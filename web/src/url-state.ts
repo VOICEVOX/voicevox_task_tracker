@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   createEmptyTableFilters,
+  waitingSubjectKey,
   type TableColumnKey,
   type TableFilters,
   type TableSort,
@@ -45,6 +46,11 @@ const filterValueSchema = z
 const basePathSchema = z.string().regex(/^\/(?:[^?#]*\/)?$/u);
 const graphClusterKindSchema = z.enum(["component", "repository"]);
 const itemNumberSchema = z.number().int().positive();
+const githubLoginSchema = z
+  .string()
+  .min(1)
+  .max(39)
+  .regex(/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/u);
 
 const FILTER_PARAMETER_NAMES = {
   repository: "repo",
@@ -92,6 +98,14 @@ export type WebRoute =
       target: ItemRouteTarget;
     }>
   | Readonly<{
+      page: "people";
+    }>
+  | Readonly<{
+      page: "person";
+      login: string;
+      teamIds: readonly string[];
+    }>
+  | Readonly<{
       page: "graph";
       selection: GraphSelection;
     }>
@@ -109,6 +123,7 @@ export type ValidGraphClusterIds = Readonly<{
 export type ValidWebRouteTargets = Readonly<{
   items: readonly ItemRouteTarget[];
   graphClusters: ValidGraphClusterIds;
+  teamIds: readonly string[];
 }>;
 
 /** ブラウザから読み取るURL。 */
@@ -365,6 +380,31 @@ function parseGraphRoute(segments: readonly string[], validIds: ValidGraphCluste
   };
 }
 
+function parsePersonRoute(segments: readonly string[]): ParsedRoute {
+  const fallback: ParsedRoute = {
+    route: {
+      page: "people",
+    },
+    status: "sanitized",
+  };
+  if (segments.length !== 2) {
+    return fallback;
+  }
+  const decodedLogin = decodePathSegment(segments[1] ?? "");
+  const parsedLogin = githubLoginSchema.safeParse(decodedLogin);
+  if (!parsedLogin.success) {
+    return fallback;
+  }
+  return {
+    route: {
+      page: "person",
+      login: parsedLogin.data,
+      teamIds: [],
+    },
+    status: segments[1] === encodeURIComponent(parsedLogin.data) ? "valid" : "canonicalized",
+  };
+}
+
 function parseRelativeRoute(relativePath: string, targets: ValidWebRouteTargets): ParsedRoute {
   const segments = relativePath.split("/");
   switch (segments[0]) {
@@ -378,6 +418,16 @@ function parseRelativeRoute(relativePath: string, targets: ValidWebRouteTargets)
         };
       }
       return parseItemRoute(segments, targets.items);
+    case "people":
+      if (segments.length === 1) {
+        return {
+          route: {
+            page: "people",
+          },
+          status: "valid",
+        };
+      }
+      return parsePersonRoute(segments);
     case "graph":
       if (segments.length === 1) {
         return {
@@ -441,6 +491,55 @@ function parseRoute(
     };
   }
   return parsedRoute;
+}
+
+function parsePersonQuery(
+  search: string,
+  route: Extract<WebRoute, Readonly<{ page: "person" }>>,
+  validTeamIds: readonly string[],
+): Readonly<{
+  sanitized: boolean;
+  state: WebViewState;
+}> {
+  const parameters = new URLSearchParams(search);
+  let sanitized = [...parameters.keys()].some((name) => name !== "teams");
+  const parsedTeams = parseParameter(parameters, "teams", filterValueSchema);
+  const teamIds: string[] = [];
+  const teamKeys = new Set<string>();
+  const validTeamKeys = new Set(
+    validTeamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId })),
+  );
+
+  switch (parsedTeams.status) {
+    case "absent":
+      break;
+    case "invalid":
+      sanitized = true;
+      break;
+    case "valid":
+      for (const teamId of parsedTeams.value.split(",")) {
+        if (teamId.length === 0) {
+          sanitized = true;
+          continue;
+        }
+        const teamKey = waitingSubjectKey({ kind: "team", teamId });
+        if (teamKeys.has(teamKey) || !validTeamKeys.has(teamKey)) {
+          sanitized = true;
+          continue;
+        }
+        teamKeys.add(teamKey);
+        teamIds.push(teamId);
+      }
+      break;
+  }
+
+  return {
+    sanitized,
+    state: createWebViewState({
+      ...route,
+      teamIds,
+    }),
+  };
 }
 
 function parseItemsQuery(
@@ -514,13 +613,24 @@ export function parseWebViewState(
   targets: ValidWebRouteTargets,
 ): ParsedWebViewState {
   const parsedRoute = parseRoute(location.pathname, basePath, targets);
-  const queryResult =
-    parsedRoute.route.page === "items"
-      ? parseItemsQuery(location.search, parsedRoute.route)
-      : {
-          sanitized: location.search.length > 0,
-          state: createWebViewState(parsedRoute.route),
-        };
+  let queryResult: Readonly<{
+    sanitized: boolean;
+    state: WebViewState;
+  }>;
+  switch (parsedRoute.route.page) {
+    case "items":
+      queryResult = parseItemsQuery(location.search, parsedRoute.route);
+      break;
+    case "person":
+      queryResult = parsePersonQuery(location.search, parsedRoute.route, targets.teamIds);
+      break;
+    default:
+      queryResult = {
+        sanitized: location.search.length > 0,
+        state: createWebViewState(parsedRoute.route),
+      };
+      break;
+  }
   if (parsedRoute.status === "sanitized" || queryResult.sanitized) {
     return {
       status: "sanitized",
@@ -549,6 +659,10 @@ function createRoutePath(basePath: string, route: WebRoute): string {
       return `${pathPrefix}/items`;
     case "item-details":
       return `${pathPrefix}/items/${encodeURIComponent(route.target.repositoryName)}/${route.target.number.toString()}`;
+    case "people":
+      return `${pathPrefix}/people`;
+    case "person":
+      return `${pathPrefix}/people/${encodeURIComponent(route.login)}`;
     case "graph":
       if (route.selection.status === "none") {
         return `${pathPrefix}/graph`;
@@ -566,6 +680,14 @@ function createRoutePath(basePath: string, route: WebRoute): string {
 /** 検証済み画面状態をbasePath配下のdeep linkへ変換する。 */
 export function createWebViewHref(basePath: string, state: WebViewState): string {
   const pathname = createRoutePath(basePath, state.route);
+  if (state.route.page === "person") {
+    if (state.route.teamIds.length === 0) {
+      return pathname;
+    }
+    const parameters = new URLSearchParams();
+    parameters.set("teams", state.route.teamIds.join(","));
+    return `${pathname}?${parameters.toString()}`;
+  }
   if (state.route.page !== "items") {
     return pathname;
   }

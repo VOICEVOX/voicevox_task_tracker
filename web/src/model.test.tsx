@@ -7,7 +7,17 @@ import {
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
-import { waitingOnHistoryLabel, waitingOnLabel } from "./model.js";
+import {
+  collectWaitingSubjectRows,
+  collectWaitingTeamIds,
+  resolveWaitingSubjects,
+  selectWaitingSubjectItemNodeIds,
+  selectWaitingSubjectReasons,
+  waitingOnHistoryLabel,
+  waitingOnLabel,
+  waitingSubjectKey,
+  waitingSubjectLabel,
+} from "./model.js";
 
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 
@@ -254,5 +264,235 @@ describe("waitingOn表示", () => {
         summaryWithoutTarget,
       ),
     ).toThrowError("waitingOn項目 sample-item-editor-103 の表示名がありません");
+  });
+});
+
+describe("待ち相手", () => {
+  const identifiedItem: PublicItemSummaryDto = {
+    ...readSampleItem("sample-item-editor-101"),
+    author: {
+      status: "identified",
+      actor: {
+        type: "human",
+        nodeId: "actor:HiHo",
+        login: "HiHo",
+      },
+    },
+    assignees: [
+      {
+        type: "human",
+        nodeId: "actor:AOIRINT",
+        login: "AOIRINT",
+      },
+      {
+        type: "human",
+        nodeId: "actor:hiho",
+        login: "hiho",
+      },
+    ],
+  };
+
+  it("userとteamを入力順の相手へ解決して重複をまとめる", () => {
+    const item: PublicItemSummaryDto = {
+      ...identifiedItem,
+      waitingOn: [
+        createWaitingOnCandidate("user", "reviewer", "HiHo"),
+        createWaitingOnCandidate("team", "reviewer", "VOICEVOX/Maintainers"),
+        createWaitingOnCandidate("user", "reviewer", "hiho"),
+      ],
+    };
+
+    expect(resolveWaitingSubjects(item)).toEqual([
+      { kind: "user", login: "HiHo" },
+      { kind: "team", teamId: "VOICEVOX/Maintainers" },
+    ]);
+  });
+
+  it("authorとassigneeのroleを具体的なloginへ解決する", () => {
+    const item: PublicItemSummaryDto = {
+      ...identifiedItem,
+      waitingOn: [
+        createWaitingOnCandidate("role", "author", "author"),
+        createWaitingOnCandidate("role", "assignee", "assignee"),
+      ],
+    };
+
+    expect(resolveWaitingSubjects(item)).toEqual([
+      { kind: "user", login: "HiHo" },
+      { kind: "user", login: "AOIRINT" },
+    ]);
+  });
+
+  it("具体的な相手を特定できないroleとkindを除外する", () => {
+    const item: PublicItemSummaryDto = {
+      ...identifiedItem,
+      author: {
+        status: "unavailable",
+        reason: "deleted_account",
+      },
+      assignees: [],
+      waitingOn: [
+        createWaitingOnCandidate("role", "author", "author"),
+        createWaitingOnCandidate("role", "assignee", "assignee"),
+        createWaitingOnCandidate("role", "maintainer", "maintainer"),
+        createWaitingOnCandidate("role", "reviewer", "reviewer"),
+        createWaitingOnCandidate("role", "merge_decider", "merge_decider"),
+        createWaitingOnCandidate("role", "ci", "ci"),
+        createWaitingOnCandidate("role", "dependency", "dependency"),
+        createWaitingOnCandidate("role", "unknown", "unknown"),
+        createWaitingOnCandidate("item", "dependency", "item"),
+        createWaitingOnCandidate("automation", "ci", "automation"),
+        createWaitingOnCandidate("unknown", "unknown", "unknown"),
+      ],
+    };
+
+    expect(resolveWaitingSubjects(item)).toEqual([]);
+  });
+
+  it("比較キーだけを小文字化し表示ラベルは元の表記を保つ", () => {
+    expect(waitingSubjectKey({ kind: "user", login: "HiHo" })).toBe("user:hiho");
+    expect(waitingSubjectKey({ kind: "team", teamId: "VOICEVOX/Maintainers" })).toBe(
+      "team:voicevox/maintainers",
+    );
+    expect(waitingSubjectLabel({ kind: "user", login: "HiHo" })).toBe("@HiHo");
+    expect(waitingSubjectLabel({ kind: "team", teamId: "VOICEVOX/Maintainers" })).toBe(
+      "チーム VOICEVOX/Maintainers",
+    );
+  });
+
+  it("team識別子を比較キーで重複排除して識別子の昇順で集める", () => {
+    const summary: PublicSummaryDto = {
+      ...sampleSummary,
+      items: [
+        {
+          ...readSampleItem("sample-item-editor-101"),
+          waitingOn: [
+            createWaitingOnCandidate("team", "reviewer", "VOICEVOX/zeta"),
+            createWaitingOnCandidate("user", "reviewer", "hiho"),
+          ],
+        },
+        {
+          ...readSampleItem("sample-item-engine-202"),
+          waitingOn: [
+            createWaitingOnCandidate("team", "reviewer", "VOICEVOX/Alpha"),
+            createWaitingOnCandidate("team", "reviewer", "voicevox/ZETA"),
+          ],
+        },
+      ],
+    };
+
+    expect(collectWaitingTeamIds(summary)).toEqual(["VOICEVOX/Alpha", "VOICEVOX/zeta"]);
+  });
+
+  it("項目数の降順とラベルの昇順で集計する", () => {
+    const summary: PublicSummaryDto = {
+      ...sampleSummary,
+      items: [
+        {
+          ...readSampleItem("sample-item-editor-101"),
+          stallSince: "2026-07-20T00:00:00.000Z",
+          waitingOn: [
+            createWaitingOnCandidate("user", "reviewer", "beta"),
+            createWaitingOnCandidate("team", "reviewer", "VOICEVOX/reviewers"),
+          ],
+        },
+        {
+          ...readSampleItem("sample-item-engine-202"),
+          stallSince: "2026-07-15T00:00:00.000Z",
+          waitingOn: [
+            createWaitingOnCandidate("user", "reviewer", "BETA"),
+            createWaitingOnCandidate("user", "reviewer", "alpha"),
+          ],
+        },
+        {
+          ...readSampleItem("sample-item-editor-103"),
+          stallSince: "2026-07-01T00:00:00.000Z",
+          waitingOn: [createWaitingOnCandidate("user", "reviewer", "alpha")],
+        },
+      ],
+    };
+
+    expect(collectWaitingSubjectRows(summary, new Date("2026-07-31T00:00:00.000Z"))).toEqual([
+      {
+        subject: { kind: "user", login: "alpha" },
+        label: "@alpha",
+        itemCount: 2,
+        longestStallDuration: "30日",
+      },
+      {
+        subject: { kind: "user", login: "beta" },
+        label: "@beta",
+        itemCount: 2,
+        longestStallDuration: "16日",
+      },
+      {
+        subject: { kind: "team", teamId: "VOICEVOX/reviewers" },
+        label: "チーム VOICEVOX/reviewers",
+        itemCount: 1,
+        longestStallDuration: "11日",
+      },
+    ]);
+  });
+
+  it("loginと所属teamのどちらかを待つ項目を選ぶ", () => {
+    const summary: PublicSummaryDto = {
+      ...sampleSummary,
+      items: [
+        {
+          ...readSampleItem("sample-item-editor-101"),
+          waitingOn: [createWaitingOnCandidate("user", "reviewer", "HIHO")],
+        },
+        {
+          ...readSampleItem("sample-item-engine-202"),
+          waitingOn: [createWaitingOnCandidate("team", "reviewer", "VOICEVOX/Maintainers")],
+        },
+        {
+          ...readSampleItem("sample-item-editor-103"),
+          waitingOn: [createWaitingOnCandidate("team", "reviewer", "VOICEVOX/Reviewers")],
+        },
+      ],
+    };
+
+    expect(selectWaitingSubjectItemNodeIds(summary, "hiho", ["voicevox/maintainers"])).toEqual(
+      new Set(["sample-item-editor-101", "sample-item-engine-202"]),
+    );
+  });
+
+  it("loginまたは所属teamに一致する候補の待ち理由だけを入力順で返す", () => {
+    const item: PublicItemSummaryDto = {
+      ...identifiedItem,
+      waitingOn: [
+        {
+          ...createWaitingOnCandidate("user", "reviewer", "other"),
+          reasonSummary: "別の人を待っています",
+        },
+        {
+          ...createWaitingOnCandidate("user", "reviewer", "HIHO"),
+          reasonSummary: "本人の確認を待っています",
+        },
+        {
+          ...createWaitingOnCandidate("team", "reviewer", "VOICEVOX/Maintainers"),
+          reasonSummary: "所属チームの確認を待っています",
+        },
+        {
+          ...createWaitingOnCandidate("team", "reviewer", "VOICEVOX/Reviewers"),
+          reasonSummary: "別のチームを待っています",
+        },
+        {
+          ...createWaitingOnCandidate("role", "assignee", "assignee"),
+          reasonSummary: "担当者の対応を待っています",
+        },
+        {
+          ...createWaitingOnCandidate("user", "reviewer", "hiho"),
+          reasonSummary: "本人の確認を待っています",
+        },
+      ],
+    };
+
+    expect(selectWaitingSubjectReasons(item, "hiho", ["voicevox/maintainers"])).toEqual([
+      "本人の確認を待っています",
+      "所属チームの確認を待っています",
+      "担当者の対応を待っています",
+    ]);
   });
 });

@@ -33,7 +33,7 @@ pnpm install --frozen-lockfile
 | `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の上限を検証する | `artifacts/performance-profile.json`                     |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                                       |
 
-`build:web`は`index.html`に加えて`404.html`と`items/index.html`、`graph/index.html`、`repositories/index.html`を生成します。
+`build:web`は`index.html`に加えて`404.html`と`items/index.html`、`graph/index.html`、`repositories/index.html`、`people/index.html`を生成します。
 GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdeep linkをこの複製で受けます。
 
 `tracker:run`はビルドを兼ねません。

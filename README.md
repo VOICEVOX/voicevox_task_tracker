@@ -1,7 +1,7 @@
 # VOICEVOX Task Tracker
 
 VOICEVOX Organizationの公開IssueとPull Requestを横断して、現在の状態、次に行動する主体、停滞時間、依存関係を整理するプロジェクトです。
-毎日08:00 JSTにGitHub Actionsから実行し、GitHub Pagesへ一覧と依存グラフを公開して、対応が必要な変化だけをDiscordへ通知します。
+毎日08:00 JSTにGitHub Actionsから実行し、GitHub Pagesへ一覧、担当者別の停滞、依存グラフを公開して、対応が必要な変化だけをDiscordへ通知します。
 追跡対象のIssue、Pull Request、コメント、ラベル、アサイン、レビュー依頼は変更しません。
 
 ## 主要な仕組み

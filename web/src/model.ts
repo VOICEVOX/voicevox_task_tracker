@@ -67,6 +67,25 @@ export type ConfidencePresentation = Readonly<{
   fieldQualifier: "" | "推定" | "候補";
 }>;
 
+/** 特定できた待ち相手。 */
+export type WaitingSubject =
+  Readonly<{ kind: "user"; login: string }> | Readonly<{ kind: "team"; teamId: string }>;
+
+/** 待ち相手ごとの集計行。 */
+export type WaitingSubjectRow = Readonly<{
+  subject: WaitingSubject;
+  label: string;
+  itemCount: number;
+  longestStallDuration: string;
+}>;
+
+interface WaitingSubjectRowAccumulator {
+  subject: WaitingSubject;
+  label: string;
+  itemCount: number;
+  longestStallSince: string;
+}
+
 const STATUS_LABELS = {
   new_untriaged: "未トリアージ",
   needs_maintainer_decision: "メンテナー判断待ち",
@@ -309,6 +328,30 @@ function currentWaitingOnRoleLabel(role: WaitingOnRole, item: PublicItemSummaryD
   }
 }
 
+/** 待ち相手を大文字小文字を区別しないキーへ変換する。 */
+export function waitingSubjectKey(subject: WaitingSubject): string {
+  switch (subject.kind) {
+    case "user":
+      return `user:${subject.login.toLowerCase()}`;
+    case "team":
+      return `team:${subject.teamId.toLowerCase()}`;
+    default:
+      throw new UnreachableError(subject);
+  }
+}
+
+/** 待ち相手を画面表示用の日本語ラベルへ変換する。 */
+export function waitingSubjectLabel(subject: WaitingSubject): string {
+  switch (subject.kind) {
+    case "user":
+      return `@${subject.login}`;
+    case "team":
+      return `チーム ${subject.teamId}`;
+    default:
+      throw new UnreachableError(subject);
+  }
+}
+
 function historyWaitingOnRoleLabel(role: WaitingOnRole, item: PublicItemSummaryDto): string {
   if (role === "assignee") {
     return `当時の${waitingOnRoleName(role)}`;
@@ -332,6 +375,63 @@ export function waitingOnHistoryLabel(
   summary: PublicSummaryDto,
 ): string {
   return waitingOnKindLabel(waitingOn, summary, (role) => historyWaitingOnRoleLabel(role, item));
+}
+
+/** waitingOn候補から特定できる待ち相手を返す。 */
+function resolveWaitingOnCandidateSubjects(
+  waitingOn: WaitingOnCandidate,
+  item: PublicItemSummaryDto,
+): readonly WaitingSubject[] {
+  switch (waitingOn.kind) {
+    case "user":
+      return [{ kind: "user", login: waitingOn.candidateId }];
+    case "team":
+      return [{ kind: "team", teamId: waitingOn.candidateId }];
+    case "role":
+      switch (waitingOn.role) {
+        case "author":
+          switch (item.author.status) {
+            case "identified":
+              return [{ kind: "user", login: item.author.actor.login }];
+            case "unavailable":
+              return [];
+            default:
+              throw new UnreachableError(item.author);
+          }
+        case "assignee":
+          return item.assignees.map((assignee) => ({ kind: "user", login: assignee.login }));
+        case "maintainer":
+        case "reviewer":
+        case "merge_decider":
+        case "ci":
+        case "dependency":
+        case "unknown":
+          return [];
+        default:
+          throw new UnreachableError(waitingOn.role);
+      }
+    case "item":
+    case "automation":
+    case "unknown":
+      return [];
+    default:
+      throw new UnreachableError(waitingOn.kind);
+  }
+}
+
+/** 項目のwaitingOnから特定できる待ち相手を入力順で返す。 */
+export function resolveWaitingSubjects(item: PublicItemSummaryDto): readonly WaitingSubject[] {
+  const subjectKeys = new Set<string>();
+  return item.waitingOn
+    .flatMap((waitingOn) => resolveWaitingOnCandidateSubjects(waitingOn, item))
+    .filter((subject) => {
+      const key = waitingSubjectKey(subject);
+      if (subjectKeys.has(key)) {
+        return false;
+      }
+      subjectKeys.add(key);
+      return true;
+    });
 }
 
 /** confidenceを確定、推定、候補の表示へ変換する。 */
@@ -414,6 +514,111 @@ function compareStrings(left: string, right: string): number {
     return 1;
   }
   return 0;
+}
+
+/** 公開summaryから待ち相手のチーム識別子を昇順で集める。 */
+export function collectWaitingTeamIds(summary: PublicSummaryDto): readonly string[] {
+  const teamIds = new Map<string, string>();
+  for (const item of summary.items) {
+    for (const subject of resolveWaitingSubjects(item)) {
+      if (subject.kind === "team") {
+        const key = waitingSubjectKey(subject);
+        if (!teamIds.has(key)) {
+          teamIds.set(key, subject.teamId);
+        }
+      }
+    }
+  }
+  return [...teamIds.values()].sort(compareStrings);
+}
+
+/** 公開summaryから待ち相手ごとの集計行を作る。 */
+export function collectWaitingSubjectRows(
+  summary: PublicSummaryDto,
+  now: Date,
+): readonly WaitingSubjectRow[] {
+  const accumulators = new Map<string, WaitingSubjectRowAccumulator>();
+  for (const item of summary.items) {
+    for (const subject of resolveWaitingSubjects(item)) {
+      const key = waitingSubjectKey(subject);
+      const accumulator = accumulators.get(key);
+      if (accumulator == null) {
+        accumulators.set(key, {
+          subject,
+          label: waitingSubjectLabel(subject),
+          itemCount: 1,
+          longestStallSince: item.stallSince,
+        });
+        continue;
+      }
+      accumulator.itemCount += 1;
+      if (parseTimestamp(item.stallSince) < parseTimestamp(accumulator.longestStallSince)) {
+        accumulator.longestStallSince = item.stallSince;
+      }
+    }
+  }
+
+  return [...accumulators.values()]
+    .map((accumulator) => ({
+      subject: accumulator.subject,
+      label: accumulator.label,
+      itemCount: accumulator.itemCount,
+      longestStallDuration: formatStallDuration(accumulator.longestStallSince, now),
+    }))
+    .sort((left, right) => {
+      const itemCountOrder = right.itemCount - left.itemCount;
+      return itemCountOrder === 0 ? compareStrings(left.label, right.label) : itemCountOrder;
+    });
+}
+
+/** loginまたは所属teamに対応する待ち理由を入力順で返す。 */
+export function selectWaitingSubjectReasons(
+  item: PublicItemSummaryDto,
+  login: string,
+  teamIds: readonly string[],
+): readonly string[] {
+  const subjectKeys = new Set([
+    waitingSubjectKey({ kind: "user", login }),
+    ...teamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId })),
+  ]);
+  const reasons = new Set<string>();
+  return item.waitingOn
+    .filter((waitingOn) =>
+      resolveWaitingOnCandidateSubjects(waitingOn, item).some((subject) =>
+        subjectKeys.has(waitingSubjectKey(subject)),
+      ),
+    )
+    .map((waitingOn) => waitingOn.reasonSummary)
+    .filter((reason) => {
+      if (reasons.has(reason)) {
+        return false;
+      }
+      reasons.add(reason);
+      return true;
+    });
+}
+
+/** loginまたは所属teamを待っている項目のnode ID集合を返す。 */
+export function selectWaitingSubjectItemNodeIds(
+  summary: PublicSummaryDto,
+  login: string,
+  teamIds: readonly string[],
+): ReadonlySet<string> {
+  const subjectKeys = new Set([
+    waitingSubjectKey({ kind: "user", login }),
+    ...teamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId })),
+  ]);
+  return new Set(
+    summary.items
+      .filter((item) =>
+        item.waitingOn.some((waitingOn) =>
+          resolveWaitingOnCandidateSubjects(waitingOn, item).some((subject) =>
+            subjectKeys.has(waitingSubjectKey(subject)),
+          ),
+        ),
+      )
+      .map((item) => item.nodeId),
+  );
 }
 
 /** attention queueの決定論的な優先順を比較する。 */

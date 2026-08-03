@@ -25,6 +25,7 @@ import {
   type TableFilters,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
+import { VIEWER_IDENTITY_STORAGE_KEY } from "./viewer-identity.js";
 
 const NOW = new Date("2026-08-01T00:00:00.000Z");
 const LOCALE = "ja-JP";
@@ -51,6 +52,16 @@ function currentContainer(): HTMLDivElement {
 
 function renderApp(summary: PublicSummaryDto): void {
   renderAppWithDetails(summary, sampleDetails);
+}
+
+function storeViewerIdentity(login: string, teamIds: readonly string[]): void {
+  window.localStorage.setItem(
+    VIEWER_IDENTITY_STORAGE_KEY,
+    JSON.stringify({
+      login,
+      teamIds,
+    }),
+  );
 }
 
 function renderAppWithDetails(summary: PublicSummaryDto, details: PublicDetailsDto): void {
@@ -125,6 +136,87 @@ function itemRowNodeIds(): readonly string[] {
   );
 }
 
+function createPersonPageSummary(): PublicSummaryDto {
+  const reviewerItem = sampleSummary.items.find((item) => item.nodeId === "sample-item-engine-202");
+  assertNonNullable(reviewerItem, "人ページテスト用のレビュー項目がありません");
+  const reviewerWaitingOn = reviewerItem.waitingOn[0];
+  assertNonNullable(reviewerWaitingOn, "人ページテスト用のwaitingOnがありません");
+  return createPublicSummaryDto({
+    ...sampleSummary,
+    items: sampleSummary.items.map((item) => {
+      switch (item.nodeId) {
+        case "sample-item-editor-101":
+          return {
+            ...item,
+            waitingOn: [
+              {
+                ...reviewerWaitingOn,
+                kind: "user",
+                candidateId: "HiHo",
+                reasonSummary: "HiHoさんの確認を待っています",
+              },
+              {
+                ...reviewerWaitingOn,
+                kind: "user",
+                candidateId: "aoirint",
+                reasonSummary: "aoirintさんの確認を待っています",
+              },
+            ],
+          };
+        case "sample-item-engine-202":
+          return {
+            ...item,
+            waitingOn: [
+              {
+                ...reviewerWaitingOn,
+                candidateId: "VOICEVOX/Maintainers",
+              },
+            ],
+          };
+        case "sample-item-editor-103":
+          return {
+            ...item,
+            waitingOn: [
+              {
+                ...reviewerWaitingOn,
+                candidateId: "VOICEVOX/Reviewers",
+                reasonSummary: "レビューチームの確認を待っています",
+              },
+            ],
+          };
+        default:
+          return item;
+      }
+    }),
+  });
+}
+
+function createPeoplePageSummary(): PublicSummaryDto {
+  const summary = createPersonPageSummary();
+  const hihoItem = summary.items.find((item) => item.nodeId === "sample-item-editor-101");
+  assertNonNullable(hihoItem, "担当者一覧テスト用の項目がありません");
+  const hihoWaitingOn = hihoItem.waitingOn[0];
+  assertNonNullable(hihoWaitingOn, "担当者一覧テスト用のwaitingOnがありません");
+  return createPublicSummaryDto({
+    ...summary,
+    items: summary.items.map((item) =>
+      item.nodeId === "sample-item-editor-103"
+        ? {
+            ...item,
+            waitingOn: [
+              ...item.waitingOn,
+              {
+                ...hihoWaitingOn,
+                candidateId: "HiHo",
+                reasonSummary: "HiHoさんの確認を待っています",
+              },
+            ],
+          }
+        : item,
+    ),
+  });
+}
+
 type OrderingItemOptions = Readonly<{
   nodeId: string;
   severity: PublicItemSummaryDto["severity"];
@@ -181,6 +273,7 @@ function contrastRatio(foreground: string, background: string): number {
 }
 
 beforeEach(() => {
+  window.localStorage.clear();
   window.history.replaceState({}, "", "/voicevox_task_tracker/");
   container = document.createElement("div");
   document.body.replaceChildren(currentContainer());
@@ -190,6 +283,8 @@ afterEach(() => {
   render(null, currentContainer());
   document.body.replaceChildren();
   container = undefined;
+  vi.restoreAllMocks();
+  window.localStorage.clear();
 });
 
 describe("Web UI", () => {
@@ -275,11 +370,89 @@ describe("Web UI", () => {
     expect(loadDetails).not.toHaveBeenCalled();
   });
 
+  it("担当者一覧を項目数の降順で描画する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people");
+
+    renderApp(createPeoplePageSummary());
+
+    expect(requiredElement<HTMLHeadingElement>("#people-page-heading").textContent).toBe(
+      "担当者一覧",
+    );
+    expect(
+      [...currentContainer().querySelectorAll(".people-table thead th")].map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(["待ち相手", "待たせている項目数", "最長停滞時間"]);
+    expect(
+      [...currentContainer().querySelectorAll(".people-table tbody tr")].map((row) => ({
+        itemCount: row.querySelector("td")?.textContent,
+        subject: row.querySelector("th")?.textContent,
+      })),
+    ).toEqual([
+      { subject: "@HiHo", itemCount: "2" },
+      { subject: "@aoirint", itemCount: "1" },
+      { subject: "@sample-bug-author", itemCount: "1" },
+      { subject: "チーム VOICEVOX/Maintainers", itemCount: "1" },
+      { subject: "チーム VOICEVOX/Reviewers", itemCount: "1" },
+    ]);
+    expect(
+      requiredElement<HTMLTableRowElement>(".people-table tbody tr:last-child").querySelector("a"),
+    ).toBeNull();
+    expect(currentContainer().textContent).toContain(
+      "チーム宛の待ちは、人ごとのページで所属チームを選ぶとその人の担当として合流します。",
+    );
+    expect(currentContainer().textContent).toContain(
+      "レビュワーの誰か待ちなど、待ち相手を特定できない項目が1件あります。",
+    );
+  });
+
+  it("人の行から人ごとのページへ遷移し担当者ナビを現在ページとして保つ", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people");
+    renderApp(createPeoplePageSummary());
+    const peopleNavigation = requiredElement<HTMLAnchorElement>(
+      '.global-navigation a[href="/voicevox_task_tracker/people"]',
+    );
+    const hihoLink = requiredElement<HTMLAnchorElement>(
+      '.people-table a[href="/voicevox_task_tracker/people/HiHo"]',
+    );
+
+    expect(peopleNavigation.getAttribute("aria-current")).toBe("page");
+    act(() => {
+      hihoLink.click();
+    });
+
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people/HiHo");
+    expect(requiredElement<HTMLHeadingElement>("#person-page-heading").textContent).toBe(
+      "@HiHo を待っている項目",
+    );
+    expect(peopleNavigation.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("待ち相手の行がないときは空であることを表示する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people");
+
+    renderApp({
+      ...sampleSummary,
+      items: [],
+    });
+
+    expect(currentContainer().querySelector(".people-table")).toBeNull();
+    expect(requiredElement<HTMLElement>(".people-page .empty-state").textContent).toBe(
+      "現在、担当者を特定できる止まっている項目はありません。",
+    );
+    expect(currentContainer().textContent).not.toContain("待ち相手を特定できない項目");
+  });
+
   it.each([
     {
       path: "/voicevox_task_tracker/items/",
       canonicalPath: "/voicevox_task_tracker/items",
       pageSelector: ".items-table",
+    },
+    {
+      path: "/voicevox_task_tracker/people/",
+      canonicalPath: "/voicevox_task_tracker/people",
+      pageSelector: ".people-table",
     },
     {
       path: "/voicevox_task_tracker/graph/",
@@ -315,6 +488,290 @@ describe("Web UI", () => {
     ).not.toBeNull();
     expect(currentContainer().querySelector(".url-state-notice")).toBeNull();
     expect(window.location.pathname).toBe("/voicevox_task_tracker/items/sample-editor/103");
+  });
+
+  it("人ごとのページを描画してloginのURL表現を正規化する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people/%68iho");
+
+    renderApp(createPersonPageSummary());
+
+    expect(requiredElement<HTMLHeadingElement>("#person-page-heading").textContent).toBe(
+      "@hiho を待っている項目",
+    );
+    expect(requiredElement<HTMLElement>(".person-page .eyebrow").textContent).toBe("People");
+    expect(
+      [...currentContainer().querySelectorAll(".person-items-table thead th")].map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(["リポジトリ", "種別", "タイトル", "status", "停滞時間", "待ち理由"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101"]);
+    expect(
+      requiredElement<HTMLTableCellElement>(
+        '.person-items-table tr[data-node-id="sample-item-editor-101"] td:last-child',
+      ).textContent,
+    ).toBe("HiHoさんの確認を待っています");
+    expect(requiredElement<HTMLElement>(".person-item-count").textContent).toBe("1件です。");
+    expect(
+      requiredElement<HTMLAnchorElement>(
+        '.person-items-table tr[data-node-id="sample-item-editor-101"] a',
+      ).pathname,
+    ).toBe("/voicevox_task_tracker/items/sample-editor/101");
+    expect(currentContainer().querySelector(".url-state-notice")).toBeNull();
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people/hiho");
+    expect(window.location.search).toBe("");
+  });
+
+  it.each([
+    "/voicevox_task_tracker/people/-hiho",
+    "/voicevox_task_tracker/people/hiho-",
+    "/voicevox_task_tracker/people/hi--ho",
+    `/voicevox_task_tracker/people/${"a".repeat(40)}`,
+    "/voicevox_task_tracker/people/hi_ho",
+    "/voicevox_task_tracker/people/hiho/extra",
+  ])("不正なloginを含むpath %s を担当者一覧へ戻す", (path) => {
+    window.history.replaceState({}, "", path);
+
+    renderApp(createPersonPageSummary());
+
+    expect(currentContainer().textContent).toContain("担当者一覧");
+    expect(currentContainer().querySelector(".person-page")).toBeNull();
+    expect(currentContainer().querySelector(".url-state-notice")).not.toBeNull();
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people");
+  });
+
+  it("所属チームの選択を履歴を増やさずURLと対象項目へ反映する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people/hiho");
+    renderApp(createPersonPageSummary());
+    const historyLength = window.history.length;
+
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101"]);
+    const maintainers = requiredElement<HTMLInputElement>(
+      '.person-team-selection input[value="VOICEVOX/Maintainers"]',
+    );
+    expect(requiredElement<HTMLElement>(".person-team-selection").textContent).not.toContain(
+      "件の待ちがあります",
+    );
+    expect(requiredElement<HTMLElement>(".person-team-selection").classList).not.toContain(
+      "graph-cluster-kind",
+    );
+    act(() => {
+      maintainers.click();
+    });
+
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
+    expect(window.history.length).toBe(historyLength);
+    expect(requiredElement<HTMLElement>(".person-item-count").textContent).toBe(
+      "2件です。うち1件が選択したチーム経由です。",
+    );
+  });
+
+  it("自分を記憶するとヘッダーから所属チーム付きの自分のページへ移動できる", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers",
+    );
+    renderApp(createPersonPageSummary());
+
+    expect(currentContainer().querySelector(".viewer-navigation-link")).toBeNull();
+    const rememberButton = requiredElement<HTMLButtonElement>(".person-identity-button");
+    expect(rememberButton.disabled).toBe(false);
+    expect(rememberButton.textContent).toBe("自分として記憶する");
+    act(() => {
+      rememberButton.click();
+    });
+
+    expect(window.localStorage.getItem(VIEWER_IDENTITY_STORAGE_KEY)).toBe(
+      JSON.stringify({
+        login: "hiho",
+        teamIds: ["VOICEVOX/Maintainers"],
+      }),
+    );
+    expect(requiredElement<HTMLButtonElement>(".person-identity-button").textContent).toBe(
+      "自分の記憶を解除する",
+    );
+    expect(requiredElement<HTMLAnchorElement>(".viewer-navigation-link").getAttribute("href")).toBe(
+      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers",
+    );
+
+    act(() => {
+      requiredElement<HTMLAnchorElement>(
+        '.global-navigation a[href="/voicevox_task_tracker/"]',
+      ).click();
+    });
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/");
+    act(() => {
+      requiredElement<HTMLAnchorElement>(".viewer-navigation-link").click();
+    });
+
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people/hiho");
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
+  });
+
+  it("公開データにないチームを記憶していても自分の担当のリンク先に含めない", () => {
+    storeViewerIdentity("hiho", ["VOICEVOX/Missing", "voicevox/maintainers"]);
+
+    renderApp(createPersonPageSummary());
+
+    const viewerLink = requiredElement<HTMLAnchorElement>(".viewer-navigation-link");
+    expect(viewerLink.getAttribute("href")).toBe(
+      "/voicevox_task_tracker/people/hiho?teams=voicevox%2Fmaintainers",
+    );
+    act(() => {
+      viewerLink.click();
+    });
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("voicevox/maintainers");
+  });
+
+  it("自分の記憶を解除すると保存値とヘッダーリンクが消える", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people/hiho");
+    renderApp(createPersonPageSummary());
+
+    act(() => {
+      requiredElement<HTMLButtonElement>(".person-identity-button").click();
+    });
+    expect(currentContainer().querySelector(".viewer-navigation-link")).not.toBeNull();
+    act(() => {
+      requiredElement<HTMLButtonElement>(".person-identity-button").click();
+    });
+
+    expect(window.localStorage.getItem(VIEWER_IDENTITY_STORAGE_KEY)).toBeNull();
+    expect(currentContainer().querySelector(".viewer-navigation-link")).toBeNull();
+    expect(requiredElement<HTMLButtonElement>(".person-identity-button").textContent).toBe(
+      "自分として記憶する",
+    );
+  });
+
+  it.each([
+    {
+      description: "JSONとして壊れた値",
+      storedValue: "{",
+    },
+    {
+      description: "未対応のプロパティを含む値",
+      storedValue: JSON.stringify({
+        version: 1,
+        login: "hiho",
+        teamIds: [],
+      }),
+    },
+  ])("$descriptionを破棄して警告し通常どおり描画する", ({ storedValue }) => {
+    window.localStorage.setItem(VIEWER_IDENTITY_STORAGE_KEY, storedValue);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    renderApp(sampleSummary);
+
+    expect(window.localStorage.getItem(VIEWER_IDENTITY_STORAGE_KEY)).toBeNull();
+    expect(warning).toHaveBeenCalledWith(
+      "保存されていた閲覧者情報が不正なため破棄しました。",
+      expect.anything(),
+    );
+    expect(currentContainer().textContent).toContain("対応が必要な項目");
+    expect(currentContainer().querySelector(".viewer-navigation-link")).toBeNull();
+  });
+
+  it("記憶済みのアカウントで所属チームを変えるとURLを正として記憶を更新する", () => {
+    storeViewerIdentity("hiho", ["VOICEVOX/Reviewers"]);
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people/hiho");
+    renderApp(createPersonPageSummary());
+
+    expect(requiredElement<HTMLButtonElement>(".person-identity-button").textContent).toBe(
+      "自分の記憶を解除する",
+    );
+    act(() => {
+      requiredElement<HTMLInputElement>(
+        '.person-team-selection input[value="VOICEVOX/Maintainers"]',
+      ).click();
+    });
+
+    expect(window.localStorage.getItem(VIEWER_IDENTITY_STORAGE_KEY)).toBe(
+      JSON.stringify({
+        login: "hiho",
+        teamIds: ["VOICEVOX/Maintainers"],
+      }),
+    );
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
+    expect(requiredElement<HTMLAnchorElement>(".viewer-navigation-link").getAttribute("href")).toBe(
+      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers",
+    );
+  });
+
+  it("localStorageへアクセスできないときは記憶機能だけを無効にする", () => {
+    const failure = new DOMException("利用できません", "SecurityError");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw failure;
+    });
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people/hiho");
+
+    renderApp(createPersonPageSummary());
+
+    const rememberButton = requiredElement<HTMLButtonElement>(".person-identity-button");
+    expect(rememberButton.disabled).toBe(true);
+    expect(rememberButton.getAttribute("aria-describedby")).toBe(
+      "person-identity-unavailable-reason",
+    );
+    expect(requiredElement("#person-identity-unavailable-reason").textContent).toBe(
+      "このブラウザーでは記憶を利用できません。",
+    );
+    expect(currentContainer().querySelector(".viewer-navigation-link")).toBeNull();
+    expect(requiredElement<HTMLHeadingElement>("#person-page-heading").textContent).toBe(
+      "@hiho を待っている項目",
+    );
+    act(() => {
+      requiredElement<HTMLInputElement>(
+        '.person-team-selection input[value="VOICEVOX/Maintainers"]',
+      ).click();
+    });
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
+    expect(warning).toHaveBeenCalledWith(
+      "localStorageへアクセスできないため、閲覧者情報の記憶機能を無効にしました。",
+      failure,
+    );
+  });
+
+  it("担当者一覧で自分の行を視覚表示と支援技術向けテキストで示す", () => {
+    storeViewerIdentity("hiho", ["VOICEVOX/Maintainers"]);
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people");
+
+    renderApp(createPeoplePageSummary());
+
+    const viewerRow = requiredElement<HTMLTableRowElement>(".viewer-person-row");
+    expect(viewerRow.querySelector("a")?.textContent).toBe("@HiHo");
+    expect(viewerRow.querySelector('[aria-hidden="true"]')?.textContent).toBe("自分");
+    expect(viewerRow.querySelector(".visually-hidden")?.textContent).toBe("自分のアカウントです");
+    expect(currentContainer().querySelectorAll(".viewer-person-row")).toHaveLength(1);
+  });
+
+  it("summaryにないチームと空要素と重複を捨ててURL状態の注意を表示する", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMissing%2C%2CVOICEVOX%2FMaintainers%2Cvoicevox%2Fmaintainers",
+    );
+
+    renderApp(createPersonPageSummary());
+
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
+    expect(currentContainer().querySelector(".url-state-notice")).not.toBeNull();
+  });
+
+  it("末尾スラッシュ付きの人ページを警告なしで表示してURLを正規化する", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/voicevox_task_tracker/people/hiho/?teams=VOICEVOX%2FMaintainers",
+    );
+
+    renderApp(createPersonPageSummary());
+
+    expect(currentContainer().querySelector(".person-page")).not.toBeNull();
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
+    expect(currentContainer().querySelector(".url-state-notice")).toBeNull();
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people/hiho");
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
   });
 
   it("末尾スラッシュ付きのcluster pathを警告なしで表示してURLを正規化する", async () => {
@@ -1249,6 +1706,37 @@ describe("Web UI", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-engine/204");
     renderApp(sampleSummary);
     await flushUi();
+
+    const results = await axe.run(document.body, {
+      runOnly: {
+        type: "tag",
+        values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"],
+      },
+      rules: {
+        "color-contrast": {
+          enabled: false,
+        },
+      },
+    });
+    const seriousViolations = results.violations.filter(
+      (violation) => violation.impact === "critical" || violation.impact === "serious",
+    );
+    expect(
+      seriousViolations.map((violation) => ({
+        id: violation.id,
+        impact: violation.impact,
+        targets: violation.nodes.flatMap((node) => node.target),
+      })),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ["担当者一覧", "/voicevox_task_tracker/people"],
+    ["人ごと", "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers"],
+  ])("%sページに重大な自動a11y違反がない", async (_pageName, path) => {
+    storeViewerIdentity("hiho", ["VOICEVOX/Maintainers"]);
+    window.history.replaceState({}, "", path);
+    renderApp(createPersonPageSummary());
 
     const results = await axe.run(document.body, {
       runOnly: {

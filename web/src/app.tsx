@@ -3,13 +3,16 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
+import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { DependencyGraphPage } from "./dependency-graph-page.js";
 import { type PublicDetailsLoader } from "./dependency-graph.js";
 import { createSharedDetailsLoader } from "./details-loader.js";
 import { ItemDetailsPage } from "./item-details-page.js";
 import { ItemsPage } from "./items-page.js";
-import { type TableColumnKey } from "./model.js";
+import { collectWaitingTeamIds, type TableColumnKey, waitingSubjectKey } from "./model.js";
 import { OverviewPage } from "./overview-page.js";
+import { PeoplePage } from "./people-page.js";
+import { PersonPage } from "./person-page.js";
 import { RepositoriesPage } from "./repositories-page.js";
 import {
   createItemRouteTargets,
@@ -22,6 +25,11 @@ import {
   type WebRoute,
   type WebViewState,
 } from "./url-state.js";
+import {
+  createViewerIdentityStore,
+  isViewerLogin,
+  type ViewerIdentity,
+} from "./viewer-identity.js";
 
 type AppProps = Readonly<{
   basePath: string;
@@ -32,7 +40,7 @@ type AppProps = Readonly<{
   title: string;
 }>;
 
-type NavigationPage = "overview" | "items" | "graph" | "repositories";
+type NavigationPage = "overview" | "items" | "people" | "graph" | "repositories";
 
 const NAVIGATION_PAGES: readonly Readonly<{
   label: string;
@@ -47,6 +55,10 @@ const NAVIGATION_PAGES: readonly Readonly<{
     page: "items",
   },
   {
+    label: "担当者",
+    page: "people",
+  },
+  {
     label: "依存グラフ",
     page: "graph",
   },
@@ -55,18 +67,6 @@ const NAVIGATION_PAGES: readonly Readonly<{
     page: "repositories",
   },
 ];
-
-function shouldHandleClientNavigation(
-  event: Readonly<{
-    altKey: boolean;
-    button: number;
-    ctrlKey: boolean;
-    metaKey: boolean;
-    shiftKey: boolean;
-  }>,
-): boolean {
-  return event.button === 0 && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-}
 
 function routeForNavigationPage(page: NavigationPage): WebRoute {
   switch (page) {
@@ -77,6 +77,10 @@ function routeForNavigationPage(page: NavigationPage): WebRoute {
     case "items":
       return {
         page: "items",
+      };
+    case "people":
+      return {
+        page: "people",
       };
     case "graph":
       return {
@@ -96,6 +100,9 @@ function isCurrentNavigationPage(route: WebRoute, page: NavigationPage): boolean
   if (route.page === "item-details") {
     return page === "items";
   }
+  if (route.page === "person") {
+    return page === "people";
+  }
   return route.page === page;
 }
 
@@ -114,6 +121,11 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     () => new Map(itemTargets.map((target) => [target.nodeId, target])),
     [itemTargets],
   );
+  const validTeamIds = useMemo(() => collectWaitingTeamIds(summary), [summary]);
+  const validTeamKeys = useMemo(
+    () => new Set(validTeamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId }))),
+    [validTeamIds],
+  );
   const validTargets = useMemo<ValidWebRouteTargets>(
     () => ({
       items: itemTargets,
@@ -123,14 +135,19 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
           summary.graph.repositoryClusters.map((cluster) => cluster.repositoryId),
         ),
       },
+      teamIds: validTeamIds,
     }),
-    [itemTargets, summary.graph.components, summary.graph.repositoryClusters],
+    [itemTargets, summary.graph.components, summary.graph.repositoryClusters, validTeamIds],
   );
   const sharedLoadDetails = useMemo(() => createSharedDetailsLoader(loadDetails), [loadDetails]);
+  const viewerIdentityStore = useMemo(createViewerIdentityStore, []);
+  const [viewerIdentityState, setViewerIdentityState] = useState(() => viewerIdentityStore.read());
   const [navigationState, setNavigationState] = useState<ParsedWebViewState>(() =>
     parseWebViewState(window.location, basePath, validTargets),
   );
   const viewState = navigationState.state;
+  const viewerIdentity =
+    viewerIdentityState.status === "available" ? viewerIdentityState.identity : undefined;
 
   useEffect(() => {
     if (navigationState.status !== "valid") {
@@ -248,6 +265,81 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     );
   }
 
+  function replacePersonTeamIds(teamIds: readonly string[]): void {
+    if (viewState.route.page !== "person") {
+      throw new TypeError("人ごとのページ以外では所属チームを変更できません");
+    }
+    const personRoute = viewState.route;
+    navigate(
+      {
+        ...viewState,
+        route: {
+          ...personRoute,
+          teamIds,
+        },
+      },
+      "replace",
+    );
+    if (
+      viewerIdentityState.status === "available" &&
+      isViewerLogin(personRoute.login, viewerIdentityState.identity?.login)
+    ) {
+      setViewerIdentityState(
+        viewerIdentityStore.save({
+          login: personRoute.login,
+          teamIds,
+        }),
+      );
+    }
+  }
+
+  function selectPerson(login: string): void {
+    navigate(
+      createWebViewState({
+        page: "person",
+        login,
+        teamIds: [],
+      }),
+      "push",
+    );
+  }
+
+  function filterValidViewerTeamIds(teamIds: readonly string[]): readonly string[] {
+    return teamIds.filter((teamId) =>
+      validTeamKeys.has(waitingSubjectKey({ kind: "team", teamId })),
+    );
+  }
+
+  function selectViewerIdentity(identity: ViewerIdentity): void {
+    navigate(
+      createWebViewState({
+        page: "person",
+        login: identity.login,
+        teamIds: filterValidViewerTeamIds(identity.teamIds),
+      }),
+      "push",
+    );
+  }
+
+  function toggleViewerIdentity(): void {
+    if (viewState.route.page !== "person") {
+      throw new TypeError("人ごとのページ以外では閲覧者情報を変更できません");
+    }
+    if (viewerIdentityState.status === "unavailable") {
+      throw new TypeError("閲覧者情報の記憶機能は利用できません");
+    }
+    if (isViewerLogin(viewState.route.login, viewerIdentityState.identity?.login)) {
+      setViewerIdentityState(viewerIdentityStore.clear());
+      return;
+    }
+    setViewerIdentityState(
+      viewerIdentityStore.save({
+        login: viewState.route.login,
+        teamIds: viewState.route.teamIds,
+      }),
+    );
+  }
+
   function createItemHref(nodeId: string): string {
     const target = itemTargetsByNodeId.get(nodeId);
     if (target == null) {
@@ -258,6 +350,28 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       createWebViewState({
         page: "item-details",
         target,
+      }),
+    );
+  }
+
+  function createPersonHref(login: string): string {
+    return createWebViewHref(
+      basePath,
+      createWebViewState({
+        page: "person",
+        login,
+        teamIds: [],
+      }),
+    );
+  }
+
+  function createViewerIdentityHref(identity: ViewerIdentity): string {
+    return createWebViewHref(
+      basePath,
+      createWebViewState({
+        page: "person",
+        login: identity.login,
+        teamIds: filterValidViewerTeamIds(identity.teamIds),
       }),
     );
   }
@@ -336,6 +450,33 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             onSelectItem={selectItem}
           />
         );
+      case "people":
+        return (
+          <PeoplePage
+            createPersonHref={createPersonHref}
+            locale={locale}
+            now={now}
+            summary={summary}
+            viewerLogin={viewerIdentity?.login}
+            onSelectPerson={selectPerson}
+          />
+        );
+      case "person":
+        return (
+          <PersonPage
+            createItemHref={createItemHref}
+            isViewerIdentity={isViewerLogin(viewState.route.login, viewerIdentity?.login)}
+            locale={locale}
+            login={viewState.route.login}
+            now={now}
+            selectedTeamIds={viewState.route.teamIds}
+            summary={summary}
+            viewerIdentityAvailable={viewerIdentityState.status === "available"}
+            onSelectItem={selectItem}
+            onTeamIdsChange={replacePersonTeamIds}
+            onViewerIdentityToggle={toggleViewerIdentity}
+          />
+        );
       case "graph":
         return (
           <DependencyGraphPage
@@ -395,6 +536,23 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
                 </li>
               );
             })}
+            {viewerIdentity != null && (
+              <li>
+                <a
+                  class="viewer-navigation-link"
+                  href={createViewerIdentityHref(viewerIdentity)}
+                  onClick={(event) => {
+                    if (!shouldHandleClientNavigation(event)) {
+                      return;
+                    }
+                    event.preventDefault();
+                    selectViewerIdentity(viewerIdentity);
+                  }}
+                >
+                  自分の担当
+                </a>
+              </li>
+            )}
           </ul>
         </nav>
         <details class="run-details">

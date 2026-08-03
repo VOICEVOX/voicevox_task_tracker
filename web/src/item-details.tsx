@@ -8,6 +8,7 @@ import {
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
+import { shouldHandleClientNavigation } from "./client-navigation.js";
 import {
   attentionPriority,
   confidencePresentation,
@@ -81,18 +82,6 @@ const EVIDENCE_SUPPORT_LABELS = {
   notification: "通知",
   uncertainty: "不確実性",
 } satisfies Readonly<Record<PublicItemDetailsDto["evidence"][number]["supports"], string>>;
-
-function shouldHandleClientNavigation(
-  event: Readonly<{
-    altKey: boolean;
-    button: number;
-    ctrlKey: boolean;
-    metaKey: boolean;
-    shiftKey: boolean;
-  }>,
-): boolean {
-  return event.button === 0 && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-}
 
 /** 項目詳細pageへ遷移し、通常のリンク操作も維持する。 */
 export function ItemDetailsLink({ children, href, nodeId, onSelect }: ItemDetailsLinkProps) {
