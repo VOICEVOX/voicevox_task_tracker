@@ -4318,6 +4318,94 @@ describe("本番判定入力の接続", () => {
     });
   });
 
+  it("AI判定を使わない項目でも責務主体のコメントをstallSinceへ反映する", async () => {
+    const repository = createRepository(
+      "R_responsible_activity",
+      "responsible-activity",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const commentedAt = createUtcIsoDateTime("2026-07-29T17:20:56.000Z");
+    const assignee = Object.freeze({
+      nodeId: createGitHubNodeId("U_responsible_user"),
+      login: "responsible-user",
+      apiType: "User",
+    });
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "responsible-activity",
+        updatedAt: commentedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      assignees: Object.freeze([assignee]),
+    });
+    const commentNodeId = createGitHubNodeId("IC_responsible_activity");
+    const comment = Object.freeze({
+      sourceId: buildSourceId("github_issue_comment", commentNodeId),
+      nodeId: commentNodeId,
+      sequence: 0,
+      author: Object.freeze({
+        status: "identified",
+        account: Object.freeze({
+          sourceId: buildSourceId("github_account", assignee.nodeId),
+          ...assignee,
+        }),
+      }),
+      body: "責務主体が状況をコメントしました",
+      createdAt: commentedAt,
+      updatedAt: commentedAt,
+      url: `${item.url}#issuecomment-${commentNodeId}`,
+    } satisfies GitHubIssueComment);
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item,
+          body: "本文",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        comments: Object.freeze([comment]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+    const trackedItem = snapshot.items.find((candidate) => candidate.nodeId === item.nodeId);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexInputs).toEqual([]);
+    expect(trackedItem).toMatchObject({
+      status: "waiting_for_assignee",
+      waitingOn: [
+        expect.objectContaining({
+          kind: "user",
+          candidateId: assignee.login,
+          role: "assignee",
+        }),
+      ],
+      ownerSince: item.createdAt,
+      stallSince: commentedAt,
+      lastProgressAt: item.createdAt,
+      lastHumanActivityAt: commentedAt,
+      aiAnalysis: {
+        status: "not_used",
+      },
+    });
+  });
+
   it("reducerの検証済み通知提案を通知選別へ渡す", async () => {
     const repository = createRepository("R_codex_notification", "codex-notification", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);

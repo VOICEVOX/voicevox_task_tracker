@@ -152,6 +152,7 @@ export {
   resolveRepositoryRoleWaitingOn,
   resolveRepositoryTeamReferences,
   resolveRepositoryTeams,
+  resolveWaitingOnAccountIdentifiers,
   type GitHubTeamDirectory,
   type GitHubTeamMember,
   type RepositoryActorTeamRoles,

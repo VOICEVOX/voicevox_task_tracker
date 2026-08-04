@@ -286,7 +286,8 @@ type ProgressAndHumanActivityExcludedEvent = Extract<
   { kind: (typeof PROGRESS_AND_HUMAN_ACTIVITY_EXCLUDED_EVENT_KINDS)[number] }
 >;
 
-function isExcludedFromProgressAndHumanActivity(
+/** 進捗とhuman活動から除外するイベントかを判定する。 */
+export function isExcludedFromProgressAndHumanActivity(
   event: NormalizedEvent,
 ): event is ProgressAndHumanActivityExcludedEvent {
   return PROGRESS_AND_HUMAN_ACTIVITY_EXCLUDED_EVENT_KINDS.some((kind) => kind === event.kind);

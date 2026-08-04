@@ -21,6 +21,7 @@ import {
   determineIssueState,
   determinePullRequestState,
   isTerminalStatus,
+  resolveWaitingOnAccountIdentifiers,
   type Actor,
   type BlockedParentContext,
   type BlockerRanking,
@@ -872,6 +873,10 @@ function createStaleness(
       item.type === "issue"
         ? createIssueObservation(item).events
         : createPullRequestObservation(item).events,
+    responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(
+      decision.waitingOn,
+      RESOLVED_TEAMS,
+    ),
     dependencyResolutions: Object.freeze([]),
     naturalLanguageAssessments: Object.freeze([]),
     minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,

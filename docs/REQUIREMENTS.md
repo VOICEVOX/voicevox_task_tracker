@@ -77,20 +77,20 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 ## 6. 用語
 
-| 用語                | 定義                                                              |
-| ------------------- | ----------------------------------------------------------------- |
-| tracked item        | 追跡対象に入ったIssueまたはPR                                     |
-| waitingOn           | 次に状態を進める行動が期待される主体                              |
-| ball / ボール       | waitingOnと同義の運用上の表現                                     |
-| statusSince         | 現在statusへ遷移した時刻                                          |
-| ownerSince          | 現在waitingOnへ遷移した時刻                                       |
-| stallSince          | 現在の待ち状態で意味のある進捗が最後に起きた時刻                  |
-| meaningful progress | push、回答、review、決定、依存解消など、次工程を進める変化        |
-| authoritative edge  | GitHub native dependency/sub-issue等、AIより優先するrelation      |
-| inferred edge       | 本文・コメント・link候補をCodexが関係ありと判定したrelation       |
-| actionable frontier | openなincoming `blocks` edgeを持たず、今着手可能な非terminal node |
-| downstream impact   | そのnodeが止めているopen node/repoの直接・推移的規模              |
-| stale repo          | 今回取得に失敗し、前回値しかないrepo                              |
+| 用語                | 定義                                                                 |
+| ------------------- | -------------------------------------------------------------------- |
+| tracked item        | 追跡対象に入ったIssueまたはPR                                        |
+| waitingOn           | 次に状態を進める行動が期待される主体                                 |
+| ball / ボール       | waitingOnと同義の運用上の表現                                        |
+| statusSince         | 現在statusへ遷移した時刻                                             |
+| ownerSince          | 現在waitingOnへ遷移した時刻                                          |
+| stallSince          | 現在の待ち状態で意味のある進捗か責務主体本人の活動が最後に起きた時刻 |
+| meaningful progress | push、回答、review、決定、依存解消など、次工程を進める変化           |
+| authoritative edge  | GitHub native dependency/sub-issue等、AIより優先するrelation         |
+| inferred edge       | 本文・コメント・link候補をCodexが関係ありと判定したrelation          |
+| actionable frontier | openなincoming `blocks` edgeを持たず、今着手可能な非terminal node    |
+| downstream impact   | そのnodeが止めているopen node/repoの直接・推移的規模                 |
+| stale repo          | 今回取得に失敗し、前回値しかないrepo                                 |
 
 ## 7. 推奨状態モデル
 
@@ -197,7 +197,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `GOL-001` | MUST | 一元的な現況把握 — 全追跡対象の現在状態を、公開Webページの1か所から把握できなければならない。                                               | `AT-GOL-001`: 異なる3リポジトリのIssue/PRを含むfixtureで、各項目の状態が同一ページから到達できる。                               |
 | `GOL-002` | MUST | ボールの所在 — 各追跡項目について、次に行動すべき個人・チーム・役割・依存項目・自動処理のいずれかを示さなければならない。                   | `AT-GOL-002`: fixture全件でwaitingOnが1件以上、またはterminalであり、理由と根拠が表示される。                                    |
-| `GOL-003` | MUST | 停滞検知 — 単なるGitHubのupdated_atではなく、責務が移った時点と意味のある進捗を基準に停滞時間を算出しなければならない。                     | `AT-GOL-003`: botコメントのみ追加したfixtureでstallSinceが変化せず、人間の責務移動イベントでは変化する。                         |
+| `GOL-003` | MUST | 停滞検知 — 単なるGitHubのupdated_atではなく、責務が移った時点、意味のある進捗、責務主体本人の活動を基準に停滞時間を算出しなければならない。 | `AT-GOL-003`: botコメントのみ追加したfixtureでstallSinceが変化せず、人間の責務移動イベントでは変化する。                         |
 | `GOL-004` | MUST | 依存関係の可視化 — リポジトリをまたぐブロッカー、親子、実装、関連関係を型付きグラフとして可視化しなければならない。                         | `AT-GOL-004`: 3リポジトリ以上をまたぐグラフfixtureで、型・向き・根拠が確認できる。                                               |
 | `GOL-005` | MUST | 高シグナル通知 — 毎日のDiscord通知は、行動が必要な項目を選別し、全件羅列を避けなければならない。                                            | `AT-GOL-005`: 通常項目50件・要対応3件のfixtureで、Discord候補は要対応中心かつ設定上限以内となる。                                |
 | `GOL-006` | MUST | 監査可能性 — 各判定は、入力イベント、ルール、AI出力、信頼度、変更履歴まで追跡可能でなければならない。                                       | `AT-GOL-006`: 任意の項目から判定根拠と前回との差分へ到達できる。                                                                 |
@@ -314,6 +314,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `RSP-028` | MUST | 不確実性表示 — 責務判定にconfidence、根拠source IDs、uncertaintiesを持ち、低信頼時はunknown/推定表示へ縮退しなければならない。                                                                                 | `AT-RSP-028`: 低confidence fixtureが断定表示・高優先通知にならない。                                                                      |
 | `RSP-029` | MUST | 保持者の発言による責務の反転 — 変更要求、未解決review thread、review依頼で待ち先を決めた後、その待ち先本人が責務の起点より後に本文のある発言をしている場合、発言の意味を解釈して責務を判定しなければならない。 | `AT-RSP-029`: 変更要求後にauthorが質問するfixtureで待ち先がreviewerへ移る。                                                               |
 | `RSP-030` | MUST | 応答不要の発言 — 了解、謝辞、進捗報告のように相手の行動を必要としない発言だけを理由に、責務を相手へ移してはならない。                                                                                          | `AT-RSP-030`: authorが了解コメントだけを返すfixtureでauthor待ちが維持される。                                                             |
+| `RSP-031` | MUST | 責務主体の活動による停滞起点 — 現在の待ち先本人がGitHub上で活動した時刻を停滞起点の下限としなければならない。第三者やbotの活動、draft戻し、merge queueの出し入れでは停滞を解除してはならない。                 | `AT-RSP-031`: 待ち先本人のコメントで停滞起点が進み、第三者のコメントでは進まない。                                                        |
 
 ### 11.7 依存グラフ
 

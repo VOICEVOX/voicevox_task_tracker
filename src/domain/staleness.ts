@@ -1,6 +1,7 @@
 import { type LabelEffectsResolver } from "./label-resolution.js";
 import {
   determineMeaningfulProgress,
+  isExcludedFromProgressAndHumanActivity,
   type DependencyResolutionProgress,
   type MeaningfulProgress,
   type NaturalLanguageProgressAssessment,
@@ -125,6 +126,7 @@ export type CalculateStalenessInput = Readonly<{
   decisionBasis: StalenessSeverityContext["decisionBasis"];
   previousState: PreviousStalenessState;
   events: readonly NormalizedEvent[];
+  responsibleAccountIdentifiers: ReadonlySet<string>;
   dependencyResolutions: readonly DependencyResolutionProgress[];
   naturalLanguageAssessments: readonly NaturalLanguageProgressAssessment[];
   minimumAiConfidence: number;
@@ -351,9 +353,27 @@ function latestTimestamp(values: readonly UtcIsoDateTime[]): UtcIsoDateTime {
   return latest;
 }
 
+function determineLastResponsibleHumanActivityAt(
+  input: CalculateStalenessInput,
+): UtcIsoDateTime | undefined {
+  const responsibleActivityTimes = input.events
+    .filter(
+      (event) =>
+        !isExcludedFromProgressAndHumanActivity(event) &&
+        event.actor.type === "human" &&
+        (input.responsibleAccountIdentifiers.has(event.actor.login) ||
+          input.responsibleAccountIdentifiers.has(event.actor.nodeId)),
+    )
+    .map((event) => event.occurredAt);
+  return responsibleActivityTimes.length === 0
+    ? undefined
+    : latestTimestamp(responsibleActivityTimes);
+}
+
 function determineTransitionTimes(
   input: CalculateStalenessInput,
   lastProgressAt: UtcIsoDateTime,
+  lastResponsibleHumanActivityAt: UtcIsoDateTime | undefined,
 ): Readonly<{
   statusSince: UtcIsoDateTime;
   ownerSince: UtcIsoDateTime;
@@ -367,7 +387,11 @@ function determineTransitionTimes(
     return Object.freeze({
       statusSince: input.currentDecision.statusBasis.occurredAt,
       ownerSince,
-      stallSince: latestTimestamp([ownerSince, lastProgressAt]),
+      stallSince: latestTimestamp([
+        ownerSince,
+        lastProgressAt,
+        ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
+      ]),
     });
   }
 
@@ -398,6 +422,7 @@ function determineTransitionTimes(
     stallSince: latestTimestamp([
       ownerSince,
       lastProgressAt,
+      ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
       ...(statusChanged || responsibilityChanged ? [] : [previous.stallSince]),
     ]),
   });
@@ -614,7 +639,11 @@ export function calculateStaleness(input: CalculateStalenessInput): StalenessRes
     repositoryFullName: input.repositoryFullName,
     resolveLabelEffects: input.resolveLabelEffects,
   });
-  const transitionTimes = determineTransitionTimes(input, progress.lastProgressAt);
+  const transitionTimes = determineTransitionTimes(
+    input,
+    progress.lastProgressAt,
+    determineLastResponsibleHumanActivityAt(input),
+  );
   const elapsed = Object.freeze({
     status: elapsedHours(transitionTimes.statusSince, input.evaluatedAt),
     owner: elapsedHours(transitionTimes.ownerSince, input.evaluatedAt),

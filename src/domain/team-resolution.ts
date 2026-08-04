@@ -1,5 +1,5 @@
 import { type GitHubNodeId, type WaitingOn } from "./types.js";
-import { assertNonNullable } from "../util/assert-non-nullable.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 
 /** 設定で参照するOrganization team。 */
 export type TeamReference = Readonly<{
@@ -187,6 +187,45 @@ export function resolveRepositoryActorTeamRoles(
 
 function teamCandidateId(team: ResolvedGitHubTeam): string {
   return `${team.org}/${team.slug}`;
+}
+
+/** waitingOnを現在の責務主体に含まれるGitHubアカウント識別子へ解決する。 */
+export function resolveWaitingOnAccountIdentifiers(
+  waitingOnValues: readonly WaitingOn[],
+  teams: ResolvedRepositoryTeams,
+): ReadonlySet<string> {
+  const identifiers = new Set<string>();
+  const configuredTeams = [...teams.maintainers, ...teams.reviewers];
+
+  for (const waitingOn of waitingOnValues) {
+    switch (waitingOn.kind) {
+      case "user":
+        identifiers.add(waitingOn.candidateId);
+        break;
+      case "team": {
+        const candidateTeamKey = waitingOn.candidateId.toLowerCase();
+        for (const team of configuredTeams) {
+          if (createTeamKey(team) !== candidateTeamKey) {
+            continue;
+          }
+          for (const member of team.members) {
+            identifiers.add(member.login);
+            identifiers.add(member.nodeId);
+          }
+        }
+        break;
+      }
+      case "role":
+      case "item":
+      case "automation":
+      case "unknown":
+        break;
+      default:
+        throw new UnreachableError(waitingOn.kind);
+    }
+  }
+
+  return identifiers;
 }
 
 function resolveWaitingOnRoleTeams(

@@ -48,6 +48,7 @@ import {
   resolvePullRequestCommitOccurredAt,
   resolveTrackingStartAt,
   resolveRepositoryTeams,
+  resolveWaitingOnAccountIdentifiers,
   selectTrackingItems,
   type LabelRule,
   type NotificationLedgerEntry,
@@ -3197,6 +3198,14 @@ function reduceAnalysisPass(
       decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
       previousState: previousStalenessState(state, analysis.item.nodeId, analysis.item.type),
       events: analysis.item.events,
+      responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(
+        decision.waitingOn,
+        resolveRepositoryTeams(
+          repositoryFullName(repository),
+          configuration.config.teams,
+          inventory.teams,
+        ),
+      ),
       dependencyResolutions: dependencyResolutions(
         state,
         collection,
