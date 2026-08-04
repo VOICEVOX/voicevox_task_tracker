@@ -24,7 +24,7 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Pull Request判定へ適用した決定規則のversion。 */
-export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v1";
+export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v2";
 
 /** 依存グラフからPull Request判定へ渡すblocker。 */
 export type PullRequestBlocker = Readonly<{
@@ -657,6 +657,29 @@ function getHumanReviewEvents(pullRequest: FreshObservedGitHubPullRequest): read
   );
 }
 
+function getHumanCommentEvents(
+  pullRequest: FreshObservedGitHubPullRequest,
+): readonly HumanCommentEvent[] {
+  return Object.freeze(
+    pullRequest.events
+      .filter(
+        (event): event is HumanCommentEvent =>
+          event.kind === "comment" && event.actor.type === "human",
+      )
+      .sort(compareEvents),
+  );
+}
+
+function getBodyBearingHumanSpeechEvents(
+  pullRequest: FreshObservedGitHubPullRequest,
+): readonly (HumanCommentEvent | ReviewEvent)[] {
+  return Object.freeze(
+    [...getHumanCommentEvents(pullRequest), ...getHumanReviewEvents(pullRequest)]
+      .filter((event) => !event.bodyEmpty)
+      .sort(compareEvents),
+  );
+}
+
 function getEffectiveReviews(events: readonly ReviewEvent[]): readonly ReviewEvent[] {
   const reviewsByActor = new Map<GitHubNodeId, ReviewEvent>();
   for (const event of events) {
@@ -721,6 +744,23 @@ function createChangesRequestedDecision(
   const sourceIds = changesRequested.map((review) => review.sourceId);
   const firstReview = changesRequested[0];
   assertNonNullable(firstReview, "変更要求reviewを取得できませんでした");
+  const latestReview = changesRequested.at(-1);
+  assertNonNullable(latestReview, "最新の変更要求reviewを取得できませんでした");
+  const author = input.pullRequest.author;
+  if (author.status === "identified" && author.actor.type === "human") {
+    const authorSpeechEvents = getBodyBearingHumanSpeechEvents(input.pullRequest).filter(
+      (event) =>
+        event.actor.nodeId === author.actor.nodeId && event.occurredAt > latestReview.occurredAt,
+    );
+    if (authorSpeechEvents.length > 0) {
+      addUncertainty(
+        context,
+        "変更要求後にauthorが発言しているためreviewer対応が必要か判断できません",
+        [latestReview.sourceId, ...authorSpeechEvents.map((event) => event.sourceId)],
+        input.confidenceThresholds.medium,
+      );
+    }
+  }
   const basis = createBasis(sourceIds, firstReview.occurredAt, "event");
   return finalizeDecision(input, context, {
     status: "waiting_for_author",
@@ -755,8 +795,10 @@ function createReviewThreadDecision(
 ): PullRequestStateDecision | undefined {
   const commentsBySourceId = getCommentEventsBySourceId(input.pullRequest);
   const actionable: Readonly<{
+    threadSourceId: SourceId;
     sourceIds: readonly SourceId[];
     occurredAt: UtcIsoDateTime;
+    latestHumanComment: HumanCommentEvent;
   }>[] = [];
 
   for (const thread of [...input.pullRequest.reviewThreads].sort((left, right) =>
@@ -817,12 +859,67 @@ function createReviewThreadDecision(
     const firstComment = [...reviewerComments].sort(compareEvents)[0];
     assertNonNullable(firstComment, "review threadのhuman commentを取得できませんでした");
     actionable.push({
+      threadSourceId: thread.sourceId,
       sourceIds,
       occurredAt: firstComment.occurredAt,
+      latestHumanComment,
     });
   }
   if (actionable.length === 0) {
     return undefined;
+  }
+
+  const reviewThreadCommentSourceIds = new Set(
+    input.pullRequest.reviewThreads.flatMap((thread) => thread.commentSourceIds),
+  );
+  const author = input.pullRequest.author;
+  const authorCommentsOutsideThreads =
+    author.status === "identified" && author.actor.type === "human"
+      ? getHumanCommentEvents(input.pullRequest).filter(
+          (comment) =>
+            !comment.bodyEmpty &&
+            comment.actor.nodeId === author.actor.nodeId &&
+            !reviewThreadCommentSourceIds.has(comment.sourceId),
+        )
+      : [];
+  const threadsBeforeAuthorComments = actionable.filter((thread) =>
+    authorCommentsOutsideThreads.some(
+      (comment) => comment.occurredAt > thread.latestHumanComment.occurredAt,
+    ),
+  );
+  if (threadsBeforeAuthorComments.length > 0) {
+    const laterAuthorComments = authorCommentsOutsideThreads.filter((comment) =>
+      threadsBeforeAuthorComments.some(
+        (thread) => comment.occurredAt > thread.latestHumanComment.occurredAt,
+      ),
+    );
+    addUncertainty(
+      context,
+      "actionableなreview threadの後にauthorがスレッド外で発言しているため対応済みまたは質問返しか判断できません",
+      [
+        ...threadsBeforeAuthorComments.flatMap((thread) => [
+          thread.threadSourceId,
+          thread.latestHumanComment.sourceId,
+        ]),
+        ...laterAuthorComments.map((comment) => comment.sourceId),
+      ],
+      input.confidenceThresholds.medium,
+    );
+  }
+
+  const threadsWithBodyBearingLatestComment = actionable.filter(
+    (thread) => !thread.latestHumanComment.bodyEmpty,
+  );
+  if (threadsWithBodyBearingLatestComment.length > 0) {
+    addUncertainty(
+      context,
+      "未解決review threadの最終human commentがauthor対応を求める内容か判断できません",
+      threadsWithBodyBearingLatestComment.flatMap((thread) => [
+        thread.threadSourceId,
+        thread.latestHumanComment.sourceId,
+      ]),
+      input.confidenceThresholds.medium,
+    );
   }
 
   actionable.sort((left, right) => {
@@ -950,6 +1047,36 @@ function createRereviewDecision(
     );
   }
 
+  if (commentedAfterPush.length === 0) {
+    const waitingReviewerNodeIds =
+      reviewRequests.length === 0
+        ? previousReviewerNodeIds
+        : new Set(
+            input.pullRequest.reviewRequests.flatMap((request) =>
+              request.target.type === "user" && request.target.actor.type === "human"
+                ? [request.target.actor.nodeId]
+                : [],
+            ),
+          );
+    const commentsAfterPush = getHumanCommentEvents(input.pullRequest).filter(
+      (comment) =>
+        !comment.bodyEmpty &&
+        comment.occurredAt > headBasis.occurredAt &&
+        waitingReviewerNodeIds.has(comment.actor.nodeId),
+    );
+    if (commentsAfterPush.length > 0) {
+      addUncertainty(
+        context,
+        "変更対応push後にreviewerがhuman commentを投稿しているため追加のauthor対応が必要か判断できません",
+        createSourceIds([
+          ...commentsAfterPush.map((comment) => comment.sourceId),
+          ...headBasis.sourceIds,
+        ]),
+        input.confidenceThresholds.medium,
+      );
+    }
+  }
+
   const waitingOn =
     reviewRequests.length > 0
       ? reviewRequests.map((request) =>
@@ -1000,6 +1127,54 @@ function createReviewRequestDecision(
   const primary = reviewRequests[0];
   assertNonNullable(primary, "primary review requestを選定できませんでした");
   const sourceIds = reviewRequests.flatMap((request) => request.waitingOn.sourceIds);
+  const resolvedUserRequestSourceIds = new Set(
+    reviewRequests.flatMap((request) =>
+      request.waitingOn.kind === "user" ? request.waitingOn.sourceIds : [],
+    ),
+  );
+  const bodyBearingHumanSpeechEvents = getBodyBearingHumanSpeechEvents(input.pullRequest);
+  const reviewerSpeechForRequests = input.pullRequest.reviewRequests.flatMap((request) => {
+    if (
+      request.target.type !== "user" ||
+      request.target.actor.type !== "human" ||
+      !resolvedUserRequestSourceIds.has(request.sourceId)
+    ) {
+      return [];
+    }
+    const reviewerActor = request.target.actor;
+    return bodyBearingHumanSpeechEvents
+      .filter((event) => event.actor.nodeId === reviewerActor.nodeId)
+      .map((event) => ({ request, event }));
+  });
+  const reviewerSpeechAfterRequests = reviewerSpeechForRequests.filter(
+    ({ request, event }) =>
+      request.requestedAt.status === "available" && event.occurredAt > request.requestedAt.value,
+  );
+  if (reviewerSpeechAfterRequests.length > 0) {
+    addUncertainty(
+      context,
+      "review依頼後にreviewerが発言しているためauthor対応が必要か判断できません",
+      reviewerSpeechAfterRequests.flatMap(({ request, event }) => [
+        request.sourceId,
+        event.sourceId,
+      ]),
+      input.confidenceThresholds.medium,
+    );
+  }
+  const reviewerSpeechWithUnavailableRequestedAt = reviewerSpeechForRequests.filter(
+    ({ request }) => request.requestedAt.status === "unavailable",
+  );
+  if (reviewerSpeechWithUnavailableRequestedAt.length > 0) {
+    addUncertainty(
+      context,
+      "review依頼時刻が不明なためreviewerの発言が依頼前か後か判断できません",
+      reviewerSpeechWithUnavailableRequestedAt.flatMap(({ request, event }) => [
+        request.sourceId,
+        event.sourceId,
+      ]),
+      input.confidenceThresholds.medium,
+    );
+  }
   return finalizeDecision(input, context, {
     status: "waiting_for_review",
     waitingOn: reviewRequests.map((request) => request.waitingOn),

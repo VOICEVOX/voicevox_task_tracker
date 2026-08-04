@@ -3680,6 +3680,164 @@ describe("本番判定入力の接続", () => {
     });
   });
 
+  it("Pull Requestのreview本文をcontent付きsourceとしてCodexへ渡す", async () => {
+    const repository = createRepository("R_codex_review", "codex-review", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const item = createPullRequestItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "review-content",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    const detail = createFailedCheckPullRequestDetail(item, observedAt);
+    const reviewer = Object.freeze({
+      status: "identified",
+      account: Object.freeze({
+        sourceId: buildSourceId("github_account", "U_review_content"),
+        nodeId: createGitHubNodeId("U_review_content"),
+        login: "review-content",
+        apiType: "User",
+      }),
+    } satisfies (typeof detail.reviews)[number]["author"]);
+    const reviewSourceId = buildSourceId("github_pull_request_review", "V_review_content");
+    const emptyReviewSourceId = buildSourceId("github_pull_request_review", "V_empty_review");
+    const commentSourceId = buildSourceId(
+      "github_pull_request_review_comment",
+      "PRRC_review_content",
+    );
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...detail,
+        reviews: Object.freeze([
+          Object.freeze({
+            sourceId: reviewSourceId,
+            nodeId: createGitHubNodeId("V_review_content"),
+            sequence: 0,
+            state: "commented",
+            author: reviewer,
+            commit: Object.freeze({
+              status: "available",
+              sourceId: detail.headCommit.sourceId,
+              nodeId: detail.headCommit.nodeId,
+              sha: detail.headSha,
+            }),
+            submittedAt: observedAt,
+            body: "レビュー全体の確認事項です",
+            url: `${item.url}#pullrequestreview-1`,
+          } satisfies (typeof detail.reviews)[number]),
+          Object.freeze({
+            sourceId: emptyReviewSourceId,
+            nodeId: createGitHubNodeId("V_empty_review"),
+            sequence: 1,
+            state: "dismissed",
+            author: reviewer,
+            commit: Object.freeze({
+              status: "available",
+              sourceId: detail.headCommit.sourceId,
+              nodeId: detail.headCommit.nodeId,
+              sha: detail.headSha,
+            }),
+            submittedAt: observedAt,
+            body: "",
+            url: `${item.url}#pullrequestreview-2`,
+          } satisfies (typeof detail.reviews)[number]),
+        ]),
+        reviewThreads: Object.freeze([
+          Object.freeze({
+            sourceId: buildSourceId("github_pull_request_review_thread", "PRRT_review_content"),
+            nodeId: createGitHubNodeId("PRRT_review_content"),
+            sequence: 0,
+            isResolved: true,
+            isOutdated: false,
+            path: "src/example.ts",
+            resolvedBy: reviewer,
+            comments: Object.freeze([
+              Object.freeze({
+                sourceId: commentSourceId,
+                nodeId: createGitHubNodeId("PRRC_review_content"),
+                sequence: 0,
+                author: reviewer,
+                body: "この条件は必要でしょうか",
+                createdAt: observedAt,
+                updatedAt: observedAt,
+                url: `${item.url}#discussion_r1`,
+              } satisfies (typeof detail.reviewThreads)[number]["comments"][number]),
+            ]),
+          } satisfies (typeof detail.reviewThreads)[number]),
+        ]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) =>
+        Promise.resolve(
+          createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: input.item.authorCandidateId,
+              kind: "user",
+              role: "assignee",
+              sourceId: commentSourceId,
+            },
+            latestMeaningfulSourceId: commentSourceId,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        ),
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const input = harness.codexInputs[0];
+    if (input == null) {
+      throw new TypeError("review本文を確認するCodex入力がありません");
+    }
+
+    expect(result.exitCode).toBe(0);
+    expect(input.sources.filter((source) => source.id === commentSourceId)).toEqual([
+      {
+        id: commentSourceId,
+        kind: "comment",
+        actorType: "human",
+        createdAt: observedAt,
+        content: "この条件は必要でしょうか",
+      },
+    ]);
+    expect(input.sources.filter((source) => source.id === reviewSourceId)).toEqual([
+      {
+        id: reviewSourceId,
+        kind: "review",
+        actorType: "human",
+        createdAt: observedAt,
+        content: "レビュー全体の確認事項です",
+      },
+    ]);
+    expect(input.sources.filter((source) => source.id === emptyReviewSourceId)).toEqual([
+      {
+        id: emptyReviewSourceId,
+        kind: "review",
+        actorType: "human",
+        createdAt: observedAt,
+        content: "",
+      },
+    ]);
+  });
+
   it("mentionの明示依頼とhuman commentの意味判定を状態と進捗時刻へ反映する", async () => {
     const repository = createRepository("R_codex_issue", "codex-issue", FIRST_RUN_AT);
     const fixture = createRepositoryFixture(repository);

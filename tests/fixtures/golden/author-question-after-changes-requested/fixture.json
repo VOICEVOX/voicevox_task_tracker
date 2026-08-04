@@ -1,0 +1,195 @@
+{
+  "schemaVersion": "1",
+  "name": "author-question-after-changes-requested",
+  "input": {
+    "kind": "standard",
+    "evaluatedAt": "2026-08-01T00:00:00.000Z",
+    "repositories": [
+      {
+        "id": "fixture-repository-change",
+        "name": "fixture-change",
+        "visibility": "public"
+      }
+    ],
+    "items": [
+      {
+        "type": "pull_request",
+        "nodeId": "author-question-after-changes-requested-pr",
+        "repositoryId": "fixture-repository-change",
+        "number": 203,
+        "title": "変更要求後の質問",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-06-20T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-31T12:00:00.000Z",
+        "observedAt": "2026-08-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "fixture-author-two",
+          "login": "contributor-two"
+        },
+        "assignees": [],
+        "labels": [],
+        "events": [
+          {
+            "kind": "push",
+            "id": "question-current-head",
+            "occurredAt": "2026-07-01T00:00:00.000Z",
+            "actor": {
+              "type": "system",
+              "name": "github"
+            },
+            "headCommitSha": "question-current-head-sha",
+            "forcePush": false
+          },
+          {
+            "kind": "review",
+            "id": "question-changes-requested",
+            "occurredAt": "2026-07-20T00:00:00.000Z",
+            "actor": {
+              "type": "human",
+              "nodeId": "fixture-reviewer-two",
+              "login": "reviewer-two"
+            },
+            "state": "changes_requested",
+            "bodyEmpty": false,
+            "commitSha": "question-current-head-sha"
+          },
+          {
+            "kind": "comment",
+            "id": "author-question",
+            "occurredAt": "2026-07-31T12:00:00.000Z",
+            "actor": {
+              "type": "human",
+              "nodeId": "fixture-author-two",
+              "login": "contributor-two"
+            },
+            "bodyEmpty": false
+          }
+        ],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        },
+        "draft": false,
+        "headSha": "question-current-head-sha",
+        "headPushedAt": "2026-07-01T00:00:00.000Z",
+        "reviewRequests": [
+          {
+            "id": "question-team-request",
+            "target": {
+              "type": "team",
+              "nodeId": "fixture-review-team-two",
+              "slug": "fixture-reviewers",
+              "name": "Fixture Reviewers"
+            },
+            "requestedAt": "2026-07-02T00:00:00.000Z"
+          }
+        ],
+        "checks": "success",
+        "mergeability": "mergeable",
+        "mergeState": "blocked"
+      }
+    ],
+    "relations": [],
+    "fixedAiAnalyses": [
+      {
+        "itemNodeId": "author-question-after-changes-requested-pr",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-08-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "author-question-after-changes-requested-pr",
+            "url": "https://github.com/VOICEVOX/fixture-change/pull/203",
+            "type": "pull_request",
+            "title": "変更要求後の質問",
+            "authorCandidateId": "fixture-author-two",
+            "headSha": "question-current-head-sha"
+          },
+          "candidates": {
+            "waitingOn": [
+              { "id": "author" },
+              { "id": "fixture-author-two" },
+              { "id": "reviewer-two" }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_event:question-changes-requested",
+              "kind": "review",
+              "actorType": "human",
+              "createdAt": "2026-07-20T00:00:00.000Z",
+              "content": "例外を置き換えるときに元のエラーをcauseへ設定してください。"
+            },
+            {
+              "id": "golden_event:author-question",
+              "kind": "comment",
+              "actorType": "human",
+              "createdAt": "2026-07-31T12:00:00.000Z",
+              "content": "@reviewer-two causeは外側の例外だけに設定すればよいでしょうか。内側の例外にも必要ですか。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_author",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "author",
+                "role": "author"
+              }
+            ],
+            "uncertainties": [
+              "変更要求後にauthorが発言しているためreviewer対応が必要か判断できません"
+            ]
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "1",
+          "item": {
+            "nodeId": "author-question-after-changes-requested-pr",
+            "url": "https://github.com/VOICEVOX/fixture-change/pull/203"
+          },
+          "status": "waiting_for_review",
+          "waitingOn": [
+            {
+              "kind": "user",
+              "candidateId": "reviewer-two",
+              "role": "reviewer",
+              "reasonSummary": "authorから回答を求める質問があります",
+              "sourceIds": ["golden_event:author-question"],
+              "confidence": 0.95
+            }
+          ],
+          "nextAction": "reviewer-twoがauthorの質問へ回答する",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_event:author-question",
+            "reasonSummary": "authorがreviewerへ確認事項を質問しました",
+            "confidence": 0.95
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_event:author-question",
+              "supports": "waiting_on",
+              "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+            }
+          ],
+          "confidence": 0.95,
+          "uncertainties": [],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "通知閾値は決定論的な停滞判定へ委ねます"
+          }
+        },
+        "rejectedOutputs": []
+      }
+    ],
+    "previousNodeStates": {}
+  }
+}

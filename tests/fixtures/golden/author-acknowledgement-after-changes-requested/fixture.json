@@ -1,0 +1,198 @@
+{
+  "schemaVersion": "1",
+  "name": "author-acknowledgement-after-changes-requested",
+  "input": {
+    "kind": "standard",
+    "evaluatedAt": "2026-08-01T00:00:00.000Z",
+    "repositories": [
+      {
+        "id": "fixture-repository-change",
+        "name": "fixture-change",
+        "visibility": "public"
+      }
+    ],
+    "items": [
+      {
+        "type": "pull_request",
+        "nodeId": "author-acknowledgement-after-changes-requested-pr",
+        "repositoryId": "fixture-repository-change",
+        "number": 204,
+        "title": "変更要求後の了解",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-06-20T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-31T12:00:00.000Z",
+        "observedAt": "2026-08-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "fixture-author-two",
+          "login": "contributor-two"
+        },
+        "assignees": [],
+        "labels": [],
+        "events": [
+          {
+            "kind": "push",
+            "id": "acknowledgement-current-head",
+            "occurredAt": "2026-07-01T00:00:00.000Z",
+            "actor": {
+              "type": "system",
+              "name": "github"
+            },
+            "headCommitSha": "acknowledgement-current-head-sha",
+            "forcePush": false
+          },
+          {
+            "kind": "review",
+            "id": "acknowledgement-changes-requested",
+            "occurredAt": "2026-07-20T00:00:00.000Z",
+            "actor": {
+              "type": "human",
+              "nodeId": "fixture-reviewer-two",
+              "login": "reviewer-two"
+            },
+            "state": "changes_requested",
+            "bodyEmpty": false,
+            "commitSha": "acknowledgement-current-head-sha"
+          },
+          {
+            "kind": "comment",
+            "id": "author-acknowledgement",
+            "occurredAt": "2026-07-31T12:00:00.000Z",
+            "actor": {
+              "type": "human",
+              "nodeId": "fixture-author-two",
+              "login": "contributor-two"
+            },
+            "bodyEmpty": false
+          }
+        ],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        },
+        "draft": false,
+        "headSha": "acknowledgement-current-head-sha",
+        "headPushedAt": "2026-07-01T00:00:00.000Z",
+        "reviewRequests": [
+          {
+            "id": "acknowledgement-team-request",
+            "target": {
+              "type": "team",
+              "nodeId": "fixture-review-team-two",
+              "slug": "fixture-reviewers",
+              "name": "Fixture Reviewers"
+            },
+            "requestedAt": "2026-07-02T00:00:00.000Z"
+          }
+        ],
+        "checks": "success",
+        "mergeability": "mergeable",
+        "mergeState": "blocked"
+      }
+    ],
+    "relations": [],
+    "fixedAiAnalyses": [
+      {
+        "itemNodeId": "author-acknowledgement-after-changes-requested-pr",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-08-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "author-acknowledgement-after-changes-requested-pr",
+            "url": "https://github.com/VOICEVOX/fixture-change/pull/204",
+            "type": "pull_request",
+            "title": "変更要求後の了解",
+            "authorCandidateId": "fixture-author-two",
+            "headSha": "acknowledgement-current-head-sha"
+          },
+          "candidates": {
+            "waitingOn": [
+              { "id": "author" },
+              { "id": "fixture-author-two" },
+              { "id": "reviewer-two" }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_event:acknowledgement-changes-requested",
+              "kind": "review",
+              "actorType": "human",
+              "createdAt": "2026-07-20T00:00:00.000Z",
+              "content": "例外を置き換えるときに元のエラーをcauseへ設定してください。"
+            },
+            {
+              "id": "golden_event:author-acknowledgement",
+              "kind": "comment",
+              "actorType": "human",
+              "createdAt": "2026-07-31T12:00:00.000Z",
+              "content": "承知しました。元のエラーをcauseへ設定するよう修正し、後ほどpushします。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_author",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "author",
+                "role": "author"
+              }
+            ],
+            "uncertainties": [
+              "変更要求後にauthorが発言しているためreviewer対応が必要か判断できません"
+            ]
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "1",
+          "item": {
+            "nodeId": "author-acknowledgement-after-changes-requested-pr",
+            "url": "https://github.com/VOICEVOX/fixture-change/pull/204"
+          },
+          "status": "waiting_for_author",
+          "waitingOn": [
+            {
+              "kind": "role",
+              "candidateId": "author",
+              "role": "author",
+              "reasonSummary": "authorが変更要求への対応を予定しています",
+              "sourceIds": [
+                "golden_event:acknowledgement-changes-requested",
+                "golden_event:author-acknowledgement"
+              ],
+              "confidence": 0.95
+            }
+          ],
+          "nextAction": "authorが変更要求へ対応してpushする",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_event:acknowledgement-changes-requested",
+            "reasonSummary": "reviewerが現行headへ変更を要求しました",
+            "confidence": 0.95
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_event:author-acknowledgement",
+              "supports": "waiting_on",
+              "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+            }
+          ],
+          "confidence": 0.95,
+          "uncertainties": [],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "通知閾値は決定論的な停滞判定へ委ねます"
+          }
+        },
+        "rejectedOutputs": []
+      }
+    ],
+    "previousNodeStates": {}
+  }
+}

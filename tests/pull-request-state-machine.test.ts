@@ -464,6 +464,107 @@ describe("Pull Request判定の優先順位", () => {
 });
 
 describe("reviewと責務の遷移", () => {
+  it("変更要求後にauthorが発言したらCodex候補のauthor待ちにする", () => {
+    const changesRequested = createReviewEvent({
+      id: "changes-before-author-comment",
+      actor: reviewer,
+      state: "changes_requested",
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+      commitSha: headSha,
+    });
+    const authorComment = createCommentEvent({
+      id: "author-after-changes-requested",
+      actor: author,
+      occurredAt: createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        events: [...pullRequest.events, changesRequested, authorComment],
+      }),
+    );
+
+    expect(decision.determination).toBe("codex_candidate");
+    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.waitingOn[0]).toMatchObject({
+      kind: "role",
+      role: "author",
+      candidateId: "author",
+    });
+    expect(decision.uncertainties).toContain(
+      "変更要求後にauthorが発言しているためreviewer対応が必要か判断できません",
+    );
+  });
+
+  it("変更要求とauthor発言の後に新しい変更要求があればdeterminedのauthor待ちを維持する", () => {
+    const secondReviewer = {
+      type: "human",
+      nodeId: createGitHubNodeId("U_second_reviewer"),
+      login: "second-reviewer",
+    } satisfies GitHubAccountActor;
+    const firstChangesRequested = createReviewEvent({
+      id: "first-changes-before-author-comment",
+      actor: reviewer,
+      state: "changes_requested",
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+      commitSha: headSha,
+    });
+    const authorComment = createCommentEvent({
+      id: "author-between-changes-requested",
+      actor: author,
+      occurredAt: createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    });
+    const secondChangesRequested = createReviewEvent({
+      id: "second-changes-after-author-comment",
+      actor: secondReviewer,
+      state: "changes_requested",
+      occurredAt: createUtcIsoDateTime("2026-07-31T07:00:00Z"),
+      commitSha: headSha,
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        events: [
+          ...pullRequest.events,
+          firstChangesRequested,
+          authorComment,
+          secondChangesRequested,
+        ],
+      }),
+    );
+
+    expect(decision.determination).toBe("determined");
+    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.uncertainties).toEqual([]);
+  });
+
+  it("変更要求後にauthorが発言していなければdeterminedのauthor待ちを維持する", () => {
+    const changesRequested = createReviewEvent({
+      id: "changes-without-author-comment",
+      actor: reviewer,
+      state: "changes_requested",
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+      commitSha: headSha,
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        events: [...pullRequest.events, changesRequested],
+      }),
+    );
+
+    expect(decision.determination).toBe("determined");
+    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.waitingOn[0]).toMatchObject({
+      kind: "role",
+      role: "author",
+      candidateId: "author",
+    });
+  });
+
   it("変更要求後のhead pushでreviewer側へ責務を戻す", () => {
     const pullRequest = createOpenPullRequest();
     const changesRequestedAt = createUtcIsoDateTime("2026-07-31T02:00:00Z");
@@ -545,6 +646,150 @@ describe("reviewと責務の遷移", () => {
       summary:
         "変更対応push後にreviewerがcommented reviewを返しているため追加のauthor対応が必要か判断できません",
     });
+  });
+
+  it("変更対応push後に再review待ちのreviewerがhuman commentを投稿したらCodex候補にする", () => {
+    const previousChangesRequested = createReviewEvent({
+      id: "old-changes-before-human-comment",
+      actor: reviewer,
+      state: "changes_requested",
+      occurredAt: createUtcIsoDateTime("2026-07-31T02:00:00Z"),
+      commitSha: "old-head",
+    });
+    const reviewerComment = createCommentEvent({
+      id: "reviewer-comment-after-push",
+      actor: reviewer,
+      occurredAt: createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        events: [previousChangesRequested, ...pullRequest.events, reviewerComment],
+      }),
+    );
+
+    expect(decision.determination).toBe("codex_candidate");
+    expect(decision.status).toBe("waiting_for_review");
+    expect(decision.waitingOn[0]).toMatchObject({
+      kind: "user",
+      role: "reviewer",
+      candidateId: "reviewer",
+    });
+    expect(decision.uncertainties).toContain(
+      "変更対応push後にreviewerがhuman commentを投稿しているため追加のauthor対応が必要か判断できません",
+    );
+  });
+
+  it("変更対応push後のcommented reviewとhuman commentの曖昧性を重複させない", () => {
+    const previousChangesRequested = createReviewEvent({
+      id: "old-changes-before-overlapping-speech",
+      actor: reviewer,
+      state: "changes_requested",
+      occurredAt: createUtcIsoDateTime("2026-07-31T02:00:00Z"),
+      commitSha: "old-head",
+    });
+    const commentedReview = createReviewEvent({
+      id: "commented-review-after-push",
+      actor: reviewer,
+      state: "commented",
+      occurredAt: createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+      commitSha: headSha,
+    });
+    const reviewerComment = createCommentEvent({
+      id: "overlapping-comment-after-push",
+      actor: reviewer,
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        events: [previousChangesRequested, ...pullRequest.events, commentedReview, reviewerComment],
+      }),
+    );
+
+    expect(decision.uncertainties).toEqual([
+      "変更対応push後にreviewerがcommented reviewを返しているため追加のauthor対応が必要か判断できません",
+    ]);
+  });
+
+  it("actionableなreview thread後にauthorがスレッド外で発言したらCodex候補のauthor待ちにする", () => {
+    const reviewerComment = {
+      ...createCommentEvent({
+        id: "empty-review-thread-comment",
+        actor: reviewer,
+        occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+      }),
+      bodyEmpty: true,
+    } satisfies Extract<NormalizedEvent, { kind: "comment" }>;
+    const authorComment = createCommentEvent({
+      id: "author-outside-review-thread",
+      actor: author,
+      occurredAt: createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        reviewThreads: [
+          {
+            sourceId: buildSourceId("github_review_thread", "before-author-comment"),
+            nodeId: createGitHubNodeId("RT_before_author_comment"),
+            isResolved: false,
+            isOutdated: false,
+            commentSourceIds: [reviewerComment.sourceId],
+          },
+        ],
+        events: [...pullRequest.events, reviewerComment, authorComment],
+      }),
+    );
+
+    expect(decision.determination).toBe("codex_candidate");
+    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.waitingOn[0]).toMatchObject({
+      kind: "role",
+      role: "author",
+      candidateId: "author",
+    });
+    expect(decision.uncertainties).toEqual([
+      "actionableなreview threadの後にauthorがスレッド外で発言しているため対応済みまたは質問返しか判断できません",
+    ]);
+  });
+
+  it("未解決review threadの最終human commentに本文があればCodex候補のauthor待ちにする", () => {
+    const reviewerComment = createCommentEvent({
+      id: "body-bearing-latest-thread-comment",
+      actor: reviewer,
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        reviewThreads: [
+          {
+            sourceId: buildSourceId("github_review_thread", "body-bearing-latest-comment"),
+            nodeId: createGitHubNodeId("RT_body_bearing_latest_comment"),
+            isResolved: false,
+            isOutdated: false,
+            commentSourceIds: [reviewerComment.sourceId],
+          },
+        ],
+        events: [...pullRequest.events, reviewerComment],
+      }),
+    );
+
+    expect(decision.determination).toBe("codex_candidate");
+    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.waitingOn[0]).toMatchObject({
+      kind: "role",
+      role: "author",
+      candidateId: "author",
+    });
+    expect(decision.uncertainties).toEqual([
+      "未解決review threadの最終human commentがauthor対応を求める内容か判断できません",
+    ]);
   });
 
   it("未解決human review threadをresolved版よりauthor待ちとして優先する", () => {
@@ -722,6 +967,171 @@ describe("reviewと責務の遷移", () => {
     ]);
     expect(decision.determination).toBe("determined");
     expect(decision.uncertainties).toEqual([]);
+  });
+
+  it("review依頼後にreviewerが発言したらCodex候補のreviewer待ちにする", () => {
+    const reviewerSpeech = createReviewEvent({
+      id: "reviewer-speech-after-request",
+      actor: reviewer,
+      state: "commented",
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+      commitSha: headSha,
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        reviewRequests: [
+          createReviewRequest(
+            "user",
+            "request-before-speech",
+            createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+          ),
+        ],
+        events: [...pullRequest.events, reviewerSpeech],
+      }),
+    );
+
+    expect(decision.determination).toBe("codex_candidate");
+    expect(decision.status).toBe("waiting_for_review");
+    expect(decision.waitingOn[0]).toMatchObject({
+      kind: "user",
+      role: "reviewer",
+      candidateId: "reviewer",
+    });
+    expect(decision.uncertainties).toContain(
+      "review依頼後にreviewerが発言しているためauthor対応が必要か判断できません",
+    );
+  });
+
+  it("review依頼時刻が不明でreviewerの発言があればCodex候補にする", () => {
+    const reviewRequest = {
+      ...createReviewRequest(
+        "user",
+        "request-without-requested-at",
+        createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+      ),
+      requestedAt: {
+        status: "unavailable",
+        reason: "timeline_event_not_found",
+      },
+    } satisfies FreshObservedGitHubPullRequest["reviewRequests"][number];
+    const reviewerSpeech = createCommentEvent({
+      id: "reviewer-speech-without-requested-at",
+      actor: reviewer,
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        reviewRequests: [reviewRequest],
+        events: [...pullRequest.events, reviewerSpeech],
+      }),
+    );
+
+    expect(decision.determination).toBe("codex_candidate");
+    expect(decision.status).toBe("waiting_for_review");
+    expect(decision.uncertainties).toContain(
+      "review依頼時刻が不明なためreviewerの発言が依頼前か後か判断できません",
+    );
+  });
+
+  it("reviewerが複数回発言しても曖昧性の根拠source IDを重複させない", () => {
+    const reviewRequest = createReviewRequest(
+      "user",
+      "request-before-multiple-speeches",
+      createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+    );
+    const reviewerSpeeches = [
+      createCommentEvent({
+        id: "first-reviewer-speech",
+        actor: reviewer,
+        occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+      }),
+      createCommentEvent({
+        id: "second-reviewer-speech",
+        actor: reviewer,
+        occurredAt: createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+      }),
+      createCommentEvent({
+        id: "third-reviewer-speech",
+        actor: reviewer,
+        occurredAt: createUtcIsoDateTime("2026-07-31T07:00:00Z"),
+      }),
+    ];
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        reviewRequests: [reviewRequest],
+        events: [...pullRequest.events, ...reviewerSpeeches],
+      }),
+    );
+    const uncertaintySummary =
+      "review依頼後にreviewerが発言しているためauthor対応が必要か判断できません";
+    const uncertaintySourceIds = decision.evidence
+      .filter(
+        (evidence) =>
+          evidence.supports === "uncertainty" && evidence.summary === uncertaintySummary,
+      )
+      .map((evidence) => evidence.sourceId);
+
+    expect(uncertaintySourceIds).toEqual(
+      [reviewRequest.sourceId, ...reviewerSpeeches.map((event) => event.sourceId)].sort(),
+    );
+  });
+
+  it("review依頼後にreviewerが発言していなければdeterminedのreviewer待ちを維持する", () => {
+    const decision = determinePullRequestState(
+      createInput({
+        ...createOpenPullRequest(),
+        reviewRequests: [
+          createReviewRequest(
+            "user",
+            "request-without-speech",
+            createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+          ),
+        ],
+      }),
+    );
+
+    expect(decision.determination).toBe("determined");
+    expect(decision.status).toBe("waiting_for_review");
+    expect(decision.waitingOn[0]).toMatchObject({
+      kind: "user",
+      role: "reviewer",
+      candidateId: "reviewer",
+    });
+  });
+
+  it("teamへのreview依頼では発言actorを照合せずdeterminedを維持する", () => {
+    const reviewerSpeech = createCommentEvent({
+      id: "reviewer-speech-after-team-request",
+      actor: reviewer,
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    });
+    const pullRequest = createOpenPullRequest();
+    const decision = determinePullRequestState(
+      createInput({
+        ...pullRequest,
+        reviewRequests: [
+          createReviewRequest(
+            "team",
+            "team-request-before-speech",
+            createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+          ),
+        ],
+        events: [...pullRequest.events, reviewerSpeech],
+      }),
+    );
+
+    expect(decision.determination).toBe("determined");
+    expect(decision.waitingOn[0]).toMatchObject({
+      kind: "team",
+      role: "reviewer",
+      candidateId: "VOICEVOX/reviewers",
+    });
   });
 
   it("draftではstatusと責務を別々に保持する", () => {

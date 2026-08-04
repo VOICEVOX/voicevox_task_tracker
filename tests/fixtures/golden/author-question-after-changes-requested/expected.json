@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "1",
+  "kind": "standard",
+  "items": [
+    {
+      "nodeId": "author-question-after-changes-requested-pr",
+      "status": "waiting_for_review",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "reviewer-two",
+          "role": "reviewer"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-01T00:00:00.000Z"
+    }
+  ],
+  "relations": [],
+  "notifications": [],
+  "publication": {
+    "status": "published"
+  },
+  "fixedAi": {
+    "acceptedOutputCount": 1,
+    "rejectedOutputCount": 0,
+    "networkCallCount": 0
+  }
+}

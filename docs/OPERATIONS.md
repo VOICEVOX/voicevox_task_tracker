@@ -169,6 +169,10 @@ authorが修正をpushした後はreviewer側を再評価するため、必要�
 未解決のreview threadもauthor待ちの根拠になりますが、authorが最後に返信したthreadはreviewer側の再確認待ちとして扱います。
 botのreviewとcommentだけではbotへ責務を移しません。
 
+これらで待ち先が決まった後も、その相手本人がさらに発言していれば発言の内容から判定し直します。
+変更要求を受けたauthorが修正せずに質問すれば待ち先はreviewerへ移り、了解を返しただけならauthor待ちのままです。
+待ち先を確実に伝えたい場合は、質問や依頼を明示した文にするか、review requestで示してください。
+
 ### native dependency
 
 本当に作業を止めるIssue同士はGitHubのblocked byとblockingで接続します。

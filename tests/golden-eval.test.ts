@@ -20,6 +20,8 @@ import {
 
 const FIXTURE_ROOT = join(import.meta.dirname, "fixtures", "golden");
 const FIXTURE_NAMES = Object.freeze([
+  "author-acknowledgement-after-changes-requested",
+  "author-question-after-changes-requested",
   "changes-requested",
   "clear-review-request",
   "cross-repo-umbrella",
@@ -104,7 +106,7 @@ beforeAll(async () => {
 });
 
 describe("golden fixture suite", () => {
-  it("共通fixture八件を決定論的順序で読み込む", () => {
+  it("共通fixture十件を決定論的順序で読み込む", () => {
     expect(evaluatedFixtures.map((evaluated) => evaluated.fixture.name)).toEqual(FIXTURE_NAMES);
   });
 

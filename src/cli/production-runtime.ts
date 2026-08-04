@@ -1765,6 +1765,40 @@ function createCodexInput(
       }),
     );
   }
+  if (analysis.detail.type === "pull_request") {
+    for (const thread of analysis.detail.reviewThreads) {
+      for (const comment of thread.comments) {
+        const event = analysis.item.events.find(
+          (candidate) => candidate.sourceId === comment.sourceId,
+        );
+        sourceRecords.set(
+          comment.sourceId,
+          Object.freeze({
+            id: comment.sourceId,
+            kind: "comment",
+            actorType: event?.actor.type ?? "system",
+            createdAt: comment.createdAt,
+            content: comment.body,
+          }),
+        );
+      }
+    }
+    for (const review of analysis.detail.reviews) {
+      const event = analysis.item.events.find(
+        (candidate) => candidate.sourceId === review.sourceId,
+      );
+      sourceRecords.set(
+        review.sourceId,
+        Object.freeze({
+          id: review.sourceId,
+          kind: "review",
+          actorType: event?.actor.type ?? "system",
+          createdAt: review.submittedAt,
+          content: review.body,
+        }),
+      );
+    }
+  }
   if (
     analysis.detail.type === "pull_request" &&
     analysis.detail.mergeState.checks.status === "configured"
