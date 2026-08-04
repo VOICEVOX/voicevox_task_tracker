@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "2"
+      "const": "3"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -246,6 +246,7 @@
         "itemFingerprint",
         "aiAnalysisFingerprint",
         "analysisRulesFingerprint",
+        "deterministicRulesVersion",
         "observedAt",
         "state",
         "terminalAt"
@@ -268,6 +269,9 @@
         },
         "analysisRulesFingerprint": {
           "$ref": "#/$defs/analysisRulesFingerprint"
+        },
+        "deterministicRulesVersion": {
+          "$ref": "#/$defs/deterministicRulesVersion"
         },
         "observedAt": {
           "$ref": "#/$defs/dateTime"
@@ -383,6 +387,33 @@
             },
             "fingerprint": {
               "$ref": "#/$defs/fingerprint"
+            }
+          }
+        }
+      ]
+    },
+    "deterministicRulesVersion": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "version"],
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "version": {
+              "$ref": "#/$defs/identifier"
             }
           }
         }

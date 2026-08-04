@@ -10,6 +10,8 @@ import {
   type FreshObservedGitHubPullRequest,
   type GitHubAccountActor,
   type NormalizedEvent,
+  type ObservedGitHubCheckRunConclusion,
+  type ObservedGitHubHeadCheckContext,
   type PullRequestBlocker,
   type PullRequestStateMachineInput,
   type ResolvedLabelEffects,
@@ -18,6 +20,7 @@ import {
 
 const headPushedAt = createUtcIsoDateTime("2026-07-31T03:00:00Z");
 const pullRequestCreatedAt = createUtcIsoDateTime("2026-07-31T01:00:00Z");
+const earlierObservedAt = createUtcIsoDateTime("2026-07-31T07:30:00Z");
 const observedAt = createUtcIsoDateTime("2026-07-31T08:00:00Z");
 const evaluatedAt = createUtcIsoDateTime("2026-07-31T09:00:00Z");
 const pullRequestNodeId = createGitHubNodeId("PR_state_machine");
@@ -46,6 +49,7 @@ const labelEffects = {
   priorityWeight: 0,
   severityLift: 0,
   requiresMaintainerDecision: false,
+  maintainerDecisionLabelNames: [],
   suppressNotifications: false,
   countsAsProgress: false,
 } satisfies ResolvedLabelEffects;
@@ -121,6 +125,51 @@ function createCommentEvent(options: {
   };
 }
 
+function createDraftLifecycleEvent(
+  kind: "ready_for_review" | "converted_to_draft",
+  id: string,
+  occurredAt: ReturnType<typeof createUtcIsoDateTime>,
+): NormalizedEvent {
+  return {
+    kind,
+    sourceId: buildSourceId("github_timeline_event", id),
+    itemNodeId: pullRequestNodeId,
+    occurredAt,
+    actor: systemActor,
+  };
+}
+
+function createMergeQueueLifecycleEvent(
+  kind: "added_to_merge_queue" | "removed_from_merge_queue",
+  id: string,
+  occurredAt: ReturnType<typeof createUtcIsoDateTime>,
+): NormalizedEvent {
+  return {
+    kind,
+    sourceId: buildSourceId("github_timeline_event", id),
+    itemNodeId: pullRequestNodeId,
+    occurredAt,
+    actor: systemActor,
+  };
+}
+
+function createLabelEvent(
+  id: string,
+  labelName: string,
+  action: "added" | "removed",
+  occurredAt: ReturnType<typeof createUtcIsoDateTime>,
+): Extract<NormalizedEvent, { kind: "label" }> {
+  return {
+    kind: "label",
+    sourceId: buildSourceId("github_timeline_event", id),
+    itemNodeId: pullRequestNodeId,
+    occurredAt,
+    actor: systemActor,
+    labelName,
+    action,
+  };
+}
+
 function createReviewRequest(
   target: "user" | "team",
   id: string,
@@ -155,6 +204,23 @@ function createReviewRequest(
     requestedAt: {
       status: "available",
       value: requestedAt,
+    },
+  };
+}
+
+function createUnavailableReviewRequest(
+  id: string,
+): FreshObservedGitHubPullRequest["reviewRequests"][number] {
+  return {
+    sourceId: buildSourceId("github_review_request", id),
+    nodeId: createGitHubNodeId(`RR_${id}`),
+    target: {
+      type: "user",
+      actor: reviewer,
+    },
+    requestedAt: {
+      status: "unavailable",
+      reason: "timeline_event_not_found",
     },
   };
 }
@@ -223,6 +289,22 @@ function createInput(pullRequest: FreshObservedGitHubPullRequest): PullRequestSt
   };
 }
 
+function determineAtTwoObservedTimes(
+  input: PullRequestStateMachineInput,
+): readonly [
+  ReturnType<typeof determinePullRequestState>,
+  ReturnType<typeof determinePullRequestState>,
+] {
+  const earlierDecision = determinePullRequestState({
+    ...input,
+    pullRequest: {
+      ...input.pullRequest,
+      observedAt: earlierObservedAt,
+    },
+  });
+  return [earlierDecision, determinePullRequestState(input)];
+}
+
 function createBlocker(options: {
   candidateId: string;
   state: PullRequestBlocker["state"];
@@ -261,6 +343,466 @@ describe("Pull Request状態機械の入力契約", () => {
     expect(second).toEqual(first);
     expect(first.deterministicRulesVersion).toBe(PULL_REQUEST_DETERMINISTIC_RULES_VERSION);
     expect(first.determination).toBe("determined");
+  });
+
+  it("check runの完了状態と結果と完了時刻を型で同期する", () => {
+    type CheckRunContext = Extract<ObservedGitHubHeadCheckContext, { type: "check_run" }>;
+    type CompletedCheckRunContext = Extract<CheckRunContext, { status: "completed" }>;
+    type IncompleteCheckRunContext = Exclude<CheckRunContext, CompletedCheckRunContext>;
+
+    expectTypeOf<
+      CompletedCheckRunContext["conclusion"]
+    >().toEqualTypeOf<ObservedGitHubCheckRunConclusion>();
+    expectTypeOf<CompletedCheckRunContext["completedAt"]>().toEqualTypeOf<
+      ReturnType<typeof createUtcIsoDateTime>
+    >();
+    expectTypeOf<IncompleteCheckRunContext["conclusion"]>().toEqualTypeOf<"not_completed">();
+    expectTypeOf<IncompleteCheckRunContext["completedAt"]>().toEqualTypeOf<null>();
+  });
+});
+
+describe("観測時刻に依存しない遷移基準", () => {
+  it("現在のdraft区間を開始したdraft変換イベントを使う", () => {
+    const pullRequest = createOpenPullRequest();
+    const firstConverted = createDraftLifecycleEvent(
+      "converted_to_draft",
+      "first-converted",
+      createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+    );
+    const ready = createDraftLifecycleEvent(
+      "ready_for_review",
+      "ready-between-drafts",
+      createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    );
+    const currentConverted = createDraftLifecycleEvent(
+      "converted_to_draft",
+      "current-converted",
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
+      createInput({
+        ...pullRequest,
+        draft: true,
+        events: [...pullRequest.events, currentConverted, firstConverted, ready],
+      }),
+    );
+
+    expect(earlierDecision.status).toBe("in_progress");
+    expect(earlierDecision.statusBasis).toEqual({
+      sourceIds: [currentConverted.sourceId],
+      occurredAt: currentConverted.occurredAt,
+      precision: "event",
+    });
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("現在のnon-draft区間を開始したready for reviewイベントを使う", () => {
+    const pullRequest = createOpenPullRequest();
+    const firstReady = createDraftLifecycleEvent(
+      "ready_for_review",
+      "first-ready",
+      createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+    );
+    const converted = createDraftLifecycleEvent(
+      "converted_to_draft",
+      "converted-between-ready",
+      createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    );
+    const currentReady = createDraftLifecycleEvent(
+      "ready_for_review",
+      "current-ready",
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
+      createInput({
+        ...pullRequest,
+        events: [...pullRequest.events, currentReady, firstReady, converted],
+      }),
+    );
+
+    expect(earlierDecision.status).toBe("needs_maintainer_decision");
+    expect(earlierDecision.statusBasis).toEqual({
+      sourceIds: [currentReady.sourceId],
+      occurredAt: currentReady.occurredAt,
+      precision: "event",
+    });
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("現行maintainer判断ラベルの現在区間が最も古い付与イベントを使う", () => {
+    const pullRequest = createOpenPullRequest();
+    const firstAddition = createLabelEvent(
+      "first-maintainer-label-addition",
+      "maintainer-a",
+      "added",
+      createUtcIsoDateTime("2026-07-31T02:00:00Z"),
+    );
+    const removal = createLabelEvent(
+      "maintainer-label-removal",
+      "maintainer-a",
+      "removed",
+      createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+    );
+    const currentSecondLabel = createLabelEvent(
+      "current-second-maintainer-label",
+      "maintainer-b",
+      "added",
+      createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    );
+    const currentFirstLabel = createLabelEvent(
+      "current-first-maintainer-label",
+      "maintainer-a",
+      "added",
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const unrelatedLabel = createLabelEvent(
+      "unrelated-label",
+      "unrelated",
+      "added",
+      createUtcIsoDateTime("2026-07-31T02:30:00Z"),
+    );
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes({
+      ...createInput({
+        ...pullRequest,
+        events: [
+          ...pullRequest.events,
+          currentFirstLabel,
+          removal,
+          unrelatedLabel,
+          firstAddition,
+          currentSecondLabel,
+        ],
+      }),
+      labelEffects: {
+        ...labelEffects,
+        requiresMaintainerDecision: true,
+        maintainerDecisionLabelNames: ["maintainer-b", "maintainer-a"],
+      },
+    });
+
+    expect(earlierDecision.status).toBe("needs_maintainer_decision");
+    expect(earlierDecision.statusBasis).toEqual({
+      sourceIds: [currentSecondLabel.sourceId],
+      occurredAt: currentSecondLabel.occurredAt,
+      precision: "event",
+    });
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("時刻不明のreview requestにはPull Request作成時刻を使う", () => {
+    const reviewRequest = createUnavailableReviewRequest("unavailable-request");
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
+      createInput({
+        ...createOpenPullRequest(),
+        reviewRequests: [reviewRequest],
+      }),
+    );
+
+    expect(earlierDecision.status).toBe("waiting_for_review");
+    expect(earlierDecision.statusBasis).toEqual({
+      sourceIds: [reviewRequest.sourceId],
+      occurredAt: pullRequestCreatedAt,
+      precision: "inferred",
+    });
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("merge queueの現在区間を開始した追加イベントを使う", () => {
+    const firstAddition = createMergeQueueLifecycleEvent(
+      "added_to_merge_queue",
+      "first-queue-addition",
+      createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+    );
+    const removal = createMergeQueueLifecycleEvent(
+      "removed_from_merge_queue",
+      "queue-removal",
+      createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    );
+    const currentAddition = createMergeQueueLifecycleEvent(
+      "added_to_merge_queue",
+      "current-queue-addition",
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const pullRequest = createOpenPullRequest();
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
+      createInput({
+        ...pullRequest,
+        mergeState: {
+          ...pullRequest.mergeState,
+          mergeQueue: {
+            status: "queued",
+            sourceId: buildSourceId("github_merge_queue_entry", "current"),
+            nodeId: createGitHubNodeId("MQ_current"),
+          },
+        },
+        events: [currentAddition, ...pullRequest.events, firstAddition, removal],
+      }),
+    );
+
+    expect(earlierDecision.status).toBe("waiting_for_automation");
+    expect(earlierDecision.statusBasis).toEqual({
+      sourceIds: [currentAddition.sourceId],
+      occurredAt: currentAddition.occurredAt,
+      precision: "event",
+    });
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("merge queue追加イベントが取得窓に無ければhead basisを使う", () => {
+    const pullRequest = createOpenPullRequest();
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
+      createInput({
+        ...pullRequest,
+        mergeState: {
+          ...pullRequest.mergeState,
+          mergeQueue: {
+            status: "queued",
+            sourceId: buildSourceId("github_merge_queue_entry", "windowed"),
+            nodeId: createGitHubNodeId("MQ_windowed"),
+          },
+        },
+      }),
+    );
+
+    expect(earlierDecision.status).toBe("waiting_for_automation");
+    expect(earlierDecision.statusBasis).toEqual({
+      sourceIds: [pullRequest.headCommit.sourceId],
+      occurredAt: headPushedAt,
+      precision: "event",
+    });
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("実行中required checksにhead basisを使う", () => {
+    const pullRequest = createOpenPullRequest();
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
+      createInput({
+        ...pullRequest,
+        mergeState: {
+          ...pullRequest.mergeState,
+          checks: {
+            status: "configured",
+            sourceId: buildSourceId("github_status_check_rollup", "pending"),
+            nodeId: createGitHubNodeId("SCR_pending"),
+            combinedState: "pending",
+            contexts: [
+              {
+                type: "check_run",
+                sourceId: buildSourceId("github_check_run", "pending"),
+                status: "in_progress",
+                conclusion: "not_completed",
+                completedAt: null,
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(earlierDecision.status).toBe("waiting_for_automation");
+    expect(earlierDecision.statusBasis).toEqual({
+      sourceIds: [pullRequest.headCommit.sourceId],
+      occurredAt: headPushedAt,
+      precision: "event",
+    });
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("Pull Request起因check失敗に現在失敗中contextの最初の失敗時刻を使う", () => {
+    const firstFailureAt = createUtcIsoDateTime("2026-07-31T04:00:00Z");
+    const pullRequest = createOpenPullRequest();
+    const input = {
+      ...createInput({
+        ...pullRequest,
+        mergeState: {
+          ...pullRequest.mergeState,
+          checks: {
+            status: "configured",
+            sourceId: buildSourceId("github_status_check_rollup", "failure"),
+            nodeId: createGitHubNodeId("SCR_failure"),
+            combinedState: "failure",
+            contexts: [
+              {
+                type: "check_run",
+                sourceId: buildSourceId("github_check_run", "later-failure"),
+                status: "completed",
+                conclusion: "failure",
+                completedAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+              },
+              {
+                type: "commit_status",
+                sourceId: buildSourceId("github_commit_status", "first-failure"),
+                state: "failure",
+                createdAt: firstFailureAt,
+              },
+              {
+                type: "commit_status",
+                sourceId: buildSourceId("github_commit_status", "success"),
+                state: "success",
+                createdAt: createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+              },
+            ],
+          },
+        },
+      }),
+      checkFailureAssessment: {
+        cause: "pull_request_change",
+        confidence: 0.95,
+        sourceIds: [buildSourceId("check_failure_assessment", "observation-independent")],
+      },
+    } satisfies PullRequestStateMachineInput;
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(input);
+
+    expect(earlierDecision.status).toBe("waiting_for_author");
+    expect(earlierDecision.statusBasis.occurredAt).toBe(firstFailureAt);
+    expect(earlierDecision.statusBasis.precision).toBe("event");
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("merge conflictにhead basisの時刻を推定値として使う", () => {
+    const pullRequest = createOpenPullRequest();
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
+      createInput({
+        ...pullRequest,
+        mergeState: {
+          ...pullRequest.mergeState,
+          mergeability: "conflicting",
+          mergeState: "dirty",
+        },
+      }),
+    );
+
+    expect(earlierDecision.status).toBe("waiting_for_author");
+    expect(earlierDecision.statusBasis).toEqual({
+      sourceIds: [pullRequest.headCommit.sourceId],
+      occurredAt: headPushedAt,
+      precision: "inferred",
+    });
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+
+  it("merge可能になった根拠時刻の最大値を使う", () => {
+    const approval = createReviewEvent({
+      id: "ready-approval",
+      actor: reviewer,
+      state: "approved",
+      occurredAt: createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+      commitSha: headSha,
+    });
+    const latestCheckAt = createUtcIsoDateTime("2026-07-31T06:00:00Z");
+    const pullRequest = createOpenPullRequest();
+    const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
+      createInput({
+        ...pullRequest,
+        mergeState: {
+          ...pullRequest.mergeState,
+          mergeState: "clean",
+          checks: {
+            status: "configured",
+            sourceId: buildSourceId("github_status_check_rollup", "success"),
+            nodeId: createGitHubNodeId("SCR_success"),
+            combinedState: "success",
+            contexts: [
+              {
+                type: "commit_status",
+                sourceId: buildSourceId("github_commit_status", "success"),
+                state: "success",
+                createdAt: createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+              },
+              {
+                type: "check_run",
+                sourceId: buildSourceId("github_check_run", "success"),
+                status: "completed",
+                conclusion: "success",
+                completedAt: latestCheckAt,
+              },
+            ],
+          },
+        },
+        events: [...pullRequest.events, approval],
+      }),
+    );
+
+    expect(earlierDecision.status).toBe("ready_to_merge");
+    expect(earlierDecision.statusBasis.occurredAt).toBe(latestCheckAt);
+    expect(earlierDecision.statusBasis.precision).toBe("inferred");
+    expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
+    expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
+  });
+});
+
+describe("timeline取得窓が途中から始まるdraft判定", () => {
+  it("draft変換イベントだけが窓にある現在draftのPRを判定する", () => {
+    const converted = createDraftLifecycleEvent(
+      "converted_to_draft",
+      "windowed-converted",
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const decision = determinePullRequestState(
+      createInput({
+        ...createOpenPullRequest(),
+        draft: true,
+        events: [converted],
+      }),
+    );
+
+    expect(decision.status).toBe("in_progress");
+    expect(decision.statusBasis).toEqual({
+      sourceIds: [converted.sourceId],
+      occurredAt: converted.occurredAt,
+      precision: "event",
+    });
+  });
+
+  it("ready for reviewイベントだけが窓にある現在non-draftのPRを判定する", () => {
+    const ready = createDraftLifecycleEvent(
+      "ready_for_review",
+      "windowed-ready",
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const decision = determinePullRequestState(
+      createInput({
+        ...createOpenPullRequest(),
+        events: [ready],
+      }),
+    );
+
+    expect(decision.status).toBe("needs_maintainer_decision");
+    expect(decision.statusBasis).toEqual({
+      sourceIds: [ready.sourceId],
+      occurredAt: ready.occurredAt,
+      precision: "event",
+    });
+  });
+
+  it("イベントが窓にないPRを現在のdraft状態ごとに判定する", () => {
+    const draftDecision = determinePullRequestState(
+      createInput({
+        ...createOpenPullRequest(),
+        draft: true,
+        events: [],
+      }),
+    );
+    const nonDraftDecision = determinePullRequestState(
+      createInput({
+        ...createOpenPullRequest(),
+        events: [],
+      }),
+    );
+
+    expect(draftDecision.status).toBe("in_progress");
+    expect(nonDraftDecision.status).toBe("needs_maintainer_decision");
+    expect(draftDecision.statusBasis.occurredAt).toBe(pullRequestCreatedAt);
+    expect(nonDraftDecision.statusBasis.occurredAt).toBe(pullRequestCreatedAt);
   });
 });
 
@@ -451,6 +993,7 @@ describe("Pull Request判定の優先順位", () => {
       labelEffects: {
         ...labelEffects,
         requiresMaintainerDecision: true,
+        maintainerDecisionLabelNames: ["maintainer-decision"],
       },
     });
 
@@ -459,6 +1002,11 @@ describe("Pull Request判定の優先順位", () => {
       kind: "team",
       role: "maintainer",
       candidateId: "VOICEVOX/maintainers",
+    });
+    expect(decision.statusBasis).toEqual({
+      sourceIds: [buildSourceId("github_item_detail", pullRequestNodeId)],
+      occurredAt: pullRequestCreatedAt,
+      precision: "inferred",
     });
   });
 });
@@ -1165,6 +1713,11 @@ describe("reviewと責務の遷移", () => {
       role: changesDecision.waitingOn[0]?.role,
       candidateId: changesDecision.waitingOn[0]?.candidateId,
     });
+    expect(draftDecision.statusBasis).toEqual({
+      sourceIds: [buildSourceId("github_item_detail", pullRequestNodeId)],
+      occurredAt: pullRequestCreatedAt,
+      precision: "inferred",
+    });
   });
 });
 
@@ -1213,6 +1766,11 @@ describe("merge readinessと失敗時の判定", () => {
       role: "maintainer",
       candidateId: "VOICEVOX/maintainers",
     });
+    expect(decision.statusBasis).toEqual({
+      sourceIds: [buildSourceId("github_item_detail", pullRequestNodeId)],
+      occurredAt: pullRequestCreatedAt,
+      precision: "inferred",
+    });
   });
 
   it("高信頼のPull Request起因required check失敗をauthor待ちとする", () => {
@@ -1242,6 +1800,11 @@ describe("merge readinessと失敗時の判定", () => {
     expect(decision.status).toBe("waiting_for_author");
     expect(decision.waitingOn[0]?.role).toBe("author");
     expect(decision.determination).toBe("determined");
+    expect(decision.statusBasis).toEqual({
+      sourceIds: [pullRequest.headCommit.sourceId],
+      occurredAt: headPushedAt,
+      precision: "event",
+    });
   });
 
   it("infrastructureまたはflaky疑いの失敗はauthorと断定せずCodex候補にする", () => {

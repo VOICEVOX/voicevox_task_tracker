@@ -615,6 +615,7 @@ describe("confidence境界とreducer統合", () => {
       },
       candidates: [candidate],
       assessments: result.relationAssessments,
+      sourceOccurredAtById: new Map([[sourceId, createUtcIsoDateTime("2026-07-30T00:00:00Z")]]),
       minimumInferredConfidence: 0.65,
       reconciledAt: createUtcIsoDateTime("2026-07-31T00:00:00Z"),
     });

@@ -27,11 +27,14 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 
 const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 
-/** 状態機械が返すstatusまたは責務の遷移根拠。 */
+/**
+ * 状態機械が返すstatusまたは責務の遷移根拠。
+ * eventはGitHubイベント時刻そのものを表し、inferredはGitHub由来の時刻から決定論的に導いた下限を表す。
+ */
 export type StalenessTransitionBasis = Readonly<{
   sourceIds: readonly [SourceId, ...SourceId[]];
   occurredAt: UtcIsoDateTime;
-  precision: "event" | "inferred" | "observation";
+  precision: "event" | "inferred";
 }>;
 
 /** 停滞時間の算出に必要な状態機械の判定結果。 */
@@ -119,6 +122,7 @@ export type CalculateStalenessInput = Readonly<{
   createdAt: UtcIsoDateTime;
   evaluatedAt: UtcIsoDateTime;
   currentDecision: StateDecisionForStaleness;
+  decisionBasis: StalenessSeverityContext["decisionBasis"];
   previousState: PreviousStalenessState;
   events: readonly NormalizedEvent[];
   dependencyResolutions: readonly DependencyResolutionProgress[];
@@ -542,12 +546,9 @@ function createSeverityContext(
   input: CalculateStalenessInput,
   waitClass: StalenessWaitClass,
 ): StalenessSeverityContext {
-  const aiOnlyBasis =
-    input.currentDecision.statusBasis.precision === "inferred" &&
-    input.currentDecision.responsibilityBasis.precision === "inferred";
   return Object.freeze({
     waitClass,
-    decisionBasis: aiOnlyBasis ? "ai_only" : "deterministic",
+    decisionBasis: input.decisionBasis,
   });
 }
 

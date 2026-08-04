@@ -309,6 +309,7 @@ function createNativeDependency(
       type: "issue",
       number: blockerItem.number,
       url: blockerItem.url,
+      createdAt: blockerItem.createdAt,
       state: "open",
     }),
   });
@@ -538,10 +539,10 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
     enumerateGitHubItemsByIdentifiers: () =>
       Promise.reject(new TypeError("性能profileでは項目の個別取得を行いません")),
     collectGitHubItemDetails: (input) => {
-      apiBudget.consume(input.items.length + 1);
+      apiBudget.consume(input.targets.length + 1);
       const itemsByNodeId = new Map(currentItems.map((item) => [item.nodeId, item]));
-      const details = input.items.map((item) =>
-        createProfileDetail(item, itemsByNodeId, currentRunAt, changedVersion),
+      const details = input.targets.map((target) =>
+        createProfileDetail(target.item, itemsByNodeId, currentRunAt, changedVersion),
       );
       return Promise.resolve(
         Object.freeze({

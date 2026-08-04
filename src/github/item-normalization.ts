@@ -30,6 +30,7 @@ import {
   type GitHubInboundCrossReferenceCandidate,
   type GitHubItemDetail,
   type GitHubNativeDependencyCollection,
+  type GitHubNativeHierarchy,
   type GitHubNativeHierarchyCollection,
   type GitHubPullRequestCommit,
   type GitHubPullRequestMergeState,
@@ -440,6 +441,11 @@ function normalizeTimelineEvent(
           direction: "from_item",
         }),
       ]);
+    case "sub_issue_added":
+    case "sub_issue_removed":
+    case "parent_issue_added":
+    case "parent_issue_removed":
+      return Object.freeze([]);
     case "head_ref_force_pushed":
       return Object.freeze([
         Object.freeze({
@@ -460,7 +466,15 @@ function normalizeTimelineEvent(
     case "removed_from_merge_queue":
     case "auto_merge_enabled":
     case "auto_merge_disabled":
-      return Object.freeze([]);
+      return Object.freeze([
+        Object.freeze({
+          kind: event.kind,
+          sourceId: event.sourceId,
+          itemNodeId: detail.nodeId,
+          occurredAt: event.occurredAt,
+          actor: normalizeGitHubActor(event.actor, isBot),
+        }),
+      ]);
     default:
       throw new UnreachableError(event);
   }
@@ -468,6 +482,7 @@ function normalizeTimelineEvent(
 
 function normalizeNativeDependencyEvents(
   detail: Extract<GitHubItemDetail, { type: "issue" }>,
+  itemCreatedAt: UtcIsoDateTime,
 ): readonly NormalizedEvent[] {
   if (detail.nativeDependencies.availability === "unavailable") {
     return Object.freeze([]);
@@ -478,7 +493,10 @@ function normalizeNativeDependencyEvents(
         kind: "relation",
         sourceId: relation.sourceId,
         itemNodeId: detail.nodeId,
-        occurredAt: detail.observedAt,
+        occurredAt:
+          itemCreatedAt > relation.relatedItem.createdAt
+            ? itemCreatedAt
+            : relation.relatedItem.createdAt,
         actor: GITHUB_SYSTEM_ACTOR,
         relationType: "blocks",
         target: Object.freeze({
@@ -493,19 +511,123 @@ function normalizeNativeDependencyEvents(
   );
 }
 
+type GitHubNativeHierarchyTimelineEvent = Extract<
+  GitHubTimelineEvent,
+  {
+    kind: "sub_issue_added" | "sub_issue_removed" | "parent_issue_added" | "parent_issue_removed";
+  }
+>;
+
+function isNativeHierarchyTimelineEvent(
+  event: GitHubTimelineEvent,
+): event is GitHubNativeHierarchyTimelineEvent {
+  return (
+    event.kind === "sub_issue_added" ||
+    event.kind === "sub_issue_removed" ||
+    event.kind === "parent_issue_added" ||
+    event.kind === "parent_issue_removed"
+  );
+}
+
+function compareNativeHierarchyTimelineEvents(
+  left: GitHubNativeHierarchyTimelineEvent,
+  right: GitHubNativeHierarchyTimelineEvent,
+): number {
+  if (left.occurredAt < right.occurredAt) {
+    return -1;
+  }
+  if (left.occurredAt > right.occurredAt) {
+    return 1;
+  }
+  if (left.sequence < right.sequence) {
+    return -1;
+  }
+  if (left.sequence > right.sequence) {
+    return 1;
+  }
+  if (left.sourceId < right.sourceId) {
+    return -1;
+  }
+  if (left.sourceId > right.sourceId) {
+    return 1;
+  }
+  return 0;
+}
+
+function hierarchyEventMatchesRelation(
+  event: GitHubNativeHierarchyTimelineEvent,
+  relation: GitHubNativeHierarchy,
+): boolean {
+  switch (event.kind) {
+    case "sub_issue_added":
+    case "sub_issue_removed":
+      return (
+        relation.relationship === "sub_issue" &&
+        event.subIssue.nodeId === relation.relatedItem.nodeId
+      );
+    case "parent_issue_added":
+    case "parent_issue_removed":
+      return (
+        relation.relationship === "parent" && event.parent.nodeId === relation.relatedItem.nodeId
+      );
+    default:
+      throw new UnreachableError(event);
+  }
+}
+
+function resolveNativeHierarchyOccurredAt(
+  events: readonly GitHubNativeHierarchyTimelineEvent[],
+  relation: GitHubNativeHierarchy,
+  itemCreatedAt: UtcIsoDateTime,
+): UtcIsoDateTime {
+  let currentInterval:
+    | Readonly<{
+        status: "active";
+        startedAt: UtcIsoDateTime;
+      }>
+    | Readonly<{
+        status: "inactive";
+      }> = Object.freeze({ status: "inactive" });
+  for (const event of events) {
+    if (!hierarchyEventMatchesRelation(event, relation)) {
+      continue;
+    }
+    if (event.kind === "sub_issue_added" || event.kind === "parent_issue_added") {
+      if (currentInterval.status === "inactive") {
+        currentInterval = Object.freeze({
+          status: "active",
+          startedAt: event.occurredAt,
+        });
+      }
+    } else {
+      currentInterval = Object.freeze({ status: "inactive" });
+    }
+  }
+  if (currentInterval.status === "active") {
+    return currentInterval.startedAt;
+  }
+  return itemCreatedAt > relation.relatedItem.createdAt
+    ? itemCreatedAt
+    : relation.relatedItem.createdAt;
+}
+
 function normalizeNativeHierarchyEvents(
   detail: Extract<GitHubItemDetail, { type: "issue" }>,
+  itemCreatedAt: UtcIsoDateTime,
 ): readonly NormalizedEvent[] {
   if (detail.nativeHierarchy.availability === "unavailable") {
     return Object.freeze([]);
   }
+  const hierarchyTimeline = detail.timeline
+    .filter(isNativeHierarchyTimelineEvent)
+    .toSorted(compareNativeHierarchyTimelineEvents);
   return Object.freeze(
     detail.nativeHierarchy.relations.map((relation) =>
       Object.freeze({
         kind: "relation",
         sourceId: relation.sourceId,
         itemNodeId: detail.nodeId,
-        occurredAt: detail.observedAt,
+        occurredAt: resolveNativeHierarchyOccurredAt(hierarchyTimeline, relation, itemCreatedAt),
         actor: GITHUB_SYSTEM_ACTOR,
         relationType: "parent_of",
         target: Object.freeze({
@@ -522,6 +644,7 @@ function normalizeNativeHierarchyEvents(
 
 function normalizeCurrentReviewRequestSnapshots(
   detail: Extract<GitHubItemDetail, { type: "pull_request" }>,
+  pullRequestCreatedAt: UtcIsoDateTime,
 ): readonly NormalizedEvent[] {
   return Object.freeze(
     detail.reviewRequests.current
@@ -531,7 +654,7 @@ function normalizeCurrentReviewRequestSnapshots(
           kind: "review_request",
           sourceId: request.sourceId,
           itemNodeId: detail.nodeId,
-          occurredAt: detail.observedAt,
+          occurredAt: pullRequestCreatedAt,
           actor: GITHUB_SYSTEM_ACTOR,
           target: normalizeReviewRequestTarget(request.target),
           action: "added",
@@ -584,8 +707,8 @@ function normalizeEvents(options: NormalizeGitHubEventsOptions): readonly Normal
     events.push(...normalizeTimelineEvent(options.item, options.detail, event, options.isBot));
   }
   if (options.detail.type === "issue") {
-    events.push(...normalizeNativeDependencyEvents(options.detail));
-    events.push(...normalizeNativeHierarchyEvents(options.detail));
+    events.push(...normalizeNativeDependencyEvents(options.detail, options.item.createdAt));
+    events.push(...normalizeNativeHierarchyEvents(options.detail, options.item.createdAt));
   } else {
     for (const review of options.detail.reviews) {
       events.push(normalizeReviewEvent(options.detail.nodeId, review, options.isBot));
@@ -604,7 +727,7 @@ function normalizeEvents(options: NormalizeGitHubEventsOptions): readonly Normal
         );
       }
     }
-    events.push(...normalizeCurrentReviewRequestSnapshots(options.detail));
+    events.push(...normalizeCurrentReviewRequestSnapshots(options.detail, options.item.createdAt));
     events.push(
       normalizePushEvent(options.detail.nodeId, options.item.createdAt, options.detail.headCommit),
     );

@@ -292,6 +292,7 @@ function createIssueObservation(
     sourceId: buildSourceId("golden_item", item.nodeId),
     nodeId,
     type: "issue",
+    createdAt: createUtcIsoDateTime(item.createdAt),
     ...createItemState(item),
     author: Object.freeze({
       status: "identified",
@@ -568,6 +569,25 @@ function createRelationCandidate(
   }
 }
 
+function createRelationSourceOccurredAtById(
+  input: StandardGoldenInput,
+  items: ReadonlyMap<string, GoldenItemInput>,
+): ReadonlyMap<SourceId, UtcIsoDateTime> {
+  const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
+  for (const relation of input.relations) {
+    const currentItem = items.get(relation.currentNodeId);
+    assertNonNullable(currentItem, `関係 ${relation.id}のcurrent itemがありません`);
+    const sourceId = buildSourceId("golden_relation", relation.sourceId);
+    const occurredAt = createUtcIsoDateTime(currentItem.createdAt);
+    const existingOccurredAt = sourceOccurredAtById.get(sourceId);
+    if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
+      throw new TypeError(`同じgolden関係source IDに異なる発生時刻があります。対象: ${sourceId}`);
+    }
+    sourceOccurredAtById.set(sourceId, occurredAt);
+  }
+  return sourceOccurredAtById;
+}
+
 function createNativeBlockers(
   item: GoldenItemInput,
   relationInputs: readonly GoldenRelationInput[],
@@ -638,6 +658,7 @@ function determineItemState(
       priorityWeight: item.priorityWeight,
       severityLift: 0,
       requiresMaintainerDecision: false,
+      maintainerDecisionLabelNames: Object.freeze([]),
       suppressNotifications: false,
       countsAsProgress: false,
     }),
@@ -845,6 +866,7 @@ function createStaleness(
       statusBasis: basis.statusBasis,
       responsibilityBasis: basis.responsibilityBasis,
     }),
+    decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
     previousState,
     events:
       item.type === "issue"
@@ -1028,7 +1050,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "2",
+    schemaVersion: "3",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1264,6 +1286,7 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
     }),
     candidates,
     assessments: fixedAi.relationAssessments,
+    sourceOccurredAtById: createRelationSourceOccurredAtById(input, items),
     minimumInferredConfidence: CONFIDENCE_THRESHOLDS.medium,
     reconciledAt: createUtcIsoDateTime(input.evaluatedAt),
   });
@@ -1526,7 +1549,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "2",
+    schemaVersion: "3",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

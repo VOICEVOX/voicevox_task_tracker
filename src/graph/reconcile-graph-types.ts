@@ -140,6 +140,7 @@ export type ReconcileGraphInput = Readonly<{
   previousGraph: ReconciledGraphState;
   candidates: readonly RelationCandidate[];
   assessments: readonly RelationCandidateAssessment[];
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>;
   minimumInferredConfidence: number;
   reconciledAt: UtcIsoDateTime;
 }>;

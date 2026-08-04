@@ -42,6 +42,7 @@ type GraphEdgeDraft = CanonicalRelation &
     evidence: readonly Evidence[];
     authoritative: boolean;
     contradictions: readonly RelationContradiction[];
+    firstSeenAt: UtcIsoDateTime;
   }>;
 
 type CandidateResolutionResult = Readonly<{
@@ -81,6 +82,42 @@ function validateUtcIsoDateTime(value: UtcIsoDateTime, context: string): void {
   if (createUtcIsoDateTime(value) !== value) {
     throw new TypeError(`${context}はUTCへ正規化してください`);
   }
+}
+
+function validateSourceOccurredAtById(
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+  reconciledAt: UtcIsoDateTime,
+): void {
+  for (const [sourceId, occurredAt] of sourceOccurredAtById) {
+    validateUtcIsoDateTime(occurredAt, `source ${sourceId}の発生時刻`);
+    if (occurredAt > reconciledAt) {
+      throw new RangeError(`source ${sourceId}の発生時刻がreconcile時刻より後です`);
+    }
+  }
+}
+
+function resolveCandidateFirstSeenAt(
+  candidate: RelationCandidate,
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+): UtcIsoDateTime {
+  const [firstSourceId, ...remainingSourceIds] = candidate.sourceIds;
+  const firstOccurredAt = sourceOccurredAtById.get(firstSourceId);
+  assertNonNullable(
+    firstOccurredAt,
+    `関係候補 ${candidate.id}のsource ${firstSourceId}に対応する発生時刻がありません`,
+  );
+  let earliestOccurredAt = firstOccurredAt;
+  for (const sourceId of remainingSourceIds) {
+    const occurredAt = sourceOccurredAtById.get(sourceId);
+    assertNonNullable(
+      occurredAt,
+      `関係候補 ${candidate.id}のsource ${sourceId}に対応する発生時刻がありません`,
+    );
+    if (occurredAt < earliestOccurredAt) {
+      earliestOccurredAt = occurredAt;
+    }
+  }
+  return earliestOccurredAt;
 }
 
 function relationNodes(
@@ -350,6 +387,7 @@ function candidateNodeById(
 function resolveCandidate(
   candidate: RelationCandidate,
   assessment: RelationCandidateAssessment | undefined,
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
   minimumInferredConfidence: number,
 ): CandidateResolutionResult {
   if (candidate.authority === "authoritative") {
@@ -368,6 +406,7 @@ function resolveCandidate(
         evidence,
         authoritative: true,
         contradictions,
+        firstSeenAt: resolveCandidateFirstSeenAt(candidate, sourceOccurredAtById),
       }),
       resolution: Object.freeze({
         candidateId: candidate.id,
@@ -435,6 +474,7 @@ function resolveCandidate(
       evidence: createInferredEvidence(candidate, assessment),
       authoritative: false,
       contradictions: Object.freeze([]),
+      firstSeenAt: resolveCandidateFirstSeenAt(candidate, sourceOccurredAtById),
     }),
     resolution: Object.freeze({
       candidateId: candidate.id,
@@ -646,7 +686,7 @@ function reconcileEdges(
     if (edgeDraft != null) {
       const activeEdge = createActiveEdge(
         edgeDraft,
-        previousEdge?.firstSeenAt ?? reconciledAt,
+        previousEdge?.firstSeenAt ?? edgeDraft.firstSeenAt,
         reconciledAt,
       );
       edges.push(activeEdge);
@@ -733,6 +773,7 @@ export function deriveBlockedBy(edges: readonly ReconciledGraphEdge[]): readonly
 export function reconcileGraph(input: ReconcileGraphInput): ReconcileGraphResult {
   validateConfidence(input.minimumInferredConfidence, "推定edgeの最低confidence");
   validateUtcIsoDateTime(input.reconciledAt, "reconcile時刻");
+  validateSourceOccurredAtById(input.sourceOccurredAtById, input.reconciledAt);
 
   const candidates = normalizeRelationCandidates(input.candidates);
   const assessmentsByCandidateId = validateAssessments(candidates, input.assessments);
@@ -745,6 +786,7 @@ export function reconcileGraph(input: ReconcileGraphInput): ReconcileGraphResult
     const result = resolveCandidate(
       candidate,
       assessmentsByCandidateId.get(candidate.id),
+      input.sourceOccurredAtById,
       input.minimumInferredConfidence,
     );
     candidateResolutions.push(result.resolution);

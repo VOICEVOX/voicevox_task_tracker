@@ -615,15 +615,28 @@ describe("増分項目収集", () => {
     }
     expect(plan.since).toBe("2026-07-31T23:55:00.000Z");
     expect(plan.changedItemNodeIds).toHaveLength(10);
-    expect(plan.detailItemNodeIds).toHaveLength(12);
-    expect(new Set(plan.detailItemNodeIds)).toEqual(
+    expect(plan.detailTargets).toHaveLength(12);
+    expect(new Set(plan.detailTargets.map((target) => target.nodeId))).toEqual(
       new Set([
         ...plan.changedItemNodeIds,
         createGitHubNodeId("I_adjacent_a"),
         createGitHubNodeId("I_adjacent_b"),
       ]),
     );
-    expect(plan.detailItemNodeIds).not.toContain("I_item_1");
+    expect(plan.detailTargets.map((target) => target.nodeId)).not.toContain("I_item_1");
+    expect(
+      plan.detailTargets
+        .filter((target) => target.eventWindow.mode === "incremental")
+        .every(
+          (target) =>
+            target.eventWindow.mode === "incremental" && target.eventWindow.since === plan.since,
+        ),
+    ).toBe(true);
+    expect(
+      plan.detailTargets
+        .filter((target) => target.eventWindow.mode === "initial")
+        .map((target) => target.nodeId),
+    ).toEqual([createGitHubNodeId("I_adjacent_a"), createGitHubNodeId("I_adjacent_b")]);
   });
 
   it("repository rename後もnode IDが同じ項目を別項目へ分裂させない", async () => {
@@ -663,11 +676,11 @@ describe("増分項目収集", () => {
     expect(previousItem.displayReference).toBe("VOICEVOX/old-name#1");
     expect(currentItem.displayReference).toBe("VOICEVOX/new-name#1");
     expect(plan.changedItemNodeIds).toEqual([]);
-    expect(plan.detailItemNodeIds).toEqual([]);
+    expect(plan.detailTargets).toEqual([]);
     expect(plan.currentItemFingerprints).toHaveLength(1);
   });
 
-  it("item fingerprintが同じでも判定規則fingerprintが変われば詳細取得対象にする", async () => {
+  it("item fingerprintが同じでも判定規則fingerprintが変われば全履歴取得対象にする", async () => {
     const items = await enumerateFixture("R_example", "example", [createItemMetadata(1, {})]);
     const item = items[0];
     if (item == null) {
@@ -692,7 +705,164 @@ describe("増分項目収集", () => {
     });
 
     expect(plan.changedItemNodeIds).toEqual([item.nodeId]);
-    expect(plan.detailItemNodeIds).toEqual([item.nodeId]);
+    expect(plan.detailTargets).toEqual([
+      {
+        nodeId: item.nodeId,
+        eventWindow: {
+          mode: "initial",
+        },
+      },
+    ]);
+  });
+
+  it("判定規則変更項目とupdated_at変更項目へ異なるtimeline取得窓を割り当てる", async () => {
+    const previousItems = await enumerateFixture("R_example", "example", [
+      createItemMetadata(1, {}),
+      createItemMetadata(2, {
+        type: "pull_request",
+      }),
+      createItemMetadata(3, {
+        type: "pull_request",
+      }),
+    ]);
+    const currentItems = await enumerateFixture("R_example", "example", [
+      createItemMetadata(1, {}),
+      createItemMetadata(2, {
+        type: "pull_request",
+        title: "更新されたPull Request",
+        updatedAt: "2026-08-01T00:01:00Z",
+      }),
+      createItemMetadata(3, {
+        type: "pull_request",
+      }),
+    ]);
+    const rulesChangedIssue = currentItems[0];
+    const updatedPullRequest = currentItems[1];
+    const adjacentPullRequest = currentItems[2];
+    if (rulesChangedIssue == null || updatedPullRequest == null || adjacentPullRequest == null) {
+      throw new Error("取得窓混在fixtureが不足しています");
+    }
+    const changedAnalysisRulesFingerprints = Object.freeze({
+      ...initialAnalysisRulesFingerprints,
+      issue: createGitHubBodyFingerprint("issue-rules-v2"),
+    }) satisfies CurrentAnalysisRulesFingerprints;
+
+    const plan = planIncrementalItemCollection({
+      items: currentItems,
+      previous: {
+        status: "successful",
+        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
+        items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
+      },
+      previouslyAnalyzedItemNodeIds: new Set(previousItems.map((item) => item.nodeId)),
+      currentAnalysisRulesFingerprints: changedAnalysisRulesFingerprints,
+      adjacentItemNodeIds: new Set([adjacentPullRequest.nodeId]),
+      overlapMilliseconds: 300_000,
+    });
+
+    expect(plan.changedItemNodeIds).toEqual([rulesChangedIssue.nodeId, updatedPullRequest.nodeId]);
+    expect(plan.detailTargets).toEqual([
+      {
+        nodeId: rulesChangedIssue.nodeId,
+        eventWindow: {
+          mode: "initial",
+        },
+      },
+      {
+        nodeId: updatedPullRequest.nodeId,
+        eventWindow: {
+          mode: "incremental",
+          since: "2026-07-31T23:55:00.000Z",
+        },
+      },
+      {
+        nodeId: adjacentPullRequest.nodeId,
+        eventWindow: {
+          mode: "incremental",
+          since: "2026-07-31T23:55:00.000Z",
+        },
+      },
+    ]);
+  });
+
+  it("前回未判定の更新項目と前回enumerationにない項目を全履歴取得対象にする", async () => {
+    const previousItems = await enumerateFixture("R_example", "example", [
+      createItemMetadata(1, {}),
+    ]);
+    const currentItems = await enumerateFixture("R_example", "example", [
+      createItemMetadata(1, {
+        title: "初回判定前の更新項目",
+        updatedAt: "2026-08-01T00:01:00Z",
+      }),
+      createItemMetadata(2, {
+        updatedAt: "2026-08-01T00:01:00Z",
+      }),
+    ]);
+
+    const plan = planIncrementalItemCollection({
+      items: currentItems,
+      previous: {
+        status: "successful",
+        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
+        items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
+      },
+      previouslyAnalyzedItemNodeIds: new Set(),
+      currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
+      adjacentItemNodeIds: new Set(),
+      overlapMilliseconds: 300_000,
+    });
+
+    expect(plan.changedItemNodeIds).toEqual(currentItems.map((item) => item.nodeId));
+    expect(plan.detailTargets).toEqual(
+      currentItems.map((item) => ({
+        nodeId: item.nodeId,
+        eventWindow: {
+          mode: "initial",
+        },
+      })),
+    );
+  });
+
+  it("隣接項目は前回判定済みなら増分、未判定なら全履歴で取得する", async () => {
+    const items = await enumerateFixture("R_example", "example", [
+      createItemMetadata(1, {}),
+      createItemMetadata(2, {}),
+    ]);
+    const analyzedItem = items[0];
+    const unanalyzedItem = items[1];
+    if (analyzedItem == null || unanalyzedItem == null) {
+      throw new Error("隣接項目取得窓fixtureが不足しています");
+    }
+
+    const plan = planIncrementalItemCollection({
+      items,
+      previous: {
+        status: "successful",
+        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
+        items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
+      },
+      previouslyAnalyzedItemNodeIds: new Set([analyzedItem.nodeId]),
+      currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
+      adjacentItemNodeIds: new Set([analyzedItem.nodeId, unanalyzedItem.nodeId]),
+      overlapMilliseconds: 300_000,
+    });
+
+    expect(plan.changedItemNodeIds).toEqual([]);
+    expect(plan.detailTargets).toEqual([
+      {
+        nodeId: analyzedItem.nodeId,
+        eventWindow: {
+          mode: "incremental",
+          since: "2026-07-31T23:55:00.000Z",
+        },
+      },
+      {
+        nodeId: unanalyzedItem.nodeId,
+        eventWindow: {
+          mode: "initial",
+        },
+      },
+    ]);
   });
 
   it("Issue規則だけが変わったときPull Requestを詳細取得対象にしない", async () => {
@@ -726,8 +896,8 @@ describe("増分項目収集", () => {
     });
 
     expect(plan.changedItemNodeIds).toEqual([issue.nodeId]);
-    expect(plan.detailItemNodeIds).toEqual([issue.nodeId]);
-    expect(plan.detailItemNodeIds).not.toContain(pullRequest.nodeId);
+    expect(plan.detailTargets.map((target) => target.nodeId)).toEqual([issue.nodeId]);
+    expect(plan.detailTargets.map((target) => target.nodeId)).not.toContain(pullRequest.nodeId);
   });
 
   it("前回判定済みでない項目は判定規則fingerprintが未保持でも詳細取得対象にしない", async () => {
@@ -751,7 +921,7 @@ describe("増分項目収集", () => {
     });
 
     expect(plan.changedItemNodeIds).toEqual([]);
-    expect(plan.detailItemNodeIds).toEqual([]);
+    expect(plan.detailTargets).toEqual([]);
   });
 
   it("前回判定済みの項目は判定規則fingerprintが未保持なら詳細取得対象にする", async () => {
@@ -775,7 +945,14 @@ describe("増分項目収集", () => {
     });
 
     expect(plan.changedItemNodeIds).toEqual([item.nodeId]);
-    expect(plan.detailItemNodeIds).toEqual([item.nodeId]);
+    expect(plan.detailTargets).toEqual([
+      {
+        nodeId: item.nodeId,
+        eventWindow: {
+          mode: "initial",
+        },
+      },
+    ]);
   });
 });
 

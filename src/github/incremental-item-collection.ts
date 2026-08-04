@@ -1,5 +1,6 @@
 import { createUtcIsoDateTime, type GitHubNodeId, type UtcIsoDateTime } from "../domain/index.js";
 import { type EnumeratedGitHubItem, type Sha256Fingerprint } from "./item-enumeration.js";
+import { type GitHubItemDetailEventWindow } from "./item-detail-queries.js";
 
 /** 項目種別ごとの現在の判定規則fingerprint。 */
 export type CurrentAnalysisRulesFingerprints = Readonly<
@@ -21,6 +22,11 @@ type PreviousItemCollectionValue = Readonly<{
   analysisRulesFingerprint: PreviousAnalysisRulesFingerprint;
 }>;
 
+type ChangedItem = Readonly<{
+  nodeId: GitHubNodeId;
+  timelineWindow: "full_history" | "incremental";
+}>;
+
 /** 前回成功時点の項目fingerprintと判定規則fingerprint。 */
 export type PreviousItemCollection =
   | Readonly<{
@@ -34,11 +40,17 @@ export type PreviousItemCollection =
 
 type IncrementalItemCollectionPlanFields = Readonly<{
   changedItemNodeIds: readonly GitHubNodeId[];
-  detailItemNodeIds: readonly GitHubNodeId[];
+  detailTargets: readonly IncrementalItemDetailTarget[];
   currentItemFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>;
 }>;
 
-/** 初回または前回成功時刻からの増分詳細取得計画。 */
+/** 詳細取得対象のnode IDとtimeline取得窓。 */
+export type IncrementalItemDetailTarget = Readonly<{
+  nodeId: GitHubNodeId;
+  eventWindow: GitHubItemDetailEventWindow;
+}>;
+
+/** 項目ごとのtimeline取得窓を含む詳細取得計画。 */
 export type IncrementalItemCollectionPlan =
   | (IncrementalItemCollectionPlanFields &
       Readonly<{
@@ -96,48 +108,127 @@ function createCurrentFingerprints(
   return fingerprints;
 }
 
-function selectChangedItemNodeIds(
+function selectChangedItems(
   items: readonly EnumeratedGitHubItem[],
   previous: PreviousItemCollection,
   previouslyAnalyzedItemNodeIds: ReadonlySet<GitHubNodeId>,
   currentAnalysisRulesFingerprints: CurrentAnalysisRulesFingerprints,
-): readonly GitHubNodeId[] {
+): readonly ChangedItem[] {
   if (previous.status === "none") {
-    return Object.freeze(items.map((item) => item.nodeId));
+    return Object.freeze(
+      items.map((item) =>
+        Object.freeze({
+          nodeId: item.nodeId,
+          timelineWindow: "full_history",
+        }),
+      ),
+    );
   }
 
-  return Object.freeze(
-    items
-      .filter((item) => {
-        const previousItem = previous.items.get(item.nodeId);
-        if (previousItem?.itemFingerprint !== item.itemFingerprint) {
-          return true;
-        }
-        if (!previouslyAnalyzedItemNodeIds.has(item.nodeId)) {
-          return false;
-        }
-        if (previousItem.analysisRulesFingerprint.status === "unavailable") {
-          return true;
-        }
-        return (
-          previousItem.analysisRulesFingerprint.fingerprint !==
-          currentAnalysisRulesFingerprints[item.type]
+  const changedItems: ChangedItem[] = [];
+  for (const item of items) {
+    const previousItem = previous.items.get(item.nodeId);
+    const itemFingerprintChanged = previousItem?.itemFingerprint !== item.itemFingerprint;
+    if (!previouslyAnalyzedItemNodeIds.has(item.nodeId)) {
+      if (itemFingerprintChanged) {
+        changedItems.push(
+          Object.freeze({
+            nodeId: item.nodeId,
+            timelineWindow: "full_history",
+          }),
         );
-      })
-      .map((item) => item.nodeId),
-  );
+      }
+      continue;
+    }
+    if (previousItem == null) {
+      changedItems.push(
+        Object.freeze({
+          nodeId: item.nodeId,
+          timelineWindow: "full_history",
+        }),
+      );
+      continue;
+    }
+    const previousRulesFingerprint = previousItem.analysisRulesFingerprint;
+    if (
+      previousRulesFingerprint.status === "unavailable" ||
+      previousRulesFingerprint.fingerprint !== currentAnalysisRulesFingerprints[item.type]
+    ) {
+      changedItems.push(
+        Object.freeze({
+          nodeId: item.nodeId,
+          timelineWindow: "full_history",
+        }),
+      );
+      continue;
+    }
+    if (itemFingerprintChanged) {
+      changedItems.push(
+        Object.freeze({
+          nodeId: item.nodeId,
+          timelineWindow: "incremental",
+        }),
+      );
+    }
+  }
+  return Object.freeze(changedItems);
 }
 
-function selectDetailItemNodeIds(
-  changedItemNodeIds: readonly GitHubNodeId[],
+function selectDetailTargets(
+  changedItems: readonly ChangedItem[],
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>,
-): readonly GitHubNodeId[] {
-  const detailItemNodeIds = new Set(changedItemNodeIds);
+  previouslyAnalyzedItemNodeIds: ReadonlySet<GitHubNodeId>,
+  defaultEventWindow: GitHubItemDetailEventWindow,
+): readonly IncrementalItemDetailTarget[] {
+  const fullHistoryEventWindow = Object.freeze({
+    mode: "initial",
+  }) satisfies GitHubItemDetailEventWindow;
+  const detailTargetsByNodeId = new Map<GitHubNodeId, IncrementalItemDetailTarget>();
+  for (const item of changedItems) {
+    detailTargetsByNodeId.set(
+      item.nodeId,
+      Object.freeze({
+        nodeId: item.nodeId,
+        eventWindow:
+          item.timelineWindow === "full_history" ? fullHistoryEventWindow : defaultEventWindow,
+      }),
+    );
+  }
   const sortedAdjacentItemNodeIds = [...adjacentItemNodeIds].sort(compareNodeIds);
   for (const nodeId of sortedAdjacentItemNodeIds) {
-    detailItemNodeIds.add(nodeId);
+    if (detailTargetsByNodeId.has(nodeId)) {
+      continue;
+    }
+    detailTargetsByNodeId.set(
+      nodeId,
+      Object.freeze({
+        nodeId,
+        eventWindow: previouslyAnalyzedItemNodeIds.has(nodeId)
+          ? defaultEventWindow
+          : fullHistoryEventWindow,
+      }),
+    );
   }
-  return Object.freeze([...detailItemNodeIds]);
+  return Object.freeze([...detailTargetsByNodeId.values()]);
+}
+
+function createPlanFields(
+  changedItems: readonly ChangedItem[],
+  adjacentItemNodeIds: ReadonlySet<GitHubNodeId>,
+  previouslyAnalyzedItemNodeIds: ReadonlySet<GitHubNodeId>,
+  defaultEventWindow: GitHubItemDetailEventWindow,
+  currentItemFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>,
+): IncrementalItemCollectionPlanFields {
+  return Object.freeze({
+    changedItemNodeIds: Object.freeze(changedItems.map((item) => item.nodeId)),
+    detailTargets: selectDetailTargets(
+      changedItems,
+      adjacentItemNodeIds,
+      previouslyAnalyzedItemNodeIds,
+      defaultEventWindow,
+    ),
+    currentItemFingerprints,
+  });
 }
 
 /** 変更項目と外部指定されたグラフ隣接nodeだけを詳細取得対象にする。 */
@@ -146,31 +237,40 @@ export function planIncrementalItemCollection(
 ): IncrementalItemCollectionPlan {
   validateOverlapMilliseconds(options.overlapMilliseconds);
   const currentItemFingerprints = createCurrentFingerprints(options.items);
-  const changedItemNodeIds = selectChangedItemNodeIds(
+  const changedItems = selectChangedItems(
     options.items,
     options.previous,
     options.previouslyAnalyzedItemNodeIds,
     options.currentAnalysisRulesFingerprints,
   );
-  const detailItemNodeIds = selectDetailItemNodeIds(
-    changedItemNodeIds,
-    options.adjacentItemNodeIds,
-  );
-  const fields = {
-    changedItemNodeIds,
-    detailItemNodeIds,
-    currentItemFingerprints,
-  } satisfies IncrementalItemCollectionPlanFields;
 
   if (options.previous.status === "none") {
+    const fields = createPlanFields(
+      changedItems,
+      options.adjacentItemNodeIds,
+      options.previouslyAnalyzedItemNodeIds,
+      Object.freeze({ mode: "initial" }),
+      currentItemFingerprints,
+    );
     return Object.freeze({
       mode: "initial",
       ...fields,
     });
   }
+  const since = calculateSince(options.previous.completedAt, options.overlapMilliseconds);
+  const fields = createPlanFields(
+    changedItems,
+    options.adjacentItemNodeIds,
+    options.previouslyAnalyzedItemNodeIds,
+    Object.freeze({
+      mode: "incremental",
+      since,
+    }),
+    currentItemFingerprints,
+  );
   return Object.freeze({
     mode: "incremental",
-    since: calculateSince(options.previous.completedAt, options.overlapMilliseconds),
+    since,
     ...fields,
   });
 }

@@ -110,6 +110,13 @@ describe("正規化イベント", () => {
         const target = event.target.type === "node" ? event.target.nodeId : event.target.url;
         return `${event.relationType}:${target}:${event.action}:${event.provenance}:${event.direction}`;
       }
+      case "ready_for_review":
+      case "converted_to_draft":
+      case "added_to_merge_queue":
+      case "removed_from_merge_queue":
+      case "auto_merge_enabled":
+      case "auto_merge_disabled":
+        return event.kind;
     }
   }
 

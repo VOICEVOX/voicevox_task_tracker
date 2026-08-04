@@ -279,6 +279,17 @@ type NormalizedRelationEvent = NormalizedEventBase &
     direction: "from_item" | "to_item";
   }>;
 
+type NormalizedPullRequestLifecycleEvent = NormalizedEventBase &
+  Readonly<{
+    kind:
+      | "ready_for_review"
+      | "converted_to_draft"
+      | "added_to_merge_queue"
+      | "removed_from_merge_queue"
+      | "auto_merge_enabled"
+      | "auto_merge_disabled";
+  }>;
+
 /** 安定したsource IDと変更種別ごとの内容を持つ正規化イベント。 */
 export type NormalizedEvent =
   | NormalizedCommentEvent
@@ -288,7 +299,8 @@ export type NormalizedEvent =
   | NormalizedLabelEvent
   | NormalizedAssigneeEvent
   | NormalizedStateEvent
-  | NormalizedRelationEvent;
+  | NormalizedRelationEvent
+  | NormalizedPullRequestLifecycleEvent;
 
 /** 根拠が支持する判定箇所。 */
 export type EvidenceSupport =

@@ -16,6 +16,7 @@ export type FreshObservedGitHubItemBase = Readonly<{
   freshness: "fresh";
   sourceId: SourceId;
   nodeId: GitHubNodeId;
+  createdAt: UtcIsoDateTime;
   author: ObservedGitHubItemAuthor;
   assignees: readonly GitHubAccountActor[];
   events: readonly NormalizedEvent[];
@@ -139,6 +140,45 @@ export type ObservedGitHubMergeQueue =
       status: "not_queued";
     }>;
 
+/** check runの完了結果。 */
+export type ObservedGitHubCheckRunConclusion =
+  | "action_required"
+  | "cancelled"
+  | "failure"
+  | "neutral"
+  | "skipped"
+  | "stale"
+  | "startup_failure"
+  | "success"
+  | "timed_out";
+
+type ObservedGitHubHeadCheckRunContext = Readonly<{
+  type: "check_run";
+  sourceId: SourceId;
+}> &
+  (
+    | Readonly<{
+        status: "completed";
+        conclusion: ObservedGitHubCheckRunConclusion;
+        completedAt: UtcIsoDateTime;
+      }>
+    | Readonly<{
+        status: "queued" | "in_progress" | "waiting" | "requested" | "pending";
+        conclusion: "not_completed";
+        completedAt: null;
+      }>
+  );
+
+/** Pull Request判定に使うhead commitのcheck context観測値。 */
+export type ObservedGitHubHeadCheckContext =
+  | ObservedGitHubHeadCheckRunContext
+  | Readonly<{
+      type: "commit_status";
+      sourceId: SourceId;
+      state: "error" | "expected" | "failure" | "pending" | "success";
+      createdAt: UtcIsoDateTime;
+    }>;
+
 /** Pull Request判定に使うcheck観測値。 */
 export type ObservedGitHubHeadChecks =
   | Readonly<{
@@ -149,9 +189,7 @@ export type ObservedGitHubHeadChecks =
       sourceId: SourceId;
       nodeId: GitHubNodeId;
       combinedState: "error" | "expected" | "failure" | "pending" | "success";
-      contexts: readonly Readonly<{
-        sourceId: SourceId;
-      }>[];
+      contexts: readonly ObservedGitHubHeadCheckContext[];
     }>;
 
 /** Pull Request判定に使うmerge情報の観測値。 */
@@ -169,7 +207,6 @@ export type FreshObservedGitHubPullRequest = FreshObservedGitHubItemBase &
   ObservedGitHubItemState &
   Readonly<{
     type: "pull_request";
-    createdAt: UtcIsoDateTime;
     draft: boolean;
     headSha: string;
     headCommit: ObservedGitHubPullRequestCommit;

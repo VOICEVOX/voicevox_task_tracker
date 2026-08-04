@@ -49,6 +49,7 @@ import {
   MemoryStateBranchAdapter,
   parseStateHistoryRecords,
   parseStateSnapshot,
+  serializeStateSnapshot,
   StatePersistenceSession,
   type StateSnapshot,
 } from "../src/persistence/index.js";
@@ -87,8 +88,10 @@ interface RepositoryFixture {
 }
 
 type DetailCall = Readonly<{
-  nodeIds: readonly GitHubNodeId[];
-  eventWindow: GitHubItemDetailEventWindow;
+  targets: readonly Readonly<{
+    nodeId: GitHubNodeId;
+    eventWindow: GitHubItemDetailEventWindow;
+  }>[];
 }>;
 
 function createRepository(id: string, name: string, observedAt: string): Repository {
@@ -331,6 +334,7 @@ function createFailedCheckPullRequestDetail(
             name: "test",
             status: "completed",
             conclusion: "failure",
+            completedAt: observedAt,
           }),
         ]),
       }),
@@ -429,7 +433,11 @@ function createNativeBlocker(
       type: blocker.type,
       number: blocker.number,
       url: blocker.url,
-      state: blocker.state,
+      createdAt: blocker.createdAt,
+      state:
+        blocker.type === "pull_request" && blocker.mergeStatus === "merged"
+          ? "merged"
+          : blocker.state,
     }),
   });
 }
@@ -457,6 +465,7 @@ function createReferencedItem(item: EnumeratedGitHubItem): GitHubReferencedItem 
     type: item.type,
     number: item.number,
     url: item.url,
+    createdAt: item.createdAt,
     state: item.type === "pull_request" && item.mergeStatus === "merged" ? "merged" : item.state,
   });
 }
@@ -553,6 +562,7 @@ function createExternalNativeBlocker(
       type: "issue",
       number: 42,
       url: "https://github.com/external-owner/external-repository/issues/42",
+      createdAt: blocked.createdAt,
       state: options.state,
     }),
   });
@@ -670,6 +680,29 @@ function requireCollectionItem(
     throw new TypeError(`snapshotの収集項目がありません。対象: ${nodeId}`);
   }
   return item;
+}
+
+async function replaceStateSnapshot(
+  adapter: MemoryStateBranchAdapter,
+  snapshot: StateSnapshot,
+  committedAt: UtcIsoDateTime,
+): Promise<void> {
+  const head = await adapter.resolveHead("tracker-state");
+  if (head.status !== "present") {
+    throw new TypeError("置換対象のstate branchがありません");
+  }
+  await adapter.commit({
+    branch: "tracker-state",
+    expectedHead: head,
+    updates: [
+      {
+        path: "state/snapshot.json",
+        bytes: new TextEncoder().encode(serializeStateSnapshot(snapshot)),
+      },
+    ],
+    message: "停滞起点の保存値を置き換えるfixture",
+    committedAt,
+  });
 }
 
 function createCodexOutput(
@@ -829,11 +862,18 @@ function createCollectionHarness(
     collectGitHubItemDetails: (input) => {
       detailCalls.push(
         Object.freeze({
-          nodeIds: Object.freeze(input.items.map((item) => item.nodeId)),
-          eventWindow: input.eventWindow,
+          targets: Object.freeze(
+            input.targets.map((target) =>
+              Object.freeze({
+                nodeId: target.item.nodeId,
+                eventWindow: target.eventWindow,
+              }),
+            ),
+          ),
         }),
       );
-      const items = input.items.map((item) => {
+      const items = input.targets.map((target) => {
+        const item = target.item;
         const fixture = fixturesByRepositoryId.get(item.repositoryId);
         const detail = fixture?.details.get(item.nodeId);
         if (detail == null) {
@@ -1373,6 +1413,8 @@ describe("本番収集の接続", () => {
     expect(result.exitCode).toBe(0);
     expect(trackedItem).toMatchObject({
       status: "blocked",
+      statusSince: blocked.createdAt,
+      ownerSince: blocked.createdAt,
       waitingOn: [
         {
           candidateId: blocker.nodeId,
@@ -1524,32 +1566,32 @@ describe("本番収集の接続", () => {
       {
         provenance: "explicit_text",
         confidence: 0.7,
-        firstSeenAt: FIRST_RUN_AT,
+        firstSeenAt: blocked.createdAt,
       },
       {
         provenance: "native",
         confidence: 1,
-        firstSeenAt: SECOND_RUN_AT,
+        firstSeenAt: changedBlocked.createdAt,
       },
     ]);
     expect(trackedItem).toMatchObject({
       status: "blocked",
-      statusSince: FIRST_RUN_AT,
+      statusSince: changedBlocked.createdAt,
       primaryWaitingOn: {
         index: 0,
       },
       waitingOn: [
         {
-          candidateId: blocker.nodeId,
-          role: "dependency",
-          confidence: 1,
-          sourceIds,
-        },
-        {
           candidateId: otherBlocker.nodeId,
           role: "dependency",
           confidence: 1,
           sourceIds: [otherNativeDependency.sourceId],
+        },
+        {
+          candidateId: blocker.nodeId,
+          role: "dependency",
+          confidence: 1,
+          sourceIds,
         },
       ],
     });
@@ -1989,6 +2031,7 @@ describe("本番収集の接続", () => {
       type: source.type,
       number: source.number,
       url: source.url,
+      createdAt: source.createdAt,
       state: source.state,
     } satisfies GitHubReferencedItem);
     const eventNodeId = createGitHubNodeId("CRE_inbound_reference");
@@ -2125,9 +2168,9 @@ describe("本番収集の接続", () => {
 
     expect(result.exitCode).toBe(0);
     expect(harness.individualCalls).toEqual([[secondReferenced.nodeId]]);
-    expect(harness.detailCalls.map((call) => call.nodeIds)).toContainEqual([
-      secondReferenced.nodeId,
-    ]);
+    expect(
+      harness.detailCalls.map((call) => call.targets.map((target) => target.nodeId)),
+    ).toContainEqual([secondReferenced.nodeId]);
     expect(snapshot.items.map((item) => item.nodeId)).toEqual(
       expect.arrayContaining([secondTracked.nodeId, secondReferenced.nodeId]),
     );
@@ -2766,10 +2809,13 @@ describe("本番収集の接続", () => {
 
     expect(result.exitCode).toBe(0);
     expect(harness.individualCalls).toEqual([]);
-    expect(harness.detailCalls.map((call) => call.nodeIds)).toEqual([
+    expect(harness.detailCalls.map((call) => call.targets.map((target) => target.nodeId))).toEqual([
       [secondTracked.nodeId],
       [secondReferenced.nodeId],
     ]);
+    expect(harness.detailCalls[1]?.targets[0]?.eventWindow).toEqual({
+      mode: "initial",
+    });
     expect(snapshot.items.map((item) => item.nodeId)).toEqual(
       expect.arrayContaining([secondTracked.nodeId, secondReferenced.nodeId]),
     );
@@ -2820,7 +2866,7 @@ describe("本番収集の接続", () => {
     });
   });
 
-  it("all-open backfillで未変更かつ前回未追跡の項目を詳細取得して追加する", async () => {
+  it("all-open backfillで未変更かつ前回未追跡の項目を全履歴取得して追加する", async () => {
     const repository = createRepository("R_all_open_unchanged", "all-open-unchanged", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
@@ -2864,11 +2910,14 @@ describe("本番収集の接続", () => {
     expect(result.exitCode).toBe(0);
     expect(harness.detailCalls).toEqual([
       {
-        nodeIds: [item.nodeId],
-        eventWindow: {
-          mode: "incremental",
-          since: "2026-07-31T23:55:00.000Z",
-        },
+        targets: [
+          {
+            nodeId: item.nodeId,
+            eventWindow: {
+              mode: "initial",
+            },
+          },
+        ],
       },
     ]);
     expect(snapshot.items.map((candidate) => candidate.nodeId)).toContain(item.nodeId);
@@ -2952,13 +3001,95 @@ describe("本番収集の接続", () => {
     expect(secondResult).toMatchObject({ exitCode: 0 });
     expect(harness.detailCalls).toHaveLength(1);
     expect(harness.detailCalls[0]).toEqual({
-      nodeIds: [firstItems[0]?.nodeId, changed.nodeId, blocker.nodeId],
-      eventWindow: {
-        mode: "incremental",
-        since: "2026-07-31T23:55:00.000Z",
-      },
+      targets: [first, changed, blocker].map((item) => ({
+        nodeId: item.nodeId,
+        eventWindow: {
+          mode: "incremental",
+          since: "2026-07-31T23:55:00.000Z",
+        },
+      })),
     });
     expect(requireDryRunSnapshot(harness.artifacts).items).toHaveLength(4);
+  });
+
+  it("判定規則変更項目と初回判定のupdated_at変更項目を全履歴で収集する", async () => {
+    const repository = createRepository("R_mixed_windows", "mixed-windows", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const firstTracked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "tracked-v1",
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const firstUntracked = createOldIssueItem(publicRepository, 2, "untracked-v1", firstObservedAt);
+    fixture.openItems = [firstTracked, firstUntracked];
+    setIssueDetails(fixture, fixture.openItems, firstObservedAt);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    harness.detailCalls.length = 0;
+    const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
+    const secondTracked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "tracked-v1",
+      updatedAt: firstObservedAt,
+      observedAt: secondObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const secondUntracked = replaceCreatedAt(
+      createIssueItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "untracked-v2",
+        updatedAt: secondObservedAt,
+        observedAt: secondObservedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      createUtcIsoDateTime(OLD_ITEM_AT),
+    );
+    fixture.openItems = [secondTracked, secondUntracked];
+    setIssueDetails(fixture, fixture.openItems, secondObservedAt);
+    harness.setConfig(
+      Object.freeze({
+        ...config,
+        ai: Object.freeze({
+          ...config.ai,
+          promptVersion: "mixed-windows-v2",
+        }),
+      }),
+    );
+
+    const result = await harness.runDry(SECOND_RUN_AT);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.detailCalls).toEqual([
+      {
+        targets: [
+          {
+            nodeId: secondTracked.nodeId,
+            eventWindow: {
+              mode: "initial",
+            },
+          },
+          {
+            nodeId: secondUntracked.nodeId,
+            eventWindow: {
+              mode: "initial",
+            },
+          },
+        ],
+      },
+    ]);
   });
 
   it("503のrepositoryを前回値と最終成功時刻付きstaleとして保持して通知から除外する", async () => {
@@ -3037,7 +3168,13 @@ describe("本番収集の接続", () => {
       },
       result: {
         notificationSelection: {
-          candidates: [],
+          candidates: [
+            {
+              itemNodeId: firstItem.nodeId,
+              reasonCode: "blocker_overdue",
+              severity: "critical",
+            },
+          ],
         },
       },
     });
@@ -3163,7 +3300,7 @@ describe("本番収集の接続", () => {
 
     expect(result.exitCode).toBe(0);
     expect(harness.individualCalls).toContainEqual([item.url]);
-    expect(harness.detailCalls[0]?.nodeIds).toEqual([item.nodeId]);
+    expect(harness.detailCalls[0]?.targets.map((target) => target.nodeId)).toEqual([item.nodeId]);
     expect(snapshot.items[0]).toMatchObject({
       nodeId: item.nodeId,
       state: "closed",
@@ -3312,14 +3449,17 @@ describe("本番収集の接続", () => {
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
     const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
-    const item = createIssueItem({
-      repository: publicRepository,
-      number: 1,
-      fingerprint: "unchanged",
-      updatedAt: firstObservedAt,
-      observedAt: firstObservedAt,
-      state: Object.freeze({ state: "open" }),
-    });
+    const item = replaceCreatedAt(
+      createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "unchanged",
+        updatedAt: firstObservedAt,
+        observedAt: firstObservedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      firstObservedAt,
+    );
     fixture.openItems = [item];
     setIssueDetails(fixture, [item], firstObservedAt);
     const config = await createTestConfig({
@@ -3339,14 +3479,17 @@ describe("本番収集の接続", () => {
     expect(firstSnapshot.items[0]?.severity).toBe("none");
 
     fixture.openItems = [
-      createIssueItem({
-        repository: publicRepository,
-        number: 1,
-        fingerprint: "unchanged",
-        updatedAt: firstObservedAt,
-        observedAt: createUtcIsoDateTime(THIRD_RUN_AT),
-        state: Object.freeze({ state: "open" }),
-      }),
+      replaceCreatedAt(
+        createIssueItem({
+          repository: publicRepository,
+          number: 1,
+          fingerprint: "unchanged",
+          updatedAt: firstObservedAt,
+          observedAt: createUtcIsoDateTime(THIRD_RUN_AT),
+          state: Object.freeze({ state: "open" }),
+        }),
+        firstObservedAt,
+      ),
     ];
     harness.detailCalls.length = 0;
     harness.artifacts.length = 0;
@@ -3465,7 +3608,13 @@ describe("本番収集の接続", () => {
     expect(harness.artifacts.at(-1)).toMatchObject({
       result: {
         notificationSelection: {
-          candidates: [],
+          candidates: [
+            {
+              itemNodeId: target.nodeId,
+              reasonCode: "triage_overdue",
+              severity: "critical",
+            },
+          ],
         },
       },
     });
@@ -4218,6 +4367,487 @@ describe("本番判定入力の接続", () => {
     expect(infrastructureItem?.status).not.toBe("waiting_for_author");
   });
 
+  it("同じGitHubデータなら前回stateなしの走査時刻が数ヶ月違っても全項目の停滞起点が一致する", async () => {
+    const githubSignalAt = createUtcIsoDateTime("2026-07-20T12:00:00.000Z");
+    const runAt = async (
+      startedAt: string,
+    ): Promise<
+      readonly Readonly<{
+        nodeId: GitHubNodeId;
+        type: "issue" | "pull_request";
+        status: StateSnapshot["items"][number]["status"];
+        statusSince: UtcIsoDateTime;
+        ownerSince: UtcIsoDateTime;
+        stallSince: UtcIsoDateTime;
+      }>[]
+    > => {
+      const observedAt = createUtcIsoDateTime(startedAt);
+      const repository = createRepository(
+        "R_deterministic_stall_since",
+        "deterministic-stall-since",
+        startedAt,
+      );
+      const publicRepository = requirePublicRepository(repository);
+      const fixture = createRepositoryFixture(repository);
+      const unassignedIssue = createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "deterministic-unassigned",
+        updatedAt: githubSignalAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      const blockedIssue = createIssueItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "deterministic-blocked",
+        updatedAt: githubSignalAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      const draftPullRequestBase = createPullRequestItem({
+        repository: publicRepository,
+        number: 3,
+        fingerprint: "deterministic-draft",
+        updatedAt: githubSignalAt,
+        observedAt,
+      });
+      if (draftPullRequestBase.type !== "pull_request") {
+        throw new TypeError("決定論性fixtureのdraftがPull Requestではありません");
+      }
+      const draftPullRequest = Object.freeze({
+        ...draftPullRequestBase,
+        draft: true,
+      });
+      const failedCheckPullRequest = createPullRequestItem({
+        repository: publicRepository,
+        number: 4,
+        fingerprint: "deterministic-failed-check",
+        updatedAt: githubSignalAt,
+        observedAt,
+      });
+      const conflictingPullRequest = createPullRequestItem({
+        repository: publicRepository,
+        number: 5,
+        fingerprint: "deterministic-conflict",
+        updatedAt: githubSignalAt,
+        observedAt,
+      });
+      const reviewWaitingPullRequest = createPullRequestItem({
+        repository: publicRepository,
+        number: 6,
+        fingerprint: "deterministic-review-waiting",
+        updatedAt: githubSignalAt,
+        observedAt,
+      });
+      const pendingCheckPullRequest = createPullRequestItem({
+        repository: publicRepository,
+        number: 7,
+        fingerprint: "deterministic-pending-check",
+        updatedAt: githubSignalAt,
+        observedAt,
+      });
+      const items = [
+        unassignedIssue,
+        blockedIssue,
+        draftPullRequest,
+        failedCheckPullRequest,
+        conflictingPullRequest,
+        reviewWaitingPullRequest,
+        pendingCheckPullRequest,
+      ];
+      fixture.openItems = items;
+      fixture.details.set(
+        unassignedIssue.nodeId,
+        createIssueDetail({
+          item: unassignedIssue,
+          body: "未アサインのIssueです",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+      );
+      fixture.details.set(
+        blockedIssue.nodeId,
+        createIssueDetail({
+          item: blockedIssue,
+          body: "draft Pull Requestの完了を待ちます",
+          observedAt,
+          nativeDependencies: Object.freeze([createNativeBlocker(blockedIssue, draftPullRequest)]),
+          duplicateComments: false,
+        }),
+      );
+      const createDetailWithoutChecks = (
+        item: EnumeratedGitHubItem,
+        mergeability: Extract<
+          GitHubItemDetail,
+          Readonly<{ type: "pull_request" }>
+        >["mergeState"]["mergeability"],
+        mergeState: Extract<
+          GitHubItemDetail,
+          Readonly<{ type: "pull_request" }>
+        >["mergeState"]["mergeState"],
+      ): Extract<GitHubItemDetail, Readonly<{ type: "pull_request" }>> => {
+        const detail = createFailedCheckPullRequestDetail(item, githubSignalAt);
+        return Object.freeze({
+          ...detail,
+          mergeState: Object.freeze({
+            ...detail.mergeState,
+            mergeability,
+            mergeState,
+            checks: Object.freeze({
+              status: "not_configured",
+            }),
+          }),
+          observedAt,
+        });
+      };
+      fixture.details.set(
+        draftPullRequest.nodeId,
+        createDetailWithoutChecks(draftPullRequest, "unknown", "draft"),
+      );
+      fixture.details.set(
+        failedCheckPullRequest.nodeId,
+        Object.freeze({
+          ...createFailedCheckPullRequestDetail(failedCheckPullRequest, githubSignalAt),
+          observedAt,
+        }),
+      );
+      fixture.details.set(
+        conflictingPullRequest.nodeId,
+        createDetailWithoutChecks(conflictingPullRequest, "conflicting", "dirty"),
+      );
+      const reviewRequestSourceId = buildSourceId(
+        "github_review_request",
+        reviewWaitingPullRequest.nodeId,
+      );
+      const reviewRequestNodeId = createGitHubNodeId(`RR_${reviewWaitingPullRequest.nodeId}`);
+      const reviewerNodeId = createGitHubNodeId("U_deterministic_reviewer");
+      const reviewWaitingDetail = createDetailWithoutChecks(
+        reviewWaitingPullRequest,
+        "mergeable",
+        "blocked",
+      );
+      fixture.details.set(
+        reviewWaitingPullRequest.nodeId,
+        Object.freeze({
+          ...reviewWaitingDetail,
+          reviewRequests: Object.freeze({
+            current: Object.freeze([
+              Object.freeze({
+                sourceId: reviewRequestSourceId,
+                nodeId: reviewRequestNodeId,
+                target: Object.freeze({
+                  type: "user",
+                  sourceId: buildSourceId("github_user", reviewerNodeId),
+                  nodeId: reviewerNodeId,
+                  login: "deterministic-reviewer",
+                  apiType: "User",
+                }),
+                requestedAt: Object.freeze({
+                  status: "unavailable",
+                  reason: "timeline_event_not_found",
+                }),
+              }),
+            ]),
+            history: Object.freeze([]),
+          }),
+        }),
+      );
+      const pendingCheckDetail = createFailedCheckPullRequestDetail(
+        pendingCheckPullRequest,
+        githubSignalAt,
+      );
+      if (pendingCheckDetail.mergeState.checks.status !== "configured") {
+        throw new TypeError("決定論性fixtureのrequired checksがありません");
+      }
+      fixture.details.set(
+        pendingCheckPullRequest.nodeId,
+        Object.freeze({
+          ...pendingCheckDetail,
+          mergeState: Object.freeze({
+            ...pendingCheckDetail.mergeState,
+            mergeState: "unstable",
+            checks: Object.freeze({
+              ...pendingCheckDetail.mergeState.checks,
+              combinedState: "pending",
+              contexts: Object.freeze(
+                pendingCheckDetail.mergeState.checks.contexts.map((context) => {
+                  if (context.type !== "check_run") {
+                    throw new TypeError("決定論性fixtureのcheck runを取得できません");
+                  }
+                  return Object.freeze({
+                    ...context,
+                    status: "in_progress",
+                    conclusion: "not_completed",
+                    completedAt: null,
+                  });
+                }),
+              ),
+            }),
+          }),
+          observedAt,
+        }),
+      );
+      const config = await createTestConfig({
+        explicitIncludes: [],
+        retentionDays: 180,
+        aiEnabled: true,
+      });
+      const harness = createCollectionHarness({
+        repositories: [fixture],
+        config,
+        executeCodexAnalysis: (input) => {
+          const failedCheck = input.item.nodeId === failedCheckPullRequest.nodeId;
+          const basisSource = input.sources.find((source) =>
+            failedCheck ? source.kind === "check_run" : source.kind === "body",
+          );
+          if (basisSource == null) {
+            throw new TypeError("決定論性fixtureのCodex根拠sourceがありません");
+          }
+          return Promise.resolve(
+            createCodexOutput(input, {
+              status: "waiting_for_author",
+              waitingOn: {
+                candidateId: input.item.authorCandidateId,
+                kind: "user",
+                role: "author",
+                sourceId: basisSource.id,
+              },
+              latestMeaningfulSourceId: null,
+              confidence: failedCheck ? 0.95 : 0.1,
+              relationVerdict: "related",
+              notification: {
+                recommended: false,
+                reasonCode: "none",
+                reasonSummary: "通知しません",
+              },
+            }),
+          );
+        },
+      });
+
+      const result = await harness.runDaily(startedAt);
+      const files = await harness.stateAdapter.readBranchFiles("tracker-state");
+      const snapshotSource = files.get("state/snapshot.json");
+      if (snapshotSource == null) {
+        throw new TypeError("決定論性検証のsnapshotがありません");
+      }
+      const snapshot = parseStateSnapshot(new TextDecoder().decode(snapshotSource));
+
+      expect(result.exitCode).toBe(0);
+      expect(harness.codexInputs.map((input) => input.item.nodeId)).toEqual([
+        unassignedIssue.nodeId,
+        failedCheckPullRequest.nodeId,
+      ]);
+      expect(snapshot.items).toHaveLength(items.length);
+      expect(snapshot.items).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ nodeId: unassignedIssue.nodeId, status: "new_untriaged" }),
+          expect.objectContaining({ nodeId: blockedIssue.nodeId, status: "blocked" }),
+          expect.objectContaining({ nodeId: draftPullRequest.nodeId, status: "in_progress" }),
+          expect.objectContaining({
+            nodeId: failedCheckPullRequest.nodeId,
+            status: "waiting_for_author",
+          }),
+          expect.objectContaining({
+            nodeId: conflictingPullRequest.nodeId,
+            status: "waiting_for_author",
+          }),
+          expect.objectContaining({
+            nodeId: reviewWaitingPullRequest.nodeId,
+            status: "waiting_for_review",
+          }),
+          expect.objectContaining({
+            nodeId: pendingCheckPullRequest.nodeId,
+            status: "waiting_for_automation",
+          }),
+        ]),
+      );
+      return Object.freeze(
+        snapshot.items
+          .map((item) =>
+            Object.freeze({
+              nodeId: item.nodeId,
+              type: item.type,
+              status: item.status,
+              statusSince: item.statusSince,
+              ownerSince: item.ownerSince,
+              stallSince: item.stallSince,
+            }),
+          )
+          .toSorted((left, right) => left.nodeId.localeCompare(right.nodeId)),
+      );
+    };
+
+    const first = await runAt(FIRST_RUN_AT);
+    const second = await runAt("2027-02-01T00:00:00.000Z");
+
+    expect(
+      second,
+      "同じGitHubデータを前回stateなしで走査したのに、run開始時刻の違いでstatusSince、ownerSince、stallSinceが変わりました。観測時刻が停滞起点へ混入しています。",
+    ).toEqual(first);
+  });
+
+  it("check source時刻とCodex由来basisをrun開始時刻に依存させない", async () => {
+    const headPushedAt = createUtcIsoDateTime("2026-07-30T12:00:00.000Z");
+    const checkCompletedAt = createUtcIsoDateTime("2026-07-31T18:00:00.000Z");
+    const runAt = async (
+      startedAt: string,
+    ): Promise<
+      Readonly<{
+        input: CodexAnalysisInput;
+        item: StateSnapshot["items"][number];
+      }>
+    > => {
+      const repository = createRepository(
+        "R_deterministic_codex",
+        "deterministic-codex",
+        startedAt,
+      );
+      const publicRepository = requirePublicRepository(repository);
+      const fixture = createRepositoryFixture(repository);
+      const item = createPullRequestItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "deterministic-codex",
+        updatedAt: checkCompletedAt,
+        observedAt: checkCompletedAt,
+      });
+      const detail = createFailedCheckPullRequestDetail(item, headPushedAt);
+      if (detail.mergeState.checks.status !== "configured") {
+        throw new TypeError("決定論的Codex fixtureのcheckがありません");
+      }
+      const completedContexts = detail.mergeState.checks.contexts.map((context) => {
+        if (context.type !== "check_run" || context.status !== "completed") {
+          throw new TypeError("決定論的Codex fixtureに完了済みcheck run以外があります");
+        }
+        return Object.freeze({
+          ...context,
+          completedAt: checkCompletedAt,
+        });
+      });
+      const pendingContext = Object.freeze({
+        type: "check_run",
+        sourceId: buildSourceId("github_check_run", `${item.nodeId}:pending`),
+        nodeId: createGitHubNodeId(`CHECK_${item.nodeId}_pending`),
+        name: "pending-test",
+        status: "in_progress",
+        conclusion: "not_completed",
+        completedAt: null,
+      });
+      fixture.openItems = [item];
+      fixture.details.set(
+        item.nodeId,
+        Object.freeze({
+          ...detail,
+          mergeState: Object.freeze({
+            ...detail.mergeState,
+            checks: Object.freeze({
+              ...detail.mergeState.checks,
+              contexts: Object.freeze([...completedContexts, pendingContext]),
+            }),
+          }),
+          observedAt: checkCompletedAt,
+        }),
+      );
+      const config = await createTestConfig({
+        explicitIncludes: [],
+        retentionDays: 180,
+        aiEnabled: true,
+      });
+      const harness = createCollectionHarness({
+        repositories: [fixture],
+        config,
+        executeCodexAnalysis: (input) => {
+          const checkSource = input.sources.find((source) => source.kind === "check_run");
+          if (checkSource == null) {
+            throw new TypeError("決定論的Codex fixtureのcheck sourceがありません");
+          }
+          return Promise.resolve(
+            createCodexOutput(input, {
+              status: "waiting_for_author",
+              waitingOn: {
+                candidateId: input.item.authorCandidateId,
+                kind: "user",
+                role: "author",
+                sourceId: checkSource.id,
+              },
+              latestMeaningfulSourceId: null,
+              confidence: 0.95,
+              relationVerdict: "related",
+              notification: {
+                recommended: false,
+                reasonCode: "none",
+                reasonSummary: "通知しません",
+              },
+            }),
+          );
+        },
+      });
+
+      const result = await harness.runDry(startedAt);
+      const input = harness.codexInputs[0];
+      const trackedItem = requireDryRunSnapshot(harness.artifacts).items.find(
+        (candidate) => candidate.nodeId === item.nodeId,
+      );
+      if (input == null || trackedItem == null) {
+        throw new TypeError("決定論的Codex fixtureの結果がありません");
+      }
+      expect(result.exitCode).toBe(0);
+      return Object.freeze({ input, item: trackedItem });
+    };
+
+    const first = await runAt(SECOND_RUN_AT);
+    const second = await runAt(THIRD_RUN_AT);
+    const sourceTimes = (input: CodexAnalysisInput): Readonly<Record<string, string>> =>
+      Object.freeze(
+        Object.fromEntries(
+          input.sources
+            .filter(
+              (source) => source.kind === "required_check_rollup" || source.kind === "check_run",
+            )
+            .map((source) => {
+              if (source.kind !== "check_run") {
+                return [source.kind, source.createdAt];
+              }
+              const status = source["status"];
+              if (typeof status !== "string") {
+                throw new TypeError("check run sourceのstatusが文字列ではありません");
+              }
+              return [`check_run_${status}`, source.createdAt];
+            }),
+        ),
+      );
+    const transitionTimes = (item: StateSnapshot["items"][number]) =>
+      Object.freeze({
+        statusSince: item.statusSince,
+        ownerSince: item.ownerSince,
+        stallSince: item.stallSince,
+      });
+    const pendingCheckTime = (input: CodexAnalysisInput): string | undefined =>
+      input.sources.find(
+        (source) => source.kind === "check_run" && source["status"] === "in_progress",
+      )?.createdAt;
+
+    expect(first.input.now).toBe(SECOND_RUN_AT);
+    expect(second.input.now).toBe(THIRD_RUN_AT);
+    expect(sourceTimes(first.input)).toEqual({
+      required_check_rollup: checkCompletedAt,
+      check_run_completed: checkCompletedAt,
+      check_run_in_progress: headPushedAt,
+    });
+    expect(sourceTimes(second.input)).toEqual(sourceTimes(first.input));
+    expect(pendingCheckTime(first.input)).toBe(headPushedAt);
+    expect(pendingCheckTime(second.input)).toBe(headPushedAt);
+    expect(transitionTimes(first.item)).toEqual({
+      statusSince: checkCompletedAt,
+      ownerSince: checkCompletedAt,
+      stallSince: checkCompletedAt,
+    });
+    expect(transitionTimes(second.item)).toEqual(transitionTimes(first.item));
+  });
+
   it("primary blockerと全blockerと外部ghostをstateと公開DTOへ運ぶ", async () => {
     const repository = createRepository("R_blockers", "blockers", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
@@ -4377,7 +5007,7 @@ describe("本番判定入力の接続", () => {
     },
   );
 
-  it("prompt versionだけを変えた未変更項目を再解析する", async () => {
+  it("prompt versionだけを変えた未変更項目を再解析して保存済みの停滞起点を引き継ぐ", async () => {
     const repository = createRepository("R_identity_change", "identity-change", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
@@ -4407,7 +5037,7 @@ describe("本番判定入力の接続", () => {
         body: `入力は変更しません。関連項目は ${related.url} です`,
         observedAt,
         nativeDependencies: Object.freeze([]),
-        duplicateComments: true,
+        duplicateComments: false,
       }),
     );
     const config = await createTestConfig({
@@ -4451,18 +5081,37 @@ describe("本番判定入力の接続", () => {
     if (firstSnapshotSource == null) {
       throw new TypeError("実行identity変更前のsnapshotがありません");
     }
-    const firstCollectionItem = requireCollectionItem(
-      parseStateSnapshot(new TextDecoder().decode(firstSnapshotSource)),
-      item.nodeId,
-    );
+    const firstSnapshot = parseStateSnapshot(new TextDecoder().decode(firstSnapshotSource));
+    const firstCollectionItem = requireCollectionItem(firstSnapshot, item.nodeId);
     const firstFingerprint = firstCollectionItem.aiAnalysisFingerprint;
     const firstAnalysisRulesFingerprint = firstCollectionItem.analysisRulesFingerprint;
+    const firstDeterministicRulesVersion = firstCollectionItem.deterministicRulesVersion;
     if (firstFingerprint.status !== "available") {
       throw new TypeError("実行identity変更前のAI分析fingerprintがありません");
     }
     if (firstAnalysisRulesFingerprint.status !== "available") {
       throw new TypeError("実行identity変更前の判定規則fingerprintがありません");
     }
+    if (firstDeterministicRulesVersion.status !== "available") {
+      throw new TypeError("実行identity変更前の決定規則versionがありません");
+    }
+    const savedAt = createUtcIsoDateTime("2026-07-20T00:00:00.000Z");
+    const snapshotWithSavedTimes = createStateSnapshot({
+      ...firstSnapshot,
+      items: firstSnapshot.items.map((candidate) =>
+        candidate.nodeId === item.nodeId
+          ? {
+              ...candidate,
+              statusSince: savedAt,
+              ownerSince: savedAt,
+              stallSince: savedAt,
+              lastProgressAt: savedAt,
+              lastHumanActivityAt: savedAt,
+            }
+          : candidate,
+      ),
+    });
+    await replaceStateSnapshot(harness.stateAdapter, snapshotWithSavedTimes, observedAt);
     const firstExecutionCount = harness.codexExecutionCount();
     const firstItemExecutionCount = harness.codexInputs.filter(
       (input) => input.item.nodeId === item.nodeId,
@@ -4483,11 +5132,19 @@ describe("本番判定入力の接続", () => {
     const secondCollectionItem = requireCollectionItem(secondSnapshot, item.nodeId);
     const secondFingerprint = secondCollectionItem.aiAnalysisFingerprint;
     const secondAnalysisRulesFingerprint = secondCollectionItem.analysisRulesFingerprint;
+    const secondDeterministicRulesVersion = secondCollectionItem.deterministicRulesVersion;
     if (secondFingerprint.status !== "available") {
       throw new TypeError("実行identity変更後のAI分析fingerprintがありません");
     }
     if (secondAnalysisRulesFingerprint.status !== "available") {
       throw new TypeError("実行identity変更後の判定規則fingerprintがありません");
+    }
+    if (secondDeterministicRulesVersion.status !== "available") {
+      throw new TypeError("実行identity変更後の決定規則versionがありません");
+    }
+    const secondItem = secondSnapshot.items.find((candidate) => candidate.nodeId === item.nodeId);
+    if (secondItem == null) {
+      throw new TypeError("実行identity変更後の追跡項目がありません");
     }
     const metrics = z
       .object({
@@ -4527,6 +5184,324 @@ describe("本番判定入力の接続", () => {
     expect(secondAnalysisRulesFingerprint.fingerprint).not.toBe(
       firstAnalysisRulesFingerprint.fingerprint,
     );
+    expect(firstDeterministicRulesVersion.version).toBe(ISSUE_DETERMINISTIC_RULES_VERSION);
+    expect(secondDeterministicRulesVersion).toEqual(firstDeterministicRulesVersion);
+    expect({
+      statusSince: secondItem.statusSince,
+      ownerSince: secondItem.ownerSince,
+      stallSince: secondItem.stallSince,
+      lastProgressAt: secondItem.lastProgressAt,
+      lastHumanActivityAt: secondItem.lastHumanActivityAt,
+    }).toEqual({
+      statusSince: savedAt,
+      ownerSince: savedAt,
+      stallSince: savedAt,
+      lastProgressAt: savedAt,
+      lastHumanActivityAt: savedAt,
+    });
+  });
+
+  it.each([
+    Object.freeze({
+      description: "前回の決定規則versionが異なる場合",
+      previousRulesVersion: Object.freeze({
+        status: "available",
+        version: "issue-old-version",
+      }),
+      previousAnalysisRulesFingerprint: Object.freeze({
+        status: "available",
+        fingerprint: hashCanonicalJson({ rules: "old" }),
+      }),
+    }),
+    Object.freeze({
+      description: "前回の決定規則versionが未取得の場合",
+      previousRulesVersion: Object.freeze({
+        status: "unavailable",
+      }),
+      previousAnalysisRulesFingerprint: Object.freeze({
+        status: "unavailable",
+      }),
+    }),
+  ])(
+    "$descriptionは保存済みの停滞起点を引き継がない",
+    async ({ previousRulesVersion, previousAnalysisRulesFingerprint }) => {
+      const repository = createRepository("R_rules_change", "rules-change", FIRST_RUN_AT);
+      const publicRepository = requirePublicRepository(repository);
+      const fixture = createRepositoryFixture(repository);
+      const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+      const item = createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "rules-change",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      fixture.openItems = [item];
+      fixture.details.set(
+        item.nodeId,
+        createIssueDetail({
+          item,
+          body: "決定規則変更時の停滞起点を検証します",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+      );
+      const config = await createTestConfig({
+        explicitIncludes: [],
+        retentionDays: 180,
+        aiEnabled: false,
+      });
+      const harness = createCollectionHarness({ repositories: [fixture], config });
+
+      expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+      const firstFiles = await harness.stateAdapter.readBranchFiles("tracker-state");
+      const firstSnapshotSource = firstFiles.get("state/snapshot.json");
+      if (firstSnapshotSource == null) {
+        throw new TypeError("決定規則変更前のsnapshotがありません");
+      }
+      const firstSnapshot = parseStateSnapshot(new TextDecoder().decode(firstSnapshotSource));
+      const savedAt = createUtcIsoDateTime("2026-07-20T00:00:00.000Z");
+      const snapshotWithOldRules = createStateSnapshot({
+        ...firstSnapshot,
+        collection: {
+          repositories: firstSnapshot.collection.repositories.map((collectionRepository) => ({
+            ...collectionRepository,
+            items: collectionRepository.items.map((collectionItem) =>
+              collectionItem.nodeId === item.nodeId
+                ? {
+                    ...collectionItem,
+                    analysisRulesFingerprint: previousAnalysisRulesFingerprint,
+                    deterministicRulesVersion: previousRulesVersion,
+                  }
+                : collectionItem,
+            ),
+          })),
+        },
+        items: firstSnapshot.items.map((candidate) =>
+          candidate.nodeId === item.nodeId
+            ? {
+                ...candidate,
+                statusSince: savedAt,
+                ownerSince: savedAt,
+                stallSince: savedAt,
+                lastProgressAt: savedAt,
+                lastHumanActivityAt: savedAt,
+              }
+            : candidate,
+        ),
+      });
+      await replaceStateSnapshot(harness.stateAdapter, snapshotWithOldRules, observedAt);
+      harness.artifacts.length = 0;
+      harness.detailCalls.length = 0;
+
+      const result = await harness.runDry(SECOND_RUN_AT);
+      const secondSnapshot = requireDryRunSnapshot(harness.artifacts);
+      const secondItem = secondSnapshot.items.find((candidate) => candidate.nodeId === item.nodeId);
+      if (secondItem == null) {
+        throw new TypeError("決定規則変更後の追跡項目がありません");
+      }
+      const secondRulesVersion = requireCollectionItem(
+        secondSnapshot,
+        item.nodeId,
+      ).deterministicRulesVersion;
+
+      expect(result.exitCode).toBe(0);
+      expect(harness.detailCalls).toEqual([
+        {
+          targets: [
+            {
+              nodeId: item.nodeId,
+              eventWindow: {
+                mode: "initial",
+              },
+            },
+          ],
+        },
+      ]);
+      expect({
+        statusSince: secondItem.statusSince,
+        ownerSince: secondItem.ownerSince,
+        stallSince: secondItem.stallSince,
+        lastProgressAt: secondItem.lastProgressAt,
+        lastHumanActivityAt: secondItem.lastHumanActivityAt,
+      }).toEqual({
+        statusSince: item.createdAt,
+        ownerSince: item.createdAt,
+        stallSince: item.createdAt,
+        lastProgressAt: item.createdAt,
+        lastHumanActivityAt: item.createdAt,
+      });
+      expect(secondRulesVersion).toEqual({
+        status: "available",
+        version: ISSUE_DETERMINISTIC_RULES_VERSION,
+      });
+    },
+  );
+
+  it("複数blockerのcloseとmergeとedge消失による依存解消時刻をrun開始時刻に依存させない", async () => {
+    const issueClosedAt = createUtcIsoDateTime("2026-08-02T08:00:00.000Z");
+    const pullRequestMergedAt = createUtcIsoDateTime("2026-08-02T16:00:00.000Z");
+    const resolutionObservedAt = createUtcIsoDateTime("2026-08-03T00:00:00.000Z");
+    const runResolutionAt = async (
+      startedAt: string,
+    ): Promise<
+      Readonly<{
+        lastProgressAt: UtcIsoDateTime;
+        stallSince: UtcIsoDateTime;
+      }>
+    > => {
+      const repository = createRepository(
+        "R_deterministic_dependency",
+        "deterministic-dependency",
+        FIRST_RUN_AT,
+      );
+      const publicRepository = requirePublicRepository(repository);
+      const fixture = createRepositoryFixture(repository);
+      const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+      const blocked = createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "deterministic-blocked",
+        updatedAt: firstObservedAt,
+        observedAt: firstObservedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      const issueBlocker = createIssueItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "deterministic-issue-blocker-open",
+        updatedAt: firstObservedAt,
+        observedAt: firstObservedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      const pullRequestBlocker = createPullRequestItem({
+        repository: publicRepository,
+        number: 3,
+        fingerprint: "deterministic-pr-blocker-open",
+        updatedAt: firstObservedAt,
+        observedAt: firstObservedAt,
+      });
+      const edgeBlocker = createIssueItem({
+        repository: publicRepository,
+        number: 4,
+        fingerprint: "deterministic-edge-blocker",
+        updatedAt: firstObservedAt,
+        observedAt: firstObservedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      fixture.openItems = [blocked, issueBlocker, pullRequestBlocker, edgeBlocker];
+      setIssueDetails(fixture, [blocked, issueBlocker, edgeBlocker], firstObservedAt);
+      fixture.details.set(
+        pullRequestBlocker.nodeId,
+        createFailedCheckPullRequestDetail(pullRequestBlocker, firstObservedAt),
+      );
+      fixture.details.set(
+        blocked.nodeId,
+        createIssueDetail({
+          item: blocked,
+          body: "IssueとPull Requestの完了を待ちます",
+          observedAt: firstObservedAt,
+          nativeDependencies: Object.freeze([
+            createNativeBlocker(blocked, issueBlocker),
+            createNativeBlocker(blocked, pullRequestBlocker),
+            createNativeBlocker(blocked, edgeBlocker),
+          ]),
+          duplicateComments: false,
+        }),
+      );
+      const config = await createTestConfig({
+        explicitIncludes: [],
+        retentionDays: 180,
+        aiEnabled: false,
+      });
+      const harness = createCollectionHarness({ repositories: [fixture], config });
+      expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+
+      const currentBlocked = createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "deterministic-blocked",
+        updatedAt: firstObservedAt,
+        observedAt: resolutionObservedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      const closedIssueBlocker = createIssueItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "deterministic-issue-blocker-closed",
+        updatedAt: issueClosedAt,
+        observedAt: resolutionObservedAt,
+        state: Object.freeze({
+          state: "closed",
+          closedAt: issueClosedAt,
+        }),
+      });
+      const mergedPullRequestBlocker = createMergedPullRequestItem({
+        repository: publicRepository,
+        number: 3,
+        fingerprint: "deterministic-pr-blocker-merged",
+        mergedAt: pullRequestMergedAt,
+        observedAt: resolutionObservedAt,
+      });
+      const currentEdgeBlocker = createIssueItem({
+        repository: publicRepository,
+        number: 4,
+        fingerprint: "deterministic-edge-blocker",
+        updatedAt: firstObservedAt,
+        observedAt: resolutionObservedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      fixture.openItems = [currentBlocked, currentEdgeBlocker];
+      fixture.individualItems.set(closedIssueBlocker.nodeId, closedIssueBlocker);
+      fixture.individualItems.set(mergedPullRequestBlocker.nodeId, mergedPullRequestBlocker);
+      setIssueDetails(
+        fixture,
+        [currentBlocked, closedIssueBlocker, currentEdgeBlocker],
+        resolutionObservedAt,
+      );
+      fixture.details.set(
+        mergedPullRequestBlocker.nodeId,
+        createFailedCheckPullRequestDetail(mergedPullRequestBlocker, resolutionObservedAt),
+      );
+      fixture.details.set(
+        currentBlocked.nodeId,
+        createIssueDetail({
+          item: currentBlocked,
+          body: "IssueとPull Requestの完了を待ちます",
+          observedAt: resolutionObservedAt,
+          nativeDependencies: Object.freeze([
+            createNativeBlocker(currentBlocked, closedIssueBlocker),
+            createNativeBlocker(currentBlocked, mergedPullRequestBlocker),
+          ]),
+          duplicateComments: false,
+        }),
+      );
+      harness.artifacts.length = 0;
+
+      const result = await harness.runDry(startedAt);
+      const resolvedItem = requireDryRunSnapshot(harness.artifacts).items.find(
+        (item) => item.nodeId === blocked.nodeId,
+      );
+      if (resolvedItem == null) {
+        throw new TypeError("決定論的依存解消fixtureの追跡項目がありません");
+      }
+      expect(result.exitCode).toBe(0);
+      return Object.freeze({
+        lastProgressAt: resolvedItem.lastProgressAt,
+        stallSince: resolvedItem.stallSince,
+      });
+    };
+
+    const first = await runResolutionAt(THIRD_RUN_AT);
+    const second = await runResolutionAt(FOURTH_RUN_AT);
+
+    expect(first).toEqual({
+      lastProgressAt: pullRequestMergedAt,
+      stallSince: pullRequestMergedAt,
+    });
+    expect(second).toEqual(first);
   });
 
   it("inferred edge解消時に本文未変更の隣接項目を再分類する", async () => {
@@ -4706,7 +5681,7 @@ describe("本番判定入力の接続", () => {
       (input) => input.item.nodeId === blocked.nodeId,
     );
     expect(reclassified?.status).not.toBe("blocked");
-    expect(reclassified?.lastProgressAt).toBe(THIRD_RUN_AT);
+    expect(reclassified?.lastProgressAt).toBe(blocked.createdAt);
     expect(thirdSnapshot.relations).toContainEqual(
       expect.objectContaining({
         fromNodeId: blocker.nodeId,

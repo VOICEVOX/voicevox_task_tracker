@@ -21,6 +21,7 @@ export type ResolvedLabelEffects = Readonly<{
   priorityWeight: number;
   severityLift: number;
   requiresMaintainerDecision: boolean;
+  maintainerDecisionLabelNames: readonly string[];
   suppressNotifications: boolean;
   countsAsProgress: boolean;
 }>;
@@ -71,6 +72,7 @@ export function createLabelEffectsResolver(rules: readonly LabelRule[]): LabelEf
     let priorityWeight = 0;
     let severityLift = 0;
     let requiresMaintainerDecision = false;
+    const maintainerDecisionLabelNames = new Set<string>();
     let suppressNotifications = false;
     let countsAsProgress = false;
 
@@ -78,13 +80,19 @@ export function createLabelEffectsResolver(rules: readonly LabelRule[]): LabelEf
       if (!matchesRepository(repositoryFullName, rule.repositoryPattern)) {
         continue;
       }
-      if (!labelNames.some((labelName) => rule.namePattern.test(labelName))) {
+      const matchedLabelNames = labelNames.filter((labelName) => rule.namePattern.test(labelName));
+      if (matchedLabelNames.length === 0) {
         continue;
       }
 
       priorityWeight += rule.effects.priorityWeight ?? 0;
       severityLift = Math.max(severityLift, rule.effects.severityLift ?? 0);
       requiresMaintainerDecision ||= rule.effects.requiresMaintainerDecision ?? false;
+      if (rule.effects.requiresMaintainerDecision === true) {
+        for (const labelName of matchedLabelNames) {
+          maintainerDecisionLabelNames.add(labelName);
+        }
+      }
       suppressNotifications ||= rule.effects.suppressNotifications ?? false;
       countsAsProgress ||= rule.effects.countsAsProgress ?? false;
     }
@@ -93,6 +101,7 @@ export function createLabelEffectsResolver(rules: readonly LabelRule[]): LabelEf
       priorityWeight,
       severityLift,
       requiresMaintainerDecision,
+      maintainerDecisionLabelNames: Object.freeze([...maintainerDecisionLabelNames].sort()),
       suppressNotifications,
       countsAsProgress,
     });

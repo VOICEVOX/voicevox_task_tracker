@@ -68,6 +68,7 @@ export {
   type SnapshotCollectionItem,
   type SnapshotCollectionRepository,
   type SnapshotCollectionState,
+  type SnapshotDeterministicRulesVersion,
   type SnapshotRun,
   type SnapshotRepository,
   type SnapshotTrackedItem,

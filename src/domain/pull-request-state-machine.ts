@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   type FreshObservedGitHubPullRequest,
+  type ObservedGitHubHeadCheckContext,
   type ObservedGitHubHeadChecks,
   resolvePullRequestCommitOccurredAt,
 } from "./github-item-observation.js";
@@ -61,11 +62,14 @@ export type PullRequestStateMachineInput = Readonly<{
   evaluatedAt: UtcIsoDateTime;
 }>;
 
-/** statusまたは責務を生じさせた時刻と根拠。 */
+/**
+ * statusまたは責務を生じさせた時刻と根拠。
+ * eventはGitHubイベント時刻そのものを表し、inferredはGitHub由来の時刻から決定論的に導いた下限を表す。
+ */
 export type PullRequestTransitionBasis = Readonly<{
   sourceIds: readonly [SourceId, ...SourceId[]];
   occurredAt: UtcIsoDateTime;
-  precision: "event" | "inferred" | "observation";
+  precision: "event" | "inferred";
 }>;
 
 /** primary waitingOnの選定結果。 */
@@ -111,6 +115,12 @@ type ReviewEvent = Extract<NormalizedEvent, { kind: "review" }> & {
 type HumanCommentEvent = Extract<NormalizedEvent, { kind: "comment" }> & {
   actor: GitHubAccountActor & { type: "human" };
 };
+
+type LabelEvent = Extract<NormalizedEvent, { kind: "label" }>;
+
+type LabelEventReplay = Readonly<{
+  activeAdditionByLabelName: ReadonlyMap<string, LabelEvent>;
+}>;
 
 type ResolvedReviewRequest = Readonly<{
   waitingOn: WaitingOn;
@@ -359,6 +369,94 @@ function getLatestEvent<T extends NormalizedEvent>(events: readonly T[]): T | un
   return [...events].sort(compareEvents).at(-1);
 }
 
+function replayLabelEvents(events: readonly NormalizedEvent[]): LabelEventReplay {
+  const activeAdditionByLabelName = new Map<string, LabelEvent>();
+  const labelEvents = events
+    .filter((event): event is LabelEvent => event.kind === "label")
+    .sort(compareEvents);
+
+  for (const event of labelEvents) {
+    if (event.action === "added") {
+      activeAdditionByLabelName.set(event.labelName, event);
+      continue;
+    }
+    activeAdditionByLabelName.delete(event.labelName);
+  }
+
+  return Object.freeze({ activeAdditionByLabelName });
+}
+
+function compareTransitionBases(
+  left: PullRequestTransitionBasis,
+  right: PullRequestTransitionBasis,
+): -1 | 0 | 1 {
+  if (left.occurredAt < right.occurredAt) {
+    return -1;
+  }
+  if (left.occurredAt > right.occurredAt) {
+    return 1;
+  }
+  return compareSourceIds(left.sourceIds[0], right.sourceIds[0]);
+}
+
+function resolveMaintainerDecisionLabelBasis(
+  pullRequest: FreshObservedGitHubPullRequest,
+  labelNames: readonly string[],
+): PullRequestTransitionBasis {
+  const replay = replayLabelEvents(pullRequest.events);
+  const bases = [...new Set(labelNames)].map((labelName) => {
+    const additionEvent = replay.activeAdditionByLabelName.get(labelName);
+    return additionEvent == null
+      ? createBasis([pullRequest.sourceId], pullRequest.createdAt, "inferred")
+      : createBasis([additionEvent.sourceId], additionEvent.occurredAt, "event");
+  });
+  return (
+    bases.sort(compareTransitionBases)[0] ??
+    createBasis([pullRequest.sourceId], pullRequest.createdAt, "inferred")
+  );
+}
+
+type DraftLifecycleEvent = NormalizedEvent &
+  Readonly<{ kind: "ready_for_review" | "converted_to_draft" }>;
+
+function resolveDraftIntervalBasis(
+  pullRequest: FreshObservedGitHubPullRequest,
+): PullRequestTransitionBasis {
+  const events = pullRequest.events
+    .filter(
+      (event): event is DraftLifecycleEvent =>
+        event.kind === "ready_for_review" || event.kind === "converted_to_draft",
+    )
+    .sort(compareEvents);
+  const firstEvent = events[0];
+  if (firstEvent == null) {
+    return createBasis([pullRequest.sourceId], pullRequest.createdAt, "inferred");
+  }
+
+  let draft = firstEvent.kind === "ready_for_review";
+  let intervalStartEvent: DraftLifecycleEvent | undefined;
+  for (const event of events) {
+    if (event.kind === "ready_for_review") {
+      if (!draft) {
+        throw new TypeError("non-draftのPull Requestにready for reviewイベントがあります");
+      }
+      draft = false;
+    } else {
+      if (draft) {
+        throw new TypeError("draftのPull Requestにdraft変換イベントがあります");
+      }
+      draft = true;
+    }
+    intervalStartEvent = event;
+  }
+
+  if (draft !== pullRequest.draft) {
+    throw new TypeError("Pull Requestのdraft状態とlifecycleイベントが一致しません");
+  }
+  assertNonNullable(intervalStartEvent, "draft区間の開始イベントを取得できませんでした");
+  return createBasis([intervalStartEvent.sourceId], intervalStartEvent.occurredAt, "event");
+}
+
 function createTerminalDecision(
   input: PullRequestStateMachineInput,
   context: DecisionContext,
@@ -556,9 +654,32 @@ function getHeadBasis(pullRequest: FreshObservedGitHubPullRequest): PullRequestT
   return createBasis([pullRequest.headCommit.sourceId], occurredAt, precision);
 }
 
+type MergeQueueLifecycleEvent = NormalizedEvent &
+  Readonly<{ kind: "added_to_merge_queue" | "removed_from_merge_queue" }>;
+
+function resolveMergeQueueBasis(
+  pullRequest: FreshObservedGitHubPullRequest,
+  headBasis: PullRequestTransitionBasis,
+): PullRequestTransitionBasis {
+  const events = pullRequest.events
+    .filter(
+      (event): event is MergeQueueLifecycleEvent =>
+        event.kind === "added_to_merge_queue" || event.kind === "removed_from_merge_queue",
+    )
+    .sort(compareEvents);
+  let intervalStartEvent: MergeQueueLifecycleEvent | undefined;
+  for (const event of events) {
+    intervalStartEvent = event.kind === "added_to_merge_queue" ? event : undefined;
+  }
+  return intervalStartEvent == null
+    ? headBasis
+    : createBasis([intervalStartEvent.sourceId], intervalStartEvent.occurredAt, "event");
+}
+
 function createAutomationDecision(
   input: PullRequestStateMachineInput,
   context: DecisionContext,
+  headBasis: PullRequestTransitionBasis,
 ): PullRequestStateDecision | undefined {
   const pullRequest = input.pullRequest;
   const automation: Readonly<{
@@ -577,11 +698,7 @@ function createAutomationDecision(
         sourceIds: [pullRequest.mergeState.mergeQueue.sourceId],
         confidence: 1,
       }),
-      basis: createBasis(
-        [pullRequest.mergeState.mergeQueue.sourceId],
-        pullRequest.observedAt,
-        "observation",
-      ),
+      basis: resolveMergeQueueBasis(pullRequest, headBasis),
       nextAction: "merge queueの完了を待つ",
     });
   }
@@ -617,11 +734,7 @@ function createAutomationDecision(
         sourceIds: [pullRequest.mergeState.checks.sourceId],
         confidence: 1,
       }),
-      basis: createBasis(
-        [pullRequest.mergeState.checks.sourceId],
-        pullRequest.observedAt,
-        "observation",
-      ),
+      basis: headBasis,
       nextAction: "required checksの完了を待つ",
     });
   }
@@ -988,7 +1101,7 @@ function resolveHumanReviewRequests(
     const basis =
       request.requestedAt.status === "available"
         ? createBasis([request.sourceId], request.requestedAt.value, "event")
-        : createBasis([request.sourceId], pullRequest.observedAt, "observation");
+        : createBasis([request.sourceId], pullRequest.createdAt, "inferred");
     const resolved = Object.freeze({
       waitingOn: createWaitingOn({
         kind,
@@ -1213,10 +1326,9 @@ function createLabelDecision(
   if (!input.labelEffects.requiresMaintainerDecision) {
     return undefined;
   }
-  const basis = createBasis(
-    [input.pullRequest.sourceId],
-    input.pullRequest.observedAt,
-    "observation",
+  const basis = resolveMaintainerDecisionLabelBasis(
+    input.pullRequest,
+    input.labelEffects.maintainerDecisionLabelNames,
   );
   return finalizeDecision(input, context, {
     status: "needs_maintainer_decision",
@@ -1251,11 +1363,7 @@ function createDraftDecision(
   if (!input.pullRequest.draft) {
     return undefined;
   }
-  const basis = createBasis(
-    [input.pullRequest.sourceId],
-    input.pullRequest.observedAt,
-    "observation",
-  );
+  const basis = resolveDraftIntervalBasis(input.pullRequest);
   return finalizeDecision(input, context, {
     status: "in_progress",
     waitingOn: [
@@ -1315,6 +1423,54 @@ function getCheckSourceIds(
   checks: Extract<ObservedGitHubHeadChecks, { status: "configured" }>,
 ): readonly [SourceId, ...SourceId[]] {
   return createSourceIds([checks.sourceId, ...checks.contexts.map((context) => context.sourceId)]);
+}
+
+function isFailingCheckRunConclusion(
+  conclusion: Extract<ObservedGitHubHeadCheckContext, { type: "check_run" }>["conclusion"],
+): boolean {
+  switch (conclusion) {
+    case "action_required":
+    case "cancelled":
+    case "failure":
+    case "stale":
+    case "startup_failure":
+    case "timed_out":
+      return true;
+    case "neutral":
+    case "not_completed":
+    case "skipped":
+    case "success":
+      return false;
+    default:
+      throw new UnreachableError(conclusion);
+  }
+}
+
+function getFailingCheckOccurredAt(
+  context: ObservedGitHubHeadCheckContext,
+  headOccurredAt: UtcIsoDateTime,
+): UtcIsoDateTime | undefined {
+  if (context.type === "commit_status") {
+    if (context.state !== "error" && context.state !== "failure") {
+      return undefined;
+    }
+    return context.createdAt < headOccurredAt ? headOccurredAt : context.createdAt;
+  }
+  if (!isFailingCheckRunConclusion(context.conclusion)) {
+    return undefined;
+  }
+  return context.completedAt == null || context.completedAt < headOccurredAt
+    ? headOccurredAt
+    : context.completedAt;
+}
+
+function getSuccessfulCheckOccurredAt(
+  context: ObservedGitHubHeadCheckContext,
+): UtcIsoDateTime | undefined {
+  if (context.type === "commit_status") {
+    return context.state === "success" ? context.createdAt : undefined;
+  }
+  return context.conclusion === "success" ? context.completedAt : undefined;
 }
 
 function analyzeCheckFailure(
@@ -1398,15 +1554,25 @@ function createCheckFailureDecision(
   input: PullRequestStateMachineInput,
   context: DecisionContext,
   analysis: CheckFailureAnalysis,
+  headBasis: PullRequestTransitionBasis,
 ): PullRequestStateDecision | undefined {
   if (analysis.authorAction === "not_applicable") {
     return undefined;
   }
-  const basis = createBasis(
-    analysis.authorAction.sourceIds,
-    input.pullRequest.observedAt,
-    "observation",
-  );
+  const checks = input.pullRequest.mergeState.checks;
+  if (checks.status !== "configured") {
+    throw new TypeError("required checksが未設定のため失敗時刻を解決できません");
+  }
+  const failureOccurredAt = checks.contexts
+    .flatMap((checkContext) => {
+      const occurredAt = getFailingCheckOccurredAt(checkContext, headBasis.occurredAt);
+      return occurredAt == null ? [] : [occurredAt];
+    })
+    .sort()[0];
+  const basis =
+    failureOccurredAt == null || failureOccurredAt === headBasis.occurredAt
+      ? headBasis
+      : createBasis(analysis.authorAction.sourceIds, failureOccurredAt, "event");
   return finalizeDecision(input, context, {
     status: "waiting_for_author",
     waitingOn: [
@@ -1435,15 +1601,12 @@ function createCheckFailureDecision(
 function createConflictDecision(
   input: PullRequestStateMachineInput,
   context: DecisionContext,
+  headBasis: PullRequestTransitionBasis,
 ): PullRequestStateDecision | undefined {
   if (input.pullRequest.mergeState.mergeability !== "conflicting") {
     return undefined;
   }
-  const basis = createBasis(
-    [input.pullRequest.sourceId],
-    input.pullRequest.observedAt,
-    "observation",
-  );
+  const basis = createBasis(headBasis.sourceIds, headBasis.occurredAt, "inferred");
   return finalizeDecision(input, context, {
     status: "waiting_for_author",
     waitingOn: [
@@ -1484,17 +1647,31 @@ function createReadyToMergeDecision(
     return undefined;
   }
 
-  const approvalSourceIds = effectiveReviews
-    .filter(
-      (review) =>
-        review.state === "approved" && isReviewForCurrentHead(review, input.pullRequest, headBasis),
-    )
-    .map((review) => review.sourceId);
+  const effectiveApprovals = effectiveReviews.filter(
+    (review) =>
+      review.state === "approved" && isReviewForCurrentHead(review, input.pullRequest, headBasis),
+  );
+  const approvalSourceIds = effectiveApprovals.map((review) => review.sourceId);
   const sourceIds =
     checks.status === "configured"
       ? [input.pullRequest.sourceId, checks.sourceId, ...approvalSourceIds]
       : [input.pullRequest.sourceId, ...approvalSourceIds];
-  const basis = createBasis(sourceIds, input.pullRequest.observedAt, "observation");
+  const successfulCheckOccurredAts =
+    checks.status === "configured"
+      ? checks.contexts.flatMap((checkContext) => {
+          const occurredAt = getSuccessfulCheckOccurredAt(checkContext);
+          return occurredAt == null ? [] : [occurredAt];
+        })
+      : [];
+  const occurredAt = [
+    headBasis.occurredAt,
+    ...effectiveApprovals.map((review) => review.occurredAt),
+    ...successfulCheckOccurredAts,
+  ]
+    .sort()
+    .at(-1);
+  assertNonNullable(occurredAt, "merge可能になった時刻を解決できませんでした");
+  const basis = createBasis(sourceIds, occurredAt, "inferred");
   return finalizeDecision(input, context, {
     status: "ready_to_merge",
     waitingOn: [
@@ -1539,11 +1716,7 @@ function createMaintainerTriageDecision(
   input: PullRequestStateMachineInput,
   context: DecisionContext,
 ): PullRequestStateDecision {
-  const basis = createBasis(
-    [input.pullRequest.sourceId],
-    input.pullRequest.observedAt,
-    "observation",
-  );
+  const basis = resolveDraftIntervalBasis(input.pullRequest);
   return finalizeDecision(input, context, {
     status: "needs_maintainer_decision",
     waitingOn: [
@@ -1598,13 +1771,13 @@ export function determinePullRequestState(
     return blockedDecision;
   }
 
+  const headBasis = getHeadBasis(input.pullRequest);
   const checkFailure = analyzeCheckFailure(input, context);
-  const automationDecision = createAutomationDecision(input, context);
+  const automationDecision = createAutomationDecision(input, context, headBasis);
   if (automationDecision != null) {
     return automationDecision;
   }
 
-  const headBasis = getHeadBasis(input.pullRequest);
   const effectiveReviews = getEffectiveReviews(getHumanReviewEvents(input.pullRequest));
   const changesRequestedDecision = createChangesRequestedDecision(
     input,
@@ -1650,12 +1823,12 @@ export function determinePullRequestState(
     return draftDecision;
   }
 
-  const checkFailureDecision = createCheckFailureDecision(input, context, checkFailure);
+  const checkFailureDecision = createCheckFailureDecision(input, context, checkFailure, headBasis);
   if (checkFailureDecision != null) {
     return checkFailureDecision;
   }
 
-  const conflictDecision = createConflictDecision(input, context);
+  const conflictDecision = createConflictDecision(input, context, headBasis);
   if (conflictDecision != null) {
     return conflictDecision;
   }

@@ -24,7 +24,7 @@ import { assertNonNullable } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Issue判定へ適用した決定規則のversion。 */
-export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v1";
+export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v2";
 
 /** 依存グラフからIssue判定へ渡すblocker。 */
 export type IssueBlocker = Readonly<{
@@ -87,11 +87,14 @@ export type IssueStateMachineInput = Readonly<{
   evaluatedAt: UtcIsoDateTime;
 }>;
 
-/** statusまたは責務を生じさせた時刻と根拠。 */
+/**
+ * statusまたは責務を生じさせた時刻と根拠。
+ * eventはGitHubイベント時刻そのものを表し、inferredはGitHub由来の時刻から決定論的に導いた下限を表す。
+ */
 export type IssueTransitionBasis = Readonly<{
   sourceIds: readonly [SourceId, ...SourceId[]];
   occurredAt: UtcIsoDateTime;
-  precision: "event" | "inferred" | "observation";
+  precision: "event" | "inferred";
 }>;
 
 /** primary waitingOnの選定結果。 */
@@ -133,6 +136,13 @@ interface DecisionContext {
 type ResolvedAssignee = Readonly<{
   waitingOn: WaitingOn;
   basis: IssueTransitionBasis;
+}>;
+
+type AssigneeEvent = Extract<NormalizedEvent, { kind: "assignee" }>;
+
+type AssigneeEventReplay = Readonly<{
+  activeAssignmentByAssigneeNodeId: ReadonlyMap<GitHubAccountActor["nodeId"], AssigneeEvent>;
+  lastUnassignedEvent: AssigneeEvent | undefined;
 }>;
 
 function validateConfidence(value: number, context: string): void {
@@ -761,21 +771,38 @@ function createExplicitRequestDecision(
 function getAssigneeBasis(
   issue: FreshObservedGitHubIssue,
   assignee: GitHubAccountActor,
+  replay: AssigneeEventReplay,
 ): IssueTransitionBasis {
-  const assignmentEvent = getLatestEvent(
-    issue.events.filter(
-      (
-        event,
-      ): event is Extract<NormalizedEvent, { kind: "assignee" }> & Readonly<{ action: "added" }> =>
-        event.kind === "assignee" &&
-        event.action === "added" &&
-        event.assignee.nodeId === assignee.nodeId,
-    ),
-  );
+  const assignmentEvent = replay.activeAssignmentByAssigneeNodeId.get(assignee.nodeId);
   if (assignmentEvent == null) {
-    return createBasis([issue.sourceId], issue.observedAt, "observation");
+    return createBasis([issue.sourceId], issue.createdAt, "inferred");
   }
   return createBasis([assignmentEvent.sourceId], assignmentEvent.occurredAt, "event");
+}
+
+function replayAssigneeEvents(events: readonly NormalizedEvent[]): AssigneeEventReplay {
+  const activeAssignmentByAssigneeNodeId = new Map<GitHubAccountActor["nodeId"], AssigneeEvent>();
+  let lastUnassignedEvent: AssigneeEvent | undefined;
+  const assigneeEvents = events
+    .filter((event): event is AssigneeEvent => event.kind === "assignee")
+    .sort(compareEvents);
+
+  for (const event of assigneeEvents) {
+    if (event.action === "added") {
+      activeAssignmentByAssigneeNodeId.set(event.assignee.nodeId, event);
+      continue;
+    }
+
+    const removedActiveAssignment = activeAssignmentByAssigneeNodeId.delete(event.assignee.nodeId);
+    if (removedActiveAssignment && activeAssignmentByAssigneeNodeId.size === 0) {
+      lastUnassignedEvent = event;
+    }
+  }
+
+  return Object.freeze({
+    activeAssignmentByAssigneeNodeId,
+    lastUnassignedEvent,
+  });
 }
 
 function compareResolvedAssignees(left: ResolvedAssignee, right: ResolvedAssignee): -1 | 0 | 1 {
@@ -802,9 +829,10 @@ function createAssigneeDecision(
     return undefined;
   }
 
+  const replay = replayAssigneeEvents(input.issue.events);
   const assignees = input.issue.assignees
     .map((assignee) => {
-      const basis = getAssigneeBasis(input.issue, assignee);
+      const basis = getAssigneeBasis(input.issue, assignee, replay);
       return Object.freeze({
         waitingOn: createWaitingOn({
           kind: "user",
@@ -870,7 +898,11 @@ function createUnassignedDecision(
   input: IssueStateMachineInput,
   context: DecisionContext,
 ): IssueStateDecision {
-  const basis = createBasis([input.issue.sourceId], input.issue.observedAt, "observation");
+  const lastUnassignedEvent = replayAssigneeEvents(input.issue.events).lastUnassignedEvent;
+  const basis =
+    lastUnassignedEvent == null
+      ? createBasis([input.issue.sourceId], input.issue.createdAt, "inferred")
+      : createBasis([lastUnassignedEvent.sourceId], lastUnassignedEvent.occurredAt, "event");
   const waitingOn = createUnassignedMaintainerWaitingOn(input, basis);
   const responsibleCandidate = waitingOn.kind === "user" ? waitingOn.candidateId : "maintainer";
   return finalizeDecision(input, context, {

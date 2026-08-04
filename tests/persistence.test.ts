@@ -183,7 +183,7 @@ function createRelations(edge: EdgeFixture): readonly unknown[] {
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "2",
+    schemaVersion: "3",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -556,7 +556,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("2");
+    expect(migrated.schemaVersion).toBe("3");
     expect(migrated.repositories.map((repository) => repository.id)).toEqual([
       publicRepositoryId,
       "R_SECOND",
@@ -565,6 +565,67 @@ describe("state schema version", () => {
       status: "unavailable",
     });
     expect(migrated.collection.repositories[0]?.items[0]?.analysisRulesFingerprint).toEqual({
+      status: "unavailable",
+    });
+    expect(migrated.collection.repositories[0]?.items[0]?.deterministicRulesVersion).toEqual({
+      status: "unavailable",
+    });
+  });
+
+  it("version 2のsnapshotへ決定規則version未取得を設定して現行形式へmigrationする", () => {
+    const snapshot = createSnapshot({
+      runId: "run-schema-version-2",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "new_untriaged",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const source = serializeCanonicalJson({
+      ...snapshot,
+      schemaVersion: "2",
+      collection: {
+        repositories: [
+          {
+            repositoryId: publicRepositoryId,
+            successfulAt: fixedItemAt,
+            items: [
+              {
+                freshness: "fresh",
+                nodeId: itemNodeId,
+                repositoryId: publicRepositoryId,
+                itemFingerprint: hashCanonicalJson({ item: itemNodeId }),
+                aiAnalysisFingerprint: {
+                  status: "unavailable",
+                },
+                analysisRulesFingerprint: {
+                  status: "available",
+                  fingerprint: hashCanonicalJson({ analysisRules: itemNodeId }),
+                },
+                observedAt: fixedItemAt,
+                state: "open",
+                terminalAt: null,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const migrated = parseStateSnapshot(source);
+
+    expect(migrated.schemaVersion).toBe("3");
+    expect(migrated.collection.repositories[0]?.items[0]?.analysisRulesFingerprint).toEqual({
+      status: "unavailable",
+    });
+    expect(migrated.collection.repositories[0]?.items[0]?.deterministicRulesVersion).toEqual({
       status: "unavailable",
     });
   });
@@ -686,6 +747,28 @@ describe("state履歴の入力イベント", () => {
 
     expect(forward).toEqual([first, second]);
     expect(reverse).toEqual(forward);
+  });
+
+  it("Pull Request固有イベントの6種を受理する", () => {
+    const kinds = Object.freeze([
+      "ready_for_review",
+      "converted_to_draft",
+      "added_to_merge_queue",
+      "removed_from_merge_queue",
+      "auto_merge_enabled",
+      "auto_merge_disabled",
+    ] satisfies readonly StateHistoryInputEvent["kind"][]);
+    const events = kinds.map((kind) =>
+      Object.freeze({
+        ...createHistoryInputEvent("I_PULL_REQUEST", `github_timeline_event:${kind}`),
+        kind,
+      } satisfies StateHistoryInputEvent),
+    );
+
+    const normalized = createStateHistoryInputEvents(events);
+
+    expect(normalized).toHaveLength(6);
+    expect(new Set(normalized.map((event) => event.kind))).toEqual(new Set(kinds));
   });
 
   it("同じ項目のsource ID重複を拒否する", () => {
@@ -830,7 +913,7 @@ describe("state canonical JSON", () => {
     );
   });
 
-  it("AI分析と判定規則のfingerprintを収集項目へ保存し、欠落した形式を拒否する", () => {
+  it("AI分析と判定規則のfingerprintと決定規則versionを収集項目へ保存し、欠落した形式を拒否する", () => {
     const base = createSnapshot({
       runId: "run-ai-fingerprint",
       generatedAt: "2026-07-31T00:00:00.000Z",
@@ -871,6 +954,10 @@ describe("state canonical JSON", () => {
           analysisRulesFingerprint: {
             status: "available",
             fingerprint: hashCanonicalJson({ analysisRules: itemNodeId }),
+          },
+          deterministicRulesVersion: {
+            status: "available",
+            version: "issue-v2",
           },
           observedAt: fixedItemAt,
           state: "open",

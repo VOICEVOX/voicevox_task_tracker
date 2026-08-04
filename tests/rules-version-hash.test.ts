@@ -10,6 +10,8 @@ const HASH_RECORD_PATH = "tests/rules-version-hash.test.ts";
 const DETERMINISTIC_RULES_HASH =
   "sha256:4184defeed6d439a9b749c0b55c5376dcb94079e2bd19bf2113342e25237dc89";
 const PROMPT_FILES_HASH = "sha256:9b016a72806902f0bf45f5193766b99c4d457dd8a8bff9e12f07d3e3133d7020";
+  "sha256:88f35eae1ca9c796d186bc906f9986faf0ae009740970377259b7f1cca522079";
+const PROMPT_FILES_HASH = "sha256:f502dbd57f1c71d358b2c604c0ed3bb31d5849945346272cce29b486a8be7ca4";
 
 async function listRelativeFiles(
   relativeDirectory: string,

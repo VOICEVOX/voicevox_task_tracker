@@ -23,6 +23,7 @@ import {
 
 const observedAt = createUtcIsoDateTime("2026-07-31T08:00:00Z");
 const evaluatedAt = createUtcIsoDateTime("2026-07-31T09:00:00Z");
+const createdAt = createUtcIsoDateTime("2026-07-30T08:00:00Z");
 const issueNodeId = createGitHubNodeId("I_state_machine");
 const systemActor = {
   type: "system",
@@ -99,6 +100,7 @@ function createOpenIssue(): FreshObservedGitHubIssue {
     sourceId: buildSourceId("github_item_detail", issueNodeId),
     nodeId: issueNodeId,
     type: "issue",
+    createdAt,
     state: "open",
     stateReason: null,
     closedAt: null,
@@ -142,6 +144,17 @@ function createAssigneeEvent(
     actor: systemActor,
     assignee,
     action: "added",
+  };
+}
+
+function createUnassignEvent(
+  id: string,
+  assignee: GitHubAccountActor,
+  occurredAt: ReturnType<typeof createUtcIsoDateTime>,
+): Extract<NormalizedEvent, { kind: "assignee" }> {
+  return {
+    ...createAssigneeEvent(id, assignee, occurredAt),
+    action: "removed",
   };
 }
 
@@ -274,6 +287,191 @@ describe("Issueの既定責務", () => {
     );
   });
 
+  it("現行assigneeの最新の未解除assignイベントを観測時刻に依存せず基準にする", () => {
+    const firstAssignment = createAssigneeEvent(
+      "first-assignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T02:00:00Z"),
+    );
+    const unassignment = createUnassignEvent(
+      "unassignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T03:00:00Z"),
+    );
+    const currentAssignment = createAssigneeEvent(
+      "current-assignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+    );
+    const issue = {
+      ...createOpenIssue(),
+      assignees: [firstAssignee],
+      events: [currentAssignment, firstAssignment, unassignment],
+    } satisfies FreshObservedGitHubIssue;
+    const firstDecision = determineIssueState(
+      createInput({
+        ...issue,
+        observedAt: createUtcIsoDateTime("2026-07-31T07:00:00Z"),
+      }),
+    );
+    const secondDecision = determineIssueState(
+      createInput({
+        ...issue,
+        observedAt: createUtcIsoDateTime("2026-07-31T08:00:00Z"),
+      }),
+    );
+
+    expect(firstDecision.statusBasis).toEqual({
+      sourceIds: [currentAssignment.sourceId],
+      occurredAt: currentAssignment.occurredAt,
+      precision: "event",
+    });
+    expect(secondDecision.statusBasis.occurredAt).toBe(firstDecision.statusBasis.occurredAt);
+    expect(secondDecision.responsibilityBasis.occurredAt).toBe(
+      firstDecision.responsibilityBasis.occurredAt,
+    );
+  });
+
+  it("現行assigneeに未解除assignイベントがなければ作成時刻を基準にする", () => {
+    const assignment = createAssigneeEvent(
+      "released-assignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T02:00:00Z"),
+    );
+    const unassignment = createUnassignEvent(
+      "released-unassignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T03:00:00Z"),
+    );
+    const issue = {
+      ...createOpenIssue(),
+      assignees: [firstAssignee],
+      events: [assignment, unassignment],
+    } satisfies FreshObservedGitHubIssue;
+    const firstDecision = determineIssueState(
+      createInput({
+        ...issue,
+        observedAt: createUtcIsoDateTime("2026-07-31T07:00:00Z"),
+      }),
+    );
+    const secondDecision = determineIssueState(
+      createInput({
+        ...issue,
+        observedAt: createUtcIsoDateTime("2026-07-31T08:00:00Z"),
+      }),
+    );
+
+    expect(firstDecision.statusBasis).toEqual({
+      sourceIds: [createOpenIssue().sourceId],
+      occurredAt: createdAt,
+      precision: "inferred",
+    });
+    expect(secondDecision.statusBasis.occurredAt).toBe(firstDecision.statusBasis.occurredAt);
+    expect(secondDecision.responsibilityBasis.occurredAt).toBe(
+      firstDecision.responsibilityBasis.occurredAt,
+    );
+  });
+
+  it("assignee集合が最後に空になったunassignイベントを観測時刻に依存せず基準にする", () => {
+    const firstAssignment = createAssigneeEvent(
+      "unassigned-first-assignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T02:00:00Z"),
+    );
+    const secondAssignment = createAssigneeEvent(
+      "unassigned-second-assignment",
+      secondAssignee,
+      createUtcIsoDateTime("2026-07-31T03:00:00Z"),
+    );
+    const firstUnassignment = createUnassignEvent(
+      "unassigned-first-unassignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T04:00:00Z"),
+    );
+    const firstEmptyingUnassignment = createUnassignEvent(
+      "unassigned-first-emptying-unassignment",
+      secondAssignee,
+      createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    );
+    const reassignment = createAssigneeEvent(
+      "unassigned-reassignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T05:30:00Z"),
+    );
+    const lastUnassignment = createUnassignEvent(
+      "unassigned-last-unassignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const issue = {
+      ...createOpenIssue(),
+      events: [
+        lastUnassignment,
+        firstEmptyingUnassignment,
+        reassignment,
+        secondAssignment,
+        firstUnassignment,
+        firstAssignment,
+      ],
+    } satisfies FreshObservedGitHubIssue;
+    const firstDecision = determineIssueState(
+      createInput({
+        ...issue,
+        observedAt: createUtcIsoDateTime("2026-07-31T07:00:00Z"),
+      }),
+    );
+    const secondDecision = determineIssueState(
+      createInput({
+        ...issue,
+        observedAt: createUtcIsoDateTime("2026-07-31T08:00:00Z"),
+      }),
+    );
+
+    expect(firstDecision.statusBasis).toEqual({
+      sourceIds: [lastUnassignment.sourceId],
+      occurredAt: lastUnassignment.occurredAt,
+      precision: "event",
+    });
+    expect(secondDecision.statusBasis.occurredAt).toBe(firstDecision.statusBasis.occurredAt);
+    expect(secondDecision.responsibilityBasis.occurredAt).toBe(
+      firstDecision.responsibilityBasis.occurredAt,
+    );
+  });
+
+  it("assignされたことがなければIssue作成時刻を未アサインの基準にする", () => {
+    const unrelatedUnassignment = createUnassignEvent(
+      "unrelated-unassignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const issue = {
+      ...createOpenIssue(),
+      events: [unrelatedUnassignment],
+    } satisfies FreshObservedGitHubIssue;
+    const firstDecision = determineIssueState(
+      createInput({
+        ...issue,
+        observedAt: createUtcIsoDateTime("2026-07-31T07:00:00Z"),
+      }),
+    );
+    const secondDecision = determineIssueState(
+      createInput({
+        ...issue,
+        observedAt: createUtcIsoDateTime("2026-07-31T08:00:00Z"),
+      }),
+    );
+
+    expect(firstDecision.statusBasis).toEqual({
+      sourceIds: [createOpenIssue().sourceId],
+      occurredAt: createdAt,
+      precision: "inferred",
+    });
+    expect(secondDecision.statusBasis.occurredAt).toBe(firstDecision.statusBasis.occurredAt);
+    expect(secondDecision.responsibilityBasis.occurredAt).toBe(
+      firstDecision.responsibilityBasis.occurredAt,
+    );
+  });
+
   it("maintainerが作成した未アサインIssueをauthor個人のmaintainer責務にする", () => {
     const decision = determineIssueState(
       createInput({
@@ -313,8 +511,8 @@ describe("Issueの既定責務", () => {
     });
     expect(decision.responsibilityBasis).toEqual({
       sourceIds: [createOpenIssue().sourceId],
-      occurredAt: observedAt,
-      precision: "observation",
+      occurredAt: createdAt,
+      precision: "inferred",
     });
   });
 

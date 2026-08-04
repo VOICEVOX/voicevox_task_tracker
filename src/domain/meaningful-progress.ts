@@ -272,10 +272,33 @@ function validateAssessments(
   return assessments;
 }
 
+const PROGRESS_AND_HUMAN_ACTIVITY_EXCLUDED_EVENT_KINDS = Object.freeze([
+  "ready_for_review",
+  "converted_to_draft",
+  "added_to_merge_queue",
+  "removed_from_merge_queue",
+  "auto_merge_enabled",
+  "auto_merge_disabled",
+] satisfies readonly NormalizedEvent["kind"][]);
+
+type ProgressAndHumanActivityExcludedEvent = Extract<
+  NormalizedEvent,
+  { kind: (typeof PROGRESS_AND_HUMAN_ACTIVITY_EXCLUDED_EVENT_KINDS)[number] }
+>;
+
+function isExcludedFromProgressAndHumanActivity(
+  event: NormalizedEvent,
+): event is ProgressAndHumanActivityExcludedEvent {
+  return PROGRESS_AND_HUMAN_ACTIVITY_EXCLUDED_EVENT_KINDS.some((kind) => kind === event.kind);
+}
+
 function classifyDeterministicEvent(
   input: MeaningfulProgressInput,
   event: NormalizedEvent,
 ): MeaningfulProgress | undefined {
+  if (isExcludedFromProgressAndHumanActivity(event)) {
+    return undefined;
+  }
   switch (event.kind) {
     case "push":
       return createProgress("push", event.occurredAt, [event.sourceId], "deterministic", 1);
@@ -374,7 +397,9 @@ export function determineMeaningfulProgress(
       ? [input.previousActivity.lastHumanActivityAt]
       : [];
   const humanEventTimes = input.events
-    .filter((event) => event.actor.type === "human")
+    .filter(
+      (event) => !isExcludedFromProgressAndHumanActivity(event) && event.actor.type === "human",
+    )
     .map((event) => event.occurredAt);
 
   return Object.freeze({

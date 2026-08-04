@@ -42,11 +42,11 @@ export {
   collectGitHubItemDetails,
   type CollectGitHubItemDetailsOptions,
   type GitHubItemDetailEventWindow,
+  type GitHubItemDetailTarget,
 } from "./item-detail-collection.js";
 export {
   type GitHubAutoMerge,
   type GitHubCheckContext,
-  type GitHubCheckRunConclusion,
   type GitHubCommitPushedAt,
   type GitHubCurrentReviewRequest,
   type GitHubDetailAccount,
@@ -95,6 +95,7 @@ export {
 export {
   planIncrementalItemCollection,
   type CurrentAnalysisRulesFingerprints,
+  type IncrementalItemDetailTarget,
   type IncrementalItemCollectionPlan,
   type PlanIncrementalItemCollectionOptions,
   type PreviousAnalysisRulesFingerprint,

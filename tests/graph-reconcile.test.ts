@@ -30,6 +30,7 @@ const EMPTY_GRAPH = {
   edges: [],
   historyEvents: [],
 } satisfies ReconciledGraphState;
+const SOURCE_OCCURRED_AT = createUtcIsoDateTime("2026-07-29T00:00:00Z");
 
 type CreateNodeOptions = Readonly<{
   nodeId: string;
@@ -113,10 +114,17 @@ function reconcile(
   assessments: readonly RelationCandidateAssessment[],
   reconciledAt: UtcIsoDateTime,
 ): ReconcileGraphResult {
+  const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
+  for (const candidate of candidates) {
+    for (const sourceId of candidate.sourceIds) {
+      sourceOccurredAtById.set(sourceId, SOURCE_OCCURRED_AT);
+    }
+  }
   const input = {
     previousGraph,
     candidates,
     assessments,
+    sourceOccurredAtById,
     minimumInferredConfidence: 0.65,
     reconciledAt,
   } satisfies ReconcileGraphInput;
@@ -130,6 +138,136 @@ function findEdge(result: ReconcileGraphResult, candidate: RelationCandidate): R
   }
   return edge;
 }
+
+describe("新規edgeのfirstSeenAt", () => {
+  it("最古の根拠時刻を使いreconcile時刻だけが違っても同じ値にする", () => {
+    const blocked = createNode({
+      nodeId: "I_deterministic_blocked",
+      repository: "tracker",
+      number: 1,
+      state: "open",
+    });
+    const blocker = createNode({
+      nodeId: "I_deterministic_blocker",
+      repository: "dependency",
+      number: 2,
+      state: "open",
+    });
+    const newerSourceId = buildSourceId("github_native_dependency", "newer");
+    const olderSourceId = buildSourceId("github_native_dependency", "older");
+    const candidates = [
+      createNativeBlocksCandidate(blocker, blocked, newerSourceId),
+      createNativeBlocksCandidate(blocker, blocked, olderSourceId),
+    ];
+    const olderOccurredAt = createUtcIsoDateTime("2026-07-10T00:00:00Z");
+    const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>([
+      [newerSourceId, createUtcIsoDateTime("2026-07-20T00:00:00Z")],
+      [olderSourceId, olderOccurredAt],
+    ]);
+    const commonInput = {
+      previousGraph: EMPTY_GRAPH,
+      candidates,
+      assessments: [],
+      sourceOccurredAtById,
+      minimumInferredConfidence: 0.65,
+    };
+
+    const first = reconcileGraph({
+      ...commonInput,
+      reconciledAt: createUtcIsoDateTime("2026-07-31T00:00:00Z"),
+    });
+    const second = reconcileGraph({
+      ...commonInput,
+      reconciledAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
+    });
+
+    expect(first.activeEdges[0]?.firstSeenAt).toBe(olderOccurredAt);
+    expect(second.activeEdges[0]?.firstSeenAt).toBe(olderOccurredAt);
+    expect(first.activeEdges[0]?.lastConfirmedAt).not.toBe(second.activeEdges[0]?.lastConfirmedAt);
+  });
+
+  it("保存済みedgeのfirstSeenAtを根拠時刻で置き換えない", () => {
+    const blocked = createNode({
+      nodeId: "I_saved_blocked",
+      repository: "tracker",
+      number: 1,
+      state: "open",
+    });
+    const blocker = createNode({
+      nodeId: "I_saved_blocker",
+      repository: "dependency",
+      number: 2,
+      state: "open",
+    });
+    const sourceId = buildSourceId("github_native_dependency", "saved");
+    const candidate = createNativeBlocksCandidate(blocker, blocked, sourceId);
+    const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>([
+      [sourceId, createUtcIsoDateTime("2026-07-10T00:00:00Z")],
+    ]);
+    const initial = reconcileGraph({
+      previousGraph: EMPTY_GRAPH,
+      candidates: [candidate],
+      assessments: [],
+      sourceOccurredAtById,
+      minimumInferredConfidence: 0.65,
+      reconciledAt: createUtcIsoDateTime("2026-07-31T00:00:00Z"),
+    });
+    const initialEdge = initial.activeEdges[0];
+    if (initialEdge == null) {
+      throw new TypeError("保存済みfirstSeenAt fixtureのedgeがありません");
+    }
+    const savedFirstSeenAt = createUtcIsoDateTime("2026-07-30T00:00:00Z");
+    const savedEdge = {
+      ...initialEdge,
+      firstSeenAt: savedFirstSeenAt,
+    } satisfies ReconciledGraphEdge;
+
+    const reconciled = reconcileGraph({
+      previousGraph: {
+        edges: [savedEdge],
+        historyEvents: [],
+      },
+      candidates: [candidate],
+      assessments: [],
+      sourceOccurredAtById,
+      minimumInferredConfidence: 0.65,
+      reconciledAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
+    });
+
+    expect(reconciled.activeEdges[0]?.firstSeenAt).toBe(savedFirstSeenAt);
+  });
+
+  it("採用候補の根拠時刻を解決できなければ例外にする", () => {
+    const blocked = createNode({
+      nodeId: "I_missing_time_blocked",
+      repository: "tracker",
+      number: 1,
+      state: "open",
+    });
+    const blocker = createNode({
+      nodeId: "I_missing_time_blocker",
+      repository: "dependency",
+      number: 2,
+      state: "open",
+    });
+    const candidate = createNativeBlocksCandidate(
+      blocker,
+      blocked,
+      buildSourceId("github_native_dependency", "missing-time"),
+    );
+
+    expect(() =>
+      reconcileGraph({
+        previousGraph: EMPTY_GRAPH,
+        candidates: [candidate],
+        assessments: [],
+        sourceOccurredAtById: new Map<SourceId, UtcIsoDateTime>(),
+        minimumInferredConfidence: 0.65,
+        reconciledAt: createUtcIsoDateTime("2026-07-31T00:00:00Z"),
+      }),
+    ).toThrowError(/対応する発生時刻がありません/u);
+  });
+});
 
 describe("authoritative edgeのreconcile", () => {
   it("AIが反対してもnative edgeを維持して矛盾を注記する", () => {
@@ -261,7 +399,7 @@ describe("authoritative edgeのreconcile", () => {
 
     expect(edge).toMatchObject({
       active: false,
-      firstSeenAt: addedAt,
+      firstSeenAt: SOURCE_OCCURRED_AT,
       lastConfirmedAt: addedAt,
       removedAt,
     });
@@ -633,7 +771,7 @@ describe("edge履歴", () => {
     });
     expect(edge).toMatchObject({
       active: false,
-      firstSeenAt: addedAt,
+      firstSeenAt: SOURCE_OCCURRED_AT,
       lastConfirmedAt: changedAt,
       removedAt,
     });

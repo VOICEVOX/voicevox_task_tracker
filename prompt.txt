@@ -25,7 +25,7 @@
 - `voicevox_task_tracker/issues/1`を解決するPRを作ってください
 - レビューリクエストや、レビュースレッドや、change requestなどがあっても、そのあとボールを持った人が質問してたりしたらボールは相手に変わりそうですが、それが考慮されていなさそうです
 - コメントしていれば必ず相手にボールが渡るというわけでもないと思います、その辺り考慮してロジックを修正してPRを作ってください
-
+- 停滞時間が直感に合わないものがあります、たぶん最初に走査したときからの時間なんだと思いますが、過去のいつ走査したかはもろもろの時間計算には関係なく、いつ走査しても決定論的に決まるのが理想そうです
 
 ---
 
@@ -48,7 +48,7 @@
 - `codex exec`は何も指定せずに実行すると別のContextを持ったCodexが起動するということに留意してください
 - Codexの実装は必ずタスク１つずつだけ行うように指示してください
 - Codexは実装指示した内容の周辺に対し、Codex側でついでに変更して良いと思ったものは勝手に変更するクセがあります
-- コードレビューはClaudeのあなたが行ってください
+- コードレビューはClaudeのあなたが行ってください、粒度と指摘タイミングは任せます
 - コード把握や調査依頼もCodexへ投げて良いと思います、並列に投げても良いと思います
 - git commitはClaudeのあなたが行ってください
 - Playwrightを使った動作確認もCodexに行わせてください、その際失敗時にどうするかも伝えないと変な行動をしだすので気をつけてください
@@ -63,6 +63,7 @@
 - codex exec resume は -s を受け付けない。-c sandbox_mode="workspace-write" を使う
 - Codexの報告は -o で受け取り、実行ごとに別パスにする。使い回すと前回の報告が残って誤判定する
 - codex exec の標準出力は全く役に立たないので必ず /dev/null へ捨てる。tailなどパイプに通すと終了コードが化けてしまう。詳細が要るときは ~/.codex/sessions のrolloutを見る
+- codex exec は標準入力を待ち続けてしまうことがあるため必ず /dev/null を入力する。 `codex exec ... </dev/null > /dev/null 2>&1` のようにすると確実
 - Codexの報告が正常なら再チェックは無駄。-o で指定したファイルが無い、終了コードが非ゼロ、報告が途中経過の文面、などの場合だけpnpm testなどをチェックし、resumeする
 - codex exec の --dangerously-bypass-approvals-and-sandbox と -c sandbox_workspace_write.network_access=true は権限分類器に弾かれる。-s workspace-write 単体なら通るし外部ネットワークも使える
 - pnpm perf:profile、pnpm eval:golden は全タスク完了後に1回だけ回す

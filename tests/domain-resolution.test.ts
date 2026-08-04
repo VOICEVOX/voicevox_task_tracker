@@ -173,6 +173,7 @@ describe("ラベル効果解決", () => {
       priorityWeight: 23,
       severityLift: 1,
       requiresMaintainerDecision: false,
+      maintainerDecisionLabelNames: [],
       suppressNotifications: false,
       countsAsProgress: false,
     });
@@ -180,6 +181,7 @@ describe("ラベル効果解決", () => {
       priorityWeight: 15,
       severityLift: 1,
       requiresMaintainerDecision: true,
+      maintainerDecisionLabelNames: ["優先度高"],
       suppressNotifications: true,
       countsAsProgress: false,
     });
@@ -192,6 +194,7 @@ describe("ラベル効果解決", () => {
       priorityWeight: 15,
       severityLift: 1,
       requiresMaintainerDecision: true,
+      maintainerDecisionLabelNames: ["優先度高"],
       suppressNotifications: true,
       countsAsProgress: false,
     });
@@ -202,6 +205,13 @@ describe("ラベル効果解決", () => {
 
     expect(effects.priorityWeight).toBe(3);
     expect(effects.severityLift).toBe(1);
+    expect(effects.maintainerDecisionLabelNames).toEqual([]);
+  });
+
+  it("maintainer判断を成立させたラベル名を重複なく返す", () => {
+    const effects = resolveLabelEffects("VOICEVOX/engine", ["対応要否高", "優先度高", "優先度高"]);
+
+    expect(effects.maintainerDecisionLabelNames).toEqual(["優先度高", "対応要否高"]);
   });
 
   it("一致するルールがない場合は効果なしを返す", () => {
@@ -209,6 +219,7 @@ describe("ラベル効果解決", () => {
       priorityWeight: 0,
       severityLift: 0,
       requiresMaintainerDecision: false,
+      maintainerDecisionLabelNames: [],
       suppressNotifications: false,
       countsAsProgress: false,
     });

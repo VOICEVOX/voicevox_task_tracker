@@ -58,6 +58,7 @@ const DETAIL_REFERENCED_ITEM_FIELDS_FRAGMENT = `
       id
       number
       url
+      createdAt
       issueState: state
       repository {
         id
@@ -74,6 +75,7 @@ const DETAIL_REFERENCED_ITEM_FIELDS_FRAGMENT = `
       id
       number
       url
+      createdAt
       pullRequestState: state
       repository {
         id
@@ -161,6 +163,7 @@ const DETAIL_CHECK_CONTEXT_FIELDS_FRAGMENT = `
       name
       status
       conclusion
+      completedAt
     }
     ... on StatusContext {
       id
@@ -258,6 +261,46 @@ const DETAIL_ISSUE_TIMELINE_FIELDS_FRAGMENT = `
         ...DetailActorFields
       }
       subject {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on SubIssueAddedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      subIssue {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on SubIssueRemovedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      subIssue {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on ParentIssueAddedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      parent {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on ParentIssueRemovedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      parent {
         ...DetailReferencedItemFields
       }
     }
@@ -537,6 +580,10 @@ const ISSUE_TIMELINE_ITEM_TYPES = `
     CROSS_REFERENCED_EVENT
     CONNECTED_EVENT
     DISCONNECTED_EVENT
+    SUB_ISSUE_ADDED_EVENT
+    SUB_ISSUE_REMOVED_EVENT
+    PARENT_ISSUE_ADDED_EVENT
+    PARENT_ISSUE_REMOVED_EVENT
   ]
 `;
 
