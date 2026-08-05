@@ -26,16 +26,18 @@ export type GitHubDetailAccount = Readonly<{
   apiType: GitHubApiAccountType;
 }>;
 
+type GitHubUnavailableActor = Readonly<{
+  status: "unavailable";
+  reason: "github_did_not_return_actor";
+}>;
+
 /** GitHub API上のアクター取得結果。 */
 export type GitHubDetailActor =
   | Readonly<{
       status: "identified";
       account: GitHubDetailAccount;
     }>
-  | Readonly<{
-      status: "unavailable";
-      reason: "github_did_not_return_actor";
-    }>;
+  | GitHubUnavailableActor;
 
 /** レビュー依頼先となるGitHub userまたはteam。 */
 export type GitHubReviewRequestTarget =
@@ -46,7 +48,8 @@ export type GitHubReviewRequestTarget =
       login: string;
       apiType: GitHubApiAccountType;
     }>
-  | Extract<ObservedGitHubReviewRequestTarget, { type: "team" }>;
+  | Extract<ObservedGitHubReviewRequestTarget, { type: "team" }>
+  | GitHubUnavailableActor;
 
 /** GitHub上の公開IssueまたはPull Requestへの参照。 */
 export type GitHubReferencedItem = Readonly<{
@@ -141,6 +144,15 @@ export type GitHubCommitPushedAt = ObservedGitHubCommitPushedAt;
 /** Pull Request timelineまたはheadから取得したcommit。 */
 export type GitHubPullRequestCommit = ObservedGitHubPullRequestCommit;
 
+type GitHubUnavailableReferencedItem = Readonly<{
+  status: "unavailable";
+  reason: "github_did_not_return_item";
+}>;
+
+type GitHubTimelineReferencedItem = GitHubReferencedItem | GitHubUnavailableReferencedItem;
+
+type GitHubUnavailableCommit = Extract<GitHubReviewCommit, { status: "unavailable" }>;
+
 type GitHubTimelineEventBase = Readonly<{
   sourceId: SourceId;
   nodeId: GitHubNodeId;
@@ -149,10 +161,12 @@ type GitHubTimelineEventBase = Readonly<{
   actor: GitHubDetailActor;
 }>;
 
-export type GitHubTimelineAssignee = Readonly<{
-  type: "account";
-  account: GitHubDetailAccount;
-}>;
+export type GitHubTimelineAssignee =
+  | Readonly<{
+      type: "account";
+      account: GitHubDetailAccount;
+    }>
+  | GitHubUnavailableActor;
 
 /** 判定に必要なIssueとPull Requestのtimelineイベント。 */
 export type GitHubTimelineEvent =
@@ -202,18 +216,18 @@ export type GitHubTimelineEvent =
   | (GitHubTimelineEventBase &
       Readonly<{
         kind: "sub_issue_added" | "sub_issue_removed";
-        subIssue: GitHubReferencedItem;
+        subIssue: GitHubTimelineReferencedItem;
       }>)
   | (GitHubTimelineEventBase &
       Readonly<{
         kind: "parent_issue_added" | "parent_issue_removed";
-        parent: GitHubReferencedItem;
+        parent: GitHubTimelineReferencedItem;
       }>)
   | (GitHubTimelineEventBase &
       Readonly<{
         kind: "head_ref_force_pushed";
-        beforeSha: string;
-        afterSha: string;
+        beforeSha: string | GitHubUnavailableCommit;
+        afterSha: string | GitHubUnavailableCommit;
       }>)
   | Readonly<{
       sourceId: SourceId;

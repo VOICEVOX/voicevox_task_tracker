@@ -58,11 +58,13 @@ type ItemMetadataFixture = Readonly<{
         name: string;
       }>
   )[];
-  assignees: readonly Readonly<{
-    node_id: string;
-    login: string;
-    type: "User";
-  }>[];
+  assignees?:
+    | readonly Readonly<{
+        node_id: string;
+        login: string;
+        type: "User";
+      }>[]
+    | null;
   milestone: Readonly<{
     node_id: string;
     number: number;
@@ -386,6 +388,21 @@ describe("GitHub項目列挙", () => {
       mergeStatus: "not_merged",
     });
     expect(requestedRoutes).toEqual(["GET /repos/{owner}/{repo}/issues"]);
+  });
+
+  it("REST Issueのassigneesが省略またはnullならassigneeなしとして扱う", async () => {
+    const omittedAssignees = {
+      ...createItemMetadata(3, {}),
+    };
+    delete omittedAssignees.assignees;
+    const nullAssignees = {
+      ...createItemMetadata(4, {}),
+      assignees: null,
+    };
+
+    const items = await enumerateFixture("R_example", "example", [omittedAssignees, nullAssignees]);
+
+    expect(items.map((item) => item.assignees)).toEqual([[], []]);
   });
 
   it("個別取得したmerge済みPull Requestの状態を正規化する", async () => {

@@ -2,7 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 
 import { z } from "zod";
 import { parse } from "graphql";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createGitHubNodeId,
@@ -18,8 +18,11 @@ import {
   createGitHubClient,
   createPublicRepositoryAllowlist,
   GITHUB_APP_READ_PERMISSIONS,
+  GitHubItemDetailCollectionError,
   GitHubResponseSchemaValidationError,
   GitHubResponseValidationError,
+  normalizeGitHubEvents,
+  normalizeObservedGitHubItem,
   type CreateGitHubClientOptions,
   type EnumeratedGitHubItem,
   type GitHubClient,
@@ -468,6 +471,77 @@ describe("Issue詳細収集", () => {
     }
   });
 
+  it("項目詳細の収集中に発生した例外を項目参照付きの型付きエラーで包む", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "I_collection_failure", 42, "issue");
+    const cause = new Error("項目詳細取得エラー");
+    const mock = createGraphqlHttpMock((operation) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("unavailable");
+      }
+      if (operation === "GitHubItemDetail") {
+        throw cause;
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    try {
+      await collectGitHubItemDetails({
+        allowlist,
+        targets: [
+          {
+            item,
+            eventWindow: Object.freeze({ mode: "initial" }),
+          },
+        ],
+        observedAt,
+        graphql: mock.graphql,
+      });
+      throw new Error("GitHubItemDetailCollectionErrorが発生しませんでした");
+    } catch (error: unknown) {
+      if (!(error instanceof GitHubItemDetailCollectionError)) {
+        throw error;
+      }
+      expect(error).toMatchObject({
+        repositoryOwner: "VOICEVOX",
+        repositoryName: "example",
+        number: 42,
+      });
+      expect(error.cause).toBe(cause);
+    }
+  });
+
+  it("既に項目詳細収集エラーで包まれた例外を二重に包まない", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "I_wrapped_collection_failure", 43, "issue");
+    const wrappedError = new GitHubItemDetailCollectionError("VOICEVOX", "example", 43, {
+      cause: new Error("項目詳細取得エラー"),
+    });
+    const mock = createGraphqlHttpMock((operation) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("unavailable");
+      }
+      if (operation === "GitHubItemDetail") {
+        throw wrappedError;
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    await expect(
+      collectGitHubItemDetails({
+        allowlist,
+        targets: [
+          {
+            item,
+            eventWindow: Object.freeze({ mode: "initial" }),
+          },
+        ],
+        observedAt,
+        graphql: mock.graphql,
+      }),
+    ).rejects.toBe(wrappedError);
+  });
+
   it("同じ詳細収集で項目ごとのtimeline取得窓を使う", async () => {
     const allowlist = createAllowlist();
     const fullHistoryItem = createItem(allowlist, "I_full_history", 1, "issue");
@@ -744,9 +818,15 @@ describe("Issue詳細収集", () => {
         switch (event.kind) {
           case "sub_issue_added":
           case "sub_issue_removed":
+            if ("status" in event.subIssue) {
+              return [];
+            }
             return [{ kind: event.kind, relatedNodeId: event.subIssue.nodeId }];
           case "parent_issue_added":
           case "parent_issue_removed":
+            if ("status" in event.parent) {
+              return [];
+            }
             return [{ kind: event.kind, relatedNodeId: event.parent.nodeId }];
           default:
             return [];
@@ -837,6 +917,7 @@ describe("Issue詳細収集", () => {
       "DetailActorFields",
       "DetailAssigneeFields",
       "DetailCheckContextFields",
+      "DetailHeadCommitFields",
       "DetailIssueCommentFields",
       "DetailIssueTimelineFields",
       "DetailPullRequestTimelineFields",
@@ -850,6 +931,153 @@ describe("Issue詳細収集", () => {
       "DetailActorFields",
       "DetailIssueCommentFields",
     ]);
+  });
+
+  it("削除済みassigneeと参照不能なIssueをunavailableとして保持し判定根拠から除外する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "I_unavailable_timeline_targets", 30, "issue");
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const timelineNodes = [
+      {
+        __typename: "AssignedEvent",
+        id: "AE_unavailable",
+        createdAt: "2026-07-31T01:00:00Z",
+        actor: createActor(1),
+        assignee: null,
+      },
+      {
+        __typename: "UnassignedEvent",
+        id: "UE_unavailable",
+        createdAt: "2026-07-31T02:00:00Z",
+        actor: createActor(2),
+        assignee: null,
+      },
+      {
+        __typename: "SubIssueAddedEvent",
+        id: "SIAE_unavailable",
+        createdAt: "2026-07-31T03:00:00Z",
+        actor: createActor(3),
+        subIssue: null,
+      },
+      {
+        __typename: "SubIssueRemovedEvent",
+        id: "SIRE_unavailable",
+        createdAt: "2026-07-31T04:00:00Z",
+        actor: createActor(4),
+        subIssue: null,
+      },
+      {
+        __typename: "ParentIssueAddedEvent",
+        id: "PIAE_unavailable",
+        createdAt: "2026-07-31T05:00:00Z",
+        actor: createActor(5),
+        parent: null,
+      },
+      {
+        __typename: "ParentIssueRemovedEvent",
+        id: "PIRE_unavailable",
+        createdAt: "2026-07-31T06:00:00Z",
+        actor: createActor(6),
+        parent: null,
+      },
+    ];
+    const mock = createGraphqlHttpMock((operation) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("available");
+      }
+      if (operation === "GitHubItemDetail") {
+        return {
+          item: {
+            __typename: "Issue",
+            id: "I_unavailable_timeline_targets",
+            body: "本文",
+            comments: createEmptyConnection(),
+            timelineItems: {
+              nodes: timelineNodes,
+              pageInfo: createPageInfo(false, null),
+            },
+            blockedBy: createEmptyConnection(),
+            blocking: createEmptyConnection(),
+            parent: null,
+            subIssues: createEmptyConnection(),
+          },
+        };
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [
+        {
+          item,
+          eventWindow: Object.freeze({ mode: "initial" }),
+        },
+      ],
+      observedAt,
+      graphql: mock.graphql,
+    });
+    const detail = requireDetail(collection.items, 0);
+    if (detail.type !== "issue") {
+      throw new Error("Issue detail fixtureではありません");
+    }
+
+    expect(detail.timeline).toMatchObject([
+      {
+        kind: "assigned",
+        assignee: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+      },
+      {
+        kind: "unassigned",
+        assignee: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+      },
+      {
+        kind: "sub_issue_added",
+        subIssue: {
+          status: "unavailable",
+          reason: "github_did_not_return_item",
+        },
+      },
+      {
+        kind: "sub_issue_removed",
+        subIssue: {
+          status: "unavailable",
+          reason: "github_did_not_return_item",
+        },
+      },
+      {
+        kind: "parent_issue_added",
+        parent: {
+          status: "unavailable",
+          reason: "github_did_not_return_item",
+        },
+      },
+      {
+        kind: "parent_issue_removed",
+        parent: {
+          status: "unavailable",
+          reason: "github_did_not_return_item",
+        },
+      },
+    ]);
+    expect(
+      normalizeGitHubEvents({
+        item,
+        detail,
+        isBot: () => false,
+      }),
+    ).toEqual([]);
+    expect(warning).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledWith(
+      "GitHubの判定根拠を除外しました item=VOICEVOX/example#30 fields=AssignedEvent.assignee,UnassignedEvent.assignee,SubIssueAddedEvent.subIssue,SubIssueRemovedEvent.subIssue,ParentIssueAddedEvent.parent,ParentIssueRemovedEvent.parent",
+    );
+    warning.mockRestore();
   });
 
   it("native APIがschemaにない場合は空配列ではなく利用不可を明示する", async () => {
@@ -963,12 +1191,29 @@ function createPullRequestResponse(
   checkState: "ERROR" | "EXPECTED" | "FAILURE" | "PENDING" | "SUCCESS",
   checkContexts: readonly unknown[],
 ): unknown {
+  const headCommit = {
+    id: `C_${itemNodeId}`,
+    oid: `head-${itemNodeId}`,
+    committedDate: "2026-07-31T20:00:00Z",
+    pushedDate: "2026-07-31T20:01:00Z",
+    statusCheckRollup: {
+      id: `SCR_${itemNodeId}`,
+      state: checkState,
+      contexts: {
+        nodes: [...checkContexts],
+        pageInfo: createPageInfo(false, null),
+      },
+    },
+  };
   return {
     item: {
       __typename: "PullRequest",
       id: itemNodeId,
       body: "Codex入力専用のPull Request本文",
       headRefOid: `head-${itemNodeId}`,
+      headRef: {
+        target: headCommit,
+      },
       mergeable,
       mergeStateStatus,
       autoMergeRequest: null,
@@ -980,20 +1225,7 @@ function createPullRequestResponse(
       headCommit: {
         nodes: [
           {
-            commit: {
-              id: `C_${itemNodeId}`,
-              oid: `head-${itemNodeId}`,
-              committedDate: "2026-07-31T20:00:00Z",
-              pushedDate: "2026-07-31T20:01:00Z",
-              statusCheckRollup: {
-                id: `SCR_${itemNodeId}`,
-                state: checkState,
-                contexts: {
-                  nodes: [...checkContexts],
-                  pageInfo: createPageInfo(false, null),
-                },
-              },
-            },
+            commit: headCommit,
           },
         ],
       },
@@ -1002,7 +1234,597 @@ function createPullRequestResponse(
   };
 }
 
+function createHeadCommit(id: string, oid: string): unknown {
+  return {
+    id,
+    oid,
+    committedDate: "2026-07-31T20:00:00Z",
+    pushedDate: "2026-07-31T20:01:00Z",
+    statusCheckRollup: null,
+  };
+}
+
+function createPullRequestNullableFieldResponse(
+  itemNodeId: string,
+  timelineNodes: readonly unknown[],
+  reviewRequestNodes: readonly unknown[],
+  autoMergeRequest: unknown,
+): unknown {
+  const headCommit = {
+    id: `C_${itemNodeId}`,
+    oid: `head-${itemNodeId}`,
+    committedDate: "2026-07-31T20:00:00Z",
+    pushedDate: "2026-07-31T20:01:00Z",
+    statusCheckRollup: null,
+  };
+  return {
+    item: {
+      __typename: "PullRequest",
+      id: itemNodeId,
+      body: "本文",
+      headRefOid: `head-${itemNodeId}`,
+      headRef: {
+        target: headCommit,
+      },
+      mergeable: "MERGEABLE",
+      mergeStateStatus: "CLEAN",
+      autoMergeRequest,
+      mergeQueueEntry: null,
+      comments: createEmptyConnection(),
+      reviews: createEmptyConnection(),
+      reviewThreads: createEmptyConnection(),
+      reviewRequests: {
+        nodes: reviewRequestNodes,
+        pageInfo: createPageInfo(false, null),
+      },
+      headCommit: {
+        nodes: [
+          {
+            commit: headCommit,
+          },
+        ],
+      },
+      timelineItems: {
+        nodes: timelineNodes,
+        pageInfo: createPageInfo(false, null),
+      },
+    },
+  };
+}
+
+async function collectPullRequestNullableFieldFixture(
+  itemNodeId: string,
+  number: number,
+  timelineNodes: readonly unknown[],
+  reviewRequestNodes: readonly unknown[],
+  autoMergeRequest: unknown,
+): Promise<
+  Readonly<{
+    item: EnumeratedGitHubItem;
+    detail: Extract<GitHubItemDetail, { type: "pull_request" }>;
+  }>
+> {
+  const allowlist = createAllowlist();
+  const item = createItem(allowlist, itemNodeId, number, "pull_request");
+  const response = createPullRequestNullableFieldResponse(
+    itemNodeId,
+    timelineNodes,
+    reviewRequestNodes,
+    autoMergeRequest,
+  );
+  const mock = createGraphqlHttpMock((operation) => {
+    if (operation === "GitHubItemDetailCapabilities") {
+      return createCapabilitiesResponse("available");
+    }
+    if (operation === "GitHubItemDetail") {
+      return response;
+    }
+    throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+  });
+  const collection = await collectGitHubItemDetails({
+    allowlist,
+    targets: [
+      {
+        item,
+        eventWindow: Object.freeze({ mode: "initial" }),
+      },
+    ],
+    observedAt,
+    graphql: mock.graphql,
+  });
+  const detail = requireDetail(collection.items, 0);
+  if (detail.type !== "pull_request") {
+    throw new Error("Pull Request detail fixtureではありません");
+  }
+  return Object.freeze({
+    item,
+    detail,
+  });
+}
+
+function createPullRequestHeadCommitResolutionResponse(
+  itemNodeId: string,
+  headRefOid: string,
+  headRef: unknown,
+  comparisonHeadCommits: readonly unknown[],
+): unknown {
+  return {
+    item: {
+      __typename: "PullRequest",
+      id: itemNodeId,
+      body: "Codex入力専用のPull Request本文",
+      headRefOid,
+      headRef,
+      mergeable: "MERGEABLE",
+      mergeStateStatus: "CLEAN",
+      autoMergeRequest: null,
+      mergeQueueEntry: null,
+      comments: createEmptyConnection(),
+      reviews: createEmptyConnection(),
+      reviewThreads: createEmptyConnection(),
+      reviewRequests: createEmptyConnection(),
+      headCommit: {
+        nodes: comparisonHeadCommits.map((commit) => ({ commit })),
+      },
+      timelineItems: createEmptyConnection(),
+    },
+  };
+}
+
 describe("Pull Request詳細収集", () => {
+  it("対象が削除された現行review requestをunavailableとして保持し判定根拠から除外する", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { item, detail } = await collectPullRequestNullableFieldFixture(
+      "PR_unavailable_current_review_request",
+      24,
+      [],
+      [
+        {
+          id: "RR_unavailable",
+          requestedReviewer: null,
+        },
+      ],
+      null,
+    );
+
+    expect(detail.reviewRequests.current).toMatchObject([
+      {
+        sourceId: "github_review_request:RR_unavailable",
+        target: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+        requestedAt: {
+          status: "unavailable",
+          reason: "timeline_event_not_found",
+        },
+      },
+    ]);
+    const observation = normalizeObservedGitHubItem({
+      item,
+      detail,
+      isBot: () => false,
+    });
+    if (observation.type !== "pull_request") {
+      throw new Error("Pull Request observation fixtureではありません");
+    }
+    expect(observation.reviewRequests).toEqual([]);
+    expect(warning).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledWith(
+      "GitHubの判定根拠を除外しました item=VOICEVOX/example#24 fields=ReviewRequest.requestedReviewer",
+    );
+    warning.mockRestore();
+  });
+
+  it("timeline上の削除済みreviewerとassigneeをunavailableとして保持し判定根拠から除外する", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const timelineNodes = [
+      {
+        __typename: "ReviewRequestedEvent",
+        id: "RRE_unavailable",
+        createdAt: "2026-07-31T01:00:00Z",
+        actor: createActor(1),
+        requestedReviewer: null,
+      },
+      {
+        __typename: "ReviewRequestRemovedEvent",
+        id: "RRRE_unavailable",
+        createdAt: "2026-07-31T02:00:00Z",
+        actor: createActor(2),
+        requestedReviewer: null,
+      },
+      {
+        __typename: "AssignedEvent",
+        id: "AE_unavailable_pr",
+        createdAt: "2026-07-31T03:00:00Z",
+        actor: createActor(3),
+        assignee: null,
+      },
+      {
+        __typename: "UnassignedEvent",
+        id: "UE_unavailable_pr",
+        createdAt: "2026-07-31T04:00:00Z",
+        actor: createActor(4),
+        assignee: null,
+      },
+    ];
+    const { item, detail } = await collectPullRequestNullableFieldFixture(
+      "PR_unavailable_timeline_actors",
+      25,
+      timelineNodes,
+      [],
+      null,
+    );
+
+    expect(detail.timeline).toMatchObject([
+      {
+        kind: "review_requested",
+        target: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+      },
+      {
+        kind: "review_request_removed",
+        target: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+      },
+      {
+        kind: "assigned",
+        assignee: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+      },
+      {
+        kind: "unassigned",
+        assignee: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+      },
+    ]);
+    expect(detail.reviewRequests.history).toHaveLength(2);
+    expect(
+      normalizeGitHubEvents({
+        item,
+        detail,
+        isBot: () => false,
+      }).map((event) => event.kind),
+    ).toEqual(["push"]);
+    expect(warning).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledWith(
+      "GitHubの判定根拠を除外しました item=VOICEVOX/example#25 fields=AssignedEvent.assignee,UnassignedEvent.assignee,ReviewRequestedEvent.requestedReviewer,ReviewRequestRemovedEvent.requestedReviewer",
+    );
+    warning.mockRestore();
+  });
+
+  it("force push前のCommitだけが参照不能でもpushイベントを生成する", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const timelineNodes = [
+      {
+        __typename: "HeadRefForcePushedEvent",
+        id: "HRFPE_unavailable_before",
+        createdAt: "2026-07-31T01:00:00Z",
+        actor: createActor(1),
+        beforeCommit: null,
+        afterCommit: {
+          oid: "after-sha",
+        },
+      },
+    ];
+    const { item, detail } = await collectPullRequestNullableFieldFixture(
+      "PR_unavailable_force_push_before_commit",
+      26,
+      timelineNodes,
+      [],
+      null,
+    );
+
+    expect(detail.timeline).toMatchObject([
+      {
+        kind: "head_ref_force_pushed",
+        beforeSha: {
+          status: "unavailable",
+          reason: "github_did_not_return_commit",
+        },
+        afterSha: "after-sha",
+      },
+    ]);
+    const normalizedPushEvents = normalizeGitHubEvents({
+      item,
+      detail,
+      isBot: () => false,
+    }).filter((event) => event.kind === "push");
+    expect(normalizedPushEvents).toHaveLength(2);
+    expect(normalizedPushEvents).toContainEqual(
+      expect.objectContaining({
+        forcePush: true,
+        headCommitSha: "after-sha",
+      }),
+    );
+    expect(normalizedPushEvents).toContainEqual(
+      expect.objectContaining({
+        forcePush: false,
+        headCommitSha: "head-PR_unavailable_force_push_before_commit",
+      }),
+    );
+    expect(warning).not.toHaveBeenCalled();
+    warning.mockRestore();
+  });
+
+  it("force push後のCommitが参照不能ならpushイベントを除外して警告する", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const timelineNodes = [
+      {
+        __typename: "HeadRefForcePushedEvent",
+        id: "HRFPE_unavailable_after",
+        createdAt: "2026-07-31T02:00:00Z",
+        actor: createActor(2),
+        beforeCommit: {
+          oid: "before-sha",
+        },
+        afterCommit: null,
+      },
+    ];
+    const { item, detail } = await collectPullRequestNullableFieldFixture(
+      "PR_unavailable_force_push_after_commit",
+      27,
+      timelineNodes,
+      [],
+      null,
+    );
+
+    expect(detail.timeline).toMatchObject([
+      {
+        kind: "head_ref_force_pushed",
+        beforeSha: "before-sha",
+        afterSha: {
+          status: "unavailable",
+          reason: "github_did_not_return_commit",
+        },
+      },
+    ]);
+    const normalizedPushEvents = normalizeGitHubEvents({
+      item,
+      detail,
+      isBot: () => false,
+    }).filter((event) => event.kind === "push");
+    expect(normalizedPushEvents).toHaveLength(1);
+    expect(normalizedPushEvents[0]).toMatchObject({
+      forcePush: false,
+      headCommitSha: "head-PR_unavailable_force_push_after_commit",
+    });
+    expect(warning).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledWith(
+      "GitHubの判定根拠を除外しました item=VOICEVOX/example#27 fields=HeadRefForcePushedEvent.afterCommit",
+    );
+    warning.mockRestore();
+  });
+
+  it("差分commit列が0件でもheadRef.targetからhead commitを解決する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "PR_head_ref_target", 20, "pull_request");
+    const headCommit = createHeadCommit("C_head_ref_target", "head-ref-target-sha");
+    const response = createPullRequestHeadCommitResolutionResponse(
+      "PR_head_ref_target",
+      "head-ref-target-sha",
+      {
+        target: headCommit,
+      },
+      [],
+    );
+    const mock = createGraphqlHttpMock((operation) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("available");
+      }
+      if (operation === "GitHubItemDetail") {
+        return response;
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [
+        {
+          item,
+          eventWindow: Object.freeze({ mode: "initial" }),
+        },
+      ],
+      observedAt,
+      graphql: mock.graphql,
+    });
+
+    const detail = requireDetail(collection.items, 0);
+    if (detail.type !== "pull_request") {
+      throw new Error("Pull Request detail fixtureではありません");
+    }
+    expect(detail.headCommit).toMatchObject({
+      nodeId: "C_head_ref_target",
+      sha: "head-ref-target-sha",
+    });
+    expect(mock.requests.map((request) => request.operation)).toEqual([
+      "GitHubItemDetailCapabilities",
+      "GitHubItemDetail",
+    ]);
+  });
+
+  it("headRefがnullでも差分commit列の末尾からhead commitを解決する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "PR_comparison_head", 21, "pull_request");
+    const comparisonHeadCommit = createHeadCommit("C_comparison_head", "comparison-head-sha");
+    const response = createPullRequestHeadCommitResolutionResponse(
+      "PR_comparison_head",
+      "comparison-head-sha",
+      null,
+      [comparisonHeadCommit],
+    );
+    const mock = createGraphqlHttpMock((operation) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("available");
+      }
+      if (operation === "GitHubItemDetail") {
+        return response;
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [
+        {
+          item,
+          eventWindow: Object.freeze({ mode: "initial" }),
+        },
+      ],
+      observedAt,
+      graphql: mock.graphql,
+    });
+
+    const detail = requireDetail(collection.items, 0);
+    if (detail.type !== "pull_request") {
+      throw new Error("Pull Request detail fixtureではありません");
+    }
+    expect(detail.headCommit).toMatchObject({
+      nodeId: "C_comparison_head",
+      sha: "comparison-head-sha",
+    });
+    expect(mock.requests.map((request) => request.operation)).toEqual([
+      "GitHubItemDetailCapabilities",
+      "GitHubItemDetail",
+    ]);
+  });
+
+  it("既存候補のOIDが一致しない場合はrepository.objectからhead commitを解決する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "PR_repository_object", 22, "pull_request");
+    const response = createPullRequestHeadCommitResolutionResponse(
+      "PR_repository_object",
+      "repository-object-sha",
+      {
+        target: createHeadCommit("C_stale_head_ref", "stale-head-ref-sha"),
+      },
+      [createHeadCommit("C_stale_comparison", "stale-comparison-sha")],
+    );
+    const repositoryObject = createHeadCommit("C_repository_object", "repository-object-sha");
+    const mock = createGraphqlHttpMock((operation, variables) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("available");
+      }
+      if (operation === "GitHubItemDetail") {
+        return response;
+      }
+      if (operation === "GitHubPullRequestHeadCommit") {
+        expect(getStringVariable(variables, "pullRequestId")).toBe("PR_repository_object");
+        expect(getStringVariable(variables, "headRefOid")).toBe("repository-object-sha");
+        return {
+          pullRequest: {
+            __typename: "PullRequest",
+            id: "PR_repository_object",
+            repository: {
+              object: repositoryObject,
+            },
+          },
+        };
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [
+        {
+          item,
+          eventWindow: Object.freeze({ mode: "initial" }),
+        },
+      ],
+      observedAt,
+      graphql: mock.graphql,
+    });
+
+    const detail = requireDetail(collection.items, 0);
+    if (detail.type !== "pull_request") {
+      throw new Error("Pull Request detail fixtureではありません");
+    }
+    expect(detail.headCommit).toMatchObject({
+      nodeId: "C_repository_object",
+      sha: "repository-object-sha",
+    });
+    expect(mock.requests.map((request) => request.operation)).toEqual([
+      "GitHubItemDetailCapabilities",
+      "GitHubItemDetail",
+      "GitHubPullRequestHeadCommit",
+    ]);
+  });
+
+  it("head commitを解決できない場合は項目詳細収集エラーから元の型付きエラーへcauseを繋ぐ", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "PR_unresolved_head", 23, "pull_request");
+    const response = createPullRequestHeadCommitResolutionResponse(
+      "PR_unresolved_head",
+      "unresolved-head-sha",
+      {
+        target: createHeadCommit("C_unresolved_head_ref", "stale-head-ref-sha"),
+      },
+      [createHeadCommit("C_unresolved_comparison", "stale-comparison-sha")],
+    );
+    const mock = createGraphqlHttpMock((operation) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("available");
+      }
+      if (operation === "GitHubItemDetail") {
+        return response;
+      }
+      if (operation === "GitHubPullRequestHeadCommit") {
+        return {
+          pullRequest: {
+            __typename: "PullRequest",
+            id: "PR_unresolved_head",
+            repository: {
+              object: null,
+            },
+          },
+        };
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    try {
+      await collectGitHubItemDetails({
+        allowlist,
+        targets: [
+          {
+            item,
+            eventWindow: Object.freeze({ mode: "initial" }),
+          },
+        ],
+        observedAt,
+        graphql: mock.graphql,
+      });
+      throw new Error("GitHubItemDetailCollectionErrorが発生しませんでした");
+    } catch (error: unknown) {
+      if (!(error instanceof GitHubItemDetailCollectionError)) {
+        throw error;
+      }
+      if (!(error.cause instanceof GitHubResponseValidationError)) {
+        throw new Error("GitHubItemDetailCollectionErrorのcauseが不正です");
+      }
+      expect(error.cause.message).toContain("unresolved-head-sha");
+      if (!(error.cause.cause instanceof TypeError)) {
+        throw new Error("GitHubResponseValidationErrorのcauseがTypeErrorではありません");
+      }
+      expect(error.cause.cause.message).toContain("repository.object");
+    }
+    expect(mock.requests.map((request) => request.operation)).toEqual([
+      "GitHubItemDetailCapabilities",
+      "GitHubItemDetail",
+      "GitHubPullRequestHeadCommit",
+    ]);
+  });
+
   it("review、thread、review request履歴、head更新、merge情報を区別して返す", async () => {
     const allowlist = createAllowlist();
     const item = createItem(allowlist, "PR_target", 7, "pull_request");
@@ -1103,6 +1925,7 @@ describe("Pull Request詳細収集", () => {
         id: "PR_target",
         body: "Codex入力専用のPull Request本文",
         headRefOid: "new-head-sha",
+        headRef: null,
         mergeable: "MERGEABLE",
         mergeStateStatus: "BLOCKED",
         autoMergeRequest: {
@@ -1268,12 +2091,17 @@ describe("Pull Request詳細収集", () => {
       },
     ]);
     expect(
-      detail.reviewRequests.current.map((request) => ({
-        sourceId: request.sourceId,
-        targetType: request.target.type,
-        targetNodeId: request.target.nodeId,
-        requestedAt: request.requestedAt,
-      })),
+      detail.reviewRequests.current.map((request) => {
+        if ("status" in request.target) {
+          throw new Error("review request対象fixtureが取得不能です");
+        }
+        return {
+          sourceId: request.sourceId,
+          targetType: request.target.type,
+          targetNodeId: request.target.nodeId,
+          requestedAt: request.requestedAt,
+        };
+      }),
     ).toEqual([
       {
         sourceId: "github_review_request:RR_team",
@@ -1286,11 +2114,16 @@ describe("Pull Request詳細収集", () => {
       },
     ]);
     expect(
-      detail.reviewRequests.history.map((event) => ({
-        kind: event.kind,
-        target: event.target.nodeId,
-        occurredAt: event.occurredAt,
-      })),
+      detail.reviewRequests.history.map((event) => {
+        if ("status" in event.target) {
+          throw new Error("review request履歴対象fixtureが取得不能です");
+        }
+        return {
+          kind: event.kind,
+          target: event.target.nodeId,
+          occurredAt: event.occurredAt,
+        };
+      }),
     ).toEqual([
       {
         kind: "review_requested",
@@ -1438,7 +2271,7 @@ describe("Pull Request詳細収集", () => {
         observedAt,
         graphql: mock.graphql,
       }),
-    ).rejects.toThrowError(GitHubResponseValidationError);
+    ).rejects.toThrowError(GitHubItemDetailCollectionError);
   });
 
   it("ready、running、failing、conflictを構成するmergeとcheck信号を保持する", async () => {

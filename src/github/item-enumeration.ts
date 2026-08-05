@@ -98,7 +98,7 @@ const itemMetadataSchema = z
     body: z.string().nullable(),
     user: accountSchema.nullable(),
     labels: z.array(labelSchema),
-    assignees: z.array(accountSchema),
+    assignees: z.array(accountSchema).nullish(),
     milestone: milestoneSchema.nullable(),
     pull_request: z
       .object({
@@ -319,8 +319,11 @@ function normalizeLabels(labels: readonly z.output<typeof labelSchema>[]): reado
 }
 
 function normalizeAssignees(
-  assignees: readonly z.output<typeof accountSchema>[],
+  assignees: readonly z.output<typeof accountSchema>[] | null | undefined,
 ): readonly GitHubItemAccount[] {
+  if (assignees == null) {
+    return Object.freeze([]);
+  }
   const normalized = assignees.map(normalizeAccount);
   const nodeIds = new Set(normalized.map((assignee) => assignee.nodeId));
   if (nodeIds.size !== normalized.length) {

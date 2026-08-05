@@ -310,8 +310,28 @@ function normalizeReviewEvent(
   });
 }
 
-function normalizeReviewRequestTarget(
+type IdentifiedGitHubReviewRequestTarget = Exclude<
+  GitHubReviewRequestTarget,
+  { status: "unavailable" }
+>;
+
+function isIdentifiedReviewRequestTarget(
   target: GitHubReviewRequestTarget,
+): target is IdentifiedGitHubReviewRequestTarget {
+  return !("status" in target);
+}
+
+function hasIdentifiedReviewRequestTarget(
+  request: GitHubCurrentReviewRequest,
+): request is GitHubCurrentReviewRequest &
+  Readonly<{
+    target: IdentifiedGitHubReviewRequestTarget;
+  }> {
+  return isIdentifiedReviewRequestTarget(request.target);
+}
+
+function normalizeReviewRequestTarget(
+  target: IdentifiedGitHubReviewRequestTarget,
 ): Extract<NormalizedEvent, { kind: "review_request" }>["target"] {
   return Object.freeze({
     type: target.type,
@@ -343,6 +363,9 @@ function normalizeTimelineEvent(
   switch (event.kind) {
     case "assigned":
     case "unassigned":
+      if ("status" in event.assignee) {
+        return Object.freeze([]);
+      }
       return Object.freeze([
         Object.freeze({
           kind: "assignee",
@@ -369,6 +392,9 @@ function normalizeTimelineEvent(
       ]);
     case "review_requested":
     case "review_request_removed":
+      if (!isIdentifiedReviewRequestTarget(event.target)) {
+        return Object.freeze([]);
+      }
       return Object.freeze([
         Object.freeze({
           kind: "review_request",
@@ -447,6 +473,9 @@ function normalizeTimelineEvent(
     case "parent_issue_removed":
       return Object.freeze([]);
     case "head_ref_force_pushed":
+      if (typeof event.afterSha !== "string") {
+        return Object.freeze([]);
+      }
       return Object.freeze([
         Object.freeze({
           kind: "push",
@@ -561,12 +590,18 @@ function hierarchyEventMatchesRelation(
   switch (event.kind) {
     case "sub_issue_added":
     case "sub_issue_removed":
+      if ("status" in event.subIssue) {
+        return false;
+      }
       return (
         relation.relationship === "sub_issue" &&
         event.subIssue.nodeId === relation.relatedItem.nodeId
       );
     case "parent_issue_added":
     case "parent_issue_removed":
+      if ("status" in event.parent) {
+        return false;
+      }
       return (
         relation.relationship === "parent" && event.parent.nodeId === relation.relatedItem.nodeId
       );
@@ -648,6 +683,7 @@ function normalizeCurrentReviewRequestSnapshots(
 ): readonly NormalizedEvent[] {
   return Object.freeze(
     detail.reviewRequests.current
+      .filter(hasIdentifiedReviewRequestTarget)
       .filter((request) => request.requestedAt.status === "unavailable")
       .map((request) =>
         Object.freeze({
@@ -746,7 +782,7 @@ export function normalizeGitHubEvents(
 }
 
 function normalizeReviewRequestTargetObservation(
-  target: GitHubReviewRequestTarget,
+  target: IdentifiedGitHubReviewRequestTarget,
   isBot: GitHubBotPredicate,
 ): ObservedGitHubReviewRequestTarget {
   if (target.type === "user") {
@@ -766,7 +802,10 @@ function normalizeReviewRequestTargetObservation(
 }
 
 function normalizeReviewRequestObservation(
-  request: GitHubCurrentReviewRequest,
+  request: GitHubCurrentReviewRequest &
+    Readonly<{
+      target: IdentifiedGitHubReviewRequestTarget;
+    }>,
   isBot: GitHubBotPredicate,
 ): ObservedGitHubReviewRequest {
   return Object.freeze({
@@ -905,9 +944,9 @@ export function normalizeObservedGitHubItem(
       headCommit: options.detail.headCommit,
       reviewThreads: normalizeReviewThreads(options.detail, options.isBot),
       reviewRequests: Object.freeze(
-        options.detail.reviewRequests.current.map((request) =>
-          normalizeReviewRequestObservation(request, options.isBot),
-        ),
+        options.detail.reviewRequests.current
+          .filter(hasIdentifiedReviewRequestTarget)
+          .map((request) => normalizeReviewRequestObservation(request, options.isBot)),
       ),
       mergeState: normalizeMergeState(options.detail.mergeState, options.isBot),
     });

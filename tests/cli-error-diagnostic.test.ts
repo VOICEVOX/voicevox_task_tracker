@@ -11,18 +11,12 @@ import {
 } from "../src/cli/errors.js";
 import {
   GitHubGraphQLResponseError,
+  GitHubItemDetailCollectionError,
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
 } from "../src/github/index.js";
 import { RelationReferenceConflictError } from "../src/graph/index.js";
 import { StateFormatError } from "../src/persistence/index.js";
-
-class GitHubItemDetailError extends Error {
-  public constructor(cause: Error) {
-    super("GitHub項目の詳細取得に失敗しました", { cause });
-    this.name = new.target.name;
-  }
-}
 
 function createGraphQLResponseError(options: ErrorOptions): GitHubGraphQLResponseError {
   return new GitHubGraphQLResponseError(
@@ -236,18 +230,37 @@ describe("safeErrorDiagnostic", () => {
     const graphQLError = createGraphQLResponseError({
       cause: new Error([rawMessage, variables, responseBody, query].join("|")),
     });
-    const error = new GitHubItemDetailError(graphQLError);
+    const error = new GitHubItemDetailCollectionError("VOICEVOX", "voicevox", 42, {
+      cause: graphQLError,
+    });
 
     const diagnostic = safeErrorDiagnostic("incremental_collection", error);
 
     expect(diagnostic).toBe(
-      "stage=incremental_collection errorType=GitHubItemDetailError<-GitHubGraphQLResponseError<-Error operation=GitHubItemDetail queryHash=3f2a1c9d8e7b6a54 gqlErrorCount=1 gqlError0Locations=line:634,column:13 gqlError0Path=node.autoMergeRequest.id gqlError0Type=INVALID gqlError0Code=undefinedField gqlError0Field=id gqlError0ParentType=AutoMergeRequest requestId=ABCD:1234:5678",
+      "stage=incremental_collection errorType=GitHubItemDetailCollectionError<-GitHubGraphQLResponseError<-Error item=VOICEVOX/voicevox#42 operation=GitHubItemDetail queryHash=3f2a1c9d8e7b6a54 gqlErrorCount=1 gqlError0Locations=line:634,column:13 gqlError0Path=node.autoMergeRequest.id gqlError0Type=INVALID gqlError0Code=undefinedField gqlError0Field=id gqlError0ParentType=AutoMergeRequest requestId=ABCD:1234:5678",
     );
     expect(diagnostic).not.toContain("httpStatus=");
     expect(diagnostic).not.toContain(rawMessage);
     expect(diagnostic).not.toContain(variables);
     expect(diagnostic).not.toContain(responseBody);
     expect(diagnostic).not.toContain(query);
+  });
+
+  it("項目詳細収集エラーから公開項目参照だけを出し汎用エラーメッセージを出さない", () => {
+    const messageCanary = "GENERIC_ERROR_MESSAGE_CANARY";
+    const cause = new Error(messageCanary);
+    const error = new GitHubItemDetailCollectionError("VOICEVOX", "voicevox_engine", 123, {
+      cause,
+    });
+    delete error.stack;
+    delete cause.stack;
+
+    const diagnostic = safeErrorDiagnostic("incremental_collection", error);
+
+    expect(diagnostic).toBe(
+      "stage=incremental_collection errorType=GitHubItemDetailCollectionError<-Error item=VOICEVOX/voicevox_engine#123",
+    );
+    expect(diagnostic).not.toContain(messageCanary);
   });
 
   it("空白や改行を含む診断値を出さない", () => {

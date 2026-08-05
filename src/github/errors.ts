@@ -91,6 +91,28 @@ export type GitHubRateLimitSnapshot =
 /** GitHubクライアントで発生するエラーの基底クラス。 */
 export abstract class GitHubClientError extends TaskTrackerError {}
 
+/** GitHub項目詳細の収集が失敗したことを表す。 */
+export class GitHubItemDetailCollectionError extends GitHubClientError {
+  public readonly repositoryOwner: string;
+  public readonly repositoryName: string;
+  public readonly number: number;
+
+  public constructor(
+    repositoryOwner: string,
+    repositoryName: string,
+    number: number,
+    options: ErrorOptions,
+  ) {
+    super(
+      `GitHub項目詳細の収集に失敗しました。対象: ${repositoryOwner}/${repositoryName}#${number.toString()}`,
+      options,
+    );
+    this.repositoryOwner = repositoryOwner;
+    this.repositoryName = repositoryName;
+    this.number = number;
+  }
+}
+
 /** GitHub App認証情報が不足または不正であることを表す。 */
 export class GitHubCredentialsError extends GitHubClientError {
   public readonly variableNames: readonly string[];

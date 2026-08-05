@@ -174,6 +174,28 @@ const DETAIL_CHECK_CONTEXT_FIELDS_FRAGMENT = `
   }
 `;
 
+const DETAIL_HEAD_COMMIT_FIELDS_FRAGMENT = `
+  fragment DetailHeadCommitFields on Commit {
+    id
+    oid
+    committedDate
+    pushedDate
+    statusCheckRollup {
+      id
+      state
+      contexts(first: 100) {
+        nodes {
+          ...DetailCheckContextFields
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+`;
+
 const DETAIL_ISSUE_TIMELINE_FIELDS_FRAGMENT = `
   fragment DetailIssueTimelineFields on IssueTimelineItems {
     __typename
@@ -501,6 +523,7 @@ const GRAPHQL_FRAGMENT_SOURCES: ReadonlyMap<string, string> = new Map([
   ["DetailReviewCommentFields", DETAIL_REVIEW_COMMENT_FIELDS_FRAGMENT],
   ["DetailReviewThreadFields", DETAIL_REVIEW_THREAD_FIELDS_FRAGMENT],
   ["DetailCheckContextFields", DETAIL_CHECK_CONTEXT_FIELDS_FRAGMENT],
+  ["DetailHeadCommitFields", DETAIL_HEAD_COMMIT_FIELDS_FRAGMENT],
   ["DetailIssueTimelineFields", DETAIL_ISSUE_TIMELINE_FIELDS_FRAGMENT],
   ["DetailPullRequestTimelineFields", DETAIL_PULL_REQUEST_TIMELINE_FIELDS_FRAGMENT],
 ]);
@@ -708,6 +731,13 @@ export function createItemDetailQuery(
           id
           body
           headRefOid
+          headRef {
+            target {
+              ... on Commit {
+                ...DetailHeadCommitFields
+              }
+            }
+          }
           mergeable
           mergeStateStatus
           autoMergeRequest {
@@ -765,23 +795,7 @@ export function createItemDetailQuery(
           headCommit: commits(last: 1) {
             nodes {
               commit {
-                id
-                oid
-                committedDate
-                pushedDate
-                statusCheckRollup {
-                  id
-                  state
-                  contexts(first: 100) {
-                    nodes {
-                      ...DetailCheckContextFields
-                    }
-                    pageInfo {
-                      hasNextPage
-                      endCursor
-                    }
-                  }
-                }
+                ...DetailHeadCommitFields
               }
             }
           }
@@ -799,6 +813,24 @@ export function createItemDetailQuery(
     }
   `);
 }
+
+export const PULL_REQUEST_HEAD_COMMIT_QUERY = appendRequiredFragments(`
+  query GitHubPullRequestHeadCommit($pullRequestId: ID!, $headRefOid: GitObjectID!) {
+    pullRequest: node(id: $pullRequestId) {
+      __typename
+      ... on PullRequest {
+        id
+        repository {
+          object(oid: $headRefOid) {
+            ... on Commit {
+              ...DetailHeadCommitFields
+            }
+          }
+        }
+      }
+    }
+  }
+`);
 
 export const COMMENT_PAGE_QUERY = appendRequiredFragments(`
   query GitHubItemCommentPage($itemId: ID!, $after: String!) {

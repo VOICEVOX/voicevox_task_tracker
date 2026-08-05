@@ -13,6 +13,7 @@ import {
   createTimelinePageQuery,
   type GitHubItemDetailEventWindow,
   ITEM_DETAIL_CAPABILITIES_QUERY,
+  PULL_REQUEST_HEAD_COMMIT_QUERY,
   REVIEW_PAGE_QUERY,
   REVIEW_REQUEST_PAGE_QUERY,
   REVIEW_THREAD_COMMENT_PAGE_QUERY,
@@ -67,6 +68,10 @@ const fixedQueryCases = [
   {
     name: "詳細取得能力",
     query: ITEM_DETAIL_CAPABILITIES_QUERY,
+  },
+  {
+    name: "Pull Request head commit取得",
+    query: PULL_REQUEST_HEAD_COMMIT_QUERY,
   },
   {
     name: "コメント次ページ",
@@ -129,12 +134,12 @@ const queryCases: readonly QueryCase[] = [
 ];
 
 describe("GitHub GraphQLクエリ", () => {
-  it("送信しうる23件を列挙する", () => {
-    expect(fixedQueryCases).toHaveLength(9);
+  it("送信しうる24件を列挙する", () => {
+    expect(fixedQueryCases).toHaveLength(10);
     expect(itemDetailQueryCases).toHaveLength(8);
     expect(timelineQueryCases).toHaveLength(4);
     expect(dependencyQueryCases).toHaveLength(2);
-    expect(queryCases).toHaveLength(23);
+    expect(queryCases).toHaveLength(24);
   });
 
   it.each(queryCases)("$nameを公式schemaで検証できる", ({ query }) => {

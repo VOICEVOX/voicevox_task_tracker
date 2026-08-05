@@ -14,6 +14,7 @@ import {
 import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { type GitHubClient } from "./client.js";
 import {
+  GitHubItemDetailCollectionError,
   GitHubPublicBoundaryViolationError,
   GitHubResponseSchemaValidationError,
   GitHubResponseValidationError,
@@ -27,6 +28,7 @@ import {
   createTimelinePageQuery,
   type GitHubItemDetailEventWindow,
   ITEM_DETAIL_CAPABILITIES_QUERY,
+  PULL_REQUEST_HEAD_COMMIT_QUERY,
   REVIEW_PAGE_QUERY,
   REVIEW_REQUEST_PAGE_QUERY,
   REVIEW_THREAD_COMMENT_PAGE_QUERY,
@@ -247,7 +249,7 @@ const reviewThreadConnectionSchema = z.object({
 });
 const reviewRequestSchema = z.object({
   id: opaqueIdSchema,
-  requestedReviewer: reviewRequestTargetSchema,
+  requestedReviewer: reviewRequestTargetSchema.nullable(),
 });
 const reviewRequestConnectionSchema = z.object({
   nodes: z.array(reviewRequestSchema).max(CONNECTION_PAGE_SIZE),
@@ -331,11 +333,11 @@ const mergedEventSchema = timelineEventBaseSchema.extend({
 });
 const assignedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("AssignedEvent"),
-  assignee: assigneeSchema,
+  assignee: assigneeSchema.nullable(),
 });
 const unassignedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("UnassignedEvent"),
-  assignee: assigneeSchema,
+  assignee: assigneeSchema.nullable(),
 });
 const labelSchema = z.object({
   id: opaqueIdSchema,
@@ -351,11 +353,11 @@ const unlabeledEventSchema = timelineEventBaseSchema.extend({
 });
 const reviewRequestedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("ReviewRequestedEvent"),
-  requestedReviewer: reviewRequestTargetSchema,
+  requestedReviewer: reviewRequestTargetSchema.nullable(),
 });
 const reviewRequestRemovedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("ReviewRequestRemovedEvent"),
-  requestedReviewer: reviewRequestTargetSchema,
+  requestedReviewer: reviewRequestTargetSchema.nullable(),
 });
 const readyForReviewEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("ReadyForReviewEvent"),
@@ -378,28 +380,32 @@ const disconnectedEventSchema = timelineEventBaseSchema.extend({
 });
 const subIssueAddedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("SubIssueAddedEvent"),
-  subIssue: referencedItemSchema,
+  subIssue: referencedItemSchema.nullable(),
 });
 const subIssueRemovedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("SubIssueRemovedEvent"),
-  subIssue: referencedItemSchema,
+  subIssue: referencedItemSchema.nullable(),
 });
 const parentIssueAddedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("ParentIssueAddedEvent"),
-  parent: referencedItemSchema,
+  parent: referencedItemSchema.nullable(),
 });
 const parentIssueRemovedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("ParentIssueRemovedEvent"),
-  parent: referencedItemSchema,
+  parent: referencedItemSchema.nullable(),
 });
 const headRefForcePushedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("HeadRefForcePushedEvent"),
-  beforeCommit: z.object({
-    oid: shaSchema,
-  }),
-  afterCommit: z.object({
-    oid: shaSchema,
-  }),
+  beforeCommit: z
+    .object({
+      oid: shaSchema,
+    })
+    .nullable(),
+  afterCommit: z
+    .object({
+      oid: shaSchema,
+    })
+    .nullable(),
 });
 const pullRequestCommitEventSchema = z.object({
   __typename: z.literal("PullRequestCommit"),
@@ -426,6 +432,11 @@ const autoMergeRequestSchema = z.object({
 const mergeQueueEntrySchema = z.object({
   id: opaqueIdSchema,
 });
+const headRefSchema = z
+  .object({
+    target: headCommitSchema.nullable(),
+  })
+  .nullable();
 const headCommitConnectionSchema = z.object({
   nodes: z
     .array(
@@ -433,7 +444,7 @@ const headCommitConnectionSchema = z.object({
         commit: headCommitSchema,
       }),
     )
-    .length(1),
+    .max(1),
 });
 const baseIssueSchema = z
   .object({
@@ -453,6 +464,7 @@ const basePullRequestSchema = z.object({
   id: opaqueIdSchema,
   body: z.string(),
   headRefOid: shaSchema,
+  headRef: headRefSchema,
   mergeable: z.enum(["CONFLICTING", "MERGEABLE", "UNKNOWN"]),
   mergeStateStatus: z.enum([
     "BEHIND",
@@ -475,6 +487,17 @@ const basePullRequestSchema = z.object({
 });
 const baseItemDetailResponseSchema = z.object({
   item: z.union([baseIssueSchema, basePullRequestSchema]).nullable(),
+});
+const pullRequestHeadCommitResponseSchema = z.object({
+  pullRequest: z
+    .object({
+      __typename: z.literal("PullRequest"),
+      id: opaqueIdSchema,
+      repository: z.object({
+        object: headCommitSchema.nullable(),
+      }),
+    })
+    .nullable(),
 });
 const capabilityResponseSchema = z.object({
   issueType: z
@@ -670,12 +693,16 @@ function normalizeAccount(account: RawActor): GitHubDetailAccount {
   });
 }
 
+function normalizeUnavailableActor(): Extract<GitHubDetailActor, { status: "unavailable" }> {
+  return Object.freeze({
+    status: "unavailable",
+    reason: "github_did_not_return_actor",
+  });
+}
+
 function normalizeActor(actor: z.output<typeof actorSchema>): GitHubDetailActor {
   if (actor == null) {
-    return Object.freeze({
-      status: "unavailable",
-      reason: "github_did_not_return_actor",
-    });
+    return normalizeUnavailableActor();
   }
   return Object.freeze({
     status: "identified",
@@ -684,8 +711,11 @@ function normalizeActor(actor: z.output<typeof actorSchema>): GitHubDetailActor 
 }
 
 function normalizeReviewRequestTarget(
-  target: z.output<typeof reviewRequestTargetSchema>,
+  target: z.output<typeof reviewRequestTargetSchema> | null,
 ): GitHubReviewRequestTarget {
+  if (target == null) {
+    return normalizeUnavailableActor();
+  }
   const nodeId = createGitHubNodeId(target.id);
   if (target.__typename !== "Team") {
     return Object.freeze({
@@ -713,7 +743,12 @@ function normalizeTeam(
   });
 }
 
-function normalizeAssignee(assignee: z.output<typeof assigneeSchema>): GitHubTimelineAssignee {
+function normalizeAssignee(
+  assignee: z.output<typeof assigneeSchema> | null,
+): GitHubTimelineAssignee {
+  if (assignee == null) {
+    return normalizeUnavailableActor();
+  }
   return Object.freeze({
     type: "account",
     account: normalizeAccount(assignee),
@@ -764,6 +799,31 @@ function normalizeReferencedItem(item: RawReferencedItem): GitHubReferencedItem 
     createdAt: item.createdAt,
     state,
   });
+}
+
+function normalizeTimelineReferencedItem(
+  item: RawReferencedItem | null,
+): Extract<GitHubTimelineEvent, { kind: "sub_issue_added" | "sub_issue_removed" }>["subIssue"] {
+  if (item == null) {
+    return Object.freeze({
+      status: "unavailable",
+      reason: "github_did_not_return_item",
+    });
+  }
+  return normalizeReferencedItem(item);
+}
+
+function normalizeUnavailableCommit(): Extract<GitHubReviewCommit, { status: "unavailable" }> {
+  return Object.freeze({
+    status: "unavailable",
+    reason: "github_did_not_return_commit",
+  });
+}
+
+function normalizeForcePushCommitSha(
+  commit: z.output<typeof headRefForcePushedEventSchema>["beforeCommit"],
+): Extract<GitHubTimelineEvent, { kind: "head_ref_force_pushed" }>["beforeSha"] {
+  return commit == null ? normalizeUnavailableCommit() : commit.oid;
 }
 
 function detectFeatureAvailability(
@@ -1123,7 +1183,7 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
       return Object.freeze({
         ...normalizeTimelineBase(event, sequence),
         kind: "sub_issue_added",
-        subIssue: normalizeReferencedItem(event.subIssue),
+        subIssue: normalizeTimelineReferencedItem(event.subIssue),
       });
     }
     case "SubIssueRemovedEvent": {
@@ -1131,7 +1191,7 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
       return Object.freeze({
         ...normalizeTimelineBase(event, sequence),
         kind: "sub_issue_removed",
-        subIssue: normalizeReferencedItem(event.subIssue),
+        subIssue: normalizeTimelineReferencedItem(event.subIssue),
       });
     }
     case "ParentIssueAddedEvent": {
@@ -1143,7 +1203,7 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
       return Object.freeze({
         ...normalizeTimelineBase(event, sequence),
         kind: "parent_issue_added",
-        parent: normalizeReferencedItem(event.parent),
+        parent: normalizeTimelineReferencedItem(event.parent),
       });
     }
     case "ParentIssueRemovedEvent": {
@@ -1155,7 +1215,7 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
       return Object.freeze({
         ...normalizeTimelineBase(event, sequence),
         kind: "parent_issue_removed",
-        parent: normalizeReferencedItem(event.parent),
+        parent: normalizeTimelineReferencedItem(event.parent),
       });
     }
     case "HeadRefForcePushedEvent": {
@@ -1167,8 +1227,8 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
       return Object.freeze({
         ...normalizeTimelineBase(event, sequence),
         kind: "head_ref_force_pushed",
-        beforeSha: event.beforeCommit.oid,
-        afterSha: event.afterCommit.oid,
+        beforeSha: normalizeForcePushCommitSha(event.beforeCommit),
+        afterSha: normalizeForcePushCommitSha(event.afterCommit),
       });
     }
     case "PullRequestCommit": {
@@ -1305,10 +1365,7 @@ function normalizeReviewCommit(
   commit: z.output<typeof reviewSchema>["commit"],
 ): GitHubReviewCommit {
   if (commit == null) {
-    return Object.freeze({
-      status: "unavailable",
-      reason: "github_did_not_return_commit",
-    });
+    return normalizeUnavailableCommit();
   }
   const nodeId = createGitHubNodeId(commit.id);
   return Object.freeze({
@@ -1509,7 +1566,9 @@ async function collectReviewRequestNodes(
     nodes.map((node) => node.id),
     "current review requests",
   );
-  const targetNodeIds = nodes.map((node) => node.requestedReviewer.id);
+  const targetNodeIds = nodes.flatMap((node) =>
+    node.requestedReviewer == null ? [] : [node.requestedReviewer.id],
+  );
   assertNoDuplicateNodeIds(targetNodeIds, "current review request targets");
   return Object.freeze(nodes);
 }
@@ -1527,6 +1586,9 @@ function findReviewRequestTimestamp(
   for (let index = history.length - 1; index >= 0; index -= 1) {
     const event = history[index];
     assertNonNullable(event, "review request historyのindexが範囲外です");
+    if ("status" in event.target) {
+      continue;
+    }
     if (event.target.nodeId !== targetNodeId) {
       continue;
     }
@@ -1558,7 +1620,13 @@ function normalizeReviewRequests(
       sourceId: buildSourceId("github_review_request", nodeId),
       nodeId,
       target,
-      requestedAt: findReviewRequestTimestamp(target.nodeId, history),
+      requestedAt:
+        "status" in target
+          ? Object.freeze({
+              status: "unavailable",
+              reason: "timeline_event_not_found",
+            })
+          : findReviewRequestTimestamp(target.nodeId, history),
     });
   });
   return Object.freeze({
@@ -2079,6 +2147,41 @@ async function normalizePullRequestMergeState(
   });
 }
 
+async function resolvePullRequestHeadCommit(
+  pullRequestNodeId: GitHubNodeId,
+  pullRequest: z.output<typeof basePullRequestSchema>,
+  graphql: Graphql,
+): Promise<z.output<typeof headCommitSchema>> {
+  const headRefTarget = pullRequest.headRef?.target;
+  if (headRefTarget?.oid === pullRequest.headRefOid) {
+    return headRefTarget;
+  }
+  const comparisonHeadCommit = pullRequest.headCommit.nodes.at(-1)?.commit;
+  if (comparisonHeadCommit?.oid === pullRequest.headRefOid) {
+    return comparisonHeadCommit;
+  }
+
+  const context = `Pull Request head SHA ${pullRequest.headRefOid}のCommit解決`;
+  const response = await graphql(PULL_REQUEST_HEAD_COMMIT_QUERY, {
+    pullRequestId: pullRequestNodeId,
+    headRefOid: pullRequest.headRefOid,
+  });
+  const parsed = parseGraphqlResponse(pullRequestHeadCommitResponseSchema, response, context);
+  const responsePullRequest = requireGraphqlNode(
+    parsed.pullRequest,
+    pullRequestNodeId,
+    (node) => node.id,
+    context,
+  );
+  const repositoryObject = responsePullRequest.repository.object;
+  if (repositoryObject?.oid === pullRequest.headRefOid) {
+    return repositoryObject;
+  }
+  throw new GitHubResponseValidationError(context, {
+    cause: new TypeError("repository.objectからhead SHAに一致するCommitを解決できません"),
+  });
+}
+
 function validateDetailTargets(
   allowlist: PublicRepositoryAllowlist,
   targets: readonly GitHubItemDetailTarget[],
@@ -2149,13 +2252,7 @@ async function collectPullRequestDetail(
   pullRequest: z.output<typeof basePullRequestSchema>,
   options: CollectGitHubItemDetailsOptions,
 ): Promise<GitHubItemDetail> {
-  const headCommitNode = pullRequest.headCommit.nodes[0];
-  assertNonNullable(headCommitNode, "Pull Requestのhead commitがありません");
-  if (headCommitNode.commit.oid !== pullRequest.headRefOid) {
-    throw new GitHubResponseValidationError("Pull Request head commit", {
-      cause: new TypeError("head SHAとhead commitが一致しません"),
-    });
-  }
+  const headCommit = await resolvePullRequestHeadCommit(item.nodeId, pullRequest, options.graphql);
   const commentNodes = await collectCommentNodes(item, pullRequest.comments, options.graphql);
   const reviewNodes = await collectReviewNodes(item, pullRequest.reviews, options.graphql);
   const reviewThreadNodes = await collectReviewThreadNodes(
@@ -2190,14 +2287,113 @@ async function collectPullRequestDetail(
     reviewThreads: await normalizeReviewThreads(reviewThreadNodes, options.graphql),
     reviewRequests: normalizeReviewRequests(reviewRequestNodes, timeline),
     headSha: pullRequest.headRefOid,
-    headCommit: normalizeCommit(headCommitNode.commit),
-    mergeState: await normalizePullRequestMergeState(
-      pullRequest,
-      headCommitNode.commit,
-      options.graphql,
-    ),
+    headCommit: normalizeCommit(headCommit),
+    mergeState: await normalizePullRequestMergeState(pullRequest, headCommit, options.graphql),
     observedAt: options.observedAt,
   });
+}
+
+type UnavailableEvidenceField =
+  | "ReviewRequest.requestedReviewer"
+  | "AssignedEvent.assignee"
+  | "UnassignedEvent.assignee"
+  | "ReviewRequestedEvent.requestedReviewer"
+  | "ReviewRequestRemovedEvent.requestedReviewer"
+  | "SubIssueAddedEvent.subIssue"
+  | "SubIssueRemovedEvent.subIssue"
+  | "ParentIssueAddedEvent.parent"
+  | "ParentIssueRemovedEvent.parent"
+  | "HeadRefForcePushedEvent.afterCommit";
+
+function collectUnavailableEvidenceFields(
+  detail: GitHubItemDetail,
+): readonly UnavailableEvidenceField[] {
+  const foundFields = new Set<UnavailableEvidenceField>();
+  if (detail.type === "pull_request") {
+    for (const request of detail.reviewRequests.current) {
+      if ("status" in request.target) {
+        foundFields.add("ReviewRequest.requestedReviewer");
+      }
+    }
+  }
+  for (const event of detail.timeline) {
+    switch (event.kind) {
+      case "assigned":
+        if ("status" in event.assignee) {
+          foundFields.add("AssignedEvent.assignee");
+        }
+        break;
+      case "unassigned":
+        if ("status" in event.assignee) {
+          foundFields.add("UnassignedEvent.assignee");
+        }
+        break;
+      case "review_requested":
+        if ("status" in event.target) {
+          foundFields.add("ReviewRequestedEvent.requestedReviewer");
+        }
+        break;
+      case "review_request_removed":
+        if ("status" in event.target) {
+          foundFields.add("ReviewRequestRemovedEvent.requestedReviewer");
+        }
+        break;
+      case "sub_issue_added":
+        if ("status" in event.subIssue) {
+          foundFields.add("SubIssueAddedEvent.subIssue");
+        }
+        break;
+      case "sub_issue_removed":
+        if ("status" in event.subIssue) {
+          foundFields.add("SubIssueRemovedEvent.subIssue");
+        }
+        break;
+      case "parent_issue_added":
+        if ("status" in event.parent) {
+          foundFields.add("ParentIssueAddedEvent.parent");
+        }
+        break;
+      case "parent_issue_removed":
+        if ("status" in event.parent) {
+          foundFields.add("ParentIssueRemovedEvent.parent");
+        }
+        break;
+      case "head_ref_force_pushed":
+        if (typeof event.afterSha !== "string") {
+          foundFields.add("HeadRefForcePushedEvent.afterCommit");
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  const fieldOrder: readonly UnavailableEvidenceField[] = [
+    "ReviewRequest.requestedReviewer",
+    "AssignedEvent.assignee",
+    "UnassignedEvent.assignee",
+    "ReviewRequestedEvent.requestedReviewer",
+    "ReviewRequestRemovedEvent.requestedReviewer",
+    "SubIssueAddedEvent.subIssue",
+    "SubIssueRemovedEvent.subIssue",
+    "ParentIssueAddedEvent.parent",
+    "ParentIssueRemovedEvent.parent",
+    "HeadRefForcePushedEvent.afterCommit",
+  ];
+  return Object.freeze(fieldOrder.filter((field) => foundFields.has(field)));
+}
+
+function warnUnavailableEvidence(
+  item: EnumeratedGitHubItem,
+  repository: PublicRepository,
+  detail: GitHubItemDetail,
+): void {
+  const fields = collectUnavailableEvidenceFields(detail);
+  if (fields.length === 0) {
+    return;
+  }
+  console.warn(
+    `GitHubの判定根拠を除外しました item=${repository.owner}/${repository.name}#${item.number.toString()} fields=${fields.join(",")}`,
+  );
 }
 
 async function collectItemDetail(
@@ -2224,10 +2420,12 @@ async function collectItemDetail(
     `${item.displayReference} details`,
   );
   assertItemResponseType(responseItem.__typename, item, `${item.displayReference} details`);
-  if (responseItem.__typename === "Issue") {
-    return collectIssueDetail(item, eventWindow, responseItem, capabilities, options);
-  }
-  return collectPullRequestDetail(item, eventWindow, responseItem, options);
+  const detail =
+    responseItem.__typename === "Issue"
+      ? await collectIssueDetail(item, eventWindow, responseItem, capabilities, options)
+      : await collectPullRequestDetail(item, eventWindow, responseItem, options);
+  warnUnavailableEvidence(item, repository, detail);
+  return detail;
 }
 
 /** 公開allowlist内の詳細取得対象から判定に必要なGitHub情報を全ページ収集する。 */
@@ -2247,7 +2445,16 @@ export async function collectGitHubItemDetails(
   const details: GitHubItemDetail[] = [];
   for (const { item, eventWindow } of options.targets) {
     const repository = options.allowlist.require(item.repositoryId);
-    details.push(await collectItemDetail(item, eventWindow, repository, capabilities, options));
+    try {
+      details.push(await collectItemDetail(item, eventWindow, repository, capabilities, options));
+    } catch (error: unknown) {
+      if (error instanceof GitHubItemDetailCollectionError) {
+        throw error;
+      }
+      throw new GitHubItemDetailCollectionError(repository.owner, repository.name, item.number, {
+        cause: error,
+      });
+    }
   }
   return Object.freeze({
     capabilities,

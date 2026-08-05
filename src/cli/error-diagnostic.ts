@@ -5,6 +5,7 @@ import {
 } from "../codex/index.js";
 import {
   GitHubGraphQLResponseError,
+  GitHubItemDetailCollectionError,
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
   GitHubRetryExhaustedError,
@@ -260,6 +261,12 @@ function appendCodexNonZeroExitDiagnostics(
 function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): void {
   if (error instanceof CodexNonZeroExitError) {
     appendCodexNonZeroExitDiagnostics(fields, error);
+  }
+  if (error instanceof GitHubItemDetailCollectionError) {
+    fields.push({
+      key: "item",
+      value: `${error.repositoryOwner}/${error.repositoryName}#${error.number.toString()}`,
+    });
   }
   if (error instanceof CliRelationExpansionLimitError) {
     fields.push({ key: "relationExpansionLimit", value: error.limit.toString() });
