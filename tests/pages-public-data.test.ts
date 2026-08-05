@@ -178,6 +178,17 @@ function createItem(options: ItemFixtureOptions): unknown {
     url: itemUrl,
     title: options.title,
     milestone: null,
+    importance: {
+      score: 25,
+      level: "medium",
+      factors: [
+        {
+          kind: "priorityLabel",
+          points: 25,
+          detail: "優先度ラベルの重みで25点を加算します",
+        },
+      ],
+    },
     author: {
       status: "identified",
       actor: {
@@ -292,7 +303,7 @@ function createRelation(
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "4",
+    schemaVersion: "5",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -992,9 +1003,9 @@ describe("公開DTO生成", () => {
       dueOn: "2026-09-01T00:00:00.000Z",
     };
 
-    expect(generated.summary.schemaVersion).toBe("2");
+    expect(generated.summary.schemaVersion).toBe("3");
     expect(generated.summary.items[0]?.milestone).toEqual(expectedMilestone);
-    expect(generated.details.schemaVersion).toBe("2");
+    expect(generated.details.schemaVersion).toBe("3");
     expect(generated.details.items[0]?.summary.milestone).toEqual(expectedMilestone);
   });
 
@@ -1348,6 +1359,17 @@ describe("公開DTO生成", () => {
     const itemA = generated.details.items.find((item) => item.summary.nodeId === "I_A");
     expect(itemA?.summary.blockerNodeIds).toEqual(["I_B"]);
     expect(itemA?.summary.priorityWeight).toBe(25);
+    expect(itemA?.summary.importance).toEqual({
+      score: 25,
+      level: "medium",
+    });
+    expect(itemA?.importanceFactors).toEqual([
+      {
+        kind: "priorityLabel",
+        points: 25,
+        detail: "優先度ラベルの重みで25点を加算します",
+      },
+    ]);
     expect(itemA?.summary.author).toMatchObject({
       status: "identified",
       actor: {
@@ -1605,11 +1627,11 @@ describe("公開summaryサイズと書き出し", () => {
       expect(result.summaryBytes).toBe(Buffer.byteLength(summarySource, "utf8"));
       expect(result.detailsBytes).toBe(Buffer.byteLength(detailsSource, "utf8"));
       expect(JSON.parse(summarySource)).toMatchObject({
-        schemaVersion: "2",
+        schemaVersion: "3",
         runId: "run-single",
       });
       expect(JSON.parse(detailsSource)).toMatchObject({
-        schemaVersion: "2",
+        schemaVersion: "3",
         runId: "run-single",
       });
     } finally {

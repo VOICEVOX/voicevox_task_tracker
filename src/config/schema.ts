@@ -207,6 +207,21 @@ const thresholdSchema = z
     }
   });
 
+const importanceLevelsSchema = z
+  .strictObject({
+    high: nonNegativeNumberSchema,
+    medium: nonNegativeNumberSchema,
+  })
+  .superRefine((levels, context) => {
+    if (levels.high < levels.medium) {
+      context.addIssue({
+        code: "custom",
+        path: ["high"],
+        message: "highはmedium以上にしてください",
+      });
+    }
+  });
+
 const aiConfidenceSchema = z
   .strictObject({
     high: probabilitySchema.default(DEFAULT_HIGH_CONFIDENCE),
@@ -351,6 +366,18 @@ const configSchema = z.strictObject({
       readyToMerge: thresholdSchema,
       automation: thresholdSchema,
     }),
+  }),
+  importance: z.strictObject({
+    weights: z.strictObject({
+      priorityLabelMultiplier: nonNegativeNumberSchema,
+      blockedItem: nonNegativeNumberSchema,
+      blockedRepository: nonNegativeNumberSchema,
+      downstreamImpactMax: nonNegativeNumberSchema,
+      milestoneWithDueDate: nonNegativeNumberSchema,
+      milestoneDueSoon: nonNegativeNumberSchema,
+    }),
+    dueSoonDays: nonNegativeNumberSchema,
+    levels: importanceLevelsSchema,
   }),
   ai: z
     .strictObject({

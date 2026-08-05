@@ -77,6 +77,19 @@ staleness:
     readyToMerge: { watch: 24, urgent: 72, critical: 168 }
     automation: { watch: 6, urgent: 24, critical: 72 }
 
+importance:
+  weights:
+    priorityLabelMultiplier: 1.0
+    blockedItem: 3
+    blockedRepository: 5
+    downstreamImpactMax: 30
+    milestoneWithDueDate: 10
+    milestoneDueSoon: 15
+  dueSoonDays: 14
+  levels:
+    high: 40
+    medium: 20
+
 ai:
   provider: codex
   enabled: true

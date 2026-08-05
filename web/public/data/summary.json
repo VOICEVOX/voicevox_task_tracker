@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "2",
+  "schemaVersion": "3",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "observedAt": "2026-07-31T00:00:00.000Z",
@@ -131,6 +131,10 @@
       },
       "nextAction": "メンテナーが内容を確認してマージする",
       "severity": "critical",
+      "importance": {
+        "score": 43,
+        "level": "high"
+      },
       "priorityWeight": 25,
       "confidence": 1,
       "githubUpdatedAt": "2026-07-30T03:00:00.000Z",
@@ -186,6 +190,10 @@
       },
       "nextAction": "レビューチームが変更内容を確認する",
       "severity": "critical",
+      "importance": {
+        "score": 39,
+        "level": "medium"
+      },
       "priorityWeight": 12,
       "confidence": 1,
       "githubUpdatedAt": "2026-07-29T06:00:00.000Z",
@@ -241,6 +249,10 @@
       },
       "nextAction": "メンテナーが配布方針を決める",
       "severity": "urgent",
+      "importance": {
+        "score": 41,
+        "level": "high"
+      },
       "priorityWeight": 25,
       "confidence": 0.95,
       "githubUpdatedAt": "2026-07-28T05:00:00.000Z",
@@ -300,6 +312,10 @@
       },
       "nextAction": "依存項目の完了後に実装を再開する",
       "severity": "watch",
+      "importance": {
+        "score": 12,
+        "level": "low"
+      },
       "priorityWeight": 12,
       "confidence": 1,
       "githubUpdatedAt": "2026-07-25T02:00:00.000Z",
@@ -355,6 +371,10 @@
       },
       "nextAction": "作成者がレビュー指摘へ対応する",
       "severity": "urgent",
+      "importance": {
+        "score": 44,
+        "level": "high"
+      },
       "priorityWeight": 25,
       "confidence": 0.9,
       "githubUpdatedAt": "2026-07-27T08:00:00.000Z",

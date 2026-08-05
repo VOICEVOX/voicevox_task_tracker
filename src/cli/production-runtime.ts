@@ -27,6 +27,7 @@ import { type Config, type loadConfig } from "../config/index.js";
 import {
   aggregatePullRequestCheckState,
   aggregatePullRequestReviewState,
+  calculateImportance,
   classifyTrackingNotification,
   createUtcIsoDateTime,
   createGitHubNodeId,
@@ -378,8 +379,11 @@ type TrackedItemStaleness = Readonly<{
   severityContext: StalenessSeverityContext;
 }>;
 
+type WithoutImportance<T> = T extends unknown ? Omit<T, "importance"> : never;
+type PendingTrackedItem = WithoutImportance<TrackedItem>;
+
 type ReducedAnalysis = Readonly<{
-  items: readonly TrackedItem[];
+  items: readonly PendingTrackedItem[];
   currentItems: readonly ReducedItemAnalysis[];
   stalenessByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemStaleness>;
   relationAssessments: readonly RelationCandidateAssessment[];
@@ -3026,7 +3030,7 @@ function createTrackedItem(
   primaryWaitingOn: PrimaryWaitingOn,
   staleness: StalenessResult,
   codexAnalysis: CodexAnalysis,
-): TrackedItem {
+): PendingTrackedItem {
   const commonFields = {
     nodeId: analysis.item.nodeId,
     type: analysis.item.type,
@@ -3065,7 +3069,7 @@ function createTrackedItem(
     confidence: decision.confidence,
     evidence: decision.evidence,
     uncertainties: decision.uncertainties,
-  } satisfies Omit<TrackedItem, "status" | "waitingOn">;
+  } satisfies Omit<PendingTrackedItem, "status" | "waitingOn">;
   if (isTerminalStatus(decision.status)) {
     return Object.freeze({
       ...commonFields,
@@ -3194,7 +3198,7 @@ function reduceAnalysisPass(
 ): ReducedAnalysis {
   const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
   const currentItems: ReducedItemAnalysis[] = [];
-  const items: TrackedItem[] = [];
+  const items: PendingTrackedItem[] = [];
   const stalenessByNodeId = new Map<GitHubNodeId, TrackedItemStaleness>();
   const relationAssessments: RelationCandidateAssessment[] = [];
   let runStatus: ReducedAnalysis["runStatus"] = "success";
@@ -3356,7 +3360,7 @@ function reduceAllAnalyses(
   );
 }
 
-function graphAnalysisNode(item: TrackedItem): GraphAnalysisNode {
+function graphAnalysisNode(item: PendingTrackedItem): GraphAnalysisNode {
   return Object.freeze({
     kind: item.type,
     nodeId: item.nodeId,
@@ -3662,9 +3666,11 @@ function snapshotRepositories(collection: CollectedItems): readonly SnapshotRepo
 
 function notificationLedgerEntries(
   state: RuntimeState,
-  items: readonly TrackedItem[],
+  items: readonly PendingTrackedItem[],
 ): readonly NotificationLedgerEntry[] {
-  const itemsByNodeId = new Map<string, TrackedItem>(items.map((item) => [item.nodeId, item]));
+  const itemsByNodeId = new Map<string, PendingTrackedItem>(
+    items.map((item) => [item.nodeId, item]),
+  );
   const entries: NotificationLedgerEntry[] = [];
   for (const entry of state.notificationLedger.entries) {
     const item = itemsByNodeId.get(entry.itemNodeId);
@@ -3725,7 +3731,7 @@ type NotificationAnalysisState =
     }>;
 
 function notificationDecisionBasis(
-  item: TrackedItem,
+  item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
 ): DiscordNotificationItem["decisionBasis"] {
@@ -3750,7 +3756,7 @@ function notificationDecisionBasis(
 }
 
 function notificationDraftState(
-  item: TrackedItem,
+  item: PendingTrackedItem,
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
 ): DiscordNotificationItem["draftState"] {
   const observed = enumeratedItemsByNodeId.get(item.nodeId);
@@ -3771,7 +3777,7 @@ function notificationItem(
   inventory: RepositoryInventory,
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
   graph: GraphResult,
-  item: TrackedItem,
+  item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
 ): DiscordNotificationItem {
@@ -3968,6 +3974,37 @@ function stateHistoryInputEvents(reduction: ReducedAnalysis): readonly StateHist
   );
 }
 
+function createTrackedItemWithImportance(
+  invocation: DailyRunInvocation,
+  configuration: RuntimeConfiguration,
+  inventory: RepositoryInventory,
+  graph: GraphResult,
+  resolveLabelEffects: ReturnType<typeof createLabelEffectsResolver>,
+  item: PendingTrackedItem,
+): TrackedItem {
+  const repository = findRepository(inventory, item.repositoryId);
+  const downstreamImpact = graph.analysis.downstreamImpacts.find(
+    (impact) => impact.nodeId === item.nodeId,
+  );
+  assertNonNullable(
+    downstreamImpact,
+    `重要度計算対象 ${item.nodeId}のdownstream impactがありません`,
+  );
+  const labelEffects = resolveLabelEffects(repositoryFullName(repository), item.labels);
+  return Object.freeze({
+    ...item,
+    importance: calculateImportance({
+      priorityWeight: labelEffects.priorityWeight,
+      downstreamImpact,
+      milestone: item.milestone,
+      evaluatedAt: invocation.startedAt,
+      weights: configuration.config.importance.weights,
+      dueSoonDays: configuration.config.importance.dueSoonDays,
+      levels: configuration.config.importance.levels,
+    }),
+  });
+}
+
 function validateRunCompleteness(
   invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
@@ -3978,6 +4015,17 @@ function validateRunCompleteness(
   reduction: ReducedAnalysis,
   graph: GraphResult,
 ): ValidatedRun {
+  const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
+  const items = reduction.items.map((item) =>
+    createTrackedItemWithImportance(
+      invocation,
+      configuration,
+      inventory,
+      graph,
+      resolveLabelEffects,
+      item,
+    ),
+  );
   const previousCollectionItems = previousCollectionItemsByNodeId(state);
   const currentAnalysisRulesFingerprints = createCurrentAnalysisRulesFingerprints(
     configuration.config,
@@ -4024,7 +4072,7 @@ function validateRunCompleteness(
   const persistedAnalysisRulesFingerprintNodeIds = new Set<string>();
   const persistedDeterministicRulesVersionNodeIds = new Set<string>();
   const snapshot = createStateSnapshot({
-    schemaVersion: "4",
+    schemaVersion: "5",
     generatedAt: invocation.startedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, invocation),
     ai: snapshotAiState(configuration.config, codexAnalysis),
@@ -4069,7 +4117,7 @@ function validateRunCompleteness(
       })),
     },
     repositories: snapshotRepositories(collection),
-    items: reduction.items.map((item) => {
+    items: items.map((item) => {
       const staleness = reduction.stalenessByNodeId.get(item.nodeId);
       assertNonNullable(staleness, `追跡項目 ${item.nodeId}のseverity再計算結果がありません`);
       return {

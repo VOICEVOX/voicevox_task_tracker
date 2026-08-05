@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { type Importance } from "./importance.js";
 import { type SourceId } from "./source-id.js";
 
 const opaqueIdSchema = z
@@ -439,6 +440,7 @@ type TrackedItemFields = Readonly<{
   url: GitHubItemUrl;
   title: string;
   milestone: TrackedItemMilestone | null;
+  importance: Importance;
   author: ObservedGitHubItemAuthor;
   latestEventActor: TrackedItemLatestEventActor;
   state: TrackedItemState;

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { PublicDtoValidationError } from "./errors.js";
+import { IMPORTANCE_FACTOR_KINDS } from "../domain/index.js";
 
 const identifierSchema = z.string().min(1).max(512).regex(/^\S+$/u);
 const shortStringSchema = z.string().max(1000);
@@ -41,6 +42,16 @@ const statusSchema = z.enum([
   "terminal_not_planned",
 ]);
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
+const importanceLevelSchema = z.enum(["low", "medium", "high"]);
+const publicImportanceSchema = z.strictObject({
+  score: z.number().int().min(0).max(100),
+  level: importanceLevelSchema,
+});
+const importanceFactorSchema = z.strictObject({
+  kind: z.enum(IMPORTANCE_FACTOR_KINDS),
+  points: z.number().positive(),
+  detail: z.string().min(1).max(1000),
+});
 const waitingOnSchema = z.strictObject({
   kind: z.enum(["user", "team", "role", "item", "automation", "unknown"]),
   candidateId: identifierSchema,
@@ -162,6 +173,7 @@ const publicItemSummarySchema = z.strictObject({
   primaryWaitingOn: primaryWaitingOnSchema,
   nextAction: shortStringSchema,
   severity: severitySchema,
+  importance: publicImportanceSchema,
   priorityWeight: z.number(),
   confidence: z.number().min(0).max(1),
   githubUpdatedAt: dateTimeSchema,
@@ -237,6 +249,7 @@ const publicItemHistoryEventSchema = z.discriminatedUnion("kind", [
 ]);
 const publicItemDetailsSchema = z.strictObject({
   summary: publicItemSummarySchema,
+  importanceFactors: z.array(importanceFactorSchema),
   timestamps: itemTimestampsSchema,
   latestEventActor: latestEventActorSchema,
   labels: z.array(z.string().min(1).max(256)),
@@ -481,7 +494,7 @@ const publicAiStateSchema = z.union([
   }),
 ]);
 const publicSummaryDtoSchema = z.strictObject({
-  schemaVersion: z.literal("2"),
+  schemaVersion: z.literal("3"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
@@ -495,17 +508,17 @@ const publicSummaryDtoSchema = z.strictObject({
   graph: publicInitialGraphSchema,
 });
 const publicDetailsDtoSchema = z.strictObject({
-  schemaVersion: z.literal("2"),
+  schemaVersion: z.literal("3"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   items: z.array(publicItemDetailsSchema),
   graph: publicGraphSchema,
 });
 
-/** Web初期表示で共有するschema version 2の公開summary DTO。 */
+/** Web初期表示で共有するschema version 3の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 2の公開details DTO。 */
+/** Web詳細表示で共有するschema version 3の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */

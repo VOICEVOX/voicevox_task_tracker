@@ -183,7 +183,7 @@ function createRelations(edge: EdgeFixture): readonly unknown[] {
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "4",
+    schemaVersion: "5",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -218,6 +218,17 @@ function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
         url: "https://github.com/VOICEVOX/example/issues/1",
         title: "追跡対象",
         milestone: null,
+        importance: {
+          score: 25,
+          level: "medium",
+          factors: [
+            {
+              kind: "priorityLabel",
+              points: 25,
+              detail: "優先度ラベルの重みで25点を加算します",
+            },
+          ],
+        },
         author: {
           status: "identified",
           actor: {
@@ -557,7 +568,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("4");
+    expect(migrated.schemaVersion).toBe("5");
     expect(migrated.repositories.map((repository) => repository.id)).toEqual([
       publicRepositoryId,
       "R_SECOND",
@@ -572,6 +583,11 @@ describe("state schema version", () => {
       status: "unavailable",
     });
     expect(migrated.items[0]?.milestone).toBeNull();
+    expect(migrated.items[0]?.importance).toEqual({
+      score: 0,
+      level: "low",
+      factors: [],
+    });
   });
 
   it("version 2のsnapshotへ決定規則version未取得を設定して現行形式へmigrationする", () => {
@@ -623,7 +639,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("4");
+    expect(migrated.schemaVersion).toBe("5");
     expect(migrated.collection.repositories[0]?.items[0]?.analysisRulesFingerprint).toEqual({
       status: "unavailable",
     });
@@ -631,6 +647,11 @@ describe("state schema version", () => {
       status: "unavailable",
     });
     expect(migrated.items[0]?.milestone).toBeNull();
+    expect(migrated.items[0]?.importance).toEqual({
+      score: 0,
+      level: "low",
+      factors: [],
+    });
   });
 
   it("version 3のsnapshotへmilestone未設定を追加して現行形式へmigrationする", () => {
@@ -661,8 +682,49 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("4");
+    expect(migrated.schemaVersion).toBe("5");
     expect(migrated.items[0]?.milestone).toBeNull();
+    expect(migrated.items[0]?.importance).toEqual({
+      score: 0,
+      level: "low",
+      factors: [],
+    });
+  });
+
+  it("version 4のsnapshotへimportance未計算値を追加して現行形式へmigrationする", () => {
+    const snapshot = createSnapshot({
+      runId: "run-schema-version-4",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "new_untriaged",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const item = snapshot.items[0];
+    assertNonNullable(item, "version 4のitem fixtureがありません");
+    const { importance, ...version4Item } = item;
+    expect(importance.score).toBe(25);
+    const source = serializeCanonicalJson({
+      ...snapshot,
+      schemaVersion: "4",
+      items: [version4Item],
+    });
+
+    const migrated = parseStateSnapshot(source);
+
+    expect(migrated.schemaVersion).toBe("5");
+    expect(migrated.items[0]?.importance).toEqual({
+      score: 0,
+      level: "low",
+      factors: [],
+    });
   });
 
   it("version 1のhistoryを登録済みparserで読み取り現行形式へmigrationする", () => {

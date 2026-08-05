@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "4"
+      "const": "5"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -771,6 +771,46 @@
         }
       }
     },
+    "importanceFactor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "points", "detail"],
+      "properties": {
+        "kind": {
+          "enum": ["priorityLabel", "downstreamImpact", "milestoneDeadline"]
+        },
+        "points": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      }
+    },
+    "importance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "level", "factors"],
+      "properties": {
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "level": {
+          "enum": ["low", "medium", "high"]
+        },
+        "factors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/importanceFactor"
+          }
+        }
+      }
+    },
     "item": {
       "type": "object",
       "additionalProperties": false,
@@ -783,6 +823,7 @@
         "url",
         "title",
         "milestone",
+        "importance",
         "author",
         "latestEventActor",
         "state",
@@ -850,6 +891,9 @@
               "type": "null"
             }
           ]
+        },
+        "importance": {
+          "$ref": "#/$defs/importance"
         },
         "author": {
           "$ref": "#/$defs/itemAuthor"

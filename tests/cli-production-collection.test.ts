@@ -1529,18 +1529,35 @@ describe("本番収集の接続", () => {
       state: "open",
       dueOn: "2026-09-01T00:00:00.000Z",
     };
+    const expectedImportance = {
+      score: 10,
+      level: "low",
+      factors: [
+        {
+          kind: "milestoneDeadline",
+          points: 10,
+          detail: "期限付きのopen milestoneで10点です",
+        },
+      ],
+    };
     const publicData = harness.publicData.at(-1);
     if (publicData == null) {
       throw new TypeError("milestoneの公開DTOがありません");
     }
 
     expect(result.exitCode).toBe(0);
-    expect(snapshot.schemaVersion).toBe("4");
+    expect(snapshot.schemaVersion).toBe("5");
     expect(snapshot.items[0]?.milestone).toEqual(expectedMilestone);
-    expect(publicData.summary.schemaVersion).toBe("2");
+    expect(snapshot.items[0]?.importance).toEqual(expectedImportance);
+    expect(publicData.summary.schemaVersion).toBe("3");
     expect(publicData.summary.items[0]?.milestone).toEqual(expectedMilestone);
-    expect(publicData.details.schemaVersion).toBe("2");
+    expect(publicData.summary.items[0]?.importance).toEqual({
+      score: 10,
+      level: "low",
+    });
+    expect(publicData.details.schemaVersion).toBe("3");
     expect(publicData.details.items[0]?.summary.milestone).toEqual(expectedMilestone);
+    expect(publicData.details.items[0]?.importanceFactors).toEqual(expectedImportance.factors);
   });
 
   it("両側detailの同じnative依存を1候補へ統合してIssue状態を判定する", async () => {

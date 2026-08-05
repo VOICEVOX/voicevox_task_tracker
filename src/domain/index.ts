@@ -33,6 +33,18 @@ export {
   type ResolvedLabelEffects,
 } from "./label-resolution.js";
 export {
+  calculateImportance,
+  IMPORTANCE_FACTOR_KINDS,
+  type CalculateImportanceInput,
+  type Importance,
+  type ImportanceDownstreamImpact,
+  type ImportanceFactor,
+  type ImportanceFactorKind,
+  type ImportanceLevel,
+  type ImportanceLevelThresholds,
+  type ImportanceWeights,
+} from "./importance.js";
+export {
   determineMeaningfulProgress,
   type DependencyResolutionProgress,
   type MeaningfulProgress,

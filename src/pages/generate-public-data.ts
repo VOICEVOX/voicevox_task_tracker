@@ -626,6 +626,10 @@ function createItemSummary(
     },
     nextAction: item.nextAction,
     severity: item.severity,
+    importance: {
+      score: item.importance.score,
+      level: item.importance.level,
+    },
     priorityWeight,
     confidence: item.confidence,
     githubUpdatedAt: item.githubUpdatedAt,
@@ -924,7 +928,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     edgeIds: cycle.edges.map((edge) => publicEdgeId(graph.analysisEdgeIdToPublicEdgeId, edge.id)),
   }));
   const summary = createPublicSummaryDto({
-    schemaVersion: "2",
+    schemaVersion: "3",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
@@ -975,7 +979,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     ),
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "2",
+    schemaVersion: "3",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     items: snapshot.items.map((item, index) => {
@@ -983,6 +987,9 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       assertNonNullable(summaryItem, `item ${item.nodeId}のsummaryがありません`);
       return {
         summary: summaryItem,
+        importanceFactors: item.importance.factors.map((factor) => ({
+          ...factor,
+        })),
         timestamps: {
           createdAt: item.createdAt,
           githubUpdatedAt: item.githubUpdatedAt,

@@ -48,6 +48,21 @@ describe("設定の読み込みと検証", () => {
     expect(config.ai.budget.maxEstimatedCostUsdPerRun).toBe(10);
     expect(config.ai.budget.estimatedInputCostUsdPerMillionTokens).toBe(1.25);
     expect(config.ai.execution.reasoningEffort).toBe("medium");
+    expect(config.importance).toEqual({
+      weights: {
+        priorityLabelMultiplier: 1,
+        blockedItem: 3,
+        blockedRepository: 5,
+        downstreamImpactMax: 30,
+        milestoneWithDueDate: 10,
+        milestoneDueSoon: 15,
+      },
+      dueSoonDays: 14,
+      levels: {
+        high: 40,
+        medium: 20,
+      },
+    });
     expect(config.notifications.automationNoiseTitles).toEqual([
       "Dependency Dashboard",
       "Renovate Dashboard",
@@ -292,6 +307,37 @@ describe("設定の読み込みと検証", () => {
     expect(error.message).toContain("urgentはwatch以上にしてください");
     expect(error.message).toContain("staleness.thresholdsHours.reviewer.critical");
     expect(error.message).toContain("criticalはurgent以上にしてください");
+  });
+
+  it.each([
+    ["priorityLabelMultiplier", "1.0"],
+    ["blockedItem", "3"],
+    ["blockedRepository", "5"],
+    ["downstreamImpactMax", "30"],
+    ["milestoneWithDueDate", "10"],
+    ["milestoneDueSoon", "15"],
+  ])("重要度の重み%sに負数を指定できない", (weightName, configuredValue) => {
+    const source = replaceRequired(
+      validConfigSource,
+      `    ${weightName}: ${configuredValue}`,
+      `    ${weightName}: -1`,
+    );
+    const error = captureConfigError(source);
+
+    expect(error.message).toContain(`importance.weights.${weightName}`);
+    expect(error.message).toContain("0以上");
+  });
+
+  it("重要度levelのhighがmedium未満なら拒否する", () => {
+    const source = replaceRequired(
+      validConfigSource,
+      "    high: 40\n    medium: 20",
+      "    high: 19\n    medium: 20",
+    );
+    const error = captureConfigError(source);
+
+    expect(error.message).toContain("importance.levels.high");
+    expect(error.message).toContain("highはmedium以上にしてください");
   });
 
   it("ラベル変更を意味のある進捗として設定できる", () => {

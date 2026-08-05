@@ -107,6 +107,11 @@ function createTrackedItem(number: number, options: ItemOptions): TrackedItem {
     url,
     title: options.title,
     milestone: null,
+    importance: Object.freeze({
+      score: 0,
+      level: "low",
+      factors: Object.freeze([]),
+    }),
     author: Object.freeze({
       status: "identified",
       actor: Object.freeze({
