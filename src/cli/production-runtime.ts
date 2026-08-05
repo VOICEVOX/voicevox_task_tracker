@@ -68,6 +68,7 @@ import {
   type PullRequestCheckFailureAssessment,
   type PrimaryWaitingOn,
   type Relation,
+  type RetentionItemState,
   type Repository,
   type SourceId,
   type Severity,
@@ -815,23 +816,43 @@ function explicitIdentifierMatchesItem(
     .some((identifier) => identifier === item.nodeId || identifier === item.url);
 }
 
-function shouldObservePreviousTrackedItem(
+function previousCollectionRetentionItemState(item: SnapshotCollectionItem): RetentionItemState {
+  if (item.state === "open") {
+    return Object.freeze({ state: "open" });
+  }
+  return Object.freeze({
+    state: "closed",
+    terminalAt: item.terminalAt,
+  });
+}
+
+function enumeratedRetentionItemState(item: EnumeratedGitHubItem): RetentionItemState {
+  if (item.state === "open") {
+    return Object.freeze({ state: "open" });
+  }
+  if (item.type === "pull_request" && item.mergeStatus === "merged") {
+    return Object.freeze({
+      state: "merged",
+      terminalAt: item.mergedAt,
+    });
+  }
+  return Object.freeze({
+    state: "closed",
+    terminalAt: item.closedAt,
+  });
+}
+
+function shouldKeepPreviousTrackedItemInActiveDataset(
   invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
-  item: TrackedItem,
-  collectionItem: SnapshotCollectionItem,
+  item: Readonly<{ nodeId: GitHubNodeId; url: string }>,
+  itemState: RetentionItemState,
 ): boolean {
   if (explicitIdentifierMatchesItem(configuration.config.tracking.include, item)) {
     return true;
   }
   const retention = determineTerminalRetention({
-    item:
-      collectionItem.state === "open"
-        ? Object.freeze({ state: "open" })
-        : Object.freeze({
-            state: "closed",
-            terminalAt: collectionItem.terminalAt,
-          }),
+    item: itemState,
     evaluatedAt: invocation.startedAt,
     retentionDays: configuration.config.tracking.retentionDaysAfterTerminal,
   });
@@ -852,7 +873,8 @@ function previousTrackedItemIdentifiers(
     }
     const collectionItem = collectionItemsByNodeId.get(item.nodeId);
     assertNonNullable(collectionItem, `既存追跡項目の収集stateがありません。対象: ${item.nodeId}`);
-    if (shouldObservePreviousTrackedItem(invocation, configuration, item, collectionItem)) {
+    const itemState = previousCollectionRetentionItemState(collectionItem);
+    if (shouldKeepPreviousTrackedItemInActiveDataset(invocation, configuration, item, itemState)) {
       identifiers.push(item.nodeId);
     }
   }
@@ -1221,7 +1243,7 @@ function collectTrackingCandidates(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
   );
   const observedItemsByNodeId = new Map(observedItems.map((item) => [item.nodeId, item]));
-  const currentNodeIds = new Set(enumeratedItems.map((item) => item.nodeId));
+  const enumeratedItemsByNodeId = new Map(enumeratedItems.map((item) => [item.nodeId, item]));
   const isBot = createGitHubBotPredicate(configuration.config.actors.bots);
   let excludedCandidateCount = 0;
   const organizationCandidates: OrganizationTrackingCandidate[] = enumeratedItems.flatMap(
@@ -1341,7 +1363,19 @@ function collectTrackingCandidates(
     candidates,
     connections: createTrackingConnections(relationCandidates),
     previouslyTrackedNodeIds: Object.freeze(
-      [...previousItems.keys()].filter((nodeId) => currentNodeIds.has(nodeId)),
+      [...previousItems.keys()].filter((nodeId) => {
+        const currentItem = enumeratedItemsByNodeId.get(nodeId);
+        if (currentItem == null) {
+          return false;
+        }
+        const itemState = enumeratedRetentionItemState(currentItem);
+        return shouldKeepPreviousTrackedItemInActiveDataset(
+          invocation,
+          configuration,
+          currentItem,
+          itemState,
+        );
+      }),
     ),
     explicitIncludes: configuration.config.tracking.include
       .map(normalizeTrackingIdentifier)
@@ -1363,7 +1397,6 @@ function collectTrackingCandidates(
   const currentAnalysisRulesFingerprints = createCurrentAnalysisRulesFingerprints(
     configuration.config,
   );
-  const enumeratedItemsByNodeId = new Map(enumeratedItems.map((item) => [item.nodeId, item]));
   const workByNodeId = new Map<GitHubNodeId, TrackedItemWorkDecision>();
   for (const selected of result.trackedItems) {
     const item = enumeratedItemsByNodeId.get(selected.item.nodeId);

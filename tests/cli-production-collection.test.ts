@@ -2656,6 +2656,135 @@ describe("本番収集の接続", () => {
     expect(snapshot.items.map((item) => item.nodeId)).not.toContain(secondSource.nodeId);
   });
 
+  it("保持期限切れの前回追跡項目を関係先から再取得しても参照をさらに展開しない", async () => {
+    const repository = createRepository(
+      "R_relation_expansion_expired_previous",
+      "relation-expansion-expired-previous",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const tracked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "expired-previous-root-v1",
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const expiredPrevious = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "expired-previous-v1",
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: firstObservedAt,
+      }),
+    });
+    const nextReference = createIssueItem({
+      repository: publicRepository,
+      number: 3,
+      fingerprint: "expired-previous-next-v1",
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: firstObservedAt,
+      }),
+    });
+    fixture.openItems = [tracked];
+    fixture.individualItems.set(expiredPrevious.nodeId, expiredPrevious);
+    fixture.individualItems.set(nextReference.nodeId, nextReference);
+    setIssueDetails(fixture, [tracked, expiredPrevious, nextReference], firstObservedAt);
+    fixture.details.set(
+      tracked.nodeId,
+      createIssueDetailWithInboundCrossReferences(tracked, [expiredPrevious], firstObservedAt),
+    );
+    fixture.details.set(
+      expiredPrevious.nodeId,
+      createIssueDetailWithInboundCrossReferences(
+        expiredPrevious,
+        [nextReference],
+        firstObservedAt,
+      ),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 1,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    expect(harness.individualCalls).toEqual([[expiredPrevious.nodeId]]);
+    harness.individualCalls.length = 0;
+
+    const currentObservedAt = createUtcIsoDateTime(THIRD_RUN_AT);
+    const currentTracked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "expired-previous-root-v2",
+      updatedAt: currentObservedAt,
+      observedAt: currentObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const currentExpiredPrevious = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "expired-previous-v1",
+      updatedAt: firstObservedAt,
+      observedAt: currentObservedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: firstObservedAt,
+      }),
+    });
+    const currentNextReference = createIssueItem({
+      repository: publicRepository,
+      number: 3,
+      fingerprint: "expired-previous-next-v1",
+      updatedAt: firstObservedAt,
+      observedAt: currentObservedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: firstObservedAt,
+      }),
+    });
+    fixture.openItems = [currentTracked];
+    fixture.individualItems.set(currentExpiredPrevious.nodeId, currentExpiredPrevious);
+    fixture.individualItems.set(currentNextReference.nodeId, currentNextReference);
+    setIssueDetails(
+      fixture,
+      [currentTracked, currentExpiredPrevious, currentNextReference],
+      currentObservedAt,
+    );
+    fixture.details.set(
+      currentTracked.nodeId,
+      createIssueDetailWithInboundCrossReferences(
+        currentTracked,
+        [currentExpiredPrevious],
+        currentObservedAt,
+      ),
+    );
+    fixture.details.set(
+      currentExpiredPrevious.nodeId,
+      createIssueDetailWithInboundCrossReferences(
+        currentExpiredPrevious,
+        [currentNextReference],
+        currentObservedAt,
+      ),
+    );
+
+    const result = await harness.runDry(THIRD_RUN_AT);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.individualCalls).toEqual([[currentExpiredPrevious.nodeId]]);
+    expect(harness.individualCalls.flat()).not.toContain(currentNextReference.nodeId);
+  });
+
   it("関係先展開上限に到達したrunでstateとPagesと通常Discord通知を変更しない", async () => {
     const repository = createRepository(
       "R_relation_expansion_limit",
