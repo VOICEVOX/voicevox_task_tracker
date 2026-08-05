@@ -10,6 +10,7 @@ import {
   filterAndSortTableRows,
   formatStallDuration,
   formatWaitingOn,
+  importanceLevelLabel,
   searchItemNodeIds,
   statusLabel,
   type ItemTableRow,
@@ -96,6 +97,10 @@ const TABLE_COLUMNS: readonly TableColumnDefinition[] = [
   {
     key: "status",
     label: "status",
+  },
+  {
+    key: "importance",
+    label: "重要度",
   },
   {
     key: "waitingOn",
@@ -355,6 +360,7 @@ function ItemTable({
           <colgroup>
             <col class="item-column" />
             <col class="status-column" />
+            <col class="importance-column" />
             <col class="waiting-column" />
             <col class="stall-column" />
           </colgroup>
@@ -365,6 +371,9 @@ function ItemTable({
               </th>
               <th scope="col" aria-sort={sort.key === "status" ? sort.direction : undefined}>
                 状態
+              </th>
+              <th scope="col" aria-sort={sort.key === "importance" ? sort.direction : undefined}>
+                重要度
               </th>
               <th scope="col" aria-sort={sort.key === "waitingOn" ? sort.direction : undefined}>
                 次の担当
@@ -397,6 +406,12 @@ function ItemTable({
                   )}
                 </th>
                 <td>{statusLabel(row.item.status)}</td>
+                <td class="importance-cell" data-importance-score={row.item.importance.score}>
+                  <span class={`importance-badge importance-${row.item.importance.level}`}>
+                    <span>{importanceLevelLabel(row.item.importance.level)}</span>
+                    <strong>{row.item.importance.score.toString()}点</strong>
+                  </span>
+                </td>
                 <td>{formatWaitingOn(row.item, summary)}</td>
                 <td>
                   <strong>{formatStallDuration(row.item.stallSince, now)}</strong>
@@ -436,6 +451,15 @@ function ItemTable({
                 <div>
                   <dt>状態</dt>
                   <dd>{statusLabel(row.item.status)}</dd>
+                </div>
+                <div>
+                  <dt>重要度</dt>
+                  <dd>
+                    <span class={`importance-badge importance-${row.item.importance.level}`}>
+                      <span>{importanceLevelLabel(row.item.importance.level)}</span>
+                      <strong>{row.item.importance.score.toString()}点</strong>
+                    </span>
+                  </dd>
                 </div>
                 <div>
                   <dt>次の担当</dt>

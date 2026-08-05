@@ -37,6 +37,7 @@ const TABLE_COLUMN_KEYS: readonly TableColumnKey[] = [
   "repository",
   "type",
   "status",
+  "importance",
   "waitingOn",
   "stall",
   "blocker",
@@ -910,7 +911,7 @@ describe("Web UI", () => {
       "マージ判断者の誰か",
     );
     expect(firstItem.querySelector(".attention-primary-details")?.textContent).toContain("12日");
-    expect(firstItem.querySelector(".severity-critical")?.textContent).toBe("最重要");
+    expect(firstItem.querySelector(".severity-critical")?.textContent).toBe("危機的");
 
     const supportingDetails = requiredElement<HTMLDetailsElement>(
       '.attention-list li[data-node-id="sample-item-editor-101"] .attention-more',
@@ -1050,6 +1051,11 @@ describe("Web UI", () => {
         expectedNodeIds: ["sample-item-editor-101"],
       },
       {
+        key: "importance",
+        value: "中 medium 39点",
+        expectedNodeIds: ["sample-item-engine-202"],
+      },
+      {
         key: "waitingOn",
         value: "レビュワー チーム sample-reviewers",
         expectedNodeIds: ["sample-item-engine-202"],
@@ -1105,19 +1111,49 @@ describe("Web UI", () => {
       );
       expect(ascending[0]?.item.nodeId).not.toBe(descending[0]?.item.nodeId);
     }
+
+    const importanceAscending = filterAndSortTableRows(
+      rows,
+      createEmptyTableFilters(),
+      {
+        key: "importance",
+        direction: "ascending",
+      },
+      LOCALE,
+    );
+    const importanceDescending = filterAndSortTableRows(
+      rows,
+      createEmptyTableFilters(),
+      {
+        key: "importance",
+        direction: "descending",
+      },
+      LOCALE,
+    );
+    expect(importanceAscending.map((row) => row.item.importance.score)).toEqual([
+      12, 39, 41, 44, 63,
+    ]);
+    expect(importanceDescending.map((row) => row.item.importance.score)).toEqual([
+      63, 44, 41, 39, 12,
+    ]);
   });
 
-  it("主要4列を表示し開閉式の入力とbuttonで一覧を絞り込み並び替える", () => {
+  it("主要5列を表示し開閉式の入力とbuttonで一覧を絞り込み並び替える", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items");
     renderApp(sampleSummary);
     expect(
       [...currentContainer().querySelectorAll(".items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["項目", "状態", "次の担当", "停滞"]);
+    ).toEqual(["項目", "状態", "重要度", "次の担当", "停滞"]);
+    expect(
+      requiredElement<HTMLTableCellElement>(
+        '.items-table tr[data-node-id="sample-item-editor-101"] .importance-cell',
+      ).textContent,
+    ).toBe("高63点");
     const filterDetails = requiredElement<HTMLDetailsElement>(".item-filters");
     expect(filterDetails.open).toBe(false);
-    expect(filterDetails.querySelectorAll('input[type="search"]')).toHaveLength(7);
+    expect(filterDetails.querySelectorAll('input[type="search"]')).toHaveLength(8);
     act(() => {
       requiredElement<HTMLElement>(".item-filters > summary").click();
     });
@@ -1145,11 +1181,11 @@ describe("Web UI", () => {
     const sortKey = requiredElement<HTMLSelectElement>("#item-sort-key");
 
     act(() => {
-      sortKey.value = "stall";
+      sortKey.value = "importance";
       sortKey.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(itemRowNodeIds()[0]).toBe("sample-item-engine-204");
-    expect(new URL(window.location.href).searchParams.get("sort")).toBe("stall");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("importance");
 
     const directionButton = requiredElement<HTMLButtonElement>(".item-sort-controls button");
     act(() => {
@@ -1314,6 +1350,34 @@ describe("Web UI", () => {
     expect(document.activeElement?.textContent).toBe("サンプル配布処理を実装する");
   });
 
+  it("重要度の内訳で決定論とCodex判定の加点要因を区別する", async () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-editor/101");
+    renderApp(sampleSummary);
+    await flushUi();
+
+    const currentAction = requiredElement<HTMLElement>(".current-action-panel");
+    expect(currentAction.textContent).toContain("停滞の深刻さ危機的停滞状況の深刻さ");
+    expect(currentAction.textContent).toContain("重要度高63点項目自体の重要さ");
+
+    const importanceEvidence = requiredElement<HTMLElement>(".importance-evidence");
+    expect(importanceEvidence.querySelector("h4")?.textContent).toContain("重要度 高・63点");
+    expect(
+      [...importanceEvidence.querySelectorAll(".importance-factor-source")].map(
+        (source) => source.textContent,
+      ),
+    ).toEqual(["決定論", "Codex判定", "決定論", "決定論"]);
+    expect(
+      [...importanceEvidence.querySelectorAll(".importance-factor-list li")].map(
+        (factor) => factor.textContent,
+      ),
+    ).toEqual([
+      "決定論優先度ラベル+25点優先度ラベルの重みで25点を加算します",
+      "Codex判定重要な機能+20点Codex判定で20点です。利用者へ広く影響する重要な機能です",
+      "決定論milestone期限+10点期限付きのopen milestoneで10点です",
+      "決定論依存先への影響+8点open項目1件とリポジトリ1件への影響で8点です",
+    ]);
+  });
+
   it("リポジトリ、番号、タイトル、アクター、team、ラベルを公開DTO内で検索する", async () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items");
     renderApp(sampleSummary);
@@ -1394,6 +1458,27 @@ describe("Web UI", () => {
 
     expect(requiredElement<HTMLInputElement>("#item-search-input").value).toBe("blocked");
     expect(itemRowNodeIds()).toEqual(["sample-item-engine-204"]);
+  });
+
+  it("重要度のfilterとscore順を項目一覧のdeep linkから再現する", () => {
+    const deepLink =
+      "/voicevox_task_tracker/items?importance=%E9%AB%98&sort=importance&direction=descending";
+    window.history.replaceState({}, "", deepLink);
+    renderApp(sampleSummary);
+
+    expect(requiredElement<HTMLInputElement>('input[aria-label="重要度で絞り込み"]').value).toBe(
+      "高",
+    );
+    expect(requiredElement<HTMLSelectElement>("#item-sort-key").value).toBe("importance");
+    expect(requiredElement<HTMLButtonElement>(".item-sort-controls button").textContent).toContain(
+      "降順",
+    );
+    expect(itemRowNodeIds()).toEqual([
+      "sample-item-editor-101",
+      "sample-item-core-305",
+      "sample-item-editor-103",
+    ]);
+    expect(window.location.pathname + window.location.search).toBe(deepLink);
   });
 
   it("repository clusterの選択をdeep linkから再現する", async () => {

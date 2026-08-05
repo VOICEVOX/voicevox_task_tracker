@@ -196,7 +196,7 @@ function Dashboard({
             )}
           </section>
           <section aria-labelledby="severity-count-heading">
-            <h3 id="severity-count-heading">severity別</h3>
+            <h3 id="severity-count-heading">停滞の深刻さ別</h3>
             {severitiesWithItems.length === 0 ? (
               <p class="no-counts">該当する分類はありません。</p>
             ) : (

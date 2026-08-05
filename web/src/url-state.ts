@@ -13,6 +13,7 @@ const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
   "repo",
   "type",
   "status",
+  "importance",
   "waitingOn",
   "stall",
   "blocker",
@@ -25,6 +26,7 @@ const tableColumnKeySchema = z.enum([
   "repository",
   "type",
   "status",
+  "importance",
   "waitingOn",
   "stall",
   "blocker",
@@ -56,6 +58,7 @@ const FILTER_PARAMETER_NAMES = {
   repository: "repo",
   type: "type",
   status: "status",
+  importance: "importance",
   waitingOn: "waitingOn",
   stall: "stall",
   blocker: "blocker",
@@ -575,6 +578,7 @@ function parseItemsQuery(
       repository: filterValueSchema,
       type: filterValueSchema,
       status: filterValueSchema,
+      importance: filterValueSchema,
       waitingOn: filterValueSchema,
       stall: filterValueSchema,
       blocker: filterValueSchema,
@@ -698,6 +702,7 @@ export function createWebViewHref(basePath: string, state: WebViewState): string
       key !== "repository" &&
       key !== "type" &&
       key !== "status" &&
+      key !== "importance" &&
       key !== "waitingOn" &&
       key !== "stall" &&
       key !== "blocker" &&

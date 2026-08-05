@@ -16,6 +16,7 @@ import {
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
+  importanceLevelLabel,
   severityLabel,
   statusLabel,
   waitingOnHistoryLabel,
@@ -54,6 +55,12 @@ type SeverityHistoryValue = Extract<
 >["before"];
 
 type WaitingOnCandidate = PublicItemDetailsDto["summary"]["waitingOn"][number];
+type ImportanceFactor = PublicItemDetailsDto["importanceFactors"][number];
+
+type ImportanceFactorSource = Readonly<{
+  kind: "deterministic" | "codex";
+  label: string;
+}>;
 
 const REVIEW_STATE_LABELS = {
   not_applicable: "対象外",
@@ -82,6 +89,15 @@ const EVIDENCE_SUPPORT_LABELS = {
   notification: "通知",
   uncertainty: "不確実性",
 } satisfies Readonly<Record<PublicItemDetailsDto["evidence"][number]["supports"], string>>;
+
+const IMPORTANCE_FACTOR_LABELS = {
+  priorityLabel: "優先度ラベル",
+  downstreamImpact: "依存先への影響",
+  milestoneDeadline: "milestone期限",
+  significantFeature: "重要な機能",
+  explicitDeadline: "明示された期限",
+  futureRisk: "将来リスク",
+} satisfies Readonly<Record<ImportanceFactor["kind"], string>>;
 
 /** 項目詳細pageへ遷移し、通常のリンク操作も維持する。 */
 export function ItemDetailsLink({ children, href, nodeId, onSelect }: ItemDetailsLinkProps) {
@@ -126,6 +142,27 @@ function decisionFieldLabel(label: string, presentation: ConfidencePresentation)
       return `${label}候補`;
     default:
       throw new UnreachableError(presentation.fieldQualifier);
+  }
+}
+
+function importanceFactorSource(kind: ImportanceFactor["kind"]): ImportanceFactorSource {
+  switch (kind) {
+    case "priorityLabel":
+    case "downstreamImpact":
+    case "milestoneDeadline":
+      return {
+        kind: "deterministic",
+        label: "決定論",
+      };
+    case "significantFeature":
+    case "explicitDeadline":
+    case "futureRisk":
+      return {
+        kind: "codex",
+        label: "Codex判定",
+      };
+    default:
+      throw new UnreachableError(kind);
   }
 }
 
@@ -458,13 +495,29 @@ export function ItemDetailsContent({
             <dt>{decisionFieldLabel("現在のstatus", presentation)}</dt>
             <dd>
               <strong>{statusLabel(item.status)}</strong>
-              <span class={`severity-badge severity-${item.severity}`}>
-                {severityLabel(item.severity)}
-              </span>
             </dd>
           </div>
           <div>
-            <dt>停滞</dt>
+            <dt>停滞の深刻さ</dt>
+            <dd>
+              <span class={`severity-badge severity-${item.severity}`}>
+                {severityLabel(item.severity)}
+              </span>
+              <span>停滞状況の深刻さ</span>
+            </dd>
+          </div>
+          <div>
+            <dt>重要度</dt>
+            <dd>
+              <span class={`importance-badge importance-${item.importance.level}`}>
+                <span>{importanceLevelLabel(item.importance.level)}</span>
+                <strong>{item.importance.score.toString()}点</strong>
+              </span>
+              <span>項目自体の重要さ</span>
+            </dd>
+          </div>
+          <div>
+            <dt>停滞時間</dt>
             <dd>
               <strong>{formatStallDuration(item.stallSince, now)}</strong>
               <span>
@@ -629,25 +682,59 @@ export function ItemDetailsContent({
       <details class="detail-disclosure evidence-details">
         <summary>
           <span>判定根拠</span>
-          <span>{details.evidence.length.toString()}件</span>
+          <span>
+            重要度{details.importanceFactors.length.toString()}件・その他
+            {details.evidence.length.toString()}件
+          </span>
         </summary>
         <div class="detail-disclosure-content">
-          {details.evidence.length === 0 ? (
-            <p>公開できる判定根拠はありません。</p>
-          ) : (
-            <ol class="evidence-list">
-              {details.evidence.map((evidence) => (
-                <li key={`${evidence.sourceId}:${evidence.supports}`}>
-                  <div>
-                    <span>{EVIDENCE_SUPPORT_LABELS[evidence.supports]}</span>
-                    <code>{evidence.sourceId}</code>
-                  </div>
-                  <p>{evidence.summary}</p>
-                  <SafeGitHubLink href={evidence.sourceUrl}>GitHub上の根拠を開く</SafeGitHubLink>
-                </li>
-              ))}
-            </ol>
-          )}
+          <section class="importance-evidence" aria-labelledby="importance-evidence-heading">
+            <h4 id="importance-evidence-heading">
+              重要度 {importanceLevelLabel(item.importance.level)}・
+              {item.importance.score.toString()}点
+            </h4>
+            <p>項目自体の重要さを、次の加点要因から算出しています。</p>
+            {details.importanceFactors.length === 0 ? (
+              <p>重要度の加点要因はありません。</p>
+            ) : (
+              <ol class="importance-factor-list">
+                {details.importanceFactors.map((factor) => {
+                  const source = importanceFactorSource(factor.kind);
+                  return (
+                    <li key={factor.kind}>
+                      <div>
+                        <span class={`importance-factor-source source-${source.kind}`}>
+                          {source.label}
+                        </span>
+                        <code>{IMPORTANCE_FACTOR_LABELS[factor.kind]}</code>
+                        <strong>+{factor.points.toLocaleString(locale)}点</strong>
+                      </div>
+                      <p>{factor.detail}</p>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </section>
+          <section class="decision-evidence" aria-labelledby="decision-evidence-heading">
+            <h4 id="decision-evidence-heading">状態と次の行動の根拠</h4>
+            {details.evidence.length === 0 ? (
+              <p>公開できる判定根拠はありません。</p>
+            ) : (
+              <ol class="evidence-list">
+                {details.evidence.map((evidence) => (
+                  <li key={`${evidence.sourceId}:${evidence.supports}`}>
+                    <div>
+                      <span>{EVIDENCE_SUPPORT_LABELS[evidence.supports]}</span>
+                      <code>{evidence.sourceId}</code>
+                    </div>
+                    <p>{evidence.summary}</p>
+                    <SafeGitHubLink href={evidence.sourceUrl}>GitHub上の根拠を開く</SafeGitHubLink>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
         </div>
       </details>
 

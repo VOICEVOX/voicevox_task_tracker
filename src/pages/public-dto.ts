@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { PublicDtoValidationError } from "./errors.js";
-import { IMPORTANCE_FACTOR_KINDS } from "../domain/index.js";
+import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
 
 const identifierSchema = z.string().min(1).max(512).regex(/^\S+$/u);
 const shortStringSchema = z.string().max(1000);

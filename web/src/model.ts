@@ -10,6 +10,7 @@ type PublicRepositoryDto = PublicSummaryDto["repositories"][number];
 type ConfidenceThresholds = PublicSummaryDto["confidenceThresholds"];
 type Status = PublicItemSummaryDto["status"];
 type Severity = PublicItemSummaryDto["severity"];
+type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 type WaitingOnRole = WaitingOnCandidate["role"];
 type PublicActor = Extract<
@@ -25,7 +26,7 @@ export type AttentionPriority = Readonly<{
 
 /** 一覧表で並び替えと絞り込みの対象にする列。 */
 export type TableColumnKey =
-  "repository" | "type" | "status" | "waitingOn" | "stall" | "blocker" | "updated";
+  "repository" | "type" | "status" | "importance" | "waitingOn" | "stall" | "blocker" | "updated";
 
 /** 一覧表の並び順。 */
 export type TableSort = Readonly<{
@@ -43,6 +44,7 @@ export type ItemTableRow = Readonly<{
   repositoryText: string;
   typeText: string;
   statusText: string;
+  importanceText: string;
   waitingOnText: string;
   stallText: string;
   blockerText: string;
@@ -106,8 +108,14 @@ const SEVERITY_LABELS = {
   none: "通常",
   watch: "要確認",
   urgent: "緊急",
-  critical: "最重要",
+  critical: "危機的",
 } satisfies Readonly<Record<Severity, string>>;
+
+const IMPORTANCE_LEVEL_LABELS = {
+  low: "低",
+  medium: "中",
+  high: "高",
+} satisfies Readonly<Record<ImportanceLevel, string>>;
 
 const SEVERITY_RANKS = {
   none: 0,
@@ -136,6 +144,7 @@ export function createEmptyTableFilters(): TableFilters {
     repository: "",
     type: "",
     status: "",
+    importance: "",
     waitingOn: "",
     stall: "",
     blocker: "",
@@ -151,6 +160,11 @@ export function statusLabel(status: Status): string {
 /** severityの日本語表示名を返す。 */
 export function severityLabel(severity: Severity): string {
   return SEVERITY_LABELS[severity];
+}
+
+/** 重要度levelの日本語表示名を返す。 */
+export function importanceLevelLabel(level: ImportanceLevel): string {
+  return IMPORTANCE_LEVEL_LABELS[level];
 }
 
 /** 設定済みラベルルールのpriorityWeightをqueue表示へ変換する。 */
@@ -744,6 +758,7 @@ export function createItemTableRows(
       statusText: `${statusLabel(item.status)} ${item.status} ${severityLabel(
         item.severity,
       )} 優先度 ${item.priorityWeight.toString()}`,
+      importanceText: `${importanceLevelLabel(item.importance.level)} ${item.importance.level} ${item.importance.score.toString()}点`,
       waitingOnText: `${formatWaitingOn(item, summary)} ${item.waitingOn
         .map((waitingOn) => waitingOn.reasonSummary)
         .join(" ")}`,
@@ -856,6 +871,8 @@ function rowColumnText(row: ItemTableRow, key: TableColumnKey): string {
       return row.typeText;
     case "status":
       return row.statusText;
+    case "importance":
+      return row.importanceText;
     case "waitingOn":
       return row.waitingOnText;
     case "stall":
@@ -882,6 +899,8 @@ function compareTableRows(
       return left.typeText.localeCompare(right.typeText, locale);
     case "status":
       return left.statusText.localeCompare(right.statusText, locale);
+    case "importance":
+      return left.item.importance.score - right.item.importance.score;
     case "waitingOn":
       return left.waitingOnText.localeCompare(right.waitingOnText, locale);
     case "stall":
@@ -915,6 +934,7 @@ export function filterAndSortTableRows(
         key !== "repository" &&
         key !== "type" &&
         key !== "status" &&
+        key !== "importance" &&
         key !== "waitingOn" &&
         key !== "stall" &&
         key !== "blocker" &&

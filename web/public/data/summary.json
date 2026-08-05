@@ -132,7 +132,7 @@
       "nextAction": "メンテナーが内容を確認してマージする",
       "severity": "critical",
       "importance": {
-        "score": 43,
+        "score": 63,
         "level": "high"
       },
       "priorityWeight": 25,

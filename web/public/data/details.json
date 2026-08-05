@@ -53,7 +53,7 @@
         "nextAction": "メンテナーが内容を確認してマージする",
         "severity": "critical",
         "importance": {
-          "score": 43,
+          "score": 63,
           "level": "high"
         },
         "priorityWeight": 25,
@@ -74,6 +74,11 @@
           "kind": "priorityLabel",
           "points": 25,
           "detail": "優先度ラベルの重みで25点を加算します"
+        },
+        {
+          "kind": "significantFeature",
+          "points": 20,
+          "detail": "Codex判定で20点です。利用者へ広く影響する重要な機能です"
         },
         {
           "kind": "milestoneDeadline",
