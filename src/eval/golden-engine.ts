@@ -969,6 +969,7 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
     number: item.number,
     url: itemUrl(repositoryName, item),
     title: item.title,
+    milestone: null,
     author: Object.freeze({
       status: "identified",
       actor: createAccountActor(item.author),
@@ -1055,7 +1056,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "3",
+    schemaVersion: "4",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1423,6 +1424,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         number: index + 1,
         url: `https://github.com/${ORGANIZATION}/${repositoryName}/${index % 2 === 0 ? "issues" : "pull"}/${(index + 1).toString()}`,
         title: `匿名性能項目 ${index.toString().padStart(4, "0")}`,
+        milestone: null,
         author: Object.freeze({
           status: "identified",
           actor: author,
@@ -1554,7 +1556,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "3",
+    schemaVersion: "4",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

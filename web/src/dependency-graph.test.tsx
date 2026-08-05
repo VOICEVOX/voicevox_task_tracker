@@ -256,7 +256,7 @@ function createGraphFixture(options: GraphFixtureOptions): Readonly<{
     },
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId: summary.runId,
     generatedAt: summary.generatedAt,
     items: [],

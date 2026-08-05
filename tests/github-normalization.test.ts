@@ -124,6 +124,7 @@ function createItem(
       number: 1,
       title: "v1",
       state: "open",
+      dueOn: createUtcIsoDateTime("2026-09-01T00:00:00Z"),
     },
     itemFingerprint: bodyFingerprint,
     observedAt,
@@ -932,6 +933,7 @@ describe("GitHub項目観測値", () => {
       labels: ["bug"],
       milestone: {
         title: "v1",
+        dueOn: "2026-09-01T00:00:00.000Z",
       },
       bodySourceId: "github_item_body:PR_normalization",
       observedAt: "2026-08-01T00:00:00.000Z",

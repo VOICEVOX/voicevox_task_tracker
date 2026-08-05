@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "3"
+      "const": "4"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -740,6 +740,37 @@
         }
       ]
     },
+    "milestone": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "number", "title", "state", "dueOn"],
+      "properties": {
+        "nodeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "state": {
+          "enum": ["open", "closed"]
+        },
+        "dueOn": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/dateTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
     "item": {
       "type": "object",
       "additionalProperties": false,
@@ -751,6 +782,7 @@
         "number",
         "url",
         "title",
+        "milestone",
         "author",
         "latestEventActor",
         "state",
@@ -808,6 +840,16 @@
         "title": {
           "type": "string",
           "maxLength": 500
+        },
+        "milestone": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/milestone"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "author": {
           "$ref": "#/$defs/itemAuthor"

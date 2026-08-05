@@ -183,7 +183,7 @@ function createRelations(edge: EdgeFixture): readonly unknown[] {
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "3",
+    schemaVersion: "4",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -217,6 +217,7 @@ function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
         number: 1,
         url: "https://github.com/VOICEVOX/example/issues/1",
         title: "追跡対象",
+        milestone: null,
         author: {
           status: "identified",
           actor: {
@@ -556,7 +557,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("3");
+    expect(migrated.schemaVersion).toBe("4");
     expect(migrated.repositories.map((repository) => repository.id)).toEqual([
       publicRepositoryId,
       "R_SECOND",
@@ -570,6 +571,7 @@ describe("state schema version", () => {
     expect(migrated.collection.repositories[0]?.items[0]?.deterministicRulesVersion).toEqual({
       status: "unavailable",
     });
+    expect(migrated.items[0]?.milestone).toBeNull();
   });
 
   it("version 2のsnapshotへ決定規則version未取得を設定して現行形式へmigrationする", () => {
@@ -621,13 +623,46 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("3");
+    expect(migrated.schemaVersion).toBe("4");
     expect(migrated.collection.repositories[0]?.items[0]?.analysisRulesFingerprint).toEqual({
       status: "unavailable",
     });
     expect(migrated.collection.repositories[0]?.items[0]?.deterministicRulesVersion).toEqual({
       status: "unavailable",
     });
+    expect(migrated.items[0]?.milestone).toBeNull();
+  });
+
+  it("version 3のsnapshotへmilestone未設定を追加して現行形式へmigrationする", () => {
+    const snapshot = createSnapshot({
+      runId: "run-schema-version-3",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "new_untriaged",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const item = snapshot.items[0];
+    assertNonNullable(item, "version 3のitem fixtureがありません");
+    const { milestone, ...version3Item } = item;
+    expect(milestone).toBeNull();
+    const source = serializeCanonicalJson({
+      ...snapshot,
+      schemaVersion: "3",
+      items: [version3Item],
+    });
+
+    const migrated = parseStateSnapshot(source);
+
+    expect(migrated.schemaVersion).toBe("4");
+    expect(migrated.items[0]?.milestone).toBeNull();
   });
 
   it("version 1のhistoryを登録済みparserで読み取り現行形式へmigrationする", () => {

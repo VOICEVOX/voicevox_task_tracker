@@ -41,7 +41,7 @@ function createEmptyWorkflowArtifact(): WorkflowArtifact {
     repositoryAllowlist: [],
     historyInputEvents: [],
     snapshot: {
-      schemaVersion: "3",
+      schemaVersion: "4",
       generatedAt: NOW,
       trackingStartAt: {
         status: "fixed",

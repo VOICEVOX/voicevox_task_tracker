@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "observedAt": "2026-07-31T00:00:00.000Z",
@@ -91,6 +91,13 @@
       "number": 101,
       "url": "https://github.com/VOICEVOX/sample-editor/pull/101",
       "title": "サンプル辞書更新をマージする",
+      "milestone": {
+        "nodeId": "sample-milestone-editor-1",
+        "number": 1,
+        "title": "サンプルリリース",
+        "state": "open",
+        "dueOn": "2026-08-31T00:00:00.000Z"
+      },
       "state": "open",
       "author": {
         "status": "identified",
@@ -145,6 +152,7 @@
       "number": 202,
       "url": "https://github.com/VOICEVOX/sample-engine/pull/202",
       "title": "サンプルAPIのレビューを完了する",
+      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -199,6 +207,7 @@
       "number": 103,
       "url": "https://github.com/VOICEVOX/sample-editor/issues/103",
       "title": "サンプル配布方針を決める",
+      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -253,6 +262,7 @@
       "number": 204,
       "url": "https://github.com/VOICEVOX/sample-engine/issues/204",
       "title": "サンプル配布処理を実装する",
+      "milestone": null,
       "state": "open",
       "author": {
         "status": "unavailable",
@@ -311,6 +321,7 @@
       "number": 305,
       "url": "https://github.com/VOICEVOX/sample-core/pull/305",
       "title": "サンプル修正へ回答する",
+      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",

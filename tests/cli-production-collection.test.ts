@@ -36,6 +36,7 @@ import {
   type EnumeratedGitHubItem,
   type GitHubItemDetail,
   type GitHubItemDetailEventWindow,
+  type GitHubItemMilestone,
   type GitHubInboundCrossReferenceCandidate,
   type GitHubIssueComment,
   type GitHubNativeDependency,
@@ -1480,6 +1481,66 @@ describe("本番収集の接続", () => {
       available: false,
       degraded: false,
     });
+  });
+
+  it("milestoneを期限と信頼できないタイトルを含めてsnapshotと公開summaryへ渡す", async () => {
+    const repository = createRepository("R_milestone", "milestone", FIRST_RUN_AT);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const baseItem = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint: "milestone-v1",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const itemMilestone = Object.freeze({
+      nodeId: createGitHubNodeId("M_milestone_v1"),
+      number: 1,
+      title: "<script>サンプルリリース</script>",
+      state: "open",
+      dueOn: createUtcIsoDateTime("2026-09-01T00:00:00Z"),
+    } satisfies GitHubItemMilestone);
+    const item = Object.freeze({
+      ...baseItem,
+      milestone: itemMilestone,
+    });
+    fixture.openItems = [item];
+    setIssueDetails(fixture, [item], observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runDaily(FIRST_RUN_AT);
+    const files = await harness.stateAdapter.readBranchFiles("tracker-state");
+    const snapshotSource = files.get("state/snapshot.json");
+    if (snapshotSource == null) {
+      throw new TypeError("milestoneのsnapshotがありません");
+    }
+    const snapshot = parseStateSnapshot(new TextDecoder().decode(snapshotSource));
+    const expectedMilestone = {
+      nodeId: "M_milestone_v1",
+      number: 1,
+      title: "<script>サンプルリリース</script>",
+      state: "open",
+      dueOn: "2026-09-01T00:00:00.000Z",
+    };
+    const publicData = harness.publicData.at(-1);
+    if (publicData == null) {
+      throw new TypeError("milestoneの公開DTOがありません");
+    }
+
+    expect(result.exitCode).toBe(0);
+    expect(snapshot.schemaVersion).toBe("4");
+    expect(snapshot.items[0]?.milestone).toEqual(expectedMilestone);
+    expect(publicData.summary.schemaVersion).toBe("2");
+    expect(publicData.summary.items[0]?.milestone).toEqual(expectedMilestone);
+    expect(publicData.details.schemaVersion).toBe("2");
+    expect(publicData.details.items[0]?.summary.milestone).toEqual(expectedMilestone);
   });
 
   it("両側detailの同じnative依存を1候補へ統合してIssue状態を判定する", async () => {

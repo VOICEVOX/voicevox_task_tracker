@@ -177,6 +177,7 @@ function createItem(options: ItemFixtureOptions): unknown {
     number: options.number,
     url: itemUrl,
     title: options.title,
+    milestone: null,
     author: {
       status: "identified",
       actor: {
@@ -291,7 +292,7 @@ function createRelation(
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "3",
+    schemaVersion: "4",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -879,6 +880,39 @@ describe("Pages公開安全性", () => {
     );
   });
 
+  it("milestoneタイトルにprivate sentinelを含むsnapshotではDTO生成を中止する", () => {
+    const source = createSingleItemSnapshot("公開項目");
+    const snapshot = createStateSnapshot({
+      ...source,
+      items: source.items.map((item) => ({
+        ...item,
+        milestone: {
+          nodeId: "M_PRIVATE_SENTINEL",
+          number: 1,
+          title: "VOICEVOX/private-sentinel",
+          state: "open",
+          dueOn: null,
+        },
+      })),
+    });
+    const inventory = createInventory([
+      {
+        id: PUBLIC_REPOSITORY_ID,
+        name: "public",
+        visibility: "public",
+      },
+      {
+        id: PRIVATE_REPOSITORY_ID,
+        name: "private-sentinel",
+        visibility: "private",
+      },
+    ]);
+
+    expect(() => generateFixture(snapshot, [], inventory, [], defaultGenerationOptions)).toThrow(
+      PagesPublicSafetyError,
+    );
+  });
+
   it("本文全文フィールドを拒否し、有効なDTOへ本文フィールドを作らない", () => {
     const fullBody = "転載してはいけないIssue本文全文";
     const snapshot = createSingleItemSnapshot("短い公開タイトル");
@@ -927,6 +961,43 @@ describe("Pages公開安全性", () => {
 });
 
 describe("公開DTO生成", () => {
+  it("milestoneを期限込みでsummaryとdetails内のsummaryへ公開する", () => {
+    const source = createSingleItemSnapshot("milestone公開fixture");
+    const snapshot = createStateSnapshot({
+      ...source,
+      items: source.items.map((item) => ({
+        ...item,
+        milestone: {
+          nodeId: "M_PUBLIC",
+          number: 2,
+          title: "公開リリース",
+          state: "closed",
+          dueOn: "2026-09-01T00:00:00.000Z",
+        },
+      })),
+    });
+
+    const generated = generateFixture(
+      snapshot,
+      [],
+      publicInventory(),
+      [],
+      defaultGenerationOptions,
+    );
+    const expectedMilestone = {
+      nodeId: "M_PUBLIC",
+      number: 2,
+      title: "公開リリース",
+      state: "closed",
+      dueOn: "2026-09-01T00:00:00.000Z",
+    };
+
+    expect(generated.summary.schemaVersion).toBe("2");
+    expect(generated.summary.items[0]?.milestone).toEqual(expectedMilestone);
+    expect(generated.details.schemaVersion).toBe("2");
+    expect(generated.details.items[0]?.summary.milestone).toEqual(expectedMilestone);
+  });
+
   it("run成功時もsnapshotのAI無効状態をそのまま公開する", () => {
     const source = createSingleItemSnapshot("AI無効状態の項目");
     const snapshot = createStateSnapshot({
@@ -1534,11 +1605,11 @@ describe("公開summaryサイズと書き出し", () => {
       expect(result.summaryBytes).toBe(Buffer.byteLength(summarySource, "utf8"));
       expect(result.detailsBytes).toBe(Buffer.byteLength(detailsSource, "utf8"));
       expect(JSON.parse(summarySource)).toMatchObject({
-        schemaVersion: "1",
+        schemaVersion: "2",
         runId: "run-single",
       });
       expect(JSON.parse(detailsSource)).toMatchObject({
-        schemaVersion: "1",
+        schemaVersion: "2",
         runId: "run-single",
       });
     } finally {

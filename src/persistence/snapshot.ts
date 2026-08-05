@@ -147,9 +147,10 @@ export type SnapshotRun = Readonly<{
 const SNAPSHOT_SCHEMA_VERSION_1 = "1";
 const SNAPSHOT_SCHEMA_VERSION_2 = "2";
 const SNAPSHOT_SCHEMA_VERSION_3 = "3";
+const SNAPSHOT_SCHEMA_VERSION_4 = "4";
 
-type StateSnapshotVersion3 = Readonly<{
-  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_3;
+type StateSnapshotVersion4 = Readonly<{
+  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_4;
   generatedAt: UtcIsoDateTime;
   trackingStartAt: TrackingStartAtState;
   ai: SnapshotAiState;
@@ -163,8 +164,8 @@ type StateSnapshotVersion3 = Readonly<{
 
 type StateSnapshotVersionParser = (value: unknown) => StateSnapshot;
 
-/** tracker-stateへ保存するschema version 3のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion3;
+/** tracker-stateへ保存するschema version 4のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion4;
 
 const snapshotSchemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
@@ -211,6 +212,12 @@ const snapshotVersion2MigrationSchema = z.looseObject({
 });
 
 type StateSnapshotVersion2 = z.output<typeof snapshotVersion2MigrationSchema>;
+const snapshotVersion3MigrationSchema = z.looseObject({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_3),
+  items: z.array(z.looseObject({})),
+});
+
+type StateSnapshotVersion3 = z.output<typeof snapshotVersion3MigrationSchema>;
 
 const ajv = new Ajv2020({
   allErrors: true,
@@ -228,7 +235,7 @@ ajv.addFormat("date-time", {
     return !Number.isNaN(Date.parse(value));
   },
 });
-const validateSnapshotVersion3Schema = ajv.compile<StateSnapshotVersion3>(snapshotSchema);
+const validateSnapshotVersion4Schema = ajv.compile<StateSnapshotVersion4>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -416,6 +423,9 @@ function assertSnapshotSemantics(snapshot: StateSnapshot): void {
     ]) {
       assertUtcDateTime(dateTime, "itemの日時");
     }
+    if (item.milestone?.dueOn != null) {
+      assertUtcDateTime(item.milestone.dueOn, "itemのmilestone期限");
+    }
   }
   const graphNodeIds = new Set([
     ...snapshot.items.map((item) => item.nodeId),
@@ -488,6 +498,12 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
         .map((item) =>
           Object.freeze({
             ...item,
+            milestone:
+              item.milestone == null
+                ? null
+                : Object.freeze({
+                    ...item.milestone,
+                  }),
             author:
               item.author.status === "unavailable"
                 ? Object.freeze({ ...item.author })
@@ -599,15 +615,36 @@ function migrateStateSnapshotVersion2(snapshot: StateSnapshotVersion2): StateSna
 }
 
 function parseStateSnapshotVersion3(value: unknown): StateSnapshotVersion3 {
-  if (!validateSnapshotVersion3Schema(value)) {
-    const issueCount = validateSnapshotVersion3Schema.errors?.length ?? 1;
+  const result = snapshotVersion3MigrationSchema.safeParse(value);
+  if (!result.success) {
+    throw new StateSnapshotSchemaError(result.error.issues.length);
+  }
+  return result.data;
+}
+
+function migrateStateSnapshotVersion3(snapshot: StateSnapshotVersion3): StateSnapshot {
+  return migrateStateSnapshotVersion4(
+    parseStateSnapshotVersion4({
+      ...snapshot,
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION_4,
+      items: snapshot.items.map((item) => ({
+        ...item,
+        milestone: null,
+      })),
+    }),
+  );
+}
+
+function parseStateSnapshotVersion4(value: unknown): StateSnapshotVersion4 {
+  if (!validateSnapshotVersion4Schema(value)) {
+    const issueCount = validateSnapshotVersion4Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
   assertSnapshotSemantics(value);
   return value;
 }
 
-function migrateStateSnapshotVersion3(snapshot: StateSnapshotVersion3): StateSnapshot {
+function migrateStateSnapshotVersion4(snapshot: StateSnapshotVersion4): StateSnapshot {
   return normalizeSnapshot(snapshot);
 }
 
@@ -631,6 +668,10 @@ const stateSnapshotVersionParsers: ReadonlyMap<string, StateSnapshotVersionParse
     SNAPSHOT_SCHEMA_VERSION_3,
     createStateSnapshotVersionParser(parseStateSnapshotVersion3, migrateStateSnapshotVersion3),
   ],
+  [
+    SNAPSHOT_SCHEMA_VERSION_4,
+    createStateSnapshotVersionParser(parseStateSnapshotVersion4, migrateStateSnapshotVersion4),
+  ],
 ]);
 
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
@@ -649,7 +690,7 @@ function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return migrateStateSnapshotVersion3(parseStateSnapshotVersion3(value));
+  return migrateStateSnapshotVersion4(parseStateSnapshotVersion4(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */

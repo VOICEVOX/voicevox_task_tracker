@@ -873,6 +873,7 @@ function createFreshItemFields(
             number: options.item.milestone.number,
             title: options.item.milestone.title,
             state: options.item.milestone.state,
+            dueOn: options.item.milestone.dueOn,
           }),
     inboundCrossReferences: Object.freeze([...options.detail.inboundCrossReferences]),
     events: normalizeEvents(options),

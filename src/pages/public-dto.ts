@@ -138,6 +138,13 @@ const itemAuthorSchema = z.discriminatedUnion("status", [
     reason: z.literal("deleted_account"),
   }),
 ]);
+const publicItemMilestoneSchema = z.strictObject({
+  nodeId: identifierSchema,
+  number: z.number().int().positive(),
+  title: z.string().max(500),
+  state: z.enum(["open", "closed"]),
+  dueOn: dateTimeSchema.nullable(),
+});
 const publicItemSummarySchema = z.strictObject({
   nodeId: identifierSchema,
   type: z.enum(["issue", "pull_request"]),
@@ -146,6 +153,7 @@ const publicItemSummarySchema = z.strictObject({
   number: z.number().int().positive(),
   url: githubUrlSchema,
   title: z.string().max(500),
+  milestone: publicItemMilestoneSchema.nullable(),
   state: z.enum(["open", "closed", "merged"]),
   author: itemAuthorSchema,
   assignees: z.array(accountActorSchema),
@@ -473,7 +481,7 @@ const publicAiStateSchema = z.union([
   }),
 ]);
 const publicSummaryDtoSchema = z.strictObject({
-  schemaVersion: z.literal("1"),
+  schemaVersion: z.literal("2"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
@@ -487,17 +495,17 @@ const publicSummaryDtoSchema = z.strictObject({
   graph: publicInitialGraphSchema,
 });
 const publicDetailsDtoSchema = z.strictObject({
-  schemaVersion: z.literal("1"),
+  schemaVersion: z.literal("2"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   items: z.array(publicItemDetailsSchema),
   graph: publicGraphSchema,
 });
 
-/** Web初期表示で共有するschema version 1の公開summary DTO。 */
+/** Web初期表示で共有するschema version 2の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 1の公開details DTO。 */
+/** Web詳細表示で共有するschema version 2の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */

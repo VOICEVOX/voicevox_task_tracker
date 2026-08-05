@@ -106,6 +106,7 @@ function createTrackedItem(number: number, options: ItemOptions): TrackedItem {
     number,
     url,
     title: options.title,
+    milestone: null,
     author: Object.freeze({
       status: "identified",
       actor: Object.freeze({

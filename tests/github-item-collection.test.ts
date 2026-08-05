@@ -68,6 +68,7 @@ type ItemMetadataFixture = Readonly<{
     number: number;
     title: string;
     state: "open";
+    due_on: string | null;
   }> | null;
   closed_at: null;
   created_at: string;
@@ -196,6 +197,7 @@ function createItemMetadata(index: number, overrides: ItemMetadataOverrides): It
       number: 1,
       title: "v1",
       state: "open",
+      due_on: "2026-09-01T09:00:00+09:00",
     },
     closed_at: null,
     created_at: "2026-07-01T00:00:00Z",
@@ -515,12 +517,50 @@ describe("GitHub項目列挙", () => {
         number: 1,
         title: "v1",
         state: "open",
+        dueOn: "2026-09-01T00:00:00.000Z",
       },
       observedAt: "2026-08-01T00:00:00.000Z",
     });
     expect(item).not.toHaveProperty("body");
     expect(JSON.stringify(item)).not.toContain(body);
     expect(item.itemFingerprint).toMatch(/^sha256:[0-9a-f]{64}$/u);
+  });
+
+  it("期限未設定のmilestoneをnullの期限として正規化する", async () => {
+    const metadata = createItemMetadata(43, {});
+    if (metadata.milestone == null) {
+      throw new TypeError("milestone fixtureがありません");
+    }
+    const items = await enumerateFixture("R_example", "example", [
+      {
+        ...metadata,
+        milestone: {
+          ...metadata.milestone,
+          due_on: null,
+        },
+      },
+    ]);
+
+    expect(items[0]?.milestone?.dueOn).toBeNull();
+  });
+
+  it("milestone期限が変わると項目fingerprintが変わる", async () => {
+    const metadata = createItemMetadata(44, {});
+    if (metadata.milestone == null) {
+      throw new TypeError("milestone fixtureがありません");
+    }
+    const firstItems = await enumerateFixture("R_example", "example", [metadata]);
+    const secondItems = await enumerateFixture("R_example", "example", [
+      {
+        ...metadata,
+        milestone: {
+          ...metadata.milestone,
+          due_on: "2026-09-02T00:00:00Z",
+        },
+      },
+    ]);
+
+    expect(firstItems[0]?.itemFingerprint).not.toBe(secondItems[0]?.itemFingerprint);
   });
 
   it("本文が1文字変わるとfingerprintが変わる", () => {

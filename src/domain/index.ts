@@ -209,6 +209,7 @@ export {
   type TrackedItemAiAnalysis,
   type TrackedItemInputEvent,
   type TrackedItemLatestEventActor,
+  type TrackedItemMilestone,
   type TrackedItemState,
   type TrackedItemType,
   type UtcIsoDateTime,

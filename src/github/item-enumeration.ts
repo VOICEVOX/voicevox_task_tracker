@@ -84,6 +84,7 @@ const milestoneSchema = z
     number: z.number().int().positive(),
     title: z.string().min(1),
     state: z.enum(["open", "closed"]),
+    due_on: utcIsoDateTimeSchema.nullable(),
   })
   .loose();
 const itemMetadataSchema = z
@@ -196,6 +197,7 @@ export type GitHubItemMilestone = Readonly<{
   number: number;
   title: string;
   state: "open" | "closed";
+  dueOn: UtcIsoDateTime | null;
 }>;
 
 /** 本文を必要時に再取得するための公開リポジトリ内locator。 */
@@ -342,6 +344,7 @@ function normalizeMilestone(
     number: milestone.number,
     title: milestone.title,
     state: milestone.state,
+    dueOn: milestone.due_on,
   });
 }
 

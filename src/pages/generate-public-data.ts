@@ -595,6 +595,12 @@ function createItemSummary(
     number: item.number,
     url: item.url,
     title: item.title,
+    milestone:
+      item.milestone == null
+        ? null
+        : {
+            ...item.milestone,
+          },
     state: item.state,
     author:
       item.author.status === "unavailable"
@@ -918,7 +924,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     edgeIds: cycle.edges.map((edge) => publicEdgeId(graph.analysisEdgeIdToPublicEdgeId, edge.id)),
   }));
   const summary = createPublicSummaryDto({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
@@ -969,7 +975,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     ),
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     items: snapshot.items.map((item, index) => {

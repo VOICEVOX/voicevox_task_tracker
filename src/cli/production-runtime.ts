@@ -3035,6 +3035,7 @@ function createTrackedItem(
     number: analysis.item.number,
     url: analysis.item.url,
     title: analysis.item.title,
+    milestone: analysis.item.milestone,
     author: analysis.item.author,
     latestEventActor: createTrackedItemLatestEventActor(analysis.item.events),
     state: trackedItemState(analysis.item, decision),
@@ -4023,7 +4024,7 @@ function validateRunCompleteness(
   const persistedAnalysisRulesFingerprintNodeIds = new Set<string>();
   const persistedDeterministicRulesVersionNodeIds = new Set<string>();
   const snapshot = createStateSnapshot({
-    schemaVersion: "3",
+    schemaVersion: "4",
     generatedAt: invocation.startedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, invocation),
     ai: snapshotAiState(configuration.config, codexAnalysis),
