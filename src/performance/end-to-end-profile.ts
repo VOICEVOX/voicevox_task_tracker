@@ -393,7 +393,7 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
     `性能profileのCodex入力にhuman commentがありません。対象: ${input.item.nodeId}`,
   );
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,
@@ -421,6 +421,12 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
       latestMeaningfulSourceId: source.id,
       reasonSummary: "human commentを意味のある進捗として扱います",
       confidence: 0.95,
+    },
+    importance: {
+      significantFeature: false,
+      explicitDeadline: false,
+      futureRisk: false,
+      rationale: "性能profileでは重要度の自然言語要因を設定しません",
     },
     evidence: [
       {

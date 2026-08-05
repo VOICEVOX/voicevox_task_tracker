@@ -93,9 +93,11 @@ export {
 export {
   type SchemaValidCodexAnalysisOutput,
   type SchemaValidCodexEvidence,
+  type SchemaValidCodexImportance,
   type SchemaValidCodexRelation,
   type SchemaValidCodexWaitingOn,
   type ValidatedCodexAnalysisOutput,
+  type ValidatedCodexImportance,
   type ValidatedCodexRelation,
 } from "./output-types.js";
 export { validateCodexAnalysisOutput } from "./output-validation.js";

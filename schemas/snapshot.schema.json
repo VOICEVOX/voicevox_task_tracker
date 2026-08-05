@@ -777,7 +777,14 @@
       "required": ["kind", "points", "detail"],
       "properties": {
         "kind": {
-          "enum": ["priorityLabel", "downstreamImpact", "milestoneDeadline"]
+          "enum": [
+            "priorityLabel",
+            "downstreamImpact",
+            "milestoneDeadline",
+            "significantFeature",
+            "explicitDeadline",
+            "futureRisk"
+          ]
         },
         "points": {
           "type": "number",
@@ -811,6 +818,56 @@
         }
       }
     },
+    "importanceAssessment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_available"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "value"],
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "significantFeature",
+                "explicitDeadline",
+                "futureRisk",
+                "rationale"
+              ],
+              "properties": {
+                "significantFeature": {
+                  "type": "boolean"
+                },
+                "explicitDeadline": {
+                  "type": "boolean"
+                },
+                "futureRisk": {
+                  "type": "boolean"
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
     "item": {
       "type": "object",
       "additionalProperties": false,
@@ -824,6 +881,7 @@
         "title",
         "milestone",
         "importance",
+        "importanceAssessment",
         "author",
         "latestEventActor",
         "state",
@@ -894,6 +952,9 @@
         },
         "importance": {
           "$ref": "#/$defs/importance"
+        },
+        "importanceAssessment": {
+          "$ref": "#/$defs/importanceAssessment"
         },
         "author": {
           "$ref": "#/$defs/itemAuthor"

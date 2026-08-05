@@ -56,6 +56,9 @@ describe("設定の読み込みと検証", () => {
         downstreamImpactMax: 30,
         milestoneWithDueDate: 10,
         milestoneDueSoon: 15,
+        significantFeature: 20,
+        explicitDeadline: 15,
+        futureRisk: 15,
       },
       dueSoonDays: 14,
       levels: {
@@ -316,6 +319,9 @@ describe("設定の読み込みと検証", () => {
     ["downstreamImpactMax", "30"],
     ["milestoneWithDueDate", "10"],
     ["milestoneDueSoon", "15"],
+    ["significantFeature", "20"],
+    ["explicitDeadline", "15"],
+    ["futureRisk", "15"],
   ])("重要度の重み%sに負数を指定できない", (weightName, configuredValue) => {
     const source = replaceRequired(
       validConfigSource,

@@ -343,6 +343,10 @@ function collectTextFields(output: SchemaValidCodexAnalysisOutput): readonly Tex
       value: output.progress.reasonSummary,
     }),
     Object.freeze({
+      path: "/importance/rationale",
+      value: output.importance.rationale,
+    }),
+    Object.freeze({
       path: "/notification/reasonSummary",
       value: output.notification.reasonSummary,
     }),
@@ -577,6 +581,12 @@ function createValidatedOutput(
           : knownSourceId(sources, output.progress.latestMeaningfulSourceId),
       reasonSummary: output.progress.reasonSummary,
       confidence: output.progress.confidence,
+    }),
+    importance: Object.freeze({
+      significantFeature: output.importance.significantFeature,
+      explicitDeadline: output.importance.explicitDeadline,
+      futureRisk: output.importance.futureRisk,
+      rationale: output.importance.rationale,
     }),
     evidence: Object.freeze(
       output.evidence.map((evidence) =>

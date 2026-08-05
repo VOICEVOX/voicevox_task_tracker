@@ -229,6 +229,9 @@ function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
             },
           ],
         },
+        importanceAssessment: {
+          status: "not_available",
+        },
         author: {
           status: "identified",
           actor: {
@@ -691,7 +694,7 @@ describe("state schema version", () => {
     });
   });
 
-  it("version 4のsnapshotへimportance未計算値を追加して現行形式へmigrationする", () => {
+  it("version 4のsnapshotへimportance未計算値と重要度判定なしを追加して現行形式へmigrationする", () => {
     const snapshot = createSnapshot({
       runId: "run-schema-version-4",
       generatedAt: "2026-08-01T00:00:00.000Z",
@@ -709,8 +712,11 @@ describe("state schema version", () => {
     });
     const item = snapshot.items[0];
     assertNonNullable(item, "version 4のitem fixtureがありません");
-    const { importance, ...version4Item } = item;
+    const { importance, importanceAssessment, ...version4Item } = item;
     expect(importance.score).toBe(25);
+    expect(importanceAssessment).toEqual({
+      status: "not_available",
+    });
     const source = serializeCanonicalJson({
       ...snapshot,
       schemaVersion: "4",
@@ -724,6 +730,9 @@ describe("state schema version", () => {
       score: 0,
       level: "low",
       factors: [],
+    });
+    expect(migrated.items[0]?.importanceAssessment).toEqual({
+      status: "not_available",
     });
   });
 

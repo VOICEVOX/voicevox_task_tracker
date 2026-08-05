@@ -14,6 +14,7 @@ import {
   type ExternalGhostNode,
   type GitHubAccountActor,
   type GitHubNodeId,
+  type NaturalLanguageImportanceAssessmentState,
   type Relation,
   type Repository,
   type Severity,
@@ -46,6 +47,7 @@ export type SnapshotRepository =
 /** snapshotへ保存するseverity付き追跡項目。 */
 export type SnapshotTrackedItem = TrackedItem &
   Readonly<{
+    importanceAssessment: NaturalLanguageImportanceAssessmentState;
     severity: Severity;
     severityContext: StalenessSeverityContext;
   }>;
@@ -544,6 +546,17 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
                 ),
               ),
             }),
+            importanceAssessment:
+              item.importanceAssessment.status === "not_available"
+                ? Object.freeze({
+                    status: "not_available",
+                  })
+                : Object.freeze({
+                    status: "available",
+                    value: Object.freeze({
+                      ...item.importanceAssessment.value,
+                    }),
+                  }),
             author:
               item.author.status === "unavailable"
                 ? Object.freeze({ ...item.author })
@@ -694,6 +707,9 @@ function migrateStateSnapshotVersion4(snapshot: StateSnapshotVersion4): StateSna
           score: 0,
           level: "low",
           factors: [],
+        },
+        importanceAssessment: {
+          status: "not_available",
         },
       })),
     }),

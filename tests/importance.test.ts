@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   calculateImportance,
+  combineImportance,
   createGitHubNodeId,
   createUtcIsoDateTime,
   type CalculateImportanceInput,
@@ -17,6 +18,9 @@ const weights = Object.freeze({
   downstreamImpactMax: 30,
   milestoneWithDueDate: 10,
   milestoneDueSoon: 15,
+  significantFeature: 20,
+  explicitDeadline: 15,
+  futureRisk: 15,
 }) satisfies ImportanceWeights;
 const levels = Object.freeze({
   high: 40,
@@ -188,5 +192,69 @@ describe("重要度の決定論的な加点", () => {
         },
       }).factors,
     ).toEqual([]);
+  });
+});
+
+describe("重要度の自然言語判定による加点", () => {
+  it("Codexがtrueと判定した3要因を決定論的な重要度へ加点する", () => {
+    const importance = combineImportance({
+      deterministic: calculateImportance(baseInput),
+      naturalLanguageAssessment: {
+        status: "available",
+        value: {
+          significantFeature: true,
+          explicitDeadline: true,
+          futureRisk: true,
+          rationale: "主要機能に期限と将来の互換性リスクがあります",
+        },
+      },
+      weights,
+      levels,
+    });
+
+    expect(importance).toMatchObject({
+      score: 50,
+      level: "high",
+      factors: [
+        {
+          kind: "significantFeature",
+          points: 20,
+        },
+        {
+          kind: "explicitDeadline",
+          points: 15,
+        },
+        {
+          kind: "futureRisk",
+          points: 15,
+        },
+      ],
+    });
+  });
+
+  it("Codex判定がなければ決定論的な3要因だけでscoreを決める", () => {
+    const deterministic = calculateImportance({
+      ...baseInput,
+      priorityWeight: 12,
+    });
+
+    expect(
+      combineImportance({
+        deterministic,
+        naturalLanguageAssessment: {
+          status: "not_available",
+        },
+        weights,
+        levels,
+      }),
+    ).toBe(deterministic);
+    expect(deterministic).toMatchObject({
+      score: 12,
+      factors: [
+        {
+          kind: "priorityLabel",
+        },
+      ],
+    });
   });
 });

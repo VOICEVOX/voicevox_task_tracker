@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "item": {
     "nodeId": "PR_example",
     "url": "https://github.com/VOICEVOX/example/pull/123"
@@ -29,6 +29,12 @@
     "latestMeaningfulSourceId": "github:native-dependency:45",
     "reasonSummary": "blocker登録が最新の意味のある状態変化。",
     "confidence": 0.98
+  },
+  "importance": {
+    "significantFeature": true,
+    "explicitDeadline": false,
+    "futureRisk": false,
+    "rationale": "他の作業の前提になる基盤の変更です。"
   },
   "evidence": [
     {

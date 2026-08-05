@@ -189,6 +189,9 @@ function createItem(options: ItemFixtureOptions): unknown {
         },
       ],
     },
+    importanceAssessment: {
+      status: "not_available",
+    },
     author: {
       status: "identified",
       actor: {

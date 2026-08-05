@@ -38,9 +38,17 @@ export type SchemaValidCodexEvidence = Readonly<{
   summary: string;
 }>;
 
+/** JSON Schema検証を通ったCodexの重要度判定。 */
+export type SchemaValidCodexImportance = Readonly<{
+  significantFeature: boolean;
+  explicitDeadline: boolean;
+  futureRisk: boolean;
+  rationale: string;
+}>;
+
 /** repositoryのJSON Schemaに適合したCodex出力。 */
 export type SchemaValidCodexAnalysisOutput = Readonly<{
-  schemaVersion: "1";
+  schemaVersion: "2";
   item: Readonly<{
     nodeId: string;
     url: string;
@@ -54,6 +62,7 @@ export type SchemaValidCodexAnalysisOutput = Readonly<{
     reasonSummary: string;
     confidence: number;
   }>;
+  importance: SchemaValidCodexImportance;
   evidence: readonly SchemaValidCodexEvidence[];
   confidence: number;
   uncertainties: readonly string[];
@@ -62,6 +71,14 @@ export type SchemaValidCodexAnalysisOutput = Readonly<{
     reasonCode: NotificationReasonCode;
     reasonSummary: string;
   }>;
+}>;
+
+/** semantic検証を通ったCodexの重要度判定。 */
+export type ValidatedCodexImportance = Readonly<{
+  significantFeature: boolean;
+  explicitDeadline: boolean;
+  futureRisk: boolean;
+  rationale: string;
 }>;
 
 /** semantic検証を通ったCodexの関係候補判定。 */
@@ -75,7 +92,7 @@ export type ValidatedCodexRelation = Readonly<{
 
 /** reducerへ渡せる二段階検証済みのCodex出力。 */
 export type ValidatedCodexAnalysisOutput = Readonly<{
-  schemaVersion: "1";
+  schemaVersion: "2";
   item: Readonly<{
     nodeId: GitHubNodeId;
     url: GitHubItemUrl;
@@ -89,6 +106,7 @@ export type ValidatedCodexAnalysisOutput = Readonly<{
     reasonSummary: string;
     confidence: number;
   }>;
+  importance: ValidatedCodexImportance;
   evidence: readonly Evidence[];
   confidence: number;
   uncertainties: readonly string[];

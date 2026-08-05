@@ -733,13 +733,13 @@ function createCodexOutput(
       reasonSummary: string;
     }>;
   }>,
-): unknown {
+) {
   const evidenceSource = input.sources[0];
   if (evidenceSource == null) {
     throw new TypeError("Codex入力にsourceがありません");
   }
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,
@@ -767,6 +767,12 @@ function createCodexOutput(
       latestMeaningfulSourceId: options.latestMeaningfulSourceId,
       reasonSummary: "本番経路fixtureの進捗判定です",
       confidence: options.confidence,
+    },
+    importance: {
+      significantFeature: false,
+      explicitDeadline: false,
+      futureRisk: false,
+      rationale: "本番経路fixtureに重要度の自然言語要因はありません",
     },
     evidence: [
       {
@@ -1558,6 +1564,401 @@ describe("本番収集の接続", () => {
     expect(publicData.details.schemaVersion).toBe("3");
     expect(publicData.details.items[0]?.summary.milestone).toEqual(expectedMilestone);
     expect(publicData.details.items[0]?.importanceFactors).toEqual(expectedImportance.factors);
+  });
+
+  it.each([
+    {
+      name: "高信頼のCodex判定なら自然言語の3要因を加点する",
+      aiEnabled: true,
+      confidence: 0.95,
+      expectedScore: 75,
+      expectedFactorKinds: [
+        "priorityLabel",
+        "significantFeature",
+        "explicitDeadline",
+        "futureRisk",
+      ],
+      expectedCodexExecutionCount: 1,
+    },
+    {
+      name: "低信頼のCodex判定なら自然言語の3要因を加点しない",
+      aiEnabled: true,
+      confidence: 0.64,
+      expectedScore: 25,
+      expectedFactorKinds: ["priorityLabel"],
+      expectedCodexExecutionCount: 1,
+    },
+    {
+      name: "Codex判定がなければ決定論的要因だけを加点する",
+      aiEnabled: false,
+      confidence: 0.95,
+      expectedScore: 25,
+      expectedFactorKinds: ["priorityLabel"],
+      expectedCodexExecutionCount: 0,
+    },
+  ])("$name", async (fixtureOptions) => {
+    const repository = createRepository(
+      `R_importance_${fixtureOptions.expectedCodexExecutionCount.toString()}_${fixtureOptions.confidence.toString()}`,
+      `importance-${fixtureOptions.expectedCodexExecutionCount.toString()}-${fixtureOptions.confidence.toString().replace(".", "-")}`,
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const baseItem = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint: `importance-${fixtureOptions.name}`,
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const item = Object.freeze({
+      ...baseItem,
+      labels: Object.freeze(["優先度：高"]),
+    });
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      createIssueDetail({
+        item,
+        body: "主要機能を期限までに変更し、将来の互換性問題を避ける",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: true,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: fixtureOptions.aiEnabled,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("重要度fixtureのsourceがありません");
+        }
+        return Promise.resolve({
+          ...createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: input.item.authorCandidateId,
+              kind: "user",
+              role: "assignee",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: fixtureOptions.confidence,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+          importance: {
+            significantFeature: true,
+            explicitDeadline: true,
+            futureRisk: true,
+            rationale: "主要機能に期限と将来の互換性リスクがあります",
+          },
+        });
+      },
+    });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    const files = await harness.stateAdapter.readBranchFiles("tracker-state");
+    const snapshotSource = files.get("state/snapshot.json");
+    if (snapshotSource == null) {
+      throw new TypeError("重要度fixtureのsnapshotがありません");
+    }
+    const snapshot = parseStateSnapshot(new TextDecoder().decode(snapshotSource));
+    const importance = snapshot.items[0]?.importance;
+
+    expect(harness.codexExecutionCount()).toBe(fixtureOptions.expectedCodexExecutionCount);
+    expect(importance?.score).toBe(fixtureOptions.expectedScore);
+    expect(importance?.factors.map((factor) => factor.kind)).toEqual(
+      fixtureOptions.expectedFactorKinds,
+    );
+  });
+
+  it.each([
+    {
+      name: "未変更のterminal項目はCodex判定を得られないrunでも前回の加点を保つ",
+      secondWeight: 20,
+    },
+    {
+      name: "前回判定の再利用時も現在のconfigの重みで加点を計算し直す",
+      secondWeight: 7,
+    },
+  ])("$name", async ({ secondWeight }) => {
+    const repository = createRepository(
+      `R_terminal_importance_${secondWeight.toString()}`,
+      `terminal-importance-${secondWeight.toString()}`,
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const terminal = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "terminal-importance",
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: firstObservedAt,
+      }),
+    });
+    fixture.individualItems.set(terminal.url, terminal);
+    fixture.details.set(
+      terminal.nodeId,
+      createIssueDetail({
+        item: terminal,
+        body: "多くの利用者が使う主要機能です",
+        observedAt: firstObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: true,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [terminal.url],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const rationale = "多くの利用者が使う主要機能です";
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("terminal重要度fixtureのsourceがありません");
+        }
+        return Promise.resolve({
+          ...createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: input.item.authorCandidateId,
+              kind: "user",
+              role: "assignee",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: source.id,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+          importance: {
+            significantFeature: true,
+            explicitDeadline: false,
+            futureRisk: false,
+            rationale,
+          },
+        });
+      },
+    });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    const firstFiles = await harness.stateAdapter.readBranchFiles("tracker-state");
+    const firstSnapshotSource = firstFiles.get("state/snapshot.json");
+    if (firstSnapshotSource == null) {
+      throw new TypeError("terminal重要度fixtureの初回snapshotがありません");
+    }
+    const firstSnapshot = parseStateSnapshot(new TextDecoder().decode(firstSnapshotSource));
+    expect(harness.codexExecutionCount()).toBe(1);
+    expect(firstSnapshot.items[0]?.importanceAssessment).toEqual({
+      status: "available",
+      value: {
+        significantFeature: true,
+        explicitDeadline: false,
+        futureRisk: false,
+        rationale,
+      },
+    });
+    expect(firstSnapshot.items[0]?.importance.score).toBe(20);
+
+    const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
+    fixture.individualItems.set(
+      terminal.url,
+      createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "terminal-importance",
+        updatedAt: firstObservedAt,
+        observedAt: secondObservedAt,
+        state: Object.freeze({
+          state: "closed",
+          closedAt: firstObservedAt,
+        }),
+      }),
+    );
+    harness.setConfig(
+      Object.freeze({
+        ...config,
+        importance: Object.freeze({
+          ...config.importance,
+          weights: Object.freeze({
+            ...config.importance.weights,
+            significantFeature: secondWeight,
+          }),
+        }),
+      }),
+    );
+    harness.detailCalls.length = 0;
+    harness.artifacts.length = 0;
+
+    const result = await harness.runDry(SECOND_RUN_AT);
+    const secondSnapshot = requireDryRunSnapshot(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.detailCalls).toHaveLength(0);
+    expect(harness.codexExecutionCount()).toBe(1);
+    expect(secondSnapshot.items[0]?.importanceAssessment).toEqual(
+      firstSnapshot.items[0]?.importanceAssessment,
+    );
+    expect(secondSnapshot.items[0]?.importance).toMatchObject({
+      score: secondWeight,
+      factors: [
+        {
+          kind: "significantFeature",
+          points: secondWeight,
+        },
+      ],
+    });
+  });
+
+  it("予算で分析を見送った項目は前回のCodex由来の加点を保つ", async () => {
+    const repository = createRepository(
+      "R_deferred_importance",
+      "deferred-importance",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const firstItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "deferred-importance-first",
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [firstItem];
+    fixture.details.set(
+      firstItem.nodeId,
+      createIssueDetail({
+        item: firstItem,
+        body: "破壊的変更を含む可能性があります",
+        observedAt: firstObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: true,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const rationale = "破壊的変更による将来リスクがあります";
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("予算見送り重要度fixtureのsourceがありません");
+        }
+        return Promise.resolve({
+          ...createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: input.item.authorCandidateId,
+              kind: "user",
+              role: "assignee",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: source.id,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+          importance: {
+            significantFeature: false,
+            explicitDeadline: false,
+            futureRisk: true,
+            rationale,
+          },
+        });
+      },
+    });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    const firstFiles = await harness.stateAdapter.readBranchFiles("tracker-state");
+    const firstSnapshotSource = firstFiles.get("state/snapshot.json");
+    if (firstSnapshotSource == null) {
+      throw new TypeError("予算見送り重要度fixtureの初回snapshotがありません");
+    }
+    const firstSnapshot = parseStateSnapshot(new TextDecoder().decode(firstSnapshotSource));
+    expect(harness.codexExecutionCount()).toBe(1);
+    expect(firstSnapshot.items[0]?.importance.score).toBe(15);
+
+    const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
+    const changedItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "deferred-importance-second",
+      updatedAt: secondObservedAt,
+      observedAt: secondObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [changedItem];
+    fixture.details.set(
+      changedItem.nodeId,
+      createIssueDetail({
+        item: changedItem,
+        body: "変更後も破壊的変更を含む可能性があります",
+        observedAt: secondObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: true,
+      }),
+    );
+    harness.setConfig(configWithBudget(config, 0, config.ai.budget.maxEstimatedCostUsdPerRun));
+    harness.artifacts.length = 0;
+
+    const result = await harness.runDry(SECOND_RUN_AT);
+    const secondSnapshot = requireDryRunSnapshot(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexExecutionCount()).toBe(1);
+    expect(secondSnapshot.items[0]?.aiAnalysis).toEqual({
+      status: "not_used",
+    });
+    expect(secondSnapshot.items[0]?.importanceAssessment).toEqual(
+      firstSnapshot.items[0]?.importanceAssessment,
+    );
+    expect(secondSnapshot.items[0]?.importance).toMatchObject({
+      score: 15,
+      factors: [
+        {
+          kind: "futureRisk",
+          points: 15,
+        },
+      ],
+    });
+    expect(secondSnapshot.items[0]?.importance.factors[0]?.detail).toContain(rationale);
   });
 
   it("両側detailの同じnative依存を1候補へ統合してIssue状態を判定する", async () => {
@@ -4495,7 +4896,7 @@ describe("本番判定入力の接続", () => {
       reasoningEffort: config.ai.execution.reasoningEffort,
       backendVersion: "codex-cli-0.145.0",
       promptVersion: config.ai.promptVersion,
-      schemaVersion: "1",
+      schemaVersion: "2",
       inputHash: cacheEntry.metadata.inputHash,
       outputHash: cacheEntry.metadata.outputHash,
       executedAt: FIRST_RUN_AT,

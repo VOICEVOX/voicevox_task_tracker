@@ -164,7 +164,7 @@ function createExecutorOutput(input: CodexAnalysisInput) {
   const source = input.sources.at(0);
   assertNonNullable(source, "Codex分析入力のsourceがありません");
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,
@@ -186,6 +186,12 @@ function createExecutorOutput(input: CodexAnalysisInput) {
       latestMeaningfulSourceId: null,
       reasonSummary: "意味のある進捗は確定できません",
       confidence: 0.8,
+    },
+    importance: {
+      significantFeature: false,
+      explicitDeadline: false,
+      futureRisk: false,
+      rationale: "重要度の自然言語要因はありません",
     },
     evidence: [
       {

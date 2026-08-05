@@ -1097,6 +1097,9 @@ function createSnapshot(
       assertNonNullable(repository, `項目 ${analysis.input.nodeId}のrepositoryがありません`);
       return {
         ...createTrackedItem(repository.name, analysis),
+        importanceAssessment: {
+          status: "not_available",
+        },
         severity: analysis.staleness.severity,
         severityContext: analysis.staleness.severityContext,
       };
@@ -1587,6 +1590,9 @@ function analyzeLargeFixture(
     })),
     items: items.map((item) => ({
       ...item,
+      importanceAssessment: {
+        status: "not_available",
+      },
       severity: "none",
       severityContext: {
         waitClass: "assigneeOrInProgress",

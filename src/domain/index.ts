@@ -34,8 +34,10 @@ export {
 } from "./label-resolution.js";
 export {
   calculateImportance,
+  combineImportance,
   IMPORTANCE_FACTOR_KINDS,
   type CalculateImportanceInput,
+  type CombineImportanceInput,
   type Importance,
   type ImportanceDownstreamImpact,
   type ImportanceFactor,
@@ -43,6 +45,8 @@ export {
   type ImportanceLevel,
   type ImportanceLevelThresholds,
   type ImportanceWeights,
+  type NaturalLanguageImportanceAssessment,
+  type NaturalLanguageImportanceAssessmentState,
 } from "./importance.js";
 export {
   determineMeaningfulProgress,

@@ -7,6 +7,9 @@ export const IMPORTANCE_FACTOR_KINDS = [
   "priorityLabel",
   "downstreamImpact",
   "milestoneDeadline",
+  "significantFeature",
+  "explicitDeadline",
+  "futureRisk",
 ] as const;
 
 /** 追跡項目の重要度。 */
@@ -29,7 +32,7 @@ export type Importance = Readonly<{
   factors: readonly ImportanceFactor[];
 }>;
 
-/** 重要度の決定論的な加点に使う重み。 */
+/** 重要度の加点に使う重み。 */
 export type ImportanceWeights = Readonly<{
   priorityLabelMultiplier: number;
   blockedItem: number;
@@ -37,7 +40,28 @@ export type ImportanceWeights = Readonly<{
   downstreamImpactMax: number;
   milestoneWithDueDate: number;
   milestoneDueSoon: number;
+  significantFeature: number;
+  explicitDeadline: number;
+  futureRisk: number;
 }>;
+
+/** 自然言語から判定した重要度の加点要因。 */
+export type NaturalLanguageImportanceAssessment = Readonly<{
+  significantFeature: boolean;
+  explicitDeadline: boolean;
+  futureRisk: boolean;
+  rationale: string;
+}>;
+
+/** 自然言語による重要度判定を利用できるかを表す。 */
+export type NaturalLanguageImportanceAssessmentState =
+  | Readonly<{
+      status: "not_available";
+    }>
+  | Readonly<{
+      status: "available";
+      value: NaturalLanguageImportanceAssessment;
+    }>;
 
 /** 重要度levelの閾値。 */
 export type ImportanceLevelThresholds = Readonly<{
@@ -59,6 +83,14 @@ export type CalculateImportanceInput = Readonly<{
   evaluatedAt: UtcIsoDateTime;
   weights: ImportanceWeights;
   dueSoonDays: number;
+  levels: ImportanceLevelThresholds;
+}>;
+
+/** 決定論的な重要度と自然言語による加点を合成する入力。 */
+export type CombineImportanceInput = Readonly<{
+  deterministic: Importance;
+  naturalLanguageAssessment: NaturalLanguageImportanceAssessmentState;
+  weights: ImportanceWeights;
   levels: ImportanceLevelThresholds;
 }>;
 
@@ -185,6 +217,65 @@ function determineLevel(score: number, levels: ImportanceLevelThresholds): Impor
   return "low";
 }
 
+function createImportance(
+  factors: ImportanceFactor[],
+  levels: ImportanceLevelThresholds,
+): Importance {
+  const sortedFactors = factors.sort(compareFactors);
+  const totalPoints = sortedFactors.reduce((sum, factor) => sum + factor.points, 0);
+  const score = Math.min(100, Math.max(0, Math.round(totalPoints)));
+  return Object.freeze({
+    score,
+    level: determineLevel(score, levels),
+    factors: Object.freeze(sortedFactors),
+  });
+}
+
+function createNaturalLanguageFactors(
+  assessment: NaturalLanguageImportanceAssessment,
+  weights: ImportanceWeights,
+): readonly ImportanceFactor[] {
+  if (assessment.rationale.trim().length === 0) {
+    throw new TypeError("自然言語による重要度判定のrationaleは空にできません");
+  }
+  const definitions = [
+    {
+      kind: "significantFeature",
+      enabled: assessment.significantFeature,
+      points: weights.significantFeature,
+    },
+    {
+      kind: "explicitDeadline",
+      enabled: assessment.explicitDeadline,
+      points: weights.explicitDeadline,
+    },
+    {
+      kind: "futureRisk",
+      enabled: assessment.futureRisk,
+      points: weights.futureRisk,
+    },
+  ] satisfies readonly Readonly<{
+    kind: ImportanceFactorKind;
+    enabled: boolean;
+    points: number;
+  }>[];
+  return Object.freeze(
+    definitions.flatMap((definition) => {
+      validateNonNegativeNumber(definition.points, `importance.weights.${definition.kind}`);
+      if (!definition.enabled || definition.points === 0) {
+        return [];
+      }
+      return [
+        Object.freeze({
+          kind: definition.kind,
+          points: definition.points,
+          detail: `Codex判定で${definition.points.toString()}点です。${assessment.rationale}`,
+        }),
+      ];
+    }),
+  );
+}
+
 /** 優先度ラベル、依存先への影響、milestone期限から重要度を計算する。 */
 export function calculateImportance(input: CalculateImportanceInput): Importance {
   validateInput(input);
@@ -192,14 +283,25 @@ export function calculateImportance(input: CalculateImportanceInput): Importance
     createPriorityLabelFactor(input),
     createDownstreamImpactFactor(input),
     createMilestoneDeadlineFactor(input),
-  ]
-    .filter((factor) => factor != null)
-    .sort(compareFactors);
-  const totalPoints = factors.reduce((sum, factor) => sum + factor.points, 0);
-  const score = Math.min(100, Math.max(0, Math.round(totalPoints)));
-  return Object.freeze({
-    score,
-    level: determineLevel(score, input.levels),
-    factors: Object.freeze(factors),
-  });
+  ].filter((factor) => factor != null);
+  return createImportance(factors, input.levels);
+}
+
+/** 決定論的な重要度へ利用可能な自然言語判定の加点要因を合成する。 */
+export function combineImportance(input: CombineImportanceInput): Importance {
+  if (input.naturalLanguageAssessment.status === "not_available") {
+    return input.deterministic;
+  }
+  validateNonNegativeNumber(input.levels.high, "importance.levels.high");
+  validateNonNegativeNumber(input.levels.medium, "importance.levels.medium");
+  if (input.levels.high < input.levels.medium) {
+    throw new RangeError("importance.levels.highはmedium以上にしてください");
+  }
+  return createImportance(
+    [
+      ...input.deterministic.factors,
+      ...createNaturalLanguageFactors(input.naturalLanguageAssessment.value, input.weights),
+    ],
+    input.levels,
+  );
 }

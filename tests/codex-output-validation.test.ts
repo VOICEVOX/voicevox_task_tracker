@@ -108,7 +108,7 @@ function createInput(): CodexAnalysisInput {
 
 function createOutput(confidence: number) {
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     item: {
       nodeId: "I_example",
       url: "https://github.com/VOICEVOX/example/issues/1",
@@ -138,6 +138,12 @@ function createOutput(confidence: number) {
       latestMeaningfulSourceId: "body:current",
       reasonSummary: "本文作成が最新の進捗です",
       confidence: 0.9,
+    },
+    importance: {
+      significantFeature: true,
+      explicitDeadline: false,
+      futureRisk: false,
+      rationale: "主要機能に関わる変更です",
     },
     evidence: [
       {
@@ -217,6 +223,27 @@ describe("Codex出力のJSON Schema検証", () => {
     ).toThrow(CodexOutputSchemaValidationError);
   });
 
+  it("importanceのrationaleを120文字以内に制限する", () => {
+    expect(() =>
+      validateCodexAnalysisSchema({
+        ...createOutput(0.9),
+        importance: {
+          ...createOutput(0.9).importance,
+          rationale: "あ".repeat(120),
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      validateCodexAnalysisSchema({
+        ...createOutput(0.9),
+        importance: {
+          ...createOutput(0.9).importance,
+          rationale: "あ".repeat(121),
+        },
+      }),
+    ).toThrow(CodexOutputSchemaValidationError);
+  });
+
   it("要件定義のCodex出力例と同じfixtureを二段階検証できる", async () => {
     const inputSource = await readFile(
       new URL("./fixtures/codex-input.example.json", import.meta.url),
@@ -233,6 +260,7 @@ describe("Codex出力のJSON Schema検証", () => {
     expect(output.item.nodeId).toBe("PR_example");
     expect(output.relations).toHaveLength(1);
     expect(output.relations[0]?.verdict).toBe("current_is_blocked_by_target");
+    expect(output.importance.significantFeature).toBe(true);
   });
 });
 
@@ -471,6 +499,16 @@ describe("confidence境界とreducer統合", () => {
       },
     });
     expect(low.relationAssessments[0]?.confidence).toBe(0.649_999);
+    expect(high.importanceAssessment).toMatchObject({
+      status: "available",
+      value: {
+        significantFeature: true,
+      },
+    });
+    expect(medium.importanceAssessment.status).toBe("available");
+    expect(low.importanceAssessment).toEqual({
+      status: "not_available",
+    });
   });
 
   it("既定値ではなく渡したconfidence設定値を使う", () => {

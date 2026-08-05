@@ -85,6 +85,9 @@ importance:
     downstreamImpactMax: 30
     milestoneWithDueDate: 10
     milestoneDueSoon: 15
+    significantFeature: 20
+    explicitDeadline: 15
+    futureRisk: 15
   dueSoonDays: 14
   levels:
     high: 40
@@ -95,7 +98,7 @@ ai:
   enabled: true
   authentication: auth-json
   model: gpt-5.6-luna
-  promptVersion: v3
+  promptVersion: v4
   confidence:
     high: 0.85
     medium: 0.65

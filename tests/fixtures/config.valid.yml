@@ -80,6 +80,9 @@ importance:
     downstreamImpactMax: 30
     milestoneWithDueDate: 10
     milestoneDueSoon: 15
+    significantFeature: 20
+    explicitDeadline: 15
+    futureRisk: 15
   dueSoonDays: 14
   levels:
     high: 40

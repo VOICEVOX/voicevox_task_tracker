@@ -12,6 +12,7 @@
     "nextAction",
     "relations",
     "progress",
+    "importance",
     "evidence",
     "confidence",
     "uncertainties",
@@ -20,7 +21,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "1"
+      "const": "2"
     },
     "item": {
       "type": "object",
@@ -206,6 +207,32 @@
           "type": "number",
           "minimum": 0,
           "maximum": 1
+        }
+      }
+    },
+    "importance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "significantFeature",
+        "explicitDeadline",
+        "futureRisk",
+        "rationale"
+      ],
+      "properties": {
+        "significantFeature": {
+          "type": "boolean"
+        },
+        "explicitDeadline": {
+          "type": "boolean"
+        },
+        "futureRisk": {
+          "type": "boolean"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
         }
       }
     },

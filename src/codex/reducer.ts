@@ -2,6 +2,7 @@ import {
   isTerminalStatus,
   type Evidence,
   type NotificationReasonCode,
+  type NaturalLanguageImportanceAssessmentState,
   type SourceId,
   type Status,
   type WaitingOn,
@@ -95,6 +96,7 @@ export type CodexRelationCoverage =
 export type CodexAnalysisReduction = Readonly<{
   decision: ReducedCodexDecision;
   displayMode: CodexConfidenceClassification["displayMode"];
+  importanceAssessment: NaturalLanguageImportanceAssessmentState;
   ai:
     | Readonly<{
         status: "available";
@@ -328,6 +330,30 @@ function createFallbackNotification(reasonSummary: string): ReducedCodexNotifica
   });
 }
 
+function createUnavailableImportanceAssessment(): NaturalLanguageImportanceAssessmentState {
+  return Object.freeze({
+    status: "not_available",
+  });
+}
+
+function createImportanceAssessment(
+  output: ValidatedCodexAnalysisOutput,
+  classification: CodexConfidenceClassification,
+): NaturalLanguageImportanceAssessmentState {
+  if (classification.level === "low") {
+    return createUnavailableImportanceAssessment();
+  }
+  return Object.freeze({
+    status: "available",
+    value: Object.freeze({
+      significantFeature: output.importance.significantFeature,
+      explicitDeadline: output.importance.explicitDeadline,
+      futureRisk: output.importance.futureRisk,
+      rationale: output.importance.rationale,
+    }),
+  });
+}
+
 function createCodexNotification(
   output: ValidatedCodexAnalysisOutput,
   confidence: CodexConfidenceClassification,
@@ -384,6 +410,7 @@ export function reduceCodexAnalysis(
     return Object.freeze({
       decision: createDecision("deterministic", deterministicDecision, uncertainty),
       displayMode: "fallback",
+      importanceAssessment: createUnavailableImportanceAssessment(),
       ai: Object.freeze({
         status: "unavailable",
         reason: attempt.reason,
@@ -397,6 +424,7 @@ export function reduceCodexAnalysis(
 
   const stateConfidence = effectiveStateConfidence(attempt.output);
   const classification = classifyCodexConfidence(stateConfidence, confidenceThresholds);
+  const importanceAssessment = createImportanceAssessment(attempt.output, classification);
   const relationAssessments = createRelationAssessments(attempt.output);
   const completeCoverage = Object.freeze({
     status: "complete",
@@ -406,6 +434,7 @@ export function reduceCodexAnalysis(
     return Object.freeze({
       decision: createDecision("deterministic", deterministicDecision, undefined),
       displayMode: "confirmed",
+      importanceAssessment,
       ai: Object.freeze({
         status: "available",
         confidenceLevel: classification.level,
@@ -426,6 +455,7 @@ export function reduceCodexAnalysis(
     return Object.freeze({
       decision: createDecision("deterministic", deterministicDecision, undefined),
       displayMode: "confirmed",
+      importanceAssessment,
       ai: Object.freeze({
         status: "available",
         confidenceLevel: classification.level,
@@ -444,6 +474,7 @@ export function reduceCodexAnalysis(
     return Object.freeze({
       decision: createDecision("deterministic", deterministicDecision, uncertainty),
       displayMode: classification.displayMode,
+      importanceAssessment,
       ai: Object.freeze({
         status: "available",
         confidenceLevel: classification.level,
@@ -471,6 +502,7 @@ export function reduceCodexAnalysis(
       additionalUncertainty,
     ),
     displayMode: classification.displayMode,
+    importanceAssessment,
     ai: Object.freeze({
       status: "available",
       confidenceLevel: classification.level,

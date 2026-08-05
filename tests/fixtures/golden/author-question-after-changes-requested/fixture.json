@@ -149,7 +149,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "item": {
             "nodeId": "author-question-after-changes-requested-pr",
             "url": "https://github.com/VOICEVOX/fixture-change/pull/203"
@@ -171,6 +171,12 @@
             "latestMeaningfulSourceId": "golden_event:author-question",
             "reasonSummary": "authorがreviewerへ確認事項を質問しました",
             "confidence": 0.95
+          },
+          "importance": {
+            "significantFeature": false,
+            "explicitDeadline": false,
+            "futureRisk": false,
+            "rationale": "重要度の自然言語要因はありません"
           },
           "evidence": [
             {
