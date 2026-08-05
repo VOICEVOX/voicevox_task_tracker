@@ -403,6 +403,7 @@ const configSchema = z.strictObject({
       execution: z.strictObject({
         timeoutSeconds: positiveIntegerSchema,
         maxAttempts: positiveIntegerSchema,
+        maxConcurrentCalls: positiveIntegerSchema,
         sandbox: z.literal("read-only"),
         approvalPolicy: z.literal("never"),
         reasoningEffort: z.enum(REASONING_EFFORTS),

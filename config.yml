@@ -111,6 +111,7 @@ ai:
   execution:
     timeoutSeconds: 120
     maxAttempts: 2
+    maxConcurrentCalls: 4
     sandbox: read-only
     approvalPolicy: never
     reasoningEffort: medium

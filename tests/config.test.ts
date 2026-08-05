@@ -242,6 +242,23 @@ describe("設定の読み込みと検証", () => {
     expect(error.message).toContain("ai.execution.reasoningEffort");
   });
 
+  it("Codexの最大同時呼び出し数を読み込む", () => {
+    const config = parseConfig(validConfigSource);
+
+    expect(config.ai.execution.maxConcurrentCalls).toBe(4);
+  });
+
+  it.each([0, -1, 1.5])("Codexの最大同時呼び出し数に%sを指定できない", (value) => {
+    const source = replaceRequired(
+      validConfigSource,
+      "    maxConcurrentCalls: 4",
+      `    maxConcurrentCalls: ${value.toString()}`,
+    );
+    const error = captureConfigError(source);
+
+    expect(error.message).toContain("ai.execution.maxConcurrentCalls");
+  });
+
   it("placeholderのteam slugを拒否する", () => {
     const source = replaceRequired(
       validConfigSource,

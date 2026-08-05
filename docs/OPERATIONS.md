@@ -242,24 +242,26 @@ Renovateの`dependencyDashboardTitle`を変更した場合は同じtitleをこ�
 schema、semantic validation、reducer、状態、graph、通知判定を変更する場合は`pnpm eval:golden`も実行します。
 golden evalはfixture内の固定AI出力を検証して期待結果と比較し、標準fixtureで`fixedAi.networkCallCount: 0`を要求します。
 実モデル、reasoning effort、promptの応答品質は評価しないため、これらを変更する場合は`metrics.aiCallCount`が1以上のdry-runでAI判定と通知候補の差分を確認します。
+`ai.execution.maxConcurrentCalls`を上げるとrun時間は縮みますが、Codexのrate limitに当たる頻度が増えて再試行が発生しやすくなります。
+上げた後は`codex_analysis` stageの失敗数と再試行数を確認します。
 mentionは通知量の調整に使わず、運用上必要なuserだけをallowlistへ追加します。
 
 ## 障害時の確認
 
 失敗したActions jobをworkflow全体のreportにある`jobs`と照合し、収集失敗ではCLI reportの`failedStage`も確認します。
 
-| stageまたはjob                  | 確認内容                                                                                                                                                                          |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test-eval`                     | `pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm format:check`、`pnpm eval:golden`をローカルで再現する                                                                           |
-| `configuration`                 | placeholder、team slug、未知field、日時、正規表現、secret名を確認する                                                                                                             |
-| `authentication`                | `GH_APP_ID`、PEM形式、Organizationへのinstallation、必要なread権限だけがあることを確認する                                                                                        |
-| `repository_inventory`          | Appのrepository access、team access、public、archive、disabledの状態を確認する                                                                                                    |
-| `incremental_collection`        | GitHub API残量、429と503、対象repositoryの一時障害を確認する                                                                                                                      |
-| `codex_analysis`                | `codex` executable、model ID、reasoning effort、予算、timeout、`ai.authentication`を確認し、`auth-json`では`CODEX_HOME`直下の`auth.json`、`api-key`では`OPENAI_API_KEY`を確認する |
-| `state_persistence`             | Actionsの`contents: write`、`tracker-state`のruleset、同時runがないことを確認する                                                                                                 |
-| `build-pages`                   | Pages DTO、`web.basePath`、Web build、公開guardの診断を確認する                                                                                                                   |
-| `deploy-pages`                  | Pages Source、`github-pages` environment、`pages: write`と`id-token: write`を確認する                                                                                             |
-| `discord`または`notify-discord` | enabled設定、Webhook secret、channel、Webhook失効、429と503を確認する                                                                                                             |
+| stageまたはjob                  | 確認内容                                                                                                                                                                                      |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test-eval`                     | `pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm format:check`、`pnpm eval:golden`をローカルで再現する                                                                                       |
+| `configuration`                 | placeholder、team slug、未知field、日時、正規表現、secret名を確認する                                                                                                                         |
+| `authentication`                | `GH_APP_ID`、PEM形式、Organizationへのinstallation、必要なread権限だけがあることを確認する                                                                                                    |
+| `repository_inventory`          | Appのrepository access、team access、public、archive、disabledの状態を確認する                                                                                                                |
+| `incremental_collection`        | GitHub API残量、429と503、対象repositoryの一時障害を確認する                                                                                                                                  |
+| `codex_analysis`                | `codex` executable、model ID、reasoning effort、予算、timeout、同時実行数、`ai.authentication`を確認し、`auth-json`では`CODEX_HOME`直下の`auth.json`、`api-key`では`OPENAI_API_KEY`を確認する |
+| `state_persistence`             | Actionsの`contents: write`、`tracker-state`のruleset、同時runがないことを確認する                                                                                                             |
+| `build-pages`                   | Pages DTO、`web.basePath`、Web build、公開guardの診断を確認する                                                                                                                               |
+| `deploy-pages`                  | Pages Source、`github-pages` environment、`pages: write`と`id-token: write`を確認する                                                                                                         |
+| `discord`または`notify-discord` | enabled設定、Webhook secret、channel、Webhook失効、429と503を確認する                                                                                                                         |
 
 `incremental_collection`が`errorType=CliRelationExpansionLimitError`で失敗した場合は、同じ診断行の`relationExpansionLimit`、`relationExpansionFetchedCount`、`relationExpansionUnfetchedCount`を確認します。
 件数が想定より多いときは、GitHub上の誤ったnative relationや参照を直します。

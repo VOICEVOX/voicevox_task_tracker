@@ -2164,6 +2164,7 @@ async function analyzeCodex(
     {
       identity,
       budget: configuration.config.ai.budget,
+      maxConcurrentCalls: configuration.config.ai.execution.maxConcurrentCalls,
     },
     {
       cache: state.session.aiCache,
@@ -2173,7 +2174,13 @@ async function analyzeCodex(
           {
             authentication: configuration.config.ai.authentication,
             model: configuration.config.ai.model,
-            execution: configuration.config.ai.execution,
+            execution: {
+              timeoutSeconds: configuration.config.ai.execution.timeoutSeconds,
+              maxAttempts: configuration.config.ai.execution.maxAttempts,
+              sandbox: configuration.config.ai.execution.sandbox,
+              approvalPolicy: configuration.config.ai.execution.approvalPolicy,
+              reasoningEffort: configuration.config.ai.execution.reasoningEffort,
+            },
             retry: {
               initialDelaySeconds: configuration.config.operations.retry.initialDelaySeconds,
               maxDelaySeconds: configuration.config.operations.retry.maxDelaySeconds,

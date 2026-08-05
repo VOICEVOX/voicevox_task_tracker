@@ -23,10 +23,11 @@ import { executeValidatedCodexAnalysis, type CodexUnavailableReason } from "./re
 import { createUtcIsoDateTime, type AnalysisMetadata } from "../domain/index.js";
 import { assertNonNullable } from "../util/index.js";
 
-/** 1 runのAI cacheと予算管理設定。 */
+/** 1 runのAI cache、予算、実行方針の設定。 */
 export type AiAnalysisRunConfiguration = Readonly<{
   identity: AiAnalysisRunIdentity;
   budget: AiRunBudget;
+  maxConcurrentCalls: number;
 }>;
 
 /** AI分析runへ注入する副作用境界。 */
@@ -77,6 +78,16 @@ type CacheMissCandidate = Readonly<{
   candidate: PreparedAiAnalysisCandidate;
   identity: AiCacheIdentity;
 }>;
+
+type CandidateExecutionOutcome =
+  | Readonly<{
+      status: "result";
+      result: AiAnalysisRunItemResult;
+    }>
+  | Readonly<{
+      status: "failure";
+      failure: AiAnalysisRunFailure;
+    }>;
 
 function createCacheIdentity(
   candidate: PreparedAiAnalysisCandidate,
@@ -174,6 +185,7 @@ function assertUnchangedCandidatesAreCached(
 async function executeSelectedCandidates(
   selected: readonly PreparedAiAnalysisCandidate[],
   cacheMisses: readonly CacheMissCandidate[],
+  maxConcurrentCalls: number,
   dependencies: AiAnalysisRunDependencies,
 ): Promise<
   Readonly<{
@@ -181,36 +193,86 @@ async function executeSelectedCandidates(
     failures: readonly AiAnalysisRunFailure[];
   }>
 > {
+  if (!Number.isSafeInteger(maxConcurrentCalls) || maxConcurrentCalls <= 0) {
+    throw new RangeError("Codexの最大同時呼び出し数は正の安全な整数にしてください");
+  }
+
+  const outcomes = new Map<number, CandidateExecutionOutcome>();
+  let nextCandidateIndex = 0;
+  let stopped = false;
+  const workerCount = Math.min(maxConcurrentCalls, selected.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (!stopped) {
+      const candidateIndex = nextCandidateIndex;
+      if (candidateIndex >= selected.length) {
+        return;
+      }
+      nextCandidateIndex += 1;
+      const candidate = selected.at(candidateIndex);
+      assertNonNullable(candidate, "Codex分析候補を予算計画順に取得できませんでした");
+
+      try {
+        const cacheMiss = findCacheMiss(cacheMisses, candidate);
+        const attempt = await executeValidatedCodexAnalysis(candidate.input, dependencies.execute);
+        if (attempt.status === "unavailable") {
+          outcomes.set(
+            candidateIndex,
+            Object.freeze({
+              status: "failure",
+              failure: Object.freeze({
+                candidateId: candidate.id,
+                reason: attempt.reason,
+                errorType: attempt.errorType,
+                ...(attempt.diagnostic == null ? {} : { diagnostic: attempt.diagnostic }),
+              }),
+            }),
+          );
+          continue;
+        }
+        const output = attempt.output;
+        const metadata = Object.freeze({
+          ...cacheMiss.identity,
+          outputHash: hashCanonicalJson(output),
+          executedAt: createUtcIsoDateTime(dependencies.executedAt()),
+        }) satisfies AnalysisMetadata;
+        const entry = createAiCacheEntry({
+          cacheKey: createAiCacheKey(cacheMiss.identity),
+          sourceHash: candidate.fingerprint.sourceHash,
+          metadata,
+          output,
+        });
+        await dependencies.cache.write(entry);
+        outcomes.set(
+          candidateIndex,
+          Object.freeze({
+            status: "result",
+            result: createResult(candidate, "executed", entry.cacheKey, output, entry.metadata),
+          }),
+        );
+      } catch (error: unknown) {
+        stopped = true;
+        throw error;
+      }
+    }
+  });
+  const settledWorkers = await Promise.allSettled(workers);
+  for (const settledWorker of settledWorkers) {
+    if (settledWorker.status === "rejected") {
+      const reason: unknown = settledWorker.reason;
+      throw reason;
+    }
+  }
+
   const results: AiAnalysisRunItemResult[] = [];
   const failures: AiAnalysisRunFailure[] = [];
-  for (const candidate of selected) {
-    const cacheMiss = findCacheMiss(cacheMisses, candidate);
-    const attempt = await executeValidatedCodexAnalysis(candidate.input, dependencies.execute);
-    if (attempt.status === "unavailable") {
-      failures.push(
-        Object.freeze({
-          candidateId: candidate.id,
-          reason: attempt.reason,
-          errorType: attempt.errorType,
-          ...(attempt.diagnostic == null ? {} : { diagnostic: attempt.diagnostic }),
-        }),
-      );
-      continue;
+  for (const candidateIndex of selected.keys()) {
+    const outcome = outcomes.get(candidateIndex);
+    assertNonNullable(outcome, "Codex分析候補の実行結果がありません");
+    if (outcome.status === "result") {
+      results.push(outcome.result);
+    } else {
+      failures.push(outcome.failure);
     }
-    const output = attempt.output;
-    const metadata = Object.freeze({
-      ...cacheMiss.identity,
-      outputHash: hashCanonicalJson(output),
-      executedAt: createUtcIsoDateTime(dependencies.executedAt()),
-    }) satisfies AnalysisMetadata;
-    const entry = createAiCacheEntry({
-      cacheKey: createAiCacheKey(cacheMiss.identity),
-      sourceHash: candidate.fingerprint.sourceHash,
-      metadata,
-      output,
-    });
-    await dependencies.cache.write(entry);
-    results.push(createResult(candidate, "executed", entry.cacheKey, output, entry.metadata));
   }
   return Object.freeze({
     results: Object.freeze(results),
@@ -254,6 +316,7 @@ export async function runAiAnalyses(
   const executed = await executeSelectedCandidates(
     budgetPlan.selected,
     selectedCacheMisses,
+    configuration.maxConcurrentCalls,
     dependencies,
   );
 

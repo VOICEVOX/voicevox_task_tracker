@@ -198,6 +198,10 @@ Codex入力の判定時刻は未来のsource参照を拒否するsemantic検証�
 call数、入力文字数、推定費用の上限を超えた候補を優先順位に従って延期できる設計です。
 本番経路は実入力から推定費用を算出し、blocker変化と前回graphのdownstream impactを予算不足時の優先順位へ反映します。
 
+予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`件まで同時に実行します。
+判定結果と失敗の並びは完了順ではなく予算計画順へ再構成するため、並列度を変えてもrun reportとstateのbyte列は変わりません。
+実行中に予期しない例外が出た場合は新しい候補の実行を始めず、実行中の候補の完了を待ってから例外を伝播します。
+
 実行時は空の一時directoryを作り、`codex exec`へ次の制約を渡します。
 
 - `read-only` sandbox

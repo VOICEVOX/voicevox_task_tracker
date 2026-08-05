@@ -132,6 +132,7 @@ function createConfiguration(
   maxCallsPerRun: number,
   maxTotalInputCharactersPerRun: number,
   maxEstimatedCostUsdPerRun: number,
+  maxConcurrentCalls: number,
 ): AiAnalysisRunConfiguration {
   return Object.freeze({
     identity: runIdentity,
@@ -141,7 +142,24 @@ function createConfiguration(
       maxTotalInputCharactersPerRun,
       maxEstimatedCostUsdPerRun,
     }),
+    maxConcurrentCalls,
   });
+}
+
+function createOrdinaryCandidates(candidateIds: readonly string[]): readonly AiAnalysisCandidate[] {
+  return Object.freeze(
+    candidateIds.map((id) =>
+      createCandidate({
+        id,
+        body: id,
+        deterministicResolution: "ambiguous",
+        previousFingerprint: unavailablePreviousFingerprint,
+        priority: createPriority("ordinary"),
+        graphVersion: 1,
+        estimatedCostUsd: 0.1,
+      }),
+    ),
+  );
 }
 
 function prepareAiAnalysisCandidate(candidate: AiAnalysisCandidate): PreparedAiAnalysisCandidate {
@@ -262,7 +280,7 @@ describe("Codex分析対象の絞り込み", () => {
     ];
     const cache = new MemoryAiCacheStore();
     const execute = createExecutor();
-    const configuration = createConfiguration(10, 1_000_000, 10);
+    const configuration = createConfiguration(10, 1_000_000, 10, 1);
     const dependencies = {
       cache,
       execute,
@@ -312,7 +330,7 @@ describe("Codex分析対象の絞り込み", () => {
     const execute = createExecutor();
 
     await expect(
-      runAiAnalyses([candidate], createConfiguration(10, 1_000_000, 10), {
+      runAiAnalyses([candidate], createConfiguration(10, 1_000_000, 10, 1), {
         cache: new MemoryAiCacheStore(),
         execute,
         executedAt: () => fixedExecutedAt,
@@ -346,7 +364,7 @@ describe("Codex分析対象の絞り込み", () => {
     });
     const execute = createExecutor();
 
-    const result = await runAiAnalyses([changed], createConfiguration(1, 1_000_000, 1), {
+    const result = await runAiAnalyses([changed], createConfiguration(1, 1_000_000, 1, 1), {
       cache: new MemoryAiCacheStore(),
       execute,
       executedAt: () => fixedExecutedAt,
@@ -372,7 +390,7 @@ describe("Codex分析対象の絞り込み", () => {
       promptVersion: "prompt-v2",
     });
     const configuration = Object.freeze({
-      ...createConfiguration(1, 1_000_000, 1),
+      ...createConfiguration(1, 1_000_000, 1, 1),
       identity: changedIdentity,
     });
     const candidate = createCandidate({
@@ -594,7 +612,7 @@ describe("content-addressed AI cache", () => {
         fingerprint: prepareAiAnalysisCandidate(firstCandidate).fingerprint,
       }),
     });
-    const configuration = createConfiguration(10, 1_000_000, 10);
+    const configuration = createConfiguration(10, 1_000_000, 10, 1);
     const dependencies = {
       cache,
       execute,
@@ -624,7 +642,7 @@ describe("content-addressed AI cache", () => {
       graphVersion: 1,
       estimatedCostUsd: 0.1,
     });
-    const configuration = createConfiguration(10, 1_000_000, 10);
+    const configuration = createConfiguration(10, 1_000_000, 10, 1);
     const dependencies = {
       cache,
       execute,
@@ -737,7 +755,7 @@ describe("content-addressed AI cache", () => {
       graphVersion: 1,
       estimatedCostUsd: 0.1,
     });
-    const first = await runAiAnalyses([original], createConfiguration(1, 1_000_000, 1), {
+    const first = await runAiAnalyses([original], createConfiguration(1, 1_000_000, 1, 1), {
       cache,
       execute,
       executedAt: () => fixedExecutedAt,
@@ -757,7 +775,7 @@ describe("content-addressed AI cache", () => {
       estimatedCostUsd: 0.1,
     });
 
-    const deferred = await runAiAnalyses([changed], createConfiguration(0, 1_000_000, 1), {
+    const deferred = await runAiAnalyses([changed], createConfiguration(0, 1_000_000, 1, 1), {
       cache,
       execute,
       executedAt: () => fixedExecutedAt,
@@ -790,7 +808,7 @@ describe("content-addressed AI cache", () => {
         graphVersion: 1,
         estimatedCostUsd: 0.1,
       });
-      const configuration = createConfiguration(10, 1_000_000, 10);
+      const configuration = createConfiguration(10, 1_000_000, 10, 1);
       const dependencies = {
         cache,
         execute,
@@ -855,7 +873,7 @@ describe("AI run予算", () => {
     );
     const execute = createExecutor();
 
-    const result = await runAiAnalyses(candidates, createConfiguration(3, 1_000_000, 10), {
+    const result = await runAiAnalyses(candidates, createConfiguration(3, 1_000_000, 10, 1), {
       cache: new MemoryAiCacheStore(),
       execute,
       executedAt: () => fixedExecutedAt,
@@ -917,7 +935,7 @@ describe("AI run予算", () => {
 
     const result = await runAiAnalyses(
       [first, second, third],
-      createConfiguration(10, 1_000_000, 0.3),
+      createConfiguration(10, 1_000_000, 0.3, 1),
       {
         cache: new MemoryAiCacheStore(),
         execute,
@@ -959,7 +977,7 @@ describe("AI run予算", () => {
 
     const result = await runAiAnalyses(
       [first, second],
-      createConfiguration(10, firstInputCharacters, 10),
+      createConfiguration(10, firstInputCharacters, 10, 1),
       {
         cache: new MemoryAiCacheStore(),
         execute,
@@ -976,6 +994,175 @@ describe("AI run予算", () => {
       },
     ]);
     expect(result.usage.inputCharacters).toBe(firstInputCharacters);
+  });
+});
+
+describe("AI runの並列実行", () => {
+  it("同時実行数がmaxConcurrentCallsを超えない", async () => {
+    const candidateIds = [
+      "concurrency-1",
+      "concurrency-2",
+      "concurrency-3",
+      "concurrency-4",
+      "concurrency-5",
+      "concurrency-6",
+    ];
+    const releaseExecutions = Promise.withResolvers<"release">();
+    const concurrencyLimitReached = Promise.withResolvers<"reached">();
+    let activeCalls = 0;
+    let peakActiveCalls = 0;
+    const execute = vi.fn(async (input: CodexAnalysisInput): Promise<unknown> => {
+      activeCalls += 1;
+      peakActiveCalls = Math.max(peakActiveCalls, activeCalls);
+      if (activeCalls === 3) {
+        concurrencyLimitReached.resolve("reached");
+      }
+      try {
+        await releaseExecutions.promise;
+        return createExecutorOutput(input);
+      } finally {
+        activeCalls -= 1;
+      }
+    });
+
+    const run = runAiAnalyses(
+      createOrdinaryCandidates(candidateIds),
+      createConfiguration(candidateIds.length, 1_000_000, 10, 3),
+      {
+        cache: new MemoryAiCacheStore(),
+        execute,
+        executedAt: () => fixedExecutedAt,
+      },
+    );
+    await concurrencyLimitReached.promise;
+    releaseExecutions.resolve("release");
+    const result = await run;
+
+    expect(result.results.map((value) => value.candidateId)).toEqual(candidateIds);
+    expect(peakActiveCalls).toBe(3);
+    expect(activeCalls).toBe(0);
+  });
+
+  it("逆順に完了してもresultsとfailuresを予算計画順で返す", async () => {
+    const candidateIds = ["order-1", "order-2", "order-3", "order-4"];
+    const failedCandidateIds = new Set(["order-1", "order-3"]);
+    const allCallsStarted = Promise.withResolvers<"started">();
+    const completionOrder: string[] = [];
+    let startedCalls = 0;
+    const execute = vi.fn(async (input: CodexAnalysisInput): Promise<unknown> => {
+      const candidateIndex = candidateIds.indexOf(input.item.nodeId);
+      if (candidateIndex < 0) {
+        throw new TypeError(`投入順に存在しない候補です。対象: ${input.item.nodeId}`);
+      }
+      startedCalls += 1;
+      if (startedCalls === candidateIds.length) {
+        allCallsStarted.resolve("started");
+      }
+      await allCallsStarted.promise;
+      for (
+        let remainingYields = candidateIds.length - candidateIndex - 1;
+        remainingYields > 0;
+        remainingYields -= 1
+      ) {
+        await Promise.resolve();
+      }
+      completionOrder.push(input.item.nodeId);
+      if (failedCandidateIds.has(input.item.nodeId)) {
+        throw new HttpFixtureError(500);
+      }
+      return createExecutorOutput(input);
+    });
+
+    const result = await runAiAnalyses(
+      createOrdinaryCandidates(candidateIds),
+      createConfiguration(candidateIds.length, 1_000_000, 10, candidateIds.length),
+      {
+        cache: new MemoryAiCacheStore(),
+        execute,
+        executedAt: () => fixedExecutedAt,
+      },
+    );
+
+    expect(completionOrder).toEqual(["order-4", "order-3", "order-2", "order-1"]);
+    expect(result.results.map((value) => value.candidateId)).toEqual(["order-2", "order-4"]);
+    expect(result.failures.map((value) => value.candidateId)).toEqual(["order-1", "order-3"]);
+  });
+
+  it("maxConcurrentCallsが1なら予算計画順の逐次実行と同じ結果になる", async () => {
+    const candidateIds = ["sequential-3", "sequential-1", "sequential-2"];
+    const candidates = createOrdinaryCandidates(candidateIds);
+    const sequentialExecute = createExecutor();
+    const concurrentExecute = createExecutor();
+
+    const sequential = await runAiAnalyses(
+      candidates,
+      createConfiguration(candidateIds.length, 1_000_000, 10, 1),
+      {
+        cache: new MemoryAiCacheStore(),
+        execute: sequentialExecute,
+        executedAt: () => fixedExecutedAt,
+      },
+    );
+    const concurrent = await runAiAnalyses(
+      candidates,
+      createConfiguration(candidateIds.length, 1_000_000, 10, candidateIds.length),
+      {
+        cache: new MemoryAiCacheStore(),
+        execute: concurrentExecute,
+        executedAt: () => fixedExecutedAt,
+      },
+    );
+
+    expect(sequentialExecute.mock.calls.map(([input]) => input.item.nodeId)).toEqual([
+      "sequential-1",
+      "sequential-2",
+      "sequential-3",
+    ]);
+    expect(sequential).toEqual(concurrent);
+  });
+
+  it("worker例外後は新しい候補を始めず実行中workerを待って最小添字の例外を投げる", async () => {
+    const candidateIds = ["worker-error-1", "worker-error-2", "worker-error-3"];
+    const firstWorkerError = new TypeError("worker 0のcache書き込み失敗");
+    const secondWorkerError = new RangeError("worker 1のcache書き込み失敗");
+    const workerErrors = [firstWorkerError, secondWorkerError];
+    const allWritesStarted = Promise.withResolvers<"started">();
+    const memoryCache = new MemoryAiCacheStore();
+    let startedWrites = 0;
+    let completedWrites = 0;
+    const cache: AiAnalysisRunDependencies["cache"] = Object.freeze({
+      read: (cacheKey) => memoryCache.read(cacheKey),
+      write: async (): Promise<void> => {
+        const workerError = workerErrors.at(startedWrites);
+        assertNonNullable(workerError, "実行workerに対応するcache書き込みエラーがありません");
+        startedWrites += 1;
+        if (startedWrites === workerErrors.length) {
+          allWritesStarted.resolve("started");
+        }
+        await allWritesStarted.promise;
+        completedWrites += 1;
+        throw workerError;
+      },
+    });
+    const execute = createExecutor();
+
+    await expect(
+      runAiAnalyses(
+        createOrdinaryCandidates(candidateIds),
+        createConfiguration(candidateIds.length, 1_000_000, 10, workerErrors.length),
+        {
+          cache,
+          execute,
+          executedAt: () => fixedExecutedAt,
+        },
+      ),
+    ).rejects.toBe(firstWorkerError);
+
+    expect(execute.mock.calls.map(([input]) => input.item.nodeId)).toEqual([
+      "worker-error-1",
+      "worker-error-2",
+    ]);
+    expect(completedWrites).toBe(2);
   });
 });
 
@@ -1006,11 +1193,15 @@ describe("AI runの候補単位fallback", () => {
       return Promise.resolve(createExecutorOutput(input));
     });
 
-    const result = await runAiAnalyses([failed, succeeded], createConfiguration(2, 1_000_000, 1), {
-      cache: new MemoryAiCacheStore(),
-      execute,
-      executedAt: () => fixedExecutedAt,
-    });
+    const result = await runAiAnalyses(
+      [failed, succeeded],
+      createConfiguration(2, 1_000_000, 1, 1),
+      {
+        cache: new MemoryAiCacheStore(),
+        execute,
+        executedAt: () => fixedExecutedAt,
+      },
+    );
 
     expect(execute).toHaveBeenCalledTimes(2);
     expect(result.results.map((value) => value.candidateId)).toEqual(["I_succeeded"]);
@@ -1048,12 +1239,12 @@ describe("AI runの候補単位fallback", () => {
 
     const first = await runAiAnalyses(
       [candidate],
-      createConfiguration(1, 1_000_000, 1),
+      createConfiguration(1, 1_000_000, 1, 1),
       dependencies,
     );
     const second = await runAiAnalyses(
       [candidate],
-      createConfiguration(1, 1_000_000, 1),
+      createConfiguration(1, 1_000_000, 1, 1),
       dependencies,
     );
 
@@ -1076,7 +1267,7 @@ describe("AI結果の再現metadata", () => {
       graphVersion: 1,
       estimatedCostUsd: 0.1,
     });
-    const result = await runAiAnalyses([candidate], createConfiguration(1, 1_000_000, 1), {
+    const result = await runAiAnalyses([candidate], createConfiguration(1, 1_000_000, 1, 1), {
       cache: new MemoryAiCacheStore(),
       execute: createExecutor(),
       executedAt: () => fixedExecutedAt,
