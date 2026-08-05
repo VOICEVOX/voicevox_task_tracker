@@ -9,7 +9,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | ----------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `src/config`      | YAMLの読み込み、Zod schemaとsemantic validation                                          | `src/codex`、`src/domain`、`src/util`                    |
 | `src/github`      | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理     | `src/config`、`src/domain`                               |
-| `src/domain`      | 状態機械、teamとlabel解決、追跡選定、停滞時間、severity                                  | `src/util`                                               |
+| `src/domain`      | 状態機械、teamとlabel解決、追跡選定、停滞時間、severity、重要度                          | `src/util`                                               |
 | `src/graph`       | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                         | `src/domain`                                             |
 | `src/codex`       | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                | `src/domain`、`src/graph`、`src/persistence`             |
 | `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、Git branch transaction | `src/codex`、`src/domain`、`src/github`                  |
@@ -18,7 +18,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | `src/eval`        | golden fixtureの解析と期待値比較                                                         | 判定、graph、公開DTO、通知の各pure処理                   |
 | `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                        | `src/cli`と全実処理モジュール                            |
 | `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                       | 上記の全モジュール                                       |
-| `web`             | 公開DTOの検証、一覧、詳細、依存グラフ、検索、deep link                                   | `src/pages`のDTO契約                                     |
+| `web`             | 公開DTOの検証、重要度を含む一覧と詳細、依存グラフ、検索、deep link                       | `src/pages`のDTO契約                                     |
 
 `src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
@@ -68,7 +68,7 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 6. GitHubイベントをsource ID付きに正規化し、追跡対象と関係候補を選びます。Pull Request作成前のcommitは作成時刻を下限としてpushイベント化し、項目作成前のイベントを作りません。
 7. IssueとPull Requestの状態と責務を決定論的に判定します。
 8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。
-9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定します。
+9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
 11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出してDiscord送信を実行します。完了時に実測時刻と送信結果を反映したrun reportとledgerを追加commitし、`tracking.startAt`が未確定なら同じcommitで確定します。
 12. 成功、Codex縮退、失敗のいずれでもCLIのreport pathへrun reportを書き出します。
@@ -86,6 +86,25 @@ repository単位の収集は、再試行後も503で失敗し、同じrepository
 各jobは`contents`、`pages`、`id-token`を必要な範囲だけ要求し、secretを使うjobはdefault branchのscheduleと手動実行に限定しています。
 `report-workflow`は収集時のCLI reportと各jobの結果をActions artifactへ保存するだけで、stateとPagesを変更しません。
 現在のActions統合上の制約は[デプロイ手順](DEPLOYMENT.md)に記載しています。
+
+## 重要度の計算
+
+重要度は`src/domain`のpureな判定で計算します。
+停滞の深刻さを表すseverityとは独立した値です。
+`src/cli`は最終graphの解析後に必要な入力を集めて`src/domain`へ渡し、Codexやgraphがscoreとlevelを直接決めることはありません。
+
+| 入力                      | 依存する情報                                                               |
+| ------------------------- | -------------------------------------------------------------------------- |
+| 優先度ラベルの重み        | 現在のラベルと`labels.rules`                                               |
+| downstream impact         | 最終graphが算出した停止中のopen項目数とリポジトリ数                        |
+| 期限付きのopen milestone  | GitHubから正規化したmilestone、run開始時刻、`importance.dueSoonDays`       |
+| Codex由来の3要因          | schema検証とsemantic検証を通った重要な機能、明示された期限、将来問題の判定 |
+| 各要因の重みとlevelの閾値 | `config.yml`の`importance.weights`と`importance.levels`                    |
+
+Codex由来の3要因はconfidenceがmedium以上の場合だけ加点します。
+そのrunで利用できる判定がない項目は前回snapshotの判定を再利用し、前回判定もなければ決定論的な要因だけを使います。
+優先度ラベル、downstream impact、milestoneの決定論的な要因は現在の入力から毎run計算します。
+`src/domain`は要因の加点を0から100の整数へ収め、設定した閾値からlow、medium、highを決めます。
 
 ## 判定規則の変更と再判定
 
@@ -172,6 +191,8 @@ GitHubの確定情報で高信頼に解決した項目に加え、入力hash、�
 未変更候補はcontent-addressed cacheの検証済み結果をreducerへ渡し、変更候補も同じ判定入力が保存済みならcacheから再利用します。
 どちらの場合もcache hitではCodex processを実行しません。
 判定規則version、model、reasoning effort、backend version、prompt version、schema version、入力hashからcache keyを作り、同一入力だけを再利用します。
+このcache再利用と重要度の前回判定利用は別の規則です。
+そのrunで利用できる重要度判定がない場合は、前回の判定を現在の決定論的な要因と組み合わせます。
 Codex入力の判定時刻は未来のsource参照を拒否するsemantic検証にだけ使い、時間依存の状態と停滞時間は決定論的処理で算出します。
 判定時刻を入力hashから除外するため、run開始時刻だけが異なる入力は同じcache keyになります。
 call数、入力文字数、推定費用の上限を超えた候補を優先順位に従って延期できる設計です。

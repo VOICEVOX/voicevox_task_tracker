@@ -147,13 +147,13 @@ tracker専用のcommand comment、override UI、専用labelはありません。
 `config.yml`の`labels.rules`へ登録した既存labelだけがtrackerの意味を持ちます。
 repository globとlabel名の正規表現を一致させ、必要な効果を設定します。
 
-| effect                       | 用途                                      |
-| ---------------------------- | ----------------------------------------- |
-| `priorityWeight`             | attention queueと通知候補の並び順を上げる |
-| `severityLift`               | severityを最大1段階引き上げる             |
-| `requiresMaintainerDecision` | maintainerの判断待ちとして扱う            |
-| `suppressNotifications`      | graphには残したまま通常通知を抑える       |
-| `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う   |
+| effect                       | 用途                                              |
+| ---------------------------- | ------------------------------------------------- |
+| `priorityWeight`             | 重要度、attention queue、通知候補の並び順を上げる |
+| `severityLift`               | severityを最大1段階引き上げる                     |
+| `requiresMaintainerDecision` | maintainerの判断待ちとして扱う                    |
+| `suppressNotifications`      | graphには残したまま通常通知を抑える               |
+| `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う           |
 
 trackerはlabelを追加も変更もしません。
 label規則を変えた場合は`pnpm test`とdry-runで通知候補の差分を確認します。
@@ -181,6 +181,15 @@ native relationはauthoritativeであり、本文のplain linkやCodex推定よ�
 
 blockerが完了したら対象Issueをcloseし、誤ったnative relationはGitHub上で解除します。
 単なる関連項目はnative dependencyにせず、本文かコメントで関連だけであることを明記します。
+
+### 重要度
+
+重要度は項目そのものの重要さを表し、停滞の深刻さを表すseverityとは別に確認します。
+個別の項目の重要度がずれている場合は、まず詳細ページの内訳でどの要因が効いているかを確かめます。
+決定論的な要因は、優先度ラベル、native dependency、milestoneと期限をGitHub上の事実へ合わせると変わります。
+Codex由来の要因は、重要な機能である根拠、具体的な期限、放置した場合の将来問題が本文かコメントから読み取れるかで決まります。
+本文へ重要だと書くだけでは根拠になりません。
+全体の加点やlevelを調整する場合は`config.yml`の`importance`を変更し、dry-runでscore、level、内訳を確認します。
 
 修正を反映したい場合は日次runを待つか、日次workflowを`backfill: none`で手動実行します。
 

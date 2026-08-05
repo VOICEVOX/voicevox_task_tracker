@@ -8,7 +8,7 @@
 
 ## 1. 文書の位置づけ
 
-本書は、VOICEVOX Organization全体の公開Issue/PRについて、**現在の状態、次に行動すべき主体、停滞時間、依存関係、重要な変化**を自動整理し、GitHub PagesとDiscordへ提示するシステムの要件を定義する。
+本書は、VOICEVOX Organization全体の公開Issue/PRについて、**現在の状態、次に行動すべき主体、停滞時間、重要度、依存関係、重要な変化**を自動整理し、GitHub PagesとDiscordへ提示するシステムの要件を定義する。
 
 要求文の `MUST` / `SHOULD` は RFC 2119・RFC 8174の規範語として用いる。本書は、要求の識別可能性・検証可能性・追跡可能性を重視するISO/IEC/IEEE 29148系の考え方、NASA Software Engineering Handbookの要求・受入基準・双方向トレーサビリティの実務例を参考に、VOICEVOX向けへ具体化した。全文標準を転載するものではない。
 
@@ -85,6 +85,8 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 | statusSince         | 現在statusへ遷移した時刻                                             |
 | ownerSince          | 現在waitingOnへ遷移した時刻                                          |
 | stallSince          | 現在の待ち状態で意味のある進捗か責務主体本人の活動が最後に起きた時刻 |
+| severity            | 停滞の深刻さ。none、watch、urgent、criticalの4段階                   |
+| importance          | 項目そのものの重要度。0から100のscoreとlow、medium、highの3段階      |
 | meaningful progress | push、回答、review、決定、依存解消など、次工程を進める変化           |
 | authoritative edge  | GitHub native dependency/sub-issue等、AIより優先するrelation         |
 | inferred edge       | 本文・コメント・link候補をCodexが関係ありと判定したrelation          |
@@ -139,7 +141,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 5. それ以外の未アサインIssueはmaintainer待ち。
 6. 作成者がmaintainerでも、次担当不明ならmaintainer責務のまま。
 
-## 8. 停滞時間・severity既定値
+## 8. 停滞時間、停滞の深刻さ、重要度の既定値
 
 すべて内部UTC、表示JST。日数は営業日ではなく連続時間で計算する。`updated_at`は参考値であり、severity clockの正本にしない。
 
@@ -153,6 +155,13 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 | automation                        |    6h |    24h |      72h | 通常のCI時間は通知しない             |
 
 blocked parentは「親自身を毎日催促」せず、blockerのseverityとdownstream impactを通知順位へ使う。priority labelはseverityを最大1段階引き上げられるが、低信頼AIだけでcriticalへ引き上げない。
+
+重要度は項目そのものの重要さを表し、停滞の深刻さを表すseverityとは独立して計算する。
+決定論的な要因は、優先度ラベルの重み、他のopen項目とリポジトリを止めている影響規模、期限付きのopen milestoneとする。
+期限が設定日数以内のmilestoneは追加で加点する。
+Codexは重要な機能か、期限が明示されているか、将来問題になるかを判定し、confidenceがlowならこれらを加点しない。
+そのrunでCodex判定を得られない項目は前回の重要度判定を再利用する。
+scoreは各要因の加点を0から100の整数へ収め、設定した閾値でlow、medium、highへ分ける。
 
 ## 9. Discord選別既定
 
@@ -189,7 +198,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 
 ## 11. 要求一覧
 
-要求は合計170件である。
+要求は合計185件である。
 
 ### 11.1 目的・成果
 
@@ -235,6 +244,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `CFG-008` | MUST | 追跡開始日時 — tracking.startAtをISO 8601で設定・永続化できなければならない。                                                                         | `AT-CFG-008`: timezone付き日時がUTC正規化され、再実行で変化しない。                           |
 | `CFG-009` | MUST | 手動includeと追跡追加上限 — 古い項目の明示include、repo filter、backfill上限、`tracking.relationExpansion.maxItemsPerRun`を設定できなければならない。 | `AT-CFG-009`: 開始日前の指定URLだけをincludeでき、関係先展開上限がAPI呼び出し前に適用される。 |
 | `CFG-010` | MUST | Discordメンション設定 — GitHub loginとDiscord user IDの対応、mentions.enabled、許可対象を設定でき、既定は無効でなければならない。                     | `AT-CFG-010`: 既定payloadのallowed_mentionsが空で、enabled時も許可ID以外をmentionしない。     |
+| `CFG-011` | MUST | 重要度設定 — 重要度の各要因の重み、期限間近とみなす日数、levelの閾値を設定できなければならない。                                                      | `AT-CFG-011`: 重み、日数、閾値の変更が重要度へ反映され、highがmedium未満なら設定を拒否する。  |
 
 ### 11.4 GitHub収集
 
@@ -310,7 +320,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `RSP-024` | MUST | 責務遷移時刻 — waitingOnの実体またはstatusが変わった時点でownerSince/stallSinceを更新しなければならない。                                                                                                      | `AT-RSP-024`: maintainer→reviewer遷移fixtureで時刻がreview requestになる。                                                                |
 | `RSP-025` | MUST | 意味のある進捗 — 単なるコメント数ではなく、成果物push、回答、レビュー、依存解消、決定等をlastProgressAtとして判定しなければならない。                                                                          | `AT-RSP-025`: 雑談コメントと回答コメントfixtureでlastProgressAtが異なる。                                                                 |
 | `RSP-026` | MUST | bot activityで停滞解除禁止 — botコメント、preview URL更新、定期dashboard更新だけではstallSinceをリセットしてはならない。                                                                                       | `AT-RSP-026`: bot-only activity fixtureで停滞時間が継続する。                                                                             |
-| `RSP-027` | MUST | label変更の扱い — label変更はpriority/semanticsを再計算するが、設定で進捗扱いされたlabel以外はstallSinceをリセットしてはならない。                                                                             | `AT-RSP-027`: priority label追加fixtureでseverityだけ変わりstallSinceは維持される。                                                       |
+| `RSP-027` | MUST | label変更の扱い — label変更はpriority/semanticsを再計算するが、設定で進捗扱いされたlabel以外はstallSinceをリセットしてはならない。                                                                             | `AT-RSP-027`: priority label追加fixtureでseverityと重要度が変わり、stallSinceは維持される。                                               |
 | `RSP-028` | MUST | 不確実性表示 — 責務判定にconfidence、根拠source IDs、uncertaintiesを持ち、低信頼時はunknown/推定表示へ縮退しなければならない。                                                                                 | `AT-RSP-028`: 低confidence fixtureが断定表示・高優先通知にならない。                                                                      |
 | `RSP-029` | MUST | 保持者の発言による責務の反転 — 変更要求、未解決review thread、review依頼で待ち先を決めた後、その待ち先本人が責務の起点より後に本文のある発言をしている場合、発言の意味を解釈して責務を判定しなければならない。 | `AT-RSP-029`: 変更要求後にauthorが質問するfixtureで待ち先がreviewerへ移る。                                                               |
 | `RSP-030` | MUST | 応答不要の発言 — 了解、謝辞、進捗報告のように相手の行動を必要としない発言だけを理由に、責務を相手へ移してはならない。                                                                                          | `AT-RSP-030`: authorが了解コメントだけを返すfixtureでauthor待ちが維持される。                                                             |
@@ -354,7 +364,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `AIC-011` | MUST | confidence閾値 — high>=0.85、medium>=0.65、low<0.65を既定とし、mediumは推定表示、lowはfallbackとしなければならない。                                                                                                                                                                          | `AT-AIC-011`: 境界値fixtureで表示・通知扱いが仕様通り変わる。                                                                                                                                         |
 | `AIC-012` | MUST | 二重validation — JSON Schema validation後にcandidate参照、時刻、URL、矛盾、native relation保護のsemantic validationを行わなければならない。                                                                                                                                                   | `AT-AIC-012`: schema-validだが候補外のfixtureがsemantic stageで失敗する。                                                                                                                             |
 | `AIC-013` | MUST | AI失敗時縮退 — timeout、rate limit、schema error時も定式判定でPages生成を継続し、AIの有効状態、利用可否、縮退状態をrun statusと独立してsnapshotへ保存し明示しなければならない。                                                                                                               | `AT-AIC-013`: AI無効のsuccess runとCodex 500のfallback runで異なるAI状態が表示される。                                                                                                                |
-| `AIC-014` | MUST | 旧結果の安全再利用 — source/input hashが完全一致する場合だけ前回AI結果を再利用し、変更後はstale結果を断定表示してはならない。                                                                                                                                                                 | `AT-AIC-014`: 本文1文字変更fixtureで旧cacheが使われない。                                                                                                                                             |
+| `AIC-014` | MUST | 旧結果の安全再利用 — Codex出力のcacheはsource/input hashが完全一致する場合だけ再利用し、変更後はstale結果を断定表示してはならない。重要度判定を得られない場合はIMP-005に従わなければならない。                                                                                                | `AT-AIC-014`: 本文1文字変更fixtureで旧cacheが使われない。                                                                                                                                             |
 | `AIC-015` | MUST | 再現情報 — 各AI結果にmodel identifier、reasoningEffort、backend version、promptVersion、schemaVersion、input/output hash、実行時刻を記録しなければならない。                                                                                                                                  | `AT-AIC-015`: 任意結果から全再現metadataが取得できる。                                                                                                                                                |
 | `AIC-016` | MUST | run予算 — 1 runあたりcall数、入力文字/token見積、費用上限を設定できなければならない。                                                                                                                                                                                                         | `AT-AIC-016`: 上限到達fixtureで追加callを停止する。                                                                                                                                                   |
 | `AIC-017` | MUST | 予算超過優先順位 — 予算不足時はseverity候補、owner unknown、changed blockers、downstream impact順に分析し、残りをdeferred表示しなければならない。                                                                                                                                             | `AT-AIC-017`: 10候補/3call上限fixtureで上位3件が選ばれる。                                                                                                                                            |
@@ -363,7 +373,18 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `AIC-020` | MUST | AI非書込 — Codex出力は提案データとして検証・reducerを通し、GitHub変更、Discord直接送信、state直接上書きを許してはならない。                                                                                                                                                                   | `AT-AIC-020`: mockでCodexがwrite指示を返しても副作用APIが呼ばれない。                                                                                                                                 |
 | `AIC-021` | MUST | 認証方式選択 — `ai.authentication`は`api-key`か`auth-json`に限定し、AI有効時だけ選択した方式の認証情報を要求しなければならない。`api-key`では`OPENAI_API_KEY`だけを渡さなければならない。`auth-json`では`CODEX_HOME`だけを渡し、直下の`auth.json`は存在だけを確認して内容を読んではならない。 | `AT-AIC-021`: 認証方式ごとのprocess environmentと`auth.json`不在時の起動前エラーが要件に一致し、AI無効時はどちらの認証環境変数も要求されない。                                                        |
 
-### 11.9 Webページ
+### 11.9 重要度
+
+| ID        | 規範 | 要求                                                                                                                                                              | 受入要約                                                                                                    |
+| --------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `IMP-001` | MUST | 停滞の深刻さとの分離 — 各追跡項目の重要度を、停滞の深刻さを表すseverityとは別に保持しなければならない。                                                           | `AT-IMP-001`: 同じseverityでも重要度要因が異なる2項目でscoreとlevelが別々に決まる。                         |
+| `IMP-002` | MUST | 決定論的要因 — 優先度ラベルの重み、downstream impact、期限付きのopen milestoneから重要度を決定論的に加点しなければならない。期限間近のmilestoneは追加で加点する。 | `AT-IMP-002`: 各要因を単独で持つfixtureがCodexなしで設定どおり加点される。                                  |
+| `IMP-003` | MUST | 自然言語要因 — Codexは、重要な機能か、期限が明示されているか、将来問題になるかの3要因を根拠付きで判定しなければならない。                                         | `AT-IMP-003`: 3要因を個別に満たすfixtureで対応する要因だけが加点され、根拠が保持される。                    |
+| `IMP-004` | MUST | 低信頼判定の非加点 — Codex判定のconfidenceがlowの場合、Codex由来の重要度要因を加点してはならない。                                                                | `AT-IMP-004`: 同じCodex出力でもmedium境界未満では3要因が加点されず、境界以上では加点される。                |
+| `IMP-005` | MUST | 前回判定の再利用 — そのrunでCodexの重要度判定を得られない項目は前回の判定を再利用しなければならない。前回の判定もなければ決定論的要因だけで計算する。             | `AT-IMP-005`: Codex判定が延期されたfixtureで前回の3要因が維持され、初回項目は決定論的要因だけで計算される。 |
+| `IMP-006` | MUST | scoreとlevel — 重要度scoreを要因の加点から0以上100以下の整数として求め、設定した閾値によりlevelをlow、medium、highのいずれかへ分類しなければならない。            | `AT-IMP-006`: 0点、閾値境界、100点を超える要因合計のfixtureでscoreとlevelが期待値に一致する。               |
+
+### 11.10 Webページ
 
 | ID        | 規範 | 要求                                                                                                                                                                                                                   | 受入要約                                                                                                                           |
 | --------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
@@ -374,8 +395,8 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `WEB-005` | MUST | 時間の視覚強調 — 長いstall時間とdownstream impactをnode size等で強調し、凡例を表示しなければならない。                                                                                                                 | `AT-WEB-005`: 1d/10d/30d fixtureの表示サイズが単調増加し上限で暴走しない。                                                         |
 | `WEB-006` | MUST | frontier表示 — actionable frontierをgraphと一覧の両方で識別できなければならない。                                                                                                                                      | `AT-WEB-006`: DAG fixtureのfrontier nodeにtext/icon表示がある。                                                                    |
 | `WEB-007` | MUST | cycle表示 — dependency cycleをcollapse/強調し、構成nodeを展開できなければならない。                                                                                                                                    | `AT-WEB-007`: 3 node cycle fixtureでブラウザが固まらず展開できる。                                                                 |
-| `WEB-008` | MUST | 表形式代替 — graphを使わずrepo、type、status、waitingOn、stall、blockers、updatedでsort/filterできる表を提供しなければならない。                                                                                       | `AT-WEB-008`: keyboardのみで全列filterとitem遷移ができる。                                                                         |
-| `WEB-009` | MUST | item詳細 — 各item詳細にGitHub URL、状態、waitingOn、next action、時間、blocker、evidence、confidence、履歴を表示しなければならない。                                                                                   | `AT-WEB-009`: 任意itemで必須欄が確認できる。                                                                                       |
+| `WEB-008` | MUST | 表形式代替 — graphを使わずrepo、type、status、importance、waitingOn、stall、blockers、updatedでsort/filterできる表を提供しなければならない。                                                                           | `AT-WEB-008`: keyboardのみで全列filterとitem遷移ができ、importanceはscoreの数値順でsortされる。                                    |
+| `WEB-009` | MUST | item詳細 — 各item詳細にGitHub URL、状態、重要度のscore、level、内訳、waitingOn、next action、時間、blocker、evidence、confidence、履歴を表示しなければならない。                                                       | `AT-WEB-009`: 任意itemで重要度の各要因と加点を含む必須欄が確認できる。                                                             |
 | `WEB-010` | MUST | 検索とdeep link — repo、number、title、actor、team、labelで検索でき、filter/itemをURLで共有できなければならない。                                                                                                      | `AT-WEB-010`: 再読込・別browserで同じdeep link状態が再現する。                                                                     |
 | `WEB-011` | MUST | アクセシビリティ — 日本語UIはWCAG 2.2 AAを目標に、keyboard、focus、contrast、非色依存、screen-reader labelを備えなければならない。                                                                                     | `AT-WEB-011`: 自動a11y検査に重大違反がなく、主要flowをkeyboardで完了できる。                                                       |
 | `WEB-012` | MUST | 鮮度表示 — 全体とrepo/itemごとにobservedAt、JST絶対時刻、相対時間、staleを表示し、AIの無効、利用不可、縮退を区別して表示しなければならない。                                                                           | `AT-WEB-012`: stale repoと3種類のAI状態のfixtureが最新や完全成功と誤認できない表示になる。                                         |
@@ -383,7 +404,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `WEB-014` | MUST | 担当者別の停滞一覧 — 待ち相手を個人とteamへ解決した担当者一覧と、個人ごとの停滞項目一覧を提供しなければならない。個人ごとのページは閲覧者が選んだ所属teamへの待ちも合流させ、その選択をURLで共有できなければならない。 | `AT-WEB-014`: 待ち相手fixtureで担当者一覧の件数と個人ごとのページの項目数が一致し、team選択を含むURLを開き直しても同じ項目が出る。 |
 | `WEB-015` | MUST | 閲覧者自身の記憶 — 閲覧者は自分のloginと所属teamをブラウザーへ記憶し、1操作で自分の停滞項目へ到達できなければならない。記憶した値はURLより優先してはならない。                                                         | `AT-WEB-015`: 記憶後に自分の担当への導線が現れ、記憶を解除すると消える。壊れた記憶値は破棄され、画面は通常どおり描画される。       |
 
-### 11.10 Discord通知
+### 11.11 Discord通知
 
 | ID        | 規範 | 要求                                                                                                                                                                                                    | 受入要約                                                                                    |
 | --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
@@ -401,7 +422,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `NTF-012` | MUST | 運用障害通知 — 収集・Pages・Discord自身の重大障害を通常item digestと区別し、設定により同一または別webhookへ1件だけ通知できなければならない。                                                            | `AT-NTF-012`: 連続retry失敗fixtureで重複しないops alertが生成される。                       |
 | `NTF-013` | MUST | 永続化済みrun照合 — 通常digestの送信前にworkflow artifactのsnapshotとtracker-state branchの永続化済みsnapshotでrun IDが一致することを検証し、不一致なら送信せず失敗しなければならない。                 | `AT-NTF-013`: 同じrunなら送信adapterが呼ばれ、異なるrunなら呼ばれず日本語エラーで失敗する。 |
 
-### 11.11 永続化
+### 11.12 永続化
 
 | ID        | 規範 | 要求                                                                                                                                                                                                   | 受入要約                                                                                          |
 | --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
@@ -412,7 +433,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `DAT-005` | MUST | AI cacheと通知ledger — AI cache、analysis metadata、予約期限と送信結果を持つnotification ledgerをstate branchで保持しなければならない。                                                                | `AT-DAT-005`: runnerを破棄して再実行してもcache hit、予約期限、cooldownが維持される。             |
 | `DAT-006` | MUST | atomic/canonical/public-safe commit — validation完了後だけsorted/canonical stateをatomic commitし、secret、raw token、private repoのID、owner/name、repository URL、不要な全文本文を含めてはならない。 | `AT-DAT-006`: 失敗途中でlast good commitが変わらず、secret scan/private sentinel testが成功する。 |
 
-### 11.12 セキュリティ・プライバシー
+### 11.13 セキュリティ・プライバシー
 
 | ID        | 規範 | 要求                                                                                                                                                                                                                                         | 受入要約                                                                                                                                                |
 | --------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -425,7 +446,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `SEC-007` | MUST | Codex認証ファイルの一時配置 — `collect-analyze` jobは`CODEX_AUTH_JSON` secretをrunnerの一時directoryにある`auth.json`へ権限600で配置し、Codex認証情報として`CODEX_HOME`だけを収集stepへ渡し、job終了時に成否を問わず削除しなければならない。 | `AT-SEC-007`: workflow静的検査でsecretの空値拒否、directory権限700、file権限600、`CODEX_HOME`の受け渡し、`if: always()`による最終stepの削除を確認する。 |
 | `SEC-008` | MUST | team memberの非公開 — GitHubのteam member一覧はrun内でのみ用い、公開DTO、state、Discord通知へ出力してはならない。閲覧者の所属teamは閲覧者自身がWeb UIで選ぶ。                                                                                | `AT-SEC-008`: 公開DTOのstrict schemaがmember一覧の欄を拒否し、Pages出力に現れるteam情報が識別子だけになる。                                             |
 
-### 11.13 運用・性能
+### 11.14 運用・性能
 
 | ID        | 規範 | 要求                                                                                                                                                                                              | 受入要約                                                                                                                                    |
 | --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -458,7 +479,7 @@ GitHub Actionsのscheduleは厳密なリアルタイムschedulerではなく、�
 
 ## 13. 受入と変更管理
 
-- 全170要求は一意な受入試験IDを持つ。
+- 全185要求は一意な受入試験IDを持つ。
 - MUST要求の未達はrelease blocker。
 - SHOULD要求の未達は理由・代替・期限をdecision logへ記録する。
 - schema、semantic validation、reducer、状態、graph、通知判定の変更はgolden evalと通知候補差分をPRでreviewする。

@@ -121,6 +121,23 @@ secretの値は`config.yml`へ書きません。
 現行設定ではCodexとDiscord通知が有効で、mentionは無効です。
 その他の閾値、追跡規則、通知上限、保存先は`config.yml`を正本として確認し、運用中の調整は[運用手順](OPERATIONS.md)に従います。
 
+### importance
+
+`importance`は項目そのものの重要度を決める設定です。
+停滞の深刻さを決める`staleness`とは独立しています。
+
+| 設定                                                                         | 意味                                                                        |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `importance.weights.priorityLabelMultiplier`                                 | `labels.rules`で解決した`priorityWeight`へ掛ける倍率                        |
+| `importance.weights.blockedItem`、`blockedRepository`、`downstreamImpactMax` | 止めているopen項目数とリポジトリ数の重み、downstream impactによる加点の上限 |
+| `importance.weights.milestoneWithDueDate`、`milestoneDueSoon`                | 期限付きのopen milestoneと期限間近の場合の追加点                            |
+| `importance.weights.significantFeature`、`explicitDeadline`、`futureRisk`    | Codexが判定する重要な機能、明示された期限、将来問題の重み                   |
+| `importance.dueSoonDays`                                                     | milestoneを期限間近として追加加点する残り日数                               |
+| `importance.levels.medium`、`high`                                           | mediumとhighのscore下限。medium未満はlowとし、highはmedium以上にする        |
+
+各重みと日数は0以上にします。
+scoreは各要因の加点を0から100の整数へ収めた値です。
+
 ## デプロイ確認
 
 ### 1. ローカルdry-run
