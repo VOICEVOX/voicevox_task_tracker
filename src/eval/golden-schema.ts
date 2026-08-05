@@ -186,7 +186,7 @@ const largeGoldenInputSchema = z.strictObject({
   evaluatedAt: dateTimeSchema,
   itemCount: z.literal(5_000),
   edgeCount: z.literal(10_000),
-  changedItemCount: z.literal(100),
+  changedItemCount: z.literal(300),
 });
 
 export const goldenEvalInputSchema = z.discriminatedUnion("kind", [
@@ -296,7 +296,7 @@ const largeGoldenOutputSchema = z.strictObject({
   kind: z.literal("large"),
   itemCount: z.literal(5_000),
   activeEdgeCount: z.literal(10_000),
-  changedItemCount: z.literal(100),
+  changedItemCount: z.literal(300),
   items: z.array(largeExpectedItemSchema),
   relations: z.array(largeExpectedRelationSchema),
   notifications: z.array(expectedNotificationSchema),

@@ -293,7 +293,7 @@ describe("回帰基準と性能", () => {
     expect(output).toMatchObject({
       itemCount: 5_000,
       activeEdgeCount: 10_000,
-      changedItemCount: 100,
+      changedItemCount: 300,
       items: [
         {
           count: 5_000,

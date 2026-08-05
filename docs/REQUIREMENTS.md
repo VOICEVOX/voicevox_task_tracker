@@ -432,7 +432,7 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 | `OPS-001` | MUST | 排他と再実行 — workflow concurrencyで日次runを直列化し、manual rerunを安全かつ冪等にしなければならない。                                                                                          | `AT-OPS-001`: 同時2 run fixtureでstate race・通常digest重複が起きない。                                                                     |
 | `OPS-002` | MUST | retryとlast-good保護 — GitHub、Codex、Discordの一時失敗を設定上限付きの指数backoffとjitterでretryし、恒久エラーはretryせず、完全性を満たさないrunでlast-good Pagesとstateを上書きしてはならない。 | `AT-OPS-002`: 429、503、transport例外、timeout、恒久エラーのfixtureで試行回数と待機時間が期待値になり、失敗後もlast good hashが維持される。 |
 | `OPS-003` | MUST | observability — run summaryにrepo/item/change/edge/AI call/cache/token見積/API残量/stale/notification/所要時間を記録しなければならない。                                                          | `AT-OPS-003`: 成功・fallback・失敗runのsummaryに必須metricが存在する。                                                                      |
-| `OPS-004` | MUST | 性能と予算 — 基準fixture（5,000 items、10,000 edges、変更100件）を30分以内、GitHub API予算70%以内、Codex設定上限以内で処理し、Web初期summaryをgzip 1 MiB以内にしなければならない。                | `AT-OPS-004`: CI performance profileが全閾値を満たす。                                                                                      |
+| `OPS-004` | MUST | 性能と予算 — 基準fixture（5,000 items、10,000 edges、変更300件）を30分以内、GitHub API予算70%以内、Codex設定上限以内で処理し、Web初期summaryをgzip 1 MiB以内にしなければならない。                | `AT-OPS-004`: CI performance profileが全閾値を満たす。                                                                                      |
 
 ## 12. 非機能方針補足
 

@@ -1440,7 +1440,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         }),
         nextAction: "担当者が作業を進める",
         createdAt,
-        githubUpdatedAt: index < 100 ? evaluatedAt : createdAt,
+        githubUpdatedAt: index < 300 ? evaluatedAt : createdAt,
         lastHumanActivityAt: createdAt,
         lastProgressAt: createdAt,
         statusSince: createdAt,

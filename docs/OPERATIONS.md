@@ -68,9 +68,9 @@ schemaの写しを古いまま据え置くと検証が形骸化するため、�
 ## 性能profile
 
 OPS-004は通常のCIから分離したend-to-end性能profileで確認します。
-外部サービスへ接続せず、本番の`daily`トランザクションへ5,000項目、10,000 edge、変更100件を流します。
+外部サービスへ接続せず、本番の`daily`トランザクションへ5,000項目、10,000 edge、変更300件を流します。
 GitHub APIは15,000 unitのモックrate limitから、一覧のpaginationと項目ごとの詳細取得で消費したunitを差し引きます。
-Codexは設定上限100件までモック出力を返し、予算選別、schema検証、reducerを実際に通します。
+Codexは設定上限300件までモック出力を返し、予算選別、schema検証、reducerを実際に通します。
 state永続化はメモリ上で行い、Pages初期summaryは実際に生成してgzipサイズを測ります。
 
 ```console

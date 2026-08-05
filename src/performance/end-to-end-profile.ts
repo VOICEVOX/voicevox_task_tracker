@@ -41,7 +41,7 @@ import { assertNonNullable } from "../util/index.js";
 
 const PROFILE_ITEM_COUNT = 5_000;
 const PROFILE_EDGE_COUNT = 10_000;
-const PROFILE_CHANGED_ITEM_COUNT = 100;
+const PROFILE_CHANGED_ITEM_COUNT = 300;
 const PROFILE_REPOSITORY_NAME = "performance-profile";
 const PROFILE_REPOSITORY_ID = createGitHubRepositoryId("R_performance_profile");
 const PROFILE_TEAM_SLUG = "performance-profile-team";
@@ -279,7 +279,7 @@ function blockerIndexes(blockedIndex: number): readonly number[] {
   }
   if (
     blockedIndex >= PROFILE_CHANGED_ITEM_COUNT + 3 &&
-    blockedIndex <= PROFILE_CHANGED_ITEM_COUNT + 205
+    blockedIndex <= PROFILE_CHANGED_ITEM_COUNT + 605
   ) {
     indexes.push(blockedIndex - 3);
   }

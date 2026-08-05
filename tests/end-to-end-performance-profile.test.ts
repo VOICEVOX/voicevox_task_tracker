@@ -15,8 +15,8 @@ function createPassingMeasurement() {
       usedRatio: 1 / 3,
     }),
     codex: Object.freeze({
-      calls: 100,
-      configuredMaxCalls: 100,
+      calls: 300,
+      configuredMaxCalls: 300,
     }),
     webInitialSummary: Object.freeze({
       gzipBytes: 100_000,
@@ -52,8 +52,8 @@ describe("end-to-end性能profileの閾値", () => {
       "Codex呼び出し上限",
       {
         codex: Object.freeze({
-          calls: 101,
-          configuredMaxCalls: 100,
+          calls: 301,
+          configuredMaxCalls: 300,
         }),
       },
     ],
