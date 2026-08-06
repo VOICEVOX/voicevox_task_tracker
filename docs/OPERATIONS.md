@@ -271,6 +271,10 @@ mentionは通知量の調整に使わず、運用上必要なuserだけをallowl
 収集の診断に「端点を取得できなかった関係候補を除外しました」が出る場合は、archive済みrepositoryやOrganization外の参照先など、公開境界の外にある関係先が残っています。
 run自体は成功し、除外した関係候補は依存グラフへ載りません。
 
+`deploy-pages`が`Timeout reached, aborting!`で失敗し、ログが`Current status: deployment_queued`のまま進んでいない場合は、Pages artifactではなくGitHub Pages側のdeploy待ち行列が滞っています。
+artifactの中身に問題があるときはPages側がエラーを返すため、この症状にはなりません。
+[GitHub Status](https://www.githubstatus.com/)でPagesの障害を確認し、復旧後にworkflowを再実行します。
+
 Actions上でCodexの認証エラーが起きた場合は、ローカルのCodexへログインし直し、[デプロイ手順](DEPLOYMENT.md)のコマンドで`CODEX_AUTH_JSON`を登録し直します。
 
 `fallback`はCodexを利用できなかった項目を決定論的判定へ縮退した完全runです。
