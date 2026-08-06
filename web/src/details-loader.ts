@@ -1,5 +1,7 @@
 import { type PublicDetailsDto } from "../../src/pages/public-dto.js";
-import { type PublicDetailsLoader } from "./dependency-graph.js";
+
+/** details.jsonを検証して返す遅延loader。 */
+export type PublicDetailsLoader = () => Promise<PublicDetailsDto>;
 
 type SharedDetailsLoaderState =
   | Readonly<{

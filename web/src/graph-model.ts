@@ -1,13 +1,11 @@
 import {
   type PublicDetailsDto,
   type PublicGraphEdgeDto,
-  type PublicGraphHistoryEventDto,
   type PublicGraphNodeDto,
   type PublicItemSummaryDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
-import { severityLabel, statusLabel } from "./model.js";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const BASE_GRAPH_NODE_SIZE = 72;
@@ -15,42 +13,24 @@ const BASE_GRAPH_NODE_SIZE = 72;
 /** グラフnodeの表示サイズ上限。 */
 export const MAX_GRAPH_NODE_SIZE = 132;
 
-type GraphNodeKind = PublicGraphNodeDto["kind"] | "dependency_cycle";
-type GraphNodeSeverity = PublicItemSummaryDto["severity"] | "cycle";
+type GraphNodeKind = PublicGraphNodeDto["kind"];
+type GraphNodeSeverity = PublicItemSummaryDto["severity"];
 type RelationType = PublicGraphEdgeDto["type"];
-type RelationProvenance = PublicGraphEdgeDto["provenance"];
 
-/** グラフnodeから遷移できるGitHubリンク。 */
-export type GraphNodeLink =
-  | Readonly<{
-      status: "available";
-      url: string;
-    }>
-  | Readonly<{
-      status: "unavailable";
-    }>;
-
-/** グラフと代替表で共有するnode表現。 */
+/** 項目の部分グラフで描画するnode。 */
 export type GraphViewNode = Readonly<{
   id: string;
-  sourceNodeIds: readonly string[];
   kind: GraphNodeKind;
   reference: string;
   title: string;
-  repositoryText: string;
-  statusText: string;
-  stateText: string;
-  severity: GraphNodeSeverity;
+  central: boolean;
   frontier: boolean;
-  cycleIds: readonly string[];
-  collapsedCycle: boolean;
   stallDays: number;
   impactOpenNodeCount: number;
   impactRepositoryCount: number;
   size: number;
   width: number;
   height: number;
-  link: GraphNodeLink;
 }>;
 
 /** 自動レイアウトへ渡すedge表現。 */
@@ -60,65 +40,17 @@ export type GraphViewEdge = Readonly<{
   toNodeId: string;
   type: RelationType;
   typeLabel: string;
-  provenance: RelationProvenance;
-  provenanceLabel: string;
   authorityLabel: "確定関係" | "推定関係";
   authoritative: boolean;
-  evidence: PublicGraphEdgeDto["evidence"];
 }>;
 
-type GraphEdgeHistoryView = Readonly<{
-  relationId: string;
-  fromNodeId: string;
-  toNodeId: string;
-  events: readonly PublicGraphHistoryEventDto[];
-}>;
-
-/** cycleの折り畳み状態と構成node。 */
-export type GraphViewCycle = Readonly<{
-  id: string;
-  expanded: boolean;
-  visible: boolean;
-  memberNodes: readonly GraphViewNode[];
-  edgeIds: readonly string[];
-}>;
-
-/** 選択したclusterの描画用データと表形式データ。 */
-export type GraphClusterView = Readonly<{
-  clusterKind: "component" | "repository";
-  clusterId: string;
+/** 項目の部分グラフに表示するnodeとedge。 */
+export type ItemGraphView = Readonly<{
   displayNodes: readonly GraphViewNode[];
   displayEdges: readonly GraphViewEdge[];
-  sourceNodes: readonly GraphViewNode[];
   sourceEdges: readonly GraphViewEdge[];
-  edgeHistories: readonly GraphEdgeHistoryView[];
-  cycles: readonly GraphViewCycle[];
-  renderedNodeCount: number;
   representedSourceNodeCount: number;
   omittedSourceNodeCount: number;
-  maxInitialNodes: number;
-}>;
-
-/** component一覧へ表示する集計値。 */
-export type GraphComponentListItem = Readonly<{
-  id: string;
-  ordinal: number;
-  repositoryText: string;
-  nodeCount: number;
-  edgeCount: number;
-  frontierCount: number;
-  cycleCount: number;
-}>;
-
-/** repository cluster一覧へ表示する集計値。 */
-export type GraphRepositoryListItem = Readonly<{
-  id: string;
-  ordinal: number;
-  repositoryText: string;
-  nodeCount: number;
-  edgeCount: number;
-  frontierCount: number;
-  cycleCount: number;
 }>;
 
 function compareStrings(left: string, right: string): number {
@@ -167,15 +99,12 @@ export function graphNodeKindLabel(kind: GraphNodeKind): string {
       return "Pull Request";
     case "external_reference":
       return "外部参照";
-    case "dependency_cycle":
-      return "循環関係";
     default:
       throw new UnreachableError(kind);
   }
 }
 
-/** edge種別の表示名を返す。 */
-export function relationTypeLabel(type: RelationType): string {
+function relationTypeLabel(type: RelationType): string {
   switch (type) {
     case "blocks":
       return "ブロック";
@@ -192,39 +121,6 @@ export function relationTypeLabel(type: RelationType): string {
   }
 }
 
-/** edge provenanceの表示名を返す。 */
-export function relationProvenanceLabel(provenance: RelationProvenance): string {
-  switch (provenance) {
-    case "native":
-      return "GitHubの正式な関係";
-    case "explicit_text":
-      return "本文の明示記述";
-    case "closing_keyword":
-      return "GitHubのクローズ指定";
-    case "checklist":
-      return "チェックリスト";
-    case "cross_reference":
-      return "相互参照";
-    case "ai_inference":
-      return "AIによる推定";
-    default:
-      throw new UnreachableError(provenance);
-  }
-}
-
-function stateLabel(state: PublicGraphNodeDto["state"]): string {
-  switch (state) {
-    case "open":
-      return "open";
-    case "closed":
-      return "closed";
-    case "merged":
-      return "merged";
-    default:
-      throw new UnreachableError(state);
-  }
-}
-
 function severityRank(severity: GraphNodeSeverity): number {
   switch (severity) {
     case "none":
@@ -235,8 +131,6 @@ function severityRank(severity: GraphNodeSeverity): number {
       return 2;
     case "critical":
       return 3;
-    case "cycle":
-      return 4;
     default:
       throw new UnreachableError(severity);
   }
@@ -245,9 +139,8 @@ function severityRank(severity: GraphNodeSeverity): number {
 function createTrackedGraphNode(
   node: Extract<PublicGraphNodeDto, Readonly<{ kind: "issue" | "pull_request" }>>,
   item: PublicItemSummaryDto,
-  repositoryText: string,
+  centralNodeIds: ReadonlySet<string>,
   frontierNodeIds: ReadonlySet<string>,
-  cycleIds: readonly string[],
   now: Date,
 ): GraphViewNode {
   if (node.kind !== item.type) {
@@ -265,127 +158,78 @@ function createTrackedGraphNode(
   );
   return {
     id: node.nodeId,
-    sourceNodeIds: [node.nodeId],
     kind: node.kind,
     reference: item.displayReference,
     title: item.title,
-    repositoryText,
-    statusText: statusLabel(item.status),
-    stateText: stateLabel(node.state),
-    severity: item.severity,
+    central: centralNodeIds.has(node.nodeId),
     frontier: frontierNodeIds.has(node.nodeId),
-    cycleIds,
-    collapsedCycle: false,
     stallDays,
     impactOpenNodeCount: item.downstreamImpact.openNodeCount,
     impactRepositoryCount: item.downstreamImpact.repositoryCount,
     size,
     width: size * 2.15,
     height: size,
-    link: {
-      status: "available",
-      url: item.url,
-    },
   };
 }
 
 function createExternalGraphNode(
   node: Extract<PublicGraphNodeDto, Readonly<{ kind: "external_reference" }>>,
+  centralNodeIds: ReadonlySet<string>,
   frontierNodeIds: ReadonlySet<string>,
-  cycleIds: readonly string[],
 ): GraphViewNode {
   const size = calculateGraphNodeSize(0, 0, 0);
   return {
     id: node.nodeId,
-    sourceNodeIds: [node.nodeId],
     kind: node.kind,
     reference: node.displayReference,
     title: node.title,
-    repositoryText: node.repositoryFullName,
-    statusText: "外部参照",
-    stateText: stateLabel(node.state),
-    severity: "none",
+    central: centralNodeIds.has(node.nodeId),
     frontier: frontierNodeIds.has(node.nodeId),
-    cycleIds,
-    collapsedCycle: false,
     stallDays: 0,
     impactOpenNodeCount: 0,
     impactRepositoryCount: 0,
     size,
     width: size * 1.55,
     height: size * 1.15,
-    link: {
-      status: "available",
-      url: node.url,
-    },
   };
 }
 
-function createCollapsedCycleNode(
-  cycleId: string,
-  memberNodes: readonly GraphViewNode[],
-): GraphViewNode {
-  const firstMember = memberNodes[0];
-  assertNonNullable(firstMember, `cycle ${cycleId}に構成nodeがありません`);
-  const repositoryText = [...new Set(memberNodes.map((node) => node.repositoryText))]
-    .sort(compareStrings)
-    .join("、");
-  const size = Math.min(MAX_GRAPH_NODE_SIZE, Math.max(...memberNodes.map((node) => node.size)) + 8);
-  return {
-    id: `cycle:${cycleId}`,
-    sourceNodeIds: memberNodes.map((node) => node.id),
-    kind: "dependency_cycle",
-    reference: "dependency cycle",
-    title: `${memberNodes.length.toString()}件のblocks循環`,
-    repositoryText,
-    statusText: "循環依存",
-    stateText: memberNodes.some((node) => node.stateText === "open") ? "open" : "closed",
-    severity: "cycle",
-    frontier: memberNodes.some((node) => node.frontier),
-    cycleIds: [cycleId],
-    collapsedCycle: true,
-    stallDays: Math.max(...memberNodes.map((node) => node.stallDays)),
-    impactOpenNodeCount: Math.max(...memberNodes.map((node) => node.impactOpenNodeCount)),
-    impactRepositoryCount: Math.max(...memberNodes.map((node) => node.impactRepositoryCount)),
-    size,
-    width: size * 2.15,
-    height: size,
-    link: {
-      status: "unavailable",
-    },
-  };
-}
-
-function createEdgeView(
-  edge: PublicGraphEdgeDto,
-  fromNodeId: string,
-  toNodeId: string,
-): GraphViewEdge {
+function createEdgeView(edge: PublicGraphEdgeDto): GraphViewEdge {
   const authoritative = edge.provenance === "native";
   return {
     id: edge.id,
-    fromNodeId,
-    toNodeId,
+    fromNodeId: edge.fromNodeId,
+    toNodeId: edge.toNodeId,
     type: edge.type,
     typeLabel: relationTypeLabel(edge.type),
-    provenance: edge.provenance,
-    provenanceLabel: relationProvenanceLabel(edge.provenance),
     authorityLabel: authoritative ? "確定関係" : "推定関係",
     authoritative,
-    evidence: edge.evidence,
   };
 }
 
-function compareNodePriority(left: GraphViewNode, right: GraphViewNode): number {
-  const cycleOrder = Number(right.collapsedCycle) - Number(left.collapsedCycle);
-  if (cycleOrder !== 0) {
-    return cycleOrder;
+function graphNodeSeverityRank(
+  node: GraphViewNode,
+  itemsByNodeId: ReadonlyMap<string, PublicItemSummaryDto>,
+): number {
+  if (node.kind === "external_reference") {
+    return severityRank("none");
   }
+  const item = itemsByNodeId.get(node.id);
+  assertNonNullable(item, `graph node ${node.id}のsummary itemがありません`);
+  return severityRank(item.severity);
+}
+
+function compareNodePriority(
+  left: GraphViewNode,
+  right: GraphViewNode,
+  itemsByNodeId: ReadonlyMap<string, PublicItemSummaryDto>,
+): number {
   const frontierOrder = Number(right.frontier) - Number(left.frontier);
   if (frontierOrder !== 0) {
     return frontierOrder;
   }
-  const severityOrder = severityRank(right.severity) - severityRank(left.severity);
+  const severityOrder =
+    graphNodeSeverityRank(right, itemsByNodeId) - graphNodeSeverityRank(left, itemsByNodeId);
   if (severityOrder !== 0) {
     return severityOrder;
   }
@@ -404,95 +248,7 @@ function compareNodePriority(left: GraphViewNode, right: GraphViewNode): number 
   return compareStrings(left.id, right.id);
 }
 
-function compareComponents(
-  left: PublicSummaryDto["graph"]["components"][number],
-  right: PublicSummaryDto["graph"]["components"][number],
-): number {
-  const repositoryOrder = right.repositoryIds.length - left.repositoryIds.length;
-  if (repositoryOrder !== 0) {
-    return repositoryOrder;
-  }
-  const cycleOrder = right.cycleCount - left.cycleCount;
-  if (cycleOrder !== 0) {
-    return cycleOrder;
-  }
-  const nodeOrder = right.nodeCount - left.nodeCount;
-  if (nodeOrder !== 0) {
-    return nodeOrder;
-  }
-  return compareStrings(left.id, right.id);
-}
-
-/** summaryの軽量索引から初期表示用component一覧を作る。 */
-export function createGraphComponentList(
-  summary: PublicSummaryDto,
-): readonly GraphComponentListItem[] {
-  const repositoriesById = new Map(
-    summary.repositories.map((repository) => [repository.id, repository]),
-  );
-  return [...summary.graph.components].sort(compareComponents).map((component, index) => ({
-    id: component.id,
-    ordinal: index + 1,
-    repositoryText: component.repositoryIds
-      .map((repositoryId) => {
-        const repository = repositoriesById.get(repositoryId);
-        assertNonNullable(
-          repository,
-          `component ${component.id}のrepository ${repositoryId}がありません`,
-        );
-        return repository.fullName;
-      })
-      .join("、"),
-    nodeCount: component.nodeCount,
-    edgeCount: component.edgeCount,
-    frontierCount: component.frontierCount,
-    cycleCount: component.cycleCount,
-  }));
-}
-
-/** summaryの軽量索引から初期表示用repository cluster一覧を作る。 */
-export function createGraphRepositoryList(
-  summary: PublicSummaryDto,
-): readonly GraphRepositoryListItem[] {
-  if (!summary.graph.clusterByRepository) {
-    if (summary.graph.repositoryClusters.length !== 0) {
-      throw new TypeError("repository cluster無効時にcluster索引を公開できません");
-    }
-    return [];
-  }
-  const repositoriesById = new Map(
-    summary.repositories.map((repository) => [repository.id, repository]),
-  );
-  return summary.graph.repositoryClusters
-    .map((cluster) => {
-      const repository = repositoriesById.get(cluster.repositoryId);
-      assertNonNullable(
-        repository,
-        `repository cluster ${cluster.repositoryId}のrepositoryがありません`,
-      );
-      if (cluster.nodeCount !== repository.itemCount) {
-        throw new TypeError(
-          `repository cluster ${cluster.repositoryId}のnode数がrepository集計と一致しません`,
-        );
-      }
-      return {
-        id: cluster.repositoryId,
-        repositoryText: repository.fullName,
-        nodeCount: cluster.nodeCount,
-        edgeCount: cluster.edgeCount,
-        frontierCount: cluster.frontierCount,
-        cycleCount: cluster.cycleCount,
-      };
-    })
-    .sort((left, right) => compareStrings(left.repositoryText, right.repositoryText))
-    .map((cluster, index) => ({
-      ...cluster,
-      ordinal: index + 1,
-    }));
-}
-
-/** summaryと遅延取得したdetailsが同じ生成runか検証する。 */
-export function assertPublicDetailsMatchSummary(
+function assertPublicDetailsMatchSummary(
   summary: PublicSummaryDto,
   details: PublicDetailsDto,
 ): void {
@@ -501,369 +257,102 @@ export function assertPublicDetailsMatchSummary(
   }
 }
 
-function createUniqueMap<Value extends Readonly<{ id: string }>>(
-  values: readonly Value[],
-  name: string,
-): ReadonlyMap<string, Value> {
-  const result = new Map<string, Value>();
-  for (const value of values) {
-    if (result.has(value.id)) {
-      throw new TypeError(`${name}のID ${value.id}が重複しています`);
-    }
-    result.set(value.id, value);
-  }
-  return result;
-}
-
-function cycleIdsByNodeId(
-  cycles: readonly PublicDetailsDto["graph"]["cycles"][number][],
-): ReadonlyMap<string, readonly string[]> {
-  const result = new Map<string, string[]>();
-  for (const cycle of cycles) {
-    for (const nodeId of cycle.nodeIds) {
-      const existing = result.get(nodeId);
-      if (existing != null) {
-        throw new TypeError(`graph node ${nodeId}が複数のdependency cycleに含まれています`);
-      }
-      result.set(nodeId, [cycle.id]);
-    }
-  }
-  return result;
-}
-
-function clusterCycles(
-  clusterNodeIds: ReadonlySet<string>,
-  cycles: readonly PublicDetailsDto["graph"]["cycles"][number][],
-  clusterKind: GraphClusterView["clusterKind"],
-): readonly PublicDetailsDto["graph"]["cycles"][number][] {
-  return cycles.filter((cycle) => {
-    const includedCount = cycle.nodeIds.filter((nodeId) => clusterNodeIds.has(nodeId)).length;
-    if (
-      clusterKind === "component" &&
-      includedCount !== 0 &&
-      includedCount !== cycle.nodeIds.length
-    ) {
-      throw new TypeError(`dependency cycle ${cycle.id}がcomponent境界をまたいでいます`);
-    }
-    return includedCount === cycle.nodeIds.length;
-  });
-}
-
 function createSourceNodes(
-  summary: PublicSummaryDto,
   details: PublicDetailsDto,
-  clusterNodeIds: readonly string[],
-  cycles: readonly PublicDetailsDto["graph"]["cycles"][number][],
+  nodeIds: readonly string[],
+  centralNodeIds: ReadonlySet<string>,
+  itemsByNodeId: ReadonlyMap<string, PublicItemSummaryDto>,
   now: Date,
 ): readonly GraphViewNode[] {
   const graphNodesById = new Map(details.graph.nodes.map((node) => [node.nodeId, node]));
-  const itemsByNodeId = new Map(summary.items.map((item) => [item.nodeId, item]));
-  const repositoriesById = new Map(
-    summary.repositories.map((repository) => [repository.id, repository]),
-  );
   const frontierNodeIds = new Set(details.graph.frontierNodeIds);
-  const nodeCycleIds = cycleIdsByNodeId(cycles);
 
-  return clusterNodeIds.map((nodeId) => {
+  return nodeIds.map((nodeId) => {
     const node = graphNodesById.get(nodeId);
-    assertNonNullable(node, `clusterのgraph node ${nodeId}がありません`);
-    const cycleIds = nodeCycleIds.get(nodeId) ?? Object.freeze([]);
+    assertNonNullable(node, `部分グラフのgraph node ${nodeId}がありません`);
     if (node.kind === "external_reference") {
-      return createExternalGraphNode(node, frontierNodeIds, cycleIds);
+      return createExternalGraphNode(node, centralNodeIds, frontierNodeIds);
     }
     const item = itemsByNodeId.get(node.nodeId);
     assertNonNullable(item, `graph node ${node.nodeId}のsummary itemがありません`);
-    const repository = repositoriesById.get(node.repositoryId);
-    assertNonNullable(
-      repository,
-      `graph node ${node.nodeId}のrepository ${node.repositoryId}がありません`,
-    );
-    return createTrackedGraphNode(node, item, repository.fullName, frontierNodeIds, cycleIds, now);
+    return createTrackedGraphNode(node, item, centralNodeIds, frontierNodeIds, now);
   });
 }
 
 function selectDisplayNodes(
   sourceNodes: readonly GraphViewNode[],
-  cycles: readonly PublicDetailsDto["graph"]["cycles"][number][],
-  expandedCycleIds: ReadonlySet<string>,
-  maxInitialNodes: number,
+  centralNodeIds: ReadonlySet<string>,
+  itemsByNodeId: ReadonlyMap<string, PublicItemSummaryDto>,
+  maxNodes: number,
 ): readonly GraphViewNode[] {
-  const sourceNodesById = new Map(sourceNodes.map((node) => [node.id, node]));
-  const cycleMemberIds = new Set(cycles.flatMap((cycle) => cycle.nodeIds));
-  const candidates: GraphViewNode[] = sourceNodes.filter((node) => !cycleMemberIds.has(node.id));
-  const requiredExpandedNodes: GraphViewNode[] = [];
-
-  for (const cycle of cycles) {
-    const memberNodes = cycle.nodeIds.map((nodeId) => {
-      const node = sourceNodesById.get(nodeId);
-      assertNonNullable(node, `cycle ${cycle.id}の構成node ${nodeId}がありません`);
-      return node;
-    });
-    if (expandedCycleIds.has(cycle.id)) {
-      requiredExpandedNodes.push(...memberNodes);
-    } else {
-      candidates.push(createCollapsedCycleNode(cycle.id, memberNodes));
-    }
-  }
-
-  requiredExpandedNodes.sort(compareNodePriority);
-  candidates.sort(compareNodePriority);
-  const requiredIds = new Set(requiredExpandedNodes.map((node) => node.id));
-  const nonRequiredCandidates = candidates.filter((node) => !requiredIds.has(node.id));
-  const remainingCapacity = Math.max(0, maxInitialNodes - requiredExpandedNodes.length);
-  return [...requiredExpandedNodes, ...nonRequiredCandidates.slice(0, remainingCapacity)].sort(
-    (left, right) => compareStrings(left.id, right.id),
+  const comparePriority = (left: GraphViewNode, right: GraphViewNode): number =>
+    compareNodePriority(left, right, itemsByNodeId);
+  const requiredNodes = sourceNodes.filter((node) => centralNodeIds.has(node.id));
+  requiredNodes.sort(comparePriority);
+  const requiredIds = new Set(requiredNodes.map((node) => node.id));
+  const candidates = sourceNodes.filter((node) => !requiredIds.has(node.id)).sort(comparePriority);
+  const remainingCapacity = Math.max(0, maxNodes - requiredNodes.length);
+  return [...requiredNodes, ...candidates.slice(0, remainingCapacity)].sort((left, right) =>
+    compareStrings(left.id, right.id),
   );
 }
 
-function validateMaxInitialNodes(value: number): void {
+function validateMaxNodes(value: number): void {
   if (!Number.isInteger(value) || value <= 0) {
-    throw new RangeError("maxInitialNodesは正の整数にしてください");
+    throw new RangeError("maxNodesは正の整数にしてください");
   }
 }
 
-function edgeHistoryEventValue(
-  event: PublicGraphHistoryEventDto,
-): Extract<PublicGraphHistoryEventDto["after"], Readonly<{ state: "present" }>>["value"] {
-  if (event.after.state === "present") {
-    return event.after.value;
-  }
-  if (event.before.state === "present") {
-    return event.before.value;
-  }
-  throw new TypeError(`edge履歴 ${event.relationId}の変更前後にedgeがありません`);
-}
-
-function createClusterEdgeHistories(
-  history: readonly PublicGraphHistoryEventDto[],
-  clusterNodeIds: ReadonlySet<string>,
-): readonly GraphEdgeHistoryView[] {
-  const eventsByRelationId = new Map<string, PublicGraphHistoryEventDto[]>();
-  for (const event of history) {
-    edgeHistoryEventValue(event);
-    const events = eventsByRelationId.get(event.relationId);
-    if (events == null) {
-      eventsByRelationId.set(event.relationId, [event]);
-      continue;
-    }
-    events.push(event);
-  }
-
-  return [...eventsByRelationId.entries()]
-    .sort(([leftRelationId], [rightRelationId]) => compareStrings(leftRelationId, rightRelationId))
-    .flatMap(([relationId, events]) => {
-      let previousRecordedAt = Number.NEGATIVE_INFINITY;
-      let relatedToCluster = false;
-      for (const event of events) {
-        const recordedAt = Date.parse(event.recordedAt);
-        if (!Number.isFinite(recordedAt)) {
-          throw new TypeError(`edge履歴 ${relationId}の日時を解釈できません`);
-        }
-        if (recordedAt < previousRecordedAt) {
-          throw new TypeError(`edge履歴 ${relationId}は記録時刻順に指定してください`);
-        }
-        previousRecordedAt = recordedAt;
-        const value = edgeHistoryEventValue(event);
-        relatedToCluster ||=
-          clusterNodeIds.has(value.fromNodeId) || clusterNodeIds.has(value.toNodeId);
-      }
-      if (!relatedToCluster) {
-        return [];
-      }
-      const latestEvent = events.at(-1);
-      assertNonNullable(latestEvent, `edge履歴 ${relationId}にeventがありません`);
-      const latestValue = edgeHistoryEventValue(latestEvent);
-      return [
-        {
-          relationId,
-          fromNodeId: latestValue.fromNodeId,
-          toNodeId: latestValue.toNodeId,
-          events,
-        },
-      ];
-    });
-}
-
-type GraphClusterDefinition = Readonly<{
-  kind: GraphClusterView["clusterKind"];
-  id: string;
-  nodeIds: readonly string[];
-  edgeIds: readonly string[];
-}>;
-
-function createGraphClusterView(
+/** 項目とactive edgeで直接つながる1 hopを設定上限付きの描画モデルへ変換する。 */
+export function createItemGraphView(
   summary: PublicSummaryDto,
   details: PublicDetailsDto,
-  cluster: GraphClusterDefinition,
-  expandedCycleIds: ReadonlySet<string>,
+  nodeId: string,
   now: Date,
-): GraphClusterView {
-  const clusterNodeIds = new Set(cluster.nodeIds);
-  const cycles = clusterCycles(clusterNodeIds, details.graph.cycles, cluster.kind);
-  const sourceNodes = createSourceNodes(summary, details, cluster.nodeIds, cycles, now);
-  const displayNodes = selectDisplayNodes(
-    sourceNodes,
-    cycles,
-    expandedCycleIds,
-    summary.graph.maxNodes,
-  );
-  const displayNodeIdBySourceNodeId = new Map<string, string>();
-  for (const node of displayNodes) {
-    for (const sourceNodeId of node.sourceNodeIds) {
-      if (displayNodeIdBySourceNodeId.has(sourceNodeId)) {
-        throw new TypeError(`source node ${sourceNodeId}の描画先が重複しています`);
-      }
-      displayNodeIdBySourceNodeId.set(sourceNodeId, node.id);
-    }
+): ItemGraphView {
+  assertPublicDetailsMatchSummary(summary, details);
+  validateMaxNodes(summary.graph.maxNodes);
+  const centerItem = summary.items.find((item) => item.nodeId === nodeId);
+  assertNonNullable(centerItem, `summaryに中心項目 ${nodeId}がありません`);
+  const centerNode = details.graph.nodes.find((node) => node.nodeId === centerItem.nodeId);
+  assertNonNullable(centerNode, `detailsに中心項目 ${nodeId}のgraph nodeがありません`);
+  if (centerNode.kind === "external_reference") {
+    throw new TypeError(`中心項目 ${nodeId}を外部参照として表示できません`);
   }
-  const representedSourceNodeIds = new Set(displayNodeIdBySourceNodeId.keys());
-  const graphEdgesById = createUniqueMap(details.graph.edges, "graph edge");
-  const activeClusterEdges = cluster.edgeIds.map((edgeId) => {
-    const edge = graphEdgesById.get(edgeId);
-    assertNonNullable(edge, `cluster ${cluster.id}のedge ${edgeId}がありません`);
-    if (!edge.active) {
-      throw new TypeError(`cluster ${cluster.id}が非active edge ${edgeId}を参照しています`);
-    }
-    if (!clusterNodeIds.has(edge.fromNodeId) || !clusterNodeIds.has(edge.toNodeId)) {
-      throw new TypeError(`cluster ${cluster.id}のedge ${edgeId}が境界外を参照しています`);
-    }
-    return edge;
-  });
-  const sourceEdges = activeClusterEdges
+  const activeEdges = details.graph.edges
     .filter(
       (edge) =>
-        representedSourceNodeIds.has(edge.fromNodeId) &&
-        representedSourceNodeIds.has(edge.toNodeId),
+        edge.active &&
+        (edge.fromNodeId === centerNode.nodeId || edge.toNodeId === centerNode.nodeId),
     )
-    .map((edge) => createEdgeView(edge, edge.fromNodeId, edge.toNodeId));
-  const displayEdges = activeClusterEdges.flatMap((edge) => {
-    const fromNodeId = displayNodeIdBySourceNodeId.get(edge.fromNodeId);
-    const toNodeId = displayNodeIdBySourceNodeId.get(edge.toNodeId);
-    if (fromNodeId == null || toNodeId == null || fromNodeId === toNodeId) {
-      return [];
-    }
-    return [createEdgeView(edge, fromNodeId, toNodeId)];
-  });
-  const sourceNodesById = new Map(sourceNodes.map((node) => [node.id, node]));
-  const graphCycles = cycles.map((cycle) => ({
-    id: cycle.id,
-    expanded: expandedCycleIds.has(cycle.id),
-    visible: cycle.nodeIds.some((nodeId) => representedSourceNodeIds.has(nodeId)),
-    memberNodes: cycle.nodeIds.map((nodeId) => {
-      const node = sourceNodesById.get(nodeId);
-      assertNonNullable(node, `cycle ${cycle.id}の表示node ${nodeId}がありません`);
-      return node;
-    }),
-    edgeIds: [...cycle.edgeIds],
-  }));
+    .sort((left, right) => compareStrings(left.id, right.id));
+  const nodeIds = [
+    ...new Set([
+      centerNode.nodeId,
+      ...activeEdges.flatMap((edge) => [edge.fromNodeId, edge.toNodeId]),
+    ]),
+  ].sort(compareStrings);
+  const centralNodeIds = new Set([centerNode.nodeId]);
+  const itemsByNodeId = new Map(summary.items.map((item) => [item.nodeId, item]));
+  const sourceNodes = createSourceNodes(details, nodeIds, centralNodeIds, itemsByNodeId, now);
+  const displayNodes = selectDisplayNodes(
+    sourceNodes,
+    centralNodeIds,
+    itemsByNodeId,
+    summary.graph.maxNodes,
+  );
+  const representedNodeIds = new Set(displayNodes.map((node) => node.id));
+  const sourceEdges = activeEdges
+    .filter(
+      (edge) => representedNodeIds.has(edge.fromNodeId) && representedNodeIds.has(edge.toNodeId),
+    )
+    .map(createEdgeView);
 
   return {
-    clusterKind: cluster.kind,
-    clusterId: cluster.id,
     displayNodes,
-    displayEdges,
-    sourceNodes: sourceNodes
-      .filter((node) => representedSourceNodeIds.has(node.id))
-      .sort((left, right) => compareStrings(left.id, right.id)),
+    displayEdges: sourceEdges,
     sourceEdges,
-    edgeHistories: createClusterEdgeHistories(details.graph.history, clusterNodeIds),
-    cycles: graphCycles,
-    renderedNodeCount: displayNodes.length,
-    representedSourceNodeCount: representedSourceNodeIds.size,
-    omittedSourceNodeCount: cluster.nodeIds.length - representedSourceNodeIds.size,
-    maxInitialNodes: summary.graph.maxNodes,
+    representedSourceNodeCount: representedNodeIds.size,
+    omittedSourceNodeCount: nodeIds.length - representedNodeIds.size,
   };
-}
-
-/** 選択componentをcycle縮約と設定上限を適用した描画モデルへ変換する。 */
-export function createComponentGraphView(
-  summary: PublicSummaryDto,
-  details: PublicDetailsDto,
-  componentId: string,
-  expandedCycleIds: ReadonlySet<string>,
-  now: Date,
-): GraphClusterView {
-  assertPublicDetailsMatchSummary(summary, details);
-  validateMaxInitialNodes(summary.graph.maxNodes);
-  const componentSummary = summary.graph.components.find(
-    (component) => component.id === componentId,
-  );
-  const component = details.graph.components.find((candidate) => candidate.id === componentId);
-  assertNonNullable(componentSummary, `summaryにcomponent ${componentId}がありません`);
-  assertNonNullable(component, `detailsにcomponent ${componentId}がありません`);
-  if (
-    componentSummary.nodeCount !== component.nodeIds.length ||
-    componentSummary.edgeCount !== component.edgeIds.length
-  ) {
-    throw new TypeError(`component ${componentId}のsummaryとdetailsが一致しません`);
-  }
-
-  return createGraphClusterView(
-    summary,
-    details,
-    {
-      kind: "component",
-      id: componentId,
-      nodeIds: component.nodeIds,
-      edgeIds: component.edgeIds,
-    },
-    expandedCycleIds,
-    now,
-  );
-}
-
-/** 選択repositoryをcycle縮約と設定上限を適用した描画モデルへ変換する。 */
-export function createRepositoryGraphView(
-  summary: PublicSummaryDto,
-  details: PublicDetailsDto,
-  repositoryId: string,
-  expandedCycleIds: ReadonlySet<string>,
-  now: Date,
-): GraphClusterView {
-  assertPublicDetailsMatchSummary(summary, details);
-  validateMaxInitialNodes(summary.graph.maxNodes);
-  if (!summary.graph.clusterByRepository) {
-    throw new TypeError("repository clusterは設定で無効です");
-  }
-  const clusterSummary = summary.graph.repositoryClusters.find(
-    (cluster) => cluster.repositoryId === repositoryId,
-  );
-  const cluster = details.graph.repositoryClusters.find(
-    (candidate) => candidate.repositoryId === repositoryId,
-  );
-  assertNonNullable(clusterSummary, `summaryにrepository cluster ${repositoryId}がありません`);
-  assertNonNullable(cluster, `detailsにrepository cluster ${repositoryId}がありません`);
-  if (
-    clusterSummary.nodeCount !== cluster.nodeIds.length ||
-    clusterSummary.edgeCount !== cluster.edgeIds.length
-  ) {
-    throw new TypeError(`repository cluster ${repositoryId}のsummaryとdetailsが一致しません`);
-  }
-  const graphNodesById = new Map(details.graph.nodes.map((node) => [node.nodeId, node]));
-  for (const nodeId of cluster.nodeIds) {
-    const node = graphNodesById.get(nodeId);
-    assertNonNullable(node, `repository cluster ${repositoryId}のnode ${nodeId}がありません`);
-    if (node.kind === "external_reference" || node.repositoryId !== repositoryId) {
-      throw new TypeError(
-        `repository cluster ${repositoryId}に別repositoryのnode ${nodeId}が含まれています`,
-      );
-    }
-  }
-  return createGraphClusterView(
-    summary,
-    details,
-    {
-      kind: "repository",
-      id: repositoryId,
-      nodeIds: cluster.nodeIds,
-      edgeIds: cluster.edgeIds,
-    },
-    expandedCycleIds,
-    now,
-  );
-}
-
-/** node severityを凡例とCSSで使う表示名へ変換する。 */
-export function graphNodeSeverityLabel(severity: GraphNodeSeverity): string {
-  return severity === "cycle" ? "循環依存" : severityLabel(severity);
 }

@@ -147,8 +147,7 @@ web:
   title: VOICEVOX Task Tracker
   defaultLocale: ja-JP
   graph:
-    maxInitialNodes: 500
-    clusterByRepository: true
+    maxInitialNodes: 40
 
 operations:
   githubApiBudgetRatio: 0.70

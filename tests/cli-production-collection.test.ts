@@ -1555,13 +1555,13 @@ describe("本番収集の接続", () => {
     expect(snapshot.schemaVersion).toBe("5");
     expect(snapshot.items[0]?.milestone).toEqual(expectedMilestone);
     expect(snapshot.items[0]?.importance).toEqual(expectedImportance);
-    expect(publicData.summary.schemaVersion).toBe("3");
+    expect(publicData.summary.schemaVersion).toBe("5");
     expect(publicData.summary.items[0]?.milestone).toEqual(expectedMilestone);
     expect(publicData.summary.items[0]?.importance).toEqual({
       score: 10,
       level: "low",
     });
-    expect(publicData.details.schemaVersion).toBe("3");
+    expect(publicData.details.schemaVersion).toBe("5");
     expect(publicData.details.items[0]?.summary.milestone).toEqual(expectedMilestone);
     expect(publicData.details.items[0]?.importanceFactors).toEqual(expectedImportance.factors);
   });
@@ -2309,9 +2309,6 @@ describe("本番収集の接続", () => {
       .flatMap((record) => record.events)
       .find((event) => event.kind === "edge_set" && event.relationId === relation.id);
     const publicEdge = publicData.details.graph.edges.find((edge) => edge.id === relation.id);
-    const publicHistoryEvent = publicData.details.graph.history.find(
-      (event) => event.relationId === relation.id,
-    );
 
     expect(result.exitCode).toBe(0);
     expect(relation).toMatchObject({
@@ -2353,20 +2350,6 @@ describe("本番収集の接続", () => {
         },
       ],
       active: true,
-    });
-    expect(publicHistoryEvent).toMatchObject({
-      relationId: relation.id,
-      after: {
-        state: "present",
-        value: {
-          contradictions: [
-            {
-              verdict: "current_blocks_target",
-              confidence: 0.95,
-            },
-          ],
-        },
-      },
     });
   });
 

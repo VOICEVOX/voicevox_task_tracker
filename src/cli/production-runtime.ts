@@ -4367,7 +4367,6 @@ async function buildPublicPages(
     repositoryInventory: inventory,
     knownSecrets,
     options: {
-      clusterByRepository: config.web.graph.clusterByRepository,
       confidenceThresholds: config.ai.confidence,
       labelRules: normalizeLabelRules(config),
       maxInitialGraphNodes: config.web.graph.maxInitialNodes,

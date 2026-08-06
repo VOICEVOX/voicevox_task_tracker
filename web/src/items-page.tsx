@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
-import { type PublicDetailsLoader } from "./dependency-graph.js";
+import { type PublicDetailsLoader } from "./details-loader.js";
+import { ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import {
   createItemDetailsMap,
@@ -10,7 +11,6 @@ import {
   filterAndSortTableRows,
   formatStallDuration,
   formatWaitingOn,
-  importanceLevelLabel,
   searchItemNodeIds,
   statusLabel,
   type ItemTableRow,
@@ -110,14 +110,6 @@ const TABLE_COLUMNS: readonly TableColumnDefinition[] = [
     key: "stall",
     label: "停滞時間",
   },
-  {
-    key: "blocker",
-    label: "blocker",
-  },
-  {
-    key: "updated",
-    label: "更新日時",
-  },
 ];
 
 function ItemTitleLink({
@@ -143,29 +135,18 @@ function ItemTitleLink({
 function SearchStatus({
   onRetryDetails,
   searchState,
-  summary,
 }: Readonly<{
   onRetryDetails: () => void;
   searchState: ItemSearchState;
-  summary: PublicSummaryDto;
 }>) {
   switch (searchState.status) {
     case "inactive":
-      return (
-        <p class="search-status" role="status" aria-live="polite">
-          全{summary.items.length.toLocaleString()}件を表示しています。
-        </p>
-      );
+    case "available":
+      return null;
     case "loading":
       return (
         <p class="search-status" role="status" aria-live="polite">
           検索用の公開詳細データを読み込んでいます。
-        </p>
-      );
-    case "available":
-      return (
-        <p class="search-status" role="status" aria-live="polite">
-          {searchState.nodeIds.length.toLocaleString()}件が検索条件に一致しました。
         </p>
       );
     case "failed":
@@ -188,14 +169,12 @@ function ItemSearch({
   onSearchQueryChange,
   searchQuery,
   searchState,
-  summary,
 }: Readonly<{
   onClearSearch: () => void;
   onRetryDetails: () => void;
   onSearchQueryChange: (query: string) => void;
   searchQuery: string;
   searchState: ItemSearchState;
-  summary: PublicSummaryDto;
 }>) {
   return (
     <section aria-labelledby="item-search-heading" class="section-card item-workspace">
@@ -228,7 +207,7 @@ function ItemSearch({
         <p id="item-search-description">
           空白で区切った語をすべて含む項目を、外部問い合わせなしで検索します。
         </p>
-        <SearchStatus searchState={searchState} summary={summary} onRetryDetails={onRetryDetails} />
+        <SearchStatus searchState={searchState} onRetryDetails={onRetryDetails} />
       </div>
     </section>
   );
@@ -247,7 +226,7 @@ function ItemTable({
   summary,
 }: ItemTableProps) {
   const [pageIndex, setPageIndex] = useState(0);
-  const rows = useMemo(() => createItemTableRows(summary, now, locale), [summary, now, locale]);
+  const rows = useMemo(() => createItemTableRows(summary, now), [summary, now]);
   const searchedRows = useMemo(() => {
     switch (searchState.status) {
       case "inactive":
@@ -356,24 +335,24 @@ function ItemTable({
       </div>
       <div class="items-table-region">
         <table class="items-table">
-          <caption class="visually-hidden">全追跡項目をグラフなしで確認できる一覧</caption>
+          <caption class="visually-hidden">追跡中の全項目の一覧</caption>
           <colgroup>
+            <col class="importance-column" />
             <col class="item-column" />
             <col class="status-column" />
-            <col class="importance-column" />
             <col class="waiting-column" />
             <col class="stall-column" />
           </colgroup>
           <thead>
             <tr>
+              <th scope="col" aria-sort={sort.key === "importance" ? sort.direction : undefined}>
+                重要度
+              </th>
               <th scope="col" aria-sort={sort.key === "repository" ? sort.direction : undefined}>
                 項目
               </th>
               <th scope="col" aria-sort={sort.key === "status" ? sort.direction : undefined}>
                 状態
-              </th>
-              <th scope="col" aria-sort={sort.key === "importance" ? sort.direction : undefined}>
-                重要度
               </th>
               <th scope="col" aria-sort={sort.key === "waitingOn" ? sort.direction : undefined}>
                 次の担当
@@ -391,6 +370,13 @@ function ItemTable({
                 data-freshness={row.item.repositoryFreshness}
                 class={row.item.repositoryFreshness === "stale" ? "stale-row" : ""}
               >
+                <td class="importance-cell">
+                  <ImportanceBadge
+                    importance={row.item.importance}
+                    showLow={true}
+                    showScore={false}
+                  />
+                </td>
                 <th scope="row">
                   <span class="item-list-meta">
                     {row.item.displayReference}・{row.typeText}
@@ -406,12 +392,6 @@ function ItemTable({
                   )}
                 </th>
                 <td>{statusLabel(row.item.status)}</td>
-                <td class="importance-cell" data-importance-score={row.item.importance.score}>
-                  <span class={`importance-badge importance-${row.item.importance.level}`}>
-                    <span>{importanceLevelLabel(row.item.importance.level)}</span>
-                    <strong>{row.item.importance.score.toString()}点</strong>
-                  </span>
-                </td>
                 <td>{formatWaitingOn(row.item, summary)}</td>
                 <td>
                   <strong>{formatStallDuration(row.item.stallSince, now)}</strong>
@@ -435,7 +415,12 @@ function ItemTable({
                   <p class="item-list-meta">
                     {row.item.displayReference}・{row.typeText}
                   </p>
-                  <h3>
+                  <h3 class="item-title-with-importance">
+                    <ImportanceBadge
+                      importance={row.item.importance}
+                      showLow={true}
+                      showScore={false}
+                    />
                     <ItemTitleLink
                       createItemHref={createItemHref}
                       onSelectItem={onSelectItem}
@@ -451,15 +436,6 @@ function ItemTable({
                 <div>
                   <dt>状態</dt>
                   <dd>{statusLabel(row.item.status)}</dd>
-                </div>
-                <div>
-                  <dt>重要度</dt>
-                  <dd>
-                    <span class={`importance-badge importance-${row.item.importance.level}`}>
-                      <span>{importanceLevelLabel(row.item.importance.level)}</span>
-                      <strong>{row.item.importance.score.toString()}点</strong>
-                    </span>
-                  </dd>
                 </div>
                 <div>
                   <dt>次の担当</dt>
@@ -584,7 +560,6 @@ export function ItemsPage({
       <ItemSearch
         searchQuery={searchQuery}
         searchState={searchState}
-        summary={summary}
         onClearSearch={() => {
           onSearchQueryChange("");
         }}

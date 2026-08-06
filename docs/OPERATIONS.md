@@ -20,7 +20,7 @@ GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は�
 `notify-operations`は収集、Pages関連、Discord通知のいずれかのjobが失敗したときだけ実行されます。
 `report-workflow`は先行jobの成否にかかわらず実行され、全job結果と収集metricをActions artifactへ保存します。
 
-Pagesでは生成時刻、repository数、item数、unknown数、状態別件数、severity別件数を確認します。
+Pagesでは概要ページのデータ観測時刻と、対応が必要な項目の件数を確認します。
 `tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
 ローカル実行のreportは`artifacts/run-reports/`へ出力されます。
 Actionsでは収集reportとworkflow全体のreportを、run IDと試行番号を含む別々のartifactへ保存します。

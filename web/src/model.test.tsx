@@ -10,6 +10,7 @@ import { assertNonNullable } from "../../src/util/index.js";
 import {
   collectWaitingSubjectRows,
   collectWaitingTeamIds,
+  createItemTableRows,
   resolveWaitingSubjects,
   selectWaitingSubjectItemNodeIds,
   selectWaitingSubjectReasons,
@@ -23,6 +24,16 @@ type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 
 const sampleSummary = createPublicSummaryDto(sampleSummarySource);
 
+describe("一覧のstatus検索", () => {
+  it("statusの日本語名と識別子だけを検索対象文字列にする", () => {
+    const rows = createItemTableRows(sampleSummary, new Date("2026-08-01T00:00:00.000Z"));
+    const row = rows.find((candidate) => candidate.item.nodeId === "sample-item-editor-101");
+    assertNonNullable(row, "status検索テスト用の項目がありません");
+
+    expect(row.statusText).toBe("マージ可能 ready_to_merge");
+  });
+});
+
 function createWaitingOnCandidate(
   kind: WaitingOnCandidate["kind"],
   role: WaitingOnCandidate["role"],
@@ -33,7 +44,6 @@ function createWaitingOnCandidate(
     role,
     candidateId,
     reasonSummary: "表示テスト",
-    sourceIds: ["source:waiting-on-label"],
     confidence: 1,
   };
 }

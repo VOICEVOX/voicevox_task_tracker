@@ -7,7 +7,7 @@ import {
   type Point,
 } from "@dagrejs/dagre";
 
-import type { GraphClusterView, GraphViewEdge, GraphViewNode } from "./graph-model.js";
+import type { GraphViewEdge, GraphViewNode, ItemGraphView } from "./graph-model.js";
 
 /** 自動配置後のgraph node。 */
 export type LayoutedGraphNode = Readonly<{
@@ -62,7 +62,7 @@ function labelPoint(points: readonly Point[]): Point {
 }
 
 /** Dagreでblockerからblocked itemへ左から右に自動配置する。 */
-export function layoutGraphCluster(view: GraphClusterView): GraphLayout {
+export function layoutItemGraph(view: ItemGraphView): GraphLayout {
   if (view.displayNodes.length === 0) {
     throw new TypeError("自動配置するgraph nodeがありません");
   }

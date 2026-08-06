@@ -51,7 +51,6 @@ const PUBLIC_REPOSITORY_ID = "R_PUBLIC";
 const STALE_REPOSITORY_ID = "R_STALE";
 const PRIVATE_REPOSITORY_ID = "R_PRIVATE_SENTINEL";
 const defaultGenerationOptions = Object.freeze({
-  clusterByRepository: true,
   confidenceThresholds: {
     high: 0.85,
     medium: 0.65,
@@ -950,7 +949,6 @@ describe("Pages公開安全性", () => {
     expect(serialized).not.toContain(fullBody);
     expect(serialized).not.toContain('"body"');
     expect(generated.details.items[0]?.evidence[0]).toMatchObject({
-      sourceId: "github_item_detail:I_SINGLE",
       sourceUrl: "https://github.com/VOICEVOX/public/issues/1",
       summary: "公開用の短い判定根拠です",
     });
@@ -1006,9 +1004,9 @@ describe("公開DTO生成", () => {
       dueOn: "2026-09-01T00:00:00.000Z",
     };
 
-    expect(generated.summary.schemaVersion).toBe("3");
+    expect(generated.summary.schemaVersion).toBe("5");
     expect(generated.summary.items[0]?.milestone).toEqual(expectedMilestone);
-    expect(generated.details.schemaVersion).toBe("3");
+    expect(generated.details.schemaVersion).toBe("5");
     expect(generated.details.items[0]?.summary.milestone).toEqual(expectedMilestone);
   });
 
@@ -1122,16 +1120,6 @@ describe("公開DTO生成", () => {
       defaultGenerationOptions,
     );
 
-    expect(generated.summary.aggregates).toMatchObject({
-      activeEdgeCount: 0,
-      componentCount: 1,
-    });
-    expect(generated.details.graph.components).toMatchObject([
-      {
-        nodeIds: [itemNodeId],
-        edgeIds: [],
-      },
-    ]);
     expect(generated.details.graph.nodes).toContainEqual(
       expect.objectContaining({
         nodeId: externalNodeId,
@@ -1148,7 +1136,7 @@ describe("公開DTO生成", () => {
     ]);
   });
 
-  it("fixtureの集計、graph、根拠、前回差分を公開DTOへ反映する", () => {
+  it("fixtureのgraph、根拠、履歴を公開DTOへ反映する", () => {
     const repository = {
       id: PUBLIC_REPOSITORY_ID,
       name: "public",
@@ -1280,87 +1268,12 @@ describe("公開DTO生成", () => {
       defaultGenerationOptions.confidenceThresholds,
     );
     expect(generated.summary.timezone).toBe(defaultGenerationOptions.timezone);
-    expect(generated.summary.aggregates).toMatchObject({
-      repositoryCount: 1,
-      itemCount: 3,
-      activeEdgeCount: 2,
-      componentCount: 2,
-      frontierCount: 1,
-      cycleCount: 1,
-      unknownItemCount: 1,
-      staleRepositoryCount: 0,
-      staleItemCount: 0,
-      statusCounts: {
-        blocked: 2,
-        unknown: 1,
-      },
-      severityCounts: {
-        none: 1,
-        watch: 1,
-        urgent: 1,
-        critical: 0,
-      },
-    });
+    expect(generated.summary).not.toHaveProperty("aggregates");
     expect(generated.summary.graph.maxNodes).toBe(DEFAULT_INITIAL_GRAPH_NODE_LIMIT);
-    expect(generated.summary.graph.clusterByRepository).toBe(true);
-    expect(generated.summary.graph.repositoryClusters).toEqual([
-      {
-        repositoryId: PUBLIC_REPOSITORY_ID,
-        nodeCount: 3,
-        edgeCount: 2,
-        frontierCount: 1,
-        cycleCount: 1,
-      },
-    ]);
-    expect(generated.summary.graph.components).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          nodeCount: 2,
-          edgeCount: 2,
-          frontierCount: 0,
-          cycleCount: 1,
-        }),
-        expect.objectContaining({
-          nodeCount: 1,
-          edgeCount: 0,
-          frontierCount: 1,
-          cycleCount: 0,
-        }),
-      ]),
-    );
     expect(generated.details.graph.frontierNodeIds).toEqual(["I_C"]);
-    expect(generated.details.graph.cycles).toMatchObject([
-      {
-        nodeIds: ["I_A", "I_B"],
-        edgeIds: ["rel:A-B", "rel:B-A"],
-      },
-    ]);
-    expect(generated.details.graph.repositoryClusters).toEqual([
-      {
-        repositoryId: PUBLIC_REPOSITORY_ID,
-        nodeIds: ["I_A", "I_B", "I_C"],
-        edgeIds: ["rel:A-B", "rel:B-A"],
-      },
-    ]);
-    expect(generated.details.graph.downstreamImpacts).toEqual([
-      {
-        nodeId: "I_A",
-        openNodeCount: 1,
-        repositoryCount: 1,
-      },
-      {
-        nodeId: "I_B",
-        openNodeCount: 1,
-        repositoryCount: 1,
-      },
-      {
-        nodeId: "I_C",
-        openNodeCount: 0,
-        repositoryCount: 0,
-      },
-    ]);
     const itemA = generated.details.items.find((item) => item.summary.nodeId === "I_A");
     expect(itemA?.summary.blockerNodeIds).toEqual(["I_B"]);
+    expect(itemA?.summary.waitingOn[0]).not.toHaveProperty("sourceIds");
     expect(itemA?.summary.priorityWeight).toBe(25);
     expect(itemA?.summary.importance).toEqual({
       score: 25,
@@ -1390,7 +1303,16 @@ describe("公開DTO生成", () => {
         login: "event-actor-I_A",
       },
     });
-    expect(itemA?.history.at(-2)).toMatchObject({
+    expect(itemA?.timestamps).toEqual({
+      createdAt: CREATED_AT,
+      githubUpdatedAt: FRESH_OBSERVED_AT,
+      stallSince: FRESH_OBSERVED_AT,
+    });
+    expect(itemA?.evidence[0]).not.toHaveProperty("sourceId");
+    expect(itemA?.evidence[0]).not.toHaveProperty("supports");
+    expect(itemA?.history).toHaveLength(2);
+    expect(itemA?.history.at(-1)).not.toHaveProperty("runId");
+    expect(itemA?.history.at(-1)).toMatchObject({
       kind: "responsibility_changed",
       before: {
         state: "present",
@@ -1405,35 +1327,7 @@ describe("公開DTO生成", () => {
         },
       },
     });
-    expect(itemA?.history.at(-1)).toMatchObject({
-      kind: "severity_changed",
-      before: {
-        state: "present",
-        value: "watch",
-      },
-      after: {
-        state: "present",
-        value: "urgent",
-      },
-    });
-    expect(generated.details.graph.history).toHaveLength(2);
-  });
-
-  it("repository cluster設定を公開し無効時はcluster索引を生成しない", () => {
-    const generated = generateFixture(
-      createSingleItemSnapshot("repository cluster無効fixture"),
-      [],
-      publicInventory(),
-      [],
-      {
-        ...defaultGenerationOptions,
-        clusterByRepository: false,
-      },
-    );
-
-    expect(generated.summary.graph.clusterByRepository).toBe(false);
-    expect(generated.summary.graph.repositoryClusters).toEqual([]);
-    expect(generated.details.graph.repositoryClusters).toEqual([]);
+    expect(JSON.stringify(itemA?.history.at(-1))).not.toContain('"sourceIds"');
   });
 
   it("stale repositoryとAI unavailableを項目まで明示する", () => {
@@ -1514,10 +1408,6 @@ describe("公開DTO生成", () => {
       degraded: true,
     });
     expect(generated.summary.observedAt).toBe(FRESH_OBSERVED_AT);
-    expect(generated.summary.aggregates).toMatchObject({
-      staleRepositoryCount: 1,
-      staleItemCount: 1,
-    });
     expect(staleRepository).toMatchObject({
       observedAt: STALE_OBSERVED_AT,
       freshness: {
@@ -1580,7 +1470,6 @@ describe("公開summaryサイズと書き出し", () => {
       }),
     });
     const options = {
-      clusterByRepository: defaultGenerationOptions.clusterByRepository,
       confidenceThresholds: defaultGenerationOptions.confidenceThresholds,
       labelRules: defaultGenerationOptions.labelRules,
       maxInitialGraphNodes: 100,
@@ -1593,14 +1482,12 @@ describe("公開summaryサイズと書き出し", () => {
     expect(generated.summary.items).toHaveLength(itemCount);
     expect(generated.summary.graph.nodes).toHaveLength(100);
     expect(generated.summary.graph.maxNodes).toBe(100);
-    expect(generated.summary.graph.omittedNodeCount).toBe(4900);
     expect(generated.summarySize.gzipBytes).toBeLessThanOrEqual(PUBLIC_SUMMARY_GZIP_LIMIT_BYTES);
   }, 30_000);
 
   it("設定した上限を超えるfixtureではDTO生成を失敗させる", () => {
     const snapshot = createSingleItemSnapshot("gzip上限超過fixture");
     const options = {
-      clusterByRepository: defaultGenerationOptions.clusterByRepository,
       confidenceThresholds: defaultGenerationOptions.confidenceThresholds,
       labelRules: defaultGenerationOptions.labelRules,
       maxInitialGraphNodes: 1,
@@ -1630,11 +1517,11 @@ describe("公開summaryサイズと書き出し", () => {
       expect(result.summaryBytes).toBe(Buffer.byteLength(summarySource, "utf8"));
       expect(result.detailsBytes).toBe(Buffer.byteLength(detailsSource, "utf8"));
       expect(JSON.parse(summarySource)).toMatchObject({
-        schemaVersion: "3",
+        schemaVersion: "5",
         runId: "run-single",
       });
       expect(JSON.parse(detailsSource)).toMatchObject({
-        schemaVersion: "3",
+        schemaVersion: "5",
         runId: "run-single",
       });
     } finally {

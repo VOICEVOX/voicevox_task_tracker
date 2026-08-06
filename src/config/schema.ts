@@ -305,7 +305,6 @@ const webConfigSchema = z.strictObject({
   defaultLocale: localeSchema,
   graph: z.strictObject({
     maxInitialNodes: positiveIntegerSchema,
-    clusterByRepository: z.boolean(),
   }),
 });
 

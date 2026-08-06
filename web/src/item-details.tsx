@@ -9,15 +9,14 @@ import {
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
+import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
+import { type ItemGraphView } from "./graph-model.js";
+import { ImportanceBadge } from "./importance-badge.js";
 import {
-  attentionPriority,
   confidencePresentation,
-  formatConfidence,
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
-  importanceLevelLabel,
-  severityLabel,
   statusLabel,
   waitingOnHistoryLabel,
   waitingOnLabel,
@@ -35,6 +34,7 @@ type ItemDetailsLinkProps = Readonly<{
 type ItemDetailsProps = Readonly<{
   clearSelectionHref: string;
   createItemHref: (nodeId: string) => string;
+  dependencyGraphView: ItemGraphView;
   details: PublicItemDetailsDto;
   graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
   locale: string;
@@ -47,11 +47,6 @@ type ItemDetailsProps = Readonly<{
 type ResponsibilityHistoryValue = Extract<
   PublicItemHistoryEventDto,
   Readonly<{ kind: "responsibility_changed" }>
->["before"];
-
-type SeverityHistoryValue = Extract<
-  PublicItemHistoryEventDto,
-  Readonly<{ kind: "severity_changed" }>
 >["before"];
 
 type WaitingOnCandidate = PublicItemDetailsDto["summary"]["waitingOn"][number];
@@ -80,15 +75,6 @@ const CHECK_STATE_LABELS = {
   conflict: "競合あり",
   unknown: "不明",
 } satisfies Readonly<Record<PublicItemDetailsDto["checkState"], string>>;
-
-const EVIDENCE_SUPPORT_LABELS = {
-  status: "状態",
-  waiting_on: "waitingOn",
-  relation: "依存関係",
-  progress: "進捗",
-  notification: "通知",
-  uncertainty: "不確実性",
-} satisfies Readonly<Record<PublicItemDetailsDto["evidence"][number]["supports"], string>>;
 
 const IMPORTANCE_FACTOR_LABELS = {
   priorityLabel: "優先度ラベル",
@@ -167,24 +153,17 @@ function importanceFactorSource(kind: ImportanceFactor["kind"]): ImportanceFacto
 }
 
 function ConfidenceDisplay({
-  confidence,
-  locale,
-  thresholds,
+  presentation,
 }: Readonly<{
-  confidence: number;
-  locale: string;
-  thresholds: PublicSummaryDto["confidenceThresholds"];
+  presentation: ConfidencePresentation;
 }>) {
-  const presentation = confidencePresentation(confidence, thresholds);
   return (
     <div
       class={`confidence-panel confidence-${presentation.level}`}
       data-confidence-level={presentation.level}
       role="status"
     >
-      <strong>
-        判定: {presentation.label}・confidence {formatConfidence(confidence, locale)}
-      </strong>
+      <strong>判定: {presentation.label}</strong>
       <span>{confidenceDescription(presentation)}</span>
     </div>
   );
@@ -201,8 +180,9 @@ function DetailTime({
     <div>
       <dt>{label}</dt>
       <dd>
-        <time dateTime={value}>{formatDateTime(value, timezone, locale)}</time>
-        <span class="relative-time">{formatRelativeTime(value, now, locale)}</span>
+        <time dateTime={value} title={formatDateTime(value, timezone, locale)}>
+          {formatRelativeTime(value, now, locale)}
+        </time>
       </dd>
     </div>
   );
@@ -225,44 +205,30 @@ function formatResponsibilityHistoryValue(
   return `${statusLabel(value.value.status)}・${waitingOn}`;
 }
 
-function formatSeverityHistoryValue(value: SeverityHistoryValue): string {
-  return value.state === "absent" ? "記録なし" : severityLabel(value.value);
-}
-
 function HistoryEvent({
   event,
   item,
   locale,
+  now,
   summary,
 }: Readonly<{
   event: PublicItemHistoryEventDto;
   item: PublicItemDetailsDto["summary"];
   locale: string;
+  now: Date;
   summary: PublicSummaryDto;
 }>) {
-  let label: string;
-  let before: string;
-  let after: string;
-  switch (event.kind) {
-    case "responsibility_changed":
-      label = "状態とwaitingOnの変更";
-      before = formatResponsibilityHistoryValue(event.before, item, summary);
-      after = formatResponsibilityHistoryValue(event.after, item, summary);
-      break;
-    case "severity_changed":
-      label = "severityの変更";
-      before = formatSeverityHistoryValue(event.before);
-      after = formatSeverityHistoryValue(event.after);
-      break;
-    default:
-      throw new UnreachableError(event);
-  }
+  const before = formatResponsibilityHistoryValue(event.before, item, summary);
+  const after = formatResponsibilityHistoryValue(event.after, item, summary);
   return (
     <article class="history-event" data-history-kind={event.kind}>
       <div>
-        <h4>{label}</h4>
-        <time dateTime={event.recordedAt}>
-          {formatDateTime(event.recordedAt, summary.timezone, locale)}
+        <h4>状態とwaitingOnの変更</h4>
+        <time
+          dateTime={event.recordedAt}
+          title={formatDateTime(event.recordedAt, summary.timezone, locale)}
+        >
+          {formatRelativeTime(event.recordedAt, now, locale)}
         </time>
       </div>
       <p>
@@ -271,7 +237,6 @@ function HistoryEvent({
         <span class="visually-hidden">から</span>
         <strong>{after}</strong>
       </p>
-      <p class="history-run-id">Run {event.runId}</p>
     </article>
   );
 }
@@ -280,35 +245,27 @@ function ItemHistory({
   history,
   item,
   locale,
+  now,
   summary,
 }: Readonly<{
   history: readonly PublicItemHistoryEventDto[];
   item: PublicItemDetailsDto["summary"];
   locale: string;
+  now: Date;
   summary: PublicSummaryDto;
 }>) {
-  const latestEvent = history.at(-1);
   return (
     <div class="item-history-content">
-      {latestEvent == null ? (
-        <p>前回から状態、waitingOn、severityに記録された差分はありません。</p>
+      {history.length === 0 ? (
+        <p>状態とwaitingOnの変更履歴はありません。</p>
       ) : (
-        <>
-          <div class="latest-difference">
-            <h4>前回との差分</h4>
-            <HistoryEvent event={latestEvent} item={item} locale={locale} summary={summary} />
-          </div>
-          <details class="history-list">
-            <summary>全履歴を表示</summary>
-            <ol>
-              {[...history].reverse().map((event) => (
-                <li key={`${event.runId}:${event.kind}:${event.recordedAt}`}>
-                  <HistoryEvent event={event} item={item} locale={locale} summary={summary} />
-                </li>
-              ))}
-            </ol>
-          </details>
-        </>
+        <ol class="history-list">
+          {[...history].reverse().map((event, index) => (
+            <li key={`${event.kind}:${event.recordedAt}:${index.toString()}`}>
+              <HistoryEvent event={event} item={item} locale={locale} now={now} summary={summary} />
+            </li>
+          ))}
+        </ol>
       )}
     </div>
   );
@@ -378,10 +335,15 @@ function WaitingOnCandidateReference({
   return <>{waitingOnLabel(candidate, item, summary)}</>;
 }
 
+function hasItemDependencies(view: ItemGraphView): boolean {
+  return view.sourceEdges.length > 0 || view.omittedSourceNodeCount > 0;
+}
+
 /** 選択した項目の判定根拠と変更履歴を表示する。 */
 export function ItemDetailsContent({
   clearSelectionHref,
   createItemHref,
+  dependencyGraphView,
   details,
   graphNodesByNodeId,
   locale,
@@ -423,36 +385,16 @@ export function ItemDetailsContent({
   );
   const timestampFields = [
     {
-      label: "作成",
+      label: "作成時刻",
       value: details.timestamps.createdAt,
     },
     {
-      label: "GitHub更新",
+      label: "GitHubの更新時刻",
       value: details.timestamps.githubUpdatedAt,
     },
     {
-      label: "最終human activity",
-      value: details.timestamps.lastHumanActivityAt,
-    },
-    {
-      label: "最終進捗",
-      value: details.timestamps.lastProgressAt,
-    },
-    {
-      label: "現在statusの開始",
-      value: details.timestamps.statusSince,
-    },
-    {
-      label: "現在waitingOnの開始",
-      value: details.timestamps.ownerSince,
-    },
-    {
-      label: "停滞開始",
+      label: "停滞開始時刻",
       value: details.timestamps.stallSince,
-    },
-    {
-      label: "項目観測",
-      value: details.timestamps.observedAt,
     },
   ];
   useEffect(() => {
@@ -498,34 +440,24 @@ export function ItemDetailsContent({
             </dd>
           </div>
           <div>
-            <dt>停滞の深刻さ</dt>
-            <dd>
-              <span class={`severity-badge severity-${item.severity}`}>
-                {severityLabel(item.severity)}
-              </span>
-              <span>停滞状況の深刻さ</span>
-            </dd>
-          </div>
-          <div>
             <dt>重要度</dt>
             <dd>
-              <span class={`importance-badge importance-${item.importance.level}`}>
-                <span>{importanceLevelLabel(item.importance.level)}</span>
-                <strong>{item.importance.score.toString()}点</strong>
-              </span>
+              <ImportanceBadge importance={item.importance} showLow={true} showScore={true} />
               <span>項目自体の重要さ</span>
             </dd>
           </div>
           <div>
             <dt>停滞時間</dt>
             <dd>
-              <strong>{formatStallDuration(item.stallSince, now)}</strong>
-              <span>
-                <time dateTime={item.stallSince}>
-                  {formatDateTime(item.stallSince, summary.timezone, locale)}
+              <strong>
+                <time
+                  dateTime={item.stallSince}
+                  title={formatDateTime(item.stallSince, summary.timezone, locale)}
+                >
+                  {formatStallDuration(item.stallSince, now)}
                 </time>
-                から
-              </span>
+              </strong>
+              <span>停滞開始からの経過</span>
             </dd>
           </div>
         </dl>
@@ -592,17 +524,49 @@ export function ItemDetailsContent({
         )}
       </section>
 
+      {hasItemDependencies(dependencyGraphView) && (
+        <section aria-labelledby="item-dependency-graph-heading" class="item-dependency-graph">
+          <div class="item-dependency-graph-heading">
+            <div>
+              <p class="eyebrow">Dependency graph</p>
+              <h3 id="item-dependency-graph-heading">依存関係</h3>
+            </div>
+            <p>この項目と現在有効な依存関係で直接つながる項目を表示します。</p>
+          </div>
+          <div class="graph-selection-summary" aria-live="polite">
+            <p>
+              中心項目を含む
+              {dependencyGraphView.representedSourceNodeCount.toLocaleString(locale)}
+              件を表示します。
+            </p>
+            {dependencyGraphView.omittedSourceNodeCount > 0 && (
+              <p>
+                表示上限外の隣接項目が
+                {dependencyGraphView.omittedSourceNodeCount.toLocaleString(locale)}件あります。
+              </p>
+            )}
+          </div>
+          <DependencyGraphDiagram
+            description={`${item.displayReference}を中心項目として示します。矢印は依存関係の始点から終点へ向き、ブロック関係はブロック元からブロックされる項目へ向きます。`}
+            idPrefix="item-dependency-graph"
+            navigation={{
+              status: "item_details",
+              createItemHref,
+              onSelectItem,
+            }}
+            title={`${item.displayReference}を中心にした依存グラフ`}
+            view={dependencyGraphView}
+          />
+        </section>
+      )}
+
       <details class="detail-disclosure decision-details">
         <summary>
-          <span>判定情報</span>
-          <span>confidenceとsource ID</span>
+          <span>判定の根拠</span>
+          <span>確度、重要度の加点、状態と行動の根拠</span>
         </summary>
         <div class="detail-disclosure-content">
-          <ConfidenceDisplay
-            confidence={item.confidence}
-            locale={locale}
-            thresholds={summary.confidenceThresholds}
-          />
+          <ConfidenceDisplay presentation={presentation} />
           {item.waitingOn.length > 0 && (
             <div class="candidate-decision-details">
               <h4>waitingOn候補の判定情報</h4>
@@ -630,18 +594,6 @@ export function ItemDetailsContent({
                           <dt>確度区分</dt>
                           <dd>{candidatePresentation.label}</dd>
                         </div>
-                        <div>
-                          <dt>confidence</dt>
-                          <dd>{formatConfidence(candidate.confidence, locale)}</dd>
-                        </div>
-                        <div>
-                          <dt>candidate ID</dt>
-                          <dd class="source-id-list">{candidate.candidateId}</dd>
-                        </div>
-                        <div>
-                          <dt>source ID</dt>
-                          <dd class="source-id-list">{candidate.sourceIds.join("、")}</dd>
-                        </div>
                       </dl>
                     </li>
                   );
@@ -655,45 +607,8 @@ export function ItemDetailsContent({
               <p>{item.primaryWaitingOn.selectionReason}</p>
             </div>
           )}
-        </div>
-      </details>
-
-      <details class="detail-disclosure timestamp-details">
-        <summary>
-          <span>各種時刻</span>
-          <span>{timestampFields.length.toString()}件</span>
-        </summary>
-        <div class="detail-disclosure-content">
-          <dl class="timestamp-grid">
-            {timestampFields.map((field) => (
-              <DetailTime
-                key={field.label}
-                label={field.label}
-                value={field.value}
-                now={now}
-                timezone={summary.timezone}
-                locale={locale}
-              />
-            ))}
-          </dl>
-        </div>
-      </details>
-
-      <details class="detail-disclosure evidence-details">
-        <summary>
-          <span>判定根拠</span>
-          <span>
-            重要度{details.importanceFactors.length.toString()}件・その他
-            {details.evidence.length.toString()}件
-          </span>
-        </summary>
-        <div class="detail-disclosure-content">
           <section class="importance-evidence" aria-labelledby="importance-evidence-heading">
-            <h4 id="importance-evidence-heading">
-              重要度 {importanceLevelLabel(item.importance.level)}・
-              {item.importance.score.toString()}点
-            </h4>
-            <p>項目自体の重要さを、次の加点要因から算出しています。</p>
+            <h4 id="importance-evidence-heading">重要度の加点内訳</h4>
             {details.importanceFactors.length === 0 ? (
               <p>重要度の加点要因はありません。</p>
             ) : (
@@ -722,12 +637,8 @@ export function ItemDetailsContent({
               <p>公開できる判定根拠はありません。</p>
             ) : (
               <ol class="evidence-list">
-                {details.evidence.map((evidence) => (
-                  <li key={`${evidence.sourceId}:${evidence.supports}`}>
-                    <div>
-                      <span>{EVIDENCE_SUPPORT_LABELS[evidence.supports]}</span>
-                      <code>{evidence.sourceId}</code>
-                    </div>
+                {details.evidence.map((evidence, index) => (
+                  <li key={`${evidence.sourceUrl}:${index.toString()}`}>
                     <p>{evidence.summary}</p>
                     <SafeGitHubLink href={evidence.sourceUrl}>GitHub上の根拠を開く</SafeGitHubLink>
                   </li>
@@ -735,6 +646,27 @@ export function ItemDetailsContent({
               </ol>
             )}
           </section>
+        </div>
+      </details>
+
+      <details class="detail-disclosure timestamp-details">
+        <summary>
+          <span>各種時刻</span>
+          <span>{timestampFields.length.toString()}件</span>
+        </summary>
+        <div class="detail-disclosure-content">
+          <dl class="timestamp-grid">
+            {timestampFields.map((field) => (
+              <DetailTime
+                key={field.label}
+                label={field.label}
+                value={field.value}
+                now={now}
+                timezone={summary.timezone}
+                locale={locale}
+              />
+            ))}
+          </dl>
         </div>
       </details>
 
@@ -746,10 +678,6 @@ export function ItemDetailsContent({
         <div class="detail-disclosure-content">
           <dl class="detail-context-grid">
             <div>
-              <dt>種別</dt>
-              <dd>{item.type === "issue" ? "Issue" : "Pull Request"}</dd>
-            </div>
-            <div>
               <dt>GitHub上の状態</dt>
               <dd>{item.state}</dd>
             </div>
@@ -760,10 +688,6 @@ export function ItemDetailsContent({
             <div>
               <dt>checks</dt>
               <dd>{CHECK_STATE_LABELS[details.checkState]}</dd>
-            </div>
-            <div>
-              <dt>対応優先度</dt>
-              <dd>{attentionPriority(item).label}</dd>
             </div>
             <div>
               <dt>ラベル</dt>
@@ -793,11 +717,17 @@ export function ItemDetailsContent({
 
       <details class="detail-disclosure history-details">
         <summary>
-          <span>前回との差分と履歴</span>
+          <span>履歴</span>
           <span>{details.history.length.toString()}件</span>
         </summary>
         <div class="detail-disclosure-content">
-          <ItemHistory history={details.history} item={item} locale={locale} summary={summary} />
+          <ItemHistory
+            history={details.history}
+            item={item}
+            locale={locale}
+            now={now}
+            summary={summary}
+          />
         </div>
       </details>
     </article>

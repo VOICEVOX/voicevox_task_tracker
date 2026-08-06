@@ -4,22 +4,18 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
-import { DependencyGraphPage } from "./dependency-graph-page.js";
-import { type PublicDetailsLoader } from "./dependency-graph.js";
-import { createSharedDetailsLoader } from "./details-loader.js";
+import { createSharedDetailsLoader, type PublicDetailsLoader } from "./details-loader.js";
 import { ItemDetailsPage } from "./item-details-page.js";
 import { ItemsPage } from "./items-page.js";
 import { collectWaitingTeamIds, type TableColumnKey, waitingSubjectKey } from "./model.js";
 import { OverviewPage } from "./overview-page.js";
 import { PeoplePage } from "./people-page.js";
 import { PersonPage } from "./person-page.js";
-import { RepositoriesPage } from "./repositories-page.js";
 import {
   createItemRouteTargets,
   createWebViewHref,
   createWebViewState,
   parseWebViewState,
-  type GraphSelection,
   type ParsedWebViewState,
   type ValidWebRouteTargets,
   type WebRoute,
@@ -40,7 +36,7 @@ type AppProps = Readonly<{
   title: string;
 }>;
 
-type NavigationPage = "overview" | "items" | "people" | "graph" | "repositories";
+type NavigationPage = "overview" | "items" | "people";
 
 const NAVIGATION_PAGES: readonly Readonly<{
   label: string;
@@ -58,14 +54,6 @@ const NAVIGATION_PAGES: readonly Readonly<{
     label: "担当者",
     page: "people",
   },
-  {
-    label: "依存グラフ",
-    page: "graph",
-  },
-  {
-    label: "リポジトリ",
-    page: "repositories",
-  },
 ];
 
 function routeForNavigationPage(page: NavigationPage): WebRoute {
@@ -81,17 +69,6 @@ function routeForNavigationPage(page: NavigationPage): WebRoute {
     case "people":
       return {
         page: "people",
-      };
-    case "graph":
-      return {
-        page: "graph",
-        selection: {
-          status: "none",
-        },
-      };
-    case "repositories":
-      return {
-        page: "repositories",
       };
   }
 }
@@ -129,15 +106,9 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
   const validTargets = useMemo<ValidWebRouteTargets>(
     () => ({
       items: itemTargets,
-      graphClusters: {
-        componentIds: new Set(summary.graph.components.map((component) => component.id)),
-        repositoryIds: new Set(
-          summary.graph.repositoryClusters.map((cluster) => cluster.repositoryId),
-        ),
-      },
       teamIds: validTeamIds,
     }),
-    [itemTargets, summary.graph.components, summary.graph.repositoryClusters, validTeamIds],
+    [itemTargets, validTeamIds],
   );
   const sharedLoadDetails = useMemo(() => createSharedDetailsLoader(loadDetails), [loadDetails]);
   const viewerIdentityStore = useMemo(createViewerIdentityStore, []);
@@ -191,27 +162,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       createWebViewState({
         page: "item-details",
         target,
-      }),
-      "push",
-    );
-  }
-
-  function selectGraphCluster(selection: GraphSelection): void {
-    if (selection.status === "selected") {
-      const validIds =
-        selection.kind === "component"
-          ? validTargets.graphClusters.componentIds
-          : validTargets.graphClusters.repositoryIds;
-      const selectedId =
-        selection.kind === "component" ? selection.componentId : selection.repositoryId;
-      if (!validIds.has(selectedId)) {
-        throw new TypeError(`選択できない依存グラフclusterです: ${selectedId}`);
-      }
-    }
-    navigate(
-      createWebViewState({
-        page: "graph",
-        selection,
       }),
       "push",
     );
@@ -382,28 +332,10 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         return (
           <OverviewPage
             createItemHref={createItemHref}
-            itemsHref={createWebViewHref(
-              basePath,
-              createWebViewState({
-                page: "items",
-              }),
-            )}
             locale={locale}
             now={now}
             summary={summary}
             onSelectItem={selectItem}
-            onSelectItems={() => {
-              navigateToPage("items");
-            }}
-            onSelectRepositories={() => {
-              navigateToPage("repositories");
-            }}
-            repositoriesHref={createWebViewHref(
-              basePath,
-              createWebViewState({
-                page: "repositories",
-              }),
-            )}
           />
         );
       case "items":
@@ -477,19 +409,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             onViewerIdentityToggle={toggleViewerIdentity}
           />
         );
-      case "graph":
-        return (
-          <DependencyGraphPage
-            loadDetails={sharedLoadDetails}
-            locale={locale}
-            now={now}
-            selection={viewState.route.selection}
-            summary={summary}
-            onSelectionChange={selectGraphCluster}
-          />
-        );
-      case "repositories":
-        return <RepositoriesPage locale={locale} now={now} summary={summary} />;
       default:
         throw new UnreachableError(viewState.route);
     }

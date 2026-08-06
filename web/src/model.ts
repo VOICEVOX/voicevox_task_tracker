@@ -26,7 +26,7 @@ export type AttentionPriority = Readonly<{
 
 /** 一覧表で並び替えと絞り込みの対象にする列。 */
 export type TableColumnKey =
-  "repository" | "type" | "status" | "importance" | "waitingOn" | "stall" | "blocker" | "updated";
+  "repository" | "type" | "status" | "importance" | "waitingOn" | "stall";
 
 /** 一覧表の並び順。 */
 export type TableSort = Readonly<{
@@ -47,9 +47,6 @@ export type ItemTableRow = Readonly<{
   importanceText: string;
   waitingOnText: string;
   stallText: string;
-  blockerText: string;
-  updatedText: string;
-  observedText: string;
 }>;
 
 /** 許可済みGitHub URLの検証結果。 */
@@ -104,13 +101,6 @@ const STATUS_LABELS = {
   terminal_not_planned: "対応しない",
 } satisfies Readonly<Record<Status, string>>;
 
-const SEVERITY_LABELS = {
-  none: "通常",
-  watch: "要確認",
-  urgent: "緊急",
-  critical: "危機的",
-} satisfies Readonly<Record<Severity, string>>;
-
 const IMPORTANCE_LEVEL_LABELS = {
   low: "低",
   medium: "中",
@@ -147,19 +137,12 @@ export function createEmptyTableFilters(): TableFilters {
     importance: "",
     waitingOn: "",
     stall: "",
-    blocker: "",
-    updated: "",
   };
 }
 
 /** statusの日本語表示名を返す。 */
 export function statusLabel(status: Status): string {
   return STATUS_LABELS[status];
-}
-
-/** severityの日本語表示名を返す。 */
-export function severityLabel(severity: Severity): string {
-  return SEVERITY_LABELS[severity];
 }
 
 /** 重要度levelの日本語表示名を返す。 */
@@ -484,17 +467,6 @@ export function confidencePresentation(
   };
 }
 
-/** confidenceを百分率へ整形する。 */
-export function formatConfidence(confidence: number, locale: string): string {
-  if (confidence < 0 || confidence > 1) {
-    throw new RangeError("confidenceは0以上1以下でなければなりません");
-  }
-  return new Intl.NumberFormat(locale, {
-    style: "percent",
-    maximumFractionDigits: 1,
-  }).format(confidence);
-}
-
 /** waitingOn配列を日本語の表示文字列へ変換する。 */
 export function formatWaitingOn(item: PublicItemSummaryDto, summary: PublicSummaryDto): string {
   if (item.waitingOn.length === 0) {
@@ -712,40 +684,11 @@ export function validateGitHubUrl(value: string): GitHubUrlResult {
   };
 }
 
-function blockerText(
-  item: PublicItemSummaryDto,
-  itemsByNodeId: ReadonlyMap<string, PublicItemSummaryDto>,
-  initialGraphNodesByNodeId: ReadonlyMap<string, PublicSummaryDto["graph"]["nodes"][number]>,
-): string {
-  if (item.blockerNodeIds.length === 0) {
-    return "なし";
-  }
-  return item.blockerNodeIds
-    .map((nodeId) => {
-      const blocker = itemsByNodeId.get(nodeId);
-      if (blocker != null) {
-        return blocker.displayReference;
-      }
-      const graphNode = initialGraphNodesByNodeId.get(nodeId);
-      if (graphNode?.kind === "external_reference") {
-        return graphNode.displayReference;
-      }
-      return nodeId;
-    })
-    .join("、");
-}
-
 /** 公開summaryから一覧表の表示行を作る。 */
-export function createItemTableRows(
-  summary: PublicSummaryDto,
-  now: Date,
-  locale: string,
-): readonly ItemTableRow[] {
+export function createItemTableRows(summary: PublicSummaryDto, now: Date): readonly ItemTableRow[] {
   const repositoriesById = new Map(
     summary.repositories.map((repository) => [repository.id, repository]),
   );
-  const itemsByNodeId = new Map(summary.items.map((item) => [item.nodeId, item]));
-  const initialGraphNodesByNodeId = new Map(summary.graph.nodes.map((node) => [node.nodeId, node]));
 
   return summary.items.map((item) => {
     const repository = repositoriesById.get(item.repositoryId);
@@ -755,25 +698,12 @@ export function createItemTableRows(
       repository,
       repositoryText: `${repository.fullName} ${item.displayReference} ${item.title}`,
       typeText: item.type === "issue" ? "Issue" : "Pull Request",
-      statusText: `${statusLabel(item.status)} ${item.status} ${severityLabel(
-        item.severity,
-      )} 優先度 ${item.priorityWeight.toString()}`,
+      statusText: `${statusLabel(item.status)} ${item.status}`,
       importanceText: `${importanceLevelLabel(item.importance.level)} ${item.importance.level} ${item.importance.score.toString()}点`,
       waitingOnText: `${formatWaitingOn(item, summary)} ${item.waitingOn
         .map((waitingOn) => waitingOn.reasonSummary)
         .join(" ")}`,
       stallText: `${formatStallDuration(item.stallSince, now)} ${item.stallSince}`,
-      blockerText: blockerText(item, itemsByNodeId, initialGraphNodesByNodeId),
-      updatedText: `${formatDateTime(item.githubUpdatedAt, summary.timezone, locale)} ${formatRelativeTime(
-        item.githubUpdatedAt,
-        now,
-        locale,
-      )} ${item.githubUpdatedAt}`,
-      observedText: `${formatDateTime(item.observedAt, summary.timezone, locale)} ${formatRelativeTime(
-        item.observedAt,
-        now,
-        locale,
-      )} ${item.observedAt}`,
     };
   });
 }
@@ -877,10 +807,6 @@ function rowColumnText(row: ItemTableRow, key: TableColumnKey): string {
       return row.waitingOnText;
     case "stall":
       return row.stallText;
-    case "blocker":
-      return row.blockerText;
-    case "updated":
-      return `${row.updatedText} ${row.observedText}`;
     default:
       throw new UnreachableError(key);
   }
@@ -905,14 +831,6 @@ function compareTableRows(
       return left.waitingOnText.localeCompare(right.waitingOnText, locale);
     case "stall":
       return parseTimestamp(left.item.stallSince) - parseTimestamp(right.item.stallSince);
-    case "blocker": {
-      const countOrder = left.item.blockerNodeIds.length - right.item.blockerNodeIds.length;
-      return countOrder === 0
-        ? left.blockerText.localeCompare(right.blockerText, locale)
-        : countOrder;
-    }
-    case "updated":
-      return parseTimestamp(left.item.githubUpdatedAt) - parseTimestamp(right.item.githubUpdatedAt);
     default:
       throw new UnreachableError(key);
   }
@@ -936,9 +854,7 @@ export function filterAndSortTableRows(
         key !== "status" &&
         key !== "importance" &&
         key !== "waitingOn" &&
-        key !== "stall" &&
-        key !== "blocker" &&
-        key !== "updated"
+        key !== "stall"
       ) {
         throw new TypeError(`未対応の表列です: ${key}`);
       }

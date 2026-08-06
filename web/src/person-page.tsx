@@ -1,6 +1,7 @@
 import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import { ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import {
   collectWaitingTeamIds,
@@ -78,10 +79,6 @@ export function PersonPage({
     () => new Set(selectedTeamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId }))),
     [selectedTeamIds],
   );
-  const directNodeIds = useMemo(
-    () => selectWaitingSubjectItemNodeIds(summary, login, []),
-    [login, summary],
-  );
   const selectedNodeIds = useMemo(
     () => selectWaitingSubjectItemNodeIds(summary, login, selectedTeamIds),
     [login, selectedTeamIds, summary],
@@ -89,17 +86,13 @@ export function PersonPage({
   const rows = useMemo(
     () =>
       filterAndSortTableRows(
-        createItemTableRows(summary, now, locale).filter((row) =>
-          selectedNodeIds.has(row.item.nodeId),
-        ),
+        createItemTableRows(summary, now).filter((row) => selectedNodeIds.has(row.item.nodeId)),
         createEmptyTableFilters(),
         LONGEST_STALL_FIRST_SORT,
         locale,
       ),
     [locale, now, selectedNodeIds, summary],
   );
-  const teamItemCount = [...selectedNodeIds].filter((nodeId) => !directNodeIds.has(nodeId)).length;
-
   function changeTeam(teamId: string, selected: boolean): void {
     const nextTeamKeys = new Set(selectedTeamKeys);
     const teamKey = waitingSubjectKey({ kind: "team", teamId });
@@ -121,9 +114,8 @@ export function PersonPage({
           <h2 id="person-page-heading">@{login} を待っている項目</h2>
         </div>
         <p class="person-item-count" aria-live="polite">
-          {rows.length.toLocaleString(locale)}件です。
-          {teamItemCount > 0 &&
-            `うち${teamItemCount.toLocaleString(locale)}件が選択したチーム経由です。`}
+          {rows.length.toLocaleString(locale)}
+          件を表示しています。所属チームを選ぶと、そのチーム宛の待ちも加わります。
         </p>
       </div>
       <div class="person-identity-action">
@@ -206,11 +198,18 @@ export function PersonPage({
                     </td>
                     <td>{row.typeText}</td>
                     <th scope="row">
-                      <ItemTitleLink
-                        createItemHref={createItemHref}
-                        onSelectItem={onSelectItem}
-                        row={row}
-                      />
+                      <span class="item-title-with-importance">
+                        <ImportanceBadge
+                          importance={row.item.importance}
+                          showLow={false}
+                          showScore={false}
+                        />
+                        <ItemTitleLink
+                          createItemHref={createItemHref}
+                          onSelectItem={onSelectItem}
+                          row={row}
+                        />
+                      </span>
                     </th>
                     <td>{statusLabel(row.item.status)}</td>
                     <td>
@@ -236,7 +235,12 @@ export function PersonPage({
                       <p class="item-list-meta">
                         {row.repository.fullName}・{row.typeText}
                       </p>
-                      <h3>
+                      <h3 class="item-title-with-importance">
+                        <ImportanceBadge
+                          importance={row.item.importance}
+                          showLow={false}
+                          showScore={false}
+                        />
                         <ItemTitleLink
                           createItemHref={createItemHref}
                           onSelectItem={onSelectItem}

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "3",
+  "schemaVersion": "5",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "observedAt": "2026-07-31T00:00:00.000Z",
@@ -14,38 +14,6 @@
     "high": 0.85,
     "medium": 0.65
   },
-  "aggregates": {
-    "repositoryCount": 3,
-    "itemCount": 5,
-    "activeEdgeCount": 2,
-    "componentCount": 4,
-    "frontierCount": 4,
-    "cycleCount": 0,
-    "unknownItemCount": 0,
-    "staleRepositoryCount": 1,
-    "staleItemCount": 1,
-    "statusCounts": {
-      "new_untriaged": 0,
-      "needs_maintainer_decision": 1,
-      "waiting_for_review": 1,
-      "waiting_for_author": 1,
-      "waiting_for_assignee": 0,
-      "blocked": 1,
-      "waiting_for_automation": 0,
-      "ready_to_merge": 1,
-      "in_progress": 0,
-      "unknown": 0,
-      "terminal_merged": 0,
-      "terminal_completed": 0,
-      "terminal_not_planned": 0
-    },
-    "severityCounts": {
-      "none": 0,
-      "watch": 1,
-      "urgent": 2,
-      "critical": 2
-    }
-  },
   "repositories": [
     {
       "id": "sample-repository-editor",
@@ -55,8 +23,7 @@
       "observedAt": "2026-07-31T00:00:00.000Z",
       "freshness": {
         "status": "fresh"
-      },
-      "itemCount": 2
+      }
     },
     {
       "id": "sample-repository-engine",
@@ -66,8 +33,7 @@
       "observedAt": "2026-07-31T00:00:00.000Z",
       "freshness": {
         "status": "fresh"
-      },
-      "itemCount": 2
+      }
     },
     {
       "id": "sample-repository-core",
@@ -78,8 +44,7 @@
       "freshness": {
         "status": "stale",
         "failedAt": "2026-07-31T00:00:00.000Z"
-      },
-      "itemCount": 1
+      }
     }
   ],
   "items": [
@@ -121,7 +86,6 @@
           "candidateId": "maintainer",
           "role": "merge_decider",
           "reasonSummary": "確認が完了し、メンテナーのマージ判断を待っています",
-          "sourceIds": ["sample-source-editor-101"],
           "confidence": 1
         }
       ],
@@ -180,7 +144,6 @@
           "candidateId": "sample-reviewers",
           "role": "reviewer",
           "reasonSummary": "レビューチームへレビューが依頼されています",
-          "sourceIds": ["sample-source-engine-202"],
           "confidence": 1
         }
       ],
@@ -239,7 +202,6 @@
           "candidateId": "maintainer",
           "role": "maintainer",
           "reasonSummary": "配布方針についてメンテナーの判断が必要です",
-          "sourceIds": ["sample-source-editor-103"],
           "confidence": 0.95
         }
       ],
@@ -294,7 +256,6 @@
           "candidateId": "sample-item-editor-103",
           "role": "dependency",
           "reasonSummary": "配布方針の決定を待っています",
-          "sourceIds": ["sample-source-engine-204"],
           "confidence": 1
         },
         {
@@ -302,7 +263,6 @@
           "candidateId": "external:github:sample-distribution-42",
           "role": "dependency",
           "reasonSummary": "外部配布ツールの対応を待っています",
-          "sourceIds": ["sample-source-external-distribution-42"],
           "confidence": 0.9
         }
       ],
@@ -361,7 +321,6 @@
           "candidateId": "author",
           "role": "author",
           "reasonSummary": "レビュー指摘への修正を待っています",
-          "sourceIds": ["sample-source-core-305"],
           "confidence": 0.9
         }
       ],
@@ -441,86 +400,6 @@
         "state": "open"
       }
     ],
-    "edges": [
-      {
-        "id": "sample-relation-editor-103-engine-204",
-        "fromNodeId": "sample-item-editor-103",
-        "toNodeId": "sample-item-engine-204",
-        "type": "blocks"
-      },
-      {
-        "id": "sample-relation-external-42-engine-204",
-        "fromNodeId": "external:github:sample-distribution-42",
-        "toNodeId": "sample-item-engine-204",
-        "type": "blocks"
-      }
-    ],
-    "components": [
-      {
-        "id": "sample-component-release",
-        "nodeCount": 3,
-        "repositoryIds": ["sample-repository-editor", "sample-repository-engine"],
-        "edgeCount": 2,
-        "frontierCount": 1,
-        "cycleCount": 0
-      },
-      {
-        "id": "sample-component-editor-101",
-        "nodeCount": 1,
-        "repositoryIds": ["sample-repository-editor"],
-        "edgeCount": 0,
-        "frontierCount": 1,
-        "cycleCount": 0
-      },
-      {
-        "id": "sample-component-engine-202",
-        "nodeCount": 1,
-        "repositoryIds": ["sample-repository-engine"],
-        "edgeCount": 0,
-        "frontierCount": 1,
-        "cycleCount": 0
-      },
-      {
-        "id": "sample-component-core-305",
-        "nodeCount": 1,
-        "repositoryIds": ["sample-repository-core"],
-        "edgeCount": 0,
-        "frontierCount": 1,
-        "cycleCount": 0
-      }
-    ],
-    "clusterByRepository": true,
-    "repositoryClusters": [
-      {
-        "repositoryId": "sample-repository-editor",
-        "nodeCount": 2,
-        "edgeCount": 0,
-        "frontierCount": 2,
-        "cycleCount": 0
-      },
-      {
-        "repositoryId": "sample-repository-engine",
-        "nodeCount": 2,
-        "edgeCount": 0,
-        "frontierCount": 1,
-        "cycleCount": 0
-      },
-      {
-        "repositoryId": "sample-repository-core",
-        "nodeCount": 1,
-        "edgeCount": 0,
-        "frontierCount": 1,
-        "cycleCount": 0
-      }
-    ],
-    "frontierNodeIds": [
-      "sample-item-editor-101",
-      "sample-item-engine-202",
-      "sample-item-editor-103",
-      "sample-item-core-305"
-    ],
-    "cycles": [],
-    "maxNodes": 500,
-    "omittedNodeCount": 0
+    "maxNodes": 40
   }
 }

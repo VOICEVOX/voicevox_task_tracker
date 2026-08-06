@@ -16,8 +16,6 @@ const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
   "importance",
   "waitingOn",
   "stall",
-  "blocker",
-  "updated",
   "sort",
   "direction",
 ];
@@ -29,8 +27,6 @@ const tableColumnKeySchema = z.enum([
   "importance",
   "waitingOn",
   "stall",
-  "blocker",
-  "updated",
 ]);
 const sortDirectionSchema = z.enum(["ascending", "descending"]);
 const filterValueSchema = z
@@ -46,7 +42,6 @@ const filterValueSchema = z
     return true;
   });
 const basePathSchema = z.string().regex(/^\/(?:[^?#]*\/)?$/u);
-const graphClusterKindSchema = z.enum(["component", "repository"]);
 const itemNumberSchema = z.number().int().positive();
 const githubLoginSchema = z
   .string()
@@ -61,25 +56,7 @@ const FILTER_PARAMETER_NAMES = {
   importance: "importance",
   waitingOn: "waitingOn",
   stall: "stall",
-  blocker: "blocker",
-  updated: "updated",
 } satisfies Readonly<Record<TableColumnKey, string>>;
-
-/** URLで共有する依存グラフのcluster選択。 */
-export type GraphSelection =
-  | Readonly<{
-      status: "none";
-    }>
-  | Readonly<{
-      status: "selected";
-      kind: "component";
-      componentId: string;
-    }>
-  | Readonly<{
-      status: "selected";
-      kind: "repository";
-      repositoryId: string;
-    }>;
 
 /** 項目詳細pathから選択する公開項目。 */
 export type ItemRouteTarget = Readonly<{
@@ -107,25 +84,11 @@ export type WebRoute =
       page: "person";
       login: string;
       teamIds: readonly string[];
-    }>
-  | Readonly<{
-      page: "graph";
-      selection: GraphSelection;
-    }>
-  | Readonly<{
-      page: "repositories";
     }>;
-
-/** 選択可能な依存グラフのcluster ID。 */
-export type ValidGraphClusterIds = Readonly<{
-  componentIds: ReadonlySet<string>;
-  repositoryIds: ReadonlySet<string>;
-}>;
 
 /** URLの検証に使う公開DTO由来の選択肢。 */
 export type ValidWebRouteTargets = Readonly<{
   items: readonly ItemRouteTarget[];
-  graphClusters: ValidGraphClusterIds;
   teamIds: readonly string[];
 }>;
 
@@ -330,59 +293,6 @@ function parseItemRoute(
   };
 }
 
-function parseGraphRoute(segments: readonly string[], validIds: ValidGraphClusterIds): ParsedRoute {
-  const unselectedRoute: WebRoute = {
-    page: "graph",
-    selection: {
-      status: "none",
-    },
-  };
-  if (segments.length !== 3) {
-    return {
-      route: unselectedRoute,
-      status: "sanitized",
-    };
-  }
-  const parsedKind = graphClusterKindSchema.safeParse(decodePathSegment(segments[1] ?? ""));
-  const clusterId = decodePathSegment(segments[2] ?? "");
-  if (!parsedKind.success || clusterId == null) {
-    return {
-      route: unselectedRoute,
-      status: "sanitized",
-    };
-  }
-  if (parsedKind.data === "component" && validIds.componentIds.has(clusterId)) {
-    return {
-      route: {
-        page: "graph",
-        selection: {
-          status: "selected",
-          kind: "component",
-          componentId: clusterId,
-        },
-      },
-      status: "valid",
-    };
-  }
-  if (parsedKind.data === "repository" && validIds.repositoryIds.has(clusterId)) {
-    return {
-      route: {
-        page: "graph",
-        selection: {
-          status: "selected",
-          kind: "repository",
-          repositoryId: clusterId,
-        },
-      },
-      status: "valid",
-    };
-  }
-  return {
-    route: unselectedRoute,
-    status: "sanitized",
-  };
-}
-
 function parsePersonRoute(segments: readonly string[]): ParsedRoute {
   const fallback: ParsedRoute = {
     route: {
@@ -431,26 +341,6 @@ function parseRelativeRoute(relativePath: string, targets: ValidWebRouteTargets)
         };
       }
       return parsePersonRoute(segments);
-    case "graph":
-      if (segments.length === 1) {
-        return {
-          route: {
-            page: "graph",
-            selection: {
-              status: "none",
-            },
-          },
-          status: "valid",
-        };
-      }
-      return parseGraphRoute(segments, targets.graphClusters);
-    case "repositories":
-      return {
-        route: {
-          page: "repositories",
-        },
-        status: segments.length === 1 ? "valid" : "sanitized",
-      };
     default:
       return {
         route: {
@@ -581,8 +471,6 @@ function parseItemsQuery(
       importance: filterValueSchema,
       waitingOn: filterValueSchema,
       stall: filterValueSchema,
-      blocker: filterValueSchema,
-      updated: filterValueSchema,
     })
     .parse(tableFilters);
 
@@ -667,17 +555,6 @@ function createRoutePath(basePath: string, route: WebRoute): string {
       return `${pathPrefix}/people`;
     case "person":
       return `${pathPrefix}/people/${encodeURIComponent(route.login)}`;
-    case "graph":
-      if (route.selection.status === "none") {
-        return `${pathPrefix}/graph`;
-      }
-      return `${pathPrefix}/graph/${route.selection.kind}/${encodeURIComponent(
-        route.selection.kind === "component"
-          ? route.selection.componentId
-          : route.selection.repositoryId,
-      )}`;
-    case "repositories":
-      return `${pathPrefix}/repositories`;
   }
 }
 
@@ -704,9 +581,7 @@ export function createWebViewHref(basePath: string, state: WebViewState): string
       key !== "status" &&
       key !== "importance" &&
       key !== "waitingOn" &&
-      key !== "stall" &&
-      key !== "blocker" &&
-      key !== "updated"
+      key !== "stall"
     ) {
       throw new TypeError(`未対応の表列です: ${key}`);
     }

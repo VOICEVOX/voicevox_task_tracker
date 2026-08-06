@@ -4,7 +4,6 @@ import {
   type LabelRule,
   type Relation,
   type Severity,
-  type Status,
   type TrackedItem,
 } from "../domain/index.js";
 import {
@@ -19,7 +18,6 @@ import {
   parseStateHistoryRecords,
   serializeStateHistoryRecords,
   type SnapshotRepository,
-  type StateHistoryEdge,
   type StateHistoryRecord,
   type StateHistoryResponsibility,
   type StateSnapshot,
@@ -36,7 +34,6 @@ import {
   createPublicSummaryDto,
   type PublicDetailsDto,
   type PublicGraphEdgeDto,
-  type PublicGraphHistoryEventDto,
   type PublicGraphNodeDto,
   type PublicItemHistoryEventDto,
   type PublicItemSummaryDto,
@@ -50,7 +47,6 @@ export const DEFAULT_INITIAL_GRAPH_NODE_LIMIT = 500;
 
 /** 公開DTO生成時のtimezone、ラベルルール、初期graph、summaryサイズ設定。 */
 export type PublicDtoGenerationOptions = Readonly<{
-  clusterByRepository: boolean;
   confidenceThresholds: PublicSummaryDto["confidenceThresholds"];
   labelRules: readonly LabelRule[];
   maxInitialGraphNodes: number;
@@ -75,23 +71,17 @@ type ResponsibilityHistoryValue = Extract<
   PublicItemHistoryEventDto,
   Readonly<{ kind: "responsibility_changed" }>
 >["before"];
-type SeverityHistoryValue = Extract<
-  PublicItemHistoryEventDto,
-  Readonly<{ kind: "severity_changed" }>
->["before"];
-type EdgeHistoryValue = PublicGraphHistoryEventDto["before"];
+type PublicWaitingOn = PublicItemSummaryDto["waitingOn"][number];
 type EvidenceSourceItem = Readonly<Pick<TrackedItem, "nodeId" | "url">>;
 
 type PublicHistory = Readonly<{
   itemEventsByNodeId: ReadonlyMap<string, readonly PublicItemHistoryEventDto[]>;
-  graphEvents: readonly PublicGraphHistoryEventDto[];
 }>;
 
 type PublicGraph = Readonly<{
   analysis: AnalyzeGraphResult;
   nodes: readonly PublicGraphNodeDto[];
   edges: readonly PublicGraphEdgeDto[];
-  analysisEdgeIdToPublicEdgeId: ReadonlyMap<string, string>;
 }>;
 
 function compareStrings(left: string, right: string): number {
@@ -113,9 +103,6 @@ function compareHistoryRecords(left: StateHistoryRecord, right: StateHistoryReco
 }
 
 function validateOptions(options: PublicDtoGenerationOptions): void {
-  if (typeof options.clusterByRepository !== "boolean") {
-    throw new PublicDtoSemanticError("clusterByRepositoryはbooleanにしてください");
-  }
   if (!Number.isInteger(options.maxInitialGraphNodes) || options.maxInitialGraphNodes <= 0) {
     throw new PublicDtoSemanticError("maxInitialGraphNodesは正の整数にしてください");
   }
@@ -139,6 +126,16 @@ function validateHistoryRecords(
   return Object.freeze([...validated].sort(compareHistoryRecords));
 }
 
+function createPublicWaitingOn(waitingOn: PublicWaitingOn): PublicWaitingOn {
+  return {
+    kind: waitingOn.kind,
+    candidateId: waitingOn.candidateId,
+    role: waitingOn.role,
+    reasonSummary: waitingOn.reasonSummary,
+    confidence: waitingOn.confidence,
+  };
+}
+
 function responsibilityHistoryValue(
   value: StateHistoryResponsibility | undefined,
 ): ResponsibilityHistoryValue {
@@ -151,37 +148,7 @@ function responsibilityHistoryValue(
     state: "present",
     value: {
       status: value.status,
-      waitingOn: value.waitingOn.map((waitingOn) => ({
-        ...waitingOn,
-        sourceIds: [...waitingOn.sourceIds],
-      })),
-    },
-  };
-}
-
-function severityHistoryValue(value: Severity | undefined): SeverityHistoryValue {
-  if (value == null) {
-    return {
-      state: "absent",
-    };
-  }
-  return {
-    state: "present",
-    value,
-  };
-}
-
-function edgeHistoryValue(value: StateHistoryEdge | undefined): EdgeHistoryValue {
-  if (value == null) {
-    return {
-      state: "absent",
-    };
-  }
-  return {
-    state: "present",
-    value: {
-      ...value,
-      evidence: value.evidence.map((entry) => ({ ...entry })),
+      waitingOn: value.waitingOn.map(createPublicWaitingOn),
     },
   };
 }
@@ -201,10 +168,7 @@ function appendItemHistoryEvent(
 
 function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHistory {
   const responsibilities = new Map<string, StateHistoryResponsibility>();
-  const severities = new Map<string, Severity>();
-  const edges = new Map<string, StateHistoryEdge>();
   const itemEventsByNodeId = new Map<string, PublicItemHistoryEventDto[]>();
-  const graphEvents: PublicGraphHistoryEventDto[] = [];
 
   for (const record of records) {
     for (const event of record.events) {
@@ -213,7 +177,6 @@ function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHist
           const before = responsibilities.get(event.nodeId);
           const historyEvent: PublicItemHistoryEventDto = {
             kind: "responsibility_changed",
-            runId: record.runId,
             recordedAt: record.recordedAt,
             before: responsibilityHistoryValue(before),
             after: responsibilityHistoryValue(event.value),
@@ -231,7 +194,6 @@ function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHist
           }
           const historyEvent: PublicItemHistoryEventDto = {
             kind: "responsibility_changed",
-            runId: record.runId,
             recordedAt: record.recordedAt,
             before: responsibilityHistoryValue(before),
             after: responsibilityHistoryValue(undefined),
@@ -240,68 +202,10 @@ function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHist
           appendItemHistoryEvent(itemEventsByNodeId, event.nodeId, historyEvent);
           break;
         }
-        case "severity_set": {
-          const before = severities.get(event.nodeId);
-          const historyEvent: PublicItemHistoryEventDto = {
-            kind: "severity_changed",
-            runId: record.runId,
-            recordedAt: record.recordedAt,
-            before: severityHistoryValue(before),
-            after: severityHistoryValue(event.value),
-          };
-          severities.set(event.nodeId, event.value);
-          appendItemHistoryEvent(itemEventsByNodeId, event.nodeId, historyEvent);
-          break;
-        }
-        case "severity_removed": {
-          const before = severities.get(event.nodeId);
-          if (before == null) {
-            throw new PublicDtoSemanticError(
-              `severity履歴の削除対象がありません。node ID: ${event.nodeId}`,
-            );
-          }
-          const historyEvent: PublicItemHistoryEventDto = {
-            kind: "severity_changed",
-            runId: record.runId,
-            recordedAt: record.recordedAt,
-            before: severityHistoryValue(before),
-            after: severityHistoryValue(undefined),
-          };
-          severities.delete(event.nodeId);
-          appendItemHistoryEvent(itemEventsByNodeId, event.nodeId, historyEvent);
-          break;
-        }
-        case "edge_set": {
-          const before = edges.get(event.relationId);
-          const historyEvent: PublicGraphHistoryEventDto = {
-            kind: "edge_changed",
-            runId: record.runId,
-            recordedAt: record.recordedAt,
-            relationId: event.relationId,
-            before: edgeHistoryValue(before),
-            after: edgeHistoryValue(event.value),
-          };
-          edges.set(event.relationId, event.value);
-          graphEvents.push(historyEvent);
-          break;
-        }
+        case "severity_set":
+        case "severity_removed":
+        case "edge_set":
         case "edge_removed": {
-          const before = edges.get(event.relationId);
-          if (before == null) {
-            throw new PublicDtoSemanticError(
-              `edge履歴の削除対象がありません。relation ID: ${event.relationId}`,
-            );
-          }
-          const historyEvent: PublicGraphHistoryEventDto = {
-            kind: "edge_changed",
-            runId: record.runId,
-            recordedAt: record.recordedAt,
-            relationId: event.relationId,
-            before: edgeHistoryValue(before),
-            after: edgeHistoryValue(undefined),
-          };
-          edges.delete(event.relationId);
-          graphEvents.push(historyEvent);
           break;
         }
         case "repository_excluded": {
@@ -318,7 +222,6 @@ function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHist
         Object.freeze([...events]),
       ]),
     ),
-    graphEvents: Object.freeze(graphEvents),
   });
 }
 
@@ -363,8 +266,6 @@ function createPublicEvidenceEntry(
   sourceOwnersById: EvidenceSourceUrlMap,
 ): PublicGraphEdgeDto["evidence"][number] {
   return {
-    sourceId: entry.sourceId,
-    supports: entry.supports,
     summary: entry.summary,
     sourceUrl: resolveEvidenceSourceUrl(entry.sourceId, sourceItems, sourceOwnersById),
   };
@@ -450,13 +351,6 @@ function createPublicGraph(
   }
 
   const analysisEdges = snapshot.relations.map(createAnalysisEdge);
-  const analysisEdgeIdToPublicEdgeId = new Map(
-    analysisEdges.map((edge, index) => {
-      const relation = snapshot.relations[index];
-      assertNonNullable(relation, `analysis edge ${edge.id}の公開edgeがありません`);
-      return [edge.id, relation.id];
-    }),
-  );
   const analysisNodes: GraphAnalysisNode[] = [
     ...snapshot.items.map((item) =>
       Object.freeze({
@@ -513,17 +407,7 @@ function createPublicGraph(
     analysis,
     nodes: Object.freeze(nodes),
     edges: Object.freeze(edges),
-    analysisEdgeIdToPublicEdgeId,
   });
-}
-
-function publicEdgeId(
-  analysisEdgeIdToPublicEdgeId: ReadonlyMap<string, string>,
-  analysisEdgeIdValue: string,
-): string {
-  const edgeId = analysisEdgeIdToPublicEdgeId.get(analysisEdgeIdValue);
-  assertNonNullable(edgeId, `analysis edge ${analysisEdgeIdValue}の公開edge IDがありません`);
-  return edgeId;
 }
 
 function createBlockersByNodeId(snapshot: StateSnapshot): ReadonlyMap<string, readonly string[]> {
@@ -617,10 +501,7 @@ function createItemSummary(
       ...assignee,
     })),
     status: item.status,
-    waitingOn: item.waitingOn.map((waitingOn) => ({
-      ...waitingOn,
-      sourceIds: [...waitingOn.sourceIds],
-    })),
+    waitingOn: item.waitingOn.map(createPublicWaitingOn),
     primaryWaitingOn: {
       ...item.primaryWaitingOn,
     },
@@ -675,10 +556,6 @@ function graphNodeImpact(
 function createInitialGraph(
   graph: PublicGraph,
   items: readonly PublicItemSummaryDto[],
-  components: PublicDetailsDto["graph"]["components"],
-  repositoryClusters: PublicDetailsDto["graph"]["repositoryClusters"],
-  cycles: PublicDetailsDto["graph"]["cycles"],
-  clusterByRepository: boolean,
   maxInitialGraphNodes: number,
 ): PublicSummaryDto["graph"] {
   const summaryByNodeId = new Map(items.map((item) => [item.nodeId, item]));
@@ -716,102 +593,10 @@ function createInitialGraph(
     })
     .slice(0, maxInitialGraphNodes)
     .sort((left, right) => compareStrings(left.nodeId, right.nodeId));
-  const selectedNodeIds = new Set(selectedNodes.map((node) => node.nodeId));
-  const selectedEdges = graph.edges
-    .filter(
-      (edge) =>
-        edge.active && selectedNodeIds.has(edge.fromNodeId) && selectedNodeIds.has(edge.toNodeId),
-    )
-    .map((edge) => ({
-      id: edge.id,
-      fromNodeId: edge.fromNodeId,
-      toNodeId: edge.toNodeId,
-      type: edge.type,
-    }));
-
   return {
     nodes: selectedNodes,
-    edges: selectedEdges,
-    components: components.map((component) => {
-      const nodeIds = new Set(component.nodeIds);
-      return {
-        id: component.id,
-        nodeCount: component.nodeIds.length,
-        repositoryIds: [...component.repositoryIds],
-        edgeCount: component.edgeIds.length,
-        frontierCount: graph.analysis.actionableFrontier.filter((nodeId) => nodeIds.has(nodeId))
-          .length,
-        cycleCount: cycles.filter((cycle) => cycle.nodeIds.every((nodeId) => nodeIds.has(nodeId)))
-          .length,
-      };
-    }),
-    clusterByRepository,
-    repositoryClusters: repositoryClusters.map((cluster) => {
-      const nodeIds = new Set(cluster.nodeIds);
-      return {
-        repositoryId: cluster.repositoryId,
-        nodeCount: cluster.nodeIds.length,
-        edgeCount: cluster.edgeIds.length,
-        frontierCount: graph.analysis.actionableFrontier.filter((nodeId) => nodeIds.has(nodeId))
-          .length,
-        cycleCount: cycles.filter((cycle) => cycle.nodeIds.every((nodeId) => nodeIds.has(nodeId)))
-          .length,
-      };
-    }),
-    frontierNodeIds: graph.analysis.actionableFrontier.filter((nodeId) =>
-      selectedNodeIds.has(nodeId),
-    ),
-    cycles: graph.analysis.dependencyCycles
-      .filter((cycle) => cycle.nodeIds.every((nodeId) => selectedNodeIds.has(nodeId)))
-      .map((cycle) => ({
-        id: cycle.id,
-        nodeIds: [...cycle.nodeIds],
-        edgeIds: cycle.edges.map((edge) =>
-          publicEdgeId(graph.analysisEdgeIdToPublicEdgeId, edge.id),
-        ),
-      })),
     maxNodes: maxInitialGraphNodes,
-    omittedNodeCount: graph.nodes.length - selectedNodes.length,
   };
-}
-
-function createStatusCounts(
-  items: readonly StateSnapshot["items"][number][],
-): Record<Status, number> {
-  const counts: Record<Status, number> = {
-    new_untriaged: 0,
-    needs_maintainer_decision: 0,
-    waiting_for_review: 0,
-    waiting_for_author: 0,
-    waiting_for_assignee: 0,
-    blocked: 0,
-    waiting_for_automation: 0,
-    ready_to_merge: 0,
-    in_progress: 0,
-    unknown: 0,
-    terminal_merged: 0,
-    terminal_completed: 0,
-    terminal_not_planned: 0,
-  };
-  for (const item of items) {
-    counts[item.status] += 1;
-  }
-  return counts;
-}
-
-function createSeverityCounts(
-  items: readonly StateSnapshot["items"][number][],
-): Record<Severity, number> {
-  const counts: Record<Severity, number> = {
-    none: 0,
-    watch: 0,
-    urgent: 0,
-    critical: 0,
-  };
-  for (const item of items) {
-    counts[item.severity] += 1;
-  }
-  return counts;
 }
 
 function latestRepositoryObservedAt(repositories: readonly SnapshotRepository[]): string {
@@ -861,13 +646,6 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       resolveLabelEffects(`${repository.owner}/${repository.name}`, item.labels).priorityWeight,
     );
   });
-  const itemCountByRepositoryId = new Map<string, number>();
-  for (const item of snapshot.items) {
-    itemCountByRepositoryId.set(
-      item.repositoryId,
-      (itemCountByRepositoryId.get(item.repositoryId) ?? 0) + 1,
-    );
-  }
   const repositories = snapshot.repositories.map((repository) => ({
     id: repository.id,
     owner: repository.owner,
@@ -875,60 +653,9 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     fullName: `${repository.owner}/${repository.name}`,
     observedAt: repository.observedAt,
     freshness: createRepositoryFreshness(repository),
-    itemCount: itemCountByRepositoryId.get(repository.id) ?? 0,
-  }));
-  const components = graph.analysis.connectedComponents.map((component) => {
-    const repositoryIds = [
-      ...new Set(
-        component.nodeIds.flatMap((nodeId) => {
-          const item = snapshot.items.find((candidate) => candidate.nodeId === nodeId);
-          return item == null ? [] : [item.repositoryId];
-        }),
-      ),
-    ].sort(compareStrings);
-    if (repositoryIds.length === 0) {
-      throw new PublicDtoSemanticError(`component ${component.id}にOrganization内itemがありません`);
-    }
-    return {
-      id: component.id,
-      nodeIds: [...component.nodeIds],
-      repositoryIds,
-      edgeIds: component.edges.map((edge) =>
-        publicEdgeId(graph.analysisEdgeIdToPublicEdgeId, edge.id),
-      ),
-    };
-  });
-  const repositoryClusters: PublicDetailsDto["graph"]["repositoryClusters"] = input.options
-    .clusterByRepository
-    ? snapshot.repositories.flatMap((repository) => {
-        const nodeIds = snapshot.items
-          .filter((item) => item.repositoryId === repository.id)
-          .map((item) => item.nodeId);
-        if (nodeIds.length === 0) {
-          return [];
-        }
-        const nodeIdSet = new Set<string>(nodeIds);
-        return [
-          {
-            repositoryId: repository.id,
-            nodeIds,
-            edgeIds: graph.edges
-              .filter(
-                (edge) =>
-                  edge.active && nodeIdSet.has(edge.fromNodeId) && nodeIdSet.has(edge.toNodeId),
-              )
-              .map((edge) => edge.id),
-          },
-        ];
-      })
-    : [];
-  const cycles = graph.analysis.dependencyCycles.map((cycle) => ({
-    id: cycle.id,
-    nodeIds: [...cycle.nodeIds],
-    edgeIds: cycle.edges.map((edge) => publicEdgeId(graph.analysisEdgeIdToPublicEdgeId, edge.id)),
   }));
   const summary = createPublicSummaryDto({
-    schemaVersion: "3",
+    schemaVersion: "5",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
@@ -943,43 +670,12 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     confidenceThresholds: {
       ...input.options.confidenceThresholds,
     },
-    aggregates: {
-      repositoryCount: snapshot.repositories.length,
-      itemCount: snapshot.items.length,
-      activeEdgeCount: snapshot.relations.filter((relation) => relation.active).length,
-      componentCount: components.length,
-      frontierCount: graph.analysis.actionableFrontier.length,
-      cycleCount: cycles.length,
-      unknownItemCount: snapshot.items.filter(
-        (item) =>
-          item.status === "unknown" ||
-          item.waitingOn.some((waitingOn) => waitingOn.kind === "unknown"),
-      ).length,
-      staleRepositoryCount: snapshot.repositories.filter(
-        (repository) => repository.freshness === "stale",
-      ).length,
-      staleItemCount: snapshot.items.filter((item) => {
-        const repository = repositoriesById.get(item.repositoryId);
-        assertNonNullable(repository, `item ${item.nodeId}のrepositoryがありません`);
-        return repository.freshness === "stale";
-      }).length,
-      statusCounts: createStatusCounts(snapshot.items),
-      severityCounts: createSeverityCounts(snapshot.items),
-    },
     repositories,
     items: itemSummaries,
-    graph: createInitialGraph(
-      graph,
-      itemSummaries,
-      components,
-      repositoryClusters,
-      cycles,
-      input.options.clusterByRepository,
-      input.options.maxInitialGraphNodes,
-    ),
+    graph: createInitialGraph(graph, itemSummaries, input.options.maxInitialGraphNodes),
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "3",
+    schemaVersion: "5",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     items: snapshot.items.map((item, index) => {
@@ -993,12 +689,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
         timestamps: {
           createdAt: item.createdAt,
           githubUpdatedAt: item.githubUpdatedAt,
-          lastHumanActivityAt: item.lastHumanActivityAt,
-          lastProgressAt: item.lastProgressAt,
-          statusSince: item.statusSince,
-          ownerSince: item.ownerSince,
           stallSince: item.stallSince,
-          observedAt: item.observedAt,
         },
         latestEventActor:
           item.latestEventActor.status === "absent"
@@ -1028,14 +719,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     graph: {
       nodes: graph.nodes,
       edges: graph.edges,
-      components,
-      repositoryClusters,
       frontierNodeIds: [...graph.analysis.actionableFrontier],
-      cycles,
-      downstreamImpacts: graph.analysis.downstreamImpacts.map((impact) => ({
-        ...impact,
-      })),
-      history: history.graphEvents,
     },
   });
   const summarySize = assertPublicSummarySize(summary, input.options.maxSummaryGzipBytes);

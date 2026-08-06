@@ -18,7 +18,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | `src/eval`        | golden fixtureの解析と期待値比較                                                         | 判定、graph、公開DTO、通知の各pure処理                   |
 | `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                        | `src/cli`と全実処理モジュール                            |
 | `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                       | 上記の全モジュール                                       |
-| `web`             | 公開DTOの検証、重要度を含む一覧と詳細、依存グラフ、検索、deep link                       | `src/pages`のDTO契約                                     |
+| `web`             | 公開DTOの検証、重要度を含む一覧と詳細、項目ごとの依存グラフ、検索、deep link             | `src/pages`のDTO契約                                     |
 
 `src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。

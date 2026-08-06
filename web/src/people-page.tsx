@@ -66,7 +66,7 @@ export function PeoplePage({
           <p class="eyebrow">People</p>
           <h2 id="people-page-heading">担当者一覧</h2>
         </div>
-        <p>チーム宛の待ちは、人ごとのページで所属チームを選ぶとその人の担当として合流します。</p>
+        <p>チーム宛の待ちは、担当者ページで所属チームを選ぶとその人の担当に加わります。</p>
       </div>
       {rows.length === 0 ? (
         <p class="empty-state">現在、担当者を特定できる止まっている項目はありません。</p>

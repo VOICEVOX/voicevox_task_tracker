@@ -19,7 +19,6 @@ export {
   createPublicSummaryDto,
   type PublicDetailsDto,
   type PublicGraphEdgeDto,
-  type PublicGraphHistoryEventDto,
   type PublicGraphNodeDto,
   type PublicItemDetailsDto,
   type PublicItemHistoryEventDto,

@@ -1,12 +1,14 @@
 import { useEffect, useState } from "preact/hooks";
 
 import {
+  type PublicDetailsDto,
   type PublicGraphNodeDto,
   type PublicItemDetailsDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
-import { type PublicDetailsLoader } from "./dependency-graph.js";
+import { type PublicDetailsLoader } from "./details-loader.js";
+import { createItemGraphView } from "./graph-model.js";
 import { ItemDetailsContent } from "./item-details.js";
 import { createItemDetailsMap } from "./model.js";
 import { type ItemRouteTarget } from "./url-state.js";
@@ -32,6 +34,7 @@ type DetailsState =
     }>
   | Readonly<{
       status: "loaded";
+      details: PublicDetailsDto;
       itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto>;
       graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
     }>
@@ -66,6 +69,7 @@ export function ItemDetailsPage({
       .then((details) => {
         setDetailsState({
           status: "loaded",
+          details,
           itemsByNodeId: createItemDetailsMap(summary, details),
           graphNodesByNodeId: new Map(details.graph.nodes.map((node) => [node.nodeId, node])),
         });
@@ -95,6 +99,12 @@ export function ItemDetailsPage({
         <ItemDetailsContent
           clearSelectionHref={clearSelectionHref}
           createItemHref={createItemHref}
+          dependencyGraphView={createItemGraphView(
+            summary,
+            detailsState.details,
+            target.nodeId,
+            now,
+          )}
           details={details}
           graphNodesByNodeId={detailsState.graphNodesByNodeId}
           locale={locale}

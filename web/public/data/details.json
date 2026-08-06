@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "3",
+  "schemaVersion": "5",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "items": [
@@ -42,7 +42,6 @@
             "candidateId": "maintainer",
             "role": "merge_decider",
             "reasonSummary": "確認が完了し、メンテナーのマージ判断を待っています",
-            "sourceIds": ["sample-source-editor-101"],
             "confidence": 1
           }
         ],
@@ -94,23 +93,20 @@
       "timestamps": {
         "createdAt": "2026-07-01T01:00:00.000Z",
         "githubUpdatedAt": "2026-07-30T03:00:00.000Z",
-        "lastHumanActivityAt": "2026-07-30T03:00:00.000Z",
-        "lastProgressAt": "2026-07-20T00:00:00.000Z",
-        "statusSince": "2026-07-20T00:00:00.000Z",
-        "ownerSince": "2026-07-20T00:00:00.000Z",
-        "stallSince": "2026-07-20T00:00:00.000Z",
-        "observedAt": "2026-07-31T00:00:00.000Z"
+        "stallSince": "2026-07-20T00:00:00.000Z"
       },
-      "latestEventActor": { "status": "absent" },
+      "latestEventActor": {
+        "status": "absent"
+      },
       "labels": ["優先度：高", "辞書"],
       "reviewState": "approved",
       "checkState": "passing",
-      "aiAnalysis": { "status": "not_used" },
+      "aiAnalysis": {
+        "status": "not_used"
+      },
       "inputEvents": [],
       "evidence": [
         {
-          "sourceId": "sample-source-editor-101",
-          "supports": "status",
           "summary": "必要なレビューとcheckが完了しています",
           "sourceUrl": "https://github.com/VOICEVOX/sample-editor/pull/101"
         }
@@ -151,7 +147,6 @@
             "candidateId": "sample-reviewers",
             "role": "reviewer",
             "reasonSummary": "レビューチームへレビューが依頼されています",
-            "sourceIds": ["sample-source-engine-202"],
             "confidence": 1
           }
         ],
@@ -193,12 +188,7 @@
       "timestamps": {
         "createdAt": "2026-07-05T02:00:00.000Z",
         "githubUpdatedAt": "2026-07-29T06:00:00.000Z",
-        "lastHumanActivityAt": "2026-07-29T06:00:00.000Z",
-        "lastProgressAt": "2026-07-15T00:00:00.000Z",
-        "statusSince": "2026-07-15T00:00:00.000Z",
-        "ownerSince": "2026-07-15T00:00:00.000Z",
-        "stallSince": "2026-07-15T00:00:00.000Z",
-        "observedAt": "2026-07-31T00:00:00.000Z"
+        "stallSince": "2026-07-15T00:00:00.000Z"
       },
       "latestEventActor": {
         "status": "present",
@@ -211,12 +201,12 @@
       "labels": ["優先度：中", "API"],
       "reviewState": "requested",
       "checkState": "passing",
-      "aiAnalysis": { "status": "not_used" },
+      "aiAnalysis": {
+        "status": "not_used"
+      },
       "inputEvents": [],
       "evidence": [
         {
-          "sourceId": "sample-source-engine-202",
-          "supports": "waiting_on",
           "summary": "sample-reviewersへレビューが依頼されています",
           "sourceUrl": "https://github.com/VOICEVOX/sample-engine/pull/202"
         }
@@ -257,7 +247,6 @@
             "candidateId": "maintainer",
             "role": "maintainer",
             "reasonSummary": "配布方針についてメンテナーの判断が必要です",
-            "sourceIds": ["sample-source-editor-103"],
             "confidence": 0.95
           }
         ],
@@ -299,23 +288,20 @@
       "timestamps": {
         "createdAt": "2026-07-08T03:00:00.000Z",
         "githubUpdatedAt": "2026-07-28T05:00:00.000Z",
-        "lastHumanActivityAt": "2026-07-28T05:00:00.000Z",
-        "lastProgressAt": "2026-07-10T00:00:00.000Z",
-        "statusSince": "2026-07-10T00:00:00.000Z",
-        "ownerSince": "2026-07-10T00:00:00.000Z",
-        "stallSince": "2026-07-10T00:00:00.000Z",
-        "observedAt": "2026-07-31T00:00:00.000Z"
+        "stallSince": "2026-07-10T00:00:00.000Z"
       },
-      "latestEventActor": { "status": "absent" },
+      "latestEventActor": {
+        "status": "absent"
+      },
       "labels": ["優先度：高", "要議論", "配布方針"],
       "reviewState": "not_applicable",
       "checkState": "not_applicable",
-      "aiAnalysis": { "status": "not_used" },
+      "aiAnalysis": {
+        "status": "not_used"
+      },
       "inputEvents": [],
       "evidence": [
         {
-          "sourceId": "sample-source-editor-103",
-          "supports": "waiting_on",
           "summary": "配布方針の決定が必要であることが示されています",
           "sourceUrl": "https://github.com/VOICEVOX/sample-editor/issues/103"
         }
@@ -352,7 +338,6 @@
             "candidateId": "sample-item-editor-103",
             "role": "dependency",
             "reasonSummary": "配布方針の決定を待っています",
-            "sourceIds": ["sample-source-engine-204"],
             "confidence": 1
           },
           {
@@ -360,7 +345,6 @@
             "candidateId": "external:github:sample-distribution-42",
             "role": "dependency",
             "reasonSummary": "外部配布ツールの対応を待っています",
-            "sourceIds": ["sample-source-external-distribution-42"],
             "confidence": 0.9
           }
         ],
@@ -397,12 +381,7 @@
       "timestamps": {
         "createdAt": "2026-07-01T00:00:00.000Z",
         "githubUpdatedAt": "2026-07-25T02:00:00.000Z",
-        "lastHumanActivityAt": "2026-07-25T02:00:00.000Z",
-        "lastProgressAt": "2026-07-01T00:00:00.000Z",
-        "statusSince": "2026-07-10T00:00:00.000Z",
-        "ownerSince": "2026-07-10T00:00:00.000Z",
-        "stallSince": "2026-07-01T00:00:00.000Z",
-        "observedAt": "2026-07-31T00:00:00.000Z"
+        "stallSince": "2026-07-01T00:00:00.000Z"
       },
       "latestEventActor": {
         "status": "present",
@@ -414,18 +393,16 @@
       "labels": ["優先度：中", "blocked", "配布"],
       "reviewState": "not_applicable",
       "checkState": "not_applicable",
-      "aiAnalysis": { "status": "not_used" },
+      "aiAnalysis": {
+        "status": "not_used"
+      },
       "inputEvents": [],
       "evidence": [
         {
-          "sourceId": "sample-source-engine-204",
-          "supports": "status",
           "summary": "配布方針の決定がopen blockerとして残っています",
           "sourceUrl": "https://github.com/VOICEVOX/sample-engine/issues/204"
         },
         {
-          "sourceId": "sample-source-external-distribution-42",
-          "supports": "waiting_on",
           "summary": "外部配布ツールの対応完了を待つことが示されています",
           "sourceUrl": "https://github.com/VOICEVOX/sample-engine/issues/204"
         }
@@ -434,7 +411,6 @@
       "history": [
         {
           "kind": "responsibility_changed",
-          "runId": "sample-run-2026-07-31",
           "recordedAt": "2026-07-31T00:05:00.000Z",
           "before": {
             "state": "present",
@@ -446,7 +422,6 @@
                   "candidateId": "assignee",
                   "role": "assignee",
                   "reasonSummary": "担当者が実装を進めています",
-                  "sourceIds": ["sample-source-engine-204-before"],
                   "confidence": 1
                 }
               ]
@@ -462,7 +437,6 @@
                   "candidateId": "sample-item-editor-103",
                   "role": "dependency",
                   "reasonSummary": "配布方針の決定を待っています",
-                  "sourceIds": ["sample-source-engine-204"],
                   "confidence": 1
                 },
                 {
@@ -470,24 +444,10 @@
                   "candidateId": "external:github:sample-distribution-42",
                   "role": "dependency",
                   "reasonSummary": "外部配布ツールの対応を待っています",
-                  "sourceIds": ["sample-source-external-distribution-42"],
                   "confidence": 0.9
                 }
               ]
             }
-          }
-        },
-        {
-          "kind": "severity_changed",
-          "runId": "sample-run-2026-07-31",
-          "recordedAt": "2026-07-31T00:05:01.000Z",
-          "before": {
-            "state": "present",
-            "value": "none"
-          },
-          "after": {
-            "state": "present",
-            "value": "watch"
           }
         }
       ]
@@ -525,7 +485,6 @@
             "candidateId": "author",
             "role": "author",
             "reasonSummary": "レビュー指摘への修正を待っています",
-            "sourceIds": ["sample-source-core-305"],
             "confidence": 0.9
           }
         ],
@@ -567,12 +526,7 @@
       "timestamps": {
         "createdAt": "2026-07-02T00:00:00.000Z",
         "githubUpdatedAt": "2026-07-27T08:00:00.000Z",
-        "lastHumanActivityAt": "2026-07-27T08:00:00.000Z",
-        "lastProgressAt": "2026-07-05T00:00:00.000Z",
-        "statusSince": "2026-07-05T00:00:00.000Z",
-        "ownerSince": "2026-07-05T00:00:00.000Z",
-        "stallSince": "2026-07-05T00:00:00.000Z",
-        "observedAt": "2026-07-28T00:00:00.000Z"
+        "stallSince": "2026-07-05T00:00:00.000Z"
       },
       "latestEventActor": {
         "status": "present",
@@ -585,12 +539,12 @@
       "labels": ["優先度：高", "bug", "review"],
       "reviewState": "changes_requested",
       "checkState": "failing",
-      "aiAnalysis": { "status": "not_used" },
+      "aiAnalysis": {
+        "status": "not_used"
+      },
       "inputEvents": [],
       "evidence": [
         {
-          "sourceId": "sample-source-core-305",
-          "supports": "waiting_on",
           "summary": "human reviewerの変更要求後に新しいpushがありません",
           "sourceUrl": "https://github.com/VOICEVOX/sample-core/pull/305"
         }
@@ -661,8 +615,6 @@
         "confidence": 0.92,
         "evidence": [
           {
-            "sourceId": "sample-source-editor-103",
-            "supports": "relation",
             "summary": "配布方針の決定後に配布処理へ進むことが明示されています",
             "sourceUrl": "https://github.com/VOICEVOX/sample-editor/issues/103"
           }
@@ -681,8 +633,6 @@
         "confidence": 0.9,
         "evidence": [
           {
-            "sourceId": "sample-source-external-distribution-42",
-            "supports": "relation",
             "summary": "外部配布ツールの対応後に配布処理へ進むことが明示されています",
             "sourceUrl": "https://github.com/VOICEVOX/sample-engine/issues/204"
           }
@@ -693,193 +643,11 @@
         "active": true
       }
     ],
-    "components": [
-      {
-        "id": "sample-component-release",
-        "nodeIds": [
-          "external:github:sample-distribution-42",
-          "sample-item-editor-103",
-          "sample-item-engine-204"
-        ],
-        "repositoryIds": ["sample-repository-editor", "sample-repository-engine"],
-        "edgeIds": [
-          "sample-relation-editor-103-engine-204",
-          "sample-relation-external-42-engine-204"
-        ]
-      },
-      {
-        "id": "sample-component-editor-101",
-        "nodeIds": ["sample-item-editor-101"],
-        "repositoryIds": ["sample-repository-editor"],
-        "edgeIds": []
-      },
-      {
-        "id": "sample-component-engine-202",
-        "nodeIds": ["sample-item-engine-202"],
-        "repositoryIds": ["sample-repository-engine"],
-        "edgeIds": []
-      },
-      {
-        "id": "sample-component-core-305",
-        "nodeIds": ["sample-item-core-305"],
-        "repositoryIds": ["sample-repository-core"],
-        "edgeIds": []
-      }
-    ],
-    "repositoryClusters": [
-      {
-        "repositoryId": "sample-repository-editor",
-        "nodeIds": ["sample-item-editor-101", "sample-item-editor-103"],
-        "edgeIds": []
-      },
-      {
-        "repositoryId": "sample-repository-engine",
-        "nodeIds": ["sample-item-engine-202", "sample-item-engine-204"],
-        "edgeIds": []
-      },
-      {
-        "repositoryId": "sample-repository-core",
-        "nodeIds": ["sample-item-core-305"],
-        "edgeIds": []
-      }
-    ],
     "frontierNodeIds": [
       "sample-item-editor-101",
       "sample-item-engine-202",
       "sample-item-editor-103",
       "sample-item-core-305"
-    ],
-    "cycles": [],
-    "downstreamImpacts": [
-      {
-        "nodeId": "sample-item-editor-101",
-        "openNodeCount": 1,
-        "repositoryCount": 1
-      },
-      {
-        "nodeId": "sample-item-engine-202",
-        "openNodeCount": 4,
-        "repositoryCount": 3
-      },
-      {
-        "nodeId": "sample-item-editor-103",
-        "openNodeCount": 2,
-        "repositoryCount": 2
-      },
-      {
-        "nodeId": "sample-item-engine-204",
-        "openNodeCount": 0,
-        "repositoryCount": 0
-      },
-      {
-        "nodeId": "sample-item-core-305",
-        "openNodeCount": 3,
-        "repositoryCount": 2
-      },
-      {
-        "nodeId": "external:github:sample-distribution-42",
-        "openNodeCount": 1,
-        "repositoryCount": 1
-      }
-    ],
-    "history": [
-      {
-        "kind": "edge_changed",
-        "runId": "sample-run-edge-added",
-        "recordedAt": "2026-07-29T00:00:00.000Z",
-        "relationId": "sample-relation-history-removed",
-        "before": {
-          "state": "absent"
-        },
-        "after": {
-          "state": "present",
-          "value": {
-            "fromNodeId": "sample-item-editor-103",
-            "toNodeId": "sample-item-engine-204",
-            "type": "related_to",
-            "provenance": "ai_inference",
-            "confidence": 0.8,
-            "evidence": [],
-            "contradictions": [],
-            "firstSeenAt": "2026-07-29T00:00:00.000Z",
-            "lastConfirmedAt": "2026-07-29T00:00:00.000Z",
-            "active": true
-          }
-        }
-      },
-      {
-        "kind": "edge_changed",
-        "runId": "sample-run-edge-changed",
-        "recordedAt": "2026-07-30T00:00:00.000Z",
-        "relationId": "sample-relation-history-removed",
-        "before": {
-          "state": "present",
-          "value": {
-            "fromNodeId": "sample-item-editor-103",
-            "toNodeId": "sample-item-engine-204",
-            "type": "related_to",
-            "provenance": "ai_inference",
-            "confidence": 0.8,
-            "evidence": [],
-            "contradictions": [],
-            "firstSeenAt": "2026-07-29T00:00:00.000Z",
-            "lastConfirmedAt": "2026-07-29T00:00:00.000Z",
-            "active": true
-          }
-        },
-        "after": {
-          "state": "present",
-          "value": {
-            "fromNodeId": "sample-item-editor-103",
-            "toNodeId": "sample-item-engine-204",
-            "type": "implements",
-            "provenance": "ai_inference",
-            "confidence": 0.9,
-            "evidence": [],
-            "contradictions": [],
-            "firstSeenAt": "2026-07-29T00:00:00.000Z",
-            "lastConfirmedAt": "2026-07-30T00:00:00.000Z",
-            "active": true
-          }
-        }
-      },
-      {
-        "kind": "edge_changed",
-        "runId": "sample-run-edge-removed",
-        "recordedAt": "2026-07-31T00:00:00.000Z",
-        "relationId": "sample-relation-history-removed",
-        "before": {
-          "state": "present",
-          "value": {
-            "fromNodeId": "sample-item-editor-103",
-            "toNodeId": "sample-item-engine-204",
-            "type": "implements",
-            "provenance": "ai_inference",
-            "confidence": 0.9,
-            "evidence": [],
-            "contradictions": [],
-            "firstSeenAt": "2026-07-29T00:00:00.000Z",
-            "lastConfirmedAt": "2026-07-30T00:00:00.000Z",
-            "active": true
-          }
-        },
-        "after": {
-          "state": "present",
-          "value": {
-            "fromNodeId": "sample-item-editor-103",
-            "toNodeId": "sample-item-engine-204",
-            "type": "implements",
-            "provenance": "ai_inference",
-            "confidence": 0.9,
-            "evidence": [],
-            "contradictions": [],
-            "firstSeenAt": "2026-07-29T00:00:00.000Z",
-            "lastConfirmedAt": "2026-07-30T00:00:00.000Z",
-            "active": false,
-            "removedAt": "2026-07-31T00:00:00.000Z"
-          }
-        }
-      }
     ]
   }
 }

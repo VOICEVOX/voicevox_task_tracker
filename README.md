@@ -1,14 +1,14 @@
 # VOICEVOX Task Tracker
 
 VOICEVOX Organizationの公開IssueとPull Requestを横断して、現在の状態、次に行動する主体、停滞時間、重要度、依存関係を整理するプロジェクトです。
-毎日08:00 JSTにGitHub Actionsから実行し、GitHub Pagesへ一覧、担当者別の停滞、依存グラフを公開して、対応が必要な変化だけをDiscordへ通知します。
+毎日08:00 JSTにGitHub Actionsから実行し、GitHub Pagesへ対応が必要な項目、全項目の一覧、担当者別の停滞、項目ごとの依存関係を公開して、対応が必要な変化だけをDiscordへ通知します。
 追跡対象のIssue、Pull Request、コメント、ラベル、アサイン、レビュー依頼は変更しません。
 
 ## 主要な仕組み
 
 - GitHubのレビュー依頼、アサイン、native dependencyなどの確定情報を決定論的な規則で先に評価します。
 - Codexは未回答の依頼やリンクの意味など、自然言語の解釈が必要な変更だけを分析します。
-- 項目そのものの重要度を、停滞の深刻さを表すseverityとは別に計算して一覧と詳細へ表示します。
+- 項目そのものの重要度を、停滞の深刻さを表すseverityとは別に計算し、すべての一覧と詳細へ表示します。severityは並び順と通知の判断にだけ使い、画面には出しません。
 - 公開かつ非アーカイブで、無効化されていないリポジトリだけを収集対象に選びます。
 - 選定を抜けた非公開データやsecretがstateや公開DTOから見つかったrunはfail closedとし、state、Pages、Discordを更新しません。
 - snapshot、日次履歴、AI cache、通知ledger、run reportは専用の`tracker-state` branchへ保存します。
