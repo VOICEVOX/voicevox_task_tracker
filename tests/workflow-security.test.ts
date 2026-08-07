@@ -1,4 +1,4 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { parse } from "yaml";
@@ -9,6 +9,15 @@ const WORKFLOW_DIRECTORY = join(import.meta.dirname, "..", ".github", "workflows
 const DAILY_WORKFLOW_PATH = join(WORKFLOW_DIRECTORY, "daily.yml");
 const CI_WORKFLOW_PATH = join(WORKFLOW_DIRECTORY, "ci.yml");
 const PERFORMANCE_WORKFLOW_PATH = join(WORKFLOW_DIRECTORY, "performance.yml");
+const CODEX_AUTH_MASK_SCRIPT_PATH = join(
+  import.meta.dirname,
+  "..",
+  ".github",
+  "scripts",
+  "mask-codex-auth-values.sh",
+);
+const CODEX_AUTH_MASK_COMMAND =
+  '.github/scripts/mask-codex-auth-values.sh "${{ runner.temp }}/codex-home/auth.json"';
 const CONFIG_PATH = join(import.meta.dirname, "..", "config.yml");
 const PACKAGE_PATH = join(import.meta.dirname, "..", "package.json");
 const FULL_COMMIT_ACTION_PATTERN = /^[^@\s]+@[0-9a-f]{40}$/u;
@@ -447,6 +456,44 @@ describe("日次workflow", () => {
         expect(JSON.stringify(job), jobName).not.toContain("CODEX_AUTH_SYNC_TOKEN");
       }
     }
+  });
+
+  it("Codex認証ファイル内の長い文字列を配置時と更新後にマスク登録する", async () => {
+    const workflow = await readDailyWorkflow();
+    const collectJob = workflow.jobs["collect-analyze"];
+    if (collectJob == null) {
+      throw new TypeError("収集jobがありません");
+    }
+
+    const placementStep = requiredStep(collectJob, "Codex認証ファイルを配置");
+    const synchronizationStep = requiredStep(
+      collectJob,
+      "更新されたCodex認証ファイルをsecretへ書き戻す",
+    );
+    if (placementStep.run == null || synchronizationStep.run == null) {
+      throw new TypeError("Codex認証ファイルのマスク対象stepにコマンドがありません");
+    }
+
+    expect(placementStep.run).toContain(CODEX_AUTH_MASK_COMMAND);
+    expect(placementStep.run.trimEnd().endsWith(CODEX_AUTH_MASK_COMMAND)).toBe(true);
+    expect(synchronizationStep.run).toContain(CODEX_AUTH_MASK_COMMAND);
+    expect(synchronizationStep.run.indexOf(CODEX_AUTH_MASK_COMMAND)).toBeGreaterThan(
+      synchronizationStep.run.indexOf("exit 1"),
+    );
+    expect(synchronizationStep.run.indexOf(CODEX_AUTH_MASK_COMMAND)).toBeLessThan(
+      synchronizationStep.run.indexOf("sha256sum --check --status"),
+    );
+
+    const scriptSource = await readFile(CODEX_AUTH_MASK_SCRIPT_PATH, "utf8");
+    const scriptMode = (await stat(CODEX_AUTH_MASK_SCRIPT_PATH)).mode;
+    expect(scriptMode & 0o111).not.toBe(0);
+    expect(scriptSource).toContain("jq --raw-output");
+    expect(scriptSource).toContain(".. | strings");
+    expect(scriptSource).toContain("select(length >= 16)");
+    expect(scriptSource).toContain('"$auth_file" > "$mask_values_file"');
+    expect(scriptSource).toContain("while IFS= read -r value");
+    expect(scriptSource).toContain('escaped_value="${value//%/%25}"');
+    expect(scriptSource).toContain("printf '::add-mask::%s\\n' \"$escaped_value\"");
   });
 
   it("外部secretを収集とDiscordのjobだけへ分離する", async () => {

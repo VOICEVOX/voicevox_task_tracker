@@ -84,6 +84,9 @@ repository単位の収集は、再試行後も503で失敗し、同じrepository
 
 `.github/workflows/daily.yml`は通常経路の`test-eval`、`collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた8 jobで構成されています。
 `collect-analyze`は`CODEX_AUTH_JSON`をrunnerの一時directoryへ配置し、配置直後の`auth.json`のsha256を指紋として保存します。
+配置直後とsecretへ書き戻す直前に、`auth.json`内のすべての文字列値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
+値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
+個々のtokenは`CODEX_AUTH_JSON`の部分文字列であり、更新後の認証ファイルもjob開始時のsecretとは異なるため、Actionsの自動マスクには依存しません。
 Codex CLIはaccess tokenの残り有効期間が5分未満になるとrefresh tokenで更新し、rotation後の認証情報を`auth.json`へ保存します。
 配置stepが成功していれば、先行stepの成否を問わず配置時の指紋と現在値を比較し、変更された場合だけ`CODEX_AUTH_JSON`へ書き戻します。
 書き戻しにはこのrepositoryだけを対象とし、repository permissionsを`Secrets`のRead and writeだけにした`CODEX_AUTH_SYNC_TOKEN`を使います。

@@ -92,6 +92,12 @@ Codex CLIはaccess tokenの残り有効期間が5分未満になるとrefresh to
 書き戻しstepは配置時のsha256と現在の`auth.json`を比較します。
 変更がなければsecretを更新せず、変更があれば`gh secret set`で`CODEX_AUTH_JSON`を更新します。
 この同期が成功する限り、手動の再ログインとsecretの再登録なしにtokenの期限が延長され続けます。
+`collect-analyze`は認証ファイルの配置直後とsecretへ書き戻す直前に`.github/scripts/mask-codex-auth-values.sh`を実行します。
+このscriptは`auth.json`内のすべての文字列値を`jq`で取り出し、改行を含む値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
+値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
+GitHub Actionsの自動マスクはrun開始時に読み込んだsecret値と完全一致する文字列だけを隠します。
+`auth.json`内の個々のtokenは`CODEX_AUTH_JSON`の部分文字列であり、自動では隠れません。
+Codexが更新した`auth.json`もjob開始時のsecretとは異なるため、書き戻し前に更新後の値を登録します。
 書き戻し後はjobの最後に`codex-home`と指紋ファイルを削除します。
 Codex認証情報と`CODEX_AUTH_SYNC_TOKEN`を`config.yml`、branch、artifact、run logへ書きません。
 

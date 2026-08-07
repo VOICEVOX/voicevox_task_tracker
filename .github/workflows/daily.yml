@@ -107,6 +107,7 @@ jobs:
           chmod 600 "${{ runner.temp }}/codex-home/auth.json"
           sha256sum "${{ runner.temp }}/codex-home/auth.json" > "${{ runner.temp }}/codex-auth-fingerprint"
           chmod 600 "${{ runner.temp }}/codex-auth-fingerprint"
+          .github/scripts/mask-codex-auth-values.sh "${{ runner.temp }}/codex-home/auth.json"
       - name: 収集と解析を実行
         env:
           BACKFILL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill || 'none' }}
@@ -159,6 +160,7 @@ jobs:
             echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
             exit 1
           fi
+          .github/scripts/mask-codex-auth-values.sh "${{ runner.temp }}/codex-home/auth.json"
           if sha256sum --check --status "${{ runner.temp }}/codex-auth-fingerprint"; then
             echo "Codex認証ファイルは更新されていません"
             exit 0
