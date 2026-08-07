@@ -122,19 +122,6 @@ tbody th {
   font-weight: 650;
 }
 
-.person-page .stale-row th,
-.person-page .stale-row td,
-.person-page .stale-card {
-  background: var(--color-state-warning-background);
-  background-image: repeating-linear-gradient(
-    -45deg,
-    transparent,
-    transparent 0.45rem,
-    var(--color-pattern-warning) 0.45rem,
-    var(--color-pattern-warning) 0.9rem
-  );
-}
-
 .item-reference {
   margin: 0.35rem 0 0;
   color: var(--color-text-muted);
@@ -149,109 +136,6 @@ tbody th {
 
 .item-workspace {
   scroll-margin-top: 1rem;
-}
-
-.people-page .items-table-region,
-.person-page .items-table-region {
-  min-width: 0;
-}
-
-.person-items-table {
-  table-layout: fixed;
-}
-
-.person-items-table .item-column {
-  width: 52%;
-}
-
-.person-items-table .status-column {
-  width: 14%;
-}
-
-.person-items-table .stall-column {
-  width: 12%;
-}
-
-.person-items-table .reason-column {
-  width: 22%;
-}
-
-.person-items-table thead th {
-  padding: 0.65rem;
-}
-
-.person-items-table tbody th {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.person-items-table tbody td {
-  overflow-wrap: anywhere;
-}
-
-.person-items-table tbody th > a[target="_blank"] {
-  justify-self: start;
-  font-size: 0.78rem;
-}
-
-.person-page .item-list-meta {
-  margin: 0;
-  color: var(--color-text-muted);
-  font-size: 0.78rem;
-}
-
-.people-page .items-card-list,
-.person-page .items-card-list {
-  display: none;
-}
-
-.person-team-selection {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.55rem;
-  margin: 0 0 1rem;
-  padding: 0.65rem 0.8rem 0.8rem;
-  color: var(--color-text-secondary);
-  background: var(--color-surface-sunken);
-  border: 1px solid var(--color-border-default);
-  border-radius: 0.65rem;
-}
-
-.person-identity-action {
-  display: flex;
-  justify-content: flex-end;
-  margin: 0 0 1rem;
-}
-
-.person-team-selection legend {
-  padding-inline: 0.25rem;
-  font-weight: 750;
-}
-
-.person-team-selection label {
-  display: inline-flex;
-  align-items: flex-start;
-  flex: 1 1 18rem;
-  gap: 0.5rem;
-  padding: 0.5rem 0.65rem;
-  background: var(--color-surface-card);
-  border: 1px solid var(--color-border-default);
-  border-radius: 0.4rem;
-  cursor: pointer;
-}
-
-.person-team-selection label > span {
-  display: grid;
-  line-height: 1.35;
-}
-
-.viewer-person-row th,
-.viewer-person-row td {
-  background: var(--color-surface-emphasis);
-}
-
-.items-card-list > .viewer-person-card {
-  background-color: var(--color-surface-emphasis);
 }
 
 .dependency-graph-diagram {
@@ -401,11 +285,6 @@ tbody th {
   font-weight: 700;
 }
 
-.people-page > p,
-.person-identity-action p {
-  margin-block: 1rem;
-}
-
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -426,88 +305,4 @@ tbody th {
 
 .load-failure p {
   margin: 0;
-}
-
-@media (max-width: 720px) {
-  .people-page > .items-table-region,
-  .person-page .items-table-region {
-    display: none;
-  }
-
-  .people-page .items-card-list,
-  .person-page .items-card-list {
-    display: grid;
-    gap: 0.75rem;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .people-page .items-card-list > li,
-  .person-page .items-card-list > li {
-    overflow: hidden;
-    background-color: var(--color-surface-card);
-    border: 1px solid var(--color-border-subtle);
-    border-radius: 0.65rem;
-  }
-
-  .people-page .items-card-list article,
-  .person-page .items-card-list article {
-    display: grid;
-    gap: 0.85rem;
-    padding: 0.9rem;
-  }
-
-  .people-page .item-card-heading,
-  .person-page .item-card-heading {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.75rem;
-  }
-
-  .people-page .item-card-heading h3,
-  .person-page .item-card-heading h3 {
-    margin: 0.15rem 0 0;
-    font-size: 1rem;
-    font-weight: 700;
-    line-height: 1.45;
-  }
-
-  .people-page .item-card-summary,
-  .person-page .item-card-summary {
-    display: grid;
-    gap: 0.55rem;
-    margin: 0;
-  }
-
-  .people-page .item-card-summary > div,
-  .person-page .item-card-summary > div {
-    display: grid;
-    grid-template-columns: 5.5rem minmax(0, 1fr);
-    gap: 0.6rem;
-  }
-
-  .people-page .item-card-summary dt,
-  .person-page .item-card-summary dt {
-    color: var(--color-text-muted);
-    font-size: 0.78rem;
-    font-weight: 700;
-  }
-
-  .people-page .item-card-summary dd,
-  .person-page .item-card-summary dd {
-    margin: 0;
-    overflow-wrap: anywhere;
-  }
-
-  .people-card-list .item-card-summary > div {
-    grid-template-columns: 9rem minmax(0, 1fr);
-  }
-
-  .people-page .items-card-list article > a[target="_blank"],
-  .person-page .items-card-list article > a[target="_blank"] {
-    justify-self: start;
-    font-size: 0.85rem;
-  }
 }

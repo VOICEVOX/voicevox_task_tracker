@@ -412,10 +412,24 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             locale={locale}
             login={viewState.route.login}
             now={now}
+            peopleHref={createWebViewHref(
+              basePath,
+              createWebViewState({
+                page: "people",
+              }),
+            )}
             selectedTeamIds={viewState.route.teamIds}
             summary={summary}
             viewerIdentityAvailable={viewerIdentityState.status === "available"}
             onSelectItem={selectItem}
+            onSelectPeople={() => {
+              navigate(
+                createWebViewState({
+                  page: "people",
+                }),
+                "push",
+              );
+            }}
             onTeamIdsChange={replacePersonTeamIds}
             onViewerIdentityToggle={toggleViewerIdentity}
           />

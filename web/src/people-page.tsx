@@ -4,6 +4,12 @@ import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { ContentState, PageSection } from "./layout.js";
 import { collectWaitingSubjectRows, resolveWaitingSubjects, waitingSubjectKey } from "./model.js";
+import {
+  ResponsiveTableCardList,
+  type ResponsiveCardField,
+  type ResponsiveListRowPresentation,
+  type ResponsiveTableColumn,
+} from "./responsive-table-card-list.js";
 import { Pill } from "./ui.js";
 import { isViewerLogin } from "./viewer-identity.js";
 
@@ -15,6 +21,8 @@ type PeoplePageProps = Readonly<{
   summary: PublicSummaryDto;
   viewerLogin: string | undefined;
 }>;
+
+type WaitingSubjectRow = ReturnType<typeof collectWaitingSubjectRows>[number];
 
 function PersonLink({
   href,
@@ -29,6 +37,7 @@ function PersonLink({
 }>) {
   return (
     <a
+      class="inline-flex min-h-11 min-w-0 items-center py-2 text-text-primary decoration-accent-link decoration-1 hover:text-accent-link-hover md:min-h-0 md:py-0"
       href={href}
       onClick={(event) => {
         if (!shouldHandleClientNavigation(event)) {
@@ -41,6 +50,59 @@ function PersonLink({
       {label}
     </a>
   );
+}
+
+function isViewerRow(row: WaitingSubjectRow, viewerLogin: string | undefined): boolean {
+  return row.subject.kind === "user" && isViewerLogin(row.subject.login, viewerLogin);
+}
+
+function WaitingSubjectName({
+  createPersonHref,
+  onSelectPerson,
+  row,
+  viewerLogin,
+}: Readonly<{
+  createPersonHref: (login: string) => string;
+  onSelectPerson: (login: string) => void;
+  row: WaitingSubjectRow;
+  viewerLogin: string | undefined;
+}>) {
+  const viewer = isViewerRow(row, viewerLogin);
+  return (
+    <span class="flex min-w-0 flex-wrap items-center gap-2">
+      {row.subject.kind === "user" ? (
+        <PersonLink
+          href={createPersonHref(row.subject.login)}
+          label={row.label}
+          login={row.subject.login}
+          onSelect={onSelectPerson}
+        />
+      ) : (
+        <span class="min-w-0 text-text-primary [overflow-wrap:anywhere]">{row.label}</span>
+      )}
+      {viewer && (
+        <Pill className="viewer-person-badge" tone="neutral">
+          <span aria-hidden="true">自分</span>
+          <span class="visually-hidden">自分のアカウントです</span>
+        </Pill>
+      )}
+    </span>
+  );
+}
+
+function waitingSubjectRowPresentation(
+  row: WaitingSubjectRow,
+  viewerLogin: string | undefined,
+): ResponsiveListRowPresentation {
+  const viewer = isViewerRow(row, viewerLogin);
+  return {
+    cardClassName: viewer ? "viewer-person-card bg-surface-emphasis" : "bg-surface-card",
+    dataAttributes: {},
+    key: waitingSubjectKey(row.subject),
+    tableClassName: viewer
+      ? "viewer-person-row [&>th]:bg-surface-emphasis [&>td]:bg-surface-emphasis"
+      : "",
+  };
 }
 
 /** 項目を待たせている人とチームの集計を表示する。 */
@@ -60,9 +122,68 @@ export function PeoplePage({
       ).length,
     [summary.items],
   );
+  const tableColumns = [
+    {
+      ariaSort: undefined,
+      cellClassName: "min-w-0",
+      cellKind: "row_header",
+      headerClassName: "",
+      key: "subject",
+      label: "待ち相手",
+      renderCell: (row: WaitingSubjectRow) => (
+        <WaitingSubjectName
+          createPersonHref={createPersonHref}
+          onSelectPerson={onSelectPerson}
+          row={row}
+          viewerLogin={viewerLogin}
+        />
+      ),
+      widthClassName: "w-[52%]",
+    },
+    {
+      ariaSort: "descending",
+      cellClassName: "whitespace-nowrap text-right tabular-nums",
+      cellKind: "data",
+      headerClassName: "text-right",
+      key: "itemCount",
+      label: "待たせている項目数",
+      renderCell: (row: WaitingSubjectRow) => row.itemCount.toLocaleString(locale),
+      widthClassName: "w-[26%]",
+    },
+    {
+      ariaSort: undefined,
+      cellClassName: "whitespace-nowrap tabular-nums",
+      cellKind: "data",
+      headerClassName: "whitespace-nowrap",
+      key: "longestStallDuration",
+      label: "最長停滞時間",
+      renderCell: (row: WaitingSubjectRow) => row.longestStallDuration,
+      widthClassName: "w-[22%]",
+    },
+  ] satisfies readonly ResponsiveTableColumn<WaitingSubjectRow>[];
+  const cardFields = [
+    {
+      className: "",
+      key: "itemCount",
+      label: "待たせている項目数",
+      renderValue: (row: WaitingSubjectRow) => row.itemCount.toLocaleString(locale),
+      valueClassName: "font-semibold text-text-primary tabular-nums",
+    },
+    {
+      className: "",
+      key: "longestStallDuration",
+      label: "最長停滞時間",
+      renderValue: (row: WaitingSubjectRow) => row.longestStallDuration,
+      valueClassName: "font-semibold text-text-primary tabular-nums",
+    },
+  ] satisfies readonly ResponsiveCardField<WaitingSubjectRow>[];
 
   return (
-    <PageSection className="people-page" heading="担当者一覧" headingId="people-page-heading">
+    <PageSection
+      className="people-page w-full max-w-4xl justify-self-start"
+      heading="担当者一覧"
+      headingId="people-page-heading"
+    >
       {rows.length === 0 ? (
         <ContentState
           className="empty-state"
@@ -70,116 +191,30 @@ export function PeoplePage({
           status="empty"
         />
       ) : (
-        <>
-          <div
-            class="items-table-region table-scroll"
-            tabIndex={0}
-            role="region"
-            aria-label="担当者一覧表の横スクロール領域"
-          >
-            <table class="people-table">
-              <caption class="visually-hidden">
-                待ち相手ごとの待たせている項目数と最長停滞時間
-              </caption>
-              <thead>
-                <tr>
-                  <th scope="col">待ち相手</th>
-                  <th scope="col" aria-sort="descending">
-                    待たせている項目数
-                  </th>
-                  <th scope="col">最長停滞時間</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const viewerRow =
-                    row.subject.kind === "user" && isViewerLogin(row.subject.login, viewerLogin);
-                  return (
-                    <tr
-                      key={waitingSubjectKey(row.subject)}
-                      class={viewerRow ? "viewer-person-row" : undefined}
-                    >
-                      <th scope="row">
-                        {row.subject.kind === "user" ? (
-                          <PersonLink
-                            href={createPersonHref(row.subject.login)}
-                            label={row.label}
-                            login={row.subject.login}
-                            onSelect={onSelectPerson}
-                          />
-                        ) : (
-                          row.label
-                        )}
-                        {viewerRow && (
-                          <>
-                            {" "}
-                            <Pill className="viewer-person-badge" tone="neutral">
-                              <span aria-hidden="true">自分</span>
-                              <span class="visually-hidden">自分のアカウントです</span>
-                            </Pill>
-                          </>
-                        )}
-                      </th>
-                      <td>{row.itemCount.toLocaleString(locale)}</td>
-                      <td>{row.longestStallDuration}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <ol class="items-card-list people-card-list" aria-label="担当者一覧">
-            {rows.map((row) => {
-              const viewerCard =
-                row.subject.kind === "user" && isViewerLogin(row.subject.login, viewerLogin);
-              return (
-                <li
-                  key={waitingSubjectKey(row.subject)}
-                  class={viewerCard ? "viewer-person-card" : undefined}
-                >
-                  <article>
-                    <div class="item-card-heading">
-                      <h3>
-                        {row.subject.kind === "user" ? (
-                          <PersonLink
-                            href={createPersonHref(row.subject.login)}
-                            label={row.label}
-                            login={row.subject.login}
-                            onSelect={onSelectPerson}
-                          />
-                        ) : (
-                          row.label
-                        )}
-                        {viewerCard && (
-                          <>
-                            {" "}
-                            <Pill className="viewer-person-badge" tone="neutral">
-                              <span aria-hidden="true">自分</span>
-                              <span class="visually-hidden">自分のアカウントです</span>
-                            </Pill>
-                          </>
-                        )}
-                      </h3>
-                    </div>
-                    <dl class="item-card-summary">
-                      <div>
-                        <dt>待たせている項目数</dt>
-                        <dd>{row.itemCount.toLocaleString(locale)}</dd>
-                      </div>
-                      <div>
-                        <dt>最長停滞時間</dt>
-                        <dd>{row.longestStallDuration}</dd>
-                      </div>
-                    </dl>
-                  </article>
-                </li>
-              );
-            })}
-          </ol>
-        </>
+        <ResponsiveTableCardList
+          cardAriaLabel="担当者一覧"
+          cardFields={cardFields}
+          cardListClassName="people-card-list"
+          columns={tableColumns}
+          getRowPresentation={(row) => waitingSubjectRowPresentation(row, viewerLogin)}
+          rows={rows}
+          tableCaption="待ち相手ごとの待たせている項目数と最長停滞時間"
+          tableClassName="people-table max-w-3xl"
+          renderCardHeading={(row) => (
+            <h3 class="m-0 min-w-0 text-base leading-6 font-semibold">
+              <WaitingSubjectName
+                createPersonHref={createPersonHref}
+                onSelectPerson={onSelectPerson}
+                row={row}
+                viewerLogin={viewerLogin}
+              />
+            </h3>
+          )}
+          renderCardFooter={() => null}
+        />
       )}
       {unidentifiedItemCount > 0 && (
-        <p>
+        <p class="mt-4 mb-0 max-w-3xl text-sm text-text-muted">
           レビュワーの誰か待ちなど、待ち相手を特定できない項目が
           {unidentifiedItemCount.toLocaleString(locale)}件あります。
         </p>

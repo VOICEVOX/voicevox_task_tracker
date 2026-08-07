@@ -486,7 +486,7 @@ describe("Web UI", () => {
     );
   });
 
-  it("人の行から人ごとのページへ遷移し担当者ナビを現在ページとして保つ", () => {
+  it("人の行から人ごとのページへ遷移し担当者一覧へ戻る", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/people");
     renderApp(createPeoplePageSummary());
     const peopleNavigation = requiredElement<HTMLAnchorElement>(
@@ -506,6 +506,15 @@ describe("Web UI", () => {
       "@HiHo を待っている項目",
     );
     expect(peopleNavigation.getAttribute("aria-current")).toBe("page");
+    const backLink = requiredElement<HTMLAnchorElement>(".person-back-link");
+    expect(backLink.getAttribute("href")).toBe("/voicevox_task_tracker/people");
+
+    act(() => {
+      backLink.click();
+    });
+
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people");
+    expect(currentContainer().querySelector(".people-table")).not.toBeNull();
   });
 
   it("待ち相手の行がないときは空であることを表示する", () => {
