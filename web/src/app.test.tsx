@@ -1596,17 +1596,19 @@ describe("Web UI", () => {
     ).toBe("page");
     expect(details.textContent).toContain("GitHubで項目を開く");
     const currentAction = requiredElement<HTMLElement>(".current-action-panel");
-    expect(currentAction.textContent).toContain("現在のstatus");
+    expect(currentAction.textContent).toContain("現在の状態");
     expect(currentAction.textContent).toContain("ブロック中");
     expect(currentAction.textContent).toContain("次の担当");
-    expect(currentAction.textContent).toContain("waitingOn");
     expect(currentAction.textContent).toContain("VOICEVOX/sample-editor#103");
     expect(currentAction.textContent).toContain("次の行動");
     expect(currentAction.textContent).toContain("31日");
     expect(currentAction.textContent).toContain("低");
     expect(currentAction.textContent).toContain("12点");
-    expect(currentAction.textContent).not.toContain("review");
-    expect(currentAction.textContent).not.toContain("checks");
+    expect(currentAction.textContent).not.toContain("レビュー");
+    expect(currentAction.textContent).not.toContain("チェック");
+    expect([...currentAction.querySelectorAll("h5")].map((heading) => heading.textContent)).toEqual(
+      ["次の担当", "次の行動"],
+    );
     expect(currentAction.querySelectorAll(".waiting-on-list > li")).toHaveLength(2);
     expect(
       [...currentAction.querySelectorAll(".waiting-on-list > li strong")].map(
@@ -1630,8 +1632,19 @@ describe("Web UI", () => {
     expect(disclosures).toHaveLength(2);
     expect(disclosures.every((disclosure) => !disclosure.open)).toBe(true);
     expect(
-      disclosures.map((disclosure) => disclosure.querySelector("summary span")?.textContent),
+      disclosures.map((disclosure) => disclosure.querySelector("summary h4 > span")?.textContent),
     ).toEqual(["判定の根拠", "履歴"]);
+    expect(
+      [...details.querySelectorAll("h3, h4")].map(
+        (heading) => heading.querySelector("span:first-child")?.textContent ?? heading.textContent,
+      ),
+    ).toEqual([
+      "サンプル配布処理を実装する",
+      "現在の状況と次の行動",
+      "依存関係",
+      "判定の根拠",
+      "履歴",
+    ]);
     expect(requiredElement<HTMLDetailsElement>(".decision-details").open).toBe(false);
     expect(requiredElement<HTMLDetailsElement>(".history-details").open).toBe(false);
     expect(details.textContent).not.toContain("各種時刻");
@@ -1651,11 +1664,13 @@ describe("Web UI", () => {
     expect(details.textContent).toContain("GitHub上の根拠を開く");
     const decisionDetails = requiredElement<HTMLDetailsElement>(".decision-details");
     expect(
-      [...decisionDetails.querySelectorAll("summary > span")].map((part) => part.textContent),
+      [...decisionDetails.querySelectorAll("summary h4 > span")].map((part) => part.textContent),
     ).toEqual(["判定の根拠", "確度、重要度の加点、状態と行動の根拠"]);
     expect(
-      [...decisionDetails.querySelectorAll("h4")].map((heading) => heading.textContent),
-    ).toEqual(["primary blockerの選定理由", "重要度の加点内訳", "状態と次の行動の根拠"]);
+      [...decisionDetails.querySelectorAll(".detail-disclosure-content h5")].map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(["主要ブロッカーの選定理由", "重要度の加点内訳", "状態と次の行動の根拠"]);
     expect(decisionDetails.querySelector(".decision-candidate-list")).toBeNull();
     expect(decisionDetails.textContent).not.toContain("VOICEVOX/sample-editor#103");
     expect(decisionDetails.textContent).not.toContain("example/sample-distribution#42");
@@ -1667,8 +1682,11 @@ describe("Web UI", () => {
     expect(evidenceItem.querySelector("code")).toBeNull();
     expect(evidenceItem.querySelector("span")).toBeNull();
     const historyDetails = requiredElement<HTMLDetailsElement>(".history-details");
-    expect(historyDetails.querySelector("summary span")?.textContent).toBe("履歴");
+    expect(historyDetails.querySelector("summary h4 > span")?.textContent).toBe("履歴");
     expect(historyDetails.querySelectorAll(".history-event")).toHaveLength(1);
+    expect(historyDetails.querySelector(".history-event h5")?.textContent).toBe(
+      "状態と次の担当の変更",
+    );
     expect(historyDetails.textContent).not.toContain("前回との差分");
     expect(historyDetails.textContent).not.toContain("Run ");
     expect(historyDetails.textContent).toContain("進行中・当時の担当者");
@@ -1689,20 +1707,20 @@ describe("Web UI", () => {
     expect(document.activeElement?.textContent).toBe("サンプル配布処理を実装する");
   });
 
-  it("Pull Requestだけ現在の状況にreviewとchecksを表示する", async () => {
+  it("Pull Requestだけ現在の状況にレビューとチェックを表示する", async () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-editor/101");
     renderApp(sampleSummary);
     await flushUi();
 
     const currentState = requiredElement<HTMLElement>(".current-state-grid");
     const reviewState = [...currentState.querySelectorAll(":scope > div")].find(
-      (field) => field.querySelector("dt")?.textContent === "review",
+      (field) => field.querySelector("dt")?.textContent === "レビュー",
     );
     const checkState = [...currentState.querySelectorAll(":scope > div")].find(
-      (field) => field.querySelector("dt")?.textContent === "checks",
+      (field) => field.querySelector("dt")?.textContent === "チェック",
     );
-    assertNonNullable(reviewState, "review状態の表示がありません");
-    assertNonNullable(checkState, "checks状態の表示がありません");
+    assertNonNullable(reviewState, "レビュー状態の表示がありません");
+    assertNonNullable(checkState, "チェック状態の表示がありません");
     expect(reviewState.querySelector("dd")?.textContent).toBe("承認済み");
     expect(checkState.querySelector("dd")?.textContent).toBe("成功");
   });
@@ -1901,7 +1919,7 @@ describe("Web UI", () => {
     expect(currentAction.textContent).toContain("重要度高63点項目自体の重要さ");
 
     const importanceEvidence = requiredElement<HTMLElement>(".importance-evidence");
-    expect(importanceEvidence.querySelector("h4")?.textContent).toBe("重要度の加点内訳");
+    expect(importanceEvidence.querySelector("h5")?.textContent).toBe("重要度の加点内訳");
     expect(importanceEvidence.textContent).not.toContain("重要度 高・63点");
     expect(
       [...importanceEvidence.querySelectorAll(".importance-factor-source")].map(
@@ -1915,7 +1933,7 @@ describe("Web UI", () => {
     ).toEqual([
       "決定論優先度ラベル+25点優先度ラベルの重みで25点を加算します",
       "Codex判定重要な機能+20点Codex判定で20点です。利用者へ広く影響する重要な機能です",
-      "決定論milestone期限+10点期限付きのopen milestoneで10点です",
+      "決定論マイルストーン期限+10点期限付きのopen milestoneで10点です",
       "決定論依存先への影響+8点open項目1件とリポジトリ1件への影響で8点です",
     ]);
   });
@@ -2211,7 +2229,7 @@ describe("Web UI", () => {
     const details = requiredElement<HTMLElement>(".item-details-card");
     expect(details.querySelector(".confidence-uncertain")).not.toBeNull();
     expect(details.textContent).toContain("判定: 未確定");
-    expect(details.textContent).toContain("status候補");
+    expect(details.textContent).toContain("現在の状態候補");
     expect(details.textContent).toContain("次の担当候補");
     expect(details.textContent).toContain("次の行動候補");
     expect(details.textContent).toContain("判断者を確定できる根拠が不足");

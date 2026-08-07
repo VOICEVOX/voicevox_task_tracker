@@ -81,13 +81,24 @@ const CHECK_STATE_LABELS = {
 const IMPORTANCE_FACTOR_LABELS = {
   priorityLabel: "優先度ラベル",
   downstreamImpact: "依存先への影響",
-  milestoneDeadline: "milestone期限",
+  milestoneDeadline: "マイルストーン期限",
   significantFeature: "重要な機能",
   explicitDeadline: "明示された期限",
   futureRisk: "将来リスク",
 } satisfies Readonly<Record<ImportanceFactor["kind"], string>>;
 
 const HISTORY_PREVIEW_LIMIT = 5;
+const WAITING_ON_LIST_CLASS_NAME = "waiting-on-list m-0 grid list-none gap-3 p-0";
+const CONFIDENCE_LEVEL_CLASS_NAMES = {
+  confirmed: "border-state-success-border bg-state-success-background text-state-success-text",
+  high_estimate: "border-state-info-border bg-state-info-background text-state-info-text",
+  estimate: "border-state-warning-border bg-state-warning-background text-state-warning-text",
+  uncertain: "border-state-danger-border bg-state-danger-background text-state-danger-text",
+} satisfies Readonly<Record<ConfidencePresentation["level"], string>>;
+const DISCLOSURE_SUMMARY_CLASS_NAME =
+  "grid min-h-12 cursor-pointer list-none grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-2 py-3 text-text-secondary marker:content-none before:mt-0.5 before:text-text-muted before:content-['▸'] group-open:before:content-['▾'] [&::-webkit-details-marker]:hidden";
+const DISCLOSURE_HEADING_CLASS_NAME =
+  "m-0 flex min-w-0 items-baseline justify-between gap-x-4 gap-y-1 text-base font-bold max-narrow:flex-col";
 
 /** 項目詳細pageへ遷移し、通常のリンク操作も維持する。 */
 export function ItemDetailsLink({ children, href, nodeId, onSelect }: ItemDetailsLinkProps) {
@@ -165,7 +176,7 @@ function ConfidenceDisplay({
 }>) {
   return (
     <div
-      class={`confidence-panel confidence-${presentation.level}`}
+      class={`confidence-panel confidence-${presentation.level} grid gap-1 rounded-md border-l-4 px-3 py-2 text-sm ${CONFIDENCE_LEVEL_CLASS_NAMES[presentation.level]}`}
       data-confidence-level={presentation.level}
       role="status"
     >
@@ -208,17 +219,18 @@ function HistoryEvent({
   const before = formatResponsibilityHistoryValue(event.before, item, summary);
   const after = formatResponsibilityHistoryValue(event.after, item, summary);
   return (
-    <article class="history-event" data-history-kind={event.kind}>
-      <div>
-        <h4>状態とwaitingOnの変更</h4>
+    <article class="history-event grid gap-2 py-3" data-history-kind={event.kind}>
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h5 class="m-0 font-bold">状態と次の担当の変更</h5>
         <time
+          class="text-xs text-text-muted"
           dateTime={event.recordedAt}
           title={formatDateTime(event.recordedAt, summary.timezone, locale)}
         >
           {formatRelativeTime(event.recordedAt, now, locale)}
         </time>
       </div>
-      <p>
+      <p class="m-0 flex flex-wrap gap-2">
         <span>{before}</span>
         <span aria-hidden="true">→</span>
         <span class="visually-hidden">から</span>
@@ -249,10 +261,10 @@ function ItemHistory({
   return (
     <div class="item-history-content">
       {history.length === 0 ? (
-        <p>状態とwaitingOnの変更履歴はありません。</p>
+        <p class="m-0">状態と次の担当の変更履歴はありません。</p>
       ) : (
         <>
-          <ol class="history-list">
+          <ol class="history-list m-0 grid list-none divide-y divide-border-subtle p-0">
             {visibleHistory.map((event, index) => (
               <li key={`${event.kind}:${event.recordedAt}:${index.toString()}`}>
                 <HistoryEvent
@@ -268,7 +280,7 @@ function ItemHistory({
           {history.length > HISTORY_PREVIEW_LIMIT && (
             <ActionButton
               aria-expanded={showAll}
-              className="history-expand-button"
+              className="history-expand-button mt-3"
               type="button"
               onClick={() => {
                 setShowAll((current) => !current);
@@ -373,9 +385,9 @@ function WaitingOnCandidateItem({
     summary.confidenceThresholds,
   );
   return (
-    <li>
-      <div>
-        <strong>
+    <li class="min-w-0 border-l-2 border-border-default pl-3">
+      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <strong class="min-w-0 [overflow-wrap:anywhere]">
           <WaitingOnCandidateReference
             candidate={candidate}
             createItemHref={createItemHref}
@@ -389,12 +401,14 @@ function WaitingOnCandidateItem({
         {primaryBlockerNodeId === candidate.candidateId &&
           item.primaryWaitingOn.index === candidateIndex && (
             <Pill className="primary-blocker-badge" tone="danger">
-              主要blocker
+              主要ブロッカー
             </Pill>
           )}
-        <small class="waiting-on-confidence">確度区分: {candidatePresentation.label}</small>
+        <small class="waiting-on-confidence text-xs font-bold text-text-muted whitespace-nowrap">
+          確度区分: {candidatePresentation.label}
+        </small>
       </div>
-      <p>{candidate.reasonSummary}</p>
+      <p class="mt-1 mb-0 text-sm text-text-secondary">{candidate.reasonSummary}</p>
     </li>
   );
 }
@@ -422,7 +436,7 @@ function WaitingOnCandidates({
   const candidates = item.waitingOn.map((candidate, index) => ({ candidate, index }));
   if (candidates.length < 4) {
     return (
-      <ul class="waiting-on-list">
+      <ul class={WAITING_ON_LIST_CLASS_NAME}>
         {candidates.map(({ candidate, index }) => (
           <WaitingOnCandidateItem
             key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}
@@ -448,7 +462,7 @@ function WaitingOnCandidates({
   const otherCandidates = candidates.filter(({ index }) => index !== primaryCandidate.index);
   return (
     <>
-      <ul class="waiting-on-list primary-waiting-on-list">
+      <ul class={`${WAITING_ON_LIST_CLASS_NAME} primary-waiting-on-list`}>
         <WaitingOnCandidateItem
           candidate={primaryCandidate.candidate}
           candidateIndex={primaryCandidate.index}
@@ -461,9 +475,11 @@ function WaitingOnCandidates({
           summary={summary}
         />
       </ul>
-      <details class="other-waiting-on-candidates">
-        <summary>その他の候補{otherCandidates.length.toLocaleString()}件を表示</summary>
-        <ul class="waiting-on-list">
+      <details class="other-waiting-on-candidates mt-3">
+        <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
+          その他の候補{otherCandidates.length.toLocaleString()}件を表示
+        </summary>
+        <ul class={`${WAITING_ON_LIST_CLASS_NAME} mt-3`}>
           {otherCandidates.map(({ candidate, index }) => (
             <WaitingOnCandidateItem
               key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}
@@ -537,15 +553,19 @@ export function ItemDetailsContent({
   }, [item.nodeId]);
 
   return (
-    <article class="item-details-card" data-node-id={item.nodeId}>
-      <div class="item-details-heading">
-        <div>
+    <article class="item-details-card grid min-w-0 gap-6" data-node-id={item.nodeId}>
+      <div class="item-details-heading flex min-w-0 items-start justify-between gap-4 max-shell:flex-col">
+        <div class="min-w-0">
           <p class="item-reference">{item.displayReference}</p>
-          <h3 ref={heading} tabIndex={-1}>
+          <h3
+            class="mt-1 mb-0 text-item-title font-bold [overflow-wrap:anywhere] focus:outline-[3px] focus:outline-offset-4 focus:outline-accent-focus-ring"
+            ref={heading}
+            tabIndex={-1}
+          >
             {item.title}
           </h3>
         </div>
-        <div class="item-details-actions">
+        <div class="item-details-actions flex flex-wrap justify-end gap-x-4 gap-y-2 max-shell:justify-start">
           <SafeGitHubLink href={item.url}>GitHubで項目を開く</SafeGitHubLink>
           <a
             href={clearSelectionHref}
@@ -562,28 +582,35 @@ export function ItemDetailsContent({
         </div>
       </div>
 
-      <section aria-labelledby="current-action-heading" class="current-action-panel">
-        <div class="current-action-heading">
-          <h3 id="current-action-heading">現在の状況と次の行動</h3>
+      <section
+        aria-labelledby="current-action-heading"
+        class="current-action-panel grid min-w-0 gap-5 border-t border-border-subtle pt-5 lg:grid-cols-2"
+      >
+        <div class="current-action-heading lg:col-span-2">
+          <h4 id="current-action-heading" class="m-0 text-subsection-title font-bold">
+            現在の状況と次の行動
+          </h4>
         </div>
-        <dl class="current-state-grid">
-          <div>
-            <dt>{decisionFieldLabel("現在のstatus", presentation)}</dt>
-            <dd>
-              <strong>{statusLabel(item.status)}</strong>
+        <dl class="current-state-grid m-0 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4 gap-y-3 lg:col-span-2">
+          <div class="min-w-0 border-l-2 border-border-default pl-3">
+            <dt class="text-xs font-[750] text-text-muted">
+              {decisionFieldLabel("現在の状態", presentation)}
+            </dt>
+            <dd class="mt-1 mb-0 grid justify-items-start gap-1">
+              <strong class="text-lg text-text-primary">{statusLabel(item.status)}</strong>
             </dd>
           </div>
-          <div>
-            <dt>重要度</dt>
-            <dd>
+          <div class="min-w-0 border-l-2 border-border-default pl-3">
+            <dt class="text-xs font-[750] text-text-muted">重要度</dt>
+            <dd class="mt-1 mb-0 grid justify-items-start gap-1">
               <ImportanceBadge importance={item.importance} showLow={true} showScore={true} />
-              <span>項目自体の重要さ</span>
+              <span class="text-xs text-text-muted">項目自体の重要さ</span>
             </dd>
           </div>
-          <div>
-            <dt>停滞時間</dt>
-            <dd>
-              <strong>
+          <div class="min-w-0 border-l-2 border-border-default pl-3">
+            <dt class="text-xs font-[750] text-text-muted">停滞時間</dt>
+            <dd class="mt-1 mb-0 grid justify-items-start gap-1">
+              <strong class="text-lg text-text-primary">
                 <time
                   dateTime={item.stallSince}
                   title={formatDateTime(item.stallSince, summary.timezone, locale)}
@@ -591,34 +618,37 @@ export function ItemDetailsContent({
                   {formatStallDuration(item.stallSince, now)}
                 </time>
               </strong>
-              <span>停滞開始からの経過</span>
+              <span class="text-xs text-text-muted">停滞開始からの経過</span>
             </dd>
           </div>
           {item.type === "pull_request" && (
             <>
-              <div>
-                <dt>review</dt>
-                <dd>
-                  <strong>{REVIEW_STATE_LABELS[details.reviewState]}</strong>
+              <div class="min-w-0 border-l-2 border-border-default pl-3">
+                <dt class="text-xs font-[750] text-text-muted">レビュー</dt>
+                <dd class="mt-1 mb-0 grid justify-items-start gap-1">
+                  <strong class="text-lg text-text-primary">
+                    {REVIEW_STATE_LABELS[details.reviewState]}
+                  </strong>
                 </dd>
               </div>
-              <div>
-                <dt>checks</dt>
-                <dd>
-                  <strong>{CHECK_STATE_LABELS[details.checkState]}</strong>
+              <div class="min-w-0 border-l-2 border-border-default pl-3">
+                <dt class="text-xs font-[750] text-text-muted">チェック</dt>
+                <dd class="mt-1 mb-0 grid justify-items-start gap-1">
+                  <strong class="text-lg text-text-primary">
+                    {CHECK_STATE_LABELS[details.checkState]}
+                  </strong>
                 </dd>
               </div>
             </>
           )}
         </dl>
 
-        <div class="current-responsibility">
-          <h4 id="item-waiting-on-heading">
+        <div class="current-responsibility min-w-0">
+          <h5 id="item-waiting-on-heading" class="mt-0 mb-3 text-base font-bold">
             {decisionFieldLabel("次の担当", presentation)}
-            <span>waitingOn</span>
-          </h4>
+          </h5>
           {item.waitingOn.length === 0 ? (
-            <p>対応完了</p>
+            <p class="m-0">対応完了</p>
           ) : (
             <WaitingOnCandidates
               createItemHref={createItemHref}
@@ -632,19 +662,30 @@ export function ItemDetailsContent({
           )}
         </div>
 
-        <div class="next-action-card">
-          <h4>{decisionFieldLabel("次の行動", presentation)}</h4>
-          <p class={presentation.level === "uncertain" ? "uncertain-value" : ""}>
+        <div class="next-action-card min-w-0 border-l-2 border-state-info-border pl-3">
+          <h5 class="mt-0 mb-3 text-base font-bold">
+            {decisionFieldLabel("次の行動", presentation)}
+          </h5>
+          <p
+            class={
+              presentation.level === "uncertain"
+                ? "uncertain-value m-0 rounded-md border-2 border-dashed border-state-danger-border bg-state-danger-background p-3 text-lg font-bold text-text-primary"
+                : "m-0 text-lg font-bold text-text-primary"
+            }
+          >
             {item.nextAction}
           </p>
         </div>
 
         {additionalBlockerNodeIds.length > 0 && (
-          <div class="additional-blockers">
-            <h4>その他のblocker</h4>
-            <ul class="blocker-list">
+          <div class="additional-blockers min-w-0 lg:col-span-2">
+            <h5 class="mt-0 mb-3 text-base font-bold">その他のブロッカー</h5>
+            <ul class="blocker-list m-0 grid list-none gap-2 p-0">
               {additionalBlockerNodeIds.map((nodeId) => (
-                <li key={nodeId}>
+                <li
+                  class="min-w-0 border-l-4 border-state-danger-border py-1 pl-3 [overflow-wrap:anywhere]"
+                  key={nodeId}
+                >
                   <RelatedItemReference
                     createItemHref={createItemHref}
                     graphNodesByNodeId={graphNodesByNodeId}
@@ -660,11 +701,17 @@ export function ItemDetailsContent({
       </section>
 
       {hasItemDependencies(dependencyGraphView) && (
-        <section aria-labelledby="item-dependency-graph-heading" class="item-dependency-graph">
-          <h3 id="item-dependency-graph-heading" class="item-dependency-graph-heading">
+        <section
+          aria-labelledby="item-dependency-graph-heading"
+          class="item-dependency-graph grid min-w-0 gap-3 border-t border-border-subtle pt-5"
+        >
+          <h4
+            id="item-dependency-graph-heading"
+            class="item-dependency-graph-heading m-0 text-subsection-title font-bold"
+          >
             依存関係
-          </h3>
-          <p class="graph-selection-summary" aria-live="polite">
+          </h4>
+          <p class="graph-selection-summary m-0 text-sm text-text-secondary" aria-live="polite">
             {`この項目と現在有効な依存関係で直接つながる項目だけを、中心項目を含めて${dependencyGraphView.representedSourceNodeCount.toLocaleString(locale)}件表示します。${
               dependencyGraphView.omittedSourceNodeCount > 0
                 ? `表示上限外の隣接項目が${dependencyGraphView.omittedSourceNodeCount.toLocaleString(locale)}件あります。`
@@ -685,17 +732,21 @@ export function ItemDetailsContent({
         </section>
       )}
 
-      <details class="detail-disclosure decision-details">
-        <summary>
-          <span>判定の根拠</span>
-          <span>確度、重要度の加点、状態と行動の根拠</span>
+      <details class="detail-disclosure decision-details group border-t border-border-subtle">
+        <summary class={DISCLOSURE_SUMMARY_CLASS_NAME}>
+          <h4 class={DISCLOSURE_HEADING_CLASS_NAME}>
+            <span>判定の根拠</span>
+            <span class="text-xs font-semibold text-text-muted">
+              確度、重要度の加点、状態と行動の根拠
+            </span>
+          </h4>
         </summary>
-        <div class="detail-disclosure-content">
+        <div class="detail-disclosure-content grid gap-4 pb-4">
           <ConfidenceDisplay presentation={presentation} />
           {details.uncertainties.length > 0 && (
-            <div class="uncertainty-list">
-              <h4>不確実な点</h4>
-              <ul>
+            <div class="uncertainty-list rounded-md border border-state-danger-border bg-state-danger-background p-3 text-state-danger-text">
+              <h5 class="m-0 font-bold">不確実な点</h5>
+              <ul class="mt-2 mb-0 list-disc pl-6">
                 {details.uncertainties.map((uncertainty) => (
                   <li key={uncertainty}>{uncertainty}</li>
                 ))}
@@ -703,22 +754,24 @@ export function ItemDetailsContent({
             </div>
           )}
           {primaryBlockerNodeId != null && (
-            <div class="primary-selection-reason">
-              <h4>primary blockerの選定理由</h4>
-              <p>{item.primaryWaitingOn.selectionReason}</p>
+            <div class="primary-selection-reason border-l-4 border-border-strong bg-surface-sunken py-2 pl-3">
+              <h5 class="mt-0 mb-2 text-base font-bold">主要ブロッカーの選定理由</h5>
+              <p class="m-0">{item.primaryWaitingOn.selectionReason}</p>
             </div>
           )}
           <section class="importance-evidence" aria-labelledby="importance-evidence-heading">
-            <h4 id="importance-evidence-heading">重要度の加点内訳</h4>
+            <h5 id="importance-evidence-heading" class="mt-0 mb-3 text-base font-bold">
+              重要度の加点内訳
+            </h5>
             {details.importanceFactors.length === 0 ? (
-              <p>重要度の加点要因はありません。</p>
+              <p class="m-0 text-sm text-text-muted">重要度の加点要因はありません。</p>
             ) : (
-              <ol class="importance-factor-list">
+              <ol class="importance-factor-list m-0 grid list-none divide-y divide-border-subtle p-0">
                 {details.importanceFactors.map((factor) => {
                   const source = importanceFactorSource(factor.kind);
                   return (
-                    <li key={factor.kind}>
-                      <div>
+                    <li class="py-3" key={factor.kind}>
+                      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
                         <Pill
                           className={`importance-factor-source source-${source.kind}`}
                           tone={source.tone}
@@ -726,9 +779,11 @@ export function ItemDetailsContent({
                           {source.label}
                         </Pill>
                         <code>{IMPORTANCE_FACTOR_LABELS[factor.kind]}</code>
-                        <strong>+{factor.points.toLocaleString(locale)}点</strong>
+                        <strong class="ml-auto text-importance-high-text tabular-nums">
+                          +{factor.points.toLocaleString(locale)}点
+                        </strong>
                       </div>
-                      <p>{factor.detail}</p>
+                      <p class="mt-1 mb-0">{factor.detail}</p>
                     </li>
                   );
                 })}
@@ -736,14 +791,16 @@ export function ItemDetailsContent({
             )}
           </section>
           <section class="decision-evidence" aria-labelledby="decision-evidence-heading">
-            <h4 id="decision-evidence-heading">状態と次の行動の根拠</h4>
+            <h5 id="decision-evidence-heading" class="mt-0 mb-3 text-base font-bold">
+              状態と次の行動の根拠
+            </h5>
             {details.evidence.length === 0 ? (
-              <p>公開できる判定根拠はありません。</p>
+              <p class="m-0">公開できる判定根拠はありません。</p>
             ) : (
-              <ol class="evidence-list">
+              <ol class="evidence-list m-0 grid list-none divide-y divide-border-subtle p-0">
                 {details.evidence.map((evidence, index) => (
-                  <li key={`${evidence.sourceUrl}:${index.toString()}`}>
-                    <p>{evidence.summary}</p>
+                  <li class="py-3" key={`${evidence.sourceUrl}:${index.toString()}`}>
+                    <p class="mt-0 mb-2">{evidence.summary}</p>
                     <SafeGitHubLink href={evidence.sourceUrl}>GitHub上の根拠を開く</SafeGitHubLink>
                   </li>
                 ))}
@@ -753,12 +810,16 @@ export function ItemDetailsContent({
         </div>
       </details>
 
-      <details class="detail-disclosure history-details">
-        <summary>
-          <span>履歴</span>
-          <span>{details.history.length.toString()}件</span>
+      <details class="detail-disclosure history-details group border-t border-border-subtle">
+        <summary class={DISCLOSURE_SUMMARY_CLASS_NAME}>
+          <h4 class={DISCLOSURE_HEADING_CLASS_NAME}>
+            <span>履歴</span>
+            <span class="text-xs font-semibold text-text-muted">
+              {details.history.length.toString()}件
+            </span>
+          </h4>
         </summary>
-        <div class="detail-disclosure-content">
+        <div class="detail-disclosure-content pb-4">
           <ItemHistory
             key={item.nodeId}
             history={details.history}

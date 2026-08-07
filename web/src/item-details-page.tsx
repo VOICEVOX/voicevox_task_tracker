@@ -150,7 +150,7 @@ export function ItemDetailsPage({
       heading="項目詳細"
       headingId="item-details-page-heading"
     >
-      <div id="item-details" class="item-details-region" aria-live="polite">
+      <div id="item-details" class="item-details-region min-w-0 scroll-mt-4" aria-live="polite">
         {content}
       </div>
     </PageSection>
