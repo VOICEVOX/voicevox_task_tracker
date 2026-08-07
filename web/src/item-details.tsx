@@ -323,7 +323,7 @@ function RelatedItemReference({
     throw new TypeError(`blocker ${nodeId}の公開項目詳細がありません`);
   }
   return (
-    <SafeGitHubLink href={graphNode.url}>
+    <SafeGitHubLink href={graphNode.url} variant="inline">
       {graphNode.displayReference} {graphNode.title}
     </SafeGitHubLink>
   );
@@ -569,8 +569,10 @@ export function ItemDetailsContent({
             {item.title}
           </h3>
         </div>
-        <div class="item-details-actions flex flex-wrap justify-end gap-x-4 gap-y-2 max-shell:justify-start [&>a]:inline-flex [&>a]:min-h-11 [&>a]:items-center">
-          <SafeGitHubLink href={item.url}>GitHubで項目を開く</SafeGitHubLink>
+        <div class="item-details-actions flex flex-wrap justify-end gap-x-4 gap-y-2 max-shell:justify-start">
+          <SafeGitHubLink href={item.url} variant="action">
+            GitHubで開く
+          </SafeGitHubLink>
           <a
             href={clearSelectionHref}
             onClick={(event) => {
@@ -805,7 +807,9 @@ export function ItemDetailsContent({
                 {details.evidence.map((evidence, index) => (
                   <li class="py-3" key={`${evidence.sourceUrl}:${index.toString()}`}>
                     <p class="mt-0 mb-2">{evidence.summary}</p>
-                    <SafeGitHubLink href={evidence.sourceUrl}>GitHub上の根拠を開く</SafeGitHubLink>
+                    <SafeGitHubLink href={evidence.sourceUrl} variant="inline">
+                      GitHub上の根拠を開く
+                    </SafeGitHubLink>
                   </li>
                 ))}
               </ol>

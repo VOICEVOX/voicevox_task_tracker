@@ -330,7 +330,9 @@ function ItemTable({
             <ItemTitleLink createItemHref={createItemHref} onSelectItem={onSelectItem} row={row} />
           </span>
           <span class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-normal">
-            <SafeGitHubLink href={row.item.url}>GitHub</SafeGitHubLink>
+            <SafeGitHubLink href={row.item.url} variant="subtle">
+              GitHubで開く
+            </SafeGitHubLink>
             {row.item.repositoryFreshness === "stale" && (
               <Pill className="freshness-badge freshness-stale" tone="warning">
                 古い観測値
@@ -529,8 +531,10 @@ function ItemTable({
           </div>
         )}
         renderCardFooter={(row) => (
-          <div class="border-t border-border-subtle pt-3 [&>a]:flex [&>a]:min-h-11 [&>a]:w-full [&>a]:items-center [&>a]:justify-center [&>a]:rounded-md [&>a]:border [&>a]:border-action-border [&>a]:bg-action-background [&>a]:px-3 [&>a]:py-2 [&>a]:text-sm [&>a]:font-bold [&>a]:no-underline">
-            <SafeGitHubLink href={row.item.url}>GitHubで開く</SafeGitHubLink>
+          <div class="border-t border-border-subtle pt-3">
+            <SafeGitHubLink href={row.item.url} variant="button">
+              GitHubで開く
+            </SafeGitHubLink>
           </div>
         )}
       />

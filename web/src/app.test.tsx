@@ -1567,7 +1567,9 @@ describe("Web UI", () => {
 
     act(() => {
       render(
-        <SafeGitHubLink href="https://example.com/VOICEVOX/sample">危険リンク</SafeGitHubLink>,
+        <SafeGitHubLink href="https://example.com/VOICEVOX/sample" variant="inline">
+          危険リンク
+        </SafeGitHubLink>,
         currentContainer(),
       );
     });
@@ -1603,7 +1605,7 @@ describe("Web UI", () => {
         '.global-navigation a[href="/voicevox_task_tracker/items"]',
       ).getAttribute("aria-current"),
     ).toBe("page");
-    expect(details.textContent).toContain("GitHubで項目を開く");
+    expect(details.textContent).toContain("GitHubで開く");
     const currentAction = requiredElement<HTMLElement>(".current-action-panel");
     expect(currentAction.textContent).toContain("現在の状態");
     expect(currentAction.textContent).toContain("ブロック中");
