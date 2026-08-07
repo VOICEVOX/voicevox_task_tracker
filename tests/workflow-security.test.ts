@@ -20,6 +20,7 @@ const permissionsSchema = z.record(z.string(), permissionSchema);
 const stepSchema = z
   .object({
     env: z.record(z.string(), z.string()).optional(),
+    id: z.string().optional(),
     if: z.string().optional(),
     name: z.string().optional(),
     uses: z.string().optional(),
@@ -352,9 +353,10 @@ describe("日次workflow", () => {
     }
 
     const authenticationDirectory = "${{ runner.temp }}/codex-home";
+    const authenticationFingerprint = "${{ runner.temp }}/codex-auth-fingerprint";
     const placementStep = requiredStep(collectJob, "Codex認証ファイルを配置");
     const collectionStep = requiredStep(collectJob, "収集と解析を実行");
-    const cleanupStep = requiredStep(collectJob, "Codex認証ファイルを削除");
+    const cleanupStep = requiredStep(collectJob, "Codex認証関連ファイルを削除");
     if (placementStep.env == null || placementStep.run == null) {
       throw new TypeError("Codex認証ファイル配置stepの設定がありません");
     }
@@ -362,12 +364,13 @@ describe("日次workflow", () => {
       throw new TypeError("収集stepの環境変数がありません");
     }
     if (cleanupStep.run == null) {
-      throw new TypeError("Codex認証ファイル削除stepのコマンドがありません");
+      throw new TypeError("Codex認証関連ファイル削除stepのコマンドがありません");
     }
 
     expect(placementStep.env).toEqual({
       CODEX_AUTH_JSON: "${{ secrets.CODEX_AUTH_JSON }}",
     });
+    expect(placementStep.id).toBe("codex_auth_placement");
     expect(placementStep.run).toContain('[[ -z "$CODEX_AUTH_JSON" ]]');
     expect(placementStep.run).toContain("exit 1");
     expect(placementStep.run).toContain(`mkdir -p "${authenticationDirectory}"`);
@@ -376,6 +379,9 @@ describe("日次workflow", () => {
       `printf '%s' "$CODEX_AUTH_JSON" > "${authenticationDirectory}/auth.json"`,
     );
     expect(placementStep.run).toContain(`chmod 600 "${authenticationDirectory}/auth.json"`);
+    expect(placementStep.run).toContain(
+      `sha256sum "${authenticationDirectory}/auth.json" > "${authenticationFingerprint}"`,
+    );
     expect(placementStep.run).not.toContain("${{ secrets.CODEX_AUTH_JSON }}");
     expect(collectJob.steps.indexOf(placementStep)).toBeLessThan(
       collectJob.steps.indexOf(collectionStep),
@@ -390,8 +396,57 @@ describe("日次workflow", () => {
     expect(collectionStep.env["CODEX_HOME"]).toBe(authenticationDirectory);
     expect(collectionStep.env).not.toHaveProperty("OPENAI_API_KEY");
     expect(cleanupStep.if).toBe("always()");
-    expect(cleanupStep.run).toBe(`rm -rf "${authenticationDirectory}"`);
+    expect(cleanupStep.run).toContain(`rm -rf "${authenticationDirectory}"`);
+    expect(cleanupStep.run).toContain(`rm -f "${authenticationFingerprint}"`);
     expect(collectJob.steps.at(-1)).toEqual(cleanupStep);
+  });
+
+  it("更新されたCodex認証ファイルだけを書き戻し同期用secretを専用stepへ限定する", async () => {
+    const workflow = await readDailyWorkflow();
+    const collectJob = workflow.jobs["collect-analyze"];
+    if (collectJob == null) {
+      throw new TypeError("収集jobがありません");
+    }
+
+    const collectionStep = requiredStep(collectJob, "収集と解析を実行");
+    const synchronizationStep = requiredStep(
+      collectJob,
+      "更新されたCodex認証ファイルをsecretへ書き戻す",
+    );
+    const cleanupStep = requiredStep(collectJob, "Codex認証関連ファイルを削除");
+    if (synchronizationStep.run == null) {
+      throw new TypeError("Codex認証ファイル書き戻しstepのコマンドがありません");
+    }
+
+    expect(synchronizationStep.if).toBe(
+      "always() && steps.codex_auth_placement.outcome == 'success'",
+    );
+    expect(synchronizationStep.env).toEqual({
+      GH_TOKEN: "${{ secrets.CODEX_AUTH_SYNC_TOKEN }}",
+    });
+    expect(synchronizationStep.run).toContain('[[ -z "$GH_TOKEN" ]]');
+    expect(synchronizationStep.run).toContain("CODEX_AUTH_SYNC_TOKENが空");
+    expect(synchronizationStep.run).toContain(">&2");
+    expect(synchronizationStep.run).toContain("exit 1");
+    expect(synchronizationStep.run).toContain("sha256sum --check --status");
+    expect(synchronizationStep.run).toContain("gh secret set CODEX_AUTH_JSON");
+    expect(synchronizationStep.run).toContain('--repo "$GITHUB_REPOSITORY"');
+    expect(synchronizationStep.run).toContain('< "${{ runner.temp }}/codex-home/auth.json"');
+    expect(collectJob.steps.indexOf(collectionStep)).toBeLessThan(
+      collectJob.steps.indexOf(synchronizationStep),
+    );
+    expect(collectJob.steps.indexOf(synchronizationStep)).toBeLessThan(
+      collectJob.steps.indexOf(cleanupStep),
+    );
+    expect(JSON.stringify(collectionStep)).not.toContain("CODEX_AUTH_SYNC_TOKEN");
+    expect(
+      collectJob.steps.filter((step) => JSON.stringify(step).includes("CODEX_AUTH_SYNC_TOKEN")),
+    ).toEqual([synchronizationStep]);
+    for (const [jobName, job] of Object.entries(workflow.jobs)) {
+      if (jobName !== "collect-analyze") {
+        expect(JSON.stringify(job), jobName).not.toContain("CODEX_AUTH_SYNC_TOKEN");
+      }
+    }
   });
 
   it("外部secretを収集とDiscordのjobだけへ分離する", async () => {
@@ -405,7 +460,8 @@ describe("日次workflow", () => {
 
     expect(collectSource).toContain("GH_APP_PRIVATE_KEY");
     expect(collectSource).toContain("CODEX_AUTH_JSON");
-    expect(collectSource.match(/\$\{\{ secrets\./gu)).toHaveLength(2);
+    expect(collectSource).toContain("CODEX_AUTH_SYNC_TOKEN");
+    expect(collectSource.match(/\$\{\{ secrets\./gu)).toHaveLength(3);
     expect(collectSource).not.toContain("DISCORD_OPERATIONS_WEBHOOK_URL");
     expect(collectSource).not.toContain("DISCORD_WEBHOOK_URL");
     expect(persistSource).not.toContain("secrets.");

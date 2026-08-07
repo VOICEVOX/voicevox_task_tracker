@@ -93,6 +93,7 @@ jobs:
       - name: 後続job用CLIをビルド
         run: pnpm build:workflow-cli
       - name: Codex認証ファイルを配置
+        id: codex_auth_placement
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
         run: |
@@ -104,6 +105,8 @@ jobs:
           chmod 700 "${{ runner.temp }}/codex-home"
           printf '%s' "$CODEX_AUTH_JSON" > "${{ runner.temp }}/codex-home/auth.json"
           chmod 600 "${{ runner.temp }}/codex-home/auth.json"
+          sha256sum "${{ runner.temp }}/codex-home/auth.json" > "${{ runner.temp }}/codex-auth-fingerprint"
+          chmod 600 "${{ runner.temp }}/codex-auth-fingerprint"
       - name: 収集と解析を実行
         env:
           BACKFILL_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.backfill || 'none' }}
@@ -147,9 +150,27 @@ jobs:
           path: artifacts/run-reports/collect-analyze.json
           if-no-files-found: error
           retention-days: 30
-      - name: Codex認証ファイルを削除
+      - name: 更新されたCodex認証ファイルをsecretへ書き戻す
+        if: always() && steps.codex_auth_placement.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_AUTH_SYNC_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
+            exit 1
+          fi
+          if sha256sum --check --status "${{ runner.temp }}/codex-auth-fingerprint"; then
+            echo "Codex認証ファイルは更新されていません"
+            exit 0
+          fi
+          gh secret set CODEX_AUTH_JSON \
+            --repo "$GITHUB_REPOSITORY" \
+            < "${{ runner.temp }}/codex-home/auth.json"
+      - name: Codex認証関連ファイルを削除
         if: always()
-        run: rm -rf "${{ runner.temp }}/codex-home"
+        run: |
+          rm -rf "${{ runner.temp }}/codex-home"
+          rm -f "${{ runner.temp }}/codex-auth-fingerprint"
 
   persist-state:
     needs: collect-analyze

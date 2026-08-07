@@ -47,13 +47,14 @@ workflowでは`GH_APP_INSTALLATION_ID`を設定しません。
 
 repositoryのSettingsからActions variableとActions secretを登録します。
 
-| 名前                             | 種別     | 値                                    |
-| -------------------------------- | -------- | ------------------------------------- |
-| `GH_APP_ID`                      | Variable | GitHub Appの数値ID                    |
-| `GH_APP_PRIVATE_KEY`             | Secret   | GitHub Appから発行したPEM private key |
-| `CODEX_AUTH_JSON`                | Secret   | Codexの`auth.json`の中身              |
-| `DISCORD_WEBHOOK_URL`            | Secret   | 通常digest用のIncoming Webhook URL    |
-| `DISCORD_OPERATIONS_WEBHOOK_URL` | Secret   | 運用障害通知用のIncoming Webhook URL  |
+| 名前                             | 種別     | 値                                                  |
+| -------------------------------- | -------- | --------------------------------------------------- |
+| `GH_APP_ID`                      | Variable | GitHub Appの数値ID                                  |
+| `GH_APP_PRIVATE_KEY`             | Secret   | GitHub Appから発行したPEM private key               |
+| `CODEX_AUTH_JSON`                | Secret   | Codexの`auth.json`の中身                            |
+| `CODEX_AUTH_SYNC_TOKEN`          | Secret   | Codex認証同期用のfine-grained personal access token |
+| `DISCORD_WEBHOOK_URL`            | Secret   | 通常digest用のIncoming Webhook URL                  |
+| `DISCORD_OPERATIONS_WEBHOOK_URL` | Secret   | 運用障害通知用のIncoming Webhook URL                |
 
 PEM private keyは改行を保持したままsecretへ登録します。
 
@@ -63,18 +64,42 @@ PEM private keyは改行を保持したままsecretへ登録します。
 gh secret set CODEX_AUTH_JSON --repo VOICEVOX/voicevox_task_tracker < "${CODEX_HOME:-$HOME/.codex}/auth.json"
 ```
 
-現行の`config.yml`は`ai.authentication: auth-json`を指定します。
-`collect-analyze` jobは`CODEX_AUTH_JSON`を`${{ runner.temp }}/codex-home/auth.json`へ権限600で書き出し、このdirectoryを`CODEX_HOME`として収集stepへ渡します。
-Codexへ渡す認証用の環境変数は`CODEX_HOME`だけです。
-配置した`auth.json`はjobの成否を問わず終了時に削除します。
+`CODEX_AUTH_SYNC_TOKEN`にはfine-grained personal access tokenを登録します。
+次の設定で作成します。
 
-Codex CLIは実行のたびに`auth.json`のtokenを更新しますが、Actions上の更新はrunnerの破棄とともに失われます。
-Codex呼び出しが認証エラーで失敗するようになったら、ローカルのCodexへログインし直してから同じコマンドでsecretを登録し直します。
-認証情報を`config.yml`、branch、artifact、run logへ書きません。
+1. GitHubのユーザー設定からDeveloper settings、Personal access tokens、Fine-grained tokensを順に開きます。
+2. Resource ownerで対象repositoryの所有者を選びます。
+3. Repository accessをOnly select repositoriesにし、`VOICEVOX/voicevox_task_tracker`だけを選びます。
+4. Repository permissionsは`Secrets`の`Read and write`だけを与えます。
+5. Organizationのrepositoryを対象にする場合はOrganizationへ承認を申請し、承認後に使用します。
+
+作成したtokenをsecretへ登録します。
+実行するとtokenの入力を求められます。
+
+```console
+gh secret set CODEX_AUTH_SYNC_TOKEN --repo VOICEVOX/voicevox_task_tracker
+```
+
+現行の`config.yml`は`ai.authentication: auth-json`を指定します。
+`collect-analyze` jobは`CODEX_AUTH_JSON`を`${{ runner.temp }}/codex-home/auth.json`へ権限600で書き出します。
+配置時のsha256は指紋として`${{ runner.temp }}/codex-auth-fingerprint`へ保存します。
+`codex-home`を`CODEX_HOME`として収集stepへ渡します。
+Codexへ渡す認証用の環境変数は`CODEX_HOME`だけです。
+Codex CLIはaccess tokenの残り有効期間が5分未満になるとrefresh tokenでtokenを更新し、`auth.json`を書き換えます。
+このときrefresh token自体も新しい値へ入れ替わるため、更新後の`auth.json`を保存しないといずれ認証エラーになります。
+認証ファイルの配置に成功していれば、書き戻しstepは先行stepの成否を問わず実行します。
+`CODEX_AUTH_SYNC_TOKEN`はこのstepだけへ`GH_TOKEN`として渡し、空なら明示的に失敗します。
+書き戻しstepは配置時のsha256と現在の`auth.json`を比較します。
+変更がなければsecretを更新せず、変更があれば`gh secret set`で`CODEX_AUTH_JSON`を更新します。
+この同期が成功する限り、手動の再ログインとsecretの再登録なしにtokenの期限が延長され続けます。
+書き戻し後はjobの最後に`codex-home`と指紋ファイルを削除します。
+Codex認証情報と`CODEX_AUTH_SYNC_TOKEN`を`config.yml`、branch、artifact、run logへ書きません。
 
 repositoryのWorkflow permissionsは既定の読み取り専用にします。
 read and writeへ変更する必要はありません。
 全workflowはtop-levelの`permissions`を空にし、各jobで必要な権限だけを指定しています。
+`CODEX_AUTH_SYNC_TOKEN`はjobの`permissions`とは独立した資格情報です。
+同期のために既定のread-only設定や`collect-analyze`の`contents: read`を変更しません。
 `persist-state`、`notify-discord`、`notify-operations`は`tracker-state`へpushするため、それぞれ`contents: write`を指定します。
 これらのjobにはGitHub Actionsが`GITHUB_TOKEN`を自動発行するため、独自の`GITHUB_TOKEN` secretは登録しません。
 
@@ -84,7 +109,7 @@ workflowはCLIの実行前にremoteの`tracker-state`をlocal refへfetchし、C
 `tracker-state`へrulesetを設定する場合はGitHub Actionsによるstate更新を許可し、人間の通常作業branchとして使わないでください。
 
 `collect-analyze`は`artifacts/workflow/validated-run.json`へ検証済みsnapshot、通知候補、notification ledger、run report生成用の収集指標、AI cache、Pages URL、Discord送信設定だけを書きます。
-GitHub App key、installation token、Codex認証情報、Discord webhookはartifactへ含めません。
+GitHub App key、installation token、Codex認証情報、`CODEX_AUTH_SYNC_TOKEN`、Discord webhookはartifactへ含めません。
 artifactを利用する後続jobは同じartifactを再検証してから利用します。
 依存関係を再インストールせず`notify-discord`でCLIを動かすため、公開sourceから作った自己完結bundleも同じActions artifactへ保存します。
 収集時のCLI reportは収集jobの成否にかかわらず、run IDと試行番号を含む別のActions artifactへ保存します。
@@ -230,6 +255,7 @@ workflowはdefault branchからのscheduleまたは手動実行だけを許可�
 
 成功後に次を確認します。
 
+- `collect-analyze`の「更新されたCodex認証ファイルをsecretへ書き戻す」stepが成功していること
 - `tracker-state`がdefault branchと別の履歴を持つこと
 - `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知ledgerがまとまっていること
 - 後続の通知jobが実測時刻と実送信数を含むrun reportと通知ledgerのcommitを追加していること

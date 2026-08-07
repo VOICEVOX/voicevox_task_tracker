@@ -88,7 +88,10 @@ CI上では`性能profile` workflowを手動実行し、同じJSONをActions art
 前stageのartifactが存在しない場合や検証に失敗した場合は明示的なエラーで停止します。
 
 収集と判定はGitHub Appの認証情報を使います。
-現行の`config.yml`は`ai.authentication: auth-json`を指定し、Actionsの`collect-analyze` jobは`CODEX_AUTH_JSON`から一時的な`auth.json`を配置して`CODEX_HOME`を渡します。
+現行の`config.yml`は`ai.authentication: auth-json`を指定します。
+Actionsの`collect-analyze` jobは配置stepだけへ`CODEX_AUTH_JSON`を渡し、一時的な`auth.json`を配置して収集stepへ`CODEX_HOME`を渡します。
+`CODEX_AUTH_SYNC_TOKEN`は書き戻しstepだけへ`GH_TOKEN`として渡します。
+jobは一時ファイルを削除する前に、更新された`auth.json`を`CODEX_AUTH_JSON`へ同期します。
 `ai.enabled: true`のローカル実行ではlockfileで固定した`codex`に加え、`auth-json`なら`CODEX_HOME`直下の`auth.json`、`api-key`なら`OPENAI_API_KEY`が必要です。
 検証後のsnapshot、通知候補、notification ledger、run report生成用の収集指標、AI cacheを公開可能なartifactへ保存します。
 
@@ -271,7 +274,10 @@ mentionは通知量の調整に使わず、運用上必要なuserだけをallowl
 収集の診断に「端点を取得できなかった関係候補を除外しました」が出る場合は、archive済みrepositoryやOrganization外の参照先など、公開境界の外にある関係先が残っています。
 run自体は成功し、除外した関係候補は依存グラフへ載りません。
 
-Actions上でCodexの認証エラーが起きた場合は、ローカルのCodexへログインし直し、[デプロイ手順](DEPLOYMENT.md)のコマンドで`CODEX_AUTH_JSON`を登録し直します。
+Actions上でCodexの認証エラーが起きた場合は、まず過去の`collect-analyze`でCodex認証の書き戻しstepが失敗していないか確認します。
+書き戻しが失敗していたときは、`CODEX_AUTH_SYNC_TOKEN`の登録、tokenの有効期限、Organizationの承認、対象repositoryと`Secrets`の`Read and write`権限を確認して直し、`backfill: none`で再実行します。
+保存済みのCodex認証をrefreshできず、再実行でも回復しない場合だけローカルのCodexへログインし直します。
+[デプロイ手順](DEPLOYMENT.md)のコマンドで、新しい`auth.json`を`CODEX_AUTH_JSON`の初期値として登録します。
 
 `fallback`はCodexを利用できなかった項目を決定論的判定へ縮退した完全runです。
 PagesでAI unavailableと不確実性を確認し、原因を直して再実行します。
