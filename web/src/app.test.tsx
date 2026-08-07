@@ -314,9 +314,11 @@ describe("Web UI", () => {
     expect(currentContainer().querySelector(".aggregate-details")).toBeNull();
     const aiStateNotice = requiredElement<HTMLElement>(".ai-state-notice");
     const freshnessNotice = requiredElement<HTMLElement>(".repository-freshness-notice");
+    const overviewNotices = requiredElement<HTMLElement>(".overview-notices");
     const attentionSection = requiredElement<HTMLElement>(".attention-section");
+    expect(overviewNotices.firstElementChild).toBe(aiStateNotice);
     expect(aiStateNotice.nextElementSibling).toBe(freshnessNotice);
-    expect(freshnessNotice.nextElementSibling).toBe(attentionSection);
+    expect(overviewNotices.nextElementSibling).toBe(attentionSection);
     expect(freshnessNotice.textContent).toBe(
       "次のリポジトリの情報を取得できなかったため、前回の値を表示しています。対象: VOICEVOX/sample-core",
     );
@@ -1092,7 +1094,10 @@ describe("Web UI", () => {
     const highBadge = requiredElement<HTMLElement>(
       '.attention-list li[data-node-id="sample-item-editor-101"] .importance-badge',
     );
-    expect(highTitle.firstElementChild).toBe(highBadge);
+    const highImportanceSlot = highTitle.querySelector(":scope > .attention-importance-slot");
+    expect(highTitle.firstElementChild).toBe(highImportanceSlot);
+    expect(highImportanceSlot?.firstElementChild).toBe(highBadge);
+    expect(highImportanceSlot?.nextElementSibling?.querySelector("a")).not.toBeNull();
     expect(highBadge.textContent).toBe("高");
     expect(
       requiredElement<HTMLElement>(
@@ -1104,6 +1109,11 @@ describe("Web UI", () => {
         '.attention-list li[data-node-id="sample-item-engine-204"] .importance-badge',
       ),
     ).toBeNull();
+    expect(
+      requiredElement<HTMLElement>(
+        '.attention-list li[data-node-id="sample-item-engine-204"] .item-title-with-importance',
+      ).querySelector(":scope > .attention-importance-slot"),
+    ).not.toBeNull();
   });
 
   it("attention queueをseverity、対応優先度、影響範囲、停滞時間で並べる", () => {
