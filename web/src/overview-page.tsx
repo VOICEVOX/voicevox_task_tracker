@@ -41,21 +41,30 @@ function RelativeTimeDisplay({ locale, now, timezone, value }: RelativeTimeDispl
 function AiStateNotice({ ai }: Readonly<{ ai: PublicSummaryDto["ai"] }>) {
   if (!ai.enabled) {
     return (
-      <p class="notice ai-state-notice" role="status">
+      <p
+        class="notice ai-state-notice my-4 rounded-md border-l-4 border-state-info-border bg-state-info-background px-4 py-3.5 text-state-info-text"
+        role="status"
+      >
         AI分析は設定で無効です。確定ルールで表示しています。
       </p>
     );
   }
   if (!ai.available) {
     return (
-      <p class="notice notice-warning ai-state-notice" role="status">
+      <p
+        class="notice notice-warning ai-state-notice my-4 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3.5 text-state-warning-text"
+        role="status"
+      >
         AIを利用できなかったため、確定ルールと利用可能な前回結果で表示しています。
       </p>
     );
   }
   if (ai.degraded) {
     return (
-      <p class="notice notice-warning ai-state-notice" role="status">
+      <p
+        class="notice notice-warning ai-state-notice my-4 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3.5 text-state-warning-text"
+        role="status"
+      >
         AI分析の一部が縮退したため、確定ルールと利用可能な前回結果を併用しています。
       </p>
     );
@@ -199,7 +208,10 @@ export function OverviewPage(props: OverviewPageProps) {
     <>
       <AiStateNotice ai={props.summary.ai} />
       {staleRepositories.length > 0 && (
-        <p class="notice notice-warning repository-freshness-notice" role="status">
+        <p
+          class="notice notice-warning repository-freshness-notice my-4 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3.5 text-state-warning-text"
+          role="status"
+        >
           次のリポジトリの情報を取得できなかったため、前回の値を表示しています。対象:{" "}
           <span class="repository-freshness-targets">
             {formatStaleRepositoryNames(staleRepositories, props.locale)}

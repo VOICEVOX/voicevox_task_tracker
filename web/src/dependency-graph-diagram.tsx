@@ -304,7 +304,11 @@ export function DependencyGraphDiagram({
       break;
     case "failed":
       graph = (
-        <p class="notice notice-warning" role="alert" data-layout-status="failed">
+        <p
+          class="notice notice-warning my-4 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3.5 text-state-warning-text"
+          role="alert"
+          data-layout-status="failed"
+        >
           依存グラフを自動配置できませんでした。
         </p>
       );

@@ -22,9 +22,10 @@
     "format:check": "prettier --check ."
   },
   "devDependencies": {
-    "@openai/codex": "0.145.0",
     "@eslint/js": "^9.32.0",
+    "@openai/codex": "0.145.0",
     "@preact/preset-vite": "^2.10.6",
+    "@tailwindcss/vite": "4.3.3",
     "@types/mdast": "^4.0.4",
     "@types/node": "^24.1.0",
     "axe-core": "^4.12.1",
@@ -32,6 +33,7 @@
     "eslint-config-prettier": "^10.1.8",
     "jsdom": "^29.1.1",
     "prettier": "^3.6.2",
+    "tailwindcss": "4.3.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.1",
     "vite": "^6.1.0",
