@@ -16,6 +16,7 @@ import {
   statusLabel,
   waitingSubjectKey,
   type ItemTableRow,
+  type TableColumnKey,
   type TableSort,
 } from "./model.js";
 import {
@@ -24,6 +25,7 @@ import {
   type ResponsiveListRowPresentation,
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
+import { SortControls } from "./sort-controls.js";
 import { ActionButton, Pill } from "./ui.js";
 
 type PersonPageProps = Readonly<{
@@ -34,18 +36,41 @@ type PersonPageProps = Readonly<{
   now: Date;
   onSelectItem: (nodeId: string) => void;
   onSelectPeople: () => void;
+  onSortChange: (key: TableColumnKey) => void;
   onTeamIdsChange: (teamIds: readonly string[]) => void;
   onViewerIdentityToggle: () => void;
   peopleHref: string;
   selectedTeamIds: readonly string[];
+  sort: TableSort;
   summary: PublicSummaryDto;
   viewerIdentityAvailable: boolean;
 }>;
 
-const LONGEST_STALL_FIRST_SORT = {
-  key: "stall",
-  direction: "descending",
-} satisfies TableSort;
+const SORT_COLUMNS = [
+  {
+    key: "repository",
+    label: "リポジトリ",
+  },
+  {
+    key: "type",
+    label: "種別",
+  },
+  {
+    key: "importance",
+    label: "重要度",
+  },
+  {
+    key: "status",
+    label: "状態",
+  },
+  {
+    key: "stall",
+    label: "停滞時間",
+  },
+] satisfies readonly Readonly<{
+  key: TableColumnKey;
+  label: string;
+}>[];
 
 function waitingReason(row: ItemTableRow, login: string, teamIds: readonly string[]): string {
   return selectWaitingSubjectReasons(row.item, login, teamIds).join("、");
@@ -93,10 +118,12 @@ export function PersonPage({
   now,
   onSelectItem,
   onSelectPeople,
+  onSortChange,
   onTeamIdsChange,
   onViewerIdentityToggle,
   peopleHref,
   selectedTeamIds,
+  sort,
   summary,
   viewerIdentityAvailable,
 }: PersonPageProps) {
@@ -114,10 +141,10 @@ export function PersonPage({
       filterAndSortTableRows(
         createItemTableRows(summary, now).filter((row) => selectedNodeIds.has(row.item.nodeId)),
         createEmptyTableFilters(),
-        LONGEST_STALL_FIRST_SORT,
+        sort,
         locale,
       ),
-    [locale, now, selectedNodeIds, summary],
+    [locale, now, selectedNodeIds, sort, summary],
   );
   function changeTeam(teamId: string, selected: boolean): void {
     const nextTeamKeys = new Set(selectedTeamKeys);
@@ -166,22 +193,28 @@ export function PersonPage({
       widthClassName: "w-[52%]",
     },
     {
-      ariaSort: undefined,
+      ariaSort: sort.key === "status" ? sort.direction : "none",
       cellClassName: "wrap-anywhere",
       cellKind: "data",
       headerClassName: "",
       key: "status",
       label: "status",
+      onSort: () => {
+        onSortChange("status");
+      },
       renderCell: (row: ItemTableRow) => statusLabel(row.item.status),
       widthClassName: "w-[14%]",
     },
     {
-      ariaSort: "descending",
+      ariaSort: sort.key === "stall" ? sort.direction : "none",
       cellClassName: "whitespace-nowrap tabular-nums",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "stall",
       label: "停滞時間",
+      onSort: () => {
+        onSortChange("stall");
+      },
       renderCell: (row: ItemTableRow) => (
         <strong>{formatStallDuration(row.item.stallSince, now)}</strong>
       ),
@@ -295,6 +328,13 @@ export function PersonPage({
           ))}
         </fieldset>
       )}
+      <SortControls
+        className="person-sort-controls mb-4 grid grid-cols-[minmax(0,1fr)_auto] gap-2 sm:max-w-sm"
+        onSortChange={onSortChange}
+        options={SORT_COLUMNS}
+        selectId="person-sort-key"
+        sort={sort}
+      />
       {rows.length === 0 ? (
         <ContentState
           className="empty-state"

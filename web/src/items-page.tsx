@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
-import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
+import { UnreachableError } from "../../src/util/index.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
@@ -28,6 +28,7 @@ import {
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
 import { SafeGitHubLink } from "./safe-link.js";
+import { SortControls } from "./sort-controls.js";
 import { ActionButton, FORM_CONTROL_CLASS_NAME, Pill } from "./ui.js";
 
 const TABLE_PAGE_SIZE = 50;
@@ -303,19 +304,22 @@ function ItemTable({
 
   const tableColumns = [
     {
-      ariaSort: sort.key === "importance" ? sort.direction : undefined,
+      ariaSort: sort.key === "importance" ? sort.direction : "none",
       cellClassName: "importance-cell whitespace-nowrap",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "importance",
       label: "重要度",
+      onSort: () => {
+        updateSort("importance");
+      },
       renderCell: (row: ItemTableRow) => (
         <ImportanceBadge importance={row.item.importance} showLow={false} showScore={false} />
       ),
       widthClassName: "w-[10%]",
     },
     {
-      ariaSort: sort.key === "repository" ? sort.direction : undefined,
+      ariaSort: undefined,
       cellClassName: "min-w-0",
       cellKind: "row_header",
       headerClassName: "whitespace-nowrap",
@@ -344,32 +348,41 @@ function ItemTable({
       widthClassName: "w-[34%]",
     },
     {
-      ariaSort: sort.key === "status" ? sort.direction : undefined,
+      ariaSort: sort.key === "status" ? sort.direction : "none",
       cellClassName: "whitespace-nowrap",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "status",
       label: "状態",
+      onSort: () => {
+        updateSort("status");
+      },
       renderCell: (row: ItemTableRow) => statusLabel(row.item.status),
       widthClassName: "w-[18%]",
     },
     {
-      ariaSort: sort.key === "waitingOn" ? sort.direction : undefined,
+      ariaSort: sort.key === "waitingOn" ? sort.direction : "none",
       cellClassName: "leading-6 wrap-anywhere",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "waitingOn",
       label: "次の担当",
+      onSort: () => {
+        updateSort("waitingOn");
+      },
       renderCell: (row: ItemTableRow) => formatWaitingOn(row.item, summary),
       widthClassName: "w-[26%]",
     },
     {
-      ariaSort: sort.key === "stall" ? sort.direction : undefined,
+      ariaSort: sort.key === "stall" ? sort.direction : "none",
       cellClassName: "whitespace-nowrap tabular-nums",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "stall",
       label: "停滞",
+      onSort: () => {
+        updateSort("stall");
+      },
       renderCell: (row: ItemTableRow) => (
         <strong>{formatStallDuration(row.item.stallSince, now)}</strong>
       ),
@@ -413,38 +426,13 @@ function ItemTable({
           onClearSearch={onClearSearch}
           onSearchQueryChange={onSearchQueryChange}
         />
-        <div class="item-sort-controls grid grid-cols-[minmax(0,1fr)_auto] content-end gap-2 md:min-w-64">
-          <label class="col-span-full text-sm font-bold text-text-secondary" for="item-sort-key">
-            並び順
-          </label>
-          <select
-            class={`${FORM_CONTROL_CLASS_NAME} w-full`}
-            id="item-sort-key"
-            value={sort.key}
-            onChange={(event) => {
-              const selectedColumn = TABLE_COLUMNS.find(
-                (column) => column.key === event.currentTarget.value,
-              );
-              assertNonNullable(selectedColumn, "選択された並び順がありません");
-              updateSort(selectedColumn.key);
-            }}
-          >
-            {TABLE_COLUMNS.map((column) => (
-              <option key={column.key} value={column.key}>
-                {column.label}
-              </option>
-            ))}
-          </select>
-          <ActionButton
-            type="button"
-            aria-label={`並び順を${sort.direction === "ascending" ? "降順" : "昇順"}に変更`}
-            onClick={() => {
-              updateSort(sort.key);
-            }}
-          >
-            {sort.direction === "ascending" ? "昇順 ↑" : "降順 ↓"}
-          </ActionButton>
-        </div>
+        <SortControls
+          className="item-sort-controls grid grid-cols-[minmax(0,1fr)_auto] content-end gap-2 md:min-w-64"
+          onSortChange={updateSort}
+          options={TABLE_COLUMNS}
+          selectId="item-sort-key"
+          sort={sort}
+        />
         <details class="item-filters border-t border-border-subtle pt-2 md:col-span-2">
           <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
             <span class="ml-1 inline-flex max-w-[calc(100%_-_2rem)] flex-wrap items-center gap-x-3 gap-y-1 align-middle">

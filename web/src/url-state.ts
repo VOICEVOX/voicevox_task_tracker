@@ -62,6 +62,7 @@ const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
   "sort",
   "direction",
 ];
+const PERSON_QUERY_PARAMETER_NAMES: readonly string[] = ["teams", "sort", "direction"];
 
 const tableColumnKeySchema = z.enum([
   "repository",
@@ -71,6 +72,7 @@ const tableColumnKeySchema = z.enum([
   "waitingOn",
   "stall",
 ]);
+const personTableColumnKeySchema = tableColumnKeySchema.exclude(["waitingOn"]);
 const sortDirectionSchema = z.enum(["ascending", "descending"]);
 const filterValueSchema = z
   .string()
@@ -447,7 +449,9 @@ function parsePersonQuery(
   state: WebViewState;
 }> {
   const parameters = new URLSearchParams(search);
-  let sanitized = [...parameters.keys()].some((name) => name !== "teams");
+  const defaults = createWebViewState(route);
+  const allowedNames = new Set<string>(PERSON_QUERY_PARAMETER_NAMES);
+  let sanitized = [...parameters.keys()].some((name) => !allowedNames.has(name));
   const parsedTeams = parseParameter(parameters, "teams", filterValueSchema);
   const teamIds: string[] = [];
   const teamKeys = new Set<string>();
@@ -478,12 +482,28 @@ function parsePersonQuery(
       break;
   }
 
+  const sortKey = parameterValueOr(
+    parseParameter(parameters, "sort", personTableColumnKeySchema),
+    defaults.tableSort.key,
+  );
+  const sortDirection = parameterValueOr(
+    parseParameter(parameters, "direction", sortDirectionSchema),
+    defaults.tableSort.direction,
+  );
+  sanitized ||= sortKey.invalid || sortDirection.invalid;
+
   return {
     sanitized,
-    state: createWebViewState({
-      ...route,
-      teamIds,
-    }),
+    state: {
+      ...createWebViewState({
+        ...route,
+        teamIds,
+      }),
+      tableSort: {
+        key: sortKey.value,
+        direction: sortDirection.value,
+      },
+    },
   };
 }
 
@@ -586,6 +606,16 @@ function appendNonEmptyParameter(parameters: URLSearchParams, name: string, valu
   }
 }
 
+function appendTableSortParameters(parameters: URLSearchParams, state: WebViewState): void {
+  const defaultSort = createWebViewState(state.route).tableSort;
+  if (state.tableSort.key !== defaultSort.key) {
+    parameters.set("sort", state.tableSort.key);
+  }
+  if (state.tableSort.direction !== defaultSort.direction) {
+    parameters.set("direction", state.tableSort.direction);
+  }
+}
+
 function createRoutePath(basePath: string, route: WebRoute): string {
   const parsedBasePath = basePathSchema.parse(basePath);
   const pathPrefix = parsedBasePath === "/" ? "" : parsedBasePath.slice(0, -1);
@@ -607,12 +637,13 @@ function createRoutePath(basePath: string, route: WebRoute): string {
 export function createWebViewHref(basePath: string, state: WebViewState): string {
   const pathname = createRoutePath(basePath, state.route);
   if (state.route.page === "person") {
-    if (state.route.teamIds.length === 0) {
-      return pathname;
-    }
     const parameters = new URLSearchParams();
-    parameters.set("teams", state.route.teamIds.join(","));
-    return `${pathname}?${parameters.toString()}`;
+    if (state.route.teamIds.length > 0) {
+      parameters.set("teams", state.route.teamIds.join(","));
+    }
+    appendTableSortParameters(parameters, state);
+    const query = parameters.toString();
+    return `${pathname}${query.length === 0 ? "" : `?${query}`}`;
   }
   if (state.route.page !== "items") {
     return pathname;
@@ -626,12 +657,7 @@ export function createWebViewHref(basePath: string, state: WebViewState): string
       state.tableFilters[definition.key],
     );
   }
-  if (state.tableSort.key !== "stall") {
-    parameters.set("sort", state.tableSort.key);
-  }
-  if (state.tableSort.direction !== "descending") {
-    parameters.set("direction", state.tableSort.direction);
-  }
+  appendTableSortParameters(parameters, state);
   const query = parameters.toString();
   return `${pathname}${query.length === 0 ? "" : `?${query}`}`;
 }

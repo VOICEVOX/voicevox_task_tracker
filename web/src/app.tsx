@@ -10,6 +10,7 @@ import { ItemsPage } from "./items-page.js";
 import {
   collectWaitingTeamIds,
   createTableFilterOptions,
+  TABLE_COLUMN_NATURAL_SORT_DIRECTIONS,
   type TableColumnKey,
   waitingSubjectKey,
 } from "./model.js";
@@ -212,18 +213,19 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
   }
 
   function replaceTableSort(key: TableColumnKey): void {
-    if (viewState.route.page !== "items") {
-      throw new TypeError("項目一覧以外では表の並び順を変更できません");
+    if (viewState.route.page !== "items" && viewState.route.page !== "person") {
+      throw new TypeError("項目一覧と担当者ページ以外では表の並び順を変更できません");
+    }
+    let direction = TABLE_COLUMN_NATURAL_SORT_DIRECTIONS[key];
+    if (viewState.tableSort.key === key) {
+      direction = viewState.tableSort.direction === "ascending" ? "descending" : "ascending";
     }
     navigate(
       {
         ...viewState,
         tableSort: {
           key,
-          direction:
-            viewState.tableSort.key === key && viewState.tableSort.direction === "ascending"
-              ? "descending"
-              : "ascending",
+          direction,
         },
       },
       "replace",
@@ -425,6 +427,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
               }),
             )}
             selectedTeamIds={viewState.route.teamIds}
+            sort={viewState.tableSort}
             summary={summary}
             viewerIdentityAvailable={viewerIdentityState.status === "available"}
             onSelectItem={selectItem}
@@ -436,6 +439,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
                 "push",
               );
             }}
+            onSortChange={replaceTableSort}
             onTeamIdsChange={replacePersonTeamIds}
             onViewerIdentityToggle={toggleViewerIdentity}
           />
