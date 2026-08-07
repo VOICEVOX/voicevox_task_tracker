@@ -314,9 +314,11 @@ describe("Web UI", () => {
     expect(currentContainer().querySelector(".aggregate-details")).toBeNull();
     const aiStateNotice = requiredElement<HTMLElement>(".ai-state-notice");
     const freshnessNotice = requiredElement<HTMLElement>(".repository-freshness-notice");
+    const overviewNotices = requiredElement<HTMLElement>(".overview-notices");
     const attentionSection = requiredElement<HTMLElement>(".attention-section");
+    expect(overviewNotices.firstElementChild).toBe(aiStateNotice);
     expect(aiStateNotice.nextElementSibling).toBe(freshnessNotice);
-    expect(freshnessNotice.nextElementSibling).toBe(attentionSection);
+    expect(overviewNotices.nextElementSibling).toBe(attentionSection);
     expect(freshnessNotice.textContent).toBe(
       "次のリポジトリの情報を取得できなかったため、前回の値を表示しています。対象: VOICEVOX/sample-core",
     );
@@ -484,7 +486,7 @@ describe("Web UI", () => {
     );
   });
 
-  it("人の行から人ごとのページへ遷移し担当者ナビを現在ページとして保つ", () => {
+  it("人の行から人ごとのページへ遷移し担当者一覧へ戻る", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/people");
     renderApp(createPeoplePageSummary());
     const peopleNavigation = requiredElement<HTMLAnchorElement>(
@@ -504,6 +506,15 @@ describe("Web UI", () => {
       "@HiHo を待っている項目",
     );
     expect(peopleNavigation.getAttribute("aria-current")).toBe("page");
+    const backLink = requiredElement<HTMLAnchorElement>(".person-back-link");
+    expect(backLink.getAttribute("href")).toBe("/voicevox_task_tracker/people");
+
+    act(() => {
+      backLink.click();
+    });
+
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people");
+    expect(currentContainer().querySelector(".people-table")).not.toBeNull();
   });
 
   it("待ち相手の行がないときは空であることを表示する", () => {
@@ -1092,7 +1103,10 @@ describe("Web UI", () => {
     const highBadge = requiredElement<HTMLElement>(
       '.attention-list li[data-node-id="sample-item-editor-101"] .importance-badge',
     );
-    expect(highTitle.firstElementChild).toBe(highBadge);
+    const highImportanceSlot = highTitle.querySelector(":scope > .attention-importance-slot");
+    expect(highTitle.firstElementChild).toBe(highImportanceSlot);
+    expect(highImportanceSlot?.firstElementChild).toBe(highBadge);
+    expect(highImportanceSlot?.nextElementSibling?.querySelector("a")).not.toBeNull();
     expect(highBadge.textContent).toBe("高");
     expect(
       requiredElement<HTMLElement>(
@@ -1104,6 +1118,11 @@ describe("Web UI", () => {
         '.attention-list li[data-node-id="sample-item-engine-204"] .importance-badge',
       ),
     ).toBeNull();
+    expect(
+      requiredElement<HTMLElement>(
+        '.attention-list li[data-node-id="sample-item-engine-204"] .item-title-with-importance',
+      ).querySelector(":scope > .attention-importance-slot"),
+    ).not.toBeNull();
   });
 
   it("attention queueをseverity、対応優先度、影響範囲、停滞時間で並べる", () => {
@@ -1548,7 +1567,9 @@ describe("Web UI", () => {
 
     act(() => {
       render(
-        <SafeGitHubLink href="https://example.com/VOICEVOX/sample">危険リンク</SafeGitHubLink>,
+        <SafeGitHubLink href="https://example.com/VOICEVOX/sample" variant="inline">
+          危険リンク
+        </SafeGitHubLink>,
         currentContainer(),
       );
     });
@@ -1584,19 +1605,21 @@ describe("Web UI", () => {
         '.global-navigation a[href="/voicevox_task_tracker/items"]',
       ).getAttribute("aria-current"),
     ).toBe("page");
-    expect(details.textContent).toContain("GitHubで項目を開く");
+    expect(details.textContent).toContain("GitHubで開く");
     const currentAction = requiredElement<HTMLElement>(".current-action-panel");
-    expect(currentAction.textContent).toContain("現在のstatus");
+    expect(currentAction.textContent).toContain("現在の状態");
     expect(currentAction.textContent).toContain("ブロック中");
     expect(currentAction.textContent).toContain("次の担当");
-    expect(currentAction.textContent).toContain("waitingOn");
     expect(currentAction.textContent).toContain("VOICEVOX/sample-editor#103");
     expect(currentAction.textContent).toContain("次の行動");
     expect(currentAction.textContent).toContain("31日");
     expect(currentAction.textContent).toContain("低");
     expect(currentAction.textContent).toContain("12点");
-    expect(currentAction.textContent).not.toContain("review");
-    expect(currentAction.textContent).not.toContain("checks");
+    expect(currentAction.textContent).not.toContain("レビュー");
+    expect(currentAction.textContent).not.toContain("チェック");
+    expect([...currentAction.querySelectorAll("h5")].map((heading) => heading.textContent)).toEqual(
+      ["次の担当", "次の行動"],
+    );
     expect(currentAction.querySelectorAll(".waiting-on-list > li")).toHaveLength(2);
     expect(
       [...currentAction.querySelectorAll(".waiting-on-list > li strong")].map(
@@ -1620,8 +1643,19 @@ describe("Web UI", () => {
     expect(disclosures).toHaveLength(2);
     expect(disclosures.every((disclosure) => !disclosure.open)).toBe(true);
     expect(
-      disclosures.map((disclosure) => disclosure.querySelector("summary span")?.textContent),
+      disclosures.map((disclosure) => disclosure.querySelector("summary h4 > span")?.textContent),
     ).toEqual(["判定の根拠", "履歴"]);
+    expect(
+      [...details.querySelectorAll("h3, h4")].map(
+        (heading) => heading.querySelector("span:first-child")?.textContent ?? heading.textContent,
+      ),
+    ).toEqual([
+      "サンプル配布処理を実装する",
+      "現在の状況と次の行動",
+      "依存関係",
+      "判定の根拠",
+      "履歴",
+    ]);
     expect(requiredElement<HTMLDetailsElement>(".decision-details").open).toBe(false);
     expect(requiredElement<HTMLDetailsElement>(".history-details").open).toBe(false);
     expect(details.textContent).not.toContain("各種時刻");
@@ -1641,11 +1675,13 @@ describe("Web UI", () => {
     expect(details.textContent).toContain("GitHub上の根拠を開く");
     const decisionDetails = requiredElement<HTMLDetailsElement>(".decision-details");
     expect(
-      [...decisionDetails.querySelectorAll("summary > span")].map((part) => part.textContent),
+      [...decisionDetails.querySelectorAll("summary h4 > span")].map((part) => part.textContent),
     ).toEqual(["判定の根拠", "確度、重要度の加点、状態と行動の根拠"]);
     expect(
-      [...decisionDetails.querySelectorAll("h4")].map((heading) => heading.textContent),
-    ).toEqual(["primary blockerの選定理由", "重要度の加点内訳", "状態と次の行動の根拠"]);
+      [...decisionDetails.querySelectorAll(".detail-disclosure-content h5")].map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(["主要ブロッカーの選定理由", "重要度の加点内訳", "状態と次の行動の根拠"]);
     expect(decisionDetails.querySelector(".decision-candidate-list")).toBeNull();
     expect(decisionDetails.textContent).not.toContain("VOICEVOX/sample-editor#103");
     expect(decisionDetails.textContent).not.toContain("example/sample-distribution#42");
@@ -1657,8 +1693,11 @@ describe("Web UI", () => {
     expect(evidenceItem.querySelector("code")).toBeNull();
     expect(evidenceItem.querySelector("span")).toBeNull();
     const historyDetails = requiredElement<HTMLDetailsElement>(".history-details");
-    expect(historyDetails.querySelector("summary span")?.textContent).toBe("履歴");
+    expect(historyDetails.querySelector("summary h4 > span")?.textContent).toBe("履歴");
     expect(historyDetails.querySelectorAll(".history-event")).toHaveLength(1);
+    expect(historyDetails.querySelector(".history-event h5")?.textContent).toBe(
+      "状態と次の担当の変更",
+    );
     expect(historyDetails.textContent).not.toContain("前回との差分");
     expect(historyDetails.textContent).not.toContain("Run ");
     expect(historyDetails.textContent).toContain("進行中・当時の担当者");
@@ -1679,20 +1718,20 @@ describe("Web UI", () => {
     expect(document.activeElement?.textContent).toBe("サンプル配布処理を実装する");
   });
 
-  it("Pull Requestだけ現在の状況にreviewとchecksを表示する", async () => {
+  it("Pull Requestだけ現在の状況にレビューとチェックを表示する", async () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-editor/101");
     renderApp(sampleSummary);
     await flushUi();
 
     const currentState = requiredElement<HTMLElement>(".current-state-grid");
     const reviewState = [...currentState.querySelectorAll(":scope > div")].find(
-      (field) => field.querySelector("dt")?.textContent === "review",
+      (field) => field.querySelector("dt")?.textContent === "レビュー",
     );
     const checkState = [...currentState.querySelectorAll(":scope > div")].find(
-      (field) => field.querySelector("dt")?.textContent === "checks",
+      (field) => field.querySelector("dt")?.textContent === "チェック",
     );
-    assertNonNullable(reviewState, "review状態の表示がありません");
-    assertNonNullable(checkState, "checks状態の表示がありません");
+    assertNonNullable(reviewState, "レビュー状態の表示がありません");
+    assertNonNullable(checkState, "チェック状態の表示がありません");
     expect(reviewState.querySelector("dd")?.textContent).toBe("承認済み");
     expect(checkState.querySelector("dd")?.textContent).toBe("成功");
   });
@@ -1891,7 +1930,7 @@ describe("Web UI", () => {
     expect(currentAction.textContent).toContain("重要度高63点項目自体の重要さ");
 
     const importanceEvidence = requiredElement<HTMLElement>(".importance-evidence");
-    expect(importanceEvidence.querySelector("h4")?.textContent).toBe("重要度の加点内訳");
+    expect(importanceEvidence.querySelector("h5")?.textContent).toBe("重要度の加点内訳");
     expect(importanceEvidence.textContent).not.toContain("重要度 高・63点");
     expect(
       [...importanceEvidence.querySelectorAll(".importance-factor-source")].map(
@@ -1905,7 +1944,7 @@ describe("Web UI", () => {
     ).toEqual([
       "決定論優先度ラベル+25点優先度ラベルの重みで25点を加算します",
       "Codex判定重要な機能+20点Codex判定で20点です。利用者へ広く影響する重要な機能です",
-      "決定論milestone期限+10点期限付きのopen milestoneで10点です",
+      "決定論マイルストーン期限+10点期限付きのopen milestoneで10点です",
       "決定論依存先への影響+8点open項目1件とリポジトリ1件への影響で8点です",
     ]);
   });
@@ -2036,7 +2075,7 @@ describe("Web UI", () => {
     await enterSearch("blocked");
 
     const itemsSection = requiredElement<HTMLElement>('[aria-labelledby="items-heading"]');
-    expect(itemsSection.querySelector(".section-heading > p")?.textContent).toBe(
+    expect(itemsSection.querySelector(".section-heading > div > p")?.textContent).toBe(
       "1件を表示対象にしています。",
     );
     expect(currentContainer().querySelector(".search-status")).toBeNull();
@@ -2201,7 +2240,7 @@ describe("Web UI", () => {
     const details = requiredElement<HTMLElement>(".item-details-card");
     expect(details.querySelector(".confidence-uncertain")).not.toBeNull();
     expect(details.textContent).toContain("判定: 未確定");
-    expect(details.textContent).toContain("status候補");
+    expect(details.textContent).toContain("現在の状態候補");
     expect(details.textContent).toContain("次の担当候補");
     expect(details.textContent).toContain("次の行動候補");
     expect(details.textContent).toContain("判断者を確定できる根拠が不足");
@@ -2371,16 +2410,42 @@ describe("Web UI", () => {
   it("主要な文字色と背景色がWCAG AAのコントラスト比を満たす", () => {
     const colorPairs = [
       ["18213b", "f4f7fb"],
-      ["175bc1", "ffffff"],
-      ["4b5f86", "ffffff"],
-      ["52617b", "ffffff"],
+      ["18213b", "ffffff"],
+      ["ffffff", "18213b"],
+      ["34435f", "ffffff"],
+      ["34435f", "f7f9fc"],
+      ["34435f", "eef4fc"],
+      ["596985", "f4f7fb"],
       ["596985", "ffffff"],
-      ["173f72", "d6e9ff"],
-      ["435169", "edf0f5"],
-      ["643000", "ffebc9"],
+      ["596985", "f7f9fc"],
+      ["596985", "eef4fc"],
+      ["596985", "fff5dc"],
+      ["175bc1", "f4f7fb"],
+      ["175bc1", "ffffff"],
+      ["175bc1", "f7f9fc"],
+      ["175bc1", "eef4fc"],
+      ["175bc1", "fff5dc"],
+      ["0b3d87", "eef4fc"],
+      ["173f72", "eef4fc"],
       ["173f72", "e8f3ff"],
+      ["174f39", "ddf4e9"],
       ["5a3500", "fff5dc"],
       ["6b2430", "fff0f2"],
+      ["435169", "eef0f3"],
+      ["3d285b", "eee5fa"],
+      ["3d285b", "ffffff"],
+      ["18213b", "eef4fc"],
+      ["18213b", "f7f9fc"],
+      ["18213b", "fff5dc"],
+      ["18213b", "fff0f2"],
+      ["18213b", "f5f8fd"],
+      ["18213b", "eef7ff"],
+      ["18213b", "fff8e8"],
+      ["095f45", "f5f8fd"],
+      ["095f45", "eef7ff"],
+      ["095f45", "fff8e8"],
+      ["173f72", "f7f9fc"],
+      ["6b2430", "ffffff"],
     ] satisfies readonly Readonly<[string, string]>[];
 
     for (const [foreground, background] of colorPairs) {

@@ -10,7 +10,9 @@ import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { createItemGraphView } from "./graph-model.js";
 import { ItemDetailsContent } from "./item-details.js";
+import { ContentState, PageSection } from "./layout.js";
 import { createItemDetailsMap } from "./model.js";
+import { ActionButton } from "./ui.js";
 import { type ItemRouteTarget } from "./url-state.js";
 
 type ItemDetailsPageProps = Readonly<{
@@ -21,6 +23,7 @@ type ItemDetailsPageProps = Readonly<{
   now: Date;
   onClearSelection: () => void;
   onSelectItem: (nodeId: string) => void;
+  showHeadingFocusRing: boolean;
   summary: PublicSummaryDto;
   target: ItemRouteTarget;
 }>;
@@ -51,6 +54,7 @@ export function ItemDetailsPage({
   now,
   onClearSelection,
   onSelectItem,
+  showHeadingFocusRing,
   summary,
   target,
 }: ItemDetailsPageProps) {
@@ -87,9 +91,11 @@ export function ItemDetailsPage({
     case "not_requested":
     case "loading":
       content = (
-        <p class="item-details-placeholder" role="status" aria-live="polite">
-          選択した項目の詳細を読み込んでいます。
-        </p>
+        <ContentState
+          className="item-details-placeholder"
+          message="選択した項目の詳細を読み込んでいます。"
+          status="loading"
+        />
       );
       break;
     case "loaded": {
@@ -111,6 +117,7 @@ export function ItemDetailsPage({
           now={now}
           onClearSelection={onClearSelection}
           onSelectItem={onSelectItem}
+          showHeadingFocusRing={showHeadingFocusRing}
           summary={summary}
         />
       );
@@ -118,9 +125,12 @@ export function ItemDetailsPage({
     }
     case "failed":
       content = (
-        <div class="item-details-placeholder" role="alert">
-          <p>選択した項目の詳細を取得できませんでした。</p>
-          <button
+        <ContentState
+          className="item-details-placeholder"
+          message="選択した項目の詳細を取得できませんでした。"
+          status="failed"
+        >
+          <ActionButton
             type="button"
             onClick={() => {
               setDetailsState({
@@ -129,8 +139,8 @@ export function ItemDetailsPage({
             }}
           >
             再取得
-          </button>
-        </div>
+          </ActionButton>
+        </ContentState>
       );
       break;
     default:
@@ -138,15 +148,14 @@ export function ItemDetailsPage({
   }
 
   return (
-    <section aria-labelledby="item-details-page-heading" class="section-card item-workspace">
-      <div class="section-heading">
-        <div>
-          <h2 id="item-details-page-heading">項目詳細</h2>
-        </div>
-      </div>
-      <div id="item-details" class="item-details-region" aria-live="polite">
+    <PageSection
+      className="item-workspace scroll-mt-4"
+      heading="項目詳細"
+      headingId="item-details-page-heading"
+    >
+      <div id="item-details" class="item-details-region min-w-0 scroll-mt-4" aria-live="polite">
         {content}
       </div>
-    </section>
+    </PageSection>
   );
 }

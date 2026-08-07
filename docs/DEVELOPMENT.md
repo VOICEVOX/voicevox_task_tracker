@@ -172,6 +172,29 @@ Codex出力は候補データとしてschema検証とsemantic検証を通し、�
 別のエラーへ変換するときは`cause`で元のエラーをつなぎます。
 外部入力はZodで検証し、型アサーションとnon-null assertionは使いません。
 
+## Web UIのスタイル
+
+Tailwind CSSでスタイルを書きます。
+`web/src/styles.css`にはトークン定義と全体の既定だけを置き、ページ固有の規則を足しません。
+
+色とフォントサイズとブレークポイントは`@theme`のトークンを使います。
+トークンは役割で名付けてあるので、`bg-surface-card`や`text-state-danger-text`のように意味で選びます。
+余白と角丸と影はTailwindの既定スケールへ寄せ、`clamp()`のように既定で表せないものだけ`@theme`へ足します。
+操作できる要素は幅の狭い画面でも押せるよう、最小高さを44pxにします。
+
+繰り返し現れる見た目は共通部品にします。
+
+| 部品                      | 用途                                     |
+| ------------------------- | ---------------------------------------- |
+| `PageSection`             | カードと見出しを備えたページ内セクション |
+| `ContentState`            | 空状態、読み込み中、読み込み失敗         |
+| `ResponsiveTableCardList` | 広い画面のtableと狭い画面のcard一覧      |
+| `Pill`                    | 意味に対応する配色のpill型label          |
+| `ActionButton`            | 操作button                               |
+
+`web/src/app.test.tsx`は識別用のclass名を選択子に使います。
+見た目をユーティリティclassへ移すときも、識別用のclass名は残します。
+
 ## Pull Requestを出す前に
 
 CIと同じ検査を手元で実行します。

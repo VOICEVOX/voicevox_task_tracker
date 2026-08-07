@@ -1,5 +1,6 @@
 import { type PublicItemSummaryDto } from "../../src/pages/public-dto.js";
 import { importanceLevelLabel } from "./model.js";
+import { Pill } from "./ui.js";
 
 type ImportanceBadgeProps = Readonly<{
   importance: PublicItemSummaryDto["importance"];
@@ -13,9 +14,9 @@ export function ImportanceBadge({ importance, showLow, showScore }: ImportanceBa
     return null;
   }
   return (
-    <span class={`importance-badge importance-${importance.level}`}>
+    <Pill className={`importance-badge importance-${importance.level}`} tone={importance.level}>
       <span>{importanceLevelLabel(importance.level)}</span>
-      {showScore && <strong>{importance.score.toString()}点</strong>}
-    </span>
+      {showScore && <strong class="tabular-nums">{importance.score.toString()}点</strong>}
+    </Pill>
   );
 }

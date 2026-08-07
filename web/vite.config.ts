@@ -2,6 +2,7 @@ import { copyFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import preact from "@preact/preset-vite";
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig, type Plugin } from "vite";
 
 import { loadWebConfig } from "../src/config/index.js";
@@ -33,7 +34,7 @@ function createGitHubPagesFallbackPlugin(): Plugin {
 export default defineConfig({
   root: import.meta.dirname,
   base: webConfig.basePath,
-  plugins: [preact(), createGitHubPagesFallbackPlugin()],
+  plugins: [tailwindcss(), preact(), createGitHubPagesFallbackPlugin()],
   publicDir: "public",
   define: {
     __VOICEVOX_TRACKER_LOCALE__: JSON.stringify(webConfig.defaultLocale),
