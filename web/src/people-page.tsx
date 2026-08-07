@@ -179,11 +179,7 @@ export function PeoplePage({
   ] satisfies readonly ResponsiveCardField<WaitingSubjectRow>[];
 
   return (
-    <PageSection
-      className="people-page w-full max-w-4xl justify-self-start"
-      heading="担当者一覧"
-      headingId="people-page-heading"
-    >
+    <PageSection className="people-page" heading="担当者一覧" headingId="people-page-heading">
       {rows.length === 0 ? (
         <ContentState
           className="empty-state"
@@ -199,7 +195,7 @@ export function PeoplePage({
           getRowPresentation={(row) => waitingSubjectRowPresentation(row, viewerLogin)}
           rows={rows}
           tableCaption="待ち相手ごとの待たせている項目数と最長停滞時間"
-          tableClassName="people-table max-w-3xl"
+          tableClassName="people-table"
           renderCardHeading={(row) => (
             <h3 class="m-0 min-w-0 text-base leading-6 font-semibold">
               <WaitingSubjectName

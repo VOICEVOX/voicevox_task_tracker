@@ -23,6 +23,7 @@ type ItemDetailsPageProps = Readonly<{
   now: Date;
   onClearSelection: () => void;
   onSelectItem: (nodeId: string) => void;
+  showHeadingFocusRing: boolean;
   summary: PublicSummaryDto;
   target: ItemRouteTarget;
 }>;
@@ -53,6 +54,7 @@ export function ItemDetailsPage({
   now,
   onClearSelection,
   onSelectItem,
+  showHeadingFocusRing,
   summary,
   target,
 }: ItemDetailsPageProps) {
@@ -115,6 +117,7 @@ export function ItemDetailsPage({
           now={now}
           onClearSelection={onClearSelection}
           onSelectItem={onSelectItem}
+          showHeadingFocusRing={showHeadingFocusRing}
           summary={summary}
         />
       );

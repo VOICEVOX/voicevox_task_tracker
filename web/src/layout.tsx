@@ -40,7 +40,7 @@ export function PageSection({
     <section aria-labelledby={headingId} class={appendClassName(PAGE_SECTION_CLASS, className)}>
       <div class="section-heading mb-6 flex items-end justify-between gap-6 max-shell:flex-col max-shell:items-start">
         <div>
-          <h2 id={headingId} class="m-0 text-section-title font-bold">
+          <h2 id={headingId} class="m-0 text-section-title leading-tight font-bold">
             {heading}
           </h2>
           {description != null && <p class="mt-2 mb-0 max-w-2xl text-text-muted">{description}</p>}
@@ -82,7 +82,7 @@ export function ContentState({
   return (
     <div
       {...attributes}
-      class={`my-4 grid min-h-32 place-content-center justify-items-center gap-3 rounded-xl border border-dashed border-border-strong bg-surface-sunken p-6 text-center text-text-muted ${className}`}
+      class={`grid min-h-32 place-content-center justify-items-center gap-3 rounded-xl border border-dashed border-border-strong bg-surface-sunken p-6 text-center text-text-muted ${className}`}
       role={role}
       aria-live={ariaLive}
     >

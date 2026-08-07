@@ -1,5 +1,5 @@
 import { type ComponentChildren } from "preact";
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
@@ -126,6 +126,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
   const [navigationState, setNavigationState] = useState<ParsedWebViewState>(() =>
     parseWebViewState(window.location, basePath, validTargets),
   );
+  const showItemHeadingFocusRing = useRef(false);
   const viewState = navigationState.state;
   const viewerIdentity =
     viewerIdentityState.status === "available" ? viewerIdentityState.identity : undefined;
@@ -142,6 +143,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       if (parsedState.status !== "valid") {
         replaceWebViewUrl(basePath, parsedState.state);
       }
+      showItemHeadingFocusRing.current = false;
       setNavigationState(parsedState);
     }
     window.addEventListener("popstate", applyBrowserHistory);
@@ -168,6 +170,9 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     if (target == null) {
       throw new TypeError(`選択できない項目です: ${nodeId}`);
     }
+    const activeElement = document.activeElement;
+    showItemHeadingFocusRing.current =
+      activeElement instanceof HTMLElement && activeElement.matches(":focus-visible");
     navigate(
       createWebViewState({
         page: "item-details",
@@ -377,6 +382,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
               }),
             )}
             createItemHref={createItemHref}
+            showHeadingFocusRing={showItemHeadingFocusRing.current}
             loadDetails={sharedLoadDetails}
             locale={locale}
             now={now}
@@ -469,7 +475,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
               return (
                 <li key={navigationPage.page}>
                   <a
-                    class={`block rounded-lg px-2.5 py-1.5 no-underline hover:bg-surface-emphasis hover:text-accent-link-hover max-narrow:px-2 ${
+                    class={`flex min-h-11 items-center rounded-lg px-2.5 py-1.5 no-underline hover:bg-surface-emphasis hover:text-accent-link-hover max-narrow:px-2 ${
                       current ? "bg-surface-emphasis font-bold text-text-primary" : ""
                     }`}
                     href={href}
@@ -490,7 +496,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             {viewerIdentity != null && (
               <li>
                 <a
-                  class="viewer-navigation-link block rounded-lg bg-surface-emphasis px-2.5 py-1.5 font-bold text-text-primary no-underline hover:bg-surface-emphasis hover:text-accent-link-hover max-narrow:px-2"
+                  class="viewer-navigation-link flex min-h-11 items-center rounded-lg bg-surface-emphasis px-2.5 py-1.5 font-bold text-text-primary no-underline hover:bg-surface-emphasis hover:text-accent-link-hover max-narrow:px-2"
                   href={createViewerIdentityHref(viewerIdentity)}
                   onClick={(event) => {
                     if (!shouldHandleClientNavigation(event)) {

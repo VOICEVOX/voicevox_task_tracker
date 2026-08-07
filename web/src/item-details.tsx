@@ -42,6 +42,7 @@ type ItemDetailsProps = Readonly<{
   now: Date;
   onClearSelection: () => void;
   onSelectItem: (nodeId: string) => void;
+  showHeadingFocusRing: boolean;
   summary: PublicSummaryDto;
 }>;
 
@@ -515,6 +516,7 @@ export function ItemDetailsContent({
   now,
   onClearSelection,
   onSelectItem,
+  showHeadingFocusRing,
   summary,
 }: ItemDetailsProps) {
   const item = details.summary;
@@ -549,23 +551,25 @@ export function ItemDetailsContent({
     (nodeId) => !waitingOnBlockerNodeIds.has(nodeId),
   );
   useEffect(() => {
-    heading.current?.focus();
-  }, [item.nodeId]);
+    heading.current?.focus({ focusVisible: showHeadingFocusRing });
+  }, [item.nodeId, showHeadingFocusRing]);
 
   return (
     <article class="item-details-card grid min-w-0 gap-6" data-node-id={item.nodeId}>
       <div class="item-details-heading flex min-w-0 items-start justify-between gap-4 max-shell:flex-col">
         <div class="min-w-0">
-          <p class="item-reference mt-1.5 mb-0 text-xs text-text-muted">{item.displayReference}</p>
+          <p class="item-reference m-0 text-sm leading-5 text-text-muted">
+            {item.displayReference}
+          </p>
           <h3
-            class="mt-1 mb-0 text-item-title font-bold wrap-anywhere focus:outline-2 focus:outline-offset-4 focus:outline-accent-focus-ring"
+            class="mt-1 mb-0 text-item-title leading-tight font-bold wrap-anywhere focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent-focus-ring"
             ref={heading}
             tabIndex={-1}
           >
             {item.title}
           </h3>
         </div>
-        <div class="item-details-actions flex flex-wrap justify-end gap-x-4 gap-y-2 max-shell:justify-start">
+        <div class="item-details-actions flex flex-wrap justify-end gap-x-4 gap-y-2 max-shell:justify-start [&>a]:inline-flex [&>a]:min-h-11 [&>a]:items-center">
           <SafeGitHubLink href={item.url}>GitHubで項目を開く</SafeGitHubLink>
           <a
             href={clearSelectionHref}
@@ -587,7 +591,7 @@ export function ItemDetailsContent({
         class="current-action-panel grid min-w-0 gap-5 border-t border-border-subtle pt-5 lg:grid-cols-2"
       >
         <div class="current-action-heading lg:col-span-2">
-          <h4 id="current-action-heading" class="m-0 text-subsection-title font-bold">
+          <h4 id="current-action-heading" class="m-0 text-subsection-title leading-snug font-bold">
             現在の状況と次の行動
           </h4>
         </div>
@@ -707,7 +711,7 @@ export function ItemDetailsContent({
         >
           <h4
             id="item-dependency-graph-heading"
-            class="item-dependency-graph-heading m-0 text-subsection-title font-bold"
+            class="item-dependency-graph-heading m-0 text-subsection-title leading-snug font-bold"
           >
             依存関係
           </h4>

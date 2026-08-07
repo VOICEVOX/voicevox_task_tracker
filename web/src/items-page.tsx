@@ -405,7 +405,7 @@ function ItemTable({
       heading="全項目一覧"
       headingId="items-heading"
     >
-      <div class="item-list-toolbar mb-4 grid gap-4 rounded-xl bg-surface-sunken p-4 md:grid-cols-[minmax(0,1fr)_auto]">
+      <div class="item-list-toolbar mb-4 grid gap-4 rounded-xl border border-border-subtle bg-surface-sunken p-4 md:grid-cols-[minmax(0,1fr)_auto]">
         <ItemSearch
           searchQuery={searchQuery}
           onClearSearch={onClearSearch}
@@ -447,9 +447,9 @@ function ItemTable({
           <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
             <span class="ml-1 inline-flex max-w-[calc(100%_-_2rem)] flex-wrap items-center gap-x-3 gap-y-1 align-middle">
               <span>列ごとの絞り込み</span>
-              <span class="filter-summary-count rounded-full bg-surface-card px-2 py-0.5 text-xs font-semibold text-text-muted">
+              <Pill className="filter-summary-count" tone="neutral">
                 {activeFilterCount === 0 ? "条件なし" : `${activeFilterCount.toString()}件適用中`}
-              </span>
+              </Pill>
             </span>
           </summary>
           <div class="item-filter-content pt-3">

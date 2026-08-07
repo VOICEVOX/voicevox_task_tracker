@@ -224,7 +224,7 @@ export function PersonPage({
 
   return (
     <PageSection
-      className="person-page flex min-h-[calc(100svh-14rem)] flex-col [&>.section-heading]:mb-4 [&>.section-heading]:flex-col [&>.section-heading]:items-start [&>.section-heading]:gap-3"
+      className="person-page [&>.section-heading]:flex-col [&>.section-heading]:items-start [&>.section-heading]:gap-2"
       heading={`@${login} を待っている項目`}
       headingAccessory={
         <div class="grid w-full gap-3">
@@ -297,7 +297,7 @@ export function PersonPage({
       )}
       {rows.length === 0 ? (
         <ContentState
-          className="empty-state flex-1"
+          className="empty-state"
           message={`@${login} を待っている項目はありません。`}
           status="empty"
         />

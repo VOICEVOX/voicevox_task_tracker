@@ -152,7 +152,7 @@ function AttentionQueue({
             const otherWaitingOnCount = primaryWaitingOn == null ? 0 : item.waitingOn.length - 1;
             return (
               <li key={item.nodeId} data-node-id={item.nodeId}>
-                <article class="attention-item grid min-w-0 grid-cols-[minmax(14rem,0.8fr)_minmax(22rem,1.4fr)_auto] items-start gap-4 rounded-xl border border-border-subtle p-4 max-shell:grid-cols-1 max-shell:gap-3 max-narrow:p-3">
+                <article class="attention-item grid min-w-0 grid-cols-[minmax(14rem,0.8fr)_minmax(22rem,1.4fr)_auto] items-start gap-4 rounded-xl border border-border-subtle bg-surface-card p-4 max-shell:grid-cols-1 max-shell:gap-3">
                   <div class="attention-title min-w-0">
                     <h3 class="item-title-with-importance m-0 grid grid-cols-[1.75rem_minmax(0,1fr)] items-start gap-2 text-lg leading-snug font-bold max-narrow:text-base">
                       <span class="attention-importance-slot mt-0.5 flex min-h-5 items-start">
@@ -192,7 +192,7 @@ function AttentionQueue({
                         </span>
                         {primaryWaitingOn != null && (
                           <span
-                            class="attention-waiting-reason mt-1 block min-w-0 truncate text-sm font-normal text-text-muted"
+                            class="attention-waiting-reason mt-1 block min-w-0 text-sm leading-5 font-normal text-text-muted wrap-anywhere"
                             title={primaryWaitingOn.reasonSummary}
                           >
                             {primaryWaitingOn.reasonSummary}
@@ -207,7 +207,7 @@ function AttentionQueue({
                       </dd>
                     </div>
                   </dl>
-                  <div class="item-actions grid justify-self-end gap-2 text-sm whitespace-nowrap max-shell:justify-self-end">
+                  <div class="item-actions grid justify-self-end gap-2 text-sm whitespace-nowrap max-shell:justify-self-end [&>a]:inline-flex [&>a]:min-h-11 [&>a]:items-center">
                     <SafeGitHubLink href={item.url}>GitHubで開く</SafeGitHubLink>
                   </div>
                 </article>
