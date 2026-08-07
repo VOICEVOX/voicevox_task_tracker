@@ -101,10 +101,6 @@
       "labels": ["優先度：高", "辞書"],
       "reviewState": "approved",
       "checkState": "passing",
-      "aiAnalysis": {
-        "status": "not_used"
-      },
-      "inputEvents": [],
       "evidence": [
         {
           "summary": "必要なレビューとcheckが完了しています",
@@ -194,17 +190,12 @@
         "status": "present",
         "actor": {
           "type": "human",
-          "nodeId": "sample-actor-reviewer",
           "login": "sample-review-actor"
         }
       },
       "labels": ["優先度：中", "API"],
       "reviewState": "requested",
       "checkState": "passing",
-      "aiAnalysis": {
-        "status": "not_used"
-      },
-      "inputEvents": [],
       "evidence": [
         {
           "summary": "sample-reviewersへレビューが依頼されています",
@@ -296,10 +287,6 @@
       "labels": ["優先度：高", "要議論", "配布方針"],
       "reviewState": "not_applicable",
       "checkState": "not_applicable",
-      "aiAnalysis": {
-        "status": "not_used"
-      },
-      "inputEvents": [],
       "evidence": [
         {
           "summary": "配布方針の決定が必要であることが示されています",
@@ -393,10 +380,6 @@
       "labels": ["優先度：中", "blocked", "配布"],
       "reviewState": "not_applicable",
       "checkState": "not_applicable",
-      "aiAnalysis": {
-        "status": "not_used"
-      },
-      "inputEvents": [],
       "evidence": [
         {
           "summary": "配布方針の決定がopen blockerとして残っています",
@@ -420,9 +403,7 @@
                 {
                   "kind": "role",
                   "candidateId": "assignee",
-                  "role": "assignee",
-                  "reasonSummary": "担当者が実装を進めています",
-                  "confidence": 1
+                  "role": "assignee"
                 }
               ]
             }
@@ -435,16 +416,12 @@
                 {
                   "kind": "item",
                   "candidateId": "sample-item-editor-103",
-                  "role": "dependency",
-                  "reasonSummary": "配布方針の決定を待っています",
-                  "confidence": 1
+                  "role": "dependency"
                 },
                 {
                   "kind": "item",
                   "candidateId": "external:github:sample-distribution-42",
-                  "role": "dependency",
-                  "reasonSummary": "外部配布ツールの対応を待っています",
-                  "confidence": 0.9
+                  "role": "dependency"
                 }
               ]
             }
@@ -532,17 +509,12 @@
         "status": "present",
         "actor": {
           "type": "bot",
-          "nodeId": "sample-actor-ci-bot",
           "login": "sample-ci-bot"
         }
       },
       "labels": ["優先度：高", "bug", "review"],
       "reviewState": "changes_requested",
       "checkState": "failing",
-      "aiAnalysis": {
-        "status": "not_used"
-      },
-      "inputEvents": [],
       "evidence": [
         {
           "summary": "human reviewerの変更要求後に新しいpushがありません",
@@ -613,15 +585,6 @@
         "type": "blocks",
         "provenance": "explicit_text",
         "confidence": 0.92,
-        "evidence": [
-          {
-            "summary": "配布方針の決定後に配布処理へ進むことが明示されています",
-            "sourceUrl": "https://github.com/VOICEVOX/sample-editor/issues/103"
-          }
-        ],
-        "contradictions": [],
-        "firstSeenAt": "2026-07-10T00:00:00.000Z",
-        "lastConfirmedAt": "2026-07-31T00:00:00.000Z",
         "active": true
       },
       {
@@ -631,15 +594,6 @@
         "type": "blocks",
         "provenance": "explicit_text",
         "confidence": 0.9,
-        "evidence": [
-          {
-            "summary": "外部配布ツールの対応後に配布処理へ進むことが明示されています",
-            "sourceUrl": "https://github.com/VOICEVOX/sample-engine/issues/204"
-          }
-        ],
-        "contradictions": [],
-        "firstSeenAt": "2026-07-25T02:00:00.000Z",
-        "lastConfirmedAt": "2026-07-31T00:00:00.000Z",
         "active": true
       }
     ],

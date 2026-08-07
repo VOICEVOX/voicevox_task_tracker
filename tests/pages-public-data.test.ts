@@ -495,46 +495,6 @@ describe("公開evidence URL", () => {
     },
   ] satisfies readonly Readonly<{ kind: string; sourceUrl: GitHubItemUrl }>[];
 
-  const graphEdgeSourceCases = [
-    {
-      name: "fromNodeId側だけがsourceを持つ",
-      kind: "github_issue_comment",
-      sourceKey: "from-comment",
-      inputSources: [
-        {
-          nodeId: "I_EDGE_FROM",
-          url: "https://github.com/VOICEVOX/public/issues/1#issuecomment-101",
-        },
-      ],
-      expectedSourceUrl: "https://github.com/VOICEVOX/public/issues/1#issuecomment-101",
-    },
-    {
-      name: "toNodeId側だけがsourceを持つ",
-      kind: "github_issue_comment",
-      sourceKey: "to-comment",
-      inputSources: [
-        {
-          nodeId: "I_EDGE_TO",
-          url: "https://github.com/VOICEVOX/public/issues/2#issuecomment-202",
-        },
-      ],
-      expectedSourceUrl: "https://github.com/VOICEVOX/public/issues/2#issuecomment-202",
-    },
-    {
-      name: "どちらの端点もsourceを持たない",
-      kind: "github_item_body",
-      sourceKey: "item-body",
-      inputSources: [],
-      expectedSourceUrl: "https://github.com/VOICEVOX/public/issues/1",
-    },
-  ] satisfies readonly Readonly<{
-    name: string;
-    kind: string;
-    sourceKey: string;
-    inputSources: readonly GraphEvidenceSourceFixture[];
-    expectedSourceUrl: GitHubItemUrl;
-  }>[];
-
   it.each(individualSourceCases)("$kindは個別anchorへ解決する", ({ kind, sourceUrl }) => {
     const itemUrl = "https://github.com/VOICEVOX/public/issues/1";
     const itemNodeId = createGitHubNodeId("I_EVIDENCE_ANCHOR");
@@ -605,25 +565,7 @@ describe("公開evidence URL", () => {
     ).toThrow("個別sourceを所有する項目がありません");
   });
 
-  it.each(graphEdgeSourceCases)(
-    "graph edgeのevidenceは$nameときに決定規則どおりURLを解決する",
-    ({ kind, sourceKey, inputSources, expectedSourceUrl }) => {
-      const sourceId = buildSourceId(kind, sourceKey);
-      const snapshot = createGraphEvidenceSnapshot(sourceId, inputSources);
-
-      const generated = generateFixture(
-        snapshot,
-        [],
-        publicInventory(),
-        [],
-        defaultGenerationOptions,
-      );
-
-      expect(generated.details.graph.edges[0]?.evidence[0]?.sourceUrl).toBe(expectedSourceUrl);
-    },
-  );
-
-  it("graph edgeの個別sourceを複数項目が所有する場合は拒否する", () => {
+  it("graph edgeの監査用フィールドを公開せず根拠URLを解決しない", () => {
     const sourceId = buildSourceId("github_issue_comment", "shared-comment");
     const snapshot = createGraphEvidenceSnapshot(sourceId, [
       {
@@ -636,9 +578,23 @@ describe("公開evidence URL", () => {
       },
     ]);
 
-    expect(() =>
-      generateFixture(snapshot, [], publicInventory(), [], defaultGenerationOptions),
-    ).toThrow("個別sourceを所有する項目が複数あります");
+    const generated = generateFixture(
+      snapshot,
+      [],
+      publicInventory(),
+      [],
+      defaultGenerationOptions,
+    );
+
+    expect(generated.details.graph.edges[0]).toEqual({
+      id: "rel:edge-evidence",
+      fromNodeId: "I_EDGE_FROM",
+      toNodeId: "I_EDGE_TO",
+      type: "blocks",
+      provenance: "native",
+      confidence: 1,
+      active: true,
+    });
   });
 
   it("項目のevidenceは別項目が所有するcommentのURLへ解決する", () => {
@@ -1120,6 +1076,11 @@ describe("公開DTO生成", () => {
       defaultGenerationOptions,
     );
 
+    expect(generated.summary.graph.nodes).toContainEqual({
+      nodeId: externalNodeId,
+      kind: "external_reference",
+      displayReference: "external/example#2",
+    });
     expect(generated.details.graph.nodes).toContainEqual(
       expect.objectContaining({
         nodeId: externalNodeId,
@@ -1134,6 +1095,7 @@ describe("公開DTO生成", () => {
         toNodeId: itemNodeId,
       },
     ]);
+    expect(generated.details.graph.edges[0]).not.toHaveProperty("removedAt");
   });
 
   it("fixtureのgraph、根拠、履歴を公開DTOへ反映する", () => {
@@ -1269,7 +1231,14 @@ describe("公開DTO生成", () => {
     );
     expect(generated.summary.timezone).toBe(defaultGenerationOptions.timezone);
     expect(generated.summary).not.toHaveProperty("aggregates");
+    expect(generated.summary).not.toHaveProperty("trackingStartAt");
+    expect(generated.summary.repositories[0]).not.toHaveProperty("owner");
+    expect(generated.summary.repositories[0]).not.toHaveProperty("observedAt");
     expect(generated.summary.graph.maxNodes).toBe(DEFAULT_INITIAL_GRAPH_NODE_LIMIT);
+    expect(generated.summary.graph.nodes[0]).not.toHaveProperty("repositoryId");
+    expect(generated.summary.graph.nodes[0]).not.toHaveProperty("state");
+    expect(generated.summary.graph.nodes[0]).not.toHaveProperty("status");
+    expect(generated.summary.graph.nodes[0]).not.toHaveProperty("severity");
     expect(generated.details.graph.frontierNodeIds).toEqual(["I_C"]);
     const itemA = generated.details.items.find((item) => item.summary.nodeId === "I_A");
     expect(itemA?.summary.blockerNodeIds).toEqual(["I_B"]);
@@ -1303,6 +1272,9 @@ describe("公開DTO生成", () => {
         login: "event-actor-I_A",
       },
     });
+    expect(itemA?.latestEventActor).not.toHaveProperty("actor.nodeId");
+    expect(itemA).not.toHaveProperty("aiAnalysis");
+    expect(itemA).not.toHaveProperty("inputEvents");
     expect(itemA?.timestamps).toEqual({
       createdAt: CREATED_AT,
       githubUpdatedAt: FRESH_OBSERVED_AT,
@@ -1327,7 +1299,10 @@ describe("公開DTO生成", () => {
         },
       },
     });
-    expect(JSON.stringify(itemA?.history.at(-1))).not.toContain('"sourceIds"');
+    const serializedHistory = JSON.stringify(itemA?.history.at(-1));
+    expect(serializedHistory).not.toContain('"sourceIds"');
+    expect(serializedHistory).not.toContain('"reasonSummary"');
+    expect(serializedHistory).not.toContain('"confidence"');
   });
 
   it("stale repositoryとAI unavailableを項目まで明示する", () => {
@@ -1409,12 +1384,13 @@ describe("公開DTO生成", () => {
     });
     expect(generated.summary.observedAt).toBe(FRESH_OBSERVED_AT);
     expect(staleRepository).toMatchObject({
-      observedAt: STALE_OBSERVED_AT,
       freshness: {
         status: "stale",
-        failedAt: FRESH_OBSERVED_AT,
       },
     });
+    expect(staleRepository).not.toHaveProperty("owner");
+    expect(staleRepository).not.toHaveProperty("observedAt");
+    expect(staleRepository).not.toHaveProperty("freshness.failedAt");
     expect(staleItem).toMatchObject({
       observedAt: STALE_OBSERVED_AT,
       repositoryFreshness: "stale",

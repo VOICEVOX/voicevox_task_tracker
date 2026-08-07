@@ -7,9 +7,13 @@ import {
   formatRelativeTime,
   formatStallDuration,
   formatWaitingOn,
+  formatWaitingOnCandidate,
   selectAttentionItems,
+  selectPrimaryWaitingOnCandidate,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
+
+const MAX_STALE_REPOSITORY_NAMES = 3;
 
 type OverviewPageProps = Readonly<{
   createItemHref: (nodeId: string) => string;
@@ -59,6 +63,20 @@ function AiStateNotice({ ai }: Readonly<{ ai: PublicSummaryDto["ai"] }>) {
   return null;
 }
 
+function formatStaleRepositoryNames(
+  repositories: PublicSummaryDto["repositories"],
+  locale: string,
+): string {
+  const visibleNames = repositories
+    .slice(0, MAX_STALE_REPOSITORY_NAMES)
+    .map((repository) => repository.fullName);
+  const remainingCount = repositories.length - visibleNames.length;
+  if (remainingCount === 0) {
+    return visibleNames.join("、");
+  }
+  return `${visibleNames.join("、")}、ほか${remainingCount.toLocaleString(locale)}件`;
+}
+
 function AttentionQueue({
   attentionItems,
   createItemHref,
@@ -78,7 +96,6 @@ function AttentionQueue({
     <section aria-labelledby="attention-heading" class="section-card attention-section">
       <div class="section-heading attention-heading">
         <div>
-          <p class="eyebrow">Action first</p>
           <h2 id="attention-heading">対応が必要な項目</h2>
         </div>
         <div class="attention-heading-metadata">
@@ -93,7 +110,7 @@ function AttentionQueue({
           </p>
           <p class="attention-summary">
             <strong>{attentionItems.length.toLocaleString(locale)}件</strong>
-            <span>停滞が深刻な順</span>
+            <span>対応が必要な順</span>
           </p>
         </div>
       </div>
@@ -104,6 +121,12 @@ function AttentionQueue({
           {attentionItems.map((item) => {
             const repository = repositoriesById.get(item.repositoryId);
             assertNonNullable(repository, `項目 ${item.nodeId} のrepositoryがありません`);
+            const primaryWaitingOn = selectPrimaryWaitingOnCandidate(item);
+            const primaryWaitingOnLabel =
+              primaryWaitingOn == null
+                ? formatWaitingOn(item, summary)
+                : formatWaitingOnCandidate(primaryWaitingOn, item, summary);
+            const otherWaitingOnCount = primaryWaitingOn == null ? 0 : item.waitingOn.length - 1;
             return (
               <li key={item.nodeId} data-node-id={item.nodeId}>
                 <article class="attention-item">
@@ -114,16 +137,39 @@ function AttentionQueue({
                         showLow={false}
                         showScore={false}
                       />
-                      {item.title}
+                      <ItemDetailsLink
+                        href={createItemHref(item.nodeId)}
+                        nodeId={item.nodeId}
+                        onSelect={onSelectItem}
+                      >
+                        {item.title}
+                      </ItemDetailsLink>
                     </h3>
                     <p class="item-reference">
                       {repository.fullName} #{item.number.toString()}
                     </p>
                   </div>
                   <dl class="attention-primary-details">
-                    <div>
-                      <dt>待っている相手</dt>
-                      <dd>{formatWaitingOn(item, summary)}</dd>
+                    <div class="attention-waiting-on">
+                      <dt>主な待ち相手</dt>
+                      <dd>
+                        <span class="attention-waiting-on-summary">
+                          <span class="attention-primary-waiting-on">{primaryWaitingOnLabel}</span>
+                          {otherWaitingOnCount > 0 && (
+                            <span class="attention-other-waiting-on">
+                              ほか{otherWaitingOnCount.toLocaleString(locale)}件
+                            </span>
+                          )}
+                        </span>
+                        {primaryWaitingOn != null && (
+                          <span
+                            class="attention-waiting-reason"
+                            title={primaryWaitingOn.reasonSummary}
+                          >
+                            {primaryWaitingOn.reasonSummary}
+                          </span>
+                        )}
+                      </dd>
                     </div>
                     <div>
                       <dt>停滞時間</dt>
@@ -131,26 +177,8 @@ function AttentionQueue({
                     </div>
                   </dl>
                   <div class="item-actions">
-                    <ItemDetailsLink
-                      href={createItemHref(item.nodeId)}
-                      nodeId={item.nodeId}
-                      onSelect={onSelectItem}
-                    >
-                      詳細を開く
-                    </ItemDetailsLink>
                     <SafeGitHubLink href={item.url}>GitHubで開く</SafeGitHubLink>
                   </div>
-                  <details class="attention-more">
-                    <summary>補助情報</summary>
-                    <dl class="attention-secondary-details">
-                      <div>
-                        <dt>待ち理由</dt>
-                        <dd>
-                          {item.waitingOn.map((waitingOn) => waitingOn.reasonSummary).join("、")}
-                        </dd>
-                      </div>
-                    </dl>
-                  </details>
                 </article>
               </li>
             );
@@ -164,15 +192,18 @@ function AttentionQueue({
 /** 対応が必要な項目を表示する。 */
 export function OverviewPage(props: OverviewPageProps) {
   const attentionItems = selectAttentionItems(props.summary.items);
-  const hasStaleRepository = props.summary.repositories.some(
+  const staleRepositories = props.summary.repositories.filter(
     (repository) => repository.freshness.status === "stale",
   );
   return (
     <>
       <AiStateNotice ai={props.summary.ai} />
-      {hasStaleRepository && (
+      {staleRepositories.length > 0 && (
         <p class="notice notice-warning repository-freshness-notice" role="status">
-          一部リポジトリの情報を取得できなかったため、前回の値を表示しています。
+          次のリポジトリの情報を取得できなかったため、前回の値を表示しています。対象:{" "}
+          <span class="repository-freshness-targets">
+            {formatStaleRepositoryNames(staleRepositories, props.locale)}
+          </span>
         </p>
       )}
       <AttentionQueue {...props} attentionItems={attentionItems} />

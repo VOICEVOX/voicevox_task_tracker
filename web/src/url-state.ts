@@ -4,18 +4,61 @@ import {
   createEmptyTableFilters,
   waitingSubjectKey,
   type TableColumnKey,
+  type TableFilterOption,
+  type TableFilterOptions,
   type TableFilters,
+  type TableSelectColumnKey,
   type TableSort,
 } from "./model.js";
 
+type TableFilterDefinition =
+  | Readonly<{
+      key: TableSelectColumnKey;
+      parameterName: string;
+      validation: "option";
+    }>
+  | Readonly<{
+      key: "waitingOn";
+      parameterName: string;
+      validation: "substring";
+    }>;
+
+const TABLE_FILTER_DEFINITIONS = [
+  {
+    key: "repository",
+    parameterName: "repo",
+    validation: "option",
+  },
+  {
+    key: "type",
+    parameterName: "type",
+    validation: "option",
+  },
+  {
+    key: "status",
+    parameterName: "status",
+    validation: "option",
+  },
+  {
+    key: "importance",
+    parameterName: "importance",
+    validation: "option",
+  },
+  {
+    key: "waitingOn",
+    parameterName: "waitingOn",
+    validation: "substring",
+  },
+  {
+    key: "stall",
+    parameterName: "stall",
+    validation: "option",
+  },
+] satisfies readonly TableFilterDefinition[];
+
 const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
   "q",
-  "repo",
-  "type",
-  "status",
-  "importance",
-  "waitingOn",
-  "stall",
+  ...TABLE_FILTER_DEFINITIONS.map((definition) => definition.parameterName),
   "sort",
   "direction",
 ];
@@ -49,15 +92,6 @@ const githubLoginSchema = z
   .max(39)
   .regex(/^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$/u);
 
-const FILTER_PARAMETER_NAMES = {
-  repository: "repo",
-  type: "type",
-  status: "status",
-  importance: "importance",
-  waitingOn: "waitingOn",
-  stall: "stall",
-} satisfies Readonly<Record<TableColumnKey, string>>;
-
 /** 項目詳細pathから選択する公開項目。 */
 export type ItemRouteTarget = Readonly<{
   nodeId: string;
@@ -89,6 +123,7 @@ export type WebRoute =
 /** URLの検証に使う公開DTO由来の選択肢。 */
 export type ValidWebRouteTargets = Readonly<{
   items: readonly ItemRouteTarget[];
+  tableFilterOptions: TableFilterOptions;
   teamIds: readonly string[];
 }>;
 
@@ -146,8 +181,8 @@ export function createWebViewState(route: WebRoute): WebViewState {
     searchQuery: "",
     tableFilters: createEmptyTableFilters(),
     tableSort: {
-      key: "repository",
-      direction: "ascending",
+      key: "stall",
+      direction: "descending",
     },
   };
 }
@@ -220,6 +255,23 @@ function parseParameter<Value>(
     status: "valid",
     value: result.data,
   };
+}
+
+function parseOptionParameter(
+  parameters: URLSearchParams,
+  name: string,
+  options: readonly TableFilterOption[],
+): ParsedParameter<string> {
+  const parameter = parseParameter(parameters, name, filterValueSchema);
+  if (parameter.status !== "valid") {
+    return parameter;
+  }
+  if (!options.some((option) => option.value === parameter.value)) {
+    return {
+      status: "invalid",
+    };
+  }
+  return parameter;
 }
 
 function parameterValueOr<Value>(
@@ -438,6 +490,7 @@ function parsePersonQuery(
 function parseItemsQuery(
   search: string,
   route: Extract<WebRoute, Readonly<{ page: "items" }>>,
+  filterOptions: TableFilterOptions,
 ): Readonly<{
   sanitized: boolean;
   state: WebViewState;
@@ -453,26 +506,18 @@ function parseItemsQuery(
   );
   sanitized ||= searchQuery.invalid;
 
-  const tableFilters = Object.fromEntries(
-    Object.entries(FILTER_PARAMETER_NAMES).map(([key, parameterName]) => {
-      const parsed = parameterValueOr(
-        parseParameter(parameters, parameterName, filterValueSchema),
-        "",
-      );
-      sanitized ||= parsed.invalid;
-      return [key, parsed.value];
-    }),
-  );
-  const parsedTableFilters = z
-    .strictObject({
-      repository: filterValueSchema,
-      type: filterValueSchema,
-      status: filterValueSchema,
-      importance: filterValueSchema,
-      waitingOn: filterValueSchema,
-      stall: filterValueSchema,
-    })
-    .parse(tableFilters);
+  const parsedTableFilters: Record<TableColumnKey, string> = {
+    ...defaults.tableFilters,
+  };
+  for (const definition of TABLE_FILTER_DEFINITIONS) {
+    const parameter =
+      definition.validation === "option"
+        ? parseOptionParameter(parameters, definition.parameterName, filterOptions[definition.key])
+        : parseParameter(parameters, definition.parameterName, filterValueSchema);
+    const filter = parameterValueOr(parameter, defaults.tableFilters[definition.key]);
+    sanitized ||= filter.invalid;
+    parsedTableFilters[definition.key] = filter.value;
+  }
 
   const sortKey = parameterValueOr(
     parseParameter(parameters, "sort", tableColumnKeySchema),
@@ -511,7 +556,7 @@ export function parseWebViewState(
   }>;
   switch (parsedRoute.route.page) {
     case "items":
-      queryResult = parseItemsQuery(location.search, parsedRoute.route);
+      queryResult = parseItemsQuery(location.search, parsedRoute.route, targets.tableFilterOptions);
       break;
     case "person":
       queryResult = parsePersonQuery(location.search, parsedRoute.route, targets.teamIds);
@@ -574,23 +619,17 @@ export function createWebViewHref(basePath: string, state: WebViewState): string
   }
   const parameters = new URLSearchParams();
   appendNonEmptyParameter(parameters, "q", state.searchQuery);
-  for (const [key, parameterName] of Object.entries(FILTER_PARAMETER_NAMES)) {
-    if (
-      key !== "repository" &&
-      key !== "type" &&
-      key !== "status" &&
-      key !== "importance" &&
-      key !== "waitingOn" &&
-      key !== "stall"
-    ) {
-      throw new TypeError(`未対応の表列です: ${key}`);
-    }
-    appendNonEmptyParameter(parameters, parameterName, state.tableFilters[key]);
+  for (const definition of TABLE_FILTER_DEFINITIONS) {
+    appendNonEmptyParameter(
+      parameters,
+      definition.parameterName,
+      state.tableFilters[definition.key],
+    );
   }
-  if (state.tableSort.key !== "repository") {
+  if (state.tableSort.key !== "stall") {
     parameters.set("sort", state.tableSort.key);
   }
-  if (state.tableSort.direction !== "ascending") {
+  if (state.tableSort.direction !== "descending") {
     parameters.set("direction", state.tableSort.direction);
   }
   const query = parameters.toString();

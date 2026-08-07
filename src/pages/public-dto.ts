@@ -24,7 +24,6 @@ const githubUrlSchema = z
       url.password === ""
     );
   }, "GitHubのHTTPS URLを指定してください");
-const aiCacheKeySchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u, "AI cache keyが不正です");
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const statusSchema = z.enum([
   "new_untriaged",
@@ -82,47 +81,18 @@ const publicEvidenceSchema = z.strictObject({
   summary: shortStringSchema,
   sourceUrl: githubUrlSchema,
 });
-const relationContradictionSchema = z.strictObject({
-  verdict: z.enum([
-    "current_is_blocked_by_target",
-    "current_blocks_target",
-    "current_implements_target",
-    "target_is_subtask_of_current",
-    "current_is_subtask_of_target",
-    "duplicates",
-    "related",
-    "none",
-  ]),
-  confidence: z.number().min(0).max(1),
-});
-const trackedItemAiAnalysisSchema = z.discriminatedUnion("status", [
-  z.strictObject({
-    status: z.literal("not_used"),
-  }),
-  z.strictObject({
-    status: z.literal("used"),
-    cacheKey: aiCacheKeySchema,
-  }),
-]);
-const trackedItemInputEventSchema = z.strictObject({
-  sourceId: identifierSchema,
-  url: githubUrlSchema,
-});
 const repositoryFreshnessSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("fresh"),
   }),
   z.strictObject({
     status: z.literal("stale"),
-    failedAt: dateTimeSchema,
   }),
 ]);
 const publicRepositorySchema = z.strictObject({
   id: identifierSchema,
-  owner: z.string().min(1).max(256),
   name: z.string().min(1).max(256),
   fullName: z.string().min(3).max(513),
-  observedAt: dateTimeSchema,
   freshness: repositoryFreshnessSchema,
 });
 const downstreamImpactSchema = z.strictObject({
@@ -184,8 +154,11 @@ const itemTimestampsSchema = z.strictObject({
   githubUpdatedAt: dateTimeSchema,
   stallSince: dateTimeSchema,
 });
-const actorSchema = z.discriminatedUnion("type", [
-  accountActorSchema,
+const latestEventActorValueSchema = z.discriminatedUnion("type", [
+  z.strictObject({
+    type: z.enum(["human", "bot"]),
+    login: z.string().min(1).max(256),
+  }),
   z.strictObject({
     type: z.literal("system"),
     name: z.string().min(1).max(512),
@@ -197,12 +170,17 @@ const latestEventActorSchema = z.discriminatedUnion("status", [
   }),
   z.strictObject({
     status: z.literal("present"),
-    actor: actorSchema,
+    actor: latestEventActorValueSchema,
   }),
 ]);
 const responsibilitySchema = z.strictObject({
   status: statusSchema,
-  waitingOn: z.array(waitingOnSchema),
+  waitingOn: z.array(
+    waitingOnSchema.omit({
+      reasonSummary: true,
+      confidence: true,
+    }),
+  ),
 });
 const responsibilityHistoryValueSchema = z.discriminatedUnion("state", [
   z.strictObject({
@@ -242,8 +220,6 @@ const publicItemDetailsSchema = z.strictObject({
     "conflict",
     "unknown",
   ]),
-  aiAnalysis: trackedItemAiAnalysisSchema,
-  inputEvents: z.array(trackedItemInputEventSchema),
   evidence: z.array(publicEvidenceSchema),
   uncertainties: z.array(shortStringSchema),
   history: z.array(publicItemHistoryEventSchema),
@@ -286,10 +262,6 @@ const publicGraphEdgeFieldsSchema = z.strictObject({
     "ai_inference",
   ]),
   confidence: z.number().min(0).max(1),
-  evidence: z.array(publicEvidenceSchema),
-  contradictions: z.array(relationContradictionSchema),
-  firstSeenAt: dateTimeSchema,
-  lastConfirmedAt: dateTimeSchema,
 });
 const publicGraphEdgeSchema = z.discriminatedUnion("active", [
   publicGraphEdgeFieldsSchema.extend({
@@ -297,11 +269,26 @@ const publicGraphEdgeSchema = z.discriminatedUnion("active", [
   }),
   publicGraphEdgeFieldsSchema.extend({
     active: z.literal(false),
-    removedAt: dateTimeSchema,
   }),
 ]);
 const publicInitialGraphSchema = z.strictObject({
-  nodes: z.array(publicGraphNodeSchema),
+  nodes: z.array(
+    z.discriminatedUnion("kind", [
+      z.strictObject({
+        nodeId: identifierSchema,
+        kind: z.literal("issue"),
+      }),
+      z.strictObject({
+        nodeId: identifierSchema,
+        kind: z.literal("pull_request"),
+      }),
+      z.strictObject({
+        nodeId: identifierSchema,
+        kind: z.literal("external_reference"),
+        displayReference: z.string().min(4).max(600),
+      }),
+    ]),
+  ),
   maxNodes: z.number().int().positive(),
 });
 const publicGraphSchema = z.strictObject({
@@ -340,7 +327,6 @@ const publicSummaryDtoSchema = z.strictObject({
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
-  trackingStartAt: dateTimeSchema,
   timezone: identifierSchema,
   ai: publicAiStateSchema,
   confidenceThresholds: publicConfidenceThresholdsSchema,

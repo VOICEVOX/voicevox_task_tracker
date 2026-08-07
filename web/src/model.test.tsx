@@ -11,7 +11,9 @@ import {
   collectWaitingSubjectRows,
   collectWaitingTeamIds,
   createItemTableRows,
+  formatWaitingOnCandidate,
   resolveWaitingSubjects,
+  selectPrimaryWaitingOnCandidate,
   selectWaitingSubjectItemNodeIds,
   selectWaitingSubjectReasons,
   waitingOnHistoryLabel,
@@ -24,13 +26,13 @@ type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 
 const sampleSummary = createPublicSummaryDto(sampleSummarySource);
 
-describe("一覧のstatus検索", () => {
-  it("statusの日本語名と識別子だけを検索対象文字列にする", () => {
+describe("一覧のstatus表示", () => {
+  it("画面に出す日本語名を導出する", () => {
     const rows = createItemTableRows(sampleSummary, new Date("2026-08-01T00:00:00.000Z"));
     const row = rows.find((candidate) => candidate.item.nodeId === "sample-item-editor-101");
     assertNonNullable(row, "status検索テスト用の項目がありません");
 
-    expect(row.statusText).toBe("マージ可能 ready_to_merge");
+    expect(row.statusText).toBe("マージ可能");
   });
 });
 
@@ -274,6 +276,42 @@ describe("waitingOn表示", () => {
         summaryWithoutTarget,
       ),
     ).toThrowError("waitingOn項目 sample-item-editor-103 の表示名がありません");
+  });
+
+  it("primary候補を選び、未選定なら先頭候補へ戻す", () => {
+    const firstCandidate = createWaitingOnCandidate("role", "maintainer", "maintainer");
+    const secondCandidate = createWaitingOnCandidate("role", "reviewer", "reviewer");
+    const selectedItem: PublicItemSummaryDto = {
+      ...identifiedItem,
+      waitingOn: [firstCandidate, secondCandidate],
+      primaryWaitingOn: {
+        index: 0,
+        selectionReason: "先頭候補を選定しました",
+      },
+    };
+    const fallbackItem: PublicItemSummaryDto = {
+      ...selectedItem,
+      primaryWaitingOn: {
+        index: "not_applicable",
+        selectionReason: "primary候補は未選定です",
+      },
+    };
+    const completedItem: PublicItemSummaryDto = {
+      ...selectedItem,
+      status: "terminal_completed",
+      waitingOn: [],
+      primaryWaitingOn: {
+        index: "not_applicable",
+        selectionReason: "完了項目にprimary候補はありません",
+      },
+    };
+
+    expect(selectPrimaryWaitingOnCandidate(selectedItem)).toBe(firstCandidate);
+    expect(selectPrimaryWaitingOnCandidate(fallbackItem)).toBe(firstCandidate);
+    expect(selectPrimaryWaitingOnCandidate(completedItem)).toBeUndefined();
+    expect(formatWaitingOnCandidate(firstCandidate, selectedItem, sampleSummary)).toBe(
+      "メンテナーの誰か",
+    );
   });
 });
 

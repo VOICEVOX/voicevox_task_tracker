@@ -78,6 +78,20 @@ function externalGraphNode(nodeId: string): PublicGraphNodeDto {
   };
 }
 
+function initialGraphNode(node: PublicGraphNodeDto): PublicSummaryDto["graph"]["nodes"][number] {
+  if (node.kind === "external_reference") {
+    return {
+      nodeId: node.nodeId,
+      kind: node.kind,
+      displayReference: node.displayReference,
+    };
+  }
+  return {
+    nodeId: node.nodeId,
+    kind: node.kind,
+  };
+}
+
 function createEdge(
   id: string,
   fromNodeId: string,
@@ -92,10 +106,6 @@ function createEdge(
     type,
     provenance,
     confidence: provenance === "native" ? 1 : 0.9,
-    evidence: [],
-    contradictions: [],
-    firstSeenAt: "2026-07-01T00:00:00.000Z",
-    lastConfirmedAt: "2026-07-31T00:00:00.000Z",
     active: true,
   };
 }
@@ -120,7 +130,7 @@ function createGraphFixture(options: GraphFixtureOptions): Readonly<{
     repositories: sampleSummary.repositories,
     items: options.items,
     graph: {
-      nodes: options.nodes.slice(0, options.maxNodes),
+      nodes: options.nodes.slice(0, options.maxNodes).map(initialGraphNode),
       maxNodes: options.maxNodes,
     },
   });
@@ -320,7 +330,13 @@ describe("項目詳細の依存グラフ", () => {
       nodes: [trackedGraphNode(center), trackedGraphNode(pullRequest), external],
       edges: [
         createEdge("edge:ui-pr", pullRequest.nodeId, center.nodeId, "blocks", "native"),
-        createEdge("edge:ui-external", external.nodeId, center.nodeId, "blocks", "native"),
+        createEdge(
+          "edge:ui-external",
+          external.nodeId,
+          center.nodeId,
+          "related_to",
+          "explicit_text",
+        ),
       ],
       frontierNodeIds: [pullRequest.nodeId],
       maxNodes: 10,
@@ -355,5 +371,20 @@ describe("項目詳細の依存グラフ", () => {
     expect(pr?.textContent).toContain("PR");
     expect(pr?.textContent).toContain("着手可能");
     expect(externalNode?.textContent).toContain("外部");
+    expect(currentContainer().querySelector(".graph-node-size-description")?.textContent).toBe(
+      "ノードの大きさは、停滞の長さと、その項目がブロックしている項目の広がりで決まります。",
+    );
+    expect(currentContainer().querySelector(".graph-edge-authoritative")?.textContent).toContain(
+      "ブロック確定関係",
+    );
+    expect(currentContainer().querySelector(".graph-edge-inferred")?.textContent).toContain(
+      "関連推定関係",
+    );
+    expect(
+      currentContainer().querySelector(".graph-edge-authoritative path[marker-end]"),
+    ).not.toBeNull();
+    expect(
+      currentContainer().querySelector(".graph-edge-inferred path[marker-end]"),
+    ).not.toBeNull();
   });
 });

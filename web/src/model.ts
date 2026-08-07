@@ -8,10 +8,12 @@ import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 
 type PublicRepositoryDto = PublicSummaryDto["repositories"][number];
 type ConfidenceThresholds = PublicSummaryDto["confidenceThresholds"];
+type ItemType = PublicItemSummaryDto["type"];
 type Status = PublicItemSummaryDto["status"];
 type Severity = PublicItemSummaryDto["severity"];
 type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
+type WaitingOnReference = Pick<WaitingOnCandidate, "candidateId" | "kind" | "role">;
 type WaitingOnRole = WaitingOnCandidate["role"];
 type PublicActor = Extract<
   PublicItemDetailsDto["latestEventActor"],
@@ -28,6 +30,9 @@ export type AttentionPriority = Readonly<{
 export type TableColumnKey =
   "repository" | "type" | "status" | "importance" | "waitingOn" | "stall";
 
+/** 一覧表で選択式の絞り込みにする列。 */
+export type TableSelectColumnKey = Exclude<TableColumnKey, "waitingOn">;
+
 /** 一覧表の並び順。 */
 export type TableSort = Readonly<{
   key: TableColumnKey;
@@ -36,6 +41,17 @@ export type TableSort = Readonly<{
 
 /** 一覧表の列別絞り込み値。 */
 export type TableFilters = Readonly<Record<TableColumnKey, string>>;
+
+/** 一覧表の選択式絞り込みへ表示する選択肢。 */
+export type TableFilterOption = Readonly<{
+  label: string;
+  value: string;
+}>;
+
+/** 公開データから選べる一覧表の絞り込み値。 */
+export type TableFilterOptions = Readonly<
+  Record<TableSelectColumnKey, readonly TableFilterOption[]>
+>;
 
 /** 一覧表へ表示する項目の導出値。 */
 export type ItemTableRow = Readonly<{
@@ -47,6 +63,7 @@ export type ItemTableRow = Readonly<{
   importanceText: string;
   waitingOnText: string;
   stallText: string;
+  stallDurationMilliseconds: number;
 }>;
 
 /** 許可済みGitHub URLの検証結果。 */
@@ -101,11 +118,45 @@ const STATUS_LABELS = {
   terminal_not_planned: "対応しない",
 } satisfies Readonly<Record<Status, string>>;
 
+const ITEM_TYPE_LABELS = {
+  issue: "Issue",
+  pull_request: "Pull Request",
+} satisfies Readonly<Record<ItemType, string>>;
+
 const IMPORTANCE_LEVEL_LABELS = {
   low: "低",
   medium: "中",
   high: "高",
 } satisfies Readonly<Record<ImportanceLevel, string>>;
+
+type StallFilterDefinition = Readonly<{
+  label: string;
+  thresholdMilliseconds: number;
+  value: string;
+}>;
+
+const STALL_FILTER_DEFINITIONS = [
+  {
+    label: "1日以上",
+    thresholdMilliseconds: 1 * 24 * 60 * 60 * 1000,
+    value: "1d",
+  },
+  {
+    label: "3日以上",
+    thresholdMilliseconds: 3 * 24 * 60 * 60 * 1000,
+    value: "3d",
+  },
+  {
+    label: "7日以上",
+    thresholdMilliseconds: 7 * 24 * 60 * 60 * 1000,
+    value: "7d",
+  },
+  {
+    label: "30日以上",
+    thresholdMilliseconds: 30 * 24 * 60 * 60 * 1000,
+    value: "30d",
+  },
+] satisfies readonly StallFilterDefinition[];
 
 const SEVERITY_RANKS = {
   none: 0,
@@ -140,6 +191,15 @@ export function createEmptyTableFilters(): TableFilters {
   };
 }
 
+/** 列が選択式の絞り込み対象かを返す。 */
+export function isTableSelectColumnKey(key: TableColumnKey): key is TableSelectColumnKey {
+  return key !== "waitingOn";
+}
+
+function itemTypeLabel(type: ItemType): string {
+  return ITEM_TYPE_LABELS[type];
+}
+
 /** statusの日本語表示名を返す。 */
 export function statusLabel(status: Status): string {
   return STATUS_LABELS[status];
@@ -148,6 +208,45 @@ export function statusLabel(status: Status): string {
 /** 重要度levelの日本語表示名を返す。 */
 export function importanceLevelLabel(level: ImportanceLevel): string {
   return IMPORTANCE_LEVEL_LABELS[level];
+}
+
+function createPresentTableFilterOptions(
+  labels: Readonly<Record<string, string>>,
+  presentValues: ReadonlySet<string>,
+): readonly TableFilterOption[] {
+  return Object.entries(labels)
+    .filter(([value]) => presentValues.has(value))
+    .map(([value, label]) => ({ label, value }));
+}
+
+/** 公開summaryに実在する一覧表の選択肢を作る。 */
+export function createTableFilterOptions(summary: PublicSummaryDto): TableFilterOptions {
+  const repositoriesById = new Map(
+    summary.repositories.map((repository) => [repository.id, repository]),
+  );
+  const repositoryValues = new Set<string>();
+  const typeValues = new Set<string>();
+  const statusValues = new Set<string>();
+  const importanceValues = new Set<string>();
+
+  for (const item of summary.items) {
+    const repository = repositoriesById.get(item.repositoryId);
+    assertNonNullable(repository, `項目 ${item.nodeId} のrepositoryがありません`);
+    repositoryValues.add(repository.fullName);
+    typeValues.add(item.type);
+    statusValues.add(item.status);
+    importanceValues.add(item.importance.level);
+  }
+
+  return {
+    repository: [...repositoryValues]
+      .sort(compareStrings)
+      .map((value) => ({ label: value, value })),
+    type: createPresentTableFilterOptions(ITEM_TYPE_LABELS, typeValues),
+    status: createPresentTableFilterOptions(STATUS_LABELS, statusValues),
+    importance: createPresentTableFilterOptions(IMPORTANCE_LEVEL_LABELS, importanceValues),
+    stall: STALL_FILTER_DEFINITIONS.map(({ label, value }) => ({ label, value })),
+  };
 }
 
 /** 設定済みラベルルールのpriorityWeightをqueue表示へ変換する。 */
@@ -273,7 +372,7 @@ function waitingOnItemLabel(candidateId: string, summary: PublicSummaryDto): str
 }
 
 function waitingOnKindLabel(
-  waitingOn: WaitingOnCandidate,
+  waitingOn: WaitingOnReference,
   summary: PublicSummaryDto,
   roleLabel: (role: WaitingOnRole) => string,
 ): string {
@@ -367,7 +466,7 @@ export function waitingOnLabel(
 
 /** 過去のwaitingOn候補を対象がわかる表示文字列へ変換する。 */
 export function waitingOnHistoryLabel(
-  waitingOn: WaitingOnCandidate,
+  waitingOn: WaitingOnReference,
   item: PublicItemSummaryDto,
   summary: PublicSummaryDto,
 ): string {
@@ -480,16 +579,35 @@ export function formatWaitingOn(item: PublicItemSummaryDto, summary: PublicSumma
     return "対応完了";
   }
   return item.waitingOn
-    .map((waitingOn) => {
-      const presentation = confidencePresentation(
-        waitingOn.confidence,
-        summary.confidenceThresholds,
-      );
-      return presentation.fieldQualifier.length === 0
-        ? waitingOnLabel(waitingOn, item, summary)
-        : `${presentation.fieldQualifier}: ${waitingOnLabel(waitingOn, item, summary)}`;
-    })
+    .map((waitingOn) => formatWaitingOnCandidate(waitingOn, item, summary))
     .join("、");
+}
+
+/** waitingOn候補を確度区分付きの表示文字列へ変換する。 */
+export function formatWaitingOnCandidate(
+  waitingOn: WaitingOnCandidate,
+  item: PublicItemSummaryDto,
+  summary: PublicSummaryDto,
+): string {
+  const presentation = confidencePresentation(waitingOn.confidence, summary.confidenceThresholds);
+  return presentation.fieldQualifier.length === 0
+    ? waitingOnLabel(waitingOn, item, summary)
+    : `${presentation.fieldQualifier}: ${waitingOnLabel(waitingOn, item, summary)}`;
+}
+
+/** primaryWaitingOnが指す候補を返し、未選定なら先頭候補を返す。 */
+export function selectPrimaryWaitingOnCandidate(
+  item: PublicItemSummaryDto,
+): WaitingOnCandidate | undefined {
+  if (item.waitingOn.length === 0) {
+    return undefined;
+  }
+  if (item.primaryWaitingOn.index === "not_applicable") {
+    return item.waitingOn[0];
+  }
+  const waitingOn = item.waitingOn[item.primaryWaitingOn.index];
+  assertNonNullable(waitingOn, `項目 ${item.nodeId} のprimary waitingOnがありません`);
+  return waitingOn;
 }
 
 function compareStrings(left: string, right: string): number {
@@ -693,17 +811,20 @@ export function createItemTableRows(summary: PublicSummaryDto, now: Date): reado
   return summary.items.map((item) => {
     const repository = repositoriesById.get(item.repositoryId);
     assertNonNullable(repository, `項目 ${item.nodeId} のrepositoryがありません`);
+    const stallDurationMilliseconds = now.getTime() - parseTimestamp(item.stallSince);
+    if (stallDurationMilliseconds < 0) {
+      throw new RangeError("stallSinceは現在時刻より後にできません");
+    }
     return {
       item,
       repository,
-      repositoryText: `${repository.fullName} ${item.displayReference} ${item.title}`,
-      typeText: item.type === "issue" ? "Issue" : "Pull Request",
-      statusText: `${statusLabel(item.status)} ${item.status}`,
-      importanceText: `${importanceLevelLabel(item.importance.level)} ${item.importance.level} ${item.importance.score.toString()}点`,
-      waitingOnText: `${formatWaitingOn(item, summary)} ${item.waitingOn
-        .map((waitingOn) => waitingOn.reasonSummary)
-        .join(" ")}`,
-      stallText: `${formatStallDuration(item.stallSince, now)} ${item.stallSince}`,
+      repositoryText: repository.fullName,
+      typeText: itemTypeLabel(item.type),
+      statusText: statusLabel(item.status),
+      importanceText: importanceLevelLabel(item.importance.level),
+      waitingOnText: formatWaitingOn(item, summary),
+      stallText: formatStallDuration(item.stallSince, now),
+      stallDurationMilliseconds,
     };
   });
 }
@@ -793,20 +914,23 @@ export function searchItemNodeIds(
     .map((item) => item.nodeId);
 }
 
-function rowColumnText(row: ItemTableRow, key: TableColumnKey): string {
+function rowMatchesTableFilter(row: ItemTableRow, key: TableColumnKey, value: string): boolean {
   switch (key) {
     case "repository":
-      return row.repositoryText;
+      return row.repositoryText === value;
     case "type":
-      return row.typeText;
+      return row.item.type === value;
     case "status":
-      return row.statusText;
+      return row.item.status === value;
     case "importance":
-      return row.importanceText;
+      return row.item.importance.level === value;
     case "waitingOn":
-      return row.waitingOnText;
-    case "stall":
-      return row.stallText;
+      return normalizedSearchText(row.waitingOnText).includes(normalizedSearchText(value));
+    case "stall": {
+      const definition = STALL_FILTER_DEFINITIONS.find((candidate) => candidate.value === value);
+      assertNonNullable(definition, `未対応の停滞時間の絞り込みです: ${value}`);
+      return row.stallDurationMilliseconds >= definition.thresholdMilliseconds;
+    }
     default:
       throw new UnreachableError(key);
   }
@@ -830,7 +954,7 @@ function compareTableRows(
     case "waitingOn":
       return left.waitingOnText.localeCompare(right.waitingOnText, locale);
     case "stall":
-      return parseTimestamp(left.item.stallSince) - parseTimestamp(right.item.stallSince);
+      return left.stallDurationMilliseconds - right.stallDurationMilliseconds;
     default:
       throw new UnreachableError(key);
   }
@@ -858,7 +982,7 @@ export function filterAndSortTableRows(
       ) {
         throw new TypeError(`未対応の表列です: ${key}`);
       }
-      return normalizedSearchText(rowColumnText(row, key)).includes(normalizedSearchText(value));
+      return rowMatchesTableFilter(row, key, value);
     }),
   );
   const direction = sort.direction === "ascending" ? 1 : -1;

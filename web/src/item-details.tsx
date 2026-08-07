@@ -1,5 +1,5 @@
 import { type ComponentChildren } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 import {
   type PublicGraphNodeDto,
@@ -85,6 +85,8 @@ const IMPORTANCE_FACTOR_LABELS = {
   futureRisk: "将来リスク",
 } satisfies Readonly<Record<ImportanceFactor["kind"], string>>;
 
+const HISTORY_PREVIEW_LIMIT = 5;
+
 /** 項目詳細pageへ遷移し、通常のリンク操作も維持する。 */
 export function ItemDetailsLink({ children, href, nodeId, onSelect }: ItemDetailsLinkProps) {
   return (
@@ -169,25 +171,6 @@ function ConfidenceDisplay({
   );
 }
 
-function DetailTime({
-  label,
-  locale,
-  now,
-  timezone,
-  value,
-}: Readonly<{ label: string; locale: string; now: Date; timezone: string; value: string }>) {
-  return (
-    <div>
-      <dt>{label}</dt>
-      <dd>
-        <time dateTime={value} title={formatDateTime(value, timezone, locale)}>
-          {formatRelativeTime(value, now, locale)}
-        </time>
-      </dd>
-    </div>
-  );
-}
-
 function formatResponsibilityHistoryValue(
   value: ResponsibilityHistoryValue,
   item: PublicItemDetailsDto["summary"],
@@ -254,18 +237,43 @@ function ItemHistory({
   now: Date;
   summary: PublicSummaryDto;
 }>) {
+  const [showAll, setShowAll] = useState(false);
+  const newestFirstHistory = [...history].reverse();
+  const visibleHistory = showAll
+    ? newestFirstHistory
+    : newestFirstHistory.slice(0, HISTORY_PREVIEW_LIMIT);
   return (
     <div class="item-history-content">
       {history.length === 0 ? (
         <p>状態とwaitingOnの変更履歴はありません。</p>
       ) : (
-        <ol class="history-list">
-          {[...history].reverse().map((event, index) => (
-            <li key={`${event.kind}:${event.recordedAt}:${index.toString()}`}>
-              <HistoryEvent event={event} item={item} locale={locale} now={now} summary={summary} />
-            </li>
-          ))}
-        </ol>
+        <>
+          <ol class="history-list">
+            {visibleHistory.map((event, index) => (
+              <li key={`${event.kind}:${event.recordedAt}:${index.toString()}`}>
+                <HistoryEvent
+                  event={event}
+                  item={item}
+                  locale={locale}
+                  now={now}
+                  summary={summary}
+                />
+              </li>
+            ))}
+          </ol>
+          {history.length > HISTORY_PREVIEW_LIMIT && (
+            <button
+              aria-expanded={showAll}
+              class="history-expand-button"
+              type="button"
+              onClick={() => {
+                setShowAll((current) => !current);
+              }}
+            >
+              {showAll ? "最新5件のみ表示" : "すべての履歴を表示"}
+            </button>
+          )}
+        </>
       )}
     </div>
   );
@@ -335,6 +343,141 @@ function WaitingOnCandidateReference({
   return <>{waitingOnLabel(candidate, item, summary)}</>;
 }
 
+function WaitingOnCandidateItem({
+  candidate,
+  candidateIndex,
+  createItemHref,
+  graphNodesByNodeId,
+  item,
+  itemsByNodeId,
+  onSelectItem,
+  primaryBlockerNodeId,
+  summary,
+}: Readonly<{
+  candidate: WaitingOnCandidate;
+  candidateIndex: number;
+  createItemHref: (nodeId: string) => string;
+  graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
+  item: PublicItemDetailsDto["summary"];
+  itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
+  onSelectItem: (nodeId: string) => void;
+  primaryBlockerNodeId: string | undefined;
+  summary: PublicSummaryDto;
+}>) {
+  const candidatePresentation = confidencePresentation(
+    candidate.confidence,
+    summary.confidenceThresholds,
+  );
+  return (
+    <li>
+      <div>
+        <strong>
+          <WaitingOnCandidateReference
+            candidate={candidate}
+            createItemHref={createItemHref}
+            graphNodesByNodeId={graphNodesByNodeId}
+            item={item}
+            itemsByNodeId={itemsByNodeId}
+            onSelectItem={onSelectItem}
+            summary={summary}
+          />
+        </strong>
+        {primaryBlockerNodeId === candidate.candidateId &&
+          item.primaryWaitingOn.index === candidateIndex && (
+            <span class="primary-blocker-badge">主要blocker</span>
+          )}
+        <small class="waiting-on-confidence">確度区分: {candidatePresentation.label}</small>
+      </div>
+      <p>{candidate.reasonSummary}</p>
+    </li>
+  );
+}
+
+function WaitingOnCandidates({
+  createItemHref,
+  graphNodesByNodeId,
+  item,
+  itemsByNodeId,
+  onSelectItem,
+  primaryBlockerNodeId,
+  summary,
+}: Readonly<{
+  createItemHref: (nodeId: string) => string;
+  graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
+  item: PublicItemDetailsDto["summary"];
+  itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
+  onSelectItem: (nodeId: string) => void;
+  primaryBlockerNodeId: string | undefined;
+  summary: PublicSummaryDto;
+}>) {
+  if (item.waitingOn.length === 0) {
+    throw new TypeError(`項目 ${item.nodeId}のwaitingOn候補がありません`);
+  }
+  const candidates = item.waitingOn.map((candidate, index) => ({ candidate, index }));
+  if (candidates.length < 4) {
+    return (
+      <ul class="waiting-on-list">
+        {candidates.map(({ candidate, index }) => (
+          <WaitingOnCandidateItem
+            key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}
+            candidate={candidate}
+            candidateIndex={index}
+            createItemHref={createItemHref}
+            graphNodesByNodeId={graphNodesByNodeId}
+            item={item}
+            itemsByNodeId={itemsByNodeId}
+            onSelectItem={onSelectItem}
+            primaryBlockerNodeId={primaryBlockerNodeId}
+            summary={summary}
+          />
+        ))}
+      </ul>
+    );
+  }
+
+  const primaryIndex =
+    item.primaryWaitingOn.index === "not_applicable" ? 0 : item.primaryWaitingOn.index;
+  const primaryCandidate = candidates[primaryIndex] ?? candidates[0];
+  assertNonNullable(primaryCandidate, `項目 ${item.nodeId}の主候補がありません`);
+  const otherCandidates = candidates.filter(({ index }) => index !== primaryCandidate.index);
+  return (
+    <>
+      <ul class="waiting-on-list primary-waiting-on-list">
+        <WaitingOnCandidateItem
+          candidate={primaryCandidate.candidate}
+          candidateIndex={primaryCandidate.index}
+          createItemHref={createItemHref}
+          graphNodesByNodeId={graphNodesByNodeId}
+          item={item}
+          itemsByNodeId={itemsByNodeId}
+          onSelectItem={onSelectItem}
+          primaryBlockerNodeId={primaryBlockerNodeId}
+          summary={summary}
+        />
+      </ul>
+      <details class="other-waiting-on-candidates">
+        <summary>その他の候補{otherCandidates.length.toLocaleString()}件を表示</summary>
+        <ul class="waiting-on-list">
+          {otherCandidates.map(({ candidate, index }) => (
+            <WaitingOnCandidateItem
+              key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}
+              candidate={candidate}
+              candidateIndex={index}
+              createItemHref={createItemHref}
+              graphNodesByNodeId={graphNodesByNodeId}
+              item={item}
+              itemsByNodeId={itemsByNodeId}
+              onSelectItem={onSelectItem}
+              primaryBlockerNodeId={primaryBlockerNodeId}
+              summary={summary}
+            />
+          ))}
+        </ul>
+      </details>
+    </>
+  );
+}
+
 function hasItemDependencies(view: ItemGraphView): boolean {
   return view.sourceEdges.length > 0 || view.omittedSourceNodeCount > 0;
 }
@@ -383,20 +526,6 @@ export function ItemDetailsContent({
   const additionalBlockerNodeIds = item.blockerNodeIds.filter(
     (nodeId) => !waitingOnBlockerNodeIds.has(nodeId),
   );
-  const timestampFields = [
-    {
-      label: "作成時刻",
-      value: details.timestamps.createdAt,
-    },
-    {
-      label: "GitHubの更新時刻",
-      value: details.timestamps.githubUpdatedAt,
-    },
-    {
-      label: "停滞開始時刻",
-      value: details.timestamps.stallSince,
-    },
-  ];
   useEffect(() => {
     heading.current?.focus();
   }, [item.nodeId]);
@@ -429,7 +558,6 @@ export function ItemDetailsContent({
 
       <section aria-labelledby="current-action-heading" class="current-action-panel">
         <div class="current-action-heading">
-          <p class="eyebrow">Current action</p>
           <h3 id="current-action-heading">現在の状況と次の行動</h3>
         </div>
         <dl class="current-state-grid">
@@ -460,6 +588,22 @@ export function ItemDetailsContent({
               <span>停滞開始からの経過</span>
             </dd>
           </div>
+          {item.type === "pull_request" && (
+            <>
+              <div>
+                <dt>review</dt>
+                <dd>
+                  <strong>{REVIEW_STATE_LABELS[details.reviewState]}</strong>
+                </dd>
+              </div>
+              <div>
+                <dt>checks</dt>
+                <dd>
+                  <strong>{CHECK_STATE_LABELS[details.checkState]}</strong>
+                </dd>
+              </div>
+            </>
+          )}
         </dl>
 
         <div class="current-responsibility">
@@ -470,30 +614,15 @@ export function ItemDetailsContent({
           {item.waitingOn.length === 0 ? (
             <p>対応完了</p>
           ) : (
-            <ul class="waiting-on-list">
-              {item.waitingOn.map((candidate, index) => (
-                <li key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}>
-                  <div>
-                    <strong>
-                      <WaitingOnCandidateReference
-                        candidate={candidate}
-                        createItemHref={createItemHref}
-                        graphNodesByNodeId={graphNodesByNodeId}
-                        item={item}
-                        itemsByNodeId={itemsByNodeId}
-                        onSelectItem={onSelectItem}
-                        summary={summary}
-                      />
-                    </strong>
-                    {primaryBlockerNodeId === candidate.candidateId &&
-                      item.primaryWaitingOn.index === index && (
-                        <span class="primary-blocker-badge">主要blocker</span>
-                      )}
-                  </div>
-                  <p>{candidate.reasonSummary}</p>
-                </li>
-              ))}
-            </ul>
+            <WaitingOnCandidates
+              createItemHref={createItemHref}
+              graphNodesByNodeId={graphNodesByNodeId}
+              item={item}
+              itemsByNodeId={itemsByNodeId}
+              onSelectItem={onSelectItem}
+              primaryBlockerNodeId={primaryBlockerNodeId}
+              summary={summary}
+            />
           )}
         </div>
 
@@ -526,26 +655,16 @@ export function ItemDetailsContent({
 
       {hasItemDependencies(dependencyGraphView) && (
         <section aria-labelledby="item-dependency-graph-heading" class="item-dependency-graph">
-          <div class="item-dependency-graph-heading">
-            <div>
-              <p class="eyebrow">Dependency graph</p>
-              <h3 id="item-dependency-graph-heading">依存関係</h3>
-            </div>
-            <p>この項目と現在有効な依存関係で直接つながる項目を表示します。</p>
-          </div>
-          <div class="graph-selection-summary" aria-live="polite">
-            <p>
-              中心項目を含む
-              {dependencyGraphView.representedSourceNodeCount.toLocaleString(locale)}
-              件を表示します。
-            </p>
-            {dependencyGraphView.omittedSourceNodeCount > 0 && (
-              <p>
-                表示上限外の隣接項目が
-                {dependencyGraphView.omittedSourceNodeCount.toLocaleString(locale)}件あります。
-              </p>
-            )}
-          </div>
+          <h3 id="item-dependency-graph-heading" class="item-dependency-graph-heading">
+            依存関係
+          </h3>
+          <p class="graph-selection-summary" aria-live="polite">
+            {`この項目と現在有効な依存関係で直接つながる項目だけを、中心項目を含めて${dependencyGraphView.representedSourceNodeCount.toLocaleString(locale)}件表示します。${
+              dependencyGraphView.omittedSourceNodeCount > 0
+                ? `表示上限外の隣接項目が${dependencyGraphView.omittedSourceNodeCount.toLocaleString(locale)}件あります。`
+                : ""
+            }`}
+          </p>
           <DependencyGraphDiagram
             description={`${item.displayReference}を中心項目として示します。矢印は依存関係の始点から終点へ向き、ブロック関係はブロック元からブロックされる項目へ向きます。`}
             idPrefix="item-dependency-graph"
@@ -567,38 +686,14 @@ export function ItemDetailsContent({
         </summary>
         <div class="detail-disclosure-content">
           <ConfidenceDisplay presentation={presentation} />
-          {item.waitingOn.length > 0 && (
-            <div class="candidate-decision-details">
-              <h4>waitingOn候補の判定情報</h4>
-              <ol class="decision-candidate-list">
-                {item.waitingOn.map((candidate) => {
-                  const candidatePresentation = confidencePresentation(
-                    candidate.confidence,
-                    summary.confidenceThresholds,
-                  );
-                  return (
-                    <li key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}>
-                      <strong>
-                        <WaitingOnCandidateReference
-                          candidate={candidate}
-                          createItemHref={createItemHref}
-                          graphNodesByNodeId={graphNodesByNodeId}
-                          item={item}
-                          itemsByNodeId={itemsByNodeId}
-                          onSelectItem={onSelectItem}
-                          summary={summary}
-                        />
-                      </strong>
-                      <dl>
-                        <div>
-                          <dt>確度区分</dt>
-                          <dd>{candidatePresentation.label}</dd>
-                        </div>
-                      </dl>
-                    </li>
-                  );
-                })}
-              </ol>
+          {details.uncertainties.length > 0 && (
+            <div class="uncertainty-list">
+              <h4>不確実な点</h4>
+              <ul>
+                {details.uncertainties.map((uncertainty) => (
+                  <li key={uncertainty}>{uncertainty}</li>
+                ))}
+              </ul>
             </div>
           )}
           {primaryBlockerNodeId != null && (
@@ -649,72 +744,6 @@ export function ItemDetailsContent({
         </div>
       </details>
 
-      <details class="detail-disclosure timestamp-details">
-        <summary>
-          <span>各種時刻</span>
-          <span>{timestampFields.length.toString()}件</span>
-        </summary>
-        <div class="detail-disclosure-content">
-          <dl class="timestamp-grid">
-            {timestampFields.map((field) => (
-              <DetailTime
-                key={field.label}
-                label={field.label}
-                value={field.value}
-                now={now}
-                timezone={summary.timezone}
-                locale={locale}
-              />
-            ))}
-          </dl>
-        </div>
-      </details>
-
-      <details class="detail-disclosure context-details">
-        <summary>
-          <span>補足情報</span>
-          <span>GitHub、review、ラベルなど</span>
-        </summary>
-        <div class="detail-disclosure-content">
-          <dl class="detail-context-grid">
-            <div>
-              <dt>GitHub上の状態</dt>
-              <dd>{item.state}</dd>
-            </div>
-            <div>
-              <dt>review</dt>
-              <dd>{REVIEW_STATE_LABELS[details.reviewState]}</dd>
-            </div>
-            <div>
-              <dt>checks</dt>
-              <dd>{CHECK_STATE_LABELS[details.checkState]}</dd>
-            </div>
-            <div>
-              <dt>ラベル</dt>
-              <dd>{details.labels.length === 0 ? "なし" : details.labels.join("、")}</dd>
-            </div>
-            <div>
-              <dt>assignee</dt>
-              <dd>
-                {item.assignees.length === 0
-                  ? "なし"
-                  : item.assignees.map((assignee) => `@${assignee.login}`).join("、")}
-              </dd>
-            </div>
-          </dl>
-          {details.uncertainties.length > 0 && (
-            <div class="uncertainty-list">
-              <h4>不確実な点</h4>
-              <ul>
-                {details.uncertainties.map((uncertainty) => (
-                  <li key={uncertainty}>{uncertainty}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      </details>
-
       <details class="detail-disclosure history-details">
         <summary>
           <span>履歴</span>
@@ -722,6 +751,7 @@ export function ItemDetailsContent({
         </summary>
         <div class="detail-disclosure-content">
           <ItemHistory
+            key={item.nodeId}
             history={details.history}
             item={item}
             locale={locale}

@@ -3,7 +3,6 @@
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "observedAt": "2026-07-31T00:00:00.000Z",
-  "trackingStartAt": "2026-07-01T00:00:00.000Z",
   "timezone": "Asia/Tokyo",
   "ai": {
     "enabled": true,
@@ -17,33 +16,26 @@
   "repositories": [
     {
       "id": "sample-repository-editor",
-      "owner": "VOICEVOX",
       "name": "sample-editor",
       "fullName": "VOICEVOX/sample-editor",
-      "observedAt": "2026-07-31T00:00:00.000Z",
       "freshness": {
         "status": "fresh"
       }
     },
     {
       "id": "sample-repository-engine",
-      "owner": "VOICEVOX",
       "name": "sample-engine",
       "fullName": "VOICEVOX/sample-engine",
-      "observedAt": "2026-07-31T00:00:00.000Z",
       "freshness": {
         "status": "fresh"
       }
     },
     {
       "id": "sample-repository-core",
-      "owner": "VOICEVOX",
       "name": "sample-core",
       "fullName": "VOICEVOX/sample-core",
-      "observedAt": "2026-07-28T00:00:00.000Z",
       "freshness": {
-        "status": "stale",
-        "failedAt": "2026-07-31T00:00:00.000Z"
+        "status": "stale"
       }
     }
   ],
@@ -352,52 +344,28 @@
     "nodes": [
       {
         "nodeId": "sample-item-editor-101",
-        "kind": "pull_request",
-        "repositoryId": "sample-repository-editor",
-        "state": "open",
-        "status": "ready_to_merge",
-        "severity": "critical"
+        "kind": "pull_request"
       },
       {
         "nodeId": "sample-item-engine-202",
-        "kind": "pull_request",
-        "repositoryId": "sample-repository-engine",
-        "state": "open",
-        "status": "waiting_for_review",
-        "severity": "critical"
+        "kind": "pull_request"
       },
       {
         "nodeId": "sample-item-editor-103",
-        "kind": "issue",
-        "repositoryId": "sample-repository-editor",
-        "state": "open",
-        "status": "needs_maintainer_decision",
-        "severity": "urgent"
+        "kind": "issue"
       },
       {
         "nodeId": "sample-item-engine-204",
-        "kind": "issue",
-        "repositoryId": "sample-repository-engine",
-        "state": "open",
-        "status": "blocked",
-        "severity": "watch"
+        "kind": "issue"
       },
       {
         "nodeId": "sample-item-core-305",
-        "kind": "pull_request",
-        "repositoryId": "sample-repository-core",
-        "state": "open",
-        "status": "waiting_for_author",
-        "severity": "urgent"
+        "kind": "pull_request"
       },
       {
         "nodeId": "external:github:sample-distribution-42",
         "kind": "external_reference",
-        "repositoryFullName": "example/sample-distribution",
-        "displayReference": "example/sample-distribution#42",
-        "url": "https://github.com/example/sample-distribution/issues/42",
-        "title": "配布ツールの新形式へ対応する",
-        "state": "open"
+        "displayReference": "example/sample-distribution#42"
       }
     ],
     "maxNodes": 40

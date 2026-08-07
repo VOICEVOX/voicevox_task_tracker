@@ -11,8 +11,10 @@ import {
   filterAndSortTableRows,
   formatStallDuration,
   formatWaitingOn,
+  isTableSelectColumnKey,
   searchItemNodeIds,
   statusLabel,
+  type TableFilterOptions,
   type ItemTableRow,
   type TableColumnKey,
   type TableFilters,
@@ -24,6 +26,7 @@ const TABLE_PAGE_SIZE = 50;
 
 type ItemsPageProps = Readonly<{
   createItemHref: (nodeId: string) => string;
+  filterOptions: TableFilterOptions;
   filters: TableFilters;
   loadDetails: PublicDetailsLoader;
   locale: string;
@@ -39,10 +42,12 @@ type ItemsPageProps = Readonly<{
 
 type ItemTableProps = Readonly<{
   createItemHref: (nodeId: string) => string;
+  filterOptions: TableFilterOptions;
   filters: TableFilters;
   locale: string;
   now: Date;
   onFilterChange: (key: TableColumnKey, value: string) => void;
+  onRetryDetails: () => void;
   onSelectItem: (nodeId: string) => void;
   onSortChange: (key: TableColumnKey) => void;
   searchState: ItemSearchState;
@@ -132,58 +137,21 @@ function ItemTitleLink({
   );
 }
 
-function SearchStatus({
-  onRetryDetails,
-  searchState,
-}: Readonly<{
-  onRetryDetails: () => void;
-  searchState: ItemSearchState;
-}>) {
-  switch (searchState.status) {
-    case "inactive":
-    case "available":
-      return null;
-    case "loading":
-      return (
-        <p class="search-status" role="status" aria-live="polite">
-          検索用の公開詳細データを読み込んでいます。
-        </p>
-      );
-    case "failed":
-      return (
-        <div class="search-load-failure" role="alert">
-          <p>検索用の公開詳細データを取得できませんでした。</p>
-          <button type="button" onClick={onRetryDetails}>
-            再取得
-          </button>
-        </div>
-      );
-    default:
-      throw new UnreachableError(searchState);
-  }
-}
-
 function ItemSearch({
   onClearSearch,
-  onRetryDetails,
   onSearchQueryChange,
   searchQuery,
-  searchState,
 }: Readonly<{
   onClearSearch: () => void;
-  onRetryDetails: () => void;
   onSearchQueryChange: (query: string) => void;
   searchQuery: string;
-  searchState: ItemSearchState;
 }>) {
   return (
     <section aria-labelledby="item-search-heading" class="section-card item-workspace">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Search</p>
           <h2 id="item-search-heading">項目検索</h2>
         </div>
-        <p>公開済みデータだけを使い、項目を検索します。</p>
       </div>
       <div class="item-search" role="search" aria-labelledby="item-search-label">
         <label id="item-search-label" for="item-search-input">
@@ -195,7 +163,7 @@ function ItemSearch({
             type="search"
             value={searchQuery}
             maxLength={200}
-            aria-describedby="item-search-description"
+            placeholder="空白で区切った語をすべて含む項目を検索"
             onInput={(event) => {
               onSearchQueryChange(event.currentTarget.value);
             }}
@@ -204,21 +172,50 @@ function ItemSearch({
             検索をクリア
           </button>
         </div>
-        <p id="item-search-description">
-          空白で区切った語をすべて含む項目を、外部問い合わせなしで検索します。
-        </p>
-        <SearchStatus searchState={searchState} onRetryDetails={onRetryDetails} />
       </div>
     </section>
   );
 }
 
+function ItemsEmptyState({
+  onRetryDetails,
+  searchState,
+}: Readonly<{
+  onRetryDetails: () => void;
+  searchState: ItemSearchState;
+}>) {
+  switch (searchState.status) {
+    case "loading":
+      return (
+        <p class="empty-state" role="status" aria-live="polite">
+          検索用の公開詳細データを読み込んでいます。
+        </p>
+      );
+    case "failed":
+      return (
+        <div class="empty-state search-load-failure" role="alert">
+          <p>検索用の公開詳細データを取得できませんでした。</p>
+          <button type="button" onClick={onRetryDetails}>
+            再取得
+          </button>
+        </div>
+      );
+    case "inactive":
+    case "available":
+      return <p class="empty-state">条件に一致する項目はありません。</p>;
+    default:
+      throw new UnreachableError(searchState);
+  }
+}
+
 function ItemTable({
   createItemHref,
+  filterOptions,
   filters,
   locale,
   now,
   onFilterChange,
+  onRetryDetails,
   onSelectItem,
   onSortChange,
   searchState,
@@ -269,7 +266,6 @@ function ItemTable({
     <section aria-labelledby="items-heading" class="section-card">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">All items</p>
           <h2 id="items-heading">全項目一覧</h2>
         </div>
         <p>{filteredRows.length.toLocaleString(locale)}件を表示対象にしています。</p>
@@ -283,21 +279,38 @@ function ItemTable({
             </span>
           </summary>
           <div class="item-filter-content">
-            <p>入力した文字を含む項目だけを表示します。</p>
+            <p>列の値を選択します。次の担当は入力した文字を含む項目を表示します。</p>
             <div class="item-filter-grid">
               {TABLE_COLUMNS.map((column) => (
                 <label key={column.key}>
                   <span>{column.label}</span>
-                  <input
-                    type="search"
-                    value={filters[column.key]}
-                    maxLength={200}
-                    aria-label={`${column.label}で絞り込み`}
-                    placeholder="部分一致で絞り込み"
-                    onInput={(event) => {
-                      updateFilter(column.key, event.currentTarget.value);
-                    }}
-                  />
+                  {isTableSelectColumnKey(column.key) ? (
+                    <select
+                      value={filters[column.key]}
+                      aria-label={`${column.label}で絞り込み`}
+                      onChange={(event) => {
+                        updateFilter(column.key, event.currentTarget.value);
+                      }}
+                    >
+                      <option value="">すべて</option>
+                      {filterOptions[column.key].map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="search"
+                      value={filters.waitingOn}
+                      maxLength={200}
+                      aria-label={`${column.label}で絞り込み`}
+                      placeholder="部分一致で絞り込み"
+                      onInput={(event) => {
+                        updateFilter(column.key, event.currentTarget.value);
+                      }}
+                    />
+                  )}
                 </label>
               ))}
             </div>
@@ -373,7 +386,7 @@ function ItemTable({
                 <td class="importance-cell">
                   <ImportanceBadge
                     importance={row.item.importance}
-                    showLow={true}
+                    showLow={false}
                     showScore={false}
                   />
                 </td>
@@ -418,7 +431,7 @@ function ItemTable({
                   <h3 class="item-title-with-importance">
                     <ImportanceBadge
                       importance={row.item.importance}
-                      showLow={true}
+                      showLow={false}
                       showScore={false}
                     />
                     <ItemTitleLink
@@ -452,13 +465,7 @@ function ItemTable({
         ))}
       </ol>
       {visibleRows.length === 0 && (
-        <p class="empty-state">
-          {searchState.status === "loading"
-            ? "検索用の公開詳細データを読み込んでいます。"
-            : searchState.status === "failed"
-              ? "検索用の公開詳細データを取得できませんでした。"
-              : "条件に一致する項目はありません。"}
-        </p>
+        <ItemsEmptyState searchState={searchState} onRetryDetails={onRetryDetails} />
       )}
       <nav aria-label="一覧のページ送り" class="pagination">
         <button
@@ -490,6 +497,7 @@ function ItemTable({
 /** 検索、列filter、sort、ページ送りを備えた項目一覧を表示する。 */
 export function ItemsPage({
   createItemHref,
+  filterOptions,
   filters,
   loadDetails,
   locale,
@@ -559,19 +567,14 @@ export function ItemsPage({
     <>
       <ItemSearch
         searchQuery={searchQuery}
-        searchState={searchState}
         onClearSearch={() => {
           onSearchQueryChange("");
-        }}
-        onRetryDetails={() => {
-          setDetailsState({
-            status: "not_requested",
-          });
         }}
         onSearchQueryChange={onSearchQueryChange}
       />
       <ItemTable
         createItemHref={createItemHref}
+        filterOptions={filterOptions}
         filters={filters}
         locale={locale}
         now={now}
@@ -579,6 +582,11 @@ export function ItemsPage({
         sort={sort}
         summary={summary}
         onFilterChange={onFilterChange}
+        onRetryDetails={() => {
+          setDetailsState({
+            status: "not_requested",
+          });
+        }}
         onSelectItem={onSelectItem}
         onSortChange={onSortChange}
       />

@@ -63,71 +63,119 @@ export function PeoplePage({
     <section aria-labelledby="people-page-heading" class="section-card people-page">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">People</p>
           <h2 id="people-page-heading">担当者一覧</h2>
         </div>
-        <p>チーム宛の待ちは、担当者ページで所属チームを選ぶとその人の担当に加わります。</p>
       </div>
       {rows.length === 0 ? (
         <p class="empty-state">現在、担当者を特定できる止まっている項目はありません。</p>
       ) : (
-        <div
-          class="table-scroll"
-          tabIndex={0}
-          role="region"
-          aria-label="担当者一覧表の横スクロール領域"
-        >
-          <table class="people-table">
-            <caption class="visually-hidden">
-              待ち相手ごとの待たせている項目数と最長停滞時間
-            </caption>
-            <thead>
-              <tr>
-                <th scope="col">待ち相手</th>
-                <th scope="col" aria-sort="descending">
-                  待たせている項目数
-                </th>
-                <th scope="col">最長停滞時間</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const viewerRow =
-                  row.subject.kind === "user" && isViewerLogin(row.subject.login, viewerLogin);
-                return (
-                  <tr
-                    key={waitingSubjectKey(row.subject)}
-                    class={viewerRow ? "viewer-person-row" : undefined}
-                  >
-                    <th scope="row">
-                      {row.subject.kind === "user" ? (
-                        <PersonLink
-                          href={createPersonHref(row.subject.login)}
-                          label={row.label}
-                          login={row.subject.login}
-                          onSelect={onSelectPerson}
-                        />
-                      ) : (
-                        row.label
-                      )}
-                      {viewerRow && (
-                        <>
-                          {" "}
-                          <span class="viewer-person-badge">
-                            <span aria-hidden="true">自分</span>
-                            <span class="visually-hidden">自分のアカウントです</span>
-                          </span>
-                        </>
-                      )}
-                    </th>
-                    <td>{row.itemCount.toLocaleString(locale)}</td>
-                    <td>{row.longestStallDuration}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <div
+            class="items-table-region table-scroll"
+            tabIndex={0}
+            role="region"
+            aria-label="担当者一覧表の横スクロール領域"
+          >
+            <table class="people-table">
+              <caption class="visually-hidden">
+                待ち相手ごとの待たせている項目数と最長停滞時間
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">待ち相手</th>
+                  <th scope="col" aria-sort="descending">
+                    待たせている項目数
+                  </th>
+                  <th scope="col">最長停滞時間</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const viewerRow =
+                    row.subject.kind === "user" && isViewerLogin(row.subject.login, viewerLogin);
+                  return (
+                    <tr
+                      key={waitingSubjectKey(row.subject)}
+                      class={viewerRow ? "viewer-person-row" : undefined}
+                    >
+                      <th scope="row">
+                        {row.subject.kind === "user" ? (
+                          <PersonLink
+                            href={createPersonHref(row.subject.login)}
+                            label={row.label}
+                            login={row.subject.login}
+                            onSelect={onSelectPerson}
+                          />
+                        ) : (
+                          row.label
+                        )}
+                        {viewerRow && (
+                          <>
+                            {" "}
+                            <span class="viewer-person-badge">
+                              <span aria-hidden="true">自分</span>
+                              <span class="visually-hidden">自分のアカウントです</span>
+                            </span>
+                          </>
+                        )}
+                      </th>
+                      <td>{row.itemCount.toLocaleString(locale)}</td>
+                      <td>{row.longestStallDuration}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <ol class="items-card-list people-card-list" aria-label="担当者一覧">
+            {rows.map((row) => {
+              const viewerCard =
+                row.subject.kind === "user" && isViewerLogin(row.subject.login, viewerLogin);
+              return (
+                <li
+                  key={waitingSubjectKey(row.subject)}
+                  class={viewerCard ? "viewer-person-card" : undefined}
+                >
+                  <article>
+                    <div class="item-card-heading">
+                      <h3>
+                        {row.subject.kind === "user" ? (
+                          <PersonLink
+                            href={createPersonHref(row.subject.login)}
+                            label={row.label}
+                            login={row.subject.login}
+                            onSelect={onSelectPerson}
+                          />
+                        ) : (
+                          row.label
+                        )}
+                        {viewerCard && (
+                          <>
+                            {" "}
+                            <span class="viewer-person-badge">
+                              <span aria-hidden="true">自分</span>
+                              <span class="visually-hidden">自分のアカウントです</span>
+                            </span>
+                          </>
+                        )}
+                      </h3>
+                    </div>
+                    <dl class="item-card-summary">
+                      <div>
+                        <dt>待たせている項目数</dt>
+                        <dd>{row.itemCount.toLocaleString(locale)}</dd>
+                      </div>
+                      <div>
+                        <dt>最長停滞時間</dt>
+                        <dd>{row.longestStallDuration}</dd>
+                      </div>
+                    </dl>
+                  </article>
+                </li>
+              );
+            })}
+          </ol>
+        </>
       )}
       {unidentifiedItemCount > 0 && (
         <p>

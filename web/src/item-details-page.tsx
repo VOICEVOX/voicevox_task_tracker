@@ -141,10 +141,8 @@ export function ItemDetailsPage({
     <section aria-labelledby="item-details-page-heading" class="section-card item-workspace">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">Item details</p>
           <h2 id="item-details-page-heading">項目詳細</h2>
         </div>
-        <p>公開済みデータだけを使い、項目の判定根拠と変更履歴まで確認できます。</p>
       </div>
       <div id="item-details" class="item-details-region" aria-live="polite">
         {content}

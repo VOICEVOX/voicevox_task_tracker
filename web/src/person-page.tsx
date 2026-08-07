@@ -33,7 +33,7 @@ type PersonPageProps = Readonly<{
 
 const LONGEST_STALL_FIRST_SORT = {
   key: "stall",
-  direction: "ascending",
+  direction: "descending",
 } satisfies TableSort;
 
 function waitingReason(row: ItemTableRow, login: string, teamIds: readonly string[]): string {
@@ -110,7 +110,6 @@ export function PersonPage({
     <section aria-labelledby="person-page-heading" class="section-card person-page">
       <div class="section-heading">
         <div>
-          <p class="eyebrow">People</p>
           <h2 id="person-page-heading">@{login} を待っている項目</h2>
         </div>
         <p class="person-item-count" aria-live="polite">
@@ -163,18 +162,14 @@ export function PersonPage({
             <table class="items-table person-items-table">
               <caption class="visually-hidden">@{login} を待っている項目の一覧</caption>
               <colgroup>
-                <col class="repository-column" />
-                <col class="type-column" />
-                <col class="title-column" />
+                <col class="item-column" />
                 <col class="status-column" />
                 <col class="stall-column" />
                 <col class="reason-column" />
               </colgroup>
               <thead>
                 <tr>
-                  <th scope="col">リポジトリ</th>
-                  <th scope="col">種別</th>
-                  <th scope="col">タイトル</th>
+                  <th scope="col">項目</th>
                   <th scope="col">status</th>
                   <th scope="col" aria-sort="descending">
                     停滞時間
@@ -190,14 +185,10 @@ export function PersonPage({
                     data-freshness={row.item.repositoryFreshness}
                     class={row.item.repositoryFreshness === "stale" ? "stale-row" : ""}
                   >
-                    <td>
-                      {row.repository.fullName}
-                      {row.item.repositoryFreshness === "stale" && (
-                        <span class="freshness-badge freshness-stale">古い観測値</span>
-                      )}
-                    </td>
-                    <td>{row.typeText}</td>
                     <th scope="row">
+                      <span class="item-list-meta">
+                        {row.item.displayReference}・{row.typeText}
+                      </span>
                       <span class="item-title-with-importance">
                         <ImportanceBadge
                           importance={row.item.importance}
@@ -210,6 +201,9 @@ export function PersonPage({
                           row={row}
                         />
                       </span>
+                      {row.item.repositoryFreshness === "stale" && (
+                        <span class="freshness-badge freshness-stale">古い観測値</span>
+                      )}
                     </th>
                     <td>{statusLabel(row.item.status)}</td>
                     <td>
@@ -233,7 +227,7 @@ export function PersonPage({
                   <div class="item-card-heading">
                     <div>
                       <p class="item-list-meta">
-                        {row.repository.fullName}・{row.typeText}
+                        {row.item.displayReference}・{row.typeText}
                       </p>
                       <h3 class="item-title-with-importance">
                         <ImportanceBadge

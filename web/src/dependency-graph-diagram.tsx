@@ -282,15 +282,17 @@ export function DependencyGraphDiagram({
     };
   }, [view]);
 
+  let graph: VNode;
   switch (layoutState.status) {
     case "loading":
-      return (
+      graph = (
         <p class="graph-loading" role="status" data-layout-status="loading">
           依存グラフを自動配置しています。
         </p>
       );
+      break;
     case "loaded":
-      return (
+      graph = (
         <GraphSvg
           description={description}
           idPrefix={idPrefix}
@@ -299,13 +301,24 @@ export function DependencyGraphDiagram({
           title={title}
         />
       );
+      break;
     case "failed":
-      return (
+      graph = (
         <p class="notice notice-warning" role="alert" data-layout-status="failed">
           依存グラフを自動配置できませんでした。
         </p>
       );
+      break;
     default:
       throw new UnreachableError(layoutState);
   }
+
+  return (
+    <div class="dependency-graph-diagram">
+      <p class="graph-node-size-description">
+        ノードの大きさは、停滞の長さと、その項目がブロックしている項目の広がりで決まります。
+      </p>
+      {graph}
+    </div>
+  );
 }

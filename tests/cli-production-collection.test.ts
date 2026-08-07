@@ -1225,7 +1225,7 @@ describe("本番収集の接続", () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it("同じcommitを共有する複数Pull Requestを履歴と公開データへ保存する", async () => {
+  it("同じcommitを共有する複数Pull Requestを履歴へ保存し公開DTOへ入力イベントを載せない", async () => {
     const repository = createRepository("R_shared_commit", "shared-commit", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
@@ -1293,31 +1293,13 @@ describe("本番収集の接続", () => {
     if (publicData == null) {
       throw new TypeError("共有commitの公開データがありません");
     }
-    const sharedPublicItems = publicData.details.items.filter((item) =>
-      item.inputEvents.some((event) => event.sourceId === sharedSourceId),
-    );
-
     expect(result.exitCode).toBe(0);
     expect(sharedHistoryEvents.map((event) => event.itemNodeId)).toEqual(
       [first.nodeId, second.nodeId].sort(),
     );
-    expect(sharedPublicItems).toHaveLength(2);
-    expect(
-      sharedPublicItems.map((item) => ({
-        nodeId: item.summary.nodeId,
-        url: item.inputEvents.find((event) => event.sourceId === sharedSourceId)?.url,
-      })),
-    ).toEqual(
-      expect.arrayContaining([
-        {
-          nodeId: first.nodeId,
-          url: first.url,
-        },
-        {
-          nodeId: second.nodeId,
-          url: second.url,
-        },
-      ]),
+    expect(publicData.details.items).toHaveLength(2);
+    expect(publicData.details.items.every((item) => !Object.hasOwn(item, "inputEvents"))).toBe(
+      true,
     );
   });
 
@@ -2343,14 +2325,9 @@ describe("本番収集の接続", () => {
       id: relation.id,
       provenance: "native",
       confidence: 1,
-      contradictions: [
-        {
-          verdict: "current_blocks_target",
-          confidence: 0.95,
-        },
-      ],
       active: true,
     });
+    expect(publicEdge).not.toHaveProperty("contradictions");
   });
 
   it("同じupdated_atの正規化イベントをkind別に履歴へ一度だけ保存する", async () => {
@@ -4903,10 +4880,16 @@ describe("本番判定入力の接続", () => {
         author: trackedItem.author,
         assignees: trackedItem.assignees,
       },
-      latestEventActor: trackedItem.latestEventActor,
-      aiAnalysis: trackedItem.aiAnalysis,
-      inputEvents: trackedItem.inputEvents,
+      latestEventActor: {
+        status: "present",
+        actor: {
+          type: "human",
+          login: "chat-commenter",
+        },
+      },
     });
+    expect(publicItem).not.toHaveProperty("aiAnalysis");
+    expect(publicItem).not.toHaveProperty("inputEvents");
   });
 
   it("AI判定を使わない項目でも責務主体のコメントをstallSinceへ反映する", async () => {

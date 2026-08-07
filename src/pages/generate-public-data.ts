@@ -148,7 +148,37 @@ function responsibilityHistoryValue(
     state: "present",
     value: {
       status: value.status,
-      waitingOn: value.waitingOn.map(createPublicWaitingOn),
+      waitingOn: value.waitingOn.map((waitingOn) => ({
+        kind: waitingOn.kind,
+        candidateId: waitingOn.candidateId,
+        role: waitingOn.role,
+      })),
+    },
+  };
+}
+
+function createPublicLatestEventActor(
+  latestEventActor: StateSnapshot["items"][number]["latestEventActor"],
+): PublicDetailsDto["items"][number]["latestEventActor"] {
+  if (latestEventActor.status === "absent") {
+    return {
+      status: latestEventActor.status,
+    };
+  }
+  if (latestEventActor.actor.type === "system") {
+    return {
+      status: latestEventActor.status,
+      actor: {
+        type: latestEventActor.actor.type,
+        name: latestEventActor.actor.name,
+      },
+    };
+  }
+  return {
+    status: latestEventActor.status,
+    actor: {
+      type: latestEventActor.actor.type,
+      login: latestEventActor.actor.login,
     },
   };
 }
@@ -264,7 +294,7 @@ function createPublicEvidenceEntry(
   entry: Evidence,
   sourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
-): PublicGraphEdgeDto["evidence"][number] {
+): PublicDetailsDto["items"][number]["evidence"][number] {
   return {
     summary: entry.summary,
     sourceUrl: resolveEvidenceSourceUrl(entry.sourceId, sourceItems, sourceOwnersById),
@@ -275,34 +305,11 @@ function createPublicEvidence(
   evidence: readonly Evidence[],
   sourceItem: EvidenceSourceItem,
   sourceOwnersById: EvidenceSourceUrlMap,
-): PublicGraphEdgeDto["evidence"] {
+): PublicDetailsDto["items"][number]["evidence"] {
   return evidence.map((entry) => createPublicEvidenceEntry(entry, [sourceItem], sourceOwnersById));
 }
 
-function createPublicGraphEvidence(
-  relation: Relation,
-  itemByNodeId: ReadonlyMap<string, TrackedItem>,
-  sourceOwnersById: EvidenceSourceUrlMap,
-): PublicGraphEdgeDto["evidence"] {
-  const sourceItems: TrackedItem[] = [];
-  const fromItem = itemByNodeId.get(relation.fromNodeId);
-  const toItem = itemByNodeId.get(relation.toNodeId);
-  if (fromItem != null) {
-    sourceItems.push(fromItem);
-  }
-  if (toItem != null) {
-    sourceItems.push(toItem);
-  }
-  return relation.evidence.map((entry) =>
-    createPublicEvidenceEntry(entry, sourceItems, sourceOwnersById),
-  );
-}
-
-function createPublicGraphEdge(
-  relation: Relation,
-  itemByNodeId: ReadonlyMap<string, TrackedItem>,
-  sourceOwnersById: EvidenceSourceUrlMap,
-): PublicGraphEdgeDto {
+function createPublicGraphEdge(relation: Relation): PublicGraphEdgeDto {
   const fields = {
     id: relation.id,
     fromNodeId: relation.fromNodeId,
@@ -310,13 +317,6 @@ function createPublicGraphEdge(
     type: relation.type,
     provenance: relation.provenance,
     confidence: relation.confidence,
-    evidence: createPublicGraphEvidence(relation, itemByNodeId, sourceOwnersById),
-    contradictions: relation.contradictions.map((contradiction) => ({
-      verdict: contradiction.verdict,
-      confidence: contradiction.confidence,
-    })),
-    firstSeenAt: relation.firstSeenAt,
-    lastConfirmedAt: relation.lastConfirmedAt,
   };
   if (relation.active) {
     return {
@@ -327,19 +327,12 @@ function createPublicGraphEdge(
   return {
     ...fields,
     active: false,
-    removedAt: relation.removedAt,
   };
 }
 
-function createPublicGraph(
-  snapshot: StateSnapshot,
-  sourceOwnersById: EvidenceSourceUrlMap,
-): PublicGraph {
-  const itemByNodeId = new Map<string, TrackedItem>(
-    snapshot.items.map((item) => [item.nodeId, item]),
-  );
+function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
   const graphNodeIds = new Set([
-    ...itemByNodeId.keys(),
+    ...snapshot.items.map((item) => item.nodeId),
     ...snapshot.externalReferences.map((reference) => reference.nodeId),
   ]);
   for (const relation of snapshot.relations) {
@@ -399,9 +392,7 @@ function createPublicGraph(
       state: reference.state,
     })),
   );
-  const edges = snapshot.relations.map((relation) =>
-    createPublicGraphEdge(relation, itemByNodeId, sourceOwnersById),
-  );
+  const edges = snapshot.relations.map(createPublicGraphEdge);
 
   return Object.freeze({
     analysis,
@@ -446,22 +437,6 @@ function createBlockersByNodeId(snapshot: StateSnapshot): ReadonlyMap<string, re
       Object.freeze([...blockerNodeIds].sort(compareStrings)),
     ]),
   );
-}
-
-function createRepositoryFreshness(
-  repository: SnapshotRepository,
-):
-  | Readonly<{ status: "fresh" }>
-  | Readonly<{ status: "stale"; failedAt: SnapshotRepository["observedAt"] }> {
-  if (repository.freshness === "fresh") {
-    return {
-      status: "fresh",
-    };
-  }
-  return {
-    status: "stale",
-    failedAt: repository.failedAt,
-  };
 }
 
 function createItemSummary(
@@ -594,7 +569,18 @@ function createInitialGraph(
     .slice(0, maxInitialGraphNodes)
     .sort((left, right) => compareStrings(left.nodeId, right.nodeId));
   return {
-    nodes: selectedNodes,
+    nodes: selectedNodes.map((node) =>
+      node.kind === "external_reference"
+        ? {
+            nodeId: node.nodeId,
+            kind: node.kind,
+            displayReference: node.displayReference,
+          }
+        : {
+            nodeId: node.nodeId,
+            kind: node.kind,
+          },
+    ),
     maxNodes: maxInitialGraphNodes,
   };
 }
@@ -624,7 +610,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       })),
     ),
   );
-  const graph = createPublicGraph(snapshot, sourceOwnersById);
+  const graph = createPublicGraph(snapshot);
   const repositoriesById = new Map(
     snapshot.repositories.map((repository) => [repository.id, repository]),
   );
@@ -648,21 +634,17 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   });
   const repositories = snapshot.repositories.map((repository) => ({
     id: repository.id,
-    owner: repository.owner,
     name: repository.name,
     fullName: `${repository.owner}/${repository.name}`,
-    observedAt: repository.observedAt,
-    freshness: createRepositoryFreshness(repository),
+    freshness: {
+      status: repository.freshness,
+    },
   }));
   const summary = createPublicSummaryDto({
     schemaVersion: "5",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
-    trackingStartAt:
-      snapshot.trackingStartAt.status === "fixed"
-        ? snapshot.trackingStartAt.value
-        : snapshot.generatedAt,
     timezone: input.options.timezone,
     ai: {
       ...snapshot.ai,
@@ -691,26 +673,10 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
           githubUpdatedAt: item.githubUpdatedAt,
           stallSince: item.stallSince,
         },
-        latestEventActor:
-          item.latestEventActor.status === "absent"
-            ? {
-                ...item.latestEventActor,
-              }
-            : {
-                ...item.latestEventActor,
-                actor: {
-                  ...item.latestEventActor.actor,
-                },
-              },
+        latestEventActor: createPublicLatestEventActor(item.latestEventActor),
         labels: [...item.labels],
         reviewState: item.reviewState,
         checkState: item.checkState,
-        aiAnalysis: {
-          ...item.aiAnalysis,
-        },
-        inputEvents: item.inputEvents.map((event) => ({
-          ...event,
-        })),
         evidence: createPublicEvidence(item.evidence, item, sourceOwnersById),
         uncertainties: [...item.uncertainties],
         history: [...(history.itemEventsByNodeId.get(item.nodeId) ?? [])],

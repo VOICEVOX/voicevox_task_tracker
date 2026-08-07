@@ -7,7 +7,12 @@ import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { createSharedDetailsLoader, type PublicDetailsLoader } from "./details-loader.js";
 import { ItemDetailsPage } from "./item-details-page.js";
 import { ItemsPage } from "./items-page.js";
-import { collectWaitingTeamIds, type TableColumnKey, waitingSubjectKey } from "./model.js";
+import {
+  collectWaitingTeamIds,
+  createTableFilterOptions,
+  type TableColumnKey,
+  waitingSubjectKey,
+} from "./model.js";
 import { OverviewPage } from "./overview-page.js";
 import { PeoplePage } from "./people-page.js";
 import { PersonPage } from "./person-page.js";
@@ -103,12 +108,14 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     () => new Set(validTeamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId }))),
     [validTeamIds],
   );
+  const tableFilterOptions = useMemo(() => createTableFilterOptions(summary), [summary]);
   const validTargets = useMemo<ValidWebRouteTargets>(
     () => ({
       items: itemTargets,
+      tableFilterOptions,
       teamIds: validTeamIds,
     }),
-    [itemTargets, validTeamIds],
+    [itemTargets, tableFilterOptions, validTeamIds],
   );
   const sharedLoadDetails = useMemo(() => createSharedDetailsLoader(loadDetails), [loadDetails]);
   const viewerIdentityStore = useMemo(createViewerIdentityStore, []);
@@ -342,6 +349,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         return (
           <ItemsPage
             createItemHref={createItemHref}
+            filterOptions={tableFilterOptions}
             filters={viewState.tableFilters}
             loadDetails={sharedLoadDetails}
             locale={locale}
@@ -425,7 +433,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       </a>
       <header class="site-header">
         <div class="site-identity">
-          <p class="eyebrow">VOICEVOX Organization</p>
           <h1>{title}</h1>
         </div>
         <nav class="global-navigation" aria-label="グローバルナビゲーション">
@@ -468,16 +475,12 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
                     selectViewerIdentity(viewerIdentity);
                   }}
                 >
-                  自分の担当
+                  自分の担当 @{viewerIdentity.login}
                 </a>
               </li>
             )}
           </ul>
         </nav>
-        <details class="run-details">
-          <summary>実行情報</summary>
-          <p class="run-id">Run {summary.runId}</p>
-        </details>
       </header>
       <main id="main-content">
         {navigationState.status === "sanitized" && (
@@ -489,6 +492,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       </main>
       <footer>
         <p>GitHubの公開情報を読み取り専用で整理しています。</p>
+        <small class="footer-run-id">Run {summary.runId}</small>
       </footer>
     </>
   );
