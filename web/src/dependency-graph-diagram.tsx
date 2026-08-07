@@ -5,6 +5,7 @@ import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import type { GraphLayout, LayoutedGraphNode } from "./graph-layout.js";
 import { graphNodeKindLabel, type ItemGraphView, type GraphViewNode } from "./graph-model.js";
+import { ContentState } from "./layout.js";
 
 type GraphDiagramNavigation = Readonly<{
   status: "item_details";
@@ -286,9 +287,12 @@ export function DependencyGraphDiagram({
   switch (layoutState.status) {
     case "loading":
       graph = (
-        <p class="graph-loading" role="status" data-layout-status="loading">
-          依存グラフを自動配置しています。
-        </p>
+        <ContentState
+          className="graph-loading"
+          data-layout-status="loading"
+          message="依存グラフを自動配置しています。"
+          status="loading"
+        />
       );
       break;
     case "loaded":
@@ -304,13 +308,12 @@ export function DependencyGraphDiagram({
       break;
     case "failed":
       graph = (
-        <p
-          class="notice notice-warning my-4 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3.5 text-state-warning-text"
-          role="alert"
+        <ContentState
+          className="graph-load-failure"
           data-layout-status="failed"
-        >
-          依存グラフを自動配置できませんでした。
-        </p>
+          message="依存グラフを自動配置できませんでした。"
+          status="failed"
+        />
       );
       break;
     default:

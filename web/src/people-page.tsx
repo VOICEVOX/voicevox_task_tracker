@@ -2,7 +2,9 @@ import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
+import { ContentState, PageSection } from "./layout.js";
 import { collectWaitingSubjectRows, resolveWaitingSubjects, waitingSubjectKey } from "./model.js";
+import { Pill } from "./ui.js";
 import { isViewerLogin } from "./viewer-identity.js";
 
 type PeoplePageProps = Readonly<{
@@ -60,14 +62,13 @@ export function PeoplePage({
   );
 
   return (
-    <section aria-labelledby="people-page-heading" class="section-card people-page">
-      <div class="section-heading">
-        <div>
-          <h2 id="people-page-heading">担当者一覧</h2>
-        </div>
-      </div>
+    <PageSection className="people-page" heading="担当者一覧" headingId="people-page-heading">
       {rows.length === 0 ? (
-        <p class="empty-state">現在、担当者を特定できる止まっている項目はありません。</p>
+        <ContentState
+          className="empty-state"
+          message="現在、担当者を特定できる止まっている項目はありません。"
+          status="empty"
+        />
       ) : (
         <>
           <div
@@ -112,10 +113,10 @@ export function PeoplePage({
                         {viewerRow && (
                           <>
                             {" "}
-                            <span class="viewer-person-badge">
+                            <Pill className="viewer-person-badge" tone="neutral">
                               <span aria-hidden="true">自分</span>
                               <span class="visually-hidden">自分のアカウントです</span>
-                            </span>
+                            </Pill>
                           </>
                         )}
                       </th>
@@ -152,10 +153,10 @@ export function PeoplePage({
                         {viewerCard && (
                           <>
                             {" "}
-                            <span class="viewer-person-badge">
+                            <Pill className="viewer-person-badge" tone="neutral">
                               <span aria-hidden="true">自分</span>
                               <span class="visually-hidden">自分のアカウントです</span>
-                            </span>
+                            </Pill>
                           </>
                         )}
                       </h3>
@@ -183,6 +184,6 @@ export function PeoplePage({
           {unidentifiedItemCount.toLocaleString(locale)}件あります。
         </p>
       )}
-    </section>
+    </PageSection>
   );
 }

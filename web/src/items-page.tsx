@@ -5,6 +5,7 @@ import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
+import { ContentState, PageSection } from "./layout.js";
 import {
   createItemDetailsMap,
   createItemTableRows,
@@ -21,6 +22,7 @@ import {
   type TableSort,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
+import { ActionButton, FORM_CONTROL_CLASS_NAME, Pill } from "./ui.js";
 
 const TABLE_PAGE_SIZE = 50;
 
@@ -147,18 +149,14 @@ function ItemSearch({
   searchQuery: string;
 }>) {
   return (
-    <section aria-labelledby="item-search-heading" class="section-card item-workspace">
-      <div class="section-heading">
-        <div>
-          <h2 id="item-search-heading">項目検索</h2>
-        </div>
-      </div>
+    <PageSection className="item-workspace" heading="項目検索" headingId="item-search-heading">
       <div class="item-search" role="search" aria-labelledby="item-search-label">
         <label id="item-search-label" for="item-search-input">
           リポジトリ、番号、タイトル、アクター、team、ラベルで検索
         </label>
         <div class="search-input-row">
           <input
+            class={FORM_CONTROL_CLASS_NAME}
             id="item-search-input"
             type="search"
             value={searchQuery}
@@ -168,12 +166,12 @@ function ItemSearch({
               onSearchQueryChange(event.currentTarget.value);
             }}
           />
-          <button type="button" disabled={searchQuery.length === 0} onClick={onClearSearch}>
+          <ActionButton type="button" disabled={searchQuery.length === 0} onClick={onClearSearch}>
             検索をクリア
-          </button>
+          </ActionButton>
         </div>
       </div>
-    </section>
+    </PageSection>
   );
 }
 
@@ -187,22 +185,33 @@ function ItemsEmptyState({
   switch (searchState.status) {
     case "loading":
       return (
-        <p class="empty-state" role="status" aria-live="polite">
-          検索用の公開詳細データを読み込んでいます。
-        </p>
+        <ContentState
+          className="empty-state"
+          message="検索用の公開詳細データを読み込んでいます。"
+          status="loading"
+        />
       );
     case "failed":
       return (
-        <div class="empty-state search-load-failure" role="alert">
-          <p>検索用の公開詳細データを取得できませんでした。</p>
-          <button type="button" onClick={onRetryDetails}>
+        <ContentState
+          className="empty-state search-load-failure"
+          message="検索用の公開詳細データを取得できませんでした。"
+          status="failed"
+        >
+          <ActionButton type="button" onClick={onRetryDetails}>
             再取得
-          </button>
-        </div>
+          </ActionButton>
+        </ContentState>
       );
     case "inactive":
     case "available":
-      return <p class="empty-state">条件に一致する項目はありません。</p>;
+      return (
+        <ContentState
+          className="empty-state"
+          message="条件に一致する項目はありません。"
+          status="empty"
+        />
+      );
     default:
       throw new UnreachableError(searchState);
   }
@@ -263,13 +272,11 @@ function ItemTable({
   }, [filters, searchState, sort]);
 
   return (
-    <section aria-labelledby="items-heading" class="section-card">
-      <div class="section-heading">
-        <div>
-          <h2 id="items-heading">全項目一覧</h2>
-        </div>
-        <p>{filteredRows.length.toLocaleString(locale)}件を表示対象にしています。</p>
-      </div>
+    <PageSection
+      description={`${filteredRows.length.toLocaleString(locale)}件を表示対象にしています。`}
+      heading="全項目一覧"
+      headingId="items-heading"
+    >
       <div class="item-list-toolbar">
         <details class="item-filters">
           <summary>
@@ -286,6 +293,7 @@ function ItemTable({
                   <span>{column.label}</span>
                   {isTableSelectColumnKey(column.key) ? (
                     <select
+                      class={FORM_CONTROL_CLASS_NAME}
                       value={filters[column.key]}
                       aria-label={`${column.label}で絞り込み`}
                       onChange={(event) => {
@@ -301,6 +309,7 @@ function ItemTable({
                     </select>
                   ) : (
                     <input
+                      class={FORM_CONTROL_CLASS_NAME}
                       type="search"
                       value={filters.waitingOn}
                       maxLength={200}
@@ -319,6 +328,7 @@ function ItemTable({
         <div class="item-sort-controls">
           <label for="item-sort-key">並び順</label>
           <select
+            class={FORM_CONTROL_CLASS_NAME}
             id="item-sort-key"
             value={sort.key}
             onChange={(event) => {
@@ -335,7 +345,7 @@ function ItemTable({
               </option>
             ))}
           </select>
-          <button
+          <ActionButton
             type="button"
             aria-label={`並び順を${sort.direction === "ascending" ? "降順" : "昇順"}に変更`}
             onClick={() => {
@@ -343,7 +353,7 @@ function ItemTable({
             }}
           >
             {sort.direction === "ascending" ? "昇順 ↑" : "降順 ↓"}
-          </button>
+          </ActionButton>
         </div>
       </div>
       <div class="items-table-region">
@@ -401,7 +411,9 @@ function ItemTable({
                   />
                   <SafeGitHubLink href={row.item.url}>GitHub</SafeGitHubLink>
                   {row.item.repositoryFreshness === "stale" && (
-                    <span class="freshness-badge freshness-stale">古い観測値</span>
+                    <Pill className="freshness-badge freshness-stale" tone="warning">
+                      古い観測値
+                    </Pill>
                   )}
                 </th>
                 <td>{statusLabel(row.item.status)}</td>
@@ -442,7 +454,9 @@ function ItemTable({
                   </h3>
                 </div>
                 {row.item.repositoryFreshness === "stale" && (
-                  <span class="freshness-badge freshness-stale">古い観測値</span>
+                  <Pill className="freshness-badge freshness-stale" tone="warning">
+                    古い観測値
+                  </Pill>
                 )}
               </div>
               <dl class="item-card-summary">
@@ -468,7 +482,7 @@ function ItemTable({
         <ItemsEmptyState searchState={searchState} onRetryDetails={onRetryDetails} />
       )}
       <nav aria-label="一覧のページ送り" class="pagination">
-        <button
+        <ActionButton
           type="button"
           disabled={pageIndex === 0}
           onClick={() => {
@@ -476,11 +490,11 @@ function ItemTable({
           }}
         >
           前のページ
-        </button>
+        </ActionButton>
         <p aria-live="polite">
           {pageIndex + 1} / {pageCount}ページ
         </p>
-        <button
+        <ActionButton
           type="button"
           disabled={pageIndex + 1 >= pageCount}
           onClick={() => {
@@ -488,9 +502,9 @@ function ItemTable({
           }}
         >
           次のページ
-        </button>
+        </ActionButton>
       </nav>
-    </section>
+    </PageSection>
   );
 }
 

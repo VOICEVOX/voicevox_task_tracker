@@ -2,6 +2,7 @@ import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/page
 import { assertNonNullable } from "../../src/util/index.js";
 import { ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
+import { ContentState, PageSection } from "./layout.js";
 import {
   formatDateTime,
   formatRelativeTime,
@@ -102,12 +103,11 @@ function AttentionQueue({
   );
 
   return (
-    <section aria-labelledby="attention-heading" class="section-card attention-section">
-      <div class="section-heading attention-heading">
-        <div>
-          <h2 id="attention-heading">対応が必要な項目</h2>
-        </div>
-        <div class="attention-heading-metadata">
+    <PageSection
+      className="attention-section"
+      heading="対応が必要な項目"
+      headingAccessory={
+        <div class="attention-heading attention-heading-metadata">
           <p class="overview-observed-time">
             <span class="time-label">データ観測</span>
             <RelativeTimeDisplay
@@ -122,9 +122,15 @@ function AttentionQueue({
             <span>対応が必要な順</span>
           </p>
         </div>
-      </div>
+      }
+      headingId="attention-heading"
+    >
       {attentionItems.length === 0 ? (
-        <p class="empty-state">現在、対応が必要な項目はありません。</p>
+        <ContentState
+          className="empty-state"
+          message="現在、対応が必要な項目はありません。"
+          status="empty"
+        />
       ) : (
         <ol class="attention-list">
           {attentionItems.map((item) => {
@@ -194,7 +200,7 @@ function AttentionQueue({
           })}
         </ol>
       )}
-    </section>
+    </PageSection>
   );
 }
 

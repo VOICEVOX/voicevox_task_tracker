@@ -23,6 +23,7 @@ import {
   type ConfidencePresentation,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
+import { ActionButton, Pill } from "./ui.js";
 
 type ItemDetailsLinkProps = Readonly<{
   children: ComponentChildren;
@@ -55,6 +56,7 @@ type ImportanceFactor = PublicItemDetailsDto["importanceFactors"][number];
 type ImportanceFactorSource = Readonly<{
   kind: "deterministic" | "codex";
   label: string;
+  tone: "success" | "high";
 }>;
 
 const REVIEW_STATE_LABELS = {
@@ -141,6 +143,7 @@ function importanceFactorSource(kind: ImportanceFactor["kind"]): ImportanceFacto
       return {
         kind: "deterministic",
         label: "決定論",
+        tone: "success",
       };
     case "significantFeature":
     case "explicitDeadline":
@@ -148,6 +151,7 @@ function importanceFactorSource(kind: ImportanceFactor["kind"]): ImportanceFacto
       return {
         kind: "codex",
         label: "Codex判定",
+        tone: "high",
       };
     default:
       throw new UnreachableError(kind);
@@ -262,16 +266,16 @@ function ItemHistory({
             ))}
           </ol>
           {history.length > HISTORY_PREVIEW_LIMIT && (
-            <button
+            <ActionButton
               aria-expanded={showAll}
-              class="history-expand-button"
+              className="history-expand-button"
               type="button"
               onClick={() => {
                 setShowAll((current) => !current);
               }}
             >
               {showAll ? "最新5件のみ表示" : "すべての履歴を表示"}
-            </button>
+            </ActionButton>
           )}
         </>
       )}
@@ -384,7 +388,9 @@ function WaitingOnCandidateItem({
         </strong>
         {primaryBlockerNodeId === candidate.candidateId &&
           item.primaryWaitingOn.index === candidateIndex && (
-            <span class="primary-blocker-badge">主要blocker</span>
+            <Pill className="primary-blocker-badge" tone="danger">
+              主要blocker
+            </Pill>
           )}
         <small class="waiting-on-confidence">確度区分: {candidatePresentation.label}</small>
       </div>
@@ -713,9 +719,12 @@ export function ItemDetailsContent({
                   return (
                     <li key={factor.kind}>
                       <div>
-                        <span class={`importance-factor-source source-${source.kind}`}>
+                        <Pill
+                          className={`importance-factor-source source-${source.kind}`}
+                          tone={source.tone}
+                        >
                           {source.label}
-                        </span>
+                        </Pill>
                         <code>{IMPORTANCE_FACTOR_LABELS[factor.kind]}</code>
                         <strong>+{factor.points.toLocaleString(locale)}点</strong>
                       </div>

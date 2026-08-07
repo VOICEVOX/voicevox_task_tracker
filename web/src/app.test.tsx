@@ -2036,7 +2036,7 @@ describe("Web UI", () => {
     await enterSearch("blocked");
 
     const itemsSection = requiredElement<HTMLElement>('[aria-labelledby="items-heading"]');
-    expect(itemsSection.querySelector(".section-heading > p")?.textContent).toBe(
+    expect(itemsSection.querySelector(".section-heading > div > p")?.textContent).toBe(
       "1件を表示対象にしています。",
     );
     expect(currentContainer().querySelector(".search-status")).toBeNull();

@@ -43,6 +43,9 @@ type AppProps = Readonly<{
 
 type NavigationPage = "overview" | "items" | "people";
 
+const SHELL_WIDTH_CLASS = "mx-auto w-[calc(100%_-_2rem)] max-narrow:w-[calc(100%_-_1rem)]";
+const SHELL_CONTAINER_CLASS = `${SHELL_WIDTH_CLASS} max-w-shell`;
+
 const NAVIGATION_PAGES: readonly Readonly<{
   label: string;
   page: NavigationPage;
@@ -434,7 +437,9 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       >
         本文へ移動
       </a>
-      <header class="site-header mx-auto grid w-[calc(100%_-_2rem)] max-w-shell grid-cols-[max-content_minmax(0,1fr)] items-center gap-6 pt-6 pb-5 max-shell:grid-cols-1 max-shell:items-start max-shell:gap-3 max-narrow:w-[calc(100%_-_1rem)] max-narrow:pt-4">
+      <header
+        class={`site-header ${SHELL_CONTAINER_CLASS} grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-6 pt-6 pb-5 max-shell:grid-cols-1 max-shell:items-start max-shell:gap-3 max-narrow:pt-4`}
+      >
         <div class="site-identity min-w-0">
           <h1 class="m-0 text-site-title font-bold leading-tight tracking-tight">{title}</h1>
         </div>
@@ -488,10 +493,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
           </ul>
         </nav>
       </header>
-      <main
-        id="main-content"
-        class="mx-auto grid w-[calc(100%_-_2rem)] max-w-shell gap-5 max-narrow:w-[calc(100%_-_1rem)]"
-      >
+      <main id="main-content" class={`${SHELL_CONTAINER_CLASS} grid gap-5`}>
         {navigationState.status === "sanitized" && (
           <p
             class="notice notice-warning url-state-notice my-4 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3.5 text-state-warning-text"
@@ -503,7 +505,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         )}
         {renderPage()}
       </main>
-      <footer class="mx-auto mt-auto w-[calc(100%_-_2rem)] max-w-shell pt-8 pb-12 text-sm text-text-muted max-narrow:w-[calc(100%_-_1rem)]">
+      <footer class={`${SHELL_CONTAINER_CLASS} mt-auto pt-8 pb-12 text-sm text-text-muted`}>
         <p class="m-0">GitHubの公開情報を読み取り専用で整理しています。</p>
         <small class="footer-run-id mt-1 block font-mono text-xs [overflow-wrap:anywhere]">
           Run {summary.runId}
@@ -516,7 +518,9 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
 /** 公開DTOを読み込めなかったことを画面へ通知する。 */
 export function DataLoadFailure() {
   return (
-    <main class="load-failure mx-auto mt-16 block w-[calc(100%_-_2rem)] max-w-2xl rounded-2xl border border-border-subtle bg-surface-card p-8 max-narrow:w-[calc(100%_-_1rem)]">
+    <main
+      class={`load-failure ${SHELL_WIDTH_CLASS} mt-16 block max-w-2xl rounded-2xl border border-border-subtle bg-surface-card p-8`}
+    >
       <h1>データを表示できません</h1>
       <p>公開データの読み込みまたは検証に失敗しました。時間を置いて再度確認してください。</p>
     </main>

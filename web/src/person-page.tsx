@@ -3,6 +3,7 @@ import { useMemo } from "preact/hooks";
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
+import { ContentState, PageSection } from "./layout.js";
 import {
   collectWaitingTeamIds,
   createEmptyTableFilters,
@@ -16,6 +17,7 @@ import {
   type ItemTableRow,
   type TableSort,
 } from "./model.js";
+import { ActionButton, Pill } from "./ui.js";
 
 type PersonPageProps = Readonly<{
   createItemHref: (nodeId: string) => string;
@@ -107,28 +109,29 @@ export function PersonPage({
   }
 
   return (
-    <section aria-labelledby="person-page-heading" class="section-card person-page">
-      <div class="section-heading">
-        <div>
-          <h2 id="person-page-heading">@{login} を待っている項目</h2>
-        </div>
+    <PageSection
+      className="person-page"
+      heading={`@${login} を待っている項目`}
+      headingAccessory={
         <p class="person-item-count" aria-live="polite">
           {rows.length.toLocaleString(locale)}
           件を表示しています。所属チームを選ぶと、そのチーム宛の待ちも加わります。
         </p>
-      </div>
+      }
+      headingId="person-page-heading"
+    >
       <div class="person-identity-action">
-        <button
+        <ActionButton
           aria-describedby={
             viewerIdentityAvailable ? undefined : "person-identity-unavailable-reason"
           }
-          class="person-identity-button"
+          className="person-identity-button"
           type="button"
           disabled={!viewerIdentityAvailable}
           onClick={onViewerIdentityToggle}
         >
           {isViewerIdentity ? "自分の記憶を解除する" : "自分として記憶する"}
-        </button>
+        </ActionButton>
         {!viewerIdentityAvailable && (
           <p id="person-identity-unavailable-reason">このブラウザーでは記憶を利用できません。</p>
         )}
@@ -155,7 +158,11 @@ export function PersonPage({
         </fieldset>
       )}
       {rows.length === 0 ? (
-        <p class="empty-state">@{login} を待っている項目はありません。</p>
+        <ContentState
+          className="empty-state"
+          message={`@${login} を待っている項目はありません。`}
+          status="empty"
+        />
       ) : (
         <>
           <div class="items-table-region">
@@ -202,7 +209,9 @@ export function PersonPage({
                         />
                       </span>
                       {row.item.repositoryFreshness === "stale" && (
-                        <span class="freshness-badge freshness-stale">古い観測値</span>
+                        <Pill className="freshness-badge freshness-stale" tone="warning">
+                          古い観測値
+                        </Pill>
                       )}
                     </th>
                     <td>{statusLabel(row.item.status)}</td>
@@ -243,7 +252,9 @@ export function PersonPage({
                       </h3>
                     </div>
                     {row.item.repositoryFreshness === "stale" && (
-                      <span class="freshness-badge freshness-stale">古い観測値</span>
+                      <Pill className="freshness-badge freshness-stale" tone="warning">
+                        古い観測値
+                      </Pill>
                     )}
                   </div>
                   <dl class="item-card-summary">
@@ -266,6 +277,6 @@ export function PersonPage({
           </ol>
         </>
       )}
-    </section>
+    </PageSection>
   );
 }
