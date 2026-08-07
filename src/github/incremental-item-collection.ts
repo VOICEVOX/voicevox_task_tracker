@@ -1,4 +1,10 @@
-import { createUtcIsoDateTime, type GitHubNodeId, type UtcIsoDateTime } from "../domain/index.js";
+import {
+  createUtcIsoDateTime,
+  isRetryableTrackedItemAiAnalysisStatus,
+  type GitHubNodeId,
+  type TrackedItemAiAnalysis,
+  type UtcIsoDateTime,
+} from "../domain/index.js";
 import { type EnumeratedGitHubItem, type Sha256Fingerprint } from "./item-enumeration.js";
 import { type GitHubItemDetailEventWindow } from "./item-detail-queries.js";
 
@@ -65,7 +71,7 @@ export type IncrementalItemCollectionPlan =
 export type PlanIncrementalItemCollectionOptions = Readonly<{
   items: readonly EnumeratedGitHubItem[];
   previous: PreviousItemCollection;
-  previouslyAnalyzedItemNodeIds: ReadonlySet<GitHubNodeId>;
+  previousAiAnalysisStatusesByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemAiAnalysis["status"]>;
   currentAnalysisRulesFingerprints: CurrentAnalysisRulesFingerprints;
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>;
   overlapMilliseconds: number;
@@ -111,7 +117,7 @@ function createCurrentFingerprints(
 function selectChangedItems(
   items: readonly EnumeratedGitHubItem[],
   previous: PreviousItemCollection,
-  previouslyAnalyzedItemNodeIds: ReadonlySet<GitHubNodeId>,
+  previouslyTrackedItemNodeIds: ReadonlySet<GitHubNodeId>,
   currentAnalysisRulesFingerprints: CurrentAnalysisRulesFingerprints,
 ): readonly ChangedItem[] {
   if (previous.status === "none") {
@@ -129,7 +135,7 @@ function selectChangedItems(
   for (const item of items) {
     const previousItem = previous.items.get(item.nodeId);
     const itemFingerprintChanged = previousItem?.itemFingerprint !== item.itemFingerprint;
-    if (!previouslyAnalyzedItemNodeIds.has(item.nodeId)) {
+    if (!previouslyTrackedItemNodeIds.has(item.nodeId)) {
       if (itemFingerprintChanged) {
         changedItems.push(
           Object.freeze({
@@ -174,10 +180,25 @@ function selectChangedItems(
   return Object.freeze(changedItems);
 }
 
+function selectAiAnalysisRetryItemNodeIds(
+  items: readonly EnumeratedGitHubItem[],
+  previousAiAnalysisStatusesByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemAiAnalysis["status"]>,
+): readonly GitHubNodeId[] {
+  const nodeIds: GitHubNodeId[] = [];
+  for (const item of items) {
+    const status = previousAiAnalysisStatusesByNodeId.get(item.nodeId);
+    if (status != null && isRetryableTrackedItemAiAnalysisStatus(status)) {
+      nodeIds.push(item.nodeId);
+    }
+  }
+  return Object.freeze(nodeIds);
+}
+
 function selectDetailTargets(
   changedItems: readonly ChangedItem[],
+  aiAnalysisRetryItemNodeIds: readonly GitHubNodeId[],
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>,
-  previouslyAnalyzedItemNodeIds: ReadonlySet<GitHubNodeId>,
+  previouslyTrackedItemNodeIds: ReadonlySet<GitHubNodeId>,
   defaultEventWindow: GitHubItemDetailEventWindow,
 ): readonly IncrementalItemDetailTarget[] {
   const fullHistoryEventWindow = Object.freeze({
@@ -194,6 +215,18 @@ function selectDetailTargets(
       }),
     );
   }
+  for (const nodeId of aiAnalysisRetryItemNodeIds) {
+    if (detailTargetsByNodeId.has(nodeId)) {
+      continue;
+    }
+    detailTargetsByNodeId.set(
+      nodeId,
+      Object.freeze({
+        nodeId,
+        eventWindow: defaultEventWindow,
+      }),
+    );
+  }
   const sortedAdjacentItemNodeIds = [...adjacentItemNodeIds].sort(compareNodeIds);
   for (const nodeId of sortedAdjacentItemNodeIds) {
     if (detailTargetsByNodeId.has(nodeId)) {
@@ -203,7 +236,7 @@ function selectDetailTargets(
       nodeId,
       Object.freeze({
         nodeId,
-        eventWindow: previouslyAnalyzedItemNodeIds.has(nodeId)
+        eventWindow: previouslyTrackedItemNodeIds.has(nodeId)
           ? defaultEventWindow
           : fullHistoryEventWindow,
       }),
@@ -214,8 +247,9 @@ function selectDetailTargets(
 
 function createPlanFields(
   changedItems: readonly ChangedItem[],
+  aiAnalysisRetryItemNodeIds: readonly GitHubNodeId[],
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>,
-  previouslyAnalyzedItemNodeIds: ReadonlySet<GitHubNodeId>,
+  previouslyTrackedItemNodeIds: ReadonlySet<GitHubNodeId>,
   defaultEventWindow: GitHubItemDetailEventWindow,
   currentItemFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>,
 ): IncrementalItemCollectionPlanFields {
@@ -223,32 +257,39 @@ function createPlanFields(
     changedItemNodeIds: Object.freeze(changedItems.map((item) => item.nodeId)),
     detailTargets: selectDetailTargets(
       changedItems,
+      aiAnalysisRetryItemNodeIds,
       adjacentItemNodeIds,
-      previouslyAnalyzedItemNodeIds,
+      previouslyTrackedItemNodeIds,
       defaultEventWindow,
     ),
     currentItemFingerprints,
   });
 }
 
-/** 変更項目と外部指定されたグラフ隣接nodeだけを詳細取得対象にする。 */
+/** 変更項目、AI再試行項目、外部指定されたグラフ隣接nodeを詳細取得対象にする。 */
 export function planIncrementalItemCollection(
   options: PlanIncrementalItemCollectionOptions,
 ): IncrementalItemCollectionPlan {
   validateOverlapMilliseconds(options.overlapMilliseconds);
   const currentItemFingerprints = createCurrentFingerprints(options.items);
+  const previouslyTrackedItemNodeIds = new Set(options.previousAiAnalysisStatusesByNodeId.keys());
   const changedItems = selectChangedItems(
     options.items,
     options.previous,
-    options.previouslyAnalyzedItemNodeIds,
+    previouslyTrackedItemNodeIds,
     options.currentAnalysisRulesFingerprints,
+  );
+  const aiAnalysisRetryItemNodeIds = selectAiAnalysisRetryItemNodeIds(
+    options.items,
+    options.previousAiAnalysisStatusesByNodeId,
   );
 
   if (options.previous.status === "none") {
     const fields = createPlanFields(
       changedItems,
+      aiAnalysisRetryItemNodeIds,
       options.adjacentItemNodeIds,
-      options.previouslyAnalyzedItemNodeIds,
+      previouslyTrackedItemNodeIds,
       Object.freeze({ mode: "initial" }),
       currentItemFingerprints,
     );
@@ -260,8 +301,9 @@ export function planIncrementalItemCollection(
   const since = calculateSince(options.previous.completedAt, options.overlapMilliseconds);
   const fields = createPlanFields(
     changedItems,
+    aiAnalysisRetryItemNodeIds,
     options.adjacentItemNodeIds,
-    options.previouslyAnalyzedItemNodeIds,
+    previouslyTrackedItemNodeIds,
     Object.freeze({
       mode: "incremental",
       since,

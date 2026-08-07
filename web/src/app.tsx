@@ -8,9 +8,11 @@ import { createSharedDetailsLoader, type PublicDetailsLoader } from "./details-l
 import { ItemDetailsPage } from "./item-details-page.js";
 import { ItemsPage } from "./items-page.js";
 import {
+  AI_ANALYSIS_DEGRADED_FILTER_VALUE,
   collectWaitingTeamIds,
   createTableFilterOptions,
   type TableColumnKey,
+  type TableFilterKey,
   waitingSubjectKey,
 } from "./model.js";
 import { OverviewPage } from "./overview-page.js";
@@ -81,6 +83,19 @@ function routeForNavigationPage(page: NavigationPage): WebRoute {
   }
 }
 
+function createAiDegradedItemsViewState(): WebViewState {
+  const state = createWebViewState({
+    page: "items",
+  });
+  return {
+    ...state,
+    tableFilters: {
+      ...state.tableFilters,
+      aiAnalysis: AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+    },
+  };
+}
+
 function isCurrentNavigationPage(route: WebRoute, page: NavigationPage): boolean {
   if (route.page === "item-details") {
     return page === "items";
@@ -128,6 +143,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
   );
   const showItemHeadingFocusRing = useRef(false);
   const viewState = navigationState.state;
+  const aiDegradedItemsViewState = createAiDegradedItemsViewState();
   const viewerIdentity =
     viewerIdentityState.status === "available" ? viewerIdentityState.identity : undefined;
 
@@ -195,7 +211,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     );
   }
 
-  function replaceTableFilter(key: TableColumnKey, value: string): void {
+  function replaceTableFilter(key: TableFilterKey, value: string): void {
     if (viewState.route.page !== "items") {
       throw new TypeError("項目一覧以外では表の絞り込み条件を変更できません");
     }
@@ -346,10 +362,14 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       case "overview":
         return (
           <OverviewPage
+            aiDegradedItemsHref={createWebViewHref(basePath, aiDegradedItemsViewState)}
             createItemHref={createItemHref}
             locale={locale}
             now={now}
             summary={summary}
+            onShowAiDegradedItems={() => {
+              navigate(aiDegradedItemsViewState, "push");
+            }}
             onSelectItem={selectItem}
           />
         );

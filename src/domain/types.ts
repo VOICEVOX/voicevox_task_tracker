@@ -371,13 +371,14 @@ export type GitHubItemUrl = `https://github.com/${string}`;
 
 export type AiCacheEntryId = `sha256:${string}`;
 
+/** 追跡項目を判定したときのAI分析利用状況。 */
 export type TrackedItemAiAnalysis =
-  | Readonly<{
-      status: "not_used";
-    }>
   | Readonly<{
       status: "used";
       cacheKey: AiCacheEntryId;
+    }>
+  | Readonly<{
+      status: "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
     }>;
 
 export type TrackedItemInputEvent = Readonly<{

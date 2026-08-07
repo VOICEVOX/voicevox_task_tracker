@@ -196,6 +196,7 @@ function createReferenceIndex(input: ExtractRelationCandidatesInput): ReferenceI
   const embeddedItems = [
     ...input.item.nativeDependencies.map((source) => source.relatedItem),
     ...input.item.nativeHierarchy.map((source) => source.relatedItem),
+    ...input.item.nativeClosingIssues.map((source) => source.relatedItem),
     ...input.item.crossReferences.map((source) => source.sourceItem),
   ];
   const items = [input.item, ...input.knownItems, ...embeddedItems];
@@ -524,7 +525,7 @@ class CandidateAccumulator {
 }
 
 function createNativeCandidate(
-  relation: CandidateBlocksRelation | CandidateParentRelation,
+  relation: CandidateBlocksRelation | CandidateParentRelation | CandidateImplementsRelation,
 ): Omit<NativeRelationCandidate, "sourceIds"> {
   return Object.freeze({
     id: buildRelationCandidateId("native", relation),
@@ -629,6 +630,22 @@ function addNativeCandidates(
     ) satisfies CandidateParentRelation;
     candidates.add(createNativeCandidate(relation), source.sourceId);
   }
+
+  if (input.item.type !== "pull_request" && input.item.nativeClosingIssues.length > 0) {
+    throw new TypeError("Issueにnative closing対象は指定できません");
+  }
+  for (const source of input.item.nativeClosingIssues) {
+    const relatedNode = resolveNodeId(source.relatedItem.nodeId, index, input.organization);
+    if (relatedNode == null || isSameNode(currentNode, relatedNode)) {
+      continue;
+    }
+    const relation = Object.freeze({
+      type: "implements",
+      implementation: currentNode,
+      target: relatedNode,
+    }) satisfies CandidateImplementsRelation;
+    candidates.add(createNativeCandidate(relation), source.sourceId);
+  }
 }
 
 function addCrossReferenceCandidates(
@@ -642,17 +659,20 @@ function addCrossReferenceCandidates(
     if (sourceNode == null || isSameNode(currentNode, sourceNode)) {
       continue;
     }
-    const relation = source.willCloseTarget
-      ? (Object.freeze({
-          type: "implements",
-          implementation: sourceNode,
-          target: currentNode,
-        }) satisfies CandidateImplementsRelation)
-      : (Object.freeze({
-          type: "unclassified",
-          referencing: sourceNode,
-          referenced: currentNode,
-        }) satisfies CandidateUnclassifiedRelation);
+    if (source.willCloseTarget) {
+      const relation = Object.freeze({
+        type: "implements",
+        implementation: sourceNode,
+        target: currentNode,
+      }) satisfies CandidateImplementsRelation;
+      candidates.add(createNativeCandidate(relation), source.sourceId);
+      continue;
+    }
+    const relation = Object.freeze({
+      type: "unclassified",
+      referencing: sourceNode,
+      referenced: currentNode,
+    }) satisfies CandidateUnclassifiedRelation;
     candidates.add(createCrossReferenceCandidate(relation), source.sourceId);
   }
 }

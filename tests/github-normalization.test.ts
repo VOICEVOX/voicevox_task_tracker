@@ -365,6 +365,7 @@ function createDetail(): Extract<GitHubItemDetail, { type: "pull_request" }> {
         > => event.kind === "review_requested" || event.kind === "review_request_removed",
       ),
     },
+    nativeClosingIssues: [],
     headSha: "head-sha",
     headCommit: {
       sourceId: buildSourceId("github_commit", "P_head"),

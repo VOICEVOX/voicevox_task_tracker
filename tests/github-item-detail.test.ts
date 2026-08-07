@@ -666,7 +666,7 @@ describe("Issue詳細収集", () => {
         createdAt: "2026-07-31T05:00:00Z",
         actor: createActor(5),
         source: createReferencedIssue("I_source", 99, "OPEN"),
-        willCloseTarget: false,
+        willCloseTarget: true,
       },
       {
         __typename: "ConnectedEvent",
@@ -893,6 +893,7 @@ describe("Issue詳細収集", () => {
         eventSourceId: candidate.eventSourceId,
         sourceItemNodeId: candidate.sourceItem.nodeId,
         sourceItemNumber: candidate.sourceItem.number,
+        willCloseTarget: candidate.willCloseTarget,
       })),
     ).toEqual([
       {
@@ -901,6 +902,7 @@ describe("Issue詳細収集", () => {
         eventSourceId: "github_timeline_event:CRE_inbound",
         sourceItemNodeId: "I_source",
         sourceItemNumber: 99,
+        willCloseTarget: true,
       },
     ]);
     expect(mock.requests.map((request) => request.operation)).toEqual([
@@ -1210,6 +1212,7 @@ function createPullRequestResponse(
       __typename: "PullRequest",
       id: itemNodeId,
       body: "Codex入力専用のPull Request本文",
+      closingIssuesReferences: createEmptyConnection(),
       headRefOid: `head-${itemNodeId}`,
       headRef: {
         target: headCommit,
@@ -1262,6 +1265,7 @@ function createPullRequestNullableFieldResponse(
       __typename: "PullRequest",
       id: itemNodeId,
       body: "本文",
+      closingIssuesReferences: createEmptyConnection(),
       headRefOid: `head-${itemNodeId}`,
       headRef: {
         target: headCommit,
@@ -1353,6 +1357,7 @@ function createPullRequestHeadCommitResolutionResponse(
       __typename: "PullRequest",
       id: itemNodeId,
       body: "Codex入力専用のPull Request本文",
+      closingIssuesReferences: createEmptyConnection(),
       headRefOid,
       headRef,
       mergeable: "MERGEABLE",
@@ -1825,7 +1830,7 @@ describe("Pull Request詳細収集", () => {
     ]);
   });
 
-  it("review、thread、review request履歴、head更新、merge情報を区別して返す", async () => {
+  it("review、closing対象Issue、head更新、merge情報を区別して全ページ返す", async () => {
     const allowlist = createAllowlist();
     const item = createItem(allowlist, "PR_target", 7, "pull_request");
     const timelineNodes = [
@@ -1919,11 +1924,18 @@ describe("Pull Request詳細収集", () => {
         actor: createActor(9),
       },
     ];
+    const closingIssues = Array.from({ length: 101 }, (_, index) =>
+      createReferencedIssue(`I_closing_${(index + 1).toString()}`, index + 1, "OPEN"),
+    );
     const baseResponse = {
       item: {
         __typename: "PullRequest",
         id: "PR_target",
         body: "Codex入力専用のPull Request本文",
+        closingIssuesReferences: {
+          nodes: closingIssues.slice(0, 100),
+          pageInfo: createPageInfo(true, "closing-issues-next"),
+        },
         headRefOid: "new-head-sha",
         headRef: null,
         mergeable: "MERGEABLE",
@@ -2018,6 +2030,19 @@ describe("Pull Request詳細収集", () => {
       }
       if (operation === "GitHubItemDetail") {
         return baseResponse;
+      }
+      if (operation === "GitHubPullRequestClosingIssuePage") {
+        expect(getStringVariable(variables, "after")).toBe("closing-issues-next");
+        return {
+          item: {
+            __typename: "PullRequest",
+            id: "PR_target",
+            closingIssuesReferences: {
+              nodes: closingIssues.slice(100),
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        };
       }
       if (operation === "GitHubPullRequestTimelinePage") {
         expect(getStringVariable(variables, "after")).toBe("timeline-next");
@@ -2141,6 +2166,16 @@ describe("Pull Request詳細収集", () => {
         occurredAt: "2026-07-31T03:00:00.000Z",
       },
     ]);
+    expect(detail.nativeClosingIssues).toHaveLength(101);
+    expect(detail.nativeClosingIssues[0]).toMatchObject({
+      sourceId: "github_native_closing_issue:PR_target:I_closing_1",
+      authoritative: true,
+      provenance: "native",
+      relatedItem: {
+        nodeId: "I_closing_1",
+      },
+    });
+    expect(detail.nativeClosingIssues[100]?.relatedItem.nodeId).toBe("I_closing_101");
     expect(detail.headSha).toBe("new-head-sha");
     expect(detail.headCommit).toMatchObject({
       nodeId: "C_new",
@@ -2216,12 +2251,17 @@ describe("Pull Request詳細収集", () => {
       "auto_merge_disabled",
     ]);
     expect(mock.requests[1]?.query).not.toMatch(/autoMergeRequest\s*\{\s*id\b/u);
+    expect(mock.requests[1]?.query).toContain("closingIssuesReferences(first: 100)");
     expect(mock.requests.map((request) => request.operation)).toEqual([
       "GitHubItemDetailCapabilities",
       "GitHubItemDetail",
+      "GitHubPullRequestClosingIssuePage",
       "GitHubPullRequestTimelinePage",
     ]);
     expect(getFragmentDefinitionNames(getRequestQuery(mock.requests, 2))).toEqual([
+      "DetailReferencedItemFields",
+    ]);
+    expect(getFragmentDefinitionNames(getRequestQuery(mock.requests, 3))).toEqual([
       "DetailActorFields",
       "DetailAssigneeFields",
       "DetailPullRequestTimelineFields",

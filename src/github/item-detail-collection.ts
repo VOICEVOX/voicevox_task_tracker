@@ -22,6 +22,7 @@ import {
 import { type EnumeratedGitHubItem } from "./item-enumeration.js";
 import {
   CHECK_CONTEXT_PAGE_QUERY,
+  CLOSING_ISSUE_PAGE_QUERY,
   COMMENT_PAGE_QUERY,
   createItemDetailQuery,
   createNativeDependencyPageQuery,
@@ -49,6 +50,7 @@ import {
   type GitHubItemDetailCollection,
   type GitHubIssueComment,
   type GitHubMergeQueue,
+  type GitHubNativeClosingIssue,
   type GitHubNativeDependency,
   type GitHubNativeDependencyCollection,
   type GitHubNativeHierarchy,
@@ -463,6 +465,7 @@ const basePullRequestSchema = z.object({
   __typename: z.literal("PullRequest"),
   id: opaqueIdSchema,
   body: z.string(),
+  closingIssuesReferences: referencedItemConnectionSchema,
   headRefOid: shaSchema,
   headRef: headRefSchema,
   mergeable: z.enum(["CONFLICTING", "MERGEABLE", "UNKNOWN"]),
@@ -575,6 +578,15 @@ const reviewRequestPageResponseSchema = z.object({
       __typename: z.literal("PullRequest"),
       id: opaqueIdSchema,
       reviewRequests: reviewRequestConnectionSchema,
+    })
+    .nullable(),
+});
+const closingIssuePageResponseSchema = z.object({
+  item: z
+    .object({
+      __typename: z.literal("PullRequest"),
+      id: opaqueIdSchema,
+      closingIssuesReferences: referencedItemConnectionSchema,
     })
     .nullable(),
 });
@@ -1296,6 +1308,7 @@ function collectInboundCrossReferences(
         provenance: "cross_reference",
         eventSourceId: event.sourceId,
         sourceItem: event.source,
+        willCloseTarget: event.willCloseTarget,
       }),
     );
   }
@@ -1633,6 +1646,75 @@ function normalizeReviewRequests(
     current: Object.freeze(current),
     history,
   });
+}
+
+async function collectClosingIssueNodes(
+  item: EnumeratedGitHubItem,
+  initialConnection: z.output<typeof referencedItemConnectionSchema>,
+  graphql: Graphql,
+): Promise<readonly RawReferencedItem[]> {
+  const nodes = [...initialConnection.nodes];
+  let pageInfo = initialConnection.pageInfo;
+  for (;;) {
+    const cursor = requireConnectionCursor(pageInfo, "Pull Request closing issues");
+    if (cursor == null) {
+      break;
+    }
+    const response = await graphql(CLOSING_ISSUE_PAGE_QUERY, {
+      itemId: item.nodeId,
+      after: cursor,
+    });
+    const parsed = parseGraphqlResponse(
+      closingIssuePageResponseSchema,
+      response,
+      "Pull Request closing issue page",
+    );
+    const responseItem = requireGraphqlNode(
+      parsed.item,
+      item.nodeId,
+      (node) => node.id,
+      "Pull Request closing issue page",
+    );
+    if (responseItem.closingIssuesReferences.nodes.length === 0) {
+      throw new GitHubResponseValidationError("Pull Request closing issue page", {
+        cause: new TypeError(
+          "次ページとして空のclosingIssuesReferences connectionを受け取りました",
+        ),
+      });
+    }
+    nodes.push(...responseItem.closingIssuesReferences.nodes);
+    pageInfo = responseItem.closingIssuesReferences.pageInfo;
+  }
+  assertNoDuplicateNodeIds(
+    nodes.map((node) => node.id),
+    "Pull Request closing issues",
+  );
+  return Object.freeze(nodes);
+}
+
+function normalizeNativeClosingIssues(
+  item: EnumeratedGitHubItem,
+  nodes: readonly RawReferencedItem[],
+): readonly GitHubNativeClosingIssue[] {
+  return Object.freeze(
+    nodes.map((relatedItem) => {
+      if (relatedItem.__typename !== "Issue") {
+        throw new GitHubResponseValidationError("Pull Request closing issues", {
+          cause: new TypeError("closingIssuesReferencesにIssue以外が含まれています"),
+        });
+      }
+      const normalizedItem = normalizeReferencedItem(relatedItem);
+      return Object.freeze({
+        sourceId: buildSourceId(
+          "github_native_closing_issue",
+          `${item.nodeId}:${normalizedItem.nodeId}`,
+        ),
+        authoritative: true,
+        provenance: "native",
+        relatedItem: normalizedItem,
+      } satisfies GitHubNativeClosingIssue);
+    }),
+  );
 }
 
 async function collectReferencedItemNodes(
@@ -2265,6 +2347,11 @@ async function collectPullRequestDetail(
     pullRequest.reviewRequests,
     options.graphql,
   );
+  const closingIssueNodes = await collectClosingIssueNodes(
+    item,
+    pullRequest.closingIssuesReferences,
+    options.graphql,
+  );
   const timelineNodes = await collectTimelineNodes(
     item,
     pullRequest.timelineItems,
@@ -2286,6 +2373,7 @@ async function collectPullRequestDetail(
     reviews: normalizeReviews(reviewNodes),
     reviewThreads: await normalizeReviewThreads(reviewThreadNodes, options.graphql),
     reviewRequests: normalizeReviewRequests(reviewRequestNodes, timeline),
+    nativeClosingIssues: normalizeNativeClosingIssues(item, closingIssueNodes),
     headSha: pullRequest.headRefOid,
     headCommit: normalizeCommit(headCommit),
     mergeState: await normalizePullRequestMergeState(pullRequest, headCommit, options.graphql),

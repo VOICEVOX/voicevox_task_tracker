@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 
-import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { ImportanceBadge } from "./importance-badge.js";
@@ -12,10 +12,12 @@ import {
   filterAndSortTableRows,
   formatStallDuration,
   formatWaitingOn,
-  isTableSelectColumnKey,
+  isAiAnalysisDegraded,
+  isTableSelectFilterKey,
   searchItemNodeIds,
   statusLabel,
   type TableFilterOptions,
+  type TableFilterKey,
   type ItemTableRow,
   type TableColumnKey,
   type TableFilters,
@@ -39,7 +41,7 @@ type ItemsPageProps = Readonly<{
   loadDetails: PublicDetailsLoader;
   locale: string;
   now: Date;
-  onFilterChange: (key: TableColumnKey, value: string) => void;
+  onFilterChange: (key: TableFilterKey, value: string) => void;
   onSearchQueryChange: (query: string) => void;
   onSelectItem: (nodeId: string) => void;
   onSortChange: (key: TableColumnKey) => void;
@@ -55,7 +57,7 @@ type ItemTableProps = Readonly<{
   locale: string;
   now: Date;
   onClearSearch: () => void;
-  onFilterChange: (key: TableColumnKey, value: string) => void;
+  onFilterChange: (key: TableFilterKey, value: string) => void;
   onRetryDetails: () => void;
   onSearchQueryChange: (query: string) => void;
   onSelectItem: (nodeId: string) => void;
@@ -68,6 +70,11 @@ type ItemTableProps = Readonly<{
 
 type TableColumnDefinition = Readonly<{
   key: TableColumnKey;
+  label: string;
+}>;
+
+type TableFilterDefinition = Readonly<{
+  key: TableFilterKey;
   label: string;
 }>;
 
@@ -127,6 +134,29 @@ const TABLE_COLUMNS: readonly TableColumnDefinition[] = [
     label: "停滞時間",
   },
 ];
+
+const TABLE_FILTERS: readonly TableFilterDefinition[] = [
+  ...TABLE_COLUMNS,
+  {
+    key: "aiAnalysis",
+    label: "AI利用状況",
+  },
+];
+
+function AiAnalysisBadge({
+  status,
+}: Readonly<{
+  status: PublicItemSummaryDto["aiAnalysis"]["status"];
+}>) {
+  if (!isAiAnalysisDegraded(status)) {
+    return null;
+  }
+  return (
+    <Pill className="ai-analysis-badge ai-analysis-degraded" tone="warning">
+      AI判定なし
+    </Pill>
+  );
+}
 
 function ItemTitleLink({
   createItemHref,
@@ -285,9 +315,9 @@ function ItemTable({
   const pageCount = Math.max(1, Math.ceil(filteredRows.length / TABLE_PAGE_SIZE));
   const firstRowIndex = pageIndex * TABLE_PAGE_SIZE;
   const visibleRows = filteredRows.slice(firstRowIndex, firstRowIndex + TABLE_PAGE_SIZE);
-  const activeFilterCount = TABLE_COLUMNS.filter((column) => filters[column.key].length > 0).length;
+  const activeFilterCount = TABLE_FILTERS.filter((filter) => filters[filter.key].length > 0).length;
 
-  function updateFilter(key: TableColumnKey, value: string): void {
+  function updateFilter(key: TableFilterKey, value: string): void {
     onFilterChange(key, value);
     setPageIndex(0);
   }
@@ -338,6 +368,7 @@ function ItemTable({
                 古い観測値
               </Pill>
             )}
+            <AiAnalysisBadge status={row.item.aiAnalysis.status} />
           </span>
         </div>
       ),
@@ -459,20 +490,20 @@ function ItemTable({
               列の値を選択します。次の担当は入力した文字を含む項目を表示します。
             </p>
             <div class="item-filter-grid grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {TABLE_COLUMNS.map((column) => (
-                <label key={column.key} class="grid gap-1 text-xs font-bold text-text-secondary">
-                  <span>{column.label}</span>
-                  {isTableSelectColumnKey(column.key) ? (
+              {TABLE_FILTERS.map((filter) => (
+                <label key={filter.key} class="grid gap-1 text-xs font-bold text-text-secondary">
+                  <span>{filter.label}</span>
+                  {isTableSelectFilterKey(filter.key) ? (
                     <select
                       class={`${FORM_CONTROL_CLASS_NAME} w-full`}
-                      value={filters[column.key]}
-                      aria-label={`${column.label}で絞り込み`}
+                      value={filters[filter.key]}
+                      aria-label={`${filter.label}で絞り込み`}
                       onChange={(event) => {
-                        updateFilter(column.key, event.currentTarget.value);
+                        updateFilter(filter.key, event.currentTarget.value);
                       }}
                     >
                       <option value="">すべて</option>
-                      {filterOptions[column.key].map((option) => (
+                      {filterOptions[filter.key].map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
                         </option>
@@ -484,10 +515,10 @@ function ItemTable({
                       type="search"
                       value={filters.waitingOn}
                       maxLength={200}
-                      aria-label={`${column.label}で絞り込み`}
+                      aria-label={`${filter.label}で絞り込み`}
                       placeholder="部分一致で絞り込み"
                       onInput={(event) => {
-                        updateFilter(column.key, event.currentTarget.value);
+                        updateFilter(filter.key, event.currentTarget.value);
                       }}
                     />
                   )}
@@ -506,30 +537,43 @@ function ItemTable({
         rows={visibleRows}
         tableCaption="追跡中の全項目の一覧"
         tableClassName="items-table"
-        renderCardHeading={(row) => (
-          <div class="grid min-w-0 gap-2">
-            <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
-              <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted wrap-anywhere">
-                {row.item.displayReference}・{row.typeText}
-              </p>
-              {row.item.repositoryFreshness === "stale" && (
-                <Pill className="freshness-badge freshness-stale" tone="warning">
-                  古い観測値
-                </Pill>
-              )}
-            </div>
-            <h3 class="item-title-with-importance m-0 flex min-w-0 items-start gap-1.5 text-base leading-6 font-bold">
-              <ImportanceBadge importance={row.item.importance} showLow={false} showScore={false} />
-              <span class="min-w-0 wrap-anywhere">
-                <ItemTitleLink
-                  createItemHref={createItemHref}
-                  onSelectItem={onSelectItem}
-                  row={row}
+        renderCardHeading={(row) => {
+          const showsFreshnessBadge = row.item.repositoryFreshness === "stale";
+          const showsAiAnalysisBadge = isAiAnalysisDegraded(row.item.aiAnalysis.status);
+          return (
+            <div class="grid min-w-0 gap-2">
+              <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted wrap-anywhere">
+                  {row.item.displayReference}・{row.typeText}
+                </p>
+                {(showsFreshnessBadge || showsAiAnalysisBadge) && (
+                  <span class="flex flex-wrap justify-end gap-1.5">
+                    {showsFreshnessBadge && (
+                      <Pill className="freshness-badge freshness-stale" tone="warning">
+                        古い観測値
+                      </Pill>
+                    )}
+                    <AiAnalysisBadge status={row.item.aiAnalysis.status} />
+                  </span>
+                )}
+              </div>
+              <h3 class="item-title-with-importance m-0 flex min-w-0 items-start gap-1.5 text-base leading-6 font-bold">
+                <ImportanceBadge
+                  importance={row.item.importance}
+                  showLow={false}
+                  showScore={false}
                 />
-              </span>
-            </h3>
-          </div>
-        )}
+                <span class="min-w-0 wrap-anywhere">
+                  <ItemTitleLink
+                    createItemHref={createItemHref}
+                    onSelectItem={onSelectItem}
+                    row={row}
+                  />
+                </span>
+              </h3>
+            </div>
+          );
+        }}
         renderCardFooter={(row) => (
           <div class="border-t border-border-subtle pt-3">
             <SafeGitHubLink href={row.item.url} variant="button">

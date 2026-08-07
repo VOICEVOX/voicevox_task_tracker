@@ -67,6 +67,7 @@ function createExtractionItem(options: CreateExtractionItemOptions): RelationExt
     crossReferences: options.crossReferences,
     nativeDependencies: options.nativeDependencies,
     nativeHierarchy: options.nativeHierarchy,
+    nativeClosingIssues: [],
   };
 }
 
@@ -220,6 +221,118 @@ describe("authoritativeな関係候補", () => {
       "parent_of:I_parent->I_current",
     ]);
     expect(candidates.every((candidate) => candidate.authority === "authoritative")).toBe(true);
+  });
+
+  it("native closingをauthoritativeなimplementsへ昇格して本文候補より優先する", () => {
+    const pullRequest = createItem({
+      nodeId: "PR_implementation",
+      owner: "VOICEVOX",
+      repository: "core",
+      type: "pull_request",
+      number: 10,
+      state: "open",
+    });
+    const issue = createItem({
+      nodeId: "I_target",
+      owner: "VOICEVOX",
+      repository: "core",
+      type: "issue",
+      number: 11,
+      state: "open",
+    });
+    const nativeSourceId = buildSourceId(
+      "github_native_closing_issue",
+      "PR_implementation:I_target",
+    );
+    const candidates = extract(
+      {
+        ...createExtractionItem({
+          item: pullRequest,
+          body: createTextSource("github_item_body", "PR_implementation", "close #11"),
+          comments: [],
+          crossReferences: [],
+          nativeDependencies: [],
+          nativeHierarchy: [],
+        }),
+        nativeClosingIssues: [
+          {
+            sourceId: nativeSourceId,
+            relatedItem: issue,
+          },
+        ],
+      },
+      [issue],
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      authority: "authoritative",
+      provenance: "native",
+      sourceIds: [nativeSourceId],
+      relation: {
+        type: "implements",
+        implementation: {
+          nodeId: pullRequest.nodeId,
+        },
+        target: {
+          nodeId: issue.nodeId,
+        },
+      },
+    });
+  });
+
+  it("willCloseTarget付きcross-referenceをauthoritativeなimplementsへ昇格する", () => {
+    const issue = createItem({
+      nodeId: "I_target",
+      owner: "VOICEVOX",
+      repository: "core",
+      type: "issue",
+      number: 11,
+      state: "open",
+    });
+    const pullRequest = createItem({
+      nodeId: "PR_implementation",
+      owner: "VOICEVOX",
+      repository: "core",
+      type: "pull_request",
+      number: 10,
+      state: "open",
+    });
+    const sourceId = buildSourceId("github_timeline_event", "CRE_closing");
+    const candidates = extract(
+      createExtractionItem({
+        item: issue,
+        body: createTextSource("github_item_body", "I_target", ""),
+        comments: [],
+        crossReferences: [
+          {
+            sourceId,
+            sourceItem: pullRequest,
+            willCloseTarget: true,
+          },
+        ],
+        nativeDependencies: [],
+        nativeHierarchy: [],
+      }),
+      [],
+    );
+
+    expect(candidates).toMatchObject([
+      {
+        authority: "authoritative",
+        provenance: "native",
+        sourceIds: [sourceId],
+        relation: {
+          type: "implements",
+          implementation: {
+            nodeId: pullRequest.nodeId,
+          },
+          target: {
+            nodeId: issue.nodeId,
+          },
+        },
+      },
+    ]);
   });
 });
 
@@ -531,6 +644,7 @@ describe("候補の識別と対象解決", () => {
       crossReferences: [],
       nativeDependencies: [],
       nativeHierarchy: [],
+      nativeClosingIssues: [],
     };
     const firstResult = extract(
       {

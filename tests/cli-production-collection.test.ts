@@ -39,6 +39,7 @@ import {
   type GitHubItemMilestone,
   type GitHubInboundCrossReferenceCandidate,
   type GitHubIssueComment,
+  type GitHubNativeClosingIssue,
   type GitHubNativeDependency,
   type GitHubReferencedItem,
   type GitHubTimelineEvent,
@@ -302,6 +303,7 @@ function createFailedCheckPullRequestDetail(
       current: Object.freeze([]),
       history: Object.freeze([]),
     }),
+    nativeClosingIssues: Object.freeze([]),
     headSha: `head-${item.nodeId}`,
     headCommit: Object.freeze({
       sourceId: headSourceId,
@@ -484,10 +486,23 @@ function createNativeBlocking(
   });
 }
 
+function createNativeClosingIssue(
+  pullRequest: EnumeratedGitHubItem,
+  issue: EnumeratedGitHubItem,
+): GitHubNativeClosingIssue {
+  return Object.freeze({
+    sourceId: buildSourceId("github_native_closing_issue", `${pullRequest.nodeId}:${issue.nodeId}`),
+    authoritative: true,
+    provenance: "native",
+    relatedItem: createReferencedItem(issue),
+  });
+}
+
 function createInboundCrossReference(
   target: EnumeratedGitHubItem,
   source: EnumeratedGitHubItem,
   observedAt: UtcIsoDateTime,
+  willCloseTarget: boolean,
 ): Readonly<{
   event: GitHubTimelineEvent;
   candidate: GitHubInboundCrossReferenceCandidate;
@@ -507,7 +522,7 @@ function createInboundCrossReference(
       }),
       kind: "cross_referenced",
       source: sourceItem,
-      willCloseTarget: false,
+      willCloseTarget,
     } satisfies GitHubTimelineEvent),
     candidate: Object.freeze({
       sourceId: buildSourceId("github_inbound_cross_reference", `${eventNodeId}:${source.nodeId}`),
@@ -515,6 +530,7 @@ function createInboundCrossReference(
       provenance: "cross_reference",
       eventSourceId,
       sourceItem,
+      willCloseTarget,
     } satisfies GitHubInboundCrossReferenceCandidate),
   });
 }
@@ -524,7 +540,9 @@ function createIssueDetailWithInboundCrossReferences(
   sources: readonly EnumeratedGitHubItem[],
   observedAt: UtcIsoDateTime,
 ): GitHubItemDetail {
-  const references = sources.map((source) => createInboundCrossReference(item, source, observedAt));
+  const references = sources.map((source) =>
+    createInboundCrossReference(item, source, observedAt, false),
+  );
   return Object.freeze({
     ...createIssueDetail({
       item,
@@ -1353,6 +1371,7 @@ describe("本番収集の接続", () => {
       earlierPullRequest,
       laterPullRequest,
       observedAt,
+      false,
     );
     fixture.openItems = [earlierPullRequest, laterPullRequest];
     fixture.details.set(
@@ -1469,7 +1488,307 @@ describe("本番収集の接続", () => {
       available: false,
       degraded: false,
     });
+    expect(snapshot.items[0]?.aiAnalysis).toEqual({
+      status: "disabled",
+    });
   });
+
+  it("確定規則だけで高信頼に判定した項目はAI分析不要として保存する", async () => {
+    const repository = createRepository("R_ai_not_required", "ai-not-required", FIRST_RUN_AT);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const item = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint: "ai-not-required-v1",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: observedAt,
+      }),
+    });
+    fixture.individualItems.set(item.url, item);
+    setIssueDetails(fixture, [item], observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: [item.url],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexExecutionCount()).toBe(0);
+    expect(snapshot.items[0]?.aiAnalysis).toEqual({
+      status: "not_required",
+    });
+  });
+
+  it("AI対象がない正常runを利用可能として保存する", async () => {
+    const repository = createRepository("R_ai_no_targets", "ai-no-targets", FIRST_RUN_AT);
+    const fixture = createRepositoryFixture(repository);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexExecutionCount()).toBe(0);
+    expect(snapshot.run.status).toBe("success");
+    expect(snapshot.ai).toEqual({
+      enabled: true,
+      available: true,
+      degraded: false,
+    });
+  });
+
+  it("一部のAI分析が失敗しても成功結果があれば利用可能として保存する", async () => {
+    const repository = createRepository("R_ai_partial_failure", "ai-partial-failure", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const succeededItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "ai-partial-success",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const failedItem = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "ai-partial-failure",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [succeededItem, failedItem];
+    for (const item of fixture.openItems) {
+      fixture.details.set(
+        item.nodeId,
+        createIssueDetail({
+          item,
+          body: "AI部分失敗を検証します",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: true,
+        }),
+      );
+    }
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("AI部分失敗fixtureのsourceがありません");
+        }
+        const output = createCodexOutput(input, {
+          status: "in_progress",
+          waitingOn: {
+            candidateId: input.item.authorCandidateId,
+            kind: "user",
+            role: "assignee",
+            sourceId: source.id,
+          },
+          latestMeaningfulSourceId: null,
+          confidence: 0.95,
+          relationVerdict: "related",
+          notification: {
+            recommended: false,
+            reasonCode: "none",
+            reasonSummary: "通知しません",
+          },
+        });
+        if (input.item.nodeId === succeededItem.nodeId) {
+          return Promise.resolve(output);
+        }
+        return Promise.resolve({
+          ...output,
+          item: {
+            ...output.item,
+            nodeId: "I_other",
+          },
+        });
+      },
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexExecutionCount()).toBe(2);
+    expect(snapshot.run.status).toBe("fallback");
+    expect(snapshot.ai).toEqual({
+      enabled: true,
+      available: true,
+      degraded: true,
+    });
+    expect(
+      snapshot.items.find((candidate) => candidate.nodeId === succeededItem.nodeId)?.aiAnalysis,
+    ).toMatchObject({
+      status: "used",
+    });
+    expect(
+      snapshot.items.find((candidate) => candidate.nodeId === failedItem.nodeId)?.aiAnalysis,
+    ).toEqual({
+      status: "failed",
+    });
+  });
+
+  it.each(["failed", "deferred"] satisfies readonly ("failed" | "deferred")[])(
+    "前回AI分析が%sの未変更terminal項目を次runで再試行する",
+    async (previousStatus) => {
+      const repository = createRepository(
+        `R_ai_retry_${previousStatus}`,
+        `ai-retry-${previousStatus}`,
+        FIRST_RUN_AT,
+      );
+      const publicRepository = requirePublicRepository(repository);
+      const fixture = createRepositoryFixture(repository);
+      const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+      const item = createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: `ai-retry-${previousStatus}`,
+        updatedAt: firstObservedAt,
+        observedAt: firstObservedAt,
+        state: Object.freeze({
+          state: "closed",
+          closedAt: firstObservedAt,
+        }),
+      });
+      fixture.individualItems.set(item.url, item);
+      fixture.details.set(
+        item.nodeId,
+        createIssueDetail({
+          item,
+          body: "失敗または延期したAI分析を再試行します",
+          observedAt: firstObservedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: true,
+        }),
+      );
+      const baseConfig = await createTestConfig({
+        explicitIncludes: [item.url],
+        retentionDays: 180,
+        aiEnabled: true,
+      });
+      const firstConfig =
+        previousStatus === "deferred"
+          ? configWithBudget(baseConfig, 0, baseConfig.ai.budget.maxEstimatedCostUsdPerRun)
+          : baseConfig;
+      let aiSucceeds = false;
+      const harness = createCollectionHarness({
+        repositories: [fixture],
+        config: firstConfig,
+        executeCodexAnalysis: (input) => {
+          if (!aiSucceeds) {
+            return Promise.reject(new TypeError("AI分析再試行fixtureの初回失敗"));
+          }
+          const source = input.sources[0];
+          if (source == null) {
+            throw new TypeError("AI分析再試行fixtureのsourceがありません");
+          }
+          return Promise.resolve(
+            createCodexOutput(input, {
+              status: "in_progress",
+              waitingOn: {
+                candidateId: input.item.authorCandidateId,
+                kind: "user",
+                role: "assignee",
+                sourceId: source.id,
+              },
+              latestMeaningfulSourceId: source.id,
+              confidence: 0.95,
+              relationVerdict: "related",
+              notification: {
+                recommended: false,
+                reasonCode: "none",
+                reasonSummary: "通知しません",
+              },
+            }),
+          );
+        },
+      });
+
+      expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+      const firstFiles = await harness.stateAdapter.readBranchFiles("tracker-state");
+      const firstSnapshotSource = firstFiles.get("state/snapshot.json");
+      if (firstSnapshotSource == null) {
+        throw new TypeError("AI分析再試行fixtureの初回snapshotがありません");
+      }
+      const firstSnapshot = parseStateSnapshot(new TextDecoder().decode(firstSnapshotSource));
+      expect(firstSnapshot.items[0]?.aiAnalysis).toEqual({
+        status: previousStatus,
+      });
+
+      const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
+      const unchangedItem = createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: `ai-retry-${previousStatus}`,
+        updatedAt: firstObservedAt,
+        observedAt: secondObservedAt,
+        state: Object.freeze({
+          state: "closed",
+          closedAt: firstObservedAt,
+        }),
+      });
+      fixture.individualItems.set(unchangedItem.url, unchangedItem);
+      fixture.details.set(
+        unchangedItem.nodeId,
+        createIssueDetail({
+          item: unchangedItem,
+          body: "失敗または延期したAI分析を再試行します",
+          observedAt: secondObservedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: true,
+        }),
+      );
+      const firstExecutionCount = harness.codexExecutionCount();
+      aiSucceeds = true;
+      harness.setConfig(baseConfig);
+      harness.detailCalls.length = 0;
+      harness.artifacts.length = 0;
+
+      const result = await harness.runDry(SECOND_RUN_AT);
+      const secondSnapshot = requireDryRunSnapshot(harness.artifacts);
+
+      expect(result.exitCode).toBe(0);
+      expect(harness.detailCalls).toEqual([
+        {
+          targets: [
+            {
+              nodeId: item.nodeId,
+              eventWindow: {
+                mode: "incremental",
+                since: "2026-07-31T23:55:00.000Z",
+              },
+            },
+          ],
+        },
+      ]);
+      expect(harness.codexExecutionCount()).toBe(firstExecutionCount + 1);
+      expect(secondSnapshot.items[0]?.aiAnalysis).toMatchObject({
+        status: "used",
+      });
+    },
+  );
 
   it("milestoneを期限と信頼できないタイトルを含めてsnapshotと公開summaryへ渡す", async () => {
     const repository = createRepository("R_milestone", "milestone", FIRST_RUN_AT);
@@ -1534,7 +1853,7 @@ describe("本番収集の接続", () => {
     }
 
     expect(result.exitCode).toBe(0);
-    expect(snapshot.schemaVersion).toBe("5");
+    expect(snapshot.schemaVersion).toBe("6");
     expect(snapshot.items[0]?.milestone).toEqual(expectedMilestone);
     expect(snapshot.items[0]?.importance).toEqual(expectedImportance);
     expect(publicData.summary.schemaVersion).toBe("5");
@@ -1926,7 +2245,7 @@ describe("本番収集の接続", () => {
     expect(result.exitCode).toBe(0);
     expect(harness.codexExecutionCount()).toBe(1);
     expect(secondSnapshot.items[0]?.aiAnalysis).toEqual({
-      status: "not_used",
+      status: "deferred",
     });
     expect(secondSnapshot.items[0]?.importanceAssessment).toEqual(
       firstSnapshot.items[0]?.importanceAssessment,
@@ -2020,6 +2339,113 @@ describe("本番収集の接続", () => {
     });
     expect(relations).toHaveLength(1);
     expect(relations[0]?.evidence.map((evidence) => evidence.sourceId).sort()).toEqual(sourceIds);
+  });
+
+  it("PR本文と両側native closing情報を1件のauthoritative implements edgeへ統合する", async () => {
+    const repository = createRepository("R_native_closing", "native-closing", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const issue = createIssueItem({
+      repository: publicRepository,
+      number: 1391,
+      fingerprint: "native-closing-issue",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const pullRequest = createPullRequestItem({
+      repository: publicRepository,
+      number: 1392,
+      fingerprint: "native-closing-pull-request",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    const crossReference = createInboundCrossReference(issue, pullRequest, observedAt, true);
+    const nativeClosingIssue = createNativeClosingIssue(pullRequest, issue);
+    const pullRequestDetail = createFailedCheckPullRequestDetail(pullRequest, observedAt);
+    fixture.openItems = [issue, pullRequest];
+    fixture.details.set(
+      issue.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item: issue,
+          body: "本文",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        timeline: Object.freeze([crossReference.event]),
+        inboundCrossReferences: Object.freeze([crossReference.candidate]),
+      }),
+    );
+    fixture.details.set(
+      pullRequest.nodeId,
+      Object.freeze({
+        ...pullRequestDetail,
+        body: "close #1391",
+        comments: createDuplicateComments(pullRequest, observedAt),
+        nativeClosingIssues: Object.freeze([nativeClosingIssue]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("native closing fixtureのsourceがありません");
+        }
+        return Promise.resolve(
+          createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: input.item.authorCandidateId,
+              kind: "user",
+              role: "author",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: 0.95,
+            relationVerdict: "current_implements_target",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        );
+      },
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+    const relations = snapshot.relations.filter(
+      (relation) =>
+        relation.active &&
+        relation.type === "implements" &&
+        relation.fromNodeId === pullRequest.nodeId &&
+        relation.toNodeId === issue.nodeId,
+    );
+    const input = harness.codexInputs.find(
+      (candidate) => candidate.item.nodeId === pullRequest.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(input?.candidates.relations).toHaveLength(1);
+    expect(relations).toHaveLength(1);
+    expect(relations[0]).toMatchObject({
+      provenance: "native",
+      confidence: 1,
+    });
+    expect(relations[0]?.evidence.map((evidence) => evidence.sourceId).sort()).toEqual(
+      [nativeClosingIssue.sourceId, crossReference.event.sourceId].sort(),
+    );
   });
 
   it("同じ2 node間の複数active blocks edgeを統合してIssue状態を判定する", async () => {
@@ -2193,7 +2619,7 @@ describe("本番収集の接続", () => {
     });
   });
 
-  it("native edgeに反するAI判定を維持したedgeの矛盾として永続化する", async () => {
+  it("native関係の方向をCodex入力へ渡して矛盾判定をedgeへ保持する", async () => {
     const repository = createRepository(
       "R_native_contradiction",
       "native-contradiction",
@@ -2291,8 +2717,15 @@ describe("本番収集の接続", () => {
       .flatMap((record) => record.events)
       .find((event) => event.kind === "edge_set" && event.relationId === relation.id);
     const publicEdge = publicData.details.graph.edges.find((edge) => edge.id === relation.id);
+    const input = harness.codexInputs.find((candidate) => candidate.item.nodeId === blocked.nodeId);
 
     expect(result.exitCode).toBe(0);
+    expect(input?.deterministicSignals).toMatchObject({
+      nativeBlockedBy: [relation.id],
+      nativeBlocking: [],
+      nativeParent: [],
+      nativeSubIssues: [],
+    });
     expect(relation).toMatchObject({
       type: "blocks",
       provenance: "native",
@@ -2629,6 +3062,7 @@ describe("本番収集の接続", () => {
       provenance: "cross_reference",
       eventSourceId,
       sourceItem,
+      willCloseTarget: false,
     } satisfies GitHubInboundCrossReferenceCandidate);
     fixture.openItems = [tracked, source];
     setIssueDetails(fixture, fixture.openItems, observedAt);
@@ -4273,7 +4707,35 @@ describe("本番収集の接続", () => {
       retentionDays: 180,
       aiEnabled: true,
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("terminal抑止fixtureのsourceがありません");
+        }
+        return Promise.resolve(
+          createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: input.item.authorCandidateId,
+              kind: "user",
+              role: "assignee",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: 0.95,
+            relationVerdict: "none",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        );
+      },
+    });
 
     expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
     const firstCodexExecutionCount = harness.codexExecutionCount();
@@ -4456,6 +4918,93 @@ describe("本番収集の接続", () => {
 });
 
 describe("本番判定入力の接続", () => {
+  it("Codex出力検証違反の要約をrun reportのdiagnosticsへ載せる", async () => {
+    const repository = createRepository(
+      "R_codex_validation_diagnostic",
+      "codex-validation-diagnostic",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const item = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint: "codex-validation-diagnostic",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      createIssueDetail({
+        item,
+        body: "@requested-user に対応をお願いします",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const bodySource = input.sources.find((source) => source.kind === "body");
+        if (bodySource == null) {
+          throw new TypeError("検証違反diagnostic fixtureのbody sourceがありません");
+        }
+        const output = createCodexOutput(input, {
+          status: "in_progress",
+          waitingOn: {
+            candidateId: "requested-user",
+            kind: "user",
+            role: "assignee",
+            sourceId: bodySource.id,
+          },
+          latestMeaningfulSourceId: null,
+          confidence: 0.9,
+          relationVerdict: "related",
+          notification: {
+            recommended: false,
+            reasonCode: "none",
+            reasonSummary: "通知しません",
+          },
+        });
+        return Promise.resolve({
+          ...output,
+          item: {
+            ...output.item,
+            nodeId: "I_other",
+          },
+        });
+      },
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    if (result.command !== "dry-run") {
+      throw new TypeError("検証違反diagnostic fixtureがdry-run結果を返しませんでした");
+    }
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(snapshot.ai).toEqual({
+      enabled: true,
+      available: false,
+      degraded: true,
+    });
+    expect(snapshot.items[0]?.aiAnalysis).toEqual({
+      status: "failed",
+    });
+    expect(result.result.report.diagnostics).toContain(
+      `codex_fallback item=${item.nodeId} reason=semantic_validation_failed errorType=CodexOutputSemanticValidationError validationIssueCount=1 validationIssue0Path=/item/nodeId validationIssue0Code=item_node_id_mismatch`,
+    );
+  });
+
   it("reviewとcheckの集約状態をsnapshotと公開DTOへ保存する", async () => {
     const repository = createRepository("R_pr_aggregate", "pr-aggregate", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
@@ -4879,6 +5428,9 @@ describe("本番判定入力の接続", () => {
       summary: {
         author: trackedItem.author,
         assignees: trackedItem.assignees,
+        aiAnalysis: {
+          status: "used",
+        },
       },
       latestEventActor: {
         status: "present",
@@ -4975,7 +5527,7 @@ describe("本番判定入力の接続", () => {
       lastProgressAt: item.createdAt,
       lastHumanActivityAt: commentedAt,
       aiAnalysis: {
-        status: "not_used",
+        status: "disabled",
       },
     });
   });
@@ -6533,9 +7085,15 @@ describe("本番判定入力の接続", () => {
     });
 
     const result = await harness.runDry(FIRST_RUN_AT);
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
 
     expect(result.exitCode).toBe(0);
     expect(harness.codexExecutionCount()).toBe(0);
+    expect(snapshot.ai).toEqual({
+      enabled: true,
+      available: false,
+      degraded: true,
+    });
     expect(harness.artifacts.at(-1)).toMatchObject({
       diagnostics: [expect.stringContaining("estimated_cost_limit")],
       metrics: {

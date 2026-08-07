@@ -251,7 +251,7 @@ function createItem(options: ItemFixtureOptions): unknown {
     reviewState: options.number % 2 === 0 ? "requested" : "not_applicable",
     checkState: options.number % 2 === 0 ? "pending" : "not_applicable",
     aiAnalysis: {
-      status: "not_used",
+      status: "not_required",
     },
     inputEvents: [
       {
@@ -305,7 +305,7 @@ function createRelation(
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "5",
+    schemaVersion: "6",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -966,6 +966,36 @@ describe("公開DTO生成", () => {
     expect(generated.details.items[0]?.summary.milestone).toEqual(expectedMilestone);
   });
 
+  it("項目単位のAI利用状況をcache keyなしでsummaryとdetailsへ公開する", () => {
+    const source = createSingleItemSnapshot("AI利用状況公開fixture");
+    const snapshot = createStateSnapshot({
+      ...source,
+      items: source.items.map((item) => ({
+        ...item,
+        aiAnalysis: {
+          status: "used",
+          cacheKey: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        },
+      })),
+    });
+
+    const generated = generateFixture(
+      snapshot,
+      [],
+      publicInventory(),
+      [],
+      defaultGenerationOptions,
+    );
+
+    expect(generated.summary.items[0]?.aiAnalysis).toEqual({
+      status: "used",
+    });
+    expect(generated.details.items[0]?.summary.aiAnalysis).toEqual({
+      status: "used",
+    });
+    expect(generated.summary.items[0]?.aiAnalysis).not.toHaveProperty("cacheKey");
+  });
+
   it("run成功時もsnapshotのAI無効状態をそのまま公開する", () => {
     const source = createSingleItemSnapshot("AI無効状態の項目");
     const snapshot = createStateSnapshot({
@@ -1273,7 +1303,9 @@ describe("公開DTO生成", () => {
       },
     });
     expect(itemA?.latestEventActor).not.toHaveProperty("actor.nodeId");
-    expect(itemA).not.toHaveProperty("aiAnalysis");
+    expect(itemA?.summary.aiAnalysis).toEqual({
+      status: "not_required",
+    });
     expect(itemA).not.toHaveProperty("inputEvents");
     expect(itemA?.timestamps).toEqual({
       createdAt: CREATED_AT,

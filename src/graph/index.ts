@@ -55,6 +55,7 @@ export {
   type ExplicitTextRelationCandidate,
   type ExternalRelationCandidateNode,
   type ExtractRelationCandidatesInput,
+  type NativeClosingIssueSource,
   type NativeDependencySource,
   type NativeHierarchySource,
   type NativeRelationCandidate,

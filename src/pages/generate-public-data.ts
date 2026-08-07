@@ -487,6 +487,9 @@ function createItemSummary(
       level: item.importance.level,
     },
     priorityWeight,
+    aiAnalysis: {
+      status: item.aiAnalysis.status,
+    },
     confidence: item.confidence,
     githubUpdatedAt: item.githubUpdatedAt,
     stallSince: item.stallSince,

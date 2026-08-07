@@ -244,6 +244,15 @@ export type GitHubInboundCrossReferenceCandidate = Readonly<{
   provenance: "cross_reference";
   eventSourceId: SourceId;
   sourceItem: GitHubReferencedItem;
+  willCloseTarget: boolean;
+}>;
+
+/** GitHubがPull Requestのclosing対象として認識したIssue。 */
+export type GitHubNativeClosingIssue = Readonly<{
+  sourceId: SourceId;
+  authoritative: true;
+  provenance: "native";
+  relatedItem: GitHubReferencedItem;
 }>;
 
 /** GitHub native issue dependencyを推定関係と混ぜずに保持するauthoritative relation。 */
@@ -364,6 +373,7 @@ export type GitHubItemDetail =
         reviews: readonly GitHubPullRequestReview[];
         reviewThreads: readonly GitHubPullRequestReviewThread[];
         reviewRequests: GitHubPullRequestReviewRequests;
+        nativeClosingIssues: readonly GitHubNativeClosingIssue[];
         headSha: string;
         headCommit: GitHubPullRequestCommit;
         mergeState: GitHubPullRequestMergeState;

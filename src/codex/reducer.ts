@@ -14,9 +14,11 @@ import {
   CodexNonZeroExitError,
   CodexOutputSchemaValidationError,
   CodexOutputSemanticValidationError,
+  CodexOutputValidationError,
   CodexRateLimitError,
   CodexTimeoutError,
   type CodexNonZeroExitDiagnostic,
+  type CodexOutputValidationDiagnostic,
 } from "./errors.js";
 import {
   classifyCodexConfidence,
@@ -27,6 +29,8 @@ import { type CodexAnalysisInput } from "./input.js";
 import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
 import { listNativeRelationConstraints } from "./semantic-validation.js";
+
+const CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT = 5;
 
 /** Codexを利用できず決定論的判定へ縮退した理由。 */
 export type CodexUnavailableReason =
@@ -49,6 +53,7 @@ export type CodexAnalysisAttempt =
       reason: CodexUnavailableReason;
       errorType: string;
       diagnostic?: CodexNonZeroExitDiagnostic;
+      validationDiagnostic?: CodexOutputValidationDiagnostic;
     }>;
 
 /** Codexと統合する前の決定論的な状態判定。 */
@@ -191,6 +196,23 @@ function nonZeroExitDiagnostic(error: unknown): CodexNonZeroExitDiagnostic | und
   });
 }
 
+function outputValidationDiagnostic(error: unknown): CodexOutputValidationDiagnostic | undefined {
+  if (!(error instanceof CodexOutputValidationError)) {
+    return undefined;
+  }
+  return Object.freeze({
+    issueCount: error.issues.length,
+    issues: Object.freeze(
+      error.issues.slice(0, CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT).map((issue) =>
+        Object.freeze({
+          path: issue.path,
+          code: issue.code,
+        }),
+      ),
+    ),
+  });
+}
+
 /** Codexを実行してschema検証とsemantic検証を行い、失敗を値として返す。 */
 export async function executeValidatedCodexAnalysis(
   input: CodexAnalysisInput,
@@ -204,11 +226,13 @@ export async function executeValidatedCodexAnalysis(
     });
   } catch (error: unknown) {
     const diagnostic = nonZeroExitDiagnostic(error);
+    const validationDiagnostic = outputValidationDiagnostic(error);
     return Object.freeze({
       status: "unavailable",
       reason: classifyCodexUnavailableReason(error),
       errorType: errorType(error),
       ...(diagnostic == null ? {} : { diagnostic }),
+      ...(validationDiagnostic == null ? {} : { validationDiagnostic }),
     });
   }
 }

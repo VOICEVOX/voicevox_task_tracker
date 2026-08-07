@@ -151,7 +151,7 @@ function createTrackedItem(number: number, options: ItemOptions): TrackedItem {
     reviewState: "requested",
     checkState: "not_applicable",
     aiAnalysis: Object.freeze({
-      status: "not_used",
+      status: "not_required",
     }),
     inputEvents: Object.freeze([]),
     confidence: 1,

@@ -17,6 +17,7 @@ import {
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
+  isAiAnalysisDegraded,
   statusLabel,
   waitingOnHistoryLabel,
   waitingOnLabel,
@@ -587,6 +588,15 @@ export function ItemDetailsContent({
           </a>
         </div>
       </div>
+
+      {isAiAnalysisDegraded(item.aiAnalysis.status) && (
+        <p
+          class="ai-analysis-notice m-0 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3 text-sm leading-5 text-state-warning-text"
+          role="status"
+        >
+          AI判定を利用できなかったため、確定ルールで表示しています。
+        </p>
+      )}
 
       <section
         aria-labelledby="current-action-heading"

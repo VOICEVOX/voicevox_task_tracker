@@ -730,6 +730,15 @@ export function createItemDetailQuery(
         ... on PullRequest {
           id
           body
+          closingIssuesReferences(first: 100) {
+            nodes {
+              ...DetailReferencedItemFields
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
           headRefOid
           headRef {
             target {
@@ -997,6 +1006,26 @@ export const REVIEW_REQUEST_PAGE_QUERY = appendRequiredFragments(`
             requestedReviewer {
               ...DetailReviewRequestTargetFields
             }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+  }
+`);
+
+export const CLOSING_ISSUE_PAGE_QUERY = appendRequiredFragments(`
+  query GitHubPullRequestClosingIssuePage($itemId: ID!, $after: String!) {
+    item: node(id: $itemId) {
+      __typename
+      ... on PullRequest {
+        id
+        closingIssuesReferences(first: 100, after: $after) {
+          nodes {
+            ...DetailReferencedItemFields
           }
           pageInfo {
             hasNextPage

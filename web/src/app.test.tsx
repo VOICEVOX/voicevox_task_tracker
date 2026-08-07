@@ -16,12 +16,14 @@ import {
 import { assertNonNullable } from "../../src/util/index.js";
 import { App } from "./app.js";
 import {
+  AI_ANALYSIS_DEGRADED_FILTER_VALUE,
   compareAttentionItems,
   createEmptyTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
   selectAttentionItems,
   type TableColumnKey,
+  type TableFilterKey,
   type TableFilters,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
@@ -258,7 +260,7 @@ function createOrderingItem(options: OrderingItemOptions): PublicItemSummaryDto 
   };
 }
 
-function filtersWith(key: TableColumnKey, value: string): TableFilters {
+function filtersWith(key: TableFilterKey, value: string): TableFilters {
   return {
     ...createEmptyTableFilters(),
     [key]: value,
@@ -994,6 +996,7 @@ describe("Web UI", () => {
 
     expect(currentContainer().textContent).toContain("AI分析は設定で無効です");
     expect(currentContainer().textContent).not.toContain("AIを利用できなかったため");
+    expect(currentContainer().querySelector(".ai-degraded-items-link")).toBeNull();
   });
 
   it("AIを利用できる縮退runを完全成功と区別して表示する", () => {
@@ -1021,6 +1024,41 @@ describe("Web UI", () => {
     });
 
     expect(currentContainer().querySelector(".ai-state-notice")).toBeNull();
+  });
+
+  it("AI縮退通知から対象件数で絞り込んだ一覧へ遷移しURLから復元する", () => {
+    renderApp(sampleSummary);
+
+    const link = requiredElement<HTMLAnchorElement>(".ai-degraded-items-link");
+    expect(link.textContent).toBe("対象4件を一覧で確認");
+    expect(link.getAttribute("href")).toBe("/voicevox_task_tracker/items?ai=degraded");
+
+    act(() => {
+      link.click();
+    });
+
+    expect(window.location.pathname + window.location.search).toBe(
+      "/voicevox_task_tracker/items?ai=degraded",
+    );
+    expect(
+      requiredElement<HTMLSelectElement>('select[aria-label="AI利用状況で絞り込み"]').value,
+    ).toBe(AI_ANALYSIS_DEGRADED_FILTER_VALUE);
+    expect(itemRowNodeIds()).toEqual([
+      "sample-item-core-305",
+      "sample-item-editor-103",
+      "sample-item-engine-202",
+      "sample-item-editor-101",
+    ]);
+
+    act(() => {
+      render(null, currentContainer());
+    });
+    renderApp(sampleSummary);
+
+    expect(
+      requiredElement<HTMLSelectElement>('select[aria-label="AI利用状況で絞り込み"]').value,
+    ).toBe(AI_ANALYSIS_DEGRADED_FILTER_VALUE);
+    expect(itemRowNodeIds()).toHaveLength(4);
   });
 
   it("要対応項目で主な待ち相手と理由だけを常時表示する", () => {
@@ -1231,10 +1269,10 @@ describe("Web UI", () => {
     expect(compareAttentionItems(olderStall, newerStall)).toBeLessThan(0);
   });
 
-  it("一覧の識別子と次の担当の表示文字列で絞り込み、6列で並び替える", () => {
+  it("一覧の識別子、次の担当、AI利用状況で絞り込み、6列で並び替える", () => {
     const rows = createItemTableRows(sampleSummary, NOW);
     const filterCases: readonly Readonly<{
-      key: TableColumnKey;
+      key: TableFilterKey;
       value: string;
       expectedNodeIds: readonly string[];
     }>[] = [
@@ -1268,6 +1306,16 @@ describe("Web UI", () => {
         value: "30d",
         expectedNodeIds: ["sample-item-engine-204"],
       },
+      {
+        key: "aiAnalysis",
+        value: AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+        expectedNodeIds: [
+          "sample-item-core-305",
+          "sample-item-editor-101",
+          "sample-item-editor-103",
+          "sample-item-engine-202",
+        ],
+      },
     ];
 
     for (const filterCase of filterCases) {
@@ -1284,7 +1332,7 @@ describe("Web UI", () => {
     }
 
     const hiddenValueCases: readonly Readonly<{
-      key: TableColumnKey;
+      key: TableFilterKey;
       value: string;
     }>[] = [
       {
@@ -1408,7 +1456,7 @@ describe("Web UI", () => {
     ).toBeNull();
     const filterDetails = requiredElement<HTMLDetailsElement>(".item-filters");
     expect(filterDetails.open).toBe(false);
-    expect(filterDetails.querySelectorAll("select")).toHaveLength(5);
+    expect(filterDetails.querySelectorAll("select")).toHaveLength(6);
     expect(filterDetails.querySelectorAll('input[type="search"]')).toHaveLength(1);
     act(() => {
       requiredElement<HTMLElement>(".item-filters > summary").click();
@@ -1491,6 +1539,17 @@ describe("Web UI", () => {
       "7d",
       "30d",
     ]);
+    const aiAnalysisFilter = requiredElement<HTMLSelectElement>(
+      'select[aria-label="AI利用状況で絞り込み"]',
+    );
+    expect([...aiAnalysisFilter.options].map((option) => option.textContent)).toEqual([
+      "すべて",
+      "AI判定を利用できず",
+    ]);
+    expect([...aiAnalysisFilter.options].map((option) => option.value)).toEqual([
+      "",
+      AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+    ]);
 
     act(() => {
       repositoryFilter.value = "VOICEVOX/sample-core";
@@ -1501,6 +1560,23 @@ describe("Web UI", () => {
     act(() => {
       repositoryFilter.value = "";
       repositoryFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    act(() => {
+      aiAnalysisFilter.value = AI_ANALYSIS_DEGRADED_FILTER_VALUE;
+      aiAnalysisFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(itemRowNodeIds()).toEqual([
+      "sample-item-core-305",
+      "sample-item-editor-103",
+      "sample-item-engine-202",
+      "sample-item-editor-101",
+    ]);
+    expect(new URL(window.location.href).searchParams.get("ai")).toBe(
+      AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+    );
+    act(() => {
+      aiAnalysisFilter.value = "";
+      aiAnalysisFilter.dispatchEvent(new Event("change", { bubbles: true }));
     });
     const sortKey = requiredElement<HTMLSelectElement>("#item-sort-key");
     expect([...sortKey.options].map((option) => option.value)).toEqual(TABLE_COLUMN_KEYS);
@@ -1588,6 +1664,76 @@ describe("Web UI", () => {
     expect(staleItem.textContent).toContain("推定: 作成者 @sample-bug-author");
   });
 
+  it("AI判定を利用できなかった項目だけ表とカードにバッジを表示する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items");
+    renderApp(sampleSummary);
+
+    for (const nodeId of [
+      "sample-item-editor-101",
+      "sample-item-engine-202",
+      "sample-item-editor-103",
+      "sample-item-core-305",
+    ]) {
+      expect(
+        requiredElement<HTMLElement>(`.items-table tr[data-node-id="${nodeId}"]`).textContent,
+      ).toContain("AI判定なし");
+      expect(
+        requiredElement<HTMLElement>(`.items-card-list li[data-node-id="${nodeId}"]`).textContent,
+      ).toContain("AI判定なし");
+    }
+    expect(
+      requiredElement<HTMLElement>(
+        '.items-table tr[data-node-id="sample-item-engine-204"]',
+      ).querySelector(".ai-analysis-badge"),
+    ).toBeNull();
+    expect(
+      requiredElement<HTMLElement>(
+        '.items-card-list li[data-node-id="sample-item-engine-204"]',
+      ).querySelector(".ai-analysis-badge"),
+    ).toBeNull();
+  });
+
+  it("AI判定が縮退していない4状態では一覧バッジを表示しない", () => {
+    const statuses: readonly PublicItemSummaryDto["aiAnalysis"]["status"][] = [
+      "used",
+      "not_required",
+      "disabled",
+      "not_recorded",
+      "used",
+    ];
+    const summary = createPublicSummaryDto({
+      ...sampleSummary,
+      items: sampleSummary.items.map((item, index) => {
+        const status = statuses[index];
+        assertNonNullable(status, "AI利用状況のテスト値がありません");
+        return {
+          ...item,
+          aiAnalysis: {
+            status,
+          },
+        };
+      }),
+    });
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items");
+
+    renderApp(summary);
+
+    expect(currentContainer().querySelector(".ai-analysis-badge")).toBeNull();
+  });
+
+  it.each([
+    ["failed", "/voicevox_task_tracker/items/sample-editor/101"],
+    ["deferred", "/voicevox_task_tracker/items/sample-engine/202"],
+  ])("AI利用状況が%sの項目詳細に縮退を表示する", async (_status, path) => {
+    window.history.replaceState({}, "", path);
+    renderApp(sampleSummary);
+    await flushUi();
+
+    expect(requiredElement<HTMLElement>(".ai-analysis-notice").textContent).toBe(
+      "AI判定を利用できなかったため、確定ルールで表示しています。",
+    );
+  });
+
   it("選択項目の状況と次の行動を先に表示して詳細を2つの折りたたみにまとめる", async () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-engine/204");
     renderApp(sampleSummary);
@@ -1596,6 +1742,7 @@ describe("Web UI", () => {
     const details = requiredElement<HTMLElement>(
       '.item-details-card[data-node-id="sample-item-engine-204"]',
     );
+    expect(details.querySelector(".ai-analysis-notice")).toBeNull();
     expect(currentContainer().querySelector(".eyebrow")).toBeNull();
     expect(currentContainer().textContent).not.toContain(
       "公開済みデータだけを使い、項目の判定根拠と変更履歴まで確認できます。",
@@ -2164,7 +2311,7 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll<HTMLSelectElement>(".item-filter-grid select")].map(
         (select) => select.value,
       ),
-    ).toEqual(["", "", "", "", ""]);
+    ).toEqual(["", "", "", "", "", ""]);
     expect(requiredElement<HTMLInputElement>('input[aria-label="waitingOnで絞り込み"]').value).toBe(
       "sample-reviewers",
     );
@@ -2308,7 +2455,7 @@ describe("Web UI", () => {
         ".item-filter-grid select, .item-filter-grid input",
       ),
     ];
-    expect(filterControls).toHaveLength(6);
+    expect(filterControls).toHaveLength(7);
     for (const filterControl of filterControls) {
       filterControl.focus();
       expect(document.activeElement).toBe(filterControl);

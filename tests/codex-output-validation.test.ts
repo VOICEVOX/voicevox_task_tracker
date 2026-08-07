@@ -10,6 +10,7 @@ import {
   CodexTimeoutError,
   classifyCodexConfidence,
   createCodexAnalysisInput,
+  executeValidatedCodexAnalysis,
   reduceCodexAnalysis,
   runCodexAnalysisWithFallback,
   validateCodexAnalysisOutput,
@@ -427,6 +428,125 @@ describe("Codex出力のsemantic検証", () => {
         input,
       ),
     ).toThrow(CodexOutputSemanticValidationError);
+  });
+});
+
+describe("Codex出力検証失敗の診断要約", () => {
+  it("schema検証とsemantic検証の違反件数と先頭のpathとcodeを返す", async () => {
+    const input = createInput();
+    const output = createOutput(0.9);
+
+    const schemaAttempt = await executeValidatedCodexAnalysis(input, () =>
+      Promise.resolve({
+        ...output,
+        extra: true,
+      }),
+    );
+    const semanticAttempt = await executeValidatedCodexAnalysis(input, () =>
+      Promise.resolve({
+        ...output,
+        item: {
+          ...output.item,
+          nodeId: "I_other",
+        },
+        evidence: [
+          {
+            ...output.evidence[0],
+            sourceId: "comment:not-found",
+          },
+        ],
+      }),
+    );
+
+    expect(schemaAttempt).toEqual({
+      status: "unavailable",
+      reason: "schema_validation_failed",
+      errorType: "CodexOutputSchemaValidationError",
+      validationDiagnostic: {
+        issueCount: 1,
+        issues: [
+          {
+            path: "$",
+            code: "additionalProperties",
+          },
+        ],
+      },
+    });
+    expect(semanticAttempt).toEqual({
+      status: "unavailable",
+      reason: "semantic_validation_failed",
+      errorType: "CodexOutputSemanticValidationError",
+      validationDiagnostic: {
+        issueCount: 2,
+        issues: [
+          {
+            path: "/item/nodeId",
+            code: "item_node_id_mismatch",
+          },
+          {
+            path: "/evidence/0/sourceId",
+            code: "unknown_source_id",
+          },
+        ],
+      },
+    });
+  });
+
+  it("先頭5件に制限しpathとcodeだけを要約へ含める", async () => {
+    const pathCanary = "/futureSchemaField";
+    const messageCanary = "INPUT_DERIVED_MESSAGE_CANARY";
+    const attempt = await executeValidatedCodexAnalysis(createInput(), () =>
+      Promise.reject(
+        new CodexOutputSemanticValidationError([
+          {
+            path: pathCanary,
+            code: "future_schema_field_rule",
+            message: messageCanary,
+          },
+          ...Array.from({ length: 5 }, (_, index) => ({
+            path: `/evidence/${index.toString()}/sourceId`,
+            code: `fixture_rule_${index.toString()}`,
+            message: messageCanary,
+          })),
+        ]),
+      ),
+    );
+
+    expect(attempt).toMatchObject({
+      status: "unavailable",
+      validationDiagnostic: {
+        issueCount: 6,
+        issues: [
+          {
+            path: pathCanary,
+            code: "future_schema_field_rule",
+          },
+          {
+            path: "/evidence/0/sourceId",
+            code: "fixture_rule_0",
+          },
+          {
+            path: "/evidence/1/sourceId",
+            code: "fixture_rule_1",
+          },
+          {
+            path: "/evidence/2/sourceId",
+            code: "fixture_rule_2",
+          },
+          {
+            path: "/evidence/3/sourceId",
+            code: "fixture_rule_3",
+          },
+        ],
+      },
+    });
+    if (attempt.status !== "unavailable") {
+      throw new TypeError("検証失敗がfallback結果になりませんでした");
+    }
+    expect(attempt.validationDiagnostic?.issues).toHaveLength(5);
+    const serializedAttempt = JSON.stringify(attempt);
+    expect(serializedAttempt).toContain(pathCanary);
+    expect(serializedAttempt).not.toContain(messageCanary);
   });
 });
 

@@ -7,6 +7,7 @@ import {
   createUtcIsoDateTime,
   type GitHubNodeId,
   type Repository,
+  type TrackedItemAiAnalysis,
 } from "../src/domain/index.js";
 import {
   GitHubApiBudgetExceededError,
@@ -137,6 +138,17 @@ function createPreviousCollectionItemsWithoutAnalysisRulesFingerprint(
       }),
     ]),
   );
+}
+
+function createPreviousAiAnalysisStatuses(
+  items: readonly EnumeratedGitHubItem[],
+  status: TrackedItemAiAnalysis["status"],
+): ReadonlyMap<GitHubNodeId, TrackedItemAiAnalysis["status"]> {
+  const statuses = new Map<GitHubNodeId, TrackedItemAiAnalysis["status"]>();
+  for (const item of items) {
+    statuses.set(item.nodeId, status);
+  }
+  return statuses;
 }
 
 function createRepository(
@@ -660,7 +672,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
       },
-      previouslyAnalyzedItemNodeIds: new Set(previousItems.map((item) => item.nodeId)),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(previousItems, "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds,
       overlapMilliseconds: 300_000,
@@ -722,7 +734,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
       },
-      previouslyAnalyzedItemNodeIds: new Set(previousItems.map((item) => item.nodeId)),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(previousItems, "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
       overlapMilliseconds: 300_000,
@@ -755,7 +767,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
       },
-      previouslyAnalyzedItemNodeIds: new Set(items.map((item) => item.nodeId)),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(items, "used"),
       currentAnalysisRulesFingerprints: changedAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
       overlapMilliseconds: 300_000,
@@ -811,7 +823,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
       },
-      previouslyAnalyzedItemNodeIds: new Set(previousItems.map((item) => item.nodeId)),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(previousItems, "used"),
       currentAnalysisRulesFingerprints: changedAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set([adjacentPullRequest.nodeId]),
       overlapMilliseconds: 300_000,
@@ -863,7 +875,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
       },
-      previouslyAnalyzedItemNodeIds: new Set(),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses([], "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
       overlapMilliseconds: 300_000,
@@ -898,7 +910,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
       },
-      previouslyAnalyzedItemNodeIds: new Set([analyzedItem.nodeId]),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses([analyzedItem], "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set([analyzedItem.nodeId, unanalyzedItem.nodeId]),
       overlapMilliseconds: 300_000,
@@ -946,7 +958,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
       },
-      previouslyAnalyzedItemNodeIds: new Set(items.map((item) => item.nodeId)),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(items, "used"),
       currentAnalysisRulesFingerprints: changedAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
       overlapMilliseconds: 300_000,
@@ -971,7 +983,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItemsWithoutAnalysisRulesFingerprint(items),
       },
-      previouslyAnalyzedItemNodeIds: new Set(),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses([], "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
       overlapMilliseconds: 300_000,
@@ -995,7 +1007,7 @@ describe("増分項目収集", () => {
         completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItemsWithoutAnalysisRulesFingerprint(items),
       },
-      previouslyAnalyzedItemNodeIds: new Set([item.nodeId]),
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses([item], "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
       overlapMilliseconds: 300_000,
@@ -1010,6 +1022,61 @@ describe("増分項目収集", () => {
         },
       },
     ]);
+  });
+
+  it.each(["failed", "deferred"] satisfies readonly TrackedItemAiAnalysis["status"][])(
+    "前回AI分析が%sの未変更項目を増分詳細取得対象にする",
+    async (status) => {
+      const items = await enumerateFixture("R_example", "example", [createItemMetadata(1, {})]);
+      const item = items[0];
+      if (item == null) {
+        throw new Error("AI分析再試行fixtureが不足しています");
+      }
+
+      const plan = planIncrementalItemCollection({
+        items,
+        previous: {
+          status: "successful",
+          completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
+          items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
+        },
+        previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(items, status),
+        currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
+        adjacentItemNodeIds: new Set(),
+        overlapMilliseconds: 300_000,
+      });
+
+      expect(plan.changedItemNodeIds).toEqual([]);
+      expect(plan.detailTargets).toEqual([
+        {
+          nodeId: item.nodeId,
+          eventWindow: {
+            mode: "incremental",
+            since: "2026-07-31T23:55:00.000Z",
+          },
+        },
+      ]);
+    },
+  );
+
+  it("not_recordedの未変更項目をAI分析再試行だけの理由では詳細取得しない", async () => {
+    const items = await enumerateFixture("R_example", "example", [createItemMetadata(1, {})]);
+
+    const plan = planIncrementalItemCollection({
+      items,
+      previous: {
+        status: "successful",
+        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
+        items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
+      },
+      previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(items, "not_recorded"),
+      currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
+      adjacentItemNodeIds: new Set(),
+      overlapMilliseconds: 300_000,
+    });
+
+    expect(plan.changedItemNodeIds).toEqual([]);
+    expect(plan.detailTargets).toEqual([]);
   });
 });
 

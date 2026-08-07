@@ -1,6 +1,7 @@
 import {
   createUtcIsoDateTime,
   type TrackingNotificationClass,
+  type TrackedItemAiAnalysis,
   type TrackedItemState,
   type UtcIsoDateTime,
 } from "./types.js";
@@ -102,6 +103,7 @@ export type DetermineTrackedItemWorkInput = Readonly<{
   state: TrackedItemState;
   analysisInputFingerprint: string;
   analysisRulesFingerprint: string;
+  previousAiAnalysisStatus: TrackedItemAiAnalysis["status"] | "not_available";
   previousObservation: PreviousTrackedItemObservation;
 }>;
 
@@ -110,7 +112,12 @@ export type CodexAnalysisWorkDecision =
   | Readonly<{
       action: "analyze";
       reason:
-        "active_item" | "terminal_transition" | "analysis_input_changed" | "analysis_rules_changed";
+        | "active_item"
+        | "terminal_transition"
+        | "analysis_input_changed"
+        | "analysis_rules_changed"
+        | "previous_analysis_failed"
+        | "previous_analysis_deferred";
     }>
   | Readonly<{
       action: "suppress";
@@ -174,6 +181,22 @@ function isTerminalState(state: TrackedItemState): state is "closed" | "merged" 
     case "closed":
     case "merged":
       return true;
+  }
+}
+
+/** 次回runでAI分析を再試行するstatusか判定する。 */
+export function isRetryableTrackedItemAiAnalysisStatus(
+  status: TrackedItemAiAnalysis["status"],
+): status is "failed" | "deferred" {
+  switch (status) {
+    case "failed":
+    case "deferred":
+      return true;
+    case "used":
+    case "not_required":
+    case "disabled":
+    case "not_recorded":
+      return false;
   }
 }
 
@@ -337,6 +360,25 @@ export function determineTrackedItemWork(
       codexAnalysis: Object.freeze({
         action: "analyze",
         reason: "analysis_rules_changed",
+      }),
+      stallNotification: Object.freeze({
+        action: "suppress",
+        reason: "terminal_unchanged",
+      }),
+    });
+  }
+
+  if (
+    input.previousAiAnalysisStatus !== "not_available" &&
+    isRetryableTrackedItemAiAnalysisStatus(input.previousAiAnalysisStatus)
+  ) {
+    return Object.freeze({
+      codexAnalysis: Object.freeze({
+        action: "analyze",
+        reason:
+          input.previousAiAnalysisStatus === "failed"
+            ? "previous_analysis_failed"
+            : "previous_analysis_deferred",
       }),
       stallNotification: Object.freeze({
         action: "suppress",

@@ -85,6 +85,11 @@ function candidateSignature(candidate: RelationCandidate): string {
   ]);
 }
 
+function relationSignature(relation: CandidateRelation): string {
+  const [firstNode, secondNode] = relationNodes(relation);
+  return JSON.stringify([relation.type, nodeSignature(firstNode), nodeSignature(secondNode)]);
+}
+
 function replaceCandidateSourceIds(
   candidate: RelationCandidate,
   sourceIds: readonly [SourceId, ...SourceId[]],
@@ -136,11 +141,25 @@ export function normalizeRelationCandidates(
     }
   }
 
-  return Object.freeze(
-    [...candidatesById.values()]
-      .map((entry) =>
-        replaceCandidateSourceIds(entry.candidate, createSourceIds([...entry.sourceIds])),
+  const normalized = [...candidatesById.values()]
+    .map((entry) =>
+      replaceCandidateSourceIds(entry.candidate, createSourceIds([...entry.sourceIds])),
+    )
+    .sort((left, right) => compareStrings(left.id, right.id));
+  const authoritativeRelations = new Set(
+    normalized
+      .filter(
+        (candidate) =>
+          candidate.authority === "authoritative" && candidate.relation.type === "implements",
       )
-      .sort((left, right) => compareStrings(left.id, right.id)),
+      .map((candidate) => relationSignature(candidate.relation)),
+  );
+  return Object.freeze(
+    normalized.filter(
+      (candidate) =>
+        candidate.authority === "authoritative" ||
+        candidate.relation.type !== "implements" ||
+        !authoritativeRelations.has(relationSignature(candidate.relation)),
+    ),
   );
 }

@@ -1251,8 +1251,22 @@ describe("AI runの候補単位fallback", () => {
     expect(execute).toHaveBeenCalledTimes(2);
     expect(first.results).toEqual([]);
     expect(second.results).toEqual([]);
-    expect(first.failures[0]?.reason).toBe("schema_validation_failed");
-    expect(second.failures[0]?.reason).toBe("schema_validation_failed");
+    const expectedFailure = {
+      candidateId: "I_invalid_schema",
+      reason: "schema_validation_failed",
+      errorType: "CodexOutputSchemaValidationError",
+      validationDiagnostic: {
+        issueCount: 1,
+        issues: [
+          {
+            path: "$",
+            code: "additionalProperties",
+          },
+        ],
+      },
+    };
+    expect(first.failures).toEqual([expectedFailure]);
+    expect(second.failures).toEqual([expectedFailure]);
   });
 });
 

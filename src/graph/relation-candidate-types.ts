@@ -39,6 +39,12 @@ export type NativeHierarchySource = Readonly<{
   relatedItem: PublicGitHubRelationItem;
 }>;
 
+/** GitHubがPull Requestのclosing対象として認識したIssueの抽出入力。 */
+export type NativeClosingIssueSource = Readonly<{
+  sourceId: SourceId;
+  relatedItem: PublicGitHubRelationItem;
+}>;
+
 /** timelineのinbound cross-reference抽出入力。 */
 export type CrossReferenceSource = Readonly<{
   sourceId: SourceId;
@@ -54,6 +60,7 @@ export type RelationExtractionItem = PublicGitHubRelationItem &
     crossReferences: readonly CrossReferenceSource[];
     nativeDependencies: readonly NativeDependencySource[];
     nativeHierarchy: readonly NativeHierarchySource[];
+    nativeClosingIssues: readonly NativeClosingIssueSource[];
   }>;
 
 /** 関係候補抽出に必要な現在項目と解決済み公開項目。 */
@@ -141,7 +148,7 @@ export type NativeRelationCandidate = RelationCandidateFields &
   Readonly<{
     authority: "authoritative";
     provenance: "native";
-    relation: CandidateBlocksRelation | CandidateParentRelation;
+    relation: CandidateBlocksRelation | CandidateParentRelation | CandidateImplementsRelation;
   }>;
 
 /** 本文またはコメント中の参照から得る意味未確定の候補。 */

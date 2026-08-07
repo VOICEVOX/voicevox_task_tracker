@@ -669,6 +669,7 @@ describe("追跡後のライフサイクル", () => {
       state: "open",
       analysisInputFingerprint: "sha256:same-history",
       analysisRulesFingerprint: "sha256:same-rules",
+      previousAiAnalysisStatus: "used",
       previousObservation: Object.freeze({
         status: "available",
         state: "open",
@@ -722,6 +723,7 @@ describe("追跡後のライフサイクル", () => {
       state: "closed",
       analysisInputFingerprint: "sha256:unchanged",
       analysisRulesFingerprint: "sha256:unchanged-rules",
+      previousAiAnalysisStatus: "used",
       previousObservation: {
         status: "available",
         state: "closed",
@@ -756,6 +758,7 @@ describe("追跡後のライフサイクル", () => {
       state: "merged",
       analysisInputFingerprint: "sha256:merged",
       analysisRulesFingerprint: "sha256:same-rules",
+      previousAiAnalysisStatus: "used",
       previousObservation: {
         status: "available",
         state: "open",
@@ -770,6 +773,7 @@ describe("追跡後のライフサイクル", () => {
       state: "closed",
       analysisInputFingerprint: "sha256:changed",
       analysisRulesFingerprint: "sha256:same-rules",
+      previousAiAnalysisStatus: "used",
       previousObservation: {
         status: "available",
         state: "closed",
@@ -796,6 +800,7 @@ describe("追跡後のライフサイクル", () => {
       state: "closed",
       analysisInputFingerprint: "sha256:unchanged",
       analysisRulesFingerprint: "sha256:current-rules",
+      previousAiAnalysisStatus: "used",
       previousObservation: {
         status: "available",
         state: "closed",
@@ -810,6 +815,7 @@ describe("追跡後のライフサイクル", () => {
       state: "closed",
       analysisInputFingerprint: "sha256:unchanged",
       analysisRulesFingerprint: "sha256:current-rules",
+      previousAiAnalysisStatus: "used",
       previousObservation: {
         status: "available",
         state: "closed",
@@ -832,6 +838,54 @@ describe("追跡後のライフサイクル", () => {
 
     expect(changed).toEqual(expected);
     expect(unavailable).toEqual(expected);
+  });
+
+  it("terminalかつ未変更でも前回AI分析が失敗または延期なら再分析する", () => {
+    const retryCases = [
+      Object.freeze({
+        status: "failed",
+        reason: "previous_analysis_failed",
+      }),
+      Object.freeze({
+        status: "deferred",
+        reason: "previous_analysis_deferred",
+      }),
+    ] satisfies readonly Readonly<{
+      status: DetermineTrackedItemWorkInput["previousAiAnalysisStatus"];
+      reason: string;
+    }>[];
+
+    const decisions = retryCases.map(({ status, reason }) => ({
+      decision: determineTrackedItemWork({
+        state: "closed",
+        analysisInputFingerprint: "sha256:unchanged",
+        analysisRulesFingerprint: "sha256:unchanged-rules",
+        previousAiAnalysisStatus: status,
+        previousObservation: {
+          status: "available",
+          state: "closed",
+          analysisInputFingerprint: "sha256:unchanged",
+          analysisRulesFingerprint: {
+            status: "available",
+            fingerprint: "sha256:unchanged-rules",
+          },
+        },
+      }),
+      reason,
+    }));
+
+    for (const { decision, reason } of decisions) {
+      expect(decision).toEqual({
+        codexAnalysis: {
+          action: "analyze",
+          reason,
+        },
+        stallNotification: {
+          action: "suppress",
+          reason: "terminal_unchanged",
+        },
+      });
+    }
   });
 
   it("automation項目とbot作成項目を追跡し、automationだけを既定digestから外す", () => {

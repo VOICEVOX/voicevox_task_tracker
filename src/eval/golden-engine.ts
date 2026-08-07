@@ -1008,7 +1008,7 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
     reviewState: item.type === "issue" ? "not_applicable" : "unknown",
     checkState: item.type === "issue" ? "not_applicable" : "unknown",
     aiAnalysis: Object.freeze({
-      status: "not_used",
+      status: "not_required",
     }),
     inputEvents: Object.freeze(
       item.events.map((event) =>
@@ -1061,7 +1061,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "5",
+    schemaVersion: "6",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1466,7 +1466,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         reviewState: index % 2 === 0 ? "not_applicable" : "requested",
         checkState: index % 2 === 0 ? "not_applicable" : "pending",
         aiAnalysis: Object.freeze({
-          status: "not_used",
+          status: "disabled",
         }),
         inputEvents: Object.freeze([]),
         confidence: 1,
@@ -1568,7 +1568,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "5",
+    schemaVersion: "6",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

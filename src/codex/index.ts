@@ -78,6 +78,7 @@ export {
   CodexTemporaryWorkspaceError,
   CodexTimeoutError,
   type CodexNonZeroExitDiagnostic,
+  type CodexOutputValidationDiagnostic,
   type CodexOutputValidationIssue,
 } from "./errors.js";
 export {

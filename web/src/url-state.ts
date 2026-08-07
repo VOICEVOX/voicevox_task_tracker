@@ -3,17 +3,17 @@ import { z } from "zod";
 import {
   createEmptyTableFilters,
   waitingSubjectKey,
-  type TableColumnKey,
+  type TableFilterKey,
   type TableFilterOption,
   type TableFilterOptions,
   type TableFilters,
-  type TableSelectColumnKey,
+  type TableSelectFilterKey,
   type TableSort,
 } from "./model.js";
 
 type TableFilterDefinition =
   | Readonly<{
-      key: TableSelectColumnKey;
+      key: TableSelectFilterKey;
       parameterName: string;
       validation: "option";
     }>
@@ -52,6 +52,11 @@ const TABLE_FILTER_DEFINITIONS = [
   {
     key: "stall",
     parameterName: "stall",
+    validation: "option",
+  },
+  {
+    key: "aiAnalysis",
+    parameterName: "ai",
     validation: "option",
   },
 ] satisfies readonly TableFilterDefinition[];
@@ -506,7 +511,7 @@ function parseItemsQuery(
   );
   sanitized ||= searchQuery.invalid;
 
-  const parsedTableFilters: Record<TableColumnKey, string> = {
+  const parsedTableFilters: Record<TableFilterKey, string> = {
     ...defaults.tableFilters,
   };
   for (const definition of TABLE_FILTER_DEFINITIONS) {

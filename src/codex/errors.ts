@@ -106,6 +106,15 @@ export type CodexOutputValidationIssue = Readonly<{
   message: string;
 }>;
 
+/** Codex出力の検証失敗から外部診断へ渡せる安全な要約。 */
+export type CodexOutputValidationDiagnostic = Readonly<{
+  issueCount: number;
+  issues: readonly Readonly<{
+    path: string;
+    code: string;
+  }>[];
+}>;
+
 /** Codex出力の検証失敗を表す基底クラス。 */
 export abstract class CodexOutputValidationError extends TaskTrackerError {
   public abstract readonly stage: "schema" | "semantic";

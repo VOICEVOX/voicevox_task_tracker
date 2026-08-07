@@ -7,6 +7,7 @@ import { createUtcIsoDateTime } from "../src/domain/index.js";
 import { ITEM_IDENTIFIER_QUERY } from "../src/github/item-enumeration-queries.js";
 import {
   CHECK_CONTEXT_PAGE_QUERY,
+  CLOSING_ISSUE_PAGE_QUERY,
   COMMENT_PAGE_QUERY,
   createItemDetailQuery,
   createNativeDependencyPageQuery,
@@ -94,6 +95,10 @@ const fixedQueryCases = [
     query: REVIEW_REQUEST_PAGE_QUERY,
   },
   {
+    name: "closing対象Issue次ページ",
+    query: CLOSING_ISSUE_PAGE_QUERY,
+  },
+  {
     name: "サブIssue次ページ",
     query: SUB_ISSUE_PAGE_QUERY,
   },
@@ -134,12 +139,12 @@ const queryCases: readonly QueryCase[] = [
 ];
 
 describe("GitHub GraphQLクエリ", () => {
-  it("送信しうる24件を列挙する", () => {
-    expect(fixedQueryCases).toHaveLength(10);
+  it("送信しうる25件を列挙する", () => {
+    expect(fixedQueryCases).toHaveLength(11);
     expect(itemDetailQueryCases).toHaveLength(8);
     expect(timelineQueryCases).toHaveLength(4);
     expect(dependencyQueryCases).toHaveLength(2);
-    expect(queryCases).toHaveLength(24);
+    expect(queryCases).toHaveLength(25);
   });
 
   it.each(queryCases)("$nameを公式schemaで検証できる", ({ query }) => {

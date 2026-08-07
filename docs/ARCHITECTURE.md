@@ -18,7 +18,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | `src/eval`        | golden fixtureの解析と期待値比較                                                         | 判定、graph、公開DTO、通知の各pure処理                   |
 | `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                        | `src/cli`と全実処理モジュール                            |
 | `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                       | 上記の全モジュール                                       |
-| `web`             | 公開DTOの検証、重要度を含む一覧と詳細、項目ごとの依存グラフ、検索、deep link             | `src/pages`のDTO契約                                     |
+| `web`             | 公開DTOの検証、重要度とAI利用状況を含む一覧と詳細、項目ごとの依存グラフ、検索、deep link | `src/pages`のDTO契約                                     |
 
 `src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
@@ -64,10 +64,10 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 2. `tracker-state` branchのsnapshotと通知ledgerを同じrevisionから読み取ります。
 3. GitHub Appのinstallation tokenを発行し、期限前に更新できる読み取り専用clientを作ります。
 4. Organizationのrepository metadataを全ページ取得し、run中に不変な公開allowlistを作ります。
-5. 設定したteamを解決し、allowlist内repositoryのopen IssueとPull Requestを列挙して詳細を収集します。収集した詳細から関係先を抽出し、まだ取得していないOrganization内の関係先を識別子指定で個別列挙して収集結果へ統合します。追加した詳細から関係先を再び抽出し、対象がなくなるまで同じrun内で繰り返します。native relationは設定した深度まで、参照は追跡根から1 hopだけ辿ります。
+5. 設定したteamを解決し、allowlist内repositoryのopen IssueとPull Requestを列挙して詳細を収集します。前回の`aiAnalysis.status`が`failed`か`deferred`の項目は、GitHub側の変化にかかわらず詳細を収集します。収集した詳細から関係先を抽出し、まだ取得していないOrganization内の関係先を識別子指定で個別列挙して収集結果へ統合します。追加した詳細から関係先を再び抽出し、対象がなくなるまで同じrun内で繰り返します。native relationは設定した深度まで、参照は追跡根から1 hopだけ辿ります。
 6. GitHubイベントをsource ID付きに正規化し、追跡対象と関係候補を選びます。Pull Request作成前のcommitは作成時刻を下限としてpushイベント化し、項目作成前のイベントを作りません。
 7. IssueとPull Requestの状態と責務を決定論的に判定します。
-8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。
+8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
 9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
 11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出してDiscord送信を実行します。完了時に実測時刻と送信結果を反映したrun reportとledgerを追加commitし、`tracking.startAt`が未確定なら同じcommitで確定します。
@@ -76,11 +76,15 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 `dry-run`は手順10まで実行し、state、Pages、Discordを変更せずに検証済みartifactとrun reportだけを書き出します。
 Codexの失敗は決定論的判定へ縮退できるため、完全性を満たす場合は`fallback`として後続処理を続けます。
 snapshotはAIの有効状態、利用可否、縮退状態をrun statusと別に保存します。
+`available`は検証済みのAI分析結果を1件以上利用できたことを表します。分析対象がなく失敗も延期もないrunも`available`です。
+`degraded`は失敗または延期が1件以上あることを表します。利用できた結果が1件もなければ`available`は`false`になります。
 PagesはこのAI状態を公開DTOへ変換し、run statusからAIの状態を推定しません。
 repository単位の収集は、再試行後も503で失敗し、同じrepositoryの前回値がある場合だけ前回値を`stale`として使います。
 この縮退はdiagnosticとstale件数を記録して後続処理を続け、run statusを変更しません。
 前回値がない503、503以外の例外、不完全な結果は`failure`となり、通常の後続stageを実行しません。
 反復を終えても端点を取得できなかった関係候補は追跡選定へ渡さず、除外した件数をdiagnosticへ記録します。
+GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。
+本文のclosing keywordだけから得た`implements`候補は推定のままです。
 
 `.github/workflows/daily.yml`は通常経路の`test-eval`、`collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた8 jobで構成されています。
 `collect-analyze`は`CODEX_AUTH_JSON`をrunnerの一時directoryへ配置し、配置直後の`auth.json`のsha256を指紋として保存します。
@@ -128,6 +132,10 @@ Issueの規則だけを変えた場合はIssueだけが再取得され、model�
 判定規則fingerprintを現在値で保存するのは、そのrunで実際に再判定した項目だけです。
 再判定していない項目に現在値を書くと、古い判定のまま最新規則で判定済みと記録され、以後再判定されなくなります。
 検査するのは前回snapshotに判定結果を持つ項目だけです。追跡対象外の列挙項目には引き継ぐ判定がないため、毎回の再取得を避けます。
+
+前回の`aiAnalysis.status`が`failed`か`deferred`の項目も、GitHub側の変化と判定規則fingerprintにかかわらず詳細取得の対象へ加えます。
+AI分析の失敗と延期はGitHub側を動かさないため、この扱いがなければ縮退した判定が固着します。
+terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行します。
 
 決定論的規則versionとprompt versionは手で更新する定数です。
 `tests/rules-version-hash.test.ts`が判定に関わるファイルの内容hashを記録しており、
@@ -228,6 +236,7 @@ call数、入力文字数、推定費用の上限を超えた候補を優先順�
 アプリケーション側のCodex認証providerは`auth.json`の存在だけを確認し、内容を読みません。
 GitHub App private key、installation token、Discord Webhook URL、`CODEX_AUTH_SYNC_TOKEN`は渡しません。
 Issue本文、コメント、ラベル、loginはID付きの信頼できない入力データとして渡し、命令として扱いません。
+`deterministicSignals`にはnative relation候補のIDを`nativeBlockedBy`、`nativeBlocking`、`nativeParent`、`nativeSubIssues`へ分けて渡します。
 
 Codexのtimeout、rate limit、不正JSON、一時的なprocess起動失敗、signal終了は`ai.execution.maxAttempts`まで再試行します。
 待機時間は`operations.retry`の初期待機時間と最大待機時間を使い、指数backoffとjitterを適用します。
@@ -236,6 +245,7 @@ Discordはtransport例外とHTTP 429、503だけを同じ設定で再試行し�
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
+`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v5`です。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch
@@ -243,13 +253,27 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 `main`にはsource、設定、schema、prompt、Web UI、テスト、文書を置きます。
 日次stateはorphan branchの`tracker-state`へcanonical JSONとして保存し、外部databaseは使いません。
 
-| 既定パス                            | 内容                                                                  |
-| ----------------------------------- | --------------------------------------------------------------------- |
-| `state/snapshot.json`               | AI状態とtracking.startAtの確定状態を含む最新snapshot                  |
-| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                    |
-| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                        |
-| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                          |
-| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断 |
+| 既定パス                            | 内容                                                                               |
+| ----------------------------------- | ---------------------------------------------------------------------------------- |
+| `state/snapshot.json`               | AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 6の最新snapshot |
+| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                 |
+| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                     |
+| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                       |
+| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断              |
+
+追跡項目の`aiAnalysis.status`は次の利用状況を表します。
+
+| status         | 意味                                               |
+| -------------- | -------------------------------------------------- |
+| `used`         | 検証済みのAI分析結果を利用した                     |
+| `failed`       | AI分析の実行または出力検証に失敗した               |
+| `deferred`     | run予算によりAI分析を延期した                      |
+| `not_required` | 決定論的判定だけで確定し、AI分析を必要としなかった |
+| `disabled`     | 設定でAI分析が無効だった                           |
+| `not_recorded` | 項目単位のAI利用状況が記録されていない             |
+
+`used`のcache keyはsnapshotだけへ保存します。
+Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しません。
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、追加cache、通知候補選別後のledgerを通常stateの最初のGit commitへまとめます。
 通知予約はrun開始時刻から24時間だけ有効です。

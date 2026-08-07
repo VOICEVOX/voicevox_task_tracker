@@ -151,9 +151,10 @@ const SNAPSHOT_SCHEMA_VERSION_2 = "2";
 const SNAPSHOT_SCHEMA_VERSION_3 = "3";
 const SNAPSHOT_SCHEMA_VERSION_4 = "4";
 const SNAPSHOT_SCHEMA_VERSION_5 = "5";
+const SNAPSHOT_SCHEMA_VERSION_6 = "6";
 
-type StateSnapshotVersion5 = Readonly<{
-  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_5;
+type StateSnapshotVersion6 = Readonly<{
+  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_6;
   generatedAt: UtcIsoDateTime;
   trackingStartAt: TrackingStartAtState;
   ai: SnapshotAiState;
@@ -167,8 +168,8 @@ type StateSnapshotVersion5 = Readonly<{
 
 type StateSnapshotVersionParser = (value: unknown) => StateSnapshot;
 
-/** tracker-stateへ保存するschema version 5のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion5;
+/** tracker-stateへ保存するschema version 6のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion6;
 
 const snapshotSchemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
@@ -227,6 +228,25 @@ const snapshotVersion4MigrationSchema = z.looseObject({
 });
 
 type StateSnapshotVersion4 = z.output<typeof snapshotVersion4MigrationSchema>;
+const snapshotVersion5AiAnalysisSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_used"),
+  }),
+  z.strictObject({
+    status: z.literal("used"),
+    cacheKey: snapshotVersion1HashSchema,
+  }),
+]);
+const snapshotVersion5MigrationSchema = z.looseObject({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_5),
+  items: z.array(
+    z.looseObject({
+      aiAnalysis: snapshotVersion5AiAnalysisSchema,
+    }),
+  ),
+});
+
+type StateSnapshotVersion5 = z.output<typeof snapshotVersion5MigrationSchema>;
 const ajv = new Ajv2020({
   allErrors: true,
   coerceTypes: false,
@@ -243,7 +263,7 @@ ajv.addFormat("date-time", {
     return !Number.isNaN(Date.parse(value));
   },
 });
-const validateSnapshotVersion5Schema = ajv.compile<StateSnapshotVersion5>(snapshotSchema);
+const validateSnapshotVersion6Schema = ajv.compile<StateSnapshotVersion6>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -717,15 +737,44 @@ function migrateStateSnapshotVersion4(snapshot: StateSnapshotVersion4): StateSna
 }
 
 function parseStateSnapshotVersion5(value: unknown): StateSnapshotVersion5 {
-  if (!validateSnapshotVersion5Schema(value)) {
-    const issueCount = validateSnapshotVersion5Schema.errors?.length ?? 1;
+  const result = snapshotVersion5MigrationSchema.safeParse(value);
+  if (!result.success) {
+    throw new StateSnapshotSchemaError(result.error.issues.length);
+  }
+  return result.data;
+}
+
+function migrateStateSnapshotVersion5(snapshot: StateSnapshotVersion5): StateSnapshot {
+  return migrateStateSnapshotVersion6(
+    parseStateSnapshotVersion6({
+      ...snapshot,
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION_6,
+      items: snapshot.items.map((item) => ({
+        ...item,
+        aiAnalysis:
+          item.aiAnalysis.status === "used"
+            ? {
+                status: "used",
+                cacheKey: item.aiAnalysis.cacheKey,
+              }
+            : {
+                status: "not_recorded",
+              },
+      })),
+    }),
+  );
+}
+
+function parseStateSnapshotVersion6(value: unknown): StateSnapshotVersion6 {
+  if (!validateSnapshotVersion6Schema(value)) {
+    const issueCount = validateSnapshotVersion6Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
   assertSnapshotSemantics(value);
   return value;
 }
 
-function migrateStateSnapshotVersion5(snapshot: StateSnapshotVersion5): StateSnapshot {
+function migrateStateSnapshotVersion6(snapshot: StateSnapshotVersion6): StateSnapshot {
   return normalizeSnapshot(snapshot);
 }
 
@@ -757,6 +806,10 @@ const stateSnapshotVersionParsers: ReadonlyMap<string, StateSnapshotVersionParse
     SNAPSHOT_SCHEMA_VERSION_5,
     createStateSnapshotVersionParser(parseStateSnapshotVersion5, migrateStateSnapshotVersion5),
   ],
+  [
+    SNAPSHOT_SCHEMA_VERSION_6,
+    createStateSnapshotVersionParser(parseStateSnapshotVersion6, migrateStateSnapshotVersion6),
+  ],
 ]);
 
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
@@ -775,7 +828,7 @@ function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return migrateStateSnapshotVersion5(parseStateSnapshotVersion5(value));
+  return migrateStateSnapshotVersion6(parseStateSnapshotVersion6(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */

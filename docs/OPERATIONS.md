@@ -20,7 +20,7 @@ GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は�
 `notify-operations`は収集、Pages関連、Discord通知のいずれかのjobが失敗したときだけ実行されます。
 `report-workflow`は先行jobの成否にかかわらず実行され、全job結果と収集metricをActions artifactへ保存します。
 
-Pagesでは概要ページのデータ観測時刻と、対応が必要な項目の件数を確認します。
+Pagesでは概要ページのデータ観測時刻、対応が必要な項目の件数、AI状態の注意を確認します。
 `tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
 ローカル実行のreportは`artifacts/run-reports/`へ出力されます。
 Actionsでは収集reportとworkflow全体のreportを、run IDと試行番号を含む別々のartifactへ保存します。
@@ -45,6 +45,10 @@ run reportの主な確認項目は次のとおりです。
 | `metrics.notificationCount`         | 送信結果をledgerへ記録した通知数                                              |
 | `metrics.scheduleDelayMilliseconds` | 予定起動時刻からCLI開始までの遅延                                             |
 | `metrics.durationMilliseconds`      | CLI開始からrun完了までの所要時間                                              |
+
+Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`へ違反件数が`validationIssueCount`として残ります。
+違反した検証ルールは先頭5件まで`validationIssue0Path`と`validationIssue0Code`の形式で残り、添字は0から始まります。
+違反の`message`は入力値を含みうるため残しません。
 
 `tracker-state`は自動更新専用です。
 人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴とcooldownの整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
@@ -181,6 +185,9 @@ botのreviewとcommentだけではbotへ責務を移しません。
 本当に作業を止めるIssue同士はGitHubのblocked byとblockingで接続します。
 親子関係はsub-issueを使います。
 native relationはauthoritativeであり、本文のplain linkやCodex推定より優先されます。
+Pull RequestがIssueを閉じる関係は、GitHubがclosing referenceとして認識する形で書きます。
+GitHubが認識したclosing referenceはauthoritativeな`implements`関係になります。
+GitHubが認識しない書き方は本文のclosing keywordとしてしか読めず、Codexの推定に頼る関係になります。
 
 blockerが完了したら対象Issueをcloseし、誤ったnative relationはGitHub上で解除します。
 単なる関連項目はnative dependencyにせず、本文かコメントで関連だけであることを明記します。
@@ -279,8 +286,10 @@ Actions上でCodexの認証エラーが起きた場合は、まず過去の`coll
 保存済みのCodex認証をrefreshできず、再実行でも回復しない場合だけローカルのCodexへログインし直します。
 [デプロイ手順](DEPLOYMENT.md)のコマンドで、新しい`auth.json`を`CODEX_AUTH_JSON`の初期値として登録します。
 
-`fallback`はCodexを利用できなかった項目を決定論的判定へ縮退した完全runです。
-PagesでAI unavailableと不確実性を確認し、原因を直して再実行します。
+`fallback`はAI分析に失敗または延期した項目を決定論的判定と利用可能な前回結果へ縮退した完全runです。
+概要ページのAI状態の注意から対象一覧を開き、`AI判定なし`のバッジと項目詳細の注記で対象を特定します。
+原因はrun reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から追います。
+対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。
 `failure`が`state_persistence`より前ならstateは更新されません。
 `pages`か`discord`で失敗した場合はstate commit後の可能性があるため、snapshotのrun IDとPagesの生成時刻を比較し、両者が同じrunか確認します。
 Pages deployに失敗した場合は最後に成功したPagesを基準にし、Discordを送信しません。

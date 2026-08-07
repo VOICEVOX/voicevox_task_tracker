@@ -1014,7 +1014,7 @@ function extractAllRelationCandidates(
           crossReferences: detail.inboundCrossReferences.map((reference) => ({
             sourceId: reference.eventSourceId,
             sourceItem: reference.sourceItem,
-            willCloseTarget: false,
+            willCloseTarget: reference.willCloseTarget,
           })),
           nativeDependencies:
             detail.type === "issue" && detail.nativeDependencies.availability === "available"
@@ -1024,6 +1024,7 @@ function extractAllRelationCandidates(
             detail.type === "issue" && detail.nativeHierarchy.availability === "available"
               ? detail.nativeHierarchy.relations
               : [],
+          nativeClosingIssues: detail.type === "pull_request" ? detail.nativeClosingIssues : [],
         },
         knownItems,
       }),
@@ -1413,12 +1414,15 @@ function collectTrackingCandidates(
     const item = enumeratedItemsByNodeId.get(selected.item.nodeId);
     assertNonNullable(item, `追跡対象の列挙値がありません。対象: ${selected.item.nodeId}`);
     const previousCollectionItem = previousCollectionItems.get(item.nodeId);
+    const previousTrackedItem = previousItems.get(item.nodeId);
     workByNodeId.set(
       item.nodeId,
       determineTrackedItemWork({
         state: item.state,
         analysisInputFingerprint: item.itemFingerprint,
         analysisRulesFingerprint: currentAnalysisRulesFingerprints[item.type],
+        previousAiAnalysisStatus:
+          previousTrackedItem == null ? "not_available" : previousTrackedItem.aiAnalysis.status,
         previousObservation:
           previousCollectionItem == null
             ? Object.freeze({ status: "not_available" })
@@ -1745,6 +1749,54 @@ function relationAssessmentOwnerNodeId(candidate: RelationCandidate): GraphNodeI
   }
 }
 
+function createNativeRelationSignals(
+  currentNodeId: GitHubNodeId,
+  candidates: readonly RelationCandidate[],
+): Readonly<{
+  nativeBlockedBy: readonly RelationCandidateId[];
+  nativeBlocking: readonly RelationCandidateId[];
+  nativeParent: readonly RelationCandidateId[];
+  nativeSubIssues: readonly RelationCandidateId[];
+}> {
+  const nativeBlockedBy: RelationCandidateId[] = [];
+  const nativeBlocking: RelationCandidateId[] = [];
+  const nativeParent: RelationCandidateId[] = [];
+  const nativeSubIssues: RelationCandidateId[] = [];
+  for (const candidate of candidates) {
+    if (candidate.provenance !== "native") {
+      continue;
+    }
+    switch (candidate.relation.type) {
+      case "blocks":
+        if (candidate.relation.blocked.nodeId === currentNodeId) {
+          nativeBlockedBy.push(candidate.id);
+        } else if (candidate.relation.blocker.nodeId === currentNodeId) {
+          nativeBlocking.push(candidate.id);
+        } else {
+          throw new TypeError(`native関係候補 ${candidate.id}に現在項目が含まれていません`);
+        }
+        break;
+      case "parent_of":
+        if (candidate.relation.subtask.nodeId === currentNodeId) {
+          nativeParent.push(candidate.id);
+        } else if (candidate.relation.parent.nodeId === currentNodeId) {
+          nativeSubIssues.push(candidate.id);
+        } else {
+          throw new TypeError(`native関係候補 ${candidate.id}に現在項目が含まれていません`);
+        }
+        break;
+      case "implements":
+        break;
+    }
+  }
+  return Object.freeze({
+    nativeBlockedBy: Object.freeze(nativeBlockedBy.sort()),
+    nativeBlocking: Object.freeze(nativeBlocking.sort()),
+    nativeParent: Object.freeze(nativeParent.sort()),
+    nativeSubIssues: Object.freeze(nativeSubIssues.sort()),
+  });
+}
+
 function latestUtcIsoDateTime(values: readonly UtcIsoDateTime[], context: string): UtcIsoDateTime {
   const firstValue = values[0];
   assertNonNullable(firstValue, `${context}の時刻がありません`);
@@ -1823,6 +1875,10 @@ function createCodexInput(
     (candidate) => candidate.id,
   );
   const mentionedCandidates = createMentionedWaitingOnCandidates(analysis.detail);
+  const nativeRelationSignals = createNativeRelationSignals(
+    analysis.item.nodeId,
+    relationCandidates,
+  );
   const waitingOnCandidates = new Map(
     analysis.decision.waitingOn.map((waitingOn) => [
       waitingOn.candidateId,
@@ -1988,6 +2044,7 @@ function createCodexInput(
       status: analysis.decision.status,
       waitingOn: analysis.decision.waitingOn,
       relationCandidateIds: relationCandidates.map((candidate) => candidate.id),
+      ...nativeRelationSignals,
       mentionedWaitingOnCandidates: mentionedCandidates,
       requiredCheckFailure:
         analysis.detail.type === "pull_request" &&
@@ -2215,6 +2272,7 @@ async function analyzeCodex(
           failure.reason,
           failure.errorType,
           failure.diagnostic,
+          failure.validationDiagnostic,
         ),
       ),
       ...run.deferred.map(
@@ -3041,15 +3099,38 @@ function trackedItemAiAnalysis(
   codexAnalysis: CodexAnalysis,
   nodeId: GitHubNodeId,
 ): TrackedItemAiAnalysis {
-  const result = codexAnalysis.run?.results.find((candidate) => candidate.candidateId === nodeId);
-  if (result == null) {
+  const run = codexAnalysis.run;
+  if (run == null) {
     return Object.freeze({
-      status: "not_used",
+      status: "disabled",
     });
   }
+  const result = run.results.find((candidate) => candidate.candidateId === nodeId);
+  if (result != null) {
+    return Object.freeze({
+      status: "used",
+      cacheKey: result.cacheKey,
+    });
+  }
+  const failure = run.failures.find((candidate) => candidate.candidateId === nodeId);
+  if (failure != null) {
+    return Object.freeze({
+      status: "failed",
+    });
+  }
+  const deferred = run.deferred.find((candidate) => candidate.candidateId === nodeId);
+  if (deferred != null) {
+    return Object.freeze({
+      status: "deferred",
+    });
+  }
+  const skipped = run.skipped.find((candidate) => candidate.candidateId === nodeId);
+  assertNonNullable(skipped, `Codex分析候補の分類がありません。対象: ${nodeId}`);
+  if (skipped.reason === "unchanged") {
+    throw new TypeError("未変更項目のCodex cache結果がありません");
+  }
   return Object.freeze({
-    status: "used",
-    cacheKey: result.cacheKey,
+    status: "not_required",
   });
 }
 
@@ -3980,7 +4061,7 @@ function snapshotAiState(config: Config, codexAnalysis: CodexAnalysis): Snapshot
   const run = codexAnalysis.run;
   assertNonNullable(run, "AIが有効ですがCodex分析結果がありません");
   const degraded = run.failures.length > 0 || run.deferred.length > 0;
-  if (run.failures.length === 0) {
+  if (run.results.length > 0 || !degraded) {
     return Object.freeze({
       enabled: true,
       available: true,
@@ -4128,7 +4209,7 @@ function validateRunCompleteness(
   const persistedAnalysisRulesFingerprintNodeIds = new Set<string>();
   const persistedDeterministicRulesVersionNodeIds = new Set<string>();
   const snapshot = createStateSnapshot({
-    schemaVersion: "5",
+    schemaVersion: "6",
     generatedAt: invocation.startedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, invocation),
     ai: snapshotAiState(configuration.config, codexAnalysis),
@@ -4651,13 +4732,15 @@ async function collectFreshRepositoryItemObservations(
 ): Promise<FreshRepositoryItemCollection> {
   const allowlist = createPublicRepositoryAllowlist([repository]);
   const currentNodeIds = new Set(enumeratedItems.map((item) => item.nodeId));
-  const previouslyAnalyzedItemNodeIds = new Set(
-    (previousSnapshot(state)?.items ?? []).map((item) => item.nodeId),
+  const previousAiAnalysisStatusesByNodeId = new Map(
+    (previousSnapshot(state)?.items ?? []).map(
+      (item) => [item.nodeId, item.aiAnalysis.status] as const,
+    ),
   );
   const plan = planIncrementalItemCollection({
     items: enumeratedItems,
     previous: previousItemCollection(state, repository),
-    previouslyAnalyzedItemNodeIds,
+    previousAiAnalysisStatusesByNodeId,
     currentAnalysisRulesFingerprints: createCurrentAnalysisRulesFingerprints(configuration.config),
     adjacentItemNodeIds: new Set(
       [...adjacentNodeIds].filter((nodeId) => currentNodeIds.has(nodeId)),
@@ -4687,7 +4770,7 @@ async function collectFreshRepositoryItemObservations(
       }
       return Object.freeze({
         item,
-        eventWindow: previouslyAnalyzedItemNodeIds.has(item.nodeId)
+        eventWindow: previousAiAnalysisStatusesByNodeId.has(item.nodeId)
           ? defaultEventWindow
           : fullHistoryEventWindow,
       });

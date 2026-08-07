@@ -122,6 +122,9 @@ const publicItemMilestoneSchema = z.strictObject({
   state: z.enum(["open", "closed"]),
   dueOn: dateTimeSchema.nullable(),
 });
+const publicItemAiAnalysisSchema = z.strictObject({
+  status: z.enum(["used", "failed", "deferred", "not_required", "disabled", "not_recorded"]),
+});
 const publicItemSummarySchema = z.strictObject({
   nodeId: identifierSchema,
   type: z.enum(["issue", "pull_request"]),
@@ -141,6 +144,7 @@ const publicItemSummarySchema = z.strictObject({
   severity: severitySchema,
   importance: publicImportanceSchema,
   priorityWeight: z.number(),
+  aiAnalysis: publicItemAiAnalysisSchema,
   confidence: z.number().min(0).max(1),
   githubUpdatedAt: dateTimeSchema,
   stallSince: dateTimeSchema,

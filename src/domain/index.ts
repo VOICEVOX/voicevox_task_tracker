@@ -122,6 +122,7 @@ export {
   determineDefaultDigestDecision,
   determineTerminalRetention,
   determineTrackedItemWork,
+  isRetryableTrackedItemAiAnalysisStatus,
   resolveTrackingStartAt,
   type CodexAnalysisWorkDecision,
   type ClassifyTrackingNotificationInput,

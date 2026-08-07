@@ -1,5 +1,6 @@
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
+import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
@@ -9,6 +10,7 @@ import {
   formatStallDuration,
   formatWaitingOn,
   formatWaitingOnCandidate,
+  isAiAnalysisDegraded,
   selectAttentionItems,
   selectPrimaryWaitingOnCandidate,
 } from "./model.js";
@@ -19,9 +21,11 @@ const OVERVIEW_NOTICE_CLASS_NAME =
   "notice m-0 rounded-md border-l-2 bg-surface-card px-3 py-2 text-sm leading-5 text-text-secondary";
 
 type OverviewPageProps = Readonly<{
+  aiDegradedItemsHref: string;
   createItemHref: (nodeId: string) => string;
   locale: string;
   now: Date;
+  onShowAiDegradedItems: () => void;
   onSelectItem: (nodeId: string) => void;
   summary: PublicSummaryDto;
 }>;
@@ -45,7 +49,47 @@ function hasAiStateNotice(ai: PublicSummaryDto["ai"]): boolean {
   return !ai.enabled || !ai.available || ai.degraded;
 }
 
-function AiStateNotice({ ai }: Readonly<{ ai: PublicSummaryDto["ai"] }>) {
+function AiDegradedItemsLink({
+  count,
+  href,
+  locale,
+  onShow,
+}: Readonly<{
+  count: number;
+  href: string;
+  locale: string;
+  onShow: () => void;
+}>) {
+  return (
+    <a
+      class="ai-degraded-items-link font-bold"
+      href={href}
+      onClick={(event) => {
+        if (!shouldHandleClientNavigation(event)) {
+          return;
+        }
+        event.preventDefault();
+        onShow();
+      }}
+    >
+      対象{count.toLocaleString(locale)}件を一覧で確認
+    </a>
+  );
+}
+
+function AiStateNotice({
+  ai,
+  degradedItemCount,
+  degradedItemsHref,
+  locale,
+  onShowDegradedItems,
+}: Readonly<{
+  ai: PublicSummaryDto["ai"];
+  degradedItemCount: number;
+  degradedItemsHref: string;
+  locale: string;
+  onShowDegradedItems: () => void;
+}>) {
   if (!ai.enabled) {
     return (
       <p
@@ -62,7 +106,13 @@ function AiStateNotice({ ai }: Readonly<{ ai: PublicSummaryDto["ai"] }>) {
         class={`${OVERVIEW_NOTICE_CLASS_NAME} notice-warning ai-state-notice border-state-warning-border`}
         role="status"
       >
-        AIを利用できなかったため、確定ルールと利用可能な前回結果で表示しています。
+        AIを利用できなかったため、確定ルールと利用可能な前回結果で表示しています。{" "}
+        <AiDegradedItemsLink
+          count={degradedItemCount}
+          href={degradedItemsHref}
+          locale={locale}
+          onShow={onShowDegradedItems}
+        />
       </p>
     );
   }
@@ -72,7 +122,13 @@ function AiStateNotice({ ai }: Readonly<{ ai: PublicSummaryDto["ai"] }>) {
         class={`${OVERVIEW_NOTICE_CLASS_NAME} notice-warning ai-state-notice border-state-warning-border`}
         role="status"
       >
-        AI分析の一部が縮退したため、確定ルールと利用可能な前回結果を併用しています。
+        AI分析の一部が縮退したため、確定ルールと利用可能な前回結果を併用しています。{" "}
+        <AiDegradedItemsLink
+          count={degradedItemCount}
+          href={degradedItemsHref}
+          locale={locale}
+          onShow={onShowDegradedItems}
+        />
       </p>
     );
   }
@@ -225,6 +281,9 @@ function AttentionQueue({
 /** 対応が必要な項目を表示する。 */
 export function OverviewPage(props: OverviewPageProps) {
   const attentionItems = selectAttentionItems(props.summary.items);
+  const aiDegradedItemCount = props.summary.items.filter((item) =>
+    isAiAnalysisDegraded(item.aiAnalysis.status),
+  ).length;
   const staleRepositories = props.summary.repositories.filter(
     (repository) => repository.freshness.status === "stale",
   );
@@ -234,7 +293,15 @@ export function OverviewPage(props: OverviewPageProps) {
     <>
       {statusNoticesVisible && (
         <div class="overview-notices grid gap-2">
-          {aiStateNoticeVisible && <AiStateNotice ai={props.summary.ai} />}
+          {aiStateNoticeVisible && (
+            <AiStateNotice
+              ai={props.summary.ai}
+              degradedItemCount={aiDegradedItemCount}
+              degradedItemsHref={props.aiDegradedItemsHref}
+              locale={props.locale}
+              onShowDegradedItems={props.onShowAiDegradedItems}
+            />
+          )}
           {staleRepositories.length > 0 && (
             <p
               class={`${OVERVIEW_NOTICE_CLASS_NAME} notice-warning repository-freshness-notice border-state-warning-border`}

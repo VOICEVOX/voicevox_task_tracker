@@ -92,6 +92,9 @@
         "level": "high"
       },
       "priorityWeight": 25,
+      "aiAnalysis": {
+        "status": "failed"
+      },
       "confidence": 1,
       "githubUpdatedAt": "2026-07-30T03:00:00.000Z",
       "stallSince": "2026-07-20T00:00:00.000Z",
@@ -150,6 +153,9 @@
         "level": "medium"
       },
       "priorityWeight": 12,
+      "aiAnalysis": {
+        "status": "deferred"
+      },
       "confidence": 1,
       "githubUpdatedAt": "2026-07-29T06:00:00.000Z",
       "stallSince": "2026-07-15T00:00:00.000Z",
@@ -208,6 +214,9 @@
         "level": "high"
       },
       "priorityWeight": 25,
+      "aiAnalysis": {
+        "status": "failed"
+      },
       "confidence": 0.95,
       "githubUpdatedAt": "2026-07-28T05:00:00.000Z",
       "stallSince": "2026-07-10T00:00:00.000Z",
@@ -269,6 +278,9 @@
         "level": "low"
       },
       "priorityWeight": 12,
+      "aiAnalysis": {
+        "status": "not_required"
+      },
       "confidence": 1,
       "githubUpdatedAt": "2026-07-25T02:00:00.000Z",
       "stallSince": "2026-07-01T00:00:00.000Z",
@@ -327,6 +339,9 @@
         "level": "high"
       },
       "priorityWeight": 25,
+      "aiAnalysis": {
+        "status": "deferred"
+      },
       "confidence": 0.9,
       "githubUpdatedAt": "2026-07-27T08:00:00.000Z",
       "stallSince": "2026-07-05T00:00:00.000Z",

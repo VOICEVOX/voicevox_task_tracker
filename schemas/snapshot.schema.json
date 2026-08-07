@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "5"
+      "const": "6"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -114,16 +114,6 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status"],
-          "properties": {
-            "status": {
-              "const": "not_used"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
           "required": ["status", "cacheKey"],
           "properties": {
             "status": {
@@ -131,6 +121,22 @@
             },
             "cacheKey": {
               "$ref": "#/$defs/fingerprint"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "enum": [
+                "failed",
+                "deferred",
+                "not_required",
+                "disabled",
+                "not_recorded"
+              ]
             }
           }
         }

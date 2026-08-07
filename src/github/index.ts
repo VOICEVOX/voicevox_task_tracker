@@ -59,6 +59,7 @@ export {
   type GitHubItemDetailCollection,
   type GitHubIssueComment,
   type GitHubMergeQueue,
+  type GitHubNativeClosingIssue,
   type GitHubNativeDependency,
   type GitHubNativeDependencyCollection,
   type GitHubNativeHierarchy,

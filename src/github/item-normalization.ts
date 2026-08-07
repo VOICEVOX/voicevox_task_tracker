@@ -540,6 +540,34 @@ function normalizeNativeDependencyEvents(
   );
 }
 
+function normalizeNativeClosingIssueEvents(
+  detail: Extract<GitHubItemDetail, { type: "pull_request" }>,
+  pullRequestCreatedAt: UtcIsoDateTime,
+): readonly NormalizedEvent[] {
+  return Object.freeze(
+    detail.nativeClosingIssues.map((relation) =>
+      Object.freeze({
+        kind: "relation",
+        sourceId: relation.sourceId,
+        itemNodeId: detail.nodeId,
+        occurredAt:
+          pullRequestCreatedAt > relation.relatedItem.createdAt
+            ? pullRequestCreatedAt
+            : relation.relatedItem.createdAt,
+        actor: GITHUB_SYSTEM_ACTOR,
+        relationType: "implements",
+        target: Object.freeze({
+          type: "node",
+          nodeId: relation.relatedItem.nodeId,
+        }),
+        action: "added",
+        provenance: "native",
+        direction: "from_item",
+      } satisfies NormalizedEvent),
+    ),
+  );
+}
+
 type GitHubNativeHierarchyTimelineEvent = Extract<
   GitHubTimelineEvent,
   {
@@ -746,6 +774,7 @@ function normalizeEvents(options: NormalizeGitHubEventsOptions): readonly Normal
     events.push(...normalizeNativeDependencyEvents(options.detail, options.item.createdAt));
     events.push(...normalizeNativeHierarchyEvents(options.detail, options.item.createdAt));
   } else {
+    events.push(...normalizeNativeClosingIssueEvents(options.detail, options.item.createdAt));
     for (const review of options.detail.reviews) {
       events.push(normalizeReviewEvent(options.detail.nodeId, review, options.isBot));
     }

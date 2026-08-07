@@ -10,6 +10,8 @@ import {
   buildRelationCandidateId,
   normalizeRelationCandidates,
   type CandidateBlocksRelation,
+  type CandidateImplementsRelation,
+  type ClosingKeywordRelationCandidate,
   type NativeRelationCandidate,
   type OrganizationRelationCandidateNode,
 } from "../src/graph/index.js";
@@ -98,5 +100,38 @@ describe("関係候補の正規化", () => {
     expect(() => normalizeRelationCandidates([candidate, conflictingCandidate])).toThrowError(
       `同じ候補ID ${candidate.id}に異なる関係が指定されています`,
     );
+  });
+
+  it("同じimplements関係のnative候補を本文由来候補より優先する", () => {
+    const implementation = createNode("PR_implementation", 1);
+    const target = createNode("I_target", 2);
+    const relation = Object.freeze({
+      type: "implements",
+      implementation,
+      target,
+    }) satisfies CandidateImplementsRelation;
+    const nativeCandidate = Object.freeze({
+      id: buildRelationCandidateId("native", relation),
+      authority: "authoritative",
+      provenance: "native",
+      relation,
+      sourceIds: Object.freeze([
+        buildSourceId("github_native_closing_issue", "PR_implementation:I_target"),
+      ] satisfies [SourceId, ...SourceId[]]),
+    }) satisfies NativeRelationCandidate;
+    const inferredCandidate = Object.freeze({
+      id: buildRelationCandidateId("closing_keyword", relation),
+      authority: "inferred",
+      provenance: "closing_keyword",
+      relation,
+      sourceIds: Object.freeze([buildSourceId("github_item_body", "PR_implementation")] satisfies [
+        SourceId,
+        ...SourceId[],
+      ]),
+    }) satisfies ClosingKeywordRelationCandidate;
+
+    expect(normalizeRelationCandidates([inferredCandidate, nativeCandidate])).toEqual([
+      nativeCandidate,
+    ]);
   });
 });

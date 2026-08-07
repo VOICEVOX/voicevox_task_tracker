@@ -1,6 +1,7 @@
 import {
   CodexNonZeroExitError,
   type CodexNonZeroExitDiagnostic,
+  type CodexOutputValidationDiagnostic,
   type CodexUnavailableReason,
 } from "../codex/index.js";
 import {
@@ -258,6 +259,18 @@ function appendCodexNonZeroExitDiagnostics(
   }
 }
 
+function appendCodexOutputValidationDiagnostics(
+  fields: DiagnosticField[],
+  diagnostic: CodexOutputValidationDiagnostic,
+): void {
+  fields.push({ key: "validationIssueCount", value: diagnostic.issueCount.toString() });
+  for (const [index, issue] of diagnostic.issues.entries()) {
+    const keyPrefix = `validationIssue${index.toString()}`;
+    fields.push({ key: `${keyPrefix}Path`, value: issue.path });
+    fields.push({ key: `${keyPrefix}Code`, value: issue.code });
+  }
+}
+
 function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): void {
   if (error instanceof CodexNonZeroExitError) {
     appendCodexNonZeroExitDiagnostics(fields, error);
@@ -332,6 +345,7 @@ export function safeCodexFallbackDiagnostic(
   reason: CodexUnavailableReason,
   errorType: string,
   diagnostic: CodexNonZeroExitDiagnostic | undefined,
+  validationDiagnostic: CodexOutputValidationDiagnostic | undefined,
 ): string {
   const fields: DiagnosticField[] = [
     { key: "item", value: item },
@@ -340,6 +354,9 @@ export function safeCodexFallbackDiagnostic(
   ];
   if (diagnostic != null) {
     appendCodexNonZeroExitDiagnostics(fields, diagnostic);
+  }
+  if (validationDiagnostic != null) {
+    appendCodexOutputValidationDiagnostics(fields, validationDiagnostic);
   }
   return formatDiagnostic(fields, undefined, "codex_fallback");
 }

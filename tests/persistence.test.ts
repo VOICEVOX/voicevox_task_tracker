@@ -183,7 +183,7 @@ function createRelations(edge: EdgeFixture): readonly unknown[] {
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "5",
+    schemaVersion: "6",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -274,7 +274,7 @@ function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
         reviewState: "not_applicable",
         checkState: "not_applicable",
         aiAnalysis: {
-          status: "not_used",
+          status: "disabled",
         },
         inputEvents: [],
         confidence: 1,
@@ -539,6 +539,12 @@ describe("state schema version", () => {
     const source = serializeCanonicalJson({
       ...snapshot,
       schemaVersion: "1",
+      items: snapshot.items.map((item) => ({
+        ...item,
+        aiAnalysis: {
+          status: "not_used",
+        },
+      })),
       collection: {
         repositories: [
           {
@@ -571,7 +577,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("5");
+    expect(migrated.schemaVersion).toBe("6");
     expect(migrated.repositories.map((repository) => repository.id)).toEqual([
       publicRepositoryId,
       "R_SECOND",
@@ -590,6 +596,9 @@ describe("state schema version", () => {
       score: 0,
       level: "low",
       factors: [],
+    });
+    expect(migrated.items[0]?.aiAnalysis).toEqual({
+      status: "not_recorded",
     });
   });
 
@@ -612,6 +621,12 @@ describe("state schema version", () => {
     const source = serializeCanonicalJson({
       ...snapshot,
       schemaVersion: "2",
+      items: snapshot.items.map((item) => ({
+        ...item,
+        aiAnalysis: {
+          status: "not_used",
+        },
+      })),
       collection: {
         repositories: [
           {
@@ -642,7 +657,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("5");
+    expect(migrated.schemaVersion).toBe("6");
     expect(migrated.collection.repositories[0]?.items[0]?.analysisRulesFingerprint).toEqual({
       status: "unavailable",
     });
@@ -680,12 +695,19 @@ describe("state schema version", () => {
     const source = serializeCanonicalJson({
       ...snapshot,
       schemaVersion: "3",
-      items: [version3Item],
+      items: [
+        {
+          ...version3Item,
+          aiAnalysis: {
+            status: "not_used",
+          },
+        },
+      ],
     });
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("5");
+    expect(migrated.schemaVersion).toBe("6");
     expect(migrated.items[0]?.milestone).toBeNull();
     expect(migrated.items[0]?.importance).toEqual({
       score: 0,
@@ -720,12 +742,19 @@ describe("state schema version", () => {
     const source = serializeCanonicalJson({
       ...snapshot,
       schemaVersion: "4",
-      items: [version4Item],
+      items: [
+        {
+          ...version4Item,
+          aiAnalysis: {
+            status: "not_used",
+          },
+        },
+      ],
     });
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("5");
+    expect(migrated.schemaVersion).toBe("6");
     expect(migrated.items[0]?.importance).toEqual({
       score: 0,
       level: "low",
@@ -733,6 +762,58 @@ describe("state schema version", () => {
     });
     expect(migrated.items[0]?.importanceAssessment).toEqual({
       status: "not_available",
+    });
+  });
+
+  it("version 5のAI利用状況を記録有無が分かる現行形式へmigrationする", () => {
+    const snapshot = createSnapshot({
+      runId: "run-schema-version-5",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "new_untriaged",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const cacheKey = hashCanonicalJson({ cache: itemNodeId });
+    const notUsedSource = serializeCanonicalJson({
+      ...snapshot,
+      schemaVersion: "5",
+      items: snapshot.items.map((item) => ({
+        ...item,
+        aiAnalysis: {
+          status: "not_used",
+        },
+      })),
+    });
+    const usedSource = serializeCanonicalJson({
+      ...snapshot,
+      schemaVersion: "5",
+      items: snapshot.items.map((item) => ({
+        ...item,
+        aiAnalysis: {
+          status: "used",
+          cacheKey,
+        },
+      })),
+    });
+
+    const migratedNotUsed = parseStateSnapshot(notUsedSource);
+    const migratedUsed = parseStateSnapshot(usedSource);
+
+    expect(migratedNotUsed.schemaVersion).toBe("6");
+    expect(migratedNotUsed.items[0]?.aiAnalysis).toEqual({
+      status: "not_recorded",
+    });
+    expect(migratedUsed.items[0]?.aiAnalysis).toEqual({
+      status: "used",
+      cacheKey,
     });
   });
 

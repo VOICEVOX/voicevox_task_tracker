@@ -12,6 +12,7 @@ type ItemType = PublicItemSummaryDto["type"];
 type Status = PublicItemSummaryDto["status"];
 type Severity = PublicItemSummaryDto["severity"];
 type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
+type AiAnalysisStatus = PublicItemSummaryDto["aiAnalysis"]["status"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 type WaitingOnReference = Pick<WaitingOnCandidate, "candidateId" | "kind" | "role">;
 type WaitingOnRole = WaitingOnCandidate["role"];
@@ -30,8 +31,11 @@ export type AttentionPriority = Readonly<{
 export type TableColumnKey =
   "repository" | "type" | "status" | "importance" | "waitingOn" | "stall";
 
+/** 一覧表で絞り込みの対象にする項目。 */
+export type TableFilterKey = TableColumnKey | "aiAnalysis";
+
 /** 一覧表で選択式の絞り込みにする列。 */
-export type TableSelectColumnKey = Exclude<TableColumnKey, "waitingOn">;
+export type TableSelectFilterKey = Exclude<TableFilterKey, "waitingOn">;
 
 /** 一覧表の並び順。 */
 export type TableSort = Readonly<{
@@ -40,7 +44,7 @@ export type TableSort = Readonly<{
 }>;
 
 /** 一覧表の列別絞り込み値。 */
-export type TableFilters = Readonly<Record<TableColumnKey, string>>;
+export type TableFilters = Readonly<Record<TableFilterKey, string>>;
 
 /** 一覧表の選択式絞り込みへ表示する選択肢。 */
 export type TableFilterOption = Readonly<{
@@ -50,7 +54,7 @@ export type TableFilterOption = Readonly<{
 
 /** 公開データから選べる一覧表の絞り込み値。 */
 export type TableFilterOptions = Readonly<
-  Record<TableSelectColumnKey, readonly TableFilterOption[]>
+  Record<TableSelectFilterKey, readonly TableFilterOption[]>
 >;
 
 /** 一覧表へ表示する項目の導出値。 */
@@ -158,6 +162,16 @@ const STALL_FILTER_DEFINITIONS = [
   },
 ] satisfies readonly StallFilterDefinition[];
 
+/** AI判定を利用できず縮退した項目を表す絞り込み値。 */
+export const AI_ANALYSIS_DEGRADED_FILTER_VALUE = "degraded";
+
+const AI_ANALYSIS_FILTER_OPTIONS = [
+  {
+    label: "AI判定を利用できず",
+    value: AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+  },
+] satisfies readonly TableFilterOption[];
+
 const SEVERITY_RANKS = {
   none: 0,
   watch: 1,
@@ -188,12 +202,29 @@ export function createEmptyTableFilters(): TableFilters {
     importance: "",
     waitingOn: "",
     stall: "",
+    aiAnalysis: "",
   };
 }
 
 /** 列が選択式の絞り込み対象かを返す。 */
-export function isTableSelectColumnKey(key: TableColumnKey): key is TableSelectColumnKey {
+export function isTableSelectFilterKey(key: TableFilterKey): key is TableSelectFilterKey {
   return key !== "waitingOn";
+}
+
+/** AI判定を利用できず縮退した状態かを返す。 */
+export function isAiAnalysisDegraded(status: AiAnalysisStatus): boolean {
+  switch (status) {
+    case "failed":
+    case "deferred":
+      return true;
+    case "used":
+    case "not_required":
+    case "disabled":
+    case "not_recorded":
+      return false;
+    default:
+      throw new UnreachableError(status);
+  }
 }
 
 function itemTypeLabel(type: ItemType): string {
@@ -246,6 +277,7 @@ export function createTableFilterOptions(summary: PublicSummaryDto): TableFilter
     status: createPresentTableFilterOptions(STATUS_LABELS, statusValues),
     importance: createPresentTableFilterOptions(IMPORTANCE_LEVEL_LABELS, importanceValues),
     stall: STALL_FILTER_DEFINITIONS.map(({ label, value }) => ({ label, value })),
+    aiAnalysis: AI_ANALYSIS_FILTER_OPTIONS,
   };
 }
 
@@ -914,7 +946,7 @@ export function searchItemNodeIds(
     .map((item) => item.nodeId);
 }
 
-function rowMatchesTableFilter(row: ItemTableRow, key: TableColumnKey, value: string): boolean {
+function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: string): boolean {
   switch (key) {
     case "repository":
       return row.repositoryText === value;
@@ -931,6 +963,11 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableColumnKey, value: st
       assertNonNullable(definition, `未対応の停滞時間の絞り込みです: ${value}`);
       return row.stallDurationMilliseconds >= definition.thresholdMilliseconds;
     }
+    case "aiAnalysis":
+      if (value !== AI_ANALYSIS_DEGRADED_FILTER_VALUE) {
+        throw new TypeError(`未対応のAI利用状況の絞り込みです: ${value}`);
+      }
+      return isAiAnalysisDegraded(row.item.aiAnalysis.status);
     default:
       throw new UnreachableError(key);
   }
@@ -978,7 +1015,8 @@ export function filterAndSortTableRows(
         key !== "status" &&
         key !== "importance" &&
         key !== "waitingOn" &&
-        key !== "stall"
+        key !== "stall" &&
+        key !== "aiAnalysis"
       ) {
         throw new TypeError(`未対応の表列です: ${key}`);
       }

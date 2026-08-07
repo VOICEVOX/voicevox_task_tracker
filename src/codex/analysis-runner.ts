@@ -15,7 +15,11 @@ import {
   type AiCacheStore,
 } from "./cache.js";
 import { hashCanonicalJson } from "./canonical-json.js";
-import { CodexOutputValidationError, type CodexNonZeroExitDiagnostic } from "./errors.js";
+import {
+  CodexOutputValidationError,
+  type CodexNonZeroExitDiagnostic,
+  type CodexOutputValidationDiagnostic,
+} from "./errors.js";
 import { type CodexAnalysisInput } from "./input.js";
 import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
@@ -53,6 +57,7 @@ export type AiAnalysisRunFailure = Readonly<{
   reason: CodexUnavailableReason;
   errorType: string;
   diagnostic?: CodexNonZeroExitDiagnostic;
+  validationDiagnostic?: CodexOutputValidationDiagnostic;
 }>;
 
 /** 1 runのAI分析、抑止、延期と予算使用量。 */
@@ -224,6 +229,9 @@ async function executeSelectedCandidates(
                 reason: attempt.reason,
                 errorType: attempt.errorType,
                 ...(attempt.diagnostic == null ? {} : { diagnostic: attempt.diagnostic }),
+                ...(attempt.validationDiagnostic == null
+                  ? {}
+                  : { validationDiagnostic: attempt.validationDiagnostic }),
               }),
             }),
           );

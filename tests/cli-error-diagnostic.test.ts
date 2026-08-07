@@ -68,6 +68,7 @@ describe("safeErrorDiagnostic", () => {
         exitCode: error.exitCode,
         apiError: error.apiError,
       },
+      undefined,
     );
 
     expect(diagnostic).toBe(
@@ -84,13 +85,46 @@ describe("safeErrorDiagnostic", () => {
 
   it("Codex APIエラー詳細がなくても終了コードだけを診断へ出す", () => {
     expect(
-      safeCodexFallbackDiagnostic("I_fixture", "execution_failed", "CodexNonZeroExitError", {
-        exitCode: 19,
-        apiError: undefined,
-      }),
+      safeCodexFallbackDiagnostic(
+        "I_fixture",
+        "execution_failed",
+        "CodexNonZeroExitError",
+        {
+          exitCode: 19,
+          apiError: undefined,
+        },
+        undefined,
+      ),
     ).toBe(
       "codex_fallback item=I_fixture reason=execution_failed errorType=CodexNonZeroExitError exitCode=19",
     );
+  });
+
+  it("Codex出力検証の診断へ件数とpathとcodeだけを出す", () => {
+    const diagnostic = safeCodexFallbackDiagnostic(
+      "I_fixture",
+      "semantic_validation_failed",
+      "CodexOutputSemanticValidationError",
+      undefined,
+      {
+        issueCount: 2,
+        issues: [
+          {
+            path: "/item/nodeId",
+            code: "item_node_id_mismatch",
+          },
+          {
+            path: "/evidence/0/sourceId",
+            code: "unknown_source_id",
+          },
+        ],
+      },
+    );
+
+    expect(diagnostic).toBe(
+      "codex_fallback item=I_fixture reason=semantic_validation_failed errorType=CodexOutputSemanticValidationError validationIssueCount=2 validationIssue0Path=/item/nodeId validationIssue0Code=item_node_id_mismatch validationIssue1Path=/evidence/0/sourceId validationIssue1Code=unknown_source_id",
+    );
+    expect(diagnostic.length).toBeLessThanOrEqual(1000);
   });
 
   it("causeを持たないエラーから発生位置を出す", () => {
