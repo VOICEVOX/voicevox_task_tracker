@@ -323,10 +323,10 @@ function ItemTable({
       label: "項目",
       renderCell: (row: ItemTableRow) => (
         <div class="grid min-w-0 gap-1.5">
-          <span class="item-list-meta text-xs leading-5 text-text-muted [overflow-wrap:anywhere]">
+          <span class="item-list-meta text-xs leading-5 text-text-muted wrap-anywhere">
             {row.item.displayReference}・{row.typeText}
           </span>
-          <span class="min-w-0 [overflow-wrap:anywhere]">
+          <span class="min-w-0 wrap-anywhere">
             <ItemTitleLink createItemHref={createItemHref} onSelectItem={onSelectItem} row={row} />
           </span>
           <span class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-normal">
@@ -353,7 +353,7 @@ function ItemTable({
     },
     {
       ariaSort: sort.key === "waitingOn" ? sort.direction : undefined,
-      cellClassName: "leading-6 [overflow-wrap:anywhere]",
+      cellClassName: "leading-6 wrap-anywhere",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "waitingOn",
@@ -400,7 +400,7 @@ function ItemTable({
 
   return (
     <PageSection
-      className="item-workspace"
+      className="item-workspace scroll-mt-4"
       description={`${filteredRows.length.toLocaleString(locale)}件を表示対象にしています。`}
       heading="全項目一覧"
       headingId="items-heading"
@@ -507,7 +507,7 @@ function ItemTable({
         renderCardHeading={(row) => (
           <div class="grid min-w-0 gap-2">
             <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
-              <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted [overflow-wrap:anywhere]">
+              <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted wrap-anywhere">
                 {row.item.displayReference}・{row.typeText}
               </p>
               {row.item.repositoryFreshness === "stale" && (
@@ -516,9 +516,9 @@ function ItemTable({
                 </Pill>
               )}
             </div>
-            <h3 class="item-title-with-importance m-0 flex min-w-0 items-start text-base leading-6 font-bold">
+            <h3 class="item-title-with-importance m-0 flex min-w-0 items-start gap-1.5 text-base leading-6 font-bold">
               <ImportanceBadge importance={row.item.importance} showLow={false} showScore={false} />
-              <span class="min-w-0 [overflow-wrap:anywhere]">
+              <span class="min-w-0 wrap-anywhere">
                 <ItemTitleLink
                   createItemHref={createItemHref}
                   onSelectItem={onSelectItem}

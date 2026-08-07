@@ -4,7 +4,12 @@ import { useEffect, useState } from "preact/hooks";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import type { GraphLayout, LayoutedGraphNode } from "./graph-layout.js";
-import { graphNodeKindLabel, type ItemGraphView, type GraphViewNode } from "./graph-model.js";
+import {
+  graphNodeKindLabel,
+  type GraphViewEdge,
+  type GraphViewNode,
+  type ItemGraphView,
+} from "./graph-model.js";
 import { ContentState } from "./layout.js";
 
 type GraphDiagramNavigation = Readonly<{
@@ -33,6 +38,55 @@ type LayoutState =
       status: "failed";
     }>;
 
+const GRAPH_NODE_FILL_CLASS_NAMES = {
+  external_reference: "fill-graph-node-external-reference-background",
+  issue: "fill-graph-node-issue-background",
+  pull_request: "fill-graph-node-pull-request-background",
+} satisfies Readonly<Record<GraphViewNode["kind"], string>>;
+
+const GRAPH_NODE_STROKE_CLASS_NAMES = {
+  external_reference: "stroke-graph-node-external-reference-border [stroke-dasharray:7_3]",
+  issue: "stroke-graph-node-issue-border",
+  pull_request: "stroke-graph-node-pull-request-border",
+} satisfies Readonly<Record<GraphViewNode["kind"], string>>;
+
+const GRAPH_EDGE_PATTERN_CLASS_NAMES = {
+  blocks: "",
+  duplicates: "[stroke-dasharray:14_4_3_4]",
+  implements: "[stroke-dasharray:4_4]",
+  parent_of: "[stroke-dasharray:12_4]",
+  related_to: "[stroke-dasharray:2_7]",
+} satisfies Readonly<Record<GraphViewEdge["type"], string>>;
+
+const GRAPH_NODE_TEXT_CLASS_NAME = "fill-text-primary [text-anchor:middle] pointer-events-none";
+const GRAPH_EDGE_TEXT_CLASS_NAME =
+  "fill-text-secondary stroke-surface-sunken [stroke-width:var(--stroke-width-graph-edge-label)] [paint-order:stroke] [text-anchor:middle] text-graph font-bold";
+
+function graphNodeShapeClassName(node: GraphViewNode, linked: boolean): string {
+  const strokeClassName = node.central
+    ? "stroke-graph-node-central-accent [stroke-width:var(--stroke-width-graph-node-emphasis)]"
+    : `${GRAPH_NODE_STROKE_CLASS_NAMES[node.kind]} [stroke-width:var(--stroke-width-graph-node)]`;
+  const linkedClassName = linked
+    ? "group-hover:stroke-graph-node-central-accent group-hover:[stroke-width:var(--stroke-width-graph-node-emphasis)] group-focus-visible:stroke-graph-node-central-accent group-focus-visible:[stroke-width:var(--stroke-width-graph-node-emphasis)]"
+    : "";
+  return `${GRAPH_NODE_FILL_CLASS_NAMES[node.kind]} ${strokeClassName} ${linkedClassName}`;
+}
+
+function graphEdgePathClassName(edge: GraphViewEdge): string {
+  const colorClassName = edge.authoritative
+    ? "stroke-graph-edge-authoritative"
+    : "stroke-graph-edge-inferred";
+  let widthClassName: string;
+  if (edge.authoritative) {
+    widthClassName = "[stroke-width:var(--stroke-width-graph-edge-authoritative)]";
+  } else if (edge.type === "related_to") {
+    widthClassName = "stroke-2";
+  } else {
+    widthClassName = "[stroke-width:var(--stroke-width-graph-edge)]";
+  }
+  return `fill-none ${colorClassName} ${widthClassName} ${GRAPH_EDGE_PATTERN_CLASS_NAMES[edge.type]}`;
+}
+
 function truncateGraphText(value: string, maximumLength: number): string {
   const characters = [...value];
   if (characters.length <= maximumLength) {
@@ -54,19 +108,28 @@ function nodeIcon(node: GraphViewNode): string {
   }
 }
 
-function nodeShape(nodeLayout: LayoutedGraphNode): VNode {
+function nodeShape(nodeLayout: LayoutedGraphNode, linked: boolean): VNode {
   const { node, x, y } = nodeLayout;
   const left = x - node.width / 2;
   const top = y - node.height / 2;
+  const className = graphNodeShapeClassName(node, linked);
   switch (node.kind) {
     case "issue":
       return (
-        <rect x={left} y={top} width={node.width} height={node.height} rx={node.height * 0.2} />
+        <rect
+          class={className}
+          x={left}
+          y={top}
+          width={node.width}
+          height={node.height}
+          rx={node.height * 0.2}
+        />
       );
     case "pull_request": {
       const corner = node.height * 0.22;
       return (
         <polygon
+          class={className}
           points={[
             `${left + corner},${top}`,
             `${left + node.width - corner},${top}`,
@@ -81,6 +144,7 @@ function nodeShape(nodeLayout: LayoutedGraphNode): VNode {
     case "external_reference":
       return (
         <polygon
+          class={className}
           points={[
             `${x},${top}`,
             `${left + node.width},${y}`,
@@ -111,6 +175,7 @@ function GraphSvgNode({
   nodeLayout: LayoutedGraphNode;
 }>) {
   const { node, x, y } = nodeLayout;
+  const linked = !node.central && (node.kind === "issue" || node.kind === "pull_request");
   const frontierLabel = node.frontier ? "、着手可能な項目" : "";
   const centralLabel = node.central ? "、中心項目" : "";
   const content = (
@@ -126,34 +191,54 @@ function GraphSvgNode({
       <title>
         {node.reference} {node.title}
       </title>
-      {nodeShape(nodeLayout)}
+      {nodeShape(nodeLayout, linked)}
       {node.central && (
-        <text class="graph-central-label" x={x} y={y - node.height / 2 - 8}>
+        <text
+          class={`graph-central-label ${GRAPH_NODE_TEXT_CLASS_NAME} fill-graph-node-central-accent text-graph-label font-extrabold`}
+          x={x}
+          y={y - node.height / 2 - 8}
+        >
           中心項目
         </text>
       )}
-      <text class="graph-node-icon" x={x} y={y - node.height * 0.25}>
+      <text
+        class={`graph-node-icon ${GRAPH_NODE_TEXT_CLASS_NAME} text-graph font-extrabold tracking-widest`}
+        x={x}
+        y={y - node.height * 0.25}
+      >
         {nodeIcon(node)}
       </text>
-      <text class="graph-node-reference" x={x} y={y - 2}>
+      <text
+        class={`graph-node-reference ${GRAPH_NODE_TEXT_CLASS_NAME} text-graph-label font-extrabold`}
+        x={x}
+        y={y - 2}
+      >
         {truncateGraphText(node.reference, 28)}
       </text>
-      <text class="graph-node-title" x={x} y={y + node.height * 0.2}>
+      <text
+        class={`graph-node-title ${GRAPH_NODE_TEXT_CLASS_NAME} text-graph`}
+        x={x}
+        y={y + node.height * 0.2}
+      >
         {truncateGraphText(node.title, 32)}
       </text>
       {node.frontier && (
-        <text class="graph-frontier-label" x={x} y={y + node.height * 0.39}>
+        <text
+          class={`graph-frontier-label ${GRAPH_NODE_TEXT_CLASS_NAME} fill-graph-frontier-text text-graph font-extrabold`}
+          x={x}
+          y={y + node.height * 0.39}
+        >
           ▶ 着手可能
         </text>
       )}
     </g>
   );
-  if (node.central || (node.kind !== "issue" && node.kind !== "pull_request")) {
+  if (!linked) {
     return content;
   }
   return (
     <a
-      class="graph-node-link"
+      class="graph-node-link group cursor-pointer"
       href={navigation.createItemHref(node.id)}
       aria-label={`${node.reference} ${node.title}の詳細ページへ`}
       onClick={(event) => {
@@ -183,9 +268,12 @@ function GraphSvg({
   title: string;
 }>) {
   return (
-    <div class="graph-viewport" data-layout-status="ready">
+    <div
+      class="graph-viewport max-h-200 overflow-auto rounded-xl border border-border-subtle bg-surface-sunken"
+      data-layout-status="ready"
+    >
       <svg
-        class="dependency-graph-svg"
+        class="dependency-graph-svg mx-auto block max-w-none bg-dependency-grid [background-size:2rem_2rem]"
         viewBox={`0 0 ${layout.width.toString()} ${layout.height.toString()}`}
         width={Math.max(layout.width, 760)}
         height={Math.max(layout.height, 360)}
@@ -205,7 +293,7 @@ function GraphSvg({
             markerHeight="7"
             orient="auto-start-reverse"
           >
-            <path d="M 0 0 L 10 5 L 0 10 z" />
+            <path class="fill-graph-edge-authoritative" d="M 0 0 L 10 5 L 0 10 z" />
           </marker>
         </defs>
         <g class="graph-edges">
@@ -219,8 +307,12 @@ function GraphSvg({
               data-edge-type={edge.type}
               data-authority={edge.authoritative ? "authoritative" : "inferred"}
             >
-              <path d={graphPath(points)} marker-end={`url(#${idPrefix}-arrow)`} />
-              <text x={labelPoint.x} y={labelPoint.y - 5}>
+              <path
+                class={graphEdgePathClassName(edge)}
+                d={graphPath(points)}
+                marker-end={`url(#${idPrefix}-arrow)`}
+              />
+              <text class={GRAPH_EDGE_TEXT_CLASS_NAME} x={labelPoint.x} y={labelPoint.y - 5}>
                 <tspan x={labelPoint.x}>{edge.typeLabel}</tspan>
                 <tspan x={labelPoint.x} dy="1.15em">
                   {edge.authorityLabel}
@@ -321,8 +413,8 @@ export function DependencyGraphDiagram({
   }
 
   return (
-    <div class="dependency-graph-diagram">
-      <p class="graph-node-size-description">
+    <div class="dependency-graph-diagram grid gap-3">
+      <p class="graph-node-size-description m-0 text-text-secondary">
         ノードの大きさは、停滞の長さと、その項目がブロックしている項目の広がりで決まります。
       </p>
       {graph}

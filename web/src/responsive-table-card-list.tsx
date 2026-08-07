@@ -50,13 +50,13 @@ function TableCell<Row>({
   column: ResponsiveTableColumn<Row>;
   row: Row;
 }>) {
-  const className = `border-b border-border-subtle p-3! text-left align-top ${column.cellClassName}`;
+  const className = `border-b border-border-subtle p-3 text-left align-top ${column.cellClassName}`;
   switch (column.cellKind) {
     case "data":
       return <td class={className}>{column.renderCell(row)}</td>;
     case "row_header":
       return (
-        <th class={`${className} font-semibold!`} scope="row">
+        <th class={`${className} font-semibold`} scope="row">
           {column.renderCell(row)}
         </th>
       );
@@ -82,7 +82,7 @@ export function ResponsiveTableCardList<Row>({
     <>
       <div class="items-table-region hidden min-w-0 md:block">
         <table class={`w-full table-fixed border-collapse ${tableClassName}`}>
-          <caption class="visually-hidden">{tableCaption}</caption>
+          <caption class="visually-hidden sr-only">{tableCaption}</caption>
           <colgroup>
             {columns.map((column) => (
               <col key={column.key} class={column.widthClassName} />
@@ -93,7 +93,7 @@ export function ResponsiveTableCardList<Row>({
               {columns.map((column) => (
                 <th
                   key={column.key}
-                  class={`border-b border-border-subtle bg-surface-sunken p-3! text-left align-middle text-sm font-bold text-text-secondary ${column.headerClassName}`}
+                  class={`border-b border-border-subtle bg-surface-sunken p-3 text-left align-middle text-sm font-bold text-text-secondary ${column.headerClassName}`}
                   scope="col"
                   aria-sort={column.ariaSort}
                 >
@@ -138,9 +138,7 @@ export function ResponsiveTableCardList<Row>({
                   {cardFields.map((field) => (
                     <div key={field.key} class={`min-w-0 ${field.className}`}>
                       <dt class="text-xs font-bold text-text-muted">{field.label}</dt>
-                      <dd
-                        class={`mt-1 mb-0 min-w-0 [overflow-wrap:anywhere] ${field.valueClassName}`}
-                      >
+                      <dd class={`mt-1 mb-0 min-w-0 wrap-anywhere ${field.valueClassName}`}>
                         {field.renderValue(row)}
                       </dd>
                     </div>

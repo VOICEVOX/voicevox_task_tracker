@@ -521,7 +521,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       </main>
       <footer class={`${SHELL_CONTAINER_CLASS} mt-auto pt-8 pb-12 text-sm text-text-muted`}>
         <p class="m-0">GitHubの公開情報を読み取り専用で整理しています。</p>
-        <small class="footer-run-id mt-1 block font-mono text-xs [overflow-wrap:anywhere]">
+        <small class="footer-run-id mt-1 block font-mono text-xs wrap-anywhere">
           Run {summary.runId}
         </small>
       </footer>
@@ -535,8 +535,10 @@ export function DataLoadFailure() {
     <main
       class={`load-failure ${SHELL_WIDTH_CLASS} mt-16 block max-w-2xl rounded-2xl border border-border-subtle bg-surface-card p-8`}
     >
-      <h1>データを表示できません</h1>
-      <p>公開データの読み込みまたは検証に失敗しました。時間を置いて再度確認してください。</p>
+      <h1 class="mt-0 mb-4 text-3xl font-bold">データを表示できません</h1>
+      <p class="m-0">
+        公開データの読み込みまたは検証に失敗しました。時間を置いて再度確認してください。
+      </p>
     </main>
   );
 }

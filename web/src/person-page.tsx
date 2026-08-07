@@ -141,12 +141,12 @@ export function PersonPage({
       label: "項目",
       renderCell: (row: ItemTableRow) => (
         <div class="grid min-w-0 gap-1.5">
-          <span class="item-list-meta text-xs leading-5 text-text-muted [overflow-wrap:anywhere]">
+          <span class="item-list-meta text-xs leading-5 text-text-muted wrap-anywhere">
             {row.item.displayReference}・{row.typeText}
           </span>
-          <span class="item-title-with-importance flex min-w-0 items-start [overflow-wrap:anywhere]">
+          <span class="item-title-with-importance flex min-w-0 items-start gap-1.5 wrap-anywhere">
             <ImportanceBadge importance={row.item.importance} showLow={false} showScore={false} />
-            <span class="min-w-0 [overflow-wrap:anywhere]">
+            <span class="min-w-0 wrap-anywhere">
               <ItemTitleLink
                 createItemHref={createItemHref}
                 onSelectItem={onSelectItem}
@@ -167,7 +167,7 @@ export function PersonPage({
     },
     {
       ariaSort: undefined,
-      cellClassName: "[overflow-wrap:anywhere]",
+      cellClassName: "wrap-anywhere",
       cellKind: "data",
       headerClassName: "",
       key: "status",
@@ -189,7 +189,7 @@ export function PersonPage({
     },
     {
       ariaSort: undefined,
-      cellClassName: "[overflow-wrap:anywhere]",
+      cellClassName: "wrap-anywhere",
       cellKind: "data",
       headerClassName: "",
       key: "reason",
@@ -288,7 +288,7 @@ export function PersonPage({
                   changeTeam(teamId, event.currentTarget.checked);
                 }}
               />
-              <span class="min-w-0 leading-5 [overflow-wrap:anywhere]">
+              <span class="min-w-0 leading-5 wrap-anywhere">
                 <strong>{teamId}</strong>
               </span>
             </label>
@@ -314,7 +314,7 @@ export function PersonPage({
           renderCardHeading={(row) => (
             <div class="grid min-w-0 gap-2">
               <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted [overflow-wrap:anywhere]">
+                <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted wrap-anywhere">
                   {row.item.displayReference}・{row.typeText}
                 </p>
                 {row.item.repositoryFreshness === "stale" && (
@@ -323,13 +323,13 @@ export function PersonPage({
                   </Pill>
                 )}
               </div>
-              <h3 class="item-title-with-importance m-0 flex min-w-0 items-start text-base leading-6 font-bold">
+              <h3 class="item-title-with-importance m-0 flex min-w-0 items-start gap-1.5 text-base leading-6 font-bold">
                 <ImportanceBadge
                   importance={row.item.importance}
                   showLow={false}
                   showScore={false}
                 />
-                <span class="min-w-0 [overflow-wrap:anywhere]">
+                <span class="min-w-0 wrap-anywhere">
                   <ItemTitleLink
                     createItemHref={createItemHref}
                     onSelectItem={onSelectItem}

@@ -146,7 +146,7 @@ export function ItemDetailsPage({
 
   return (
     <PageSection
-      className="item-workspace"
+      className="item-workspace scroll-mt-4"
       heading="項目詳細"
       headingId="item-details-page-heading"
     >

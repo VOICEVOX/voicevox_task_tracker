@@ -11,7 +11,11 @@ type SafeGitHubLinkProps = Readonly<{
 export function SafeGitHubLink({ children, href }: SafeGitHubLinkProps) {
   const result = validateGitHubUrl(href);
   if (!result.allowed) {
-    return <span class="unsafe-link">安全でないリンクを無効化しました</span>;
+    return (
+      <span class="unsafe-link font-bold text-state-danger-text">
+        安全でないリンクを無効化しました
+      </span>
+    );
   }
   return (
     <a href={result.url} target="_blank" rel="noopener noreferrer">

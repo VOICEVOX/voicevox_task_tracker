@@ -1,6 +1,7 @@
 import { type ComponentChildren, type JSX } from "preact";
 
 import { UnreachableError } from "../../src/util/index.js";
+import { appendClassName } from "./class-name.js";
 
 type PageSectionProps = Readonly<{
   children: ComponentChildren;
@@ -24,14 +25,7 @@ type ContentStateProps = Readonly<
 >;
 
 const PAGE_SECTION_CLASS =
-  "section-card min-w-0 rounded-2xl border border-border-subtle bg-surface-card p-[clamp(1rem,2.5vw,2rem)] shadow-[0_0.4rem_1.6rem_var(--color-shadow-card)] max-narrow:rounded-[0.65rem]";
-
-function appendClassName(baseClassName: string, className: string | undefined): string {
-  if (className == null) {
-    return baseClassName;
-  }
-  return `${baseClassName} ${className}`;
-}
+  "section-card min-w-0 rounded-2xl border border-border-subtle bg-surface-card p-[clamp(1rem,2.5vw,2rem)] shadow-card max-narrow:rounded-xl";
 
 /** カードと見出しを備えたページ内セクションを表示する。 */
 export function PageSection({
@@ -49,9 +43,7 @@ export function PageSection({
           <h2 id={headingId} class="m-0 text-section-title font-bold">
             {heading}
           </h2>
-          {description != null && (
-            <p class="mt-2 mb-0 max-w-[42rem] text-text-muted">{description}</p>
-          )}
+          {description != null && <p class="mt-2 mb-0 max-w-2xl text-text-muted">{description}</p>}
         </div>
         {headingAccessory}
       </div>

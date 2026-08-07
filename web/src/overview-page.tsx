@@ -162,7 +162,7 @@ function AttentionQueue({
                           showScore={false}
                         />
                       </span>
-                      <span class="min-w-0 [overflow-wrap:anywhere]">
+                      <span class="min-w-0 wrap-anywhere">
                         <ItemDetailsLink
                           href={createItemHref(item.nodeId)}
                           nodeId={item.nodeId}
@@ -181,7 +181,7 @@ function AttentionQueue({
                       <dt class="text-xs font-bold text-text-muted">主な待ち相手</dt>
                       <dd class="mt-0.5 mb-0 font-bold">
                         <span class="attention-waiting-on-summary flex min-w-0 items-baseline gap-2">
-                          <span class="attention-primary-waiting-on min-w-0 flex-1 text-base leading-snug [overflow-wrap:anywhere]">
+                          <span class="attention-primary-waiting-on min-w-0 flex-1 text-base leading-snug wrap-anywhere">
                             {primaryWaitingOnLabel}
                           </span>
                           {otherWaitingOnCount > 0 && (
@@ -239,7 +239,7 @@ export function OverviewPage(props: OverviewPageProps) {
               role="status"
             >
               次のリポジトリの情報を取得できなかったため、前回の値を表示しています。対象:{" "}
-              <span class="repository-freshness-targets font-bold [overflow-wrap:anywhere]">
+              <span class="repository-freshness-targets font-bold wrap-anywhere">
                 {formatStaleRepositoryNames(staleRepositories, props.locale)}
               </span>
             </p>

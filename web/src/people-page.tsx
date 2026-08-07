@@ -78,12 +78,12 @@ function WaitingSubjectName({
           onSelect={onSelectPerson}
         />
       ) : (
-        <span class="min-w-0 text-text-primary [overflow-wrap:anywhere]">{row.label}</span>
+        <span class="min-w-0 text-text-primary wrap-anywhere">{row.label}</span>
       )}
       {viewer && (
         <Pill className="viewer-person-badge" tone="neutral">
           <span aria-hidden="true">自分</span>
-          <span class="visually-hidden">自分のアカウントです</span>
+          <span class="visually-hidden sr-only">自分のアカウントです</span>
         </Pill>
       )}
     </span>

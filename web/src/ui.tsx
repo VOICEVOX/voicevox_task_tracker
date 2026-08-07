@@ -1,10 +1,12 @@
 import { type ButtonHTMLAttributes, type ComponentChildren } from "preact";
 
+import { appendClassName } from "./class-name.js";
+
 const ACTION_BUTTON_CLASS =
   "min-h-11 cursor-pointer rounded-md border border-action-border bg-action-background px-3 py-2 text-action-text enabled:hover:bg-action-background-hover disabled:cursor-not-allowed disabled:border-state-neutral-border disabled:bg-state-neutral-background disabled:text-state-neutral-text";
 
 const PILL_CLASS =
-  "inline-flex w-fit items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs leading-5 font-[750]";
+  "inline-flex w-fit items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs leading-5 font-bold";
 
 const PILL_TONE_CLASSES = {
   danger: "border-state-danger-border bg-state-danger-background text-state-danger-text",
@@ -32,13 +34,6 @@ type PillProps = Readonly<{
 
 export const FORM_CONTROL_CLASS_NAME =
   "min-h-11 min-w-0 rounded-md border border-border-strong bg-surface-card px-3 py-2 text-text-primary";
-
-function appendClassName(baseClassName: string, className: string | undefined): string {
-  if (className == null) {
-    return baseClassName;
-  }
-  return `${baseClassName} ${className}`;
-}
 
 /** 共通の操作ボタンを表示する。 */
 export function ActionButton({ children, className, ...attributes }: ActionButtonProps) {

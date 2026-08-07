@@ -233,7 +233,7 @@ function HistoryEvent({
       <p class="m-0 flex flex-wrap gap-2">
         <span>{before}</span>
         <span aria-hidden="true">→</span>
-        <span class="visually-hidden">から</span>
+        <span class="visually-hidden sr-only">から</span>
         <strong>{after}</strong>
       </p>
     </article>
@@ -387,7 +387,7 @@ function WaitingOnCandidateItem({
   return (
     <li class="min-w-0 border-l-2 border-border-default pl-3">
       <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <strong class="min-w-0 [overflow-wrap:anywhere]">
+        <strong class="min-w-0 wrap-anywhere">
           <WaitingOnCandidateReference
             candidate={candidate}
             createItemHref={createItemHref}
@@ -556,9 +556,9 @@ export function ItemDetailsContent({
     <article class="item-details-card grid min-w-0 gap-6" data-node-id={item.nodeId}>
       <div class="item-details-heading flex min-w-0 items-start justify-between gap-4 max-shell:flex-col">
         <div class="min-w-0">
-          <p class="item-reference">{item.displayReference}</p>
+          <p class="item-reference mt-1.5 mb-0 text-xs text-text-muted">{item.displayReference}</p>
           <h3
-            class="mt-1 mb-0 text-item-title font-bold [overflow-wrap:anywhere] focus:outline-[3px] focus:outline-offset-4 focus:outline-accent-focus-ring"
+            class="mt-1 mb-0 text-item-title font-bold wrap-anywhere focus:outline-2 focus:outline-offset-4 focus:outline-accent-focus-ring"
             ref={heading}
             tabIndex={-1}
           >
@@ -593,7 +593,7 @@ export function ItemDetailsContent({
         </div>
         <dl class="current-state-grid m-0 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4 gap-y-3 lg:col-span-2">
           <div class="min-w-0 border-l-2 border-border-default pl-3">
-            <dt class="text-xs font-[750] text-text-muted">
+            <dt class="text-xs font-bold text-text-muted">
               {decisionFieldLabel("現在の状態", presentation)}
             </dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
@@ -601,14 +601,14 @@ export function ItemDetailsContent({
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
-            <dt class="text-xs font-[750] text-text-muted">重要度</dt>
+            <dt class="text-xs font-bold text-text-muted">重要度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
               <ImportanceBadge importance={item.importance} showLow={true} showScore={true} />
               <span class="text-xs text-text-muted">項目自体の重要さ</span>
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
-            <dt class="text-xs font-[750] text-text-muted">停滞時間</dt>
+            <dt class="text-xs font-bold text-text-muted">停滞時間</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
               <strong class="text-lg text-text-primary">
                 <time
@@ -624,7 +624,7 @@ export function ItemDetailsContent({
           {item.type === "pull_request" && (
             <>
               <div class="min-w-0 border-l-2 border-border-default pl-3">
-                <dt class="text-xs font-[750] text-text-muted">レビュー</dt>
+                <dt class="text-xs font-bold text-text-muted">レビュー</dt>
                 <dd class="mt-1 mb-0 grid justify-items-start gap-1">
                   <strong class="text-lg text-text-primary">
                     {REVIEW_STATE_LABELS[details.reviewState]}
@@ -632,7 +632,7 @@ export function ItemDetailsContent({
                 </dd>
               </div>
               <div class="min-w-0 border-l-2 border-border-default pl-3">
-                <dt class="text-xs font-[750] text-text-muted">チェック</dt>
+                <dt class="text-xs font-bold text-text-muted">チェック</dt>
                 <dd class="mt-1 mb-0 grid justify-items-start gap-1">
                   <strong class="text-lg text-text-primary">
                     {CHECK_STATE_LABELS[details.checkState]}
@@ -683,7 +683,7 @@ export function ItemDetailsContent({
             <ul class="blocker-list m-0 grid list-none gap-2 p-0">
               {additionalBlockerNodeIds.map((nodeId) => (
                 <li
-                  class="min-w-0 border-l-4 border-state-danger-border py-1 pl-3 [overflow-wrap:anywhere]"
+                  class="min-w-0 border-l-4 border-state-danger-border py-1 pl-3 wrap-anywhere"
                   key={nodeId}
                 >
                   <RelatedItemReference
