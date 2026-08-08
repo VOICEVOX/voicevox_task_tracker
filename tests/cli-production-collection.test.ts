@@ -7,6 +7,7 @@ import {
   createProductionCliApplication,
   type ProductionRuntimeAdapters,
 } from "../src/cli/production-runtime.js";
+import { createWorkflowArtifact } from "../src/cli/workflow-artifact.js";
 import {
   createAiCacheEntry,
   hashCanonicalJson,
@@ -810,6 +811,7 @@ function createCollectionHarness(
     repositories: readonly RepositoryFixture[];
     config: Config;
     executeCodexAnalysis?: (input: CodexAnalysisInput) => Promise<unknown>;
+    collectionCompletedAt?: string;
   }>,
 ) {
   const stateAdapter = new MemoryStateBranchAdapter();
@@ -906,6 +908,9 @@ function createCollectionHarness(
         }
         return detail;
       });
+      if (options.collectionCompletedAt != null) {
+        currentTime = options.collectionCompletedAt;
+      }
       return Promise.resolve(
         Object.freeze({
           capabilities: Object.freeze({
@@ -1038,6 +1043,18 @@ function createCollectionHarness(
       currentTime = at;
       return application.run([
         "dry-run",
+        "--config",
+        "unused-config.yml",
+        "--artifact",
+        "unused-artifact.json",
+        "--report",
+        "unused-report.json",
+      ]);
+    },
+    runCollectAnalyze: (at: string) => {
+      currentTime = at;
+      return application.run([
+        "collect-analyze",
         "--config",
         "unused-config.yml",
         "--artifact",
@@ -1199,6 +1216,86 @@ function createHistoryInputDetail(
 }
 
 describe("本番収集の接続", () => {
+  it("収集中に追加されたコメントを収集完了時刻で評価する", async () => {
+    const runStartedAt = "2026-08-01T09:50:26.872Z";
+    const commentOccurredAt = createUtcIsoDateTime("2026-08-01T09:54:30.000Z");
+    const collectionCompletedAt = "2026-08-01T09:58:30.000Z";
+    const repository = createRepository(
+      "R_comment_during_collection",
+      "comment-during-collection",
+      runStartedAt,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const item = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint: "comment-during-collection",
+      updatedAt: commentOccurredAt,
+      observedAt: createUtcIsoDateTime(runStartedAt),
+      state: Object.freeze({ state: "open" }),
+    });
+    const comment = createDuplicateComments(item, commentOccurredAt)[0];
+    if (comment == null) {
+      throw new TypeError("収集中コメントfixtureを作成できません");
+    }
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item,
+          body: "本文",
+          observedAt: createUtcIsoDateTime(runStartedAt),
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        comments: Object.freeze([comment]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      collectionCompletedAt,
+    });
+
+    const result = await harness.runCollectAnalyze(runStartedAt);
+    const artifactSource = harness.artifacts.at(-1);
+    if (artifactSource == null) {
+      throw new TypeError("収集中コメントfixtureのworkflow artifactがありません");
+    }
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("収集中コメントfixtureがcollect-analyze結果ではありません");
+    }
+    const artifact = createWorkflowArtifact(artifactSource);
+    const snapshot = artifact.snapshot;
+    const trackedItem = snapshot.items.find((candidate) => candidate.nodeId === item.nodeId);
+    const collectionItem = requireCollectionItem(snapshot, item.nodeId);
+    const inputEvent = artifact.historyInputEvents.find(
+      (event) => event.sourceId === comment.sourceId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.result.report.startedAt).toBe(runStartedAt);
+    expect(snapshot.generatedAt).toBe(collectionCompletedAt);
+    expect(snapshot.repositories[0]?.observedAt).toBe(collectionCompletedAt);
+    expect(snapshot.collection.repositories[0]?.successfulAt).toBe(collectionCompletedAt);
+    expect(collectionItem.observedAt).toBe(collectionCompletedAt);
+    expect(trackedItem).toMatchObject({
+      observedAt: collectionCompletedAt,
+      lastHumanActivityAt: commentOccurredAt,
+    });
+    expect(inputEvent).toMatchObject({
+      sourceId: comment.sourceId,
+      kind: "comment",
+      occurredAt: commentOccurredAt,
+    });
+  });
+
   it("Pull Request作成前のcommittedDateをincremental_collection相当の経路で処理できる", async () => {
     const repository = createRepository(
       "R_pre_creation_commit",
@@ -4638,7 +4735,7 @@ describe("本番収集の接続", () => {
     expect(harness.detailCalls).toHaveLength(0);
     expect(snapshot.items[0]).toMatchObject({
       nodeId: item.nodeId,
-      observedAt: FIRST_RUN_AT,
+      observedAt: THIRD_RUN_AT,
       severity: "watch",
     });
     expect(harness.artifacts.at(-1)).toMatchObject({

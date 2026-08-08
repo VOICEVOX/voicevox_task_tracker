@@ -295,6 +295,7 @@ type RepositoryInventory = Readonly<{
 }>;
 
 type CollectedItems = Readonly<{
+  evaluatedAt: UtcIsoDateTime;
   enumeratedItems: readonly EnumeratedGitHubItem[];
   details: readonly GitHubItemDetail[];
   observedItems: readonly FreshObservedGitHubItem[];
@@ -330,6 +331,7 @@ type FreshRuntimeCollectionAggregate = Readonly<{
 
 type RelationExpandedRuntimeCollection = FreshRuntimeCollectionAggregate &
   Readonly<{
+    evaluatedAt: UtcIsoDateTime;
     relationCandidates: readonly RelationCandidate[];
     droppedRelationCandidateCount: number;
     tracking: RuntimeTrackingSelection;
@@ -491,6 +493,14 @@ export type ProductionRuntimeAdapters = Readonly<{
   ) => Promise<PublicDataWriteResult>;
   sendDiscord: typeof sendDiscordDigest;
 }>;
+
+function currentRuntimeTime(adapters: ProductionRuntimeAdapters): UtcIsoDateTime {
+  const now = adapters.now();
+  if (!Number.isFinite(now.getTime())) {
+    throw new TypeError("production runtimeのnowは有効な日時を返してください");
+  }
+  return createUtcIsoDateTime(now.toISOString());
+}
 
 function requireEnvironmentValue(
   environment: Readonly<NodeJS.ProcessEnv>,
@@ -854,7 +864,7 @@ function enumeratedRetentionItemState(item: EnumeratedGitHubItem): RetentionItem
 }
 
 function shouldKeepPreviousTrackedItemInActiveDataset(
-  invocation: DailyRunInvocation,
+  evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
   item: Readonly<{ nodeId: GitHubNodeId; url: string }>,
   itemState: RetentionItemState,
@@ -864,7 +874,7 @@ function shouldKeepPreviousTrackedItemInActiveDataset(
   }
   const retention = determineTerminalRetention({
     item: itemState,
-    evaluatedAt: invocation.startedAt,
+    evaluatedAt,
     retentionDays: configuration.config.tracking.retentionDaysAfterTerminal,
   });
   return retention.dataset === "active";
@@ -885,7 +895,14 @@ function previousTrackedItemIdentifiers(
     const collectionItem = collectionItemsByNodeId.get(item.nodeId);
     assertNonNullable(collectionItem, `既存追跡項目の収集stateがありません。対象: ${item.nodeId}`);
     const itemState = previousCollectionRetentionItemState(collectionItem);
-    if (shouldKeepPreviousTrackedItemInActiveDataset(invocation, configuration, item, itemState)) {
+    if (
+      shouldKeepPreviousTrackedItemInActiveDataset(
+        invocation.startedAt,
+        configuration,
+        item,
+        itemState,
+      )
+    ) {
       identifiers.push(item.nodeId);
     }
   }
@@ -1168,7 +1185,7 @@ function resolveProductionTrackingStartAt(
 function trackingSelectionStartAt(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
-  invocation: DailyRunInvocation,
+  evaluatedAt: UtcIsoDateTime,
 ): UtcIsoDateTime {
   const resolved = resolveProductionTrackingStartAt(
     configuration.config,
@@ -1178,11 +1195,11 @@ function trackingSelectionStartAt(
       }),
     Object.freeze({
       outcome: "incomplete",
-      finishedAt: invocation.startedAt,
+      finishedAt: evaluatedAt,
     }),
   );
   if (resolved.status === "not_fixed") {
-    return invocation.startedAt;
+    return evaluatedAt;
   }
   return resolved.value;
 }
@@ -1190,7 +1207,7 @@ function trackingSelectionStartAt(
 function pendingSnapshotTrackingStartAt(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
-  invocation: DailyRunInvocation,
+  evaluatedAt: UtcIsoDateTime,
 ): TrackingStartAtState {
   return resolveProductionTrackingStartAt(
     configuration.config,
@@ -1200,7 +1217,7 @@ function pendingSnapshotTrackingStartAt(
       }),
     Object.freeze({
       outcome: "incomplete",
-      finishedAt: invocation.startedAt,
+      finishedAt: evaluatedAt,
     }),
   );
 }
@@ -1243,6 +1260,7 @@ function enumeratedAuthorType(
 
 function collectTrackingCandidates(
   invocation: DailyRunInvocation,
+  evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   inventory: RepositoryInventory,
@@ -1274,7 +1292,7 @@ function collectTrackingCandidates(
               })
           : determineMeaningfulProgress({
               createdAt: observed.createdAt,
-              evaluatedAt: invocation.startedAt,
+              evaluatedAt,
               events: observed.events,
               dependencyResolutions: [],
               naturalLanguageAssessments: [],
@@ -1370,8 +1388,8 @@ function collectTrackingCandidates(
     ...externalCandidates,
   ]);
   const result = selectTrackingItems({
-    startAt: trackingSelectionStartAt(configuration, state, invocation),
-    evaluatedAt: invocation.startedAt,
+    startAt: trackingSelectionStartAt(configuration, state, evaluatedAt),
+    evaluatedAt,
     candidates,
     connections: createTrackingConnections(relationCandidates),
     previouslyTrackedNodeIds: Object.freeze(
@@ -1382,7 +1400,7 @@ function collectTrackingCandidates(
         }
         const itemState = enumeratedRetentionItemState(currentItem);
         return shouldKeepPreviousTrackedItemInActiveDataset(
-          invocation,
+          evaluatedAt,
           configuration,
           currentItem,
           itemState,
@@ -1636,7 +1654,6 @@ function createMentionedWaitingOnCandidates(
 }
 
 function applyDeterministicAnalysis(
-  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   inventory: RepositoryInventory,
@@ -1669,7 +1686,7 @@ function applyDeterministicAnalysis(
         },
         teams,
         confidenceThresholds: configuration.config.ai.confidence,
-        evaluatedAt: invocation.startedAt,
+        evaluatedAt: collection.evaluatedAt,
       });
       items.push(
         Object.freeze({
@@ -1693,7 +1710,7 @@ function applyDeterministicAnalysis(
         labelEffects,
         teams,
         confidenceThresholds: configuration.config.ai.confidence,
-        evaluatedAt: invocation.startedAt,
+        evaluatedAt: collection.evaluatedAt,
       });
       items.push(
         Object.freeze({
@@ -1865,7 +1882,7 @@ function requireCodexSourceOccurredAt(
 }
 
 function createCodexInput(
-  invocation: DailyRunInvocation,
+  evaluatedAt: UtcIsoDateTime,
   analysis: DeterministicItemAnalysis,
 ): CodexAnalysisInput {
   const relationCandidates = deduplicateByStableId(
@@ -2019,7 +2036,7 @@ function createCodexInput(
   }
   return createCodexAnalysisInput({
     schemaVersion: "1",
-    now: invocation.startedAt,
+    now: evaluatedAt,
     item: {
       nodeId: analysis.item.nodeId,
       url: analysis.item.url,
@@ -2060,7 +2077,6 @@ function createCodexInput(
 }
 
 function createAiCandidates(
-  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   collection: CollectedItems,
@@ -2091,7 +2107,7 @@ function createAiCandidates(
     ),
   );
   const candidates = deterministicAnalysis.items.map((analysis) => {
-    const input = createCodexInput(invocation, analysis);
+    const input = createCodexInput(collection.evaluatedAt, analysis);
     inputByNodeId.set(analysis.item.nodeId, input);
     const naturalLanguageProgressCandidate = analysis.item.events.some(
       (event) => event.kind === "comment" && event.actor.type === "human",
@@ -2175,7 +2191,6 @@ function createAiCandidates(
 
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
-  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   collection: CollectedItems,
@@ -2192,7 +2207,6 @@ async function analyzeCodex(
 > {
   const identity = createAiAnalysisRunIdentity(configuration.config);
   const prepared = createAiCandidates(
-    invocation,
     configuration,
     state,
     collection,
@@ -2252,7 +2266,7 @@ async function analyzeCodex(
             },
           },
         ),
-      executedAt: () => invocation.startedAt,
+      executedAt: () => collection.evaluatedAt,
     },
   );
   const fallback = run.failures.length > 0 || run.deferred.length > 0;
@@ -2664,7 +2678,7 @@ function graphBlockers(
 }
 
 function reassessDeterministicAnalysis(
-  invocation: DailyRunInvocation,
+  evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   inventory: RepositoryInventory,
@@ -2697,7 +2711,7 @@ function reassessDeterministicAnalysis(
         ),
         teams,
         confidenceThresholds: configuration.config.ai.confidence,
-        evaluatedAt: invocation.startedAt,
+        evaluatedAt,
       }),
     });
   }
@@ -2714,7 +2728,7 @@ function reassessDeterministicAnalysis(
         labelEffects: resolveLabelEffects(repositoryFullName(repository), analysis.item.labels),
         teams,
         confidenceThresholds: configuration.config.ai.confidence,
-        evaluatedAt: invocation.startedAt,
+        evaluatedAt,
       }),
     });
   }
@@ -3135,7 +3149,6 @@ function trackedItemAiAnalysis(
 }
 
 function createTrackedItem(
-  invocation: DailyRunInvocation,
   analysis: DeterministicItemAnalysis,
   decision: ReducedCodexDecision,
   primaryWaitingOn: PrimaryWaitingOn,
@@ -3164,7 +3177,7 @@ function createTrackedItem(
     statusSince: staleness.statusSince,
     ownerSince: staleness.ownerSince,
     stallSince: staleness.stallSince,
-    observedAt: invocation.startedAt,
+    observedAt: analysis.item.observedAt,
     labels: analysis.item.labels,
     assignees: analysis.item.assignees,
     reviewState:
@@ -3251,7 +3264,7 @@ function trackedItemStaleness(staleness: StalenessResult): TrackedItemStaleness 
 }
 
 function recalculateTrackedItemStaleness(
-  invocation: DailyRunInvocation,
+  evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
   inventory: RepositoryInventory,
   item: SnapshotTrackedItem,
@@ -3259,7 +3272,7 @@ function recalculateTrackedItemStaleness(
 ): TrackedItemStaleness {
   const repository = findRepository(inventory, item.repositoryId);
   const recalculated = recalculateStalenessSeverity({
-    evaluatedAt: invocation.startedAt,
+    evaluatedAt,
     stallSince: item.stallSince,
     confidence: item.confidence,
     minimumAiConfidence: configuration.config.ai.confidence.medium,
@@ -3297,8 +3310,21 @@ function retainedItemNotificationClass(
   return item.notificationClass;
 }
 
+function retainedItemObservedAt(
+  collection: CollectedItems,
+  item: SnapshotTrackedItem,
+): UtcIsoDateTime {
+  const repositoryResult = collection.repositoryResults.find(
+    (result) => result.repository.id === item.repositoryId,
+  );
+  assertNonNullable(
+    repositoryResult,
+    `保持項目のrepository収集結果がありません。対象: ${item.nodeId}`,
+  );
+  return repositoryResult.freshness === "fresh" ? collection.evaluatedAt : item.observedAt;
+}
+
 function reduceAnalysisPass(
-  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   inventory: RepositoryInventory,
@@ -3319,7 +3345,7 @@ function reduceAnalysisPass(
   for (const originalAnalysis of deterministicAnalysis.items) {
     const output = codexOutputForAnalysis(originalAnalysis, codexAnalysis);
     const analysis = reassessDeterministicAnalysis(
-      invocation,
+      collection.evaluatedAt,
       configuration,
       state,
       inventory,
@@ -3339,7 +3365,7 @@ function reduceAnalysisPass(
     const repository = findRepository(inventory, analysis.item.repositoryId);
     const staleness = calculateStaleness({
       createdAt: analysis.item.createdAt,
-      evaluatedAt: invocation.startedAt,
+      evaluatedAt: collection.evaluatedAt,
       currentDecision: {
         status: decision.status,
         waitingOn: decision.waitingOn,
@@ -3396,9 +3422,7 @@ function reduceAnalysisPass(
       }),
     );
     stalenessByNodeId.set(analysis.item.nodeId, trackedItemStaleness(staleness));
-    items.push(
-      createTrackedItem(invocation, analysis, decision, primaryWaitingOn, staleness, codexAnalysis),
-    );
+    items.push(createTrackedItem(analysis, decision, primaryWaitingOn, staleness, codexAnalysis));
   }
   const currentNodeIds = new Set(items.map((item) => item.nodeId));
   const currentRepositoryIds = new Set<string>(
@@ -3414,12 +3438,13 @@ function reduceAnalysisPass(
         Object.freeze({
           ...previousItem,
           notificationClass: retainedItemNotificationClass(collection, previousItem),
+          observedAt: retainedItemObservedAt(collection, previousItem),
         }),
       );
       stalenessByNodeId.set(
         previousItem.nodeId,
         recalculateTrackedItemStaleness(
-          invocation,
+          collection.evaluatedAt,
           configuration,
           inventory,
           previousItem,
@@ -3441,7 +3466,6 @@ function reduceAnalysisPass(
 }
 
 function reduceAllAnalyses(
-  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   inventory: RepositoryInventory,
@@ -3450,7 +3474,6 @@ function reduceAllAnalyses(
   codexAnalysis: CodexAnalysis,
 ): ReducedAnalysis {
   const initialReduction = reduceAnalysisPass(
-    invocation,
     configuration,
     state,
     inventory,
@@ -3460,14 +3483,12 @@ function reduceAllAnalyses(
     undefined,
   );
   const provisionalGraph = reconcileCurrentGraph(
-    invocation,
     configuration,
     state,
     collection,
     initialReduction,
   );
   return reduceAnalysisPass(
-    invocation,
     configuration,
     state,
     inventory,
@@ -3619,7 +3640,6 @@ function createEarliestRelationSourceOccurredAtById(
 }
 
 function reconcileCurrentGraph(
-  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   collection: CollectedItems,
@@ -3646,7 +3666,7 @@ function reconcileCurrentGraph(
     ),
     sourceOccurredAtById: createEarliestRelationSourceOccurredAtById(collection.observedItems),
     minimumInferredConfidence: configuration.config.ai.confidence.medium,
-    reconciledAt: invocation.startedAt,
+    reconciledAt: collection.evaluatedAt,
   });
   const reconciledEdges = preserveStaleGraphEdges(
     collection,
@@ -4093,7 +4113,7 @@ function stateHistoryInputEvents(reduction: ReducedAnalysis): readonly StateHist
 }
 
 function createTrackedItemWithImportance(
-  invocation: DailyRunInvocation,
+  evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
   inventory: RepositoryInventory,
   graph: GraphResult,
@@ -4114,7 +4134,7 @@ function createTrackedItemWithImportance(
     priorityWeight: labelEffects.priorityWeight,
     downstreamImpact,
     milestone: item.milestone,
-    evaluatedAt: invocation.startedAt,
+    evaluatedAt,
     weights: configuration.config.importance.weights,
     dueSoonDays: configuration.config.importance.dueSoonDays,
     levels: configuration.config.importance.levels,
@@ -4151,7 +4171,7 @@ function validateRunCompleteness(
   const items = reduction.items.map((item) => {
     const currentAnalysis = currentAnalysisByNodeId.get(item.nodeId);
     return createTrackedItemWithImportance(
-      invocation,
+      collection.evaluatedAt,
       configuration,
       inventory,
       graph,
@@ -4210,8 +4230,8 @@ function validateRunCompleteness(
   const persistedDeterministicRulesVersionNodeIds = new Set<string>();
   const snapshot = createStateSnapshot({
     schemaVersion: "6",
-    generatedAt: invocation.startedAt,
-    trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, invocation),
+    generatedAt: collection.evaluatedAt,
+    trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
     collection: {
       repositories: collection.collectionRepositories.map((repository) => ({
@@ -4287,7 +4307,7 @@ function validateRunCompleteness(
     }
   }
   const notificationSelection = selectDiscordNotifications({
-    evaluatedAt: invocation.startedAt,
+    evaluatedAt: collection.evaluatedAt,
     items: notificationItems(configuration, state, inventory, collection, reduction, graph),
     ledger: notificationLedgerEntries(state, reduction.items),
     settings: {
@@ -5099,8 +5119,10 @@ async function collectRelationExpandedItems(
       discoveredRelationCandidates,
       collectedCandidateNodeIds,
     );
+    const evaluatedAt = currentRuntimeTime(adapters);
     const tracking = collectTrackingCandidates(
       invocation,
+      evaluatedAt,
       configuration,
       state,
       repositoryInventory,
@@ -5122,6 +5144,7 @@ async function collectRelationExpandedItems(
     if (nextRequests.length === 0) {
       return Object.freeze({
         ...aggregate,
+        evaluatedAt,
         relationCandidates: completedRelationCandidates.candidates,
         droppedRelationCandidateCount: completedRelationCandidates.droppedCount,
         tracking,
@@ -5178,6 +5201,68 @@ async function collectRelationExpandedItems(
       repositoryResultsById,
     );
   }
+}
+
+function finalizeEnumeratedItemObservation(
+  item: EnumeratedGitHubItem,
+  evaluatedAt: UtcIsoDateTime,
+): EnumeratedGitHubItem {
+  return Object.freeze({
+    ...item,
+    observedAt: evaluatedAt,
+  } satisfies EnumeratedGitHubItem);
+}
+
+function finalizeItemDetailObservation(
+  detail: GitHubItemDetail,
+  evaluatedAt: UtcIsoDateTime,
+): GitHubItemDetail {
+  return Object.freeze({
+    ...detail,
+    observedAt: evaluatedAt,
+  } satisfies GitHubItemDetail);
+}
+
+function finalizeObservedItemObservation(
+  item: FreshObservedGitHubItem,
+  evaluatedAt: UtcIsoDateTime,
+): FreshObservedGitHubItem {
+  return Object.freeze({
+    ...item,
+    observedAt: evaluatedAt,
+  } satisfies FreshObservedGitHubItem);
+}
+
+function finalizeSnapshotCollectionRepository(
+  repository: SnapshotCollectionRepository,
+  evaluatedAt: UtcIsoDateTime,
+): SnapshotCollectionRepository {
+  return Object.freeze({
+    ...repository,
+    successfulAt: evaluatedAt,
+    items: Object.freeze(
+      repository.items.map((item) =>
+        Object.freeze({
+          ...item,
+          observedAt: evaluatedAt,
+        } satisfies SnapshotCollectionItem),
+      ),
+    ),
+  });
+}
+
+function finalizeRepositoryCollectionResult(
+  result: RepositoryCollectionResult<SnapshotCollectionRepository>,
+  evaluatedAt: UtcIsoDateTime,
+): RepositoryCollectionResult<SnapshotCollectionRepository> {
+  if (result.freshness === "fresh") {
+    return Object.freeze({
+      ...result,
+      value: finalizeSnapshotCollectionRepository(result.value, evaluatedAt),
+      observedAt: evaluatedAt,
+    });
+  }
+  return result;
 }
 
 async function collectProductionItems(
@@ -5247,7 +5332,7 @@ async function collectProductionItems(
     repositoryInventory.allowlist.repositories.map((repository) => {
       const result = repositoryResultsById.get(repository.id);
       assertNonNullable(result, `repository収集結果がありません。対象: ${repository.id}`);
-      return result;
+      return finalizeRepositoryCollectionResult(result, expanded.evaluatedAt);
     }),
   );
 
@@ -5282,9 +5367,19 @@ async function collectProductionItems(
     );
   }
 
-  const uniqueEnumeratedItems = expanded.enumeratedItems;
-  const uniqueDetails = expanded.details;
-  const uniqueObservedItems = expanded.observedItems;
+  const uniqueEnumeratedItems = Object.freeze(
+    expanded.enumeratedItems.map((item) =>
+      finalizeEnumeratedItemObservation(item, expanded.evaluatedAt),
+    ),
+  );
+  const uniqueDetails = Object.freeze(
+    expanded.details.map((detail) => finalizeItemDetailObservation(detail, expanded.evaluatedAt)),
+  );
+  const uniqueObservedItems = Object.freeze(
+    expanded.observedItems.map((item) =>
+      finalizeObservedItemObservation(item, expanded.evaluatedAt),
+    ),
+  );
   const changedNodeIds = expanded.changedNodeIds;
   const relationCandidates = expanded.relationCandidates;
   const tracking = expanded.tracking;
@@ -5311,6 +5406,7 @@ async function collectProductionItems(
   }
   return Object.freeze({
     value: Object.freeze({
+      evaluatedAt: expanded.evaluatedAt,
       enumeratedItems: uniqueEnumeratedItems,
       details: uniqueDetails,
       observedItems: uniqueObservedItems,
@@ -5413,32 +5509,13 @@ function createDailyDependencies(
         diagnostics: collection.diagnostics,
       });
     },
-    applyDeterministicRules: ({
-      invocation,
-      configuration,
-      state,
-      repositoryInventory,
-      collection,
-    }) =>
+    applyDeterministicRules: ({ configuration, state, repositoryInventory, collection }) =>
       Promise.resolve(
-        applyDeterministicAnalysis(
-          invocation,
-          configuration,
-          state,
-          repositoryInventory,
-          collection,
-        ),
+        applyDeterministicAnalysis(configuration, state, repositoryInventory, collection),
       ),
-    analyzeWithCodex: async ({
-      invocation,
-      configuration,
-      state,
-      collection,
-      deterministicAnalysis,
-    }) => {
+    analyzeWithCodex: async ({ configuration, state, collection, deterministicAnalysis }) => {
       const analysis = await analyzeCodex(
         adapters,
-        invocation,
         configuration,
         state,
         collection,
@@ -5453,16 +5530,9 @@ function createDailyDependencies(
         diagnostics: analysis.diagnostics,
       });
     },
-    reduceAnalysis: ({
-      invocation,
-      configuration,
-      collection,
-      deterministicAnalysis,
-      codexAnalysis,
-    }) =>
+    reduceAnalysis: ({ configuration, collection, deterministicAnalysis, codexAnalysis }) =>
       Promise.resolve(
         reduceAllAnalyses(
-          invocation,
           configuration,
           deterministicAnalysis.state,
           deterministicAnalysis.inventory,
@@ -5471,8 +5541,8 @@ function createDailyDependencies(
           codexAnalysis,
         ),
       ),
-    reconcileGraph: ({ invocation, configuration, state, collection, reduction }) => {
-      const graph = reconcileCurrentGraph(invocation, configuration, state, collection, reduction);
+    reconcileGraph: ({ configuration, state, collection, reduction }) => {
+      const graph = reconcileCurrentGraph(configuration, state, collection, reduction);
       return Promise.resolve(
         Object.freeze({
           value: graph,

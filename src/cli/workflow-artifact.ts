@@ -314,8 +314,8 @@ export function createWorkflowRunMetadata(value: unknown): WorkflowRunMetadata {
 }
 
 function assertRunConsistency(snapshot: StateSnapshot, metadata: WorkflowRunMetadata): void {
-  if (snapshot.generatedAt !== metadata.startedAt) {
-    throw new TypeError("workflow artifactのsnapshotとrun metadataが一致しません");
+  if (snapshot.generatedAt < metadata.startedAt) {
+    throw new TypeError("workflow artifactのsnapshot生成時刻はrun開始時刻以後にしてください");
   }
   if (
     snapshot.repositories.length !== metadata.metrics.repositoryCount ||

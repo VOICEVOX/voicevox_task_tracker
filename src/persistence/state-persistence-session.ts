@@ -149,7 +149,8 @@ function assertRunConsistency(snapshot: StateSnapshot, report: StateRunReport): 
   if (
     snapshot.run.id !== report.runId ||
     snapshot.run.status !== report.status ||
-    snapshot.generatedAt !== report.startedAt
+    snapshot.generatedAt < report.startedAt ||
+    snapshot.generatedAt > report.finishedAt
   ) {
     throw new StateSnapshotSemanticError("snapshotとrun reportのrun情報が一致しません");
   }
