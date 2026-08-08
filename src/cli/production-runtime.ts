@@ -1774,6 +1774,13 @@ function relationAssessmentOwnerNodeId(candidate: RelationCandidate): GraphNodeI
   }
 }
 
+function selectRelationAssessmentCandidates(
+  nodeId: GraphNodeId,
+  candidates: readonly RelationCandidate[],
+): readonly RelationCandidate[] {
+  return candidates.filter((candidate) => relationAssessmentOwnerNodeId(candidate) === nodeId);
+}
+
 function createNativeRelationSignals(
   currentNodeId: GitHubNodeId,
   candidates: readonly RelationCandidate[],
@@ -1894,9 +1901,7 @@ function createCodexInput(
   analysis: DeterministicItemAnalysis,
 ): CodexAnalysisInput {
   const relationCandidates = deduplicateByStableId(
-    analysis.relationCandidates.filter(
-      (candidate) => relationAssessmentOwnerNodeId(candidate) === analysis.item.nodeId,
-    ),
+    selectRelationAssessmentCandidates(analysis.item.nodeId, analysis.relationCandidates),
     (candidate) => candidate.id,
   );
   const mentionedCandidates = createMentionedWaitingOnCandidates(analysis.detail);
@@ -2120,7 +2125,11 @@ function createAiCandidates(
     const input = createCodexInput(collection.evaluatedAt, analysis);
     inputByNodeId.set(analysis.item.nodeId, input);
     const naturalLanguageProgressCandidate = analysis.item.events.some(
-      (event) => event.kind === "comment" && event.actor.type === "human",
+      (event) => event.kind === "comment" && event.actor.type === "human" && !event.bodyEmpty,
+    );
+    const relationAssessmentCandidates = selectRelationAssessmentCandidates(
+      analysis.item.nodeId,
+      analysis.relationCandidates,
     );
     const previousIncomingBlockers = new Set<string>(
       previousRelations
@@ -2165,7 +2174,7 @@ function createAiCandidates(
         deterministicResolution:
           analysis.decision.determination === "determined" &&
           !naturalLanguageProgressCandidate &&
-          analysis.relationCandidates.every((candidate) => candidate.authority === "authoritative")
+          relationAssessmentCandidates.every((candidate) => candidate.authority === "authoritative")
             ? "high_confidence"
             : "ambiguous",
         input,

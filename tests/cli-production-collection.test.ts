@@ -1639,6 +1639,201 @@ describe("本番収集の接続", () => {
     });
   });
 
+  it("空本文のhuman commentだけを持つ確定項目はAI分析を省く", async () => {
+    const repository = createRepository(
+      "R_ai_empty_human_comment",
+      "ai-empty-human-comment",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const item = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint: "ai-empty-human-comment-v1",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: observedAt,
+      }),
+    });
+    const commenterNodeId = createGitHubNodeId("U_empty_commenter");
+    const commentNodeId = createGitHubNodeId("IC_empty_human_comment");
+    const emptyComment = Object.freeze({
+      sourceId: buildSourceId("github_issue_comment", commentNodeId),
+      nodeId: commentNodeId,
+      sequence: 0,
+      author: Object.freeze({
+        status: "identified",
+        account: Object.freeze({
+          sourceId: buildSourceId("github_account", commenterNodeId),
+          nodeId: commenterNodeId,
+          login: "empty-commenter",
+          apiType: "User",
+        }),
+      }),
+      body: "",
+      createdAt: observedAt,
+      updatedAt: observedAt,
+      url: `${item.url}#issuecomment-${commentNodeId}`,
+    } satisfies GitHubIssueComment);
+    fixture.individualItems.set(item.url, item);
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item,
+          body: "本文",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        comments: Object.freeze([emptyComment]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [item.url],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+    const trackedItem = snapshot.items.find((candidate) => candidate.nodeId === item.nodeId);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexExecutionCount()).toBe(0);
+    expect(trackedItem?.aiAnalysis).toEqual({
+      status: "not_required",
+    });
+  });
+
+  it("担当外のinferred関係候補はAI分析要否に影響せず担当するinferred候補はAI分析する", async () => {
+    const repository = createRepository(
+      "R_ai_relation_assessment_owner",
+      "ai-relation-assessment-owner",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const referencing = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "ai-relation-referencing",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: observedAt,
+      }),
+    });
+    const referenced = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "ai-relation-referenced",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: observedAt,
+      }),
+    });
+    const blocker = createIssueItem({
+      repository: publicRepository,
+      number: 3,
+      fingerprint: "ai-relation-authoritative-blocker",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({
+        state: "closed",
+        closedAt: observedAt,
+      }),
+    });
+    for (const item of [referencing, referenced, blocker]) {
+      fixture.individualItems.set(item.url, item);
+    }
+    fixture.details.set(
+      referencing.nodeId,
+      createIssueDetail({
+        item: referencing,
+        body: `${referenced.url} を参照します`,
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    fixture.details.set(
+      referenced.nodeId,
+      createIssueDetail({
+        item: referenced,
+        body: "担当する関係候補はauthoritativeです",
+        observedAt,
+        nativeDependencies: Object.freeze([createNativeBlocker(referenced, blocker)]),
+        duplicateComments: false,
+      }),
+    );
+    fixture.details.set(
+      blocker.nodeId,
+      createIssueDetail({
+        item: blocker,
+        body: "authoritative関係候補のblockerです",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [referencing.url, referenced.url, blocker.url],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("relation担当fixtureのsourceがありません");
+        }
+        return Promise.resolve(
+          createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: requireCodexAuthorCandidateId(input),
+              kind: "user",
+              role: "author",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        );
+      },
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+    const referencedTrackedItem = snapshot.items.find(
+      (candidate) => candidate.nodeId === referenced.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexInputs.map((input) => input.item.nodeId)).toEqual([referencing.nodeId]);
+    expect(harness.codexInputs[0]?.candidates.relations).toHaveLength(1);
+    expect(referencedTrackedItem?.aiAnalysis).toEqual({
+      status: "not_required",
+    });
+  });
+
   it("AI対象がない正常runを利用可能として保存する", async () => {
     const repository = createRepository("R_ai_no_targets", "ai-no-targets", FIRST_RUN_AT);
     const fixture = createRepositoryFixture(repository);
