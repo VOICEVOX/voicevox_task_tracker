@@ -4744,7 +4744,7 @@ describe("本番収集の接続", () => {
           candidates: [
             {
               itemNodeId: item.nodeId,
-              reasonCode: "triage_overdue",
+              reasonCode: "assessment_overdue",
               severity: "watch",
             },
           ],
@@ -4873,7 +4873,7 @@ describe("本番収集の接続", () => {
           candidates: [
             {
               itemNodeId: target.nodeId,
-              reasonCode: "triage_overdue",
+              reasonCode: "assessment_overdue",
               severity: "critical",
             },
           ],
@@ -6089,7 +6089,10 @@ describe("本番判定入力の接続", () => {
       expect(snapshot.items).toHaveLength(items.length);
       expect(snapshot.items).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ nodeId: unassignedIssue.nodeId, status: "waiting_for_triage" }),
+          expect.objectContaining({
+            nodeId: unassignedIssue.nodeId,
+            status: "waiting_for_assessment",
+          }),
           expect.objectContaining({ nodeId: blockedIssue.nodeId, status: "waiting_for_unblock" }),
           expect.objectContaining({ nodeId: draftPullRequest.nodeId, status: "in_progress" }),
           expect.objectContaining({

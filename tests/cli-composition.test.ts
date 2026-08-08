@@ -630,7 +630,7 @@ describe("CLI合成root", () => {
         const ledgerEntry = Object.freeze({
           notificationKey: "notification:composition:sent",
           itemNodeId: createGitHubNodeId("I_COMPOSITION_SENT"),
-          reasonCode: "triage_overdue",
+          reasonCode: "assessment_overdue",
           severity: "urgent",
           reservedAt: createUtcIsoDateTime(NOW),
           cooldownUntil: createUtcIsoDateTime("2026-08-03T00:00:00.000Z"),

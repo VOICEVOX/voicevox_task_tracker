@@ -474,9 +474,12 @@ function determineWaitClass(
   }
 
   switch (decision.status) {
-    case "waiting_for_triage":
+    case "waiting_for_assessment":
+      return "assessment";
+    case "waiting_for_owner":
+      return "owner";
     case "waiting_for_decision":
-      return "triage";
+      return "decision";
     case "waiting_for_work":
     case "in_progress":
       return "work";

@@ -20,7 +20,7 @@ import { assertNonNullable } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Issue判定へ適用した決定規則のversion。 */
-export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v7";
+export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v8";
 
 /** 依存グラフからIssue判定へ渡すblocker。 */
 export type IssueBlocker = Readonly<{
@@ -870,29 +870,63 @@ function createUnassignedDecision(
     lastUnassignedEvent == null
       ? createBasis([input.issue.sourceId], input.issue.createdAt, "inferred")
       : createBasis([lastUnassignedEvent.sourceId], lastUnassignedEvent.occurredAt, "event");
+  const assessmentEvidenceSourceIds = input.issue.events.flatMap((event) => {
+    if (event.kind === "assignee" && event.action === "added") {
+      return [event.sourceId];
+    }
+    if (event.kind !== "comment" || event.actor.type !== "human") {
+      return [];
+    }
+    if (
+      input.issue.author.status === "identified" &&
+      event.actor.nodeId === input.issue.author.actor.nodeId
+    ) {
+      return [];
+    }
+    return [event.sourceId];
+  });
+  if (input.issue.labels.length > 0) {
+    assessmentEvidenceSourceIds.push(input.issue.sourceId);
+  }
+  const assessmentCompleted = assessmentEvidenceSourceIds.length > 0;
+  let nextAction = assessmentCompleted
+    ? "maintainerがIssueの担当を決める"
+    : "maintainerがIssueの内容を確認する";
+  if (context.uncertainties.length > 0) {
+    nextAction = assessmentCompleted
+      ? "maintainerが不確実な点を確認して担当を決める"
+      : "maintainerが不確実な点を確認してIssueの内容を確認する";
+  }
   const waitingOn = createWaitingOn({
     kind: "role",
     candidateId: "maintainer",
     role: "maintainer",
-    reasonSummary: "未アサインIssueのtriageが必要です",
+    reasonSummary: assessmentCompleted
+      ? "内容確認済みの未アサインIssueで担当決定が必要です"
+      : "未アサインIssueの内容確認が必要です",
     sourceIds: basis.sourceIds,
     confidence: 1,
   });
   return finalizeDecision(input, context, {
-    status: "waiting_for_triage",
+    status: assessmentCompleted ? "waiting_for_owner" : "waiting_for_assessment",
     waitingOn: [waitingOn],
     primarySelectionReason: "未アサインIssueの既定責務としてmaintainerを選定しました",
-    nextAction:
-      context.uncertainties.length === 0
-        ? "maintainerがIssueをtriageする"
-        : "maintainerが不確実な点を確認してIssueをtriageする",
+    nextAction,
     confidence: 1,
     evidence: [
-      ...createEvidence([input.issue.sourceId], "status", "Issueにassigneeが設定されていません"),
+      ...createEvidence(
+        assessmentCompleted ? assessmentEvidenceSourceIds : [input.issue.sourceId],
+        "status",
+        assessmentCompleted
+          ? "Issueの内容が確認された根拠があり、assigneeは設定されていません"
+          : "Issueにassigneeがなく、内容確認済みの根拠もありません",
+      ),
       ...createEvidence(
         basis.sourceIds,
         "waiting_on",
-        "未アサインIssueのtriageはmaintainerの責務です",
+        assessmentCompleted
+          ? "未アサインIssueの担当決定はmaintainerの責務です"
+          : "未アサインIssueの内容確認はmaintainerの責務です",
       ),
     ],
     statusBasis: basis,

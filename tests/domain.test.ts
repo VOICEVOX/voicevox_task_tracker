@@ -68,7 +68,8 @@ describe("terminal判定", () => {
   });
 
   it("継続中の状態を終了状態と判定しない", () => {
-    expect(isTerminalStatus("waiting_for_triage")).toBe(false);
+    expect(isTerminalStatus("waiting_for_assessment")).toBe(false);
+    expect(isTerminalStatus("waiting_for_owner")).toBe(false);
     expect(isTerminalStatus("waiting_for_unblock")).toBe(false);
     expect(isTerminalStatus("unknown")).toBe(false);
   });

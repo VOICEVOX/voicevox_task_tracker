@@ -175,18 +175,18 @@
             "nodeId": "nested-release-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/501"
           },
-          "status": "waiting_for_triage",
+          "status": "waiting_for_assessment",
           "waitingOn": [
             {
               "kind": "team",
               "candidateId": "VOICEVOX/fixture-maintainers",
               "role": "maintainer",
-              "reasonSummary": "未アサインのためtriage待ちです",
+              "reasonSummary": "未アサインのため内容確認待ちです",
               "sourceIds": ["body:release"],
               "confidence": 0.95
             }
           ],
-          "nextAction": "maintainerがリリース作業をtriageする",
+          "nextAction": "maintainerがリリース作業の内容を確認する",
           "relations": [
             {
               "candidateId": "rel:checklist-release-core",
@@ -263,18 +263,18 @@
             "nodeId": "nested-core-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/502"
           },
-          "status": "waiting_for_triage",
+          "status": "waiting_for_assessment",
           "waitingOn": [
             {
               "kind": "team",
               "candidateId": "VOICEVOX/fixture-maintainers",
               "role": "maintainer",
-              "reasonSummary": "未アサインのためtriage待ちです",
+              "reasonSummary": "未アサインのため内容確認待ちです",
               "sourceIds": ["body:core-task"],
               "confidence": 0.95
             }
           ],
-          "nextAction": "maintainerが中間作業をtriageする",
+          "nextAction": "maintainerが中間作業の内容を確認する",
           "relations": [
             {
               "candidateId": "rel:checklist-core-engine",

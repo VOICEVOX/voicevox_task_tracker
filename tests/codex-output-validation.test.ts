@@ -157,8 +157,8 @@ function createOutput(confidence: number) {
     uncertainties: [],
     notification: {
       recommended: true,
-      reasonCode: "triage_overdue",
-      reasonSummary: "triageが必要です",
+      reasonCode: "assessment_overdue",
+      reasonSummary: "内容確認が必要です",
     },
   };
 }

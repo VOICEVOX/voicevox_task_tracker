@@ -421,7 +421,7 @@ describe("観測時刻に依存しない遷移基準", () => {
       }),
     );
 
-    expect(earlierDecision.status).toBe("waiting_for_decision");
+    expect(earlierDecision.status).toBe("waiting_for_owner");
     expect(earlierDecision.statusBasis).toEqual({
       sourceIds: [currentReady.sourceId],
       occurredAt: currentReady.occurredAt,
@@ -776,7 +776,7 @@ describe("timeline取得窓が途中から始まるdraft判定", () => {
       }),
     );
 
-    expect(decision.status).toBe("waiting_for_decision");
+    expect(decision.status).toBe("waiting_for_owner");
     expect(decision.statusBasis).toEqual({
       sourceIds: [ready.sourceId],
       occurredAt: ready.occurredAt,
@@ -800,7 +800,7 @@ describe("timeline取得窓が途中から始まるdraft判定", () => {
     );
 
     expect(draftDecision.status).toBe("in_progress");
-    expect(nonDraftDecision.status).toBe("waiting_for_decision");
+    expect(nonDraftDecision.status).toBe("waiting_for_owner");
     expect(draftDecision.statusBasis.occurredAt).toBe(pullRequestCreatedAt);
     expect(nonDraftDecision.statusBasis.occurredAt).toBe(pullRequestCreatedAt);
   });
@@ -1467,7 +1467,7 @@ describe("reviewと責務の遷移", () => {
       }),
     );
 
-    expect(decision.status).toBe("waiting_for_decision");
+    expect(decision.status).toBe("waiting_for_owner");
     expect(decision.waitingOn.some((value) => value.candidateId === bot.login)).toBe(false);
     expect(decision.waitingOn.some((value) => value.kind === "automation")).toBe(false);
     expect(decision.determination).toBe("determined");
@@ -1487,7 +1487,7 @@ describe("reviewと責務の遷移", () => {
       }),
     );
 
-    expect(decision.status).toBe("waiting_for_decision");
+    expect(decision.status).toBe("waiting_for_owner");
     expect(decision.determination).toBe("codex_candidate");
     expect(decision.uncertainties).toContain("human commentの意味を決定論的に確定できません");
     expect(decision.evidence).toContainEqual({
@@ -1757,10 +1757,10 @@ describe("merge readinessと失敗時の判定", () => {
     });
   });
 
-  it("ready for reviewでreview未依頼ならmaintainer待ちとする", () => {
+  it("review requestも変更要求もないopen・non-draft PRを担当決め待ちにする", () => {
     const decision = determinePullRequestState(createInput(createOpenPullRequest()));
 
-    expect(decision.status).toBe("waiting_for_decision");
+    expect(decision.status).toBe("waiting_for_owner");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "team",
       role: "maintainer",
@@ -1830,7 +1830,7 @@ describe("merge readinessと失敗時の判定", () => {
       },
     });
 
-    expect(decision.status).toBe("waiting_for_decision");
+    expect(decision.status).toBe("waiting_for_owner");
     expect(decision.waitingOn[0]?.role).toBe("maintainer");
     expect(decision.determination).toBe("codex_candidate");
     expect(decision.confidence).toBeLessThanOrEqual(0.65);

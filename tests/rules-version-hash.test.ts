@@ -8,8 +8,8 @@ import { hashCanonicalJson, type Sha256Hash } from "../src/persistence/canonical
 const REPOSITORY_ROOT = join(import.meta.dirname, "..");
 const HASH_RECORD_PATH = "tests/rules-version-hash.test.ts";
 const DETERMINISTIC_RULES_HASH =
-  "sha256:a927003b5cbce0b54d2e27a27f2039973d7102c3a65ada6d5b2ce732f650fce3";
-const PROMPT_FILES_HASH = "sha256:33605202ecfd5c2eed9267a659c2bad4fb1575443cdae7c82f63bca296b8b126";
+  "sha256:dbce6d238dba684380c3aa59435f2de7f0d51f7d869ac55cfcc0864c27c04f14";
+const PROMPT_FILES_HASH = "sha256:6d6c3b5a12a4d4da0673bc50a4dbdf2e38acce167ce098080ab1c262eb099e58";
 
 async function listRelativeFiles(
   relativeDirectory: string,

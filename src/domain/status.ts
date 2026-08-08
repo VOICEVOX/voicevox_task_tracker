@@ -7,7 +7,8 @@ export function isTerminalStatus(status: Status): status is TerminalStatus {
     case "terminal_completed":
     case "terminal_not_planned":
       return true;
-    case "waiting_for_triage":
+    case "waiting_for_assessment":
+    case "waiting_for_owner":
     case "waiting_for_decision":
     case "waiting_for_review":
     case "waiting_for_revision":

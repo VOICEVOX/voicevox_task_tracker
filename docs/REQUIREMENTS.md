@@ -22,7 +22,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 2. 本文のチェックリスト、コメント、レビュー、別repoのIssueなどに依存関係が分散し、native dependencyが設定されていない場合がある。
 3. botコメントやpreview更新で`updated_at`が進み、実質的な停滞が隠れる。
 4. 依存先が完了しても、依存元本文の未チェック項目が残り、再開可能になったことを見落とす。
-5. 全件通知では疲弊する一方、triage忘れや長期停止は早く知りたい。
+5. 全件通知では疲弊する一方、内容確認漏れや長期停止は早く知りたい。
 
 ## 3. 実データ調査から得た設計上の結論
 
@@ -51,7 +51,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 ### 4.2 運用KPI（初期目標）
 
 - 追跡中open項目の90%以上で、`waitingOn=unknown`以外を根拠付き表示できる。
-- 48時間を超えた未triage項目をgolden fixture上で100%検出する。
+- 48時間を超えた内容未確認項目をgolden fixture上で100%検出する。
 - daily digestは通常10項目以下とし、同一理由の不要な連日再送を行わない。
 - private/internal repo由来データの公開件数を常に0件とする。
 - 固定AI出力を使うgolden fixtureの処理結果について、critical/urgent recallを95%以上、誤通知率を10%以下に保つ。
@@ -98,19 +98,20 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 ### 7.1 status enum
 
-- `waiting_for_triage`
-- `waiting_for_decision`
-- `waiting_for_review`
-- `waiting_for_revision`
-- `waiting_for_work`
-- `waiting_for_unblock`
-- `waiting_for_automation`
-- `waiting_for_merge`
-- `in_progress`
-- `unknown`
-- `terminal_merged`
-- `terminal_completed`
-- `terminal_not_planned`
+- `waiting_for_assessment` — 内容確認待ち
+- `waiting_for_owner` — 担当決め待ち
+- `waiting_for_decision` — 方針判断待ち
+- `waiting_for_review` — レビュー待ち
+- `waiting_for_revision` — 修正待ち
+- `waiting_for_work` — 作業待ち
+- `waiting_for_unblock` — ブロック解消待ち
+- `waiting_for_automation` — 自動処理待ち
+- `waiting_for_merge` — マージ待ち
+- `in_progress` — 作業中
+- `unknown` — 待ち先不明
+- `terminal_merged` — マージ済み
+- `terminal_completed` — 完了
+- `terminal_not_planned` — 対応しない
 
 ### 7.2 waitingOn enum
 
@@ -127,7 +128,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 7. 現行review requestがあればrequested user/team待ち。
 8. draftは原則author待ち。ただし明示的判断依頼・blockerを優先。
 9. 必要承認/checks済みなら`waiting_for_merge`＋maintainer待ち。
-10. ready-for-reviewでreview未依頼ならmaintainer待ち。
+10. ready-for-reviewでreview未依頼なら`waiting_for_owner`としてmaintainer待ち。
 11. CI失敗・コメント意味等が曖昧な場合だけCodexへ渡す。
 
 4、5、6、7で待ち先を決めた後、その待ち先本人が責務の起点より後に本文のある発言をしていれば、発言の意味を解釈しないと責務を確定できない。決定論的な待ち先を既定として残したままCodexへ渡す。5では、未解決threadの最後のhumanコメントに本文がある場合も同じ扱いとする。そのコメントがauthorの対応を求めるとは限らないためである。
@@ -138,21 +139,23 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 2. open blockerがあれば`waiting_for_unblock`。
 3. 最新の未回答な明示依頼があれば相手待ち。
 4. assigneeがいればassignee待ち。
-5. それ以外の未アサインIssueはmaintainer待ち。
+5. それ以外の未アサインIssueは、作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば`waiting_for_owner`、なければ`waiting_for_assessment`としてmaintainer待ち。
 6. 作成者がmaintainerでも、次担当不明ならmaintainer責務のまま。
 
 ## 8. 停滞時間、停滞の深刻さ、重要度の既定値
 
 すべて内部UTC、表示JST。日数は営業日ではなく連続時間で計算する。`updated_at`は参考値であり、severity clockの正本にしない。
 
-| wait class                        | watch | urgent | critical | 主な扱い                             |
-| --------------------------------- | ----: | -----: | -------: | ------------------------------------ |
-| maintainer triage / owner unknown |   48h |    96h |     168h | 「丸2日」を最初の通知境界とする      |
-| review                            |   48h |   120h |     240h | review requestから計時               |
-| author after changes requested    |   72h |   168h |     336h | author pushでreviewer側へ遷移可能    |
-| assignee/in progress              |  168h |   336h |     720h | 実装作業の長さを考慮                 |
-| ready to merge                    |   24h |    72h |     168h | merge decisionの見落としを早めに検出 |
-| automation                        |    6h |    24h |      72h | 通常のCI時間は通知しない             |
+| wait class                     | watch | urgent | critical | 主な扱い                             |
+| ------------------------------ | ----: | -----: | -------: | ------------------------------------ |
+| assessment                     |   48h |    96h |     168h | 内容確認の見落としを検出             |
+| owner                          |   48h |    96h |     168h | 担当未決定または待ち先不明を検出     |
+| decision                       |   48h |    96h |     168h | 方針判断の停滞を検出                 |
+| review                         |   48h |   120h |     240h | review requestから計時               |
+| author after changes requested |   72h |   168h |     336h | author pushでreviewer側へ遷移可能    |
+| assignee/in progress           |  168h |   336h |     720h | 実装作業の長さを考慮                 |
+| ready to merge                 |   24h |    72h |     168h | merge decisionの見落としを早めに検出 |
+| automation                     |    6h |    24h |      72h | 通常のCI時間は通知しない             |
 
 blocked parentは「親自身を毎日催促」せず、blockerのseverityとdownstream impactを通知順位へ使う。priority labelはseverityを最大1段階引き上げられるが、低信頼AIだけでcriticalへ引き上げない。
 
@@ -168,7 +171,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 通知する主な変化:
 
 - severityがwatch/urgent/criticalへ初めて上がった。
-- 未triage・owner unknownが48時間を超えた。
+- 内容確認待ち・担当未決定・待ち先不明が48時間を超えた。
 - human `CHANGES_REQUESTED`後のauthor待ちが長期化した。
 - high-impact blockerがurgent以上になった。
 - 依存解消で重要項目が`newly_unblocked`になった。
@@ -296,14 +299,14 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | --------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `RSP-001` | MUST | 状態と責務の分離 — status、waitingOn、nextAction、statusSince、ownerSinceを別フィールドで保持しなければならない。                                                                                              | `AT-RSP-001`: 同一ownerでstatusだけ変わるfixtureを表現できる。                                                                            |
 | `RSP-002` | MUST | 責務種別 — waitingOnはuser、team、role、item、automation、unknownを表現できなければならない。                                                                                                                  | `AT-RSP-002`: 全種別のschema fixtureがvalidationに通る。                                                                                  |
-| `RSP-003` | MUST | 未アサインIssueの既定 — 明確な別根拠がない未アサインIssueは当該repoのmaintainer role待ちとしなければならない。                                                                                                 | `AT-RSP-003`: unassigned/no-request Issue fixtureがmaintainerになる。                                                                     |
+| `RSP-003` | MUST | 未アサインIssueの分類 — 作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば担当決め待ち、なければ内容確認待ちとし、当該repoのmaintainer role待ちにしなければならない。                         | `AT-RSP-003`: コメントなし、humanコメントあり、botコメントのみ、ラベルありの各fixtureが期待する状態になる。                               |
 | `RSP-004` | MUST | アサインIssue — 明確な別の待ち根拠がないアサイン済みIssueはassignee待ちとしなければならない。                                                                                                                  | `AT-RSP-004`: assignee 1名/複数fixtureで全員が候補となる。                                                                                |
 | `RSP-005` | MUST | 未回答の明示依頼 — 最新の未回答な質問・判断依頼が個人またはteamへ向く場合、その相手を優先できなければならない。                                                                                                | `AT-RSP-005`: 本文/コメントの依頼fixtureでCodexがsource ID付きで相手を選ぶ。                                                              |
 | `RSP-006` | MUST | maintainer作成でも責務維持 — maintainerが作成したIssue/PRでも次の担当が明確でなければmaintainer roleの責務としなければならない。                                                                               | `AT-RSP-006`: maintainer-authored unassigned fixtureがauthor任せにならない。                                                              |
 | `RSP-007` | MUST | open blocker優先 — 確定したopen blockerがある項目はstatus=waiting_for_unblockとし、waitingOnにblocker itemを置かなければならない。                                                                             | `AT-RSP-007`: open/closed blocker混在fixtureでopenだけがwaitingOnになる。                                                                 |
 | `RSP-008` | MUST | draft PRの既定 — 明示的な他者待ちがないdraft PRはauthor待ちとしなければならない。                                                                                                                              | `AT-RSP-008`: recent draft fixtureがauthor/in_progressになる。                                                                            |
 | `RSP-009` | MUST | draft中の明示依頼 — draftでもmaintainer判断や外部blockerを明示している場合、author既定を上書きできなければならない。                                                                                           | `AT-RSP-009`: draft + decision request fixtureでmaintainer待ちになる。                                                                    |
-| `RSP-010` | MUST | レビュー未依頼PR — ready-for-reviewのPRにreview requestがなく、他の明確な待ち先もない場合はmaintainer role待ちとしなければならない。                                                                           | `AT-RSP-010`: reviewerなしPR fixtureがmaintainer triageになる。                                                                           |
+| `RSP-010` | MUST | レビュー未依頼PR — ready-for-reviewのPRにreview requestがなく、他の明確な待ち先もない場合は`waiting_for_owner`としてmaintainer role待ちとしなければならない。                                                  | `AT-RSP-010`: reviewerなしPR fixtureが担当決め待ちになる。                                                                                |
 | `RSP-011` | MUST | 個人レビュー依頼 — 現行requested reviewer userがいるPRは当該user待ちとしなければならない。                                                                                                                     | `AT-RSP-011`: user request fixtureでloginが表示される。                                                                                   |
 | `RSP-012` | MUST | teamレビュー依頼 — 現行requested team reviewerがいるPRは当該team待ちとしなければならない。                                                                                                                     | `AT-RSP-012`: team request fixtureでteam slugが表示される。                                                                               |
 | `RSP-013` | MUST | 変更要求後のauthor待ち — 最新head commit以後にhuman reviewerのCHANGES_REQUESTEDがある場合はauthor待ちとしなければならない。                                                                                    | `AT-RSP-013`: VOICEVOX/voicevox#3079型fixtureでauthor待ちになる。                                                                         |
@@ -417,7 +420,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | `NTF-004` | MUST | mention既定無効 — 既定payloadはallowed_mentionsで全mentionを無効化しなければならない。                                                                                                                  | `AT-NTF-004`: @everyone/@user文字列fixtureでも実mentionが許可されない。                     |
 | `NTF-005` | MUST | mention allowlist — 有効化時も設定済みDiscord IDだけをallowed_mentions.usersへ含めなければならない。                                                                                                    | `AT-NTF-005`: 未登録GitHub loginはplain text表示になる。                                    |
 | `NTF-006` | MUST | 通知選別 — threshold crossing、urgent/critical停滞、owner不明48h超、責務遷移、newly unblocked高impact、cycleを主要通知候補としなければならない。                                                        | `AT-NTF-006`: 各reason fixtureがcandidateになる。                                           |
-| `NTF-007` | MUST | digest構成 — digestを「停止要因」「責務/triage不明」「新規解消・重要変化」に分け、各itemにrepo#number、title、waitingOn、duration、reason、URLを含めなければならない。                                  | `AT-NTF-007`: payload snapshotが必須項目を満たす。                                          |
+| `NTF-007` | MUST | digest構成 — digestを「停止要因」「内容確認または担当が未確定」「新規解消・重要変化」に分け、各itemにrepo#number、title、waitingOn、duration、reason、URLを含めなければならない。                       | `AT-NTF-007`: payload snapshotが必須項目を満たす。                                          |
 | `NTF-008` | MUST | Discord制限内分割 — embed/文字数/件数のDiscord制限を事前計算し、安全上限を超える場合は複数messageへ分割しなければならない。                                                                             | `AT-NTF-008`: 長文20件fixtureがAPI rejectなしの複数payloadになる。                          |
 | `NTF-009` | MUST | noise抑制 — freshな作業中、bot-only更新、unchanged watch、recent draft、低信頼AI-only、automation dashboardを既定digestから除外しなければならない。                                                     | `AT-NTF-009`: noise fixture群が候補0件になる。                                              |
 | `NTF-010` | MUST | 重複/cooldown — notification ledgerの予約は24時間だけ再送を抑え、期限切れ後は再送可能にしなければならない。cooldownは送信済み記録だけへ適用し、urgentは既定3日、criticalは既定2日としなければならない。 | `AT-NTF-010`: 期限内と期限切れの予約、同日再実行、連日fixtureで期待回数になる。             |

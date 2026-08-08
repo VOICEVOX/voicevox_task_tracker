@@ -211,7 +211,8 @@ const expectedWaitingOnSchema = z.strictObject({
 const expectedItemSchema = z.strictObject({
   nodeId: identifierSchema,
   status: z.enum([
-    "waiting_for_triage",
+    "waiting_for_assessment",
+    "waiting_for_owner",
     "waiting_for_decision",
     "waiting_for_review",
     "waiting_for_revision",
@@ -247,7 +248,7 @@ const expectedNotificationSchema = z.strictObject({
   itemNodeId: identifierSchema,
   reasonCodes: z.array(
     z.enum([
-      "triage_overdue",
+      "assessment_overdue",
       "review_overdue",
       "author_overdue",
       "owner_unknown",

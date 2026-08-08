@@ -248,7 +248,7 @@ function formatElapsedTime(startTimestamp: number, endTimestamp: number): string
 
 function categoryForReason(reasonCode: DiscordNotificationReasonCode): DiscordDigestCategory {
   switch (reasonCode) {
-    case "triage_overdue":
+    case "assessment_overdue":
     case "owner_unknown":
       return "unknown_responsibility";
     case "newly_unblocked":
@@ -269,7 +269,7 @@ function categoryTitle(category: DiscordDigestCategory): string {
     case "blocking":
       return "停止要因";
     case "unknown_responsibility":
-      return "責務またはtriageが不明";
+      return "内容確認または担当が未確定";
     case "important_change":
       return "新規解消や重要な変化";
   }
@@ -277,8 +277,8 @@ function categoryTitle(category: DiscordDigestCategory): string {
 
 function reasonText(reasonCode: DiscordNotificationReasonCode): string {
   switch (reasonCode) {
-    case "triage_overdue":
-      return "triage待ちが基準時間を超えました";
+    case "assessment_overdue":
+      return "内容確認待ちが基準時間を超えました";
     case "review_overdue":
       return "レビュー待ちが基準時間を超えました";
     case "author_overdue":

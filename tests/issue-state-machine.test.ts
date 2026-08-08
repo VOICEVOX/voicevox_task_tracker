@@ -108,6 +108,7 @@ function createOpenIssue(): FreshObservedGitHubIssue {
       status: "identified",
       actor: author,
     },
+    labels: [],
     assignees: [],
     events: [],
     observedAt,
@@ -240,10 +241,10 @@ describe("Issue状態機械の入力と出力契約", () => {
 });
 
 describe("Issueの既定責務", () => {
-  it("未アサインIssueをmaintainer待ちにする", () => {
+  it("コメントもラベルもない未アサインIssueを内容確認待ちにする", () => {
     const decision = determineIssueState(createInput(createOpenIssue()));
 
-    expect(decision.status).toBe("waiting_for_triage");
+    expect(decision.status).toBe("waiting_for_assessment");
     expect(decision.waitingOn).toEqual([
       expect.objectContaining({
         kind: "team",
@@ -491,7 +492,7 @@ describe("Issueの既定責務", () => {
     expect(decision.waitingOn.map((value) => value.candidateId)).not.toContain(maintainer.login);
   });
 
-  it("直近のhuman actorがreviewerでもtriageをmaintainer teamの責務にする", () => {
+  it("作成者以外のhumanコメントがある未アサインIssueを担当決め待ちにする", () => {
     const reviewerActivity = createCommentEvent(
       "reviewer-activity",
       reviewer,
@@ -504,6 +505,7 @@ describe("Issueの既定責務", () => {
       }),
     );
 
+    expect(decision.status).toBe("waiting_for_owner");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "team",
       candidateId: "VOICEVOX/maintainers",
@@ -514,6 +516,54 @@ describe("Issueの既定責務", () => {
       occurredAt: createdAt,
       precision: "inferred",
     });
+  });
+
+  it("botコメントだけの未アサインIssueを内容確認待ちにする", () => {
+    const botActivity = createCommentEvent(
+      "bot-activity",
+      botAuthor,
+      createUtcIsoDateTime("2026-07-31T07:00:00Z"),
+    );
+    const decision = determineIssueState(
+      createInput({
+        ...createOpenIssue(),
+        events: [botActivity],
+      }),
+    );
+
+    expect(decision.status).toBe("waiting_for_assessment");
+  });
+
+  it("ラベルが付いた未アサインIssueを担当決め待ちにする", () => {
+    const decision = determineIssueState(
+      createInput({
+        ...createOpenIssue(),
+        labels: ["要検討"],
+      }),
+    );
+
+    expect(decision.status).toBe("waiting_for_owner");
+  });
+
+  it("過去にassigneeがいた未アサインIssueを担当決め待ちにする", () => {
+    const assignment = createAssigneeEvent(
+      "past-assignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T05:00:00Z"),
+    );
+    const unassignment = createUnassignEvent(
+      "past-unassignment",
+      firstAssignee,
+      createUtcIsoDateTime("2026-07-31T06:00:00Z"),
+    );
+    const decision = determineIssueState(
+      createInput({
+        ...createOpenIssue(),
+        events: [assignment, unassignment],
+      }),
+    );
+
+    expect(decision.status).toBe("waiting_for_owner");
   });
 
   it("2 repositoryでauthorのmembershipに関係なく設定済みmaintainer teamへ解決する", () => {

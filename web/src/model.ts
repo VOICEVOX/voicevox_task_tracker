@@ -136,7 +136,8 @@ interface WaitingSubjectRowAccumulator {
 }
 
 const STATUS_LABELS = {
-  waiting_for_triage: "トリアージ待ち",
+  waiting_for_assessment: "内容確認待ち",
+  waiting_for_owner: "担当決め待ち",
   waiting_for_decision: "方針判断待ち",
   waiting_for_review: "レビュー待ち",
   waiting_for_revision: "修正待ち",

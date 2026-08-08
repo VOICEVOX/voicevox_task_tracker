@@ -26,7 +26,7 @@ const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
 const notificationReasonCodeSchema = z.enum([
   "none",
-  "triage_overdue",
+  "assessment_overdue",
   "review_overdue",
   "author_overdue",
   "owner_unknown",

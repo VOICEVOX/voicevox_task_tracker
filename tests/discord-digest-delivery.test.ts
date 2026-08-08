@@ -397,7 +397,7 @@ describe("Discord digest payload", () => {
     const serialized = JSON.stringify(plan.messages.map((message) => message.payload));
 
     expect(serialized).toContain("停止要因");
-    expect(serialized).toContain("責務またはtriageが不明");
+    expect(serialized).toContain("内容確認または担当が未確定");
     expect(serialized).toContain("新規解消や重要な変化");
     expect(serialized).toContain(PAGES_URL);
     expect(serialized).toContain("2026年8月10日 09:00 JST");

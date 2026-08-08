@@ -41,6 +41,7 @@ export type FreshObservedGitHubIssue = FreshObservedGitHubItemBase &
   ObservedGitHubItemState &
   Readonly<{
     type: "issue";
+    labels: readonly string[];
   }>;
 
 /** Pull RequestのcommitがGitHubへpushされた時刻の観測値。 */

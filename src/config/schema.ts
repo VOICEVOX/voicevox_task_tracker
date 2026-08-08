@@ -357,8 +357,9 @@ const configSchema = z.strictObject({
     timezone: requiredStringSchema,
     recentProgressGraceHours: nonNegativeNumberSchema,
     thresholdsHours: z.strictObject({
-      triage: thresholdSchema,
+      assessment: thresholdSchema,
       owner: thresholdSchema,
+      decision: thresholdSchema,
       review: thresholdSchema,
       revision: thresholdSchema,
       work: thresholdSchema,

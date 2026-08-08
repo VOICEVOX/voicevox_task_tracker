@@ -443,8 +443,8 @@ function overdueReasonCode(
   waitClass: StalenessWaitClass,
 ): DiscordNotificationReasonCode | undefined {
   switch (waitClass) {
-    case "triage":
-      return "triage_overdue";
+    case "assessment":
+      return "assessment_overdue";
     case "owner":
       return "owner_unknown";
     case "review":
@@ -455,6 +455,7 @@ function overdueReasonCode(
       return "ready_to_merge_overdue";
     case "automation":
       return "automation_stuck";
+    case "decision":
     case "work":
     case "blockedParent":
     case "notApplicable":
@@ -593,7 +594,7 @@ function createResponsibilityChangedSignal(
 
 function recommendationIsRepeatable(reasonCode: DiscordNotificationReasonCode): boolean {
   switch (reasonCode) {
-    case "triage_overdue":
+    case "assessment_overdue":
     case "review_overdue":
     case "author_overdue":
     case "owner_unknown":
@@ -862,7 +863,7 @@ function reasonPriority(reasonCode: DiscordNotificationReasonCode): number {
       return 4;
     case "review_overdue":
       return 3;
-    case "triage_overdue":
+    case "assessment_overdue":
       return 2;
     case "automation_stuck":
       return 1;

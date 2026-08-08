@@ -55,7 +55,8 @@ export function createUtcIsoDateTime(value: string): UtcIsoDateTime {
 
 /** 追跡項目の処理状態。 */
 export type Status =
-  | "waiting_for_triage"
+  | "waiting_for_assessment"
+  | "waiting_for_owner"
   | "waiting_for_decision"
   | "waiting_for_review"
   | "waiting_for_revision"
@@ -94,7 +95,7 @@ export type Severity = "none" | "watch" | "urgent" | "critical";
 
 /** staleness.thresholdsHoursのキーと1対1に対応する待機分類。 */
 export type WaitClass =
-  "triage" | "owner" | "review" | "revision" | "work" | "merge" | "automation";
+  "assessment" | "owner" | "decision" | "review" | "revision" | "work" | "merge" | "automation";
 
 /** グラフnodeの種別。 */
 export type GraphNodeKind = "issue" | "pull_request" | "external_reference";
@@ -129,7 +130,7 @@ export type RelationContradictionSummary = Readonly<{
 /** Codex出力schemaと一致する通知理由コード。 */
 export type NotificationReasonCode =
   | "none"
-  | "triage_overdue"
+  | "assessment_overdue"
   | "review_overdue"
   | "author_overdue"
   | "owner_unknown"

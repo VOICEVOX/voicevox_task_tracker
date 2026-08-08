@@ -93,8 +93,9 @@ const CONFIDENCE_THRESHOLDS = Object.freeze({
   medium: 0.65,
 });
 const SEVERITY_THRESHOLDS = Object.freeze({
-  triage: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
+  assessment: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
   owner: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
+  decision: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
   review: Object.freeze({ watch: 48, urgent: 120, critical: 240 }),
   revision: Object.freeze({ watch: 72, urgent: 168, critical: 336 }),
   work: Object.freeze({ watch: 168, urgent: 336, critical: 720 }),
@@ -299,6 +300,7 @@ function createIssueObservation(
       status: "identified",
       actor: createAccountActor(item.author),
     }),
+    labels: Object.freeze([...item.labels]),
     assignees: Object.freeze(item.assignees.map(createAccountActor)),
     events: Object.freeze(item.events.map((event) => createEvent(nodeId, event))),
     observedAt: createUtcIsoDateTime(item.observedAt),

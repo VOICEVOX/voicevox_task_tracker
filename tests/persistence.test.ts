@@ -97,9 +97,12 @@ type SnapshotFixtureOptions = Readonly<{
 
 function severityWaitClass(status: Status): StalenessWaitClass {
   switch (status) {
-    case "waiting_for_triage":
+    case "waiting_for_assessment":
+      return "assessment";
+    case "waiting_for_owner":
+      return "owner";
     case "waiting_for_decision":
-      return "triage";
+      return "decision";
     case "waiting_for_review":
       return "review";
     case "waiting_for_revision":
@@ -339,7 +342,7 @@ function createHistoryInputSnapshot(
     generatedAt,
     repositoryIds: [publicRepositoryId],
     responsibility: {
-      status: "waiting_for_triage",
+      status: "waiting_for_assessment",
       kind: "role",
       candidateId: "role:maintainer",
       role: "maintainer",
@@ -416,7 +419,7 @@ function createSentLedger(cooldownUntil: string): StateNotificationLedger {
       {
         notificationKey: "notification:tracked:overdue",
         itemNodeId,
-        reasonCode: "triage_overdue",
+        reasonCode: "assessment_overdue",
         severity: "urgent",
         reservedAt: fixedItemAt,
         cooldownUntil,
@@ -526,7 +529,7 @@ describe("state schema version", () => {
       generatedAt: "2026-08-01T00:00:00.000Z",
       repositoryIds: [publicRepositoryId, "R_SECOND"],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -608,7 +611,7 @@ describe("state schema version", () => {
       generatedAt: "2026-08-01T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -678,7 +681,7 @@ describe("state schema version", () => {
       generatedAt: "2026-08-01T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -722,7 +725,7 @@ describe("state schema version", () => {
       generatedAt: "2026-08-01T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -771,7 +774,7 @@ describe("state schema version", () => {
       generatedAt: "2026-08-01T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -848,7 +851,7 @@ describe("state schema version", () => {
       generatedAt: "2026-08-01T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1026,7 +1029,7 @@ describe("state canonical JSON", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: ["R_SECOND", publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1041,7 +1044,7 @@ describe("state canonical JSON", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId, "R_SECOND"],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1069,7 +1072,7 @@ describe("state canonical JSON", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1084,7 +1087,7 @@ describe("state canonical JSON", () => {
       generatedAt: "2026-08-01T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1106,7 +1109,7 @@ describe("state canonical JSON", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1201,7 +1204,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1270,7 +1273,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1375,7 +1378,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1440,7 +1443,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1465,7 +1468,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-08-01T00:00:00.000Z",
       repositoryIds: [publicRepositoryId, privateRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1505,7 +1508,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1544,7 +1547,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1586,7 +1589,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1654,7 +1657,7 @@ describe("メモリstate branch transaction", () => {
       generatedAt: "2026-07-31T00:00:00.000Z",
       repositoryIds: [publicRepositoryId],
       responsibility: {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         kind: "role",
         candidateId: "role:maintainer",
         role: "maintainer",
@@ -1709,7 +1712,7 @@ describe("メモリstate branch transaction", () => {
           generatedAt: "2026-07-31T00:00:00.000Z",
           repositoryIds: [publicRepositoryId],
           responsibility: {
-            status: "waiting_for_triage",
+            status: "waiting_for_assessment",
             kind: "role",
             candidateId: "role:maintainer",
             role: "maintainer",
@@ -1870,7 +1873,7 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
         generatedAt: "2026-07-31T00:00:00.000Z",
         repositoryIds: [publicRepositoryId],
         responsibility: {
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
           kind: "role",
           candidateId: "role:maintainer",
           role: "maintainer",

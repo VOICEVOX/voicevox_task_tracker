@@ -214,12 +214,12 @@ describe("通知理由の抽出", () => {
   const responsibilityAfter = createWaitingOn("user", "current-owner", "assignee");
   const fixtures = [
     {
-      reasonCode: "triage_overdue",
-      item: createItem("I_triage", {
-        status: "waiting_for_triage",
+      reasonCode: "assessment_overdue",
+      item: createItem("I_assessment", {
+        status: "waiting_for_assessment",
         waitingOn: [maintainer],
         severity: "watch",
-        waitClass: "triage",
+        waitClass: "assessment",
       }),
     },
     {
@@ -326,12 +326,12 @@ describe("通知理由の抽出", () => {
     "severityが%sへ初めて上がると候補にする",
     (severity, previousSeverity) => {
       const item = createItem(`I_threshold_${severity}`, {
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         waitingOn: [maintainer],
         severity,
-        waitClass: "triage",
+        waitClass: "assessment",
         previous: createPrevious(
-          "waiting_for_triage",
+          "waiting_for_assessment",
           [maintainer],
           previousSeverity,
           CREATED_AT,
@@ -339,7 +339,7 @@ describe("通知理由の抽出", () => {
         ),
       });
 
-      expect(candidateReasonCodes(selectOne(item))).toEqual(["triage_overdue"]);
+      expect(candidateReasonCodes(selectOne(item))).toEqual(["assessment_overdue"]);
     },
   );
 
@@ -444,7 +444,7 @@ describe("Codex通知提案の統合", () => {
         confidence: 0.7,
       },
       notificationRecommendation: createAvailableRecommendation(
-        "triage_overdue",
+        "assessment_overdue",
         "normal_priority_only",
       ),
     });

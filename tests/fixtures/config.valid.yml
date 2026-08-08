@@ -64,8 +64,9 @@ staleness:
   timezone: Asia/Tokyo
   recentProgressGraceHours: 24
   thresholdsHours:
-    triage: { watch: 48, urgent: 96, critical: 168 }
+    assessment: { watch: 48, urgent: 96, critical: 168 }
     owner: { watch: 48, urgent: 96, critical: 168 }
+    decision: { watch: 48, urgent: 96, critical: 168 }
     review: { watch: 48, urgent: 120, critical: 240 }
     revision: { watch: 72, urgent: 168, critical: 336 }
     work: { watch: 168, urgent: 336, critical: 720 }

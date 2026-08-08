@@ -4,7 +4,7 @@
   "items": [
     {
       "nodeId": "nested-core-issue",
-      "status": "waiting_for_triage",
+      "status": "waiting_for_assessment",
       "waitingOn": [
         {
           "kind": "team",
@@ -17,7 +17,7 @@
     },
     {
       "nodeId": "nested-engine-issue",
-      "status": "waiting_for_triage",
+      "status": "waiting_for_assessment",
       "waitingOn": [
         {
           "kind": "team",
@@ -30,7 +30,7 @@
     },
     {
       "nodeId": "nested-release-issue",
-      "status": "waiting_for_triage",
+      "status": "waiting_for_assessment",
       "waitingOn": [
         {
           "kind": "team",
@@ -61,15 +61,15 @@
   "notifications": [
     {
       "itemNodeId": "nested-core-issue",
-      "reasonCodes": ["triage_overdue"]
+      "reasonCodes": ["assessment_overdue"]
     },
     {
       "itemNodeId": "nested-engine-issue",
-      "reasonCodes": ["triage_overdue"]
+      "reasonCodes": ["assessment_overdue"]
     },
     {
       "itemNodeId": "nested-release-issue",
-      "reasonCodes": ["triage_overdue"]
+      "reasonCodes": ["assessment_overdue"]
     }
   ],
   "publication": {

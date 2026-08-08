@@ -47,8 +47,9 @@ const noResolvedTeams = Object.freeze({
   reviewers: Object.freeze([]),
 }) satisfies ResolvedRepositoryTeams;
 const thresholdsHours = Object.freeze({
-  triage: { watch: 48, urgent: 96, critical: 168 },
+  assessment: { watch: 48, urgent: 96, critical: 168 },
   owner: { watch: 48, urgent: 96, critical: 168 },
+  decision: { watch: 48, urgent: 96, critical: 168 },
   review: { watch: 48, urgent: 120, critical: 240 },
   revision: { watch: 72, urgent: 168, critical: 336 },
   work: { watch: 168, urgent: 336, critical: 720 },
@@ -216,7 +217,7 @@ function createBaseInput(): CalculateStalenessInput {
     createdAt: CREATED_AT,
     evaluatedAt: addHours(CREATED_AT, 24),
     currentDecision: createDecision({
-      status: "waiting_for_triage",
+      status: "waiting_for_assessment",
       waitingOn: [waitingOn],
       statusAt: CREATED_AT,
       ownerAt: CREATED_AT,
@@ -253,7 +254,7 @@ function createResponsibleInput(
   return Object.freeze({
     ...input,
     currentDecision: createDecision({
-      status: "waiting_for_triage",
+      status: "waiting_for_assessment",
       waitingOn: [waitingOn],
       statusAt: CREATED_AT,
       ownerAt: CREATED_AT,
@@ -679,8 +680,8 @@ type WaitClassFixture = Readonly<{
 
 const waitClassFixtures = Object.freeze([
   {
-    waitClass: "triage",
-    status: "waiting_for_triage",
+    waitClass: "assessment",
+    status: "waiting_for_assessment",
     waitingKind: "role",
     candidateId: "maintainer",
     waitingRole: "maintainer",
@@ -688,10 +689,18 @@ const waitClassFixtures = Object.freeze([
   },
   {
     waitClass: "owner",
-    status: "unknown",
-    waitingKind: "unknown",
-    candidateId: "unknown",
-    waitingRole: "unknown",
+    status: "waiting_for_owner",
+    waitingKind: "role",
+    candidateId: "maintainer",
+    waitingRole: "maintainer",
+    precision: "inferred",
+  },
+  {
+    waitClass: "decision",
+    status: "waiting_for_decision",
+    waitingKind: "role",
+    candidateId: "maintainer",
+    waitingRole: "maintainer",
     precision: "inferred",
   },
   {
@@ -779,9 +788,30 @@ function createWaitClassInput(
 }
 
 describe("wait classとseverity", () => {
+  it("待ち先不明を担当決め待ちと同じownerへ分類する", () => {
+    const input = createBaseInput();
+    const sourceId = buildSourceId("wait_class", "unknown-owner");
+    const waitingOn = createWaitingOn("unknown", "unknown", "unknown", sourceId);
+    const result = calculateStaleness({
+      ...input,
+      currentDecision: createDecision({
+        status: "unknown",
+        waitingOn: [waitingOn],
+        statusAt: CREATED_AT,
+        ownerAt: CREATED_AT,
+        statusSourceId: sourceId,
+        ownerSourceId: sourceId,
+        precision: "inferred",
+        confidence: 1,
+      }),
+    });
+
+    expect(result.waitClass).toBe("owner");
+  });
+
   it("保存済みの算出条件からrun時刻までseverityを進める", () => {
-    const fixture = getWaitClassFixture("triage");
-    const threshold = thresholdsHours.triage.watch;
+    const fixture = getWaitClassFixture("assessment");
+    const threshold = thresholdsHours.assessment.watch;
     const input = createWaitClassInput(fixture, threshold - 1);
     const initial = calculateStaleness(input);
     const recalculated = recalculateStalenessSeverity({
@@ -799,7 +829,7 @@ describe("wait classとseverity", () => {
     expect(initial.severity).toBe("none");
     expect(recalculated).toMatchObject({
       elapsedHours: threshold,
-      waitClass: "triage",
+      waitClass: "assessment",
       severity: "watch",
     });
   });
@@ -831,7 +861,7 @@ describe("wait classとseverity", () => {
   });
 
   it("優先度ラベル追加ではseverityだけを最大1段階引き上げる", () => {
-    const base = createWaitClassInput(getWaitClassFixture("triage"), 60);
+    const base = createWaitClassInput(getWaitClassFixture("assessment"), 60);
     const initial = calculateStaleness(base);
     const labelEvent = createLabelEvent("priority", addHours(CREATED_AT, 66), "優先度：高");
     const resolver = createLabelEffectsResolver([

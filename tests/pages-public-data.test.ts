@@ -124,9 +124,12 @@ type SnapshotFixtureOptions = Readonly<{
 
 function severityWaitClass(status: Status): StalenessWaitClass {
   switch (status) {
-    case "waiting_for_triage":
+    case "waiting_for_assessment":
+      return "assessment";
+    case "waiting_for_owner":
+      return "owner";
     case "waiting_for_decision":
-      return "triage";
+      return "decision";
     case "waiting_for_review":
       return "review";
     case "waiting_for_revision":
@@ -370,7 +373,7 @@ function createSingleItemSnapshot(title: string): StateSnapshot {
         repositoryId: PUBLIC_REPOSITORY_ID,
         repositoryName: "public",
         number: 1,
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         severity: "watch",
         waitingOnKind: "role",
         waitingOnRole: "maintainer",
@@ -409,7 +412,7 @@ function createGraphEvidenceSnapshot(
         repositoryId: PUBLIC_REPOSITORY_ID,
         repositoryName: "public",
         number: 1,
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         severity: "watch",
         waitingOnKind: "role",
         waitingOnRole: "maintainer",
@@ -421,7 +424,7 @@ function createGraphEvidenceSnapshot(
         repositoryId: PUBLIC_REPOSITORY_ID,
         repositoryName: "public",
         number: 2,
-        status: "waiting_for_triage",
+        status: "waiting_for_assessment",
         severity: "watch",
         waitingOnKind: "role",
         waitingOnRole: "maintainer",
@@ -714,7 +717,7 @@ describe("公開evidence URL", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 2,
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -726,7 +729,7 @@ describe("公開evidence URL", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 4,
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -871,7 +874,7 @@ describe("Pages公開安全性", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -1099,7 +1102,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -1206,7 +1209,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -1218,7 +1221,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 2,
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
           severity: "none",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -1371,7 +1374,7 @@ describe("公開DTO生成", () => {
       before: {
         state: "present",
         value: {
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
         },
       },
       after: {
@@ -1418,7 +1421,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "waiting_for_triage",
+          status: "waiting_for_assessment",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
