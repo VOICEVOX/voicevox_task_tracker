@@ -249,16 +249,19 @@ function formatElapsedTime(startTimestamp: number, endTimestamp: number): string
 function categoryForReason(reasonCode: DiscordNotificationReasonCode): DiscordDigestCategory {
   switch (reasonCode) {
     case "assessment_overdue":
+    case "owner_overdue":
     case "owner_unknown":
       return "unknown_responsibility";
     case "newly_unblocked":
     case "responsibility_changed":
       return "important_change";
+    case "decision_overdue":
     case "review_overdue":
-    case "author_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
     case "blocker_overdue":
     case "dependency_cycle":
-    case "ready_to_merge_overdue":
+    case "merge_overdue":
     case "automation_stuck":
       return "blocking";
   }
@@ -279,12 +282,18 @@ function reasonText(reasonCode: DiscordNotificationReasonCode): string {
   switch (reasonCode) {
     case "assessment_overdue":
       return "内容確認待ちが基準時間を超えました";
+    case "owner_overdue":
+      return "担当決め待ちが基準時間を超えました";
+    case "decision_overdue":
+      return "方針判断待ちが基準時間を超えました";
     case "review_overdue":
       return "レビュー待ちが基準時間を超えました";
-    case "author_overdue":
-      return "変更要求後のauthor待ちが基準時間を超えました";
+    case "revision_overdue":
+      return "修正待ちが基準時間を超えました";
+    case "reply_overdue":
+      return "返答待ちが基準時間を超えました";
     case "owner_unknown":
-      return "次の責務を持つ主体が不明です";
+      return "待ち先不明です";
     case "blocker_overdue":
       return "下流を止める項目が長期化しています";
     case "newly_unblocked":
@@ -293,8 +302,8 @@ function reasonText(reasonCode: DiscordNotificationReasonCode): string {
       return "新しい依存cycleを検出しました";
     case "responsibility_changed":
       return "長期停止後に責務が移りました";
-    case "ready_to_merge_overdue":
-      return "merge判断待ちが基準時間を超えました";
+    case "merge_overdue":
+      return "マージ待ちが基準時間を超えました";
     case "automation_stuck":
       return "自動処理待ちが基準時間を超えました";
   }

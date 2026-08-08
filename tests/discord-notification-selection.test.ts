@@ -205,6 +205,7 @@ const maintainer = createWaitingOn("role", "maintainer", "maintainer");
 const unknownOwner = createWaitingOn("unknown", "unknown", "unknown");
 const reviewer = createWaitingOn("role", "reviewer", "reviewer");
 const author = createWaitingOn("role", "author", "author");
+const respondent = createWaitingOn("user", "respondent", "respondent");
 const mergeDecider = createWaitingOn("role", "merge_decider", "merge_decider");
 const automation = createWaitingOn("automation", "required_checks", "ci");
 
@@ -223,6 +224,24 @@ describe("通知理由の抽出", () => {
       }),
     },
     {
+      reasonCode: "owner_overdue",
+      item: createItem("I_owner", {
+        status: "waiting_for_owner",
+        waitingOn: [maintainer],
+        severity: "watch",
+        waitClass: "owner",
+      }),
+    },
+    {
+      reasonCode: "decision_overdue",
+      item: createItem("I_decision", {
+        status: "waiting_for_decision",
+        waitingOn: [maintainer],
+        severity: "watch",
+        waitClass: "decision",
+      }),
+    },
+    {
       reasonCode: "review_overdue",
       item: createItem("I_review", {
         status: "waiting_for_review",
@@ -232,12 +251,21 @@ describe("通知理由の抽出", () => {
       }),
     },
     {
-      reasonCode: "author_overdue",
-      item: createItem("I_author", {
+      reasonCode: "revision_overdue",
+      item: createItem("I_revision", {
         status: "waiting_for_revision",
         waitingOn: [author],
         severity: "watch",
         waitClass: "revision",
+      }),
+    },
+    {
+      reasonCode: "reply_overdue",
+      item: createItem("I_reply", {
+        status: "waiting_for_reply",
+        waitingOn: [respondent],
+        severity: "watch",
+        waitClass: "reply",
       }),
     },
     {
@@ -286,8 +314,8 @@ describe("通知理由の抽出", () => {
       }),
     },
     {
-      reasonCode: "ready_to_merge_overdue",
-      item: createItem("I_ready_to_merge", {
+      reasonCode: "merge_overdue",
+      item: createItem("I_merge", {
         status: "waiting_for_merge",
         waitingOn: [mergeDecider],
         severity: "watch",

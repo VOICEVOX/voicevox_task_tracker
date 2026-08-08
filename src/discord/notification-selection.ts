@@ -440,23 +440,26 @@ function isItemSuppressed(
 }
 
 function overdueReasonCode(
+  status: Status,
   waitClass: StalenessWaitClass,
 ): DiscordNotificationReasonCode | undefined {
   switch (waitClass) {
     case "assessment":
       return "assessment_overdue";
     case "owner":
-      return "owner_unknown";
+      return status === "unknown" ? "owner_unknown" : "owner_overdue";
+    case "decision":
+      return "decision_overdue";
     case "review":
       return "review_overdue";
     case "revision":
-      return "author_overdue";
+      return "revision_overdue";
+    case "reply":
+      return "reply_overdue";
     case "merge":
-      return "ready_to_merge_overdue";
+      return "merge_overdue";
     case "automation":
       return "automation_stuck";
-    case "decision":
-    case "reply":
     case "work":
     case "blockedParent":
     case "notApplicable":
@@ -511,7 +514,7 @@ function createOverdueSignals(
     return [];
   }
   const signals: ReasonSignal[] = [];
-  const reasonCode = overdueReasonCode(item.current.waitClass);
+  const reasonCode = overdueReasonCode(item.current.status, item.current.waitClass);
   if (reasonCode != null && isStateReasonAllowed(item, reasonCode, settings.minimumAiConfidence)) {
     signals.push({
       reasonCode,
@@ -596,11 +599,14 @@ function createResponsibilityChangedSignal(
 function recommendationIsRepeatable(reasonCode: DiscordNotificationReasonCode): boolean {
   switch (reasonCode) {
     case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
     case "review_overdue":
-    case "author_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
     case "owner_unknown":
     case "blocker_overdue":
-    case "ready_to_merge_overdue":
+    case "merge_overdue":
     case "automation_stuck":
       return true;
     case "newly_unblocked":
@@ -858,12 +864,15 @@ function reasonPriority(reasonCode: DiscordNotificationReasonCode): number {
       return 7;
     case "responsibility_changed":
       return 6;
-    case "ready_to_merge_overdue":
+    case "merge_overdue":
       return 5;
-    case "author_overdue":
+    case "revision_overdue":
       return 4;
+    case "decision_overdue":
+    case "reply_overdue":
     case "review_overdue":
       return 3;
+    case "owner_overdue":
     case "assessment_overdue":
       return 2;
     case "automation_stuck":

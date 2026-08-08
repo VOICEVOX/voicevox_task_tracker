@@ -414,6 +414,78 @@ describe("Discord digest payload", () => {
   });
 
   it.each([
+    {
+      reasonCode: "assessment_overdue",
+      statusLabel: "内容確認待ち",
+      expectedReason: "内容確認待ちが基準時間を超えました",
+    },
+    {
+      reasonCode: "owner_overdue",
+      statusLabel: "担当決め待ち",
+      expectedReason: "担当決め待ちが基準時間を超えました",
+    },
+    {
+      reasonCode: "decision_overdue",
+      statusLabel: "方針判断待ち",
+      expectedReason: "方針判断待ちが基準時間を超えました",
+    },
+    {
+      reasonCode: "review_overdue",
+      statusLabel: "レビュー待ち",
+      expectedReason: "レビュー待ちが基準時間を超えました",
+    },
+    {
+      reasonCode: "revision_overdue",
+      statusLabel: "修正待ち",
+      expectedReason: "修正待ちが基準時間を超えました",
+    },
+    {
+      reasonCode: "reply_overdue",
+      statusLabel: "返答待ち",
+      expectedReason: "返答待ちが基準時間を超えました",
+    },
+    {
+      reasonCode: "merge_overdue",
+      statusLabel: "マージ待ち",
+      expectedReason: "マージ待ちが基準時間を超えました",
+    },
+    {
+      reasonCode: "automation_stuck",
+      statusLabel: "自動処理待ち",
+      expectedReason: "自動処理待ちが基準時間を超えました",
+    },
+    {
+      reasonCode: "owner_unknown",
+      statusLabel: "待ち先不明",
+      expectedReason: "待ち先不明です",
+    },
+  ] satisfies readonly {
+    reasonCode: DiscordNotificationReasonCode;
+    statusLabel: string;
+    expectedReason: string;
+  }[])(
+    "$reasonCodeの日本語文面に状態表示名の$statusLabelを使う",
+    ({ reasonCode, expectedReason }) => {
+      const fixture = createDigestFixture([reasonCode], defaultItemOptions);
+      const plan = buildDiscordDigestPlan({
+        candidates: fixture.candidates,
+        ledgerReservations: fixture.reservations,
+        items: fixture.items,
+        pagesUrl: PAGES_URL,
+        generatedAt: GENERATED_AT,
+        mentions: {
+          enabled: false,
+          users: {},
+        },
+      });
+
+      expect(JSON.stringify(plan.messages.map((message) => message.payload))).toContain(
+        `理由: ${expectedReason}`,
+      );
+    },
+  );
+
+  it.each([
     { boundary: "59分", elapsedMinutes: 59, expected: "59分" },
     { boundary: "1時間ちょうど", elapsedMinutes: 60, expected: "1時間" },
     { boundary: "23時間59分", elapsedMinutes: 23 * 60 + 59, expected: "23時間" },

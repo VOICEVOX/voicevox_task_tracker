@@ -51,14 +51,17 @@ const repositoryAllowlistEntrySchema = z.strictObject({
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
 const notificationReasonCodeSchema = z.enum([
   "assessment_overdue",
+  "owner_overdue",
+  "decision_overdue",
   "review_overdue",
-  "author_overdue",
+  "revision_overdue",
+  "reply_overdue",
   "owner_unknown",
   "blocker_overdue",
   "newly_unblocked",
   "dependency_cycle",
   "responsibility_changed",
-  "ready_to_merge_overdue",
+  "merge_overdue",
   "automation_stuck",
 ]);
 const selectedReasonSchema = z.strictObject({

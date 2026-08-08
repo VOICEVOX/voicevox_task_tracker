@@ -20,7 +20,7 @@
   "notifications": [
     {
       "itemNodeId": "changes-requested-pr",
-      "reasonCodes": ["author_overdue"]
+      "reasonCodes": ["revision_overdue"]
     }
   ],
   "publication": {

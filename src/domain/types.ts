@@ -141,14 +141,17 @@ export type RelationContradictionSummary = Readonly<{
 export type NotificationReasonCode =
   | "none"
   | "assessment_overdue"
+  | "owner_overdue"
+  | "decision_overdue"
   | "review_overdue"
-  | "author_overdue"
+  | "revision_overdue"
+  | "reply_overdue"
   | "owner_unknown"
   | "blocker_overdue"
   | "newly_unblocked"
   | "dependency_cycle"
   | "responsibility_changed"
-  | "ready_to_merge_overdue"
+  | "merge_overdue"
   | "automation_stuck";
 
 /** イベントを起こした主体の種別。 */
