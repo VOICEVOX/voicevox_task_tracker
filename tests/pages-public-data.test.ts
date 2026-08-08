@@ -25,7 +25,11 @@ import {
   type StateHistoryRecord,
   type StateSnapshot,
 } from "../src/persistence/index.js";
-import { createPublicRepositoryAllowlist } from "../src/github/index.js";
+import {
+  PRODUCTION_SOURCE_ID_KINDS,
+  createPublicRepositoryAllowlist,
+  type ProductionSourceIdKind,
+} from "../src/github/index.js";
 import {
   DEFAULT_INITIAL_GRAPH_NODE_LIMIT,
   PUBLIC_DETAILS_FILE_NAME,
@@ -493,7 +497,10 @@ describe("公開evidence URL", () => {
       kind: "github_pull_request_review_comment",
       sourceUrl: "https://github.com/VOICEVOX/public/issues/1#discussion_r303",
     },
-  ] satisfies readonly Readonly<{ kind: string; sourceUrl: GitHubItemUrl }>[];
+  ] satisfies readonly Readonly<{
+    kind: ProductionSourceIdKind;
+    sourceUrl: GitHubItemUrl;
+  }>[];
 
   it.each(individualSourceCases)("$kindは個別anchorへ解決する", ({ kind, sourceUrl }) => {
     const itemUrl = "https://github.com/VOICEVOX/public/issues/1";
@@ -514,6 +521,49 @@ describe("公開evidence URL", () => {
         ]),
       ),
     ).toBe(sourceUrl);
+  });
+
+  it("github_native_closing_issueはanchorのないPull Request URLを項目URLへ解決する", () => {
+    const itemUrl: GitHubItemUrl = "https://github.com/VOICEVOX/public/pull/1";
+    const itemNodeId = createGitHubNodeId("PR_EVIDENCE_CLOSING_ISSUE");
+    const sourceId = buildSourceId("github_native_closing_issue", "PR_source:I_target");
+
+    expect(
+      resolveEvidenceSourceUrl(
+        sourceId,
+        [{ nodeId: itemNodeId, url: itemUrl }],
+        createEvidenceSourceUrlMap([
+          {
+            itemNodeId,
+            itemUrl,
+            sourceId,
+            url: itemUrl,
+          },
+        ]),
+      ),
+    ).toBe(itemUrl);
+  });
+
+  it.each(PRODUCTION_SOURCE_ID_KINDS)("%sに公開evidence URLの解決方式がある", (kind) => {
+    const itemUrl: GitHubItemUrl = "https://github.com/VOICEVOX/public/issues/1";
+    const itemNodeId = createGitHubNodeId("I_EVIDENCE_PRODUCTION_KIND");
+    const sourceId = buildSourceId(kind, "source");
+    const individualSource = individualSourceCases.find((candidate) => candidate.kind === kind);
+    const sourceOwnersById =
+      individualSource == null
+        ? createEvidenceSourceUrlMap([])
+        : createEvidenceSourceUrlMap([
+            {
+              itemNodeId,
+              itemUrl,
+              sourceId,
+              url: individualSource.sourceUrl,
+            },
+          ]);
+
+    expect(
+      resolveEvidenceSourceUrl(sourceId, [{ nodeId: itemNodeId, url: itemUrl }], sourceOwnersById),
+    ).toBe(individualSource?.sourceUrl ?? itemUrl);
   });
 
   it("項目単位のsourceは項目URLへ解決し未知の種別を拒否する", () => {

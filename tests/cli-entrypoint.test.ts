@@ -145,4 +145,54 @@ describe("tracker:run実行入口", () => {
       vi.resetModules();
     }
   });
+
+  it("build-pagesのトップレベル例外へ固定stageを付けて安全に出す", async () => {
+    const githubValueCanaries = [
+      "I_kwDO_TOP_LEVEL_NODE_ID_CANARY",
+      "https://github.com/VOICEVOX/voicevox/issues/987654",
+      "top-level-github-user-canary",
+    ];
+    const outputDirectoryCanary = "web/public/data-user-input-canary";
+    const error = new Error(githubValueCanaries.join(" "));
+    delete error.stack;
+    vi.resetModules();
+    vi.doMock("../src/cli/composition-root.js", () => ({
+      createDefaultCliApplication: () => ({
+        run: () => Promise.reject(error),
+      }),
+    }));
+    const trackerRunPath = fileURLToPath(new URL("../src/cli/tracker-run.ts", import.meta.url));
+    const originalArgv = [...process.argv];
+    const originalExitCode = process.exitCode;
+    const stderrWrite = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      process.argv.splice(
+        0,
+        process.argv.length,
+        "node",
+        trackerRunPath,
+        "build-pages",
+        "--output",
+        outputDirectoryCanary,
+      );
+      await import("../src/cli/tracker-run.js");
+
+      expect(stderrWrite).toHaveBeenCalledTimes(2);
+      expect(stderrWrite).toHaveBeenNthCalledWith(1, "tracker:runの実行に失敗しました\n");
+      expect(stderrWrite).toHaveBeenNthCalledWith(2, "stage=pages errorType=Error\n");
+      const standardError = stderrWrite.mock.calls.map((call) => call[0].toString()).join("");
+      for (const canary of githubValueCanaries) {
+        expect(standardError).not.toContain(canary);
+      }
+      expect(standardError).not.toContain(outputDirectoryCanary);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.argv.splice(0, process.argv.length, ...originalArgv);
+      process.exitCode = originalExitCode;
+      stderrWrite.mockRestore();
+      vi.doUnmock("../src/cli/composition-root.js");
+      vi.resetModules();
+    }
+  });
 });

@@ -2,8 +2,9 @@ import { pathToFileURL } from "node:url";
 
 import { z } from "zod";
 
+import { UnreachableError } from "../util/index.js";
 import { type CliExecutionResult } from "./application.js";
-import { parseCliArguments } from "./command.js";
+import { parseCliArguments, type CliCommand } from "./command.js";
 import { createDefaultCliApplication } from "./composition-root.js";
 import { safeErrorDiagnostic } from "./error-diagnostic.js";
 import {
@@ -13,6 +14,7 @@ import {
   CliUsageError,
   CliWorkflowArtifactError,
 } from "./errors.js";
+import { type RunStage } from "./run-report.js";
 
 const REPOSITORY_FILTER_SEPARATOR = ",";
 
@@ -140,6 +142,30 @@ export async function runTrackerCommand<Result>(
   return runCli(createTrackerRunCliArguments(args));
 }
 
+function topLevelDiagnosticStage(command: CliCommand): RunStage | "unknown" {
+  switch (command.kind) {
+    case "persist-state":
+      return "state_persistence";
+    case "build-pages":
+      return "pages";
+    case "notify-discord":
+    case "notify-operations":
+      return "discord";
+    case "report-workflow":
+      return "artifact";
+    case "daily":
+    case "dry-run":
+    case "backfill":
+    case "collect-analyze":
+    case "replay":
+    case "eval":
+    case "help":
+      return "unknown";
+    default:
+      throw new UnreachableError(command);
+  }
+}
+
 function writeFailureDiagnostics(result: CliExecutionResult): void {
   if (result.exitCode === 0) {
     return;
@@ -167,14 +193,17 @@ function isMainModule(moduleUrl: string, executablePath: string | undefined): bo
 }
 
 if (isMainModule(import.meta.url, process.argv[1])) {
+  let stage: RunStage | "unknown" = "unknown";
   try {
-    const application = createDefaultCliApplication();
-    const result = await runTrackerCommand(process.argv.slice(2), (args) => application.run(args));
+    const result = await runTrackerCommand(process.argv.slice(2), (args) => {
+      stage = topLevelDiagnosticStage(parseCliArguments(args));
+      return createDefaultCliApplication().run(args);
+    });
     writeFailureDiagnostics(result);
     process.exitCode = result.exitCode;
   } catch (error: unknown) {
     process.stderr.write(`${safeTopLevelMessage(error)}\n`);
-    process.stderr.write(`${safeErrorDiagnostic("unknown", error)}\n`);
+    process.stderr.write(`${safeErrorDiagnostic(stage, error)}\n`);
     process.exitCode = 1;
   }
 }

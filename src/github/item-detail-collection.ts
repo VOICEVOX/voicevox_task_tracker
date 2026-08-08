@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 import {
-  buildSourceId,
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
@@ -36,6 +35,7 @@ import {
   REVIEW_THREAD_PAGE_QUERY,
   SUB_ISSUE_PAGE_QUERY,
 } from "./item-detail-queries.js";
+import { buildProductionSourceId } from "./production-source-id.js";
 import {
   type GitHubAutoMerge,
   type GitHubCheckContext,
@@ -698,7 +698,7 @@ function assertNoDuplicateNodeIds(nodeIds: readonly string[], context: string): 
 function normalizeAccount(account: RawActor): GitHubDetailAccount {
   const nodeId = createGitHubNodeId(account.id);
   return Object.freeze({
-    sourceId: buildSourceId("github_actor", nodeId),
+    sourceId: buildProductionSourceId("github_actor", nodeId),
     nodeId,
     login: account.login,
     apiType: account.__typename,
@@ -732,7 +732,7 @@ function normalizeReviewRequestTarget(
   if (target.__typename !== "Team") {
     return Object.freeze({
       type: "user",
-      sourceId: buildSourceId("github_user", nodeId),
+      sourceId: buildProductionSourceId("github_user", nodeId),
       nodeId,
       login: target.login,
       apiType: target.__typename,
@@ -747,7 +747,7 @@ function normalizeTeam(
   const nodeId = createGitHubNodeId(target.id);
   return Object.freeze({
     type: "team",
-    sourceId: buildSourceId("github_team", nodeId),
+    sourceId: buildProductionSourceId("github_team", nodeId),
     nodeId,
     organizationLogin: target.organization.login,
     slug: target.slug,
@@ -798,7 +798,7 @@ function normalizeReferencedItem(item: RawReferencedItem): GitHubReferencedItem 
           ? "merged"
           : "closed";
   return Object.freeze({
-    sourceId: buildSourceId("github_item", nodeId),
+    sourceId: buildProductionSourceId("github_item", nodeId),
     nodeId,
     repositoryId,
     repositoryOwner: item.repository.owner.login,
@@ -945,7 +945,7 @@ function normalizeComments(nodes: readonly RawComment[]): readonly GitHubIssueCo
     nodes.map((comment, sequence) => {
       const nodeId = createGitHubNodeId(comment.id);
       return Object.freeze({
-        sourceId: buildSourceId("github_issue_comment", nodeId),
+        sourceId: buildProductionSourceId("github_issue_comment", nodeId),
         nodeId,
         sequence,
         author: normalizeActor(comment.author),
@@ -1023,7 +1023,7 @@ function normalizeCommit(commit: z.output<typeof commitSchema>): GitHubPullReque
           value: commit.pushedDate,
         });
   return Object.freeze({
-    sourceId: buildSourceId("github_commit", nodeId),
+    sourceId: buildProductionSourceId("github_commit", nodeId),
     nodeId,
     sha: commit.oid,
     committedAt: commit.committedDate,
@@ -1043,7 +1043,7 @@ function normalizeTimelineBase(
 }> {
   const nodeId = createGitHubNodeId(event.id);
   return {
-    sourceId: buildSourceId("github_timeline_event", nodeId),
+    sourceId: buildProductionSourceId("github_timeline_event", nodeId),
     nodeId,
     sequence,
     occurredAt: event.createdAt,
@@ -1114,7 +1114,7 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
         ...normalizeTimelineBase(event, sequence),
         kind: "labeled",
         label: Object.freeze({
-          sourceId: buildSourceId("github_label", labelNodeId),
+          sourceId: buildProductionSourceId("github_label", labelNodeId),
           nodeId: labelNodeId,
           name: event.label.name,
         }),
@@ -1127,7 +1127,7 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
         ...normalizeTimelineBase(event, sequence),
         kind: "unlabeled",
         label: Object.freeze({
-          sourceId: buildSourceId("github_label", labelNodeId),
+          sourceId: buildProductionSourceId("github_label", labelNodeId),
           nodeId: labelNodeId,
           name: event.label.name,
         }),
@@ -1247,7 +1247,7 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
       const event = parseGraphqlResponse(pullRequestCommitEventSchema, node, "PullRequestCommit");
       const nodeId = createGitHubNodeId(event.id);
       return Object.freeze({
-        sourceId: buildSourceId("github_timeline_event", nodeId),
+        sourceId: buildProductionSourceId("github_timeline_event", nodeId),
         nodeId,
         sequence,
         kind: "commit_added",
@@ -1300,7 +1300,7 @@ function collectInboundCrossReferences(
     }
     candidates.push(
       Object.freeze({
-        sourceId: buildSourceId(
+        sourceId: buildProductionSourceId(
           "github_inbound_cross_reference",
           `${event.nodeId}:${event.source.nodeId}`,
         ),
@@ -1383,7 +1383,7 @@ function normalizeReviewCommit(
   const nodeId = createGitHubNodeId(commit.id);
   return Object.freeze({
     status: "available",
-    sourceId: buildSourceId("github_commit", nodeId),
+    sourceId: buildProductionSourceId("github_commit", nodeId),
     nodeId,
     sha: commit.oid,
   });
@@ -1399,7 +1399,7 @@ function normalizeReviews(nodes: readonly RawReview[]): readonly GitHubPullReque
       }
       const nodeId = createGitHubNodeId(review.id);
       return Object.freeze({
-        sourceId: buildSourceId("github_pull_request_review", nodeId),
+        sourceId: buildProductionSourceId("github_pull_request_review", nodeId),
         nodeId,
         sequence,
         state: normalizeReviewState(review.state),
@@ -1503,7 +1503,7 @@ function normalizeReviewComments(
     nodes.map((comment, sequence) => {
       const nodeId = createGitHubNodeId(comment.id);
       return Object.freeze({
-        sourceId: buildSourceId("github_pull_request_review_comment", nodeId),
+        sourceId: buildProductionSourceId("github_pull_request_review_comment", nodeId),
         nodeId,
         sequence,
         author: normalizeActor(comment.author),
@@ -1526,7 +1526,7 @@ async function normalizeReviewThreads(
     const nodeId = createGitHubNodeId(thread.id);
     threads.push(
       Object.freeze({
-        sourceId: buildSourceId("github_pull_request_review_thread", nodeId),
+        sourceId: buildProductionSourceId("github_pull_request_review_thread", nodeId),
         nodeId,
         sequence,
         isResolved: thread.isResolved,
@@ -1630,7 +1630,7 @@ function normalizeReviewRequests(
     const nodeId = createGitHubNodeId(request.id);
     const target = normalizeReviewRequestTarget(request.requestedReviewer);
     return Object.freeze({
-      sourceId: buildSourceId("github_review_request", nodeId),
+      sourceId: buildProductionSourceId("github_review_request", nodeId),
       nodeId,
       target,
       requestedAt:
@@ -1705,7 +1705,7 @@ function normalizeNativeClosingIssues(
       }
       const normalizedItem = normalizeReferencedItem(relatedItem);
       return Object.freeze({
-        sourceId: buildSourceId(
+        sourceId: buildProductionSourceId(
           "github_native_closing_issue",
           `${item.nodeId}:${normalizedItem.nodeId}`,
         ),
@@ -1795,7 +1795,7 @@ async function normalizeNativeDependencies(
     ...blockedByNodes.map((relatedItem) => {
       const normalizedItem = normalizeReferencedItem(relatedItem);
       return Object.freeze({
-        sourceId: buildSourceId(
+        sourceId: buildProductionSourceId(
           "github_native_dependency",
           `${item.nodeId}:blocked_by:${normalizedItem.nodeId}`,
         ),
@@ -1808,7 +1808,7 @@ async function normalizeNativeDependencies(
     ...blockingNodes.map((relatedItem) => {
       const normalizedItem = normalizeReferencedItem(relatedItem);
       return Object.freeze({
-        sourceId: buildSourceId(
+        sourceId: buildProductionSourceId(
           "github_native_dependency",
           `${item.nodeId}:blocking:${normalizedItem.nodeId}`,
         ),
@@ -1890,7 +1890,7 @@ async function normalizeNativeHierarchy(
     const parent = normalizeReferencedItem(issue.parent);
     relations.push(
       Object.freeze({
-        sourceId: buildSourceId(
+        sourceId: buildProductionSourceId(
           "github_native_hierarchy",
           `${item.nodeId}:parent:${parent.nodeId}`,
         ),
@@ -1905,7 +1905,7 @@ async function normalizeNativeHierarchy(
     const subIssue = normalizeReferencedItem(subIssueNode);
     relations.push(
       Object.freeze({
-        sourceId: buildSourceId(
+        sourceId: buildProductionSourceId(
           "github_native_hierarchy",
           `${item.nodeId}:sub_issue:${subIssue.nodeId}`,
         ),
@@ -2024,7 +2024,7 @@ function normalizeCheckRunContext(
 ): Extract<GitHubCheckContext, { type: "check_run" }> {
   const fields = {
     type: "check_run",
-    sourceId: buildSourceId("github_check_run", nodeId),
+    sourceId: buildProductionSourceId("github_check_run", nodeId),
     nodeId,
     name: context.name,
   } satisfies Pick<
@@ -2096,7 +2096,7 @@ function normalizeCheckContexts(nodes: readonly RawCheckContext[]): readonly Git
       }
       return Object.freeze({
         type: "commit_status",
-        sourceId: buildSourceId("github_commit_status", nodeId),
+        sourceId: buildProductionSourceId("github_commit_status", nodeId),
         nodeId,
         context: context.context,
         state: normalizeCombinedStatus(context.state),
@@ -2119,7 +2119,7 @@ async function normalizeHeadChecks(
   const nodeId = createGitHubNodeId(commit.statusCheckRollup.id);
   return Object.freeze({
     status: "configured",
-    sourceId: buildSourceId("github_status_check_rollup", nodeId),
+    sourceId: buildProductionSourceId("github_status_check_rollup", nodeId),
     nodeId,
     combinedState: normalizeCombinedStatus(commit.statusCheckRollup.state),
     contexts: normalizeCheckContexts(contexts),
@@ -2192,7 +2192,7 @@ function normalizeAutoMerge(
   }
   return Object.freeze({
     status: "enabled",
-    sourceId: buildSourceId("github_auto_merge_request", pullRequestNodeId),
+    sourceId: buildProductionSourceId("github_auto_merge_request", pullRequestNodeId),
     enabledAt: autoMergeRequest.enabledAt,
     enabledBy: normalizeActor(autoMergeRequest.enabledBy),
     mergeMethod: normalizeMergeMethod(autoMergeRequest.mergeMethod),
@@ -2210,7 +2210,7 @@ function normalizeMergeQueue(
   const nodeId = createGitHubNodeId(mergeQueueEntry.id);
   return Object.freeze({
     status: "queued",
-    sourceId: buildSourceId("github_merge_queue_entry", nodeId),
+    sourceId: buildProductionSourceId("github_merge_queue_entry", nodeId),
     nodeId,
   });
 }
@@ -2307,12 +2307,12 @@ async function collectIssueDetail(
   );
   const timeline = normalizeTimeline(timelineNodes);
   return Object.freeze({
-    sourceId: buildSourceId("github_item_detail", item.nodeId),
+    sourceId: buildProductionSourceId("github_item_detail", item.nodeId),
     nodeId: item.nodeId,
     repositoryId: item.repositoryId,
     number: item.number,
     type: "issue",
-    bodySourceId: buildSourceId("github_item_body", item.nodeId),
+    bodySourceId: buildProductionSourceId("github_item_body", item.nodeId),
     body: issue.body,
     comments: normalizeComments(commentNodes),
     timeline,
@@ -2360,12 +2360,12 @@ async function collectPullRequestDetail(
   );
   const timeline = normalizeTimeline(timelineNodes);
   return Object.freeze({
-    sourceId: buildSourceId("github_item_detail", item.nodeId),
+    sourceId: buildProductionSourceId("github_item_detail", item.nodeId),
     nodeId: item.nodeId,
     repositoryId: item.repositoryId,
     number: item.number,
     type: "pull_request",
-    bodySourceId: buildSourceId("github_item_body", item.nodeId),
+    bodySourceId: buildProductionSourceId("github_item_body", item.nodeId),
     body: pullRequest.body,
     comments: normalizeComments(commentNodes),
     timeline,

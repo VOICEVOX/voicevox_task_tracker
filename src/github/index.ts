@@ -95,6 +95,12 @@ export {
   type StaleObservedGitHubItem,
 } from "./item-normalization.js";
 export {
+  PRODUCTION_SOURCE_ID_KINDS,
+  buildProductionSourceId,
+  isProductionSourceIdKind,
+  type ProductionSourceIdKind,
+} from "./production-source-id.js";
+export {
   planIncrementalItemCollection,
   type CurrentAnalysisRulesFingerprints,
   type IncrementalItemDetailTarget,
