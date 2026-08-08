@@ -82,6 +82,12 @@ export type ConfidencePresentation = Readonly<{
   fieldQualifier: "" | "推定" | "候補";
 }>;
 
+/** AI推定の利用状況について一覧や詳細へ出す注記。 */
+export type AiAnalysisNotice =
+  | Readonly<{ kind: "none" }>
+  | Readonly<{ kind: "skipped"; description: string }>
+  | Readonly<{ kind: "outdated"; description: string }>;
+
 /** 特定できた待ち相手。 */
 export type WaitingSubject =
   Readonly<{ kind: "user"; login: string }> | Readonly<{ kind: "team"; teamId: string }>;
@@ -159,13 +165,14 @@ const STALL_FILTER_DEFINITIONS = [
   },
 ] satisfies readonly StallFilterDefinition[];
 
-/** AI判定を利用できず縮退した項目を表す絞り込み値。 */
-export const AI_ANALYSIS_DEGRADED_FILTER_VALUE = "degraded";
-
 const AI_ANALYSIS_FILTER_OPTIONS = [
   {
-    label: "AI判定を利用できず",
-    value: AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+    label: "AI推定が最新でない",
+    value: "outdated",
+  },
+  {
+    label: "AI推定を省略",
+    value: "skipped",
   },
 ] satisfies readonly TableFilterOption[];
 
@@ -202,17 +209,30 @@ export function isTableSelectFilterKey(key: TableFilterKey): key is TableSelectF
   return key !== "waitingOn";
 }
 
-/** AI判定を利用できず縮退した状態かを返す。 */
-export function isAiAnalysisDegraded(status: AiAnalysisStatus): boolean {
+/** AI推定の利用状況から表示する注記を返す。 */
+export function aiAnalysisNotice(status: AiAnalysisStatus): AiAnalysisNotice {
   switch (status) {
-    case "failed":
-    case "deferred":
-      return true;
     case "used":
-    case "not_required":
     case "disabled":
     case "not_recorded":
-      return false;
+      return { kind: "none" };
+    case "not_required":
+      return {
+        kind: "skipped",
+        description: "確定ルールだけで判定できたため、AI推定を省いています。",
+      };
+    case "failed":
+      return {
+        kind: "outdated",
+        description:
+          "AI推定に失敗したため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+      };
+    case "deferred":
+      return {
+        kind: "outdated",
+        description:
+          "AI推定を今回実行しなかったため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+      };
     default:
       throw new UnreachableError(status);
   }
@@ -924,10 +944,10 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: st
       return row.stallDurationMilliseconds >= definition.thresholdMilliseconds;
     }
     case "aiAnalysis":
-      if (value !== AI_ANALYSIS_DEGRADED_FILTER_VALUE) {
+      if (value !== "outdated" && value !== "skipped") {
         throw new TypeError(`未対応のAI利用状況の絞り込みです: ${value}`);
       }
-      return isAiAnalysisDegraded(row.item.aiAnalysis.status);
+      return aiAnalysisNotice(row.item.aiAnalysis.status).kind === value;
     default:
       throw new UnreachableError(key);
   }

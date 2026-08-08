@@ -333,7 +333,7 @@ Actions上でCodexの認証エラーが起きた場合は、まず過去の`coll
 [デプロイ手順](DEPLOYMENT.md)のコマンドで、新しい`auth.json`を`CODEX_AUTH_JSON`の初期値として登録します。
 
 `fallback`はAI分析に失敗または延期した項目を決定論的判定と利用可能な前回結果へ縮退した完全runです。
-概要ページのAI状態の注意から対象一覧を開き、`AI判定なし`のバッジと項目詳細の注記で対象を特定します。
+全項目一覧を`AI推定が最新でない`で絞り込み、各行の警告アイコンと項目詳細の注記で対象を特定します。
 原因はrun reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から追います。
 対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。
 `failure`が`state_persistence`より前ならstateは更新されません。
