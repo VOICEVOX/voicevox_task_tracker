@@ -735,7 +735,7 @@ export function ItemDetailsContent({
             }`}
           </p>
           <DependencyGraphDiagram
-            description={`${item.displayReference}を中心項目として示します。矢印は依存関係の始点から終点へ向き、ブロック関係はブロック元からブロックされる項目へ向きます。`}
+            description={`${item.displayReference}を中心項目として示します。`}
             idPrefix="item-dependency-graph"
             navigation={{
               status: "item_details",

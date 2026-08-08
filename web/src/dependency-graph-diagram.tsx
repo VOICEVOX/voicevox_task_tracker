@@ -71,14 +71,14 @@ function graphNodeShapeClassName(node: GraphViewNode, linked: boolean): string {
   return `${GRAPH_NODE_FILL_CLASS_NAMES[node.kind]} ${strokeClassName} ${linkedClassName}`;
 }
 
-function graphEdgePathClassName(edge: GraphViewEdge): string {
-  const colorClassName = edge.authoritative
+function graphEdgePathClassName(authoritative: boolean): string {
+  const colorClassName = authoritative
     ? "stroke-graph-edge-authoritative"
     : "stroke-graph-edge-inferred";
-  const widthClassName = edge.authoritative
+  const widthClassName = authoritative
     ? "[stroke-width:var(--stroke-width-graph-edge-authoritative)]"
     : "[stroke-width:var(--stroke-width-graph-edge)]";
-  const patternClassName = edge.authoritative ? "" : "[stroke-dasharray:8_6]";
+  const patternClassName = authoritative ? "" : "[stroke-dasharray:8_6]";
   return `fill-none ${colorClassName} ${widthClassName} ${patternClassName}`;
 }
 
@@ -99,34 +99,39 @@ function nodeIcon(node: GraphViewNode): string {
   }
 }
 
-function nodeShape(nodeLayout: LayoutedGraphNode, linked: boolean): VNode {
-  const { node, x, y } = nodeLayout;
-  const left = x - node.width / 2;
-  const top = y - node.height / 2;
-  const className = graphNodeShapeClassName(node, linked);
-  switch (node.kind) {
+function GraphNodeShape({
+  className,
+  height,
+  kind,
+  width,
+  x,
+  y,
+}: Readonly<{
+  className: string;
+  height: number;
+  kind: GraphViewNode["kind"];
+  width: number;
+  x: number;
+  y: number;
+}>): VNode {
+  const left = x - width / 2;
+  const top = y - height / 2;
+  switch (kind) {
     case "issue":
       return (
-        <rect
-          class={className}
-          x={left}
-          y={top}
-          width={node.width}
-          height={node.height}
-          rx={node.height * 0.2}
-        />
+        <rect class={className} x={left} y={top} width={width} height={height} rx={height * 0.2} />
       );
     case "pull_request": {
-      const corner = node.height * 0.22;
+      const corner = height * 0.22;
       return (
         <polygon
           class={className}
           points={[
             `${left + corner},${top}`,
-            `${left + node.width - corner},${top}`,
-            `${left + node.width},${y}`,
-            `${left + node.width - corner},${top + node.height}`,
-            `${left + corner},${top + node.height}`,
+            `${left + width - corner},${top}`,
+            `${left + width},${y}`,
+            `${left + width - corner},${top + height}`,
+            `${left + corner},${top + height}`,
             `${left},${y}`,
           ].join(" ")}
         />
@@ -138,15 +143,64 @@ function nodeShape(nodeLayout: LayoutedGraphNode, linked: boolean): VNode {
           class={className}
           points={[
             `${x},${top}`,
-            `${left + node.width},${y}`,
-            `${x},${top + node.height}`,
+            `${left + width},${y}`,
+            `${x},${top + height}`,
             `${left},${y}`,
           ].join(" ")}
         />
       );
     default:
-      throw new UnreachableError(node);
+      throw new UnreachableError(kind);
   }
+}
+
+function nodeShape(nodeLayout: LayoutedGraphNode, linked: boolean): VNode {
+  const { node, x, y } = nodeLayout;
+  return (
+    <GraphNodeShape
+      className={graphNodeShapeClassName(node, linked)}
+      height={node.height}
+      kind={node.kind}
+      width={node.width}
+      x={x}
+      y={y}
+    />
+  );
+}
+
+function GraphLegendNodeSample({ kind }: Readonly<{ kind: GraphViewNode["kind"] }>): VNode {
+  return (
+    <svg
+      class="graph-legend-node-sample block h-7 w-12 shrink-0"
+      viewBox="0 0 48 28"
+      width="48"
+      height="28"
+      aria-hidden="true"
+    >
+      <GraphNodeShape
+        className={`${GRAPH_NODE_FILL_CLASS_NAMES[kind]} ${GRAPH_NODE_STROKE_CLASS_NAMES[kind]} [stroke-width:var(--stroke-width-graph-node)]`}
+        height={24}
+        kind={kind}
+        width={44}
+        x={24}
+        y={14}
+      />
+    </svg>
+  );
+}
+
+function GraphLegendEdgeSample({ authoritative }: Readonly<{ authoritative: boolean }>): VNode {
+  return (
+    <svg
+      class="graph-legend-edge-sample block h-4 w-16 shrink-0"
+      viewBox="0 0 64 16"
+      width="64"
+      height="16"
+      aria-hidden="true"
+    >
+      <line class={graphEdgePathClassName(authoritative)} x1="2" y1="8" x2="62" y2="8" />
+    </svg>
+  );
 }
 
 function graphPath(points: GraphLayout["edges"][number]["points"]): string {
@@ -338,86 +392,137 @@ function GraphSvg({
   navigation: GraphDiagramNavigation;
   title: string;
 }>) {
+  const nodeKinds = [
+    "issue",
+    "pull_request",
+    "external_reference",
+  ] satisfies readonly GraphViewNode["kind"][];
   return (
-    <div
-      class="graph-viewport max-h-200 overflow-auto rounded-xl border border-border-subtle bg-surface-sunken"
-      data-layout-status="ready"
-    >
-      <svg
-        class="dependency-graph-svg mx-auto block max-w-none bg-dependency-grid [background-size:2rem_2rem]"
-        viewBox={`0 0 ${layout.width.toString()} ${layout.height.toString()}`}
-        width={Math.max(layout.width, 760)}
-        height={Math.max(layout.height, 360)}
-        role="group"
-        aria-labelledby={`${idPrefix}-title ${idPrefix}-description`}
-        data-rendered-node-count={layout.nodes.length}
+    <>
+      <section
+        class="dependency-graph-legend grid gap-3 rounded-xl border border-border-subtle bg-surface-sunken p-3 text-sm text-text-secondary"
+        aria-labelledby={`${idPrefix}-legend-title`}
       >
-        <title id={`${idPrefix}-title`}>{title}</title>
-        <desc id={`${idPrefix}-description`}>{description}</desc>
-        <defs>
-          <marker
-            id={`${idPrefix}-arrow-authoritative`}
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
-            <path class="fill-graph-edge-authoritative" d="M 0 0 L 10 5 L 0 10 z" />
-          </marker>
-          <marker
-            id={`${idPrefix}-arrow-inferred`}
-            viewBox="0 0 10 10"
-            refX="9"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
-            <path class="fill-graph-edge-inferred" d="M 0 0 L 10 5 L 0 10 z" />
-          </marker>
-        </defs>
-        <g class="graph-edges">
-          {layout.edges.map(({ edge, points, labelPoint }) => {
-            const authorityLabel = graphEdgeAuthorityLabel(edge);
-            return (
-              <g
-                key={edge.id}
-                class={`graph-edge graph-edge-${edge.type} ${
-                  edge.authoritative ? "graph-edge-authoritative" : "graph-edge-inferred"
-                }`}
-                data-edge-id={edge.id}
-                data-edge-type={edge.type}
-                data-authority={edge.authoritative ? "authoritative" : "inferred"}
-                role="group"
-                aria-label={`${edge.typeLabel}、${authorityLabel}`}
-              >
-                <path
-                  class={graphEdgePathClassName(edge)}
-                  d={graphPath(points)}
-                  marker-end={`url(#${idPrefix}-arrow-${
-                    edge.authoritative ? "authoritative" : "inferred"
-                  })`}
-                />
-                <text class={GRAPH_EDGE_TEXT_CLASS_NAME} x={labelPoint.x} y={labelPoint.y}>
-                  {edge.typeLabel}
-                </text>
-              </g>
-            );
-          })}
-        </g>
-        <g class="graph-nodes">
-          {layout.nodes.map((nodeLayout) => (
-            <GraphSvgNode
-              key={nodeLayout.node.id}
-              nodeLayout={nodeLayout}
-              navigation={navigation}
-            />
-          ))}
-        </g>
-      </svg>
-    </div>
+        <h5 id={`${idPrefix}-legend-title`} class="m-0 text-base font-bold text-text-primary">
+          凡例
+        </h5>
+        <dl class="m-0 grid gap-3 lg:grid-cols-3">
+          <div class="graph-legend-nodes grid content-start gap-2">
+            <dt class="font-bold text-text-primary">ノードの形</dt>
+            <dd class="m-0">
+              <ul class="m-0 flex list-none flex-wrap gap-x-4 gap-y-2 p-0">
+                {nodeKinds.map((kind) => (
+                  <li class="flex items-center gap-2" data-legend-node-kind={kind} key={kind}>
+                    <GraphLegendNodeSample kind={kind} />
+                    <span>{graphNodeKindLabel(kind)}</span>
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+          <div class="graph-legend-edges grid content-start gap-2">
+            <dt class="font-bold text-text-primary">線種</dt>
+            <dd class="m-0">
+              <ul class="m-0 grid list-none gap-2 p-0">
+                <li class="flex items-center gap-2">
+                  <GraphLegendEdgeSample authoritative={true} />
+                  <span>確定関係</span>
+                </li>
+                <li class="flex items-center gap-2">
+                  <GraphLegendEdgeSample authoritative={false} />
+                  <span>推定関係</span>
+                </li>
+              </ul>
+            </dd>
+          </div>
+          <div class="graph-legend-direction grid content-start gap-2">
+            <dt class="font-bold text-text-primary">矢印の向き</dt>
+            <dd class="m-0">
+              矢印は依存関係の始点から終点へ向き、ブロック関係はブロック元からブロックされる項目へ向きます。
+            </dd>
+          </div>
+        </dl>
+      </section>
+      <div
+        class="graph-viewport min-w-0 max-h-200 overflow-auto rounded-xl border border-border-subtle bg-surface-sunken"
+        data-layout-status="ready"
+      >
+        <svg
+          class="dependency-graph-svg mx-auto block bg-dependency-grid [background-size:2rem_2rem]"
+          viewBox={`0 0 ${layout.width.toString()} ${layout.height.toString()}`}
+          width={layout.width}
+          height={layout.height}
+          role="group"
+          aria-labelledby={`${idPrefix}-title ${idPrefix}-description`}
+          data-rendered-node-count={layout.nodes.length}
+        >
+          <title id={`${idPrefix}-title`}>{title}</title>
+          <desc id={`${idPrefix}-description`}>{description}</desc>
+          <defs>
+            <marker
+              id={`${idPrefix}-arrow-authoritative`}
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path class="fill-graph-edge-authoritative" d="M 0 0 L 10 5 L 0 10 z" />
+            </marker>
+            <marker
+              id={`${idPrefix}-arrow-inferred`}
+              viewBox="0 0 10 10"
+              refX="9"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path class="fill-graph-edge-inferred" d="M 0 0 L 10 5 L 0 10 z" />
+            </marker>
+          </defs>
+          <g class="graph-edges">
+            {layout.edges.map(({ edge, points, labelPoint }) => {
+              const authorityLabel = graphEdgeAuthorityLabel(edge);
+              return (
+                <g
+                  key={edge.id}
+                  class={`graph-edge graph-edge-${edge.type} ${
+                    edge.authoritative ? "graph-edge-authoritative" : "graph-edge-inferred"
+                  }`}
+                  data-edge-id={edge.id}
+                  data-edge-type={edge.type}
+                  data-authority={edge.authoritative ? "authoritative" : "inferred"}
+                  role="group"
+                  aria-label={`${edge.typeLabel}、${authorityLabel}`}
+                >
+                  <path
+                    class={graphEdgePathClassName(edge.authoritative)}
+                    d={graphPath(points)}
+                    marker-end={`url(#${idPrefix}-arrow-${
+                      edge.authoritative ? "authoritative" : "inferred"
+                    })`}
+                  />
+                  <text class={GRAPH_EDGE_TEXT_CLASS_NAME} x={labelPoint.x} y={labelPoint.y}>
+                    {edge.typeLabel}
+                  </text>
+                </g>
+              );
+            })}
+          </g>
+          <g class="graph-nodes">
+            {layout.nodes.map((nodeLayout) => (
+              <GraphSvgNode
+                key={nodeLayout.node.id}
+                nodeLayout={nodeLayout}
+                navigation={navigation}
+              />
+            ))}
+          </g>
+        </svg>
+      </div>
+    </>
   );
 }
 
@@ -498,12 +603,5 @@ export function DependencyGraphDiagram({
       throw new UnreachableError(layoutState);
   }
 
-  return (
-    <div class="dependency-graph-diagram grid gap-3">
-      <p class="graph-node-size-description m-0 text-text-secondary">
-        ノードはすべて同じ大きさで表示します。
-      </p>
-      {graph}
-    </div>
-  );
+  return <div class="dependency-graph-diagram grid min-w-0 gap-3">{graph}</div>;
 }

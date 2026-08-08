@@ -434,9 +434,52 @@ describe("項目詳細の依存グラフ", () => {
       />,
       currentContainer(),
     );
+    expect(currentContainer().querySelector(".dependency-graph-legend")).toBeNull();
     await vi.waitFor(() => {
       expect(currentContainer().querySelector('[data-layout-status="ready"]')).not.toBeNull();
     });
+
+    const graphSvg = currentContainer().querySelector<SVGSVGElement>(".dependency-graph-svg");
+    assertNonNullable(graphSvg, "依存グラフのSVGがありません");
+    const viewBoxWidth = graphSvg.getAttribute("viewBox")?.split(" ")[2];
+    const viewBoxHeight = graphSvg.getAttribute("viewBox")?.split(" ")[3];
+    assertNonNullable(viewBoxWidth, "依存グラフのviewBox幅がありません");
+    assertNonNullable(viewBoxHeight, "依存グラフのviewBox高さがありません");
+    expect(graphSvg.getAttribute("width")).toBe(viewBoxWidth);
+    expect(graphSvg.getAttribute("height")).toBe(viewBoxHeight);
+    expect(graphSvg.classList).not.toContain("max-w-full");
+    expect(graphSvg.classList).not.toContain("h-auto");
+    expect(graphSvg.classList).not.toContain("max-w-none");
+
+    const legend = currentContainer().querySelector<HTMLElement>(".dependency-graph-legend");
+    assertNonNullable(legend, "依存グラフの凡例がありません");
+    expect(legend.closest("svg")).toBeNull();
+    expect(legend.querySelector("h5")?.textContent).toBe("凡例");
+    const issueLegend = legend.querySelector('[data-legend-node-kind="issue"]');
+    const pullRequestLegend = legend.querySelector('[data-legend-node-kind="pull_request"]');
+    const externalReferenceLegend = legend.querySelector(
+      '[data-legend-node-kind="external_reference"]',
+    );
+    expect(issueLegend?.textContent).toBe("Issue");
+    expect(issueLegend?.querySelector("svg > rect")).not.toBeNull();
+    expect(pullRequestLegend?.textContent).toBe("Pull Request");
+    expect(pullRequestLegend?.querySelector("svg > polygon")).not.toBeNull();
+    expect(externalReferenceLegend?.textContent).toBe("外部参照");
+    expect(externalReferenceLegend?.querySelector("svg > polygon")).not.toBeNull();
+    expect(externalReferenceLegend?.querySelector("polygon")?.getAttribute("class")).toContain(
+      "stroke-dasharray:7_3",
+    );
+    const legendEdgeItems = [...legend.querySelectorAll(".graph-legend-edges li")];
+    expect(legendEdgeItems.map((item) => item.textContent)).toEqual(["確定関係", "推定関係"]);
+    expect(legendEdgeItems[0]?.querySelector("line")?.getAttribute("class")).not.toContain(
+      "stroke-dasharray",
+    );
+    expect(legendEdgeItems[1]?.querySelector("line")?.getAttribute("class")).toContain(
+      "stroke-dasharray:8_6",
+    );
+    expect(legend.querySelector(".graph-legend-direction")?.textContent).toBe(
+      "矢印の向き矢印は依存関係の始点から終点へ向き、ブロック関係はブロック元からブロックされる項目へ向きます。",
+    );
 
     const issue = currentContainer().querySelector('[data-node-kind="issue"]');
     const pr = currentContainer().querySelector('[data-node-kind="pull_request"]');
@@ -462,9 +505,7 @@ describe("項目詳細の依存グラフ", () => {
     expect(issue?.querySelector("rect")?.getAttribute("class")).toContain(
       "stroke-graph-node-central-accent",
     );
-    expect(currentContainer().querySelector(".graph-node-size-description")?.textContent).toBe(
-      "ノードはすべて同じ大きさで表示します。",
-    );
+    expect(currentContainer().querySelector(".graph-node-size-description")).toBeNull();
     const authoritativeEdge = currentContainer().querySelector(".graph-edge-authoritative");
     const inferredEdge = currentContainer().querySelector(".graph-edge-inferred");
     expect(authoritativeEdge?.textContent).toBe("ブロック");
