@@ -1187,6 +1187,86 @@ describe("公開DTO生成", () => {
     expect(generated.details.graph.edges[0]).not.toHaveProperty("removedAt");
   });
 
+  it("初期graphはseverityより要対応度が高い項目を優先する", () => {
+    const source = createSnapshot({
+      runId: "run-initial-graph-attention",
+      runStatus: "success",
+      ai: {
+        enabled: false,
+        available: false,
+        degraded: false,
+      },
+      generatedAt: GENERATED_AT,
+      repositories: [
+        {
+          id: PUBLIC_REPOSITORY_ID,
+          name: "public",
+          observedAt: FRESH_OBSERVED_AT,
+          freshness: "fresh",
+        },
+      ],
+      items: [
+        createItem({
+          nodeId: "I_HIGH_SEVERITY",
+          repositoryId: PUBLIC_REPOSITORY_ID,
+          repositoryName: "public",
+          number: 1,
+          status: "waiting_for_assessment",
+          severity: "critical",
+          waitingOnKind: "role",
+          waitingOnRole: "maintainer",
+          observedAt: FRESH_OBSERVED_AT,
+          title: "severityが高い項目",
+        }),
+        createItem({
+          nodeId: "I_HIGH_ATTENTION",
+          repositoryId: PUBLIC_REPOSITORY_ID,
+          repositoryName: "public",
+          number: 2,
+          status: "waiting_for_assessment",
+          severity: "none",
+          waitingOnKind: "role",
+          waitingOnRole: "maintainer",
+          observedAt: FRESH_OBSERVED_AT,
+          title: "要対応度が高い項目",
+        }),
+      ],
+      relations: [],
+    });
+    const snapshot = createStateSnapshot({
+      ...source,
+      items: source.items.map((item) => {
+        if (item.nodeId === "I_HIGH_SEVERITY") {
+          return {
+            ...item,
+            attention: {
+              score: 5,
+              level: "low",
+            },
+          };
+        }
+        if (item.nodeId === "I_HIGH_ATTENTION") {
+          return {
+            ...item,
+            attention: {
+              score: 80,
+              level: "high",
+            },
+          };
+        }
+        throw new Error(`初期graph選定fixtureに未知の項目があります: ${item.nodeId}`);
+      }),
+    });
+    const options = {
+      ...defaultGenerationOptions,
+      maxInitialGraphNodes: 1,
+    } satisfies PublicDtoGenerationOptions;
+
+    const generated = generateFixture(snapshot, [], publicInventory(), [], options);
+
+    expect(generated.summary.graph.nodes.map((node) => node.nodeId)).toEqual(["I_HIGH_ATTENTION"]);
+  });
+
   it("fixtureのgraph、根拠、履歴を公開DTOへ反映する", () => {
     const repository = {
       id: PUBLIC_REPOSITORY_ID,

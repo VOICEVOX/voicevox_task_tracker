@@ -3,7 +3,6 @@ import {
   type Evidence,
   type LabelRule,
   type Relation,
-  type Severity,
   type TrackedItem,
 } from "../domain/index.js";
 import {
@@ -506,21 +505,16 @@ function createItemSummary(
   };
 }
 
-function severityRank(severity: Severity): number {
-  switch (severity) {
-    case "none":
-      return 0;
-    case "watch":
-      return 1;
-    case "urgent":
-      return 2;
-    case "critical":
-      return 3;
+function graphNodeAttentionScore(
+  node: PublicGraphNodeDto,
+  summaryByNodeId: ReadonlyMap<string, PublicItemSummaryDto>,
+): number {
+  if (node.kind === "external_reference") {
+    return 0;
   }
-}
-
-function graphNodeSeverity(node: PublicGraphNodeDto): Severity {
-  return node.kind === "external_reference" ? "none" : node.severity;
+  const summary = summaryByNodeId.get(node.nodeId);
+  assertNonNullable(summary, `node ${node.nodeId}のsummaryがありません`);
+  return summary.attention.score;
 }
 
 function graphNodeImpact(
@@ -546,10 +540,11 @@ function createInitialGraph(
   );
   const selectedNodes = [...graph.nodes]
     .sort((left, right) => {
-      const severityOrder =
-        severityRank(graphNodeSeverity(right)) - severityRank(graphNodeSeverity(left));
-      if (severityOrder !== 0) {
-        return severityOrder;
+      const attentionOrder =
+        graphNodeAttentionScore(right, summaryByNodeId) -
+        graphNodeAttentionScore(left, summaryByNodeId);
+      if (attentionOrder !== 0) {
+        return attentionOrder;
       }
       const leftImpact = graphNodeImpact(left, impactByNodeId);
       const rightImpact = graphNodeImpact(right, impactByNodeId);

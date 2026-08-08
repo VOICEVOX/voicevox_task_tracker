@@ -1,65 +1,30 @@
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
-import { ImportanceBadge } from "./importance-badge.js";
+import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
 import {
   createEmptyTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
+  filterAttentionItems,
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
   formatWaitingOn,
   formatWaitingOnCandidate,
   isAiAnalysisDegraded,
-  selectAttentionItems,
   selectPrimaryWaitingOnCandidate,
-  type OverviewSort,
-  type OverviewSortKey,
-  type TableSort,
+  type ItemSort,
+  type ItemSortKey,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
-import { SortControls } from "./sort-controls.js";
+import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 
 const MAX_STALE_REPOSITORY_NAMES = 3;
 const OVERVIEW_NOTICE_CLASS_NAME =
   "notice m-0 rounded-md border-l-2 bg-surface-card px-3 py-2 text-sm leading-5 text-text-secondary";
-
-const SORT_OPTIONS = [
-  {
-    key: "attention",
-    label: "対応が必要な順",
-  },
-  {
-    key: "repository",
-    label: "リポジトリ",
-  },
-  {
-    key: "type",
-    label: "種別",
-  },
-  {
-    key: "status",
-    label: "状態",
-  },
-  {
-    key: "importance",
-    label: "重要度",
-  },
-  {
-    key: "waitingOn",
-    label: "次の担当",
-  },
-  {
-    key: "stall",
-    label: "停滞時間",
-  },
-] satisfies readonly Readonly<{
-  key: OverviewSortKey;
-  label: string;
-}>[];
 
 type OverviewPageProps = Readonly<{
   aiDegradedItemsHref: string;
@@ -68,8 +33,8 @@ type OverviewPageProps = Readonly<{
   now: Date;
   onShowAiDegradedItems: () => void;
   onSelectItem: (nodeId: string) => void;
-  onSortChange: (key: OverviewSortKey) => void;
-  sort: OverviewSort;
+  onSortChange: (key: ItemSortKey) => void;
+  sort: ItemSort;
   summary: PublicSummaryDto;
 }>;
 
@@ -195,23 +160,14 @@ function formatStaleRepositoryNames(
 function sortAttentionItems(
   summary: PublicSummaryDto,
   now: Date,
-  sort: OverviewSort,
-  locale: string,
+  sort: ItemSort,
 ): readonly PublicItemSummaryDto[] {
-  const attentionItems = selectAttentionItems(summary.items);
-  if (sort.key === "attention") {
-    return sort.direction === "descending" ? attentionItems : attentionItems.toReversed();
-  }
+  const attentionItems = filterAttentionItems(summary.items);
   const attentionItemNodeIds = new Set(attentionItems.map((item) => item.nodeId));
-  const tableSort: TableSort = {
-    key: sort.key,
-    direction: sort.direction,
-  };
   return filterAndSortTableRows(
     createItemTableRows(summary, now).filter((row) => attentionItemNodeIds.has(row.item.nodeId)),
     createEmptyTableFilters(),
-    tableSort,
-    locale,
+    sort,
   ).map((row) => row.item);
 }
 
@@ -231,12 +187,13 @@ function AttentionQueue({
   const repositoriesById = new Map(
     summary.repositories.map((repository) => [repository.id, repository]),
   );
-  const selectedSortOption = SORT_OPTIONS.find((option) => option.key === sort.key);
+  const selectedSortOption = ITEM_SORT_OPTIONS.find((option) => option.key === sort.key);
   assertNonNullable(selectedSortOption, "選択中の並び順がありません");
 
   return (
     <PageSection
       className="attention-section"
+      description="要対応度は、重要度が高く、かつ最近動きがあった項目ほど高くなります。高または中の項目を表示します。"
       heading="対応が必要な項目"
       headingAccessory={
         <div class="attention-heading attention-heading-metadata flex flex-wrap items-end gap-4 max-shell:-mt-2 max-shell:items-start">
@@ -262,7 +219,7 @@ function AttentionQueue({
       <SortControls
         className="overview-sort-controls mb-4 grid grid-cols-[minmax(0,1fr)_auto] gap-2 sm:max-w-sm"
         onSortChange={onSortChange}
-        options={SORT_OPTIONS}
+        options={ITEM_SORT_OPTIONS}
         selectId="overview-sort-key"
         sort={sort}
       />
@@ -287,10 +244,17 @@ function AttentionQueue({
               <li key={item.nodeId} data-node-id={item.nodeId}>
                 <article class="attention-item grid min-w-0 grid-cols-[minmax(14rem,0.8fr)_minmax(22rem,1.4fr)_auto] items-start gap-4 rounded-xl border border-border-subtle bg-surface-card p-4 max-shell:grid-cols-1 max-shell:gap-3">
                   <div class="attention-title min-w-0">
-                    <h3 class="item-title-with-importance m-0 grid grid-cols-[1.75rem_minmax(0,1fr)] items-start gap-2 text-lg leading-snug font-bold max-narrow:text-base">
-                      <span class="attention-importance-slot mt-0.5 flex min-h-5 items-start">
+                    <h3 class="item-title-with-scores m-0 grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-lg leading-snug font-bold max-narrow:grid-cols-1 max-narrow:text-base">
+                      <span class="attention-score-badges mt-0.5 flex min-h-5 flex-wrap items-start gap-1.5">
+                        <AttentionBadge
+                          attention={item.attention}
+                          showLabel={true}
+                          showLow={true}
+                          showScore={true}
+                        />
                         <ImportanceBadge
                           importance={item.importance}
+                          showLabel={true}
                           showLow={false}
                           showScore={false}
                         />
@@ -357,7 +321,7 @@ function AttentionQueue({
 
 /** 対応が必要な項目を表示する。 */
 export function OverviewPage(props: OverviewPageProps) {
-  const attentionItems = sortAttentionItems(props.summary, props.now, props.sort, props.locale);
+  const attentionItems = sortAttentionItems(props.summary, props.now, props.sort);
   const aiDegradedItemCount = props.summary.items.filter((item) =>
     isAiAnalysisDegraded(item.aiAnalysis.status),
   ).length;

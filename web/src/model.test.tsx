@@ -10,8 +10,10 @@ import { assertNonNullable } from "../../src/util/index.js";
 import {
   collectWaitingSubjectRows,
   collectWaitingTeamIds,
+  createEmptyTableFilters,
   createItemTableRows,
   createTableFilterOptions,
+  filterAndSortTableRows,
   formatStallDuration,
   formatWaitingOnCandidate,
   resolveWaitingSubjects,
@@ -23,6 +25,7 @@ import {
   waitingOnLabel,
   waitingSubjectKey,
   waitingSubjectLabel,
+  type ItemSortKey,
 } from "./model.js";
 
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
@@ -90,13 +93,66 @@ describe("停滞時間表示", () => {
   });
 });
 
-describe("一覧のstatus表示", () => {
-  it("画面に出す日本語名を導出する", () => {
-    const rows = createItemTableRows(sampleSummary, new Date("2026-08-01T00:00:00.000Z"));
-    const row = rows.find((candidate) => candidate.item.nodeId === "sample-item-editor-101");
-    assertNonNullable(row, "status検索テスト用の項目がありません");
+describe("項目一覧の並び替え", () => {
+  const source = sampleSummary.items[0];
+  assertNonNullable(source, "並び替えテスト用の項目がありません");
+  const summary: PublicSummaryDto = {
+    ...sampleSummary,
+    items: [
+      {
+        ...source,
+        nodeId: "a",
+        attention: { score: 50, level: "medium" },
+        importance: { score: 40, level: "medium" },
+        stallSince: "2026-07-02T00:00:00.000Z",
+      },
+      {
+        ...source,
+        nodeId: "b",
+        attention: { score: 40, level: "medium" },
+        importance: { score: 40, level: "medium" },
+        stallSince: "2026-07-03T00:00:00.000Z",
+      },
+      {
+        ...source,
+        nodeId: "c",
+        attention: { score: 50, level: "medium" },
+        importance: { score: 40, level: "medium" },
+        stallSince: "2026-07-01T00:00:00.000Z",
+      },
+      {
+        ...source,
+        nodeId: "d",
+        attention: { score: 60, level: "high" },
+        importance: { score: 30, level: "medium" },
+        stallSince: "2026-07-01T00:00:00.000Z",
+      },
+    ],
+  };
+  const rows = createItemTableRows(summary, new Date("2026-08-01T00:00:00.000Z"));
 
-    expect(row.statusText).toBe("マージ待ち");
+  function sortedNodeIds(
+    key: ItemSortKey,
+    direction: "ascending" | "descending",
+  ): readonly string[] {
+    return filterAndSortTableRows(rows, createEmptyTableFilters(), { key, direction }).map(
+      (row) => row.item.nodeId,
+    );
+  }
+
+  it("要対応度だけを反転し、同値なら停滞時間の長い順とnode IDの昇順を保つ", () => {
+    expect(sortedNodeIds("attention", "descending")).toEqual(["d", "c", "a", "b"]);
+    expect(sortedNodeIds("attention", "ascending")).toEqual(["b", "c", "a", "d"]);
+  });
+
+  it("重要度だけを反転し、同値なら要対応度の降順とnode IDの昇順を保つ", () => {
+    expect(sortedNodeIds("importance", "descending")).toEqual(["a", "c", "b", "d"]);
+    expect(sortedNodeIds("importance", "ascending")).toEqual(["d", "a", "c", "b"]);
+  });
+
+  it("停滞時間だけを反転し、同値ならnode IDの昇順を保つ", () => {
+    expect(sortedNodeIds("stall", "descending")).toEqual(["c", "d", "a", "b"]);
+    expect(sortedNodeIds("stall", "ascending")).toEqual(["b", "a", "c", "d"]);
   });
 });
 

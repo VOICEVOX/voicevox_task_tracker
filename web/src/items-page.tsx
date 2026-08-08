@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
-import { ImportanceBadge } from "./importance-badge.js";
+import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
 import {
@@ -19,9 +19,9 @@ import {
   type TableFilterOptions,
   type TableFilterKey,
   type ItemTableRow,
-  type TableColumnKey,
+  type ItemSort,
+  type ItemSortKey,
   type TableFilters,
-  type TableSort,
 } from "./model.js";
 import {
   ResponsiveTableCardList,
@@ -30,7 +30,7 @@ import {
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
 import { SafeGitHubLink } from "./safe-link.js";
-import { SortControls } from "./sort-controls.js";
+import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 import { ActionButton, FORM_CONTROL_CLASS_NAME, Pill } from "./ui.js";
 
 const TABLE_PAGE_SIZE = 50;
@@ -45,9 +45,9 @@ type ItemsPageProps = Readonly<{
   onFilterChange: (key: TableFilterKey, value: string) => void;
   onSearchQueryChange: (query: string) => void;
   onSelectItem: (nodeId: string) => void;
-  onSortChange: (key: TableColumnKey) => void;
+  onSortChange: (key: ItemSortKey) => void;
   searchQuery: string;
-  sort: TableSort;
+  sort: ItemSort;
   summary: PublicSummaryDto;
 }>;
 
@@ -62,16 +62,11 @@ type ItemTableProps = Readonly<{
   onRetryDetails: () => void;
   onSearchQueryChange: (query: string) => void;
   onSelectItem: (nodeId: string) => void;
-  onSortChange: (key: TableColumnKey) => void;
+  onSortChange: (key: ItemSortKey) => void;
   searchQuery: string;
   searchState: ItemSearchState;
-  sort: TableSort;
+  sort: ItemSort;
   summary: PublicSummaryDto;
-}>;
-
-type TableColumnDefinition = Readonly<{
-  key: TableColumnKey;
-  label: string;
 }>;
 
 type TableFilterDefinition = Readonly<{
@@ -109,7 +104,7 @@ type ItemSearchState =
       status: "failed";
     }>;
 
-const TABLE_COLUMNS: readonly TableColumnDefinition[] = [
+const TABLE_FILTERS: readonly TableFilterDefinition[] = [
   {
     key: "repository",
     label: "リポジトリ",
@@ -134,10 +129,6 @@ const TABLE_COLUMNS: readonly TableColumnDefinition[] = [
     key: "stall",
     label: "停滞時間",
   },
-];
-
-const TABLE_FILTERS: readonly TableFilterDefinition[] = [
-  ...TABLE_COLUMNS,
   {
     key: "aiAnalysis",
     label: "AI利用状況",
@@ -310,8 +301,8 @@ function ItemTable({
     }
   }, [rows, searchState]);
   const filteredRows = useMemo(
-    () => filterAndSortTableRows(searchedRows, filters, sort, locale),
-    [searchedRows, filters, sort, locale],
+    () => filterAndSortTableRows(searchedRows, filters, sort),
+    [searchedRows, filters, sort],
   );
   const pageCount = Math.max(1, Math.ceil(filteredRows.length / TABLE_PAGE_SIZE));
   const firstRowIndex = pageIndex * TABLE_PAGE_SIZE;
@@ -323,7 +314,7 @@ function ItemTable({
     setPageIndex(0);
   }
 
-  function updateSort(key: TableColumnKey): void {
+  function updateSort(key: ItemSortKey): void {
     onSortChange(key);
     setPageIndex(0);
   }
@@ -333,6 +324,26 @@ function ItemTable({
   }, [filters, searchState, sort]);
 
   const tableColumns = [
+    {
+      ariaSort: sort.key === "attention" ? sort.direction : "none",
+      cellClassName: "attention-cell whitespace-nowrap",
+      cellKind: "data",
+      headerClassName: "whitespace-nowrap",
+      key: "attention",
+      label: "要対応",
+      onSort: () => {
+        updateSort("attention");
+      },
+      renderCell: (row: ItemTableRow) => (
+        <AttentionBadge
+          attention={row.item.attention}
+          showLabel={false}
+          showLow={true}
+          showScore={true}
+        />
+      ),
+      widthClassName: "w-[14%]",
+    },
     {
       ariaSort: sort.key === "importance" ? sort.direction : "none",
       cellClassName: "importance-cell whitespace-nowrap",
@@ -344,7 +355,12 @@ function ItemTable({
         updateSort("importance");
       },
       renderCell: (row: ItemTableRow) => (
-        <ImportanceBadge importance={row.item.importance} showLow={false} showScore={false} />
+        <ImportanceBadge
+          importance={row.item.importance}
+          showLabel={false}
+          showLow={false}
+          showScore={false}
+        />
       ),
       widthClassName: "w-[10%]",
     },
@@ -376,33 +392,27 @@ function ItemTable({
           </span>
         </div>
       ),
-      widthClassName: "w-[34%]",
+      widthClassName: "w-[27%]",
     },
     {
-      ariaSort: sort.key === "status" ? sort.direction : "none",
+      ariaSort: undefined,
       cellClassName: "whitespace-nowrap",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "status",
       label: "状態",
-      onSort: () => {
-        updateSort("status");
-      },
       renderCell: (row: ItemTableRow) => statusLabel(row.item.status),
-      widthClassName: "w-[18%]",
+      widthClassName: "w-[14%]",
     },
     {
-      ariaSort: sort.key === "waitingOn" ? sort.direction : "none",
+      ariaSort: undefined,
       cellClassName: "leading-6 wrap-anywhere",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "waitingOn",
       label: "次の担当",
-      onSort: () => {
-        updateSort("waitingOn");
-      },
       renderCell: (row: ItemTableRow) => formatWaitingOn(row.item, summary),
-      widthClassName: "w-[26%]",
+      widthClassName: "w-[23%]",
     },
     {
       ariaSort: sort.key === "stall" ? sort.direction : "none",
@@ -460,7 +470,7 @@ function ItemTable({
         <SortControls
           className="item-sort-controls grid grid-cols-[minmax(0,1fr)_auto] content-end gap-2 md:min-w-64"
           onSortChange={updateSort}
-          options={TABLE_COLUMNS}
+          options={ITEM_SORT_OPTIONS}
           selectId="item-sort-key"
           sort={sort}
         />
@@ -545,9 +555,16 @@ function ItemTable({
                   </span>
                 )}
               </div>
-              <h3 class="item-title-with-importance m-0 flex min-w-0 items-start gap-1.5 text-base leading-6 font-bold">
+              <h3 class="item-title-with-scores m-0 flex min-w-0 flex-wrap items-start gap-1.5 text-base leading-6 font-bold">
+                <AttentionBadge
+                  attention={row.item.attention}
+                  showLabel={true}
+                  showLow={true}
+                  showScore={true}
+                />
                 <ImportanceBadge
                   importance={row.item.importance}
+                  showLabel={true}
                   showLow={false}
                   showScore={false}
                 />

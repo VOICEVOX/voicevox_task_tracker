@@ -17,12 +17,11 @@ import { assertNonNullable } from "../../src/util/index.js";
 import { App } from "./app.js";
 import {
   AI_ANALYSIS_DEGRADED_FILTER_VALUE,
-  compareAttentionItems,
   createEmptyTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
-  selectAttentionItems,
-  type TableColumnKey,
+  filterAttentionItems,
+  type ItemSortKey,
   type TableFilterKey,
   type TableFilters,
 } from "./model.js";
@@ -35,14 +34,7 @@ const TITLE = "VOICEVOX Task Tracker";
 const BASE_PATH = "/voicevox_task_tracker/";
 const sampleDetails = createPublicDetailsDto(sampleDetailsSource);
 const sampleSummary = createPublicSummaryDto(sampleSummarySource);
-const TABLE_COLUMN_KEYS: readonly TableColumnKey[] = [
-  "repository",
-  "type",
-  "status",
-  "importance",
-  "waitingOn",
-  "stall",
-];
+const ITEM_SORT_KEYS: readonly ItemSortKey[] = ["attention", "importance", "stall"];
 
 let container: HTMLDivElement | undefined;
 
@@ -212,6 +204,30 @@ function createPersonPageSummaryWithLowImportance(): PublicSummaryDto {
   });
 }
 
+function createOverviewSortSummary(): PublicSummaryDto {
+  const attentionScores = new Map([
+    ["sample-item-editor-101", 25],
+    ["sample-item-engine-202", 16],
+    ["sample-item-editor-103", 16],
+    ["sample-item-engine-204", 5],
+  ]);
+  return createPublicSummaryDto({
+    ...sampleSummary,
+    items: sampleSummary.items.map((item) => {
+      const attentionScore = attentionScores.get(item.nodeId);
+      return attentionScore == null
+        ? item
+        : {
+            ...item,
+            attention: {
+              score: attentionScore,
+              level: "medium",
+            },
+          };
+    }),
+  });
+}
+
 function createPeoplePageSummary(): PublicSummaryDto {
   const summary = createPersonPageSummary();
   const hihoItem = summary.items.find((item) => item.nodeId === "sample-item-editor-101");
@@ -239,12 +255,9 @@ function createPeoplePageSummary(): PublicSummaryDto {
 }
 
 type OrderingItemOptions = Readonly<{
+  attention: PublicItemSummaryDto["attention"];
   nodeId: string;
-  severity: PublicItemSummaryDto["severity"];
   status: PublicItemSummaryDto["status"];
-  priorityWeight: number;
-  repositoryCount: number;
-  openNodeCount: number;
   stallSince: string;
 }>;
 
@@ -253,16 +266,10 @@ function createOrderingItem(options: OrderingItemOptions): PublicItemSummaryDto 
   assertNonNullable(source, "並び順テストの基準項目がありません");
   return {
     ...source,
+    attention: options.attention,
     nodeId: options.nodeId,
-    severity: options.severity,
     status: options.status,
-    priorityWeight: options.priorityWeight,
     stallSince: options.stallSince,
-    downstreamImpact: {
-      nodeId: options.nodeId,
-      repositoryCount: options.repositoryCount,
-      openNodeCount: options.openNodeCount,
-    },
   };
 }
 
@@ -337,56 +344,51 @@ describe("Web UI", () => {
     expect(observedTime.dateTime).toBe(sampleSummary.observedAt);
     expect(observedTime.textContent).toBe("1 日前");
     expect(observedTime.title).toContain("JST");
-    expect(requiredElement<HTMLElement>(".attention-summary span").textContent).toBe(
-      "対応が必要な順",
+    expect(requiredElement<HTMLElement>(".attention-summary span").textContent).toBe("要対応");
+    expect(attentionSection.textContent).toContain(
+      "要対応度は、重要度が高く、かつ最近動きがあった項目ほど高くなります。",
     );
+    expect(attentionItemNodeIds()).toEqual(["sample-item-editor-101"]);
     expect(currentContainer().textContent).not.toContain("生成時刻");
   });
 
-  it("概要ページで並び替えキーを変更すると自然な方向で順序を変える", () => {
-    renderApp(sampleSummary);
+  it("概要ページで3つの並び替えキーを選び、別キーは降順から始める", () => {
+    renderApp(createOverviewSortSummary());
     const sortKey = requiredElement<HTMLSelectElement>("#overview-sort-key");
 
     expect([...sortKey.options].map((option) => option.textContent)).toEqual([
-      "対応が必要な順",
-      "リポジトリ",
-      "種別",
-      "状態",
+      "要対応",
       "重要度",
-      "次の担当",
       "停滞時間",
     ]);
-    expect([...sortKey.options].map((option) => option.value)).toEqual([
-      "attention",
-      ...TABLE_COLUMN_KEYS,
-    ]);
+    expect([...sortKey.options].map((option) => option.value)).toEqual(ITEM_SORT_KEYS);
     expect(attentionItemNodeIds()).toEqual([
       "sample-item-editor-101",
-      "sample-item-engine-202",
       "sample-item-editor-103",
+      "sample-item-engine-202",
       "sample-item-engine-204",
     ]);
 
     act(() => {
-      sortKey.value = "repository";
+      sortKey.value = "stall";
       sortKey.dispatchEvent(new Event("change", { bubbles: true }));
     });
 
     expect(attentionItemNodeIds()).toEqual([
-      "sample-item-editor-101",
+      "sample-item-engine-204",
       "sample-item-editor-103",
       "sample-item-engine-202",
-      "sample-item-engine-204",
+      "sample-item-editor-101",
     ]);
     expect(
       requiredElement<HTMLButtonElement>(".overview-sort-controls button").textContent,
-    ).toContain("昇順");
-    expect(new URL(window.location.href).searchParams.get("sort")).toBe("repository");
-    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
+    ).toContain("降順");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("stall");
+    expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
   });
 
-  it("概要ページで同じ並び替えキーを再選択すると方向を反転する", () => {
-    renderApp(sampleSummary);
+  it("概要ページで同じキーを再操作すると主キーだけを反転する", () => {
+    renderApp(createOverviewSortSummary());
     const sortKey = requiredElement<HTMLSelectElement>("#overview-sort-key");
 
     expect(sortKey.value).toBe("attention");
@@ -410,7 +412,8 @@ describe("Web UI", () => {
   it("概要ページの並び替え状態をURLクエリから復元する", () => {
     const deepLink = "/voicevox_task_tracker/?sort=importance&direction=ascending";
     window.history.replaceState({}, "", deepLink);
-    renderApp(sampleSummary);
+    const summary = createOverviewSortSummary();
+    renderApp(summary);
 
     expect(requiredElement<HTMLSelectElement>("#overview-sort-key").value).toBe("importance");
     expect(
@@ -427,7 +430,7 @@ describe("Web UI", () => {
     act(() => {
       render(null, currentContainer());
     });
-    renderApp(sampleSummary);
+    renderApp(summary);
 
     expect(requiredElement<HTMLSelectElement>("#overview-sort-key").value).toBe("importance");
     expect(attentionItemNodeIds()).toEqual([
@@ -438,9 +441,9 @@ describe("Web UI", () => {
     ]);
   });
 
-  it("概要ページの不正な並び替えクエリを既定値へ戻す", () => {
-    window.history.replaceState({}, "", "/voicevox_task_tracker/?sort=invalid&direction=sideways");
-    renderApp(sampleSummary);
+  it("概要ページの古い並び替えキーを既定値へ戻して注意を表示する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/?sort=repository");
+    renderApp(createOverviewSortSummary());
 
     expect(requiredElement<HTMLSelectElement>("#overview-sort-key").value).toBe("attention");
     expect(
@@ -448,8 +451,8 @@ describe("Web UI", () => {
     ).toContain("降順");
     expect(attentionItemNodeIds()).toEqual([
       "sample-item-editor-101",
-      "sample-item-engine-202",
       "sample-item-editor-103",
+      "sample-item-engine-202",
       "sample-item-engine-204",
     ]);
     expect(window.location.pathname).toBe("/voicevox_task_tracker/");
@@ -706,7 +709,7 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll(".person-items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["項目", "状態", "停滞時間↓", "待ち理由"]);
+    ).toEqual(["項目", "状態", "停滞時間", "待ち理由"]);
     expect(itemRowNodeIds()).toEqual(["sample-item-editor-101"]);
     const itemCell = requiredElement<HTMLTableCellElement>(
       '.person-items-table tr[data-node-id="sample-item-editor-101"] th[scope="row"]',
@@ -714,7 +717,8 @@ describe("Web UI", () => {
     expect(itemCell.querySelector(".item-list-meta")?.textContent).toBe(
       "VOICEVOX/sample-editor#101・Pull Request",
     );
-    expect(itemCell.querySelector(".importance-badge")?.textContent).toBe("高");
+    expect(itemCell.querySelector(".attention-badge")?.textContent).toBe("要対応度中25点");
+    expect(itemCell.querySelector(".importance-badge")?.textContent).toBe("重要度高");
     expect(
       requiredElement<HTMLTableCellElement>(
         '.person-items-table tr[data-node-id="sample-item-editor-101"] td:last-child',
@@ -756,19 +760,29 @@ describe("Web UI", () => {
     expect(staleCard.textContent).toContain("古い観測値");
   });
 
-  it("担当者ページの表とカードで重要度をタイトル直前に表示して低を省く", () => {
+  it("担当者ページの表とカードで要対応度と重要度をタイトル直前に表示する", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/people/hiho");
 
     renderApp(createPersonPageSummaryWithLowImportance());
 
     const highTableTitle = requiredElement<HTMLElement>(
-      '.person-items-table tr[data-node-id="sample-item-editor-101"] .item-title-with-importance',
+      '.person-items-table tr[data-node-id="sample-item-editor-101"] .item-title-with-scores',
+    );
+    const highTableAttentionBadge = requiredElement<HTMLElement>(
+      '.person-items-table tr[data-node-id="sample-item-editor-101"] .attention-badge',
     );
     const highTableBadge = requiredElement<HTMLElement>(
       '.person-items-table tr[data-node-id="sample-item-editor-101"] .importance-badge',
     );
-    expect(highTableTitle.firstElementChild).toBe(highTableBadge);
-    expect(highTableBadge.textContent).toBe("高");
+    expect(highTableTitle.firstElementChild).toBe(highTableAttentionBadge);
+    expect(highTableAttentionBadge.nextElementSibling).toBe(highTableBadge);
+    expect(highTableAttentionBadge.textContent).toBe("要対応度中25点");
+    expect(highTableBadge.textContent).toBe("重要度高");
+    expect(
+      requiredElement<HTMLElement>(
+        '.person-items-table tr[data-node-id="sample-item-engine-204"] .attention-badge',
+      ).textContent,
+    ).toBe("要対応度低0点");
     expect(
       currentContainer().querySelector(
         '.person-items-table tr[data-node-id="sample-item-engine-204"] .importance-badge',
@@ -776,13 +790,18 @@ describe("Web UI", () => {
     ).toBeNull();
 
     const highCardTitle = requiredElement<HTMLElement>(
-      '.items-card-list li[data-node-id="sample-item-editor-101"] .item-title-with-importance',
+      '.items-card-list li[data-node-id="sample-item-editor-101"] .item-title-with-scores',
+    );
+    const highCardAttentionBadge = requiredElement<HTMLElement>(
+      '.items-card-list li[data-node-id="sample-item-editor-101"] .attention-badge',
     );
     const highCardBadge = requiredElement<HTMLElement>(
       '.items-card-list li[data-node-id="sample-item-editor-101"] .importance-badge',
     );
-    expect(highCardTitle.firstElementChild).toBe(highCardBadge);
-    expect(highCardBadge.textContent).toBe("高");
+    expect(highCardTitle.firstElementChild).toBe(highCardAttentionBadge);
+    expect(highCardAttentionBadge.nextElementSibling).toBe(highCardBadge);
+    expect(highCardAttentionBadge.textContent).toBe("要対応度中25点");
+    expect(highCardBadge.textContent).toBe("重要度高");
     expect(
       currentContainer().querySelector(
         '.items-card-list li[data-node-id="sample-item-engine-204"] .importance-badge',
@@ -794,20 +813,20 @@ describe("Web UI", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/people/hiho");
     renderApp(createPersonPageSummaryWithLowImportance());
 
-    expect(itemRowNodeIds()).toEqual(["sample-item-engine-204", "sample-item-editor-101"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-204"]);
     expect(currentContainer().querySelectorAll(".person-items-table thead th button")).toHaveLength(
-      2,
+      1,
     );
     expect(
       requiredElement<HTMLTableCellElement>(
         ".person-items-table thead th:nth-child(2)",
       ).getAttribute("aria-sort"),
-    ).toBe("none");
+    ).toBeNull();
     expect(
       requiredElement<HTMLTableCellElement>(
         ".person-items-table thead th:nth-child(3)",
       ).getAttribute("aria-sort"),
-    ).toBe("descending");
+    ).toBe("none");
     expect(
       requiredElement<HTMLTableCellElement>(
         ".person-items-table thead th:first-child",
@@ -825,13 +844,22 @@ describe("Web UI", () => {
       ).click();
     });
 
-    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-204"]);
-    expect(new URL(window.location.href).searchParams.get("sort")).toBeNull();
-    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-204", "sample-item-editor-101"]);
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("stall");
+    expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
     expect(
-      requiredElement<HTMLTableCellElement>('.person-items-table thead th[aria-sort="ascending"]')
+      requiredElement<HTMLTableCellElement>('.person-items-table thead th[aria-sort="descending"]')
         .textContent,
-    ).toBe("停滞時間↑");
+    ).toBe("停滞時間↓");
+
+    act(() => {
+      requiredElement<HTMLButtonElement>(
+        ".person-items-table thead th:nth-child(3) button",
+      ).click();
+    });
+
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-204"]);
+    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
   });
 
   it("担当者ページの並び替え状態をURLへ反映して開き直したときに復元する", () => {
@@ -841,39 +869,31 @@ describe("Web UI", () => {
     const sortKey = requiredElement<HTMLSelectElement>("#person-sort-key");
 
     expect([...sortKey.options].map((option) => option.textContent)).toEqual([
-      "リポジトリ",
-      "種別",
+      "要対応",
       "重要度",
-      "状態",
       "停滞時間",
     ]);
-    expect([...sortKey.options].map((option) => option.value)).toEqual([
-      "repository",
-      "type",
-      "importance",
-      "status",
-      "stall",
-    ]);
-    expect(sortKey.value).toBe("stall");
+    expect([...sortKey.options].map((option) => option.value)).toEqual(ITEM_SORT_KEYS);
+    expect(sortKey.value).toBe("attention");
 
     act(() => {
-      sortKey.value = "repository";
+      sortKey.value = "importance";
       sortKey.dispatchEvent(new Event("change", { bubbles: true }));
     });
 
     expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-204"]);
-    expect(new URL(window.location.href).searchParams.get("sort")).toBe("repository");
-    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("importance");
+    expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
 
     act(() => {
       render(null, currentContainer());
     });
     renderApp(summary);
 
-    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("repository");
+    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("importance");
     expect(
       requiredElement<HTMLButtonElement>(".person-sort-controls button").textContent,
-    ).toContain("昇順");
+    ).toContain("降順");
     expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-204"]);
   });
 
@@ -881,7 +901,7 @@ describe("Web UI", () => {
     window.history.replaceState(
       {},
       "",
-      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers&sort=status&direction=ascending",
+      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers&sort=importance&direction=ascending",
     );
     renderApp(createPersonPageSummary());
     const maintainers = requiredElement<HTMLInputElement>(
@@ -889,7 +909,7 @@ describe("Web UI", () => {
     );
 
     expect(maintainers.checked).toBe(true);
-    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("status");
+    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("importance");
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
 
     act(() => {
@@ -897,7 +917,7 @@ describe("Web UI", () => {
     });
 
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
-    expect(new URL(window.location.href).searchParams.get("sort")).toBe("status");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("importance");
     expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
 
     act(() => {
@@ -905,23 +925,23 @@ describe("Web UI", () => {
     });
 
     expect(new URL(window.location.href).searchParams.get("teams")).toBeNull();
-    expect(new URL(window.location.href).searchParams.get("sort")).toBe("status");
-    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("status");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("importance");
+    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("importance");
   });
 
-  it("担当者ページの不正な並び替え値と重複を既定値へ戻す", () => {
+  it("担当者ページの古い並び替えキーを既定値へ戻す", () => {
     window.history.replaceState(
       {},
       "",
-      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers&sort=status&sort=stall&direction=sideways",
+      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers&sort=status",
     );
     renderApp(createPersonPageSummary());
 
-    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("stall");
+    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("attention");
     expect(
       requiredElement<HTMLButtonElement>(".person-sort-controls button").textContent,
     ).toContain("降順");
-    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-202"]);
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
     expect(new URL(window.location.href).searchParams.get("sort")).toBeNull();
     expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
@@ -962,7 +982,7 @@ describe("Web UI", () => {
       maintainers.click();
     });
 
-    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-202"]);
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
     expect(window.history.length).toBe(historyLength);
     expect(requiredElement<HTMLElement>(".person-item-count").textContent).toBe(
@@ -1165,7 +1185,7 @@ describe("Web UI", () => {
 
     renderApp(createPersonPageSummary());
 
-    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-202"]);
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
     expect(currentContainer().querySelector(".url-state-notice")).not.toBeNull();
   });
@@ -1180,7 +1200,7 @@ describe("Web UI", () => {
     renderApp(createPersonPageSummary());
 
     expect(currentContainer().querySelector(".person-page")).not.toBeNull();
-    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-202"]);
     expect(currentContainer().querySelector(".url-state-notice")).toBeNull();
     expect(window.location.pathname).toBe("/voicevox_task_tracker/people/hiho");
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
@@ -1304,10 +1324,10 @@ describe("Web UI", () => {
       requiredElement<HTMLSelectElement>('select[aria-label="AI利用状況で絞り込み"]').value,
     ).toBe(AI_ANALYSIS_DEGRADED_FILTER_VALUE);
     expect(itemRowNodeIds()).toEqual([
+      "sample-item-editor-101",
       "sample-item-core-305",
       "sample-item-editor-103",
       "sample-item-engine-202",
-      "sample-item-editor-101",
     ]);
 
     act(() => {
@@ -1322,7 +1342,7 @@ describe("Web UI", () => {
   });
 
   it("要対応項目で主な待ち相手と理由だけを常時表示する", () => {
-    renderApp(sampleSummary);
+    renderApp(createOverviewSortSummary());
 
     const firstItem = requiredElement<HTMLElement>(
       '.attention-list li[data-node-id="sample-item-editor-101"]',
@@ -1366,9 +1386,10 @@ describe("Web UI", () => {
   });
 
   it("primary waitingOnが未選定なら先頭候補を主な待ち相手にする", () => {
+    const overviewSummary = createOverviewSortSummary();
     const summary = createPublicSummaryDto({
-      ...sampleSummary,
-      items: sampleSummary.items.map((item) =>
+      ...overviewSummary,
+      items: overviewSummary.items.map((item) =>
         item.nodeId === "sample-item-engine-204"
           ? {
               ...item,
@@ -1392,25 +1413,30 @@ describe("Web UI", () => {
     expect(item.querySelector(".attention-other-waiting-on")?.textContent).toBe("ほか1件");
   });
 
-  it("概要ページの要対応項目で重要度をタイトル直前に表示して低を省く", () => {
-    renderApp(sampleSummary);
+  it("概要ページの要対応項目で要対応度と重要度をタイトル直前に表示する", () => {
+    renderApp(createOverviewSortSummary());
 
     const highTitle = requiredElement<HTMLElement>(
-      '.attention-list li[data-node-id="sample-item-editor-101"] .item-title-with-importance',
+      '.attention-list li[data-node-id="sample-item-editor-101"] .item-title-with-scores',
+    );
+    const attentionBadge = requiredElement<HTMLElement>(
+      '.attention-list li[data-node-id="sample-item-editor-101"] .attention-badge',
     );
     const highBadge = requiredElement<HTMLElement>(
       '.attention-list li[data-node-id="sample-item-editor-101"] .importance-badge',
     );
-    const highImportanceSlot = highTitle.querySelector(":scope > .attention-importance-slot");
-    expect(highTitle.firstElementChild).toBe(highImportanceSlot);
-    expect(highImportanceSlot?.firstElementChild).toBe(highBadge);
-    expect(highImportanceSlot?.nextElementSibling?.querySelector("a")).not.toBeNull();
-    expect(highBadge.textContent).toBe("高");
+    const scoreBadges = highTitle.querySelector(":scope > .attention-score-badges");
+    expect(highTitle.firstElementChild).toBe(scoreBadges);
+    expect(scoreBadges?.firstElementChild).toBe(attentionBadge);
+    expect(attentionBadge.nextElementSibling).toBe(highBadge);
+    expect(scoreBadges?.nextElementSibling?.querySelector("a")).not.toBeNull();
+    expect(attentionBadge.textContent).toBe("要対応度中25点");
+    expect(highBadge.textContent).toBe("重要度高");
     expect(
       requiredElement<HTMLElement>(
         '.attention-list li[data-node-id="sample-item-engine-202"] .importance-badge',
       ).textContent,
-    ).toBe("中");
+    ).toBe("重要度中");
     expect(
       currentContainer().querySelector(
         '.attention-list li[data-node-id="sample-item-engine-204"] .importance-badge',
@@ -1418,124 +1444,55 @@ describe("Web UI", () => {
     ).toBeNull();
     expect(
       requiredElement<HTMLElement>(
-        '.attention-list li[data-node-id="sample-item-engine-204"] .item-title-with-importance',
-      ).querySelector(":scope > .attention-importance-slot"),
+        '.attention-list li[data-node-id="sample-item-engine-204"] .item-title-with-scores',
+      ).querySelector(":scope > .attention-score-badges .attention-badge"),
     ).not.toBeNull();
   });
 
-  it("attention queueをseverity、対応優先度、影響範囲、停滞時間で並べる", () => {
-    const expectedNodeIds = [
-      "sample-item-editor-101",
-      "sample-item-engine-202",
-      "sample-item-editor-103",
-      "sample-item-engine-204",
-    ];
-    expect(selectAttentionItems(sampleSummary.items).map((item) => item.nodeId)).toEqual(
-      expectedNodeIds,
-    );
-
-    renderApp(sampleSummary);
-    expect(attentionItemNodeIds()).toEqual(expectedNodeIds);
-
-    const critical = createOrderingItem({
-      nodeId: "critical",
-      severity: "critical",
+  it("要対応度が中以上で新しい観測値の未完了項目だけを入力順で絞り込む", () => {
+    const higherAttention = createOrderingItem({
+      attention: { score: 80, level: "high" },
+      nodeId: "higher-attention",
       status: "waiting_for_unblock",
-      priorityWeight: 0,
-      repositoryCount: 0,
-      openNodeCount: 0,
       stallSince: "2026-07-31T00:00:00.000Z",
     });
-    const urgent = createOrderingItem({
-      nodeId: "urgent",
-      severity: "urgent",
-      status: "waiting_for_merge",
-      priorityWeight: 100,
-      repositoryCount: 10,
-      openNodeCount: 100,
+    const olderTie = createOrderingItem({
+      attention: { score: 50, level: "medium" },
+      nodeId: "older-tie",
+      status: "waiting_for_review",
       stallSince: "2026-07-01T00:00:00.000Z",
     });
-    const highPriority = createOrderingItem({
-      nodeId: "high-priority",
-      severity: "urgent",
-      status: "waiting_for_merge",
-      priorityWeight: 25,
-      repositoryCount: 0,
-      openNodeCount: 0,
-      stallSince: "2026-07-31T00:00:00.000Z",
-    });
-    const mediumPriority = createOrderingItem({
-      nodeId: "medium-priority",
-      severity: "urgent",
+    const newerTie = createOrderingItem({
+      attention: { score: 50, level: "medium" },
+      nodeId: "newer-tie",
       status: "waiting_for_review",
-      priorityWeight: 12,
-      repositoryCount: 10,
-      openNodeCount: 100,
-      stallSince: "2026-07-01T00:00:00.000Z",
-    });
-    const widerRepositoryImpact = createOrderingItem({
-      nodeId: "repository-impact",
-      severity: "watch",
-      status: "waiting_for_review",
-      priorityWeight: 12,
-      repositoryCount: 3,
-      openNodeCount: 1,
-      stallSince: "2026-07-31T00:00:00.000Z",
-    });
-    const narrowerRepositoryImpact = createOrderingItem({
-      nodeId: "narrow-repository-impact",
-      severity: "watch",
-      status: "waiting_for_review",
-      priorityWeight: 12,
-      repositoryCount: 2,
-      openNodeCount: 100,
-      stallSince: "2026-07-01T00:00:00.000Z",
-    });
-    const widerItemImpact = createOrderingItem({
-      nodeId: "item-impact",
-      severity: "watch",
-      status: "waiting_for_review",
-      priorityWeight: 12,
-      repositoryCount: 2,
-      openNodeCount: 5,
-      stallSince: "2026-07-31T00:00:00.000Z",
-    });
-    const narrowerItemImpact = createOrderingItem({
-      nodeId: "narrow-item-impact",
-      severity: "watch",
-      status: "waiting_for_review",
-      priorityWeight: 12,
-      repositoryCount: 2,
-      openNodeCount: 4,
-      stallSince: "2026-07-01T00:00:00.000Z",
-    });
-    const olderStall = createOrderingItem({
-      nodeId: "older-stall",
-      severity: "watch",
-      status: "waiting_for_review",
-      priorityWeight: 12,
-      repositoryCount: 1,
-      openNodeCount: 1,
-      stallSince: "2026-07-01T00:00:00.000Z",
-    });
-    const newerStall = createOrderingItem({
-      nodeId: "newer-stall",
-      severity: "watch",
-      status: "waiting_for_review",
-      priorityWeight: 12,
-      repositoryCount: 1,
-      openNodeCount: 1,
       stallSince: "2026-07-02T00:00:00.000Z",
     });
+    const lowLevel = createOrderingItem({
+      attention: { score: 100, level: "low" },
+      nodeId: "low-level",
+      status: "waiting_for_review",
+      stallSince: "2026-07-01T00:00:00.000Z",
+    });
+    const stale = {
+      ...higherAttention,
+      nodeId: "stale",
+      repositoryFreshness: "stale",
+    } satisfies PublicItemSummaryDto;
+    const terminal = {
+      ...higherAttention,
+      nodeId: "terminal",
+      status: "terminal_completed",
+    } satisfies PublicItemSummaryDto;
 
-    expect(compareAttentionItems(critical, urgent)).toBeLessThan(0);
-    expect(compareAttentionItems(highPriority, mediumPriority)).toBeLessThan(0);
-    expect(compareAttentionItems(widerRepositoryImpact, narrowerRepositoryImpact)).toBeLessThan(0);
-    expect(compareAttentionItems(widerItemImpact, narrowerItemImpact)).toBeLessThan(0);
-    expect(compareAttentionItems(olderStall, newerStall)).toBeLessThan(0);
+    expect(
+      filterAttentionItems([newerTie, stale, lowLevel, olderTie, terminal, higherAttention]).map(
+        (item) => item.nodeId,
+      ),
+    ).toEqual(["newer-tie", "older-tie", "higher-attention"]);
   });
 
-  it("一覧の識別子、次の担当、AI利用状況で絞り込み、6列で並び替える", () => {
+  it("一覧の識別子、次の担当、AI利用状況で絞り込み、3キーで並び替える", () => {
     const rows = createItemTableRows(sampleSummary, NOW);
     const filterCases: readonly Readonly<{
       key: TableFilterKey;
@@ -1576,8 +1533,8 @@ describe("Web UI", () => {
         key: "aiAnalysis",
         value: AI_ANALYSIS_DEGRADED_FILTER_VALUE,
         expectedNodeIds: [
-          "sample-item-core-305",
           "sample-item-editor-101",
+          "sample-item-core-305",
           "sample-item-editor-103",
           "sample-item-engine-202",
         ],
@@ -1585,15 +1542,10 @@ describe("Web UI", () => {
     ];
 
     for (const filterCase of filterCases) {
-      const filtered = filterAndSortTableRows(
-        rows,
-        filtersWith(filterCase.key, filterCase.value),
-        {
-          key: "repository",
-          direction: "ascending",
-        },
-        LOCALE,
-      );
+      const filtered = filterAndSortTableRows(rows, filtersWith(filterCase.key, filterCase.value), {
+        key: "attention",
+        direction: "descending",
+      });
       expect(filtered.map((row) => row.item.nodeId)).toEqual(filterCase.expectedNodeIds);
     }
 
@@ -1619,58 +1571,33 @@ describe("Web UI", () => {
       },
     ];
     for (const filterCase of hiddenValueCases) {
-      const filtered = filterAndSortTableRows(
-        rows,
-        filtersWith(filterCase.key, filterCase.value),
-        {
-          key: "stall",
-          direction: "descending",
-        },
-        LOCALE,
-      );
+      const filtered = filterAndSortTableRows(rows, filtersWith(filterCase.key, filterCase.value), {
+        key: "stall",
+        direction: "descending",
+      });
       expect(filtered).toEqual([]);
     }
 
-    for (const key of TABLE_COLUMN_KEYS) {
-      const ascending = filterAndSortTableRows(
-        rows,
-        createEmptyTableFilters(),
-        {
-          key,
-          direction: "ascending",
-        },
-        LOCALE,
-      );
-      const descending = filterAndSortTableRows(
-        rows,
-        createEmptyTableFilters(),
-        {
-          key,
-          direction: "descending",
-        },
-        LOCALE,
-      );
+    for (const key of ITEM_SORT_KEYS) {
+      const ascending = filterAndSortTableRows(rows, createEmptyTableFilters(), {
+        key,
+        direction: "ascending",
+      });
+      const descending = filterAndSortTableRows(rows, createEmptyTableFilters(), {
+        key,
+        direction: "descending",
+      });
       expect(ascending[0]?.item.nodeId).not.toBe(descending[0]?.item.nodeId);
     }
 
-    const importanceAscending = filterAndSortTableRows(
-      rows,
-      createEmptyTableFilters(),
-      {
-        key: "importance",
-        direction: "ascending",
-      },
-      LOCALE,
-    );
-    const importanceDescending = filterAndSortTableRows(
-      rows,
-      createEmptyTableFilters(),
-      {
-        key: "importance",
-        direction: "descending",
-      },
-      LOCALE,
-    );
+    const importanceAscending = filterAndSortTableRows(rows, createEmptyTableFilters(), {
+      key: "importance",
+      direction: "ascending",
+    });
+    const importanceDescending = filterAndSortTableRows(rows, createEmptyTableFilters(), {
+      key: "importance",
+      direction: "descending",
+    });
     expect(importanceAscending.map((row) => row.item.importance.score)).toEqual([
       0, 0, 0, 0, 0, 0, 0, 12, 39, 41, 44, 63,
     ]);
@@ -1679,7 +1606,7 @@ describe("Web UI", () => {
     ]);
   });
 
-  it("一覧の低重要度を省き、選択と入力で絞り込み並び替える", () => {
+  it("一覧に要対応度を表示し、選択と入力で絞り込み並び替える", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items");
     renderApp(sampleSummary);
     expect(requiredElement<HTMLTableCaptionElement>(".items-table caption").textContent).toBe(
@@ -1689,12 +1616,22 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll(".items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["重要度", "項目", "状態", "次の担当", "停滞↓"]);
+    ).toEqual(["要対応↓", "重要度", "項目", "状態", "次の担当", "停滞"]);
+    const attentionCell = requiredElement<HTMLTableCellElement>(
+      '.items-table tr[data-node-id="sample-item-editor-101"] .attention-cell',
+    );
+    expect(attentionCell.textContent).toBe("中25点");
     const highImportanceCell = requiredElement<HTMLTableCellElement>(
       '.items-table tr[data-node-id="sample-item-editor-101"] .importance-cell',
     );
+    expect(attentionCell.nextElementSibling).toBe(highImportanceCell);
     expect(highImportanceCell.textContent).toBe("高");
     expect(highImportanceCell.nextElementSibling?.getAttribute("scope")).toBe("row");
+    expect(
+      requiredElement<HTMLTableCellElement>(
+        '.items-table tr[data-node-id="sample-item-engine-204"] .attention-cell',
+      ).textContent,
+    ).toBe("低0点");
     expect(
       requiredElement<HTMLTableCellElement>(
         '.items-table tr[data-node-id="sample-item-engine-204"] .importance-cell',
@@ -1720,6 +1657,11 @@ describe("Web UI", () => {
         '.items-card-list li[data-node-id="sample-item-engine-204"] .importance-badge',
       ),
     ).toBeNull();
+    expect(
+      requiredElement<HTMLElement>(
+        '.items-card-list li[data-node-id="sample-item-engine-204"] .attention-badge',
+      ).textContent,
+    ).toBe("要対応度低0点");
     const filterDetails = requiredElement<HTMLDetailsElement>(".item-filters");
     expect(filterDetails.open).toBe(false);
     expect(filterDetails.querySelectorAll("select")).toHaveLength(6);
@@ -1846,10 +1788,10 @@ describe("Web UI", () => {
       aiAnalysisFilter.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(itemRowNodeIds()).toEqual([
+      "sample-item-editor-101",
       "sample-item-core-305",
       "sample-item-editor-103",
       "sample-item-engine-202",
-      "sample-item-editor-101",
     ]);
     expect(new URL(window.location.href).searchParams.get("ai")).toBe(
       AI_ANALYSIS_DEGRADED_FILTER_VALUE,
@@ -1860,24 +1802,21 @@ describe("Web UI", () => {
     });
     const sortKey = requiredElement<HTMLSelectElement>("#item-sort-key");
     expect([...sortKey.options].map((option) => option.textContent)).toEqual([
-      "リポジトリ",
-      "種別",
-      "状態",
+      "要対応",
       "重要度",
-      "次の担当",
       "停滞時間",
     ]);
-    expect([...sortKey.options].map((option) => option.value)).toEqual(TABLE_COLUMN_KEYS);
-    expect(sortKey.value).toBe("stall");
+    expect([...sortKey.options].map((option) => option.value)).toEqual(ITEM_SORT_KEYS);
+    expect(sortKey.value).toBe("attention");
     expect(requiredElement<HTMLButtonElement>(".item-sort-controls button").textContent).toContain(
       "降順",
     );
     expect(itemRowNodeIds()).toEqual([
-      "sample-item-engine-204",
+      "sample-item-editor-101",
       "sample-item-core-305",
       "sample-item-editor-103",
       "sample-item-engine-202",
-      "sample-item-editor-101",
+      "sample-item-engine-204",
       "sample-item-workflow-401",
       "sample-item-workflow-402",
       "sample-item-workflow-403",
@@ -1909,7 +1848,7 @@ describe("Web UI", () => {
     );
   });
 
-  it("別の列へ切り替えると重要度は降順、状態は昇順で始まり、同じ列で反転する", () => {
+  it("別のキーへ切り替えると3キーとも降順で始まり、同じキーで反転する", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items");
     renderApp(sampleSummary);
     const sortKey = requiredElement<HTMLSelectElement>("#item-sort-key");
@@ -1925,23 +1864,23 @@ describe("Web UI", () => {
     ).toBe("重要度↓");
 
     act(() => {
-      sortKey.value = "status";
+      sortKey.value = "stall";
       sortKey.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    expect(
-      requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="ascending"]')
-        .textContent,
-    ).toBe("状態↑");
-
-    act(() => {
-      requiredElement<HTMLButtonElement>(".items-table thead th:nth-child(3) button").click();
     });
 
     expect(
       requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="descending"]')
         .textContent,
-    ).toBe("状態↓");
+    ).toBe("停滞↓");
+
+    act(() => {
+      requiredElement<HTMLButtonElement>(".items-table thead th:nth-child(6) button").click();
+    });
+
+    expect(
+      requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="ascending"]')
+        .textContent,
+    ).toBe("停滞↑");
   });
 
   it("項目一覧の表ヘッダで並び替え、同じ列の再操作で方向を反転する", () => {
@@ -1953,10 +1892,10 @@ describe("Web UI", () => {
     ).toHaveLength(1);
     expect(
       currentContainer().querySelectorAll('.items-table thead th[aria-sort="none"]'),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
 
     act(() => {
-      requiredElement<HTMLButtonElement>(".items-table thead th:first-child button").click();
+      requiredElement<HTMLButtonElement>(".items-table thead th:nth-child(2) button").click();
     });
 
     expect(itemRowNodeIds()).toEqual([
@@ -1988,10 +1927,10 @@ describe("Web UI", () => {
     ).toHaveLength(1);
     expect(
       currentContainer().querySelectorAll('.items-table thead th[aria-sort="none"]'),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
 
     act(() => {
-      requiredElement<HTMLButtonElement>(".items-table thead th:first-child button").click();
+      requiredElement<HTMLButtonElement>(".items-table thead th:nth-child(2) button").click();
     });
 
     expect(itemRowNodeIds()).toEqual([
@@ -2019,18 +1958,18 @@ describe("Web UI", () => {
     ).toHaveLength(1);
     expect(
       currentContainer().querySelectorAll('.items-table thead th[aria-sort="none"]'),
-    ).toHaveLength(3);
+    ).toHaveLength(2);
   });
 
   it("項目一覧の項目列ヘッダは並び替え操作を持たない", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items");
     renderApp(sampleSummary);
 
-    const itemHeader = requiredElement<HTMLTableCellElement>(".items-table thead th:nth-child(2)");
+    const itemHeader = requiredElement<HTMLTableCellElement>(".items-table thead th:nth-child(3)");
     expect(itemHeader.textContent).toBe("項目");
     expect(itemHeader.querySelector("button")).toBeNull();
     expect(itemHeader.getAttribute("aria-sort")).toBeNull();
-    expect(currentContainer().querySelectorAll(".items-table thead th button")).toHaveLength(4);
+    expect(currentContainer().querySelectorAll(".items-table thead th button")).toHaveLength(3);
   });
 
   it("GitHub由来のHTMLを文字列として描画し危険URLを遷移不能にする", () => {
@@ -2511,13 +2450,14 @@ describe("Web UI", () => {
     expect(currentContainer().querySelector(".dependency-graph-legend")).toBeNull();
   });
 
-  it("重要度の内訳で決定論とCodex判定の加点要因を区別する", async () => {
+  it("要対応度と重要度を表示し、重要度の加点要因を区別する", async () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-editor/101");
     renderApp(sampleSummary);
     await flushUi();
 
     const currentAction = requiredElement<HTMLElement>(".current-action-panel");
     expect(currentAction.textContent).not.toContain("停滞の深刻さ");
+    expect(currentAction.textContent).toContain("要対応度中25点重要度と直近の動きから決まる値");
     expect(currentAction.textContent).toContain("重要度高63点項目自体の重要さ");
 
     const importanceEvidence = requiredElement<HTMLElement>(".importance-evidence");
@@ -2724,11 +2664,11 @@ describe("Web UI", () => {
     expect(window.location.pathname + window.location.search).toBe(deepLink);
   });
 
-  it("削除済みのblockerと更新日時をURL状態から無視して既定値へ戻す", () => {
+  it("削除済みの条件と古い並び替えキーをURL状態から除去する", () => {
     window.history.replaceState(
       {},
       "",
-      "/voicevox_task_tracker/items?repo=VOICEVOX%2Fsample-core&blocker=sample-editor%23103&updated=2026-07-29&sort=updated",
+      "/voicevox_task_tracker/items?repo=VOICEVOX%2Fsample-core&blocker=sample-editor%23103&updated=2026-07-29&sort=repository",
     );
     renderApp(sampleSummary);
 
@@ -2736,7 +2676,7 @@ describe("Web UI", () => {
     expect(
       requiredElement<HTMLSelectElement>('select[aria-label="リポジトリで絞り込み"]').value,
     ).toBe("VOICEVOX/sample-core");
-    expect(requiredElement<HTMLSelectElement>("#item-sort-key").value).toBe("stall");
+    expect(requiredElement<HTMLSelectElement>("#item-sort-key").value).toBe("attention");
     expect(window.location.pathname + window.location.search).toBe(
       "/voicevox_task_tracker/items?repo=VOICEVOX%2Fsample-core",
     );
@@ -2779,12 +2719,12 @@ describe("Web UI", () => {
     expect(
       requiredElement<HTMLSelectElement>('select[aria-label="リポジトリで絞り込み"]').value,
     ).toBe("");
-    expect(requiredElement<HTMLSelectElement>("#item-sort-key").value).toBe("stall");
+    expect(requiredElement<HTMLSelectElement>("#item-sort-key").value).toBe("attention");
     expect(requiredElement<HTMLButtonElement>(".item-sort-controls button").textContent).toContain(
       "降順",
     );
     expect(requiredElement<HTMLTableCellElement>('th[aria-sort="descending"]').textContent).toBe(
-      "停滞↓",
+      "要対応↓",
     );
     expect(currentContainer().querySelector(".item-details-card")).toBeNull();
     expect(window.location.pathname).toBe("/voicevox_task_tracker/items");

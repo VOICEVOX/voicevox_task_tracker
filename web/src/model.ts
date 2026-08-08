@@ -6,11 +6,9 @@ import {
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 
-type PublicRepositoryDto = PublicSummaryDto["repositories"][number];
 type ConfidenceThresholds = PublicSummaryDto["confidenceThresholds"];
 type ItemType = PublicItemSummaryDto["type"];
 type Status = PublicItemSummaryDto["status"];
-type Severity = PublicItemSummaryDto["severity"];
 type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
 type AiAnalysisStatus = PublicItemSummaryDto["aiAnalysis"]["status"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
@@ -21,55 +19,27 @@ type PublicActor = Extract<
   Readonly<{ status: "present" }>
 >["actor"];
 
-/** attention queueで使う対応優先度。 */
-export type AttentionPriority = Readonly<{
-  label: string;
-  rank: number;
-}>;
-
-/** 一覧表で並び替えと絞り込みの対象にする列。 */
-export type TableColumnKey =
-  "repository" | "type" | "status" | "importance" | "waitingOn" | "stall";
-
-/** 概要の対応が必要な項目で並び替えの対象にするキー。 */
-export type OverviewSortKey = "attention" | TableColumnKey;
-
 /** 一覧表で絞り込みの対象にする項目。 */
-export type TableFilterKey = TableColumnKey | "aiAnalysis";
+export type TableFilterKey =
+  "repository" | "type" | "status" | "importance" | "waitingOn" | "stall" | "aiAnalysis";
 
 /** 一覧表で選択式の絞り込みにする列。 */
 export type TableSelectFilterKey = Exclude<TableFilterKey, "waitingOn">;
 
-/** 一覧表の並び順。 */
-export type TableSort = Readonly<{
-  key: TableColumnKey;
+/** 項目一覧で並び替えの対象にするキー。 */
+export type ItemSortKey = "attention" | "importance" | "stall";
+
+/** 項目一覧の並び順。 */
+export type ItemSort = Readonly<{
+  key: ItemSortKey;
   direction: "ascending" | "descending";
 }>;
 
-/** 概要の対応が必要な項目の並び順。 */
-export type OverviewSort = Readonly<{
-  key: OverviewSortKey;
-  direction: TableSort["direction"];
-}>;
-
-/** 一覧表で別の列を選んだときの自然な並び順。 */
-export const TABLE_COLUMN_NATURAL_SORT_DIRECTIONS: Readonly<
-  Record<TableColumnKey, TableSort["direction"]>
-> = {
-  repository: "ascending",
-  type: "ascending",
-  status: "ascending",
-  importance: "descending",
-  waitingOn: "ascending",
-  stall: "descending",
-};
-
-/** 概要で別の並び順を選んだときの自然な方向。 */
-export const OVERVIEW_NATURAL_SORT_DIRECTIONS: Readonly<
-  Record<OverviewSortKey, OverviewSort["direction"]>
-> = {
+/** 別のキーを選んだときの自然な並び順。 */
+export const ITEM_NATURAL_SORT_DIRECTIONS: Readonly<Record<ItemSortKey, ItemSort["direction"]>> = {
   attention: "descending",
-  ...TABLE_COLUMN_NATURAL_SORT_DIRECTIONS,
+  importance: "descending",
+  stall: "descending",
 };
 
 /** 一覧表の列別絞り込み値。 */
@@ -89,13 +59,9 @@ export type TableFilterOptions = Readonly<
 /** 一覧表へ表示する項目の導出値。 */
 export type ItemTableRow = Readonly<{
   item: PublicItemSummaryDto;
-  repository: PublicRepositoryDto;
   repositoryText: string;
   typeText: string;
-  statusText: string;
-  importanceText: string;
   waitingOnText: string;
-  stallText: string;
   stallDurationMilliseconds: number;
 }>;
 
@@ -203,13 +169,6 @@ const AI_ANALYSIS_FILTER_OPTIONS = [
   },
 ] satisfies readonly TableFilterOption[];
 
-const SEVERITY_RANKS = {
-  none: 0,
-  watch: 1,
-  urgent: 2,
-  critical: 3,
-} satisfies Readonly<Record<Severity, number>>;
-
 const dateTimeFormatters = new Map<string, Map<string, Intl.DateTimeFormat>>();
 const relativeTimeFormatters = new Map<string, Intl.RelativeTimeFormat>();
 
@@ -310,14 +269,6 @@ export function createTableFilterOptions(summary: PublicSummaryDto): TableFilter
     importance: createPresentTableFilterOptions(IMPORTANCE_LEVEL_LABELS, importanceValues),
     stall: STALL_FILTER_DEFINITIONS.map(({ label, value }) => ({ label, value })),
     aiAnalysis: AI_ANALYSIS_FILTER_OPTIONS,
-  };
-}
-
-/** 設定済みラベルルールのpriorityWeightをqueue表示へ変換する。 */
-export function attentionPriority(item: PublicItemSummaryDto): AttentionPriority {
-  return {
-    label: item.priorityWeight === 0 ? "標準" : item.priorityWeight.toString(),
-    rank: item.priorityWeight,
   };
 }
 
@@ -802,36 +753,6 @@ export function selectWaitingSubjectItemNodeIds(
   );
 }
 
-/** attention queueの決定論的な優先順を比較する。 */
-export function compareAttentionItems(
-  left: PublicItemSummaryDto,
-  right: PublicItemSummaryDto,
-): number {
-  const severityOrder = SEVERITY_RANKS[right.severity] - SEVERITY_RANKS[left.severity];
-  if (severityOrder !== 0) {
-    return severityOrder;
-  }
-  const priorityOrder = attentionPriority(right).rank - attentionPriority(left).rank;
-  if (priorityOrder !== 0) {
-    return priorityOrder;
-  }
-  const repositoryImpactOrder =
-    right.downstreamImpact.repositoryCount - left.downstreamImpact.repositoryCount;
-  if (repositoryImpactOrder !== 0) {
-    return repositoryImpactOrder;
-  }
-  const itemImpactOrder =
-    right.downstreamImpact.openNodeCount - left.downstreamImpact.openNodeCount;
-  if (itemImpactOrder !== 0) {
-    return itemImpactOrder;
-  }
-  const stallOrder = compareStrings(left.stallSince, right.stallSince);
-  if (stallOrder !== 0) {
-    return stallOrder;
-  }
-  return compareStrings(left.nodeId, right.nodeId);
-}
-
 function isTerminalStatus(status: Status): boolean {
   return (
     status === "terminal_merged" ||
@@ -840,18 +761,16 @@ function isTerminalStatus(status: Status): boolean {
   );
 }
 
-/** staleとterminalを除いた要対応項目を優先順で返す。 */
-export function selectAttentionItems(
+/** 要対応度が中以上の項目からstaleとterminalを除いて返す。 */
+export function filterAttentionItems(
   items: readonly PublicItemSummaryDto[],
 ): readonly PublicItemSummaryDto[] {
-  return items
-    .filter(
-      (item) =>
-        item.severity !== "none" &&
-        item.repositoryFreshness === "fresh" &&
-        !isTerminalStatus(item.status),
-    )
-    .sort(compareAttentionItems);
+  return items.filter(
+    (item) =>
+      (item.attention.level === "high" || item.attention.level === "medium") &&
+      item.repositoryFreshness === "fresh" &&
+      !isTerminalStatus(item.status),
+  );
 }
 
 /** URLがhttps://github.com配下かを検証する。 */
@@ -894,13 +813,9 @@ export function createItemTableRows(summary: PublicSummaryDto, now: Date): reado
     }
     return {
       item,
-      repository,
       repositoryText: repository.fullName,
       typeText: itemTypeLabel(item.type),
-      statusText: statusLabel(item.status),
-      importanceText: importanceLevelLabel(item.importance.level),
       waitingOnText: formatWaitingOn(item, summary),
-      stallText: formatStallDuration(item.stallSince, now),
       stallDurationMilliseconds,
     };
   });
@@ -1018,23 +933,12 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: st
   }
 }
 
-function compareTableRows(
-  left: ItemTableRow,
-  right: ItemTableRow,
-  key: TableColumnKey,
-  locale: string,
-): number {
+function compareTableRows(left: ItemTableRow, right: ItemTableRow, key: ItemSortKey): number {
   switch (key) {
-    case "repository":
-      return left.repositoryText.localeCompare(right.repositoryText, locale);
-    case "type":
-      return left.typeText.localeCompare(right.typeText, locale);
-    case "status":
-      return left.statusText.localeCompare(right.statusText, locale);
+    case "attention":
+      return left.item.attention.score - right.item.attention.score;
     case "importance":
       return left.item.importance.score - right.item.importance.score;
-    case "waitingOn":
-      return left.waitingOnText.localeCompare(right.waitingOnText, locale);
     case "stall":
       return left.stallDurationMilliseconds - right.stallDurationMilliseconds;
     default:
@@ -1042,12 +946,39 @@ function compareTableRows(
   }
 }
 
+function compareTableRowTieBreakers(
+  left: ItemTableRow,
+  right: ItemTableRow,
+  key: ItemSortKey,
+): number {
+  switch (key) {
+    case "attention": {
+      const stallOrder = right.stallDurationMilliseconds - left.stallDurationMilliseconds;
+      if (stallOrder !== 0) {
+        return stallOrder;
+      }
+      break;
+    }
+    case "importance": {
+      const attentionOrder = right.item.attention.score - left.item.attention.score;
+      if (attentionOrder !== 0) {
+        return attentionOrder;
+      }
+      break;
+    }
+    case "stall":
+      break;
+    default:
+      throw new UnreachableError(key);
+  }
+  return compareStrings(left.item.nodeId, right.item.nodeId);
+}
+
 /** 一覧表の全列filterとsortを適用する。 */
 export function filterAndSortTableRows(
   rows: readonly ItemTableRow[],
   filters: TableFilters,
-  sort: TableSort,
-  locale: string,
+  sort: ItemSort,
 ): readonly ItemTableRow[] {
   const filteredRows = rows.filter((row) =>
     Object.entries(filters).every(([key, value]) => {
@@ -1070,10 +1001,10 @@ export function filterAndSortTableRows(
   );
   const direction = sort.direction === "ascending" ? 1 : -1;
   return filteredRows.sort((left, right) => {
-    const order = compareTableRows(left, right, sort.key, locale);
+    const order = compareTableRows(left, right, sort.key);
     if (order !== 0) {
       return order * direction;
     }
-    return compareStrings(left.item.nodeId, right.item.nodeId);
+    return compareTableRowTieBreakers(left, right, sort.key);
   });
 }

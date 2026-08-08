@@ -2,7 +2,7 @@ import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
-import { ImportanceBadge } from "./importance-badge.js";
+import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
 import {
@@ -15,9 +15,9 @@ import {
   selectWaitingSubjectReasons,
   statusLabel,
   waitingSubjectKey,
+  type ItemSort,
+  type ItemSortKey,
   type ItemTableRow,
-  type TableColumnKey,
-  type TableSort,
 } from "./model.js";
 import {
   ResponsiveTableCardList,
@@ -25,7 +25,7 @@ import {
   type ResponsiveListRowPresentation,
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
-import { SortControls } from "./sort-controls.js";
+import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 import { ActionButton, Pill } from "./ui.js";
 
 type PersonPageProps = Readonly<{
@@ -36,41 +36,15 @@ type PersonPageProps = Readonly<{
   now: Date;
   onSelectItem: (nodeId: string) => void;
   onSelectPeople: () => void;
-  onSortChange: (key: TableColumnKey) => void;
+  onSortChange: (key: ItemSortKey) => void;
   onTeamIdsChange: (teamIds: readonly string[]) => void;
   onViewerIdentityToggle: () => void;
   peopleHref: string;
   selectedTeamIds: readonly string[];
-  sort: TableSort;
+  sort: ItemSort;
   summary: PublicSummaryDto;
   viewerIdentityAvailable: boolean;
 }>;
-
-const SORT_COLUMNS = [
-  {
-    key: "repository",
-    label: "リポジトリ",
-  },
-  {
-    key: "type",
-    label: "種別",
-  },
-  {
-    key: "importance",
-    label: "重要度",
-  },
-  {
-    key: "status",
-    label: "状態",
-  },
-  {
-    key: "stall",
-    label: "停滞時間",
-  },
-] satisfies readonly Readonly<{
-  key: TableColumnKey;
-  label: string;
-}>[];
 
 function waitingReason(row: ItemTableRow, login: string, teamIds: readonly string[]): string {
   return selectWaitingSubjectReasons(row.item, login, teamIds).join("、");
@@ -142,9 +116,8 @@ export function PersonPage({
         createItemTableRows(summary, now).filter((row) => selectedNodeIds.has(row.item.nodeId)),
         createEmptyTableFilters(),
         sort,
-        locale,
       ),
-    [locale, now, selectedNodeIds, sort, summary],
+    [now, selectedNodeIds, sort, summary],
   );
   function changeTeam(teamId: string, selected: boolean): void {
     const nextTeamKeys = new Set(selectedTeamKeys);
@@ -171,8 +144,19 @@ export function PersonPage({
           <span class="item-list-meta text-xs leading-5 text-text-muted wrap-anywhere">
             {row.item.displayReference}・{row.typeText}
           </span>
-          <span class="item-title-with-importance flex min-w-0 items-start gap-1.5 wrap-anywhere">
-            <ImportanceBadge importance={row.item.importance} showLow={false} showScore={false} />
+          <span class="item-title-with-scores flex min-w-0 flex-wrap items-start gap-1.5 wrap-anywhere">
+            <AttentionBadge
+              attention={row.item.attention}
+              showLabel={true}
+              showLow={true}
+              showScore={true}
+            />
+            <ImportanceBadge
+              importance={row.item.importance}
+              showLabel={true}
+              showLow={false}
+              showScore={false}
+            />
             <span class="min-w-0 wrap-anywhere">
               <ItemTitleLink
                 createItemHref={createItemHref}
@@ -193,15 +177,12 @@ export function PersonPage({
       widthClassName: "w-[52%]",
     },
     {
-      ariaSort: sort.key === "status" ? sort.direction : "none",
+      ariaSort: undefined,
       cellClassName: "wrap-anywhere",
       cellKind: "data",
       headerClassName: "",
       key: "status",
       label: "状態",
-      onSort: () => {
-        onSortChange("status");
-      },
       renderCell: (row: ItemTableRow) => statusLabel(row.item.status),
       widthClassName: "w-[14%]",
     },
@@ -331,7 +312,7 @@ export function PersonPage({
       <SortControls
         className="person-sort-controls mb-4 grid grid-cols-[minmax(0,1fr)_auto] gap-2 sm:max-w-sm"
         onSortChange={onSortChange}
-        options={SORT_COLUMNS}
+        options={ITEM_SORT_OPTIONS}
         selectId="person-sort-key"
         sort={sort}
       />
@@ -363,9 +344,16 @@ export function PersonPage({
                   </Pill>
                 )}
               </div>
-              <h3 class="item-title-with-importance m-0 flex min-w-0 items-start gap-1.5 text-base leading-6 font-bold">
+              <h3 class="item-title-with-scores m-0 flex min-w-0 flex-wrap items-start gap-1.5 text-base leading-6 font-bold">
+                <AttentionBadge
+                  attention={row.item.attention}
+                  showLabel={true}
+                  showLow={true}
+                  showScore={true}
+                />
                 <ImportanceBadge
                   importance={row.item.importance}
+                  showLabel={true}
                   showLow={false}
                   showScore={false}
                 />

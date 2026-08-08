@@ -8,8 +8,7 @@ import {
   type TableFilterOptions,
   type TableFilters,
   type TableSelectFilterKey,
-  type TableSort,
-  type OverviewSort,
+  type ItemSort,
 } from "./model.js";
 
 type TableFilterDefinition =
@@ -71,16 +70,7 @@ const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
 const PERSON_QUERY_PARAMETER_NAMES: readonly string[] = ["teams", "sort", "direction"];
 const OVERVIEW_QUERY_PARAMETER_NAMES: readonly string[] = ["sort", "direction"];
 
-const tableColumnKeySchema = z.enum([
-  "repository",
-  "type",
-  "status",
-  "importance",
-  "waitingOn",
-  "stall",
-]);
-const personTableColumnKeySchema = tableColumnKeySchema.exclude(["waitingOn"]);
-const overviewSortKeySchema = z.union([z.literal("attention"), tableColumnKeySchema]);
+const itemSortKeySchema = z.enum(["attention", "importance", "stall"]);
 const sortDirectionSchema = z.enum(["ascending", "descending"]);
 const filterValueSchema = z
   .string()
@@ -146,11 +136,11 @@ export type WebLocation = Readonly<{
 
 /** URLで共有するrouteと一覧の表示状態。 */
 export type WebViewState = Readonly<{
-  overviewSort: OverviewSort;
+  overviewSort: ItemSort;
   route: WebRoute;
   searchQuery: string;
   tableFilters: TableFilters;
-  tableSort: TableSort;
+  tableSort: ItemSort;
 }>;
 
 /** URL状態を検証した結果。 */
@@ -196,7 +186,7 @@ export function createWebViewState(route: WebRoute): WebViewState {
     searchQuery: "",
     tableFilters: createEmptyTableFilters(),
     tableSort: {
-      key: "stall",
+      key: "attention",
       direction: "descending",
     },
   };
@@ -465,7 +455,7 @@ function parseOverviewQuery(
   const allowedNames = new Set<string>(OVERVIEW_QUERY_PARAMETER_NAMES);
   let sanitized = [...parameters.keys()].some((name) => !allowedNames.has(name));
   const sortKey = parameterValueOr(
-    parseParameter(parameters, "sort", overviewSortKeySchema),
+    parseParameter(parameters, "sort", itemSortKeySchema),
     defaults.overviewSort.key,
   );
   const sortDirection = parameterValueOr(
@@ -529,7 +519,7 @@ function parsePersonQuery(
   }
 
   const sortKey = parameterValueOr(
-    parseParameter(parameters, "sort", personTableColumnKeySchema),
+    parseParameter(parameters, "sort", itemSortKeySchema),
     defaults.tableSort.key,
   );
   const sortDirection = parameterValueOr(
@@ -586,7 +576,7 @@ function parseItemsQuery(
   }
 
   const sortKey = parameterValueOr(
-    parseParameter(parameters, "sort", tableColumnKeySchema),
+    parseParameter(parameters, "sort", itemSortKeySchema),
     defaults.tableSort.key,
   );
   const sortDirection = parameterValueOr(
@@ -660,11 +650,11 @@ function appendSortParameters<Key extends string>(
   parameters: URLSearchParams,
   sort: Readonly<{
     key: Key;
-    direction: TableSort["direction"];
+    direction: ItemSort["direction"];
   }>,
   defaultSort: Readonly<{
     key: Key;
-    direction: TableSort["direction"];
+    direction: ItemSort["direction"];
   }>,
 ): void {
   if (sort.key !== defaultSort.key) {

@@ -62,7 +62,7 @@ function trackedGraphNode(item: PublicItemSummaryDto): PublicGraphNodeDto {
     repositoryId: item.repositoryId,
     state: item.state,
     status: item.status,
-    severity: item.severity,
+    severity: "watch",
   };
 }
 
@@ -298,10 +298,13 @@ describe("項目詳細の依存グラフ", () => {
     expect(view.sourceEdges.slice(1).every((edge) => !edge.authoritative)).toBe(true);
   });
 
-  it("表示上限を超えても中心項目を残してseverityが高い隣接項目を選ぶ", () => {
+  it("表示上限を超えても中心項目を残して要対応度が高い隣接項目を選ぶ", () => {
     const center = {
       ...createItem("node:z-center", "issue", 61, "2026-08-01T00:00:00.000Z"),
-      severity: "none",
+      attention: {
+        score: 0,
+        level: "low",
+      },
       downstreamImpact: {
         nodeId: "node:z-center",
         openNodeCount: 0,
@@ -310,7 +313,10 @@ describe("項目詳細の依存グラフ", () => {
     } satisfies PublicItemSummaryDto;
     const highestPriorityNeighbor = {
       ...createItem("node:high", "issue", 62, "2026-07-31T00:00:00.000Z"),
-      severity: "critical",
+      attention: {
+        score: 100,
+        level: "high",
+      },
     } satisfies PublicItemSummaryDto;
     const lowerPriorityNeighbors = [
       createItem("node:low-a", "issue", 63, "2026-07-01T00:00:00.000Z"),
@@ -347,7 +353,10 @@ describe("項目詳細の依存グラフ", () => {
     const center = createItem("node:center-priority", "issue", 65, "2026-08-01T00:00:00.000Z");
     const tracked = {
       ...createItem("node:z-tracked", "issue", 66, "2026-08-01T00:00:00.000Z"),
-      severity: "none",
+      attention: {
+        score: 0,
+        level: "low",
+      },
       downstreamImpact: {
         nodeId: "node:z-tracked",
         openNodeCount: 0,

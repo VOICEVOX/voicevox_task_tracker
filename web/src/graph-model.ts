@@ -13,7 +13,6 @@ const GRAPH_EXTERNAL_REFERENCE_NODE_WIDTH = 360;
 const GRAPH_NODE_HEIGHT = 112;
 
 type GraphNodeKind = PublicGraphNodeDto["kind"];
-type GraphNodeSeverity = PublicItemSummaryDto["severity"];
 type RelationType = PublicGraphEdgeDto["type"];
 
 type GraphViewNodeFields = Readonly<{
@@ -121,21 +120,6 @@ function relationTypeLabel(type: RelationType): string {
   }
 }
 
-function severityRank(severity: GraphNodeSeverity): number {
-  switch (severity) {
-    case "none":
-      return 0;
-    case "watch":
-      return 1;
-    case "urgent":
-      return 2;
-    case "critical":
-      return 3;
-    default:
-      throw new UnreachableError(severity);
-  }
-}
-
 function createTrackedGraphNode(
   node: Extract<PublicGraphNodeDto, Readonly<{ kind: "issue" | "pull_request" }>>,
   item: PublicItemSummaryDto,
@@ -197,16 +181,16 @@ function createEdgeView(edge: PublicGraphEdgeDto): GraphViewEdge {
   };
 }
 
-function graphNodeSeverityRank(
+function graphNodeAttentionScore(
   node: GraphViewNode,
   itemsByNodeId: ReadonlyMap<string, PublicItemSummaryDto>,
 ): number {
   if (node.kind === "external_reference") {
-    return severityRank("none");
+    return 0;
   }
   const item = itemsByNodeId.get(node.id);
   assertNonNullable(item, `graph node ${node.id}のsummary itemがありません`);
-  return severityRank(item.severity);
+  return item.attention.score;
 }
 
 function compareNodePriority(
@@ -218,10 +202,10 @@ function compareNodePriority(
   if (frontierOrder !== 0) {
     return frontierOrder;
   }
-  const severityOrder =
-    graphNodeSeverityRank(right, itemsByNodeId) - graphNodeSeverityRank(left, itemsByNodeId);
-  if (severityOrder !== 0) {
-    return severityOrder;
+  const attentionOrder =
+    graphNodeAttentionScore(right, itemsByNodeId) - graphNodeAttentionScore(left, itemsByNodeId);
+  if (attentionOrder !== 0) {
+    return attentionOrder;
   }
   const externalReferenceOrder =
     Number(left.kind === "external_reference") - Number(right.kind === "external_reference");

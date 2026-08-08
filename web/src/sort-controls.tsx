@@ -1,6 +1,25 @@
 import { assertNonNullable } from "../../src/util/index.js";
-import { type TableSort } from "./model.js";
+import { type ItemSort, type ItemSortKey } from "./model.js";
 import { ActionButton, FORM_CONTROL_CLASS_NAME } from "./ui.js";
+
+/** 項目一覧で選べる並び替えキー。 */
+export const ITEM_SORT_OPTIONS = [
+  {
+    key: "attention",
+    label: "要対応",
+  },
+  {
+    key: "importance",
+    label: "重要度",
+  },
+  {
+    key: "stall",
+    label: "停滞時間",
+  },
+] satisfies readonly Readonly<{
+  key: ItemSortKey;
+  label: string;
+}>[];
 
 type SortOption<Key extends string> = Readonly<{
   key: Key;
@@ -14,7 +33,7 @@ type SortControlsProps<Key extends string> = Readonly<{
   selectId: string;
   sort: Readonly<{
     key: Key;
-    direction: TableSort["direction"];
+    direction: ItemSort["direction"];
   }>;
 }>;
 

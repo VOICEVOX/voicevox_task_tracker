@@ -11,7 +11,7 @@ import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
 import { type ItemGraphView } from "./graph-model.js";
-import { ImportanceBadge } from "./importance-badge.js";
+import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import {
   confidencePresentation,
   formatDateTime,
@@ -617,9 +617,26 @@ export function ItemDetailsContent({
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
+            <dt class="text-xs font-bold text-text-muted">要対応度</dt>
+            <dd class="mt-1 mb-0 grid justify-items-start gap-1">
+              <AttentionBadge
+                attention={item.attention}
+                showLabel={false}
+                showLow={true}
+                showScore={true}
+              />
+              <span class="text-xs text-text-muted">重要度と直近の動きから決まる値</span>
+            </dd>
+          </div>
+          <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">重要度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <ImportanceBadge importance={item.importance} showLow={true} showScore={true} />
+              <ImportanceBadge
+                importance={item.importance}
+                showLabel={false}
+                showLow={true}
+                showScore={true}
+              />
               <span class="text-xs text-text-muted">項目自体の重要さ</span>
             </dd>
           </div>
