@@ -1632,7 +1632,7 @@ function createConflictDecision(
   });
 }
 
-function createReadyToMergeDecision(
+function createWaitingForMergeDecision(
   input: PullRequestStateMachineInput,
   context: DecisionContext,
   effectiveReviews: readonly ReviewEvent[],
@@ -1833,14 +1833,14 @@ export function determinePullRequestState(
     return conflictDecision;
   }
 
-  const readyToMergeDecision = createReadyToMergeDecision(
+  const waitingForMergeDecision = createWaitingForMergeDecision(
     input,
     context,
     effectiveReviews,
     headBasis,
   );
-  if (readyToMergeDecision != null) {
-    return readyToMergeDecision;
+  if (waitingForMergeDecision != null) {
+    return waitingForMergeDecision;
   }
 
   addMergeStateUncertainty(input, context);

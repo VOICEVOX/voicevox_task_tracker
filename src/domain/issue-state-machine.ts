@@ -866,6 +866,22 @@ function createAssigneeDecision(
   });
 }
 
+function determineUnassignedNextAction(
+  assessmentCompleted: boolean,
+  hasUncertainty: boolean,
+): string {
+  if (assessmentCompleted && hasUncertainty) {
+    return "maintainerが不確実な点を確認して担当を決める";
+  }
+  if (assessmentCompleted) {
+    return "maintainerがIssueの担当を決める";
+  }
+  if (hasUncertainty) {
+    return "maintainerが不確実な点を確認してIssueの内容を確認する";
+  }
+  return "maintainerがIssueの内容を確認する";
+}
+
 function createUnassignedDecision(
   input: IssueStateMachineInput,
   context: DecisionContext,
@@ -894,14 +910,10 @@ function createUnassignedDecision(
     assessmentEvidenceSourceIds.push(input.issue.sourceId);
   }
   const assessmentCompleted = assessmentEvidenceSourceIds.length > 0;
-  let nextAction = assessmentCompleted
-    ? "maintainerがIssueの担当を決める"
-    : "maintainerがIssueの内容を確認する";
-  if (context.uncertainties.length > 0) {
-    nextAction = assessmentCompleted
-      ? "maintainerが不確実な点を確認して担当を決める"
-      : "maintainerが不確実な点を確認してIssueの内容を確認する";
-  }
+  const nextAction = determineUnassignedNextAction(
+    assessmentCompleted,
+    context.uncertainties.length > 0,
+  );
   const waitingOn = createWaitingOn({
     kind: "role",
     candidateId: "maintainer",
