@@ -37,6 +37,7 @@ import {
   createStateNotificationLedger,
   createStateRunReport,
   createStateSnapshot,
+  parseStateNotificationLedger,
   parseStateHistoryRecords,
   parseStateSnapshot,
   serializeCanonicalJson,
@@ -188,7 +189,7 @@ function createRelations(edge: EdgeFixture): readonly unknown[] {
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "6",
+    schemaVersion: "7",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -416,7 +417,7 @@ function createRunReport(
 
 function createSentLedger(cooldownUntil: string): StateNotificationLedger {
   return createStateNotificationLedger({
-    schemaVersion: "1",
+    schemaVersion: "2",
     entries: [
       {
         notificationKey: "notification:tracked:overdue",
@@ -580,6 +581,11 @@ describe("state schema version", () => {
       schemaVersion: "1",
       items: snapshot.items.map((item) => ({
         ...item,
+        status: "new_untriaged",
+        severityContext: {
+          ...item.severityContext,
+          waitClass: "maintainerTriage",
+        },
         aiAnalysis: {
           status: "not_used",
         },
@@ -616,7 +622,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("6");
+    expect(migrated.schemaVersion).toBe("7");
     expect(migrated.repositories.map((repository) => repository.id)).toEqual([
       publicRepositoryId,
       "R_SECOND",
@@ -638,6 +644,12 @@ describe("state schema version", () => {
     });
     expect(migrated.items[0]?.aiAnalysis).toEqual({
       status: "not_recorded",
+    });
+    expect(migrated.items[0]).toMatchObject({
+      status: "waiting_for_assessment",
+      severityContext: {
+        waitClass: "assessment",
+      },
     });
   });
 
@@ -662,6 +674,11 @@ describe("state schema version", () => {
       schemaVersion: "2",
       items: snapshot.items.map((item) => ({
         ...item,
+        status: "new_untriaged",
+        severityContext: {
+          ...item.severityContext,
+          waitClass: "maintainerTriage",
+        },
         aiAnalysis: {
           status: "not_used",
         },
@@ -696,7 +713,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("6");
+    expect(migrated.schemaVersion).toBe("7");
     expect(migrated.collection.repositories[0]?.items[0]?.analysisRulesFingerprint).toEqual({
       status: "unavailable",
     });
@@ -737,6 +754,11 @@ describe("state schema version", () => {
       items: [
         {
           ...version3Item,
+          status: "new_untriaged",
+          severityContext: {
+            ...version3Item.severityContext,
+            waitClass: "maintainerTriage",
+          },
           aiAnalysis: {
             status: "not_used",
           },
@@ -746,7 +768,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("6");
+    expect(migrated.schemaVersion).toBe("7");
     expect(migrated.items[0]?.milestone).toBeNull();
     expect(migrated.items[0]?.importance).toEqual({
       score: 0,
@@ -784,6 +806,11 @@ describe("state schema version", () => {
       items: [
         {
           ...version4Item,
+          status: "new_untriaged",
+          severityContext: {
+            ...version4Item.severityContext,
+            waitClass: "maintainerTriage",
+          },
           aiAnalysis: {
             status: "not_used",
           },
@@ -793,7 +820,7 @@ describe("state schema version", () => {
 
     const migrated = parseStateSnapshot(source);
 
-    expect(migrated.schemaVersion).toBe("6");
+    expect(migrated.schemaVersion).toBe("7");
     expect(migrated.items[0]?.importance).toEqual({
       score: 0,
       level: "low",
@@ -826,6 +853,11 @@ describe("state schema version", () => {
       schemaVersion: "5",
       items: snapshot.items.map((item) => ({
         ...item,
+        status: "new_untriaged",
+        severityContext: {
+          ...item.severityContext,
+          waitClass: "maintainerTriage",
+        },
         aiAnalysis: {
           status: "not_used",
         },
@@ -836,6 +868,11 @@ describe("state schema version", () => {
       schemaVersion: "5",
       items: snapshot.items.map((item) => ({
         ...item,
+        status: "new_untriaged",
+        severityContext: {
+          ...item.severityContext,
+          waitClass: "maintainerTriage",
+        },
         aiAnalysis: {
           status: "used",
           cacheKey,
@@ -846,7 +883,7 @@ describe("state schema version", () => {
     const migratedNotUsed = parseStateSnapshot(notUsedSource);
     const migratedUsed = parseStateSnapshot(usedSource);
 
-    expect(migratedNotUsed.schemaVersion).toBe("6");
+    expect(migratedNotUsed.schemaVersion).toBe("7");
     expect(migratedNotUsed.items[0]?.aiAnalysis).toEqual({
       status: "not_recorded",
     });
@@ -856,29 +893,364 @@ describe("state schema version", () => {
     });
   });
 
-  it("version 1のhistoryを登録済みparserで読み取り現行形式へmigrationする", () => {
+  it("version 6の旧列挙値をversion 7へmigrationする", () => {
+    const snapshot = createSnapshot({
+      runId: "run-schema-version-6",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const item = snapshot.items[0];
+    assertNonNullable(item, "version 6のitem fixtureがありません");
+    const fixtures = [
+      {
+        legacyStatus: "new_untriaged",
+        legacyWaitClass: "maintainerTriage",
+        status: "waiting_for_assessment",
+        waitClass: "assessment",
+      },
+      {
+        legacyStatus: "needs_maintainer_decision",
+        legacyWaitClass: "decision",
+        status: "waiting_for_decision",
+        waitClass: "decision",
+      },
+      {
+        legacyStatus: "waiting_for_author",
+        legacyWaitClass: "authorAfterChangesRequested",
+        status: "waiting_for_revision",
+        waitClass: "revision",
+      },
+      {
+        legacyStatus: "waiting_for_assignee",
+        legacyWaitClass: "assigneeOrInProgress",
+        status: "waiting_for_work",
+        waitClass: "work",
+      },
+      {
+        legacyStatus: "blocked",
+        legacyWaitClass: "blockedParent",
+        status: "waiting_for_unblock",
+        waitClass: "blockedParent",
+      },
+      {
+        legacyStatus: "ready_to_merge",
+        legacyWaitClass: "readyToMerge",
+        status: "waiting_for_merge",
+        waitClass: "merge",
+      },
+      {
+        legacyStatus: "waiting_for_owner",
+        legacyWaitClass: "ownerUnknown",
+        status: "waiting_for_owner",
+        waitClass: "owner",
+      },
+      {
+        legacyStatus: "waiting_for_review",
+        legacyWaitClass: "reviewer",
+        status: "waiting_for_review",
+        waitClass: "review",
+      },
+    ] satisfies readonly Readonly<{
+      legacyStatus: string;
+      legacyWaitClass: string;
+      status: Status;
+      waitClass: StalenessWaitClass;
+    }>[];
+
+    for (const fixture of fixtures) {
+      const source = serializeCanonicalJson({
+        ...snapshot,
+        schemaVersion: "6",
+        items: [
+          {
+            ...item,
+            status: fixture.legacyStatus,
+            severityContext: {
+              ...item.severityContext,
+              waitClass: fixture.legacyWaitClass,
+            },
+          },
+        ],
+      });
+
+      const migrated = parseStateSnapshot(source);
+
+      expect(migrated.schemaVersion).toBe("7");
+      expect(migrated.items[0]).toMatchObject({
+        status: fixture.status,
+        severityContext: {
+          waitClass: fixture.waitClass,
+        },
+      });
+    }
+  });
+
+  it("version 6の未知の旧列挙値を拒否する", () => {
+    const snapshot = createSnapshot({
+      runId: "run-schema-version-6-unknown-enum",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const item = snapshot.items[0];
+    assertNonNullable(item, "version 6のitem fixtureがありません");
+    const legacyItem = {
+      ...item,
+      status: "new_untriaged",
+      severityContext: {
+        ...item.severityContext,
+        waitClass: "maintainerTriage",
+      },
+    };
+
+    expect(() =>
+      parseStateSnapshot(
+        serializeCanonicalJson({
+          ...snapshot,
+          schemaVersion: "6",
+          items: [
+            {
+              ...legacyItem,
+              status: "unexpected_status",
+            },
+          ],
+        }),
+      ),
+    ).toThrow(StateSnapshotSchemaError);
+    expect(() =>
+      parseStateSnapshot(
+        serializeCanonicalJson({
+          ...snapshot,
+          schemaVersion: "6",
+          items: [
+            {
+              ...legacyItem,
+              severityContext: {
+                ...legacyItem.severityContext,
+                waitClass: "unexpected_wait_class",
+              },
+            },
+          ],
+        }),
+      ),
+    ).toThrow(StateSnapshotSchemaError);
+  });
+
+  it("version 1のnotification ledgerにある旧reasonCodeをversion 2へmigrationする", () => {
+    const fixtures = [
+      {
+        legacyReasonCode: "author_overdue",
+        reasonCode: "revision_overdue",
+      },
+      {
+        legacyReasonCode: "ready_to_merge_overdue",
+        reasonCode: "merge_overdue",
+      },
+      {
+        legacyReasonCode: "triage_overdue",
+        reasonCode: "assessment_overdue",
+      },
+    ] as const;
+    const entries = fixtures.map((fixture, index) => ({
+      notificationKey: `discord-notification:v1:${fixture.legacyReasonCode}:0000000000000000000000000000000000000000000000000000000000000000`,
+      itemNodeId: `I_LEGACY_NOTIFICATION_${index.toString()}`,
+      reasonCode: fixture.legacyReasonCode,
+      severity: "critical",
+      reservedAt: "2026-08-01T00:00:00.000Z",
+      cooldownUntil: "2026-08-02T00:00:00.000Z",
+      status: "sent",
+      sentAt: "2026-08-01T00:01:00.000Z",
+      discordMessageId: `discord-message-${index.toString()}`,
+    }));
+    const operationsAlerts = [
+      {
+        alertKey: "discord-operations-alert:v1:collection",
+        incidentId: "collection-incident",
+        kind: "collection",
+        occurredAt: "2026-08-01T00:00:00.000Z",
+        sentAt: "2026-08-01T00:01:00.000Z",
+        discordMessageId: "discord-operations-message",
+      },
+    ];
+
+    const migrated = parseStateNotificationLedger(
+      serializeCanonicalJson({
+        schemaVersion: "1",
+        entries,
+        operationsAlerts,
+      }),
+    );
+
+    expect(migrated).toEqual({
+      schemaVersion: "2",
+      entries: entries.map((entry, index) => {
+        const fixture = fixtures[index];
+        assertNonNullable(fixture, "notification ledgerのmigration fixtureがありません");
+        return {
+          ...entry,
+          reasonCode: fixture.reasonCode,
+        };
+      }),
+      operationsAlerts,
+    });
+  });
+
+  it("version 1のnotification ledgerにある未知の旧reasonCodeを拒否する", () => {
+    expect(() =>
+      parseStateNotificationLedger(
+        serializeCanonicalJson({
+          schemaVersion: "1",
+          entries: [
+            {
+              reasonCode: "unexpected_reason",
+            },
+          ],
+          operationsAlerts: [],
+        }),
+      ),
+    ).toThrow(StateFormatError);
+  });
+
+  it("version 1のhistoryにある旧Statusをversion 2へmigrationする", () => {
+    const fixtures = [
+      {
+        legacyStatus: "new_untriaged",
+        status: "waiting_for_assessment",
+      },
+      {
+        legacyStatus: "needs_maintainer_decision",
+        status: "waiting_for_decision",
+      },
+      {
+        legacyStatus: "waiting_for_author",
+        status: "waiting_for_revision",
+      },
+      {
+        legacyStatus: "waiting_for_assignee",
+        status: "waiting_for_work",
+      },
+      {
+        legacyStatus: "blocked",
+        status: "waiting_for_unblock",
+      },
+      {
+        legacyStatus: "ready_to_merge",
+        status: "waiting_for_merge",
+      },
+    ] satisfies readonly Readonly<{
+      legacyStatus: string;
+      status: Status;
+    }>[];
     const source = `${serializeCanonicalJson({
       schemaVersion: "1",
       date: "2026-08-01",
       runId: "run-history-schema-version-1",
       recordedAt: "2026-08-01T09:00:00+09:00",
       inputEvents: [],
-      events: [],
+      events: fixtures.map((fixture, index) => ({
+        kind: "responsibility_set",
+        nodeId: `I_LEGACY_${index.toString()}`,
+        value: {
+          status: fixture.legacyStatus,
+          waitingOn: [
+            {
+              kind: "role",
+              candidateId: "maintainer",
+              role: "maintainer",
+              reasonSummary: "旧履歴の責務です",
+              sourceIds: [`fixture:legacy:${index.toString()}`],
+              confidence: 1,
+            },
+          ],
+        },
+      })),
     })}\n`;
 
     const records = parseStateHistoryRecords(source);
     const record = records[0];
     assertNonNullable(record, "version 1のhistory recordを取得できませんでした");
 
-    expect(record).toEqual({
+    expect(record.schemaVersion).toBe("2");
+    expect(record.recordedAt).toBe("2026-08-01T00:00:00.000Z");
+    expect(
+      record.events.map((event) => {
+        if (event.kind !== "responsibility_set") {
+          throw new TypeError("旧Statusの履歴fixtureに責務設定以外のeventがあります");
+        }
+        return event.value.status;
+      }),
+    ).toEqual(fixtures.map((fixture) => fixture.status));
+    expect(Object.isFrozen(record)).toBe(true);
+  });
+
+  it("version 1とversion 2が混在するhistoryをrecordごとに読み取る", () => {
+    const records = parseStateHistoryRecords(
+      [
+        serializeCanonicalJson({
+          schemaVersion: "1",
+          date: "2026-08-01",
+          runId: "run-history-mixed-version-1",
+          recordedAt: "2026-08-01T00:00:00.000Z",
+          inputEvents: [],
+          events: [],
+        }),
+        serializeCanonicalJson({
+          schemaVersion: "2",
+          date: "2026-08-01",
+          runId: "run-history-mixed-version-2",
+          recordedAt: "2026-08-01T01:00:00.000Z",
+          inputEvents: [],
+          events: [],
+        }),
+      ].join("\n") + "\n",
+    );
+
+    expect(records.map((record) => record.schemaVersion)).toEqual(["2", "2"]);
+    expect(records.map((record) => record.runId)).toEqual([
+      "run-history-mixed-version-1",
+      "run-history-mixed-version-2",
+    ]);
+  });
+
+  it("version 1のhistoryにある未知の旧Statusを拒否する", () => {
+    const source = `${serializeCanonicalJson({
       schemaVersion: "1",
       date: "2026-08-01",
-      runId: "run-history-schema-version-1",
+      runId: "run-history-unknown-legacy-status",
       recordedAt: "2026-08-01T00:00:00.000Z",
       inputEvents: [],
-      events: [],
-    });
-    expect(Object.isFrozen(record)).toBe(true);
+      events: [
+        {
+          kind: "responsibility_set",
+          nodeId: "I_UNKNOWN_LEGACY_STATUS",
+          value: {
+            status: "unexpected_status",
+            waitingOn: [],
+          },
+        },
+      ],
+    })}\n`;
+
+    expect(() => parseStateHistoryRecords(source)).toThrow(StateFormatError);
   });
 
   it("未知のsnapshot schema versionを拒否する", () => {
@@ -927,6 +1299,24 @@ describe("state schema version", () => {
     expect(error).toBeInstanceOf(StateFormatError);
     expect(error.cause).toMatchObject({
       message: "state historyのschemaVersionは未対応です",
+    });
+  });
+
+  it("未知のnotification ledger schema versionを拒否する", () => {
+    const error = captureSynchronousError(() =>
+      parseStateNotificationLedger(
+        serializeCanonicalJson({
+          schemaVersion: "999",
+          entries: [],
+          operationsAlerts: [],
+        }),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(StateFormatError);
+    expect(error).not.toBeInstanceOf(StateZodValidationError);
+    expect(error.cause).toMatchObject({
+      message: "notification ledgerのschemaVersionは未対応です",
     });
   });
 });
@@ -1367,7 +1757,7 @@ describe("メモリstate branch transaction", () => {
   it("snapshotを欠く既存stateを初回運用障害stateと誤認しない", async () => {
     const adapter = new MemoryStateBranchAdapter();
     const notificationLedger = createStateNotificationLedger({
-      schemaVersion: "1",
+      schemaVersion: "2",
       entries: [],
       operationsAlerts: [
         {

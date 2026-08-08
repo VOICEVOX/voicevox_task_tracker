@@ -4064,7 +4064,7 @@ function mergeNotificationLedger(
     entries.set(reservation.notificationKey, reservation);
   }
   return createStateNotificationLedger({
-    schemaVersion: "1",
+    schemaVersion: "2",
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
   });
@@ -4232,7 +4232,7 @@ function validateRunCompleteness(
   const persistedAnalysisRulesFingerprintNodeIds = new Set<string>();
   const persistedDeterministicRulesVersionNodeIds = new Set<string>();
   const snapshot = createStateSnapshot({
-    schemaVersion: "6",
+    schemaVersion: "7",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
@@ -4576,7 +4576,7 @@ async function deliverDiscord(
       delivery,
     }),
     notificationLedger: createStateNotificationLedger({
-      schemaVersion: "1",
+      schemaVersion: "2",
       entries: [...notificationEntriesByKey.values()],
       operationsAlerts: [...operationsAlertsByKey.values()],
     }),
@@ -4697,7 +4697,7 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: "1",
+    schemaVersion: "2",
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
   });

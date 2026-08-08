@@ -255,7 +255,7 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 
 | 既定パス                            | 内容                                                                               |
 | ----------------------------------- | ---------------------------------------------------------------------------------- |
-| `state/snapshot.json`               | AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 6の最新snapshot |
+| `state/snapshot.json`               | AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 7の最新snapshot |
 | `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                 |
 | `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                     |
 | `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                       |

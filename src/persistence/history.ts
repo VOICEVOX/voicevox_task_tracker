@@ -2,10 +2,12 @@ import { z } from "zod";
 
 import { serializeCanonicalJson, serializeCanonicalJsonLine } from "./canonical-json.js";
 import { StateFormatError, StateHistoryError } from "./errors.js";
+import { type LegacyStatus, migrateLegacyStatus } from "./legacy-enum.js";
 import { type StateSnapshot } from "./snapshot.js";
 import { type Repository } from "../domain/index.js";
 
 const STATE_HISTORY_SCHEMA_VERSION_1 = "1";
+const STATE_HISTORY_SCHEMA_VERSION_2 = "2";
 
 const historySchemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
@@ -78,6 +80,22 @@ const dateSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}$/u)
   .refine(isCalendarDate);
+const legacyStatusSchema: z.ZodType<LegacyStatus> = z.enum([
+  "new_untriaged",
+  "needs_maintainer_decision",
+  "waiting_for_author",
+  "waiting_for_assignee",
+  "blocked",
+  "ready_to_merge",
+  "waiting_for_owner",
+  "waiting_for_review",
+  "waiting_for_automation",
+  "in_progress",
+  "unknown",
+  "terminal_merged",
+  "terminal_completed",
+  "terminal_not_planned",
+]);
 const statusSchema = z.enum([
   "waiting_for_assessment",
   "waiting_for_owner",
@@ -197,9 +215,31 @@ const historyEventSchema = z.discriminatedUnion("kind", [
     reason: z.literal("archived"),
   }),
 ]);
-const historyRecordVersion1Schema = z
+const historyRecordVersion1EventSchema = z.union([
+  z.looseObject({
+    kind: z.literal("responsibility_set"),
+    value: z.looseObject({
+      status: legacyStatusSchema,
+    }),
+  }),
+  z.looseObject({
+    kind: z.enum([
+      "responsibility_removed",
+      "severity_set",
+      "severity_removed",
+      "edge_set",
+      "edge_removed",
+      "repository_excluded",
+    ]),
+  }),
+]);
+const historyRecordVersion1MigrationSchema = z.looseObject({
+  schemaVersion: z.literal(STATE_HISTORY_SCHEMA_VERSION_1),
+  events: z.array(historyRecordVersion1EventSchema),
+});
+const historyRecordVersion2Schema = z
   .strictObject({
-    schemaVersion: z.literal(STATE_HISTORY_SCHEMA_VERSION_1),
+    schemaVersion: z.literal(STATE_HISTORY_SCHEMA_VERSION_2),
     date: dateSchema,
     runId: identifierSchema,
     recordedAt: dateTimeSchema,
@@ -229,11 +269,12 @@ export type StateHistoryEvent = z.output<typeof historyEventSchema>;
 /** 日次履歴へ保存する一つの正規化入力イベント。 */
 export type StateHistoryInputEvent = z.output<typeof inputEventSchema>;
 
-type StateHistoryRecordVersion1 = z.output<typeof historyRecordVersion1Schema>;
+type StateHistoryRecordVersion1 = z.output<typeof historyRecordVersion1MigrationSchema>;
+type StateHistoryRecordVersion2 = z.output<typeof historyRecordVersion2Schema>;
 type StateHistoryRecordVersionParser = (value: unknown) => StateHistoryRecord;
 
-/** 一つの完全runが生成した日次履歴record。 */
-export type StateHistoryRecord = StateHistoryRecordVersion1;
+/** 一つの完全runが生成したschema version 2の日次履歴record。 */
+export type StateHistoryRecord = StateHistoryRecordVersion2;
 
 /** 履歴を指定時点まで再生した責務・edge・severity状態。 */
 export type ReplayedStateHistory = Readonly<{
@@ -543,7 +584,7 @@ function createEmptyProjection(): StateHistoryProjection {
 }
 
 function parseStateHistoryRecordVersion1(value: unknown): StateHistoryRecordVersion1 {
-  const result = historyRecordVersion1Schema.safeParse(value);
+  const result = historyRecordVersion1MigrationSchema.safeParse(value);
   if (!result.success) {
     throw StateFormatError.fromZodError("state history", result.error);
   }
@@ -551,6 +592,34 @@ function parseStateHistoryRecordVersion1(value: unknown): StateHistoryRecordVers
 }
 
 function migrateStateHistoryRecordVersion1(record: StateHistoryRecordVersion1): StateHistoryRecord {
+  return migrateStateHistoryRecordVersion2(
+    parseStateHistoryRecordVersion2({
+      ...record,
+      schemaVersion: STATE_HISTORY_SCHEMA_VERSION_2,
+      events: record.events.map((event) =>
+        event.kind === "responsibility_set"
+          ? {
+              ...event,
+              value: {
+                ...event.value,
+                status: migrateLegacyStatus(event.value.status),
+              },
+            }
+          : event,
+      ),
+    }),
+  );
+}
+
+function parseStateHistoryRecordVersion2(value: unknown): StateHistoryRecordVersion2 {
+  const result = historyRecordVersion2Schema.safeParse(value);
+  if (!result.success) {
+    throw StateFormatError.fromZodError("state history", result.error);
+  }
+  return result.data;
+}
+
+function migrateStateHistoryRecordVersion2(record: StateHistoryRecordVersion2): StateHistoryRecord {
   return Object.freeze(record);
 }
 
@@ -570,6 +639,13 @@ const stateHistoryRecordVersionParsers: ReadonlyMap<string, StateHistoryRecordVe
         migrateStateHistoryRecordVersion1,
       ),
     ],
+    [
+      STATE_HISTORY_SCHEMA_VERSION_2,
+      createStateHistoryRecordVersionParser(
+        parseStateHistoryRecordVersion2,
+        migrateStateHistoryRecordVersion2,
+      ),
+    ],
   ]);
 
 function parseVersionedStateHistoryRecord(value: unknown): StateHistoryRecord {
@@ -587,7 +663,7 @@ function parseVersionedStateHistoryRecord(value: unknown): StateHistoryRecord {
 }
 
 function validateHistoryRecord(value: unknown): StateHistoryRecord {
-  return migrateStateHistoryRecordVersion1(parseStateHistoryRecordVersion1(value));
+  return migrateStateHistoryRecordVersion2(parseStateHistoryRecordVersion2(value));
 }
 
 /** previous snapshotからcurrent snapshotへの日次履歴recordを生成する。 */
@@ -616,7 +692,7 @@ export function createStateHistoryRecord(
   ].sort((left, right) => compareStrings(historyEventKey(left), historyEventKey(right)));
 
   return validateHistoryRecord({
-    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_1,
+    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_2,
     date,
     runId: currentSnapshot.run.id,
     recordedAt: currentSnapshot.generatedAt,
