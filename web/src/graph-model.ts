@@ -9,6 +9,7 @@ import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const GRAPH_NODE_WIDTH = 240;
+const GRAPH_EXTERNAL_REFERENCE_NODE_WIDTH = 360;
 const GRAPH_NODE_HEIGHT = 112;
 
 type GraphNodeKind = PublicGraphNodeDto["kind"];
@@ -179,7 +180,7 @@ function createExternalGraphNode(
     title: node.title,
     central: centralNodeIds.has(node.nodeId),
     frontier: frontierNodeIds.has(node.nodeId),
-    width: GRAPH_NODE_WIDTH,
+    width: GRAPH_EXTERNAL_REFERENCE_NODE_WIDTH,
     height: GRAPH_NODE_HEIGHT,
   };
 }

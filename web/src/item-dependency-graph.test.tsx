@@ -165,7 +165,7 @@ afterEach(() => {
 });
 
 describe("項目詳細の依存グラフ", () => {
-  it("停滞日数、影響範囲、種別によらず240×112で表示する", () => {
+  it("追跡項目を240×112、外部参照を360×112で表示する", () => {
     const center = createItem("node:fixed-center", "issue", 31, "2026-08-01T00:00:00.000Z");
     const highImpact = {
       ...createItem("node:fixed-high-impact", "pull_request", 32, "2020-01-01T00:00:00.000Z"),
@@ -196,7 +196,16 @@ describe("項目詳細の依存グラフ", () => {
     const view = createItemGraphView(fixture.summary, fixture.details, center.nodeId, NOW);
 
     expect(view.displayNodes).toHaveLength(3);
-    expect(view.displayNodes.every((node) => node.width === 240 && node.height === 112)).toBe(true);
+    expect(
+      view.displayNodes
+        .filter((node) => node.kind !== "external_reference")
+        .every((node) => node.width === 240 && node.height === 112),
+    ).toBe(true);
+    expect(
+      view.displayNodes
+        .filter((node) => node.kind === "external_reference")
+        .every((node) => node.width === 360 && node.height === 112),
+    ).toBe(true);
   });
 
   it("中心項目を識別して1 hop表示へ必ず含める", () => {

@@ -9,6 +9,10 @@ import {
 
 import type { GraphViewEdge, GraphViewNode, ItemGraphView } from "./graph-model.js";
 
+const GRAPH_EDGE_LABEL_WIDTH = 64;
+const GRAPH_EDGE_LABEL_HEIGHT = 20;
+const GRAPH_EDGE_LABEL_OFFSET = 8;
+
 /** 自動配置後のgraph node。 */
 export type LayoutedGraphNode = Readonly<{
   node: GraphViewNode;
@@ -53,14 +57,6 @@ function edgeWeight(edge: GraphViewEdge): number {
   }
 }
 
-function labelPoint(points: readonly Point[]): Point {
-  const point = points[Math.floor(points.length / 2)];
-  if (point == null) {
-    throw new TypeError("graph edgeの自動配置点がありません");
-  }
-  return point;
-}
-
 /** Dagreでblockerからblocked itemへ左から右に自動配置する。 */
 export function layoutItemGraph(view: ItemGraphView): GraphLayout {
   if (view.displayNodes.length === 0) {
@@ -94,8 +90,12 @@ export function layoutItemGraph(view: ItemGraphView): GraphLayout {
       edge.fromNodeId,
       edge.toNodeId,
       {
+        height: GRAPH_EDGE_LABEL_HEIGHT,
+        labeloffset: GRAPH_EDGE_LABEL_OFFSET,
+        labelpos: "l",
         minlen: 1,
         weight: edgeWeight(edge),
+        width: GRAPH_EDGE_LABEL_WIDTH,
       },
       edge.id,
     );
@@ -122,7 +122,10 @@ export function layoutItemGraph(view: ItemGraphView): GraphLayout {
         x: point.x,
         y: point.y,
       })),
-      labelPoint: labelPoint(edgeLabel.points),
+      labelPoint: {
+        x: requiredFiniteNumber(edgeLabel.x, `graph edge ${edge.id}のlabel x座標`),
+        y: requiredFiniteNumber(edgeLabel.y, `graph edge ${edge.id}のlabel y座標`),
+      },
     };
   });
 
