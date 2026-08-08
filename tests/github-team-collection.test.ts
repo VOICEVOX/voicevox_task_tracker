@@ -2,11 +2,7 @@ import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
 import { ConfigError } from "../src/config/index.js";
-import {
-  resolveRepositoryActorTeamRoles,
-  resolveRepositoryTeams,
-  type TeamResolutionSettings,
-} from "../src/domain/index.js";
+import { type TeamResolutionSettings } from "../src/domain/index.js";
 import {
   collectGitHubTeamDirectory,
   type GitHubRestRequest,
@@ -167,6 +163,7 @@ describe("GitHub team取得", () => {
       "voicevox-reviewers",
     ]);
     expect(directory[0]?.members).toHaveLength(101);
+    expect(directory[0]?.members[100]?.login).toBe("default-maintainers-member-100");
     expect(calls).toEqual([
       "team:voicevox/default-maintainers",
       "members:voicevox/default-maintainers:1",
@@ -178,12 +175,6 @@ describe("GitHub team取得", () => {
       "team:voicevox/voicevox-reviewers",
       "members:voicevox/voicevox-reviewers:1",
     ]);
-
-    const teams = resolveRepositoryTeams("VOICEVOX/other", teamSettings, directory);
-    expect(resolveRepositoryActorTeamRoles(teams, "default-maintainers-member-100")).toEqual({
-      isMaintainer: true,
-      isReviewer: false,
-    });
   });
 
   it("存在しないteam slugを設定エラーにして後続の公開と通知へ進まない", async () => {

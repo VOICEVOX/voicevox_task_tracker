@@ -165,14 +165,12 @@ export {
 } from "./tracking-selection.js";
 export {
   listConfiguredTeamReferences,
-  resolveRepositoryActorTeamRoles,
   resolveRepositoryRoleWaitingOn,
   resolveRepositoryTeamReferences,
   resolveRepositoryTeams,
   resolveWaitingOnAccountIdentifiers,
   type GitHubTeamDirectory,
   type GitHubTeamMember,
-  type RepositoryActorTeamRoles,
   type RepositoryTeamReferences,
   type ResolvedGitHubTeam,
   type ResolvedRepositoryTeams,

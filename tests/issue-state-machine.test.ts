@@ -472,7 +472,7 @@ describe("Issueの既定責務", () => {
     );
   });
 
-  it("maintainerが作成した未アサインIssueをauthor個人のmaintainer責務にする", () => {
+  it("authorがmaintainerでも設定済みmaintainer teamの責務にする", () => {
     const decision = determineIssueState(
       createInput({
         ...createOpenIssue(),
@@ -484,11 +484,11 @@ describe("Issueの既定責務", () => {
     );
 
     expect(decision.waitingOn[0]).toMatchObject({
-      kind: "user",
-      candidateId: maintainer.login,
+      kind: "team",
+      candidateId: "VOICEVOX/maintainers",
       role: "maintainer",
     });
-    expect(decision.waitingOn.some((value) => value.role === "author")).toBe(false);
+    expect(decision.waitingOn.map((value) => value.candidateId)).not.toContain(maintainer.login);
   });
 
   it("直近のhuman actorがreviewerでもtriageをmaintainer teamの責務にする", () => {
@@ -516,7 +516,7 @@ describe("Issueの既定責務", () => {
     });
   });
 
-  it("2 repositoryでmaintainer authorを個人へ、それ以外を設定済みteamへ解決する", () => {
+  it("2 repositoryでauthorのmembershipに関係なく設定済みmaintainer teamへ解決する", () => {
     const defaultMaintainer = {
       type: "human",
       nodeId: createGitHubNodeId("U_default_maintainer"),
@@ -617,9 +617,9 @@ describe("Issueの既定責務", () => {
         ]),
       ),
     ).toEqual([
-      [["user", "default-maintainer", "maintainer"]],
       [["team", "VOICEVOX/default-maintainers", "maintainer"]],
-      [["user", "override-maintainer", "maintainer"]],
+      [["team", "VOICEVOX/default-maintainers", "maintainer"]],
+      [["team", "VOICEVOX/override-maintainers", "maintainer"]],
       [["team", "VOICEVOX/override-maintainers", "maintainer"]],
     ]);
   });

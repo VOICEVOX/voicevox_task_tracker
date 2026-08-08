@@ -6,7 +6,6 @@ import {
   createGitHubNodeId,
   createLabelEffectsResolver,
   listConfiguredTeamReferences,
-  resolveRepositoryActorTeamRoles,
   resolveRepositoryRoleWaitingOn,
   resolveRepositoryTeamReferences,
   resolveRepositoryTeams,
@@ -262,27 +261,6 @@ describe("team解決", () => {
     expect(references).toEqual(teamSettings.repositories["VOICEVOX/voicevox"]);
     expect(teams.maintainers.map((team) => team.slug)).toEqual(["voicevox-maintainers"]);
     expect(teams.reviewers.map((team) => team.slug)).toEqual(["voicevox-reviewers"]);
-  });
-
-  it("team membershipからloginのmaintainerとreviewer roleを判定する", () => {
-    const teams = resolveRepositoryTeams("VOICEVOX/other", teamSettings, teamDirectory);
-
-    expect(resolveRepositoryActorTeamRoles(teams, "DEFAULT-MAINTAINER")).toEqual({
-      isMaintainer: true,
-      isReviewer: false,
-    });
-    expect(resolveRepositoryActorTeamRoles(teams, "default-reviewer")).toEqual({
-      isMaintainer: false,
-      isReviewer: true,
-    });
-    expect(resolveRepositoryActorTeamRoles(teams, "both")).toEqual({
-      isMaintainer: true,
-      isReviewer: true,
-    });
-    expect(resolveRepositoryActorTeamRoles(teams, "unknown")).toEqual({
-      isMaintainer: false,
-      isReviewer: false,
-    });
   });
 
   it("抽象roleを既定と上書きのteamへ解決しGitHub由来の実体は維持する", () => {

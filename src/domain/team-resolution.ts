@@ -42,12 +42,6 @@ export type ResolvedRepositoryTeams = Readonly<{
   reviewers: readonly ResolvedGitHubTeam[];
 }>;
 
-/** loginに対して解決したリポジトリ内のteam role。 */
-export type RepositoryActorTeamRoles = Readonly<{
-  isMaintainer: boolean;
-  isReviewer: boolean;
-}>;
-
 function createTeamKey(team: TeamReference): string {
   return `${team.org.toLowerCase()}/${team.slug.toLowerCase()}`;
 }
@@ -160,28 +154,6 @@ export function resolveRepositoryTeams(
   return Object.freeze({
     maintainers: resolveTeams(references.maintainers, lookup),
     reviewers: resolveTeams(references.reviewers, lookup),
-  });
-}
-
-function hasMember(teams: readonly ResolvedGitHubTeam[], login: string): boolean {
-  const normalizedLogin = login.toLowerCase();
-  return teams.some((team) =>
-    team.members.some((member) => member.login.toLowerCase() === normalizedLogin),
-  );
-}
-
-/** loginがリポジトリのmaintainerまたはreviewer teamに所属するか判定する。 */
-export function resolveRepositoryActorTeamRoles(
-  teams: ResolvedRepositoryTeams,
-  login: string,
-): RepositoryActorTeamRoles {
-  if (login.length === 0) {
-    throw new TypeError("team roleを解決するloginは空にできません");
-  }
-
-  return Object.freeze({
-    isMaintainer: hasMember(teams.maintainers, login),
-    isReviewer: hasMember(teams.reviewers, login),
   });
 }
 
