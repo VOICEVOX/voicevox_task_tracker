@@ -722,6 +722,12 @@ describe("Web UI", () => {
     );
     expect(itemCell.querySelector(".attention-badge")?.textContent).toBe("要対応度中25点");
     expect(itemCell.querySelector(".importance-badge")?.textContent).toBe("重要度高");
+    expect(itemCell.querySelector(".ai-analysis-badge")?.textContent).toBe("AI判定なし");
+    const tableGitHubLink = requiredElement<HTMLAnchorElement>(
+      '.person-items-table tr[data-node-id="sample-item-editor-101"] a[target="_blank"]',
+    );
+    expect(tableGitHubLink.textContent).toBe("GitHubで開く");
+    expect(tableGitHubLink.href).toBe("https://github.com/VOICEVOX/sample-editor/pull/101");
     expect(
       requiredElement<HTMLTableCellElement>(
         '.person-items-table tr[data-node-id="sample-item-editor-101"] td:last-child',
@@ -740,6 +746,13 @@ describe("Web UI", () => {
         '.items-card-list li[data-node-id="sample-item-editor-101"] .item-list-meta',
       ).textContent,
     ).toBe("VOICEVOX/sample-editor#101・Pull Request");
+    const itemCard = requiredElement<HTMLElement>(
+      '.items-card-list li[data-node-id="sample-item-editor-101"]',
+    );
+    expect(itemCard.querySelector(".ai-analysis-badge")?.textContent).toBe("AI判定なし");
+    const cardGitHubLink = itemCard.querySelector<HTMLAnchorElement>('a[target="_blank"]');
+    expect(cardGitHubLink?.textContent).toBe("GitHubで開く");
+    expect(cardGitHubLink?.href).toBe("https://github.com/VOICEVOX/sample-editor/pull/101");
     expect(currentContainer().querySelector(".url-state-notice")).toBeNull();
     expect(window.location.pathname).toBe("/voicevox_task_tracker/people/hiho");
     expect(window.location.search).toBe("");
@@ -810,6 +823,10 @@ describe("Web UI", () => {
         '.items-card-list li[data-node-id="sample-item-engine-204"] .importance-badge',
       ),
     ).toBeNull();
+    const normalCardMeta = requiredElement<HTMLElement>(
+      '.items-card-list li[data-node-id="sample-item-engine-204"] .item-list-meta',
+    );
+    expect(normalCardMeta.nextElementSibling).toBeNull();
   });
 
   it("担当者ページの表ヘッダで並び替え、同じ列の再操作で方向を反転する", () => {
@@ -1355,9 +1372,9 @@ describe("Web UI", () => {
     );
     expect(titleLink.textContent).toBe("サンプル辞書更新をマージする");
     expect(titleLink.getAttribute("href")).toBe("/voicevox_task_tracker/items/sample-editor/101");
-    expect(firstItem.querySelector(".item-reference")?.textContent).toContain(
-      "VOICEVOX/sample-editor #101",
-    );
+    const itemMeta = firstItem.querySelector(".item-list-meta");
+    expect(itemMeta?.textContent).toBe("VOICEVOX/sample-editor#101・Pull Request");
+    expect(itemMeta?.nextElementSibling?.tagName).toBe("H3");
     expect(firstItem.querySelector(".attention-primary-waiting-on")?.textContent).toBe(
       "マージ判断者の誰か",
     );
@@ -1619,7 +1636,12 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll(".items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["要対応↓", "重要度", "項目", "状態", "次の担当", "停滞"]);
+    ).toEqual(["要対応↓", "重要度", "項目", "状態", "次の担当", "停滞時間"]);
+    expect(
+      [...currentContainer().querySelectorAll(".items-card-list li:first-child dt")].map(
+        (heading) => heading.textContent,
+      ),
+    ).toEqual(["状態", "停滞時間", "次の担当"]);
     const attentionCell = requiredElement<HTMLTableCellElement>(
       '.items-table tr[data-node-id="sample-item-editor-101"] .attention-cell',
     );
@@ -1874,7 +1896,7 @@ describe("Web UI", () => {
     expect(
       requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="descending"]')
         .textContent,
-    ).toBe("停滞↓");
+    ).toBe("停滞時間↓");
 
     act(() => {
       requiredElement<HTMLButtonElement>(".items-table thead th:nth-child(6) button").click();
@@ -1883,7 +1905,7 @@ describe("Web UI", () => {
     expect(
       requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="ascending"]')
         .textContent,
-    ).toBe("停滞↑");
+    ).toBe("停滞時間↑");
   });
 
   it("項目一覧の表ヘッダで並び替え、同じ列の再操作で方向を反転する", () => {
@@ -2056,6 +2078,23 @@ describe("Web UI", () => {
         '.items-card-list li[data-node-id="sample-item-engine-204"]',
       ).querySelector(".ai-analysis-badge"),
     ).toBeNull();
+  });
+
+  it("表示対象が0件なら一覧とページ送りを描画しない", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items");
+    renderApp({
+      ...sampleSummary,
+      items: [],
+    });
+
+    expect(currentContainer().querySelector(".items-table")).toBeNull();
+    expect(currentContainer().querySelector(".items-card-list")).toBeNull();
+    expect(
+      currentContainer().querySelector('.pagination[aria-label="一覧のページ送り"]'),
+    ).toBeNull();
+    expect(requiredElement<HTMLElement>(".item-workspace .empty-state").textContent).toBe(
+      "条件に一致する項目はありません。",
+    );
   });
 
   it("AI判定が縮退していない4状態では一覧バッジを表示しない", () => {

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 
-import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
+import { AiAnalysisBadge } from "./ai-analysis-badge.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
@@ -134,21 +135,6 @@ const TABLE_FILTERS: readonly TableFilterDefinition[] = [
     label: "AI利用状況",
   },
 ];
-
-function AiAnalysisBadge({
-  status,
-}: Readonly<{
-  status: PublicItemSummaryDto["aiAnalysis"]["status"];
-}>) {
-  if (!isAiAnalysisDegraded(status)) {
-    return null;
-  }
-  return (
-    <Pill className="ai-analysis-badge ai-analysis-degraded" tone="warning">
-      AI判定なし
-    </Pill>
-  );
-}
 
 function ItemTitleLink({
   createItemHref,
@@ -420,7 +406,7 @@ function ItemTable({
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "stall",
-      label: "停滞",
+      label: "停滞時間",
       onSort: () => {
         updateSort("stall");
       },
@@ -441,7 +427,7 @@ function ItemTable({
     {
       className: "",
       key: "stall",
-      label: "停滞",
+      label: "停滞時間",
       renderValue: (row: ItemTableRow) => formatStallDuration(row.item.stallSince, now),
       valueClassName: "font-semibold text-text-primary tabular-nums",
     },
@@ -526,96 +512,99 @@ function ItemTable({
           </div>
         </details>
       </div>
-      <ResponsiveTableCardList
-        cardAriaLabel="項目一覧"
-        cardFields={cardFields}
-        cardListClassName=""
-        columns={tableColumns}
-        getRowPresentation={itemRowPresentation}
-        rows={visibleRows}
-        tableCaption="追跡中の全項目の一覧"
-        tableClassName="items-table"
-        renderCardHeading={(row) => {
-          const showsFreshnessBadge = row.item.repositoryFreshness === "stale";
-          const showsAiAnalysisBadge = isAiAnalysisDegraded(row.item.aiAnalysis.status);
-          return (
-            <div class="grid min-w-0 gap-2">
-              <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted wrap-anywhere">
-                  {row.item.displayReference}・{row.typeText}
-                </p>
-                {(showsFreshnessBadge || showsAiAnalysisBadge) && (
-                  <span class="flex flex-wrap justify-end gap-1.5">
-                    {showsFreshnessBadge && (
-                      <Pill className="freshness-badge freshness-stale" tone="warning">
-                        古い観測値
-                      </Pill>
-                    )}
-                    <AiAnalysisBadge status={row.item.aiAnalysis.status} />
-                  </span>
-                )}
-              </div>
-              <h3 class="item-title-with-scores m-0 flex min-w-0 flex-wrap items-start gap-1.5 text-base leading-6 font-bold">
-                <AttentionBadge
-                  attention={row.item.attention}
-                  showLabel={true}
-                  showLow={true}
-                  showScore={true}
-                />
-                <ImportanceBadge
-                  importance={row.item.importance}
-                  showLabel={true}
-                  showLow={false}
-                  showScore={false}
-                />
-                <span class="min-w-0 wrap-anywhere">
-                  <ItemTitleLink
-                    createItemHref={createItemHref}
-                    onSelectItem={onSelectItem}
-                    row={row}
-                  />
-                </span>
-              </h3>
-            </div>
-          );
-        }}
-        renderCardFooter={(row) => (
-          <div class="border-t border-border-subtle pt-3">
-            <SafeGitHubLink href={row.item.url} variant="button">
-              GitHubで開く
-            </SafeGitHubLink>
-          </div>
-        )}
-      />
-      {visibleRows.length === 0 && (
+      {filteredRows.length === 0 ? (
         <ItemsEmptyState searchState={searchState} onRetryDetails={onRetryDetails} />
+      ) : (
+        <>
+          <ResponsiveTableCardList
+            cardAriaLabel="項目一覧"
+            cardFields={cardFields}
+            cardListClassName=""
+            columns={tableColumns}
+            getRowPresentation={itemRowPresentation}
+            rows={visibleRows}
+            tableCaption="追跡中の全項目の一覧"
+            tableClassName="items-table"
+            renderCardHeading={(row) => {
+              const showsFreshnessBadge = row.item.repositoryFreshness === "stale";
+              const showsAiAnalysisBadge = isAiAnalysisDegraded(row.item.aiAnalysis.status);
+              return (
+                <div class="grid min-w-0 gap-2">
+                  <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
+                    <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted wrap-anywhere">
+                      {row.item.displayReference}・{row.typeText}
+                    </p>
+                    {(showsFreshnessBadge || showsAiAnalysisBadge) && (
+                      <span class="flex flex-wrap justify-end gap-1.5">
+                        {showsFreshnessBadge && (
+                          <Pill className="freshness-badge freshness-stale" tone="warning">
+                            古い観測値
+                          </Pill>
+                        )}
+                        <AiAnalysisBadge status={row.item.aiAnalysis.status} />
+                      </span>
+                    )}
+                  </div>
+                  <h3 class="item-title-with-scores m-0 flex min-w-0 flex-wrap items-start gap-1.5 text-base leading-6 font-bold">
+                    <AttentionBadge
+                      attention={row.item.attention}
+                      showLabel={true}
+                      showLow={true}
+                      showScore={true}
+                    />
+                    <ImportanceBadge
+                      importance={row.item.importance}
+                      showLabel={true}
+                      showLow={false}
+                      showScore={false}
+                    />
+                    <span class="min-w-0 wrap-anywhere">
+                      <ItemTitleLink
+                        createItemHref={createItemHref}
+                        onSelectItem={onSelectItem}
+                        row={row}
+                      />
+                    </span>
+                  </h3>
+                </div>
+              );
+            }}
+            renderCardFooter={(row) => (
+              <div class="border-t border-border-subtle pt-3">
+                <SafeGitHubLink href={row.item.url} variant="button">
+                  GitHubで開く
+                </SafeGitHubLink>
+              </div>
+            )}
+          />
+          <nav
+            aria-label="一覧のページ送り"
+            class="pagination mt-4 flex flex-wrap items-center justify-center gap-3"
+          >
+            <ActionButton
+              type="button"
+              disabled={pageIndex === 0}
+              onClick={() => {
+                setPageIndex((currentPage) => currentPage - 1);
+              }}
+            >
+              前のページ
+            </ActionButton>
+            <p class="m-0 tabular-nums" aria-live="polite">
+              {pageIndex + 1} / {pageCount}ページ
+            </p>
+            <ActionButton
+              type="button"
+              disabled={pageIndex + 1 >= pageCount}
+              onClick={() => {
+                setPageIndex((currentPage) => currentPage + 1);
+              }}
+            >
+              次のページ
+            </ActionButton>
+          </nav>
+        </>
       )}
-      <nav
-        aria-label="一覧のページ送り"
-        class="pagination mt-4 flex flex-wrap items-center justify-center gap-3"
-      >
-        <ActionButton
-          type="button"
-          disabled={pageIndex === 0}
-          onClick={() => {
-            setPageIndex((currentPage) => currentPage - 1);
-          }}
-        >
-          前のページ
-        </ActionButton>
-        <p class="m-0 tabular-nums" aria-live="polite">
-          {pageIndex + 1} / {pageCount}ページ
-        </p>
-        <ActionButton
-          type="button"
-          disabled={pageIndex + 1 >= pageCount}
-          onClick={() => {
-            setPageIndex((currentPage) => currentPage + 1);
-          }}
-        >
-          次のページ
-        </ActionButton>
-      </nav>
     </PageSection>
   );
 }
