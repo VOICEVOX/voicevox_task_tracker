@@ -9,7 +9,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | ----------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `src/config`      | YAMLの読み込み、Zod schemaとsemantic validation                                          | `src/codex`、`src/domain`、`src/util`                    |
 | `src/github`      | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理     | `src/config`、`src/domain`                               |
-| `src/domain`      | 状態機械、teamとlabel解決、追跡選定、停滞時間、severity、重要度                          | `src/util`                                               |
+| `src/domain`      | 状態機械、teamとlabel解決、追跡選定、停滞時間、severity、重要度、要対応度                | `src/util`                                               |
 | `src/graph`       | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                         | `src/domain`                                             |
 | `src/codex`       | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                | `src/domain`、`src/graph`、`src/persistence`             |
 | `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、Git branch transaction | `src/codex`、`src/domain`、`src/github`                  |
@@ -18,7 +18,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | `src/eval`        | golden fixtureの解析と期待値比較                                                         | 判定、graph、公開DTO、通知の各pure処理                   |
 | `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                        | `src/cli`と全実処理モジュール                            |
 | `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                       | 上記の全モジュール                                       |
-| `web`             | 公開DTOの検証、重要度とAI利用状況を含む一覧と詳細、項目ごとの依存グラフ、検索、deep link | `src/pages`のDTO契約                                     |
+| `web`             | 公開DTOの検証、要対応度と重要度を含む一覧と詳細、項目ごとの依存グラフ、検索、deep link   | `src/pages`のDTO契約                                     |
 
 `src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
@@ -68,7 +68,7 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 6. GitHubイベントをsource ID付きに正規化し、追跡対象と関係候補を選びます。Pull Request作成前のcommitは作成時刻を下限としてpushイベント化し、項目作成前のイベントを作りません。
 7. IssueとPull Requestの状態と責務を決定論的に判定します。
 8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
-9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度を計算します。
+9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
 11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出してDiscord送信を実行します。完了時に実測時刻と送信結果を反映したrun reportとledgerを追加commitし、`tracking.startAt`が未確定なら同じcommitで確定します。
 12. 成功、Codex縮退、失敗のいずれでもCLIのreport pathへrun reportを書き出します。
@@ -119,6 +119,26 @@ Codex由来の3要因はconfidenceがmedium以上の場合だけ加点します�
 優先度ラベル、downstream impact、milestoneの決定論的な要因は現在の入力から毎run計算します。
 `src/domain`は要因の加点を0から100の整数へ収め、設定した閾値からlow、medium、highを決めます。
 
+## 要対応度の計算
+
+要対応度は`src/domain`のpureな判定で、重要度を主、停滞の短さを従として計算します。
+停滞が長い項目は対応が不要だった場合が多いという前提に立ち、重要度が低いまま最近動いただけの項目を上位へ置きません。
+
+```text
+鮮度係数 = recencyFloor + (1 - recencyFloor) × 0.5 ^ (停滞時間 ÷ watch閾値)
+要対応度スコア = round(重要度スコア × 鮮度係数)
+```
+
+停滞時間は`stallSince`からrun開始時刻までの経過時間です。
+watch閾値は項目のwait classに対応する`staleness.thresholdsHours`の`watch`で、鮮度係数の半減期として使います。
+`attention.recencyFloor`の既定値は0.4で、停滞が伸びても要対応度は重要度の0.4倍までしか下がりません。
+scoreは0から100の整数で、`attention.levels`の閾値からlow、medium、highを決めます。
+既定の下限はhighが40、mediumが20です。
+terminal項目と`waiting_for_unblock`の項目は、自身が動けないためscoreを0にします。
+
+要対応度はGitHub側の変更有無にかかわらず、最新の重要度、停滞時間、設定から毎run全項目で再計算します。
+Codexとgraphは要対応度のscoreとlevelを直接決めません。
+
 ## 判定規則の変更と再判定
 
 増分収集はGitHub由来の項目fingerprintが前回と一致する項目の詳細取得を省きます。
@@ -140,6 +160,8 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 決定論的規則versionとprompt versionは手で更新する定数です。
 `tests/rules-version-hash.test.ts`が判定に関わるファイルの内容hashを記録しており、
 判定ロジックやプロンプトを変えるとテストが失敗してversionの更新要否を判断させます。
+
+要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
 初回に判定する項目と、判定規則の変更で再判定する項目は、timelineを`since`なしの全履歴で取得します。
 停滞起点はtimelineイベントの再生から決めるため、過去のイベントが見えていないと下限まで落ちてしまいます。
@@ -168,7 +190,7 @@ GitHubが時刻を持たない場面では、決定論的に決まる下限を�
 `event`はGitHubのイベント時刻そのもの、`inferred`はGitHub由来の時刻から導いた下限です。
 
 停滞起点は一度確定するとstateへ保存し、statusと責務が変わるまで引き継ぎます。
-severityの算出だけがrun時刻を使い、起点からの経過時間として毎回求め直します。
+起点からrun開始時刻までの経過時間を毎回求め直し、severityと要対応度の算出に使います。
 
 停滞起点には、現在の待ち先本人がGitHub上で活動した時刻も下限として効きます。
 待ち先がuserならそのアカウント、teamなら設定済みteamのmemberが対象です。
@@ -183,6 +205,20 @@ AI判定を行わなかった項目では`lastProgressAt`が作成時刻のま�
 同じcommitを複数のPull Requestが含む場合、commitのsource IDは共有される一方で、
 発生時刻はそれぞれのPull Request作成時刻を下限に補正されるため食い違います。
 最も古い時刻はsourceの集合だけで決まるので、収集した項目の順番が変わっても同じ値になります。
+
+## 公開DTOとWeb UI
+
+`src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度に加えて要対応度のscoreとlevelを`attention`へ格納します。
+summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
+
+概要の「対応が必要な項目」は、要対応度levelがhighまたはmediumで、観測値がfreshの非terminal項目だけです。
+概要、全項目一覧、担当者ごとのページは要対応度、重要度、停滞時間の三つだけを並び替えキーとし、既定は要対応度の降順です。
+repository、種別、状態、重要度、次の担当、停滞時間、AI利用状況による絞り込みは全項目一覧で独立して適用します。
+Web UIはseverityを表示、絞り込み、並び替え、依存グラフのnode選定に使いません。
+
+公開summaryの依存グラフは要対応度を最初の優先順位として初期nodeを選びます。
+項目詳細の依存グラフは中心項目を必ず残し、表示上限内の候補をfrontier、要対応度の順で優先します。
+残りの同順位はdownstream impact、停滞時間、node IDなどの決定論的なキーで解決します。
 
 ## 公開境界の三重guard
 
@@ -253,13 +289,13 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 `main`にはsource、設定、schema、prompt、Web UI、テスト、文書を置きます。
 日次stateはorphan branchの`tracker-state`へcanonical JSONとして保存し、外部databaseは使いません。
 
-| 既定パス                            | 内容                                                                               |
-| ----------------------------------- | ---------------------------------------------------------------------------------- |
-| `state/snapshot.json`               | AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 6の最新snapshot |
-| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                 |
-| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                     |
-| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                       |
-| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断              |
+| 既定パス                            | 内容                                                                                         |
+| ----------------------------------- | -------------------------------------------------------------------------------------------- |
+| `state/snapshot.json`               | 要対応度、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 7の最新snapshot |
+| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                           |
+| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                               |
+| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                                 |
+| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                        |
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
 

@@ -20,7 +20,7 @@ GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は�
 `notify-operations`は収集、Pages関連、Discord通知のいずれかのjobが失敗したときだけ実行されます。
 `report-workflow`は先行jobの成否にかかわらず実行され、全job結果と収集metricをActions artifactへ保存します。
 
-Pagesでは概要ページのデータ観測時刻、対応が必要な項目の件数、AI状態の注意を確認します。
+Pagesでは概要ページのデータ観測時刻、要対応度がhighまたはmediumの項目数、要対応度の降順、AI状態の注意を確認します。
 `tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
 ローカル実行のreportは`artifacts/run-reports/`へ出力されます。
 Actionsでは収集reportとworkflow全体のreportを、run IDと試行番号を含む別々のartifactへ保存します。
@@ -161,13 +161,13 @@ Issueを作業待ちへ直す場合は、実際に作業するuserをassigneeへ
 `config.yml`の`labels.rules`へ登録した既存labelだけがtrackerの意味を持ちます。
 repository globとlabel名の正規表現を一致させ、必要な効果を設定します。
 
-| effect                       | 用途                                              |
-| ---------------------------- | ------------------------------------------------- |
-| `priorityWeight`             | 重要度、attention queue、通知候補の並び順を上げる |
-| `severityLift`               | severityを最大1段階引き上げる                     |
-| `requiresMaintainerDecision` | 方針判断待ちとし、maintainer roleへ責務を置く     |
-| `suppressNotifications`      | graphには残したまま通常通知を抑える               |
-| `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う           |
+| effect                       | 用途                                                 |
+| ---------------------------- | ---------------------------------------------------- |
+| `priorityWeight`             | 重要度を通じて要対応度を上げ、通知候補の順位も上げる |
+| `severityLift`               | 通知判断に使うseverityを最大1段階引き上げる          |
+| `requiresMaintainerDecision` | 方針判断待ちとし、maintainer roleへ責務を置く        |
+| `suppressNotifications`      | graphには残したまま通常通知を抑える                  |
+| `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う              |
 
 trackerはlabelを追加も変更もしません。
 label規則を変えた場合は`pnpm test`とdry-runで通知候補の差分を確認します。
@@ -211,6 +211,20 @@ Codex由来の要因は、重要な機能である根拠、具体的な期限、
 本文へ重要だと書くだけでは根拠になりません。
 全体の加点やlevelを調整する場合は`config.yml`の`importance`を変更し、dry-runでscore、level、内訳を確認します。
 
+### 要対応度
+
+要対応度は重要度を主、停滞の短さを従として計算します。
+個別の項目の要対応度がずれている場合は、重要度score、`stallSince`、現在のwait class、そのwait classの`watch`閾値を順に確認します。
+terminal項目とブロック解消待ちの項目が0点になるのは意図した動作です。
+
+停滞による下がり方を全体で調整する場合は`config.yml`の`attention.recencyFloor`を変更します。
+概要の「対応が必要な項目」へ出す範囲は`attention.levels.high`と`attention.levels.medium`で調整します。
+要対応度と重要度と停滞時間は、概要、全項目一覧、担当者ごとのページで選べる三つの並び替えキーです。
+既定は要対応度の降順です。
+severityはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
+
+設定変更後は`pnpm test`とdry-runを実行し、要対応度のscore、level、表示対象、並び順、依存グラフのnode選定を確認します。
+
 修正を反映したい場合は日次runを待つか、日次workflowを`backfill: none`で手動実行します。
 
 ## backfill
@@ -237,12 +251,15 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 
 ## 通知量の調整
 
+severityはDiscord通知の判断にだけ使います。
 通知選別はseverityの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。
 直近に意味のある進捗がある項目、botだけの活動、recent draft、低信頼のAI判定、labelで抑制した項目は通常通知から外します。
 botが作成した項目のtitleが`notifications.automationNoiseTitles`のいずれかと大文字小文字を区別せず一致した場合、graphへ残したまま通常通知から外します。
 Renovateの`dependencyDashboardTitle`を変更した場合は同じtitleをこの一覧へ追加します。
 
 特定の状態だけ通知時刻を調整する場合は、対応する`staleness.thresholdsHours`のキーを変更します。
+各キーの`watch`は要対応度の半減期にも使うため、変更するとWebの要対応度と並び順も変わります。
+`urgent`と`critical`は通知判断だけに使います。
 
 | 状態                                             | キー         |
 | ------------------------------------------------ | ------------ |

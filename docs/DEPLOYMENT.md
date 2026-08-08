@@ -143,6 +143,7 @@ Zodのstrict schemaで未知のfieldも拒否するため、設定名を追加�
 | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `tracking.startAt`                                                                             | 追跡を開始する日時                                            |
 | `teams.defaults`と`teams.repositories`                                                         | Organizationに実在するmaintainerとreviewerのteam slug         |
+| `attention.recencyFloor`と`attention.levels`                                                   | 要対応度の鮮度係数の下限とlevelの閾値                         |
 | `ai.authentication`と`ai.model`                                                                | Actionsへ登録した認証方式と利用可能なmodel ID                 |
 | `notifications.discord.enabled`                                                                | 初回の日次workflowからDiscord通知を実行する設定になっているか |
 | `notifications.discord.webhookSecretName`と`notifications.discord.operationsWebhookSecretName` | Actionsへ登録した2つのsecret名と一致するか                    |
@@ -155,7 +156,7 @@ secretの値は`config.yml`へ書きません。
 ### importance
 
 `importance`は項目そのものの重要度を決める設定です。
-停滞の深刻さを決める`staleness`とは独立しています。
+重要度の計算は`staleness`から独立し、計算結果を要対応度の基礎に使います。
 
 | 設定                                                                         | 意味                                                                        |
 | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
@@ -168,6 +169,21 @@ secretの値は`config.yml`へ書きません。
 
 各重みと日数は0以上にします。
 scoreは各要因の加点を0から100の整数へ収めた値です。
+
+### attention
+
+`attention`は重要度を主、停滞の短さを従とする要対応度を決める設定です。
+項目のwait classに対応する`staleness.thresholdsHours`の`watch`を鮮度係数の半減期として使います。
+
+| 設定                      | 意味                                              |
+| ------------------------- | ------------------------------------------------- |
+| `attention.recencyFloor`  | 鮮度係数の下限。0以上1以下とし、既定値は0.4       |
+| `attention.levels.medium` | mediumのscore下限。既定値は20                     |
+| `attention.levels.high`   | highのscore下限。既定値は40とし、medium以上にする |
+
+鮮度係数は`recencyFloor + (1 - recencyFloor) × 0.5 ^ (停滞時間 ÷ watch閾値)`で求めます。
+重要度scoreへ鮮度係数を掛けて四捨五入し、要対応度scoreを0から100の整数にします。
+terminal項目とブロック解消待ちの項目は要対応度scoreが0になります。
 
 ## デプロイ確認
 

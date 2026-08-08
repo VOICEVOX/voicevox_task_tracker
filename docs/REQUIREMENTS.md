@@ -8,7 +8,7 @@
 
 ## 1. 文書の位置づけ
 
-本書は、VOICEVOX Organization全体の公開Issue/PRについて、**現在の状態、次に行動すべき主体、停滞時間、重要度、依存関係、重要な変化**を自動整理し、GitHub PagesとDiscordへ提示するシステムの要件を定義する。
+本書は、VOICEVOX Organization全体の公開Issue/PRについて、**現在の状態、次に行動すべき主体、停滞時間、重要度、要対応度、依存関係、重要な変化**を自動整理し、GitHub PagesとDiscordへ提示するシステムの要件を定義する。
 
 要求文の `MUST` / `SHOULD` は RFC 2119・RFC 8174の規範語として用いる。本書は、要求の識別可能性・検証可能性・追跡可能性を重視するISO/IEC/IEEE 29148系の考え方、NASA Software Engineering Handbookの要求・受入基準・双方向トレーサビリティの実務例を参考に、VOICEVOX向けへ具体化した。全文標準を転載するものではない。
 
@@ -43,7 +43,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 ### 4.1 目的
 
-- 朝の短時間で、止まっている重要項目と次の担当を把握できる。
+- 朝の短時間で、要対応度が高い項目と次の担当を把握できる。
 - repoを越えた依存の末端、再開可能項目、循環を見つけられる。
 - 判定が誤っていても、なぜそう判断したかをGitHub上の根拠へ遡れる。
 - botがGitHub上の運用を勝手に変更せず、既存のコメント・ラベル・review運用を正本にする。
@@ -77,23 +77,24 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 ## 6. 用語
 
-| 用語                | 定義                                                                 |
-| ------------------- | -------------------------------------------------------------------- |
-| tracked item        | 追跡対象に入ったIssueまたはPR                                        |
-| status              | 待たれている行動。誰を待つかは含まない                               |
-| waitingOn           | 次に状態を進める行動が期待される主体                                 |
-| ball / ボール       | waitingOnと同義の運用上の表現                                        |
-| statusSince         | 現在statusへ遷移した時刻                                             |
-| ownerSince          | 現在waitingOnへ遷移した時刻                                          |
-| stallSince          | 現在の待ち状態で意味のある進捗か責務主体本人の活動が最後に起きた時刻 |
-| severity            | 停滞の深刻さ。none、watch、urgent、criticalの4段階                   |
-| importance          | 項目そのものの重要度。0から100のscoreとlow、medium、highの3段階      |
-| meaningful progress | push、回答、review、決定、依存解消など、次工程を進める変化           |
-| authoritative edge  | GitHub native dependency/sub-issue等、AIより優先するrelation         |
-| inferred edge       | 本文・コメント・link候補をCodexが関係ありと判定したrelation          |
-| actionable frontier | openなincoming `blocks` edgeを持たず、今着手可能な非terminal node    |
-| downstream impact   | そのnodeが止めているopen node/repoの直接・推移的規模                 |
-| stale repo          | 今回取得に失敗し、前回値しかないrepo                                 |
+| 用語                | 定義                                                                            |
+| ------------------- | ------------------------------------------------------------------------------- |
+| tracked item        | 追跡対象に入ったIssueまたはPR                                                   |
+| status              | 待たれている行動。誰を待つかは含まない                                          |
+| waitingOn           | 次に状態を進める行動が期待される主体                                            |
+| ball / ボール       | waitingOnと同義の運用上の表現                                                   |
+| statusSince         | 現在statusへ遷移した時刻                                                        |
+| ownerSince          | 現在waitingOnへ遷移した時刻                                                     |
+| stallSince          | 現在の待ち状態で意味のある進捗か責務主体本人の活動が最後に起きた時刻            |
+| severity            | Discord通知に使う停滞の深刻さ。none、watch、urgent、criticalの4段階             |
+| importance          | 項目そのものの重要度。0から100のscoreとlow、medium、highの3段階                 |
+| attention           | 重要度と停滞の短さから求める要対応度。0から100のscoreとlow、medium、highの3段階 |
+| meaningful progress | push、回答、review、決定、依存解消など、次工程を進める変化                      |
+| authoritative edge  | GitHub native dependency/sub-issue等、AIより優先するrelation                    |
+| inferred edge       | 本文・コメント・link候補をCodexが関係ありと判定したrelation                     |
+| actionable frontier | openなincoming `blocks` edgeを持たず、今着手可能な非terminal node               |
+| downstream impact   | そのnodeが止めているopen node/repoの直接・推移的規模                            |
+| stale repo          | 今回取得に失敗し、前回値しかないrepo                                            |
 
 ## 7. 推奨状態モデル
 
@@ -161,7 +162,7 @@ waitingOnは待たれている主体を表す。`kind`が主体の種類、`role
 5. 未アサインなら、作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば`waiting_for_owner`、どれもなければ`waiting_for_assessment`とし、どちらもmaintainerを待つ。
 6. 作成者がmaintainerでも、次の担当が不明ならmaintainerの責務のままとする。
 
-## 8. 停滞時間、停滞の深刻さ、重要度の既定値
+## 8. 停滞時間、停滞の深刻さ、重要度、要対応度の既定値
 
 すべて内部UTC、表示JST。日数は営業日ではなく連続時間で計算する。`updated_at`は参考値であり、severity clockの正本にしない。
 
@@ -178,6 +179,7 @@ waitingOnは待たれている主体を表す。`kind`が主体の種類、`role
 | automation |    6h |    24h |      72h | 自動処理待ちは通常のCI時間を通知しない                         |
 
 blocked parentは「親自身を毎日催促」せず、blockerのseverityとdownstream impactを通知順位へ使う。priority labelはseverityを最大1段階引き上げられるが、低信頼AIだけでcriticalへ引き上げない。
+severityはDiscord通知の判断だけに使い、Web UIの表示、絞り込み、並び替え、依存グラフには使わない。
 
 重要度は項目そのものの重要さを表し、停滞の深刻さを表すseverityとは独立して計算する。
 決定論的な要因は、優先度ラベルの重み、他のopen項目とリポジトリを止めている影響規模、期限付きのopen milestoneとする。
@@ -185,6 +187,22 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 Codexは重要な機能か、期限が明示されているか、将来問題になるかを判定し、confidenceがlowならこれらを加点しない。
 そのrunでCodex判定を得られない項目は前回の重要度判定を再利用する。
 scoreは各要因の加点を0から100の整数へ収め、設定した閾値でlow、medium、highへ分ける。
+
+要対応度は重要度を主、停滞の短さを従として次の式で計算する。
+停滞が長い項目は対応が不要だった場合が多いという前提に立ち、重要度が低いまま最近動いただけの項目を上位へ置かない。
+
+```text
+鮮度係数 = recencyFloor + (1 - recencyFloor) × 0.5 ^ (停滞時間 ÷ watch閾値)
+要対応度スコア = round(重要度スコア × 鮮度係数)
+```
+
+停滞時間は`stallSince`からrun開始時刻までの経過時間とする。
+watch閾値は項目のwait classに対応する`staleness.thresholdsHours`の`watch`とし、鮮度係数の半減期として使う。
+`attention.recencyFloor`の既定値は0.4とし、停滞が伸びても要対応度は重要度の0.4倍までしか下げない。
+要対応度scoreは0から100の整数とし、`attention.levels`の閾値でlow、medium、highへ分ける。
+既定の下限はhighを40、mediumを20とする。
+terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする。
+要対応度はGitHub側の変更有無にかかわらず、最新の重要度、停滞時間、設定から毎run全項目で再計算する。
 
 ## 9. Discord選別既定
 
@@ -221,7 +239,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 
 ## 11. 要求一覧
 
-要求は合計188件である。
+要求は合計192件である。
 
 ### 11.1 目的・成果
 
@@ -231,7 +249,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | `GOL-002` | MUST | ボールの所在 — 各追跡項目について、次に行動すべき個人・チーム・役割・依存項目・自動処理のいずれかを示さなければならない。                   | `AT-GOL-002`: fixture全件でwaitingOnが1件以上、またはterminalであり、理由と根拠が表示される。                                    |
 | `GOL-003` | MUST | 停滞検知 — 単なるGitHubのupdated_atではなく、責務が移った時点、意味のある進捗、責務主体本人の活動を基準に停滞時間を算出しなければならない。 | `AT-GOL-003`: botコメントのみ追加したfixtureでstallSinceが変化せず、人間の責務移動イベントでは変化する。                         |
 | `GOL-004` | MUST | 依存関係の可視化 — リポジトリをまたぐブロッカー、親子、実装、関連関係を型付きグラフとして可視化しなければならない。                         | `AT-GOL-004`: 3リポジトリ以上をまたぐグラフfixtureで、型・向き・根拠が確認できる。                                               |
-| `GOL-005` | MUST | 高シグナル通知 — 毎日のDiscord通知は、行動が必要な項目を選別し、全件羅列を避けなければならない。                                            | `AT-GOL-005`: 通常項目50件・要対応3件のfixtureで、Discord候補は要対応中心かつ設定上限以内となる。                                |
+| `GOL-005` | MUST | 高シグナル通知 — 毎日のDiscord通知は、通知条件に該当する項目を選別し、全件羅列を避けなければならない。                                      | `AT-GOL-005`: 通常項目50件と通知条件に該当する3件のfixtureで、Discord候補は該当項目中心かつ設定上限以内となる。                  |
 | `GOL-006` | MUST | 監査可能性 — 各判定は、入力イベント、ルール、AI出力、信頼度、変更履歴まで追跡可能でなければならない。                                       | `AT-GOL-006`: 任意の項目から判定根拠と前回との差分へ到達できる。                                                                 |
 | `GOL-007` | MUST | 読み取り専用運用 — 追跡対象リポジトリのIssue、PR、コメント、ラベル、アサイン、レビュー依頼を変更してはならない。                            | `AT-GOL-007`: 統合テストで対象リポジトリへのwrite API呼び出しが0件である。                                                       |
 | `GOL-008` | MUST | 決定論優先 — GitHubの確定情報と定式ルールを先に適用し、Codexは曖昧部分の補助と失敗または延期した分析の再試行に限定しなければならない。      | `AT-GOL-008`: 明確なレビュー依頼fixtureではAI呼び出しなしで同一結果が得られる。                                                  |
@@ -255,19 +273,20 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 
 ### 11.3 設定
 
-| ID        | 規範 | 要求                                                                                                                                                  | 受入要約                                                                                      |
-| --------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `CFG-001` | MUST | 設定schema version — 設定ファイルにschemaVersionを持ち、未知のmajor versionを拒否しなければならない。                                                 | `AT-CFG-001`: 未対応majorの設定で明示的エラーとなり処理を開始しない。                         |
-| `CFG-002` | MUST | 既定メンテナーチーム — Organization共通の既定メンテナーチームをteam slugで設定できなければならない。                                                  | `AT-CFG-002`: 既定値のみのrepoでメンテナーロールが当該teamへ解決される。                      |
-| `CFG-003` | MUST | 既定レビュワーチーム — Organization共通の既定レビュワーチームをteam slugで設定できなければならない。                                                  | `AT-CFG-003`: 既定値のみのrepoでレビュワーロールが当該teamへ解決される。                      |
-| `CFG-004` | MUST | リポジトリ別上書き — 例外リポジトリだけメンテナー・レビュワーチームを上書きできなければならない。                                                     | `AT-CFG-004`: 2 repo fixtureで一方は既定、一方はoverrideが適用される。                        |
-| `CFG-005` | MUST | 未設定チームの安全停止 — 必須team slugがplaceholder・空・取得不能の場合、誤った個人推定をせず設定エラーとして扱わなければならない。                   | `AT-CFG-005`: 存在しないslugで公開・通知が行われず、診断が出る。                              |
-| `CFG-006` | MUST | 既存ラベル意味付け — 既存ラベルを優先度・要議論・通知抑制等へ読み替えるルールをrepo glob付きで設定できなければならない。                              | `AT-CFG-006`: 同名ラベルをrepo別に異なる意味へ割り当てられる。                                |
-| `CFG-007` | MUST | bot識別設定 — bot login、末尾パターン、明示allow/denyを設定できなければならない。                                                                     | `AT-CFG-007`: 既知bot・未知human・例外bot fixtureが期待通り分類される。                       |
-| `CFG-008` | MUST | 追跡開始日時 — tracking.startAtをISO 8601で設定・永続化できなければならない。                                                                         | `AT-CFG-008`: timezone付き日時がUTC正規化され、再実行で変化しない。                           |
-| `CFG-009` | MUST | 手動includeと追跡追加上限 — 古い項目の明示include、repo filter、backfill上限、`tracking.relationExpansion.maxItemsPerRun`を設定できなければならない。 | `AT-CFG-009`: 開始日前の指定URLだけをincludeでき、関係先展開上限がAPI呼び出し前に適用される。 |
-| `CFG-010` | MUST | Discordメンション設定 — GitHub loginとDiscord user IDの対応、mentions.enabled、許可対象を設定でき、既定は無効でなければならない。                     | `AT-CFG-010`: 既定payloadのallowed_mentionsが空で、enabled時も許可ID以外をmentionしない。     |
-| `CFG-011` | MUST | 重要度設定 — 重要度の各要因の重み、期限間近とみなす日数、levelの閾値を設定できなければならない。                                                      | `AT-CFG-011`: 重み、日数、閾値の変更が重要度へ反映され、highがmedium未満なら設定を拒否する。  |
+| ID        | 規範 | 要求                                                                                                                                                  | 受入要約                                                                                                         |
+| --------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `CFG-001` | MUST | 設定schema version — 設定ファイルにschemaVersionを持ち、未知のmajor versionを拒否しなければならない。                                                 | `AT-CFG-001`: 未対応majorの設定で明示的エラーとなり処理を開始しない。                                            |
+| `CFG-002` | MUST | 既定メンテナーチーム — Organization共通の既定メンテナーチームをteam slugで設定できなければならない。                                                  | `AT-CFG-002`: 既定値のみのrepoでメンテナーロールが当該teamへ解決される。                                         |
+| `CFG-003` | MUST | 既定レビュワーチーム — Organization共通の既定レビュワーチームをteam slugで設定できなければならない。                                                  | `AT-CFG-003`: 既定値のみのrepoでレビュワーロールが当該teamへ解決される。                                         |
+| `CFG-004` | MUST | リポジトリ別上書き — 例外リポジトリだけメンテナー・レビュワーチームを上書きできなければならない。                                                     | `AT-CFG-004`: 2 repo fixtureで一方は既定、一方はoverrideが適用される。                                           |
+| `CFG-005` | MUST | 未設定チームの安全停止 — 必須team slugがplaceholder・空・取得不能の場合、誤った個人推定をせず設定エラーとして扱わなければならない。                   | `AT-CFG-005`: 存在しないslugで公開・通知が行われず、診断が出る。                                                 |
+| `CFG-006` | MUST | 既存ラベル意味付け — 既存ラベルを優先度・要議論・通知抑制等へ読み替えるルールをrepo glob付きで設定できなければならない。                              | `AT-CFG-006`: 同名ラベルをrepo別に異なる意味へ割り当てられる。                                                   |
+| `CFG-007` | MUST | bot識別設定 — bot login、末尾パターン、明示allow/denyを設定できなければならない。                                                                     | `AT-CFG-007`: 既知bot・未知human・例外bot fixtureが期待通り分類される。                                          |
+| `CFG-008` | MUST | 追跡開始日時 — tracking.startAtをISO 8601で設定・永続化できなければならない。                                                                         | `AT-CFG-008`: timezone付き日時がUTC正規化され、再実行で変化しない。                                              |
+| `CFG-009` | MUST | 手動includeと追跡追加上限 — 古い項目の明示include、repo filter、backfill上限、`tracking.relationExpansion.maxItemsPerRun`を設定できなければならない。 | `AT-CFG-009`: 開始日前の指定URLだけをincludeでき、関係先展開上限がAPI呼び出し前に適用される。                    |
+| `CFG-010` | MUST | Discordメンション設定 — GitHub loginとDiscord user IDの対応、mentions.enabled、許可対象を設定でき、既定は無効でなければならない。                     | `AT-CFG-010`: 既定payloadのallowed_mentionsが空で、enabled時も許可ID以外をmentionしない。                        |
+| `CFG-011` | MUST | 重要度設定 — 重要度の各要因の重み、期限間近とみなす日数、levelの閾値を設定できなければならない。                                                      | `AT-CFG-011`: 重み、日数、閾値の変更が重要度へ反映され、highがmedium未満なら設定を拒否する。                     |
+| `CFG-012` | MUST | 要対応度設定 — 鮮度係数の下限とlevelの閾値を設定できなければならない。                                                                                | `AT-CFG-012`: `recencyFloor`と閾値の変更が要対応度へ反映され、0から1の範囲外とhighがmedium未満の設定を拒否する。 |
 
 ### 11.4 GitHub収集
 
@@ -343,7 +362,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | `RSP-024` | MUST | 責務遷移時刻 — waitingOnの実体またはstatusが変わった時点でownerSince/stallSinceを更新しなければならない。                                                                                                      | `AT-RSP-024`: 担当決め待ちからレビュー待ちへ移り、責務がmaintainerからreviewerへ移るfixtureで時刻がreview requestになる。               |
 | `RSP-025` | MUST | 意味のある進捗 — 単なるコメント数ではなく、成果物push、回答、レビュー、依存解消、決定等をlastProgressAtとして判定しなければならない。                                                                          | `AT-RSP-025`: 雑談コメントと回答コメントfixtureでlastProgressAtが異なる。                                                               |
 | `RSP-026` | MUST | bot activityで停滞解除禁止 — botコメント、preview URL更新、定期dashboard更新だけではstallSinceをリセットしてはならない。                                                                                       | `AT-RSP-026`: bot-only activity fixtureで停滞時間が継続する。                                                                           |
-| `RSP-027` | MUST | label変更の扱い — label変更はpriority/semanticsを再計算するが、設定で進捗扱いされたlabel以外はstallSinceをリセットしてはならない。                                                                             | `AT-RSP-027`: priority label追加fixtureでseverityと重要度が変わり、stallSinceは維持される。                                             |
+| `RSP-027` | MUST | label変更の扱い — label変更はpriority/semanticsを再計算するが、設定で進捗扱いされたlabel以外はstallSinceをリセットしてはならない。                                                                             | `AT-RSP-027`: priority label追加fixtureでseverity、重要度、要対応度が変わり、stallSinceは維持される。                                   |
 | `RSP-028` | MUST | 不確実性表示 — 責務判定にconfidence、根拠source IDs、uncertaintiesを持ち、低信頼時はunknown/推定表示へ縮退しなければならない。                                                                                 | `AT-RSP-028`: 低confidence fixtureが断定表示・高優先通知にならない。                                                                    |
 | `RSP-029` | MUST | 保持者の発言による責務の反転 — 変更要求、未解決review thread、review依頼で待ち先を決めた後、その待ち先本人が責務の起点より後に本文のある発言をしている場合、発言の意味を解釈して責務を判定しなければならない。 | `AT-RSP-029`: 変更要求後にauthorが質問するfixtureは返答待ちとなり、reviewerの返答を待つ。                                               |
 | `RSP-030` | MUST | 応答不要の発言 — 了解、謝辞、進捗報告のように相手の行動を必要としない発言だけを理由に、責務を相手へ移してはならない。                                                                                          | `AT-RSP-030`: authorが了解コメントだけを返すfixtureは修正待ちを維持し、authorの修正を待つ。                                             |
@@ -391,7 +410,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | `AIC-014` | MUST | 旧結果の安全再利用 — Codex出力のcacheはsource/input hashが完全一致する場合だけ再利用し、変更後はstale結果を断定表示してはならない。重要度判定を得られない場合はIMP-005に従わなければならない。                                                                                                                                                                                                  | `AT-AIC-014`: 本文1文字変更fixtureで旧cacheが使われない。                                                                                                                                             |
 | `AIC-015` | MUST | 再現情報 — 各AI結果にmodel identifier、reasoningEffort、backend version、promptVersion、schemaVersion、input/output hash、実行時刻を記録しなければならない。                                                                                                                                                                                                                                    | `AT-AIC-015`: 任意結果から全再現metadataが取得できる。                                                                                                                                                |
 | `AIC-016` | MUST | run予算 — 1 runあたりcall数、入力文字/token見積、費用上限を設定できなければならない。                                                                                                                                                                                                                                                                                                           | `AT-AIC-016`: 上限到達fixtureで追加callを停止する。                                                                                                                                                   |
-| `AIC-017` | MUST | 予算超過優先順位 — 予算不足時はseverity候補、owner unknown、changed blockers、downstream impact順に分析し、残りをdeferred表示しなければならない。                                                                                                                                                                                                                                               | `AT-AIC-017`: 10候補/3call上限fixtureで上位3件が選ばれる。                                                                                                                                            |
+| `AIC-017` | MUST | 予算超過優先順位 — 予算不足時は曖昧な状態判定候補、owner unknown、changed blockers、downstream impact順に分析し、残りをdeferred表示しなければならない。                                                                                                                                                                                                                                         | `AT-AIC-017`: 10候補/3call上限fixtureで上位3件が選ばれる。                                                                                                                                            |
 | `AIC-018` | MUST | golden eval — 実VOICEVOX運用パターンを匿名化/固定したgolden fixture suiteを保持しなければならない。                                                                                                                                                                                                                                                                                             | `AT-AIC-018`: review change、stale blocker、checklist、bot noise、direct requestのfixtureが存在する。                                                                                                 |
 | `AIC-019` | MUST | 更新前回帰評価 — schema、semantic validation、reducer、状態、graph、通知判定の更新は固定AI出力を使うgolden evalの基準を満たさなければならない。model、reasoning effort、promptの更新は実モデルを呼び出すdry-run結果も確認しなければならない。                                                                                                                                                   | `AT-AIC-019`: 意図的な判定退行でCIが失敗し、標準golden fixtureの`fixedAi.networkCallCount`が0になる。model、reasoning effort、promptの変更では`metrics.aiCallCount`が1以上のdry-run差分をreviewする。 |
 | `AIC-020` | MUST | AI非書込 — Codex出力は提案データとして検証・reducerを通し、GitHub変更、Discord直接送信、state直接上書きを許してはならない。                                                                                                                                                                                                                                                                     | `AT-AIC-020`: mockでCodexがwrite指示を返しても副作用APIが呼ばれない。                                                                                                                                 |
@@ -399,36 +418,39 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | `AIC-022` | MUST | 並列実行 — 予算計画で選ばれた候補を`ai.execution.maxConcurrentCalls`件まで同時に実行できなければならない。判定結果と失敗の並びは完了順に依存せず予算計画順で決定論的でなければならない。                                                                                                                                                                                                        | `AT-AIC-022`: 同時実行数が設定値を超えず、逆順に完了しても結果と失敗の並びが変わらない。                                                                                                              |
 | `AIC-023` | MUST | 失敗と延期の再試行 — 前回の`aiAnalysis.status`が`failed`か`deferred`の項目は、GitHub側に変化がなくても次回runの増分詳細取得とAI分析候補へ必ず含めなければならない。terminal項目も除外してはならない。                                                                                                                                                                                           | `AT-AIC-023`: `failed`と`deferred`の未変更terminal fixtureが増分窓で詳細取得され、十分な予算の次回runでAI分析を実行して`used`になる。                                                                 |
 
-### 11.9 重要度
+### 11.9 重要度と要対応度
 
-| ID        | 規範 | 要求                                                                                                                                                              | 受入要約                                                                                                    |
-| --------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `IMP-001` | MUST | 停滞の深刻さとの分離 — 各追跡項目の重要度を、停滞の深刻さを表すseverityとは別に保持しなければならない。                                                           | `AT-IMP-001`: 同じseverityでも重要度要因が異なる2項目でscoreとlevelが別々に決まる。                         |
-| `IMP-002` | MUST | 決定論的要因 — 優先度ラベルの重み、downstream impact、期限付きのopen milestoneから重要度を決定論的に加点しなければならない。期限間近のmilestoneは追加で加点する。 | `AT-IMP-002`: 各要因を単独で持つfixtureがCodexなしで設定どおり加点される。                                  |
-| `IMP-003` | MUST | 自然言語要因 — Codexは、重要な機能か、期限が明示されているか、将来問題になるかの3要因を根拠付きで判定しなければならない。                                         | `AT-IMP-003`: 3要因を個別に満たすfixtureで対応する要因だけが加点され、根拠が保持される。                    |
-| `IMP-004` | MUST | 低信頼判定の非加点 — Codex判定のconfidenceがlowの場合、Codex由来の重要度要因を加点してはならない。                                                                | `AT-IMP-004`: 同じCodex出力でもmedium境界未満では3要因が加点されず、境界以上では加点される。                |
-| `IMP-005` | MUST | 前回判定の再利用 — そのrunでCodexの重要度判定を得られない項目は前回の判定を再利用しなければならない。前回の判定もなければ決定論的要因だけで計算する。             | `AT-IMP-005`: Codex判定が延期されたfixtureで前回の3要因が維持され、初回項目は決定論的要因だけで計算される。 |
-| `IMP-006` | MUST | scoreとlevel — 重要度scoreを要因の加点から0以上100以下の整数として求め、設定した閾値によりlevelをlow、medium、highのいずれかへ分類しなければならない。            | `AT-IMP-006`: 0点、閾値境界、100点を超える要因合計のfixtureでscoreとlevelが期待値に一致する。               |
+| ID        | 規範 | 要求                                                                                                                                                              | 受入要約                                                                                                     |
+| --------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `IMP-001` | MUST | 停滞の深刻さとの分離 — 各追跡項目の重要度を、停滞の深刻さを表すseverityとは別に保持しなければならない。                                                           | `AT-IMP-001`: 同じseverityでも重要度要因が異なる2項目でscoreとlevelが別々に決まる。                          |
+| `IMP-002` | MUST | 決定論的要因 — 優先度ラベルの重み、downstream impact、期限付きのopen milestoneから重要度を決定論的に加点しなければならない。期限間近のmilestoneは追加で加点する。 | `AT-IMP-002`: 各要因を単独で持つfixtureがCodexなしで設定どおり加点される。                                   |
+| `IMP-003` | MUST | 自然言語要因 — Codexは、重要な機能か、期限が明示されているか、将来問題になるかの3要因を根拠付きで判定しなければならない。                                         | `AT-IMP-003`: 3要因を個別に満たすfixtureで対応する要因だけが加点され、根拠が保持される。                     |
+| `IMP-004` | MUST | 低信頼判定の非加点 — Codex判定のconfidenceがlowの場合、Codex由来の重要度要因を加点してはならない。                                                                | `AT-IMP-004`: 同じCodex出力でもmedium境界未満では3要因が加点されず、境界以上では加点される。                 |
+| `IMP-005` | MUST | 前回判定の再利用 — そのrunでCodexの重要度判定を得られない項目は前回の判定を再利用しなければならない。前回の判定もなければ決定論的要因だけで計算する。             | `AT-IMP-005`: Codex判定が延期されたfixtureで前回の3要因が維持され、初回項目は決定論的要因だけで計算される。  |
+| `IMP-006` | MUST | scoreとlevel — 重要度scoreを要因の加点から0以上100以下の整数として求め、設定した閾値によりlevelをlow、medium、highのいずれかへ分類しなければならない。            | `AT-IMP-006`: 0点、閾値境界、100点を超える要因合計のfixtureでscoreとlevelが期待値に一致する。                |
+| `ATT-001` | MUST | 要対応度計算 — wait classのwatch閾値を半減期とする鮮度係数を重要度scoreへ掛け、四捨五入した0以上100以下の要対応度scoreとlevelを求めなければならない。             | `AT-ATT-001`: 停滞0時間、半減期、長期停滞、level境界のfixtureで式と設定どおりのscoreとlevelになる。          |
+| `ATT-002` | MUST | 計時対象外 — terminal項目とblocker待ちで自身が動けない項目は要対応度scoreを0にしなければならない。                                                                | `AT-ATT-002`: terminalと`waiting_for_unblock`のfixtureが重要度にかかわらず0点となる。                        |
+| `ATT-003` | MUST | 毎run再計算 — 要対応度は前回値を引き継がず、最新の重要度、停滞時間、wait class、設定から毎run全項目で再計算しなければならない。                                   | `AT-ATT-003`: GitHub側が未変更の項目もrun開始時刻と設定に応じて再計算され、決定論的規則versionに依存しない。 |
 
 ### 11.10 Webページ
 
-| ID        | 規範 | 要求                                                                                                                                                                                                                                                                                                                                                                     | 受入要約                                                                                                                                                                                      |
-| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WEB-001` | MUST | GitHub Pages公開 — Web UIをVOICEVOX/voicevox_task_trackerのGitHub PagesへActions artifact経由で公開しなければならない。                                                                                                                                                                                                                                                  | `AT-WEB-001`: mainの成功run後にPages URLが200を返す。                                                                                                                                         |
-| `WEB-002` | MUST | 概要ページの絞り込み — 概要ページは対応が必要な項目の一覧を主とし、データの観測時刻と鮮度およびAI状態の注意だけを添えなければならない。各項目には主な待ち相手とその理由、停滞時間だけを示し、集計値や候補の全列挙を並べてはならない。                                                                                                                                    | `AT-WEB-002`: 概要ページに要対応項目、観測時刻、必要な注意だけが現れ、待ち相手は主候補1件と残り件数で示される。                                                                               |
-| `WEB-003` | MUST | attention queue — 要対応項目をseverity、priority、downstream impact、stall時間で並べたqueueを表示しなければならない。                                                                                                                                                                                                                                                    | `AT-WEB-003`: 既知fixtureで期待順序になる。                                                                                                                                                   |
-| `WEB-004` | MUST | 項目ごとの依存graph — 各item詳細で、その項目とactive edgeで直接つながる項目を依存graphとして閲覧でき、隣接項目の詳細へ遷移できなければならない。                                                                                                                                                                                                                         | `AT-WEB-004`: 依存関係を持つitem fixtureで中心項目と隣接項目が図に現れ、依存がない項目では図が出ない。                                                                                        |
-| `WEB-005` | MUST | 停滞と影響の明示 — 長いstall時間とdownstream impactを追跡対象nodeの中へ数値で示し、nodeの形、edgeの線種、矢印の向きが何を表すかを凡例として図の近くへ示さなければならない。                                                                                                                                                                                              | `AT-WEB-005`: 停滞日数と影響するopen項目数がnodeに現れ、凡例にnodeの形、edgeの線種、矢印の向きの説明が現れる。                                                                                |
-| `WEB-006` | MUST | frontier表示 — actionable frontierを依存graph上で識別できなければならない。                                                                                                                                                                                                                                                                                              | `AT-WEB-006`: DAG fixtureのfrontier nodeにtext/icon表示がある。                                                                                                                               |
-| `WEB-007` | MUST | 表示上限と中心項目 — 依存graphは設定した表示上限を超えても中心項目を必ず描き、上限外の隣接項目の件数を示さなければならない。                                                                                                                                                                                                                                             | `AT-WEB-007`: 上限を超える隣接項目を持つfixtureで中心項目が残り、除外件数が表示される。                                                                                                       |
-| `WEB-008` | MUST | 一覧の絞り込み — repo、type、status、importance、waitingOn、stall、AI利用状況でsortまたはfilterできる項目一覧を提供しなければならない。AI分析に失敗または延期した項目にはバッジを表示し、まとめて絞り込めなければならない。値が有限の列は公開データに実在する選択肢から選ばせ、URLへは表示文言ではなく識別子を入れなければならない。既定の並び順は停滞時間の降順とする。 | `AT-WEB-008`: keyboardのみで全列filterとitem遷移ができ、`ai=degraded`で`failed`と`deferred`だけが表示される。importanceはscoreの数値順でsortされ、選択肢に無いURL値は不正値として捨てられる。 |
-| `WEB-009` | MUST | item詳細 — 各item詳細にGitHub URL、状態、重要度のscore、level、内訳、waitingOn、next action、停滞時間、blocker、evidence、判定の確度区分、履歴を表示しなければならない。AI分析に失敗または延期した項目には、AI判定を利用できなかった旨を1行で表示しなければならない。GitHubを開けば分かる値や、他の欄が具体的に示している値を重ねて並べてはならない。                    | `AT-WEB-009`: 任意itemで重要度の各要因と加点を含む必須欄が確認でき、`failed`と`deferred`では注記が現れ、ラベルやassigneeの再掲が現れない。                                                    |
-| `WEB-010` | MUST | 検索とdeep link — repo、number、title、actor、team、labelで検索でき、filter/itemをURLで共有できなければならない。                                                                                                                                                                                                                                                        | `AT-WEB-010`: 再読込・別browserで同じdeep link状態が再現する。                                                                                                                                |
-| `WEB-011` | MUST | アクセシビリティ — 日本語UIはWCAG 2.2 AAを目標に、keyboard、focus、contrast、非色依存、screen-reader labelを備えなければならない。                                                                                                                                                                                                                                       | `AT-WEB-011`: 自動a11y検査に重大違反がなく、主要flowをkeyboardで完了できる。                                                                                                                  |
-| `WEB-012` | MUST | 鮮度表示 — データ全体のobservedAtを相対時間で示してJST絶対時刻を補助へ添え、取得できなかったリポジトリがあるときは対象名を添えた注意を示し、AIの無効、利用不可、縮退を区別して表示しなければならない。AIの利用不可と縮退の注意から対象項目を絞り込んだ一覧へ遷移できなければならない。                                                                                   | `AT-WEB-012`: stale repoと3種類のAI状態のfixtureが最新や完全成功と誤認できない表示になり、注意へリポジトリ名と`ai=degraded`の一覧導線が現れる。                                               |
-| `WEB-013` | MUST | waitingOnの対象明示 — waitingOn表示は役割名だけで終わらせず、作成者とassigneeはlogin、依存項目はrepo#numberまで示さなければならない。個人を特定できないroleは特定の一人ではないと分かる表示にする。                                                                                                                                                                      | `AT-WEB-013`: 全kindのfixtureで、表示文字列から待機先の個人、team、項目、処理を特定できる。                                                                                                   |
-| `WEB-014` | MUST | 担当者別の停滞一覧 — 待ち相手を個人とteamへ解決した担当者一覧と、個人ごとの停滞項目一覧を提供しなければならない。個人ごとのページは閲覧者が選んだ所属teamへの待ちも合流させ、その選択をURLで共有できなければならない。個人ごとのページの項目一覧はrepo、type、importance、status、stallで並び替えでき、並び順もURLで共有できなければならない。                           | `AT-WEB-014`: 待ち相手fixtureで担当者一覧の件数と個人ごとのページの項目数が一致し、team選択と並び順を含むURLを開き直しても同じ項目が同じ順序で出る。                                          |
-| `WEB-015` | MUST | 閲覧者自身の記憶 — 閲覧者は自分のloginと所属teamをブラウザーへ記憶し、1操作で自分の停滞項目へ到達できなければならない。記憶した値はURLより優先してはならない。                                                                                                                                                                                                           | `AT-WEB-015`: 記憶後に自分の担当への導線が現れ、記憶を解除すると消える。壊れた記憶値は破棄され、画面は通常どおり描画される。                                                                  |
+| ID        | 規範 | 要求                                                                                                                                                                                                                                                                                                                                                                                                                                 | 受入要約                                                                                                                                                                                                                 |
+| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `WEB-001` | MUST | GitHub Pages公開 — Web UIをVOICEVOX/voicevox_task_trackerのGitHub PagesへActions artifact経由で公開しなければならない。                                                                                                                                                                                                                                                                                                              | `AT-WEB-001`: mainの成功run後にPages URLが200を返す。                                                                                                                                                                    |
+| `WEB-002` | MUST | 概要ページの絞り込み — 概要ページは対応が必要な項目の一覧を主とし、データの観測時刻と鮮度およびAI状態の注意だけを添えなければならない。各項目には要対応度、重要度、主な待ち相手とその理由、停滞時間を示し、集計値や候補の全列挙を並べてはならない。                                                                                                                                                                                  | `AT-WEB-002`: 概要ページに要対応項目、観測時刻、必要な注意だけが現れ、要対応度と重要度が表示され、待ち相手は主候補1件と残り件数で示される。                                                                              |
+| `WEB-003` | MUST | 要対応一覧 — 要対応度levelがhighまたはmediumで、観測値がfreshの非terminal項目だけを表示しなければならない。並び替えキーは要対応度、重要度、停滞時間の三つだけとし、既定は要対応度の降順にしなければならない。                                                                                                                                                                                                                        | `AT-WEB-003`: level境界、stale、terminalを含むfixtureで表示対象が一致し、三つのキーと方向をURLから復元でき、既定は要対応度scoreの降順になる。                                                                            |
+| `WEB-004` | MUST | 項目ごとの依存graph — 各item詳細で、その項目とactive edgeで直接つながる項目を依存graphとして閲覧でき、隣接項目の詳細へ遷移できなければならない。                                                                                                                                                                                                                                                                                     | `AT-WEB-004`: 依存関係を持つitem fixtureで中心項目と隣接項目が図に現れ、依存がない項目では図が出ない。                                                                                                                   |
+| `WEB-005` | MUST | 停滞と影響の明示 — 長いstall時間とdownstream impactを追跡対象nodeの中へ数値で示し、nodeの形、edgeの線種、矢印の向きが何を表すかを凡例として図の近くへ示さなければならない。                                                                                                                                                                                                                                                          | `AT-WEB-005`: 停滞日数と影響するopen項目数がnodeに現れ、凡例にnodeの形、edgeの線種、矢印の向きの説明が現れる。                                                                                                           |
+| `WEB-006` | MUST | frontier表示 — actionable frontierを依存graph上で識別できなければならない。                                                                                                                                                                                                                                                                                                                                                          | `AT-WEB-006`: DAG fixtureのfrontier nodeにtext/icon表示がある。                                                                                                                                                          |
+| `WEB-007` | MUST | 表示上限と中心項目 — 公開summaryの依存graphは要対応度を最初の優先順位として初期nodeを選ばなければならない。項目詳細では中心項目を必ず描き、frontier、要対応度の順で表示上限内の候補を選び、上限外の隣接項目の件数を示さなければならない。                                                                                                                                                                                            | `AT-WEB-007`: 初期graphと上限を超える隣接項目のfixtureで要対応度による選定順が一致し、中心項目、frontier、除外件数が表示される。                                                                                         |
+| `WEB-008` | MUST | 一覧の絞り込みと並び替え — repo、type、status、importance、waitingOn、stall、AI利用状況で絞り込める項目一覧を提供しなければならない。並び替えキーは要対応度、重要度、停滞時間の三つだけとし、既定は要対応度の降順にしなければならない。AI分析に失敗または延期した項目にはバッジを表示し、まとめて絞り込めなければならない。値が有限の列は公開データに実在する選択肢から選ばせ、URLへは表示文言ではなく識別子を入れなければならない。 | `AT-WEB-008`: keyboardのみで全filterとitem遷移ができ、`ai=degraded`で`failed`と`deferred`だけが表示される。要対応度と重要度はscoreの数値順でsortされ、三つの並び替えだけをURLから復元し、選択肢に無いURL値は捨てられる。 |
+| `WEB-009` | MUST | item詳細 — 各item詳細にGitHub URL、状態、要対応度のscoreとlevel、重要度のscore、level、内訳、waitingOn、next action、停滞時間、blocker、evidence、判定の確度区分、履歴を表示しなければならない。AI分析に失敗または延期した項目には、AI判定を利用できなかった旨を1行で表示しなければならない。GitHubを開けば分かる値や、他の欄が具体的に示している値を重ねて並べてはならない。                                                        | `AT-WEB-009`: 任意itemで要対応度と、重要度の各要因と加点を含む必須欄が確認でき、`failed`と`deferred`では注記が現れ、ラベルやassigneeの再掲が現れない。                                                                   |
+| `WEB-010` | MUST | 検索とdeep link — repo、number、title、actor、team、labelで検索でき、filter/itemをURLで共有できなければならない。                                                                                                                                                                                                                                                                                                                    | `AT-WEB-010`: 再読込・別browserで同じdeep link状態が再現する。                                                                                                                                                           |
+| `WEB-011` | MUST | アクセシビリティ — 日本語UIはWCAG 2.2 AAを目標に、keyboard、focus、contrast、非色依存、screen-reader labelを備えなければならない。                                                                                                                                                                                                                                                                                                   | `AT-WEB-011`: 自動a11y検査に重大違反がなく、主要flowをkeyboardで完了できる。                                                                                                                                             |
+| `WEB-012` | MUST | 鮮度表示 — データ全体のobservedAtを相対時間で示してJST絶対時刻を補助へ添え、取得できなかったリポジトリがあるときは対象名を添えた注意を示し、AIの無効、利用不可、縮退を区別して表示しなければならない。AIの利用不可と縮退の注意から対象項目を絞り込んだ一覧へ遷移できなければならない。                                                                                                                                               | `AT-WEB-012`: stale repoと3種類のAI状態のfixtureが最新や完全成功と誤認できない表示になり、注意へリポジトリ名と`ai=degraded`の一覧導線が現れる。                                                                          |
+| `WEB-013` | MUST | waitingOnの対象明示 — waitingOn表示は役割名だけで終わらせず、作成者とassigneeはlogin、依存項目はrepo#numberまで示さなければならない。個人を特定できないroleは特定の一人ではないと分かる表示にする。                                                                                                                                                                                                                                  | `AT-WEB-013`: 全kindのfixtureで、表示文字列から待機先の個人、team、項目、処理を特定できる。                                                                                                                              |
+| `WEB-014` | MUST | 担当者別の停滞一覧 — 待ち相手を個人とteamへ解決した担当者一覧と、個人ごとの停滞項目一覧を提供しなければならない。個人ごとのページは閲覧者が選んだ所属teamへの待ちも合流させ、その選択をURLで共有できなければならない。個人ごとのページは要対応度、重要度、停滞時間の三つだけで並び替えでき、既定を要対応度の降順とし、並び順をURLで共有できなければならない。                                                                        | `AT-WEB-014`: 待ち相手fixtureで担当者一覧の件数と個人ごとのページの項目数が一致し、team選択と三つの並び順を含むURLを開き直しても同じ項目が同じ順序で出る。                                                               |
+| `WEB-015` | MUST | 閲覧者自身の記憶 — 閲覧者は自分のloginと所属teamをブラウザーへ記憶し、1操作で自分の停滞項目へ到達できなければならない。記憶した値はURLより優先してはならない。                                                                                                                                                                                                                                                                       | `AT-WEB-015`: 記憶後に自分の担当への導線が現れ、記憶を解除すると消える。壊れた記憶値は破棄され、画面は通常どおり描画される。                                                                                             |
 
 ### 11.11 Discord通知
 
@@ -450,14 +472,14 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 
 ### 11.12 永続化
 
-| ID        | 規範 | 要求                                                                                                                                                                                                   | 受入要約                                                                                                          |
-| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `DAT-001` | MUST | main branch責務 — main branchにはsource、config、schema、prompt、docs、testsを置き、日次state commitを混在させてはならない。                                                                           | `AT-DAT-001`: branch tree検査で日次snapshotがmainに存在しない。                                                   |
-| `DAT-002` | MUST | state branch — 永続状態を専用orphan branch tracker-stateへGit管理しなければならない。                                                                                                                  | `AT-DAT-002`: 初回bootstrapでbranchが作成され、以後同branchへbot commitされる。                                   |
-| `DAT-003` | MUST | current snapshot — tracker-stateにschema version 6のcurrent snapshotをcanonical JSONで保存し、各追跡項目に`aiAnalysis.status`を持たせなければならない。                                                | `AT-DAT-003`: 同一入力2回でvolatile fieldを除くbyte列が一致し、snapshot schemaが6種類のAI利用状況だけを受理する。 |
-| `DAT-004` | MUST | 日次履歴 — 日次差分またはevent historyを日付単位で保持し、previous→currentを再構成できなければならない。                                                                                               | `AT-DAT-004`: 任意2日間のowner/edge/severity差分を再生できる。                                                    |
-| `DAT-005` | MUST | AI cacheと通知ledger — AI cache、analysis metadata、予約期限と送信結果を持つnotification ledgerをstate branchで保持しなければならない。                                                                | `AT-DAT-005`: runnerを破棄して再実行してもcache hit、予約期限、cooldownが維持される。                             |
-| `DAT-006` | MUST | atomic/canonical/public-safe commit — validation完了後だけsorted/canonical stateをatomic commitし、secret、raw token、private repoのID、owner/name、repository URL、不要な全文本文を含めてはならない。 | `AT-DAT-006`: 失敗途中でlast good commitが変わらず、secret scan/private sentinel testが成功する。                 |
+| ID        | 規範 | 要求                                                                                                                                                                                                   | 受入要約                                                                                                                                         |
+| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DAT-001` | MUST | main branch責務 — main branchにはsource、config、schema、prompt、docs、testsを置き、日次state commitを混在させてはならない。                                                                           | `AT-DAT-001`: branch tree検査で日次snapshotがmainに存在しない。                                                                                  |
+| `DAT-002` | MUST | state branch — 永続状態を専用orphan branch tracker-stateへGit管理しなければならない。                                                                                                                  | `AT-DAT-002`: 初回bootstrapでbranchが作成され、以後同branchへbot commitされる。                                                                  |
+| `DAT-003` | MUST | current snapshot — tracker-stateにschema version 7のcurrent snapshotをcanonical JSONで保存し、各追跡項目に`attention`と`aiAnalysis.status`を持たせなければならない。                                   | `AT-DAT-003`: 同一入力2回でvolatile fieldを除くbyte列が一致し、snapshot schemaが`attention`のscoreとlevel、および6種類のAI利用statusを検証する。 |
+| `DAT-004` | MUST | 日次履歴 — 日次差分またはevent historyを日付単位で保持し、previous→currentを再構成できなければならない。                                                                                               | `AT-DAT-004`: 任意2日間のowner/edge/severity差分を再生できる。                                                                                   |
+| `DAT-005` | MUST | AI cacheと通知ledger — AI cache、analysis metadata、予約期限と送信結果を持つnotification ledgerをstate branchで保持しなければならない。                                                                | `AT-DAT-005`: runnerを破棄して再実行してもcache hit、予約期限、cooldownが維持される。                                                            |
+| `DAT-006` | MUST | atomic/canonical/public-safe commit — validation完了後だけsorted/canonical stateをatomic commitし、secret、raw token、private repoのID、owner/name、repository URL、不要な全文本文を含めてはならない。 | `AT-DAT-006`: 失敗途中でlast good commitが変わらず、secret scan/private sentinel testが成功する。                                                |
 
 ### 11.13 セキュリティ・プライバシー
 
