@@ -1438,7 +1438,7 @@ describe("Web UI", () => {
     const critical = createOrderingItem({
       nodeId: "critical",
       severity: "critical",
-      status: "blocked",
+      status: "waiting_for_unblock",
       priorityWeight: 0,
       repositoryCount: 0,
       openNodeCount: 0,
@@ -1447,7 +1447,7 @@ describe("Web UI", () => {
     const urgent = createOrderingItem({
       nodeId: "urgent",
       severity: "urgent",
-      status: "ready_to_merge",
+      status: "waiting_for_merge",
       priorityWeight: 100,
       repositoryCount: 10,
       openNodeCount: 100,
@@ -1456,7 +1456,7 @@ describe("Web UI", () => {
     const highPriority = createOrderingItem({
       nodeId: "high-priority",
       severity: "urgent",
-      status: "ready_to_merge",
+      status: "waiting_for_merge",
       priorityWeight: 25,
       repositoryCount: 0,
       openNodeCount: 0,
@@ -1552,7 +1552,7 @@ describe("Web UI", () => {
       },
       {
         key: "status",
-        value: "ready_to_merge",
+        value: "waiting_for_merge",
         expectedNodeIds: ["sample-item-editor-101"],
       },
       {
@@ -1605,7 +1605,7 @@ describe("Web UI", () => {
       },
       {
         key: "status",
-        value: "マージ可能",
+        value: "マージ待ち",
       },
       {
         key: "importance",
@@ -1757,19 +1757,19 @@ describe("Web UI", () => {
     );
     expect([...statusFilter.options].map((option) => option.textContent)).toEqual([
       "すべて",
-      "メンテナー判断待ち",
+      "方針判断待ち",
       "レビュー待ち",
-      "作成者待ち",
-      "ブロック中",
-      "マージ可能",
+      "修正待ち",
+      "ブロック解消待ち",
+      "マージ待ち",
     ]);
     expect([...statusFilter.options].map((option) => option.value)).toEqual([
       "",
-      "needs_maintainer_decision",
+      "waiting_for_decision",
       "waiting_for_review",
-      "waiting_for_author",
-      "blocked",
-      "ready_to_merge",
+      "waiting_for_revision",
+      "waiting_for_unblock",
+      "waiting_for_merge",
     ]);
     const importanceFilter = requiredElement<HTMLSelectElement>(
       'select[aria-label="重要度で絞り込み"]',
@@ -2133,7 +2133,7 @@ describe("Web UI", () => {
     expect(details.textContent).toContain("GitHubで開く");
     const currentAction = requiredElement<HTMLElement>(".current-action-panel");
     expect(currentAction.textContent).toContain("現在の状態");
-    expect(currentAction.textContent).toContain("ブロック中");
+    expect(currentAction.textContent).toContain("ブロック解消待ち");
     expect(currentAction.textContent).toContain("次の担当");
     expect(currentAction.textContent).toContain("VOICEVOX/sample-editor#103");
     expect(currentAction.textContent).toContain("次の行動");
@@ -2225,10 +2225,10 @@ describe("Web UI", () => {
     );
     expect(historyDetails.textContent).not.toContain("前回との差分");
     expect(historyDetails.textContent).not.toContain("Run ");
-    expect(historyDetails.textContent).toContain("進行中・当時の担当者");
+    expect(historyDetails.textContent).toContain("作業中・当時の担当者");
     expect(historyDetails.textContent).not.toContain("担当者 @sample-implementer");
     expect(historyDetails.textContent).toContain(
-      "ブロック中・VOICEVOX/sample-editor#103、example/sample-distribution#42",
+      "ブロック解消待ち・VOICEVOX/sample-editor#103、example/sample-distribution#42",
     );
     expect(historyDetails.textContent).not.toContain("severity");
     expect(historyDetails.querySelector(".history-expand-button")).toBeNull();
@@ -2623,7 +2623,7 @@ describe("Web UI", () => {
 
   it("検索、表filter、並び順を項目一覧のdeep linkから再現する", async () => {
     const deepLink =
-      "/voicevox_task_tracker/items?q=blocked&repo=VOICEVOX%2Fsample-engine&status=blocked&sort=stall&direction=descending";
+      "/voicevox_task_tracker/items?q=blocked&repo=VOICEVOX%2Fsample-engine&status=waiting_for_unblock&sort=stall&direction=descending";
     window.history.replaceState({}, "", deepLink);
     renderApp(sampleSummary);
     await flushUi();
@@ -2633,7 +2633,7 @@ describe("Web UI", () => {
       requiredElement<HTMLSelectElement>('select[aria-label="リポジトリで絞り込み"]').value,
     ).toBe("VOICEVOX/sample-engine");
     expect(requiredElement<HTMLSelectElement>('select[aria-label="statusで絞り込み"]').value).toBe(
-      "blocked",
+      "waiting_for_unblock",
     );
     expect(requiredElement<HTMLSelectElement>("#item-sort-key").value).toBe("stall");
     expect(requiredElement<HTMLButtonElement>(".item-sort-controls button").textContent).toContain(

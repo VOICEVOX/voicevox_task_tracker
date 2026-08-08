@@ -25,7 +25,7 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Pull Request判定へ適用した決定規則のversion。 */
-export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v5";
+export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v6";
 
 /** 依存グラフからPull Request判定へ渡すblocker。 */
 export type PullRequestBlocker = Readonly<{
@@ -631,7 +631,7 @@ function createBlockedDecision(
   const basis = createBasis(primaryBlocker.sourceIds, primaryBlocker.becameBlockingAt, "event");
 
   return finalizeDecision(input, context, {
-    status: "blocked",
+    status: "waiting_for_unblock",
     waitingOn,
     primarySelectionReason,
     nextAction: `${primaryBlocker.candidateId}の完了を待つ`,
@@ -876,7 +876,7 @@ function createChangesRequestedDecision(
   }
   const basis = createBasis(sourceIds, firstReview.occurredAt, "event");
   return finalizeDecision(input, context, {
-    status: "waiting_for_author",
+    status: "waiting_for_revision",
     waitingOn: [createAuthorWaitingOn(sourceIds, "human reviewerから変更を要求されています", 1)],
     primarySelectionReason: "現行headに対するhumanの変更要求を選定しました",
     nextAction: "変更要求へ対応してpushする",
@@ -1052,7 +1052,7 @@ function createReviewThreadDecision(
   const sourceIds = actionable.flatMap((thread) => thread.sourceIds);
   const basis = createBasis(sourceIds, firstThread.occurredAt, "event");
   return finalizeDecision(input, context, {
-    status: "waiting_for_author",
+    status: "waiting_for_revision",
     waitingOn: [createAuthorWaitingOn(sourceIds, "未解決のhuman review threadがあります", 1)],
     primarySelectionReason: "未解決のhuman review threadをauthor対応として選定しました",
     nextAction: "未解決のreview threadへ対応する",
@@ -1331,7 +1331,7 @@ function createLabelDecision(
     input.labelEffects.maintainerDecisionLabelNames,
   );
   return finalizeDecision(input, context, {
-    status: "needs_maintainer_decision",
+    status: "waiting_for_decision",
     waitingOn: [
       createMaintainerWaitingOn(
         [input.pullRequest.sourceId],
@@ -1574,7 +1574,7 @@ function createCheckFailureDecision(
       ? headBasis
       : createBasis(analysis.authorAction.sourceIds, failureOccurredAt, "event");
   return finalizeDecision(input, context, {
-    status: "waiting_for_author",
+    status: "waiting_for_revision",
     waitingOn: [
       createAuthorWaitingOn(
         analysis.authorAction.sourceIds,
@@ -1608,7 +1608,7 @@ function createConflictDecision(
   }
   const basis = createBasis(headBasis.sourceIds, headBasis.occurredAt, "inferred");
   return finalizeDecision(input, context, {
-    status: "waiting_for_author",
+    status: "waiting_for_revision",
     waitingOn: [
       createAuthorWaitingOn(
         [input.pullRequest.sourceId],
@@ -1673,7 +1673,7 @@ function createReadyToMergeDecision(
   assertNonNullable(occurredAt, "merge可能になった時刻を解決できませんでした");
   const basis = createBasis(sourceIds, occurredAt, "inferred");
   return finalizeDecision(input, context, {
-    status: "ready_to_merge",
+    status: "waiting_for_merge",
     waitingOn: [
       createMaintainerWaitingOn(
         sourceIds,
@@ -1718,7 +1718,7 @@ function createMaintainerTriageDecision(
 ): PullRequestStateDecision {
   const basis = resolveDraftIntervalBasis(input.pullRequest);
   return finalizeDecision(input, context, {
-    status: "needs_maintainer_decision",
+    status: "waiting_for_decision",
     waitingOn: [
       createMaintainerWaitingOn(
         [input.pullRequest.sourceId],

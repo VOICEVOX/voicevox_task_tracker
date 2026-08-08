@@ -243,7 +243,7 @@ describe("Issueの既定責務", () => {
   it("未アサインIssueをmaintainer待ちにする", () => {
     const decision = determineIssueState(createInput(createOpenIssue()));
 
-    expect(decision.status).toBe("new_untriaged");
+    expect(decision.status).toBe("waiting_for_triage");
     expect(decision.waitingOn).toEqual([
       expect.objectContaining({
         kind: "team",
@@ -274,7 +274,7 @@ describe("Issueの既定責務", () => {
       }),
     );
 
-    expect(singleDecision.status).toBe("waiting_for_assignee");
+    expect(singleDecision.status).toBe("waiting_for_work");
     expect(singleDecision.waitingOn.map((value) => value.candidateId)).toEqual([
       firstAssignee.login,
     ]);
@@ -678,7 +678,7 @@ describe("Issueのblockerとterminal", () => {
       ],
     });
 
-    expect(decision.status).toBe("blocked");
+    expect(decision.status).toBe("waiting_for_unblock");
     expect(decision.waitingOn.map((value) => value.candidateId)).toEqual(["VOICEVOX/core#1"]);
     expect(decision.determination).toBe("determined");
   });
@@ -788,7 +788,7 @@ describe("Issueの明示依頼候補", () => {
       explicitRequestCandidates: [createRequestCandidate(requestEvent)],
     });
 
-    expect(decision.status).toBe("waiting_for_assignee");
+    expect(decision.status).toBe("waiting_for_work");
     expect(decision.waitingOn[0]?.candidateId).toBe(firstAssignee.login);
     expect(decision.determination).toBe("codex_candidate");
     expect(decision.confidence).toBeLessThanOrEqual(0.65);
@@ -839,7 +839,7 @@ describe("Issueの明示依頼候補", () => {
       },
     });
 
-    expect(decision.status).toBe("waiting_for_assignee");
+    expect(decision.status).toBe("waiting_for_work");
     expect(decision.waitingOn).toEqual([
       expect.objectContaining({
         kind: "user",

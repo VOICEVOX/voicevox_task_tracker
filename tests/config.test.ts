@@ -318,14 +318,14 @@ describe("設定の読み込みと検証", () => {
   it("停滞閾値がwatch、urgent、criticalの順でなければ拒否する", () => {
     const source = replaceRequired(
       validConfigSource,
-      "reviewer: { watch: 48, urgent: 120, critical: 240 }",
-      "reviewer: { watch: 121, urgent: 120, critical: 119 }",
+      "review: { watch: 48, urgent: 120, critical: 240 }",
+      "review: { watch: 121, urgent: 120, critical: 119 }",
     );
     const error = captureConfigError(source);
 
-    expect(error.message).toContain("staleness.thresholdsHours.reviewer.urgent");
+    expect(error.message).toContain("staleness.thresholdsHours.review.urgent");
     expect(error.message).toContain("urgentはwatch以上にしてください");
-    expect(error.message).toContain("staleness.thresholdsHours.reviewer.critical");
+    expect(error.message).toContain("staleness.thresholdsHours.review.critical");
     expect(error.message).toContain("criticalはurgent以上にしてください");
   });
 

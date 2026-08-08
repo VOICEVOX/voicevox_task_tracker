@@ -4,7 +4,7 @@
   "items": [
     {
       "nodeId": "private-sentinel-issue",
-      "status": "new_untriaged",
+      "status": "waiting_for_triage",
       "waitingOn": [
         {
           "kind": "team",

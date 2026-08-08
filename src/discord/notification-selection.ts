@@ -248,11 +248,15 @@ function validateCurrentState(item: DiscordNotificationItem, evaluatedTimestamp:
   if (!terminal && item.current.waitClass === "notApplicable") {
     throw new TypeError(`${item.nodeId}の継続中状態をnotApplicableにはできません`);
   }
-  if (item.current.status === "blocked" && item.current.waitClass !== "blockedParent") {
-    throw new TypeError(`${item.nodeId}のblocked状態はblockedParentとして扱ってください`);
+  if (item.current.status === "waiting_for_unblock" && item.current.waitClass !== "blockedParent") {
+    throw new TypeError(
+      `${item.nodeId}のwaiting_for_unblock状態はblockedParentとして扱ってください`,
+    );
   }
-  if (item.current.status !== "blocked" && item.current.waitClass === "blockedParent") {
-    throw new TypeError(`${item.nodeId}のblocked以外の状態をblockedParentにはできません`);
+  if (item.current.status !== "waiting_for_unblock" && item.current.waitClass === "blockedParent") {
+    throw new TypeError(
+      `${item.nodeId}のwaiting_for_unblock以外の状態をblockedParentにはできません`,
+    );
   }
 
   const createdTimestamp = parseTimestamp(item.createdAt, `${item.nodeId}の作成時刻`);
@@ -439,19 +443,19 @@ function overdueReasonCode(
   waitClass: StalenessWaitClass,
 ): DiscordNotificationReasonCode | undefined {
   switch (waitClass) {
-    case "maintainerTriage":
+    case "triage":
       return "triage_overdue";
-    case "ownerUnknown":
+    case "owner":
       return "owner_unknown";
-    case "reviewer":
+    case "review":
       return "review_overdue";
-    case "authorAfterChangesRequested":
+    case "revision":
       return "author_overdue";
-    case "readyToMerge":
+    case "merge":
       return "ready_to_merge_overdue";
     case "automation":
       return "automation_stuck";
-    case "assigneeOrInProgress":
+    case "work":
     case "blockedParent":
     case "notApplicable":
       return undefined;

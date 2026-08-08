@@ -2544,7 +2544,7 @@ function checkFailureAssessment(
     ...output.waitingOn.map((waitingOn) => waitingOn.confidence),
   );
   const authorAction =
-    output.status === "waiting_for_author" ||
+    output.status === "waiting_for_revision" ||
     output.waitingOn.some((waitingOn) => waitingOn.role === "author");
   if (authorAction) {
     return Object.freeze({
@@ -2555,7 +2555,7 @@ function checkFailureAssessment(
   }
   const infrastructureOrFlaky =
     output.status === "waiting_for_automation" ||
-    output.status === "needs_maintainer_decision" ||
+    output.status === "waiting_for_decision" ||
     output.status === "unknown" ||
     output.waitingOn.some(
       (waitingOn) =>
@@ -3213,7 +3213,7 @@ function blockedParentContext(
   decision: ReducedCodexDecision,
   graph: GraphResult | undefined,
 ): BlockedParentContext {
-  if (decision.status !== "blocked") {
+  if (decision.status !== "waiting_for_unblock") {
     return Object.freeze({
       status: "not_applicable",
     });

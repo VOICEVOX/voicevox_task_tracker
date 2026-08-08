@@ -35,7 +35,7 @@
             "login": "sample-merge-maintainer"
           }
         ],
-        "status": "ready_to_merge",
+        "status": "waiting_for_merge",
         "waitingOn": [
           {
             "kind": "role",
@@ -237,7 +237,7 @@
             "login": "hiho"
           }
         ],
-        "status": "needs_maintainer_decision",
+        "status": "waiting_for_decision",
         "waitingOn": [
           {
             "kind": "role",
@@ -327,7 +327,7 @@
             "login": "sample-implementer"
           }
         ],
-        "status": "blocked",
+        "status": "waiting_for_unblock",
         "waitingOn": [
           {
             "kind": "item",
@@ -423,7 +423,7 @@
           "after": {
             "state": "present",
             "value": {
-              "status": "blocked",
+              "status": "waiting_for_unblock",
               "waitingOn": [
                 {
                   "kind": "item",
@@ -467,7 +467,7 @@
             "login": "sample-author"
           }
         ],
-        "status": "waiting_for_author",
+        "status": "waiting_for_revision",
         "waitingOn": [
           {
             "kind": "role",
@@ -547,7 +547,7 @@
         "kind": "pull_request",
         "repositoryId": "sample-repository-editor",
         "state": "open",
-        "status": "ready_to_merge",
+        "status": "waiting_for_merge",
         "severity": "critical"
       },
       {
@@ -563,7 +563,7 @@
         "kind": "issue",
         "repositoryId": "sample-repository-editor",
         "state": "open",
-        "status": "needs_maintainer_decision",
+        "status": "waiting_for_decision",
         "severity": "urgent"
       },
       {
@@ -571,7 +571,7 @@
         "kind": "issue",
         "repositoryId": "sample-repository-engine",
         "state": "open",
-        "status": "blocked",
+        "status": "waiting_for_unblock",
         "severity": "watch"
       },
       {
@@ -579,7 +579,7 @@
         "kind": "pull_request",
         "repositoryId": "sample-repository-core",
         "state": "open",
-        "status": "waiting_for_author",
+        "status": "waiting_for_revision",
         "severity": "urgent"
       },
       {

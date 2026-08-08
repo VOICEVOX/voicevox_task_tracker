@@ -421,7 +421,7 @@ describe("観測時刻に依存しない遷移基準", () => {
       }),
     );
 
-    expect(earlierDecision.status).toBe("needs_maintainer_decision");
+    expect(earlierDecision.status).toBe("waiting_for_decision");
     expect(earlierDecision.statusBasis).toEqual({
       sourceIds: [currentReady.sourceId],
       occurredAt: currentReady.occurredAt,
@@ -482,7 +482,7 @@ describe("観測時刻に依存しない遷移基準", () => {
       },
     });
 
-    expect(earlierDecision.status).toBe("needs_maintainer_decision");
+    expect(earlierDecision.status).toBe("waiting_for_decision");
     expect(earlierDecision.statusBasis).toEqual({
       sourceIds: [currentSecondLabel.sourceId],
       occurredAt: currentSecondLabel.occurredAt,
@@ -660,7 +660,7 @@ describe("観測時刻に依存しない遷移基準", () => {
     } satisfies PullRequestStateMachineInput;
     const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(input);
 
-    expect(earlierDecision.status).toBe("waiting_for_author");
+    expect(earlierDecision.status).toBe("waiting_for_revision");
     expect(earlierDecision.statusBasis.occurredAt).toBe(firstFailureAt);
     expect(earlierDecision.statusBasis.precision).toBe("event");
     expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
@@ -680,7 +680,7 @@ describe("観測時刻に依存しない遷移基準", () => {
       }),
     );
 
-    expect(earlierDecision.status).toBe("waiting_for_author");
+    expect(earlierDecision.status).toBe("waiting_for_revision");
     expect(earlierDecision.statusBasis).toEqual({
       sourceIds: [pullRequest.headCommit.sourceId],
       occurredAt: headPushedAt,
@@ -732,7 +732,7 @@ describe("観測時刻に依存しない遷移基準", () => {
       }),
     );
 
-    expect(earlierDecision.status).toBe("ready_to_merge");
+    expect(earlierDecision.status).toBe("waiting_for_merge");
     expect(earlierDecision.statusBasis.occurredAt).toBe(latestCheckAt);
     expect(earlierDecision.statusBasis.precision).toBe("inferred");
     expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
@@ -776,7 +776,7 @@ describe("timeline取得窓が途中から始まるdraft判定", () => {
       }),
     );
 
-    expect(decision.status).toBe("needs_maintainer_decision");
+    expect(decision.status).toBe("waiting_for_decision");
     expect(decision.statusBasis).toEqual({
       sourceIds: [ready.sourceId],
       occurredAt: ready.occurredAt,
@@ -800,7 +800,7 @@ describe("timeline取得窓が途中から始まるdraft判定", () => {
     );
 
     expect(draftDecision.status).toBe("in_progress");
-    expect(nonDraftDecision.status).toBe("needs_maintainer_decision");
+    expect(nonDraftDecision.status).toBe("waiting_for_decision");
     expect(draftDecision.statusBasis.occurredAt).toBe(pullRequestCreatedAt);
     expect(nonDraftDecision.statusBasis.occurredAt).toBe(pullRequestCreatedAt);
   });
@@ -885,7 +885,7 @@ describe("Pull Request判定の優先順位", () => {
       ],
     });
 
-    expect(decision.status).toBe("blocked");
+    expect(decision.status).toBe("waiting_for_unblock");
     expect(decision.waitingOn.map((value) => value.candidateId)).toEqual(["VOICEVOX/core#1"]);
   });
 
@@ -957,7 +957,7 @@ describe("Pull Request判定の優先順位", () => {
       }),
     );
 
-    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.status).toBe("waiting_for_revision");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "role",
       role: "author",
@@ -997,7 +997,7 @@ describe("Pull Request判定の優先順位", () => {
       },
     });
 
-    expect(decision.status).toBe("needs_maintainer_decision");
+    expect(decision.status).toBe("waiting_for_decision");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "team",
       role: "maintainer",
@@ -1034,7 +1034,7 @@ describe("reviewと責務の遷移", () => {
     );
 
     expect(decision.determination).toBe("codex_candidate");
-    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.status).toBe("waiting_for_revision");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "role",
       role: "author",
@@ -1084,7 +1084,7 @@ describe("reviewと責務の遷移", () => {
     );
 
     expect(decision.determination).toBe("determined");
-    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.status).toBe("waiting_for_revision");
     expect(decision.uncertainties).toEqual([]);
   });
 
@@ -1105,7 +1105,7 @@ describe("reviewと責務の遷移", () => {
     );
 
     expect(decision.determination).toBe("determined");
-    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.status).toBe("waiting_for_revision");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "role",
       role: "author",
@@ -1294,7 +1294,7 @@ describe("reviewと責務の遷移", () => {
     );
 
     expect(decision.determination).toBe("codex_candidate");
-    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.status).toBe("waiting_for_revision");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "role",
       role: "author",
@@ -1329,7 +1329,7 @@ describe("reviewと責務の遷移", () => {
     );
 
     expect(decision.determination).toBe("codex_candidate");
-    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.status).toBe("waiting_for_revision");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "role",
       role: "author",
@@ -1371,7 +1371,7 @@ describe("reviewと責務の遷移", () => {
       })),
     } satisfies FreshObservedGitHubPullRequest;
 
-    expect(determinePullRequestState(createInput(unresolved)).status).toBe("waiting_for_author");
+    expect(determinePullRequestState(createInput(unresolved)).status).toBe("waiting_for_revision");
     expect(determinePullRequestState(createInput(resolved)).status).toBe("waiting_for_review");
   });
 
@@ -1415,7 +1415,7 @@ describe("reviewと責務の遷移", () => {
       }),
     );
 
-    expect(decision.status).not.toBe("waiting_for_author");
+    expect(decision.status).not.toBe("waiting_for_revision");
     expect(decision.status).toBe("waiting_for_review");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "user",
@@ -1467,7 +1467,7 @@ describe("reviewと責務の遷移", () => {
       }),
     );
 
-    expect(decision.status).toBe("needs_maintainer_decision");
+    expect(decision.status).toBe("waiting_for_decision");
     expect(decision.waitingOn.some((value) => value.candidateId === bot.login)).toBe(false);
     expect(decision.waitingOn.some((value) => value.kind === "automation")).toBe(false);
     expect(decision.determination).toBe("determined");
@@ -1487,7 +1487,7 @@ describe("reviewと責務の遷移", () => {
       }),
     );
 
-    expect(decision.status).toBe("needs_maintainer_decision");
+    expect(decision.status).toBe("waiting_for_decision");
     expect(decision.determination).toBe("codex_candidate");
     expect(decision.uncertainties).toContain("human commentの意味を決定論的に確定できません");
     expect(decision.evidence).toContainEqual({
@@ -1707,7 +1707,7 @@ describe("reviewと責務の遷移", () => {
     );
 
     expect(draftDecision.status).toBe("in_progress");
-    expect(changesDecision.status).toBe("waiting_for_author");
+    expect(changesDecision.status).toBe("waiting_for_revision");
     expect(draftDecision.waitingOn[0]).toMatchObject({
       kind: changesDecision.waitingOn[0]?.kind,
       role: changesDecision.waitingOn[0]?.role,
@@ -1722,7 +1722,7 @@ describe("reviewと責務の遷移", () => {
 });
 
 describe("merge readinessと失敗時の判定", () => {
-  it("承認とchecksを満たしたPRをready_to_mergeとする", () => {
+  it("承認とchecksを満たしたPRをwaiting_for_mergeとする", () => {
     const approval = createReviewEvent({
       id: "approval",
       actor: reviewer,
@@ -1749,7 +1749,7 @@ describe("merge readinessと失敗時の判定", () => {
       }),
     );
 
-    expect(decision.status).toBe("ready_to_merge");
+    expect(decision.status).toBe("waiting_for_merge");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "team",
       role: "merge_decider",
@@ -1760,7 +1760,7 @@ describe("merge readinessと失敗時の判定", () => {
   it("ready for reviewでreview未依頼ならmaintainer待ちとする", () => {
     const decision = determinePullRequestState(createInput(createOpenPullRequest()));
 
-    expect(decision.status).toBe("needs_maintainer_decision");
+    expect(decision.status).toBe("waiting_for_decision");
     expect(decision.waitingOn[0]).toMatchObject({
       kind: "team",
       role: "maintainer",
@@ -1797,7 +1797,7 @@ describe("merge readinessと失敗時の判定", () => {
       },
     });
 
-    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.status).toBe("waiting_for_revision");
     expect(decision.waitingOn[0]?.role).toBe("author");
     expect(decision.determination).toBe("determined");
     expect(decision.statusBasis).toEqual({
@@ -1830,7 +1830,7 @@ describe("merge readinessと失敗時の判定", () => {
       },
     });
 
-    expect(decision.status).toBe("needs_maintainer_decision");
+    expect(decision.status).toBe("waiting_for_decision");
     expect(decision.waitingOn[0]?.role).toBe("maintainer");
     expect(decision.determination).toBe("codex_candidate");
     expect(decision.confidence).toBeLessThanOrEqual(0.65);
@@ -1877,7 +1877,7 @@ describe("merge readinessと失敗時の判定", () => {
       }),
     );
 
-    expect(decision.status).toBe("waiting_for_author");
+    expect(decision.status).toBe("waiting_for_revision");
     expect(decision.waitingOn[0]?.role).toBe("author");
     expect(decision.nextAction).toContain("base branch");
   });
@@ -1912,7 +1912,7 @@ describe("blockerとterminalの詳細", () => {
       ],
     });
 
-    expect(decision.status).toBe("blocked");
+    expect(decision.status).toBe("waiting_for_unblock");
     expect(decision.waitingOn.map((value) => value.candidateId)).toEqual([
       "VOICEVOX/core#1",
       "VOICEVOX/core#2",

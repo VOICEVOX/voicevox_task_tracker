@@ -7,14 +7,14 @@ export function isTerminalStatus(status: Status): status is TerminalStatus {
     case "terminal_completed":
     case "terminal_not_planned":
       return true;
-    case "new_untriaged":
-    case "needs_maintainer_decision":
+    case "waiting_for_triage":
+    case "waiting_for_decision":
     case "waiting_for_review":
-    case "waiting_for_author":
-    case "waiting_for_assignee":
-    case "blocked":
+    case "waiting_for_revision":
+    case "waiting_for_work":
+    case "waiting_for_unblock":
     case "waiting_for_automation":
-    case "ready_to_merge":
+    case "waiting_for_merge":
     case "in_progress":
     case "unknown":
       return false;

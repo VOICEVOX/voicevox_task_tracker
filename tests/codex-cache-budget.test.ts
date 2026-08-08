@@ -187,7 +187,7 @@ function createExecutorOutput(input: CodexAnalysisInput) {
       nodeId: input.item.nodeId,
       url: input.item.url,
     },
-    status: "needs_maintainer_decision",
+    status: "waiting_for_decision",
     waitingOn: [
       {
         kind: "role",

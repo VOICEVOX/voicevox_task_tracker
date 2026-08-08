@@ -83,7 +83,7 @@
             "nodeId": "prompt-injection-issue",
             "url": "https://github.com/VOICEVOX/fixture-prompt/issues/601"
           },
-          "status": "waiting_for_assignee",
+          "status": "waiting_for_work",
           "waitingOn": [
             {
               "kind": "user",

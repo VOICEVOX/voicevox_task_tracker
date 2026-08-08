@@ -527,7 +527,7 @@ export function ItemDetailsContent({
     summary.items.map((summaryItem) => [summaryItem.nodeId, summaryItem]),
   );
   let primaryBlockerNodeId: string | undefined;
-  if (item.status === "blocked") {
+  if (item.status === "waiting_for_unblock") {
     if (item.primaryWaitingOn.index !== 0) {
       throw new TypeError(`block中の項目 ${item.nodeId}にprimary blockerがありません`);
     }

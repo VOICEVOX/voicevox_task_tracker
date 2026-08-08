@@ -26,14 +26,14 @@ const githubUrlSchema = z
   }, "GitHubのHTTPS URLを指定してください");
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const statusSchema = z.enum([
-  "new_untriaged",
-  "needs_maintainer_decision",
+  "waiting_for_triage",
+  "waiting_for_decision",
   "waiting_for_review",
-  "waiting_for_author",
-  "waiting_for_assignee",
-  "blocked",
+  "waiting_for_revision",
+  "waiting_for_work",
+  "waiting_for_unblock",
   "waiting_for_automation",
-  "ready_to_merge",
+  "waiting_for_merge",
   "in_progress",
   "unknown",
   "terminal_merged",

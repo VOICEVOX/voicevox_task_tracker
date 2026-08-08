@@ -148,7 +148,7 @@ function createItem(nodeIdValue: string, overrides: ItemOverrides): DiscordNotif
       status: overrides.status ?? "in_progress",
       waitingOn: Object.freeze([...waitingOn]),
       severity: overrides.severity ?? "none",
-      waitClass: overrides.waitClass ?? "assigneeOrInProgress",
+      waitClass: overrides.waitClass ?? "work",
       statusSince: overrides.statusSince ?? CREATED_AT,
       ownerSince: overrides.ownerSince ?? CREATED_AT,
       stallSince: overrides.stallSince ?? CREATED_AT,
@@ -216,10 +216,10 @@ describe("通知理由の抽出", () => {
     {
       reasonCode: "triage_overdue",
       item: createItem("I_triage", {
-        status: "new_untriaged",
+        status: "waiting_for_triage",
         waitingOn: [maintainer],
         severity: "watch",
-        waitClass: "maintainerTriage",
+        waitClass: "triage",
       }),
     },
     {
@@ -228,16 +228,16 @@ describe("通知理由の抽出", () => {
         status: "waiting_for_review",
         waitingOn: [reviewer],
         severity: "watch",
-        waitClass: "reviewer",
+        waitClass: "review",
       }),
     },
     {
       reasonCode: "author_overdue",
       item: createItem("I_author", {
-        status: "waiting_for_author",
+        status: "waiting_for_revision",
         waitingOn: [author],
         severity: "watch",
-        waitClass: "authorAfterChangesRequested",
+        waitClass: "revision",
       }),
     },
     {
@@ -246,7 +246,7 @@ describe("通知理由の抽出", () => {
         status: "unknown",
         waitingOn: [unknownOwner],
         severity: "watch",
-        waitClass: "ownerUnknown",
+        waitClass: "owner",
       }),
     },
     {
@@ -288,10 +288,10 @@ describe("通知理由の抽出", () => {
     {
       reasonCode: "ready_to_merge_overdue",
       item: createItem("I_ready_to_merge", {
-        status: "ready_to_merge",
+        status: "waiting_for_merge",
         waitingOn: [mergeDecider],
         severity: "watch",
-        waitClass: "readyToMerge",
+        waitClass: "merge",
       }),
     },
     {
@@ -326,12 +326,12 @@ describe("通知理由の抽出", () => {
     "severityが%sへ初めて上がると候補にする",
     (severity, previousSeverity) => {
       const item = createItem(`I_threshold_${severity}`, {
-        status: "new_untriaged",
+        status: "waiting_for_triage",
         waitingOn: [maintainer],
         severity,
-        waitClass: "maintainerTriage",
+        waitClass: "triage",
         previous: createPrevious(
-          "new_untriaged",
+          "waiting_for_triage",
           [maintainer],
           previousSeverity,
           CREATED_AT,
@@ -348,7 +348,7 @@ describe("通知理由の抽出", () => {
       status: "unknown",
       waitingOn: [unknownOwner],
       severity: "watch",
-      waitClass: "ownerUnknown",
+      waitClass: "owner",
       decisionBasis: {
         source: "ai_only",
         confidence: 0.4,
@@ -363,7 +363,7 @@ describe("通知理由の抽出", () => {
       status: "unknown",
       waitingOn: [unknownOwner],
       severity: "urgent",
-      waitClass: "ownerUnknown",
+      waitClass: "owner",
       downstreamOpenNodeCount: 4,
       downstreamRepositoryCount: 2,
     });
@@ -414,7 +414,7 @@ describe("Codex通知提案の統合", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       notificationRecommendation: Object.freeze({
         availability: "available",
         value: Object.freeze({
@@ -435,7 +435,7 @@ describe("Codex通知提案の統合", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
     });
     const mediumRecommendation = createItem("I_medium_recommendation", {
       severity: "critical",
@@ -496,42 +496,42 @@ describe("noise抑制", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       lastProgressAt: NOW,
     }),
     createItem("I_bot_only", {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       latestChange: "bot_only",
     }),
     createItem("I_preview", {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       latestChange: "preview_update",
     }),
     createItem("I_renovate_update", {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       latestChange: "renovate_dashboard_update",
     }),
     createItem("I_unchanged_watch", {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       previous: previousWatch,
     }),
     createItem("I_recent_draft", {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       createdAt: recentDraftAt,
       statusSince: recentDraftAt,
       ownerSince: recentDraftAt,
@@ -543,7 +543,7 @@ describe("noise抑制", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       decisionBasis: {
         source: "ai_only",
         confidence: 0.649_999,
@@ -553,21 +553,21 @@ describe("noise抑制", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       notificationsSuppressedByLabel: true,
     }),
     createItem("I_stale_repository", {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       repositoryFreshness: "stale",
     }),
     createItem("I_automation_dashboard", {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "watch",
-      waitClass: "reviewer",
+      waitClass: "review",
       notificationClass: "automation_noise",
     }),
   ];
@@ -623,13 +623,13 @@ describe("順位と件数上限", () => {
         status: "waiting_for_review",
         waitingOn: [reviewer],
         severity: "urgent",
-        waitClass: "reviewer",
+        waitClass: "review",
       }),
       createItem("I_attention_owner", {
         status: "unknown",
         waitingOn: [unknownOwner],
         severity: "critical",
-        waitClass: "ownerUnknown",
+        waitClass: "owner",
       }),
       createItem("I_attention_cycle", {
         currentDependencyCycleIds: ["dependency-cycle:attention-cycle" satisfies DependencyCycleId],
@@ -656,7 +656,7 @@ describe("順位と件数上限", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "urgent",
-      waitClass: "reviewer",
+      waitClass: "review",
     });
     const cycle = createItem("I_rank_cycle", {
       currentDependencyCycleIds: ["dependency-cycle:rank-cycle" satisfies DependencyCycleId],
@@ -665,7 +665,7 @@ describe("順位と件数上限", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "critical",
-      waitClass: "reviewer",
+      waitClass: "review",
     });
 
     const selection = selectDiscordNotifications(
@@ -701,12 +701,12 @@ describe("順位と件数上限", () => {
 
   it("blocked親自身は催促せずblockerだけを候補にする", () => {
     const blockedParent = createItem("I_blocked_parent", {
-      status: "blocked",
+      status: "waiting_for_unblock",
       waitingOn: [createWaitingOn("item", "I_actual_blocker", "dependency")],
       severity: "none",
       waitClass: "blockedParent",
       previous: createPrevious(
-        "blocked",
+        "waiting_for_unblock",
         [createWaitingOn("item", "I_actual_blocker", "dependency")],
         "none",
         CREATED_AT,
@@ -733,7 +733,7 @@ describe("ledgerとcooldown", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "urgent",
-      waitClass: "reviewer",
+      waitClass: "review",
       previous: createPrevious(
         "waiting_for_review",
         [reviewer],
@@ -771,7 +771,7 @@ describe("ledgerとcooldown", () => {
       status: "unknown",
       waitingOn: [unknownOwner],
       severity: "critical",
-      waitClass: "ownerUnknown",
+      waitClass: "owner",
       previous: createPrevious(
         "unknown",
         [unknownOwner],
@@ -784,7 +784,7 @@ describe("ledgerとcooldown", () => {
       status: "unknown",
       waitingOn: [unknownOwner],
       severity: "critical",
-      waitClass: "ownerUnknown",
+      waitClass: "owner",
       previous: createPrevious(
         "unknown",
         [unknownOwner],
@@ -889,7 +889,7 @@ describe("空digestとautomation追跡分離", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "critical",
-      waitClass: "reviewer",
+      waitClass: "review",
       notificationClass: "automation_noise",
       latestChange: "renovate_dashboard_update",
     });
@@ -921,7 +921,7 @@ describe("空digestとautomation追跡分離", () => {
       status: "waiting_for_review",
       waitingOn: [reviewer],
       severity: "urgent",
-      waitClass: "reviewer",
+      waitClass: "review",
     });
     const input = createInput(NOW, [item], [], settings);
 

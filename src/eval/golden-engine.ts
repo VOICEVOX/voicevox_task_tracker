@@ -93,12 +93,12 @@ const CONFIDENCE_THRESHOLDS = Object.freeze({
   medium: 0.65,
 });
 const SEVERITY_THRESHOLDS = Object.freeze({
-  maintainerTriage: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
-  ownerUnknown: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
-  reviewer: Object.freeze({ watch: 48, urgent: 120, critical: 240 }),
-  authorAfterChangesRequested: Object.freeze({ watch: 72, urgent: 168, critical: 336 }),
-  assigneeOrInProgress: Object.freeze({ watch: 168, urgent: 336, critical: 720 }),
-  readyToMerge: Object.freeze({ watch: 24, urgent: 72, critical: 168 }),
+  triage: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
+  owner: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
+  review: Object.freeze({ watch: 48, urgent: 120, critical: 240 }),
+  revision: Object.freeze({ watch: 72, urgent: 168, critical: 336 }),
+  work: Object.freeze({ watch: 168, urgent: 336, critical: 720 }),
+  merge: Object.freeze({ watch: 24, urgent: 72, critical: 168 }),
   automation: Object.freeze({ watch: 6, urgent: 24, critical: 72 }),
 }) satisfies SeverityThresholds;
 const NOTIFICATION_SETTINGS = Object.freeze({
@@ -806,7 +806,7 @@ function createBlockedParentContext(
   waitingOn: readonly WaitingOn[],
   nodeId: string,
 ): BlockedParentContext {
-  if (status !== "blocked") {
+  if (status !== "waiting_for_unblock") {
     return Object.freeze({
       status: "not_applicable",
     });
@@ -1594,7 +1594,7 @@ function analyzeLargeFixture(
       },
       severity: "none",
       severityContext: {
-        waitClass: "assigneeOrInProgress",
+        waitClass: "work",
         decisionBasis: "deterministic",
       },
     })),

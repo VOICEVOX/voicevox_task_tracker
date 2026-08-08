@@ -114,7 +114,7 @@ function createOutput(confidence: number) {
       nodeId: "I_example",
       url: "https://github.com/VOICEVOX/example/issues/1",
     },
-    status: "needs_maintainer_decision",
+    status: "waiting_for_decision",
     waitingOn: [
       {
         kind: "role",
@@ -169,7 +169,7 @@ function createDeterministicDecision(
   const sourceId = buildSourceId("body", "current");
   return Object.freeze({
     determination,
-    status: "needs_maintainer_decision",
+    status: "waiting_for_decision",
     waitingOn: Object.freeze([
       Object.freeze({
         kind: "role",
@@ -714,7 +714,7 @@ describe("confidence境界とreducer統合", () => {
     });
     const deterministic = Object.freeze({
       determination: "codex_candidate",
-      status: "blocked",
+      status: "waiting_for_unblock",
       waitingOn: Object.freeze([
         Object.freeze({
           kind: "item",
@@ -759,7 +759,7 @@ describe("confidence境界とreducer統合", () => {
 
     expect(result.decision).toMatchObject({
       origin: "deterministic",
-      status: "blocked",
+      status: "waiting_for_unblock",
     });
     expect(result.ai).toMatchObject({
       application: "native_relation_preserved",

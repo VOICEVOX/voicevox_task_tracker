@@ -98,14 +98,14 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 ### 7.1 status enum
 
-- `new_untriaged`
-- `needs_maintainer_decision`
+- `waiting_for_triage`
+- `waiting_for_decision`
 - `waiting_for_review`
-- `waiting_for_author`
-- `waiting_for_assignee`
-- `blocked`
+- `waiting_for_revision`
+- `waiting_for_work`
+- `waiting_for_unblock`
 - `waiting_for_automation`
-- `ready_to_merge`
+- `waiting_for_merge`
 - `in_progress`
 - `unknown`
 - `terminal_merged`
@@ -119,14 +119,14 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 ### 7.3 PR判定の既定優先順位
 
 1. merged/closedならterminal。
-2. authoritativeまたは高信頼のopen blockerがあれば`blocked`。
+2. authoritativeまたは高信頼のopen blockerがあれば`waiting_for_unblock`。
 3. merge queue/auto-merge/required checks実行中なら`waiting_for_automation`。
 4. latest head以後のhuman `CHANGES_REQUESTED`ならauthor待ち。
 5. 未解決human review threadのうち最後のhumanコメントがauthor以外のものがあればauthor待ち。
 6. 変更要求後にauthor push済みなら再review側を評価。
 7. 現行review requestがあればrequested user/team待ち。
 8. draftは原則author待ち。ただし明示的判断依頼・blockerを優先。
-9. 必要承認/checks済みなら`ready_to_merge`＋maintainer待ち。
+9. 必要承認/checks済みなら`waiting_for_merge`＋maintainer待ち。
 10. ready-for-reviewでreview未依頼ならmaintainer待ち。
 11. CI失敗・コメント意味等が曖昧な場合だけCodexへ渡す。
 
@@ -135,7 +135,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 ### 7.4 Issue判定の既定優先順位
 
 1. closedならterminal。
-2. open blockerがあれば`blocked`。
+2. open blockerがあれば`waiting_for_unblock`。
 3. 最新の未回答な明示依頼があれば相手待ち。
 4. assigneeがいればassignee待ち。
 5. それ以外の未アサインIssueはmaintainer待ち。
@@ -148,7 +148,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 | wait class                        | watch | urgent | critical | 主な扱い                             |
 | --------------------------------- | ----: | -----: | -------: | ------------------------------------ |
 | maintainer triage / owner unknown |   48h |    96h |     168h | 「丸2日」を最初の通知境界とする      |
-| reviewer                          |   48h |   120h |     240h | review requestから計時               |
+| review                            |   48h |   120h |     240h | review requestから計時               |
 | author after changes requested    |   72h |   168h |     336h | author pushでreviewer側へ遷移可能    |
 | assignee/in progress              |  168h |   336h |     720h | 実装作業の長さを考慮                 |
 | ready to merge                    |   24h |    72h |     168h | merge decisionの見落としを早めに検出 |
@@ -300,7 +300,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | `RSP-004` | MUST | アサインIssue — 明確な別の待ち根拠がないアサイン済みIssueはassignee待ちとしなければならない。                                                                                                                  | `AT-RSP-004`: assignee 1名/複数fixtureで全員が候補となる。                                                                                |
 | `RSP-005` | MUST | 未回答の明示依頼 — 最新の未回答な質問・判断依頼が個人またはteamへ向く場合、その相手を優先できなければならない。                                                                                                | `AT-RSP-005`: 本文/コメントの依頼fixtureでCodexがsource ID付きで相手を選ぶ。                                                              |
 | `RSP-006` | MUST | maintainer作成でも責務維持 — maintainerが作成したIssue/PRでも次の担当が明確でなければmaintainer roleの責務としなければならない。                                                                               | `AT-RSP-006`: maintainer-authored unassigned fixtureがauthor任せにならない。                                                              |
-| `RSP-007` | MUST | open blocker優先 — 確定したopen blockerがある項目はstatus=blockedとし、waitingOnにblocker itemを置かなければならない。                                                                                         | `AT-RSP-007`: open/closed blocker混在fixtureでopenだけがwaitingOnになる。                                                                 |
+| `RSP-007` | MUST | open blocker優先 — 確定したopen blockerがある項目はstatus=waiting_for_unblockとし、waitingOnにblocker itemを置かなければならない。                                                                             | `AT-RSP-007`: open/closed blocker混在fixtureでopenだけがwaitingOnになる。                                                                 |
 | `RSP-008` | MUST | draft PRの既定 — 明示的な他者待ちがないdraft PRはauthor待ちとしなければならない。                                                                                                                              | `AT-RSP-008`: recent draft fixtureがauthor/in_progressになる。                                                                            |
 | `RSP-009` | MUST | draft中の明示依頼 — draftでもmaintainer判断や外部blockerを明示している場合、author既定を上書きできなければならない。                                                                                           | `AT-RSP-009`: draft + decision request fixtureでmaintainer待ちになる。                                                                    |
 | `RSP-010` | MUST | レビュー未依頼PR — ready-for-reviewのPRにreview requestがなく、他の明確な待ち先もない場合はmaintainer role待ちとしなければならない。                                                                           | `AT-RSP-010`: reviewerなしPR fixtureがmaintainer triageになる。                                                                           |
@@ -310,7 +310,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | `RSP-014` | MUST | 変更対応push後の再review待ち — CHANGES_REQUESTED後にauthorが新しいhead commitをpushし、再対応が完了したと推定できる場合はreviewer側へ責務を戻せなければならない。                                              | `AT-RSP-014`: review→push fixtureでownerSinceがpush時刻へ変わる。                                                                         |
 | `RSP-015` | MUST | 未解決human thread — 未解決のhuman review threadをactionable signalとして扱わなければならない。ただし最後のhumanコメントがauthorのthreadはauthor応答済みとみなし、author待ちの根拠にしてはならない。           | `AT-RSP-015`: unresolved human thread fixtureでresolved版よりauthor待ち優先度が高く、authorが最後に返信したthreadはauthor待ちにならない。 |
 | `RSP-016` | MUST | bot review非所有 — botのreview/commentだけを理由に個人・teamのボールをbotへ移してはならない。                                                                                                                  | `AT-RSP-016`: Copilot comment fixtureでwaitingOn.kindがautomation/user botにならない。                                                    |
-| `RSP-017` | MUST | 承認済みready-to-merge — 必要承認とchecksを満たしauto-merge/queue未設定のPRはmaintainerのmerge decision待ちとしなければならない。                                                                              | `AT-RSP-017`: approved/passing fixtureがready_to_merge + maintainerになる。                                                               |
+| `RSP-017` | MUST | 承認済みready-to-merge — 必要承認とchecksを満たしauto-merge/queue未設定のPRはmaintainerのmerge decision待ちとしなければならない。                                                                              | `AT-RSP-017`: approved/passing fixtureがwaiting_for_merge + maintainerになる。                                                            |
 | `RSP-018` | MUST | 自動merge待ち — auto-merge、merge queue、実行中required checksで人の操作が不要な間はautomation待ちとしなければならない。                                                                                       | `AT-RSP-018`: queue/running checks fixtureがautomationになり短時間の人向け通知を出さない。                                                |
 | `RSP-019` | MUST | コード起因CI失敗 — PR変更に起因すると確度高く判定できるrequired check failureはauthor待ちとしなければならない。                                                                                                | `AT-RSP-019`: deterministic test failure fixtureがauthorになる。                                                                          |
 | `RSP-020` | MUST | infra/flaky CI — インフラ・flakyの疑いがあるcheck failureはCodex評価し、低信頼時はmaintainer role待ちまたはunknownへ縮退しなければならない。                                                                   | `AT-RSP-020`: runner outage fixtureがauthor断定にならない。                                                                               |

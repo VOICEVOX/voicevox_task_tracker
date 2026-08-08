@@ -55,7 +55,7 @@ describe("一覧のstatus表示", () => {
     const row = rows.find((candidate) => candidate.item.nodeId === "sample-item-editor-101");
     assertNonNullable(row, "status検索テスト用の項目がありません");
 
-    expect(row.statusText).toBe("マージ可能");
+    expect(row.statusText).toBe("マージ待ち");
   });
 });
 

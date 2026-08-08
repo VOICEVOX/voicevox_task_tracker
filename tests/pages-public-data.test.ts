@@ -124,24 +124,24 @@ type SnapshotFixtureOptions = Readonly<{
 
 function severityWaitClass(status: Status): StalenessWaitClass {
   switch (status) {
-    case "new_untriaged":
-    case "needs_maintainer_decision":
-      return "maintainerTriage";
+    case "waiting_for_triage":
+    case "waiting_for_decision":
+      return "triage";
     case "waiting_for_review":
-      return "reviewer";
-    case "waiting_for_author":
-      return "authorAfterChangesRequested";
-    case "waiting_for_assignee":
+      return "review";
+    case "waiting_for_revision":
+      return "revision";
+    case "waiting_for_work":
     case "in_progress":
-      return "assigneeOrInProgress";
-    case "blocked":
+      return "work";
+    case "waiting_for_unblock":
       return "blockedParent";
     case "waiting_for_automation":
       return "automation";
-    case "ready_to_merge":
-      return "readyToMerge";
+    case "waiting_for_merge":
+      return "merge";
     case "unknown":
-      return "ownerUnknown";
+      return "owner";
     case "terminal_merged":
     case "terminal_completed":
     case "terminal_not_planned":
@@ -370,7 +370,7 @@ function createSingleItemSnapshot(title: string): StateSnapshot {
         repositoryId: PUBLIC_REPOSITORY_ID,
         repositoryName: "public",
         number: 1,
-        status: "new_untriaged",
+        status: "waiting_for_triage",
         severity: "watch",
         waitingOnKind: "role",
         waitingOnRole: "maintainer",
@@ -409,7 +409,7 @@ function createGraphEvidenceSnapshot(
         repositoryId: PUBLIC_REPOSITORY_ID,
         repositoryName: "public",
         number: 1,
-        status: "new_untriaged",
+        status: "waiting_for_triage",
         severity: "watch",
         waitingOnKind: "role",
         waitingOnRole: "maintainer",
@@ -421,7 +421,7 @@ function createGraphEvidenceSnapshot(
         repositoryId: PUBLIC_REPOSITORY_ID,
         repositoryName: "public",
         number: 2,
-        status: "new_untriaged",
+        status: "waiting_for_triage",
         severity: "watch",
         waitingOnKind: "role",
         waitingOnRole: "maintainer",
@@ -714,7 +714,7 @@ describe("公開evidence URL", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 2,
-          status: "new_untriaged",
+          status: "waiting_for_triage",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -726,7 +726,7 @@ describe("公開evidence URL", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 4,
-          status: "new_untriaged",
+          status: "waiting_for_triage",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -871,7 +871,7 @@ describe("Pages公開安全性", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "new_untriaged",
+          status: "waiting_for_triage",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -1099,7 +1099,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "new_untriaged",
+          status: "waiting_for_triage",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -1206,7 +1206,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "new_untriaged",
+          status: "waiting_for_triage",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -1218,7 +1218,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 2,
-          status: "new_untriaged",
+          status: "waiting_for_triage",
           severity: "none",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",
@@ -1256,7 +1256,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "blocked",
+          status: "waiting_for_unblock",
           severity: "urgent",
           waitingOnKind: "item",
           waitingOnRole: "dependency",
@@ -1268,7 +1268,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 2,
-          status: "blocked",
+          status: "waiting_for_unblock",
           severity: "watch",
           waitingOnKind: "item",
           waitingOnRole: "dependency",
@@ -1371,13 +1371,13 @@ describe("公開DTO生成", () => {
       before: {
         state: "present",
         value: {
-          status: "new_untriaged",
+          status: "waiting_for_triage",
         },
       },
       after: {
         state: "present",
         value: {
-          status: "blocked",
+          status: "waiting_for_unblock",
         },
       },
     });
@@ -1418,7 +1418,7 @@ describe("公開DTO生成", () => {
           repositoryId: PUBLIC_REPOSITORY_ID,
           repositoryName: "public",
           number: 1,
-          status: "new_untriaged",
+          status: "waiting_for_triage",
           severity: "watch",
           waitingOnKind: "role",
           waitingOnRole: "maintainer",

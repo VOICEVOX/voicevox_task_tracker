@@ -4,7 +4,7 @@
   "items": [
     {
       "nodeId": "nested-core-issue",
-      "status": "new_untriaged",
+      "status": "waiting_for_triage",
       "waitingOn": [
         {
           "kind": "team",
@@ -17,7 +17,7 @@
     },
     {
       "nodeId": "nested-engine-issue",
-      "status": "new_untriaged",
+      "status": "waiting_for_triage",
       "waitingOn": [
         {
           "kind": "team",
@@ -30,7 +30,7 @@
     },
     {
       "nodeId": "nested-release-issue",
-      "status": "new_untriaged",
+      "status": "waiting_for_triage",
       "waitingOn": [
         {
           "kind": "team",

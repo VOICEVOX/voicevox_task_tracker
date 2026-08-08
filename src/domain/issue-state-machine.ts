@@ -20,7 +20,7 @@ import { assertNonNullable } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Issue判定へ適用した決定規則のversion。 */
-export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v6";
+export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v7";
 
 /** 依存グラフからIssue判定へ渡すblocker。 */
 export type IssueBlocker = Readonly<{
@@ -621,7 +621,7 @@ function createBlockedDecision(
   const basis = createBasis(primaryBlocker.sourceIds, primaryBlocker.becameBlockingAt, "event");
 
   return finalizeDecision(input, context, {
-    status: "blocked",
+    status: "waiting_for_unblock",
     waitingOn,
     primarySelectionReason,
     nextAction: `${primaryBlocker.candidateId}の完了を待つ`,
@@ -666,8 +666,8 @@ function getRequestTargetKindOrder(kind: IssueExplicitRequestTarget["kind"]): nu
 
 function getRequestDecisionStatus(targets: readonly IssueExplicitRequestTarget[]): Status {
   return targets.every((target) => target.kind === "role" && target.role === "maintainer")
-    ? "needs_maintainer_decision"
-    : "waiting_for_assignee";
+    ? "waiting_for_decision"
+    : "waiting_for_work";
 }
 
 function createExplicitRequestDecision(
@@ -847,7 +847,7 @@ function createAssigneeDecision(
   const sourceIds = assignees.flatMap((assignee) => assignee.waitingOn.sourceIds);
 
   return finalizeDecision(input, context, {
-    status: "waiting_for_assignee",
+    status: "waiting_for_work",
     waitingOn: assignees.map((assignee) => assignee.waitingOn),
     primarySelectionReason: "assign時刻とcandidate IDの順でassigneeを選定しました",
     nextAction: `${primaryAssignee.waitingOn.candidateId}がIssueを進める`,
@@ -879,7 +879,7 @@ function createUnassignedDecision(
     confidence: 1,
   });
   return finalizeDecision(input, context, {
-    status: "new_untriaged",
+    status: "waiting_for_triage",
     waitingOn: [waitingOn],
     primarySelectionReason: "未アサインIssueの既定責務としてmaintainerを選定しました",
     nextAction:

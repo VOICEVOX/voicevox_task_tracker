@@ -415,14 +415,20 @@ function assertSnapshotSemantics(snapshot: StateSnapshot): void {
         "継続中itemのseverity contextをnotApplicableにはできません",
       );
     }
-    if (item.status === "blocked" && item.severityContext.waitClass !== "blockedParent") {
+    if (
+      item.status === "waiting_for_unblock" &&
+      item.severityContext.waitClass !== "blockedParent"
+    ) {
       throw new StateSnapshotSemanticError(
-        "blocked itemのseverity contextはblockedParentにしてください",
+        "waiting_for_unblock itemのseverity contextはblockedParentにしてください",
       );
     }
-    if (item.status !== "blocked" && item.severityContext.waitClass === "blockedParent") {
+    if (
+      item.status !== "waiting_for_unblock" &&
+      item.severityContext.waitClass === "blockedParent"
+    ) {
       throw new StateSnapshotSemanticError(
-        "blocked以外のitemのseverity contextをblockedParentにはできません",
+        "waiting_for_unblock以外のitemのseverity contextをblockedParentにはできません",
       );
     }
     if (item.waitingOn.length === 0 && item.primaryWaitingOn.index !== "not_applicable") {

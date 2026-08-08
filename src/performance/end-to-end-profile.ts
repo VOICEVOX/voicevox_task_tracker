@@ -398,7 +398,7 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
       nodeId: input.item.nodeId,
       url: input.item.url,
     },
-    status: "waiting_for_assignee",
+    status: "waiting_for_work",
     waitingOn: [
       {
         kind: "user",

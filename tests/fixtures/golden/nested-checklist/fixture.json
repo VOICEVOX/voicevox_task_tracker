@@ -175,7 +175,7 @@
             "nodeId": "nested-release-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/501"
           },
-          "status": "new_untriaged",
+          "status": "waiting_for_triage",
           "waitingOn": [
             {
               "kind": "team",
@@ -263,7 +263,7 @@
             "nodeId": "nested-core-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/502"
           },
-          "status": "new_untriaged",
+          "status": "waiting_for_triage",
           "waitingOn": [
             {
               "kind": "team",

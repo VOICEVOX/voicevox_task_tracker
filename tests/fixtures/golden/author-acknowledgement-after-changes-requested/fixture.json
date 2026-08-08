@@ -134,7 +134,7 @@
             }
           ],
           "deterministicSignals": {
-            "status": "waiting_for_author",
+            "status": "waiting_for_revision",
             "waitingOn": [
               {
                 "kind": "role",
@@ -154,7 +154,7 @@
             "nodeId": "author-acknowledgement-after-changes-requested-pr",
             "url": "https://github.com/VOICEVOX/fixture-change/pull/204"
           },
-          "status": "waiting_for_author",
+          "status": "waiting_for_revision",
           "waitingOn": [
             {
               "kind": "role",

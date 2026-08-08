@@ -207,12 +207,14 @@ function validateStatusAndWaitingOn(
 }
 
 function validateBlockedParentContext(input: CalculateStalenessInput): void {
-  const isBlocked = input.currentDecision.status === "blocked";
+  const isBlocked = input.currentDecision.status === "waiting_for_unblock";
   if (!isBlocked && input.blockedParentContext.status !== "not_applicable") {
-    throw new TypeError("blocked以外の項目にblocked parent情報は設定できません");
+    throw new TypeError("waiting_for_unblock以外の項目にblocked parent情報は設定できません");
   }
   if (isBlocked && input.blockedParentContext.status !== "available") {
-    throw new TypeError("blocked項目にはblockerのseverityとdownstream impactが必要です");
+    throw new TypeError(
+      "waiting_for_unblock項目にはblockerのseverityとdownstream impactが必要です",
+    );
   }
   if (input.blockedParentContext.status !== "available") {
     return;
@@ -449,39 +451,37 @@ function determineWaitClass(
   if (isTerminalStatus(decision.status)) {
     return "notApplicable";
   }
-  if (decision.status === "blocked") {
+  if (decision.status === "waiting_for_unblock") {
     return "blockedParent";
   }
 
   const primaryWaitingOn = decision.waitingOn[0];
   assertNonNullable(primaryWaitingOn, "継続中状態のprimary waitingOnがありません");
   if (primaryWaitingOn.kind === "unknown" || primaryWaitingOn.role === "unknown") {
-    return "ownerUnknown";
+    return "owner";
   }
-  if (decision.status === "ready_to_merge") {
-    return "readyToMerge";
+  if (decision.status === "waiting_for_merge") {
+    return "merge";
   }
   if (decision.status === "waiting_for_automation" || primaryWaitingOn.kind === "automation") {
     return "automation";
   }
   if (decision.status === "waiting_for_review" || primaryWaitingOn.role === "reviewer") {
-    return "reviewer";
+    return "review";
   }
-  if (decision.status === "waiting_for_author") {
-    return isAuthorAfterChangesRequested(decision, events)
-      ? "authorAfterChangesRequested"
-      : "assigneeOrInProgress";
+  if (decision.status === "waiting_for_revision") {
+    return isAuthorAfterChangesRequested(decision, events) ? "revision" : "work";
   }
 
   switch (decision.status) {
-    case "new_untriaged":
-    case "needs_maintainer_decision":
-      return "maintainerTriage";
-    case "waiting_for_assignee":
+    case "waiting_for_triage":
+    case "waiting_for_decision":
+      return "triage";
+    case "waiting_for_work":
     case "in_progress":
-      return "assigneeOrInProgress";
+      return "work";
     case "unknown":
-      return "ownerUnknown";
+      return "owner";
     default:
       throw new UnreachableError(decision.status);
   }

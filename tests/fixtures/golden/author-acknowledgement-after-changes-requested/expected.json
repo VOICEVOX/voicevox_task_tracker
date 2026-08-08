@@ -4,7 +4,7 @@
   "items": [
     {
       "nodeId": "author-acknowledgement-after-changes-requested-pr",
-      "status": "waiting_for_author",
+      "status": "waiting_for_revision",
       "waitingOn": [
         {
           "kind": "role",

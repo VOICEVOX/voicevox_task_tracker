@@ -4,7 +4,7 @@
   "items": [
     {
       "nodeId": "umbrella-core-issue",
-      "status": "blocked",
+      "status": "waiting_for_unblock",
       "waitingOn": [
         {
           "kind": "item",
@@ -17,7 +17,7 @@
     },
     {
       "nodeId": "umbrella-engine-issue",
-      "status": "waiting_for_assignee",
+      "status": "waiting_for_work",
       "waitingOn": [
         {
           "kind": "user",
@@ -30,7 +30,7 @@
     },
     {
       "nodeId": "umbrella-project-issue",
-      "status": "blocked",
+      "status": "waiting_for_unblock",
       "waitingOn": [
         {
           "kind": "item",

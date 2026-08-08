@@ -4,7 +4,7 @@
     "nodeId": "PR_example",
     "url": "https://github.com/VOICEVOX/example/pull/123"
   },
-  "status": "blocked",
+  "status": "waiting_for_unblock",
   "waitingOn": [
     {
       "kind": "item",

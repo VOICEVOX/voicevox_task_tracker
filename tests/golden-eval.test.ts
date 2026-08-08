@@ -162,7 +162,7 @@ describe("固定AI判定と公開境界", () => {
     }
 
     expect(output.items[0]).toMatchObject({
-      status: "waiting_for_assignee",
+      status: "waiting_for_work",
       waitingOn: [
         {
           candidateId: "user:reviewer-two",

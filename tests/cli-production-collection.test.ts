@@ -728,7 +728,7 @@ async function replaceStateSnapshot(
 function createCodexOutput(
   input: CodexAnalysisInput,
   options: Readonly<{
-    status: "waiting_for_author" | "waiting_for_automation" | "in_progress" | "unknown";
+    status: "waiting_for_revision" | "waiting_for_automation" | "in_progress" | "unknown";
     waitingOn: Readonly<{
       candidateId: string;
       kind: "user" | "team" | "role" | "item" | "automation" | "unknown";
@@ -2424,7 +2424,7 @@ describe("本番収集の接続", () => {
 
     expect(result.exitCode).toBe(0);
     expect(trackedItem).toMatchObject({
-      status: "blocked",
+      status: "waiting_for_unblock",
       statusSince: blocked.createdAt,
       ownerSince: blocked.createdAt,
       waitingOn: [
@@ -2634,7 +2634,7 @@ describe("本番収集の接続", () => {
     }
     const firstSnapshot = parseStateSnapshot(new TextDecoder().decode(firstSnapshotSource));
     expect(firstSnapshot.items.find((item) => item.nodeId === blocked.nodeId)?.status).not.toBe(
-      "blocked",
+      "waiting_for_unblock",
     );
 
     const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
@@ -2694,7 +2694,7 @@ describe("本番収集の接続", () => {
       },
     ]);
     expect(trackedItem).toMatchObject({
-      status: "blocked",
+      status: "waiting_for_unblock",
       statusSince: changedBlocked.createdAt,
       primaryWaitingOn: {
         index: 0,
@@ -5473,7 +5473,7 @@ describe("本番判定入力の接続", () => {
       ].sort((left, right) => left.id.localeCompare(right.id)),
     );
     expect(trackedItem).toMatchObject({
-      status: "waiting_for_assignee",
+      status: "waiting_for_work",
       lastHumanActivityAt: FIRST_RUN_AT,
       lastProgressAt: meaningfulAt,
       author: {
@@ -5611,7 +5611,7 @@ describe("本番判定入力の接続", () => {
     expect(result.exitCode).toBe(0);
     expect(harness.codexInputs).toEqual([]);
     expect(trackedItem).toMatchObject({
-      status: "waiting_for_assignee",
+      status: "waiting_for_work",
       waitingOn: [
         expect.objectContaining({
           kind: "user",
@@ -5768,7 +5768,7 @@ describe("本番判定入力の接続", () => {
         const codeCaused = input.item.nodeId === codeFailure.nodeId;
         return Promise.resolve(
           createCodexOutput(input, {
-            status: codeCaused ? "waiting_for_author" : "unknown",
+            status: codeCaused ? "waiting_for_revision" : "unknown",
             waitingOn: {
               candidateId: input.item.authorCandidateId,
               kind: "user",
@@ -5807,10 +5807,10 @@ describe("本番判定入力の接続", () => {
       );
     }
     expect(codeItem).toMatchObject({
-      status: "waiting_for_author",
+      status: "waiting_for_revision",
       waitingOn: [expect.objectContaining({ role: "author" })],
     });
-    expect(infrastructureItem?.status).not.toBe("waiting_for_author");
+    expect(infrastructureItem?.status).not.toBe("waiting_for_revision");
   });
 
   it("同じGitHubデータなら前回stateなしの走査時刻が数ヶ月違っても全項目の停滞起点が一致する", async () => {
@@ -6053,7 +6053,7 @@ describe("本番判定入力の接続", () => {
           }
           return Promise.resolve(
             createCodexOutput(input, {
-              status: "waiting_for_author",
+              status: "waiting_for_revision",
               waitingOn: {
                 candidateId: input.item.authorCandidateId,
                 kind: "user",
@@ -6089,16 +6089,16 @@ describe("本番判定入力の接続", () => {
       expect(snapshot.items).toHaveLength(items.length);
       expect(snapshot.items).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ nodeId: unassignedIssue.nodeId, status: "new_untriaged" }),
-          expect.objectContaining({ nodeId: blockedIssue.nodeId, status: "blocked" }),
+          expect.objectContaining({ nodeId: unassignedIssue.nodeId, status: "waiting_for_triage" }),
+          expect.objectContaining({ nodeId: blockedIssue.nodeId, status: "waiting_for_unblock" }),
           expect.objectContaining({ nodeId: draftPullRequest.nodeId, status: "in_progress" }),
           expect.objectContaining({
             nodeId: failedCheckPullRequest.nodeId,
-            status: "waiting_for_author",
+            status: "waiting_for_revision",
           }),
           expect.objectContaining({
             nodeId: conflictingPullRequest.nodeId,
-            status: "waiting_for_author",
+            status: "waiting_for_revision",
           }),
           expect.objectContaining({
             nodeId: reviewWaitingPullRequest.nodeId,
@@ -6212,7 +6212,7 @@ describe("本番判定入力の接続", () => {
           }
           return Promise.resolve(
             createCodexOutput(input, {
-              status: "waiting_for_author",
+              status: "waiting_for_revision",
               waitingOn: {
                 candidateId: input.item.authorCandidateId,
                 kind: "user",
@@ -7037,7 +7037,7 @@ describe("本番判定入力の接続", () => {
       throw new TypeError("初回Codex分析fingerprintが保存されていません");
     }
     expect(firstSnapshot.items.find((item) => item.nodeId === blocked.nodeId)?.status).toBe(
-      "blocked",
+      "waiting_for_unblock",
     );
     expect(firstSnapshot.relations).toContainEqual(
       expect.objectContaining({
@@ -7070,7 +7070,7 @@ describe("本番判定入力の接続", () => {
     expect(unchangedMetrics.aiCallCount).toBe(0);
     expect(unchangedMetrics.aiCacheHitCount).toBeGreaterThan(0);
     expect(unchangedSnapshot.items.find((item) => item.nodeId === blocked.nodeId)?.status).toBe(
-      "blocked",
+      "waiting_for_unblock",
     );
     expect(unchangedSnapshot.relations).toContainEqual(
       expect.objectContaining({
@@ -7126,7 +7126,7 @@ describe("本番判定入力の接続", () => {
     const blockedInputs = harness.codexInputs.filter(
       (input) => input.item.nodeId === blocked.nodeId,
     );
-    expect(reclassified?.status).not.toBe("blocked");
+    expect(reclassified?.status).not.toBe("waiting_for_unblock");
     expect(reclassified?.lastProgressAt).toBe(blocked.createdAt);
     expect(thirdSnapshot.relations).toContainEqual(
       expect.objectContaining({
