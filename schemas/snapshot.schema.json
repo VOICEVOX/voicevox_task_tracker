@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "6"
+      "const": "7"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -825,6 +825,21 @@
         }
       }
     },
+    "attention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "level"],
+      "properties": {
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "level": {
+          "enum": ["low", "medium", "high"]
+        }
+      }
+    },
     "importanceAssessment": {
       "oneOf": [
         {
@@ -888,6 +903,7 @@
         "title",
         "milestone",
         "importance",
+        "attention",
         "importanceAssessment",
         "author",
         "latestEventActor",
@@ -959,6 +975,9 @@
         },
         "importance": {
           "$ref": "#/$defs/importance"
+        },
+        "attention": {
+          "$ref": "#/$defs/attention"
         },
         "importanceAssessment": {
           "$ref": "#/$defs/importanceAssessment"

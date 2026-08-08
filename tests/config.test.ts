@@ -66,6 +66,13 @@ describe("設定の読み込みと検証", () => {
         medium: 20,
       },
     });
+    expect(config.attention).toEqual({
+      recencyFloor: 0.4,
+      levels: {
+        high: 40,
+        medium: 20,
+      },
+    });
     expect(config.notifications.automationNoiseTitles).toEqual([
       "Dependency Dashboard",
       "Renovate Dashboard",
@@ -360,6 +367,29 @@ describe("設定の読み込みと検証", () => {
     const error = captureConfigError(source);
 
     expect(error.message).toContain("importance.levels.high");
+    expect(error.message).toContain("highはmedium以上にしてください");
+  });
+
+  it.each([-0.1, 1.1])("要対応度のrecencyFloorに範囲外の値%fを指定できない", (value) => {
+    const source = replaceRequired(
+      validConfigSource,
+      "  recencyFloor: 0.4",
+      `  recencyFloor: ${value.toString()}`,
+    );
+    const error = captureConfigError(source);
+
+    expect(error.message).toContain("attention.recencyFloor");
+  });
+
+  it("要対応度levelのhighがmedium未満なら拒否する", () => {
+    const source = replaceRequired(
+      validConfigSource,
+      "attention:\n  recencyFloor: 0.4\n  levels:\n    high: 40\n    medium: 20",
+      "attention:\n  recencyFloor: 0.4\n  levels:\n    high: 19\n    medium: 20",
+    );
+    const error = captureConfigError(source);
+
+    expect(error.message).toContain("attention.levels.high");
     expect(error.message).toContain("highはmedium以上にしてください");
   });
 

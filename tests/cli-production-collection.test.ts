@@ -1964,13 +1964,21 @@ describe("本番収集の接続", () => {
     }
 
     expect(result.exitCode).toBe(0);
-    expect(snapshot.schemaVersion).toBe("6");
+    expect(snapshot.schemaVersion).toBe("7");
     expect(snapshot.items[0]?.milestone).toEqual(expectedMilestone);
     expect(snapshot.items[0]?.importance).toEqual(expectedImportance);
+    expect(snapshot.items[0]?.attention).toEqual({
+      score: 4,
+      level: "low",
+    });
     expect(publicData.summary.schemaVersion).toBe("5");
     expect(publicData.summary.items[0]?.milestone).toEqual(expectedMilestone);
     expect(publicData.summary.items[0]?.importance).toEqual({
       score: 10,
+      level: "low",
+    });
+    expect(publicData.summary.items[0]?.attention).toEqual({
+      score: 4,
       level: "low",
     });
     expect(publicData.details.schemaVersion).toBe("5");

@@ -4,6 +4,13 @@ export {
   type BotPredicate,
   type BotPredicateInput,
 } from "./actor-resolution.js";
+export {
+  calculateAttention,
+  type Attention,
+  type AttentionLevel,
+  type AttentionLevelThresholds,
+  type CalculateAttentionInput,
+} from "./attention.js";
 export { DETERMINISTIC_RULES_VERSION } from "./deterministic-rules-version.js";
 export {
   resolvePullRequestCommitOccurredAt,

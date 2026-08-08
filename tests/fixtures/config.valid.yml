@@ -90,6 +90,12 @@ importance:
     high: 40
     medium: 20
 
+attention:
+  recencyFloor: 0.4
+  levels:
+    high: 40
+    medium: 20
+
 ai:
   provider: codex
   enabled: true

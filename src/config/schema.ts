@@ -383,6 +383,10 @@ const configSchema = z.strictObject({
     dueSoonDays: nonNegativeNumberSchema,
     levels: importanceLevelsSchema,
   }),
+  attention: z.strictObject({
+    recencyFloor: probabilitySchema,
+    levels: importanceLevelsSchema,
+  }),
   ai: z
     .strictObject({
       provider: aiProviderSchema,

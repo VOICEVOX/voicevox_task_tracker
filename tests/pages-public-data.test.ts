@@ -197,6 +197,10 @@ function createItem(options: ItemFixtureOptions): unknown {
         },
       ],
     },
+    attention: {
+      score: 25,
+      level: "medium",
+    },
     importanceAssessment: {
       status: "not_available",
     },
@@ -314,7 +318,7 @@ function createRelation(
 
 function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   return createStateSnapshot({
-    schemaVersion: "6",
+    schemaVersion: "7",
     generatedAt: options.generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1330,6 +1334,10 @@ describe("公開DTO生成", () => {
     expect(itemA?.summary.waitingOn[0]).not.toHaveProperty("sourceIds");
     expect(itemA?.summary.priorityWeight).toBe(25);
     expect(itemA?.summary.importance).toEqual({
+      score: 25,
+      level: "medium",
+    });
+    expect(itemA?.summary.attention).toEqual({
       score: 25,
       level: "medium",
     });

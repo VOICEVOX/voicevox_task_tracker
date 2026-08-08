@@ -486,6 +486,10 @@ function createItemSummary(
       score: item.importance.score,
       level: item.importance.level,
     },
+    attention: {
+      score: item.attention.score,
+      level: item.attention.level,
+    },
     priorityWeight,
     aiAnalysis: {
       status: item.aiAnalysis.status,

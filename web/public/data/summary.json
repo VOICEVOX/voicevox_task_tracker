@@ -99,6 +99,10 @@
         "score": 63,
         "level": "high"
       },
+      "attention": {
+        "score": 25,
+        "level": "medium"
+      },
       "priorityWeight": 25,
       "aiAnalysis": {
         "status": "failed"
@@ -160,6 +164,10 @@
         "score": 39,
         "level": "medium"
       },
+      "attention": {
+        "score": 16,
+        "level": "low"
+      },
       "priorityWeight": 12,
       "aiAnalysis": {
         "status": "deferred"
@@ -220,6 +228,10 @@
       "importance": {
         "score": 41,
         "level": "high"
+      },
+      "attention": {
+        "score": 16,
+        "level": "low"
       },
       "priorityWeight": 25,
       "aiAnalysis": {
@@ -285,6 +297,10 @@
         "score": 12,
         "level": "low"
       },
+      "attention": {
+        "score": 0,
+        "level": "low"
+      },
       "priorityWeight": 12,
       "aiAnalysis": {
         "status": "not_required"
@@ -346,6 +362,10 @@
         "score": 44,
         "level": "high"
       },
+      "attention": {
+        "score": 18,
+        "level": "low"
+      },
       "priorityWeight": 25,
       "aiAnalysis": {
         "status": "deferred"
@@ -398,6 +418,10 @@
       "nextAction": "メンテナーが要件の内容を確認する",
       "severity": "none",
       "importance": {
+        "score": 0,
+        "level": "low"
+      },
+      "attention": {
         "score": 0,
         "level": "low"
       },
@@ -456,6 +480,10 @@
         "score": 0,
         "level": "low"
       },
+      "attention": {
+        "score": 0,
+        "level": "low"
+      },
       "priorityWeight": 0,
       "aiAnalysis": {
         "status": "used"
@@ -508,6 +536,10 @@
       "nextAction": "回答者が質問へ返答する",
       "severity": "none",
       "importance": {
+        "score": 0,
+        "level": "low"
+      },
+      "attention": {
         "score": 0,
         "level": "low"
       },
@@ -572,6 +604,10 @@
         "score": 0,
         "level": "low"
       },
+      "attention": {
+        "score": 0,
+        "level": "low"
+      },
       "priorityWeight": 0,
       "aiAnalysis": {
         "status": "used"
@@ -633,6 +669,10 @@
         "score": 0,
         "level": "low"
       },
+      "attention": {
+        "score": 0,
+        "level": "low"
+      },
       "priorityWeight": 0,
       "aiAnalysis": {
         "status": "used"
@@ -688,6 +728,10 @@
         "score": 0,
         "level": "low"
       },
+      "attention": {
+        "score": 0,
+        "level": "low"
+      },
       "priorityWeight": 0,
       "aiAnalysis": {
         "status": "used"
@@ -740,6 +784,10 @@
       "nextAction": "メンテナーが次の対応者を確認する",
       "severity": "none",
       "importance": {
+        "score": 0,
+        "level": "low"
+      },
+      "attention": {
         "score": 0,
         "level": "low"
       },

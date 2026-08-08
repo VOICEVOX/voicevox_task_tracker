@@ -146,6 +146,7 @@ const publicItemSummarySchema = z.strictObject({
   nextAction: shortStringSchema,
   severity: severitySchema,
   importance: publicImportanceSchema,
+  attention: publicImportanceSchema,
   priorityWeight: z.number(),
   aiAnalysis: publicItemAiAnalysisSchema,
   confidence: z.number().min(0).max(1),

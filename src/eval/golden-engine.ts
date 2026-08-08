@@ -1064,7 +1064,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "6",
+    schemaVersion: "7",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1102,6 +1102,10 @@ function createSnapshot(
         ...createTrackedItem(repository.name, analysis),
         importanceAssessment: {
           status: "not_available",
+        },
+        attention: {
+          score: 0,
+          level: "low",
         },
         severity: analysis.staleness.severity,
         severityContext: analysis.staleness.severityContext,
@@ -1571,7 +1575,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "6",
+    schemaVersion: "7",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1594,6 +1598,10 @@ function analyzeLargeFixture(
       ...item,
       importanceAssessment: {
         status: "not_available",
+      },
+      attention: {
+        score: 0,
+        level: "low",
       },
       severity: "none",
       severityContext: {
