@@ -198,7 +198,7 @@ export function PersonPage({
       cellKind: "data",
       headerClassName: "",
       key: "status",
-      label: "status",
+      label: "状態",
       onSort: () => {
         onSortChange("status");
       },
@@ -235,7 +235,7 @@ export function PersonPage({
     {
       className: "",
       key: "status",
-      label: "status",
+      label: "状態",
       renderValue: (row: ItemTableRow) => statusLabel(row.item.status),
       valueClassName: "font-semibold text-text-primary",
     },

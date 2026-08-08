@@ -538,6 +538,565 @@
       ],
       "uncertainties": ["リポジトリの観測に失敗したため前回値です"],
       "history": []
+    },
+    {
+      "summary": {
+        "nodeId": "sample-item-workflow-401",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "displayReference": "example/sample-workflow#401",
+        "number": 401,
+        "url": "https://github.com/example/sample-workflow/pull/401",
+        "title": "サンプル要件の内容を確認する",
+        "milestone": null,
+        "state": "open",
+        "author": {
+          "status": "identified",
+          "actor": {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-author",
+            "login": "sample-workflow-author"
+          }
+        },
+        "assignees": [],
+        "status": "waiting_for_assessment",
+        "waitingOn": [
+          {
+            "kind": "role",
+            "candidateId": "maintainer",
+            "role": "maintainer",
+            "reasonSummary": "メンテナーによる要件の内容確認を待っています",
+            "confidence": 1
+          }
+        ],
+        "primaryWaitingOn": {
+          "index": 0,
+          "selectionReason": "先頭の待ち相手を主な待ち相手として選びました"
+        },
+        "nextAction": "メンテナーが要件の内容を確認する",
+        "severity": "none",
+        "importance": {
+          "score": 0,
+          "level": "low"
+        },
+        "priorityWeight": 0,
+        "aiAnalysis": {
+          "status": "used"
+        },
+        "confidence": 1,
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z",
+        "observedAt": "2026-07-31T00:00:00.000Z",
+        "repositoryFreshness": "fresh",
+        "blockerNodeIds": [],
+        "downstreamImpact": {
+          "nodeId": "sample-item-workflow-401",
+          "openNodeCount": 0,
+          "repositoryCount": 0
+        }
+      },
+      "importanceFactors": [],
+      "timestamps": {
+        "createdAt": "2026-07-29T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z"
+      },
+      "latestEventActor": {
+        "status": "absent"
+      },
+      "labels": ["要件確認"],
+      "reviewState": "not_requested",
+      "checkState": "not_required",
+      "evidence": [
+        {
+          "summary": "要件の内容確認が必要であることが示されています",
+          "sourceUrl": "https://github.com/example/sample-workflow/pull/401"
+        }
+      ],
+      "uncertainties": [],
+      "history": []
+    },
+    {
+      "summary": {
+        "nodeId": "sample-item-workflow-402",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "displayReference": "example/sample-workflow#402",
+        "number": 402,
+        "url": "https://github.com/example/sample-workflow/pull/402",
+        "title": "サンプル移行の担当を決める",
+        "milestone": null,
+        "state": "open",
+        "author": {
+          "status": "identified",
+          "actor": {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-author",
+            "login": "sample-workflow-author"
+          }
+        },
+        "assignees": [],
+        "status": "waiting_for_owner",
+        "waitingOn": [
+          {
+            "kind": "role",
+            "candidateId": "assignee",
+            "role": "assignee",
+            "reasonSummary": "移行作業の担当者が決まるのを待っています",
+            "confidence": 1
+          }
+        ],
+        "primaryWaitingOn": {
+          "index": 0,
+          "selectionReason": "先頭の待ち相手を主な待ち相手として選びました"
+        },
+        "nextAction": "メンテナーが移行作業の担当者を決める",
+        "severity": "none",
+        "importance": {
+          "score": 0,
+          "level": "low"
+        },
+        "priorityWeight": 0,
+        "aiAnalysis": {
+          "status": "used"
+        },
+        "confidence": 1,
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z",
+        "observedAt": "2026-07-31T00:00:00.000Z",
+        "repositoryFreshness": "fresh",
+        "blockerNodeIds": [],
+        "downstreamImpact": {
+          "nodeId": "sample-item-workflow-402",
+          "openNodeCount": 0,
+          "repositoryCount": 0
+        }
+      },
+      "importanceFactors": [],
+      "timestamps": {
+        "createdAt": "2026-07-29T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z"
+      },
+      "latestEventActor": {
+        "status": "absent"
+      },
+      "labels": ["担当募集"],
+      "reviewState": "not_requested",
+      "checkState": "not_required",
+      "evidence": [
+        {
+          "summary": "移行作業の担当者が未割り当てです",
+          "sourceUrl": "https://github.com/example/sample-workflow/pull/402"
+        }
+      ],
+      "uncertainties": [],
+      "history": []
+    },
+    {
+      "summary": {
+        "nodeId": "sample-item-workflow-403",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "displayReference": "example/sample-workflow#403",
+        "number": 403,
+        "url": "https://github.com/example/sample-workflow/pull/403",
+        "title": "サンプル質問への返答を確認する",
+        "milestone": null,
+        "state": "open",
+        "author": {
+          "status": "identified",
+          "actor": {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-author",
+            "login": "sample-workflow-author"
+          }
+        },
+        "assignees": [],
+        "status": "waiting_for_reply",
+        "waitingOn": [
+          {
+            "kind": "user",
+            "candidateId": "sample-workflow-contributor",
+            "role": "respondent",
+            "reasonSummary": "質問を受けた回答者からの返答を待っています",
+            "confidence": 1
+          }
+        ],
+        "primaryWaitingOn": {
+          "index": 0,
+          "selectionReason": "先頭の待ち相手を主な待ち相手として選びました"
+        },
+        "nextAction": "回答者が質問へ返答する",
+        "severity": "none",
+        "importance": {
+          "score": 0,
+          "level": "low"
+        },
+        "priorityWeight": 0,
+        "aiAnalysis": {
+          "status": "used"
+        },
+        "confidence": 1,
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z",
+        "observedAt": "2026-07-31T00:00:00.000Z",
+        "repositoryFreshness": "fresh",
+        "blockerNodeIds": [],
+        "downstreamImpact": {
+          "nodeId": "sample-item-workflow-403",
+          "openNodeCount": 0,
+          "repositoryCount": 0
+        }
+      },
+      "importanceFactors": [],
+      "timestamps": {
+        "createdAt": "2026-07-29T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z"
+      },
+      "latestEventActor": {
+        "status": "present",
+        "actor": {
+          "type": "human",
+          "login": "sample-workflow-author"
+        }
+      },
+      "labels": ["質問"],
+      "reviewState": "not_requested",
+      "checkState": "not_required",
+      "evidence": [
+        {
+          "summary": "回答者へ質問したことが示されています",
+          "sourceUrl": "https://github.com/example/sample-workflow/pull/403"
+        }
+      ],
+      "uncertainties": [],
+      "history": []
+    },
+    {
+      "summary": {
+        "nodeId": "sample-item-workflow-404",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "displayReference": "example/sample-workflow#404",
+        "number": 404,
+        "url": "https://github.com/example/sample-workflow/pull/404",
+        "title": "サンプル画面の実装を開始する",
+        "milestone": null,
+        "state": "open",
+        "author": {
+          "status": "identified",
+          "actor": {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-author",
+            "login": "sample-workflow-author"
+          }
+        },
+        "assignees": [
+          {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-contributor",
+            "login": "sample-workflow-contributor"
+          }
+        ],
+        "status": "waiting_for_work",
+        "waitingOn": [
+          {
+            "kind": "role",
+            "candidateId": "assignee",
+            "role": "assignee",
+            "reasonSummary": "担当者が画面の実装を始めるのを待っています",
+            "confidence": 1
+          }
+        ],
+        "primaryWaitingOn": {
+          "index": 0,
+          "selectionReason": "先頭の待ち相手を主な待ち相手として選びました"
+        },
+        "nextAction": "担当者が画面の実装を開始する",
+        "severity": "none",
+        "importance": {
+          "score": 0,
+          "level": "low"
+        },
+        "priorityWeight": 0,
+        "aiAnalysis": {
+          "status": "used"
+        },
+        "confidence": 1,
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z",
+        "observedAt": "2026-07-31T00:00:00.000Z",
+        "repositoryFreshness": "fresh",
+        "blockerNodeIds": [],
+        "downstreamImpact": {
+          "nodeId": "sample-item-workflow-404",
+          "openNodeCount": 0,
+          "repositoryCount": 0
+        }
+      },
+      "importanceFactors": [],
+      "timestamps": {
+        "createdAt": "2026-07-29T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z"
+      },
+      "latestEventActor": {
+        "status": "absent"
+      },
+      "labels": ["実装待ち"],
+      "reviewState": "not_requested",
+      "checkState": "not_required",
+      "evidence": [
+        {
+          "summary": "実装内容と担当者が決まっています",
+          "sourceUrl": "https://github.com/example/sample-workflow/pull/404"
+        }
+      ],
+      "uncertainties": [],
+      "history": []
+    },
+    {
+      "summary": {
+        "nodeId": "sample-item-workflow-405",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "displayReference": "example/sample-workflow#405",
+        "number": 405,
+        "url": "https://github.com/example/sample-workflow/pull/405",
+        "title": "サンプル機能を実装する",
+        "milestone": null,
+        "state": "open",
+        "author": {
+          "status": "identified",
+          "actor": {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-author",
+            "login": "sample-workflow-author"
+          }
+        },
+        "assignees": [
+          {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-contributor",
+            "login": "sample-workflow-contributor"
+          }
+        ],
+        "status": "in_progress",
+        "waitingOn": [
+          {
+            "kind": "role",
+            "candidateId": "assignee",
+            "role": "assignee",
+            "reasonSummary": "担当者が機能を実装しています",
+            "confidence": 1
+          }
+        ],
+        "primaryWaitingOn": {
+          "index": 0,
+          "selectionReason": "先頭の待ち相手を主な待ち相手として選びました"
+        },
+        "nextAction": "担当者が機能の実装を続ける",
+        "severity": "none",
+        "importance": {
+          "score": 0,
+          "level": "low"
+        },
+        "priorityWeight": 0,
+        "aiAnalysis": {
+          "status": "used"
+        },
+        "confidence": 1,
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z",
+        "observedAt": "2026-07-31T00:00:00.000Z",
+        "repositoryFreshness": "fresh",
+        "blockerNodeIds": [],
+        "downstreamImpact": {
+          "nodeId": "sample-item-workflow-405",
+          "openNodeCount": 0,
+          "repositoryCount": 0
+        }
+      },
+      "importanceFactors": [],
+      "timestamps": {
+        "createdAt": "2026-07-29T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z"
+      },
+      "latestEventActor": {
+        "status": "absent"
+      },
+      "labels": ["実装中"],
+      "reviewState": "not_requested",
+      "checkState": "pending",
+      "evidence": [
+        {
+          "summary": "担当者が実装を進めています",
+          "sourceUrl": "https://github.com/example/sample-workflow/pull/405"
+        }
+      ],
+      "uncertainties": [],
+      "history": []
+    },
+    {
+      "summary": {
+        "nodeId": "sample-item-workflow-406",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "displayReference": "example/sample-workflow#406",
+        "number": 406,
+        "url": "https://github.com/example/sample-workflow/pull/406",
+        "title": "サンプル配布の自動処理を待つ",
+        "milestone": null,
+        "state": "open",
+        "author": {
+          "status": "identified",
+          "actor": {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-author",
+            "login": "sample-workflow-author"
+          }
+        },
+        "assignees": [],
+        "status": "waiting_for_automation",
+        "waitingOn": [
+          {
+            "kind": "automation",
+            "candidateId": "sample-workflow-bot",
+            "role": "ci",
+            "reasonSummary": "自動配布処理の完了を待っています",
+            "confidence": 1
+          }
+        ],
+        "primaryWaitingOn": {
+          "index": 0,
+          "selectionReason": "先頭の待ち相手を主な待ち相手として選びました"
+        },
+        "nextAction": "自動配布処理が完了する",
+        "severity": "none",
+        "importance": {
+          "score": 0,
+          "level": "low"
+        },
+        "priorityWeight": 0,
+        "aiAnalysis": {
+          "status": "used"
+        },
+        "confidence": 1,
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z",
+        "observedAt": "2026-07-31T00:00:00.000Z",
+        "repositoryFreshness": "fresh",
+        "blockerNodeIds": [],
+        "downstreamImpact": {
+          "nodeId": "sample-item-workflow-406",
+          "openNodeCount": 0,
+          "repositoryCount": 0
+        }
+      },
+      "importanceFactors": [],
+      "timestamps": {
+        "createdAt": "2026-07-29T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z"
+      },
+      "latestEventActor": {
+        "status": "present",
+        "actor": {
+          "type": "bot",
+          "login": "sample-workflow-bot"
+        }
+      },
+      "labels": ["自動処理"],
+      "reviewState": "approved",
+      "checkState": "pending",
+      "evidence": [
+        {
+          "summary": "自動配布処理が実行中です",
+          "sourceUrl": "https://github.com/example/sample-workflow/pull/406"
+        }
+      ],
+      "uncertainties": [],
+      "history": []
+    },
+    {
+      "summary": {
+        "nodeId": "sample-item-workflow-407",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "displayReference": "example/sample-workflow#407",
+        "number": 407,
+        "url": "https://github.com/example/sample-workflow/pull/407",
+        "title": "サンプル待ち先を調査する",
+        "milestone": null,
+        "state": "open",
+        "author": {
+          "status": "identified",
+          "actor": {
+            "type": "human",
+            "nodeId": "sample-actor-workflow-author",
+            "login": "sample-workflow-author"
+          }
+        },
+        "assignees": [],
+        "status": "unknown",
+        "waitingOn": [
+          {
+            "kind": "unknown",
+            "candidateId": "unknown",
+            "role": "unknown",
+            "reasonSummary": "次に対応する相手を特定できていません",
+            "confidence": 0.3
+          }
+        ],
+        "primaryWaitingOn": {
+          "index": 0,
+          "selectionReason": "先頭の待ち相手を主な待ち相手として選びました"
+        },
+        "nextAction": "メンテナーが次の対応者を確認する",
+        "severity": "none",
+        "importance": {
+          "score": 0,
+          "level": "low"
+        },
+        "priorityWeight": 0,
+        "aiAnalysis": {
+          "status": "used"
+        },
+        "confidence": 0.3,
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z",
+        "observedAt": "2026-07-31T00:00:00.000Z",
+        "repositoryFreshness": "fresh",
+        "blockerNodeIds": [],
+        "downstreamImpact": {
+          "nodeId": "sample-item-workflow-407",
+          "openNodeCount": 0,
+          "repositoryCount": 0
+        }
+      },
+      "importanceFactors": [],
+      "timestamps": {
+        "createdAt": "2026-07-29T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
+        "stallSince": "2026-07-30T12:00:00.000Z"
+      },
+      "latestEventActor": {
+        "status": "absent"
+      },
+      "labels": ["要調査"],
+      "reviewState": "unknown",
+      "checkState": "unknown",
+      "evidence": [
+        {
+          "summary": "次の対応者を判断できる情報が不足しています",
+          "sourceUrl": "https://github.com/example/sample-workflow/pull/407"
+        }
+      ],
+      "uncertainties": ["次に対応する相手を特定できていません"],
+      "history": []
     }
   ],
   "graph": {
@@ -581,6 +1140,62 @@
         "state": "open",
         "status": "waiting_for_revision",
         "severity": "urgent"
+      },
+      {
+        "nodeId": "sample-item-workflow-401",
+        "kind": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "state": "open",
+        "status": "waiting_for_assessment",
+        "severity": "none"
+      },
+      {
+        "nodeId": "sample-item-workflow-402",
+        "kind": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "state": "open",
+        "status": "waiting_for_owner",
+        "severity": "none"
+      },
+      {
+        "nodeId": "sample-item-workflow-403",
+        "kind": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "state": "open",
+        "status": "waiting_for_reply",
+        "severity": "none"
+      },
+      {
+        "nodeId": "sample-item-workflow-404",
+        "kind": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "state": "open",
+        "status": "waiting_for_work",
+        "severity": "none"
+      },
+      {
+        "nodeId": "sample-item-workflow-405",
+        "kind": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "state": "open",
+        "status": "in_progress",
+        "severity": "none"
+      },
+      {
+        "nodeId": "sample-item-workflow-406",
+        "kind": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "state": "open",
+        "status": "waiting_for_automation",
+        "severity": "none"
+      },
+      {
+        "nodeId": "sample-item-workflow-407",
+        "kind": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "state": "open",
+        "status": "unknown",
+        "severity": "none"
       },
       {
         "nodeId": "external:github:sample-distribution-42",

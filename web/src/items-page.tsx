@@ -120,7 +120,7 @@ const TABLE_COLUMNS: readonly TableColumnDefinition[] = [
   },
   {
     key: "status",
-    label: "status",
+    label: "状態",
   },
   {
     key: "importance",
@@ -128,7 +128,7 @@ const TABLE_COLUMNS: readonly TableColumnDefinition[] = [
   },
   {
     key: "waitingOn",
-    label: "waitingOn",
+    label: "次の担当",
   },
   {
     key: "stall",
