@@ -5,6 +5,9 @@ import { ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
 import {
+  createEmptyTableFilters,
+  createItemTableRows,
+  filterAndSortTableRows,
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
@@ -13,12 +16,50 @@ import {
   isAiAnalysisDegraded,
   selectAttentionItems,
   selectPrimaryWaitingOnCandidate,
+  type OverviewSort,
+  type OverviewSortKey,
+  type TableSort,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
+import { SortControls } from "./sort-controls.js";
 
 const MAX_STALE_REPOSITORY_NAMES = 3;
 const OVERVIEW_NOTICE_CLASS_NAME =
   "notice m-0 rounded-md border-l-2 bg-surface-card px-3 py-2 text-sm leading-5 text-text-secondary";
+
+const SORT_OPTIONS = [
+  {
+    key: "attention",
+    label: "対応が必要な順",
+  },
+  {
+    key: "repository",
+    label: "リポジトリ",
+  },
+  {
+    key: "type",
+    label: "種別",
+  },
+  {
+    key: "status",
+    label: "状態",
+  },
+  {
+    key: "importance",
+    label: "重要度",
+  },
+  {
+    key: "waitingOn",
+    label: "次の担当",
+  },
+  {
+    key: "stall",
+    label: "停滞時間",
+  },
+] satisfies readonly Readonly<{
+  key: OverviewSortKey;
+  label: string;
+}>[];
 
 type OverviewPageProps = Readonly<{
   aiDegradedItemsHref: string;
@@ -27,6 +68,8 @@ type OverviewPageProps = Readonly<{
   now: Date;
   onShowAiDegradedItems: () => void;
   onSelectItem: (nodeId: string) => void;
+  onSortChange: (key: OverviewSortKey) => void;
+  sort: OverviewSort;
   summary: PublicSummaryDto;
 }>;
 
@@ -149,12 +192,37 @@ function formatStaleRepositoryNames(
   return `${visibleNames.join("、")}、ほか${remainingCount.toLocaleString(locale)}件`;
 }
 
+function sortAttentionItems(
+  summary: PublicSummaryDto,
+  now: Date,
+  sort: OverviewSort,
+  locale: string,
+): readonly PublicItemSummaryDto[] {
+  const attentionItems = selectAttentionItems(summary.items);
+  if (sort.key === "attention") {
+    return sort.direction === "descending" ? attentionItems : attentionItems.toReversed();
+  }
+  const attentionItemNodeIds = new Set(attentionItems.map((item) => item.nodeId));
+  const tableSort: TableSort = {
+    key: sort.key,
+    direction: sort.direction,
+  };
+  return filterAndSortTableRows(
+    createItemTableRows(summary, now).filter((row) => attentionItemNodeIds.has(row.item.nodeId)),
+    createEmptyTableFilters(),
+    tableSort,
+    locale,
+  ).map((row) => row.item);
+}
+
 function AttentionQueue({
   attentionItems,
   createItemHref,
   locale,
   now,
   onSelectItem,
+  onSortChange,
+  sort,
   summary,
 }: OverviewPageProps &
   Readonly<{
@@ -163,6 +231,8 @@ function AttentionQueue({
   const repositoriesById = new Map(
     summary.repositories.map((repository) => [repository.id, repository]),
   );
+  const selectedSortOption = SORT_OPTIONS.find((option) => option.key === sort.key);
+  assertNonNullable(selectedSortOption, "選択中の並び順がありません");
 
   return (
     <PageSection
@@ -183,12 +253,19 @@ function AttentionQueue({
             <strong class="text-xl leading-tight text-text-primary">
               {attentionItems.length.toLocaleString(locale)}件
             </strong>
-            <span class="text-xs">対応が必要な順</span>
+            <span class="text-xs">{selectedSortOption.label}</span>
           </p>
         </div>
       }
       headingId="attention-heading"
     >
+      <SortControls
+        className="overview-sort-controls mb-4 grid grid-cols-[minmax(0,1fr)_auto] gap-2 sm:max-w-sm"
+        onSortChange={onSortChange}
+        options={SORT_OPTIONS}
+        selectId="overview-sort-key"
+        sort={sort}
+      />
       {attentionItems.length === 0 ? (
         <ContentState
           className="empty-state"
@@ -280,7 +357,7 @@ function AttentionQueue({
 
 /** 対応が必要な項目を表示する。 */
 export function OverviewPage(props: OverviewPageProps) {
-  const attentionItems = selectAttentionItems(props.summary.items);
+  const attentionItems = sortAttentionItems(props.summary, props.now, props.sort, props.locale);
   const aiDegradedItemCount = props.summary.items.filter((item) =>
     isAiAnalysisDegraded(item.aiAnalysis.status),
   ).length;

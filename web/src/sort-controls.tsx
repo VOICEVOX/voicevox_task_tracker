@@ -1,28 +1,31 @@
 import { assertNonNullable } from "../../src/util/index.js";
-import { type TableColumnKey, type TableSort } from "./model.js";
+import { type TableSort } from "./model.js";
 import { ActionButton, FORM_CONTROL_CLASS_NAME } from "./ui.js";
 
-type SortOption = Readonly<{
-  key: TableColumnKey;
+type SortOption<Key extends string> = Readonly<{
+  key: Key;
   label: string;
 }>;
 
-type SortControlsProps = Readonly<{
+type SortControlsProps<Key extends string> = Readonly<{
   className: string;
-  onSortChange: (key: TableColumnKey) => void;
-  options: readonly SortOption[];
+  onSortChange: (key: Key) => void;
+  options: readonly SortOption<Key>[];
   selectId: string;
-  sort: TableSort;
+  sort: Readonly<{
+    key: Key;
+    direction: TableSort["direction"];
+  }>;
 }>;
 
-/** 一覧表の並び替え操作を表示する。 */
-export function SortControls({
+/** 一覧の並び替え操作を表示する。 */
+export function SortControls<Key extends string>({
   className,
   onSortChange,
   options,
   selectId,
   sort,
-}: SortControlsProps) {
+}: SortControlsProps<Key>) {
   return (
     <div class={className}>
       <label class="col-span-full text-sm font-bold text-text-secondary" for={selectId}>

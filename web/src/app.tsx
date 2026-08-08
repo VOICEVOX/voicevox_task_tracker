@@ -11,9 +11,12 @@ import {
   AI_ANALYSIS_DEGRADED_FILTER_VALUE,
   collectWaitingTeamIds,
   createTableFilterOptions,
+  OVERVIEW_NATURAL_SORT_DIRECTIONS,
   TABLE_COLUMN_NATURAL_SORT_DIRECTIONS,
+  type OverviewSortKey,
   type TableColumnKey,
   type TableFilterKey,
+  type TableSort,
   waitingSubjectKey,
 } from "./model.js";
 import { OverviewPage } from "./overview-page.js";
@@ -113,6 +116,28 @@ function replaceWebViewUrl(basePath: string, state: WebViewState): void {
     "",
     `${createWebViewHref(basePath, state)}${window.location.hash}`,
   );
+}
+
+function nextSort<Key extends string>(
+  currentSort: Readonly<{
+    key: Key;
+    direction: TableSort["direction"];
+  }>,
+  key: Key,
+  naturalDirection: TableSort["direction"],
+): Readonly<{
+  key: Key;
+  direction: TableSort["direction"];
+}> {
+  return {
+    key,
+    direction:
+      currentSort.key === key
+        ? currentSort.direction === "ascending"
+          ? "descending"
+          : "ascending"
+        : naturalDirection,
+  };
 }
 
 /** 公開summary DTOをpathnameで選択したページとして表示する。 */
@@ -232,17 +257,23 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     if (viewState.route.page !== "items" && viewState.route.page !== "person") {
       throw new TypeError("項目一覧と担当者ページ以外では表の並び順を変更できません");
     }
-    let direction = TABLE_COLUMN_NATURAL_SORT_DIRECTIONS[key];
-    if (viewState.tableSort.key === key) {
-      direction = viewState.tableSort.direction === "ascending" ? "descending" : "ascending";
+    navigate(
+      {
+        ...viewState,
+        tableSort: nextSort(viewState.tableSort, key, TABLE_COLUMN_NATURAL_SORT_DIRECTIONS[key]),
+      },
+      "replace",
+    );
+  }
+
+  function replaceOverviewSort(key: OverviewSortKey): void {
+    if (viewState.route.page !== "overview") {
+      throw new TypeError("概要ページ以外では対応が必要な項目の並び順を変更できません");
     }
     navigate(
       {
         ...viewState,
-        tableSort: {
-          key,
-          direction,
-        },
+        overviewSort: nextSort(viewState.overviewSort, key, OVERVIEW_NATURAL_SORT_DIRECTIONS[key]),
       },
       "replace",
     );
@@ -368,11 +399,13 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             createItemHref={createItemHref}
             locale={locale}
             now={now}
+            sort={viewState.overviewSort}
             summary={summary}
             onShowAiDegradedItems={() => {
               navigate(aiDegradedItemsViewState, "push");
             }}
             onSelectItem={selectItem}
+            onSortChange={replaceOverviewSort}
           />
         );
       case "items":

@@ -11,6 +11,7 @@ import {
   collectWaitingSubjectRows,
   collectWaitingTeamIds,
   createItemTableRows,
+  formatStallDuration,
   formatWaitingOnCandidate,
   resolveWaitingSubjects,
   selectPrimaryWaitingOnCandidate,
@@ -25,6 +26,28 @@ import {
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 
 const sampleSummary = createPublicSummaryDto(sampleSummarySource);
+
+describe("停滞時間表示", () => {
+  const now = new Date("2026-08-01T00:00:00.000Z");
+
+  it.each([
+    { boundary: "59分", elapsedMinutes: 59, expected: "59分" },
+    { boundary: "1時間ちょうど", elapsedMinutes: 60, expected: "1時間" },
+    { boundary: "23時間59分", elapsedMinutes: 23 * 60 + 59, expected: "23時間" },
+    { boundary: "24時間ちょうど", elapsedMinutes: 24 * 60, expected: "1日" },
+    { boundary: "7日直前", elapsedMinutes: (7 * 24 - 1) * 60, expected: "6日 23時間" },
+    { boundary: "7日ちょうど", elapsedMinutes: 7 * 24 * 60, expected: "7日" },
+    { boundary: "7日と1時間", elapsedMinutes: (7 * 24 + 1) * 60, expected: "7日" },
+    { boundary: "365日ちょうど", elapsedMinutes: 365 * 24 * 60, expected: "365日" },
+    { boundary: "365日と1時間", elapsedMinutes: (365 * 24 + 1) * 60, expected: "1年" },
+    { boundary: "366日ちょうど", elapsedMinutes: 366 * 24 * 60, expected: "1年 1日" },
+    { boundary: "2年ちょうど", elapsedMinutes: 2 * 365 * 24 * 60, expected: "2年" },
+  ])("$boundaryを切り捨てて整形する", ({ elapsedMinutes, expected }) => {
+    const stallSince = new Date(now.getTime() - elapsedMinutes * 60 * 1000).toISOString();
+
+    expect(formatStallDuration(stallSince, now)).toBe(expected);
+  });
+});
 
 describe("一覧のstatus表示", () => {
   it("画面に出す日本語名を導出する", () => {

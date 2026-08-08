@@ -127,6 +127,12 @@ function itemRowNodeIds(): readonly string[] {
   );
 }
 
+function attentionItemNodeIds(): readonly string[] {
+  return [...currentContainer().querySelectorAll<HTMLLIElement>(".attention-list > li")].map(
+    (item) => item.dataset["nodeId"] ?? "",
+  );
+}
+
 function createPersonPageSummary(): PublicSummaryDto {
   const reviewerItem = sampleSummary.items.find((item) => item.nodeId === "sample-item-engine-202");
   assertNonNullable(reviewerItem, "人ページテスト用のレビュー項目がありません");
@@ -335,6 +341,120 @@ describe("Web UI", () => {
       "対応が必要な順",
     );
     expect(currentContainer().textContent).not.toContain("生成時刻");
+  });
+
+  it("概要ページで並び替えキーを変更すると自然な方向で順序を変える", () => {
+    renderApp(sampleSummary);
+    const sortKey = requiredElement<HTMLSelectElement>("#overview-sort-key");
+
+    expect([...sortKey.options].map((option) => option.textContent)).toEqual([
+      "対応が必要な順",
+      "リポジトリ",
+      "種別",
+      "状態",
+      "重要度",
+      "次の担当",
+      "停滞時間",
+    ]);
+    expect([...sortKey.options].map((option) => option.value)).toEqual([
+      "attention",
+      ...TABLE_COLUMN_KEYS,
+    ]);
+    expect(attentionItemNodeIds()).toEqual([
+      "sample-item-editor-101",
+      "sample-item-engine-202",
+      "sample-item-editor-103",
+      "sample-item-engine-204",
+    ]);
+
+    act(() => {
+      sortKey.value = "repository";
+      sortKey.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(attentionItemNodeIds()).toEqual([
+      "sample-item-editor-101",
+      "sample-item-editor-103",
+      "sample-item-engine-202",
+      "sample-item-engine-204",
+    ]);
+    expect(
+      requiredElement<HTMLButtonElement>(".overview-sort-controls button").textContent,
+    ).toContain("昇順");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("repository");
+    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
+  });
+
+  it("概要ページで同じ並び替えキーを再選択すると方向を反転する", () => {
+    renderApp(sampleSummary);
+    const sortKey = requiredElement<HTMLSelectElement>("#overview-sort-key");
+
+    expect(sortKey.value).toBe("attention");
+    act(() => {
+      requiredElement<HTMLButtonElement>(".overview-sort-controls button").click();
+    });
+
+    expect(attentionItemNodeIds()).toEqual([
+      "sample-item-engine-204",
+      "sample-item-editor-103",
+      "sample-item-engine-202",
+      "sample-item-editor-101",
+    ]);
+    expect(
+      requiredElement<HTMLButtonElement>(".overview-sort-controls button").textContent,
+    ).toContain("昇順");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBeNull();
+    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
+  });
+
+  it("概要ページの並び替え状態をURLクエリから復元する", () => {
+    const deepLink = "/voicevox_task_tracker/?sort=importance&direction=ascending";
+    window.history.replaceState({}, "", deepLink);
+    renderApp(sampleSummary);
+
+    expect(requiredElement<HTMLSelectElement>("#overview-sort-key").value).toBe("importance");
+    expect(
+      requiredElement<HTMLButtonElement>(".overview-sort-controls button").textContent,
+    ).toContain("昇順");
+    expect(attentionItemNodeIds()).toEqual([
+      "sample-item-engine-204",
+      "sample-item-engine-202",
+      "sample-item-editor-103",
+      "sample-item-editor-101",
+    ]);
+    expect(window.location.pathname + window.location.search).toBe(deepLink);
+
+    act(() => {
+      render(null, currentContainer());
+    });
+    renderApp(sampleSummary);
+
+    expect(requiredElement<HTMLSelectElement>("#overview-sort-key").value).toBe("importance");
+    expect(attentionItemNodeIds()).toEqual([
+      "sample-item-engine-204",
+      "sample-item-engine-202",
+      "sample-item-editor-103",
+      "sample-item-editor-101",
+    ]);
+  });
+
+  it("概要ページの不正な並び替えクエリを既定値へ戻す", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/?sort=invalid&direction=sideways");
+    renderApp(sampleSummary);
+
+    expect(requiredElement<HTMLSelectElement>("#overview-sort-key").value).toBe("attention");
+    expect(
+      requiredElement<HTMLButtonElement>(".overview-sort-controls button").textContent,
+    ).toContain("降順");
+    expect(attentionItemNodeIds()).toEqual([
+      "sample-item-editor-101",
+      "sample-item-engine-202",
+      "sample-item-editor-103",
+      "sample-item-engine-204",
+    ]);
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/");
+    expect(window.location.search).toBe("");
+    expect(currentContainer().querySelector(".url-state-notice")).not.toBeNull();
   });
 
   it("全リポジトリの情報が新しいときは鮮度注意を表示しない", () => {
@@ -1302,12 +1422,18 @@ describe("Web UI", () => {
   });
 
   it("attention queueをseverity、対応優先度、影響範囲、停滞時間で並べる", () => {
-    expect(selectAttentionItems(sampleSummary.items).map((item) => item.nodeId)).toEqual([
+    const expectedNodeIds = [
       "sample-item-editor-101",
       "sample-item-engine-202",
       "sample-item-editor-103",
       "sample-item-engine-204",
-    ]);
+    ];
+    expect(selectAttentionItems(sampleSummary.items).map((item) => item.nodeId)).toEqual(
+      expectedNodeIds,
+    );
+
+    renderApp(sampleSummary);
+    expect(attentionItemNodeIds()).toEqual(expectedNodeIds);
 
     const critical = createOrderingItem({
       nodeId: "critical",

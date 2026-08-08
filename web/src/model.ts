@@ -31,6 +31,9 @@ export type AttentionPriority = Readonly<{
 export type TableColumnKey =
   "repository" | "type" | "status" | "importance" | "waitingOn" | "stall";
 
+/** 概要の対応が必要な項目で並び替えの対象にするキー。 */
+export type OverviewSortKey = "attention" | TableColumnKey;
+
 /** 一覧表で絞り込みの対象にする項目。 */
 export type TableFilterKey = TableColumnKey | "aiAnalysis";
 
@@ -43,6 +46,12 @@ export type TableSort = Readonly<{
   direction: "ascending" | "descending";
 }>;
 
+/** 概要の対応が必要な項目の並び順。 */
+export type OverviewSort = Readonly<{
+  key: OverviewSortKey;
+  direction: TableSort["direction"];
+}>;
+
 /** 一覧表で別の列を選んだときの自然な並び順。 */
 export const TABLE_COLUMN_NATURAL_SORT_DIRECTIONS: Readonly<
   Record<TableColumnKey, TableSort["direction"]>
@@ -53,6 +62,14 @@ export const TABLE_COLUMN_NATURAL_SORT_DIRECTIONS: Readonly<
   importance: "descending",
   waitingOn: "ascending",
   stall: "descending",
+};
+
+/** 概要で別の並び順を選んだときの自然な方向。 */
+export const OVERVIEW_NATURAL_SORT_DIRECTIONS: Readonly<
+  Record<OverviewSortKey, OverviewSort["direction"]>
+> = {
+  attention: "descending",
+  ...TABLE_COLUMN_NATURAL_SORT_DIRECTIONS,
 };
 
 /** 一覧表の列別絞り込み値。 */
@@ -392,10 +409,21 @@ export function formatStallDuration(stallSince: string, now: Date): string {
   }
   const elapsedDays = Math.floor(elapsedHours / 24);
   const remainingHours = elapsedHours % 24;
-  if (remainingHours === 0) {
+  if (elapsedMilliseconds <= 7 * 24 * 60 * 60 * 1000) {
+    if (remainingHours === 0) {
+      return `${elapsedDays.toString()}日`;
+    }
+    return `${elapsedDays.toString()}日 ${remainingHours.toString()}時間`;
+  }
+  if (elapsedMilliseconds <= 365 * 24 * 60 * 60 * 1000) {
     return `${elapsedDays.toString()}日`;
   }
-  return `${elapsedDays.toString()}日 ${remainingHours.toString()}時間`;
+  const elapsedYears = Math.floor(elapsedDays / 365);
+  const remainingDays = elapsedDays % 365;
+  if (remainingDays === 0) {
+    return `${elapsedYears.toString()}年`;
+  }
+  return `${elapsedYears.toString()}年 ${remainingDays.toString()}日`;
 }
 
 function waitingOnRoleName(role: WaitingOnRole): string {

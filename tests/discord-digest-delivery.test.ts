@@ -402,7 +402,7 @@ describe("Discord digest payload", () => {
     expect(serialized).toContain(PAGES_URL);
     expect(serialized).toContain("2026年8月10日 09:00 JST");
     expect(serialized).toContain("2026年8月1日 09:00 JSTから");
-    expect(serialized).toContain("経過時間: 9日0時間");
+    expect(serialized).toContain("経過時間: 9日、");
     for (const item of fixture.items) {
       expect(serialized).toContain(item.displayReference);
       expect(serialized).toContain(item.title);
@@ -411,6 +411,42 @@ describe("Discord digest payload", () => {
     expect(serialized).toContain("waitingOn:");
     expect(serialized).toContain("理由:");
     expect(plan.digestId).toMatch(/^discord-digest:v1:[a-f0-9]{24}$/u);
+  });
+
+  it.each([
+    { boundary: "59分", elapsedMinutes: 59, expected: "59分" },
+    { boundary: "1時間ちょうど", elapsedMinutes: 60, expected: "1時間" },
+    { boundary: "23時間59分", elapsedMinutes: 23 * 60 + 59, expected: "23時間" },
+    { boundary: "24時間ちょうど", elapsedMinutes: 24 * 60, expected: "1日" },
+    { boundary: "7日直前", elapsedMinutes: (7 * 24 - 1) * 60, expected: "6日 23時間" },
+    { boundary: "7日ちょうど", elapsedMinutes: 7 * 24 * 60, expected: "7日" },
+    { boundary: "7日と1時間", elapsedMinutes: (7 * 24 + 1) * 60, expected: "7日" },
+    { boundary: "365日ちょうど", elapsedMinutes: 365 * 24 * 60, expected: "365日" },
+    { boundary: "365日と1時間", elapsedMinutes: (365 * 24 + 1) * 60, expected: "1年" },
+    { boundary: "366日ちょうど", elapsedMinutes: 366 * 24 * 60, expected: "1年 1日" },
+    { boundary: "2年ちょうど", elapsedMinutes: 2 * 365 * 24 * 60, expected: "2年" },
+  ])("経過時間が$boundaryのとき$expectedへ整形する", ({ elapsedMinutes, expected }) => {
+    const stallSince = createUtcIsoDateTime(
+      new Date(Date.parse(GENERATED_AT) - elapsedMinutes * 60 * 1000).toISOString(),
+    );
+    const fixture = createDigestFixture(["review_overdue"], (index) => ({
+      ...defaultItemOptions(index),
+      stallSince,
+    }));
+    const plan = buildDiscordDigestPlan({
+      candidates: fixture.candidates,
+      ledgerReservations: fixture.reservations,
+      items: fixture.items,
+      pagesUrl: PAGES_URL,
+      generatedAt: GENERATED_AT,
+      mentions: {
+        enabled: false,
+        users: {},
+      },
+    });
+    const serialized = JSON.stringify(plan.messages.map((message) => message.payload));
+
+    expect(serialized).toContain(`経過時間: ${expected}、`);
   });
 
   it("長文20件をDiscord APIの制限より低い複数payloadへ分割する", () => {

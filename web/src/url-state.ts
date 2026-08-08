@@ -9,6 +9,7 @@ import {
   type TableFilters,
   type TableSelectFilterKey,
   type TableSort,
+  type OverviewSort,
 } from "./model.js";
 
 type TableFilterDefinition =
@@ -68,6 +69,7 @@ const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
   "direction",
 ];
 const PERSON_QUERY_PARAMETER_NAMES: readonly string[] = ["teams", "sort", "direction"];
+const OVERVIEW_QUERY_PARAMETER_NAMES: readonly string[] = ["sort", "direction"];
 
 const tableColumnKeySchema = z.enum([
   "repository",
@@ -78,6 +80,7 @@ const tableColumnKeySchema = z.enum([
   "stall",
 ]);
 const personTableColumnKeySchema = tableColumnKeySchema.exclude(["waitingOn"]);
+const overviewSortKeySchema = z.union([z.literal("attention"), tableColumnKeySchema]);
 const sortDirectionSchema = z.enum(["ascending", "descending"]);
 const filterValueSchema = z
   .string()
@@ -141,8 +144,9 @@ export type WebLocation = Readonly<{
   hash: string;
 }>;
 
-/** URLで共有するrouteと項目一覧の表示状態。 */
+/** URLで共有するrouteと一覧の表示状態。 */
 export type WebViewState = Readonly<{
+  overviewSort: OverviewSort;
   route: WebRoute;
   searchQuery: string;
   tableFilters: TableFilters;
@@ -184,6 +188,10 @@ type ParsedRoute = Readonly<{
 /** 指定routeの既定画面状態を作る。 */
 export function createWebViewState(route: WebRoute): WebViewState {
   return {
+    overviewSort: {
+      key: "attention",
+      direction: "descending",
+    },
     route,
     searchQuery: "",
     tableFilters: createEmptyTableFilters(),
@@ -445,6 +453,39 @@ function parseRoute(
   return parsedRoute;
 }
 
+function parseOverviewQuery(
+  search: string,
+  route: Extract<WebRoute, Readonly<{ page: "overview" }>>,
+): Readonly<{
+  sanitized: boolean;
+  state: WebViewState;
+}> {
+  const parameters = new URLSearchParams(search);
+  const defaults = createWebViewState(route);
+  const allowedNames = new Set<string>(OVERVIEW_QUERY_PARAMETER_NAMES);
+  let sanitized = [...parameters.keys()].some((name) => !allowedNames.has(name));
+  const sortKey = parameterValueOr(
+    parseParameter(parameters, "sort", overviewSortKeySchema),
+    defaults.overviewSort.key,
+  );
+  const sortDirection = parameterValueOr(
+    parseParameter(parameters, "direction", sortDirectionSchema),
+    defaults.overviewSort.direction,
+  );
+  sanitized ||= sortKey.invalid || sortDirection.invalid;
+
+  return {
+    sanitized,
+    state: {
+      ...defaults,
+      overviewSort: {
+        key: sortKey.value,
+        direction: sortDirection.value,
+      },
+    },
+  };
+}
+
 function parsePersonQuery(
   search: string,
   route: Extract<WebRoute, Readonly<{ page: "person" }>>,
@@ -557,6 +598,7 @@ function parseItemsQuery(
   return {
     sanitized,
     state: {
+      overviewSort: defaults.overviewSort,
       route,
       searchQuery: searchQuery.value,
       tableFilters: parsedTableFilters,
@@ -580,6 +622,9 @@ export function parseWebViewState(
     state: WebViewState;
   }>;
   switch (parsedRoute.route.page) {
+    case "overview":
+      queryResult = parseOverviewQuery(location.search, parsedRoute.route);
+      break;
     case "items":
       queryResult = parseItemsQuery(location.search, parsedRoute.route, targets.tableFilterOptions);
       break;
@@ -611,13 +656,22 @@ function appendNonEmptyParameter(parameters: URLSearchParams, name: string, valu
   }
 }
 
-function appendTableSortParameters(parameters: URLSearchParams, state: WebViewState): void {
-  const defaultSort = createWebViewState(state.route).tableSort;
-  if (state.tableSort.key !== defaultSort.key) {
-    parameters.set("sort", state.tableSort.key);
+function appendSortParameters<Key extends string>(
+  parameters: URLSearchParams,
+  sort: Readonly<{
+    key: Key;
+    direction: TableSort["direction"];
+  }>,
+  defaultSort: Readonly<{
+    key: Key;
+    direction: TableSort["direction"];
+  }>,
+): void {
+  if (sort.key !== defaultSort.key) {
+    parameters.set("sort", sort.key);
   }
-  if (state.tableSort.direction !== defaultSort.direction) {
-    parameters.set("direction", state.tableSort.direction);
+  if (sort.direction !== defaultSort.direction) {
+    parameters.set("direction", sort.direction);
   }
 }
 
@@ -641,12 +695,22 @@ function createRoutePath(basePath: string, route: WebRoute): string {
 /** 検証済み画面状態をbasePath配下のdeep linkへ変換する。 */
 export function createWebViewHref(basePath: string, state: WebViewState): string {
   const pathname = createRoutePath(basePath, state.route);
+  if (state.route.page === "overview") {
+    const parameters = new URLSearchParams();
+    appendSortParameters(
+      parameters,
+      state.overviewSort,
+      createWebViewState(state.route).overviewSort,
+    );
+    const query = parameters.toString();
+    return `${pathname}${query.length === 0 ? "" : `?${query}`}`;
+  }
   if (state.route.page === "person") {
     const parameters = new URLSearchParams();
     if (state.route.teamIds.length > 0) {
       parameters.set("teams", state.route.teamIds.join(","));
     }
-    appendTableSortParameters(parameters, state);
+    appendSortParameters(parameters, state.tableSort, createWebViewState(state.route).tableSort);
     const query = parameters.toString();
     return `${pathname}${query.length === 0 ? "" : `?${query}`}`;
   }
@@ -662,7 +726,7 @@ export function createWebViewHref(basePath: string, state: WebViewState): string
       state.tableFilters[definition.key],
     );
   }
-  appendTableSortParameters(parameters, state);
+  appendSortParameters(parameters, state.tableSort, createWebViewState(state.route).tableSort);
   const query = parameters.toString();
   return `${pathname}${query.length === 0 ? "" : `?${query}`}`;
 }

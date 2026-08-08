@@ -218,18 +218,32 @@ function formatElapsedTime(startTimestamp: number, endTimestamp: number): string
   if (startTimestamp > endTimestamp) {
     throw new DiscordPayloadError("経過時間の起点は集計時刻以前にしてください");
   }
-  const totalMinutes = Math.floor((endTimestamp - startTimestamp) / MILLISECONDS_PER_MINUTE);
-  const days = Math.floor(totalMinutes / MINUTES_PER_DAY);
-  const remainingAfterDays = totalMinutes % MINUTES_PER_DAY;
-  const hours = Math.floor(remainingAfterDays / MINUTES_PER_HOUR);
-  const minutes = remainingAfterDays % MINUTES_PER_HOUR;
-  if (days > 0) {
-    return `${days.toString()}日${hours.toString()}時間`;
+  const elapsedMilliseconds = endTimestamp - startTimestamp;
+  const elapsedMinutes = Math.floor(elapsedMilliseconds / MILLISECONDS_PER_MINUTE);
+  const elapsedHours = Math.floor(elapsedMinutes / MINUTES_PER_HOUR);
+  if (elapsedHours < 1) {
+    return `${elapsedMinutes.toString()}分`;
   }
-  if (hours > 0) {
-    return `${hours.toString()}時間${minutes.toString()}分`;
+  if (elapsedHours < 24) {
+    return `${elapsedHours.toString()}時間`;
   }
-  return `${minutes.toString()}分`;
+  const elapsedDays = Math.floor(elapsedMinutes / MINUTES_PER_DAY);
+  const remainingHours = Math.floor((elapsedMinutes % MINUTES_PER_DAY) / MINUTES_PER_HOUR);
+  if (elapsedMilliseconds <= 7 * MINUTES_PER_DAY * MILLISECONDS_PER_MINUTE) {
+    if (remainingHours === 0) {
+      return `${elapsedDays.toString()}日`;
+    }
+    return `${elapsedDays.toString()}日 ${remainingHours.toString()}時間`;
+  }
+  if (elapsedMilliseconds <= 365 * MINUTES_PER_DAY * MILLISECONDS_PER_MINUTE) {
+    return `${elapsedDays.toString()}日`;
+  }
+  const elapsedYears = Math.floor(elapsedDays / 365);
+  const remainingDays = elapsedDays % 365;
+  if (remainingDays === 0) {
+    return `${elapsedYears.toString()}年`;
+  }
+  return `${elapsedYears.toString()}年 ${remainingDays.toString()}日`;
 }
 
 function categoryForReason(reasonCode: DiscordNotificationReasonCode): DiscordDigestCategory {
