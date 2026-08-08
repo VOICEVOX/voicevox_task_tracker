@@ -13,7 +13,7 @@ import {
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
 import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
-import { calculateGraphNodeSize, createItemGraphView, MAX_GRAPH_NODE_SIZE } from "./graph-model.js";
+import { createItemGraphView } from "./graph-model.js";
 
 const NOW = new Date("2026-08-01T00:00:00.000Z");
 const sampleSummary = createPublicSummaryDto(sampleSummarySource);
@@ -163,20 +163,38 @@ afterEach(() => {
 });
 
 describe("項目詳細の依存グラフ", () => {
-  it("停滞1日、10日、30日の順で大きくし上限を超えない", () => {
-    const oneDay = calculateGraphNodeSize(1, 0, 0);
-    const tenDays = calculateGraphNodeSize(10, 0, 0);
-    const thirtyDays = calculateGraphNodeSize(30, 0, 0);
-    const oneImpactedItem = calculateGraphNodeSize(1, 1, 0);
-    const oneImpactedRepository = calculateGraphNodeSize(1, 0, 1);
-    const extreme = calculateGraphNodeSize(1_000_000, 1_000_000, 1_000_000);
+  it("停滞日数、影響範囲、種別によらず240×112で表示する", () => {
+    const center = createItem("node:fixed-center", "issue", 31, "2026-08-01T00:00:00.000Z");
+    const highImpact = {
+      ...createItem("node:fixed-high-impact", "pull_request", 32, "2020-01-01T00:00:00.000Z"),
+      downstreamImpact: {
+        nodeId: "node:fixed-high-impact",
+        openNodeCount: 1_000,
+        repositoryCount: 100,
+      },
+    } satisfies PublicItemSummaryDto;
+    const external = externalGraphNode("node:fixed-external");
+    const fixture = createGraphFixture({
+      items: [center, highImpact],
+      nodes: [trackedGraphNode(center), trackedGraphNode(highImpact), external],
+      edges: [
+        createEdge("edge:fixed-high-impact", highImpact.nodeId, center.nodeId, "blocks", "native"),
+        createEdge(
+          "edge:fixed-external",
+          external.nodeId,
+          center.nodeId,
+          "related_to",
+          "explicit_text",
+        ),
+      ],
+      frontierNodeIds: [],
+      maxNodes: 10,
+    });
 
-    expect(oneDay).toBeLessThan(tenDays);
-    expect(tenDays).toBeLessThan(thirtyDays);
-    expect(oneDay).toBeLessThan(oneImpactedItem);
-    expect(oneDay).toBeLessThan(oneImpactedRepository);
-    expect(thirtyDays).toBeLessThanOrEqual(MAX_GRAPH_NODE_SIZE);
-    expect(extreme).toBe(MAX_GRAPH_NODE_SIZE);
+    const view = createItemGraphView(fixture.summary, fixture.details, center.nodeId, NOW);
+
+    expect(view.displayNodes).toHaveLength(3);
+    expect(view.displayNodes.every((node) => node.width === 240 && node.height === 112)).toBe(true);
   });
 
   it("中心項目を識別して1 hop表示へ必ず含める", () => {
@@ -337,6 +355,13 @@ describe("項目詳細の依存グラフ", () => {
           "related_to",
           "explicit_text",
         ),
+        createEdge(
+          "edge:ui-external-implements",
+          external.nodeId,
+          center.nodeId,
+          "implements",
+          "closing_keyword",
+        ),
       ],
       frontierNodeIds: [pullRequest.nodeId],
       maxNodes: 10,
@@ -372,7 +397,7 @@ describe("項目詳細の依存グラフ", () => {
     expect(pr?.textContent).toContain("着手可能");
     expect(externalNode?.textContent).toContain("外部");
     expect(currentContainer().querySelector(".graph-node-size-description")?.textContent).toBe(
-      "ノードの大きさは、停滞の長さと、その項目がブロックしている項目の広がりで決まります。",
+      "ノードはすべて同じ大きさで表示します。",
     );
     expect(currentContainer().querySelector(".graph-edge-authoritative")?.textContent).toContain(
       "ブロック確定関係",
@@ -380,11 +405,32 @@ describe("項目詳細の依存グラフ", () => {
     expect(currentContainer().querySelector(".graph-edge-inferred")?.textContent).toContain(
       "関連推定関係",
     );
+    const authoritativePath = currentContainer().querySelector(
+      ".graph-edge-authoritative path[marker-end]",
+    );
+    const inferredPaths = [
+      ...currentContainer().querySelectorAll(".graph-edge-inferred path[marker-end]"),
+    ];
+    expect(authoritativePath?.getAttribute("class")).not.toContain("stroke-dasharray");
+    expect(authoritativePath?.getAttribute("marker-end")).toBe(
+      "url(#item-graph-fixture-arrow-authoritative)",
+    );
+    expect(inferredPaths).toHaveLength(2);
     expect(
-      currentContainer().querySelector(".graph-edge-authoritative path[marker-end]"),
-    ).not.toBeNull();
+      inferredPaths.every((path) => path.getAttribute("class")?.includes("stroke-dasharray:8_6")),
+    ).toBe(true);
     expect(
-      currentContainer().querySelector(".graph-edge-inferred path[marker-end]"),
-    ).not.toBeNull();
+      inferredPaths.every(
+        (path) => path.getAttribute("marker-end") === "url(#item-graph-fixture-arrow-inferred)",
+      ),
+    ).toBe(true);
+    expect(
+      currentContainer().querySelector("#item-graph-fixture-arrow-authoritative path")?.classList,
+    ).toContain("fill-graph-edge-authoritative");
+    expect(
+      currentContainer().querySelector("#item-graph-fixture-arrow-inferred path")?.classList,
+    ).toContain("fill-graph-edge-inferred");
+    expect(issue?.querySelector(".graph-node-reference")?.classList).toContain("text-ellipsis");
+    expect(issue?.querySelector(".graph-node-title")?.classList).toContain("text-ellipsis");
   });
 });

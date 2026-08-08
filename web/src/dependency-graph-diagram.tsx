@@ -50,17 +50,13 @@ const GRAPH_NODE_STROKE_CLASS_NAMES = {
   pull_request: "stroke-graph-node-pull-request-border",
 } satisfies Readonly<Record<GraphViewNode["kind"], string>>;
 
-const GRAPH_EDGE_PATTERN_CLASS_NAMES = {
-  blocks: "",
-  duplicates: "[stroke-dasharray:14_4_3_4]",
-  implements: "[stroke-dasharray:4_4]",
-  parent_of: "[stroke-dasharray:12_4]",
-  related_to: "[stroke-dasharray:2_7]",
-} satisfies Readonly<Record<GraphViewEdge["type"], string>>;
-
 const GRAPH_NODE_TEXT_CLASS_NAME = "fill-text-primary [text-anchor:middle] pointer-events-none";
+const GRAPH_NODE_FITTED_TEXT_CLASS_NAME =
+  "h-full overflow-hidden text-ellipsis whitespace-nowrap text-center text-text-primary text-graph-label leading-5";
 const GRAPH_EDGE_TEXT_CLASS_NAME =
   "fill-text-secondary stroke-surface-sunken [stroke-width:var(--stroke-width-graph-edge-label)] [paint-order:stroke] [text-anchor:middle] text-graph font-bold";
+const GRAPH_NODE_TEXT_LINE_HEIGHT = 20;
+const GRAPH_NODE_TEXT_HORIZONTAL_PADDING = 16;
 
 function graphNodeShapeClassName(node: GraphViewNode, linked: boolean): string {
   const strokeClassName = node.central
@@ -76,23 +72,11 @@ function graphEdgePathClassName(edge: GraphViewEdge): string {
   const colorClassName = edge.authoritative
     ? "stroke-graph-edge-authoritative"
     : "stroke-graph-edge-inferred";
-  let widthClassName: string;
-  if (edge.authoritative) {
-    widthClassName = "[stroke-width:var(--stroke-width-graph-edge-authoritative)]";
-  } else if (edge.type === "related_to") {
-    widthClassName = "stroke-2";
-  } else {
-    widthClassName = "[stroke-width:var(--stroke-width-graph-edge)]";
-  }
-  return `fill-none ${colorClassName} ${widthClassName} ${GRAPH_EDGE_PATTERN_CLASS_NAMES[edge.type]}`;
-}
-
-function truncateGraphText(value: string, maximumLength: number): string {
-  const characters = [...value];
-  if (characters.length <= maximumLength) {
-    return value;
-  }
-  return `${characters.slice(0, maximumLength - 1).join("")}…`;
+  const widthClassName = edge.authoritative
+    ? "[stroke-width:var(--stroke-width-graph-edge-authoritative)]"
+    : "[stroke-width:var(--stroke-width-graph-edge)]";
+  const patternClassName = edge.authoritative ? "" : "[stroke-dasharray:8_6]";
+  return `fill-none ${colorClassName} ${widthClassName} ${patternClassName}`;
 }
 
 function nodeIcon(node: GraphViewNode): string {
@@ -167,6 +151,51 @@ function graphPath(points: GraphLayout["edges"][number]["points"]): string {
   ].join(" ");
 }
 
+function graphNodeTextWidth(node: GraphViewNode, verticalOffset: number): number {
+  const offsetRatio = Math.abs(verticalOffset) / (node.height / 2);
+  let shapeInset: number;
+  switch (node.kind) {
+    case "issue":
+      shapeInset = 0;
+      break;
+    case "pull_request":
+      shapeInset = node.height * 0.22 * offsetRatio;
+      break;
+    case "external_reference":
+      shapeInset = (node.width / 2) * offsetRatio;
+      break;
+    default:
+      throw new UnreachableError(node.kind);
+  }
+  return node.width - 2 * (GRAPH_NODE_TEXT_HORIZONTAL_PADDING + shapeInset);
+}
+
+function FittedGraphNodeText({
+  className,
+  value,
+  width,
+  x,
+  y,
+}: Readonly<{
+  className: string;
+  value: string;
+  width: number;
+  x: number;
+  y: number;
+}>): VNode {
+  return (
+    <foreignObject
+      class="pointer-events-none overflow-hidden"
+      x={x - width / 2}
+      y={y - GRAPH_NODE_TEXT_LINE_HEIGHT / 2}
+      width={width}
+      height={GRAPH_NODE_TEXT_LINE_HEIGHT}
+    >
+      <div class={`${className} ${GRAPH_NODE_FITTED_TEXT_CLASS_NAME}`}>{value}</div>
+    </foreignObject>
+  );
+}
+
 function GraphSvgNode({
   navigation,
   nodeLayout,
@@ -202,29 +231,29 @@ function GraphSvgNode({
         </text>
       )}
       <text
-        class={`graph-node-icon ${GRAPH_NODE_TEXT_CLASS_NAME} text-graph font-extrabold tracking-widest`}
+        class={`graph-node-icon ${GRAPH_NODE_TEXT_CLASS_NAME} text-graph-label font-extrabold tracking-widest`}
         x={x}
         y={y - node.height * 0.25}
       >
         {nodeIcon(node)}
       </text>
-      <text
-        class={`graph-node-reference ${GRAPH_NODE_TEXT_CLASS_NAME} text-graph-label font-extrabold`}
+      <FittedGraphNodeText
+        className="graph-node-reference font-extrabold"
+        value={node.reference}
+        width={graphNodeTextWidth(node, -2)}
         x={x}
         y={y - 2}
-      >
-        {truncateGraphText(node.reference, 28)}
-      </text>
-      <text
-        class={`graph-node-title ${GRAPH_NODE_TEXT_CLASS_NAME} text-graph`}
+      />
+      <FittedGraphNodeText
+        className="graph-node-title"
+        value={node.title}
+        width={graphNodeTextWidth(node, node.height * 0.2)}
         x={x}
         y={y + node.height * 0.2}
-      >
-        {truncateGraphText(node.title, 32)}
-      </text>
+      />
       {node.frontier && (
         <text
-          class={`graph-frontier-label ${GRAPH_NODE_TEXT_CLASS_NAME} fill-graph-frontier-text text-graph font-extrabold`}
+          class={`graph-frontier-label ${GRAPH_NODE_TEXT_CLASS_NAME} fill-graph-frontier-text text-graph-label font-extrabold`}
           x={x}
           y={y + node.height * 0.39}
         >
@@ -285,7 +314,7 @@ function GraphSvg({
         <desc id={`${idPrefix}-description`}>{description}</desc>
         <defs>
           <marker
-            id={`${idPrefix}-arrow`}
+            id={`${idPrefix}-arrow-authoritative`}
             viewBox="0 0 10 10"
             refX="9"
             refY="5"
@@ -294,6 +323,17 @@ function GraphSvg({
             orient="auto-start-reverse"
           >
             <path class="fill-graph-edge-authoritative" d="M 0 0 L 10 5 L 0 10 z" />
+          </marker>
+          <marker
+            id={`${idPrefix}-arrow-inferred`}
+            viewBox="0 0 10 10"
+            refX="9"
+            refY="5"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto-start-reverse"
+          >
+            <path class="fill-graph-edge-inferred" d="M 0 0 L 10 5 L 0 10 z" />
           </marker>
         </defs>
         <g class="graph-edges">
@@ -310,7 +350,9 @@ function GraphSvg({
               <path
                 class={graphEdgePathClassName(edge)}
                 d={graphPath(points)}
-                marker-end={`url(#${idPrefix}-arrow)`}
+                marker-end={`url(#${idPrefix}-arrow-${
+                  edge.authoritative ? "authoritative" : "inferred"
+                })`}
               />
               <text class={GRAPH_EDGE_TEXT_CLASS_NAME} x={labelPoint.x} y={labelPoint.y - 5}>
                 <tspan x={labelPoint.x}>{edge.typeLabel}</tspan>
@@ -415,7 +457,7 @@ export function DependencyGraphDiagram({
   return (
     <div class="dependency-graph-diagram grid gap-3">
       <p class="graph-node-size-description m-0 text-text-secondary">
-        ノードの大きさは、停滞の長さと、その項目がブロックしている項目の広がりで決まります。
+        ノードはすべて同じ大きさで表示します。
       </p>
       {graph}
     </div>

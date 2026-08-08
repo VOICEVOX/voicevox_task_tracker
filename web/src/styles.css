@@ -49,9 +49,9 @@
   --color-graph-grid: color-mix(in srgb, var(--color-text-secondary) 5%, transparent);
   --color-graph-edge-authoritative: #445a7a;
   --color-graph-edge-inferred: #79546a;
-  --color-graph-node-issue-background: #f5f8fd;
+  --color-graph-node-issue-background: #f1f3f5;
   --color-graph-node-issue-border: #4c678d;
-  --color-graph-node-pull-request-background: #eef7ff;
+  --color-graph-node-pull-request-background: #b8d8ff;
   --color-graph-node-pull-request-border: #326b9b;
   --color-graph-node-external-reference-background: #fff8e8;
   --color-graph-node-external-reference-border: #94631c;
@@ -68,7 +68,7 @@
   --stroke-width-graph-node: 2.5;
   --stroke-width-graph-node-emphasis: 5;
   --text-graph: 0.625rem;
-  --text-graph-label: 0.6875rem;
+  --text-graph-label: 0.875rem;
   --text-site-title: clamp(1.4rem, 2.5vw, 2rem);
   --text-section-title: clamp(1.35rem, 2.5vw, 2rem);
   --text-item-title: clamp(1.2rem, 2.5vw, 1.65rem);

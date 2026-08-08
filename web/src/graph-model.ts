@@ -8,10 +8,8 @@ import {
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
-const BASE_GRAPH_NODE_SIZE = 72;
-
-/** グラフnodeの表示サイズ上限。 */
-export const MAX_GRAPH_NODE_SIZE = 132;
+const GRAPH_NODE_WIDTH = 240;
+const GRAPH_NODE_HEIGHT = 112;
 
 type GraphNodeKind = PublicGraphNodeDto["kind"];
 type GraphNodeSeverity = PublicItemSummaryDto["severity"];
@@ -28,7 +26,6 @@ export type GraphViewNode = Readonly<{
   stallDays: number;
   impactOpenNodeCount: number;
   impactRepositoryCount: number;
-  size: number;
   width: number;
   height: number;
 }>;
@@ -67,27 +64,6 @@ function finiteNonNegative(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new RangeError(`${name}は0以上の有限数にしてください`);
   }
-}
-
-/** 停滞日数と影響範囲から単調増加かつ上限付きのnodeサイズを返す。 */
-export function calculateGraphNodeSize(
-  stallDays: number,
-  impactOpenNodeCount: number,
-  impactRepositoryCount: number,
-): number {
-  finiteNonNegative(stallDays, "停滞日数");
-  finiteNonNegative(impactOpenNodeCount, "影響項目数");
-  finiteNonNegative(impactRepositoryCount, "影響リポジトリ数");
-  const stallContribution = Math.log2(stallDays + 1) * 8;
-  const itemImpactContribution = Math.log2(impactOpenNodeCount + 1) * 5;
-  const repositoryImpactContribution = Math.log2(impactRepositoryCount + 1) * 4;
-  return Math.min(
-    MAX_GRAPH_NODE_SIZE,
-    BASE_GRAPH_NODE_SIZE +
-      stallContribution +
-      itemImpactContribution +
-      repositoryImpactContribution,
-  );
 }
 
 /** graph node種別の色に依存しない表示名を返す。 */
@@ -151,11 +127,6 @@ function createTrackedGraphNode(
   }
   const stallDays = (now.getTime() - Date.parse(item.stallSince)) / MILLISECONDS_PER_DAY;
   finiteNonNegative(stallDays, `graph node ${node.nodeId}の停滞日数`);
-  const size = calculateGraphNodeSize(
-    stallDays,
-    item.downstreamImpact.openNodeCount,
-    item.downstreamImpact.repositoryCount,
-  );
   return {
     id: node.nodeId,
     kind: node.kind,
@@ -166,9 +137,8 @@ function createTrackedGraphNode(
     stallDays,
     impactOpenNodeCount: item.downstreamImpact.openNodeCount,
     impactRepositoryCount: item.downstreamImpact.repositoryCount,
-    size,
-    width: size * 2.15,
-    height: size,
+    width: GRAPH_NODE_WIDTH,
+    height: GRAPH_NODE_HEIGHT,
   };
 }
 
@@ -177,7 +147,6 @@ function createExternalGraphNode(
   centralNodeIds: ReadonlySet<string>,
   frontierNodeIds: ReadonlySet<string>,
 ): GraphViewNode {
-  const size = calculateGraphNodeSize(0, 0, 0);
   return {
     id: node.nodeId,
     kind: node.kind,
@@ -188,9 +157,8 @@ function createExternalGraphNode(
     stallDays: 0,
     impactOpenNodeCount: 0,
     impactRepositoryCount: 0,
-    size,
-    width: size * 1.55,
-    height: size * 1.15,
+    width: GRAPH_NODE_WIDTH,
+    height: GRAPH_NODE_HEIGHT,
   };
 }
 

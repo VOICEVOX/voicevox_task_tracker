@@ -2392,7 +2392,7 @@ describe("Web UI", () => {
     );
     expect(graphSection.textContent).not.toContain("表示上限外の隣接項目");
     expect(requiredElement<HTMLElement>(".graph-node-size-description").textContent).toBe(
-      "ノードの大きさは、停滞の長さと、その項目がブロックしている項目の広がりで決まります。",
+      "ノードはすべて同じ大きさで表示します。",
     );
     expect(centerNode.dataset["central"]).toBe("true");
     expect(centerNode.textContent).toContain("中心項目");
