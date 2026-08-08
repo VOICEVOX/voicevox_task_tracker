@@ -20,7 +20,7 @@ import { assertNonNullable } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Issue判定へ適用した決定規則のversion。 */
-export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v8";
+export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v9";
 
 /** 依存グラフからIssue判定へ渡すblocker。 */
 export type IssueBlocker = Readonly<{
@@ -267,6 +267,11 @@ function validateAssessment(
           `明示依頼先の根拠が外部判定の根拠に含まれていません。対象: ${sourceId}`,
         );
       }
+    }
+    if (!target.sourceIds.includes(assessment.requestSourceId)) {
+      throw new TypeError(
+        `明示依頼先の根拠に選定した依頼のsource IDがありません。対象: ${target.candidateId}`,
+      );
     }
     const targetKey = `${target.kind}:${target.candidateId}`;
     if (targetKeys.has(targetKey)) {
@@ -667,7 +672,7 @@ function getRequestTargetKindOrder(kind: IssueExplicitRequestTarget["kind"]): nu
 function getRequestDecisionStatus(targets: readonly IssueExplicitRequestTarget[]): Status {
   return targets.every((target) => target.kind === "role" && target.role === "maintainer")
     ? "waiting_for_decision"
-    : "waiting_for_work";
+    : "waiting_for_reply";
 }
 
 function createExplicitRequestDecision(
@@ -739,7 +744,7 @@ function createExplicitRequestDecision(
     createWaitingOn({
       kind: target.kind,
       candidateId: target.candidateId,
-      role: target.role,
+      role: target.kind === "role" ? target.role : "respondent",
       reasonSummary: "最新の未回答な明示依頼があります",
       sourceIds: target.sourceIds,
       confidence: Math.min(target.confidence, assessment.confidence),

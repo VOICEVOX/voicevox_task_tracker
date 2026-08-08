@@ -52,6 +52,7 @@ const thresholdsHours = Object.freeze({
   decision: { watch: 48, urgent: 96, critical: 168 },
   review: { watch: 48, urgent: 120, critical: 240 },
   revision: { watch: 72, urgent: 168, critical: 336 },
+  reply: { watch: 48, urgent: 120, critical: 240 },
   work: { watch: 168, urgent: 336, critical: 720 },
   merge: { watch: 24, urgent: 72, critical: 168 },
   automation: { watch: 6, urgent: 24, critical: 72 },
@@ -718,6 +719,14 @@ const waitClassFixtures = Object.freeze([
     candidateId: "author",
     waitingRole: "author",
     precision: "event",
+  },
+  {
+    waitClass: "reply",
+    status: "waiting_for_reply",
+    waitingKind: "user",
+    candidateId: "respondent",
+    waitingRole: "respondent",
+    precision: "inferred",
   },
   {
     waitClass: "work",

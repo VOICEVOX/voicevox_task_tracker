@@ -11,12 +11,14 @@ import {
   collectWaitingSubjectRows,
   collectWaitingTeamIds,
   createItemTableRows,
+  createTableFilterOptions,
   formatStallDuration,
   formatWaitingOnCandidate,
   resolveWaitingSubjects,
   selectPrimaryWaitingOnCandidate,
   selectWaitingSubjectItemNodeIds,
   selectWaitingSubjectReasons,
+  statusLabel,
   waitingOnHistoryLabel,
   waitingOnLabel,
   waitingSubjectKey,
@@ -26,6 +28,45 @@ import {
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 
 const sampleSummary = createPublicSummaryDto(sampleSummarySource);
+
+describe("返答待ち表示", () => {
+  it("返答待ちと回答者を表示しstatusフィルタへ追加する", () => {
+    const sourceItem = sampleSummary.items[0];
+    assertNonNullable(sourceItem, "返答待ち表示用の項目がありません");
+    const sourceWaitingOn = sourceItem.waitingOn[0];
+    assertNonNullable(sourceWaitingOn, "返答待ち表示用のwaitingOnがありません");
+    const summary = createPublicSummaryDto({
+      ...sampleSummary,
+      items: [
+        {
+          ...sourceItem,
+          status: "waiting_for_reply",
+          waitingOn: [
+            {
+              ...sourceWaitingOn,
+              kind: "user",
+              candidateId: "requested-user",
+              role: "respondent",
+            },
+          ],
+        },
+      ],
+    });
+    const item = summary.items[0];
+    assertNonNullable(item, "返答待ち表示用の公開項目がありません");
+    const waitingOn = item.waitingOn[0];
+    assertNonNullable(waitingOn, "返答待ち表示用の公開waitingOnがありません");
+
+    expect(statusLabel(item.status)).toBe("返答待ち");
+    expect(waitingOnLabel(waitingOn, item, summary)).toBe("回答者 @requested-user");
+    expect(createTableFilterOptions(summary).status).toEqual([
+      {
+        label: "返答待ち",
+        value: "waiting_for_reply",
+      },
+    ]);
+  });
+});
 
 describe("停滞時間表示", () => {
   const now = new Date("2026-08-01T00:00:00.000Z");

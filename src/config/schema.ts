@@ -362,6 +362,7 @@ const configSchema = z.strictObject({
       decision: thresholdSchema,
       review: thresholdSchema,
       revision: thresholdSchema,
+      reply: thresholdSchema,
       work: thresholdSchema,
       merge: thresholdSchema,
       automation: thresholdSchema,

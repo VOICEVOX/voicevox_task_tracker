@@ -103,6 +103,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 - `waiting_for_decision` — 方針判断待ち
 - `waiting_for_review` — レビュー待ち
 - `waiting_for_revision` — 修正待ち
+- `waiting_for_reply` — 返答待ち
 - `waiting_for_work` — 作業待ち
 - `waiting_for_unblock` — ブロック解消待ち
 - `waiting_for_automation` — 自動処理待ち
@@ -115,7 +116,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 ### 7.2 waitingOn enum
 
-`user`、`team`、`role`（author/maintainer/reviewer/assignee）、`item`、`automation`、`unknown`。複数blockerや複数assigneeを表せる配列とし、UI・通知用にprimaryを1つ選ぶ。
+`user`、`team`、`role`、`item`、`automation`、`unknown`を使う。`role`の値はauthor、maintainer、reviewer、assignee、respondent、dependency、merge_decider、ci、unknownとする。`respondent`は名指しで質問や依頼を向けられた相手を表す。複数blockerや複数assigneeを表せる配列とし、UI・通知用にprimaryを1つ選ぶ。
 
 ### 7.3 PR判定の既定優先順位
 
@@ -137,7 +138,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 1. closedならterminal。
 2. open blockerがあれば`waiting_for_unblock`。
-3. 最新の未回答な明示依頼があれば相手待ち。
+3. 最新の未回答な明示依頼がmaintainer役割だけへ向く場合は`waiting_for_decision`、それ以外は`waiting_for_reply`として名指しされた相手をrespondent待ちにする。
 4. assigneeがいればassignee待ち。
 5. それ以外の未アサインIssueは、作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば`waiting_for_owner`、なければ`waiting_for_assessment`としてmaintainer待ち。
 6. 作成者がmaintainerでも、次担当不明ならmaintainer責務のまま。
@@ -153,6 +154,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 | decision                       |   48h |    96h |     168h | 方針判断の停滞を検出                 |
 | review                         |   48h |   120h |     240h | review requestから計時               |
 | author after changes requested |   72h |   168h |     336h | author pushでreviewer側へ遷移可能    |
+| reply                          |   48h |   120h |     240h | 未回答の質問や依頼から計時           |
 | assignee/in progress           |  168h |   336h |     720h | 実装作業の長さを考慮                 |
 | ready to merge                 |   24h |    72h |     168h | merge decisionの見落としを早めに検出 |
 | automation                     |    6h |    24h |      72h | 通常のCI時間は通知しない             |
@@ -301,7 +303,7 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 | `RSP-002` | MUST | 責務種別 — waitingOnはuser、team、role、item、automation、unknownを表現できなければならない。                                                                                                                  | `AT-RSP-002`: 全種別のschema fixtureがvalidationに通る。                                                                                  |
 | `RSP-003` | MUST | 未アサインIssueの分類 — 作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば担当決め待ち、なければ内容確認待ちとし、当該repoのmaintainer role待ちにしなければならない。                         | `AT-RSP-003`: コメントなし、humanコメントあり、botコメントのみ、ラベルありの各fixtureが期待する状態になる。                               |
 | `RSP-004` | MUST | アサインIssue — 明確な別の待ち根拠がないアサイン済みIssueはassignee待ちとしなければならない。                                                                                                                  | `AT-RSP-004`: assignee 1名/複数fixtureで全員が候補となる。                                                                                |
-| `RSP-005` | MUST | 未回答の明示依頼 — 最新の未回答な質問・判断依頼が個人またはteamへ向く場合、その相手を優先できなければならない。                                                                                                | `AT-RSP-005`: 本文/コメントの依頼fixtureでCodexがsource ID付きで相手を選ぶ。                                                              |
+| `RSP-005` | MUST | 未回答の明示依頼 — 最新の未回答な質問・判断依頼が個人またはteamへ向く場合、返答待ちとして名指しされた相手をrespondentにしなければならない。                                                                    | `AT-RSP-005`: 本文/コメントの依頼fixtureでCodexがsource ID付きのrespondentを選ぶ。                                                        |
 | `RSP-006` | MUST | maintainer作成でも責務維持 — maintainerが作成したIssue/PRでも次の担当が明確でなければmaintainer roleの責務としなければならない。                                                                               | `AT-RSP-006`: maintainer-authored unassigned fixtureがauthor任せにならない。                                                              |
 | `RSP-007` | MUST | open blocker優先 — 確定したopen blockerがある項目はstatus=waiting_for_unblockとし、waitingOnにblocker itemを置かなければならない。                                                                             | `AT-RSP-007`: open/closed blocker混在fixtureでopenだけがwaitingOnになる。                                                                 |
 | `RSP-008` | MUST | draft PRの既定 — 明示的な他者待ちがないdraft PRはauthor待ちとしなければならない。                                                                                                                              | `AT-RSP-008`: recent draft fixtureがauthor/in_progressになる。                                                                            |

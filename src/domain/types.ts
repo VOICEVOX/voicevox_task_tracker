@@ -60,6 +60,7 @@ export type Status =
   | "waiting_for_decision"
   | "waiting_for_review"
   | "waiting_for_revision"
+  | "waiting_for_reply"
   | "waiting_for_work"
   | "waiting_for_unblock"
   | "waiting_for_automation"
@@ -85,6 +86,7 @@ export type WaitingOnRole =
   | "maintainer"
   | "reviewer"
   | "assignee"
+  | "respondent"
   | "dependency"
   | "merge_decider"
   | "ci"
@@ -95,7 +97,15 @@ export type Severity = "none" | "watch" | "urgent" | "critical";
 
 /** staleness.thresholdsHoursのキーと1対1に対応する待機分類。 */
 export type WaitClass =
-  "assessment" | "owner" | "decision" | "review" | "revision" | "work" | "merge" | "automation";
+  | "assessment"
+  | "owner"
+  | "decision"
+  | "review"
+  | "revision"
+  | "reply"
+  | "work"
+  | "merge"
+  | "automation";
 
 /** グラフnodeの種別。 */
 export type GraphNodeKind = "issue" | "pull_request" | "external_reference";

@@ -107,6 +107,8 @@ function severityWaitClass(status: Status): StalenessWaitClass {
       return "review";
     case "waiting_for_revision":
       return "revision";
+    case "waiting_for_reply":
+      return "reply";
     case "waiting_for_work":
     case "in_progress":
       return "work";
@@ -523,6 +525,40 @@ async function readGitOutput(
 }
 
 describe("state schema version", () => {
+  it("返答待ちの回答者をsnapshotへ保存して読み戻す", () => {
+    const snapshot = createSnapshot({
+      runId: "run-waiting-for-reply",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_reply",
+        kind: "user",
+        candidateId: "requested-user",
+        role: "respondent",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+
+    const parsed = parseStateSnapshot(serializeStateSnapshot(snapshot));
+
+    expect(parsed.items[0]).toMatchObject({
+      status: "waiting_for_reply",
+      waitingOn: [
+        {
+          kind: "user",
+          candidateId: "requested-user",
+          role: "respondent",
+        },
+      ],
+      severityContext: {
+        waitClass: "reply",
+      },
+    });
+  });
+
   it("version 1のsnapshotを登録済みparserで読み取り現行形式へmigrationする", () => {
     const snapshot = createSnapshot({
       runId: "run-schema-version-1",

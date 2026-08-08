@@ -456,6 +456,7 @@ function overdueReasonCode(
     case "automation":
       return "automation_stuck";
     case "decision":
+    case "reply":
     case "work":
     case "blockedParent":
     case "notApplicable":

@@ -12,6 +12,7 @@ export function isTerminalStatus(status: Status): status is TerminalStatus {
     case "waiting_for_decision":
     case "waiting_for_review":
     case "waiting_for_revision":
+    case "waiting_for_reply":
     case "waiting_for_work":
     case "waiting_for_unblock":
     case "waiting_for_automation":

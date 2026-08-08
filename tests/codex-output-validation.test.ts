@@ -224,6 +224,26 @@ describe("Codex出力のJSON Schema検証", () => {
     ).toThrow(CodexOutputSchemaValidationError);
   });
 
+  it("返答待ちと回答者をschema段階で受理する", () => {
+    const output = validateCodexAnalysisSchema({
+      ...createOutput(0.9),
+      status: "waiting_for_reply",
+      waitingOn: [
+        {
+          kind: "user",
+          candidateId: "user:requested-user",
+          role: "respondent",
+          reasonSummary: "名指しされた質問への返答待ちです",
+          sourceIds: ["body:current"],
+          confidence: 0.9,
+        },
+      ],
+    });
+
+    expect(output.status).toBe("waiting_for_reply");
+    expect(output.waitingOn[0]?.role).toBe("respondent");
+  });
+
   it("importanceのrationaleを120文字以内に制限する", () => {
     expect(() =>
       validateCodexAnalysisSchema({

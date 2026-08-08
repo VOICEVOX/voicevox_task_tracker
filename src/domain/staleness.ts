@@ -472,6 +472,9 @@ function determineWaitClass(
   if (decision.status === "waiting_for_revision") {
     return isAuthorAfterChangesRequested(decision, events) ? "revision" : "work";
   }
+  if (decision.status === "waiting_for_reply") {
+    return "reply";
+  }
 
   switch (decision.status) {
     case "waiting_for_assessment":

@@ -98,6 +98,7 @@ const SEVERITY_THRESHOLDS = Object.freeze({
   decision: Object.freeze({ watch: 48, urgent: 96, critical: 168 }),
   review: Object.freeze({ watch: 48, urgent: 120, critical: 240 }),
   revision: Object.freeze({ watch: 72, urgent: 168, critical: 336 }),
+  reply: Object.freeze({ watch: 48, urgent: 120, critical: 240 }),
   work: Object.freeze({ watch: 168, urgent: 336, critical: 720 }),
   merge: Object.freeze({ watch: 24, urgent: 72, critical: 168 }),
   automation: Object.freeze({ watch: 6, urgent: 24, critical: 72 }),

@@ -141,6 +141,7 @@ const STATUS_LABELS = {
   waiting_for_decision: "方針判断待ち",
   waiting_for_review: "レビュー待ち",
   waiting_for_revision: "修正待ち",
+  waiting_for_reply: "返答待ち",
   waiting_for_work: "作業待ち",
   waiting_for_unblock: "ブロック解消待ち",
   waiting_for_automation: "自動処理待ち",
@@ -217,6 +218,7 @@ const ROLE_LABELS = {
   maintainer: "メンテナー",
   reviewer: "レビュワー",
   assignee: "担当者",
+  respondent: "回答者",
   dependency: "依存項目",
   merge_decider: "マージ判断者",
   ci: "CI",
@@ -490,6 +492,7 @@ function currentWaitingOnRoleLabel(role: WaitingOnRole, item: PublicItemSummaryD
       return `${waitingOnRoleName(role)}の誰か`;
     case "ci":
     case "dependency":
+    case "respondent":
     case "unknown":
       return waitingOnRoleName(role);
     default:
@@ -574,6 +577,7 @@ function resolveWaitingOnCandidateSubjects(
         case "merge_decider":
         case "ci":
         case "dependency":
+        case "respondent":
         case "unknown":
           return [];
         default:

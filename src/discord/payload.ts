@@ -310,6 +310,8 @@ function roleText(role: WaitingOnRole): string {
       return "レビュワー";
     case "assignee":
       return "assignee";
+    case "respondent":
+      return "回答者";
     case "dependency":
       return "依存項目";
     case "merge_decider":

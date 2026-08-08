@@ -134,6 +134,8 @@ function severityWaitClass(status: Status): StalenessWaitClass {
       return "review";
     case "waiting_for_revision":
       return "revision";
+    case "waiting_for_reply":
+      return "reply";
     case "waiting_for_work":
     case "in_progress":
       return "work";

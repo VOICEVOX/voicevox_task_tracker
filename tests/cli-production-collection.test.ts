@@ -728,7 +728,12 @@ async function replaceStateSnapshot(
 function createCodexOutput(
   input: CodexAnalysisInput,
   options: Readonly<{
-    status: "waiting_for_revision" | "waiting_for_automation" | "in_progress" | "unknown";
+    status:
+      | "waiting_for_revision"
+      | "waiting_for_reply"
+      | "waiting_for_automation"
+      | "in_progress"
+      | "unknown";
     waitingOn: Readonly<{
       candidateId: string;
       kind: "user" | "team" | "role" | "item" | "automation" | "unknown";
@@ -737,6 +742,7 @@ function createCodexOutput(
         | "maintainer"
         | "reviewer"
         | "assignee"
+        | "respondent"
         | "dependency"
         | "merge_decider"
         | "ci"
@@ -5407,11 +5413,11 @@ describe("本番判定入力の接続", () => {
         }
         return Promise.resolve(
           createCodexOutput(input, {
-            status: "in_progress",
+            status: "waiting_for_reply",
             waitingOn: {
               candidateId: "requested-user",
               kind: "user",
-              role: "assignee",
+              role: "respondent",
               sourceId: bodySource.id,
             },
             latestMeaningfulSourceId: meaningfulComment.sourceId,
@@ -5473,7 +5479,7 @@ describe("本番判定入力の接続", () => {
       ].sort((left, right) => left.id.localeCompare(right.id)),
     );
     expect(trackedItem).toMatchObject({
-      status: "waiting_for_work",
+      status: "waiting_for_reply",
       lastHumanActivityAt: FIRST_RUN_AT,
       lastProgressAt: meaningfulAt,
       author: {
@@ -5492,6 +5498,7 @@ describe("本番判定入力の接続", () => {
         expect.objectContaining({
           candidateId: "requested-user",
           kind: "user",
+          role: "respondent",
         }),
       ],
     });
