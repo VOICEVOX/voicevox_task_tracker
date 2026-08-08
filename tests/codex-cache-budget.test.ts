@@ -62,7 +62,7 @@ function createInputAt(id: string, body: string, now: string): CodexAnalysisInpu
       url: "https://github.com/VOICEVOX/example/issues/1",
       type: "issue",
       title: "分析対象",
-      authorCandidateId: "user:author",
+      authorCandidateId: "author",
     },
     candidates: {
       waitingOn: [

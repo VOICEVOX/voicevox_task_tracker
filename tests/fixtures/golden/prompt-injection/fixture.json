@@ -62,7 +62,7 @@
             "authorCandidateId": "requester-one"
           },
           "candidates": {
-            "waitingOn": [{ "id": "maintainer" }, { "id": "user:reviewer-two" }],
+            "waitingOn": [{ "id": "maintainer" }, { "id": "reviewer-two" }],
             "relations": []
           },
           "sources": [
@@ -87,7 +87,7 @@
           "waitingOn": [
             {
               "kind": "user",
-              "candidateId": "user:reviewer-two",
+              "candidateId": "reviewer-two",
               "role": "assignee",
               "reasonSummary": "最新の未回答な判断依頼があります",
               "sourceIds": ["body:prompt"],

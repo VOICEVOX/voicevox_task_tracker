@@ -9,7 +9,7 @@ const REPOSITORY_ROOT = join(import.meta.dirname, "..");
 const HASH_RECORD_PATH = "tests/rules-version-hash.test.ts";
 const DETERMINISTIC_RULES_HASH =
   "sha256:eb335981dcdf1b64495b0f6201f298c2385aa5fd359c45c85bf8eaa0452112ff";
-const PROMPT_FILES_HASH = "sha256:7d3fbc381e3203fa7af126355a673da8bee5f66c7adc06f3238f51baad34bd95";
+const PROMPT_FILES_HASH = "sha256:0c673d7a0f6118a62cc93696e215ba1a6a1775d1a6be73139fe3afa969648d61";
 
 async function listRelativeFiles(
   relativeDirectory: string,

@@ -68,7 +68,7 @@ function createInput(): CodexAnalysisInput {
       url: "https://github.com/VOICEVOX/example/issues/1",
       type: "issue",
       title: "方針を決める",
-      authorCandidateId: "user:author",
+      authorCandidateId: "author",
     },
     candidates: {
       waitingOn: [
@@ -231,7 +231,7 @@ describe("Codex出力のJSON Schema検証", () => {
       waitingOn: [
         {
           kind: "user",
-          candidateId: "user:requested-user",
+          candidateId: "requested-user",
           role: "respondent",
           reasonSummary: "名指しされた質問への返答待ちです",
           sourceIds: ["body:current"],
@@ -286,6 +286,54 @@ describe("Codex出力のJSON Schema検証", () => {
 });
 
 describe("Codex出力のsemantic検証", () => {
+  it("作者候補がない入力では作者を待ち先にする出力を拒否する", () => {
+    const baseInput = createInput();
+    const input = createCodexAnalysisInput({
+      ...baseInput,
+      item: {
+        nodeId: baseInput.item.nodeId,
+        url: baseInput.item.url,
+        type: baseInput.item.type,
+        title: baseInput.item.title,
+      },
+    });
+    const attemptedAuthorCandidateId = `deleted-account:${input.item.nodeId}`;
+    const output = createOutput(0.9);
+    const errorAction = () =>
+      validateCodexAnalysisOutput(
+        {
+          ...output,
+          waitingOn: [
+            {
+              ...output.waitingOn[0],
+              candidateId: attemptedAuthorCandidateId,
+              kind: "user",
+              role: "author",
+            },
+          ],
+        },
+        input,
+      );
+
+    expect(input.item).not.toHaveProperty("authorCandidateId");
+    expect(input.candidates.waitingOn.map((candidate) => candidate.id)).not.toContain(
+      attemptedAuthorCandidateId,
+    );
+    expect(errorAction).toThrow(CodexOutputSemanticValidationError);
+    try {
+      errorAction();
+    } catch (error: unknown) {
+      if (!(error instanceof CodexOutputSemanticValidationError)) {
+        throw error;
+      }
+      expect(error.issues).toContainEqual({
+        path: "/waitingOn/0/candidateId",
+        code: "unknown_waiting_on_candidate",
+        message: "入力のwaitingOn候補集合にない対象を参照しています",
+      });
+    }
+  });
+
   it("候補集合の外にあるwaitingOnとrelationをsemantic段階で拒否する", () => {
     const input = createInput();
     const output = createOutput(0.9);
@@ -296,7 +344,7 @@ describe("Codex出力のsemantic検証", () => {
           waitingOn: [
             {
               ...output.waitingOn[0],
-              candidateId: "user:unknown",
+              candidateId: "unknown-user",
               kind: "user",
             },
           ],

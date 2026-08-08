@@ -165,7 +165,7 @@ describe("固定AI判定と公開境界", () => {
       status: "waiting_for_work",
       waitingOn: [
         {
-          candidateId: "user:reviewer-two",
+          candidateId: "reviewer-two",
         },
       ],
     });

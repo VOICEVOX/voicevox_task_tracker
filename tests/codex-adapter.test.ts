@@ -77,7 +77,7 @@ function createInput(untrustedText: string): CodexAnalysisInput {
       url: "https://github.com/VOICEVOX/example/pull/123",
       type: "pull_request",
       title: "依存ライブラリを更新する",
-      authorCandidateId: "user:author",
+      authorCandidateId: "author",
       headSha: "bbbb",
     },
     candidates: {
@@ -86,7 +86,7 @@ function createInput(untrustedText: string): CodexAnalysisInput {
           id: "role:maintainer",
         },
         {
-          id: "user:author",
+          id: "author",
         },
         {
           id: "team:VOICEVOX/reviewers",
@@ -158,7 +158,7 @@ describe("Codex分析入力", () => {
     ]);
     expect(input.candidates.waitingOn.map((candidate) => candidate.id)).toEqual([
       "role:maintainer",
-      "user:author",
+      "author",
       "team:VOICEVOX/reviewers",
       "item:blocker",
     ]);

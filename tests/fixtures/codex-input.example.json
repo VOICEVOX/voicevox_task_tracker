@@ -6,7 +6,7 @@
     "url": "https://github.com/VOICEVOX/example/pull/123",
     "type": "pull_request",
     "title": "build: update dependency",
-    "authorCandidateId": "user:author",
+    "authorCandidateId": "author",
     "headSha": "bbbb"
   },
   "candidates": {
@@ -15,7 +15,7 @@
         "id": "role:maintainer"
       },
       {
-        "id": "user:author"
+        "id": "author"
       },
       {
         "id": "team:VOICEVOX/reviewers"

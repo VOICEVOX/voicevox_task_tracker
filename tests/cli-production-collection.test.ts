@@ -702,6 +702,14 @@ function requireCollectionItem(
   return item;
 }
 
+function requireCodexAuthorCandidateId(input: CodexAnalysisInput): string {
+  const authorCandidateId = input.item.authorCandidateId;
+  if (authorCandidateId == null) {
+    throw new TypeError(`Codex入力の作者候補IDがありません。対象: ${input.item.nodeId}`);
+  }
+  return authorCandidateId;
+}
+
 async function replaceStateSnapshot(
   adapter: MemoryStateBranchAdapter,
   snapshot: StateSnapshot,
@@ -1516,7 +1524,7 @@ describe("本番収集の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -1703,7 +1711,7 @@ describe("本番収集の接続", () => {
         const output = createCodexOutput(input, {
           status: "in_progress",
           waitingOn: {
-            candidateId: input.item.authorCandidateId,
+            candidateId: requireCodexAuthorCandidateId(input),
             kind: "user",
             role: "assignee",
             sourceId: source.id,
@@ -1811,7 +1819,7 @@ describe("本番収集の接続", () => {
             createCodexOutput(input, {
               status: "in_progress",
               waitingOn: {
-                candidateId: input.item.authorCandidateId,
+                candidateId: requireCodexAuthorCandidateId(input),
                 kind: "user",
                 role: "assignee",
                 sourceId: source.id,
@@ -2048,7 +2056,7 @@ describe("本番収集の接続", () => {
           ...createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -2146,7 +2154,7 @@ describe("本番収集の接続", () => {
           ...createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -2285,7 +2293,7 @@ describe("本番収集の接続", () => {
           ...createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -2508,7 +2516,7 @@ describe("本番収集の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "author",
               sourceId: source.id,
@@ -2614,7 +2622,7 @@ describe("本番収集の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -2779,7 +2787,7 @@ describe("本番収集の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -4822,7 +4830,7 @@ describe("本番収集の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -5289,7 +5297,7 @@ describe("本番判定入力の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: commentSourceId,
@@ -5731,7 +5739,7 @@ describe("本番判定入力の接続", () => {
     });
   });
 
-  it("required check失敗をCodexへ渡しコード起因だけをauthor待ちにする", async () => {
+  it("Codexのuser候補とauthor待ちにGitHub loginを使う", async () => {
     const repository = createRepository("R_codex_pr", "codex-pr", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
@@ -5777,7 +5785,7 @@ describe("本番判定入力の接続", () => {
           createCodexOutput(input, {
             status: codeCaused ? "waiting_for_revision" : "unknown",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: codeCaused ? "author" : "unknown",
               sourceId: checkSource.id,
@@ -5804,7 +5812,29 @@ describe("本番判定入力の接続", () => {
 
     expect(result.exitCode).toBe(0);
     expect(harness.codexInputs).toHaveLength(2);
+    const authorByItemNodeId = new Map(
+      [codeFailure, infrastructureFailure].map((candidate) => {
+        if (candidate.author.kind !== "account") {
+          throw new TypeError("Codex作者候補fixtureの作者アカウントがありません");
+        }
+        return [candidate.nodeId, candidate.author.account] as const;
+      }),
+    );
     for (const input of harness.codexInputs) {
+      const author = authorByItemNodeId.get(createGitHubNodeId(input.item.nodeId));
+      if (author == null) {
+        throw new TypeError("Codex作者候補fixtureの入力項目がありません");
+      }
+      expect(input.item.authorCandidateId).toBe(author.login);
+      expect(input.candidates.waitingOn).toContainEqual(
+        expect.objectContaining({
+          id: author.login,
+          kind: "user",
+        }),
+      );
+      expect(input.candidates.waitingOn.map((candidate) => candidate.id)).not.toContain(
+        author.nodeId,
+      );
       expect(input.deterministicSignals["requiredCheckFailure"]).toMatchObject({
         status: "configured",
         combinedState: "failure",
@@ -5815,9 +5845,116 @@ describe("本番判定入力の接続", () => {
     }
     expect(codeItem).toMatchObject({
       status: "waiting_for_revision",
-      waitingOn: [expect.objectContaining({ role: "author" })],
+      waitingOn: [
+        expect.objectContaining({
+          kind: "role",
+          candidateId: "author",
+          role: "author",
+        }),
+      ],
+      aiAnalysis: {
+        status: "used",
+      },
     });
     expect(infrastructureItem?.status).not.toBe("waiting_for_revision");
+  });
+
+  it("作者のGitHub loginを解決できなくても作者候補なしでCodex分析を実行する", async () => {
+    const repository = createRepository(
+      "R_codex_deleted_author",
+      "codex-deleted-author",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "codex-deleted-author",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      author: Object.freeze({
+        kind: "deleted_account",
+      }),
+    } satisfies EnumeratedGitHubItem);
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      createIssueDetail({
+        item,
+        body: "本文",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const attemptedAuthorCandidateId = `deleted-account:${item.nodeId}`;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("削除済み作者fixtureのsourceがありません");
+        }
+        return Promise.resolve(
+          createCodexOutput(input, {
+            status: "unknown",
+            waitingOn: {
+              candidateId: attemptedAuthorCandidateId,
+              kind: "user",
+              role: "author",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: 0.8,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        );
+      },
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    if (result.command !== "dry-run") {
+      throw new TypeError("削除済み作者fixtureがdry-run結果を返しませんでした");
+    }
+    const input = harness.codexInputs[0];
+    if (input == null) {
+      throw new TypeError("削除済み作者fixtureのCodex入力がありません");
+    }
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexExecutionCount()).toBe(1);
+    expect(harness.codexInputs).toHaveLength(1);
+    expect(input.item).not.toHaveProperty("authorCandidateId");
+    expect(input.candidates.waitingOn).not.toContainEqual(
+      expect.objectContaining({
+        kind: "user",
+      }),
+    );
+    expect(input.candidates.waitingOn.map((candidate) => candidate.id)).not.toContain(
+      attemptedAuthorCandidateId,
+    );
+    expect(snapshot.items[0]?.aiAnalysis).toEqual({
+      status: "failed",
+    });
+    expect(result.result.report.diagnostics).toContain(
+      `codex_fallback item=${item.nodeId} reason=semantic_validation_failed errorType=CodexOutputSemanticValidationError validationIssueCount=1 validationIssue0Path=/waitingOn/0/candidateId validationIssue0Code=unknown_waiting_on_candidate`,
+    );
   });
 
   it("同じGitHubデータなら前回stateなしの走査時刻が数ヶ月違っても全項目の停滞起点が一致する", async () => {
@@ -6062,7 +6199,7 @@ describe("本番判定入力の接続", () => {
             createCodexOutput(input, {
               status: "waiting_for_revision",
               waitingOn: {
-                candidateId: input.item.authorCandidateId,
+                candidateId: requireCodexAuthorCandidateId(input),
                 kind: "user",
                 role: "author",
                 sourceId: basisSource.id,
@@ -6224,7 +6361,7 @@ describe("本番判定入力の接続", () => {
             createCodexOutput(input, {
               status: "waiting_for_revision",
               waitingOn: {
-                candidateId: input.item.authorCandidateId,
+                candidateId: requireCodexAuthorCandidateId(input),
                 kind: "user",
                 role: "author",
                 sourceId: checkSource.id,
@@ -6513,7 +6650,7 @@ describe("本番判定入力の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -7012,7 +7149,7 @@ describe("本番判定入力の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,
@@ -7291,7 +7428,7 @@ describe("本番判定入力の接続", () => {
           createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
-              candidateId: input.item.authorCandidateId,
+              candidateId: requireCodexAuthorCandidateId(input),
               kind: "user",
               role: "assignee",
               sourceId: source.id,

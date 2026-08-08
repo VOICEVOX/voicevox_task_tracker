@@ -8,7 +8,7 @@
       "waitingOn": [
         {
           "kind": "user",
-          "candidateId": "user:reviewer-two",
+          "candidateId": "reviewer-two",
           "role": "assignee"
         }
       ],

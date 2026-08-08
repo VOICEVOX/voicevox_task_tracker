@@ -34,7 +34,7 @@ const itemSchema = z
     url: githubItemUrlSchema,
     type: z.enum(["issue", "pull_request"]),
     title: z.string().min(1, "titleは空にできません"),
-    authorCandidateId: opaqueIdSchema,
+    authorCandidateId: opaqueIdSchema.optional(),
     headSha: opaqueIdSchema.optional(),
   })
   .catchall(jsonValueSchema);
