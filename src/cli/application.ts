@@ -5,6 +5,7 @@ import {
   type DailyTransactionTypeMap,
 } from "./daily-transaction.js";
 import { OfflineRunRunner, type OfflineRunExecutionResult } from "./offline-runner.js";
+import { StateVerificationRunner } from "./state-verification.js";
 import { WorkflowStageRunner } from "./workflow-stage.js";
 
 /** CLI実行後の終了codeとreport種別。 */
@@ -29,6 +30,10 @@ export type CliExecutionResult =
       exitCode: 0;
     }>
   | Readonly<{
+      command: "verify-state";
+      exitCode: 0;
+    }>
+  | Readonly<{
       command: "replay" | "eval";
       exitCode: 0 | 1;
       result: OfflineRunExecutionResult;
@@ -39,6 +44,7 @@ export type CliApplicationDependencies<Types extends DailyTransactionTypeMap> = 
   dailyRunner: DailyTransactionRunner<Types>;
   workflowStageRunner: WorkflowStageRunner;
   offlineRunner: OfflineRunRunner;
+  stateVerificationRunner: StateVerificationRunner;
   writeStandardOutput: (source: string) => Promise<void>;
 }>;
 
@@ -80,6 +86,12 @@ export class CliApplication<Types extends DailyTransactionTypeMap> {
       case "notify-operations":
       case "report-workflow":
         await this.#dependencies.workflowStageRunner.run(command);
+        return Object.freeze({
+          command: command.kind,
+          exitCode: 0,
+        });
+      case "verify-state":
+        await this.#dependencies.stateVerificationRunner.run(command);
         return Object.freeze({
           command: command.kind,
           exitCode: 0,

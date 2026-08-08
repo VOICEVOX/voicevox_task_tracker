@@ -946,6 +946,7 @@ function createCollectionHarness(
     readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),
     readGoldenFixtures: () => Promise.reject(new TypeError("golden fixtureは読みません")),
     readWorkflowArtifact: () => Promise.reject(new TypeError("workflow artifactは読みません")),
+    verifyStateDirectory: () => Promise.reject(new TypeError("永続stateは検証しません")),
     createGitHubClient: () =>
       Promise.resolve(
         Object.freeze({

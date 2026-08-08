@@ -620,11 +620,12 @@ describe("workflow security", () => {
     );
   });
 
-  it("CIを外部APIへ接続せず全検証とgolden evalに割り当てる", async () => {
+  it("CIのqualityと実state検証を権限分離する", async () => {
     const workflow = await readWorkflow(CI_WORKFLOW_PATH);
     const qualityJob = workflow.jobs["quality"];
-    if (qualityJob == null) {
-      throw new TypeError("CIのquality jobがありません");
+    const verifyStateJob = workflow.jobs["verify-state"];
+    if (qualityJob == null || verifyStateJob == null) {
+      throw new TypeError("CIのqualityまたは実state検証jobがありません");
     }
 
     const qualityCommands = runCommands(qualityJob);
@@ -640,6 +641,25 @@ describe("workflow security", () => {
     ]) {
       expect(qualityCommands).toContain(command);
     }
+    expect(qualityJob.permissions).toEqual({ contents: "read" });
+    expect(verifyStateJob.permissions).toEqual({ contents: "read" });
+
+    const stateCheckout = requiredStep(verifyStateJob, "永続stateを取得");
+    expect(stateCheckout.uses).toBe("actions/checkout@11d5960a326750d5838078e36cf38b85af677262");
+    expect(stateCheckout.with).toMatchObject({
+      ref: "tracker-state",
+      path: "tracker-state",
+      "persist-credentials": false,
+    });
+    expect(stateCheckout.with).not.toHaveProperty("repository");
+
+    const verifyStateCommands = runCommands(verifyStateJob);
+    expect(verifyStateCommands).toContain("pnpm build");
+    expect(verifyStateCommands).toContain(
+      "pnpm tracker:run verify-state --state-directory tracker-state/state",
+    );
+    expect(verifyStateCommands).not.toContain("pnpm eval:golden");
+    expect(verifyStateCommands).not.toContain("pnpm perf:profile");
     expect(JSON.stringify(workflow)).not.toContain("${{ secrets.");
     expect(runCommands(qualityJob).join("\n")).not.toContain("curl");
   });

@@ -509,6 +509,7 @@ describe("CLI合成root", () => {
         ),
       executeCodexAnalysis: () => Promise.reject(new TypeError("Codex adapterは呼ばれません")),
       readWorkflowArtifact: () => Promise.reject(new TypeError("workflow artifactは読みません")),
+      verifyStateDirectory: () => Promise.reject(new TypeError("永続stateは検証しません")),
       readReplayFixture: () => Promise.reject(new TypeError("replay fixtureは読みません")),
       readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),
       readGoldenFixtures: () => Promise.reject(new TypeError("golden fixtureは読みません")),
@@ -611,6 +612,7 @@ describe("CLI合成root", () => {
       readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),
       readGoldenFixtures: () => Promise.reject(new TypeError("golden fixtureは読みません")),
       readWorkflowArtifact: () => Promise.resolve(artifact),
+      verifyStateDirectory: () => Promise.reject(new TypeError("永続stateは検証しません")),
       createStateBranchAdapter: () => stateAdapter,
       now: () => new Date(COMPLETED_AT),
       writePublicData: () => {
@@ -804,6 +806,7 @@ describe("CLI合成root", () => {
         readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),
         readGoldenFixtures: () => Promise.reject(new TypeError("golden fixtureは読みません")),
         readWorkflowArtifact: () => Promise.resolve(artifact),
+        verifyStateDirectory: () => Promise.reject(new TypeError("永続stateは検証しません")),
         createStateBranchAdapter: () => stateAdapter,
         discordHttpClient: Object.freeze({
           execute: (request: DiscordWebhookHttpRequest) => {

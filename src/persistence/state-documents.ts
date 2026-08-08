@@ -8,7 +8,7 @@ import {
 } from "./legacy-enum.js";
 
 const NOTIFICATION_LEDGER_SCHEMA_VERSION_1 = "1";
-const NOTIFICATION_LEDGER_SCHEMA_VERSION_2 = "2";
+export const NOTIFICATION_LEDGER_SCHEMA_VERSION_2 = "2";
 
 const nonEmptyStringSchema = z.string().min(1).max(1000);
 const dateTimeSchema = z.iso
@@ -44,7 +44,7 @@ const legacyNotificationReasonCodeSchema: z.ZodType<LegacyNotificationReasonCode
   "ready_to_merge_overdue",
   "automation_stuck",
 ]);
-const notificationReasonCodeSchema = z.enum([
+export const NOTIFICATION_LEDGER_REASON_CODE_VALUES = [
   "none",
   "assessment_overdue",
   "owner_overdue",
@@ -59,7 +59,8 @@ const notificationReasonCodeSchema = z.enum([
   "responsibility_changed",
   "merge_overdue",
   "automation_stuck",
-]);
+] as const;
+const notificationReasonCodeSchema = z.enum(NOTIFICATION_LEDGER_REASON_CODE_VALUES);
 const operationsAlertKindSchema = z.enum(["collection", "pages", "discord"]);
 
 const runMetricsSchema = z.strictObject({

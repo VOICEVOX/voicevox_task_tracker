@@ -158,7 +158,7 @@ const SNAPSHOT_SCHEMA_VERSION_3 = "3";
 const SNAPSHOT_SCHEMA_VERSION_4 = "4";
 const SNAPSHOT_SCHEMA_VERSION_5 = "5";
 const SNAPSHOT_SCHEMA_VERSION_6 = "6";
-const SNAPSHOT_SCHEMA_VERSION_7 = "7";
+export const SNAPSHOT_SCHEMA_VERSION_7 = "7";
 
 type StateSnapshotVersion7 = Readonly<{
   schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_7;

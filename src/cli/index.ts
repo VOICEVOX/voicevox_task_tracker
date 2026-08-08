@@ -22,6 +22,7 @@ export {
   type ReportWorkflowCliCommand,
   type ReplayCliCommand,
   type ReplaySource,
+  type VerifyStateCliCommand,
 } from "./command.js";
 export {
   DailyTransactionRunner,
@@ -47,6 +48,7 @@ export {
   CliFixtureError,
   CliOutputError,
   CliRelationExpansionLimitError,
+  CliStateVerificationError,
   CliUsageError,
   CliWorkflowArtifactError,
 } from "./errors.js";
@@ -73,6 +75,14 @@ export {
   type ReplayFixture,
 } from "./offline-runner.js";
 export { RunCoordinator, type CoordinatedRunResult } from "./run-coordinator.js";
+export {
+  StateVerificationRunner,
+  formatStateVerificationResult,
+  verifyPersistentStateDirectory,
+  type StateDocumentVerification,
+  type StateVerificationDependencies,
+  type StateVerificationResult,
+} from "./state-verification.js";
 export {
   createEmptyRunMetrics,
   createRunReport,

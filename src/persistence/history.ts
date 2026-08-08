@@ -7,7 +7,7 @@ import { type StateSnapshot } from "./snapshot.js";
 import { type Repository } from "../domain/index.js";
 
 const STATE_HISTORY_SCHEMA_VERSION_1 = "1";
-const STATE_HISTORY_SCHEMA_VERSION_2 = "2";
+export const STATE_HISTORY_SCHEMA_VERSION_2 = "2";
 
 const historySchemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
@@ -96,7 +96,7 @@ const legacyStatusSchema: z.ZodType<LegacyStatus> = z.enum([
   "terminal_completed",
   "terminal_not_planned",
 ]);
-const statusSchema = z.enum([
+export const STATE_HISTORY_STATUS_VALUES = [
   "waiting_for_assessment",
   "waiting_for_owner",
   "waiting_for_decision",
@@ -112,7 +112,8 @@ const statusSchema = z.enum([
   "terminal_merged",
   "terminal_completed",
   "terminal_not_planned",
-]);
+] as const;
+const statusSchema = z.enum(STATE_HISTORY_STATUS_VALUES);
 const waitingOnSchema = z.strictObject({
   kind: z.enum(["user", "team", "role", "item", "automation", "unknown"]),
   candidateId: identifierSchema,

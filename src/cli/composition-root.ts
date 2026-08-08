@@ -25,6 +25,7 @@ import {
   type ProductionRuntimeAdapters,
   type ProductionTypes,
 } from "./production-runtime.js";
+import { verifyPersistentStateDirectory } from "./state-verification.js";
 import { readWorkflowArtifactFile } from "./workflow-artifact.js";
 
 const DEFAULT_PAGES_OUTPUT_DIRECTORY = "artifacts/workflow/pages";
@@ -41,7 +42,8 @@ type ConcreteOperationName =
   | "readGoldenFixtures"
   | "readReplayFixture"
   | "readReplayState"
-  | "readWorkflowArtifact";
+  | "readWorkflowArtifact"
+  | "verifyStateDirectory";
 
 /** 合成rootへ注入する外部接続、時刻、永続化の境界。 */
 export type CliCompositionAdapters = Omit<ProductionRuntimeAdapters, ConcreteOperationName>;
@@ -62,6 +64,7 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
     readReplayState: readReplayStateFile,
     readGoldenFixtures: readGoldenFixtureFiles,
     readWorkflowArtifact: readWorkflowArtifactFile,
+    verifyStateDirectory: verifyPersistentStateDirectory,
   });
 }
 

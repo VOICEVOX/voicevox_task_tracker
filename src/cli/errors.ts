@@ -21,6 +21,13 @@ export class CliFixtureError extends TaskTrackerError {
   }
 }
 
+/** 指定した永続stateファイルを読み取れないか検証できないことを表す。 */
+export class CliStateVerificationError extends TaskTrackerError {
+  public constructor(path: string, options: ErrorOptions) {
+    super(`永続stateを検証できません。対象: ${path}`, options);
+  }
+}
+
 /** CLIへ安全に表示できる環境変数名だけを保持する認証情報エラー。 */
 export class CliCredentialsError extends TaskTrackerError {
   public readonly variableNames: readonly string[];

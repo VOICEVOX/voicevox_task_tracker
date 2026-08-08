@@ -211,6 +211,10 @@ import {
 } from "./offline-runner.js";
 import { writeRunReport, type RunMetrics } from "./run-report.js";
 import {
+  StateVerificationRunner,
+  type verifyPersistentStateDirectory,
+} from "./state-verification.js";
+import {
   assertWorkflowArtifactPublicSafety,
   createWorkflowArtifact,
   createWorkflowRunMetadata,
@@ -477,6 +481,7 @@ export type ProductionRuntimeAdapters = Readonly<{
   readReplayState: typeof readReplayStateFile;
   readGoldenFixtures: typeof readGoldenFixtureFiles;
   readWorkflowArtifact: typeof readWorkflowArtifactFile;
+  verifyStateDirectory: typeof verifyPersistentStateDirectory;
   createGitHubClient: (options: CreateGitHubClientOptions) => Promise<GitHubClient>;
   createStateBranchAdapter: () => StateBranchAdapter;
   codexProcessRunner: CodexProcessRunner;
@@ -5918,6 +5923,10 @@ export function createProductionCliApplication(
     }),
     workflowStageRunner: createWorkflowStageRunner(adapters),
     offlineRunner: createOfflineRunner(adapters),
+    stateVerificationRunner: new StateVerificationRunner({
+      verifyStateDirectory: adapters.verifyStateDirectory,
+      writeStandardOutput: adapters.writeStandardOutput,
+    }),
     writeStandardOutput: adapters.writeStandardOutput,
   });
 }

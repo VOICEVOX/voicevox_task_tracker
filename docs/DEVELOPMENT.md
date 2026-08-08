@@ -132,6 +132,20 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 `tests/rules-version-hash.test.ts`が判定に関わるファイルの内容hashを記録しており、更新漏れがあると失敗します。
 失敗したら、判定結果が変わるかを考えてversionを上げるか判断し、どちらの場合も記録hashを更新してください。
 
+### 永続stateの列挙値を変更する
+
+snapshot、履歴、通知ledgerが保存する列挙値は、次の順序で変更します。
+
+1. 対象文書のschema versionを上げる。
+2. 旧versionから現行versionへのマイグレーションを追加する。
+3. `tests/state-schema-enum-lock.ts`のロック定義を更新する。
+4. CLIをビルドし、checkoutした`tracker-state`の実stateを検証する。
+
+```console
+pnpm build
+pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
+```
+
 ## ディレクトリ構成
 
 | パス                 | 責務                                                                                       |

@@ -88,6 +88,12 @@ describe("tracker:run実行入口", () => {
     ).toEqual(["eval", "--fixtures", "tests/fixtures/golden", "--artifact", "artifacts/eval.json"]);
   });
 
+  it("verify-stateサブコマンドをstateディレクトリ指定とともに既存CLIへ渡す", () => {
+    expect(
+      createTrackerRunCliArguments(["verify-state", "--state-directory", "tracker-state/state"]),
+    ).toEqual(["verify-state", "--state-directory", "tracker-state/state"]);
+  });
+
   it("workflow stageサブコマンドを検証してそのまま渡す", () => {
     expect(
       createTrackerRunCliArguments([

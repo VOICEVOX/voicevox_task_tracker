@@ -571,6 +571,8 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
     readGoldenFixtures: () => Promise.reject(new TypeError("性能profileではgolden evalしません")),
     readWorkflowArtifact: () =>
       Promise.reject(new TypeError("性能profileではworkflow artifactを読みません")),
+    verifyStateDirectory: () =>
+      Promise.reject(new TypeError("性能profileでは永続stateを検証しません")),
     createGitHubClient: () => {
       apiBudget.reset();
       return Promise.resolve(
