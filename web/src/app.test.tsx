@@ -205,24 +205,22 @@ function createPersonPageSummaryWithLowImportance(): PublicSummaryDto {
 }
 
 function createOverviewSortSummary(): PublicSummaryDto {
-  const attentionScores = new Map([
-    ["sample-item-editor-101", 25],
-    ["sample-item-engine-202", 16],
-    ["sample-item-editor-103", 16],
-    ["sample-item-engine-204", 5],
+  const attentions = new Map<string, PublicItemSummaryDto["attention"]>([
+    ["sample-item-editor-101", { score: 25, level: "medium" }],
+    ["sample-item-engine-202", { score: 16, level: "medium" }],
+    ["sample-item-editor-103", { score: 16, level: "medium" }],
+    ["sample-item-engine-204", { score: 5, level: "medium" }],
+    ["sample-item-core-305", { score: 24, level: "low" }],
   ]);
   return createPublicSummaryDto({
     ...sampleSummary,
     items: sampleSummary.items.map((item) => {
-      const attentionScore = attentionScores.get(item.nodeId);
-      return attentionScore == null
+      const attention = attentions.get(item.nodeId);
+      return attention == null
         ? item
         : {
             ...item,
-            attention: {
-              score: attentionScore,
-              level: "medium",
-            },
+            attention,
           };
     }),
   });
@@ -344,11 +342,16 @@ describe("Web UI", () => {
     expect(observedTime.dateTime).toBe(sampleSummary.observedAt);
     expect(observedTime.textContent).toBe("1 日前");
     expect(observedTime.title).toContain("JST");
+    expect(requiredElement<HTMLElement>(".attention-summary strong").textContent).toBe("3件");
     expect(requiredElement<HTMLElement>(".attention-summary span").textContent).toBe("要対応");
     expect(attentionSection.textContent).toContain(
       "要対応度は、重要度が高く、かつ最近動きがあった項目ほど高くなります。",
     );
-    expect(attentionItemNodeIds()).toEqual(["sample-item-editor-101"]);
+    expect(attentionItemNodeIds()).toEqual([
+      "sample-item-engine-202",
+      "sample-item-editor-103",
+      "sample-item-editor-101",
+    ]);
     expect(currentContainer().textContent).not.toContain("生成時刻");
   });
 
@@ -376,9 +379,9 @@ describe("Web UI", () => {
 
     expect(attentionItemNodeIds()).toEqual([
       "sample-item-engine-204",
+      "sample-item-editor-101",
       "sample-item-editor-103",
       "sample-item-engine-202",
-      "sample-item-editor-101",
     ]);
     expect(
       requiredElement<HTMLButtonElement>(".overview-sort-controls button").textContent,
@@ -941,7 +944,7 @@ describe("Web UI", () => {
     expect(
       requiredElement<HTMLButtonElement>(".person-sort-controls button").textContent,
     ).toContain("降順");
-    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-202"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
     expect(new URL(window.location.href).searchParams.get("sort")).toBeNull();
     expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
@@ -982,7 +985,7 @@ describe("Web UI", () => {
       maintainers.click();
     });
 
-    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-202"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
     expect(window.history.length).toBe(historyLength);
     expect(requiredElement<HTMLElement>(".person-item-count").textContent).toBe(
@@ -1185,7 +1188,7 @@ describe("Web UI", () => {
 
     renderApp(createPersonPageSummary());
 
-    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-202"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
     expect(currentContainer().querySelector(".url-state-notice")).not.toBeNull();
   });
@@ -1200,7 +1203,7 @@ describe("Web UI", () => {
     renderApp(createPersonPageSummary());
 
     expect(currentContainer().querySelector(".person-page")).not.toBeNull();
-    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-202"]);
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
     expect(currentContainer().querySelector(".url-state-notice")).toBeNull();
     expect(window.location.pathname).toBe("/voicevox_task_tracker/people/hiho");
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
@@ -1324,10 +1327,10 @@ describe("Web UI", () => {
       requiredElement<HTMLSelectElement>('select[aria-label="AI利用状況で絞り込み"]').value,
     ).toBe(AI_ANALYSIS_DEGRADED_FILTER_VALUE);
     expect(itemRowNodeIds()).toEqual([
+      "sample-item-engine-202",
+      "sample-item-editor-103",
       "sample-item-editor-101",
       "sample-item-core-305",
-      "sample-item-editor-103",
-      "sample-item-engine-202",
     ]);
 
     act(() => {
@@ -1533,10 +1536,10 @@ describe("Web UI", () => {
         key: "aiAnalysis",
         value: AI_ANALYSIS_DEGRADED_FILTER_VALUE,
         expectedNodeIds: [
+          "sample-item-engine-202",
+          "sample-item-editor-103",
           "sample-item-editor-101",
           "sample-item-core-305",
-          "sample-item-editor-103",
-          "sample-item-engine-202",
         ],
       },
     ];
@@ -1788,10 +1791,10 @@ describe("Web UI", () => {
       aiAnalysisFilter.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(itemRowNodeIds()).toEqual([
+      "sample-item-engine-202",
+      "sample-item-editor-103",
       "sample-item-editor-101",
       "sample-item-core-305",
-      "sample-item-editor-103",
-      "sample-item-engine-202",
     ]);
     expect(new URL(window.location.href).searchParams.get("ai")).toBe(
       AI_ANALYSIS_DEGRADED_FILTER_VALUE,
@@ -1812,10 +1815,10 @@ describe("Web UI", () => {
       "降順",
     );
     expect(itemRowNodeIds()).toEqual([
+      "sample-item-engine-202",
+      "sample-item-editor-103",
       "sample-item-editor-101",
       "sample-item-core-305",
-      "sample-item-editor-103",
-      "sample-item-engine-202",
       "sample-item-engine-204",
       "sample-item-workflow-401",
       "sample-item-workflow-402",
