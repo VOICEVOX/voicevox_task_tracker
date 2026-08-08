@@ -143,11 +143,18 @@ tracker専用のcommand comment、override UI、専用labelはありません。
 ### コメント
 
 最新コメントで、次に誰が何をするかを一文で明示します。
-判断依頼なら対象のuserかteam、必要な判断、回答済みかどうかを具体的に書きます。
+方針判断待ちへ直す場合は、maintainer roleへ必要な判断を明記します。
+返答待ちへ直す場合は、回答を求めるuserかteamを名指しします。
+質問の内容と未回答であることも明記します。
 依存関係なら対象IssueかPRのURLと、現在の項目を止めているか、単なる関連情報かを明記します。
 
 古いmention、謝辞、単なるリンクだけでは責務移動やblockerを確定しません。
 依頼が解決した場合は、回答か決定を新しいコメントとして残すと未回答扱いを解消しやすくなります。
+
+### assignee
+
+Issueを作業待ちへ直す場合は、実際に作業するuserをassigneeへ設定します。
+担当が決まっていない間はassigneeを設定しません。
 
 ### ラベル
 
@@ -158,7 +165,7 @@ repository globとlabel名の正規表現を一致させ、必要な効果を設
 | ---------------------------- | ------------------------------------------------- |
 | `priorityWeight`             | 重要度、attention queue、通知候補の並び順を上げる |
 | `severityLift`               | severityを最大1段階引き上げる                     |
-| `requiresMaintainerDecision` | maintainerの判断待ちとして扱う                    |
+| `requiresMaintainerDecision` | 方針判断待ちとし、maintainer roleへ責務を置く     |
 | `suppressNotifications`      | graphには残したまま通常通知を抑える               |
 | `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う           |
 
@@ -167,17 +174,20 @@ label規則を変えた場合は`pnpm test`とdry-runで通知候補の差分を
 
 ### review request
 
-PRのCurrent reviewersへ実際に待っているuserかteamを追加します。
+PRをレビュー待ちへ直す場合は、Current reviewersへレビューを依頼するuserかteamを追加します。
 不要になったreview requestはGitHub上で解除します。
 現在のreview requestは自然言語より強い決定論的根拠です。
 
-人間の`CHANGES_REQUESTED`が最新head以後にある場合はauthor待ちが優先されます。
-authorが修正をpushした後はreviewer側を再評価するため、必要ならreview requestも現在の担当へ合わせます。
-未解決のreview threadもauthor待ちの根拠になりますが、authorが最後に返信したthreadはreviewer側の再確認待ちとして扱います。
+人間の`CHANGES_REQUESTED`が最新head以後にある場合は修正待ちを優先し、authorの修正を待ちます。
+authorが修正をpushした後はレビュー待ちとしてreviewer側を再評価します。
+必要ならreview requestも現在の担当へ合わせます。
+未解決のreview threadも修正待ちの根拠になります。
+authorが最後に返信したthreadは修正待ちの根拠から外し、reviewerの再確認を待つレビュー待ちとして扱います。
 botのreviewとcommentだけではbotへ責務を移しません。
 
 これらで待ち先が決まった後も、その相手本人がさらに発言していれば発言の内容から判定し直します。
-変更要求を受けたauthorが修正せずに質問すれば待ち先はreviewerへ移り、了解を返しただけならauthor待ちのままです。
+変更要求を受けたauthorが修正せずに質問すれば返答待ちとなり、reviewerの返答を待ちます。
+authorが了解を返しただけなら修正待ちを維持し、authorの修正を待ちます。
 待ち先を確実に伝えたい場合は、質問や依頼を明示した文にするか、review requestで示してください。
 
 ### native dependency
@@ -232,21 +242,40 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 botが作成した項目のtitleが`notifications.automationNoiseTitles`のいずれかと大文字小文字を区別せず一致した場合、graphへ残したまま通常通知から外します。
 Renovateの`dependencyDashboardTitle`を変更した場合は同じtitleをこの一覧へ追加します。
 
+特定の状態だけ通知時刻を調整する場合は、対応する`staleness.thresholdsHours`のキーを変更します。
+
+| 状態                                             | キー         |
+| ------------------------------------------------ | ------------ |
+| 内容確認待ち                                     | `assessment` |
+| 担当決め待ち、待ち先不明                         | `owner`      |
+| 方針判断待ち                                     | `decision`   |
+| レビュー待ち                                     | `review`     |
+| `CHANGES_REQUESTED`後の修正待ち                  | `revision`   |
+| 作業待ち、作業中、CI失敗やconflictによる修正待ち | `work`       |
+| 返答待ち                                         | `reply`      |
+| マージ待ち                                       | `merge`      |
+| 自動処理待ち                                     | `automation` |
+
+ブロック解消待ちには直接の閾値がありません。
+blockerのseverityとdownstream impactが通知順位を決めます。
+
 通知が多すぎる場合は次の順で調整します。
 
-1. 誤った責務や依存をGitHub上で明確にします。
+1. 誤ったstatus、waitingOn、依存をGitHub上で明確にします。
 2. automation dashboardのtitleを`notifications.automationNoiseTitles`へ追加するか、対象labelへ`labels.rules.effects.suppressNotifications`を割り当てます。
-3. `staleness.thresholdsHours`と`recentProgressGraceHours`を増やします。
-4. `cooldownDays`を増やし、`maxItemsPerDigest`を減らします。
-5. AI推定が原因なら`ai.confidence.medium`を上げ、実モデルを呼び出すdry-runでAI判定と通知候補の差分を確認します。
+3. 通知を減らす状態に対応する`staleness.thresholdsHours`を増やします。
+4. 全状態で直近の進捗を長く猶予する場合は`recentProgressGraceHours`を増やします。
+5. `cooldownDays`を増やし、`maxItemsPerDigest`を減らします。
+6. AI推定が原因なら`ai.confidence.medium`を上げ、実モデルを呼び出すdry-runでAI判定と通知候補の差分を確認します。
 
 通知が少なすぎる場合は逆方向に調整します。
 
-1. team、review request、native dependency、label規則が実態と一致するか確認します。
-2. `staleness.thresholdsHours`と`recentProgressGraceHours`を減らします。
-3. `maxItemsPerDigest`を増やし、`cooldownDays`を減らします。
-4. 重要labelへ`priorityWeight`か`severityLift: 1`を設定します。
-5. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目、通知候補を確認します。
+1. team、review request、native dependency、label規則がstatusとwaitingOnの実態に合うか確認します。
+2. 通知を増やす状態に対応する`staleness.thresholdsHours`を減らします。
+3. 全状態で直近の進捗を短く猶予する場合は`recentProgressGraceHours`を減らします。
+4. `maxItemsPerDigest`を増やし、`cooldownDays`を減らします。
+5. 重要labelへ`priorityWeight`か`severityLift: 1`を設定します。
+6. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目、通知候補を確認します。
 
 閾値、confidence、label規則、AI予算を変更する場合は、`pnpm test`とdry-runを実行して通知候補の差分を確認します。
 schema、semantic validation、reducer、状態、graph、通知判定を変更する場合は`pnpm eval:golden`も実行します。

@@ -105,7 +105,7 @@ function waitingSubjectRowPresentation(
   };
 }
 
-/** 項目を待たせている人とチームの集計を表示する。 */
+/** 項目への対応を待たれている人とチームの集計を表示する。 */
 export function PeoplePage({
   createPersonHref,
   locale,

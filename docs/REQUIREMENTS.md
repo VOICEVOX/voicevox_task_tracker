@@ -32,7 +32,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 - 本文の記載だけでなく、隣接nodeの最新stateを伝播し、依存解消時に依存元を再判定する。
 - checklistとindentからrelation候補を抽出し、native relationと区別して曖昧な関係だけをCodexで判定する。
-- bot activityを進捗扱いせず、latest headとhuman reviewの前後関係でauthor待ちとreviewer待ちを決める。
+- bot activityを進捗扱いせず、latest headとhuman reviewの前後関係で修正待ちとレビュー待ちを決める。
 - botをボール所有者にせず、承認、merge readiness、未解決human threadを別々に評価する。
 - 追跡とgraph利用をDiscordのnoise抑制から分離する。
 - assigneeだけでなく、未回答の明示依頼をCodexで根拠付き判定する。
@@ -80,6 +80,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 | 用語                | 定義                                                                 |
 | ------------------- | -------------------------------------------------------------------- |
 | tracked item        | 追跡対象に入ったIssueまたはPR                                        |
+| status              | 待たれている行動。誰を待つかは含まない                               |
 | waitingOn           | 次に状態を進める行動が期待される主体                                 |
 | ball / ボール       | waitingOnと同義の運用上の表現                                        |
 | statusSince         | 現在statusへ遷移した時刻                                             |
@@ -98,39 +99,56 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 ### 7.1 status enum
 
-- `waiting_for_assessment` — 内容確認待ち
-- `waiting_for_owner` — 担当決め待ち
-- `waiting_for_decision` — 方針判断待ち
-- `waiting_for_review` — レビュー待ち
-- `waiting_for_revision` — 修正待ち
-- `waiting_for_reply` — 返答待ち
-- `waiting_for_work` — 作業待ち
-- `waiting_for_unblock` — ブロック解消待ち
-- `waiting_for_automation` — 自動処理待ち
-- `waiting_for_merge` — マージ待ち
-- `in_progress` — 作業中
-- `unknown` — 待ち先不明
-- `terminal_merged` — マージ済み
-- `terminal_completed` — 完了
-- `terminal_not_planned` — 対応しない
+statusは待たれている行動を表す。誰を待っているかはwaitingOnだけで表し、status名へ主体を含めない。
+主体名を状態名にすると、その人が行動するのを待つのか、その人が決まるのを待つのかを読み取れないためである。
+
+| status                   | 表示名           | 待っている行動                                             |
+| ------------------------ | ---------------- | ---------------------------------------------------------- |
+| `waiting_for_assessment` | 内容確認待ち     | 内容がまだ読まれておらず、扱いの検討が始まっていない       |
+| `waiting_for_owner`      | 担当決め待ち     | 内容は検討されたが、誰が進めるか決まっていない             |
+| `waiting_for_decision`   | 方針判断待ち     | 進め方そのものの判断を待っている                           |
+| `waiting_for_review`     | レビュー待ち     | レビューされるのを待っている                               |
+| `waiting_for_revision`   | 修正待ち         | レビュー指摘、conflict、CI失敗への対応を待っている         |
+| `waiting_for_reply`      | 返答待ち         | 未回答の質問や依頼への返答を待っている                     |
+| `waiting_for_work`       | 作業待ち         | 担当が決まっている作業が進むのを待っている                 |
+| `waiting_for_unblock`    | ブロック解消待ち | 依存している項目の解消を待っている                         |
+| `waiting_for_automation` | 自動処理待ち     | merge queueやrequired checksなど自動処理の完了を待っている |
+| `waiting_for_merge`      | マージ待ち       | マージ操作を待っている                                     |
+| `in_progress`            | 作業中           | draft Pull Requestで作業が現に進んでいる                   |
+| `unknown`                | 待ち先不明       | 根拠が足りず待ち先を決められない                           |
+
+終了状態は`terminal_merged`、`terminal_completed`、`terminal_not_planned`とする。
+`in_progress`だけは待ち状態ではなく、作業が現に進んでいることを表す。この違いは意図したものである。
 
 ### 7.2 waitingOn enum
 
-`user`、`team`、`role`、`item`、`automation`、`unknown`を使う。`role`の値はauthor、maintainer、reviewer、assignee、respondent、dependency、merge_decider、ci、unknownとする。`respondent`は名指しで質問や依頼を向けられた相手を表す。複数blockerや複数assigneeを表せる配列とし、UI・通知用にprimaryを1つ選ぶ。
+waitingOnは待たれている主体を表す。`kind`が主体の種類、`role`がその主体を待つ根拠である。
+
+`kind`は`user`、`team`、`role`、`item`、`automation`、`unknown`を使う。
+`role`はauthor、maintainer、reviewer、assignee、respondent、dependency、merge_decider、ci、unknownとする。
+
+`respondent`は名指しで質問や依頼を向けられた相手を表し、その人の役割を問わない。
+これにより、作成者という役割を待つ`kind=role`・`role=author`と、たまたま作成者である個人を名指しで待つ`kind=user`・`role=respondent`を区別できる。
+メンテナー全体を待つ場合と、メンテナーのうち特定の個人を待つ場合も同じように分かれる。
+
+`kind=user`の`candidateId`はGitHub login、`kind=team`は`organization/slug`とする。
+複数blockerや複数assigneeを表せる配列とし、UI・通知用にprimaryを1つ選ぶ。
 
 ### 7.3 PR判定の既定優先順位
 
 1. merged/closedならterminal。
 2. authoritativeまたは高信頼のopen blockerがあれば`waiting_for_unblock`。
 3. merge queue/auto-merge/required checks実行中なら`waiting_for_automation`。
-4. latest head以後のhuman `CHANGES_REQUESTED`ならauthor待ち。
-5. 未解決human review threadのうち最後のhumanコメントがauthor以外のものがあればauthor待ち。
-6. 変更要求後にauthor push済みなら再review側を評価。
-7. 現行review requestがあればrequested user/team待ち。
-8. draftは原則author待ち。ただし明示的判断依頼・blockerを優先。
-9. 必要承認/checks済みなら`waiting_for_merge`＋maintainer待ち。
-10. ready-for-reviewでreview未依頼なら`waiting_for_owner`としてmaintainer待ち。
-11. CI失敗・コメント意味等が曖昧な場合だけCodexへ渡す。
+4. latest head以後にhuman `CHANGES_REQUESTED`があれば`waiting_for_revision`。
+5. 未解決human review threadのうち最後のhumanコメントがauthor以外のものがあれば`waiting_for_revision`。
+6. 変更要求後にauthorがpush済みなら`waiting_for_review`として再review側を評価。
+7. 現行review requestがあれば`waiting_for_review`とし、requestされたuserまたはteamを待つ。
+8. ラベルが方針判断を要求していれば`waiting_for_decision`。
+9. draftは原則`in_progress`とし、authorを待つ。ただし明示的判断依頼・blockerを優先。
+10. PR変更起因と判定できるrequired check失敗、またはmerge conflictがあれば`waiting_for_revision`。
+11. 必要承認/checks済みなら`waiting_for_merge`とし、merge判断者を待つ。
+12. 残るopenのnon-draft PRは`waiting_for_owner`とし、レビュー担当を決めるmaintainerを待つ。
+13. CI失敗・コメント意味等が曖昧な場合だけCodexへ渡す。
 
 4、5、6、7で待ち先を決めた後、その待ち先本人が責務の起点より後に本文のある発言をしていれば、発言の意味を解釈しないと責務を確定できない。決定論的な待ち先を既定として残したままCodexへ渡す。5では、未解決threadの最後のhumanコメントに本文がある場合も同じ扱いとする。そのコメントがauthorの対応を求めるとは限らないためである。
 
@@ -138,26 +156,26 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 1. closedならterminal。
 2. open blockerがあれば`waiting_for_unblock`。
-3. 最新の未回答な明示依頼がmaintainer役割だけへ向く場合は`waiting_for_decision`、それ以外は`waiting_for_reply`として名指しされた相手をrespondent待ちにする。
-4. assigneeがいればassignee待ち。
-5. それ以外の未アサインIssueは、作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば`waiting_for_owner`、なければ`waiting_for_assessment`としてmaintainer待ち。
-6. 作成者がmaintainerでも、次担当不明ならmaintainer責務のまま。
+3. 最新の未回答な明示依頼がmaintainer役割だけへ向くなら`waiting_for_decision`。それ以外は`waiting_for_reply`とし、名指しされた相手を`respondent`として待つ。相手がassignee本人でも、待っているのは作業ではなく返答なので`waiting_for_reply`とする。
+4. assigneeがいれば`waiting_for_work`とし、assigneeを待つ。
+5. 未アサインなら、作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば`waiting_for_owner`、どれもなければ`waiting_for_assessment`とし、どちらもmaintainerを待つ。
+6. 作成者がmaintainerでも、次の担当が不明ならmaintainerの責務のままとする。
 
 ## 8. 停滞時間、停滞の深刻さ、重要度の既定値
 
 すべて内部UTC、表示JST。日数は営業日ではなく連続時間で計算する。`updated_at`は参考値であり、severity clockの正本にしない。
 
-| wait class                     | watch | urgent | critical | 主な扱い                             |
-| ------------------------------ | ----: | -----: | -------: | ------------------------------------ |
-| assessment                     |   48h |    96h |     168h | 内容確認の見落としを検出             |
-| owner                          |   48h |    96h |     168h | 担当未決定または待ち先不明を検出     |
-| decision                       |   48h |    96h |     168h | 方針判断の停滞を検出                 |
-| review                         |   48h |   120h |     240h | review requestから計時               |
-| author after changes requested |   72h |   168h |     336h | author pushでreviewer側へ遷移可能    |
-| reply                          |   48h |   120h |     240h | 未回答の質問や依頼から計時           |
-| assignee/in progress           |  168h |   336h |     720h | 実装作業の長さを考慮                 |
-| ready to merge                 |   24h |    72h |     168h | merge decisionの見落としを早めに検出 |
-| automation                     |    6h |    24h |      72h | 通常のCI時間は通知しない             |
+| wait class | watch | urgent | critical | 主な扱い                                                       |
+| ---------- | ----: | -----: | -------: | -------------------------------------------------------------- |
+| assessment |   48h |    96h |     168h | 内容確認待ちの見落としを検出                                   |
+| owner      |   48h |    96h |     168h | 担当決め待ちまたは待ち先不明を検出                             |
+| decision   |   48h |    96h |     168h | 方針判断待ちの停滞を検出                                       |
+| review     |   48h |   120h |     240h | レビュー待ちはreview requestから計時                           |
+| revision   |   72h |   168h |     336h | 変更要求後の修正待ちはauthorのpush後にレビュー待ちへ遷移可能   |
+| reply      |   48h |   120h |     240h | 返答待ちは未回答の質問や依頼から計時                           |
+| work       |  168h |   336h |     720h | 作業待ち、作業中、変更要求以外の修正待ちは実装作業の長さを考慮 |
+| merge      |   24h |    72h |     168h | マージ待ちの見落としを早めに検出                               |
+| automation |    6h |    24h |      72h | 自動処理待ちは通常のCI時間を通知しない                         |
 
 blocked parentは「親自身を毎日催促」せず、blockerのseverityとdownstream impactを通知順位へ使う。priority labelはseverityを最大1段階引き上げられるが、低信頼AIだけでcriticalへ引き上げない。
 
@@ -173,8 +191,8 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 通知する主な変化:
 
 - severityがwatch/urgent/criticalへ初めて上がった。
-- 内容確認待ち・担当未決定・待ち先不明が48時間を超えた。
-- human `CHANGES_REQUESTED`後のauthor待ちが長期化した。
+- 内容確認待ち、担当決め待ち、待ち先不明が48時間を超えた。
+- human `CHANGES_REQUESTED`後の修正待ちが長期化した。
 - high-impact blockerがurgent以上になった。
 - 依存解消で重要項目が`newly_unblocked`になった。
 - blocks cycleが新たに発生した。
@@ -297,39 +315,39 @@ scoreは各要因の加点を0から100の整数へ収め、設定した閾値�
 
 ### 11.6 状態・ボール判定
 
-| ID        | 規範 | 要求                                                                                                                                                                                                           | 受入要約                                                                                                                                  |
-| --------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `RSP-001` | MUST | 状態と責務の分離 — status、waitingOn、nextAction、statusSince、ownerSinceを別フィールドで保持しなければならない。                                                                                              | `AT-RSP-001`: 同一ownerでstatusだけ変わるfixtureを表現できる。                                                                            |
-| `RSP-002` | MUST | 責務種別 — waitingOnはuser、team、role、item、automation、unknownを表現できなければならない。                                                                                                                  | `AT-RSP-002`: 全種別のschema fixtureがvalidationに通る。                                                                                  |
-| `RSP-003` | MUST | 未アサインIssueの分類 — 作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば担当決め待ち、なければ内容確認待ちとし、当該repoのmaintainer role待ちにしなければならない。                         | `AT-RSP-003`: コメントなし、humanコメントあり、botコメントのみ、ラベルありの各fixtureが期待する状態になる。                               |
-| `RSP-004` | MUST | アサインIssue — 明確な別の待ち根拠がないアサイン済みIssueはassignee待ちとしなければならない。                                                                                                                  | `AT-RSP-004`: assignee 1名/複数fixtureで全員が候補となる。                                                                                |
-| `RSP-005` | MUST | 未回答の明示依頼 — 最新の未回答な質問・判断依頼が個人またはteamへ向く場合、返答待ちとして名指しされた相手をrespondentにしなければならない。                                                                    | `AT-RSP-005`: 本文/コメントの依頼fixtureでCodexがsource ID付きのrespondentを選ぶ。                                                        |
-| `RSP-006` | MUST | maintainer作成でも責務維持 — maintainerが作成したIssue/PRでも次の担当が明確でなければmaintainer roleの責務としなければならない。                                                                               | `AT-RSP-006`: maintainer-authored unassigned fixtureがauthor任せにならない。                                                              |
-| `RSP-007` | MUST | open blocker優先 — 確定したopen blockerがある項目はstatus=waiting_for_unblockとし、waitingOnにblocker itemを置かなければならない。                                                                             | `AT-RSP-007`: open/closed blocker混在fixtureでopenだけがwaitingOnになる。                                                                 |
-| `RSP-008` | MUST | draft PRの既定 — 明示的な他者待ちがないdraft PRはauthor待ちとしなければならない。                                                                                                                              | `AT-RSP-008`: recent draft fixtureがauthor/in_progressになる。                                                                            |
-| `RSP-009` | MUST | draft中の明示依頼 — draftでもmaintainer判断や外部blockerを明示している場合、author既定を上書きできなければならない。                                                                                           | `AT-RSP-009`: draft + decision request fixtureでmaintainer待ちになる。                                                                    |
-| `RSP-010` | MUST | レビュー未依頼PR — ready-for-reviewのPRにreview requestがなく、他の明確な待ち先もない場合は`waiting_for_owner`としてmaintainer role待ちとしなければならない。                                                  | `AT-RSP-010`: reviewerなしPR fixtureが担当決め待ちになる。                                                                                |
-| `RSP-011` | MUST | 個人レビュー依頼 — 現行requested reviewer userがいるPRは当該user待ちとしなければならない。                                                                                                                     | `AT-RSP-011`: user request fixtureでloginが表示される。                                                                                   |
-| `RSP-012` | MUST | teamレビュー依頼 — 現行requested team reviewerがいるPRは当該team待ちとしなければならない。                                                                                                                     | `AT-RSP-012`: team request fixtureでteam slugが表示される。                                                                               |
-| `RSP-013` | MUST | 変更要求後のauthor待ち — 最新head commit以後にhuman reviewerのCHANGES_REQUESTEDがある場合はauthor待ちとしなければならない。                                                                                    | `AT-RSP-013`: VOICEVOX/voicevox#3079型fixtureでauthor待ちになる。                                                                         |
-| `RSP-014` | MUST | 変更対応push後の再review待ち — CHANGES_REQUESTED後にauthorが新しいhead commitをpushし、再対応が完了したと推定できる場合はreviewer側へ責務を戻せなければならない。                                              | `AT-RSP-014`: review→push fixtureでownerSinceがpush時刻へ変わる。                                                                         |
-| `RSP-015` | MUST | 未解決human thread — 未解決のhuman review threadをactionable signalとして扱わなければならない。ただし最後のhumanコメントがauthorのthreadはauthor応答済みとみなし、author待ちの根拠にしてはならない。           | `AT-RSP-015`: unresolved human thread fixtureでresolved版よりauthor待ち優先度が高く、authorが最後に返信したthreadはauthor待ちにならない。 |
-| `RSP-016` | MUST | bot review非所有 — botのreview/commentだけを理由に個人・teamのボールをbotへ移してはならない。                                                                                                                  | `AT-RSP-016`: Copilot comment fixtureでwaitingOn.kindがautomation/user botにならない。                                                    |
-| `RSP-017` | MUST | 承認済みready-to-merge — 必要承認とchecksを満たしauto-merge/queue未設定のPRはmaintainerのmerge decision待ちとしなければならない。                                                                              | `AT-RSP-017`: approved/passing fixtureがwaiting_for_merge + maintainerになる。                                                            |
-| `RSP-018` | MUST | 自動merge待ち — auto-merge、merge queue、実行中required checksで人の操作が不要な間はautomation待ちとしなければならない。                                                                                       | `AT-RSP-018`: queue/running checks fixtureがautomationになり短時間の人向け通知を出さない。                                                |
-| `RSP-019` | MUST | コード起因CI失敗 — PR変更に起因すると確度高く判定できるrequired check failureはauthor待ちとしなければならない。                                                                                                | `AT-RSP-019`: deterministic test failure fixtureがauthorになる。                                                                          |
-| `RSP-020` | MUST | infra/flaky CI — インフラ・flakyの疑いがあるcheck failureはCodex評価し、低信頼時はmaintainer role待ちまたはunknownへ縮退しなければならない。                                                                   | `AT-RSP-020`: runner outage fixtureがauthor断定にならない。                                                                               |
-| `RSP-021` | MUST | merge conflict — 他の明確な運用ルールがないmerge conflict PRはauthor待ちとしなければならない。                                                                                                                 | `AT-RSP-021`: conflicting fixtureがauthor + update branch actionになる。                                                                  |
-| `RSP-022` | MUST | terminal状態 — merged、closed-completed、closed-not-plannedを区別し、いずれも人のwaitingOnを空にしなければならない。                                                                                           | `AT-RSP-022`: 3 terminal fixtureでstatus reasonが区別される。                                                                             |
-| `RSP-023` | MUST | 複数blocker — 複数open blockerを同時に保持し、primary blocker選定と全一覧を表示しなければならない。                                                                                                            | `AT-RSP-023`: 3 blockers fixtureで欠落せず、primary選定理由がある。                                                                       |
-| `RSP-024` | MUST | 責務遷移時刻 — waitingOnの実体またはstatusが変わった時点でownerSince/stallSinceを更新しなければならない。                                                                                                      | `AT-RSP-024`: maintainer→reviewer遷移fixtureで時刻がreview requestになる。                                                                |
-| `RSP-025` | MUST | 意味のある進捗 — 単なるコメント数ではなく、成果物push、回答、レビュー、依存解消、決定等をlastProgressAtとして判定しなければならない。                                                                          | `AT-RSP-025`: 雑談コメントと回答コメントfixtureでlastProgressAtが異なる。                                                                 |
-| `RSP-026` | MUST | bot activityで停滞解除禁止 — botコメント、preview URL更新、定期dashboard更新だけではstallSinceをリセットしてはならない。                                                                                       | `AT-RSP-026`: bot-only activity fixtureで停滞時間が継続する。                                                                             |
-| `RSP-027` | MUST | label変更の扱い — label変更はpriority/semanticsを再計算するが、設定で進捗扱いされたlabel以外はstallSinceをリセットしてはならない。                                                                             | `AT-RSP-027`: priority label追加fixtureでseverityと重要度が変わり、stallSinceは維持される。                                               |
-| `RSP-028` | MUST | 不確実性表示 — 責務判定にconfidence、根拠source IDs、uncertaintiesを持ち、低信頼時はunknown/推定表示へ縮退しなければならない。                                                                                 | `AT-RSP-028`: 低confidence fixtureが断定表示・高優先通知にならない。                                                                      |
-| `RSP-029` | MUST | 保持者の発言による責務の反転 — 変更要求、未解決review thread、review依頼で待ち先を決めた後、その待ち先本人が責務の起点より後に本文のある発言をしている場合、発言の意味を解釈して責務を判定しなければならない。 | `AT-RSP-029`: 変更要求後にauthorが質問するfixtureで待ち先がreviewerへ移る。                                                               |
-| `RSP-030` | MUST | 応答不要の発言 — 了解、謝辞、進捗報告のように相手の行動を必要としない発言だけを理由に、責務を相手へ移してはならない。                                                                                          | `AT-RSP-030`: authorが了解コメントだけを返すfixtureでauthor待ちが維持される。                                                             |
-| `RSP-031` | MUST | 責務主体の活動による停滞起点 — 現在の待ち先本人がGitHub上で活動した時刻を停滞起点の下限としなければならない。第三者やbotの活動、draft戻し、merge queueの出し入れでは停滞を解除してはならない。                 | `AT-RSP-031`: 待ち先本人のコメントで停滞起点が進み、第三者のコメントでは進まない。                                                        |
+| ID        | 規範 | 要求                                                                                                                                                                                                           | 受入要約                                                                                                                                |
+| --------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `RSP-001` | MUST | 状態と責務の分離 — status、waitingOn、nextAction、statusSince、ownerSinceを別フィールドで保持しなければならない。                                                                                              | `AT-RSP-001`: 同一ownerでstatusだけ変わるfixtureを表現できる。                                                                          |
+| `RSP-002` | MUST | 責務種別 — waitingOnはuser、team、role、item、automation、unknownを表現できなければならない。                                                                                                                  | `AT-RSP-002`: 全種別のschema fixtureがvalidationに通る。                                                                                |
+| `RSP-003` | MUST | 未アサインIssueの分類 — 作成者以外のhumanコメント、現在のラベル、担当履歴のいずれかがあれば担当決め待ち、なければ内容確認待ちとし、当該repoのmaintainer roleへ責務を置かなければならない。                     | `AT-RSP-003`: コメントなし、humanコメントあり、botコメントのみ、ラベルありの各fixtureが期待する状態になる。                             |
+| `RSP-004` | MUST | アサインIssue — 明確な別の待ち根拠がないアサイン済みIssueは作業待ちとし、assigneeの作業を待たなければならない。                                                                                                | `AT-RSP-004`: assignee 1名または複数名のfixtureで全員がwaitingOn候補となる。                                                            |
+| `RSP-005` | MUST | 未回答の明示依頼 — 最新の未回答な質問・判断依頼が個人またはteamへ向く場合、返答待ちとして名指しされた相手をrespondentにしなければならない。                                                                    | `AT-RSP-005`: 本文/コメントの依頼fixtureでCodexがsource ID付きのrespondentを選ぶ。                                                      |
+| `RSP-006` | MUST | maintainer作成でも責務維持 — maintainerが作成したIssue/PRでも次の担当が明確でなければmaintainer roleへ責務を置かなければならない。                                                                             | `AT-RSP-006`: maintainer-authored unassigned fixtureでauthorへ責務が移らない。                                                          |
+| `RSP-007` | MUST | open blocker優先 — 確定したopen blockerがある項目はstatus=waiting_for_unblockとし、waitingOnにblocker itemを置かなければならない。                                                                             | `AT-RSP-007`: open/closed blocker混在fixtureでopenだけがwaitingOnになる。                                                               |
+| `RSP-008` | MUST | draft PRの既定 — 明示的に他者の行動を待っていないdraft PRは作業中とし、authorへ責務を置かなければならない。                                                                                                    | `AT-RSP-008`: recent draft fixtureが`in_progress`となり、waitingOn.roleがauthorになる。                                                 |
+| `RSP-009` | MUST | draft中の明示依頼 — draftでもmaintainerへの方針判断依頼や外部blockerを明示している場合、作業中としてauthorへ責務を置く既定を上書きできなければならない。                                                       | `AT-RSP-009`: draft + decision request fixtureが方針判断待ちとなり、maintainerへ責務が移る。                                            |
+| `RSP-010` | MUST | レビュー未依頼PR — ready-for-reviewのPRにreview requestがなく、他の明確な待ち先もない場合は担当決め待ちとし、レビュー担当を決めるmaintainer roleへ責務を置かなければならない。                                 | `AT-RSP-010`: reviewerなしPR fixtureが担当決め待ちになる。                                                                              |
+| `RSP-011` | MUST | 個人レビュー依頼 — 現行requested reviewer userがいるPRはレビュー待ちとし、当該userのレビューを待たなければならない。                                                                                           | `AT-RSP-011`: user request fixtureでloginが表示される。                                                                                 |
+| `RSP-012` | MUST | teamレビュー依頼 — 現行requested team reviewerがいるPRはレビュー待ちとし、当該teamのレビューを待たなければならない。                                                                                           | `AT-RSP-012`: team request fixtureでteam slugが表示される。                                                                             |
+| `RSP-013` | MUST | 変更要求後の修正待ち — 最新head commit以後にhuman reviewerの`CHANGES_REQUESTED`がある場合は修正待ちとし、authorの修正を待たなければならない。                                                                  | `AT-RSP-013`: VOICEVOX/voicevox#3079型fixtureが修正待ちとなり、waitingOn.roleがauthorになる。                                           |
+| `RSP-014` | MUST | 変更対応push後のレビュー待ち — `CHANGES_REQUESTED`後にauthorが新しいhead commitをpushし、再対応が完了したと推定できる場合はレビュー待ちとし、reviewer側へ責務を戻せなければならない。                          | `AT-RSP-014`: review→push fixtureがレビュー待ちとなり、ownerSinceがpush時刻へ変わる。                                                   |
+| `RSP-015` | MUST | 未解決human thread — 未解決のhuman review threadをactionable signalとして扱わなければならない。ただし最後のhumanコメントがauthorのthreadはauthor応答済みとみなし、修正待ちの根拠にしてはならない。             | `AT-RSP-015`: unresolved human thread fixtureはresolved版より修正待ちの優先度が高い。authorが最後に返信したthreadは修正待ちにならない。 |
+| `RSP-016` | MUST | bot review非所有 — botのreview/commentだけを理由に個人・teamのボールをbotへ移してはならない。                                                                                                                  | `AT-RSP-016`: Copilot comment fixtureでwaitingOn.kindがautomation/user botにならない。                                                  |
+| `RSP-017` | MUST | 承認済みready-to-merge — 必要承認とchecksを満たしauto-mergeまたはqueueが未設定のPRはマージ待ちとし、maintainerのマージ判断を待たなければならない。                                                             | `AT-RSP-017`: approved/passing fixtureが`waiting_for_merge`となり、waitingOn.roleがmaintainerになる。                                   |
+| `RSP-018` | MUST | 自動処理待ち — auto-merge、merge queue、実行中required checksで人の操作が不要な間は自動処理待ちとし、automationの完了を待たなければならない。                                                                  | `AT-RSP-018`: queue/running checks fixtureが自動処理待ちとなり、waitingOn.kindがautomationになる。短時間の人向け通知は出さない。        |
+| `RSP-019` | MUST | コード起因CI失敗 — PR変更に起因すると確度高く判定できるrequired check failureは修正待ちとし、authorの修正を待たなければならない。                                                                              | `AT-RSP-019`: deterministic test failure fixtureが修正待ちとなり、waitingOn.roleがauthorになる。                                        |
+| `RSP-020` | MUST | infra/flaky CI — インフラまたはflakyの疑いがあるcheck failureはCodex評価し、低信頼時は担当決め待ちとしてmaintainer roleへ責務を置くか、待ち先不明へ縮退しなければならない。                                    | `AT-RSP-020`: runner outage fixtureが修正待ちとしてauthorの修正を待つ判定にならない。                                                   |
+| `RSP-021` | MUST | merge conflict — 他の明確な運用ルールがないmerge conflict PRは修正待ちとし、authorの修正を待たなければならない。                                                                                               | `AT-RSP-021`: conflicting fixtureが修正待ちとなり、authorのnext actionがbranch更新になる。                                              |
+| `RSP-022` | MUST | terminal状態 — `terminal_merged`、`terminal_completed`、`terminal_not_planned`を区別し、いずれも人のwaitingOnを空にしなければならない。                                                                        | `AT-RSP-022`: 3 terminal fixtureでstatus reasonが区別される。                                                                           |
+| `RSP-023` | MUST | 複数blocker — 複数open blockerを同時に保持し、primary blocker選定と全一覧を表示しなければならない。                                                                                                            | `AT-RSP-023`: 3 blockers fixtureで欠落せず、primary選定理由がある。                                                                     |
+| `RSP-024` | MUST | 責務遷移時刻 — waitingOnの実体またはstatusが変わった時点でownerSince/stallSinceを更新しなければならない。                                                                                                      | `AT-RSP-024`: 担当決め待ちからレビュー待ちへ移り、責務がmaintainerからreviewerへ移るfixtureで時刻がreview requestになる。               |
+| `RSP-025` | MUST | 意味のある進捗 — 単なるコメント数ではなく、成果物push、回答、レビュー、依存解消、決定等をlastProgressAtとして判定しなければならない。                                                                          | `AT-RSP-025`: 雑談コメントと回答コメントfixtureでlastProgressAtが異なる。                                                               |
+| `RSP-026` | MUST | bot activityで停滞解除禁止 — botコメント、preview URL更新、定期dashboard更新だけではstallSinceをリセットしてはならない。                                                                                       | `AT-RSP-026`: bot-only activity fixtureで停滞時間が継続する。                                                                           |
+| `RSP-027` | MUST | label変更の扱い — label変更はpriority/semanticsを再計算するが、設定で進捗扱いされたlabel以外はstallSinceをリセットしてはならない。                                                                             | `AT-RSP-027`: priority label追加fixtureでseverityと重要度が変わり、stallSinceは維持される。                                             |
+| `RSP-028` | MUST | 不確実性表示 — 責務判定にconfidence、根拠source IDs、uncertaintiesを持ち、低信頼時はunknown/推定表示へ縮退しなければならない。                                                                                 | `AT-RSP-028`: 低confidence fixtureが断定表示・高優先通知にならない。                                                                    |
+| `RSP-029` | MUST | 保持者の発言による責務の反転 — 変更要求、未解決review thread、review依頼で待ち先を決めた後、その待ち先本人が責務の起点より後に本文のある発言をしている場合、発言の意味を解釈して責務を判定しなければならない。 | `AT-RSP-029`: 変更要求後にauthorが質問するfixtureは返答待ちとなり、reviewerの返答を待つ。                                               |
+| `RSP-030` | MUST | 応答不要の発言 — 了解、謝辞、進捗報告のように相手の行動を必要としない発言だけを理由に、責務を相手へ移してはならない。                                                                                          | `AT-RSP-030`: authorが了解コメントだけを返すfixtureは修正待ちを維持し、authorの修正を待つ。                                             |
+| `RSP-031` | MUST | 責務主体の活動による停滞起点 — 現在の待ち先本人がGitHub上で活動した時刻を停滞起点の下限としなければならない。第三者やbotの活動、draft戻し、merge queueの出し入れでは停滞を解除してはならない。                 | `AT-RSP-031`: 待ち先本人のコメントで停滞起点が進み、第三者のコメントでは進まない。                                                      |
 
 ### 11.7 依存グラフ
 

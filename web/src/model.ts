@@ -779,7 +779,7 @@ export function selectWaitingSubjectReasons(
     });
 }
 
-/** loginまたは所属teamを待っている項目のnode ID集合を返す。 */
+/** loginまたは所属teamの対応を待っている項目のnode ID集合を返す。 */
 export function selectWaitingSubjectItemNodeIds(
   summary: PublicSummaryDto,
   login: string,

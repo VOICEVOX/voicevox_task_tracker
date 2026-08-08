@@ -109,7 +109,7 @@ function itemRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
   };
 }
 
-/** 指定したGitHubアカウントを待っている項目を表示する。 */
+/** 指定したGitHubアカウントの対応を待っている項目を表示する。 */
 export function PersonPage({
   createItemHref,
   isViewerIdentity,
