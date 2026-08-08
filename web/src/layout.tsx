@@ -6,7 +6,7 @@ import { appendClassName } from "./class-name.js";
 type PageSectionProps = Readonly<{
   children: ComponentChildren;
   className?: string;
-  description?: string;
+  description?: string | undefined;
   heading: string;
   headingAccessory?: ComponentChildren;
   headingId: string;

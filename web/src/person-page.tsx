@@ -6,6 +6,7 @@ import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
+import { ListCountSummary } from "./list-count-summary.js";
 import {
   collectWaitingTeamIds,
   createEmptyTableFilters,
@@ -245,52 +246,55 @@ export function PersonPage({
 
   return (
     <PageSection
-      className="person-page [&>.section-heading]:flex-col [&>.section-heading]:items-start [&>.section-heading]:gap-2"
+      className="person-page"
+      description={
+        teamOptions.length > 0 ? "所属チームを選ぶと、そのチーム宛の待ちも加わります。" : undefined
+      }
       heading={`@${login} を待っている項目`}
       headingAccessory={
-        <div class="grid w-full gap-3">
-          <p class="person-item-count m-0 max-w-3xl text-text-muted" aria-live="polite">
-            {rows.length.toLocaleString(locale)}
-            件を表示しています。所属チームを選ぶと、そのチーム宛の待ちも加わります。
-          </p>
-          <div class="person-identity-action flex flex-wrap items-center gap-x-4 gap-y-2">
-            <ActionButton
-              aria-describedby={
-                viewerIdentityAvailable ? undefined : "person-identity-unavailable-reason"
-              }
-              className="person-identity-button max-narrow:w-full"
-              type="button"
-              disabled={!viewerIdentityAvailable}
-              onClick={onViewerIdentityToggle}
-            >
-              {isViewerIdentity ? "自分の記憶を解除する" : "自分として記憶する"}
-            </ActionButton>
-            <a
-              class="person-back-link inline-flex min-h-11 items-center"
-              href={peopleHref}
-              onClick={(event) => {
-                if (!shouldHandleClientNavigation(event)) {
-                  return;
-                }
-                event.preventDefault();
-                onSelectPeople();
-              }}
-            >
-              担当者一覧へ戻る
-            </a>
-            {!viewerIdentityAvailable && (
-              <p
-                class="m-0 w-full text-sm text-state-warning-text"
-                id="person-identity-unavailable-reason"
-              >
-                このブラウザーでは記憶を利用できません。
-              </p>
-            )}
-          </div>
-        </div>
+        <ListCountSummary
+          className="person-item-count"
+          count={rows.length}
+          locale={locale}
+          sort={sort}
+        />
       }
       headingId="person-page-heading"
     >
+      <div class="person-identity-action mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <ActionButton
+          aria-describedby={
+            viewerIdentityAvailable ? undefined : "person-identity-unavailable-reason"
+          }
+          className="person-identity-button max-narrow:w-full"
+          type="button"
+          disabled={!viewerIdentityAvailable}
+          onClick={onViewerIdentityToggle}
+        >
+          {isViewerIdentity ? "自分の記憶を解除する" : "自分として記憶する"}
+        </ActionButton>
+        <a
+          class="person-back-link inline-flex min-h-11 items-center"
+          href={peopleHref}
+          onClick={(event) => {
+            if (!shouldHandleClientNavigation(event)) {
+              return;
+            }
+            event.preventDefault();
+            onSelectPeople();
+          }}
+        >
+          担当者一覧へ戻る
+        </a>
+        {!viewerIdentityAvailable && (
+          <p
+            class="m-0 w-full text-sm text-state-warning-text"
+            id="person-identity-unavailable-reason"
+          >
+            このブラウザーでは記憶を利用できません。
+          </p>
+        )}
+      </div>
       {teamOptions.length > 0 && (
         <fieldset class="person-team-selection mb-4 flex flex-wrap gap-2 rounded-xl border border-border-default bg-surface-sunken px-3 pt-2 pb-3 text-text-secondary">
           <legend class="px-1 font-bold">所属チーム</legend>

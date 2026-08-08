@@ -7,6 +7,7 @@ import { type PublicDetailsLoader } from "./details-loader.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
+import { ListCountSummary } from "./list-count-summary.js";
 import {
   createItemDetailsMap,
   createItemTableRows,
@@ -443,8 +444,16 @@ function ItemTable({
   return (
     <PageSection
       className="item-workspace scroll-mt-4"
-      description={`${filteredRows.length.toLocaleString(locale)}件を表示対象にしています。`}
+      description="追跡中のすべての項目を検索、絞り込み、並び替えできます。"
       heading="全項目一覧"
+      headingAccessory={
+        <ListCountSummary
+          className="items-item-count"
+          count={filteredRows.length}
+          locale={locale}
+          sort={sort}
+        />
+      }
       headingId="items-heading"
     >
       <div class="item-list-toolbar mb-4 grid gap-4 rounded-xl border border-border-subtle bg-surface-sunken p-4 md:grid-cols-[minmax(0,1fr)_auto]">

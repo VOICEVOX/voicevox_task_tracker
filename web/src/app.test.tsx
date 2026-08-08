@@ -733,9 +733,11 @@ describe("Web UI", () => {
         '.person-items-table tr[data-node-id="sample-item-editor-101"] td:last-child',
       ).textContent,
     ).toBe("HiHoさんの確認を待っています");
-    expect(requiredElement<HTMLElement>(".person-item-count").textContent).toBe(
-      "1件を表示しています。所属チームを選ぶと、そのチーム宛の待ちも加わります。",
-    );
+    expect(requiredElement<HTMLElement>(".person-item-count strong").textContent).toBe("1件");
+    expect(requiredElement<HTMLElement>(".person-item-count span").textContent).toBe("要対応");
+    expect(
+      requiredElement<HTMLElement>(".person-page .section-heading > div > p").textContent,
+    ).toBe("所属チームを選ぶと、そのチーム宛の待ちも加わります。");
     expect(
       requiredElement<HTMLAnchorElement>(
         '.person-items-table tr[data-node-id="sample-item-editor-101"] a',
@@ -1005,9 +1007,7 @@ describe("Web UI", () => {
     expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
     expect(window.history.length).toBe(historyLength);
-    expect(requiredElement<HTMLElement>(".person-item-count").textContent).toBe(
-      "2件を表示しています。所属チームを選ぶと、そのチーム宛の待ちも加わります。",
-    );
+    expect(requiredElement<HTMLElement>(".person-item-count strong").textContent).toBe("2件");
   });
 
   it("自分を記憶するとヘッダーから所属チーム付きの自分のページへ移動できる", () => {
@@ -2641,7 +2641,7 @@ describe("Web UI", () => {
     expect(itemRowNodeIds()).toEqual(["sample-item-engine-204"]);
   });
 
-  it("検索一致件数と絞り込み後の表示対象件数を一つにまとめる", async () => {
+  it("検索一致件数を見出し脇へ表示する", async () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items");
     renderApp(sampleSummary);
 
@@ -2649,8 +2649,10 @@ describe("Web UI", () => {
 
     const itemsSection = requiredElement<HTMLElement>('[aria-labelledby="items-heading"]');
     expect(itemsSection.querySelector(".section-heading > div > p")?.textContent).toBe(
-      "1件を表示対象にしています。",
+      "追跡中のすべての項目を検索、絞り込み、並び替えできます。",
     );
+    expect(requiredElement<HTMLElement>(".items-item-count strong").textContent).toBe("1件");
+    expect(requiredElement<HTMLElement>(".items-item-count span").textContent).toBe("要対応");
     expect(currentContainer().querySelector(".search-status")).toBeNull();
     expect(currentContainer().textContent).not.toContain("件が検索条件に一致しました。");
   });

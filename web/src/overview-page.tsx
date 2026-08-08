@@ -1,9 +1,9 @@
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
-import { assertNonNullable } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
+import { ListCountSummary } from "./list-count-summary.js";
 import {
   createEmptyTableFilters,
   createItemTableRows,
@@ -185,9 +185,6 @@ function AttentionQueue({
   Readonly<{
     attentionItems: readonly ItemTableRow[];
   }>) {
-  const selectedSortOption = ITEM_SORT_OPTIONS.find((option) => option.key === sort.key);
-  assertNonNullable(selectedSortOption, "選択中の並び順がありません");
-
   return (
     <PageSection
       className="attention-section"
@@ -204,12 +201,12 @@ function AttentionQueue({
               locale={locale}
             />
           </p>
-          <p class="attention-summary m-0 grid justify-items-end text-right max-shell:justify-items-start max-shell:text-left">
-            <strong class="text-xl leading-tight text-text-primary">
-              {attentionItems.length.toLocaleString(locale)}件
-            </strong>
-            <span class="text-xs">{selectedSortOption.label}</span>
-          </p>
+          <ListCountSummary
+            className="attention-summary"
+            count={attentionItems.length}
+            locale={locale}
+            sort={sort}
+          />
         </div>
       }
       headingId="attention-heading"
