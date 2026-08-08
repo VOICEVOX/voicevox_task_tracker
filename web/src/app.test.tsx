@@ -584,7 +584,7 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll(".person-items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["項目", "status", "停滞時間", "待ち理由"]);
+    ).toEqual(["項目", "status", "停滞時間↓", "待ち理由"]);
     expect(itemRowNodeIds()).toEqual(["sample-item-editor-101"]);
     const itemCell = requiredElement<HTMLTableCellElement>(
       '.person-items-table tr[data-node-id="sample-item-editor-101"] th[scope="row"]',
@@ -666,6 +666,144 @@ describe("Web UI", () => {
         '.items-card-list li[data-node-id="sample-item-engine-204"] .importance-badge',
       ),
     ).toBeNull();
+  });
+
+  it("担当者ページの表ヘッダで並び替え、同じ列の再操作で方向を反転する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people/hiho");
+    renderApp(createPersonPageSummaryWithLowImportance());
+
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-204", "sample-item-editor-101"]);
+    expect(currentContainer().querySelectorAll(".person-items-table thead th button")).toHaveLength(
+      2,
+    );
+    expect(
+      requiredElement<HTMLTableCellElement>(
+        ".person-items-table thead th:nth-child(2)",
+      ).getAttribute("aria-sort"),
+    ).toBe("none");
+    expect(
+      requiredElement<HTMLTableCellElement>(
+        ".person-items-table thead th:nth-child(3)",
+      ).getAttribute("aria-sort"),
+    ).toBe("descending");
+    expect(
+      requiredElement<HTMLTableCellElement>(
+        ".person-items-table thead th:first-child",
+      ).querySelector("button"),
+    ).toBeNull();
+    expect(
+      requiredElement<HTMLTableCellElement>(
+        ".person-items-table thead th:last-child",
+      ).querySelector("button"),
+    ).toBeNull();
+
+    act(() => {
+      requiredElement<HTMLButtonElement>(
+        ".person-items-table thead th:nth-child(3) button",
+      ).click();
+    });
+
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-204"]);
+    expect(new URL(window.location.href).searchParams.get("sort")).toBeNull();
+    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
+    expect(
+      requiredElement<HTMLTableCellElement>('.person-items-table thead th[aria-sort="ascending"]')
+        .textContent,
+    ).toBe("停滞時間↑");
+  });
+
+  it("担当者ページの並び替え状態をURLへ反映して開き直したときに復元する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/people/hiho");
+    const summary = createPersonPageSummaryWithLowImportance();
+    renderApp(summary);
+    const sortKey = requiredElement<HTMLSelectElement>("#person-sort-key");
+
+    expect([...sortKey.options].map((option) => option.textContent)).toEqual([
+      "リポジトリ",
+      "種別",
+      "重要度",
+      "状態",
+      "停滞時間",
+    ]);
+    expect([...sortKey.options].map((option) => option.value)).toEqual([
+      "repository",
+      "type",
+      "importance",
+      "status",
+      "stall",
+    ]);
+    expect(sortKey.value).toBe("stall");
+
+    act(() => {
+      sortKey.value = "repository";
+      sortKey.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-204"]);
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("repository");
+    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
+
+    act(() => {
+      render(null, currentContainer());
+    });
+    renderApp(summary);
+
+    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("repository");
+    expect(
+      requiredElement<HTMLButtonElement>(".person-sort-controls button").textContent,
+    ).toContain("昇順");
+    expect(itemRowNodeIds()).toEqual(["sample-item-editor-101", "sample-item-engine-204"]);
+  });
+
+  it("担当者ページで所属チームと並び替え状態を同時に保つ", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers&sort=status&direction=ascending",
+    );
+    renderApp(createPersonPageSummary());
+    const maintainers = requiredElement<HTMLInputElement>(
+      '.person-team-selection input[value="VOICEVOX/Maintainers"]',
+    );
+
+    expect(maintainers.checked).toBe(true);
+    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("status");
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
+
+    act(() => {
+      requiredElement<HTMLButtonElement>(".person-sort-controls button").click();
+    });
+
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("status");
+    expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
+
+    act(() => {
+      maintainers.click();
+    });
+
+    expect(new URL(window.location.href).searchParams.get("teams")).toBeNull();
+    expect(new URL(window.location.href).searchParams.get("sort")).toBe("status");
+    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("status");
+  });
+
+  it("担当者ページの不正な並び替え値と重複を既定値へ戻す", () => {
+    window.history.replaceState(
+      {},
+      "",
+      "/voicevox_task_tracker/people/hiho?teams=VOICEVOX%2FMaintainers&sort=status&sort=stall&direction=sideways",
+    );
+    renderApp(createPersonPageSummary());
+
+    expect(requiredElement<HTMLSelectElement>("#person-sort-key").value).toBe("stall");
+    expect(
+      requiredElement<HTMLButtonElement>(".person-sort-controls button").textContent,
+    ).toContain("降順");
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
+    expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
+    expect(new URL(window.location.href).searchParams.get("sort")).toBeNull();
+    expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
+    expect(currentContainer().querySelector(".url-state-notice")).not.toBeNull();
   });
 
   it.each([
@@ -1423,7 +1561,7 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll(".items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["重要度", "項目", "状態", "次の担当", "停滞"]);
+    ).toEqual(["重要度", "項目", "状態", "次の担当", "停滞↓"]);
     const highImportanceCell = requiredElement<HTMLTableCellElement>(
       '.items-table tr[data-node-id="sample-item-editor-101"] .importance-cell',
     );
@@ -1596,18 +1734,132 @@ describe("Web UI", () => {
       sortKey.value = "importance";
       sortKey.dispatchEvent(new Event("change", { bubbles: true }));
     });
-    expect(itemRowNodeIds()[0]).toBe("sample-item-engine-204");
+    expect(itemRowNodeIds()[0]).toBe("sample-item-editor-101");
     expect(new URL(window.location.href).searchParams.get("sort")).toBe("importance");
+    expect(
+      requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="descending"]')
+        .textContent,
+    ).toBe("重要度↓");
 
     const directionButton = requiredElement<HTMLButtonElement>(".item-sort-controls button");
     act(() => {
       directionButton.click();
     });
-    expect(itemRowNodeIds()[0]).toBe("sample-item-editor-101");
-    expect(new URL(window.location.href).searchParams.get("direction")).toBeNull();
+    expect(itemRowNodeIds()[0]).toBe("sample-item-engine-204");
+    expect(new URL(window.location.href).searchParams.get("direction")).toBe("ascending");
     expect(requiredElement<HTMLAnchorElement>('.items-table tbody a[target="_blank"]').rel).toBe(
       "noopener noreferrer",
     );
+  });
+
+  it("別の列へ切り替えると重要度は降順、状態は昇順で始まり、同じ列で反転する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items");
+    renderApp(sampleSummary);
+    const sortKey = requiredElement<HTMLSelectElement>("#item-sort-key");
+
+    act(() => {
+      sortKey.value = "importance";
+      sortKey.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(
+      requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="descending"]')
+        .textContent,
+    ).toBe("重要度↓");
+
+    act(() => {
+      sortKey.value = "status";
+      sortKey.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    expect(
+      requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="ascending"]')
+        .textContent,
+    ).toBe("状態↑");
+
+    act(() => {
+      requiredElement<HTMLButtonElement>(".items-table thead th:nth-child(3) button").click();
+    });
+
+    expect(
+      requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="descending"]')
+        .textContent,
+    ).toBe("状態↓");
+  });
+
+  it("項目一覧の表ヘッダで並び替え、同じ列の再操作で方向を反転する", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items");
+    renderApp(sampleSummary);
+
+    expect(
+      currentContainer().querySelectorAll('.items-table thead th[aria-sort="descending"]'),
+    ).toHaveLength(1);
+    expect(
+      currentContainer().querySelectorAll('.items-table thead th[aria-sort="none"]'),
+    ).toHaveLength(3);
+
+    act(() => {
+      requiredElement<HTMLButtonElement>(".items-table thead th:first-child button").click();
+    });
+
+    expect(itemRowNodeIds()).toEqual([
+      "sample-item-editor-101",
+      "sample-item-core-305",
+      "sample-item-editor-103",
+      "sample-item-engine-202",
+      "sample-item-engine-204",
+    ]);
+    expect(
+      requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="descending"]')
+        .textContent,
+    ).toBe("重要度↓");
+    expect(requiredElement<HTMLSelectElement>("#item-sort-key").value).toBe("importance");
+    expect(requiredElement<HTMLButtonElement>(".item-sort-controls button").textContent).toContain(
+      "降順",
+    );
+    expect(
+      currentContainer().querySelectorAll(
+        '.items-table thead th[aria-sort="ascending"], .items-table thead th[aria-sort="descending"]',
+      ),
+    ).toHaveLength(1);
+    expect(
+      currentContainer().querySelectorAll('.items-table thead th[aria-sort="none"]'),
+    ).toHaveLength(3);
+
+    act(() => {
+      requiredElement<HTMLButtonElement>(".items-table thead th:first-child button").click();
+    });
+
+    expect(itemRowNodeIds()).toEqual([
+      "sample-item-engine-204",
+      "sample-item-engine-202",
+      "sample-item-editor-103",
+      "sample-item-core-305",
+      "sample-item-editor-101",
+    ]);
+    expect(
+      requiredElement<HTMLTableCellElement>('.items-table thead th[aria-sort="ascending"]')
+        .textContent,
+    ).toBe("重要度↑");
+    expect(
+      currentContainer().querySelectorAll(
+        '.items-table thead th[aria-sort="ascending"], .items-table thead th[aria-sort="descending"]',
+      ),
+    ).toHaveLength(1);
+    expect(
+      currentContainer().querySelectorAll('.items-table thead th[aria-sort="none"]'),
+    ).toHaveLength(3);
+  });
+
+  it("項目一覧の項目列ヘッダは並び替え操作を持たない", () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items");
+    renderApp(sampleSummary);
+
+    const itemHeader = requiredElement<HTMLTableCellElement>(".items-table thead th:nth-child(2)");
+    expect(itemHeader.textContent).toBe("項目");
+    expect(itemHeader.querySelector("button")).toBeNull();
+    expect(itemHeader.getAttribute("aria-sort")).toBeNull();
+    expect(currentContainer().querySelectorAll(".items-table thead th button")).toHaveLength(4);
   });
 
   it("GitHub由来のHTMLを文字列として描画し危険URLを遷移不能にする", () => {
@@ -2340,7 +2592,7 @@ describe("Web UI", () => {
       "降順",
     );
     expect(requiredElement<HTMLTableCellElement>('th[aria-sort="descending"]').textContent).toBe(
-      "停滞",
+      "停滞↓",
     );
     expect(currentContainer().querySelector(".item-details-card")).toBeNull();
     expect(window.location.pathname).toBe("/voicevox_task_tracker/items");

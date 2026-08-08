@@ -43,6 +43,18 @@ export type TableSort = Readonly<{
   direction: "ascending" | "descending";
 }>;
 
+/** 一覧表で別の列を選んだときの自然な並び順。 */
+export const TABLE_COLUMN_NATURAL_SORT_DIRECTIONS: Readonly<
+  Record<TableColumnKey, TableSort["direction"]>
+> = {
+  repository: "ascending",
+  type: "ascending",
+  status: "ascending",
+  importance: "descending",
+  waitingOn: "ascending",
+  stall: "descending",
+};
+
 /** 一覧表の列別絞り込み値。 */
 export type TableFilters = Readonly<Record<TableFilterKey, string>>;
 

@@ -11,6 +11,7 @@ export type ResponsiveTableColumn<Row> = Readonly<{
   headerClassName: string;
   key: string;
   label: string;
+  onSort?: () => void;
   renderCell: (row: Row) => ComponentChildren;
   widthClassName: string;
 }>;
@@ -97,7 +98,19 @@ export function ResponsiveTableCardList<Row>({
                   scope="col"
                   aria-sort={column.ariaSort}
                 >
-                  {column.label}
+                  {column.onSort == null ? (
+                    column.label
+                  ) : (
+                    <button
+                      class="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 py-1 text-left text-sm font-bold text-text-secondary hover:bg-surface-emphasis hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-focus-ring"
+                      type="button"
+                      onClick={column.onSort}
+                    >
+                      <span>{column.label}</span>
+                      {column.ariaSort === "ascending" && <span aria-hidden="true">↑</span>}
+                      {column.ariaSort === "descending" && <span aria-hidden="true">↓</span>}
+                    </button>
+                  )}
                 </th>
               ))}
             </tr>
