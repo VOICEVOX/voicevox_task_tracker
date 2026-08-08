@@ -3,6 +3,15 @@ import { describe, expect, it } from "vitest";
 import { CliUsageError, parseCliArguments } from "../src/cli/index.js";
 
 describe("CLI引数解析", () => {
+  it("verify-stateのstateディレクトリを解析する", () => {
+    expect(parseCliArguments(["verify-state", "--state-directory", "tracker-state/state"])).toEqual(
+      {
+        kind: "verify-state",
+        stateDirectory: "tracker-state/state",
+      },
+    );
+  });
+
   it("dailyの既定値と明示した予定時刻を解析する", () => {
     expect(parseCliArguments(["daily", "--scheduled-for", "2026-07-31T08:00:00+09:00"])).toEqual({
       kind: "daily",

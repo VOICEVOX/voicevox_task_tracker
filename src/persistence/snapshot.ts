@@ -9,6 +9,12 @@ import {
   StateSnapshotSemanticError,
 } from "./errors.js";
 import {
+  type LegacyStatus,
+  type LegacyWaitClass,
+  migrateLegacyStatus,
+  migrateLegacyWaitClass,
+} from "./legacy-enum.js";
+import {
   type Attention,
   type Actor,
   isTerminalStatus,
@@ -155,9 +161,10 @@ const SNAPSHOT_SCHEMA_VERSION_4 = "4";
 const SNAPSHOT_SCHEMA_VERSION_5 = "5";
 const SNAPSHOT_SCHEMA_VERSION_6 = "6";
 const SNAPSHOT_SCHEMA_VERSION_7 = "7";
+export const SNAPSHOT_SCHEMA_VERSION_8 = "8";
 
-type StateSnapshotVersion7 = Readonly<{
-  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_7;
+type StateSnapshotVersion8 = Readonly<{
+  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_8;
   generatedAt: UtcIsoDateTime;
   trackingStartAt: TrackingStartAtState;
   ai: SnapshotAiState;
@@ -171,8 +178,8 @@ type StateSnapshotVersion7 = Readonly<{
 
 type StateSnapshotVersionParser = (value: unknown) => StateSnapshot;
 
-/** tracker-stateへ保存するschema version 7のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion7;
+/** tracker-stateへ保存するschema version 8のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion8;
 
 const snapshotSchemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
@@ -250,12 +257,53 @@ const snapshotVersion5MigrationSchema = z.looseObject({
 });
 
 type StateSnapshotVersion5 = z.output<typeof snapshotVersion5MigrationSchema>;
+const snapshotVersion6StatusSchema: z.ZodType<LegacyStatus> = z.enum([
+  "new_untriaged",
+  "needs_maintainer_decision",
+  "waiting_for_author",
+  "waiting_for_assignee",
+  "blocked",
+  "ready_to_merge",
+  "waiting_for_owner",
+  "waiting_for_review",
+  "waiting_for_automation",
+  "in_progress",
+  "unknown",
+  "terminal_merged",
+  "terminal_completed",
+  "terminal_not_planned",
+]);
+const snapshotVersion6WaitClassSchema: z.ZodType<LegacyWaitClass> = z.enum([
+  "maintainerTriage",
+  "ownerUnknown",
+  "reviewer",
+  "authorAfterChangesRequested",
+  "assigneeOrInProgress",
+  "readyToMerge",
+  "decision",
+  "automation",
+  "blockedParent",
+  "notApplicable",
+]);
 const snapshotVersion6MigrationSchema = z.looseObject({
   schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_6),
-  items: z.array(z.looseObject({})),
+  items: z.array(
+    z.looseObject({
+      status: snapshotVersion6StatusSchema,
+      severityContext: z.looseObject({
+        waitClass: snapshotVersion6WaitClassSchema,
+      }),
+    }),
+  ),
 });
 
 type StateSnapshotVersion6 = z.output<typeof snapshotVersion6MigrationSchema>;
+const snapshotVersion7MigrationSchema = z.looseObject({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_7),
+  items: z.array(z.looseObject({})),
+});
+
+type StateSnapshotVersion7 = z.output<typeof snapshotVersion7MigrationSchema>;
 const ajv = new Ajv2020({
   allErrors: true,
   coerceTypes: false,
@@ -272,7 +320,7 @@ ajv.addFormat("date-time", {
     return !Number.isNaN(Date.parse(value));
   },
 });
-const validateSnapshotVersion7Schema = ajv.compile<StateSnapshotVersion7>(snapshotSchema);
+const validateSnapshotVersion8Schema = ajv.compile<StateSnapshotVersion8>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -798,6 +846,31 @@ function migrateStateSnapshotVersion6(snapshot: StateSnapshotVersion6): StateSna
       schemaVersion: SNAPSHOT_SCHEMA_VERSION_7,
       items: snapshot.items.map((item) => ({
         ...item,
+        status: migrateLegacyStatus(item.status),
+        severityContext: {
+          ...item.severityContext,
+          waitClass: migrateLegacyWaitClass(item.severityContext.waitClass),
+        },
+      })),
+    }),
+  );
+}
+
+function parseStateSnapshotVersion7(value: unknown): StateSnapshotVersion7 {
+  const result = snapshotVersion7MigrationSchema.safeParse(value);
+  if (!result.success) {
+    throw new StateSnapshotSchemaError(result.error.issues.length);
+  }
+  return result.data;
+}
+
+function migrateStateSnapshotVersion7(snapshot: StateSnapshotVersion7): StateSnapshot {
+  return migrateStateSnapshotVersion8(
+    parseStateSnapshotVersion8({
+      ...snapshot,
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION_8,
+      items: snapshot.items.map((item) => ({
+        ...item,
         attention: {
           score: 0,
           level: "low",
@@ -807,16 +880,16 @@ function migrateStateSnapshotVersion6(snapshot: StateSnapshotVersion6): StateSna
   );
 }
 
-function parseStateSnapshotVersion7(value: unknown): StateSnapshotVersion7 {
-  if (!validateSnapshotVersion7Schema(value)) {
-    const issueCount = validateSnapshotVersion7Schema.errors?.length ?? 1;
+function parseStateSnapshotVersion8(value: unknown): StateSnapshotVersion8 {
+  if (!validateSnapshotVersion8Schema(value)) {
+    const issueCount = validateSnapshotVersion8Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
   assertSnapshotSemantics(value);
   return value;
 }
 
-function migrateStateSnapshotVersion7(snapshot: StateSnapshotVersion7): StateSnapshot {
+function migrateStateSnapshotVersion8(snapshot: StateSnapshotVersion8): StateSnapshot {
   return normalizeSnapshot(snapshot);
 }
 
@@ -856,6 +929,10 @@ const stateSnapshotVersionParsers: ReadonlyMap<string, StateSnapshotVersionParse
     SNAPSHOT_SCHEMA_VERSION_7,
     createStateSnapshotVersionParser(parseStateSnapshotVersion7, migrateStateSnapshotVersion7),
   ],
+  [
+    SNAPSHOT_SCHEMA_VERSION_8,
+    createStateSnapshotVersionParser(parseStateSnapshotVersion8, migrateStateSnapshotVersion8),
+  ],
 ]);
 
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
@@ -874,7 +951,7 @@ function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return migrateStateSnapshotVersion7(parseStateSnapshotVersion7(value));
+  return migrateStateSnapshotVersion8(parseStateSnapshotVersion8(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */

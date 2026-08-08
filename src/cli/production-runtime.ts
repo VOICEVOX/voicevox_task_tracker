@@ -212,6 +212,10 @@ import {
 } from "./offline-runner.js";
 import { writeRunReport, type RunMetrics } from "./run-report.js";
 import {
+  StateVerificationRunner,
+  type verifyPersistentStateDirectory,
+} from "./state-verification.js";
+import {
   assertWorkflowArtifactPublicSafety,
   createWorkflowArtifact,
   createWorkflowRunMetadata,
@@ -479,6 +483,7 @@ export type ProductionRuntimeAdapters = Readonly<{
   readReplayState: typeof readReplayStateFile;
   readGoldenFixtures: typeof readGoldenFixtureFiles;
   readWorkflowArtifact: typeof readWorkflowArtifactFile;
+  verifyStateDirectory: typeof verifyPersistentStateDirectory;
   createGitHubClient: (options: CreateGitHubClientOptions) => Promise<GitHubClient>;
   createStateBranchAdapter: () => StateBranchAdapter;
   codexProcessRunner: CodexProcessRunner;
@@ -4068,7 +4073,7 @@ function mergeNotificationLedger(
     entries.set(reservation.notificationKey, reservation);
   }
   return createStateNotificationLedger({
-    schemaVersion: "1",
+    schemaVersion: "2",
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
   });
@@ -4236,7 +4241,7 @@ function validateRunCompleteness(
   const persistedAnalysisRulesFingerprintNodeIds = new Set<string>();
   const persistedDeterministicRulesVersionNodeIds = new Set<string>();
   const snapshot = createStateSnapshot({
-    schemaVersion: "7",
+    schemaVersion: "8",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
@@ -4588,7 +4593,7 @@ async function deliverDiscord(
       delivery,
     }),
     notificationLedger: createStateNotificationLedger({
-      schemaVersion: "1",
+      schemaVersion: "2",
       entries: [...notificationEntriesByKey.values()],
       operationsAlerts: [...operationsAlertsByKey.values()],
     }),
@@ -4709,7 +4714,7 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: "1",
+    schemaVersion: "2",
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
   });
@@ -5930,6 +5935,10 @@ export function createProductionCliApplication(
     }),
     workflowStageRunner: createWorkflowStageRunner(adapters),
     offlineRunner: createOfflineRunner(adapters),
+    stateVerificationRunner: new StateVerificationRunner({
+      verifyStateDirectory: adapters.verifyStateDirectory,
+      writeStandardOutput: adapters.writeStandardOutput,
+    }),
     writeStandardOutput: adapters.writeStandardOutput,
   });
 }

@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "7"
+      "const": "8"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"

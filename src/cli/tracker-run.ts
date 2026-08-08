@@ -93,7 +93,8 @@ export function createTrackerRunCliArguments(args: readonly string[]): readonly 
     args[0] === "build-pages" ||
     args[0] === "notify-discord" ||
     args[0] === "notify-operations" ||
-    args[0] === "report-workflow"
+    args[0] === "report-workflow" ||
+    args[0] === "verify-state"
   ) {
     const command = parseCliArguments(args);
     if (command.kind !== args[0]) {
@@ -159,6 +160,7 @@ function topLevelDiagnosticStage(command: CliCommand): RunStage | "unknown" {
     case "collect-analyze":
     case "replay":
     case "eval":
+    case "verify-state":
     case "help":
       return "unknown";
     default:

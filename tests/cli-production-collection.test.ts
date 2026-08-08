@@ -946,6 +946,7 @@ function createCollectionHarness(
     readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),
     readGoldenFixtures: () => Promise.reject(new TypeError("golden fixtureは読みません")),
     readWorkflowArtifact: () => Promise.reject(new TypeError("workflow artifactは読みません")),
+    verifyStateDirectory: () => Promise.reject(new TypeError("永続stateは検証しません")),
     createGitHubClient: () =>
       Promise.resolve(
         Object.freeze({
@@ -1964,7 +1965,7 @@ describe("本番収集の接続", () => {
     }
 
     expect(result.exitCode).toBe(0);
-    expect(snapshot.schemaVersion).toBe("7");
+    expect(snapshot.schemaVersion).toBe("8");
     expect(snapshot.items[0]?.milestone).toEqual(expectedMilestone);
     expect(snapshot.items[0]?.importance).toEqual(expectedImportance);
     expect(snapshot.items[0]?.attention).toEqual({

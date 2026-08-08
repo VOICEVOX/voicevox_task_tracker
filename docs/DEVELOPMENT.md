@@ -136,6 +136,20 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 要対応度は最新の重要度、停滞時間、設定から毎run全項目で再計算します。
 要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
+### 永続stateの列挙値を変更する
+
+snapshot、履歴、通知ledgerが保存する列挙値は、次の順序で変更します。
+
+1. 対象文書のschema versionを上げる。
+2. 旧versionから現行versionへのマイグレーションを追加する。
+3. `tests/state-schema-enum-lock.ts`のロック定義を更新する。
+4. CLIをビルドし、checkoutした`tracker-state`の実stateを検証する。
+
+```console
+pnpm build
+pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
+```
+
 ## ディレクトリ構成
 
 | パス                 | 責務                                                                                         |

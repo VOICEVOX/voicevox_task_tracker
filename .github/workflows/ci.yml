@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+  workflow_dispatch:
 
 permissions: {}
 
@@ -41,3 +44,32 @@ jobs:
         run: pnpm build:workflow-cli
       - name: Web UIをビルド
         run: pnpm build:web
+
+  verify-state:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: ソースコードを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: 永続stateを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: tracker-state
+          path: tracker-state
+          persist-credentials: false
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: pnpmを準備
+        run: corepack enable
+      - name: 依存関係をインストール
+        run: pnpm install --frozen-lockfile
+      - name: CLIをビルド
+        run: pnpm build
+      - name: 永続stateを検証
+        run: pnpm tracker:run verify-state --state-directory tracker-state/state

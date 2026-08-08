@@ -105,6 +105,12 @@ export type ReportWorkflowCliCommand = Readonly<{
   jobResults: WorkflowJobResults;
 }>;
 
+/** 指定した永続stateディレクトリを検証するCLI入力。 */
+export type VerifyStateCliCommand = Readonly<{
+  kind: "verify-state";
+  stateDirectory: string;
+}>;
+
 /** replayへ渡すfixtureまたは過去stateの入力元。 */
 export type ReplaySource =
   | Readonly<{
@@ -150,6 +156,7 @@ export type CliCommand =
   | NotifyDiscordCliCommand
   | NotifyOperationsCliCommand
   | ReportWorkflowCliCommand
+  | VerifyStateCliCommand
   | ReplayCliCommand
   | EvalCliCommand
   | HelpCliCommand;
@@ -514,6 +521,14 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
   });
 }
 
+function parseVerifyState(args: readonly string[]): VerifyStateCliCommand {
+  const options = parseOptions(args, new Set(["--state-directory"]));
+  return Object.freeze({
+    kind: "verify-state",
+    stateDirectory: requiredSingleOption(options, "--state-directory", "verify-state"),
+  });
+}
+
 function parseReplaySource(options: ParsedOptions): ReplaySource {
   const fixturePath = optionalSingleOption(options, "--fixture");
   const statePath = optionalSingleOption(options, "--state");
@@ -613,6 +628,8 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
       return parseNotifyOperations(options);
     case "report-workflow":
       return parseReportWorkflow(options);
+    case "verify-state":
+      return parseVerifyState(options);
     case "replay":
       return parseReplay(options);
     case "eval":
@@ -635,6 +652,7 @@ export function formatCliUsage(): string {
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",
     "  voicevox-task-tracker notify-operations --kind collection|pages|discord --incident-id ID --occurred-at ISO",
     "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --test-eval-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --notify-operations-result RESULT",
+    "  voicevox-task-tracker verify-state --state-directory PATH",
     "  voicevox-task-tracker replay (--fixture PATH | --state PATH) [--artifact PATH]",
     "  voicevox-task-tracker eval --fixtures PATH [--artifact PATH]",
   ].join("\n");
