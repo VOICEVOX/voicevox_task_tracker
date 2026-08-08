@@ -15,20 +15,30 @@ type GraphNodeKind = PublicGraphNodeDto["kind"];
 type GraphNodeSeverity = PublicItemSummaryDto["severity"];
 type RelationType = PublicGraphEdgeDto["type"];
 
-/** 項目の部分グラフで描画するnode。 */
-export type GraphViewNode = Readonly<{
+type GraphViewNodeFields = Readonly<{
   id: string;
-  kind: GraphNodeKind;
-  reference: string;
+  fullReference: string;
+  shortReference: string;
   title: string;
   central: boolean;
   frontier: boolean;
-  stallDays: number;
-  impactOpenNodeCount: number;
-  impactRepositoryCount: number;
   width: number;
   height: number;
 }>;
+
+/** 項目の部分グラフで描画するnode。 */
+export type GraphViewNode =
+  | (GraphViewNodeFields &
+      Readonly<{
+        kind: "issue" | "pull_request";
+        stallDays: number;
+        impactOpenNodeCount: number;
+        impactRepositoryCount: number;
+      }>)
+  | (GraphViewNodeFields &
+      Readonly<{
+        kind: "external_reference";
+      }>);
 
 /** 自動レイアウトへ渡すedge表現。 */
 export type GraphViewEdge = Readonly<{
@@ -37,7 +47,6 @@ export type GraphViewEdge = Readonly<{
   toNodeId: string;
   type: RelationType;
   typeLabel: string;
-  authorityLabel: "確定関係" | "推定関係";
   authoritative: boolean;
 }>;
 
@@ -64,6 +73,20 @@ function finiteNonNegative(value: number, name: string): void {
   if (!Number.isFinite(value) || value < 0) {
     throw new RangeError(`${name}は0以上の有限数にしてください`);
   }
+}
+
+function createShortReference(fullReference: string): string {
+  const repositorySeparatorIndex = fullReference.lastIndexOf("/");
+  const numberSeparatorIndex = fullReference.lastIndexOf("#");
+  const numberText = fullReference.slice(numberSeparatorIndex + 1);
+  if (
+    repositorySeparatorIndex <= 0 ||
+    numberSeparatorIndex <= repositorySeparatorIndex + 1 ||
+    !/^[1-9]\d*$/u.test(numberText)
+  ) {
+    return fullReference;
+  }
+  return fullReference.slice(repositorySeparatorIndex + 1);
 }
 
 /** graph node種別の色に依存しない表示名を返す。 */
@@ -130,7 +153,8 @@ function createTrackedGraphNode(
   return {
     id: node.nodeId,
     kind: node.kind,
-    reference: item.displayReference,
+    fullReference: item.displayReference,
+    shortReference: createShortReference(item.displayReference),
     title: item.title,
     central: centralNodeIds.has(node.nodeId),
     frontier: frontierNodeIds.has(node.nodeId),
@@ -150,13 +174,11 @@ function createExternalGraphNode(
   return {
     id: node.nodeId,
     kind: node.kind,
-    reference: node.displayReference,
+    fullReference: node.displayReference,
+    shortReference: createShortReference(node.displayReference),
     title: node.title,
     central: centralNodeIds.has(node.nodeId),
     frontier: frontierNodeIds.has(node.nodeId),
-    stallDays: 0,
-    impactOpenNodeCount: 0,
-    impactRepositoryCount: 0,
     width: GRAPH_NODE_WIDTH,
     height: GRAPH_NODE_HEIGHT,
   };
@@ -170,7 +192,6 @@ function createEdgeView(edge: PublicGraphEdgeDto): GraphViewEdge {
     toNodeId: edge.toNodeId,
     type: edge.type,
     typeLabel: relationTypeLabel(edge.type),
-    authorityLabel: authoritative ? "確定関係" : "推定関係",
     authoritative,
   };
 }
@@ -200,6 +221,14 @@ function compareNodePriority(
     graphNodeSeverityRank(right, itemsByNodeId) - graphNodeSeverityRank(left, itemsByNodeId);
   if (severityOrder !== 0) {
     return severityOrder;
+  }
+  const externalReferenceOrder =
+    Number(left.kind === "external_reference") - Number(right.kind === "external_reference");
+  if (externalReferenceOrder !== 0) {
+    return externalReferenceOrder;
+  }
+  if (left.kind === "external_reference" || right.kind === "external_reference") {
+    return compareStrings(left.id, right.id);
   }
   const repositoryImpactOrder = right.impactRepositoryCount - left.impactRepositoryCount;
   if (repositoryImpactOrder !== 0) {

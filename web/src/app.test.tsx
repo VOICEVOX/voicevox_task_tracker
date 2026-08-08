@@ -2395,7 +2395,10 @@ describe("Web UI", () => {
       "ノードはすべて同じ大きさで表示します。",
     );
     expect(centerNode.dataset["central"]).toBe("true");
-    expect(centerNode.textContent).toContain("中心項目");
+    expect(centerNode.querySelector(".graph-central-label")).toBeNull();
+    expect(centerNode.querySelector("rect")?.getAttribute("class")).toContain(
+      "stroke-graph-node-central-accent",
+    );
     expect(centerNode.getAttribute("aria-label")).toContain("中心項目");
     const neighborLink = requiredElement<SVGAElement>(
       '.item-dependency-graph a[href="/voicevox_task_tracker/items/sample-editor/103"]',

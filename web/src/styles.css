@@ -67,7 +67,6 @@
   --stroke-width-graph-edge-label: 4;
   --stroke-width-graph-node: 2.5;
   --stroke-width-graph-node-emphasis: 5;
-  --text-graph: 0.625rem;
   --text-graph-label: 0.875rem;
   --text-site-title: clamp(1.4rem, 2.5vw, 2rem);
   --text-section-title: clamp(1.35rem, 2.5vw, 2rem);
