@@ -12,7 +12,6 @@ import {
   type GitHubAccountActor,
   type NaturalLanguageProgressAssessment,
   type NormalizedEvent,
-  type ResolvedRepositoryTeams,
   type SeverityThresholds,
   type SourceId,
   type StateDecisionForStaleness,
@@ -42,10 +41,6 @@ const bot = Object.freeze({
   nodeId: createGitHubNodeId("B_preview"),
   login: "preview[bot]",
 } satisfies GitHubAccountActor);
-const noResolvedTeams = Object.freeze({
-  maintainers: Object.freeze([]),
-  reviewers: Object.freeze([]),
-}) satisfies ResolvedRepositoryTeams;
 const thresholdsHours = Object.freeze({
   assessment: { watch: 48, urgent: 96, critical: 168 },
   owner: { watch: 48, urgent: 96, critical: 168 },
@@ -246,10 +241,7 @@ function createBaseInput(): CalculateStalenessInput {
   } satisfies CalculateStalenessInput);
 }
 
-function createResponsibleInput(
-  waitingOn: WaitingOn,
-  teams: ResolvedRepositoryTeams,
-): CalculateStalenessInput {
+function createResponsibleInput(waitingOn: WaitingOn): CalculateStalenessInput {
   const input = createBaseInput();
   const sourceId = waitingOn.sourceIds[0];
   return Object.freeze({
@@ -264,7 +256,7 @@ function createResponsibleInput(
       precision: "event",
       confidence: 1,
     }),
-    responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers([waitingOn], teams),
+    responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers([waitingOn]),
   });
 }
 
@@ -292,7 +284,7 @@ describe("停滞時間", () => {
   it("責務主体本人のコメントでstallSinceを更新する", () => {
     const sourceId = buildSourceId("responsibility", "human-login");
     const waitingOn = createWaitingOn("user", human.login, "maintainer", sourceId);
-    const input = createResponsibleInput(waitingOn, noResolvedTeams);
+    const input = createResponsibleInput(waitingOn);
     const commentedAt = addHours(CREATED_AT, 30);
     const comment = createComment("responsible-human", commentedAt, human);
     const result = calculateStaleness({
@@ -310,7 +302,7 @@ describe("停滞時間", () => {
   it("第三者の人間コメントではstallSinceを更新しない", () => {
     const sourceId = buildSourceId("responsibility", "third-party");
     const waitingOn = createWaitingOn("user", human.login, "maintainer", sourceId);
-    const input = createResponsibleInput(waitingOn, noResolvedTeams);
+    const input = createResponsibleInput(waitingOn);
     const commentedAt = addHours(CREATED_AT, 30);
     const comment = createComment("third-party", commentedAt, thirdParty);
     const result = calculateStaleness({
@@ -328,7 +320,7 @@ describe("停滞時間", () => {
   it("責務主体と識別子が一致するbotコメントではstallSinceを更新しない", () => {
     const sourceId = buildSourceId("responsibility", "bot");
     const waitingOn = createWaitingOn("user", bot.login, "maintainer", sourceId);
-    const input = createResponsibleInput(waitingOn, noResolvedTeams);
+    const input = createResponsibleInput(waitingOn);
     const initial = calculateStaleness(input);
     const botComment = createComment("preview-update", addHours(CREATED_AT, 30), bot);
     const result = calculateStaleness({
@@ -348,7 +340,7 @@ describe("停滞時間", () => {
   it("candidateIdがnode IDでも責務主体本人のコメントでstallSinceを更新する", () => {
     const sourceId = buildSourceId("responsibility", "human-node-id");
     const waitingOn = createWaitingOn("user", human.nodeId, "maintainer", sourceId);
-    const input = createResponsibleInput(waitingOn, noResolvedTeams);
+    const input = createResponsibleInput(waitingOn);
     const commentedAt = addHours(CREATED_AT, 30);
     const comment = createComment("responsible-human-node-id", commentedAt, human);
     const result = calculateStaleness({
@@ -361,26 +353,10 @@ describe("停滞時間", () => {
     expect(result.lastProgressAt).toBe(CREATED_AT);
   });
 
-  it("team memberのコメントだけをstallSinceへ反映する", () => {
-    const teams = Object.freeze({
-      maintainers: Object.freeze([
-        Object.freeze({
-          nodeId: createGitHubNodeId("T_reviewers"),
-          org: "VOICEVOX",
-          slug: "reviewers",
-          members: Object.freeze([
-            Object.freeze({
-              nodeId: human.nodeId,
-              login: human.login,
-            }),
-          ]),
-        }),
-      ]),
-      reviewers: Object.freeze([]),
-    }) satisfies ResolvedRepositoryTeams;
+  it("team候補は責務アカウントを持たない", () => {
     const sourceId = buildSourceId("responsibility", "team");
     const waitingOn = createWaitingOn("team", "voicevox/ReViEwErS", "reviewer", sourceId);
-    const input = createResponsibleInput(waitingOn, teams);
+    const input = createResponsibleInput(waitingOn);
     const memberCommentedAt = addHours(CREATED_AT, 30);
     const thirdPartyCommentedAt = addHours(CREATED_AT, 40);
     const result = calculateStaleness({
@@ -392,7 +368,7 @@ describe("停滞時間", () => {
       ],
     });
 
-    expect(result.stallSince).toBe(memberCommentedAt);
+    expect(result.stallSince).toBe(CREATED_AT);
     expect(result.lastProgressAt).toBe(CREATED_AT);
     expect(result.lastHumanActivityAt).toBe(thirdPartyCommentedAt);
   });
@@ -400,7 +376,7 @@ describe("停滞時間", () => {
   it("責務主体本人のconverted_to_draftではstallSinceを更新しない", () => {
     const sourceId = buildSourceId("responsibility", "converted-to-draft");
     const waitingOn = createWaitingOn("user", human.login, "maintainer", sourceId);
-    const input = createResponsibleInput(waitingOn, noResolvedTeams);
+    const input = createResponsibleInput(waitingOn);
     const convertedAt = addHours(CREATED_AT, 30);
     const convertedToDraft = Object.freeze({
       kind: "converted_to_draft",

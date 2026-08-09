@@ -149,7 +149,7 @@
             "authorCandidateId": "release-planner"
           },
           "candidates": {
-            "waitingOn": [{ "id": "VOICEVOX/fixture-maintainers" }],
+            "waitingOn": [{ "id": "fixture-maintainer" }],
             "relations": [
               {
                 "id": "rel:checklist-release-core",
@@ -178,8 +178,8 @@
           "status": "waiting_for_assessment",
           "waitingOn": [
             {
-              "kind": "team",
-              "candidateId": "VOICEVOX/fixture-maintainers",
+              "kind": "user",
+              "candidateId": "fixture-maintainer",
               "role": "maintainer",
               "reasonSummary": "未アサインのため内容確認待ちです",
               "sourceIds": ["body:release"],
@@ -237,7 +237,7 @@
             "authorCandidateId": "release-worker-one"
           },
           "candidates": {
-            "waitingOn": [{ "id": "VOICEVOX/fixture-maintainers" }],
+            "waitingOn": [{ "id": "fixture-maintainer" }],
             "relations": [
               {
                 "id": "rel:checklist-core-engine",
@@ -266,8 +266,8 @@
           "status": "waiting_for_assessment",
           "waitingOn": [
             {
-              "kind": "team",
-              "candidateId": "VOICEVOX/fixture-maintainers",
+              "kind": "user",
+              "candidateId": "fixture-maintainer",
               "role": "maintainer",
               "reasonSummary": "未アサインのため内容確認待ちです",
               "sourceIds": ["body:core-task"],

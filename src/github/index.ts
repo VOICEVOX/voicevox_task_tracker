@@ -143,7 +143,3 @@ export {
 } from "./repository-inventory.js";
 export { deduplicateByStableId } from "./stable-id.js";
 export { GITHUB_APP_READ_PERMISSIONS, InstallationTokenManager } from "./token-manager.js";
-export {
-  collectGitHubTeamDirectory,
-  type CollectGitHubTeamDirectoryOptions,
-} from "./team-collection.js";

@@ -38,7 +38,6 @@ import {
   type PullRequestStateDecision,
   type Relation,
   type Repository,
-  type ResolvedRepositoryTeams,
   type SeverityThresholds,
   type SourceId,
   type StalenessResult,
@@ -112,24 +111,7 @@ const NOTIFICATION_SETTINGS = Object.freeze({
   recentProgressGraceHours: 24,
   minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,
 });
-const RESOLVED_TEAMS = Object.freeze({
-  maintainers: Object.freeze([
-    Object.freeze({
-      nodeId: createGitHubNodeId("fixture-team-maintainers"),
-      org: ORGANIZATION,
-      slug: "fixture-maintainers",
-      members: Object.freeze([]),
-    }),
-  ]),
-  reviewers: Object.freeze([
-    Object.freeze({
-      nodeId: createGitHubNodeId("fixture-team-reviewers"),
-      org: ORGANIZATION,
-      slug: "fixture-reviewers",
-      members: Object.freeze([]),
-    }),
-  ]),
-}) satisfies ResolvedRepositoryTeams;
+const MAINTAINERS = Object.freeze(["fixture-maintainer"]);
 
 type GoldenItemInput = StandardGoldenInput["items"][number];
 type GoldenRelationInput = StandardGoldenInput["relations"][number];
@@ -647,7 +629,7 @@ function determineItemState(
       explicitRequestAssessment: Object.freeze({
         status: "not_assessed",
       }),
-      teams: RESOLVED_TEAMS,
+      maintainers: MAINTAINERS,
       confidenceThresholds: CONFIDENCE_THRESHOLDS,
       evaluatedAt,
     });
@@ -666,7 +648,7 @@ function determineItemState(
       suppressNotifications: false,
       countsAsProgress: false,
     }),
-    teams: RESOLVED_TEAMS,
+    maintainers: MAINTAINERS,
     confidenceThresholds: CONFIDENCE_THRESHOLDS,
     evaluatedAt,
   });
@@ -876,10 +858,7 @@ function createStaleness(
       item.type === "issue"
         ? createIssueObservation(item).events
         : createPullRequestObservation(item).events,
-    responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(
-      decision.waitingOn,
-      RESOLVED_TEAMS,
-    ),
+    responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
     dependencyResolutions: Object.freeze([]),
     naturalLanguageAssessments: Object.freeze([]),
     minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,

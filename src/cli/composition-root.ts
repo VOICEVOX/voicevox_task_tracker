@@ -5,7 +5,6 @@ import { loadConfig } from "../config/index.js";
 import { createFetchDiscordWebhookHttpClient, sendDiscordDigest } from "../discord/index.js";
 import {
   collectGitHubItemDetails,
-  collectGitHubTeamDirectory,
   createGitHubClient,
   discoverRepositoryInventory,
   enumerateGitHubItemsByIdentifiers,
@@ -32,7 +31,6 @@ const DEFAULT_PAGES_OUTPUT_DIRECTORY = "artifacts/workflow/pages";
 
 type ConcreteOperationName =
   | "collectGitHubItemDetails"
-  | "collectGitHubTeamDirectory"
   | "discoverRepositoryInventory"
   | "enumerateGitHubItemsByIdentifiers"
   | "enumerateOpenGitHubItems"
@@ -55,7 +53,6 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
     openStateSession: (adapter, configuration) =>
       StatePersistenceSession.open(adapter, configuration),
     discoverRepositoryInventory,
-    collectGitHubTeamDirectory,
     enumerateGitHubItemsByIdentifiers,
     enumerateOpenGitHubItems,
     collectGitHubItemDetails,

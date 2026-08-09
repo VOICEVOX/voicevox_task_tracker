@@ -13,7 +13,6 @@ export const GITHUB_APP_READ_PERMISSIONS = Object.freeze({
   pull_requests: "read",
   checks: "read",
   statuses: "read",
-  members: "read",
 } satisfies Readonly<Record<string, "read">>);
 
 const TOKEN_REFRESH_WINDOW_MILLISECONDS = 5 * 60 * 1000;

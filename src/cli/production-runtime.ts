@@ -50,7 +50,7 @@ import {
   PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
   resolvePullRequestCommitOccurredAt,
   resolveTrackingStartAt,
-  resolveRepositoryTeams,
+  resolveRepositoryMaintainers,
   resolveWaitingOnAccountIdentifiers,
   selectTrackingItems,
   type LabelRule,
@@ -106,7 +106,6 @@ import {
 import { analyzeGoldenFixture, goldenEvalInputSchema } from "../eval/index.js";
 import {
   type collectGitHubItemDetails,
-  type collectGitHubTeamDirectory,
   collectRepositoriesWithStaleFallback,
   createPublicRepositoryAllowlist,
   deduplicateByStableId,
@@ -296,7 +295,6 @@ type RuntimeState = Readonly<{
 type RepositoryInventory = Readonly<{
   inventory: readonly Repository[];
   allowlist: PublicRepositoryAllowlist;
-  teams: Awaited<ReturnType<typeof collectGitHubTeamDirectory>>;
 }>;
 
 type CollectedItems = Readonly<{
@@ -474,7 +472,6 @@ export type ProductionRuntimeAdapters = Readonly<{
     configuration: Config["state"],
   ) => Promise<StatePersistenceSession>;
   discoverRepositoryInventory: typeof discoverRepositoryInventory;
-  collectGitHubTeamDirectory: typeof collectGitHubTeamDirectory;
   enumerateGitHubItemsByIdentifiers: typeof enumerateGitHubItemsByIdentifiers;
   enumerateOpenGitHubItems: typeof enumerateOpenGitHubItems;
   collectGitHubItemDetails: typeof collectGitHubItemDetails;
@@ -1673,10 +1670,9 @@ function applyDeterministicAnalysis(
       continue;
     }
     const repository = findRepository(inventory, item.repositoryId);
-    const teams = resolveRepositoryTeams(
+    const maintainers = resolveRepositoryMaintainers(
+      configuration.config.maintainers,
       repositoryFullName(repository),
-      configuration.config.teams,
-      inventory.teams,
     );
     const detail = findDetail(collection, item.nodeId);
     const notificationClass = collection.trackingNotificationClassByNodeId.get(item.nodeId);
@@ -1691,7 +1687,7 @@ function applyDeterministicAnalysis(
         explicitRequestAssessment: {
           status: "not_assessed",
         },
-        teams,
+        maintainers,
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt: collection.evaluatedAt,
       });
@@ -1715,7 +1711,7 @@ function applyDeterministicAnalysis(
           cause: "not_assessed",
         },
         labelEffects,
-        teams,
+        maintainers,
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt: collection.evaluatedAt,
       });
@@ -2707,10 +2703,9 @@ function reassessDeterministicAnalysis(
   graph: GraphResult | undefined,
 ): DeterministicItemAnalysis {
   const repository = findRepository(inventory, analysis.item.repositoryId);
-  const teams = resolveRepositoryTeams(
+  const maintainers = resolveRepositoryMaintainers(
+    configuration.config.maintainers,
     repositoryFullName(repository),
-    configuration.config.teams,
-    inventory.teams,
   );
   const blockers =
     graph == null
@@ -2728,7 +2723,7 @@ function reassessDeterministicAnalysis(
           analysis.detail,
           output,
         ),
-        teams,
+        maintainers,
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt,
       }),
@@ -2745,7 +2740,7 @@ function reassessDeterministicAnalysis(
         blockers,
         checkFailureAssessment: checkFailureAssessment(analysis.detail, output),
         labelEffects: resolveLabelEffects(repositoryFullName(repository), analysis.item.labels),
-        teams,
+        maintainers,
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt,
       }),
@@ -3397,14 +3392,7 @@ function reduceAnalysisPass(
       decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
       previousState: previousStalenessState(state, analysis.item.nodeId, analysis.item.type),
       events: analysis.item.events,
-      responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(
-        decision.waitingOn,
-        resolveRepositoryTeams(
-          repositoryFullName(repository),
-          configuration.config.teams,
-          inventory.teams,
-        ),
-      ),
+      responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
       dependencyResolutions: dependencyResolutions(
         state,
         collection,
@@ -5500,15 +5488,10 @@ function createDailyDependencies(
         request: authentication.request,
       });
       const allowlist = createPublicRepositoryAllowlist(inventory);
-      const teams = await adapters.collectGitHubTeamDirectory({
-        teams: configuration.config.teams,
-        request: authentication.request,
-      });
       return Object.freeze({
         value: Object.freeze({
           inventory,
           allowlist,
-          teams,
         }),
         repositoryCount: allowlist.repositories.length,
         githubApiRemaining: githubApiRemaining(authentication),

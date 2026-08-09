@@ -158,7 +158,7 @@ describe("GitHub App認証とOctokitクライアント", () => {
         expect(request.headers.get("authorization")).toMatch(/^Bearer [^.]+\.[^.]+\.[^.]+$/u);
         expect(request.body).toContain('"permissions"');
         expect(request.body).toContain('"issues":"read"');
-        expect(request.body).toContain('"members":"read"');
+        expect(request.body).not.toContain('"members":"read"');
         expect(request.body).not.toContain('"write"');
         return createTokenResponse("ghs_installation_canary_1", "2026-08-01T01:00:00Z");
       },

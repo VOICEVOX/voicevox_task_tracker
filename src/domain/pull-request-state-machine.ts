@@ -7,8 +7,8 @@ import {
   resolvePullRequestCommitOccurredAt,
 } from "./github-item-observation.js";
 import { type ResolvedLabelEffects } from "./label-resolution.js";
+import { resolveRepositoryRoleWaitingOn } from "./maintainer-resolution.js";
 import { type SourceId } from "./source-id.js";
-import { resolveRepositoryRoleWaitingOn, type ResolvedRepositoryTeams } from "./team-resolution.js";
 import {
   type Evidence,
   type EvidenceSupport,
@@ -25,7 +25,7 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Pull Request判定へ適用した決定規則のversion。 */
-export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v7";
+export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v8";
 
 /** 依存グラフからPull Request判定へ渡すblocker。 */
 export type PullRequestBlocker = Readonly<{
@@ -54,7 +54,7 @@ export type PullRequestStateMachineInput = Readonly<{
   blockers: readonly PullRequestBlocker[];
   checkFailureAssessment: PullRequestCheckFailureAssessment;
   labelEffects: ResolvedLabelEffects;
-  teams: ResolvedRepositoryTeams;
+  maintainers: readonly string[];
   confidenceThresholds: Readonly<{
     high: number;
     medium: number;
@@ -152,10 +152,13 @@ function validateSourceIds(sourceIds: readonly SourceId[], context: string): voi
   }
 }
 
-function validateTeamNodeIdList(teams: ResolvedRepositoryTeams["maintainers"], role: string): void {
-  const nodeIds = teams.map((team) => team.nodeId);
-  if (new Set(nodeIds).size !== nodeIds.length) {
-    throw new TypeError(`解決済み${role} teamのnode IDが重複しています`);
+function validateMaintainerLoginList(maintainers: readonly string[]): void {
+  if (maintainers.length === 0) {
+    throw new TypeError("メンテナのGitHub loginは1件以上必要です");
+  }
+  const normalizedLogins = maintainers.map((login) => login.toLowerCase());
+  if (new Set(normalizedLogins).size !== normalizedLogins.length) {
+    throw new TypeError("メンテナのGitHub loginが重複しています");
   }
 }
 
@@ -201,8 +204,7 @@ function validateInput(input: PullRequestStateMachineInput): void {
     validateConfidence(input.checkFailureAssessment.confidence, "check失敗原因のconfidence");
     validateSourceIds(input.checkFailureAssessment.sourceIds, "check失敗原因の評価");
   }
-  validateTeamNodeIdList(input.teams.maintainers, "maintainer");
-  validateTeamNodeIdList(input.teams.reviewers, "reviewer");
+  validateMaintainerLoginList(input.maintainers);
 }
 
 function compareSourceIds(left: SourceId, right: SourceId): -1 | 0 | 1 {
@@ -320,7 +322,7 @@ function finalizeDecision(
   const confidence = Math.min(draft.confidence, context.confidenceCap);
   const waitingOn = Object.freeze(
     draft.waitingOn
-      .flatMap((value) => resolveRepositoryRoleWaitingOn(input.teams, value))
+      .flatMap((value) => resolveRepositoryRoleWaitingOn(value, input.maintainers))
       .map((value) =>
         Object.freeze({
           ...value,

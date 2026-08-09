@@ -44,7 +44,7 @@ const PROFILE_EDGE_COUNT = 10_000;
 const PROFILE_CHANGED_ITEM_COUNT = 300;
 const PROFILE_REPOSITORY_NAME = "performance-profile";
 const PROFILE_REPOSITORY_ID = createGitHubRepositoryId("R_performance_profile");
-const PROFILE_TEAM_SLUG = "performance-profile-team";
+const PROFILE_MAINTAINER_LOGIN = "performance-maintainer";
 const PROFILE_START_AT = createUtcIsoDateTime("2026-01-01T00:00:00.000Z");
 const BASELINE_RUN_AT = createUtcIsoDateTime("2026-08-01T00:00:00.000Z");
 const PROFILE_RUN_AT = createUtcIsoDateTime("2026-08-02T00:00:00.000Z");
@@ -452,10 +452,6 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
 
 async function createPerformanceConfig(repositoryPath: string): Promise<Config> {
   const base = await loadConfig(join(repositoryPath, "tests/fixtures/config.valid.yml"));
-  const team = Object.freeze({
-    org: "VOICEVOX",
-    slug: PROFILE_TEAM_SLUG,
-  });
   return Object.freeze({
     ...base,
     tracking: Object.freeze({
@@ -463,11 +459,8 @@ async function createPerformanceConfig(repositoryPath: string): Promise<Config> 
       startAt: PROFILE_START_AT,
       include: [],
     }),
-    teams: Object.freeze({
-      defaults: Object.freeze({
-        maintainers: [team],
-        reviewers: [team],
-      }),
+    maintainers: Object.freeze({
+      defaults: [PROFILE_MAINTAINER_LOGIN],
       repositories: Object.freeze({}),
     }),
     ai: Object.freeze({
@@ -528,19 +521,6 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
     discoverRepositoryInventory: () => {
       apiBudget.consume(1);
       return Promise.resolve(Object.freeze([createRepository(currentRunAt)]));
-    },
-    collectGitHubTeamDirectory: () => {
-      apiBudget.consume(1);
-      return Promise.resolve(
-        Object.freeze([
-          Object.freeze({
-            nodeId: createGitHubNodeId("T_performance_profile"),
-            org: "VOICEVOX",
-            slug: PROFILE_TEAM_SLUG,
-            members: Object.freeze([]),
-          }),
-        ]),
-      );
     },
     enumerateOpenGitHubItems: (input) => {
       requireSingleRepository(input.allowlist.repositories);

@@ -171,19 +171,11 @@ export {
   type TrackingSelectionResult,
 } from "./tracking-selection.js";
 export {
-  listConfiguredTeamReferences,
+  resolveRepositoryMaintainers,
   resolveRepositoryRoleWaitingOn,
-  resolveRepositoryTeamReferences,
-  resolveRepositoryTeams,
   resolveWaitingOnAccountIdentifiers,
-  type GitHubTeamDirectory,
-  type GitHubTeamMember,
-  type RepositoryTeamReferences,
-  type ResolvedGitHubTeam,
-  type ResolvedRepositoryTeams,
-  type TeamReference,
-  type TeamResolutionSettings,
-} from "./team-resolution.js";
+  type MaintainerResolutionSettings,
+} from "./maintainer-resolution.js";
 export {
   REASONING_EFFORTS,
   createExternalReferenceNodeId,

@@ -18,24 +18,42 @@ tracking:
   backfill:
     maxItemsPerRun: 500
 
-teams:
-  defaults:
-    maintainers:
-      - org: VOICEVOX
-        slug: maintainer
-    reviewers:
-      - org: VOICEVOX
-        slug: reviewer
-  repositories: {}
-  # リポジトリ別に上書きする場合は空のmapを次の形式へ置き換える。
-  # repositories:
-  #   VOICEVOX/example_repo:
-  #     maintainers:
-  #       - org: VOICEVOX
-  #         slug: EXAMPLE_MAINTAINERS
-  #     reviewers:
-  #       - org: VOICEVOX
-  #         slug: EXAMPLE_REVIEWERS
+# NOTE: リポジトリごとのメンテナは暫定的に1人ずつ手書きしている。実態に合わせて随時見直す。
+maintainers:
+  defaults: [Hiroshiba]
+  repositories:
+    VOICEVOX/voicevox_engine: [Hiroshiba]
+    VOICEVOX/pyopenjtalk: [Hiroshiba]
+    VOICEVOX/pyinstaller: [Hiroshiba]
+    VOICEVOX/voicevox_nemo_engine: [Hiroshiba]
+    VOICEVOX/voicevox_nemo_core: [Hiroshiba]
+    VOICEVOX/voicevox_vvm: [Hiroshiba]
+    VOICEVOX/voicevox_resource: [Hiroshiba]
+    VOICEVOX/voicevox_nemo_resource: [Hiroshiba]
+    VOICEVOX/homebrew-voicevox: [Hiroshiba]
+    VOICEVOX/voicevox_blog: [Hiroshiba]
+    VOICEVOX/voicevox_project: [Hiroshiba]
+    VOICEVOX/voicevox_task_tracker: [Hiroshiba]
+    VOICEVOX/voicevox_operation: [Hiroshiba]
+    VOICEVOX/.github: [Hiroshiba]
+    VOICEVOX/voicevox: [sevenc-nanashi]
+    VOICEVOX/voicevox_mobile: [sevenc-nanashi]
+    VOICEVOX/voicevox_vst: [sevenc-nanashi]
+    VOICEVOX/kuromoji.js: [sevenc-nanashi]
+    VOICEVOX/voicevox_telemetry_gas: [sevenc-nanashi]
+    VOICEVOX/kanalizer: [sevenc-nanashi]
+    VOICEVOX/preview-pages: [sevenc-nanashi]
+    VOICEVOX/WIP_docs: [sevenc-nanashi]
+    VOICEVOX/merge-gatekeeper: [sevenc-nanashi]
+    VOICEVOX/voicevox_core: [qryxip]
+    VOICEVOX/open_jtalk-rs: [qryxip]
+    VOICEVOX/open_jtalk: [qryxip]
+    VOICEVOX/process_path: [qryxip]
+    VOICEVOX/onnxruntime-builder: [qryxip]
+    VOICEVOX/voicevox_additional_libraries: [qryxip]
+    VOICEVOX/ort: [qryxip]
+    VOICEVOX/onnxruntime-rs: [qryxip]
+    VOICEVOX/onnxruntime: [qryxip]
 
 actors:
   bots:

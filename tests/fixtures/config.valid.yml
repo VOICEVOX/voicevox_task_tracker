@@ -18,22 +18,10 @@ tracking:
   backfill:
     maxItemsPerRun: 500
 
-teams:
-  defaults:
-    maintainers:
-      - org: VOICEVOX
-        slug: default-maintainers
-    reviewers:
-      - org: VOICEVOX
-        slug: default-reviewers
+maintainers:
+  defaults: [default-maintainer]
   repositories:
-    VOICEVOX/voicevox:
-      maintainers:
-        - org: VOICEVOX
-          slug: voicevox-maintainers
-      reviewers:
-        - org: VOICEVOX
-          slug: voicevox-reviewers
+    VOICEVOX/voicevox: [voicevox-maintainer, VoicevoxReviewer]
 
 actors:
   bots:

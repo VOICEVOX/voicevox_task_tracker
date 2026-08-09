@@ -5,13 +5,10 @@ import {
   createGitHubBotPredicate,
   createGitHubNodeId,
   createLabelEffectsResolver,
-  listConfiguredTeamReferences,
+  resolveRepositoryMaintainers,
   resolveRepositoryRoleWaitingOn,
-  resolveRepositoryTeamReferences,
-  resolveRepositoryTeams,
-  type GitHubTeamDirectory,
-  type ResolvedGitHubTeam,
-  type TeamResolutionSettings,
+  resolveWaitingOnAccountIdentifiers,
+  type MaintainerResolutionSettings,
   type WaitingOn,
 } from "../src/domain/index.js";
 import {
@@ -20,49 +17,12 @@ import {
   type GitHubDetailActor,
 } from "../src/github/index.js";
 
-const teamSettings = {
-  defaults: {
-    maintainers: [{ org: "VOICEVOX", slug: "default-maintainers" }],
-    reviewers: [{ org: "VOICEVOX", slug: "default-reviewers" }],
-  },
+const maintainerSettings = {
+  defaults: ["default-maintainer", "shared-maintainer"],
   repositories: {
-    "VOICEVOX/voicevox": {
-      maintainers: [{ org: "VOICEVOX", slug: "voicevox-maintainers" }],
-      reviewers: [{ org: "VOICEVOX", slug: "voicevox-reviewers" }],
-    },
-    "VOICEVOX/shared": {
-      maintainers: [{ org: "VOICEVOX", slug: "default-maintainers" }],
-      reviewers: [{ org: "VOICEVOX", slug: "default-reviewers" }],
-    },
+    "VOICEVOX/voicevox": ["voicevox-maintainer"],
   },
-} satisfies TeamResolutionSettings;
-
-function createTeam(
-  nodeId: string,
-  slug: string,
-  memberLogins: readonly string[],
-): ResolvedGitHubTeam {
-  return Object.freeze({
-    nodeId: createGitHubNodeId(nodeId),
-    org: "VOICEVOX",
-    slug,
-    members: Object.freeze(
-      memberLogins.map((login, index) =>
-        Object.freeze({
-          nodeId: createGitHubNodeId(`${nodeId}_member_${index.toString()}`),
-          login,
-        }),
-      ),
-    ),
-  });
-}
-
-const teamDirectory = Object.freeze([
-  createTeam("T_default_maintainers", "default-maintainers", ["default-maintainer", "both"]),
-  createTeam("T_default_reviewers", "default-reviewers", ["default-reviewer", "both"]),
-  createTeam("T_voicevox_maintainers", "voicevox-maintainers", ["voicevox-maintainer"]),
-  createTeam("T_voicevox_reviewers", "voicevox-reviewers", ["voicevox-reviewer"]),
-]) satisfies GitHubTeamDirectory;
+} satisfies MaintainerResolutionSettings;
 
 function createDetailActor(login: string, apiType: "Bot" | "User"): GitHubDetailActor {
   const nodeId = createGitHubNodeId(`U_${login}`);
@@ -244,26 +204,26 @@ describe("ラベル効果解決", () => {
   });
 });
 
-describe("team解決", () => {
-  it("リポジトリ別設定がない場合は既定teamを解決する", () => {
-    const references = resolveRepositoryTeamReferences("VOICEVOX/other", teamSettings);
-    const teams = resolveRepositoryTeams("VOICEVOX/other", teamSettings, teamDirectory);
-
-    expect(references).toEqual(teamSettings.defaults);
-    expect(teams.maintainers.map((team) => team.slug)).toEqual(["default-maintainers"]);
-    expect(teams.reviewers.map((team) => team.slug)).toEqual(["default-reviewers"]);
+describe("メンテナ解決", () => {
+  it("リポジトリ別設定がない場合は既定メンテナを解決する", () => {
+    expect(resolveRepositoryMaintainers(maintainerSettings, "VOICEVOX/other")).toEqual(
+      maintainerSettings.defaults,
+    );
   });
 
-  it("リポジトリ別設定がある場合はmaintainerとreviewerを上書きする", () => {
-    const references = resolveRepositoryTeamReferences("VOICEVOX/voicevox", teamSettings);
-    const teams = resolveRepositoryTeams("VOICEVOX/voicevox", teamSettings, teamDirectory);
-
-    expect(references).toEqual(teamSettings.repositories["VOICEVOX/voicevox"]);
-    expect(teams.maintainers.map((team) => team.slug)).toEqual(["voicevox-maintainers"]);
-    expect(teams.reviewers.map((team) => team.slug)).toEqual(["voicevox-reviewers"]);
+  it("リポジトリ別設定がある場合は既定値とmergeせず一覧全体を上書きする", () => {
+    expect(resolveRepositoryMaintainers(maintainerSettings, "VOICEVOX/voicevox")).toEqual([
+      "voicevox-maintainer",
+    ]);
   });
 
-  it("抽象roleを既定と上書きのteamへ解決しGitHub由来の実体は維持する", () => {
+  it("リポジトリ名の大文字小文字を区別して照合する", () => {
+    expect(resolveRepositoryMaintainers(maintainerSettings, "voicevox/voicevox")).toEqual(
+      maintainerSettings.defaults,
+    );
+  });
+
+  it("リポジトリ責務の抽象roleを各メンテナのuser候補へ展開する", () => {
     const sourceId = buildSourceId("github_item_detail", "I_team_role");
     const maintainer = {
       kind: "role",
@@ -281,40 +241,72 @@ describe("team解決", () => {
       sourceIds: [sourceId],
       confidence: 1,
     } satisfies WaitingOn;
+    const mergeDecider = {
+      ...maintainer,
+      role: "merge_decider",
+    } satisfies WaitingOn;
     const requestedUser = {
       ...reviewer,
       kind: "user",
       candidateId: "requested-reviewer",
     } satisfies WaitingOn;
-    const defaultTeams = resolveRepositoryTeams("VOICEVOX/other", teamSettings, teamDirectory);
-    const overrideTeams = resolveRepositoryTeams("VOICEVOX/voicevox", teamSettings, teamDirectory);
+    const requestedTeam = {
+      ...reviewer,
+      kind: "team",
+      candidateId: "VOICEVOX/reviewers",
+    } satisfies WaitingOn;
 
     expect(
       [
-        resolveRepositoryRoleWaitingOn(defaultTeams, maintainer),
-        resolveRepositoryRoleWaitingOn(defaultTeams, reviewer),
-        resolveRepositoryRoleWaitingOn(overrideTeams, maintainer),
-        resolveRepositoryRoleWaitingOn(overrideTeams, reviewer),
+        resolveRepositoryRoleWaitingOn(maintainer, maintainerSettings.defaults),
+        resolveRepositoryRoleWaitingOn(reviewer, maintainerSettings.defaults),
+        resolveRepositoryRoleWaitingOn(mergeDecider, maintainerSettings.defaults),
       ].map((waitingOnValues) =>
-        waitingOnValues.map((waitingOn) => [waitingOn.kind, waitingOn.candidateId]),
+        waitingOnValues.map((waitingOn) => [waitingOn.kind, waitingOn.candidateId, waitingOn.role]),
       ),
     ).toEqual([
-      [["team", "VOICEVOX/default-maintainers"]],
-      [["team", "VOICEVOX/default-reviewers"]],
-      [["team", "VOICEVOX/voicevox-maintainers"]],
-      [["team", "VOICEVOX/voicevox-reviewers"]],
+      [
+        ["user", "default-maintainer", "maintainer"],
+        ["user", "shared-maintainer", "maintainer"],
+      ],
+      [
+        ["user", "default-maintainer", "reviewer"],
+        ["user", "shared-maintainer", "reviewer"],
+      ],
+      [
+        ["user", "default-maintainer", "merge_decider"],
+        ["user", "shared-maintainer", "merge_decider"],
+      ],
     ]);
-    expect(resolveRepositoryRoleWaitingOn(defaultTeams, requestedUser)).toEqual([requestedUser]);
+    expect(resolveRepositoryRoleWaitingOn(requestedUser, maintainerSettings.defaults)).toEqual([
+      requestedUser,
+    ]);
+    expect(resolveRepositoryRoleWaitingOn(requestedTeam, maintainerSettings.defaults)).toEqual([
+      requestedTeam,
+    ]);
   });
 
-  it("既定値と上書きで重複するteamを一度だけ列挙する", () => {
-    expect(
-      listConfiguredTeamReferences(teamSettings).map((team) => `${team.org}/${team.slug}`),
-    ).toEqual([
-      "VOICEVOX/default-maintainers",
-      "VOICEVOX/default-reviewers",
-      "VOICEVOX/voicevox-maintainers",
-      "VOICEVOX/voicevox-reviewers",
-    ]);
+  it("user候補だけを責務アカウント識別子として返す", () => {
+    const sourceId = buildSourceId("github_item_detail", "I_account_identifiers");
+    const waitingOnValues = [
+      {
+        kind: "user",
+        candidateId: "maintainer-login",
+        role: "maintainer",
+        reasonSummary: "メンテナの対応待ちです",
+        sourceIds: [sourceId],
+        confidence: 1,
+      },
+      {
+        kind: "team",
+        candidateId: "VOICEVOX/reviewers",
+        role: "reviewer",
+        reasonSummary: "teamの対応待ちです",
+        sourceIds: [sourceId],
+        confidence: 1,
+      },
+    ] satisfies readonly WaitingOn[];
+
+    expect([...resolveWaitingOnAccountIdentifiers(waitingOnValues)]).toEqual(["maintainer-login"]);
   });
 });

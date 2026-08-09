@@ -494,7 +494,6 @@ describe("CLI合成root", () => {
       openStateSession: (adapter, configuration) =>
         StatePersistenceSession.open(adapter, configuration),
       discoverRepositoryInventory: () => Promise.resolve(Object.freeze([])),
-      collectGitHubTeamDirectory: () => Promise.resolve(Object.freeze([])),
       enumerateGitHubItemsByIdentifiers: () => Promise.resolve(Object.freeze([])),
       enumerateOpenGitHubItems: () => Promise.resolve(Object.freeze([])),
       collectGitHubItemDetails: () =>
@@ -602,7 +601,6 @@ describe("CLI合成root", () => {
         StatePersistenceSession.open(adapter, configuration),
       discoverRepositoryInventory: () =>
         Promise.reject(new TypeError("GitHub inventoryは呼びません")),
-      collectGitHubTeamDirectory: () => Promise.reject(new TypeError("teamは収集しません")),
       enumerateGitHubItemsByIdentifiers: () =>
         Promise.reject(new TypeError("個別項目は収集しません")),
       enumerateOpenGitHubItems: () => Promise.reject(new TypeError("項目は収集しません")),
@@ -796,7 +794,6 @@ describe("CLI合成root", () => {
           StatePersistenceSession.open(adapter, configuration),
         discoverRepositoryInventory: () =>
           Promise.reject(new TypeError("GitHub inventoryは呼びません")),
-        collectGitHubTeamDirectory: () => Promise.reject(new TypeError("teamは収集しません")),
         enumerateGitHubItemsByIdentifiers: () =>
           Promise.reject(new TypeError("個別項目は収集しません")),
         enumerateOpenGitHubItems: () => Promise.reject(new TypeError("項目は収集しません")),

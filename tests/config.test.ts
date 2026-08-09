@@ -36,13 +36,11 @@ describe("設定の読み込みと検証", () => {
 
     expect(config.schemaVersion).toBe(1);
     expect(config.organization).toBe("VOICEVOX");
-    expect(config.teams.defaults.maintainers[0]).toEqual({
-      org: "VOICEVOX",
-      slug: "default-maintainers",
-    });
-    expect(config.teams.repositories["VOICEVOX/voicevox"]?.reviewers[0]?.slug).toBe(
-      "voicevox-reviewers",
-    );
+    expect(config.maintainers.defaults).toEqual(["default-maintainer"]);
+    expect(config.maintainers.repositories["VOICEVOX/voicevox"]).toEqual([
+      "voicevox-maintainer",
+      "VoicevoxReviewer",
+    ]);
     expect(config.ai.provider).toBe("codex");
     expect(config.ai.authentication).toBe("api-key");
     expect(config.ai.budget.maxEstimatedCostUsdPerRun).toBe(10);
@@ -266,24 +264,55 @@ describe("設定の読み込みと検証", () => {
     expect(error.message).toContain("ai.execution.maxConcurrentCalls");
   });
 
-  it("placeholderのteam slugを拒否する", () => {
+  it.each(["-invalid", "invalid-", "invalid--login", "invalid_login", "a".repeat(40)])(
+    "GitHub loginとして不正な%sを拒否する",
+    (login) => {
+      const source = replaceRequired(
+        validConfigSource,
+        "  defaults: [default-maintainer]",
+        `  defaults: [${login}]`,
+      );
+      const error = captureConfigError(source);
+
+      expect(error.message).toContain("maintainers.defaults[0]");
+      expect(error.message).toContain("GitHub loginの形式");
+    },
+  );
+
+  it("メンテナを1件も指定できない", () => {
     const source = replaceRequired(
       validConfigSource,
-      "slug: default-maintainers",
-      "slug: YOUR_DEFAULT_MAINTAINER_TEAM_SLUG",
+      "  defaults: [default-maintainer]",
+      "  defaults: []",
     );
     const error = captureConfigError(source);
 
-    expect(error.message).toContain("teams.defaults.maintainers[0].slug");
-    expect(error.message).toContain("placeholderは使用できません");
+    expect(error.message).toContain("maintainers.defaults");
+    expect(error.message).toContain("1件以上");
   });
 
-  it("空のteam slugを拒否する", () => {
-    const source = replaceRequired(validConfigSource, "slug: default-reviewers", 'slug: ""');
+  it("GitHub loginの大文字小文字だけが違う重複を拒否する", () => {
+    const source = replaceRequired(
+      validConfigSource,
+      "  defaults: [default-maintainer]",
+      "  defaults: [Maintainer, maintainer]",
+    );
     const error = captureConfigError(source);
 
-    expect(error.message).toContain("teams.defaults.reviewers[0].slug");
-    expect(error.message).toContain("空文字は指定できません");
+    expect(error.message).toContain("maintainers.defaults[1]");
+    expect(error.message).toContain("重複しています");
+  });
+
+  it("リポジトリ別メンテナ設定のキーをowner/repo形式へ制限する", () => {
+    const source = replaceRequired(
+      validConfigSource,
+      "    VOICEVOX/voicevox: [voicevox-maintainer, VoicevoxReviewer]",
+      "    VOICEVOX: [voicevox-maintainer]",
+    );
+    const error = captureConfigError(source);
+
+    expect(error.message).toContain("maintainers.repositories.VOICEVOX");
+    expect(error.message).toContain("owner/repo形式");
   });
 
   it("AI confidenceのhighがmedium未満なら拒否する", () => {
@@ -486,16 +515,12 @@ describe("設定の読み込みと検証", () => {
       "  provider: codex",
       "  provider: other",
     );
-    const source = replaceRequired(
-      invalidProvider,
-      "slug: default-maintainers",
-      "slug: YOUR_DEFAULT_MAINTAINER_TEAM_SLUG",
-    );
+    const source = replaceRequired(invalidProvider, "default-maintainer", "invalid-");
     const error = captureConfigError(source);
     const paths = error.issues.map((issue) => issue.path);
 
     expect(paths).toEqual(
-      expect.arrayContaining(["organization", "teams.defaults.maintainers[0].slug", "ai.provider"]),
+      expect.arrayContaining(["organization", "maintainers.defaults[0]", "ai.provider"]),
     );
   });
 });

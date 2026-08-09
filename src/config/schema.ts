@@ -14,6 +14,8 @@ const DEFAULT_MEDIUM_CONFIDENCE = 0.65;
 const SCHEMA_VERSION_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)*$/;
 const GITHUB_ITEM_URL_PATTERN =
   /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/(?:issues|pull)\/[1-9]\d*\/?$/u;
+const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/u;
+const REPOSITORY_FULL_NAME_PATTERN = /^[^/\s]+\/[^/\s]+$/u;
 const WEB_BASE_PATH_PATTERN = /^\/(?:[A-Za-z0-9._~-]+\/)*$/u;
 
 const requiredStringSchema = z.string().min(1, "空文字は指定できません");
@@ -115,20 +117,6 @@ const aiProviderSchema = requiredStringSchema.transform((value, context) => {
   return SUPPORTED_AI_PROVIDER;
 });
 
-const teamSlugSchema = z.string().superRefine((value, context) => {
-  if (value.trim().length === 0) {
-    context.addIssue({
-      code: "custom",
-      message: "空文字は指定できません",
-    });
-  } else if (value.startsWith("YOUR_")) {
-    context.addIssue({
-      code: "custom",
-      message: "YOUR_で始まるplaceholderは使用できません",
-    });
-  }
-});
-
 const regexPatternSchema = requiredStringSchema.superRefine((value, context) => {
   try {
     new RegExp(value);
@@ -172,17 +160,42 @@ const startAtSchema = z
     return value;
   });
 
-const teamSchema = z.strictObject({
-  org: requiredStringSchema,
-  slug: teamSlugSchema,
-});
-
-const teamListSchema = z.array(teamSchema).min(1, "teamを1件以上指定してください");
-
-const repositoryTeamsSchema = z.strictObject({
-  maintainers: teamListSchema,
-  reviewers: teamListSchema,
-});
+const maintainerLoginSchema = z
+  .string()
+  .regex(GITHUB_LOGIN_PATTERN, "GitHub loginの形式で指定してください");
+const maintainerLoginListSchema = z
+  .array(maintainerLoginSchema)
+  .min(1, "メンテナのGitHub loginを1件以上指定してください")
+  .superRefine((logins, context) => {
+    const seenLogins = new Set<string>();
+    for (const [index, login] of logins.entries()) {
+      const normalizedLogin = login.toLowerCase();
+      if (seenLogins.has(normalizedLogin)) {
+        context.addIssue({
+          code: "custom",
+          path: [index],
+          message: "メンテナのGitHub loginが重複しています",
+        });
+      }
+      seenLogins.add(normalizedLogin);
+    }
+  });
+const maintainersSchema = z
+  .strictObject({
+    defaults: maintainerLoginListSchema,
+    repositories: z.record(requiredStringSchema, maintainerLoginListSchema),
+  })
+  .superRefine((maintainers, context) => {
+    for (const repositoryFullName of Object.keys(maintainers.repositories)) {
+      if (!REPOSITORY_FULL_NAME_PATTERN.test(repositoryFullName)) {
+        context.addIssue({
+          code: "custom",
+          path: ["repositories", repositoryFullName],
+          message: "owner/repo形式で指定してください",
+        });
+      }
+    }
+  });
 
 const thresholdSchema = z
   .strictObject({
@@ -330,13 +343,7 @@ const configSchema = z.strictObject({
       maxItemsPerRun: positiveIntegerSchema,
     }),
   }),
-  teams: z.strictObject({
-    defaults: z.strictObject({
-      maintainers: teamListSchema,
-      reviewers: teamListSchema,
-    }),
-    repositories: z.record(requiredStringSchema, repositoryTeamsSchema),
-  }),
+  maintainers: maintainersSchema,
   actors: z.strictObject({
     bots: z.strictObject({
       loginPatterns: z.array(regexPatternSchema),

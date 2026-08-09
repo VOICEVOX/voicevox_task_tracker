@@ -606,10 +606,6 @@ async function createTestConfig(
   }>,
 ): Promise<Config> {
   const base = await loadConfig(join(import.meta.dirname, "fixtures/config.valid.yml"));
-  const team = Object.freeze({
-    org: "VOICEVOX",
-    slug: "production-test-team",
-  });
   return Object.freeze({
     ...base,
     tracking: Object.freeze({
@@ -618,11 +614,8 @@ async function createTestConfig(
       include: [...options.explicitIncludes],
       retentionDaysAfterTerminal: options.retentionDays,
     }),
-    teams: Object.freeze({
-      defaults: Object.freeze({
-        maintainers: [team],
-        reviewers: [team],
-      }),
+    maintainers: Object.freeze({
+      defaults: ["production-test-maintainer"],
       repositories: Object.freeze({}),
     }),
     ai: Object.freeze({
@@ -859,17 +852,6 @@ function createCollectionHarness(
     openStateSession: (adapter, configuration) =>
       StatePersistenceSession.open(adapter, configuration),
     discoverRepositoryInventory: () => Promise.resolve(Object.freeze([...inventory])),
-    collectGitHubTeamDirectory: () =>
-      Promise.resolve(
-        Object.freeze([
-          Object.freeze({
-            nodeId: createGitHubNodeId("T_production_test"),
-            org: "VOICEVOX",
-            slug: "production-test-team",
-            members: Object.freeze([]),
-          }),
-        ]),
-      ),
     enumerateOpenGitHubItems: (input) => {
       const repository = requireSingleRepository(input.allowlist.repositories);
       const fixture = fixturesByRepositoryId.get(repository.id);
@@ -6145,11 +6127,12 @@ describe("本番判定入力の接続", () => {
     expect(harness.codexExecutionCount()).toBe(1);
     expect(harness.codexInputs).toHaveLength(1);
     expect(input.item).not.toHaveProperty("authorCandidateId");
-    expect(input.candidates.waitingOn).not.toContainEqual(
+    expect(input.candidates.waitingOn).toEqual([
       expect.objectContaining({
+        id: "production-test-maintainer",
         kind: "user",
       }),
-    );
+    ]);
     expect(input.candidates.waitingOn.map((candidate) => candidate.id)).not.toContain(
       attemptedAuthorCandidateId,
     );

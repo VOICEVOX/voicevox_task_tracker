@@ -7,8 +7,8 @@
       "status": "waiting_for_assessment",
       "waitingOn": [
         {
-          "kind": "team",
-          "candidateId": "VOICEVOX/fixture-maintainers",
+          "kind": "user",
+          "candidateId": "fixture-maintainer",
           "role": "maintainer"
         }
       ],

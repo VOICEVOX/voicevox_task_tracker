@@ -15,7 +15,6 @@ import {
   type PullRequestBlocker,
   type PullRequestStateMachineInput,
   type ResolvedLabelEffects,
-  type ResolvedRepositoryTeams,
 } from "../src/domain/index.js";
 
 const headPushedAt = createUtcIsoDateTime("2026-07-31T03:00:00Z");
@@ -54,24 +53,7 @@ const labelEffects = {
   countsAsProgress: false,
 } satisfies ResolvedLabelEffects;
 
-const teams = {
-  maintainers: [
-    {
-      nodeId: createGitHubNodeId("T_maintainers"),
-      org: "VOICEVOX",
-      slug: "maintainers",
-      members: [],
-    },
-  ],
-  reviewers: [
-    {
-      nodeId: createGitHubNodeId("T_reviewers"),
-      org: "VOICEVOX",
-      slug: "reviewers",
-      members: [],
-    },
-  ],
-} satisfies ResolvedRepositoryTeams;
+const maintainers = ["configured-maintainer"];
 
 function createPushEvent(
   sha: string,
@@ -280,7 +262,7 @@ function createInput(pullRequest: FreshObservedGitHubPullRequest): PullRequestSt
       cause: "not_assessed",
     },
     labelEffects,
-    teams,
+    maintainers,
     confidenceThresholds: {
       high: 0.85,
       medium: 0.65,
@@ -343,6 +325,18 @@ describe("Pull Request状態機械の入力契約", () => {
     expect(second).toEqual(first);
     expect(first.deterministicRulesVersion).toBe(PULL_REQUEST_DETERMINISTIC_RULES_VERSION);
     expect(first.determination).toBe("determined");
+  });
+
+  it.each([
+    { maintainers: [], expectedMessage: "1件以上" },
+    { maintainers: ["Maintainer", "maintainer"], expectedMessage: "重複しています" },
+  ])("不正なメンテナ一覧を拒否する", ({ maintainers: invalidMaintainers, expectedMessage }) => {
+    expect(() =>
+      determinePullRequestState({
+        ...createInput(createOpenPullRequest()),
+        maintainers: invalidMaintainers,
+      }),
+    ).toThrow(expectedMessage);
   });
 
   it("check runの完了状態と結果と完了時刻を型で同期する", () => {
@@ -999,9 +993,9 @@ describe("Pull Request判定の優先順位", () => {
 
     expect(decision.status).toBe("waiting_for_decision");
     expect(decision.waitingOn[0]).toMatchObject({
-      kind: "team",
+      kind: "user",
       role: "maintainer",
-      candidateId: "VOICEVOX/maintainers",
+      candidateId: maintainers[0],
     });
     expect(decision.statusBasis).toEqual({
       sourceIds: [buildSourceId("github_item_detail", pullRequestNodeId)],
@@ -1751,9 +1745,9 @@ describe("merge readinessと失敗時の判定", () => {
 
     expect(decision.status).toBe("waiting_for_merge");
     expect(decision.waitingOn[0]).toMatchObject({
-      kind: "team",
+      kind: "user",
       role: "merge_decider",
-      candidateId: "VOICEVOX/maintainers",
+      candidateId: maintainers[0],
     });
   });
 
@@ -1762,9 +1756,9 @@ describe("merge readinessと失敗時の判定", () => {
 
     expect(decision.status).toBe("waiting_for_owner");
     expect(decision.waitingOn[0]).toMatchObject({
-      kind: "team",
+      kind: "user",
       role: "maintainer",
-      candidateId: "VOICEVOX/maintainers",
+      candidateId: maintainers[0],
     });
     expect(decision.statusBasis).toEqual({
       sourceIds: [buildSourceId("github_item_detail", pullRequestNodeId)],

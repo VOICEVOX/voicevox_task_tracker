@@ -1,9 +1,9 @@
 import { z } from "zod";
 
 import { type FreshObservedGitHubIssue } from "./github-item-observation.js";
+import { resolveRepositoryRoleWaitingOn } from "./maintainer-resolution.js";
 import { type SourceId } from "./source-id.js";
 import { isTerminalStatus } from "./status.js";
-import { resolveRepositoryRoleWaitingOn, type ResolvedRepositoryTeams } from "./team-resolution.js";
 import {
   type Evidence,
   type EvidenceSupport,
@@ -20,7 +20,7 @@ import { assertNonNullable } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Issue判定へ適用した決定規則のversion。 */
-export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v9";
+export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v10";
 
 /** 依存グラフからIssue判定へ渡すblocker。 */
 export type IssueBlocker = Readonly<{
@@ -75,7 +75,7 @@ export type IssueStateMachineInput = Readonly<{
   blockers: readonly IssueBlocker[];
   explicitRequestCandidates: readonly IssueExplicitRequestCandidate[];
   explicitRequestAssessment: IssueExplicitRequestAssessment;
-  teams: ResolvedRepositoryTeams;
+  maintainers: readonly string[];
   confidenceThresholds: Readonly<{
     high: number;
     medium: number;
@@ -157,13 +157,13 @@ function validateSourceIds(sourceIds: readonly SourceId[], context: string): voi
   }
 }
 
-function validateTeamNodeIdList(teams: ResolvedRepositoryTeams["maintainers"], role: string): void {
-  if (teams.length === 0) {
-    throw new TypeError(`解決済み${role} teamは1件以上必要です`);
+function validateMaintainerLoginList(maintainers: readonly string[]): void {
+  if (maintainers.length === 0) {
+    throw new TypeError("メンテナのGitHub loginは1件以上必要です");
   }
-  const nodeIds = teams.map((team) => team.nodeId);
-  if (new Set(nodeIds).size !== nodeIds.length) {
-    throw new TypeError(`解決済み${role} teamのnode IDが重複しています`);
+  const normalizedLogins = maintainers.map((login) => login.toLowerCase());
+  if (new Set(normalizedLogins).size !== normalizedLogins.length) {
+    throw new TypeError("メンテナのGitHub loginが重複しています");
   }
 }
 
@@ -342,8 +342,7 @@ function validateInput(input: IssueStateMachineInput): void {
     }
   }
   validateAssessment(input, candidates);
-  validateTeamNodeIdList(input.teams.maintainers, "maintainer");
-  validateTeamNodeIdList(input.teams.reviewers, "reviewer");
+  validateMaintainerLoginList(input.maintainers);
 }
 
 function createBasis(
@@ -436,7 +435,7 @@ function finalizeDecision(
   const confidence = Math.min(draft.confidence, context.confidenceCap);
   const waitingOn = Object.freeze(
     draft.waitingOn
-      .flatMap((value) => resolveRepositoryRoleWaitingOn(input.teams, value))
+      .flatMap((value) => resolveRepositoryRoleWaitingOn(value, input.maintainers))
       .map((value) =>
         Object.freeze({
           ...value,
