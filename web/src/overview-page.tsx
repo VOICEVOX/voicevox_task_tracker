@@ -1,10 +1,11 @@
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
-import { shouldHandleClientNavigation } from "./client-navigation.js";
+import { AiAnalysisNoticeIcon } from "./ai-analysis-notice-icon.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
 import { ListCountSummary } from "./list-count-summary.js";
 import {
+  aiAnalysisNotice,
   createEmptyTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
@@ -14,7 +15,6 @@ import {
   formatStallDuration,
   formatWaitingOn,
   formatWaitingOnCandidate,
-  isAiAnalysisDegraded,
   selectPrimaryWaitingOnCandidate,
   type ItemSort,
   type ItemSortKey,
@@ -28,11 +28,9 @@ const OVERVIEW_NOTICE_CLASS_NAME =
   "notice m-0 rounded-md border-l-2 bg-surface-card px-3 py-2 text-sm leading-5 text-text-secondary";
 
 type OverviewPageProps = Readonly<{
-  aiDegradedItemsHref: string;
   createItemHref: (nodeId: string) => string;
   locale: string;
   now: Date;
-  onShowAiDegradedItems: () => void;
   onSelectItem: (nodeId: string) => void;
   onSortChange: (key: ItemSortKey) => void;
   sort: ItemSort;
@@ -54,94 +52,15 @@ function RelativeTimeDisplay({ locale, now, timezone, value }: RelativeTimeDispl
   );
 }
 
-function hasAiStateNotice(ai: PublicSummaryDto["ai"]): boolean {
-  return !ai.enabled || !ai.available || ai.degraded;
-}
-
-function AiDegradedItemsLink({
-  count,
-  href,
-  locale,
-  onShow,
-}: Readonly<{
-  count: number;
-  href: string;
-  locale: string;
-  onShow: () => void;
-}>) {
+function AiStateNotice() {
   return (
-    <a
-      class="ai-degraded-items-link font-bold"
-      href={href}
-      onClick={(event) => {
-        if (!shouldHandleClientNavigation(event)) {
-          return;
-        }
-        event.preventDefault();
-        onShow();
-      }}
+    <p
+      class={`${OVERVIEW_NOTICE_CLASS_NAME} ai-state-notice border-state-info-border`}
+      role="status"
     >
-      対象{count.toLocaleString(locale)}件を一覧で確認
-    </a>
+      AI分析は設定で無効です。確定ルールで表示しています。
+    </p>
   );
-}
-
-function AiStateNotice({
-  ai,
-  degradedItemCount,
-  degradedItemsHref,
-  locale,
-  onShowDegradedItems,
-}: Readonly<{
-  ai: PublicSummaryDto["ai"];
-  degradedItemCount: number;
-  degradedItemsHref: string;
-  locale: string;
-  onShowDegradedItems: () => void;
-}>) {
-  if (!ai.enabled) {
-    return (
-      <p
-        class={`${OVERVIEW_NOTICE_CLASS_NAME} ai-state-notice border-state-info-border`}
-        role="status"
-      >
-        AI分析は設定で無効です。確定ルールで表示しています。
-      </p>
-    );
-  }
-  if (!ai.available) {
-    return (
-      <p
-        class={`${OVERVIEW_NOTICE_CLASS_NAME} notice-warning ai-state-notice border-state-warning-border`}
-        role="status"
-      >
-        AIを利用できなかったため、確定ルールと利用可能な前回結果で表示しています。{" "}
-        <AiDegradedItemsLink
-          count={degradedItemCount}
-          href={degradedItemsHref}
-          locale={locale}
-          onShow={onShowDegradedItems}
-        />
-      </p>
-    );
-  }
-  if (ai.degraded) {
-    return (
-      <p
-        class={`${OVERVIEW_NOTICE_CLASS_NAME} notice-warning ai-state-notice border-state-warning-border`}
-        role="status"
-      >
-        AI分析の一部が縮退したため、確定ルールと利用可能な前回結果を併用しています。{" "}
-        <AiDegradedItemsLink
-          count={degradedItemCount}
-          href={degradedItemsHref}
-          locale={locale}
-          onShow={onShowDegradedItems}
-        />
-      </p>
-    );
-  }
-  return null;
 }
 
 function formatStaleRepositoryNames(
@@ -263,7 +182,8 @@ function AttentionQueue({
                           onSelect={onSelectItem}
                         >
                           {item.title}
-                        </ItemDetailsLink>
+                        </ItemDetailsLink>{" "}
+                        <AiAnalysisNoticeIcon notice={aiAnalysisNotice(item.aiAnalysis.status)} />
                       </span>
                     </h3>
                   </div>
@@ -316,27 +236,16 @@ function AttentionQueue({
 /** 対応が必要な項目を表示する。 */
 export function OverviewPage(props: OverviewPageProps) {
   const attentionItems = sortAttentionItems(props.summary, props.now, props.sort);
-  const aiDegradedItemCount = props.summary.items.filter((item) =>
-    isAiAnalysisDegraded(item.aiAnalysis.status),
-  ).length;
   const staleRepositories = props.summary.repositories.filter(
     (repository) => repository.freshness.status === "stale",
   );
-  const aiStateNoticeVisible = hasAiStateNotice(props.summary.ai);
+  const aiStateNoticeVisible = !props.summary.ai.enabled;
   const statusNoticesVisible = aiStateNoticeVisible || staleRepositories.length > 0;
   return (
     <>
       {statusNoticesVisible && (
         <div class="overview-notices grid gap-2">
-          {aiStateNoticeVisible && (
-            <AiStateNotice
-              ai={props.summary.ai}
-              degradedItemCount={aiDegradedItemCount}
-              degradedItemsHref={props.aiDegradedItemsHref}
-              locale={props.locale}
-              onShowDegradedItems={props.onShowAiDegradedItems}
-            />
-          )}
+          {aiStateNoticeVisible && <AiStateNotice />}
           {staleRepositories.length > 0 && (
             <p
               class={`${OVERVIEW_NOTICE_CLASS_NAME} notice-warning repository-freshness-notice border-state-warning-border`}

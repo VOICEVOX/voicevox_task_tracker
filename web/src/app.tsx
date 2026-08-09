@@ -8,7 +8,6 @@ import { createSharedDetailsLoader, type PublicDetailsLoader } from "./details-l
 import { ItemDetailsPage } from "./item-details-page.js";
 import { ItemsPage } from "./items-page.js";
 import {
-  AI_ANALYSIS_DEGRADED_FILTER_VALUE,
   collectWaitingTeamIds,
   createTableFilterOptions,
   ITEM_NATURAL_SORT_DIRECTIONS,
@@ -85,19 +84,6 @@ function routeForNavigationPage(page: NavigationPage): WebRoute {
   }
 }
 
-function createAiDegradedItemsViewState(): WebViewState {
-  const state = createWebViewState({
-    page: "items",
-  });
-  return {
-    ...state,
-    tableFilters: {
-      ...state.tableFilters,
-      aiAnalysis: AI_ANALYSIS_DEGRADED_FILTER_VALUE,
-    },
-  };
-}
-
 function isCurrentNavigationPage(route: WebRoute, page: NavigationPage): boolean {
   if (route.page === "item-details") {
     return page === "items";
@@ -167,7 +153,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
   );
   const showItemHeadingFocusRing = useRef(false);
   const viewState = navigationState.state;
-  const aiDegradedItemsViewState = createAiDegradedItemsViewState();
   const viewerIdentity =
     viewerIdentityState.status === "available" ? viewerIdentityState.identity : undefined;
 
@@ -393,15 +378,11 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       case "overview":
         return (
           <OverviewPage
-            aiDegradedItemsHref={createWebViewHref(basePath, aiDegradedItemsViewState)}
             createItemHref={createItemHref}
             locale={locale}
             now={now}
             sort={viewState.overviewSort}
             summary={summary}
-            onShowAiDegradedItems={() => {
-              navigate(aiDegradedItemsViewState, "push");
-            }}
             onSelectItem={selectItem}
             onSortChange={replaceOverviewSort}
           />

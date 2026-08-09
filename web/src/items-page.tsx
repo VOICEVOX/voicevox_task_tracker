@@ -2,19 +2,19 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
-import { AiAnalysisBadge } from "./ai-analysis-badge.js";
+import { AiAnalysisNoticeIcon } from "./ai-analysis-notice-icon.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
 import { ListCountSummary } from "./list-count-summary.js";
 import {
+  aiAnalysisNotice,
   createItemDetailsMap,
   createItemTableRows,
   filterAndSortTableRows,
   formatStallDuration,
   formatWaitingOn,
-  isAiAnalysisDegraded,
   isTableSelectFilterKey,
   searchItemNodeIds,
   statusLabel,
@@ -375,7 +375,7 @@ function ItemTable({
                 古い観測値
               </Pill>
             )}
-            <AiAnalysisBadge status={row.item.aiAnalysis.status} />
+            <AiAnalysisNoticeIcon notice={aiAnalysisNotice(row.item.aiAnalysis.status)} />
           </span>
         </div>
       ),
@@ -536,21 +536,22 @@ function ItemTable({
             tableClassName="items-table"
             renderCardHeading={(row) => {
               const showsFreshnessBadge = row.item.repositoryFreshness === "stale";
-              const showsAiAnalysisBadge = isAiAnalysisDegraded(row.item.aiAnalysis.status);
+              const aiNotice = aiAnalysisNotice(row.item.aiAnalysis.status);
+              const showsAiAnalysisNotice = aiNotice.kind === "outdated";
               return (
                 <div class="grid min-w-0 gap-2">
                   <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
                     <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted wrap-anywhere">
                       {row.item.displayReference}・{row.typeText}
                     </p>
-                    {(showsFreshnessBadge || showsAiAnalysisBadge) && (
+                    {(showsFreshnessBadge || showsAiAnalysisNotice) && (
                       <span class="flex flex-wrap justify-end gap-1.5">
                         {showsFreshnessBadge && (
                           <Pill className="freshness-badge freshness-stale" tone="warning">
                             古い観測値
                           </Pill>
                         )}
-                        <AiAnalysisBadge status={row.item.aiAnalysis.status} />
+                        <AiAnalysisNoticeIcon notice={aiNotice} />
                       </span>
                     )}
                   </div>

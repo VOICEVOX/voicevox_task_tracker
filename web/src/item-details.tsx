@@ -13,11 +13,11 @@ import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
 import { type ItemGraphView } from "./graph-model.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import {
+  aiAnalysisNotice,
   confidencePresentation,
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
-  isAiAnalysisDegraded,
   statusLabel,
   waitingOnHistoryLabel,
   waitingOnLabel,
@@ -523,6 +523,7 @@ export function ItemDetailsContent({
   const item = details.summary;
   const heading = useRef<HTMLHeadingElement>(null);
   const presentation = confidencePresentation(item.confidence, summary.confidenceThresholds);
+  const aiNotice = aiAnalysisNotice(item.aiAnalysis.status);
   const itemsByNodeId = new Map(
     summary.items.map((summaryItem) => [summaryItem.nodeId, summaryItem]),
   );
@@ -589,12 +590,16 @@ export function ItemDetailsContent({
         </div>
       </div>
 
-      {isAiAnalysisDegraded(item.aiAnalysis.status) && (
+      {aiNotice.kind !== "none" && (
         <p
-          class="ai-analysis-notice m-0 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3 text-sm leading-5 text-state-warning-text"
+          class={`ai-analysis-notice m-0 rounded-md border-l-4 px-4 py-3 text-sm leading-5 ${
+            aiNotice.kind === "outdated"
+              ? "ai-analysis-notice-outdated border-state-warning-border bg-state-warning-background text-state-warning-text"
+              : "ai-analysis-notice-skipped border-state-info-border bg-state-info-background text-state-info-text"
+          }`}
           role="status"
         >
-          AI判定を利用できなかったため、確定ルールで表示しています。
+          {aiNotice.description}
         </p>
       )}
 

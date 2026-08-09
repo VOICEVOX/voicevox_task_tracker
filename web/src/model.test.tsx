@@ -8,6 +8,7 @@ import {
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
 import {
+  aiAnalysisNotice,
   collectWaitingSubjectRows,
   collectWaitingTeamIds,
   createEmptyTableFilters,
@@ -31,6 +32,28 @@ import {
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 
 const sampleSummary = createPublicSummaryDto(sampleSummarySource);
+
+describe("AI推定の利用状況", () => {
+  it("全statusを一覧と詳細の注記へ変換する", () => {
+    expect(aiAnalysisNotice("used")).toEqual({ kind: "none" });
+    expect(aiAnalysisNotice("disabled")).toEqual({ kind: "none" });
+    expect(aiAnalysisNotice("not_recorded")).toEqual({ kind: "none" });
+    expect(aiAnalysisNotice("not_required")).toEqual({
+      kind: "skipped",
+      description: "確定ルールだけで判定できたため、AI推定を省いています。",
+    });
+    expect(aiAnalysisNotice("failed")).toEqual({
+      kind: "outdated",
+      description:
+        "AI推定に失敗したため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+    });
+    expect(aiAnalysisNotice("deferred")).toEqual({
+      kind: "outdated",
+      description:
+        "AI推定を今回実行しなかったため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+    });
+  });
+});
 
 describe("返答待ち表示", () => {
   it("返答待ちと回答者を表示しstatusフィルタへ追加する", () => {

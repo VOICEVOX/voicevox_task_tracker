@@ -16,7 +16,7 @@ import {
 import { assertNonNullable } from "../../src/util/index.js";
 import { App } from "./app.js";
 import {
-  AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+  aiAnalysisNotice,
   createEmptyTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
@@ -325,18 +325,17 @@ describe("Web UI", () => {
     ]);
     expect(currentContainer().querySelector(".metric-grid")).toBeNull();
     expect(currentContainer().querySelector(".aggregate-details")).toBeNull();
-    const aiStateNotice = requiredElement<HTMLElement>(".ai-state-notice");
     const freshnessNotice = requiredElement<HTMLElement>(".repository-freshness-notice");
     const overviewNotices = requiredElement<HTMLElement>(".overview-notices");
     const attentionSection = requiredElement<HTMLElement>(".attention-section");
-    expect(overviewNotices.firstElementChild).toBe(aiStateNotice);
-    expect(aiStateNotice.nextElementSibling).toBe(freshnessNotice);
+    expect(currentContainer().querySelector(".ai-state-notice")).toBeNull();
+    expect(overviewNotices.firstElementChild).toBe(freshnessNotice);
     expect(overviewNotices.nextElementSibling).toBe(attentionSection);
     expect(freshnessNotice.textContent).toBe(
       "次のリポジトリの情報を取得できなかったため、前回の値を表示しています。対象: VOICEVOX/sample-core",
     );
     expect(freshnessNotice.querySelector("a")).toBeNull();
-    expect(currentContainer().textContent).toContain("AIを利用できなかったため");
+    expect(currentContainer().textContent).not.toContain("AIを利用できなかったため");
     const observedTime = requiredElement<HTMLTimeElement>(".overview-observed-time time");
     expect(observedTime.closest(".attention-heading")).not.toBeNull();
     expect(observedTime.dateTime).toBe(sampleSummary.observedAt);
@@ -702,7 +701,14 @@ describe("Web UI", () => {
   it("人ごとのページを描画してloginのURL表現を正規化する", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/people/%68iho");
 
-    renderApp(createPersonPageSummary());
+    const personSummary = createPersonPageSummary();
+    const personItem = personSummary.items.find((item) => item.nodeId === "sample-item-editor-101");
+    assertNonNullable(personItem, "担当者ページのAI推定表示テスト用項目がありません");
+    const aiNotice = aiAnalysisNotice(personItem.aiAnalysis.status);
+    if (aiNotice.kind !== "outdated") {
+      throw new TypeError("担当者ページのAI推定が最新です");
+    }
+    renderApp(personSummary);
 
     expect(requiredElement<HTMLHeadingElement>("#person-page-heading").textContent).toBe(
       "@hiho を待っている項目",
@@ -722,7 +728,8 @@ describe("Web UI", () => {
     );
     expect(itemCell.querySelector(".attention-badge")?.textContent).toBe("要対応度中25点");
     expect(itemCell.querySelector(".importance-badge")?.textContent).toBe("重要度高");
-    expect(itemCell.querySelector(".ai-analysis-badge")?.textContent).toBe("AI判定なし");
+    const tableAiNoticeIcon = itemCell.querySelector<HTMLElement>(".ai-analysis-notice-icon");
+    assertNonNullable(tableAiNoticeIcon, "担当者ページの表にAI推定の警告アイコンがありません");
     const tableGitHubLink = requiredElement<HTMLAnchorElement>(
       '.person-items-table tr[data-node-id="sample-item-editor-101"] a[target="_blank"]',
     );
@@ -751,7 +758,13 @@ describe("Web UI", () => {
     const itemCard = requiredElement<HTMLElement>(
       '.items-card-list li[data-node-id="sample-item-editor-101"]',
     );
-    expect(itemCard.querySelector(".ai-analysis-badge")?.textContent).toBe("AI判定なし");
+    const cardAiNoticeIcon = itemCard.querySelector<HTMLElement>(".ai-analysis-notice-icon");
+    assertNonNullable(cardAiNoticeIcon, "担当者ページのカードにAI推定の警告アイコンがありません");
+    for (const icon of [tableAiNoticeIcon, cardAiNoticeIcon]) {
+      expect(icon.title).toBe(aiNotice.description);
+      expect(icon.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+      expect(icon.querySelector(".sr-only")?.textContent).toBe(aiNotice.description);
+    }
     const cardGitHubLink = itemCard.querySelector<HTMLAnchorElement>('a[target="_blank"]');
     expect(cardGitHubLink?.textContent).toBe("GitHubで開く");
     expect(cardGitHubLink?.href).toBe("https://github.com/VOICEVOX/sample-editor/pull/101");
@@ -1284,7 +1297,7 @@ describe("Web UI", () => {
     ).toThrow();
   });
 
-  it("AI無効をAI利用失敗と区別して表示する", () => {
+  it("AIが設定で無効なときだけ概要へ全体通知を表示する", () => {
     renderApp({
       ...sampleSummary,
       ai: {
@@ -1299,17 +1312,17 @@ describe("Web UI", () => {
     expect(currentContainer().querySelector(".ai-degraded-items-link")).toBeNull();
   });
 
-  it("AIを利用できる縮退runを完全成功と区別して表示する", () => {
+  it.each([
+    ["利用不可", { enabled: true, available: false, degraded: true }],
+    ["縮退", { enabled: true, available: true, degraded: true }],
+  ] as const)("AIの%sは概要の全体通知へ表示しない", (_state, ai) => {
     renderApp({
       ...sampleSummary,
-      ai: {
-        enabled: true,
-        available: true,
-        degraded: true,
-      },
+      ai,
     });
 
-    expect(currentContainer().textContent).toContain("AI分析の一部が縮退したため");
+    expect(currentContainer().querySelector(".ai-state-notice")).toBeNull();
+    expect(currentContainer().textContent).not.toContain("AI分析の一部が縮退したため");
     expect(currentContainer().textContent).not.toContain("AIを利用できなかったため");
   });
 
@@ -1326,39 +1339,24 @@ describe("Web UI", () => {
     expect(currentContainer().querySelector(".ai-state-notice")).toBeNull();
   });
 
-  it("AI縮退通知から対象件数で絞り込んだ一覧へ遷移しURLから復元する", () => {
-    renderApp(sampleSummary);
+  it("概要の対応項目では最新でないAI推定だけを警告アイコンで示す", () => {
+    renderApp(createOverviewSortSummary());
 
-    const link = requiredElement<HTMLAnchorElement>(".ai-degraded-items-link");
-    expect(link.textContent).toBe("対象4件を一覧で確認");
-    expect(link.getAttribute("href")).toBe("/voicevox_task_tracker/items?ai=degraded");
-
-    act(() => {
-      link.click();
-    });
-
-    expect(window.location.pathname + window.location.search).toBe(
-      "/voicevox_task_tracker/items?ai=degraded",
+    const outdatedItem = requiredElement<HTMLElement>(
+      '.attention-list li[data-node-id="sample-item-editor-101"]',
     );
-    expect(
-      requiredElement<HTMLSelectElement>('select[aria-label="AI利用状況で絞り込み"]').value,
-    ).toBe(AI_ANALYSIS_DEGRADED_FILTER_VALUE);
-    expect(itemRowNodeIds()).toEqual([
-      "sample-item-engine-202",
-      "sample-item-editor-103",
-      "sample-item-editor-101",
-      "sample-item-core-305",
-    ]);
+    const outdatedIcon = outdatedItem.querySelector<HTMLElement>(".ai-analysis-notice-icon");
+    assertNonNullable(outdatedIcon, "最新でないAI推定の警告アイコンがありません");
+    expect(outdatedIcon.title).toBe(
+      "AI推定に失敗したため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+    );
+    expect(outdatedIcon.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    expect(outdatedIcon.querySelector(".sr-only")?.textContent).toBe(outdatedIcon.title);
 
-    act(() => {
-      render(null, currentContainer());
-    });
-    renderApp(sampleSummary);
-
-    expect(
-      requiredElement<HTMLSelectElement>('select[aria-label="AI利用状況で絞り込み"]').value,
-    ).toBe(AI_ANALYSIS_DEGRADED_FILTER_VALUE);
-    expect(itemRowNodeIds()).toHaveLength(4);
+    const skippedItem = requiredElement<HTMLElement>(
+      '.attention-list li[data-node-id="sample-item-engine-204"]',
+    );
+    expect(skippedItem.querySelector(".ai-analysis-notice-icon")).toBeNull();
   });
 
   it("要対応項目で主な待ち相手と理由だけを常時表示する", () => {
@@ -1551,13 +1549,18 @@ describe("Web UI", () => {
       },
       {
         key: "aiAnalysis",
-        value: AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+        value: "outdated",
         expectedNodeIds: [
           "sample-item-engine-202",
           "sample-item-editor-103",
           "sample-item-editor-101",
           "sample-item-core-305",
         ],
+      },
+      {
+        key: "aiAnalysis",
+        value: "skipped",
+        expectedNodeIds: ["sample-item-engine-204"],
       },
     ];
 
@@ -1791,11 +1794,13 @@ describe("Web UI", () => {
     );
     expect([...aiAnalysisFilter.options].map((option) => option.textContent)).toEqual([
       "すべて",
-      "AI判定を利用できず",
+      "AI推定が最新でない",
+      "AI推定を省略",
     ]);
     expect([...aiAnalysisFilter.options].map((option) => option.value)).toEqual([
       "",
-      AI_ANALYSIS_DEGRADED_FILTER_VALUE,
+      "outdated",
+      "skipped",
     ]);
 
     act(() => {
@@ -1809,7 +1814,7 @@ describe("Web UI", () => {
       repositoryFilter.dispatchEvent(new Event("change", { bubbles: true }));
     });
     act(() => {
-      aiAnalysisFilter.value = AI_ANALYSIS_DEGRADED_FILTER_VALUE;
+      aiAnalysisFilter.value = "outdated";
       aiAnalysisFilter.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(itemRowNodeIds()).toEqual([
@@ -1818,9 +1823,13 @@ describe("Web UI", () => {
       "sample-item-editor-101",
       "sample-item-core-305",
     ]);
-    expect(new URL(window.location.href).searchParams.get("ai")).toBe(
-      AI_ANALYSIS_DEGRADED_FILTER_VALUE,
-    );
+    expect(new URL(window.location.href).searchParams.get("ai")).toBe("outdated");
+    act(() => {
+      aiAnalysisFilter.value = "skipped";
+      aiAnalysisFilter.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(itemRowNodeIds()).toEqual(["sample-item-engine-204"]);
+    expect(new URL(window.location.href).searchParams.get("ai")).toBe("skipped");
     act(() => {
       aiAnalysisFilter.value = "";
       aiAnalysisFilter.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2051,7 +2060,7 @@ describe("Web UI", () => {
     expect(staleItem.textContent).toContain("推定: 作成者 @sample-bug-author");
   });
 
-  it("AI判定を利用できなかった項目だけ表とカードにバッジを表示する", () => {
+  it("AI推定が最新でない項目だけ表とカードに警告アイコンを表示する", () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/items");
     renderApp(sampleSummary);
 
@@ -2061,22 +2070,33 @@ describe("Web UI", () => {
       "sample-item-editor-103",
       "sample-item-core-305",
     ]) {
-      expect(
-        requiredElement<HTMLElement>(`.items-table tr[data-node-id="${nodeId}"]`).textContent,
-      ).toContain("AI判定なし");
-      expect(
-        requiredElement<HTMLElement>(`.items-card-list li[data-node-id="${nodeId}"]`).textContent,
-      ).toContain("AI判定なし");
+      const item = sampleSummary.items.find((candidate) => candidate.nodeId === nodeId);
+      assertNonNullable(item, `AI推定の表示テスト用項目 ${nodeId} がありません`);
+      const notice = aiAnalysisNotice(item.aiAnalysis.status);
+      if (notice.kind !== "outdated") {
+        throw new TypeError(`項目 ${nodeId} のAI推定が最新です`);
+      }
+      const tableIcon = requiredElement<HTMLElement>(
+        `.items-table tr[data-node-id="${nodeId}"] .ai-analysis-notice-icon`,
+      );
+      const cardIcon = requiredElement<HTMLElement>(
+        `.items-card-list li[data-node-id="${nodeId}"] .ai-analysis-notice-icon`,
+      );
+      for (const icon of [tableIcon, cardIcon]) {
+        expect(icon.title).toBe(notice.description);
+        expect(icon.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+        expect(icon.querySelector(".sr-only")?.textContent).toBe(notice.description);
+      }
     }
     expect(
       requiredElement<HTMLElement>(
         '.items-table tr[data-node-id="sample-item-engine-204"]',
-      ).querySelector(".ai-analysis-badge"),
+      ).querySelector(".ai-analysis-notice-icon"),
     ).toBeNull();
     expect(
       requiredElement<HTMLElement>(
         '.items-card-list li[data-node-id="sample-item-engine-204"]',
-      ).querySelector(".ai-analysis-badge"),
+      ).querySelector(".ai-analysis-notice-icon"),
     ).toBeNull();
   });
 
@@ -2097,7 +2117,7 @@ describe("Web UI", () => {
     );
   });
 
-  it("AI判定が縮退していない4状態では一覧バッジを表示しない", () => {
+  it("AI推定が最新でない状態以外では一覧アイコンを表示しない", () => {
     const statuses: readonly PublicItemSummaryDto["aiAnalysis"]["status"][] = [
       "used",
       "not_required",
@@ -2129,20 +2149,40 @@ describe("Web UI", () => {
 
     renderApp(summary);
 
-    expect(currentContainer().querySelector(".ai-analysis-badge")).toBeNull();
+    expect(currentContainer().querySelector(".ai-analysis-notice-icon")).toBeNull();
   });
 
   it.each([
-    ["failed", "/voicevox_task_tracker/items/sample-editor/101"],
-    ["deferred", "/voicevox_task_tracker/items/sample-engine/202"],
-  ])("AI利用状況が%sの項目詳細に縮退を表示する", async (_status, path) => {
+    [
+      "failed",
+      "/voicevox_task_tracker/items/sample-editor/101",
+      "AI推定に失敗したため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+    ],
+    [
+      "deferred",
+      "/voicevox_task_tracker/items/sample-engine/202",
+      "AI推定を今回実行しなかったため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+    ],
+  ])("AI利用状況が%sの項目詳細に最新でない旨を警告表示する", async (_status, path, description) => {
     window.history.replaceState({}, "", path);
     renderApp(sampleSummary);
     await flushUi();
 
-    expect(requiredElement<HTMLElement>(".ai-analysis-notice").textContent).toBe(
-      "AI判定を利用できなかったため、確定ルールで表示しています。",
-    );
+    const notice = requiredElement<HTMLElement>(".ai-analysis-notice-outdated");
+    expect(notice.textContent).toBe(description);
+    expect(notice.classList).toContain("bg-state-warning-background");
+    expect(currentContainer().querySelector(".ai-analysis-notice-skipped")).toBeNull();
+  });
+
+  it("AI推定を省いた項目詳細に警告ではない情報を表示する", async () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-engine/204");
+    renderApp(sampleSummary);
+    await flushUi();
+
+    const notice = requiredElement<HTMLElement>(".ai-analysis-notice-skipped");
+    expect(notice.textContent).toBe("確定ルールだけで判定できたため、AI推定を省いています。");
+    expect(notice.classList).toContain("bg-state-info-background");
+    expect(currentContainer().querySelector(".ai-analysis-notice-outdated")).toBeNull();
   });
 
   it("選択項目の状況と次の行動を先に表示して詳細を2つの折りたたみにまとめる", async () => {
@@ -2153,7 +2193,7 @@ describe("Web UI", () => {
     const details = requiredElement<HTMLElement>(
       '.item-details-card[data-node-id="sample-item-engine-204"]',
     );
-    expect(details.querySelector(".ai-analysis-notice")).toBeNull();
+    expect(details.querySelector(".ai-analysis-notice-skipped")).not.toBeNull();
     expect(currentContainer().querySelector(".eyebrow")).toBeNull();
     expect(currentContainer().textContent).not.toContain(
       "公開済みデータだけを使い、項目の判定根拠と変更履歴まで確認できます。",
