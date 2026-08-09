@@ -298,8 +298,8 @@ function AttentionQueue({
                       </dd>
                     </div>
                   </dl>
-                  <div class="item-actions grid justify-self-end gap-2 text-sm whitespace-nowrap max-shell:justify-self-end">
-                    <SafeGitHubLink href={item.url} variant="action">
+                  <div class="item-actions grid justify-self-end gap-2 text-sm whitespace-nowrap max-shell:w-full max-shell:justify-self-stretch">
+                    <SafeGitHubLink href={item.url} variant="responsive-button">
                       GitHubで開く
                     </SafeGitHubLink>
                   </div>

@@ -2,7 +2,7 @@ import { type ComponentChildren } from "preact";
 
 import { validateGitHubUrl } from "./model.js";
 
-type SafeGitHubLinkVariant = "action" | "button" | "inline" | "subtle";
+type SafeGitHubLinkVariant = "action" | "button" | "inline" | "responsive-button" | "subtle";
 
 type SafeGitHubLinkProps = Readonly<{
   children: ComponentChildren;
@@ -15,6 +15,8 @@ const SAFE_GITHUB_LINK_CLASS_NAMES = {
   button:
     "flex min-h-11 w-full items-center justify-center rounded-md border border-action-border bg-action-background px-3 py-2 text-sm font-bold no-underline",
   inline: "inline",
+  "responsive-button":
+    "inline-flex min-h-11 items-center max-shell:flex max-shell:min-h-11 max-shell:w-full max-shell:items-center max-shell:justify-center max-shell:rounded-md max-shell:border max-shell:border-action-border max-shell:bg-action-background max-shell:px-3 max-shell:py-2 max-shell:text-sm max-shell:font-bold max-shell:no-underline",
   subtle: "text-sm font-normal",
 } satisfies Readonly<Record<SafeGitHubLinkVariant, string>>;
 
