@@ -120,6 +120,29 @@ artifactを利用する後続jobは同じartifactを再検証してから利用�
 最後の`report-workflow`は全jobの結果と必須metricを`artifacts/run-reports/workflow.json`へまとめ、別のActions artifactへ保存します。
 これらのreport artifactはstateとPagesの入力にしません。
 
+## マージゲートの設定
+
+`.github/workflows/merge_gatekeeper.yml`はauto mergeとmerge queueのためのチェッカーです。
+[VOICEVOX/merge-gatekeeper](https://github.com/VOICEVOX/merge-gatekeeper)でApprove数の重み付き合計が足りているかを判定し、[upsidr/merge-gatekeeper](https://github.com/upsidr/merge-gatekeeper)で他の全CIの完了を待ちます。
+
+必要スコアは2で、`@Hiroshiba`のApproveに2点、`#reviewer` teamのApproveに1点を与えます。
+Hiroshibaが1人でApproveすれば通り、reviewerだけなら2人のApproveが要ります。
+Review when Readyを押した人もApproveとして数えます。
+
+Approve数の判定にはVOICEVOX organizationで共有している`GATEKEEPER_TOKEN` secretを使います。
+このsecretはteamの所属を引くためにorganizationのMember権限を要求するので、repository secretとして登録せず、organization secretの利用対象へこのrepositoryを含めます。
+CIの完了待ちは自動発行の`GITHUB_TOKEN`だけで足り、jobには`checks: read`と`statuses: read`しか与えません。
+
+workflowを追加しただけでは有効になりません。
+repositoryのSettingsで次を設定します。
+
+- GeneralのAllow auto-mergeをONにする
+- Rulesetを作成し、Require status checks to passへ`merge_gatekeeper`を追加する
+- 同じRulesetのRequire merge queueをONにする
+
+必須チェック名はworkflow名ではなくjob名の`merge_gatekeeper`です。
+job名を変えるとRulesetの必須チェックが永久に未完了のままになるため、変えないでください。
+
 ## Pagesの設定
 
 repositoryをpublicにした後、SettingsのPagesでSourceを`GitHub Actions`にします。

@@ -171,7 +171,7 @@ pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
 | `schemas/`           | GitHub GraphQL schemaの写し、Codex分析出力とsnapshotのJSON Schema                                  |
 | `prompts/`           | Codexへ渡す固定system prompt                                                                       |
 | `docs/`              | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                       |
-| `.github/workflows/` | CI、日次run、性能profileのGitHub Actions workflow                                                  |
+| `.github/workflows/` | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                    |
 
 ## コードの方針
 
