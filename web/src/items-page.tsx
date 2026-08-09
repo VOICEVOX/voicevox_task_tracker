@@ -6,7 +6,6 @@ import { type PublicDetailsLoader } from "./details-loader.js";
 import { createItemCardFields, createItemTableColumns } from "./item-list-fields.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
-import { ListCountSummary } from "./list-count-summary.js";
 import {
   createItemDetailsMap,
   createItemTableRows,
@@ -334,9 +333,6 @@ function ItemTable({
             </span>
           </summary>
           <div class="item-filter-content pt-3">
-            <p class="mt-0 mb-3 text-sm text-text-muted">
-              列の値を選択します。待ち相手は入力した文字を含む項目を表示します。
-            </p>
             <div class="item-filter-grid grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {TABLE_FILTERS.map((filter) => (
                 <label key={filter.key} class="grid gap-1 text-xs font-bold text-text-secondary">
@@ -376,21 +372,13 @@ function ItemTable({
           </div>
         </details>
       </div>
-      <div class="item-list-controls mb-4 flex flex-wrap items-end justify-between gap-4">
-        <ListCountSummary
-          className="item-list-count items-item-count"
-          count={filteredRows.length}
-          locale={locale}
-          sort={sort}
-        />
-        <SortControls
-          className="item-list-sort-controls item-sort-controls grid w-full grid-cols-[minmax(0,1fr)_auto] gap-2 sm:w-auto sm:min-w-64"
-          onSortChange={updateSort}
-          options={ITEM_SORT_OPTIONS}
-          selectId="item-sort-key"
-          sort={sort}
-        />
-      </div>
+      <SortControls
+        className="item-list-sort-controls item-sort-controls mb-4 grid w-full grid-cols-[minmax(0,1fr)_auto] gap-2 sm:w-auto sm:min-w-64 lg:hidden"
+        onSortChange={updateSort}
+        options={ITEM_SORT_OPTIONS}
+        selectId="item-sort-key"
+        sort={sort}
+      />
       {filteredRows.length === 0 ? (
         <ItemsEmptyState searchState={searchState} onRetryDetails={onRetryDetails} />
       ) : (

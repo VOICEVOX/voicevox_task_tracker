@@ -564,7 +564,7 @@ export function ItemDetailsContent({
             {item.displayReference}
           </p>
           <h3
-            class="mt-1 mb-0 text-item-title leading-tight font-bold wrap-anywhere focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent-focus-ring"
+            class="mt-1 mb-0 text-lg leading-tight font-semibold wrap-anywhere focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent-focus-ring"
             ref={heading}
             tabIndex={-1}
           >
@@ -608,7 +608,7 @@ export function ItemDetailsContent({
         class="current-action-panel grid min-w-0 gap-5 border-t border-border-subtle pt-5 lg:grid-cols-2"
       >
         <div class="current-action-heading lg:col-span-2">
-          <h4 id="current-action-heading" class="m-0 text-subsection-title leading-snug font-bold">
+          <h4 id="current-action-heading" class="m-0 text-base leading-snug font-semibold">
             現在の状況と次の行動
           </h4>
         </div>
@@ -735,7 +735,7 @@ export function ItemDetailsContent({
         >
           <h4
             id="item-dependency-graph-heading"
-            class="item-dependency-graph-heading m-0 text-subsection-title leading-snug font-bold"
+            class="item-dependency-graph-heading m-0 text-base leading-snug font-semibold"
           >
             依存関係
           </h4>

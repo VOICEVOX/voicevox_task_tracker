@@ -6,7 +6,6 @@ import { appendClassName } from "./class-name.js";
 type PageSectionProps = Readonly<{
   children: ComponentChildren;
   className?: string;
-  description?: string | undefined;
   heading: string;
   headingAccessory?: ComponentChildren;
   headingId: string;
@@ -31,20 +30,16 @@ const PAGE_SECTION_CLASS =
 export function PageSection({
   children,
   className,
-  description,
   heading,
   headingAccessory,
   headingId,
 }: PageSectionProps) {
   return (
     <section aria-labelledby={headingId} class={appendClassName(PAGE_SECTION_CLASS, className)}>
-      <div class="section-heading mb-6 flex items-end justify-between gap-6 max-shell:flex-col max-shell:items-start">
-        <div>
-          <h2 id={headingId} class="m-0 text-section-title leading-tight font-bold">
-            {heading}
-          </h2>
-          {description != null && <p class="mt-2 mb-0 max-w-2xl text-text-muted">{description}</p>}
-        </div>
+      <div class="section-heading mb-4 flex items-end justify-between gap-6 max-shell:flex-col max-shell:items-start">
+        <h2 id={headingId} class="m-0 text-lg leading-tight font-semibold">
+          {heading}
+        </h2>
         {headingAccessory}
       </div>
       {children}

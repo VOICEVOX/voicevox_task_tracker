@@ -331,7 +331,47 @@ describe("Web UI", () => {
     expect(observedTime.dateTime).toBe(sampleSummary.observedAt);
     expect(observedTime.textContent).toBe("1 日前");
     expect(observedTime.title).toContain("JST");
+    expect(requiredElement<HTMLElement>(".time-label").textContent).toBe("最新更新");
     expect(currentContainer().querySelector(".attention-section")).toBeNull();
+  });
+
+  it.each([
+    {
+      headingSelector: "#items-heading",
+      pageName: "項目一覧",
+      path: "/voicevox_task_tracker/",
+    },
+    {
+      headingSelector: "#item-details-page-heading",
+      pageName: "項目詳細",
+      path: "/voicevox_task_tracker/items/sample-editor/101",
+    },
+    {
+      headingSelector: "#people-page-heading",
+      pageName: "担当者一覧",
+      path: "/voicevox_task_tracker/people",
+    },
+    {
+      headingSelector: "#person-page-heading",
+      pageName: "担当者個別",
+      path: "/voicevox_task_tracker/people/HiHo",
+    },
+  ])("$pageNameページで見出し階層を保ったまま文字を小さくする", ({ headingSelector, path }) => {
+    window.history.replaceState({}, "", path);
+    renderAppWithLoader(sampleSummary, () => new Promise<PublicDetailsDto>(() => {}));
+
+    const siteTitle = requiredElement<HTMLHeadingElement>(".site-identity h1");
+    const pageHeading = requiredElement<HTMLHeadingElement>(headingSelector);
+    expect(siteTitle.tagName).toBe("H1");
+    expect([...siteTitle.classList]).toEqual(
+      expect.arrayContaining(["text-base", "font-semibold"]),
+    );
+    expect(siteTitle.classList).not.toContain("font-bold");
+    expect(pageHeading.tagName).toBe("H2");
+    expect([...pageHeading.classList]).toEqual(
+      expect.arrayContaining(["text-lg", "font-semibold"]),
+    );
+    expect(pageHeading.classList).not.toContain("font-bold");
   });
 
   it("AIが設定で無効なときはトップ項目一覧へ全体通知を表示する", () => {
@@ -441,6 +481,40 @@ describe("Web UI", () => {
     },
   );
 
+  it.each([
+    {
+      controlsSelector: ".item-sort-controls",
+      pageName: "項目一覧",
+      pageSelector: ".item-workspace",
+      path: "/voicevox_task_tracker/",
+      summary: sampleSummary,
+    },
+    {
+      controlsSelector: ".person-sort-controls",
+      pageName: "担当者個別",
+      pageSelector: ".person-page",
+      path: "/voicevox_task_tracker/people/hiho",
+      summary: createPersonPageSummary(),
+    },
+  ])(
+    "$pageNameページの並び順UIをカード表示幅だけに出す",
+    ({ controlsSelector, pageSelector, path, summary }) => {
+      window.history.replaceState({}, "", path);
+      renderApp(summary);
+
+      const page = requiredElement<HTMLElement>(pageSelector);
+      const controls = requiredElement<HTMLElement>(controlsSelector);
+      const tableRegion = requiredElement<HTMLElement>(`${pageSelector} > .items-table-region`);
+      const cardList = requiredElement<HTMLElement>(`${pageSelector} > .items-card-list`);
+      expect(page.contains(controls)).toBe(true);
+      expect(controls.classList).toContain("grid");
+      expect(controls.classList).toContain("lg:hidden");
+      expect(controls.classList).not.toContain("hidden");
+      expect(tableRegion.classList).toContain("lg:block");
+      expect(cardList.classList).toContain("lg:hidden");
+    },
+  );
+
   it("グローバルナビゲーションを実リンクとして表示しpathごとにページを切り替える", () => {
     const loadDetails = vi.fn(() => Promise.resolve(sampleDetails));
     renderAppWithLoader(sampleSummary, loadDetails);
@@ -461,7 +535,8 @@ describe("Web UI", () => {
     expect(header.textContent).not.toContain("VOICEVOX Organization");
     expect(header.textContent).not.toContain("実行情報");
     const footer = requiredElement<HTMLElement>("footer");
-    expect(footer.textContent).toContain("GitHubの公開情報を読み取り専用で整理しています。");
+    expect(footer.textContent).not.toContain("GitHubの公開情報を読み取り専用で整理しています。");
+    expect(footer.children).toHaveLength(1);
     expect(requiredElement<HTMLElement>(".footer-run-id").textContent).toBe(
       `Run ${sampleSummary.runId}`,
     );
@@ -677,15 +752,16 @@ describe("Web UI", () => {
     expect(directWaitingOn.querySelector(".item-waiting-reason")?.textContent).toBe(
       "HiHoさんの確認を待っています",
     );
-    expect(requiredElement<HTMLElement>(".person-item-count strong").textContent).toBe("1件");
-    expect(requiredElement<HTMLElement>(".person-item-count span").textContent).toBe("要対応度");
-    const personControls = requiredElement<HTMLElement>(".person-page > .item-list-controls");
+    expect(currentContainer().querySelector(".person-item-count")).toBeNull();
+    const personControls = requiredElement<HTMLElement>(".person-page > .person-sort-controls");
     expect(requiredElement<HTMLElement>(".person-team-selection").nextElementSibling).toBe(
       personControls,
     );
-    expect(
-      requiredElement<HTMLElement>(".person-page .section-heading > div > p").textContent,
-    ).toBe("所属チームを選ぶと、そのチーム宛の待ちも加わります。");
+    expect(personControls.classList).toContain("lg:hidden");
+    expect(currentContainer().querySelector(".person-page .section-heading p")).toBeNull();
+    expect(currentContainer().textContent).not.toContain(
+      "所属チームを選ぶと、そのチーム宛の待ちも加わります。",
+    );
     expect(
       requiredElement<HTMLAnchorElement>(
         '.person-items-table tr[data-node-id="sample-item-editor-101"] a',
@@ -982,7 +1058,7 @@ describe("Web UI", () => {
     expect(itemRowNodeIds()).toEqual(["sample-item-engine-202", "sample-item-editor-101"]);
     expect(new URL(window.location.href).searchParams.get("teams")).toBe("VOICEVOX/Maintainers");
     expect(window.history.length).toBe(historyLength);
-    expect(requiredElement<HTMLElement>(".person-item-count strong").textContent).toBe("2件");
+    expect(currentContainer().querySelector(".person-item-count")).toBeNull();
     const teamWaitingOn = requiredElement<HTMLElement>(
       '.person-items-table tr[data-node-id="sample-item-engine-202"] .item-waiting-on-status',
     );
@@ -1252,7 +1328,7 @@ describe("Web UI", () => {
     );
   });
 
-  it("データ観測時刻のtitleへ公開DTOのtimezoneを反映する", () => {
+  it("最新更新時刻のtitleへ公開DTOのtimezoneを反映する", () => {
     const newYorkFixture = createPublicSummaryDto({
       ...sampleSummary,
       timezone: "America/New_York",
@@ -1412,7 +1488,7 @@ describe("Web UI", () => {
         (heading) => heading.textContent,
       ),
     ).toEqual(["待ち相手と状態", "要対応度", "重要度", "停滞時間"]);
-    const itemsControls = requiredElement<HTMLElement>(".item-workspace > .item-list-controls");
+    const itemsControls = requiredElement<HTMLElement>(".item-workspace > .item-sort-controls");
     const itemsTableRegion = requiredElement<HTMLElement>(".item-workspace > .items-table-region");
     const itemsCardList = requiredElement<HTMLOListElement>(".item-workspace > .items-card-list");
     expect(requiredElement<HTMLElement>(".item-list-toolbar").nextElementSibling).toBe(
@@ -1423,6 +1499,10 @@ describe("Web UI", () => {
     expect(itemsTableRegion.classList).not.toContain("md:block");
     expect(itemsCardList.classList).toContain("lg:hidden");
     expect(itemsCardList.classList).not.toContain("md:hidden");
+    expect(itemsControls.classList).toContain("lg:hidden");
+    expect(currentContainer().textContent).not.toContain(
+      "列の値を選択します。待ち相手は入力した文字を含む項目を表示します。",
+    );
     const itemsTable = requiredElement<HTMLTableElement>(".items-table");
     expect(itemsTable.classList).toContain("table-fixed");
     expect(
@@ -2511,21 +2591,19 @@ describe("Web UI", () => {
     expect(itemRowNodeIds()).toEqual(["sample-item-engine-204"]);
   });
 
-  it("検索一致件数をページ固有操作の後で一覧のすぐ上へ表示する", async () => {
+  it("検索後も一覧件数とソートキー名を表示しない", async () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/");
     renderApp(sampleSummary);
 
     await enterSearch("blocked");
 
     const itemsSection = requiredElement<HTMLElement>('[aria-labelledby="items-heading"]');
-    expect(itemsSection.querySelector(".section-heading > div > p")).toBeNull();
-    expect(requiredElement<HTMLElement>(".items-item-count strong").textContent).toBe("1件");
-    expect(requiredElement<HTMLElement>(".items-item-count span").textContent).toBe("要対応度");
-    const controls = requiredElement<HTMLElement>(".item-workspace > .item-list-controls");
+    const controls = requiredElement<HTMLElement>(".item-workspace > .item-sort-controls");
+    expect(itemsSection.querySelector(".section-heading p")).toBeNull();
+    expect(currentContainer().querySelector(".items-item-count")).toBeNull();
+    expect(currentContainer().querySelector(".item-list-count")).toBeNull();
     expect(requiredElement<HTMLElement>(".item-list-toolbar").nextElementSibling).toBe(controls);
-    expect(controls.querySelector(".items-item-count")).not.toBeNull();
-    expect(controls.querySelector(".item-sort-controls")).not.toBeNull();
-    expect(itemsSection.querySelector(".section-heading .items-item-count")).toBeNull();
+    expect(controls.classList).toContain("lg:hidden");
     expect(currentContainer().querySelector(".search-status")).toBeNull();
     expect(currentContainer().textContent).not.toContain("件が検索条件に一致しました。");
   });

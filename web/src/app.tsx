@@ -477,13 +477,13 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         本文へ移動
       </a>
       <header
-        class={`site-header ${SHELL_CONTAINER_CLASS} grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-6 pt-6 pb-5 max-shell:grid-cols-1 max-shell:items-start max-shell:gap-3 max-narrow:pt-4`}
+        class={`site-header ${SHELL_CONTAINER_CLASS} grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-4 py-3 max-shell:grid-cols-[minmax(0,1fr)_max-content] max-shell:gap-x-4 max-shell:gap-y-1 max-narrow:py-2`}
       >
         <div class="site-identity min-w-0">
-          <h1 class="m-0 text-site-title font-bold leading-tight tracking-tight">{title}</h1>
+          <h1 class="m-0 text-base leading-tight font-semibold tracking-tight">{title}</h1>
         </div>
         <nav
-          class="global-navigation min-w-0 justify-self-center max-shell:justify-self-start"
+          class="global-navigation min-w-0 justify-self-center max-shell:col-span-2 max-shell:col-start-1 max-shell:row-start-2 max-shell:justify-self-start"
           aria-label="グローバルナビゲーション"
         >
           <ul class="m-0 flex list-none flex-wrap justify-center gap-1.5 p-0 max-shell:justify-start">
@@ -531,8 +531,8 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             )}
           </ul>
         </nav>
-        <p class="site-observed-time m-0 grid justify-self-end justify-items-end text-right max-shell:justify-self-start max-shell:justify-items-start max-shell:text-left">
-          <span class="time-label text-xs font-bold text-text-muted">データ観測</span>
+        <p class="site-observed-time m-0 flex flex-wrap items-baseline justify-end gap-x-2 text-right max-shell:col-start-2 max-shell:row-start-1">
+          <span class="time-label text-xs font-bold text-text-muted">最新更新</span>
           <RelativeTimeDisplay
             value={summary.observedAt}
             now={now}
@@ -553,9 +553,8 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         )}
         {renderPage()}
       </main>
-      <footer class={`${SHELL_CONTAINER_CLASS} mt-auto pt-8 pb-12 text-sm text-text-muted`}>
-        <p class="m-0">GitHubの公開情報を読み取り専用で整理しています。</p>
-        <small class="footer-run-id mt-1 block font-mono text-xs wrap-anywhere">
+      <footer class={`${SHELL_CONTAINER_CLASS} mt-auto py-6 text-sm text-text-muted`}>
+        <small class="footer-run-id block font-mono text-xs wrap-anywhere">
           Run {summary.runId}
         </small>
       </footer>
@@ -569,7 +568,7 @@ export function DataLoadFailure() {
     <main
       class={`load-failure ${SHELL_WIDTH_CLASS} mt-16 block max-w-2xl rounded-2xl border border-border-subtle bg-surface-card p-8`}
     >
-      <h1 class="mt-0 mb-4 text-3xl font-bold">データを表示できません</h1>
+      <h1 class="mt-0 mb-4 text-lg font-semibold">データを表示できません</h1>
       <p class="m-0">
         公開データの読み込みまたは検証に失敗しました。時間を置いて再度確認してください。
       </p>

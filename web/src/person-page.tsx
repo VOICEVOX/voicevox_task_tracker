@@ -5,7 +5,6 @@ import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { createItemCardFields, createItemTableColumns } from "./item-list-fields.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
-import { ListCountSummary } from "./list-count-summary.js";
 import {
   collectWaitingTeamIds,
   createEmptyTableFilters,
@@ -121,9 +120,6 @@ export function PersonPage({
   return (
     <PageSection
       className="person-page"
-      description={
-        teamOptions.length > 0 ? "所属チームを選ぶと、そのチーム宛の待ちも加わります。" : undefined
-      }
       heading={`@${login} を待っている項目`}
       headingId="person-page-heading"
     >
@@ -186,21 +182,13 @@ export function PersonPage({
           ))}
         </fieldset>
       )}
-      <div class="item-list-controls mb-4 flex flex-wrap items-end justify-between gap-4">
-        <ListCountSummary
-          className="item-list-count person-item-count"
-          count={rows.length}
-          locale={locale}
-          sort={sort}
-        />
-        <SortControls
-          className="item-list-sort-controls person-sort-controls grid w-full grid-cols-[minmax(0,1fr)_auto] gap-2 sm:w-auto sm:min-w-64"
-          onSortChange={onSortChange}
-          options={ITEM_SORT_OPTIONS}
-          selectId="person-sort-key"
-          sort={sort}
-        />
-      </div>
+      <SortControls
+        className="item-list-sort-controls person-sort-controls mb-4 grid w-full grid-cols-[minmax(0,1fr)_auto] gap-2 sm:w-auto sm:min-w-64 lg:hidden"
+        onSortChange={onSortChange}
+        options={ITEM_SORT_OPTIONS}
+        selectId="person-sort-key"
+        sort={sort}
+      />
       {rows.length === 0 ? (
         <ContentState
           className="empty-state"
