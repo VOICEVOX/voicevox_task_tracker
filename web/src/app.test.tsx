@@ -356,7 +356,7 @@ afterEach(() => {
 });
 
 describe("Web UI", () => {
-  it("概要ページを対応が必要な項目だけで構成し観測時刻と通知を所定位置に表示する", () => {
+  it("概要ページを対応が必要な項目だけで構成し観測時刻を共通ヘッダーへ移して通知を残す", () => {
     renderApp(sampleSummary);
 
     expect(currentContainer().querySelector(".eyebrow")).toBeNull();
@@ -378,8 +378,10 @@ describe("Web UI", () => {
     );
     expect(freshnessNotice.querySelector("a")).toBeNull();
     expect(currentContainer().textContent).not.toContain("AIを利用できなかったため");
-    const observedTime = requiredElement<HTMLTimeElement>(".overview-observed-time time");
-    expect(observedTime.closest(".attention-heading")).not.toBeNull();
+    const observedTime = requiredElement<HTMLTimeElement>(".site-observed-time time");
+    expect(observedTime.closest(".site-header")).not.toBeNull();
+    expect(attentionSection.querySelector(".site-observed-time")).toBeNull();
+    expect(currentContainer().querySelector(".overview-observed-time")).toBeNull();
     expect(observedTime.dateTime).toBe(sampleSummary.observedAt);
     expect(observedTime.textContent).toBe("1 日前");
     expect(observedTime.title).toContain("JST");
@@ -422,6 +424,88 @@ describe("Web UI", () => {
     ]);
     expect(currentContainer().textContent).not.toContain("生成時刻");
   });
+
+  it.each([
+    {
+      pageName: "概要",
+      path: "/voicevox_task_tracker/",
+    },
+    {
+      pageName: "項目一覧",
+      path: "/voicevox_task_tracker/items",
+    },
+    {
+      pageName: "項目詳細",
+      path: "/voicevox_task_tracker/items/sample-editor/101",
+    },
+    {
+      pageName: "担当者一覧",
+      path: "/voicevox_task_tracker/people",
+    },
+    {
+      pageName: "担当者個別",
+      path: "/voicevox_task_tracker/people/HiHo",
+    },
+  ])("$pageNameページで観測時刻を共通ヘッダーだけに表示する", ({ path }) => {
+    window.history.replaceState({}, "", path);
+    renderAppWithLoader(sampleSummary, () => new Promise<PublicDetailsDto>(() => {}));
+
+    const observedDisplays = currentContainer().querySelectorAll(".site-observed-time");
+    expect(observedDisplays).toHaveLength(1);
+    const observedTime = requiredElement<HTMLTimeElement>(".site-observed-time time");
+    expect(observedTime.closest(".site-header")).not.toBeNull();
+    expect(currentContainer().querySelector("main .site-observed-time")).toBeNull();
+    expect(observedTime.dateTime).toBe(sampleSummary.observedAt);
+    expect(observedTime.textContent).toBe("1 日前");
+    expect(observedTime.title).toContain("JST");
+  });
+
+  it.each([
+    {
+      pageName: "概要",
+      path: "/voicevox_task_tracker/",
+      summary: sampleSummary,
+      tableSelector: ".attention-table",
+    },
+    {
+      pageName: "項目一覧",
+      path: "/voicevox_task_tracker/items",
+      summary: sampleSummary,
+      tableSelector: ".items-table",
+    },
+    {
+      pageName: "担当者一覧",
+      path: "/voicevox_task_tracker/people",
+      summary: createPeoplePageSummary(),
+      tableSelector: ".people-table",
+    },
+    {
+      pageName: "担当者個別",
+      path: "/voicevox_task_tracker/people/hiho",
+      summary: createPersonPageSummary(),
+      tableSelector: ".person-items-table",
+    },
+  ])(
+    "$pageNameページの表で全列見出しを不透明な背景と下境界付きで固定する",
+    ({ path, summary, tableSelector }) => {
+      window.history.replaceState({}, "", path);
+      renderApp(summary);
+
+      const tableHeaders = currentContainer().querySelectorAll(`${tableSelector} thead th`);
+      expect(tableHeaders.length).toBeGreaterThan(0);
+      for (const tableHeader of tableHeaders) {
+        expect([...tableHeader.classList]).toEqual(
+          expect.arrayContaining([
+            "sticky",
+            "top-0",
+            "border-b",
+            "border-border-strong",
+            "bg-surface-sunken",
+          ]),
+        );
+      }
+    },
+  );
 
   it("概要ページで3つの並び替えキーを選び、別キーは降順から始める", () => {
     renderApp(createOverviewSortSummary());
@@ -1407,7 +1491,7 @@ describe("Web UI", () => {
     renderApp(newYorkFixture);
 
     const observedTime = requiredElement<HTMLTimeElement>(
-      `.overview-observed-time time[datetime="${newYorkFixture.observedAt}"]`,
+      `.site-observed-time time[datetime="${newYorkFixture.observedAt}"]`,
     );
     expect(observedTime.textContent).toBe("1 日前");
     expect(observedTime.title).toBe("2026/07/30 20:00:00 GMT-4");

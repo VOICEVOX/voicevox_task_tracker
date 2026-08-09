@@ -10,6 +10,8 @@ import { ItemsPage } from "./items-page.js";
 import {
   collectWaitingTeamIds,
   createTableFilterOptions,
+  formatDateTime,
+  formatRelativeTime,
   ITEM_NATURAL_SORT_DIRECTIONS,
   type ItemSort,
   type ItemSortKey,
@@ -46,6 +48,13 @@ type AppProps = Readonly<{
 
 type NavigationPage = "overview" | "items" | "people";
 
+type RelativeTimeDisplayProps = Readonly<{
+  locale: string;
+  now: Date;
+  timezone: string;
+  value: string;
+}>;
+
 const SHELL_WIDTH_CLASS = "mx-auto w-[calc(100%_-_2rem)] max-narrow:w-[calc(100%_-_1rem)]";
 const SHELL_CONTAINER_CLASS = `${SHELL_WIDTH_CLASS} max-w-shell`;
 
@@ -66,6 +75,14 @@ const NAVIGATION_PAGES: readonly Readonly<{
     page: "people",
   },
 ];
+
+function RelativeTimeDisplay({ locale, now, timezone, value }: RelativeTimeDisplayProps) {
+  return (
+    <time class="font-bold" dateTime={value} title={formatDateTime(value, timezone, locale)}>
+      {formatRelativeTime(value, now, locale)}
+    </time>
+  );
+}
 
 function routeForNavigationPage(page: NavigationPage): WebRoute {
   switch (page) {
@@ -494,7 +511,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         本文へ移動
       </a>
       <header
-        class={`site-header ${SHELL_CONTAINER_CLASS} grid grid-cols-[max-content_minmax(0,1fr)] items-center gap-6 pt-6 pb-5 max-shell:grid-cols-1 max-shell:items-start max-shell:gap-3 max-narrow:pt-4`}
+        class={`site-header ${SHELL_CONTAINER_CLASS} grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-6 pt-6 pb-5 max-shell:grid-cols-1 max-shell:items-start max-shell:gap-3 max-narrow:pt-4`}
       >
         <div class="site-identity min-w-0">
           <h1 class="m-0 text-site-title font-bold leading-tight tracking-tight">{title}</h1>
@@ -548,6 +565,15 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             )}
           </ul>
         </nav>
+        <p class="site-observed-time m-0 grid justify-self-end justify-items-end text-right max-shell:justify-self-start max-shell:justify-items-start max-shell:text-left">
+          <span class="time-label text-xs font-bold text-text-muted">データ観測</span>
+          <RelativeTimeDisplay
+            value={summary.observedAt}
+            now={now}
+            timezone={summary.timezone}
+            locale={locale}
+          />
+        </p>
       </header>
       <main id="main-content" class={`${SHELL_CONTAINER_CLASS} grid gap-5`}>
         {navigationState.status === "sanitized" && (

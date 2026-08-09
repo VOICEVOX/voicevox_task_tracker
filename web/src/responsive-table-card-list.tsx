@@ -115,7 +115,7 @@ export function ResponsiveTableCardList<Row>({
               {columns.map((column) => (
                 <th
                   key={column.key}
-                  class={`border-b border-border-subtle bg-surface-sunken p-3 text-left align-middle text-sm font-bold text-text-secondary ${column.headerClassName}`}
+                  class={`sticky top-0 border-b border-border-strong bg-surface-sunken p-3 text-left align-middle text-sm font-bold text-text-secondary ${column.headerClassName}`}
                   scope="col"
                   aria-sort={column.ariaSort}
                 >

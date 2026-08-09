@@ -8,8 +8,6 @@ import {
   createItemTableRows,
   filterAndSortTableRows,
   filterAttentionItems,
-  formatDateTime,
-  formatRelativeTime,
   formatStallDuration,
   formatWaitingOn,
   formatWaitingOnCandidate,
@@ -39,21 +37,6 @@ type OverviewPageProps = Readonly<{
   sort: ItemSort;
   summary: PublicSummaryDto;
 }>;
-
-type RelativeTimeDisplayProps = Readonly<{
-  locale: string;
-  now: Date;
-  timezone: string;
-  value: string;
-}>;
-
-function RelativeTimeDisplay({ locale, now, timezone, value }: RelativeTimeDisplayProps) {
-  return (
-    <time class="font-bold" dateTime={value} title={formatDateTime(value, timezone, locale)}>
-      {formatRelativeTime(value, now, locale)}
-    </time>
-  );
-}
 
 function AiStateNotice() {
   return (
@@ -275,19 +258,6 @@ function AttentionQueue({
       className="attention-section"
       description="要対応度は、重要度が高く、かつ最近動きがあった項目ほど高くなります。高または中の項目を表示します。"
       heading="対応が必要な項目"
-      headingAccessory={
-        <div class="attention-heading attention-heading-metadata max-shell:-mt-2">
-          <p class="overview-observed-time m-0 grid justify-items-end text-right max-shell:justify-items-start max-shell:text-left">
-            <span class="time-label text-xs font-bold text-text-muted">データ観測</span>
-            <RelativeTimeDisplay
-              value={summary.observedAt}
-              now={now}
-              timezone={summary.timezone}
-              locale={locale}
-            />
-          </p>
-        </div>
-      }
       headingId="attention-heading"
     >
       <div class="item-list-controls mb-4 flex flex-wrap items-end justify-between gap-4">
