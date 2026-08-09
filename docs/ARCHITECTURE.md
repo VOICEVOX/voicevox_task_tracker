@@ -9,7 +9,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | ----------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------- |
 | `src/config`      | YAMLの読み込み、Zod schemaとsemantic validation                                          | `src/codex`、`src/domain`、`src/util`                    |
 | `src/github`      | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理     | `src/config`、`src/domain`                               |
-| `src/domain`      | 状態機械、teamとlabel解決、追跡選定、停滞時間、severity、重要度、要対応度                | `src/util`                                               |
+| `src/domain`      | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、severity、重要度、要対応度          | `src/util`                                               |
 | `src/graph`       | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                         | `src/domain`                                             |
 | `src/codex`       | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                | `src/domain`、`src/graph`、`src/persistence`             |
 | `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、Git branch transaction | `src/codex`、`src/domain`、`src/github`                  |
@@ -64,9 +64,9 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 2. `tracker-state` branchのsnapshotと通知ledgerを同じrevisionから読み取ります。
 3. GitHub Appのinstallation tokenを発行し、期限前に更新できる読み取り専用clientを作ります。
 4. Organizationのrepository metadataを全ページ取得し、run中に不変な公開allowlistを作ります。
-5. 設定したteamを解決し、allowlist内repositoryのopen IssueとPull Requestを列挙して詳細を収集します。前回の`aiAnalysis.status`が`failed`か`deferred`の項目は、GitHub側の変化にかかわらず詳細を収集します。収集した詳細から関係先を抽出し、まだ取得していないOrganization内の関係先を識別子指定で個別列挙して収集結果へ統合します。追加した詳細から関係先を再び抽出し、対象がなくなるまで同じrun内で繰り返します。native relationは設定した深度まで、参照は追跡根から1 hopだけ辿ります。
+5. allowlist内repositoryのopen IssueとPull Requestを列挙して詳細を収集します。前回の`aiAnalysis.status`が`failed`か`deferred`の項目は、GitHub側の変化にかかわらず詳細を収集します。収集した詳細から関係先を抽出し、まだ取得していないOrganization内の関係先を識別子指定で個別列挙して収集結果へ統合します。追加した詳細から関係先を再び抽出し、対象がなくなるまで同じrun内で繰り返します。native relationは設定した深度まで、参照は追跡根から1 hopだけ辿ります。
 6. GitHubイベントをsource ID付きに正規化し、追跡対象と関係候補を選びます。Pull Request作成前のcommitは作成時刻を下限としてpushイベント化し、項目作成前のイベントを作りません。
-7. IssueとPull Requestの状態と責務を決定論的に判定します。
+7. `config.yml`の`maintainers`からrepositoryごとのGitHubユーザー名一覧を解決し、IssueとPull Requestの状態と責務を決定論的に判定します。抽象的なmaintainer、reviewer、merge_deciderの責務は、メンテナ1人につき1件の`kind: "user"`候補へ展開します。
 8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
 9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
@@ -160,6 +160,7 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 決定論的規則versionとprompt versionは手で更新する定数です。
 `tests/rules-version-hash.test.ts`が判定に関わるファイルの内容hashを記録しており、
 判定ロジックやプロンプトを変えるとテストが失敗してversionの更新要否を判断させます。
+現行の決定論的規則versionはIssueが`issue-v10`、Pull Requestが`pull-request-v8`です。
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
@@ -193,7 +194,8 @@ GitHubが時刻を持たない場面では、決定論的に決まる下限を�
 起点からrun開始時刻までの経過時間を毎回求め直し、severityと要対応度の算出に使います。
 
 停滞起点には、現在の待ち先本人がGitHub上で活動した時刻も下限として効きます。
-待ち先がuserならそのアカウント、teamなら設定済みteamのmemberが対象です。
+`kind: "user"`の候補だけが責務アカウントを持ち、そのGitHubアカウントの活動を対象にします。
+`kind: "team"`の候補は責務アカウントを持たず、team memberの活動では停滞起点を更新しません。
 第三者やbotの活動、draft戻しやmerge queueの出し入れは対象外で、停滞を解除しません。
 待ち先本人が動いていない項目は作成時刻まで下限が落ち、長い停滞として残ります。
 
@@ -223,6 +225,7 @@ repository、種別、状態、重要度、次の担当、停滞時間、AI利�
 専用UIの表示切り替えには表とカードと同じbreakpointを使います。
 待ち相手と状態には主な待ち相手、状態、主候補の理由を表示し、一覧の要対応度と重要度にはlevel名を付けずscoreだけを表示します。
 待ち相手は文字列とユーザー名の断片へ構造化し、表示文字列と画面表示を同じ断片から組み立てます。
+設定したメンテナのGitHubユーザー名は公開情報として`kind: "user"`のwaitingOnへ載せます。
 個人のユーザー名は共通部品で人ごとのページへリンクし、teamはプレーンテキストで表示します。
 人ページのhref生成とクライアント遷移はWeb UIのルートで一元化し、一覧、詳細、担当者一覧へ渡します。
 項目一覧の個人のユーザー名、担当者一覧の個人行、人ページの見出しには、ユーザー名から組み立てたGitHubアバターURLを表示します。
@@ -231,6 +234,7 @@ repository、種別、状態、重要度、次の担当、停滞時間、AI利�
 人ページのGitHubプロフィールリンクは、GitHub URLの検証と外部リンクの安全属性を共通部品へ委ねます。
 トップページの主候補は`primaryWaitingOn.index`で選び、`not_applicable`では先頭候補を使います。
 担当者ごとのページでは、閲覧者本人または選択した所属teamに対応する先頭候補を使います。
+所属teamの選択肢は公開summaryのwaitingOnに現れるteam識別子から作り、閲覧者が自身の所属を選びます。
 `failed`と`deferred`は項目一覧へ警告アイコンを表示し、項目詳細でも警告として表示します。
 `not_required`は警告アイコンを表示せず、項目詳細では警告ではない情報として区別します。
 項目一覧のAI利用状況は、AI推定が最新でない項目とAI推定を省いた項目を別々に絞り込みます。
@@ -247,6 +251,9 @@ Web UIはseverityを表示、絞り込み、並び替え、依存グラフのnod
 1. 収集guardはrepository metadataだけを先に取得し、`public`、非アーカイブ、非disabledを満たすrepository IDをallowlistへ固定します。Organization外の参照先は詳細応答で`public`を検証し、関係候補の解決時にarchive済みとdisabledを除外します。
 2. 永続化guardはcommit直前にsnapshotと付随データを走査し、allowlist外ID、private repositoryのID、owner/name、repository URL、既知secret、credential field、不要な全文を拒否します。
 3. Pages guardはDTO生成直前に別実装で収集時の公開allowlistとsnapshotを照合し、repository identity、private sentinel、secret、安全でないURL、不要な全文を再検査します。
+
+`config.yml`の`maintainers`に書いたGitHubユーザー名と、GitHubのreview requestや本文とコメントから得たteam識別子は公開情報としてguardを通過できます。
+GitHubのteam member一覧は収集しないため、snapshot、公開DTO、Discord通知の入力にも含まれません。
 
 収集時の公開allowlistはworkflow artifactへ保存し、Pages guardではsnapshotから再構築しません。
 artifactには照合に必要なrepository ID、owner、nameだけを保存します。

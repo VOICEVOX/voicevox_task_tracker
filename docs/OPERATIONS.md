@@ -142,6 +142,12 @@ pnpm tracker:run --backfill none
 tracker専用のcommand comment、override UI、専用labelはありません。
 次回runで機械的に解釈できるように、GitHub上の事実を明確にします。
 
+抽象的なmaintainer、reviewer、merge_deciderの責務は、`config.yml`でrepositoryごとに設定したメンテナ全員へ展開されます。
+担当者を変える場合は`maintainers.defaults`か`maintainers.repositories`のGitHubユーザー名一覧を更新します。
+GitHubのteam review requestと本文やコメントの`@organization/team`はteamへの待ちとして残ります。
+trackerはteam memberを取得しないため、team memberの活動ではteam宛て項目の停滞起点を更新しません。
+個人の活動を停滞計算へ反映させる場合はuserを名指しします。
+
 ### コメント
 
 最新コメントで、次に誰が何をするかを一文で明示します。
@@ -288,7 +294,7 @@ blockerのseverityとdownstream impactが通知順位を決めます。
 
 通知が少なすぎる場合は逆方向に調整します。
 
-1. team、review request、native dependency、label規則がstatusとwaitingOnの実態に合うか確認します。
+1. maintainer設定、userかteamの指定、review request、native dependency、label規則がstatusとwaitingOnの実態に合うか確認します。
 2. 通知を増やす状態に対応する`staleness.thresholdsHours`を減らします。
 3. 全状態で直近の進捗を短く猶予する場合は`recentProgressGraceHours`を減らします。
 4. `maxItemsPerDigest`を増やし、`cooldownDays`を減らします。
@@ -310,9 +316,9 @@ mentionは通知量の調整に使わず、運用上必要なuserだけをallowl
 | stageまたはjob                  | 確認内容                                                                                                                                                                                      |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `test-eval`                     | `pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm format:check`、`pnpm eval:golden`をローカルで再現する                                                                                       |
-| `configuration`                 | placeholder、team slug、未知field、日時、正規表現、secret名を確認する                                                                                                                         |
+| `configuration`                 | maintainerのGitHubユーザー名一覧、repository名、未知field、日時、正規表現、secret名を確認する                                                                                                 |
 | `authentication`                | `GH_APP_ID`、PEM形式、Organizationへのinstallation、必要なread権限だけがあることを確認する                                                                                                    |
-| `repository_inventory`          | Appのrepository access、team access、public、archive、disabledの状態を確認する                                                                                                                |
+| `repository_inventory`          | Appのrepository access、public、archive、disabledの状態を確認する                                                                                                                             |
 | `incremental_collection`        | GitHub API残量、429と503、対象repositoryの一時障害を確認する                                                                                                                                  |
 | `codex_analysis`                | `codex` executable、model ID、reasoning effort、予算、timeout、同時実行数、`ai.authentication`を確認し、`auth-json`では`CODEX_HOME`直下の`auth.json`、`api-key`では`OPENAI_API_KEY`を確認する |
 | `state_persistence`             | Actionsの`contents: write`、`tracker-state`のruleset、同時runがないことを確認する                                                                                                             |

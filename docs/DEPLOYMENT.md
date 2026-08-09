@@ -34,9 +34,7 @@ repositoryへのアクセス範囲は次のどちらかを選びます。
 
 ### Organization permissions
 
-| Permission | Access    | 用途                                    |
-| ---------- | --------- | --------------------------------------- |
-| Members    | Read-only | 設定したteam slugの存在確認とmember解決 |
+Organization permissionsはすべて`No access`にします。
 
 `Contents`、`Actions`、`Administration`、`Projects`など、表にない権限は`No access`のままにします。
 installation IDは実行時にOrganizationから自動発見します。
@@ -139,19 +137,31 @@ Zodのstrict schemaで未知のfieldも拒否するため、設定名を追加�
 
 デプロイ前に必ず確認する項目は次のとおりです。
 
-| 設定                                                                                           | 確認内容                                                      |
-| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `tracking.startAt`                                                                             | 追跡を開始する日時                                            |
-| `teams.defaults`と`teams.repositories`                                                         | Organizationに実在するmaintainerとreviewerのteam slug         |
-| `attention.recencyFloor`と`attention.levels`                                                   | 要対応度の鮮度係数の下限とlevelの閾値                         |
-| `ai.authentication`と`ai.model`                                                                | Actionsへ登録した認証方式と利用可能なmodel ID                 |
-| `notifications.discord.enabled`                                                                | 初回の日次workflowからDiscord通知を実行する設定になっているか |
-| `notifications.discord.webhookSecretName`と`notifications.discord.operationsWebhookSecretName` | Actionsへ登録した2つのsecret名と一致するか                    |
-| `web.basePath`                                                                                 | GitHub Pagesのrepository pathと一致するか                     |
+| 設定                                                                                           | 確認内容                                                           |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `tracking.startAt`                                                                             | 追跡を開始する日時                                                 |
+| `maintainers.defaults`と`maintainers.repositories`                                             | 既定値とrepository別上書きへ指定するメンテナのGitHubユーザー名一覧 |
+| `attention.recencyFloor`と`attention.levels`                                                   | 要対応度の鮮度係数の下限とlevelの閾値                              |
+| `ai.authentication`と`ai.model`                                                                | Actionsへ登録した認証方式と利用可能なmodel ID                      |
+| `notifications.discord.enabled`                                                                | 初回の日次workflowからDiscord通知を実行する設定になっているか      |
+| `notifications.discord.webhookSecretName`と`notifications.discord.operationsWebhookSecretName` | Actionsへ登録した2つのsecret名と一致するか                         |
+| `web.basePath`                                                                                 | GitHub Pagesのrepository pathと一致するか                          |
 
 secretの値は`config.yml`へ書きません。
 現行設定ではCodexとDiscord通知が有効で、mentionは無効です。
 その他の閾値、追跡規則、通知上限、保存先は`config.yml`を正本として確認し、運用中の調整は[運用手順](OPERATIONS.md)に従います。
+
+メンテナは次の形式で指定します。
+`defaults`と`repositories`の各値は1件以上のGitHubユーザー名を持つ一覧です。
+repository別の値は既定値を置き換えます。
+
+```yaml
+maintainers:
+  defaults: [Hiroshiba]
+  repositories:
+    VOICEVOX/voicevox: [sevenc-nanashi]
+    VOICEVOX/voicevox_core: [qryxip, Hiroshiba]
+```
 
 ### importance
 
@@ -198,7 +208,7 @@ corepack enable
 pnpm --version
 ```
 
-設定済みのteam slugがOrganizationに存在することを確認します。
+`maintainers`のGitHubユーザー名一覧とrepository別上書きが意図した内容であることを確認します。
 GitHub Appの`GH_APP_ID`と`GH_APP_PRIVATE_KEY`を安全な方法でshellへ渡します。
 Codexは`auth.json`を直下に持つdirectoryを`CODEX_HOME`へ指定します。
 
