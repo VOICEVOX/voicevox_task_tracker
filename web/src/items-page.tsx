@@ -152,11 +152,8 @@ function ItemSearch({
 }>) {
   return (
     <div class="item-search min-w-0" role="search" aria-labelledby="item-search-label">
-      <h3 id="item-search-heading" class="m-0 text-lg font-bold">
-        項目検索
-      </h3>
       <label
-        class="mt-2 block text-sm font-bold text-text-secondary"
+        class="block text-sm font-bold text-text-secondary"
         id="item-search-label"
         for="item-search-input"
       >
@@ -284,6 +281,8 @@ function ItemTable({
   const firstRowIndex = pageIndex * TABLE_PAGE_SIZE;
   const visibleRows = filteredRows.slice(firstRowIndex, firstRowIndex + TABLE_PAGE_SIZE);
   const activeFilterCount = TABLE_FILTERS.filter((filter) => filters[filter.key].length > 0).length;
+  const activeConditionCount = activeFilterCount + (searchQuery.length > 0 ? 1 : 0);
+  const [isToolbarOpen, setIsToolbarOpen] = useState(activeConditionCount > 0);
 
   function updateFilter(key: TableFilterKey, value: string): void {
     onFilterChange(key, value);
@@ -324,61 +323,67 @@ function ItemTable({
           <AiStateNotice />
         </div>
       )}
-      <div class="item-list-toolbar mb-4 grid gap-4 rounded-2xl border border-border-default bg-surface-sunken p-4">
-        <ItemSearch
-          searchQuery={searchQuery}
-          onClearSearch={onClearSearch}
-          onSearchQueryChange={onSearchQueryChange}
-        />
-        <details class="item-filters border-t border-border-subtle pt-2">
-          <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
-            <span class="ml-1 inline-flex max-w-[calc(100%_-_2rem)] flex-wrap items-center gap-x-3 gap-y-1 align-middle">
-              <span>列ごとの絞り込み</span>
-              <Pill className="filter-summary-count font-mono tabular-nums" tone="neutral">
-                {activeFilterCount === 0 ? "条件なし" : `${activeFilterCount.toString()}件適用中`}
-              </Pill>
-            </span>
-          </summary>
-          <div class="item-filter-content pt-3">
-            <div class="item-filter-grid grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {TABLE_FILTERS.map((filter) => (
-                <label key={filter.key} class="grid gap-1 text-xs font-bold text-text-secondary">
-                  <span>{filter.label}</span>
-                  {isTableSelectFilterKey(filter.key) ? (
-                    <select
-                      class={`${FORM_CONTROL_CLASS_NAME} w-full`}
-                      value={filters[filter.key]}
-                      aria-label={`${filter.label}で絞り込み`}
-                      onChange={(event) => {
-                        updateFilter(filter.key, event.currentTarget.value);
-                      }}
-                    >
-                      <option value="">すべて</option>
-                      {filterOptions[filter.key].map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      class={`${FORM_CONTROL_CLASS_NAME} w-full`}
-                      type="search"
-                      value={filters.waitingOn}
-                      maxLength={200}
-                      aria-label={`${filter.label}で絞り込み`}
-                      placeholder="部分一致で絞り込み"
-                      onInput={(event) => {
-                        updateFilter(filter.key, event.currentTarget.value);
-                      }}
-                    />
-                  )}
-                </label>
-              ))}
-            </div>
+      <details
+        class="item-list-toolbar mb-4 rounded-2xl border border-border-default bg-surface-sunken p-4"
+        open={isToolbarOpen}
+        onToggle={(event) => {
+          setIsToolbarOpen(event.currentTarget.open);
+        }}
+      >
+        <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
+          <span class="ml-1 inline-flex max-w-[calc(100%_-_2rem)] flex-wrap items-center gap-x-3 gap-y-1 align-middle">
+            <span>検索と絞り込み</span>
+            <Pill className="filter-summary-count font-mono tabular-nums" tone="neutral">
+              {activeConditionCount === 0
+                ? "条件なし"
+                : `${activeConditionCount.toString()}件適用中`}
+            </Pill>
+          </span>
+        </summary>
+        <div class="item-filter-content grid gap-4 pt-3">
+          <ItemSearch
+            searchQuery={searchQuery}
+            onClearSearch={onClearSearch}
+            onSearchQueryChange={onSearchQueryChange}
+          />
+          <div class="item-filter-grid grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {TABLE_FILTERS.map((filter) => (
+              <label key={filter.key} class="grid gap-1 text-xs font-bold text-text-secondary">
+                <span>{filter.label}</span>
+                {isTableSelectFilterKey(filter.key) ? (
+                  <select
+                    class={`${FORM_CONTROL_CLASS_NAME} w-full`}
+                    value={filters[filter.key]}
+                    aria-label={`${filter.label}で絞り込み`}
+                    onChange={(event) => {
+                      updateFilter(filter.key, event.currentTarget.value);
+                    }}
+                  >
+                    <option value="">すべて</option>
+                    {filterOptions[filter.key].map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    class={`${FORM_CONTROL_CLASS_NAME} w-full`}
+                    type="search"
+                    value={filters.waitingOn}
+                    maxLength={200}
+                    aria-label={`${filter.label}で絞り込み`}
+                    placeholder="部分一致で絞り込み"
+                    onInput={(event) => {
+                      updateFilter(filter.key, event.currentTarget.value);
+                    }}
+                  />
+                )}
+              </label>
+            ))}
           </div>
-        </details>
-      </div>
+        </div>
+      </details>
       <SortControls
         className="item-list-sort-controls item-sort-controls mb-4 grid w-full grid-cols-[minmax(0,1fr)_auto] gap-2 sm:w-auto sm:min-w-64 lg:hidden"
         onSortChange={updateSort}

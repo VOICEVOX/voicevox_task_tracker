@@ -1761,12 +1761,19 @@ describe("Web UI", () => {
         '.items-card-list li[data-node-id="sample-item-engine-204"] .attention-badge',
       ).textContent,
     ).toBe("0点");
-    const filterDetails = requiredElement<HTMLDetailsElement>(".item-filters");
+    const filterDetails = requiredElement<HTMLDetailsElement>(".item-list-toolbar");
+    expect(filterDetails.tagName).toBe("DETAILS");
     expect(filterDetails.open).toBe(false);
+    expect(filterDetails.querySelector("details")).toBeNull();
     expect(filterDetails.querySelectorAll("select")).toHaveLength(6);
-    expect(filterDetails.querySelectorAll('input[type="search"]')).toHaveLength(1);
+    expect(filterDetails.querySelectorAll('input[type="search"]')).toHaveLength(2);
+    expect(filterDetails.querySelector("#item-search-heading")).toBeNull();
+    expect(requiredElement<HTMLElement>(".item-list-toolbar > summary").textContent).toContain(
+      "検索と絞り込み",
+    );
+    expect(requiredElement<HTMLElement>(".filter-summary-count").textContent).toBe("条件なし");
     act(() => {
-      requiredElement<HTMLElement>(".item-filters > summary").click();
+      requiredElement<HTMLElement>(".item-list-toolbar > summary").click();
     });
     expect(filterDetails.open).toBe(true);
     const repositoryFilter = requiredElement<HTMLSelectElement>(
@@ -1879,15 +1886,26 @@ describe("Web UI", () => {
       repositoryFilter.dispatchEvent(new Event("change", { bubbles: true }));
     });
     expect(itemRowNodeIds()).toEqual(["sample-item-core-305"]);
+    expect(filterDetails.open).toBe(true);
+    expect(requiredElement<HTMLElement>(".filter-summary-count").textContent).toBe("1件適用中");
+
+    act(() => {
+      requiredElement<HTMLElement>(".item-list-toolbar > summary").click();
+    });
+    expect(filterDetails.open).toBe(false);
 
     act(() => {
       repositoryFilter.value = "";
       repositoryFilter.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    expect(filterDetails.open).toBe(false);
+    expect(requiredElement<HTMLElement>(".filter-summary-count").textContent).toBe("条件なし");
     act(() => {
       aiAnalysisFilter.value = "outdated";
       aiAnalysisFilter.dispatchEvent(new Event("change", { bubbles: true }));
     });
+    expect(filterDetails.open).toBe(false);
+    expect(requiredElement<HTMLElement>(".filter-summary-count").textContent).toBe("1件適用中");
     expect(itemRowNodeIds()).toEqual([
       "sample-item-engine-202",
       "sample-item-editor-103",
@@ -2828,6 +2846,9 @@ describe("Web UI", () => {
     renderApp(sampleSummary);
     await flushUi();
 
+    const filterDetails = requiredElement<HTMLDetailsElement>(".item-list-toolbar");
+    expect(filterDetails.open).toBe(true);
+    expect(requiredElement<HTMLElement>(".filter-summary-count").textContent).toBe("3件適用中");
     expect(requiredElement<HTMLInputElement>("#item-search-input").value).toBe("blocked");
     expect(
       requiredElement<HTMLSelectElement>('select[aria-label="リポジトリで絞り込み"]').value,
@@ -2847,6 +2868,7 @@ describe("Web UI", () => {
     renderApp(sampleSummary);
     await flushUi();
 
+    expect(requiredElement<HTMLDetailsElement>(".item-list-toolbar").open).toBe(true);
     expect(requiredElement<HTMLInputElement>("#item-search-input").value).toBe("blocked");
     expect(itemRowNodeIds()).toEqual(["sample-item-engine-204"]);
   });
@@ -2856,6 +2878,8 @@ describe("Web UI", () => {
     window.history.replaceState({}, "", deepLink);
     renderApp(sampleSummary);
 
+    expect(requiredElement<HTMLDetailsElement>(".item-list-toolbar").open).toBe(true);
+    expect(requiredElement<HTMLElement>(".filter-summary-count").textContent).toBe("1件適用中");
     expect(requiredElement<HTMLSelectElement>('select[aria-label="重要度で絞り込み"]').value).toBe(
       "high",
     );
@@ -3037,7 +3061,7 @@ describe("Web UI", () => {
   it("keyboard focusで全列を絞り込み、link activationで詳細を開いて閉じる", async () => {
     window.history.replaceState({}, "", "/voicevox_task_tracker/");
     renderApp(sampleSummary);
-    const filterDetails = requiredElement<HTMLDetailsElement>(".item-filters");
+    const filterDetails = requiredElement<HTMLDetailsElement>(".item-list-toolbar");
     act(() => {
       filterDetails.open = true;
     });
