@@ -18,6 +18,12 @@ import {
   type ItemSortKey,
   type ItemTableRow,
 } from "./model.js";
+import {
+  ResponsiveTableCardList,
+  type ResponsiveCardField,
+  type ResponsiveListRowPresentation,
+  type ResponsiveTableColumn,
+} from "./responsive-table-card-list.js";
 import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 
 const MAX_STALE_REPOSITORY_NAMES = 3;
@@ -88,6 +94,56 @@ function sortAttentionItems(
   );
 }
 
+function attentionRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
+  return {
+    cardClassName: "attention-item bg-surface-card",
+    dataAttributes: {
+      "data-node-id": row.item.nodeId,
+    },
+    key: row.item.nodeId,
+    tableClassName: "attention-row",
+  };
+}
+
+function OverviewWaitingOn({
+  locale,
+  row,
+  summary,
+}: Readonly<{
+  locale: string;
+  row: ItemTableRow;
+  summary: PublicSummaryDto;
+}>) {
+  const primaryWaitingOn = selectPrimaryWaitingOnCandidate(row.item);
+  const primaryWaitingOnLabel =
+    primaryWaitingOn == null
+      ? formatWaitingOn(row.item, summary)
+      : formatWaitingOnCandidate(primaryWaitingOn, row.item, summary);
+  const otherWaitingOnCount = primaryWaitingOn == null ? 0 : row.item.waitingOn.length - 1;
+  return (
+    <div class="attention-waiting-on min-w-0">
+      <span class="attention-waiting-on-summary flex min-w-0 items-baseline gap-2">
+        <strong class="attention-primary-waiting-on min-w-0 flex-1 leading-snug wrap-anywhere">
+          {primaryWaitingOnLabel}
+        </strong>
+        {otherWaitingOnCount > 0 && (
+          <span class="attention-other-waiting-on flex-none text-xs text-text-muted whitespace-nowrap">
+            ほか{otherWaitingOnCount.toLocaleString(locale)}件
+          </span>
+        )}
+      </span>
+      {primaryWaitingOn != null && (
+        <span
+          class="attention-waiting-reason mt-1 block min-w-0 text-sm leading-5 text-text-muted wrap-anywhere"
+          title={primaryWaitingOn.reasonSummary}
+        >
+          {primaryWaitingOn.reasonSummary}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AttentionQueue({
   attentionItems,
   createItemHref,
@@ -101,13 +157,126 @@ function AttentionQueue({
   Readonly<{
     attentionItems: readonly ItemTableRow[];
   }>) {
+  const tableColumns = [
+    {
+      ariaSort: undefined,
+      cellClassName: "min-w-0",
+      cellKind: "row_header",
+      headerClassName: "whitespace-nowrap",
+      key: "item",
+      label: "項目",
+      renderCell: (row: ItemTableRow) => (
+        <ItemListHeading
+          createItemHref={createItemHref}
+          onSelectItem={onSelectItem}
+          row={row}
+          showFreshnessBadge={false}
+        />
+      ),
+      widthClassName: "w-[36%]",
+    },
+    {
+      ariaSort: sort.key === "attention" ? sort.direction : "none",
+      cellClassName: "attention-cell whitespace-nowrap",
+      cellKind: "data",
+      headerClassName: "whitespace-nowrap",
+      key: "attention",
+      label: "要対応度",
+      onSort: () => {
+        onSortChange("attention");
+      },
+      renderCell: (row: ItemTableRow) => (
+        <AttentionBadge attention={row.item.attention} showLabel={false} showScore={false} />
+      ),
+      widthClassName: "w-[13%]",
+    },
+    {
+      ariaSort: sort.key === "importance" ? sort.direction : "none",
+      cellClassName: "importance-cell whitespace-nowrap",
+      cellKind: "data",
+      headerClassName: "whitespace-nowrap",
+      key: "importance",
+      label: "重要度",
+      onSort: () => {
+        onSortChange("importance");
+      },
+      renderCell: (row: ItemTableRow) => (
+        <ImportanceBadge importance={row.item.importance} showLabel={false} showScore={false} />
+      ),
+      widthClassName: "w-[11%]",
+    },
+    {
+      ariaSort: undefined,
+      cellClassName: "leading-6 wrap-anywhere",
+      cellKind: "data",
+      headerClassName: "whitespace-nowrap",
+      key: "waitingOn",
+      label: "待ち相手",
+      renderCell: (row: ItemTableRow) => (
+        <OverviewWaitingOn locale={locale} row={row} summary={summary} />
+      ),
+      widthClassName: "w-[27%]",
+    },
+    {
+      ariaSort: sort.key === "stall" ? sort.direction : "none",
+      cellClassName: "whitespace-nowrap tabular-nums",
+      cellKind: "data",
+      headerClassName: "whitespace-nowrap",
+      key: "stall",
+      label: "停滞時間",
+      onSort: () => {
+        onSortChange("stall");
+      },
+      renderCell: (row: ItemTableRow) => (
+        <strong>{formatStallDuration(row.item.stallSince, now)}</strong>
+      ),
+      widthClassName: "w-[13%]",
+    },
+  ] satisfies readonly ResponsiveTableColumn<ItemTableRow>[];
+  const cardFields = [
+    {
+      className: "",
+      key: "attention",
+      label: "要対応度",
+      renderValue: (row: ItemTableRow) => (
+        <AttentionBadge attention={row.item.attention} showLabel={false} showScore={false} />
+      ),
+      valueClassName: "font-semibold text-text-primary",
+    },
+    {
+      className: "",
+      key: "importance",
+      label: "重要度",
+      renderValue: (row: ItemTableRow) => (
+        <ImportanceBadge importance={row.item.importance} showLabel={false} showScore={false} />
+      ),
+      valueClassName: "font-semibold text-text-primary",
+    },
+    {
+      className: "col-span-full border-t border-border-subtle pt-3",
+      key: "waitingOn",
+      label: "待ち相手",
+      renderValue: (row: ItemTableRow) => (
+        <OverviewWaitingOn locale={locale} row={row} summary={summary} />
+      ),
+      valueClassName: "leading-6 text-text-primary",
+    },
+    {
+      className: "",
+      key: "stall",
+      label: "停滞時間",
+      renderValue: (row: ItemTableRow) => formatStallDuration(row.item.stallSince, now),
+      valueClassName: "font-semibold text-text-primary tabular-nums",
+    },
+  ] satisfies readonly ResponsiveCardField<ItemTableRow>[];
+
   return (
     <PageSection
       className="attention-section"
       description="要対応度は、重要度が高く、かつ最近動きがあった項目ほど高くなります。高または中の項目を表示します。"
       heading="対応が必要な項目"
       headingAccessory={
-        <div class="attention-heading attention-heading-metadata flex flex-wrap items-end gap-4 max-shell:-mt-2 max-shell:items-start">
+        <div class="attention-heading attention-heading-metadata max-shell:-mt-2">
           <p class="overview-observed-time m-0 grid justify-items-end text-right max-shell:justify-items-start max-shell:text-left">
             <span class="time-label text-xs font-bold text-text-muted">データ観測</span>
             <RelativeTimeDisplay
@@ -117,23 +286,25 @@ function AttentionQueue({
               locale={locale}
             />
           </p>
-          <ListCountSummary
-            className="attention-summary"
-            count={attentionItems.length}
-            locale={locale}
-            sort={sort}
-          />
         </div>
       }
       headingId="attention-heading"
     >
-      <SortControls
-        className="overview-sort-controls mb-4 grid grid-cols-[minmax(0,1fr)_auto] gap-2 sm:max-w-sm"
-        onSortChange={onSortChange}
-        options={ITEM_SORT_OPTIONS}
-        selectId="overview-sort-key"
-        sort={sort}
-      />
+      <div class="item-list-controls mb-4 flex flex-wrap items-end justify-between gap-4">
+        <ListCountSummary
+          className="item-list-count attention-summary"
+          count={attentionItems.length}
+          locale={locale}
+          sort={sort}
+        />
+        <SortControls
+          className="item-list-sort-controls overview-sort-controls grid w-full grid-cols-[minmax(0,1fr)_auto] gap-2 sm:w-auto sm:min-w-64"
+          onSortChange={onSortChange}
+          options={ITEM_SORT_OPTIONS}
+          selectId="overview-sort-key"
+          sort={sort}
+        />
+      </div>
       {attentionItems.length === 0 ? (
         <ContentState
           className="empty-state"
@@ -141,74 +312,28 @@ function AttentionQueue({
           status="empty"
         />
       ) : (
-        <ol class="attention-list m-0 grid list-none gap-3 p-0">
-          {attentionItems.map((row) => {
-            const { item } = row;
-            const primaryWaitingOn = selectPrimaryWaitingOnCandidate(item);
-            const primaryWaitingOnLabel =
-              primaryWaitingOn == null
-                ? formatWaitingOn(item, summary)
-                : formatWaitingOnCandidate(primaryWaitingOn, item, summary);
-            const otherWaitingOnCount = primaryWaitingOn == null ? 0 : item.waitingOn.length - 1;
-            return (
-              <li key={item.nodeId} data-node-id={item.nodeId}>
-                <article class="attention-item grid min-w-0 grid-cols-[minmax(14rem,0.8fr)_minmax(22rem,1.4fr)] items-start gap-4 rounded-xl border border-border-subtle bg-surface-card p-4 max-shell:grid-cols-1 max-shell:gap-3">
-                  <div class="attention-title grid min-w-0 gap-2">
-                    <ItemListHeading
-                      createItemHref={createItemHref}
-                      onSelectItem={onSelectItem}
-                      row={row}
-                      showFreshnessBadge={false}
-                    />
-                    <div class="attention-score-badges flex min-h-5 flex-wrap items-start gap-1.5">
-                      <AttentionBadge
-                        attention={item.attention}
-                        showLabel={true}
-                        showScore={false}
-                      />
-                      <ImportanceBadge
-                        importance={item.importance}
-                        showLabel={true}
-                        showScore={false}
-                      />
-                    </div>
-                  </div>
-                  <dl class="attention-primary-details m-0 grid min-w-0 grid-cols-[minmax(0,1fr)_8rem] gap-3 max-narrow:gap-2">
-                    <div class="attention-waiting-on relative min-w-0 border-l-2 border-border-default pl-3">
-                      <dt class="text-xs font-bold text-text-muted">待ち相手</dt>
-                      <dd class="mt-0.5 mb-0 font-bold">
-                        <span class="attention-waiting-on-summary flex min-w-0 items-baseline gap-2">
-                          <span class="attention-primary-waiting-on min-w-0 flex-1 text-base leading-snug wrap-anywhere">
-                            {primaryWaitingOnLabel}
-                          </span>
-                          {otherWaitingOnCount > 0 && (
-                            <span class="attention-other-waiting-on flex-none text-xs text-text-muted whitespace-nowrap max-narrow:absolute max-narrow:top-0 max-narrow:right-0">
-                              ほか{otherWaitingOnCount.toLocaleString(locale)}件
-                            </span>
-                          )}
-                        </span>
-                        {primaryWaitingOn != null && (
-                          <span
-                            class="attention-waiting-reason mt-1 block min-w-0 text-sm leading-5 font-normal text-text-muted wrap-anywhere"
-                            title={primaryWaitingOn.reasonSummary}
-                          >
-                            {primaryWaitingOn.reasonSummary}
-                          </span>
-                        )}
-                      </dd>
-                    </div>
-                    <div class="min-w-24 border-l-2 border-border-default pl-3">
-                      <dt class="text-xs font-bold text-text-muted">停滞時間</dt>
-                      <dd class="mt-0.5 mb-0 font-bold whitespace-nowrap">
-                        {formatStallDuration(item.stallSince, now)}
-                      </dd>
-                    </div>
-                  </dl>
-                </article>
-              </li>
-            );
-          })}
-        </ol>
+        <ResponsiveTableCardList
+          breakpoint="lg"
+          cardAriaLabel="対応が必要な項目一覧"
+          cardFields={cardFields}
+          cardListClassName="attention-list"
+          columns={tableColumns}
+          getRowPresentation={attentionRowPresentation}
+          rows={attentionItems}
+          tableCaption="対応が必要な項目の一覧"
+          tableClassName="attention-table"
+          renderCardHeading={(row) => (
+            <div class="attention-title min-w-0">
+              <ItemListHeading
+                createItemHref={createItemHref}
+                onSelectItem={onSelectItem}
+                row={row}
+                showFreshnessBadge={false}
+              />
+            </div>
+          )}
+          renderCardFooter={() => null}
+        />
       )}
     </PageSection>
   );

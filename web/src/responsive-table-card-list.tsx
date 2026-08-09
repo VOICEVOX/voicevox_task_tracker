@@ -31,7 +31,15 @@ export type ResponsiveListRowPresentation = Readonly<{
   tableClassName: string;
 }>;
 
+type ResponsiveBreakpoint = "md" | "lg";
+
+type BreakpointClassNames = Readonly<{
+  cardList: string;
+  tableRegion: string;
+}>;
+
 type ResponsiveTableCardListProps<Row> = Readonly<{
+  breakpoint: ResponsiveBreakpoint;
   cardAriaLabel: string;
   cardFields: readonly ResponsiveCardField<Row>[];
   cardListClassName: string;
@@ -43,6 +51,17 @@ type ResponsiveTableCardListProps<Row> = Readonly<{
   tableCaption: string;
   tableClassName: string;
 }>;
+
+const BREAKPOINT_CLASS_NAMES = {
+  md: {
+    cardList: "md:hidden",
+    tableRegion: "md:block",
+  },
+  lg: {
+    cardList: "lg:hidden",
+    tableRegion: "lg:block",
+  },
+} satisfies Readonly<Record<ResponsiveBreakpoint, BreakpointClassNames>>;
 
 function TableCell<Row>({
   column,
@@ -68,6 +87,7 @@ function TableCell<Row>({
 
 /** 同じ行データを広い画面では表、狭い画面ではカード一覧として表示する。 */
 export function ResponsiveTableCardList<Row>({
+  breakpoint,
   cardAriaLabel,
   cardFields,
   cardListClassName,
@@ -79,9 +99,10 @@ export function ResponsiveTableCardList<Row>({
   tableCaption,
   tableClassName,
 }: ResponsiveTableCardListProps<Row>) {
+  const breakpointClassNames = BREAKPOINT_CLASS_NAMES[breakpoint];
   return (
     <>
-      <div class="items-table-region hidden min-w-0 md:block">
+      <div class={`items-table-region hidden min-w-0 ${breakpointClassNames.tableRegion}`}>
         <table class={`w-full table-fixed border-collapse ${tableClassName}`}>
           <caption class="visually-hidden sr-only">{tableCaption}</caption>
           <colgroup>
@@ -134,7 +155,7 @@ export function ResponsiveTableCardList<Row>({
         </table>
       </div>
       <ol
-        class={`items-card-list m-0 grid list-none gap-3 p-0 md:hidden ${cardListClassName}`}
+        class={`items-card-list m-0 grid list-none gap-3 p-0 ${breakpointClassNames.cardList} ${cardListClassName}`}
         aria-label={cardAriaLabel}
       >
         {rows.map((row) => {

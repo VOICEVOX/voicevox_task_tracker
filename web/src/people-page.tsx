@@ -188,6 +188,7 @@ export function PeoplePage({
         />
       ) : (
         <ResponsiveTableCardList
+          breakpoint="md"
           cardAriaLabel="担当者一覧"
           cardFields={cardFields}
           cardListClassName="people-card-list"
