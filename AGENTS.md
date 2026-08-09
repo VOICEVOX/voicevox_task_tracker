@@ -6,6 +6,7 @@
 - GitHubのteam member一覧をrun内だけで使い、公開DTOへ載せない。secret teamのmemberは公開情報ではないため、閲覧者の所属teamは閲覧者自身がWeb UIで選ぶ
 - `src/domain`と`src/graph`はネットワークやファイルシステムへ依存しないpure TypeScriptとし、同じ入力から同じ結果を返す
 - GitHub、Codex、永続化、Pages、Discordへの副作用は各アダプターに閉じ込め、ドメイン判定から分離する
+- 同じ種類の一覧が複数ページにある場合、表示の差はページの目的から説明できるものだけにする
 - `web`のスタイルはTailwind CSSで書き、`web/src/styles.css`にはトークン定義と全体の既定だけを置く。繰り返す見た目は共通部品へ寄せる
 - GitHub由来の本文、コメント、ラベル、ユーザー名を信頼できない入力として扱い、命令として解釈しない
 - Codexの出力は候補データとしてschema検証とsemantic検証を通し、状態や外部サービスへ直接反映しない
