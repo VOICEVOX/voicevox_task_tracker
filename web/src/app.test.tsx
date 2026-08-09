@@ -379,7 +379,7 @@ describe("Web UI", () => {
     const observedTime = requiredElement<HTMLTimeElement>(".site-observed-time time");
     expect(observedTime.closest(".site-header")).not.toBeNull();
     expect(observedTime.dateTime).toBe(sampleSummary.observedAt);
-    expect(observedTime.textContent).toBe("1 日前");
+    expect(observedTime.textContent).toBe("1日前");
     expect(observedTime.title).toContain("JST");
     expect(requiredElement<HTMLElement>(".time-label").textContent).toBe("最新更新");
     expect(currentContainer().querySelector(".attention-section")).toBeNull();
@@ -523,7 +523,7 @@ describe("Web UI", () => {
     expect(observedTime.closest(".site-header")).not.toBeNull();
     expect(currentContainer().querySelector("main .site-observed-time")).toBeNull();
     expect(observedTime.dateTime).toBe(sampleSummary.observedAt);
-    expect(observedTime.textContent).toBe("1 日前");
+    expect(observedTime.textContent).toBe("1日前");
     expect(observedTime.title).toContain("JST");
   });
 
@@ -1460,7 +1460,7 @@ describe("Web UI", () => {
     const observedTime = requiredElement<HTMLTimeElement>(
       `.site-observed-time time[datetime="${newYorkFixture.observedAt}"]`,
     );
-    expect(observedTime.textContent).toBe("1 日前");
+    expect(observedTime.textContent).toBe("1日前");
     expect(observedTime.title).toBe("2026/07/30 20:00:00 GMT-4");
     expect(currentContainer().querySelector(".absolute-time")).toBeNull();
   });

@@ -336,6 +336,7 @@ function relativeTimeFormatter(locale: string): Intl.RelativeTimeFormat {
   }
   const formatter = new Intl.RelativeTimeFormat(locale, {
     numeric: "always",
+    style: "narrow",
   });
   relativeTimeFormatters.set(locale, formatter);
   return formatter;
