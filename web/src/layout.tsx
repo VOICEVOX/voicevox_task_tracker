@@ -6,8 +6,9 @@ import { appendClassName } from "./class-name.js";
 type PageSectionProps = Readonly<{
   children: ComponentChildren;
   className?: string;
-  heading: string;
+  heading: ComponentChildren;
   headingAccessory?: ComponentChildren;
+  headingClassName?: string;
   headingId: string;
 }>;
 
@@ -24,7 +25,7 @@ type ContentStateProps = Readonly<
 >;
 
 const PAGE_SECTION_CLASS =
-  "section-card min-w-0 rounded-2xl border border-border-subtle bg-surface-card p-[clamp(1rem,2.5vw,2rem)] shadow-card max-narrow:rounded-xl";
+  "section-card min-w-0 rounded-2xl border border-border-default bg-surface-card p-[clamp(1rem,2.5vw,2rem)]";
 
 /** カードと見出しを備えたページ内セクションを表示する。 */
 export function PageSection({
@@ -32,12 +33,19 @@ export function PageSection({
   className,
   heading,
   headingAccessory,
+  headingClassName,
   headingId,
 }: PageSectionProps) {
   return (
     <section aria-labelledby={headingId} class={appendClassName(PAGE_SECTION_CLASS, className)}>
       <div class="section-heading mb-4 flex items-end justify-between gap-6 max-shell:flex-col max-shell:items-start">
-        <h2 id={headingId} class="m-0 text-lg leading-tight font-semibold">
+        <h2
+          id={headingId}
+          class={appendClassName(
+            "m-0 font-display text-lg leading-tight font-semibold",
+            headingClassName,
+          )}
+        >
           {heading}
         </h2>
         {headingAccessory}
@@ -77,7 +85,7 @@ export function ContentState({
   return (
     <div
       {...attributes}
-      class={`grid min-h-32 place-content-center justify-items-center gap-3 rounded-xl border border-dashed border-border-strong bg-surface-sunken p-6 text-center text-text-muted ${className}`}
+      class={`grid min-h-32 place-content-center justify-items-center gap-3 rounded-2xl border border-dashed border-border-strong bg-surface-sunken p-6 text-center text-text-muted ${className}`}
       role={role}
       aria-live={ariaLive}
     >

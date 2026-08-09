@@ -102,7 +102,7 @@ const CONFIDENCE_LEVEL_CLASS_NAMES = {
 const DISCLOSURE_SUMMARY_CLASS_NAME =
   "grid min-h-12 cursor-pointer list-none grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-2 py-3 text-text-secondary marker:content-none before:mt-0.5 before:text-text-muted before:content-['▸'] group-open:before:content-['▾'] [&::-webkit-details-marker]:hidden";
 const DISCLOSURE_HEADING_CLASS_NAME =
-  "m-0 flex min-w-0 items-baseline justify-between gap-x-4 gap-y-1 text-base font-bold max-narrow:flex-col";
+  "m-0 flex min-w-0 items-baseline justify-between gap-x-4 gap-y-1 font-display text-base font-bold max-narrow:flex-col";
 
 /** 項目詳細pageへ遷移し、通常のリンク操作も維持する。 */
 export function ItemDetailsLink({ children, href, nodeId, onSelect }: ItemDetailsLinkProps) {
@@ -180,7 +180,7 @@ function ConfidenceDisplay({
 }>) {
   return (
     <div
-      class={`confidence-panel confidence-${presentation.level} grid gap-1 rounded-md border-l-4 px-3 py-2 text-sm ${CONFIDENCE_LEVEL_CLASS_NAMES[presentation.level]}`}
+      class={`confidence-panel confidence-${presentation.level} grid gap-1 rounded-xl border-l-4 px-3 py-2 text-sm ${CONFIDENCE_LEVEL_CLASS_NAMES[presentation.level]}`}
       data-confidence-level={presentation.level}
       role="status"
     >
@@ -225,9 +225,9 @@ function HistoryEvent({
   return (
     <article class="history-event grid gap-2 py-3" data-history-kind={event.kind}>
       <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h5 class="m-0 font-bold">状態と待ち相手の変更</h5>
+        <h5 class="m-0 font-display font-bold">状態と待ち相手の変更</h5>
         <time
-          class="text-xs text-text-muted"
+          class="font-mono text-xs text-text-muted tabular-nums"
           dateTime={event.recordedAt}
           title={formatDateTime(event.recordedAt, summary.timezone, locale)}
         >
@@ -368,6 +368,7 @@ function WaitingOnCandidateReference({
       createPersonHref={createPersonHref}
       onSelectPerson={onSelectPerson}
       parts={waitingOnLabelParts(candidate, item, summary)}
+      showAvatar={false}
     />
   );
 }
@@ -502,7 +503,9 @@ function WaitingOnCandidates({
       </ul>
       <details class="other-waiting-on-candidates mt-3">
         <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
-          その他の候補{otherCandidates.length.toLocaleString()}件を表示
+          {"その他の候補"}
+          <span class="font-mono tabular-nums">{otherCandidates.length.toLocaleString()}</span>
+          {"件を表示"}
         </summary>
         <ul class={`${WAITING_ON_LIST_CLASS_NAME} mt-3`}>
           {otherCandidates.map(({ candidate, index }) => (
@@ -591,7 +594,7 @@ export function ItemDetailsContent({
             {item.displayReference}
           </p>
           <h3
-            class="mt-1 mb-0 text-lg leading-tight font-semibold wrap-anywhere focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent-focus-ring"
+            class="mt-1 mb-0 font-display text-lg leading-tight font-semibold wrap-anywhere focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-accent-focus-ring"
             ref={heading}
             tabIndex={-1}
           >
@@ -619,7 +622,7 @@ export function ItemDetailsContent({
 
       {aiNotice.kind !== "none" && (
         <p
-          class={`ai-analysis-notice m-0 rounded-md border-l-4 px-4 py-3 text-sm leading-5 ${
+          class={`ai-analysis-notice m-0 rounded-xl border-l-4 px-4 py-3 text-sm leading-5 ${
             aiNotice.kind === "outdated"
               ? "ai-analysis-notice-outdated border-state-warning-border bg-state-warning-background text-state-warning-text"
               : "ai-analysis-notice-skipped border-state-info-border bg-state-info-background text-state-info-text"
@@ -635,7 +638,10 @@ export function ItemDetailsContent({
         class="current-action-panel grid min-w-0 gap-5 border-t border-border-subtle pt-5 lg:grid-cols-2"
       >
         <div class="current-action-heading lg:col-span-2">
-          <h4 id="current-action-heading" class="m-0 text-base leading-snug font-semibold">
+          <h4
+            id="current-action-heading"
+            class="m-0 font-display text-base leading-snug font-semibold"
+          >
             現在の状況と次の行動
           </h4>
         </div>
@@ -645,7 +651,9 @@ export function ItemDetailsContent({
               {decisionFieldLabel("現在の状態", presentation)}
             </dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <strong class="text-lg text-text-primary">{statusLabel(item.status)}</strong>
+              <Pill className="current-status-badge" tone="neutral" variant="filled">
+                {statusLabel(item.status)}
+              </Pill>
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
@@ -665,7 +673,7 @@ export function ItemDetailsContent({
           <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">停滞時間</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <strong class="text-lg text-text-primary">
+              <strong class="font-mono text-lg text-text-primary tabular-nums">
                 <time
                   dateTime={item.stallSince}
                   title={formatDateTime(item.stallSince, summary.timezone, locale)}
@@ -699,7 +707,7 @@ export function ItemDetailsContent({
         </dl>
 
         <div class="current-responsibility min-w-0">
-          <h5 id="item-waiting-on-heading" class="mt-0 mb-3 text-base font-bold">
+          <h5 id="item-waiting-on-heading" class="mt-0 mb-3 font-display text-base font-bold">
             {decisionFieldLabel("待ち相手", presentation)}
           </h5>
           {item.waitingOn.length === 0 ? (
@@ -720,13 +728,13 @@ export function ItemDetailsContent({
         </div>
 
         <div class="next-action-card min-w-0 border-l-2 border-state-info-border pl-3">
-          <h5 class="mt-0 mb-3 text-base font-bold">
+          <h5 class="mt-0 mb-3 font-display text-base font-bold">
             {decisionFieldLabel("次の行動", presentation)}
           </h5>
           <p
             class={
               presentation.level === "uncertain"
-                ? "uncertain-value m-0 rounded-md border-2 border-dashed border-state-danger-border bg-state-danger-background p-3 text-lg font-bold text-text-primary"
+                ? "uncertain-value m-0 rounded-xl border-2 border-dashed border-state-danger-border bg-state-danger-background p-3 text-lg font-bold text-text-primary"
                 : "m-0 text-lg font-bold text-text-primary"
             }
           >
@@ -736,7 +744,7 @@ export function ItemDetailsContent({
 
         {additionalBlockerNodeIds.length > 0 && (
           <div class="additional-blockers min-w-0 lg:col-span-2">
-            <h5 class="mt-0 mb-3 text-base font-bold">その他のブロッカー</h5>
+            <h5 class="mt-0 mb-3 font-display text-base font-bold">その他のブロッカー</h5>
             <ul class="blocker-list m-0 grid list-none gap-2 p-0">
               {additionalBlockerNodeIds.map((nodeId) => (
                 <li
@@ -764,16 +772,25 @@ export function ItemDetailsContent({
         >
           <h4
             id="item-dependency-graph-heading"
-            class="item-dependency-graph-heading m-0 text-base leading-snug font-semibold"
+            class="item-dependency-graph-heading m-0 font-display text-base leading-snug font-semibold"
           >
             依存関係
           </h4>
           <p class="graph-selection-summary m-0 text-sm text-text-secondary" aria-live="polite">
-            {`この項目と現在有効な依存関係で直接つながる項目だけを、中心項目を含めて${dependencyGraphView.representedSourceNodeCount.toLocaleString(locale)}件表示します。${
-              dependencyGraphView.omittedSourceNodeCount > 0
-                ? `表示上限外の隣接項目が${dependencyGraphView.omittedSourceNodeCount.toLocaleString(locale)}件あります。`
-                : ""
-            }`}
+            {"この項目と現在有効な依存関係で直接つながる項目だけを、中心項目を含めて"}
+            <span class="font-mono tabular-nums">
+              {dependencyGraphView.representedSourceNodeCount.toLocaleString(locale)}
+            </span>
+            {"件表示します。"}
+            {dependencyGraphView.omittedSourceNodeCount > 0 && (
+              <>
+                {"表示上限外の隣接項目が"}
+                <span class="font-mono tabular-nums">
+                  {dependencyGraphView.omittedSourceNodeCount.toLocaleString(locale)}
+                </span>
+                {"件あります。"}
+              </>
+            )}
           </p>
           <DependencyGraphDiagram
             description={`${item.displayReference}を中心項目として示します。`}
@@ -801,8 +818,8 @@ export function ItemDetailsContent({
         <div class="detail-disclosure-content grid gap-4 pb-4">
           <ConfidenceDisplay presentation={presentation} />
           {details.uncertainties.length > 0 && (
-            <div class="uncertainty-list rounded-md border border-state-danger-border bg-state-danger-background p-3 text-state-danger-text">
-              <h5 class="m-0 font-bold">不確実な点</h5>
+            <div class="uncertainty-list rounded-xl border border-state-danger-border bg-state-danger-background p-3 text-state-danger-text">
+              <h5 class="m-0 font-display font-bold">不確実な点</h5>
               <ul class="mt-2 mb-0 list-disc pl-6">
                 {details.uncertainties.map((uncertainty) => (
                   <li key={uncertainty}>{uncertainty}</li>
@@ -811,13 +828,13 @@ export function ItemDetailsContent({
             </div>
           )}
           {primaryBlockerNodeId != null && (
-            <div class="primary-selection-reason border-l-4 border-border-strong bg-surface-sunken py-2 pl-3">
-              <h5 class="mt-0 mb-2 text-base font-bold">主要ブロッカーの選定理由</h5>
+            <div class="primary-selection-reason rounded-xl border-l-4 border-border-strong bg-surface-sunken px-3 py-2">
+              <h5 class="mt-0 mb-2 font-display text-base font-bold">主要ブロッカーの選定理由</h5>
               <p class="m-0">{item.primaryWaitingOn.selectionReason}</p>
             </div>
           )}
           <section class="importance-evidence" aria-labelledby="importance-evidence-heading">
-            <h5 id="importance-evidence-heading" class="mt-0 mb-3 text-base font-bold">
+            <h5 id="importance-evidence-heading" class="mt-0 mb-3 font-display text-base font-bold">
               重要度の加点内訳
             </h5>
             {details.importanceFactors.length === 0 ? (
@@ -837,7 +854,7 @@ export function ItemDetailsContent({
                           {source.label}
                         </Pill>
                         <code>{IMPORTANCE_FACTOR_LABELS[factor.kind]}</code>
-                        <strong class="ml-auto text-importance-high-text tabular-nums">
+                        <strong class="ml-auto font-mono text-importance-high-text tabular-nums">
                           +{factor.points.toLocaleString(locale)}点
                         </strong>
                       </div>
@@ -849,7 +866,7 @@ export function ItemDetailsContent({
             )}
           </section>
           <section class="decision-evidence" aria-labelledby="decision-evidence-heading">
-            <h5 id="decision-evidence-heading" class="mt-0 mb-3 text-base font-bold">
+            <h5 id="decision-evidence-heading" class="mt-0 mb-3 font-display text-base font-bold">
               状態と次の行動の根拠
             </h5>
             {details.evidence.length === 0 ? (
@@ -874,7 +891,7 @@ export function ItemDetailsContent({
         <summary class={DISCLOSURE_SUMMARY_CLASS_NAME}>
           <h4 class={DISCLOSURE_HEADING_CLASS_NAME}>
             <span>履歴</span>
-            <span class="text-xs font-semibold text-text-muted">
+            <span class="font-mono text-xs font-semibold text-text-muted tabular-nums">
               {details.history.length.toString()}件
             </span>
           </h4>

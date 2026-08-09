@@ -2,6 +2,8 @@ import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
+import { createGitHubAvatarUrl } from "./github-avatar.js";
+import { GitHubProfileLink } from "./github-icon-button.js";
 import { createItemCardFields, createItemTableColumns } from "./item-list-fields.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
@@ -47,13 +49,17 @@ type PersonPageProps = PersonNavigation &
 function itemRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
   const stale = row.item.repositoryFreshness === "stale";
   return {
-    cardClassName: stale ? "stale-card bg-state-warning-background/40" : "bg-surface-card",
+    cardClassName: stale
+      ? "stale-card bg-state-warning-background/40 [&_a]:text-accent-link-hover"
+      : "bg-surface-card",
     dataAttributes: {
       "data-freshness": row.item.repositoryFreshness,
       "data-node-id": row.item.nodeId,
     },
     key: row.item.nodeId,
-    tableClassName: stale ? "stale-row bg-state-warning-background/40" : "",
+    tableClassName: stale
+      ? "stale-row bg-state-warning-background/40 [&_a]:text-accent-link-hover"
+      : "",
   };
 }
 
@@ -126,7 +132,20 @@ export function PersonPage({
   return (
     <PageSection
       className="person-page"
-      heading={`@${login} を待っている項目`}
+      heading={
+        <span class="flex max-w-full min-w-0 items-center gap-3">
+          <img
+            alt=""
+            class="size-10 shrink-0 rounded-full border border-border-default bg-surface-page"
+            decoding="async"
+            height={40}
+            loading="lazy"
+            src={createGitHubAvatarUrl(login)}
+            width={40}
+          />
+          <span class="min-w-0 leading-snug wrap-anywhere">@{login} を待っている項目</span>
+        </span>
+      }
       headingId="person-page-heading"
     >
       <div class="person-identity-action mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -141,6 +160,7 @@ export function PersonPage({
         >
           {isViewerIdentity ? "自分の記憶を解除する" : "自分として記憶する"}
         </ActionButton>
+        <GitHubProfileLink href={`https://github.com/${encodeURIComponent(login)}`} />
         <a
           class="person-back-link inline-flex min-h-11 items-center"
           href={peopleHref}
@@ -164,11 +184,11 @@ export function PersonPage({
         )}
       </div>
       {teamOptions.length > 0 && (
-        <fieldset class="person-team-selection mb-4 flex flex-wrap gap-2 rounded-xl border border-border-default bg-surface-sunken px-3 pt-2 pb-3 text-text-secondary">
+        <fieldset class="person-team-selection mb-4 flex flex-wrap gap-2 rounded-2xl border border-border-default bg-surface-sunken px-3 pt-2 pb-3 text-text-secondary">
           <legend class="px-1 font-bold">所属チーム</legend>
           {teamOptions.map((teamId) => (
             <label
-              class="flex min-h-11 flex-[1_1_18rem] cursor-pointer items-start gap-2 rounded-md border border-border-default bg-surface-card px-3 py-2"
+              class="flex min-h-11 flex-[1_1_18rem] cursor-pointer items-start gap-2 rounded-xl border border-border-default bg-surface-card px-3 py-2"
               key={waitingSubjectKey({ kind: "team", teamId })}
             >
               <input

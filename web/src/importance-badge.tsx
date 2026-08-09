@@ -28,7 +28,7 @@ function ScoreBadge({
 }>) {
   return (
     <Pill
-      className={`${className} importance-${score.level} tabular-nums ${presentation === "score" ? "min-w-12 justify-center" : ""}`}
+      className={`${className} importance-${score.level} font-mono tabular-nums ${presentation === "score" ? "min-w-12 justify-center" : ""}`}
       tone={score.level}
       variant={variant}
     >

@@ -20,7 +20,7 @@ type SafeGitHubLinkProps = Readonly<{
 
 const SAFE_GITHUB_LINK_CLASS_NAMES = {
   action: "inline-flex min-h-11 items-center",
-  icon: "github-icon-button inline-flex size-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-accent-link no-underline hover:bg-surface-emphasis hover:text-accent-link-hover focus-visible:bg-surface-emphasis focus-visible:text-accent-link-hover",
+  icon: "github-icon-button inline-flex size-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-xl text-accent-link no-underline hover:bg-surface-emphasis hover:text-accent-link-hover focus-visible:bg-surface-emphasis focus-visible:text-accent-link-hover",
   inline: "inline",
 } satisfies Readonly<Record<SafeGitHubLinkVariant, string>>;
 

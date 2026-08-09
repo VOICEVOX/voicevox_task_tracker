@@ -1,5 +1,6 @@
 import { UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
+import { createGitHubAvatarUrl } from "./github-avatar.js";
 import { type WaitingOnDisplayPart } from "./model.js";
 
 /** 人ごとのページへのリンク生成とクライアント遷移。 */
@@ -11,7 +12,10 @@ export type PersonNavigation = Readonly<{
 type PersonLinkProps = PersonNavigation & Readonly<{ login: string }>;
 
 type WaitingOnDisplayProps = PersonNavigation &
-  Readonly<{ parts: readonly WaitingOnDisplayPart[] }>;
+  Readonly<{
+    parts: readonly WaitingOnDisplayPart[];
+    showAvatar: boolean;
+  }>;
 
 /** 人ごとのページへ遷移し、通常のリンク操作も維持する。 */
 export function PersonLink({ createPersonHref, login, onSelectPerson }: PersonLinkProps) {
@@ -37,6 +41,7 @@ export function WaitingOnDisplay({
   createPersonHref,
   onSelectPerson,
   parts,
+  showAvatar,
 }: WaitingOnDisplayProps) {
   return (
     <>
@@ -45,6 +50,29 @@ export function WaitingOnDisplay({
           case "text":
             return part.text;
           case "login":
+            if (showAvatar) {
+              return (
+                <span
+                  class="inline-flex min-w-0 items-center gap-1.5 align-middle"
+                  key={`${index.toString()}:${part.login}`}
+                >
+                  <img
+                    alt=""
+                    class="size-5 shrink-0 rounded-full border border-border-default bg-surface-page"
+                    decoding="async"
+                    height={20}
+                    loading="lazy"
+                    src={createGitHubAvatarUrl(part.login)}
+                    width={20}
+                  />
+                  <PersonLink
+                    createPersonHref={createPersonHref}
+                    login={part.login}
+                    onSelectPerson={onSelectPerson}
+                  />
+                </span>
+              );
+            }
             return (
               <PersonLink
                 key={`${index.toString()}:${part.login}`}

@@ -14,6 +14,7 @@ import {
   type ResponsiveCardField,
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
+import { Pill } from "./ui.js";
 import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
 
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
@@ -62,17 +63,18 @@ function WaitingOnStatus({
             createPersonHref={createPersonHref}
             onSelectPerson={onSelectPerson}
             parts={primaryWaitingOnParts}
+            showAvatar={true}
           />
         </strong>
         {otherWaitingOnCount > 0 && (
-          <span class="item-other-waiting-on flex-none text-xs text-text-muted whitespace-nowrap">
+          <span class="item-other-waiting-on flex-none font-mono text-xs text-text-muted whitespace-nowrap tabular-nums">
             ほか{otherWaitingOnCount.toLocaleString(locale)}件
           </span>
         )}
       </span>
-      <span class="item-waiting-status text-sm leading-5 text-text-secondary">
+      <Pill className="item-waiting-status" tone="neutral" variant="filled">
         {statusLabel(row.item.status)}
-      </span>
+      </Pill>
       {reason != null && reason.length > 0 && (
         <span
           class="item-waiting-reason line-clamp-2 text-xs leading-5 text-text-muted wrap-anywhere"
@@ -137,7 +139,7 @@ export function createItemTableColumns({
     },
     {
       ariaSort: sort.key === "attention" ? sort.direction : "none",
-      cellClassName: "attention-cell text-center whitespace-nowrap tabular-nums",
+      cellClassName: "attention-cell text-center font-mono whitespace-nowrap tabular-nums",
       cellKind: "data",
       headerClassName: NUMERIC_HEADER_CLASS_NAME,
       key: "attention",
@@ -150,7 +152,7 @@ export function createItemTableColumns({
     },
     {
       ariaSort: sort.key === "importance" ? sort.direction : "none",
-      cellClassName: "importance-cell text-center whitespace-nowrap tabular-nums",
+      cellClassName: "importance-cell text-center font-mono whitespace-nowrap tabular-nums",
       cellKind: "data",
       headerClassName: NUMERIC_HEADER_CLASS_NAME,
       key: "importance",
@@ -165,7 +167,7 @@ export function createItemTableColumns({
     },
     {
       ariaSort: sort.key === "stall" ? sort.direction : "none",
-      cellClassName: "text-center whitespace-nowrap tabular-nums",
+      cellClassName: "text-center font-mono whitespace-nowrap tabular-nums",
       cellKind: "data",
       headerClassName: NUMERIC_HEADER_CLASS_NAME,
       key: "stall",
@@ -174,7 +176,9 @@ export function createItemTableColumns({
         onSortChange("stall");
       },
       renderCell: (row) => (
-        <strong class="tabular-nums">{formatStallDuration(row.item.stallSince, now)}</strong>
+        <strong class="font-mono tabular-nums">
+          {formatStallDuration(row.item.stallSince, now)}
+        </strong>
       ),
       widthClassName: "w-[10.5%]",
     },
@@ -212,7 +216,7 @@ export function createItemCardFields({
       key: "attention",
       label: "要対応度",
       renderValue: (row) => <AttentionBadge attention={row.item.attention} presentation="score" />,
-      valueClassName: "text-text-primary tabular-nums",
+      valueClassName: "font-mono text-text-primary tabular-nums",
     },
     {
       className: "",
@@ -221,14 +225,14 @@ export function createItemCardFields({
       renderValue: (row) => (
         <ImportanceBadge importance={row.item.importance} presentation="score" />
       ),
-      valueClassName: "text-text-primary tabular-nums",
+      valueClassName: "font-mono text-text-primary tabular-nums",
     },
     {
       className: "",
       key: "stall",
       label: "停滞時間",
       renderValue: (row) => formatStallDuration(row.item.stallSince, now),
-      valueClassName: "font-semibold text-text-primary tabular-nums",
+      valueClassName: "font-mono font-semibold text-text-primary tabular-nums",
     },
   ];
 }

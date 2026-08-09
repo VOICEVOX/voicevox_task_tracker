@@ -135,7 +135,7 @@ const TABLE_FILTERS: readonly TableFilterDefinition[] = [
 function AiStateNotice() {
   return (
     <p
-      class="notice ai-state-notice m-0 rounded-md border-l-2 border-state-info-border bg-surface-card px-3 py-2 text-sm leading-5 text-text-secondary"
+      class="notice ai-state-notice m-0 rounded-xl border-l-2 border-state-info-border bg-surface-card px-3 py-2 text-sm leading-5 text-text-secondary"
       role="status"
     >
       AI分析は設定で無効です。確定ルールで表示しています。
@@ -229,13 +229,17 @@ function ItemsEmptyState({
 function itemRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
   const stale = row.item.repositoryFreshness === "stale";
   return {
-    cardClassName: stale ? "stale-card bg-state-warning-background/40" : "bg-surface-card",
+    cardClassName: stale
+      ? "stale-card bg-state-warning-background/40 [&_a]:text-accent-link-hover"
+      : "bg-surface-card",
     dataAttributes: {
       "data-freshness": row.item.repositoryFreshness,
       "data-node-id": row.item.nodeId,
     },
     key: row.item.nodeId,
-    tableClassName: stale ? "stale-row bg-state-warning-background/40" : "",
+    tableClassName: stale
+      ? "stale-row bg-state-warning-background/40 [&_a]:text-accent-link-hover"
+      : "",
   };
 }
 
@@ -324,7 +328,7 @@ function ItemTable({
           <AiStateNotice />
         </div>
       )}
-      <div class="item-list-toolbar mb-4 grid gap-4 rounded-xl border border-border-subtle bg-surface-sunken p-4">
+      <div class="item-list-toolbar mb-4 grid gap-4 rounded-2xl border border-border-default bg-surface-sunken p-4">
         <ItemSearch
           searchQuery={searchQuery}
           onClearSearch={onClearSearch}
@@ -334,7 +338,11 @@ function ItemTable({
           <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
             <span class="ml-1 inline-flex max-w-[calc(100%_-_2rem)] flex-wrap items-center gap-x-3 gap-y-1 align-middle">
               <span>列ごとの絞り込み</span>
-              <Pill className="filter-summary-count" tone="neutral" variant="filled">
+              <Pill
+                className="filter-summary-count font-mono tabular-nums"
+                tone="neutral"
+                variant="filled"
+              >
                 {activeFilterCount === 0 ? "条件なし" : `${activeFilterCount.toString()}件適用中`}
               </Pill>
             </span>
@@ -423,7 +431,7 @@ function ItemTable({
             >
               前のページ
             </ActionButton>
-            <p class="m-0 tabular-nums" aria-live="polite">
+            <p class="m-0 font-mono tabular-nums" aria-live="polite">
               {pageIndex + 1} / {pageCount}ページ
             </p>
             <ActionButton

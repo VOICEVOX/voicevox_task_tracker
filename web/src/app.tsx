@@ -73,7 +73,11 @@ const NAVIGATION_PAGES: readonly Readonly<{
 
 function RelativeTimeDisplay({ locale, now, timezone, value }: RelativeTimeDisplayProps) {
   return (
-    <time class="font-bold" dateTime={value} title={formatDateTime(value, timezone, locale)}>
+    <time
+      class="font-mono font-bold tabular-nums"
+      dateTime={value}
+      title={formatDateTime(value, timezone, locale)}
+    >
       {formatRelativeTime(value, now, locale)}
     </time>
   );
@@ -477,7 +481,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
   return (
     <>
       <a
-        class="skip-link absolute top-3 left-3 -translate-y-[180%] bg-text-primary px-4 py-2.5 text-text-inverse focus:translate-y-0"
+        class="skip-link absolute top-3 left-3 -translate-y-[180%] rounded-xl bg-text-primary px-4 py-2.5 text-text-inverse focus:translate-y-0"
         href="#main-content"
       >
         本文へ移動
@@ -486,7 +490,9 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         class={`site-header ${SHELL_CONTAINER_CLASS} grid grid-cols-[max-content_minmax(0,1fr)_max-content] items-center gap-4 py-3 max-shell:grid-cols-[minmax(0,1fr)_max-content] max-shell:gap-x-4 max-shell:gap-y-1 max-narrow:py-2`}
       >
         <div class="site-identity min-w-0">
-          <h1 class="m-0 text-base leading-tight font-semibold tracking-tight">{title}</h1>
+          <h1 class="m-0 font-display text-base leading-tight font-semibold tracking-tight">
+            {title}
+          </h1>
         </div>
         <nav
           class="global-navigation min-w-0 justify-self-center max-shell:col-span-2 max-shell:col-start-1 max-shell:row-start-2 max-shell:justify-self-start"
@@ -500,7 +506,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
               return (
                 <li key={navigationPage.page}>
                   <a
-                    class={`flex min-h-11 items-center rounded-lg px-2.5 py-1.5 no-underline hover:bg-surface-emphasis hover:text-accent-link-hover max-narrow:px-2 ${
+                    class={`flex min-h-11 items-center rounded-full px-2.5 py-1.5 text-action-text no-underline hover:bg-surface-emphasis hover:text-accent-link-hover max-narrow:px-2 ${
                       current ? "bg-surface-emphasis font-bold text-text-primary" : ""
                     }`}
                     href={href}
@@ -521,7 +527,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             {viewerIdentity != null && (
               <li>
                 <a
-                  class="viewer-navigation-link flex min-h-11 items-center rounded-lg bg-surface-emphasis px-2.5 py-1.5 font-bold text-text-primary no-underline hover:bg-surface-emphasis hover:text-accent-link-hover max-narrow:px-2"
+                  class="viewer-navigation-link flex min-h-11 items-center rounded-full bg-surface-emphasis px-2.5 py-1.5 font-bold text-text-primary no-underline hover:bg-surface-emphasis hover:text-accent-link-hover max-narrow:px-2"
                   href={createViewerIdentityHref(viewerIdentity)}
                   onClick={(event) => {
                     if (!shouldHandleClientNavigation(event)) {
@@ -550,7 +556,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
       <main id="main-content" class={`${SHELL_CONTAINER_CLASS} grid gap-5`}>
         {navigationState.status === "sanitized" && (
           <p
-            class="notice notice-warning url-state-notice my-4 rounded-md border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3.5 text-state-warning-text"
+            class="notice notice-warning url-state-notice my-4 rounded-xl border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3.5 text-state-warning-text"
             role="status"
             aria-live="polite"
           >
@@ -572,9 +578,9 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
 export function DataLoadFailure() {
   return (
     <main
-      class={`load-failure ${SHELL_WIDTH_CLASS} mt-16 block max-w-2xl rounded-2xl border border-border-subtle bg-surface-card p-8`}
+      class={`load-failure ${SHELL_WIDTH_CLASS} mt-16 block max-w-2xl rounded-2xl border border-border-default bg-surface-card p-8`}
     >
-      <h1 class="mt-0 mb-4 text-lg font-semibold">データを表示できません</h1>
+      <h1 class="mt-0 mb-4 font-display text-lg font-semibold">データを表示できません</h1>
       <p class="m-0">
         公開データの読み込みまたは検証に失敗しました。時間を置いて再度確認してください。
       </p>

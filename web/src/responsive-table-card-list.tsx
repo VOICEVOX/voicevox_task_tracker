@@ -70,7 +70,7 @@ function TableCell<Row>({
   column: ResponsiveTableColumn<Row>;
   row: Row;
 }>) {
-  const className = `border-b border-border-subtle p-3 text-left align-top ${column.cellClassName}`;
+  const className = `p-3 text-left align-top ${column.cellClassName}`;
   switch (column.cellKind) {
     case "data":
       return <td class={className}>{column.renderCell(row)}</td>;
@@ -102,7 +102,9 @@ export function ResponsiveTableCardList<Row>({
   const breakpointClassNames = BREAKPOINT_CLASS_NAMES[breakpoint];
   return (
     <>
-      <div class={`items-table-region hidden min-w-0 ${breakpointClassNames.tableRegion}`}>
+      <div
+        class={`items-table-region hidden min-w-0 overflow-hidden rounded-2xl border border-border-default bg-surface-card shadow-[0_8px_24px_rgba(34,52,45,0.04)] ${breakpointClassNames.tableRegion}`}
+      >
         <table class={`w-full table-fixed border-collapse ${tableClassName}`}>
           <caption class="visually-hidden sr-only">{tableCaption}</caption>
           <colgroup>
@@ -115,7 +117,7 @@ export function ResponsiveTableCardList<Row>({
               {columns.map((column) => (
                 <th
                   key={column.key}
-                  class={`sticky top-0 border-b border-border-strong bg-surface-sunken p-3 text-left align-middle text-sm font-bold text-text-secondary ${column.headerClassName}`}
+                  class={`sticky top-0 border-b border-border-subtle bg-surface-sunken p-3 text-left align-middle text-sm font-bold text-text-secondary ${column.headerClassName}`}
                   scope="col"
                   aria-sort={column.ariaSort}
                 >
@@ -123,7 +125,7 @@ export function ResponsiveTableCardList<Row>({
                     column.label
                   ) : (
                     <button
-                      class="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-md bg-transparent px-2 py-1 text-left text-sm font-bold text-text-secondary hover:bg-surface-emphasis hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-focus-ring"
+                      class="inline-flex min-h-11 cursor-pointer items-center gap-1 rounded-xl bg-transparent px-2 py-1 text-left text-sm font-bold text-text-secondary hover:bg-surface-emphasis hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-focus-ring"
                       type="button"
                       onClick={column.onSort}
                     >
@@ -143,7 +145,7 @@ export function ResponsiveTableCardList<Row>({
                 <tr
                   {...presentation.dataAttributes}
                   key={presentation.key}
-                  class={presentation.tableClassName}
+                  class={`border-b border-border-subtle last:border-b-0 hover:bg-surface-page/60 ${presentation.tableClassName}`}
                 >
                   {columns.map((column) => (
                     <TableCell key={column.key} column={column} row={row} />
@@ -155,7 +157,7 @@ export function ResponsiveTableCardList<Row>({
         </table>
       </div>
       <ol
-        class={`items-card-list m-0 grid list-none gap-3 p-0 ${breakpointClassNames.cardList} ${cardListClassName}`}
+        class={`items-card-list m-0 grid list-none overflow-hidden rounded-2xl border border-border-default bg-surface-card p-0 shadow-[0_8px_24px_rgba(34,52,45,0.04)] ${breakpointClassNames.cardList} ${cardListClassName}`}
         aria-label={cardAriaLabel}
       >
         {rows.map((row) => {
@@ -164,7 +166,7 @@ export function ResponsiveTableCardList<Row>({
             <li
               {...presentation.dataAttributes}
               key={presentation.key}
-              class={`overflow-hidden rounded-xl border border-border-subtle ${presentation.cardClassName}`}
+              class={`border-b border-border-subtle last:border-b-0 hover:bg-surface-page/60 ${presentation.cardClassName}`}
             >
               <article class="grid gap-3 p-4">
                 <div class="item-card-heading min-w-0">{renderCardHeading(row)}</div>

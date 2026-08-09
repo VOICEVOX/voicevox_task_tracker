@@ -340,7 +340,7 @@ function GraphSvgNode({
       />
       {node.kind !== "external_reference" && (
         <FittedGraphNodeText
-          className="graph-node-metrics font-semibold"
+          className="graph-node-metrics font-mono font-semibold tabular-nums"
           value={`停滞${Math.floor(node.stallDays).toString()}日・影響${node.impactOpenNodeCount.toString()}件`}
           width={graphNodeTextWidth(node, graphNodeRowOffset("metrics", rows))}
           x={x}
@@ -400,10 +400,13 @@ function GraphSvg({
   return (
     <>
       <section
-        class="dependency-graph-legend grid gap-3 rounded-xl border border-border-subtle bg-surface-sunken p-3 text-sm text-text-secondary"
+        class="dependency-graph-legend grid gap-3 rounded-2xl border border-border-default bg-surface-sunken p-3 text-sm text-text-secondary"
         aria-labelledby={`${idPrefix}-legend-title`}
       >
-        <h5 id={`${idPrefix}-legend-title`} class="m-0 text-base font-bold text-text-primary">
+        <h5
+          id={`${idPrefix}-legend-title`}
+          class="m-0 font-display text-base font-bold text-text-primary"
+        >
           凡例
         </h5>
         <dl class="m-0 grid gap-3 lg:grid-cols-3">
@@ -444,11 +447,11 @@ function GraphSvg({
         </dl>
       </section>
       <div
-        class="graph-viewport min-w-0 max-h-200 overflow-auto rounded-xl border border-border-subtle bg-surface-sunken"
+        class="graph-viewport min-w-0 max-h-200 overflow-auto rounded-2xl border border-border-default bg-surface-sunken"
         data-layout-status="ready"
       >
         <svg
-          class="dependency-graph-svg mx-auto block bg-dependency-grid [background-size:2rem_2rem]"
+          class="dependency-graph-svg mx-auto block bg-surface-sunken"
           viewBox={`0 0 ${layout.width.toString()} ${layout.height.toString()}`}
           width={layout.width}
           height={layout.height}

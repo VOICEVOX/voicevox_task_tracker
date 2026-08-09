@@ -1,6 +1,7 @@
 import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import { createGitHubAvatarUrl } from "./github-avatar.js";
 import { ContentState, PageSection } from "./layout.js";
 import { collectWaitingSubjectRows, resolveWaitingSubjects, waitingSubjectKey } from "./model.js";
 import {
@@ -42,11 +43,22 @@ function WaitingSubjectName({
   return (
     <span class="flex min-w-0 flex-wrap items-center gap-2">
       {row.subject.kind === "user" ? (
-        <PersonLink
-          createPersonHref={createPersonHref}
-          login={row.subject.login}
-          onSelectPerson={onSelectPerson}
-        />
+        <span class="flex min-w-0 items-center gap-2">
+          <img
+            alt=""
+            class="size-6 shrink-0 rounded-full border border-border-default bg-surface-page"
+            decoding="async"
+            height={24}
+            loading="lazy"
+            src={createGitHubAvatarUrl(row.subject.login)}
+            width={24}
+          />
+          <PersonLink
+            createPersonHref={createPersonHref}
+            login={row.subject.login}
+            onSelectPerson={onSelectPerson}
+          />
+        </span>
       ) : (
         <span class="min-w-0 text-text-primary wrap-anywhere">{row.label}</span>
       )}
@@ -66,11 +78,13 @@ function waitingSubjectRowPresentation(
 ): ResponsiveListRowPresentation {
   const viewer = isViewerRow(row, viewerLogin);
   return {
-    cardClassName: viewer ? "viewer-person-card bg-surface-emphasis" : "bg-surface-card",
+    cardClassName: viewer
+      ? "viewer-person-card bg-surface-emphasis [&_a]:text-accent-link-hover"
+      : "bg-surface-card",
     dataAttributes: {},
     key: waitingSubjectKey(row.subject),
     tableClassName: viewer
-      ? "viewer-person-row [&>th]:bg-surface-emphasis [&>td]:bg-surface-emphasis"
+      ? "viewer-person-row bg-surface-emphasis [&_a]:text-accent-link-hover"
       : "",
   };
 }
@@ -112,7 +126,7 @@ export function PeoplePage({
     },
     {
       ariaSort: "descending",
-      cellClassName: "whitespace-nowrap text-right tabular-nums",
+      cellClassName: "font-mono whitespace-nowrap text-right tabular-nums",
       cellKind: "data",
       headerClassName: "text-right",
       key: "itemCount",
@@ -122,7 +136,7 @@ export function PeoplePage({
     },
     {
       ariaSort: undefined,
-      cellClassName: "whitespace-nowrap tabular-nums",
+      cellClassName: "font-mono whitespace-nowrap tabular-nums",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "longestStallDuration",
@@ -137,14 +151,14 @@ export function PeoplePage({
       key: "itemCount",
       label: "待たせている項目数",
       renderValue: (row: WaitingSubjectRow) => row.itemCount.toLocaleString(locale),
-      valueClassName: "font-semibold text-text-primary tabular-nums",
+      valueClassName: "font-mono font-semibold text-text-primary tabular-nums",
     },
     {
       className: "",
       key: "longestStallDuration",
       label: "最長停滞時間",
       renderValue: (row: WaitingSubjectRow) => row.longestStallDuration,
-      valueClassName: "font-semibold text-text-primary tabular-nums",
+      valueClassName: "font-mono font-semibold text-text-primary tabular-nums",
     },
   ] satisfies readonly ResponsiveCardField<WaitingSubjectRow>[];
 
@@ -182,8 +196,9 @@ export function PeoplePage({
       )}
       {unidentifiedItemCount > 0 && (
         <p class="mt-4 mb-0 max-w-3xl text-sm text-text-muted">
-          レビュワーの誰か待ちなど、待ち相手を特定できない項目が
-          {unidentifiedItemCount.toLocaleString(locale)}件あります。
+          {"レビュワーの誰か待ちなど、待ち相手を特定できない項目が"}
+          <span class="font-mono tabular-nums">{unidentifiedItemCount.toLocaleString(locale)}</span>
+          {"件あります。"}
         </p>
       )}
     </PageSection>

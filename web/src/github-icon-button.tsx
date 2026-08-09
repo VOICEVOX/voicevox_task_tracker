@@ -27,3 +27,15 @@ export function GitHubIconButton({ href }: GitHubIconButtonProps) {
     </SafeGitHubLink>
   );
 }
+
+/** GitHubプロフィールへのリンクをマークと文字で表示する。 */
+export function GitHubProfileLink({ href }: GitHubIconButtonProps) {
+  return (
+    <SafeGitHubLink href={href} variant="action">
+      <span class="inline-flex items-center gap-2">
+        <GitHubMarkIcon />
+        <span>GitHubプロフィール</span>
+      </span>
+    </SafeGitHubLink>
+  );
+}

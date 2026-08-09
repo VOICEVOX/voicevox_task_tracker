@@ -15,6 +15,7 @@ import {
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
 import { App } from "./app.js";
+import { createGitHubAvatarUrl } from "./github-avatar.js";
 import {
   aiAnalysisNotice,
   createEmptyTableFilters,
@@ -112,6 +113,36 @@ function requiredElement<ElementType extends Element>(selector: string): Element
   return element;
 }
 
+function expectGitHubAvatar(
+  scope: ParentNode,
+  expectedLogin: string,
+  expectedSize: number,
+  expectedSizeClassName: string,
+): HTMLImageElement {
+  const expectedSource = createGitHubAvatarUrl(expectedLogin);
+  const avatars = [...scope.querySelectorAll<HTMLImageElement>("img")].filter(
+    (image) => image.getAttribute("src") === expectedSource,
+  );
+  expect(avatars).toHaveLength(1);
+  const avatar = avatars[0];
+  assertNonNullable(avatar, "GitHubアバターがありません");
+  expect(avatar.getAttribute("alt")).toBe("");
+  expect(avatar.getAttribute("loading")).toBe("lazy");
+  expect(avatar.getAttribute("decoding")).toBe("async");
+  expect(avatar.getAttribute("width")).toBe(expectedSize.toString());
+  expect(avatar.getAttribute("height")).toBe(expectedSize.toString());
+  expect([...avatar.classList]).toEqual(
+    expect.arrayContaining([
+      expectedSizeClassName,
+      "rounded-full",
+      "border",
+      "border-border-default",
+      "bg-surface-page",
+    ]),
+  );
+  return avatar;
+}
+
 function expectGitHubIconButton(scope: ParentNode, expectedHref: string): HTMLAnchorElement {
   const links = scope.querySelectorAll<HTMLAnchorElement>('a[target="_blank"]');
   expect(links).toHaveLength(1);
@@ -146,6 +177,19 @@ function expectItemListHeading(
   expect(title.classList).not.toContain("font-bold");
   expect([...meta.classList]).toEqual(expect.arrayContaining(["text-xs", "text-text-muted"]));
   expect(meta.textContent).toBe(expectedMeta);
+  const typeBadge = meta.querySelector<HTMLElement>(".item-type-badge");
+  assertNonNullable(typeBadge, "項目種別のバッジがありません");
+  expect(typeBadge.classList).toContain("rounded-full");
+  if (typeBadge.textContent === "Issue") {
+    expect([...typeBadge.classList]).toEqual(
+      expect.arrayContaining(["bg-state-success-background", "text-state-success-text"]),
+    );
+  } else {
+    expect(typeBadge.textContent).toBe("Pull Request");
+    expect([...typeBadge.classList]).toEqual(
+      expect.arrayContaining(["bg-state-info-background", "text-state-info-text"]),
+    );
+  }
   const aiNotice = title.querySelector(".ai-analysis-notice-icon");
   const githubLink = expectGitHubIconButton(scope, expectedGitHubHref);
   expect(title.lastElementChild).toBe(githubLink);
@@ -310,6 +354,12 @@ afterEach(() => {
 });
 
 describe("Web UI", () => {
+  it("loginをencodeしてGitHubアバターのURLを組み立てる", () => {
+    expect(createGitHubAvatarUrl("sample/name")).toBe(
+      "https://github.com/sample%2Fname.png?size=48",
+    );
+  });
+
   it("トップページに全項目を要対応度の降順で表示する", () => {
     renderApp(sampleSummary);
 
@@ -343,12 +393,17 @@ describe("Web UI", () => {
     );
     expect(personLink.textContent).toBe("@sample-bug-author");
     expect(personLink.getAttribute("href")).toBe("/voicevox_task_tracker/people/sample-bug-author");
-    expect(personLink.parentElement?.textContent).toBe("推定: 作成者 @sample-bug-author");
+    const personWaitingOn = personLink.closest<HTMLElement>(".item-primary-waiting-on");
+    assertNonNullable(personWaitingOn, "個人の待ち相手表示がありません");
+    expect(personWaitingOn.textContent).toBe("推定: 作成者 @sample-bug-author");
+    const avatar = expectGitHubAvatar(personWaitingOn, "sample-bug-author", 20, "size-5");
+    expect(avatar.nextElementSibling).toBe(personLink);
     const teamWaitingOn = requiredElement<HTMLElement>(
       '.items-table tr[data-node-id="sample-item-engine-202"] .item-primary-waiting-on',
     );
     expect(teamWaitingOn.textContent).toBe("レビュワー チーム sample-reviewers");
     expect(teamWaitingOn.querySelector("a")).toBeNull();
+    expect(teamWaitingOn.querySelector("img")).toBeNull();
 
     act(() => {
       personLink.click();
@@ -381,7 +436,7 @@ describe("Web UI", () => {
       pageName: "担当者個別",
       path: "/voicevox_task_tracker/people/HiHo",
     },
-  ])("$pageNameページで見出し階層を保ったまま文字を小さくする", ({ headingSelector, path }) => {
+  ])("$pageNameページで見出し階層と文字の大きさを統一する", ({ headingSelector, path }) => {
     window.history.replaceState({}, "", path);
     renderAppWithLoader(sampleSummary, () => new Promise<PublicDetailsDto>(() => {}));
 
@@ -389,14 +444,21 @@ describe("Web UI", () => {
     const pageHeading = requiredElement<HTMLHeadingElement>(headingSelector);
     expect(siteTitle.tagName).toBe("H1");
     expect([...siteTitle.classList]).toEqual(
-      expect.arrayContaining(["text-base", "font-semibold"]),
+      expect.arrayContaining(["font-display", "text-base", "font-semibold"]),
     );
     expect(siteTitle.classList).not.toContain("font-bold");
     expect(pageHeading.tagName).toBe("H2");
     expect([...pageHeading.classList]).toEqual(
-      expect.arrayContaining(["text-lg", "font-semibold"]),
+      expect.arrayContaining(["font-display", "text-lg", "font-semibold"]),
     );
     expect(pageHeading.classList).not.toContain("font-bold");
+    expect(pageHeading.classList).not.toContain("max-narrow:text-base");
+    const pageSection = pageHeading.closest<HTMLElement>(".section-card");
+    assertNonNullable(pageSection, "ページ見出しを囲むセクションがありません");
+    expect([...pageSection.classList]).toEqual(
+      expect.arrayContaining(["rounded-2xl", "border", "border-border-default", "bg-surface-card"]),
+    );
+    expect(pageSection.classList).not.toContain("shadow-card");
   });
 
   it("AIが設定で無効なときはトップ項目一覧へ全体通知を表示する", () => {
@@ -498,7 +560,7 @@ describe("Web UI", () => {
             "sticky",
             "top-0",
             "border-b",
-            "border-border-strong",
+            "border-border-subtle",
             "bg-surface-sunken",
           ]),
         );
@@ -537,6 +599,18 @@ describe("Web UI", () => {
       expect(controls.classList).not.toContain("hidden");
       expect(tableRegion.classList).toContain("lg:block");
       expect(cardList.classList).toContain("lg:hidden");
+      for (const listFrame of [tableRegion, cardList]) {
+        expect([...listFrame.classList]).toEqual(
+          expect.arrayContaining([
+            "overflow-hidden",
+            "rounded-2xl",
+            "border",
+            "border-border-default",
+            "bg-surface-card",
+            "shadow-[0_8px_24px_rgba(34,52,45,0.04)]",
+          ]),
+        );
+      }
     },
   );
 
@@ -610,6 +684,17 @@ describe("Web UI", () => {
     ]);
     expect(
       requiredElement<HTMLTableRowElement>(".people-table tbody tr:last-child").querySelector("a"),
+    ).toBeNull();
+    const hihoRow = requiredElement<HTMLAnchorElement>(
+      '.people-table a[href="/voicevox_task_tracker/people/HiHo"]',
+    ).closest<HTMLTableRowElement>("tr");
+    assertNonNullable(hihoRow, "HiHoの担当者行がありません");
+    const hihoAvatar = expectGitHubAvatar(hihoRow, "HiHo", 24, "size-6");
+    expect(hihoAvatar.nextElementSibling?.textContent).toBe("@HiHo");
+    expect(
+      requiredElement<HTMLTableRowElement>(".people-table tbody tr:last-child").querySelector(
+        "img",
+      ),
     ).toBeNull();
     expect(
       requiredElement<HTMLElement>(".people-page > .items-table-region").querySelector(
@@ -739,6 +824,17 @@ describe("Web UI", () => {
     expect(requiredElement<HTMLHeadingElement>("#person-page-heading").textContent).toBe(
       "@hiho を待っている項目",
     );
+    const personHeading = requiredElement<HTMLHeadingElement>("#person-page-heading");
+    const personAvatar = expectGitHubAvatar(personHeading, "hiho", 40, "size-10");
+    expect(personAvatar.nextElementSibling?.textContent).toBe("@hiho を待っている項目");
+    const githubProfileLink = [...currentContainer().querySelectorAll<HTMLAnchorElement>("a")].find(
+      (link) => link.textContent === "GitHubプロフィール",
+    );
+    assertNonNullable(githubProfileLink, "GitHubプロフィールへのリンクがありません");
+    expect(githubProfileLink.getAttribute("href")).toBe("https://github.com/hiho");
+    expect(githubProfileLink.getAttribute("target")).toBe("_blank");
+    expect(githubProfileLink.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(githubProfileLink.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
     expect(currentContainer().querySelector(".person-page .eyebrow")).toBeNull();
     expect(
       [...currentContainer().querySelectorAll(".person-items-table thead th")].map(
@@ -1553,6 +1649,15 @@ describe("Web UI", () => {
     expect(waitingOnStatusCell?.querySelector(".item-waiting-status")?.textContent).toBe(
       "マージ待ち",
     );
+    const statusBadge = waitingOnStatusCell?.querySelector<HTMLElement>(".item-waiting-status");
+    assertNonNullable(statusBadge, "一覧に状態のバッジがありません");
+    expect([...statusBadge.classList]).toEqual(
+      expect.arrayContaining([
+        "rounded-full",
+        "bg-state-neutral-background",
+        "text-state-neutral-text",
+      ]),
+    );
     expect(waitingOnStatusCell?.querySelector(".item-waiting-reason")?.textContent).toBe(
       "確認が完了し、メンテナーのマージ判断を待っています",
     );
@@ -1560,6 +1665,9 @@ describe("Web UI", () => {
     expect(attentionCell.nextElementSibling).toBe(highImportanceCell);
     expect(highImportanceCell.textContent).toBe("63点");
     expect(highImportanceBadge.classList).toContain("border-importance-high-border");
+    expect([...highImportanceBadge.classList]).toEqual(
+      expect.arrayContaining(["font-mono", "tabular-nums"]),
+    );
     const commonHeadingScopes = [
       itemCell,
       requiredElement<HTMLElement>('.items-card-list li[data-node-id="sample-item-editor-101"]'),
@@ -1956,7 +2064,13 @@ describe("Web UI", () => {
     });
     renderApp(xssSummary);
 
-    expect(currentContainer().querySelector("img")).toBeNull();
+    expect(currentContainer().querySelector('img[src="x"]')).toBeNull();
+    const renderedImages = currentContainer().querySelectorAll<HTMLImageElement>("img");
+    expect(renderedImages.length).toBeGreaterThan(0);
+    for (const image of renderedImages) {
+      expect(image.getAttribute("src")?.startsWith("https://github.com/")).toBe(true);
+      expect(image.getAttribute("onerror")).toBeNull();
+    }
     expect(currentContainer().textContent).toContain(xssTitle);
 
     const dangerousUrlSource = {
@@ -2189,6 +2303,20 @@ describe("Web UI", () => {
       "判定の根拠",
       "履歴",
     ]);
+    expect(
+      [...details.querySelectorAll("h3, h4")].every((heading) =>
+        heading.classList.contains("font-display"),
+      ),
+    ).toBe(true);
+    const currentStatus = requiredElement<HTMLElement>(".current-status-badge");
+    expect([...currentStatus.classList]).toEqual(
+      expect.arrayContaining([
+        "rounded-full",
+        "bg-state-neutral-background",
+        "text-state-neutral-text",
+      ]),
+    );
+    expect(currentStatus.textContent).toBe("ブロック解消待ち");
     expect(requiredElement<HTMLDetailsElement>(".decision-details").open).toBe(false);
     expect(requiredElement<HTMLDetailsElement>(".history-details").open).toBe(false);
     expect(details.textContent).not.toContain("各種時刻");
@@ -2984,6 +3112,9 @@ describe("Web UI", () => {
     expect(indexHtml).toContain("base-uri 'none'");
     expect(indexHtml).toContain("form-action 'none'");
     expect(indexHtml).toContain("object-src 'none'");
+    expect(indexHtml).toContain(
+      "img-src 'self' data: https://github.com https://avatars.githubusercontent.com",
+    );
     expect(indexHtml).toContain('<link rel="stylesheet" href="/src/styles.css" />');
     expect(indexHtml).not.toContain("'unsafe-inline'");
     expect(indexHtml).not.toContain("'unsafe-eval'");
@@ -2991,43 +3122,40 @@ describe("Web UI", () => {
 
   it("主要な文字色と背景色がWCAG AAのコントラスト比を満たす", () => {
     const colorPairs = [
-      ["18213b", "f4f7fb"],
-      ["18213b", "ffffff"],
-      ["ffffff", "18213b"],
-      ["34435f", "ffffff"],
-      ["34435f", "f7f9fc"],
-      ["34435f", "eef4fc"],
-      ["596985", "f4f7fb"],
-      ["596985", "ffffff"],
-      ["596985", "f7f9fc"],
-      ["596985", "eef4fc"],
-      ["596985", "fff5dc"],
-      ["175bc1", "f4f7fb"],
-      ["175bc1", "ffffff"],
-      ["175bc1", "f7f9fc"],
-      ["175bc1", "eef4fc"],
-      ["175bc1", "fff5dc"],
-      ["0b3d87", "eef4fc"],
-      ["173f72", "eef4fc"],
-      ["173f72", "e8f3ff"],
-      ["174f39", "ddf4e9"],
-      ["5a3500", "fff5dc"],
-      ["6b2430", "fff0f2"],
-      ["435169", "eef0f3"],
-      ["3d285b", "eee5fa"],
-      ["3d285b", "ffffff"],
-      ["18213b", "eef4fc"],
-      ["18213b", "f7f9fc"],
-      ["18213b", "fff5dc"],
-      ["18213b", "fff0f2"],
-      ["18213b", "f5f8fd"],
-      ["18213b", "eef7ff"],
-      ["18213b", "fff8e8"],
-      ["095f45", "f5f8fd"],
-      ["095f45", "eef7ff"],
-      ["095f45", "fff8e8"],
-      ["173f72", "f7f9fc"],
-      ["6b2430", "ffffff"],
+      ["162521", "f4f1e8"],
+      ["162521", "fffcf5"],
+      ["fffcf5", "162521"],
+      ["3c4a45", "fffcf5"],
+      ["3c4a45", "efece1"],
+      ["3c4a45", "dff3e9"],
+      ["5d6964", "f4f1e8"],
+      ["5d6964", "fffcf5"],
+      ["5d6964", "efece1"],
+      ["5d6964", "dff3e9"],
+      ["5d6964", "fdf0d5"],
+      ["16815d", "fffcf5"],
+      ["0d5a40", "f4f1e8"],
+      ["0d5a40", "fffcf5"],
+      ["0d5a40", "efece1"],
+      ["0d5a40", "dff3e9"],
+      ["0d5a40", "fdf0d5"],
+      ["1e4b7a", "e4eef8"],
+      ["0d5a40", "dff3e9"],
+      ["6b4400", "fdf0d5"],
+      ["7a2727", "fbe9e6"],
+      ["4b5a55", "eceadf"],
+      ["7a2727", "fbe0da"],
+      ["7a2727", "fffcf5"],
+      ["162521", "dff3e9"],
+      ["162521", "efece1"],
+      ["162521", "fdf0d5"],
+      ["162521", "fbe9e6"],
+      ["162521", "eceadf"],
+      ["162521", "cfe9dc"],
+      ["0d5a40", "eceadf"],
+      ["0d5a40", "cfe9dc"],
+      ["0d5a40", "fdf0d5"],
+      ["7a2727", "fffcf5"],
     ] satisfies readonly Readonly<[string, string]>[];
 
     for (const [foreground, background] of colorPairs) {

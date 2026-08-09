@@ -1,3 +1,4 @@
+import { UnreachableError } from "../../src/util/index.js";
 import { AiAnalysisNoticeIcon } from "./ai-analysis-notice-icon.js";
 import { GitHubIconButton } from "./github-icon-button.js";
 import { ItemDetailsLink } from "./item-details.js";
@@ -10,6 +11,17 @@ type ItemListHeadingProps = Readonly<{
   row: ItemTableRow;
   showFreshnessBadge: boolean;
 }>;
+
+function itemTypeTone(type: ItemTableRow["item"]["type"]): "info" | "success" {
+  switch (type) {
+    case "issue":
+      return "success";
+    case "pull_request":
+      return "info";
+    default:
+      throw new UnreachableError(type);
+  }
+}
 
 /** 一覧に共通する項目タイトルと補助情報を表示する。 */
 export function ItemListHeading({
@@ -34,8 +46,16 @@ export function ItemListHeading({
         <GitHubIconButton href={row.item.url} />
       </h3>
       <p class="item-list-meta m-0 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-5 font-normal text-text-muted wrap-anywhere">
-        <span>
-          <span>{row.item.displayReference}</span>・<span>{row.typeText}</span>
+        <span class="inline-flex min-w-0 flex-wrap items-center gap-1">
+          <span>{row.item.displayReference}</span>
+          <span aria-hidden="true">・</span>
+          <Pill
+            className={`item-type-badge item-type-${row.item.type}`}
+            tone={itemTypeTone(row.item.type)}
+            variant="filled"
+          >
+            {row.typeText}
+          </Pill>
         </span>
         {showFreshnessBadge && row.item.repositoryFreshness === "stale" && (
           <Pill className="freshness-badge freshness-stale" tone="warning" variant="filled">
