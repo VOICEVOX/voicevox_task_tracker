@@ -2,27 +2,31 @@ import { type ComponentChildren } from "preact";
 
 import { validateGitHubUrl } from "./model.js";
 
-type SafeGitHubLinkVariant = "action" | "button" | "inline" | "responsive-button" | "subtle";
+type SafeGitHubLinkVariant = "action" | "icon" | "inline";
 
 type SafeGitHubLinkProps = Readonly<{
   children: ComponentChildren;
   href: string;
-  variant: SafeGitHubLinkVariant;
-}>;
+}> &
+  (
+    | Readonly<{
+        label: string;
+        variant: "icon";
+      }>
+    | Readonly<{
+        variant: Exclude<SafeGitHubLinkVariant, "icon">;
+      }>
+  );
 
 const SAFE_GITHUB_LINK_CLASS_NAMES = {
   action: "inline-flex min-h-11 items-center",
-  button:
-    "flex min-h-11 w-full items-center justify-center rounded-md border border-action-border bg-action-background px-3 py-2 text-sm font-bold no-underline",
+  icon: "github-icon-button inline-flex size-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-md text-accent-link no-underline hover:bg-surface-emphasis hover:text-accent-link-hover focus-visible:bg-surface-emphasis focus-visible:text-accent-link-hover",
   inline: "inline",
-  "responsive-button":
-    "inline-flex min-h-11 items-center max-shell:flex max-shell:min-h-11 max-shell:w-full max-shell:items-center max-shell:justify-center max-shell:rounded-md max-shell:border max-shell:border-action-border max-shell:bg-action-background max-shell:px-3 max-shell:py-2 max-shell:text-sm max-shell:font-bold max-shell:no-underline",
-  subtle: "text-sm font-normal",
 } satisfies Readonly<Record<SafeGitHubLinkVariant, string>>;
 
 /** 許可されたGitHub URLだけを別タブで開くリンク。 */
-export function SafeGitHubLink({ children, href, variant }: SafeGitHubLinkProps) {
-  const result = validateGitHubUrl(href);
+export function SafeGitHubLink(props: SafeGitHubLinkProps) {
+  const result = validateGitHubUrl(props.href);
   if (!result.allowed) {
     return (
       <span class="unsafe-link font-bold text-state-danger-text">
@@ -30,14 +34,17 @@ export function SafeGitHubLink({ children, href, variant }: SafeGitHubLinkProps)
       </span>
     );
   }
+  const label = props.variant === "icon" ? props.label : undefined;
   return (
     <a
-      class={SAFE_GITHUB_LINK_CLASS_NAMES[variant]}
+      aria-label={label}
+      class={SAFE_GITHUB_LINK_CLASS_NAMES[props.variant]}
       href={result.url}
       target="_blank"
       rel="noopener noreferrer"
+      title={label}
     >
-      {children}
+      {props.children}
     </a>
   );
 }

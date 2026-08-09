@@ -1,11 +1,9 @@
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
-import { AiAnalysisNoticeIcon } from "./ai-analysis-notice-icon.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
-import { ItemDetailsLink } from "./item-details.js";
+import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
 import { ListCountSummary } from "./list-count-summary.js";
 import {
-  aiAnalysisNotice,
   createEmptyTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
@@ -20,7 +18,6 @@ import {
   type ItemSortKey,
   type ItemTableRow,
 } from "./model.js";
-import { SafeGitHubLink } from "./safe-link.js";
 import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 
 const MAX_STALE_REPOSITORY_NAMES = 3;
@@ -155,35 +152,26 @@ function AttentionQueue({
             const otherWaitingOnCount = primaryWaitingOn == null ? 0 : item.waitingOn.length - 1;
             return (
               <li key={item.nodeId} data-node-id={item.nodeId}>
-                <article class="attention-item grid min-w-0 grid-cols-[minmax(14rem,0.8fr)_minmax(22rem,1.4fr)_auto] items-start gap-4 rounded-xl border border-border-subtle bg-surface-card p-4 max-shell:grid-cols-1 max-shell:gap-3">
+                <article class="attention-item grid min-w-0 grid-cols-[minmax(14rem,0.8fr)_minmax(22rem,1.4fr)] items-start gap-4 rounded-xl border border-border-subtle bg-surface-card p-4 max-shell:grid-cols-1 max-shell:gap-3">
                   <div class="attention-title grid min-w-0 gap-2">
-                    <p class="item-list-meta m-0 min-w-0 text-sm leading-5 text-text-muted wrap-anywhere">
-                      {item.displayReference}・{row.typeText}
-                    </p>
-                    <h3 class="item-title-with-scores m-0 grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-lg leading-snug font-bold max-narrow:grid-cols-1 max-narrow:text-base">
-                      <span class="attention-score-badges mt-0.5 flex min-h-5 flex-wrap items-start gap-1.5">
-                        <AttentionBadge
-                          attention={item.attention}
-                          showLabel={true}
-                          showScore={false}
-                        />
-                        <ImportanceBadge
-                          importance={item.importance}
-                          showLabel={true}
-                          showScore={false}
-                        />
-                      </span>
-                      <span class="min-w-0 wrap-anywhere">
-                        <ItemDetailsLink
-                          href={createItemHref(item.nodeId)}
-                          nodeId={item.nodeId}
-                          onSelect={onSelectItem}
-                        >
-                          {item.title}
-                        </ItemDetailsLink>{" "}
-                        <AiAnalysisNoticeIcon notice={aiAnalysisNotice(item.aiAnalysis.status)} />
-                      </span>
-                    </h3>
+                    <ItemListHeading
+                      createItemHref={createItemHref}
+                      onSelectItem={onSelectItem}
+                      row={row}
+                      showFreshnessBadge={false}
+                    />
+                    <div class="attention-score-badges flex min-h-5 flex-wrap items-start gap-1.5">
+                      <AttentionBadge
+                        attention={item.attention}
+                        showLabel={true}
+                        showScore={false}
+                      />
+                      <ImportanceBadge
+                        importance={item.importance}
+                        showLabel={true}
+                        showScore={false}
+                      />
+                    </div>
                   </div>
                   <dl class="attention-primary-details m-0 grid min-w-0 grid-cols-[minmax(0,1fr)_8rem] gap-3 max-narrow:gap-2">
                     <div class="attention-waiting-on relative min-w-0 border-l-2 border-border-default pl-3">
@@ -216,11 +204,6 @@ function AttentionQueue({
                       </dd>
                     </div>
                   </dl>
-                  <div class="item-actions grid justify-self-end gap-2 text-sm whitespace-nowrap max-shell:w-full max-shell:justify-self-stretch">
-                    <SafeGitHubLink href={item.url} variant="responsive-button">
-                      GitHubで開く
-                    </SafeGitHubLink>
-                  </div>
                 </article>
               </li>
             );

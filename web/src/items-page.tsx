@@ -2,14 +2,12 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
-import { AiAnalysisNoticeIcon } from "./ai-analysis-notice-icon.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
-import { ItemDetailsLink } from "./item-details.js";
+import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
 import { ListCountSummary } from "./list-count-summary.js";
 import {
-  aiAnalysisNotice,
   createItemDetailsMap,
   createItemTableRows,
   filterAndSortTableRows,
@@ -31,7 +29,6 @@ import {
   type ResponsiveListRowPresentation,
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
-import { SafeGitHubLink } from "./safe-link.js";
 import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 import { ActionButton, FORM_CONTROL_CLASS_NAME, Pill } from "./ui.js";
 
@@ -136,26 +133,6 @@ const TABLE_FILTERS: readonly TableFilterDefinition[] = [
     label: "AI利用状況",
   },
 ];
-
-function ItemTitleLink({
-  createItemHref,
-  onSelectItem,
-  row,
-}: Readonly<{
-  createItemHref: (nodeId: string) => string;
-  onSelectItem: (nodeId: string) => void;
-  row: ItemTableRow;
-}>) {
-  return (
-    <ItemDetailsLink
-      href={createItemHref(row.item.nodeId)}
-      nodeId={row.item.nodeId}
-      onSelect={onSelectItem}
-    >
-      {row.item.title}
-    </ItemDetailsLink>
-  );
-}
 
 function ItemSearch({
   onClearSearch,
@@ -349,25 +326,12 @@ function ItemTable({
       key: "item",
       label: "項目",
       renderCell: (row: ItemTableRow) => (
-        <div class="grid min-w-0 gap-1.5">
-          <span class="item-list-meta text-xs leading-5 text-text-muted wrap-anywhere">
-            {row.item.displayReference}・{row.typeText}
-          </span>
-          <span class="min-w-0 wrap-anywhere">
-            <ItemTitleLink createItemHref={createItemHref} onSelectItem={onSelectItem} row={row} />
-          </span>
-          <span class="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm font-normal">
-            <SafeGitHubLink href={row.item.url} variant="subtle">
-              GitHubで開く
-            </SafeGitHubLink>
-            {row.item.repositoryFreshness === "stale" && (
-              <Pill className="freshness-badge freshness-stale" tone="warning" variant="filled">
-                古い観測値
-              </Pill>
-            )}
-            <AiAnalysisNoticeIcon notice={aiAnalysisNotice(row.item.aiAnalysis.status)} />
-          </span>
-        </div>
+        <ItemListHeading
+          createItemHref={createItemHref}
+          onSelectItem={onSelectItem}
+          row={row}
+          showFreshnessBadge={true}
+        />
       ),
       widthClassName: "w-[27%]",
     },
@@ -524,60 +488,29 @@ function ItemTable({
             rows={visibleRows}
             tableCaption="追跡中の全項目の一覧"
             tableClassName="items-table"
-            renderCardHeading={(row) => {
-              const showsFreshnessBadge = row.item.repositoryFreshness === "stale";
-              const aiNotice = aiAnalysisNotice(row.item.aiAnalysis.status);
-              const showsAiAnalysisNotice = aiNotice.kind === "outdated";
-              return (
-                <div class="grid min-w-0 gap-2">
-                  <div class="flex min-w-0 flex-wrap items-start justify-between gap-2">
-                    <p class="item-list-meta m-0 min-w-0 flex-1 text-sm leading-5 text-text-muted wrap-anywhere">
-                      {row.item.displayReference}・{row.typeText}
-                    </p>
-                    {(showsFreshnessBadge || showsAiAnalysisNotice) && (
-                      <span class="flex flex-wrap justify-end gap-1.5">
-                        {showsFreshnessBadge && (
-                          <Pill
-                            className="freshness-badge freshness-stale"
-                            tone="warning"
-                            variant="filled"
-                          >
-                            古い観測値
-                          </Pill>
-                        )}
-                        <AiAnalysisNoticeIcon notice={aiNotice} />
-                      </span>
-                    )}
-                  </div>
-                  <h3 class="item-title-with-scores m-0 flex min-w-0 flex-wrap items-start gap-1.5 text-base leading-6 font-bold">
-                    <AttentionBadge
-                      attention={row.item.attention}
-                      showLabel={true}
-                      showScore={false}
-                    />
-                    <ImportanceBadge
-                      importance={row.item.importance}
-                      showLabel={true}
-                      showScore={false}
-                    />
-                    <span class="min-w-0 wrap-anywhere">
-                      <ItemTitleLink
-                        createItemHref={createItemHref}
-                        onSelectItem={onSelectItem}
-                        row={row}
-                      />
-                    </span>
-                  </h3>
+            renderCardHeading={(row) => (
+              <div class="grid min-w-0 gap-2">
+                <ItemListHeading
+                  createItemHref={createItemHref}
+                  onSelectItem={onSelectItem}
+                  row={row}
+                  showFreshnessBadge={true}
+                />
+                <div class="item-score-badges flex min-w-0 flex-wrap items-start gap-1.5">
+                  <AttentionBadge
+                    attention={row.item.attention}
+                    showLabel={true}
+                    showScore={false}
+                  />
+                  <ImportanceBadge
+                    importance={row.item.importance}
+                    showLabel={true}
+                    showScore={false}
+                  />
                 </div>
-              );
-            }}
-            renderCardFooter={(row) => (
-              <div class="border-t border-border-subtle pt-3">
-                <SafeGitHubLink href={row.item.url} variant="button">
-                  GitHubで開く
-                </SafeGitHubLink>
               </div>
             )}
+            renderCardFooter={() => null}
           />
           <nav
             aria-label="一覧のページ送り"
