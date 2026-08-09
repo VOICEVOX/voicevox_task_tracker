@@ -290,5 +290,5 @@ workflowはdefault branchからのscheduleまたは手動実行だけを許可�
 収集、Pages、Discordのいずれかで運用対象の失敗が起きたrunでは、`notify-operations`が障害通知を1件送ります。
 GitHub Actionsのscheduleは遅延し得るため、08:00 JSTは起動予定時刻として扱います。
 
-mentionが必要になった場合だけ、GitHub loginと17桁から20桁のDiscord user IDを`mentions.users`へ登録します。
+mentionが必要になった場合だけ、GitHubユーザー名と17桁から20桁のDiscord user IDを`mentions.users`へ登録します。
 登録されていないuserと`@everyone`はmentionされません。

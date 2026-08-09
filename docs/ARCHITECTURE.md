@@ -222,11 +222,11 @@ repository、種別、状態、重要度、次の担当、停滞時間、AI利�
 表を表示する幅では列見出しを並び替え操作に使い、カードを表示する幅でだけ専用の並び順選択UIを表示します。
 専用UIの表示切り替えには表とカードと同じbreakpointを使います。
 待ち相手と状態には主な待ち相手、状態、主候補の理由を表示し、一覧の要対応度と重要度にはlevel名を付けずscoreだけを表示します。
-待ち相手は文字列とloginの断片へ構造化し、表示文字列と画面表示を同じ断片から組み立てます。
-個人のloginは共通部品で人ごとのページへリンクし、teamはプレーンテキストで表示します。
+待ち相手は文字列とユーザー名の断片へ構造化し、表示文字列と画面表示を同じ断片から組み立てます。
+個人のユーザー名は共通部品で人ごとのページへリンクし、teamはプレーンテキストで表示します。
 人ページのhref生成とクライアント遷移はWeb UIのルートで一元化し、一覧、詳細、担当者一覧へ渡します。
-項目一覧の個人login、担当者一覧の個人行、人ページの見出しには、loginから組み立てたGitHubアバターURLを表示します。
-アバターは装飾として扱い、文字のloginを常に併記するため、外部画像を読み込めなくても人物を識別できます。
+項目一覧の個人のユーザー名、担当者一覧の個人行、人ページの見出しには、ユーザー名から組み立てたGitHubアバターURLを表示します。
+アバターは装飾として扱い、文字のユーザー名を常に併記するため、外部画像を読み込めなくても人物を識別できます。
 `img-src`は同一originとdata URLに加えて`github.com`と`avatars.githubusercontent.com`だけを許可します。
 人ページのGitHubプロフィールリンクは、GitHub URLの検証と外部リンクの安全属性を共通部品へ委ねます。
 トップページの主候補は`primaryWaitingOn.index`で選び、`not_applicable`では先頭候補を使います。
@@ -291,7 +291,7 @@ call数、入力文字数、推定費用の上限を超えた候補を優先順�
 `ai.authentication: auth-json`では`CODEX_HOME`、`HOME`、`PATH`だけを渡し、起動前に`CODEX_HOME`直下の`auth.json`がファイルとして存在することを確認します。
 アプリケーション側のCodex認証providerは`auth.json`の存在だけを確認し、内容を読みません。
 GitHub App private key、installation token、Discord Webhook URL、`CODEX_AUTH_SYNC_TOKEN`は渡しません。
-Issue本文、コメント、ラベル、loginはID付きの信頼できない入力データとして渡し、命令として扱いません。
+Issue本文、コメント、ラベル、ユーザー名はID付きの信頼できない入力データとして渡し、命令として扱いません。
 `deterministicSignals`にはnative relation候補のIDを`nativeBlockedBy`、`nativeBlocking`、`nativeParent`、`nativeSubIssues`へ分けて渡します。
 
 Codexのtimeout、rate limit、不正JSON、一時的なprocess起動失敗、signal終了は`ai.execution.maxAttempts`まで再試行します。

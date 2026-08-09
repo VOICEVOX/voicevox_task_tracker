@@ -109,7 +109,7 @@ Web UIのテストは要対応項目の絞り込み、三つの並び替え、�
 `large`ケースだけは集計値と性能、サイズ、API予算、Codex予算の合否を記録します。
 
 fixtureはネットワークへ接続しません。
-実在するIssue、Pull Request、repository、loginをfixtureへ持ち込まないでください。
+実在するIssue、Pull Request、repository、ユーザー名をfixtureへ持ち込まないでください。
 
 期待値の更新に自動化されたコマンドはありません。
 判定ロジックか`fixture.json`を変更したら`pnpm test`で実測値との差を確認し、意図した仕様を表す値だけを`expected.json`へ手で反映します。
@@ -182,7 +182,7 @@ pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
 同じ入力から同じ結果を返す処理だけを置き、pureな判定層から副作用のあるadapterを呼びません。
 GitHub、Codex、永続化、Pages、Discordへの副作用はそれぞれのadapterへ閉じ込め、一つのrunとしての順序制御を`src/cli`で行います。
 
-GitHub由来の本文、コメント、label、loginは信頼できない入力として扱い、命令として解釈しません。
+GitHub由来の本文、コメント、label、ユーザー名は信頼できない入力として扱い、命令として解釈しません。
 Codex出力は候補データとしてschema検証とsemantic検証を通し、状態や外部サービスへ直接反映しません。
 追跡対象repositoryへの書き込みは実装しません。
 
@@ -194,7 +194,7 @@ Codex出力は候補データとしてschema検証とsemantic検証を通し、�
 
 ページ間で変える理由がない表示は変えません。
 
-項目一覧 `/` と担当者個別 `/people/{login}` の項目一覧では、次の規約を守ります。
+項目一覧 `/` と担当者個別 `/people/{ユーザー名}` の項目一覧では、次の規約を守ります。
 
 - `ResponsiveTableCardList`は画面幅だけで表とカードを切り替え、ページの種類では切り替えません。
 - 切り替え幅は`breakpoint`で呼び出し側が明示します。
@@ -203,11 +203,11 @@ Codex出力は候補データとしてschema検証とsemantic検証を通し、�
 - カードのフィールドも表の列と同じ順に置きます。
 - 待ち相手と状態は、主な待ち相手、状態、主候補の理由の順に表示します。理由が空なら理由の段を省きます。
 - 複数の待ち相手がいる場合は主候補だけを表示し、残りは件数で示します。
-- 待ち相手の表示は`model.ts`で文字列とloginの断片へ分け、文字列が必要な処理と画面表示を同じ断片から組み立てます。
-- 個人のloginは共通部品で人ごとのページへリンクし、teamはリンクにしません。
-- 項目一覧のloginには20px、担当者一覧のloginには24px、人ページの見出しには40pxのGitHubアバターを添えます。項目詳細には添えません。
-- アバターURLはloginを`encodeURIComponent`へ通して`https://github.com/{login}.png?size=48`の形で組み立てます。
-- アバターは空の`alt`、`loading="lazy"`、`decoding="async"`、数値の`width`と`height`を持たせ、読み込み失敗時も隣のloginだけで人物を識別できるようにします。
+- 待ち相手の表示は`model.ts`で文字列とユーザー名の断片へ分け、文字列が必要な処理と画面表示を同じ断片から組み立てます。
+- 個人のユーザー名は共通部品で人ごとのページへリンクし、teamはリンクにしません。
+- 項目一覧のユーザー名には20px、担当者一覧のユーザー名には24px、人ページの見出しには40pxのGitHubアバターを添えます。項目詳細には添えません。
+- アバターURLはユーザー名を`encodeURIComponent`へ通して`https://github.com/{ユーザー名}.png?size=48`の形で組み立てます。
+- アバターは空の`alt`、`loading="lazy"`、`decoding="async"`、数値の`width`と`height`を持たせ、読み込み失敗時も隣のユーザー名だけで人物を識別できるようにします。
 - teamにはアバターを表示しません。
 - 人ページには既存のGitHubマークと文字を並べたGitHubプロフィールリンクを置き、安全な外部リンクとして新しいタブで開きます。
 - トップページの主候補は`primaryWaitingOn.index`を使い、`not_applicable`では先頭候補を使います。
