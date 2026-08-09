@@ -125,7 +125,7 @@ const TABLE_FILTERS: readonly TableFilterDefinition[] = [
   },
   {
     key: "waitingOn",
-    label: "次の担当",
+    label: "待ち相手",
   },
   {
     key: "stall",
@@ -317,17 +317,12 @@ function ItemTable({
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "attention",
-      label: "要対応",
+      label: "要対応度",
       onSort: () => {
         updateSort("attention");
       },
       renderCell: (row: ItemTableRow) => (
-        <AttentionBadge
-          attention={row.item.attention}
-          showLabel={false}
-          showLow={true}
-          showScore={true}
-        />
+        <AttentionBadge attention={row.item.attention} showLabel={false} showScore={false} />
       ),
       widthClassName: "w-[14%]",
     },
@@ -342,12 +337,7 @@ function ItemTable({
         updateSort("importance");
       },
       renderCell: (row: ItemTableRow) => (
-        <ImportanceBadge
-          importance={row.item.importance}
-          showLabel={false}
-          showLow={false}
-          showScore={false}
-        />
+        <ImportanceBadge importance={row.item.importance} showLabel={false} showScore={false} />
       ),
       widthClassName: "w-[10%]",
     },
@@ -371,7 +361,7 @@ function ItemTable({
               GitHubで開く
             </SafeGitHubLink>
             {row.item.repositoryFreshness === "stale" && (
-              <Pill className="freshness-badge freshness-stale" tone="warning">
+              <Pill className="freshness-badge freshness-stale" tone="warning" variant="filled">
                 古い観測値
               </Pill>
             )}
@@ -397,7 +387,7 @@ function ItemTable({
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
       key: "waitingOn",
-      label: "次の担当",
+      label: "待ち相手",
       renderCell: (row: ItemTableRow) => formatWaitingOn(row.item, summary),
       widthClassName: "w-[23%]",
     },
@@ -435,7 +425,7 @@ function ItemTable({
     {
       className: "col-span-full border-t border-border-subtle pt-3",
       key: "waitingOn",
-      label: "次の担当",
+      label: "待ち相手",
       renderValue: (row: ItemTableRow) => formatWaitingOn(row.item, summary),
       valueClassName: "leading-6 text-text-primary",
     },
@@ -473,14 +463,14 @@ function ItemTable({
           <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
             <span class="ml-1 inline-flex max-w-[calc(100%_-_2rem)] flex-wrap items-center gap-x-3 gap-y-1 align-middle">
               <span>列ごとの絞り込み</span>
-              <Pill className="filter-summary-count" tone="neutral">
+              <Pill className="filter-summary-count" tone="neutral" variant="filled">
                 {activeFilterCount === 0 ? "条件なし" : `${activeFilterCount.toString()}件適用中`}
               </Pill>
             </span>
           </summary>
           <div class="item-filter-content pt-3">
             <p class="mt-0 mb-3 text-sm text-text-muted">
-              列の値を選択します。次の担当は入力した文字を含む項目を表示します。
+              列の値を選択します。待ち相手は入力した文字を含む項目を表示します。
             </p>
             <div class="item-filter-grid grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {TABLE_FILTERS.map((filter) => (
@@ -547,7 +537,11 @@ function ItemTable({
                     {(showsFreshnessBadge || showsAiAnalysisNotice) && (
                       <span class="flex flex-wrap justify-end gap-1.5">
                         {showsFreshnessBadge && (
-                          <Pill className="freshness-badge freshness-stale" tone="warning">
+                          <Pill
+                            className="freshness-badge freshness-stale"
+                            tone="warning"
+                            variant="filled"
+                          >
                             古い観測値
                           </Pill>
                         )}
@@ -559,13 +553,11 @@ function ItemTable({
                     <AttentionBadge
                       attention={row.item.attention}
                       showLabel={true}
-                      showLow={true}
-                      showScore={true}
+                      showScore={false}
                     />
                     <ImportanceBadge
                       importance={row.item.importance}
                       showLabel={true}
-                      showLow={false}
                       showScore={false}
                     />
                     <span class="min-w-0 wrap-anywhere">

@@ -314,7 +314,7 @@ afterEach(() => {
 });
 
 describe("Web UI", () => {
-  it("概要ページを要対応項目だけで構成し観測時刻と通知を所定位置に表示する", () => {
+  it("概要ページを対応が必要な項目だけで構成し観測時刻と通知を所定位置に表示する", () => {
     renderApp(sampleSummary);
 
     expect(currentContainer().querySelector(".eyebrow")).toBeNull();
@@ -342,7 +342,7 @@ describe("Web UI", () => {
     expect(observedTime.textContent).toBe("1 日前");
     expect(observedTime.title).toContain("JST");
     expect(requiredElement<HTMLElement>(".attention-summary strong").textContent).toBe("3件");
-    expect(requiredElement<HTMLElement>(".attention-summary span").textContent).toBe("要対応");
+    expect(requiredElement<HTMLElement>(".attention-summary span").textContent).toBe("要対応度");
     expect(attentionSection.textContent).toContain(
       "要対応度は、重要度が高く、かつ最近動きがあった項目ほど高くなります。",
     );
@@ -359,7 +359,7 @@ describe("Web UI", () => {
     const sortKey = requiredElement<HTMLSelectElement>("#overview-sort-key");
 
     expect([...sortKey.options].map((option) => option.textContent)).toEqual([
-      "要対応",
+      "要対応度",
       "重要度",
       "停滞時間",
     ]);
@@ -726,8 +726,8 @@ describe("Web UI", () => {
     expect(itemCell.querySelector(".item-list-meta")?.textContent).toBe(
       "VOICEVOX/sample-editor#101・Pull Request",
     );
-    expect(itemCell.querySelector(".attention-badge")?.textContent).toBe("要対応度中25点");
-    expect(itemCell.querySelector(".importance-badge")?.textContent).toBe("重要度高");
+    expect(itemCell.querySelector(".attention-badge")?.textContent).toBe("中");
+    expect(itemCell.querySelector(".importance-badge")?.textContent).toBe("高");
     const tableAiNoticeIcon = itemCell.querySelector<HTMLElement>(".ai-analysis-notice-icon");
     assertNonNullable(tableAiNoticeIcon, "担当者ページの表にAI推定の警告アイコンがありません");
     const tableGitHubLink = requiredElement<HTMLAnchorElement>(
@@ -741,7 +741,7 @@ describe("Web UI", () => {
       ).textContent,
     ).toBe("HiHoさんの確認を待っています");
     expect(requiredElement<HTMLElement>(".person-item-count strong").textContent).toBe("1件");
-    expect(requiredElement<HTMLElement>(".person-item-count span").textContent).toBe("要対応");
+    expect(requiredElement<HTMLElement>(".person-item-count span").textContent).toBe("要対応度");
     expect(
       requiredElement<HTMLElement>(".person-page .section-heading > div > p").textContent,
     ).toBe("所属チームを選ぶと、そのチーム宛の待ちも加わります。");
@@ -807,18 +807,20 @@ describe("Web UI", () => {
     );
     expect(highTableTitle.firstElementChild).toBe(highTableAttentionBadge);
     expect(highTableAttentionBadge.nextElementSibling).toBe(highTableBadge);
-    expect(highTableAttentionBadge.textContent).toBe("要対応度中25点");
-    expect(highTableBadge.textContent).toBe("重要度高");
+    expect(highTableAttentionBadge.textContent).toBe("中");
+    expect(highTableAttentionBadge.classList).toContain("bg-importance-medium-background");
+    expect(highTableBadge.textContent).toBe("高");
+    expect(highTableBadge.classList).not.toContain("bg-importance-high-background");
     expect(
       requiredElement<HTMLElement>(
         '.person-items-table tr[data-node-id="sample-item-engine-204"] .attention-badge',
       ).textContent,
-    ).toBe("要対応度低0点");
+    ).toBe("低");
     expect(
-      currentContainer().querySelector(
+      requiredElement<HTMLElement>(
         '.person-items-table tr[data-node-id="sample-item-engine-204"] .importance-badge',
-      ),
-    ).toBeNull();
+      ).textContent,
+    ).toBe("低");
 
     const highCardTitle = requiredElement<HTMLElement>(
       '.items-card-list li[data-node-id="sample-item-editor-101"] .item-title-with-scores',
@@ -831,13 +833,13 @@ describe("Web UI", () => {
     );
     expect(highCardTitle.firstElementChild).toBe(highCardAttentionBadge);
     expect(highCardAttentionBadge.nextElementSibling).toBe(highCardBadge);
-    expect(highCardAttentionBadge.textContent).toBe("要対応度中25点");
+    expect(highCardAttentionBadge.textContent).toBe("要対応度中");
     expect(highCardBadge.textContent).toBe("重要度高");
     expect(
-      currentContainer().querySelector(
+      requiredElement<HTMLElement>(
         '.items-card-list li[data-node-id="sample-item-engine-204"] .importance-badge',
-      ),
-    ).toBeNull();
+      ).textContent,
+    ).toBe("重要度低");
     const normalCardMeta = requiredElement<HTMLElement>(
       '.items-card-list li[data-node-id="sample-item-engine-204"] .item-list-meta',
     );
@@ -904,7 +906,7 @@ describe("Web UI", () => {
     const sortKey = requiredElement<HTMLSelectElement>("#person-sort-key");
 
     expect([...sortKey.options].map((option) => option.textContent)).toEqual([
-      "要対応",
+      "要対応度",
       "重要度",
       "停滞時間",
     ]);
@@ -1348,7 +1350,7 @@ describe("Web UI", () => {
     const outdatedIcon = outdatedItem.querySelector<HTMLElement>(".ai-analysis-notice-icon");
     assertNonNullable(outdatedIcon, "最新でないAI推定の警告アイコンがありません");
     expect(outdatedIcon.title).toBe(
-      "AI推定に失敗したため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+      "AI推定に失敗したため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
     );
     expect(outdatedIcon.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
     expect(outdatedIcon.querySelector(".sr-only")?.textContent).toBe(outdatedIcon.title);
@@ -1359,7 +1361,7 @@ describe("Web UI", () => {
     expect(skippedItem.querySelector(".ai-analysis-notice-icon")).toBeNull();
   });
 
-  it("要対応項目で主な待ち相手と理由だけを常時表示する", () => {
+  it("対応が必要な項目で待ち相手と理由だけを常時表示する", () => {
     renderApp(createOverviewSortSummary());
 
     const firstItem = requiredElement<HTMLElement>(
@@ -1403,7 +1405,7 @@ describe("Web UI", () => {
     expect(multipleWaitingOnItem.textContent).not.toContain("外部配布ツールの対応を待っています");
   });
 
-  it("primary waitingOnが未選定なら先頭候補を主な待ち相手にする", () => {
+  it("primary waitingOnが未選定なら先頭候補を待ち相手にする", () => {
     const overviewSummary = createOverviewSortSummary();
     const summary = createPublicSummaryDto({
       ...overviewSummary,
@@ -1431,7 +1433,7 @@ describe("Web UI", () => {
     expect(item.querySelector(".attention-other-waiting-on")?.textContent).toBe("ほか1件");
   });
 
-  it("概要ページの要対応項目で要対応度と重要度をタイトル直前に表示する", () => {
+  it("概要ページの対応が必要な項目で要対応度と重要度をタイトル直前に表示する", () => {
     renderApp(createOverviewSortSummary());
 
     const highTitle = requiredElement<HTMLElement>(
@@ -1448,7 +1450,7 @@ describe("Web UI", () => {
     expect(scoreBadges?.firstElementChild).toBe(attentionBadge);
     expect(attentionBadge.nextElementSibling).toBe(highBadge);
     expect(scoreBadges?.nextElementSibling?.querySelector("a")).not.toBeNull();
-    expect(attentionBadge.textContent).toBe("要対応度中25点");
+    expect(attentionBadge.textContent).toBe("要対応度中");
     expect(highBadge.textContent).toBe("重要度高");
     expect(
       requiredElement<HTMLElement>(
@@ -1456,10 +1458,10 @@ describe("Web UI", () => {
       ).textContent,
     ).toBe("重要度中");
     expect(
-      currentContainer().querySelector(
+      requiredElement<HTMLElement>(
         '.attention-list li[data-node-id="sample-item-engine-204"] .importance-badge',
-      ),
-    ).toBeNull();
+      ).textContent,
+    ).toBe("重要度低");
     expect(
       requiredElement<HTMLElement>(
         '.attention-list li[data-node-id="sample-item-engine-204"] .item-title-with-scores',
@@ -1510,7 +1512,7 @@ describe("Web UI", () => {
     ).toEqual(["newer-tie", "older-tie", "higher-attention"]);
   });
 
-  it("一覧の識別子、次の担当、AI利用状況で絞り込み、3キーで並び替える", () => {
+  it("一覧の識別子、待ち相手、AI利用状況で絞り込み、3キーで並び替える", () => {
     const rows = createItemTableRows(sampleSummary, NOW);
     const filterCases: readonly Readonly<{
       key: TableFilterKey;
@@ -1639,16 +1641,16 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll(".items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["要対応↓", "重要度", "項目", "状態", "次の担当", "停滞時間"]);
+    ).toEqual(["要対応度↓", "重要度", "項目", "状態", "待ち相手", "停滞時間"]);
     expect(
       [...currentContainer().querySelectorAll(".items-card-list li:first-child dt")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["状態", "停滞時間", "次の担当"]);
+    ).toEqual(["状態", "停滞時間", "待ち相手"]);
     const attentionCell = requiredElement<HTMLTableCellElement>(
       '.items-table tr[data-node-id="sample-item-editor-101"] .attention-cell',
     );
-    expect(attentionCell.textContent).toBe("中25点");
+    expect(attentionCell.textContent).toBe("中");
     const highImportanceCell = requiredElement<HTMLTableCellElement>(
       '.items-table tr[data-node-id="sample-item-editor-101"] .importance-cell',
     );
@@ -1659,17 +1661,12 @@ describe("Web UI", () => {
       requiredElement<HTMLTableCellElement>(
         '.items-table tr[data-node-id="sample-item-engine-204"] .attention-cell',
       ).textContent,
-    ).toBe("低0点");
+    ).toBe("低");
     expect(
       requiredElement<HTMLTableCellElement>(
         '.items-table tr[data-node-id="sample-item-engine-204"] .importance-cell',
       ).textContent,
-    ).toBe("");
-    expect(
-      currentContainer().querySelector(
-        '.items-table tr[data-node-id="sample-item-engine-204"] .importance-badge',
-      ),
-    ).toBeNull();
+    ).toBe("低");
     expect(
       [...currentContainer().querySelectorAll(".items-table .importance-badge")].every(
         (badge) => !badge.textContent?.includes("点"),
@@ -1681,15 +1678,15 @@ describe("Web UI", () => {
       ),
     ).toBe(true);
     expect(
-      currentContainer().querySelector(
+      requiredElement<HTMLElement>(
         '.items-card-list li[data-node-id="sample-item-engine-204"] .importance-badge',
-      ),
-    ).toBeNull();
+      ).textContent,
+    ).toBe("重要度低");
     expect(
       requiredElement<HTMLElement>(
         '.items-card-list li[data-node-id="sample-item-engine-204"] .attention-badge',
       ).textContent,
-    ).toBe("要対応度低0点");
+    ).toBe("要対応度低");
     const filterDetails = requiredElement<HTMLDetailsElement>(".item-filters");
     expect(filterDetails.open).toBe(false);
     expect(filterDetails.querySelectorAll("select")).toHaveLength(6);
@@ -1836,7 +1833,7 @@ describe("Web UI", () => {
     });
     const sortKey = requiredElement<HTMLSelectElement>("#item-sort-key");
     expect([...sortKey.options].map((option) => option.textContent)).toEqual([
-      "要対応",
+      "要対応度",
       "重要度",
       "停滞時間",
     ]);
@@ -2156,12 +2153,12 @@ describe("Web UI", () => {
     [
       "failed",
       "/voicevox_task_tracker/items/sample-editor/101",
-      "AI推定に失敗したため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+      "AI推定に失敗したため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
     ],
     [
       "deferred",
       "/voicevox_task_tracker/items/sample-engine/202",
-      "AI推定を今回実行しなかったため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+      "AI推定を今回実行しなかったため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
     ],
   ])("AI利用状況が%sの項目詳細に最新でない旨を警告表示する", async (_status, path, description) => {
     window.history.replaceState({}, "", path);
@@ -2207,7 +2204,7 @@ describe("Web UI", () => {
     const currentAction = requiredElement<HTMLElement>(".current-action-panel");
     expect(currentAction.textContent).toContain("現在の状態");
     expect(currentAction.textContent).toContain("ブロック解消待ち");
-    expect(currentAction.textContent).toContain("次の担当");
+    expect(currentAction.textContent).toContain("待ち相手");
     expect(currentAction.textContent).toContain("VOICEVOX/sample-editor#103");
     expect(currentAction.textContent).toContain("次の行動");
     expect(currentAction.textContent).toContain("31日");
@@ -2216,7 +2213,7 @@ describe("Web UI", () => {
     expect(currentAction.textContent).not.toContain("レビュー");
     expect(currentAction.textContent).not.toContain("チェック");
     expect([...currentAction.querySelectorAll("h5")].map((heading) => heading.textContent)).toEqual(
-      ["次の担当", "次の行動"],
+      ["待ち相手", "次の行動"],
     );
     expect(currentAction.querySelectorAll(".waiting-on-list > li")).toHaveLength(2);
     expect(
@@ -2294,7 +2291,7 @@ describe("Web UI", () => {
     expect(historyDetails.querySelector("summary h4 > span")?.textContent).toBe("履歴");
     expect(historyDetails.querySelectorAll(".history-event")).toHaveLength(1);
     expect(historyDetails.querySelector(".history-event h5")?.textContent).toBe(
-      "状態と次の担当の変更",
+      "状態と待ち相手の変更",
     );
     expect(historyDetails.textContent).not.toContain("前回との差分");
     expect(historyDetails.textContent).not.toContain("Run ");
@@ -2334,7 +2331,7 @@ describe("Web UI", () => {
     expect(checkState.querySelector("dd")?.textContent).toBe("成功");
   });
 
-  it("次の担当が4件以上なら主候補以外を折りたたみ、primaryがなければ先頭を主候補にする", async () => {
+  it("待ち相手が4件以上なら主候補以外を折りたたみ、primaryがなければ先頭を主候補にする", async () => {
     const targetNodeId = "sample-item-editor-103";
     const sourceItem = sampleSummary.items.find((item) => item.nodeId === targetNodeId);
     assertNonNullable(sourceItem, "候補折りたたみテスト用の項目がありません");
@@ -2692,7 +2689,7 @@ describe("Web UI", () => {
       "追跡中のすべての項目を検索、絞り込み、並び替えできます。",
     );
     expect(requiredElement<HTMLElement>(".items-item-count strong").textContent).toBe("1件");
-    expect(requiredElement<HTMLElement>(".items-item-count span").textContent).toBe("要対応");
+    expect(requiredElement<HTMLElement>(".items-item-count span").textContent).toBe("要対応度");
     expect(currentContainer().querySelector(".search-status")).toBeNull();
     expect(currentContainer().textContent).not.toContain("件が検索条件に一致しました。");
   });
@@ -2780,7 +2777,7 @@ describe("Web UI", () => {
         (select) => select.value,
       ),
     ).toEqual(["", "", "", "", "", ""]);
-    expect(requiredElement<HTMLInputElement>('input[aria-label="次の担当で絞り込み"]').value).toBe(
+    expect(requiredElement<HTMLInputElement>('input[aria-label="待ち相手で絞り込み"]').value).toBe(
       "sample-reviewers",
     );
     expect(itemRowNodeIds()).toEqual(["sample-item-engine-202"]);
@@ -2808,7 +2805,7 @@ describe("Web UI", () => {
       "降順",
     );
     expect(requiredElement<HTMLTableCellElement>('th[aria-sort="descending"]').textContent).toBe(
-      "要対応↓",
+      "要対応度↓",
     );
     expect(currentContainer().querySelector(".item-details-card")).toBeNull();
     expect(window.location.pathname).toBe("/voicevox_task_tracker/items");
@@ -2856,7 +2853,7 @@ describe("Web UI", () => {
     expect(details.querySelector(".confidence-uncertain")).not.toBeNull();
     expect(details.textContent).toContain("判定: 未確定");
     expect(details.textContent).toContain("現在の状態候補");
-    expect(details.textContent).toContain("次の担当候補");
+    expect(details.textContent).toContain("待ち相手候補");
     expect(details.textContent).toContain("次の行動候補");
     expect(details.textContent).toContain("判断者を確定できる根拠が不足");
     expect(details.querySelector(".current-action-panel .waiting-on-confidence")?.textContent).toBe(

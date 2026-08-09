@@ -225,13 +225,13 @@ export function aiAnalysisNotice(status: AiAnalysisStatus): AiAnalysisNotice {
       return {
         kind: "outdated",
         description:
-          "AI推定に失敗したため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+          "AI推定に失敗したため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
       };
     case "deferred":
       return {
         kind: "outdated",
         description:
-          "AI推定を今回実行しなかったため、状態、次の担当、重要度、停滞に最新のAI推定を反映できていません。",
+          "AI推定を今回実行しなかったため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
       };
     default:
       throw new UnreachableError(status);

@@ -223,7 +223,7 @@ function HistoryEvent({
   return (
     <article class="history-event grid gap-2 py-3" data-history-kind={event.kind}>
       <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h5 class="m-0 font-bold">状態と次の担当の変更</h5>
+        <h5 class="m-0 font-bold">状態と待ち相手の変更</h5>
         <time
           class="text-xs text-text-muted"
           dateTime={event.recordedAt}
@@ -263,7 +263,7 @@ function ItemHistory({
   return (
     <div class="item-history-content">
       {history.length === 0 ? (
-        <p class="m-0">状態と次の担当の変更履歴はありません。</p>
+        <p class="m-0">状態と待ち相手の変更履歴はありません。</p>
       ) : (
         <>
           <ol class="history-list m-0 grid list-none divide-y divide-border-subtle p-0">
@@ -402,7 +402,7 @@ function WaitingOnCandidateItem({
         </strong>
         {primaryBlockerNodeId === candidate.candidateId &&
           item.primaryWaitingOn.index === candidateIndex && (
-            <Pill className="primary-blocker-badge" tone="danger">
+            <Pill className="primary-blocker-badge" tone="danger" variant="filled">
               主要ブロッカー
             </Pill>
           )}
@@ -624,24 +624,14 @@ export function ItemDetailsContent({
           <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">要対応度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <AttentionBadge
-                attention={item.attention}
-                showLabel={false}
-                showLow={true}
-                showScore={true}
-              />
+              <AttentionBadge attention={item.attention} showLabel={false} showScore={true} />
               <span class="text-xs text-text-muted">重要度と直近の動きから決まる値</span>
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">重要度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <ImportanceBadge
-                importance={item.importance}
-                showLabel={false}
-                showLow={true}
-                showScore={true}
-              />
+              <ImportanceBadge importance={item.importance} showLabel={false} showScore={true} />
               <span class="text-xs text-text-muted">項目自体の重要さ</span>
             </dd>
           </div>
@@ -683,7 +673,7 @@ export function ItemDetailsContent({
 
         <div class="current-responsibility min-w-0">
           <h5 id="item-waiting-on-heading" class="mt-0 mb-3 text-base font-bold">
-            {decisionFieldLabel("次の担当", presentation)}
+            {decisionFieldLabel("待ち相手", presentation)}
           </h5>
           {item.waitingOn.length === 0 ? (
             <p class="m-0">対応完了</p>
@@ -813,6 +803,7 @@ export function ItemDetailsContent({
                         <Pill
                           className={`importance-factor-source source-${source.kind}`}
                           tone={source.tone}
+                          variant="filled"
                         >
                           {source.label}
                         </Pill>

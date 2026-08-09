@@ -165,13 +165,11 @@ function AttentionQueue({
                         <AttentionBadge
                           attention={item.attention}
                           showLabel={true}
-                          showLow={true}
-                          showScore={true}
+                          showScore={false}
                         />
                         <ImportanceBadge
                           importance={item.importance}
                           showLabel={true}
-                          showLow={false}
                           showScore={false}
                         />
                       </span>
@@ -189,7 +187,7 @@ function AttentionQueue({
                   </div>
                   <dl class="attention-primary-details m-0 grid min-w-0 grid-cols-[minmax(0,1fr)_8rem] gap-3 max-narrow:gap-2">
                     <div class="attention-waiting-on relative min-w-0 border-l-2 border-border-default pl-3">
-                      <dt class="text-xs font-bold text-text-muted">主な待ち相手</dt>
+                      <dt class="text-xs font-bold text-text-muted">待ち相手</dt>
                       <dd class="mt-0.5 mb-0 font-bold">
                         <span class="attention-waiting-on-summary flex min-w-0 items-baseline gap-2">
                           <span class="attention-primary-waiting-on min-w-0 flex-1 text-base leading-snug wrap-anywhere">

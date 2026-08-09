@@ -6,7 +6,7 @@ import { ActionButton, FORM_CONTROL_CLASS_NAME } from "./ui.js";
 export const ITEM_SORT_OPTIONS = [
   {
     key: "attention",
-    label: "要対応",
+    label: "要対応度",
   },
   {
     key: "importance",

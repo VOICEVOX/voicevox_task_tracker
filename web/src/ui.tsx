@@ -9,15 +9,38 @@ const PILL_CLASS =
   "inline-flex w-fit items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs leading-5 font-bold";
 
 const PILL_TONE_CLASSES = {
-  danger: "border-state-danger-border bg-state-danger-background text-state-danger-text",
-  high: "border-importance-high-border bg-importance-high-background text-importance-high-text",
-  low: "border-importance-low-border bg-importance-low-background text-importance-low-text",
-  medium:
-    "border-importance-medium-border bg-importance-medium-background text-importance-medium-text",
-  neutral: "border-state-neutral-border bg-state-neutral-background text-state-neutral-text",
-  success: "border-state-success-border bg-state-success-background text-state-success-text",
-  warning: "border-state-warning-border bg-state-warning-background text-state-warning-text",
+  danger: {
+    filled: "border-state-danger-border bg-state-danger-background text-state-danger-text",
+    outlined: "border-state-danger-border text-state-danger-text",
+  },
+  high: {
+    filled: "border-importance-high-border bg-importance-high-background text-importance-high-text",
+    outlined: "border-importance-high-border text-importance-high-text",
+  },
+  low: {
+    filled: "border-importance-low-border bg-importance-low-background text-importance-low-text",
+    outlined: "border-importance-low-border text-importance-low-text",
+  },
+  medium: {
+    filled:
+      "border-importance-medium-border bg-importance-medium-background text-importance-medium-text",
+    outlined: "border-importance-medium-border text-importance-medium-text",
+  },
+  neutral: {
+    filled: "border-state-neutral-border bg-state-neutral-background text-state-neutral-text",
+    outlined: "border-state-neutral-border text-state-neutral-text",
+  },
+  success: {
+    filled: "border-state-success-border bg-state-success-background text-state-success-text",
+    outlined: "border-state-success-border text-state-success-text",
+  },
+  warning: {
+    filled: "border-state-warning-border bg-state-warning-background text-state-warning-text",
+    outlined: "border-state-warning-border text-state-warning-text",
+  },
 };
+
+export type PillVariant = keyof (typeof PILL_TONE_CLASSES)["neutral"];
 
 type ActionButtonProps = Readonly<
   {
@@ -30,6 +53,7 @@ type PillProps = Readonly<{
   children: ComponentChildren;
   className: string;
   tone: keyof typeof PILL_TONE_CLASSES;
+  variant: PillVariant;
 }>;
 
 export const FORM_CONTROL_CLASS_NAME =
@@ -45,6 +69,8 @@ export function ActionButton({ children, className, ...attributes }: ActionButto
 }
 
 /** 意味に対応する配色のピル型ラベルを表示する。 */
-export function Pill({ children, className, tone }: PillProps) {
-  return <span class={`${PILL_CLASS} ${PILL_TONE_CLASSES[tone]} ${className}`}>{children}</span>;
+export function Pill({ children, className, tone, variant }: PillProps) {
+  return (
+    <span class={`${PILL_CLASS} ${PILL_TONE_CLASSES[tone][variant]} ${className}`}>{children}</span>
+  );
 }

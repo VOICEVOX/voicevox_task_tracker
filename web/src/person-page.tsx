@@ -149,18 +149,8 @@ export function PersonPage({
             {row.item.displayReference}・{row.typeText}
           </span>
           <span class="item-title-with-scores flex min-w-0 flex-wrap items-start gap-1.5 wrap-anywhere">
-            <AttentionBadge
-              attention={row.item.attention}
-              showLabel={true}
-              showLow={true}
-              showScore={true}
-            />
-            <ImportanceBadge
-              importance={row.item.importance}
-              showLabel={true}
-              showLow={false}
-              showScore={false}
-            />
+            <AttentionBadge attention={row.item.attention} showLabel={false} showScore={false} />
+            <ImportanceBadge importance={row.item.importance} showLabel={false} showScore={false} />
             <span class="min-w-0 wrap-anywhere">
               <ItemTitleLink
                 createItemHref={createItemHref}
@@ -174,7 +164,7 @@ export function PersonPage({
               GitHubで開く
             </SafeGitHubLink>
             {row.item.repositoryFreshness === "stale" && (
-              <Pill className="freshness-badge freshness-stale" tone="warning">
+              <Pill className="freshness-badge freshness-stale" tone="warning" variant="filled">
                 古い観測値
               </Pill>
             )}
@@ -356,7 +346,11 @@ export function PersonPage({
                   {(showsFreshnessBadge || showsAiAnalysisNotice) && (
                     <span class="flex flex-wrap justify-end gap-1.5">
                       {showsFreshnessBadge && (
-                        <Pill className="freshness-badge freshness-stale" tone="warning">
+                        <Pill
+                          className="freshness-badge freshness-stale"
+                          tone="warning"
+                          variant="filled"
+                        >
                           古い観測値
                         </Pill>
                       )}
@@ -368,13 +362,11 @@ export function PersonPage({
                   <AttentionBadge
                     attention={row.item.attention}
                     showLabel={true}
-                    showLow={true}
-                    showScore={true}
+                    showScore={false}
                   />
                   <ImportanceBadge
                     importance={row.item.importance}
                     showLabel={true}
-                    showLow={false}
                     showScore={false}
                   />
                   <span class="min-w-0 wrap-anywhere">
