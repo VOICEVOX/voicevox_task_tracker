@@ -134,6 +134,17 @@ const TABLE_FILTERS: readonly TableFilterDefinition[] = [
   },
 ];
 
+function AiStateNotice() {
+  return (
+    <p
+      class="notice ai-state-notice m-0 rounded-md border-l-2 border-state-info-border bg-surface-card px-3 py-2 text-sm leading-5 text-text-secondary"
+      role="status"
+    >
+      AI分析は設定で無効です。確定ルールで表示しています。
+    </p>
+  );
+}
+
 function ItemSearch({
   onClearSearch,
   onSearchQueryChange,
@@ -416,10 +427,14 @@ function ItemTable({
   return (
     <PageSection
       className="item-workspace scroll-mt-4"
-      description="追跡中のすべての項目を検索、絞り込み、並び替えできます。"
-      heading="全項目一覧"
+      heading="項目一覧"
       headingId="items-heading"
     >
+      {!summary.ai.enabled && (
+        <div class="item-list-notices mb-4">
+          <AiStateNotice />
+        </div>
+      )}
       <div class="item-list-toolbar mb-4 grid gap-4 rounded-xl border border-border-subtle bg-surface-sunken p-4">
         <ItemSearch
           searchQuery={searchQuery}

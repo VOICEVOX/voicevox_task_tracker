@@ -631,8 +631,7 @@ export function formatWaitingOn(item: PublicItemSummaryDto, summary: PublicSumma
     .join("、");
 }
 
-/** waitingOn候補を確度区分付きの表示文字列へ変換する。 */
-export function formatWaitingOnCandidate(
+function formatWaitingOnCandidate(
   waitingOn: WaitingOnCandidate,
   item: PublicItemSummaryDto,
   summary: PublicSummaryDto,
@@ -641,21 +640,6 @@ export function formatWaitingOnCandidate(
   return presentation.fieldQualifier.length === 0
     ? waitingOnLabel(waitingOn, item, summary)
     : `${presentation.fieldQualifier}: ${waitingOnLabel(waitingOn, item, summary)}`;
-}
-
-/** primaryWaitingOnが指す候補を返し、未選定なら先頭候補を返す。 */
-export function selectPrimaryWaitingOnCandidate(
-  item: PublicItemSummaryDto,
-): WaitingOnCandidate | undefined {
-  if (item.waitingOn.length === 0) {
-    return undefined;
-  }
-  if (item.primaryWaitingOn.index === "not_applicable") {
-    return item.waitingOn[0];
-  }
-  const waitingOn = item.waitingOn[item.primaryWaitingOn.index];
-  assertNonNullable(waitingOn, `項目 ${item.nodeId} のprimary waitingOnがありません`);
-  return waitingOn;
 }
 
 function compareStrings(left: string, right: string): number {
@@ -770,26 +754,6 @@ export function selectWaitingSubjectItemNodeIds(
         ),
       )
       .map((item) => item.nodeId),
-  );
-}
-
-function isTerminalStatus(status: Status): boolean {
-  return (
-    status === "terminal_merged" ||
-    status === "terminal_completed" ||
-    status === "terminal_not_planned"
-  );
-}
-
-/** 要対応度が中以上の項目からstaleとterminalを除いて返す。 */
-export function filterAttentionItems(
-  items: readonly PublicItemSummaryDto[],
-): readonly PublicItemSummaryDto[] {
-  return items.filter(
-    (item) =>
-      (item.attention.level === "high" || item.attention.level === "medium") &&
-      item.repositoryFreshness === "fresh" &&
-      !isTerminalStatus(item.status),
   );
 }
 

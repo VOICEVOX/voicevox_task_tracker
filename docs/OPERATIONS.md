@@ -20,7 +20,7 @@ GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は�
 `notify-operations`は収集、Pages関連、Discord通知のいずれかのjobが失敗したときだけ実行されます。
 `report-workflow`は先行jobの成否にかかわらず実行され、全job結果と収集metricをActions artifactへ保存します。
 
-Pagesでは概要ページのデータ観測時刻、要対応度がhighまたはmediumの項目数、要対応度の降順、AI状態の注意を確認します。
+Pagesではトップの項目一覧にすべての追跡項目が表示され、既定が要対応度の降順であることを確認します。
 `tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
 ローカル実行のreportは`artifacts/run-reports/`へ出力されます。
 Actionsでは収集reportとworkflow全体のreportを、run IDと試行番号を含む別々のartifactへ保存します。
@@ -218,8 +218,7 @@ Codex由来の要因は、重要な機能である根拠、具体的な期限、
 terminal項目とブロック解消待ちの項目が0点になるのは意図した動作です。
 
 停滞による下がり方を全体で調整する場合は`config.yml`の`attention.recencyFloor`を変更します。
-概要の「対応が必要な項目」へ出す範囲は`attention.levels.high`と`attention.levels.medium`で調整します。
-要対応度と重要度と停滞時間は、概要、全項目一覧、担当者ごとのページで選べる三つの並び替えキーです。
+要対応度と重要度と停滞時間は、項目一覧と担当者ごとのページで選べる三つの並び替えキーです。
 既定は要対応度の降順です。
 severityはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
 
@@ -333,7 +332,7 @@ Actions上でCodexの認証エラーが起きた場合は、まず過去の`coll
 [デプロイ手順](DEPLOYMENT.md)のコマンドで、新しい`auth.json`を`CODEX_AUTH_JSON`の初期値として登録します。
 
 `fallback`はAI分析に失敗または延期した項目を決定論的判定と利用可能な前回結果へ縮退した完全runです。
-全項目一覧を`AI推定が最新でない`で絞り込み、各行の警告アイコンと項目詳細の注記で対象を特定します。
+項目一覧を`AI推定が最新でない`で絞り込み、各行の警告アイコンと項目詳細の注記で対象を特定します。
 原因はrun reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から追います。
 対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。
 `failure`が`state_persistence`より前ならstateは更新されません。

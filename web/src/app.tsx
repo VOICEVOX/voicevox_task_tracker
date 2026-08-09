@@ -18,7 +18,6 @@ import {
   type TableFilterKey,
   waitingSubjectKey,
 } from "./model.js";
-import { OverviewPage } from "./overview-page.js";
 import { PeoplePage } from "./people-page.js";
 import { PersonPage } from "./person-page.js";
 import {
@@ -46,7 +45,7 @@ type AppProps = Readonly<{
   title: string;
 }>;
 
-type NavigationPage = "overview" | "items" | "people";
+type NavigationPage = "items" | "people";
 
 type RelativeTimeDisplayProps = Readonly<{
   locale: string;
@@ -62,10 +61,6 @@ const NAVIGATION_PAGES: readonly Readonly<{
   label: string;
   page: NavigationPage;
 }>[] = [
-  {
-    label: "概要",
-    page: "overview",
-  },
   {
     label: "項目一覧",
     page: "items",
@@ -86,10 +81,6 @@ function RelativeTimeDisplay({ locale, now, timezone, value }: RelativeTimeDispl
 
 function routeForNavigationPage(page: NavigationPage): WebRoute {
   switch (page) {
-    case "overview":
-      return {
-        page: "overview",
-      };
     case "items":
       return {
         page: "items",
@@ -266,19 +257,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     );
   }
 
-  function replaceOverviewSort(key: ItemSortKey): void {
-    if (viewState.route.page !== "overview") {
-      throw new TypeError("概要ページ以外では対応が必要な項目の並び順を変更できません");
-    }
-    navigate(
-      {
-        ...viewState,
-        overviewSort: nextSort(viewState.overviewSort, key, ITEM_NATURAL_SORT_DIRECTIONS[key]),
-      },
-      "replace",
-    );
-  }
-
   function replacePersonTeamIds(teamIds: readonly string[]): void {
     if (viewState.route.page !== "person") {
       throw new TypeError("人ごとのページ以外では所属チームを変更できません");
@@ -392,18 +370,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
 
   function renderPage(): ComponentChildren {
     switch (viewState.route.page) {
-      case "overview":
-        return (
-          <OverviewPage
-            createItemHref={createItemHref}
-            locale={locale}
-            now={now}
-            sort={viewState.overviewSort}
-            summary={summary}
-            onSelectItem={selectItem}
-            onSortChange={replaceOverviewSort}
-          />
-        );
       case "items":
         return (
           <ItemsPage

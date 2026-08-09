@@ -68,7 +68,6 @@ const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
   "direction",
 ];
 const PERSON_QUERY_PARAMETER_NAMES: readonly string[] = ["teams", "sort", "direction"];
-const OVERVIEW_QUERY_PARAMETER_NAMES: readonly string[] = ["sort", "direction"];
 
 const itemSortKeySchema = z.enum(["attention", "importance", "stall"]);
 const sortDirectionSchema = z.enum(["ascending", "descending"]);
@@ -102,9 +101,6 @@ export type ItemRouteTarget = Readonly<{
 /** pathnameで表す表示ページ。 */
 export type WebRoute =
   | Readonly<{
-      page: "overview";
-    }>
-  | Readonly<{
       page: "items";
     }>
   | Readonly<{
@@ -136,7 +132,6 @@ export type WebLocation = Readonly<{
 
 /** URLで共有するrouteと一覧の表示状態。 */
 export type WebViewState = Readonly<{
-  overviewSort: ItemSort;
   route: WebRoute;
   searchQuery: string;
   tableFilters: TableFilters;
@@ -178,10 +173,6 @@ type ParsedRoute = Readonly<{
 /** 指定routeの既定画面状態を作る。 */
 export function createWebViewState(route: WebRoute): WebViewState {
   return {
-    overviewSort: {
-      key: "attention",
-      direction: "descending",
-    },
     route,
     searchQuery: "",
     tableFilters: createEmptyTableFilters(),
@@ -379,14 +370,6 @@ function parseRelativeRoute(relativePath: string, targets: ValidWebRouteTargets)
   const segments = relativePath.split("/");
   switch (segments[0]) {
     case "items":
-      if (segments.length === 1) {
-        return {
-          route: {
-            page: "items",
-          },
-          status: "valid",
-        };
-      }
       return parseItemRoute(segments, targets.items);
     case "people":
       if (segments.length === 1) {
@@ -401,7 +384,7 @@ function parseRelativeRoute(relativePath: string, targets: ValidWebRouteTargets)
     default:
       return {
         route: {
-          page: "overview",
+          page: "items",
         },
         status: "sanitized",
       };
@@ -417,7 +400,7 @@ function parseRoute(
   if (!pathname.startsWith(parsedBasePath)) {
     return {
       route: {
-        page: "overview",
+        page: "items",
       },
       status: "sanitized",
     };
@@ -426,7 +409,7 @@ function parseRoute(
   if (relativePath.length === 0) {
     return {
       route: {
-        page: "overview",
+        page: "items",
       },
       status: "valid",
     };
@@ -441,39 +424,6 @@ function parseRoute(
     };
   }
   return parsedRoute;
-}
-
-function parseOverviewQuery(
-  search: string,
-  route: Extract<WebRoute, Readonly<{ page: "overview" }>>,
-): Readonly<{
-  sanitized: boolean;
-  state: WebViewState;
-}> {
-  const parameters = new URLSearchParams(search);
-  const defaults = createWebViewState(route);
-  const allowedNames = new Set<string>(OVERVIEW_QUERY_PARAMETER_NAMES);
-  let sanitized = [...parameters.keys()].some((name) => !allowedNames.has(name));
-  const sortKey = parameterValueOr(
-    parseParameter(parameters, "sort", itemSortKeySchema),
-    defaults.overviewSort.key,
-  );
-  const sortDirection = parameterValueOr(
-    parseParameter(parameters, "direction", sortDirectionSchema),
-    defaults.overviewSort.direction,
-  );
-  sanitized ||= sortKey.invalid || sortDirection.invalid;
-
-  return {
-    sanitized,
-    state: {
-      ...defaults,
-      overviewSort: {
-        key: sortKey.value,
-        direction: sortDirection.value,
-      },
-    },
-  };
 }
 
 function parsePersonQuery(
@@ -588,7 +538,6 @@ function parseItemsQuery(
   return {
     sanitized,
     state: {
-      overviewSort: defaults.overviewSort,
       route,
       searchQuery: searchQuery.value,
       tableFilters: parsedTableFilters,
@@ -612,9 +561,6 @@ export function parseWebViewState(
     state: WebViewState;
   }>;
   switch (parsedRoute.route.page) {
-    case "overview":
-      queryResult = parseOverviewQuery(location.search, parsedRoute.route);
-      break;
     case "items":
       queryResult = parseItemsQuery(location.search, parsedRoute.route, targets.tableFilterOptions);
       break;
@@ -669,10 +615,8 @@ function createRoutePath(basePath: string, route: WebRoute): string {
   const parsedBasePath = basePathSchema.parse(basePath);
   const pathPrefix = parsedBasePath === "/" ? "" : parsedBasePath.slice(0, -1);
   switch (route.page) {
-    case "overview":
-      return parsedBasePath;
     case "items":
-      return `${pathPrefix}/items`;
+      return parsedBasePath;
     case "item-details":
       return `${pathPrefix}/items/${encodeURIComponent(route.target.repositoryName)}/${route.target.number.toString()}`;
     case "people":
@@ -685,16 +629,6 @@ function createRoutePath(basePath: string, route: WebRoute): string {
 /** 検証済み画面状態をbasePath配下のdeep linkへ変換する。 */
 export function createWebViewHref(basePath: string, state: WebViewState): string {
   const pathname = createRoutePath(basePath, state.route);
-  if (state.route.page === "overview") {
-    const parameters = new URLSearchParams();
-    appendSortParameters(
-      parameters,
-      state.overviewSort,
-      createWebViewState(state.route).overviewSort,
-    );
-    const query = parameters.toString();
-    return `${pathname}${query.length === 0 ? "" : `?${query}`}`;
-  }
   if (state.route.page === "person") {
     const parameters = new URLSearchParams();
     if (state.route.teamIds.length > 0) {
