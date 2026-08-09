@@ -374,6 +374,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         return (
           <ItemsPage
             createItemHref={createItemHref}
+            createPersonHref={createPersonHref}
             filterOptions={tableFilterOptions}
             filters={viewState.tableFilters}
             loadDetails={sharedLoadDetails}
@@ -385,6 +386,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             onFilterChange={replaceTableFilter}
             onSearchQueryChange={replaceSearchQuery}
             onSelectItem={selectItem}
+            onSelectPerson={selectPerson}
             onSortChange={replaceTableSort}
           />
         );
@@ -399,6 +401,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
               }),
             )}
             createItemHref={createItemHref}
+            createPersonHref={createPersonHref}
             showHeadingFocusRing={showItemHeadingFocusRing.current}
             loadDetails={sharedLoadDetails}
             locale={locale}
@@ -414,6 +417,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
               );
             }}
             onSelectItem={selectItem}
+            onSelectPerson={selectPerson}
           />
         );
       case "people":
@@ -431,6 +435,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         return (
           <PersonPage
             createItemHref={createItemHref}
+            createPersonHref={createPersonHref}
             isViewerIdentity={isViewerLogin(viewState.route.login, viewerIdentity?.login)}
             locale={locale}
             login={viewState.route.login}
@@ -446,6 +451,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             summary={summary}
             viewerIdentityAvailable={viewerIdentityState.status === "available"}
             onSelectItem={selectItem}
+            onSelectPerson={selectPerson}
             onSelectPeople={() => {
               navigate(
                 createWebViewState({

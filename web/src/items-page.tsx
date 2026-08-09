@@ -26,42 +26,45 @@ import {
 } from "./responsive-table-card-list.js";
 import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 import { ActionButton, FORM_CONTROL_CLASS_NAME, Pill } from "./ui.js";
+import { type PersonNavigation } from "./waiting-on-display.js";
 
 const TABLE_PAGE_SIZE = 50;
 
-type ItemsPageProps = Readonly<{
-  createItemHref: (nodeId: string) => string;
-  filterOptions: TableFilterOptions;
-  filters: TableFilters;
-  loadDetails: PublicDetailsLoader;
-  locale: string;
-  now: Date;
-  onFilterChange: (key: TableFilterKey, value: string) => void;
-  onSearchQueryChange: (query: string) => void;
-  onSelectItem: (nodeId: string) => void;
-  onSortChange: (key: ItemSortKey) => void;
-  searchQuery: string;
-  sort: ItemSort;
-  summary: PublicSummaryDto;
-}>;
+type ItemsPageProps = PersonNavigation &
+  Readonly<{
+    createItemHref: (nodeId: string) => string;
+    filterOptions: TableFilterOptions;
+    filters: TableFilters;
+    loadDetails: PublicDetailsLoader;
+    locale: string;
+    now: Date;
+    onFilterChange: (key: TableFilterKey, value: string) => void;
+    onSearchQueryChange: (query: string) => void;
+    onSelectItem: (nodeId: string) => void;
+    onSortChange: (key: ItemSortKey) => void;
+    searchQuery: string;
+    sort: ItemSort;
+    summary: PublicSummaryDto;
+  }>;
 
-type ItemTableProps = Readonly<{
-  createItemHref: (nodeId: string) => string;
-  filterOptions: TableFilterOptions;
-  filters: TableFilters;
-  locale: string;
-  now: Date;
-  onClearSearch: () => void;
-  onFilterChange: (key: TableFilterKey, value: string) => void;
-  onRetryDetails: () => void;
-  onSearchQueryChange: (query: string) => void;
-  onSelectItem: (nodeId: string) => void;
-  onSortChange: (key: ItemSortKey) => void;
-  searchQuery: string;
-  searchState: ItemSearchState;
-  sort: ItemSort;
-  summary: PublicSummaryDto;
-}>;
+type ItemTableProps = PersonNavigation &
+  Readonly<{
+    createItemHref: (nodeId: string) => string;
+    filterOptions: TableFilterOptions;
+    filters: TableFilters;
+    locale: string;
+    now: Date;
+    onClearSearch: () => void;
+    onFilterChange: (key: TableFilterKey, value: string) => void;
+    onRetryDetails: () => void;
+    onSearchQueryChange: (query: string) => void;
+    onSelectItem: (nodeId: string) => void;
+    onSortChange: (key: ItemSortKey) => void;
+    searchQuery: string;
+    searchState: ItemSearchState;
+    sort: ItemSort;
+    summary: PublicSummaryDto;
+  }>;
 
 type TableFilterDefinition = Readonly<{
   key: TableFilterKey;
@@ -238,6 +241,7 @@ function itemRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
 
 function ItemTable({
   createItemHref,
+  createPersonHref,
   filterOptions,
   filters,
   locale,
@@ -247,6 +251,7 @@ function ItemTable({
   onRetryDetails,
   onSearchQueryChange,
   onSelectItem,
+  onSelectPerson,
   onSortChange,
   searchQuery,
   searchState,
@@ -295,9 +300,11 @@ function ItemTable({
 
   const itemListFieldOptions = {
     createItemHref,
+    createPersonHref,
     locale,
     now,
     onSelectItem,
+    onSelectPerson,
     onSortChange: updateSort,
     selectPrimaryWaitingOn: (row: ItemTableRow) => selectPrimaryWaitingOnCandidate(row.item),
     sort,
@@ -438,6 +445,7 @@ function ItemTable({
 /** 検索、列絞り込み、並び替え、ページ送りを備えた項目一覧を表示する。 */
 export function ItemsPage({
   createItemHref,
+  createPersonHref,
   filterOptions,
   filters,
   loadDetails,
@@ -446,6 +454,7 @@ export function ItemsPage({
   onFilterChange,
   onSearchQueryChange,
   onSelectItem,
+  onSelectPerson,
   onSortChange,
   searchQuery,
   sort,
@@ -507,6 +516,7 @@ export function ItemsPage({
   return (
     <ItemTable
       createItemHref={createItemHref}
+      createPersonHref={createPersonHref}
       filterOptions={filterOptions}
       filters={filters}
       locale={locale}
@@ -526,6 +536,7 @@ export function ItemsPage({
       }}
       onSearchQueryChange={onSearchQueryChange}
       onSelectItem={onSelectItem}
+      onSelectPerson={onSelectPerson}
       onSortChange={onSortChange}
     />
   );

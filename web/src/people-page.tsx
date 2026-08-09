@@ -1,7 +1,6 @@
 import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
-import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { ContentState, PageSection } from "./layout.js";
 import { collectWaitingSubjectRows, resolveWaitingSubjects, waitingSubjectKey } from "./model.js";
 import {
@@ -12,45 +11,17 @@ import {
 } from "./responsive-table-card-list.js";
 import { Pill } from "./ui.js";
 import { isViewerLogin } from "./viewer-identity.js";
+import { PersonLink, type PersonNavigation } from "./waiting-on-display.js";
 
-type PeoplePageProps = Readonly<{
-  createPersonHref: (login: string) => string;
-  locale: string;
-  now: Date;
-  onSelectPerson: (login: string) => void;
-  summary: PublicSummaryDto;
-  viewerLogin: string | undefined;
-}>;
+type PeoplePageProps = PersonNavigation &
+  Readonly<{
+    locale: string;
+    now: Date;
+    summary: PublicSummaryDto;
+    viewerLogin: string | undefined;
+  }>;
 
 type WaitingSubjectRow = ReturnType<typeof collectWaitingSubjectRows>[number];
-
-function PersonLink({
-  href,
-  label,
-  login,
-  onSelect,
-}: Readonly<{
-  href: string;
-  label: string;
-  login: string;
-  onSelect: (login: string) => void;
-}>) {
-  return (
-    <a
-      class="inline-flex min-h-11 min-w-0 items-center py-2 text-text-primary decoration-accent-link decoration-1 hover:text-accent-link-hover md:min-h-0 md:py-0"
-      href={href}
-      onClick={(event) => {
-        if (!shouldHandleClientNavigation(event)) {
-          return;
-        }
-        event.preventDefault();
-        onSelect(login);
-      }}
-    >
-      {label}
-    </a>
-  );
-}
 
 function isViewerRow(row: WaitingSubjectRow, viewerLogin: string | undefined): boolean {
   return row.subject.kind === "user" && isViewerLogin(row.subject.login, viewerLogin);
@@ -72,10 +43,9 @@ function WaitingSubjectName({
     <span class="flex min-w-0 flex-wrap items-center gap-2">
       {row.subject.kind === "user" ? (
         <PersonLink
-          href={createPersonHref(row.subject.login)}
-          label={row.label}
+          createPersonHref={createPersonHref}
           login={row.subject.login}
-          onSelect={onSelectPerson}
+          onSelectPerson={onSelectPerson}
         />
       ) : (
         <span class="min-w-0 text-text-primary wrap-anywhere">{row.label}</span>

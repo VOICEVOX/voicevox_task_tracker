@@ -16,7 +16,10 @@ import {
   createTableFilterOptions,
   filterAndSortTableRows,
   formatStallDuration,
+  formatWaitingOn,
   formatWaitingOnCandidate,
+  formatWaitingOnCandidateParts,
+  formatWaitingOnParts,
   resolveWaitingSubjects,
   selectPrimaryWaitingOnCandidate,
   selectWaitingSubjectItemNodeIds,
@@ -24,6 +27,7 @@ import {
   statusLabel,
   waitingOnHistoryLabel,
   waitingOnLabel,
+  waitingOnLabelParts,
   waitingSubjectKey,
   waitingSubjectLabel,
   type ItemSortKey,
@@ -332,6 +336,57 @@ describe("waitingOn表示", () => {
         testCase.expected,
       );
     }
+  });
+
+  it("表示を文字列とloginの断片に分ける", () => {
+    const userCandidate = {
+      ...createWaitingOnCandidate("user", "reviewer", "hiho"),
+      confidence: 0.8,
+    };
+    const teamCandidate = createWaitingOnCandidate("team", "reviewer", "VOICEVOX/Maintainers");
+    const itemCandidate = {
+      ...createWaitingOnCandidate("item", "dependency", "sample-item-editor-103"),
+      confidence: 0.4,
+    };
+    const item: PublicItemSummaryDto = {
+      ...identifiedItem,
+      waitingOn: [userCandidate, teamCandidate, itemCandidate],
+      primaryWaitingOn: {
+        index: 0,
+        selectionReason: "表示断片テストの先頭候補です",
+      },
+    };
+
+    expect(
+      waitingOnLabelParts(
+        createWaitingOnCandidate("role", "assignee", "assignee"),
+        identifiedItem,
+        sampleSummary,
+      ),
+    ).toEqual([
+      { kind: "text", text: "担当者 " },
+      { kind: "login", login: "hiho" },
+      { kind: "text", text: "、" },
+      { kind: "login", login: "aoirint" },
+    ]);
+    expect(formatWaitingOnCandidateParts(userCandidate, item, sampleSummary)).toEqual([
+      { kind: "text", text: "推定: " },
+      { kind: "text", text: "レビュワー " },
+      { kind: "login", login: "hiho" },
+    ]);
+    expect(formatWaitingOnParts(item, sampleSummary)).toEqual([
+      { kind: "text", text: "推定: " },
+      { kind: "text", text: "レビュワー " },
+      { kind: "login", login: "hiho" },
+      { kind: "text", text: "、" },
+      { kind: "text", text: "レビュワー チーム VOICEVOX/Maintainers" },
+      { kind: "text", text: "、" },
+      { kind: "text", text: "候補: " },
+      { kind: "text", text: "VOICEVOX/sample-editor#103" },
+    ]);
+    expect(formatWaitingOn(item, sampleSummary)).toBe(
+      "推定: レビュワー @hiho、レビュワー チーム VOICEVOX/Maintainers、候補: VOICEVOX/sample-editor#103",
+    );
   });
 
   it("履歴の役割と対象を過去時点に適したラベルへ統一する", () => {

@@ -3,8 +3,8 @@ import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import {
   formatStallDuration,
-  formatWaitingOn,
-  formatWaitingOnCandidate,
+  formatWaitingOnCandidateParts,
+  formatWaitingOnParts,
   statusLabel,
   type ItemSort,
   type ItemSortKey,
@@ -14,45 +14,55 @@ import {
   type ResponsiveCardField,
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
+import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
 
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 
-type ItemListFieldOptions = Readonly<{
-  createItemHref: (nodeId: string) => string;
-  locale: string;
-  now: Date;
-  onSelectItem: (nodeId: string) => void;
-  onSortChange: (key: ItemSortKey) => void;
-  selectPrimaryWaitingOn: (row: ItemTableRow) => WaitingOnCandidate | undefined;
-  sort: ItemSort;
-  summary: PublicSummaryDto;
-}>;
+type ItemListFieldOptions = PersonNavigation &
+  Readonly<{
+    createItemHref: (nodeId: string) => string;
+    locale: string;
+    now: Date;
+    onSelectItem: (nodeId: string) => void;
+    onSortChange: (key: ItemSortKey) => void;
+    selectPrimaryWaitingOn: (row: ItemTableRow) => WaitingOnCandidate | undefined;
+    sort: ItemSort;
+    summary: PublicSummaryDto;
+  }>;
 
 const NUMERIC_HEADER_CLASS_NAME =
   "text-center whitespace-nowrap [&>button]:w-full [&>button]:justify-center [&>button]:px-1";
 
 function WaitingOnStatus({
+  createPersonHref,
   locale,
+  onSelectPerson,
   primaryWaitingOn,
   row,
   summary,
 }: Readonly<{
   locale: string;
+  createPersonHref: (login: string) => string;
+  onSelectPerson: (login: string) => void;
   primaryWaitingOn: WaitingOnCandidate | undefined;
   row: ItemTableRow;
   summary: PublicSummaryDto;
 }>) {
-  const primaryWaitingOnLabel =
+  const primaryWaitingOnParts =
     primaryWaitingOn == null
-      ? formatWaitingOn(row.item, summary)
-      : formatWaitingOnCandidate(primaryWaitingOn, row.item, summary);
+      ? formatWaitingOnParts(row.item, summary)
+      : formatWaitingOnCandidateParts(primaryWaitingOn, row.item, summary);
   const otherWaitingOnCount = primaryWaitingOn == null ? 0 : row.item.waitingOn.length - 1;
   const reason = primaryWaitingOn?.reasonSummary;
   return (
     <div class="item-waiting-on-status grid min-w-0 gap-1">
       <span class="item-waiting-on-summary flex min-w-0 items-baseline gap-2">
         <strong class="item-primary-waiting-on min-w-0 flex-1 leading-5 font-semibold text-text-primary wrap-anywhere">
-          {primaryWaitingOnLabel}
+          <WaitingOnDisplay
+            createPersonHref={createPersonHref}
+            onSelectPerson={onSelectPerson}
+            parts={primaryWaitingOnParts}
+          />
         </strong>
         {otherWaitingOnCount > 0 && (
           <span class="item-other-waiting-on flex-none text-xs text-text-muted whitespace-nowrap">
@@ -78,9 +88,11 @@ function WaitingOnStatus({
 /** 項目一覧で共通利用する表の列を作る。 */
 export function createItemTableColumns({
   createItemHref,
+  createPersonHref,
   locale,
   now,
   onSelectItem,
+  onSelectPerson,
   onSortChange,
   selectPrimaryWaitingOn,
   sort,
@@ -113,7 +125,9 @@ export function createItemTableColumns({
       label: "待ち相手と状態",
       renderCell: (row) => (
         <WaitingOnStatus
+          createPersonHref={createPersonHref}
           locale={locale}
+          onSelectPerson={onSelectPerson}
           primaryWaitingOn={selectPrimaryWaitingOn(row)}
           row={row}
           summary={summary}
@@ -169,8 +183,10 @@ export function createItemTableColumns({
 
 /** 項目一覧で共通利用するカードのフィールドを作る。 */
 export function createItemCardFields({
+  createPersonHref,
   locale,
   now,
+  onSelectPerson,
   selectPrimaryWaitingOn,
   summary,
 }: ItemListFieldOptions): readonly ResponsiveCardField<ItemTableRow>[] {
@@ -181,7 +197,9 @@ export function createItemCardFields({
       label: "待ち相手と状態",
       renderValue: (row) => (
         <WaitingOnStatus
+          createPersonHref={createPersonHref}
           locale={locale}
+          onSelectPerson={onSelectPerson}
           primaryWaitingOn={selectPrimaryWaitingOn(row)}
           row={row}
           summary={summary}

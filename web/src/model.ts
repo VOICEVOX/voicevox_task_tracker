@@ -100,6 +100,10 @@ export type WaitingSubjectRow = Readonly<{
   longestStallDuration: string;
 }>;
 
+/** 待ち相手表示を構成する文字列またはGitHub login。 */
+export type WaitingOnDisplayPart =
+  Readonly<{ kind: "text"; text: string }> | Readonly<{ kind: "login"; login: string }>;
+
 interface WaitingSubjectRowAccumulator {
   subject: WaitingSubject;
   label: string;
@@ -417,55 +421,108 @@ function waitingOnItemLabel(candidateId: string, summary: PublicSummaryDto): str
   return graphNode.displayReference;
 }
 
-function waitingOnKindLabel(
+function textWaitingOnPart(text: string): WaitingOnDisplayPart {
+  return { kind: "text", text };
+}
+
+function loginWaitingOnPart(login: string): WaitingOnDisplayPart {
+  return { kind: "login", login };
+}
+
+function joinWaitingOnParts(
+  groups: readonly (readonly WaitingOnDisplayPart[])[],
+  separator: string,
+): readonly WaitingOnDisplayPart[] {
+  const parts: WaitingOnDisplayPart[] = [];
+  for (const [index, group] of groups.entries()) {
+    if (index > 0) {
+      parts.push(textWaitingOnPart(separator));
+    }
+    parts.push(...group);
+  }
+  return parts;
+}
+
+function waitingOnPartsText(parts: readonly WaitingOnDisplayPart[]): string {
+  return parts
+    .map((part) => {
+      switch (part.kind) {
+        case "text":
+          return part.text;
+        case "login":
+          return `@${part.login}`;
+        default:
+          throw new UnreachableError(part);
+      }
+    })
+    .join("");
+}
+
+function waitingOnKindParts(
   waitingOn: WaitingOnReference,
   summary: PublicSummaryDto,
-  roleLabel: (role: WaitingOnRole) => string,
-): string {
+  roleParts: (role: WaitingOnRole) => readonly WaitingOnDisplayPart[],
+): readonly WaitingOnDisplayPart[] {
   switch (waitingOn.kind) {
     case "user":
-      return `${waitingOnRoleName(waitingOn.role)} @${waitingOn.candidateId}`;
+      return [
+        textWaitingOnPart(`${waitingOnRoleName(waitingOn.role)} `),
+        loginWaitingOnPart(waitingOn.candidateId),
+      ];
     case "team":
-      return `${waitingOnRoleName(waitingOn.role)} チーム ${waitingOn.candidateId}`;
+      return [
+        textWaitingOnPart(`${waitingOnRoleName(waitingOn.role)} チーム ${waitingOn.candidateId}`),
+      ];
     case "role":
-      return roleLabel(waitingOn.role);
+      return roleParts(waitingOn.role);
     case "item":
-      return waitingOnItemLabel(waitingOn.candidateId, summary);
+      return [textWaitingOnPart(waitingOnItemLabel(waitingOn.candidateId, summary))];
     case "automation":
-      return `自動処理 ${waitingOn.candidateId}`;
+      return [textWaitingOnPart(`自動処理 ${waitingOn.candidateId}`)];
     case "unknown":
-      return "不明";
+      return [textWaitingOnPart("不明")];
     default:
       throw new UnreachableError(waitingOn.kind);
   }
 }
 
-function currentWaitingOnRoleLabel(role: WaitingOnRole, item: PublicItemSummaryDto): string {
+function currentWaitingOnRoleParts(
+  role: WaitingOnRole,
+  item: PublicItemSummaryDto,
+): readonly WaitingOnDisplayPart[] {
   switch (role) {
     case "author":
       switch (item.author.status) {
         case "identified":
-          return `${waitingOnRoleName(role)} @${item.author.actor.login}`;
+          return [
+            textWaitingOnPart(`${waitingOnRoleName(role)} `),
+            loginWaitingOnPart(item.author.actor.login),
+          ];
         case "unavailable":
-          return `${waitingOnRoleName(role)} アカウント削除済み`;
+          return [textWaitingOnPart(`${waitingOnRoleName(role)} アカウント削除済み`)];
         default:
           throw new UnreachableError(item.author);
       }
     case "assignee":
-      return item.assignees.length === 0
-        ? `${waitingOnRoleName(role)} 未割り当て`
-        : `${waitingOnRoleName(role)} ${item.assignees
-            .map((assignee) => `@${assignee.login}`)
-            .join("、")}`;
+      if (item.assignees.length === 0) {
+        return [textWaitingOnPart(`${waitingOnRoleName(role)} 未割り当て`)];
+      }
+      return [
+        textWaitingOnPart(`${waitingOnRoleName(role)} `),
+        ...joinWaitingOnParts(
+          item.assignees.map((assignee) => [loginWaitingOnPart(assignee.login)]),
+          "、",
+        ),
+      ];
     case "maintainer":
     case "reviewer":
     case "merge_decider":
-      return `${waitingOnRoleName(role)}の誰か`;
+      return [textWaitingOnPart(`${waitingOnRoleName(role)}の誰か`)];
     case "ci":
     case "dependency":
     case "respondent":
     case "unknown":
-      return waitingOnRoleName(role);
+      return [textWaitingOnPart(waitingOnRoleName(role))];
     default:
       throw new UnreachableError(role);
   }
@@ -495,11 +552,23 @@ export function waitingSubjectLabel(subject: WaitingSubject): string {
   }
 }
 
-function historyWaitingOnRoleLabel(role: WaitingOnRole, item: PublicItemSummaryDto): string {
+function historyWaitingOnRoleParts(
+  role: WaitingOnRole,
+  item: PublicItemSummaryDto,
+): readonly WaitingOnDisplayPart[] {
   if (role === "assignee") {
-    return `当時の${waitingOnRoleName(role)}`;
+    return [textWaitingOnPart(`当時の${waitingOnRoleName(role)}`)];
   }
-  return currentWaitingOnRoleLabel(role, item);
+  return currentWaitingOnRoleParts(role, item);
+}
+
+/** 現在のwaitingOn候補を役割と対象がわかる表示断片へ変換する。 */
+export function waitingOnLabelParts(
+  waitingOn: WaitingOnCandidate,
+  item: PublicItemSummaryDto,
+  summary: PublicSummaryDto,
+): readonly WaitingOnDisplayPart[] {
+  return waitingOnKindParts(waitingOn, summary, (role) => currentWaitingOnRoleParts(role, item));
 }
 
 /** 現在のwaitingOn候補を役割と対象がわかる表示文字列へ変換する。 */
@@ -508,7 +577,7 @@ export function waitingOnLabel(
   item: PublicItemSummaryDto,
   summary: PublicSummaryDto,
 ): string {
-  return waitingOnKindLabel(waitingOn, summary, (role) => currentWaitingOnRoleLabel(role, item));
+  return waitingOnPartsText(waitingOnLabelParts(waitingOn, item, summary));
 }
 
 /** 過去のwaitingOn候補を対象がわかる表示文字列へ変換する。 */
@@ -517,7 +586,9 @@ export function waitingOnHistoryLabel(
   item: PublicItemSummaryDto,
   summary: PublicSummaryDto,
 ): string {
-  return waitingOnKindLabel(waitingOn, summary, (role) => historyWaitingOnRoleLabel(role, item));
+  return waitingOnPartsText(
+    waitingOnKindParts(waitingOn, summary, (role) => historyWaitingOnRoleParts(role, item)),
+  );
 }
 
 /** waitingOn候補から特定できる待ち相手を返す。 */
@@ -614,8 +685,11 @@ export function confidencePresentation(
   };
 }
 
-/** waitingOn配列を日本語の表示文字列へ変換する。 */
-export function formatWaitingOn(item: PublicItemSummaryDto, summary: PublicSummaryDto): string {
+/** waitingOn配列を日本語の表示断片へ変換する。 */
+export function formatWaitingOnParts(
+  item: PublicItemSummaryDto,
+  summary: PublicSummaryDto,
+): readonly WaitingOnDisplayPart[] {
   if (item.waitingOn.length === 0) {
     if (
       item.status !== "terminal_merged" &&
@@ -624,11 +698,32 @@ export function formatWaitingOn(item: PublicItemSummaryDto, summary: PublicSumma
     ) {
       throw new TypeError(`非terminal項目 ${item.nodeId} にwaitingOnがありません`);
     }
-    return "対応完了";
+    return [textWaitingOnPart("対応完了")];
   }
-  return item.waitingOn
-    .map((waitingOn) => formatWaitingOnCandidate(waitingOn, item, summary))
-    .join("、");
+  return joinWaitingOnParts(
+    item.waitingOn.map((waitingOn) => formatWaitingOnCandidateParts(waitingOn, item, summary)),
+    "、",
+  );
+}
+
+/** waitingOn候補を確度区分付きの表示断片へ変換する。 */
+export function formatWaitingOnCandidateParts(
+  waitingOn: WaitingOnCandidate,
+  item: PublicItemSummaryDto,
+  summary: PublicSummaryDto,
+): readonly WaitingOnDisplayPart[] {
+  const presentation = confidencePresentation(waitingOn.confidence, summary.confidenceThresholds);
+  return presentation.fieldQualifier.length === 0
+    ? waitingOnLabelParts(waitingOn, item, summary)
+    : [
+        textWaitingOnPart(`${presentation.fieldQualifier}: `),
+        ...waitingOnLabelParts(waitingOn, item, summary),
+      ];
+}
+
+/** waitingOn配列を日本語の表示文字列へ変換する。 */
+export function formatWaitingOn(item: PublicItemSummaryDto, summary: PublicSummaryDto): string {
+  return waitingOnPartsText(formatWaitingOnParts(item, summary));
 }
 
 /** waitingOn候補を確度区分付きの表示文字列へ変換する。 */
@@ -637,10 +732,7 @@ export function formatWaitingOnCandidate(
   item: PublicItemSummaryDto,
   summary: PublicSummaryDto,
 ): string {
-  const presentation = confidencePresentation(waitingOn.confidence, summary.confidenceThresholds);
-  return presentation.fieldQualifier.length === 0
-    ? waitingOnLabel(waitingOn, item, summary)
-    : `${presentation.fieldQualifier}: ${waitingOnLabel(waitingOn, item, summary)}`;
+  return waitingOnPartsText(formatWaitingOnCandidateParts(waitingOn, item, summary));
 }
 
 /** primaryWaitingOnが指す候補を返し、未選定なら先頭候補を返す。 */

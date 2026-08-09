@@ -335,6 +335,31 @@ describe("Web UI", () => {
     expect(currentContainer().querySelector(".attention-section")).toBeNull();
   });
 
+  it("項目一覧の個人loginから人ごとのページへ遷移しチームはリンクにしない", () => {
+    renderApp(sampleSummary);
+
+    const personLink = requiredElement<HTMLAnchorElement>(
+      '.items-table tr[data-node-id="sample-item-core-305"] .item-primary-waiting-on .person-link',
+    );
+    expect(personLink.textContent).toBe("@sample-bug-author");
+    expect(personLink.getAttribute("href")).toBe("/voicevox_task_tracker/people/sample-bug-author");
+    expect(personLink.parentElement?.textContent).toBe("推定: 作成者 @sample-bug-author");
+    const teamWaitingOn = requiredElement<HTMLElement>(
+      '.items-table tr[data-node-id="sample-item-engine-202"] .item-primary-waiting-on',
+    );
+    expect(teamWaitingOn.textContent).toBe("レビュワー チーム sample-reviewers");
+    expect(teamWaitingOn.querySelector("a")).toBeNull();
+
+    act(() => {
+      personLink.click();
+    });
+
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people/sample-bug-author");
+    expect(requiredElement<HTMLHeadingElement>("#person-page-heading").textContent).toBe(
+      "@sample-bug-author を待っている項目",
+    );
+  });
+
   it.each([
     {
       headingSelector: "#items-heading",
@@ -2242,6 +2267,38 @@ describe("Web UI", () => {
     assertNonNullable(checkState, "チェック状態の表示がありません");
     expect(reviewState.querySelector("dd")?.textContent).toBe("承認済み");
     expect(checkState.querySelector("dd")?.textContent).toBe("成功");
+  });
+
+  it("項目詳細の個人loginから人ごとのページへ遷移する", async () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-core/305");
+    renderApp(sampleSummary);
+    await flushUi();
+
+    const personLink = requiredElement<HTMLAnchorElement>(".current-responsibility .person-link");
+    expect(personLink.textContent).toBe("@sample-bug-author");
+    expect(personLink.getAttribute("href")).toBe("/voicevox_task_tracker/people/sample-bug-author");
+    expect(personLink.parentElement?.textContent).toBe("作成者 @sample-bug-author");
+
+    act(() => {
+      personLink.click();
+    });
+
+    expect(window.location.pathname).toBe("/voicevox_task_tracker/people/sample-bug-author");
+    expect(requiredElement<HTMLHeadingElement>("#person-page-heading").textContent).toBe(
+      "@sample-bug-author を待っている項目",
+    );
+  });
+
+  it("項目詳細の待ち相手がチームならリンクにしない", async () => {
+    window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-engine/202");
+    renderApp(sampleSummary);
+    await flushUi();
+
+    const waitingOn = requiredElement<HTMLElement>(
+      ".current-responsibility .waiting-on-list > li strong",
+    );
+    expect(waitingOn.textContent).toBe("レビュワー チーム sample-reviewers");
+    expect(waitingOn.querySelector("a")).toBeNull();
   });
 
   it("待ち相手が4件以上なら主候補以外を折りたたみ、primaryがなければ先頭を主候補にする", async () => {

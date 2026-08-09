@@ -20,11 +20,12 @@ import {
   formatStallDuration,
   statusLabel,
   waitingOnHistoryLabel,
-  waitingOnLabel,
+  waitingOnLabelParts,
   type ConfidencePresentation,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
 import { ActionButton, Pill } from "./ui.js";
+import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
 
 type ItemDetailsLinkProps = Readonly<{
   children: ComponentChildren;
@@ -33,19 +34,20 @@ type ItemDetailsLinkProps = Readonly<{
   onSelect: (nodeId: string) => void;
 }>;
 
-type ItemDetailsProps = Readonly<{
-  clearSelectionHref: string;
-  createItemHref: (nodeId: string) => string;
-  dependencyGraphView: ItemGraphView;
-  details: PublicItemDetailsDto;
-  graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
-  locale: string;
-  now: Date;
-  onClearSelection: () => void;
-  onSelectItem: (nodeId: string) => void;
-  showHeadingFocusRing: boolean;
-  summary: PublicSummaryDto;
-}>;
+type ItemDetailsProps = PersonNavigation &
+  Readonly<{
+    clearSelectionHref: string;
+    createItemHref: (nodeId: string) => string;
+    dependencyGraphView: ItemGraphView;
+    details: PublicItemDetailsDto;
+    graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
+    locale: string;
+    now: Date;
+    onClearSelection: () => void;
+    onSelectItem: (nodeId: string) => void;
+    showHeadingFocusRing: boolean;
+    summary: PublicSummaryDto;
+  }>;
 
 type ResponsibilityHistoryValue = Extract<
   PublicItemHistoryEventDto,
@@ -333,20 +335,23 @@ function RelatedItemReference({
 function WaitingOnCandidateReference({
   candidate,
   createItemHref,
+  createPersonHref,
   graphNodesByNodeId,
   item,
   itemsByNodeId,
   onSelectItem,
+  onSelectPerson,
   summary,
-}: Readonly<{
-  candidate: WaitingOnCandidate;
-  createItemHref: (nodeId: string) => string;
-  graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
-  item: PublicItemDetailsDto["summary"];
-  itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
-  onSelectItem: (nodeId: string) => void;
-  summary: PublicSummaryDto;
-}>) {
+}: PersonNavigation &
+  Readonly<{
+    candidate: WaitingOnCandidate;
+    createItemHref: (nodeId: string) => string;
+    graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
+    item: PublicItemDetailsDto["summary"];
+    itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
+    onSelectItem: (nodeId: string) => void;
+    summary: PublicSummaryDto;
+  }>) {
   if (candidate.kind === "item") {
     return (
       <RelatedItemReference
@@ -358,30 +363,39 @@ function WaitingOnCandidateReference({
       />
     );
   }
-  return <>{waitingOnLabel(candidate, item, summary)}</>;
+  return (
+    <WaitingOnDisplay
+      createPersonHref={createPersonHref}
+      onSelectPerson={onSelectPerson}
+      parts={waitingOnLabelParts(candidate, item, summary)}
+    />
+  );
 }
 
 function WaitingOnCandidateItem({
   candidate,
   candidateIndex,
   createItemHref,
+  createPersonHref,
   graphNodesByNodeId,
   item,
   itemsByNodeId,
   onSelectItem,
+  onSelectPerson,
   primaryBlockerNodeId,
   summary,
-}: Readonly<{
-  candidate: WaitingOnCandidate;
-  candidateIndex: number;
-  createItemHref: (nodeId: string) => string;
-  graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
-  item: PublicItemDetailsDto["summary"];
-  itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
-  onSelectItem: (nodeId: string) => void;
-  primaryBlockerNodeId: string | undefined;
-  summary: PublicSummaryDto;
-}>) {
+}: PersonNavigation &
+  Readonly<{
+    candidate: WaitingOnCandidate;
+    candidateIndex: number;
+    createItemHref: (nodeId: string) => string;
+    graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
+    item: PublicItemDetailsDto["summary"];
+    itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
+    onSelectItem: (nodeId: string) => void;
+    primaryBlockerNodeId: string | undefined;
+    summary: PublicSummaryDto;
+  }>) {
   const candidatePresentation = confidencePresentation(
     candidate.confidence,
     summary.confidenceThresholds,
@@ -393,10 +407,12 @@ function WaitingOnCandidateItem({
           <WaitingOnCandidateReference
             candidate={candidate}
             createItemHref={createItemHref}
+            createPersonHref={createPersonHref}
             graphNodesByNodeId={graphNodesByNodeId}
             item={item}
             itemsByNodeId={itemsByNodeId}
             onSelectItem={onSelectItem}
+            onSelectPerson={onSelectPerson}
             summary={summary}
           />
         </strong>
@@ -417,21 +433,24 @@ function WaitingOnCandidateItem({
 
 function WaitingOnCandidates({
   createItemHref,
+  createPersonHref,
   graphNodesByNodeId,
   item,
   itemsByNodeId,
   onSelectItem,
+  onSelectPerson,
   primaryBlockerNodeId,
   summary,
-}: Readonly<{
-  createItemHref: (nodeId: string) => string;
-  graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
-  item: PublicItemDetailsDto["summary"];
-  itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
-  onSelectItem: (nodeId: string) => void;
-  primaryBlockerNodeId: string | undefined;
-  summary: PublicSummaryDto;
-}>) {
+}: PersonNavigation &
+  Readonly<{
+    createItemHref: (nodeId: string) => string;
+    graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
+    item: PublicItemDetailsDto["summary"];
+    itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
+    onSelectItem: (nodeId: string) => void;
+    primaryBlockerNodeId: string | undefined;
+    summary: PublicSummaryDto;
+  }>) {
   if (item.waitingOn.length === 0) {
     throw new TypeError(`項目 ${item.nodeId}のwaitingOn候補がありません`);
   }
@@ -445,10 +464,12 @@ function WaitingOnCandidates({
             candidate={candidate}
             candidateIndex={index}
             createItemHref={createItemHref}
+            createPersonHref={createPersonHref}
             graphNodesByNodeId={graphNodesByNodeId}
             item={item}
             itemsByNodeId={itemsByNodeId}
             onSelectItem={onSelectItem}
+            onSelectPerson={onSelectPerson}
             primaryBlockerNodeId={primaryBlockerNodeId}
             summary={summary}
           />
@@ -469,10 +490,12 @@ function WaitingOnCandidates({
           candidate={primaryCandidate.candidate}
           candidateIndex={primaryCandidate.index}
           createItemHref={createItemHref}
+          createPersonHref={createPersonHref}
           graphNodesByNodeId={graphNodesByNodeId}
           item={item}
           itemsByNodeId={itemsByNodeId}
           onSelectItem={onSelectItem}
+          onSelectPerson={onSelectPerson}
           primaryBlockerNodeId={primaryBlockerNodeId}
           summary={summary}
         />
@@ -488,10 +511,12 @@ function WaitingOnCandidates({
               candidate={candidate}
               candidateIndex={index}
               createItemHref={createItemHref}
+              createPersonHref={createPersonHref}
               graphNodesByNodeId={graphNodesByNodeId}
               item={item}
               itemsByNodeId={itemsByNodeId}
               onSelectItem={onSelectItem}
+              onSelectPerson={onSelectPerson}
               primaryBlockerNodeId={primaryBlockerNodeId}
               summary={summary}
             />
@@ -510,6 +535,7 @@ function hasItemDependencies(view: ItemGraphView): boolean {
 export function ItemDetailsContent({
   clearSelectionHref,
   createItemHref,
+  createPersonHref,
   dependencyGraphView,
   details,
   graphNodesByNodeId,
@@ -517,6 +543,7 @@ export function ItemDetailsContent({
   now,
   onClearSelection,
   onSelectItem,
+  onSelectPerson,
   showHeadingFocusRing,
   summary,
 }: ItemDetailsProps) {
@@ -680,10 +707,12 @@ export function ItemDetailsContent({
           ) : (
             <WaitingOnCandidates
               createItemHref={createItemHref}
+              createPersonHref={createPersonHref}
               graphNodesByNodeId={graphNodesByNodeId}
               item={item}
               itemsByNodeId={itemsByNodeId}
               onSelectItem={onSelectItem}
+              onSelectPerson={onSelectPerson}
               primaryBlockerNodeId={primaryBlockerNodeId}
               summary={summary}
             />

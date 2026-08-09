@@ -14,19 +14,21 @@ import { ContentState, PageSection } from "./layout.js";
 import { createItemDetailsMap } from "./model.js";
 import { ActionButton } from "./ui.js";
 import { type ItemRouteTarget } from "./url-state.js";
+import { type PersonNavigation } from "./waiting-on-display.js";
 
-type ItemDetailsPageProps = Readonly<{
-  clearSelectionHref: string;
-  createItemHref: (nodeId: string) => string;
-  loadDetails: PublicDetailsLoader;
-  locale: string;
-  now: Date;
-  onClearSelection: () => void;
-  onSelectItem: (nodeId: string) => void;
-  showHeadingFocusRing: boolean;
-  summary: PublicSummaryDto;
-  target: ItemRouteTarget;
-}>;
+type ItemDetailsPageProps = PersonNavigation &
+  Readonly<{
+    clearSelectionHref: string;
+    createItemHref: (nodeId: string) => string;
+    loadDetails: PublicDetailsLoader;
+    locale: string;
+    now: Date;
+    onClearSelection: () => void;
+    onSelectItem: (nodeId: string) => void;
+    showHeadingFocusRing: boolean;
+    summary: PublicSummaryDto;
+    target: ItemRouteTarget;
+  }>;
 
 type DetailsState =
   | Readonly<{
@@ -49,11 +51,13 @@ type DetailsState =
 export function ItemDetailsPage({
   clearSelectionHref,
   createItemHref,
+  createPersonHref,
   loadDetails,
   locale,
   now,
   onClearSelection,
   onSelectItem,
+  onSelectPerson,
   showHeadingFocusRing,
   summary,
   target,
@@ -105,6 +109,7 @@ export function ItemDetailsPage({
         <ItemDetailsContent
           clearSelectionHref={clearSelectionHref}
           createItemHref={createItemHref}
+          createPersonHref={createPersonHref}
           dependencyGraphView={createItemGraphView(
             summary,
             detailsState.details,
@@ -117,6 +122,7 @@ export function ItemDetailsPage({
           now={now}
           onClearSelection={onClearSelection}
           onSelectItem={onSelectItem}
+          onSelectPerson={onSelectPerson}
           showHeadingFocusRing={showHeadingFocusRing}
           summary={summary}
         />

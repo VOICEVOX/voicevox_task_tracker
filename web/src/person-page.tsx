@@ -23,24 +23,26 @@ import {
 } from "./responsive-table-card-list.js";
 import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 import { ActionButton } from "./ui.js";
+import { type PersonNavigation } from "./waiting-on-display.js";
 
-type PersonPageProps = Readonly<{
-  createItemHref: (nodeId: string) => string;
-  isViewerIdentity: boolean;
-  locale: string;
-  login: string;
-  now: Date;
-  onSelectItem: (nodeId: string) => void;
-  onSelectPeople: () => void;
-  onSortChange: (key: ItemSortKey) => void;
-  onTeamIdsChange: (teamIds: readonly string[]) => void;
-  onViewerIdentityToggle: () => void;
-  peopleHref: string;
-  selectedTeamIds: readonly string[];
-  sort: ItemSort;
-  summary: PublicSummaryDto;
-  viewerIdentityAvailable: boolean;
-}>;
+type PersonPageProps = PersonNavigation &
+  Readonly<{
+    createItemHref: (nodeId: string) => string;
+    isViewerIdentity: boolean;
+    locale: string;
+    login: string;
+    now: Date;
+    onSelectItem: (nodeId: string) => void;
+    onSelectPeople: () => void;
+    onSortChange: (key: ItemSortKey) => void;
+    onTeamIdsChange: (teamIds: readonly string[]) => void;
+    onViewerIdentityToggle: () => void;
+    peopleHref: string;
+    selectedTeamIds: readonly string[];
+    sort: ItemSort;
+    summary: PublicSummaryDto;
+    viewerIdentityAvailable: boolean;
+  }>;
 
 function itemRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
   const stale = row.item.repositoryFreshness === "stale";
@@ -58,11 +60,13 @@ function itemRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
 /** 指定したGitHubアカウントの対応を待っている項目を表示する。 */
 export function PersonPage({
   createItemHref,
+  createPersonHref,
   isViewerIdentity,
   locale,
   login,
   now,
   onSelectItem,
+  onSelectPerson,
   onSelectPeople,
   onSortChange,
   onTeamIdsChange,
@@ -105,9 +109,11 @@ export function PersonPage({
   }
   const itemListFieldOptions = {
     createItemHref,
+    createPersonHref,
     locale,
     now,
     onSelectItem,
+    onSelectPerson,
     onSortChange,
     selectPrimaryWaitingOn: (row: ItemTableRow) =>
       selectWaitingSubjectPrimaryCandidate(row.item, login, selectedTeamIds),
