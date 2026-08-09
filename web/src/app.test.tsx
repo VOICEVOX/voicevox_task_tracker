@@ -385,7 +385,7 @@ describe("Web UI", () => {
     expect(currentContainer().querySelector(".attention-section")).toBeNull();
   });
 
-  it("項目一覧の個人loginから人ごとのページへ遷移しチームはリンクにしない", () => {
+  it("項目一覧の個人loginとアバターから人ごとのページへ遷移しチームはリンクにしない", () => {
     renderApp(sampleSummary);
 
     const personLink = requiredElement<HTMLAnchorElement>(
@@ -397,7 +397,7 @@ describe("Web UI", () => {
     assertNonNullable(personWaitingOn, "個人の待ち相手表示がありません");
     expect(personWaitingOn.textContent).toBe("推定: 作成者 @sample-bug-author");
     const avatar = expectGitHubAvatar(personWaitingOn, "sample-bug-author", 20, "size-5");
-    expect(avatar.nextElementSibling).toBe(personLink);
+    expect(avatar.parentElement).toBe(personLink);
     const teamWaitingOn = requiredElement<HTMLElement>(
       '.items-table tr[data-node-id="sample-item-engine-202"] .item-primary-waiting-on',
     );
@@ -406,7 +406,7 @@ describe("Web UI", () => {
     expect(teamWaitingOn.querySelector("img")).toBeNull();
 
     act(() => {
-      personLink.click();
+      avatar.click();
     });
 
     expect(window.location.pathname).toBe("/voicevox_task_tracker/people/sample-bug-author");
@@ -685,12 +685,13 @@ describe("Web UI", () => {
     expect(
       requiredElement<HTMLTableRowElement>(".people-table tbody tr:last-child").querySelector("a"),
     ).toBeNull();
-    const hihoRow = requiredElement<HTMLAnchorElement>(
+    const hihoLink = requiredElement<HTMLAnchorElement>(
       '.people-table a[href="/voicevox_task_tracker/people/HiHo"]',
-    ).closest<HTMLTableRowElement>("tr");
+    );
+    const hihoRow = hihoLink.closest<HTMLTableRowElement>("tr");
     assertNonNullable(hihoRow, "HiHoの担当者行がありません");
-    const hihoAvatar = expectGitHubAvatar(hihoRow, "HiHo", 24, "size-6");
-    expect(hihoAvatar.nextElementSibling?.textContent).toBe("@HiHo");
+    const hihoAvatar = expectGitHubAvatar(hihoRow, "HiHo", 20, "size-5");
+    expect(hihoAvatar.parentElement).toBe(hihoLink);
     expect(
       requiredElement<HTMLTableRowElement>(".people-table tbody tr:last-child").querySelector(
         "img",
@@ -865,14 +866,22 @@ describe("Web UI", () => {
     const directWaitingOn = requiredElement<HTMLElement>(
       '.person-items-table tr[data-node-id="sample-item-editor-101"] .item-waiting-on-status',
     );
-    expect(directWaitingOn.querySelector(".item-primary-waiting-on")?.textContent).toBe(
-      "レビュワー @HiHo",
-    );
-    expect(directWaitingOn.querySelector(".item-other-waiting-on")?.textContent).toBe("ほか1件");
+    const directWaitingOnCandidates = [
+      ...directWaitingOn.querySelectorAll<HTMLElement>(".item-waiting-on-candidate"),
+    ];
+    expect(
+      directWaitingOnCandidates.map(
+        (candidate) => candidate.querySelector(".item-waiting-on-candidate-label")?.textContent,
+      ),
+    ).toEqual(["レビュワー @HiHo", "レビュワー @aoirint"]);
+    expect(
+      directWaitingOnCandidates.map(
+        (candidate) => candidate.querySelector(".item-waiting-reason")?.textContent,
+      ),
+    ).toEqual(["HiHoさんの確認を待っています", "aoirintさんの確認を待っています"]);
+    expect(directWaitingOnCandidates[0]?.querySelector(".item-primary-waiting-on")).not.toBeNull();
+    expect(directWaitingOnCandidates[1]?.querySelector(".item-primary-waiting-on")).toBeNull();
     expect(directWaitingOn.querySelector(".item-waiting-status")?.textContent).toBe("マージ待ち");
-    expect(directWaitingOn.querySelector(".item-waiting-reason")?.textContent).toBe(
-      "HiHoさんの確認を待っています",
-    );
     expect(currentContainer().querySelector(".person-item-count")).toBeNull();
     const personControls = requiredElement<HTMLElement>(".person-page > .person-sort-controls");
     expect(requiredElement<HTMLElement>(".person-team-selection").nextElementSibling).toBe(
@@ -1692,17 +1701,36 @@ describe("Web UI", () => {
     const multipleWaitingOn = requiredElement<HTMLElement>(
       '.items-table tr[data-node-id="sample-item-engine-204"] .item-waiting-on-status',
     );
+    const waitingOnCandidates = [
+      ...multipleWaitingOn.querySelectorAll<HTMLElement>(".item-waiting-on-candidate"),
+    ];
+    expect(
+      waitingOnCandidates.map(
+        (candidate) => candidate.querySelector(".item-waiting-on-candidate-label")?.textContent,
+      ),
+    ).toEqual(["VOICEVOX/sample-editor#103", "推定: example/sample-distribution#42"]);
+    expect(
+      waitingOnCandidates.map(
+        (candidate) => candidate.querySelector(".item-waiting-reason")?.textContent,
+      ),
+    ).toEqual(["配布方針の決定を待っています", "外部配布ツールの対応を待っています"]);
+    expect(waitingOnCandidates[0]?.querySelector(".item-primary-waiting-on")).not.toBeNull();
+    expect(waitingOnCandidates[1]?.querySelector(".item-primary-waiting-on")).toBeNull();
+    expect(
+      waitingOnCandidates.map((candidate) =>
+        candidate.querySelector(".item-waiting-reason")?.classList.contains("line-clamp-2"),
+      ),
+    ).toEqual([true, true]);
+    expect(
+      waitingOnCandidates.map(
+        (candidate) => candidate.querySelector<HTMLElement>(".item-waiting-reason")?.title,
+      ),
+    ).toEqual(["配布方針の決定を待っています", "外部配布ツールの対応を待っています"]);
+    expect(multipleWaitingOn.querySelectorAll(".item-waiting-reason")).toHaveLength(2);
+    expect(multipleWaitingOn.querySelector(".item-waiting-on-list")).not.toBeNull();
     expect(multipleWaitingOn.querySelector(".item-primary-waiting-on")?.textContent).toBe(
       "VOICEVOX/sample-editor#103",
     );
-    expect(multipleWaitingOn.querySelector(".item-other-waiting-on")?.textContent).toBe("ほか1件");
-    expect(multipleWaitingOn.querySelector(".item-waiting-reason")?.textContent).toBe(
-      "配布方針の決定を待っています",
-    );
-    expect(multipleWaitingOn.querySelector(".item-waiting-reason")?.classList).toContain(
-      "line-clamp-2",
-    );
-    expect(multipleWaitingOn.textContent).not.toContain("example/sample-distribution#42");
     expect(
       requiredElement<HTMLElement>(
         '.items-table tr[data-node-id="sample-item-engine-204"] .attention-badge',

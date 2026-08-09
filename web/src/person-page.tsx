@@ -31,7 +31,6 @@ type PersonPageProps = PersonNavigation &
   Readonly<{
     createItemHref: (nodeId: string) => string;
     isViewerIdentity: boolean;
-    locale: string;
     login: string;
     now: Date;
     onSelectItem: (nodeId: string) => void;
@@ -68,7 +67,6 @@ export function PersonPage({
   createItemHref,
   createPersonHref,
   isViewerIdentity,
-  locale,
   login,
   now,
   onSelectItem,
@@ -116,7 +114,6 @@ export function PersonPage({
   const itemListFieldOptions = {
     createItemHref,
     createPersonHref,
-    locale,
     now,
     onSelectItem,
     onSelectPerson,

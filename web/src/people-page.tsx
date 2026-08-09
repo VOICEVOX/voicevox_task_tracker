@@ -1,7 +1,6 @@
 import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
-import { createGitHubAvatarUrl } from "./github-avatar.js";
 import { ContentState, PageSection } from "./layout.js";
 import { collectWaitingSubjectRows, resolveWaitingSubjects, waitingSubjectKey } from "./model.js";
 import {
@@ -43,22 +42,12 @@ function WaitingSubjectName({
   return (
     <span class="flex min-w-0 flex-wrap items-center gap-2">
       {row.subject.kind === "user" ? (
-        <span class="flex min-w-0 items-center gap-2">
-          <img
-            alt=""
-            class="size-6 shrink-0 rounded-full border border-border-default bg-surface-page"
-            decoding="async"
-            height={24}
-            loading="lazy"
-            src={createGitHubAvatarUrl(row.subject.login)}
-            width={24}
-          />
-          <PersonLink
-            createPersonHref={createPersonHref}
-            login={row.subject.login}
-            onSelectPerson={onSelectPerson}
-          />
-        </span>
+        <PersonLink
+          createPersonHref={createPersonHref}
+          login={row.subject.login}
+          onSelectPerson={onSelectPerson}
+          showAvatar={true}
+        />
       ) : (
         <span class="min-w-0 text-text-primary wrap-anywhere">{row.label}</span>
       )}

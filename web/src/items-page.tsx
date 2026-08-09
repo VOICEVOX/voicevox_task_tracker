@@ -36,7 +36,6 @@ type ItemsPageProps = PersonNavigation &
     filterOptions: TableFilterOptions;
     filters: TableFilters;
     loadDetails: PublicDetailsLoader;
-    locale: string;
     now: Date;
     onFilterChange: (key: TableFilterKey, value: string) => void;
     onSearchQueryChange: (query: string) => void;
@@ -52,7 +51,6 @@ type ItemTableProps = PersonNavigation &
     createItemHref: (nodeId: string) => string;
     filterOptions: TableFilterOptions;
     filters: TableFilters;
-    locale: string;
     now: Date;
     onClearSearch: () => void;
     onFilterChange: (key: TableFilterKey, value: string) => void;
@@ -248,7 +246,6 @@ function ItemTable({
   createPersonHref,
   filterOptions,
   filters,
-  locale,
   now,
   onClearSearch,
   onFilterChange,
@@ -305,7 +302,6 @@ function ItemTable({
   const itemListFieldOptions = {
     createItemHref,
     createPersonHref,
-    locale,
     now,
     onSelectItem,
     onSelectPerson,
@@ -453,7 +449,6 @@ export function ItemsPage({
   filterOptions,
   filters,
   loadDetails,
-  locale,
   now,
   onFilterChange,
   onSearchQueryChange,
@@ -523,7 +518,6 @@ export function ItemsPage({
       createPersonHref={createPersonHref}
       filterOptions={filterOptions}
       filters={filters}
-      locale={locale}
       now={now}
       searchQuery={searchQuery}
       searchState={searchState}

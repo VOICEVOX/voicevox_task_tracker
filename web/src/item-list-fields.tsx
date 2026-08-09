@@ -22,7 +22,6 @@ type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 type ItemListFieldOptions = PersonNavigation &
   Readonly<{
     createItemHref: (nodeId: string) => string;
-    locale: string;
     now: Date;
     onSelectItem: (nodeId: string) => void;
     onSortChange: (key: ItemSortKey) => void;
@@ -34,55 +33,92 @@ type ItemListFieldOptions = PersonNavigation &
 const NUMERIC_HEADER_CLASS_NAME =
   "text-center whitespace-nowrap [&>button]:w-full [&>button]:justify-center [&>button]:px-1";
 
+function orderWaitingOnCandidates(
+  item: PublicItemSummaryDto,
+  primaryWaitingOn: WaitingOnCandidate | undefined,
+): readonly WaitingOnCandidate[] {
+  if (primaryWaitingOn == null) {
+    return item.waitingOn;
+  }
+  const primaryWaitingOnIndex = item.waitingOn.indexOf(primaryWaitingOn);
+  if (primaryWaitingOnIndex < 0) {
+    throw new TypeError(`項目 ${item.nodeId} のprimary waitingOnが候補にありません`);
+  }
+  return [
+    primaryWaitingOn,
+    ...item.waitingOn.slice(0, primaryWaitingOnIndex),
+    ...item.waitingOn.slice(primaryWaitingOnIndex + 1),
+  ];
+}
+
 function WaitingOnStatus({
   createPersonHref,
-  locale,
   onSelectPerson,
   primaryWaitingOn,
   row,
   summary,
 }: Readonly<{
-  locale: string;
   createPersonHref: (login: string) => string;
   onSelectPerson: (login: string) => void;
   primaryWaitingOn: WaitingOnCandidate | undefined;
   row: ItemTableRow;
   summary: PublicSummaryDto;
 }>) {
-  const primaryWaitingOnParts =
-    primaryWaitingOn == null
-      ? formatWaitingOnParts(row.item, summary)
-      : formatWaitingOnCandidateParts(primaryWaitingOn, row.item, summary);
-  const otherWaitingOnCount = primaryWaitingOn == null ? 0 : row.item.waitingOn.length - 1;
-  const reason = primaryWaitingOn?.reasonSummary;
+  const waitingOnCandidates = orderWaitingOnCandidates(row.item, primaryWaitingOn);
   return (
     <div class="item-waiting-on-status grid min-w-0 gap-1">
-      <span class="item-waiting-on-summary flex min-w-0 items-baseline gap-2">
-        <strong class="item-primary-waiting-on min-w-0 flex-1 leading-5 font-semibold text-text-primary wrap-anywhere">
+      {waitingOnCandidates.length === 0 ? (
+        <strong class="item-waiting-on-summary item-primary-waiting-on min-w-0 leading-5 font-semibold text-text-primary wrap-anywhere">
           <WaitingOnDisplay
             createPersonHref={createPersonHref}
             onSelectPerson={onSelectPerson}
-            parts={primaryWaitingOnParts}
+            parts={formatWaitingOnParts(row.item, summary)}
             showAvatar={true}
           />
         </strong>
-        {otherWaitingOnCount > 0 && (
-          <span class="item-other-waiting-on flex-none font-mono text-xs text-text-muted whitespace-nowrap tabular-nums">
-            ほか{otherWaitingOnCount.toLocaleString(locale)}件
-          </span>
-        )}
-      </span>
+      ) : (
+        <ul class="item-waiting-on-list m-0 grid min-w-0 list-none gap-2 p-0">
+          {waitingOnCandidates.map((candidate, index) => {
+            const primary = primaryWaitingOn != null && index === 0;
+            const reason = candidate.reasonSummary;
+            const waitingOnDisplay = (
+              <WaitingOnDisplay
+                createPersonHref={createPersonHref}
+                onSelectPerson={onSelectPerson}
+                parts={formatWaitingOnCandidateParts(candidate, row.item, summary)}
+                showAvatar={true}
+              />
+            );
+            return (
+              <li
+                class="item-waiting-on-candidate grid min-w-0 gap-0.5"
+                key={`${candidate.kind}:${candidate.role}:${candidate.candidateId}:${index.toString()}`}
+              >
+                {primary ? (
+                  <strong class="item-waiting-on-candidate-label item-primary-waiting-on min-w-0 leading-5 font-semibold text-text-primary wrap-anywhere">
+                    {waitingOnDisplay}
+                  </strong>
+                ) : (
+                  <span class="item-waiting-on-candidate-label min-w-0 leading-5 wrap-anywhere">
+                    {waitingOnDisplay}
+                  </span>
+                )}
+                {reason != null && reason.length > 0 && (
+                  <span
+                    class="item-waiting-reason line-clamp-2 text-xs leading-5 text-text-muted wrap-anywhere"
+                    title={reason}
+                  >
+                    {reason}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
       <Pill className="item-waiting-status" tone="neutral">
         {statusLabel(row.item.status)}
       </Pill>
-      {reason != null && reason.length > 0 && (
-        <span
-          class="item-waiting-reason line-clamp-2 text-xs leading-5 text-text-muted wrap-anywhere"
-          title={reason}
-        >
-          {reason}
-        </span>
-      )}
     </div>
   );
 }
@@ -91,7 +127,6 @@ function WaitingOnStatus({
 export function createItemTableColumns({
   createItemHref,
   createPersonHref,
-  locale,
   now,
   onSelectItem,
   onSelectPerson,
@@ -128,7 +163,6 @@ export function createItemTableColumns({
       renderCell: (row) => (
         <WaitingOnStatus
           createPersonHref={createPersonHref}
-          locale={locale}
           onSelectPerson={onSelectPerson}
           primaryWaitingOn={selectPrimaryWaitingOn(row)}
           row={row}
@@ -188,7 +222,6 @@ export function createItemTableColumns({
 /** 項目一覧で共通利用するカードのフィールドを作る。 */
 export function createItemCardFields({
   createPersonHref,
-  locale,
   now,
   onSelectPerson,
   selectPrimaryWaitingOn,
@@ -202,7 +235,6 @@ export function createItemCardFields({
       renderValue: (row) => (
         <WaitingOnStatus
           createPersonHref={createPersonHref}
-          locale={locale}
           onSelectPerson={onSelectPerson}
           primaryWaitingOn={selectPrimaryWaitingOn(row)}
           row={row}

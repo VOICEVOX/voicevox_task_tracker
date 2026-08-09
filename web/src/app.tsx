@@ -382,7 +382,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             filterOptions={tableFilterOptions}
             filters={viewState.tableFilters}
             loadDetails={sharedLoadDetails}
-            locale={locale}
             now={now}
             searchQuery={viewState.searchQuery}
             sort={viewState.tableSort}
@@ -441,7 +440,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             createItemHref={createItemHref}
             createPersonHref={createPersonHref}
             isViewerIdentity={isViewerLogin(viewState.route.login, viewerIdentity?.login)}
-            locale={locale}
             login={viewState.route.login}
             now={now}
             peopleHref={createWebViewHref(
