@@ -125,6 +125,13 @@ artifactを利用する後続jobは同じartifactを再検証してから利用�
 `.github/workflows/merge_gatekeeper.yml`はauto mergeとmerge queueのためのチェッカーです。
 [VOICEVOX/merge-gatekeeper](https://github.com/VOICEVOX/merge-gatekeeper)でApprove数の重み付き合計が足りているかを判定し、[upsidr/merge-gatekeeper](https://github.com/upsidr/merge-gatekeeper)で他の全CIの完了を待ちます。
 
+他のworkflowと同じく、どちらのactionもfull commit SHAでpinします。
+VOICEVOX/merge-gatekeeperはtagを持たないため、追跡先の`main`をversionの代わりにコメントへ書きます。
+上流の修正はSHAを差し替えるPRで取り込みます。
+
+このworkflowだけは`pull_request_target`をtriggerに使います。
+auto mergeを有効にできるのはwrite権限を持つ人だけで、workflowはrepositoryをcheckoutせずrun stepも持たないため、PR側のcodeが実行されることはありません。
+
 必要スコアは2で、`@Hiroshiba`のApproveに2点、`#reviewer` teamのApproveに1点を与えます。
 Hiroshibaが1人でApproveすれば通り、reviewerだけなら2人のApproveが要ります。
 Review when Readyを押した人もApproveとして数えます。

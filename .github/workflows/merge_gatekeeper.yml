@@ -20,7 +20,7 @@ jobs:
       statuses: read
     steps:
       - name: Approve数を検査
-        uses: voicevox/merge-gatekeeper@main
+        uses: voicevox/merge-gatekeeper@3f507fbdca77423c5433015039ff86f3ec2c7066 # main
         with:
           token: ${{ secrets.GATEKEEPER_TOKEN }}
           required_score: 2

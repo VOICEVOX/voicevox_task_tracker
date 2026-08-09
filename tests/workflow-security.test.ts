@@ -8,6 +8,7 @@ import { z } from "zod";
 const WORKFLOW_DIRECTORY = join(import.meta.dirname, "..", ".github", "workflows");
 const DAILY_WORKFLOW_PATH = join(WORKFLOW_DIRECTORY, "daily.yml");
 const CI_WORKFLOW_PATH = join(WORKFLOW_DIRECTORY, "ci.yml");
+const MERGE_GATEKEEPER_WORKFLOW_PATH = join(WORKFLOW_DIRECTORY, "merge_gatekeeper.yml");
 const PERFORMANCE_WORKFLOW_PATH = join(WORKFLOW_DIRECTORY, "performance.yml");
 const CODEX_AUTH_MASK_SCRIPT_PATH = join(
   import.meta.dirname,
@@ -22,7 +23,7 @@ const CONFIG_PATH = join(import.meta.dirname, "..", "config.yml");
 const PACKAGE_PATH = join(import.meta.dirname, "..", "package.json");
 const FULL_COMMIT_ACTION_PATTERN = /^[^@\s]+@[0-9a-f]{40}$/u;
 const VERSIONED_USES_LINE_PATTERN =
-  /^\s*uses:\s+[^@\s]+@[0-9a-f]{40}\s+#\s+v\d+(?:\.\d+){0,2}\s*$/gmu;
+  /^\s*uses:\s+[^@\s]+@[0-9a-f]{40}\s+#\s+(?:v\d+(?:\.\d+){0,2}|main)\s*$/gmu;
 
 const permissionSchema = z.enum(["read", "write", "none"]);
 const permissionsSchema = z.record(z.string(), permissionSchema);
@@ -50,6 +51,11 @@ const workflowSchema = z
   .object({
     on: z.record(z.string(), z.unknown()),
     jobs: z.record(z.string(), jobSchema),
+  })
+  .loose();
+const pullRequestTargetSchema = z
+  .object({
+    types: z.array(z.string()),
   })
   .loose();
 const dailyWorkflowSchema = workflowSchema.extend({
@@ -557,7 +563,7 @@ describe("workflow security", () => {
     expect(JSON.stringify(workflow)).not.toContain("${{ secrets.");
   });
 
-  it("全Actionをversion付きfull commit SHAへpinする", async () => {
+  it("全Actionをref付きfull commit SHAへpinする", async () => {
     const fileNames = (await readdir(WORKFLOW_DIRECTORY))
       .filter((fileName) => fileName.endsWith(".yml") || fileName.endsWith(".yaml"))
       .sort();
@@ -585,7 +591,20 @@ describe("workflow security", () => {
       const workflow = await readWorkflow(join(WORKFLOW_DIRECTORY, fileName));
       const triggerNames = Object.keys(workflow.on);
 
-      expect(triggerNames, fileName).not.toContain("pull_request_target");
+      if (triggerNames.includes("pull_request_target")) {
+        const pullRequestTarget = pullRequestTargetSchema.parse(workflow.on["pull_request_target"]);
+        const steps = Object.values(workflow.jobs).flatMap((job) => job.steps);
+
+        expect(pullRequestTarget.types, fileName).toEqual(["auto_merge_enabled"]);
+        expect(
+          steps.some((step) => step.uses?.startsWith("actions/checkout") === true),
+          fileName,
+        ).toBe(false);
+        expect(
+          steps.some((step) => step.run != null),
+          fileName,
+        ).toBe(false);
+      }
       if (triggerNames.includes("pull_request")) {
         expect(secretJobNames(workflow), fileName).toEqual([]);
       }
@@ -618,6 +637,33 @@ describe("workflow security", () => {
     expect(JSON.stringify(operationsJob)).toContain(
       '"NOTIFY_DISCORD_RESULT":"${{ needs.notify-discord.result }}"',
     );
+  });
+
+  it("マージゲートをApprove数と全CI完了の二段で構成する", async () => {
+    const workflow = await readWorkflow(MERGE_GATEKEEPER_WORKFLOW_PATH);
+
+    expect(Object.keys(workflow.on).sort()).toEqual(["merge_group", "pull_request_target"]);
+    expect(Object.keys(workflow.jobs)).toEqual(["merge_gatekeeper"]);
+
+    const mergeGatekeeperJob = workflow.jobs["merge_gatekeeper"];
+    if (mergeGatekeeperJob == null) {
+      throw new TypeError("マージゲートjobがありません");
+    }
+    const approvalStep = mergeGatekeeperJob.steps.find(
+      (step) => step.uses?.startsWith("voicevox/merge-gatekeeper@") === true,
+    );
+    const allCiStep = mergeGatekeeperJob.steps.find(
+      (step) => step.uses?.startsWith("upsidr/merge-gatekeeper@") === true,
+    );
+    if (approvalStep == null || allCiStep == null) {
+      throw new TypeError("マージゲートのApprove数検査または全CI完了待機stepがありません");
+    }
+
+    expect(mergeGatekeeperJob.permissions).toEqual({ checks: "read", statuses: "read" });
+    expect(approvalStep.with?.["required_score"]).toBe(2);
+    expect(approvalStep.with?.["score_rules"]).toContain("@Hiroshiba: 2");
+    expect(approvalStep.with?.["score_rules"]).toContain("#reviewer: 1");
+    expect(allCiStep.with?.["self"]).toBe("merge_gatekeeper");
   });
 
   it("CIのqualityと実state検証を権限分離する", async () => {
