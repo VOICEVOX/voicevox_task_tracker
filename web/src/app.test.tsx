@@ -176,14 +176,14 @@ function createPersonPageSummary(): PublicSummaryDto {
               {
                 ...reviewerWaitingOn,
                 kind: "user",
-                candidateId: "HiHo",
-                reasonSummary: "HiHoさんの確認を待っています",
+                candidateId: "aoirint",
+                reasonSummary: "aoirintさんの確認を待っています",
               },
               {
                 ...reviewerWaitingOn,
                 kind: "user",
-                candidateId: "aoirint",
-                reasonSummary: "aoirintさんの確認を待っています",
+                candidateId: "HiHo",
+                reasonSummary: "HiHoさんの確認を待っています",
               },
             ],
           };
@@ -219,7 +219,9 @@ function createPersonPageSummaryWithLowImportance(): PublicSummaryDto {
   const summary = createPersonPageSummary();
   const directItem = summary.items.find((item) => item.nodeId === "sample-item-editor-101");
   assertNonNullable(directItem, "担当者ページテスト用の直接担当項目がありません");
-  const directWaitingOn = directItem.waitingOn[0];
+  const directWaitingOn = directItem.waitingOn.find(
+    (waitingOn) => waitingOn.candidateId.toLowerCase() === "hiho",
+  );
   assertNonNullable(directWaitingOn, "担当者ページテスト用の直接担当がありません");
   return createPublicSummaryDto({
     ...summary,
@@ -642,7 +644,7 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll(".person-items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["項目", "状態", "要対応度↓", "重要度", "待ち相手", "停滞時間"]);
+    ).toEqual(["項目", "待ち相手と状態", "要対応度↓", "重要度", "停滞時間"]);
     expect(itemRowNodeIds()).toEqual(["sample-item-editor-101"]);
     const itemCell = requiredElement<HTMLTableCellElement>(
       '.person-items-table tr[data-node-id="sample-item-editor-101"] th[scope="row"]',
@@ -656,21 +658,23 @@ describe("Web UI", () => {
       requiredElement<HTMLElement>(
         '.person-items-table tr[data-node-id="sample-item-editor-101"] .attention-cell',
       ).textContent,
-    ).toBe("中");
+    ).toBe("25点");
     expect(
       requiredElement<HTMLElement>(
         '.person-items-table tr[data-node-id="sample-item-editor-101"] .importance-cell',
       ).textContent,
-    ).toBe("高");
+    ).toBe("63点");
     const tableAiNoticeIcon = itemCell.querySelector<HTMLElement>(".ai-analysis-notice-icon");
     assertNonNullable(tableAiNoticeIcon, "担当者ページの表にAI推定の警告アイコンがありません");
     const directWaitingOn = requiredElement<HTMLElement>(
-      '.person-items-table tr[data-node-id="sample-item-editor-101"] .person-waiting-on',
+      '.person-items-table tr[data-node-id="sample-item-editor-101"] .item-waiting-on-status',
     );
-    expect(directWaitingOn.querySelector(".person-waiting-destinations")?.textContent).toBe(
-      "本人 @HiHo",
+    expect(directWaitingOn.querySelector(".item-primary-waiting-on")?.textContent).toBe(
+      "レビュワー @HiHo",
     );
-    expect(directWaitingOn.querySelector(".person-waiting-reasons")?.textContent).toBe(
+    expect(directWaitingOn.querySelector(".item-other-waiting-on")?.textContent).toBe("ほか1件");
+    expect(directWaitingOn.querySelector(".item-waiting-status")?.textContent).toBe("マージ待ち");
+    expect(directWaitingOn.querySelector(".item-waiting-reason")?.textContent).toBe(
       "HiHoさんの確認を待っています",
     );
     expect(requiredElement<HTMLElement>(".person-item-count strong").textContent).toBe("1件");
@@ -696,14 +700,15 @@ describe("Web UI", () => {
       "https://github.com/VOICEVOX/sample-editor/pull/101",
     );
     expect([...itemCard.querySelectorAll("dt")].map((heading) => heading.textContent)).toEqual([
-      "状態",
+      "待ち相手と状態",
       "要対応度",
       "重要度",
-      "待ち相手",
       "停滞時間",
     ]);
-    expect(itemCard.querySelector(".person-waiting-destinations")?.textContent).toBe("本人 @HiHo");
-    expect(itemCard.querySelector(".person-waiting-reasons")?.textContent).toBe(
+    expect(itemCard.querySelector(".item-primary-waiting-on")?.textContent).toBe(
+      "レビュワー @HiHo",
+    );
+    expect(itemCard.querySelector(".item-waiting-reason")?.textContent).toBe(
       "HiHoさんの確認を待っています",
     );
     const personTableRegion = requiredElement<HTMLElement>(".person-page > .items-table-region");
@@ -756,25 +761,24 @@ describe("Web UI", () => {
       '.person-items-table tr[data-node-id="sample-item-editor-101"] .importance-badge',
     );
     expect(highTableRow.children[0]?.querySelector(".item-list-heading")).not.toBeNull();
-    expect(highTableRow.children[1]?.textContent).toBe("マージ待ち");
+    expect(highTableRow.children[1]?.querySelector(".item-waiting-on-status")).not.toBeNull();
     expect(highTableRow.children[2]?.firstElementChild).toBe(highTableAttentionBadge);
     expect(highTableRow.children[3]?.firstElementChild).toBe(highTableBadge);
-    expect(highTableRow.children[4]?.querySelector(".person-waiting-on")).not.toBeNull();
-    expect(highTableRow.children[5]?.textContent).toBe("12日");
-    expect(highTableAttentionBadge.textContent).toBe("中");
+    expect(highTableRow.children[4]?.textContent).toBe("12日");
+    expect(highTableAttentionBadge.textContent).toBe("25点");
     expect(highTableAttentionBadge.classList).toContain("bg-importance-medium-background");
-    expect(highTableBadge.textContent).toBe("高");
+    expect(highTableBadge.textContent).toBe("63点");
     expect(highTableBadge.classList).not.toContain("bg-importance-high-background");
     expect(
       requiredElement<HTMLElement>(
         '.person-items-table tr[data-node-id="sample-item-engine-204"] .attention-badge',
       ).textContent,
-    ).toBe("低");
+    ).toBe("0点");
     expect(
       requiredElement<HTMLElement>(
         '.person-items-table tr[data-node-id="sample-item-engine-204"] .importance-badge',
       ).textContent,
-    ).toBe("低");
+    ).toBe("12点");
 
     const highCard = requiredElement<HTMLElement>(
       '.items-card-list li[data-node-id="sample-item-editor-101"]',
@@ -787,19 +791,18 @@ describe("Web UI", () => {
     );
     expect(highCardHeading.nextElementSibling).toBe(highCardSummary);
     expect([...highCard.querySelectorAll("dt")].map((heading) => heading.textContent)).toEqual([
-      "状態",
+      "待ち相手と状態",
       "要対応度",
       "重要度",
-      "待ち相手",
       "停滞時間",
     ]);
-    expect(highCard.querySelector(".attention-badge")?.textContent).toBe("中");
-    expect(highCard.querySelector(".importance-badge")?.textContent).toBe("高");
+    expect(highCard.querySelector(".attention-badge")?.textContent).toBe("25点");
+    expect(highCard.querySelector(".importance-badge")?.textContent).toBe("63点");
     expect(
       requiredElement<HTMLElement>(
         '.items-card-list li[data-node-id="sample-item-engine-204"] .importance-badge',
       ).textContent,
-    ).toBe("低");
+    ).toBe("12点");
     expect(highCard.querySelector(".item-score-badges")).toBeNull();
   });
 
@@ -828,13 +831,13 @@ describe("Web UI", () => {
     ).toBeNull();
     expect(
       requiredElement<HTMLTableCellElement>(
-        ".person-items-table thead th:nth-child(5)",
+        ".person-items-table thead th:nth-child(2)",
       ).querySelector("button"),
     ).toBeNull();
 
     act(() => {
       requiredElement<HTMLButtonElement>(
-        ".person-items-table thead th:nth-child(6) button",
+        ".person-items-table thead th:nth-child(5) button",
       ).click();
     });
 
@@ -848,7 +851,7 @@ describe("Web UI", () => {
 
     act(() => {
       requiredElement<HTMLButtonElement>(
-        ".person-items-table thead th:nth-child(6) button",
+        ".person-items-table thead th:nth-child(5) button",
       ).click();
     });
 
@@ -981,21 +984,21 @@ describe("Web UI", () => {
     expect(window.history.length).toBe(historyLength);
     expect(requiredElement<HTMLElement>(".person-item-count strong").textContent).toBe("2件");
     const teamWaitingOn = requiredElement<HTMLElement>(
-      '.person-items-table tr[data-node-id="sample-item-engine-202"] .person-waiting-on',
+      '.person-items-table tr[data-node-id="sample-item-engine-202"] .item-waiting-on-status',
     );
-    expect(teamWaitingOn.querySelector(".person-waiting-destinations")?.textContent).toBe(
-      "選択したチーム VOICEVOX/Maintainers",
+    expect(teamWaitingOn.querySelector(".item-primary-waiting-on")?.textContent).toBe(
+      "レビュワー チーム VOICEVOX/Maintainers",
     );
-    expect(teamWaitingOn.querySelector(".person-waiting-reasons")?.textContent).toBe(
+    expect(teamWaitingOn.querySelector(".item-waiting-reason")?.textContent).toBe(
       "レビューチームへレビューが依頼されています",
     );
     const teamWaitingCard = requiredElement<HTMLElement>(
-      '.items-card-list li[data-node-id="sample-item-engine-202"] .person-waiting-on',
+      '.items-card-list li[data-node-id="sample-item-engine-202"] .item-waiting-on-status',
     );
-    expect(teamWaitingCard.querySelector(".person-waiting-destinations")?.textContent).toBe(
-      "選択したチーム VOICEVOX/Maintainers",
+    expect(teamWaitingCard.querySelector(".item-primary-waiting-on")?.textContent).toBe(
+      "レビュワー チーム VOICEVOX/Maintainers",
     );
-    expect(teamWaitingCard.querySelector(".person-waiting-reasons")?.textContent).toBe(
+    expect(teamWaitingCard.querySelector(".item-waiting-reason")?.textContent).toBe(
       "レビューチームへレビューが依頼されています",
     );
   });
@@ -1403,12 +1406,12 @@ describe("Web UI", () => {
       [...currentContainer().querySelectorAll(".items-table thead th")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["項目", "状態", "要対応度↓", "重要度", "待ち相手", "停滞時間"]);
+    ).toEqual(["項目", "待ち相手と状態", "要対応度↓", "重要度", "停滞時間"]);
     expect(
       [...currentContainer().querySelectorAll(".items-card-list li:first-child dt")].map(
         (heading) => heading.textContent,
       ),
-    ).toEqual(["状態", "要対応度", "重要度", "待ち相手", "停滞時間"]);
+    ).toEqual(["待ち相手と状態", "要対応度", "重要度", "停滞時間"]);
     const itemsControls = requiredElement<HTMLElement>(".item-workspace > .item-list-controls");
     const itemsTableRegion = requiredElement<HTMLElement>(".item-workspace > .items-table-region");
     const itemsCardList = requiredElement<HTMLOListElement>(".item-workspace > .items-card-list");
@@ -1420,21 +1423,38 @@ describe("Web UI", () => {
     expect(itemsTableRegion.classList).not.toContain("md:block");
     expect(itemsCardList.classList).toContain("lg:hidden");
     expect(itemsCardList.classList).not.toContain("md:hidden");
+    const itemsTable = requiredElement<HTMLTableElement>(".items-table");
+    expect(itemsTable.classList).toContain("table-fixed");
+    expect(
+      [...itemsTable.querySelectorAll("colgroup col")].map((column) => column.className),
+    ).toEqual(["w-[39%]", "w-[31%]", "w-[10.5%]", "w-[9%]", "w-[10.5%]"]);
     const itemCell = requiredElement<HTMLTableCellElement>(
       '.items-table tr[data-node-id="sample-item-editor-101"] th[scope="row"]',
     );
-    const statusCell = itemCell.nextElementSibling;
+    const waitingOnStatusCell = itemCell.nextElementSibling;
     const attentionCell = requiredElement<HTMLTableCellElement>(
       '.items-table tr[data-node-id="sample-item-editor-101"] .attention-cell',
     );
-    expect(attentionCell.textContent).toBe("中");
+    expect(attentionCell.textContent).toBe("25点");
     const highImportanceCell = requiredElement<HTMLTableCellElement>(
       '.items-table tr[data-node-id="sample-item-editor-101"] .importance-cell',
     );
-    expect(statusCell?.textContent).toBe("マージ待ち");
-    expect(statusCell?.nextElementSibling).toBe(attentionCell);
+    const highImportanceBadge = requiredElement<HTMLElement>(
+      '.items-table tr[data-node-id="sample-item-editor-101"] .importance-badge',
+    );
+    expect(waitingOnStatusCell?.querySelector(".item-primary-waiting-on")?.textContent).toBe(
+      "マージ判断者の誰か",
+    );
+    expect(waitingOnStatusCell?.querySelector(".item-waiting-status")?.textContent).toBe(
+      "マージ待ち",
+    );
+    expect(waitingOnStatusCell?.querySelector(".item-waiting-reason")?.textContent).toBe(
+      "確認が完了し、メンテナーのマージ判断を待っています",
+    );
+    expect(waitingOnStatusCell?.nextElementSibling).toBe(attentionCell);
     expect(attentionCell.nextElementSibling).toBe(highImportanceCell);
-    expect(highImportanceCell.textContent).toBe("高");
+    expect(highImportanceCell.textContent).toBe("63点");
+    expect(highImportanceBadge.classList).toContain("border-importance-high-border");
     const commonHeadingScopes = [
       itemCell,
       requiredElement<HTMLElement>('.items-card-list li[data-node-id="sample-item-editor-101"]'),
@@ -1450,32 +1470,56 @@ describe("Web UI", () => {
       requiredElement<HTMLTableCellElement>(
         '.items-table tr[data-node-id="sample-item-engine-204"] .attention-cell',
       ).textContent,
-    ).toBe("低");
+    ).toBe("0点");
     expect(
       requiredElement<HTMLTableCellElement>(
         '.items-table tr[data-node-id="sample-item-engine-204"] .importance-cell',
       ).textContent,
-    ).toBe("低");
+    ).toBe("12点");
+    const multipleWaitingOn = requiredElement<HTMLElement>(
+      '.items-table tr[data-node-id="sample-item-engine-204"] .item-waiting-on-status',
+    );
+    expect(multipleWaitingOn.querySelector(".item-primary-waiting-on")?.textContent).toBe(
+      "VOICEVOX/sample-editor#103",
+    );
+    expect(multipleWaitingOn.querySelector(".item-other-waiting-on")?.textContent).toBe("ほか1件");
+    expect(multipleWaitingOn.querySelector(".item-waiting-reason")?.textContent).toBe(
+      "配布方針の決定を待っています",
+    );
+    expect(multipleWaitingOn.querySelector(".item-waiting-reason")?.classList).toContain(
+      "line-clamp-2",
+    );
+    expect(multipleWaitingOn.textContent).not.toContain("example/sample-distribution#42");
+    expect(
+      requiredElement<HTMLElement>(
+        '.items-table tr[data-node-id="sample-item-engine-204"] .attention-badge',
+      ).classList,
+    ).toContain("bg-importance-low-background");
+    expect(
+      requiredElement<HTMLElement>(
+        '.items-table tr[data-node-id="sample-item-engine-204"] .importance-badge',
+      ).classList,
+    ).toContain("border-importance-low-border");
     expect(
       [...currentContainer().querySelectorAll(".items-table .importance-badge")].every(
-        (badge) => !badge.textContent?.includes("点"),
+        (badge) => badge.textContent?.endsWith("点") === true,
       ),
     ).toBe(true);
     expect(
       [...currentContainer().querySelectorAll(".items-card-list .importance-badge")].every(
-        (badge) => !badge.textContent?.includes("点"),
+        (badge) => badge.textContent?.endsWith("点") === true,
       ),
     ).toBe(true);
     expect(
       requiredElement<HTMLElement>(
         '.items-card-list li[data-node-id="sample-item-engine-204"] .importance-badge',
       ).textContent,
-    ).toBe("低");
+    ).toBe("12点");
     expect(
       requiredElement<HTMLElement>(
         '.items-card-list li[data-node-id="sample-item-engine-204"] .attention-badge',
       ).textContent,
-    ).toBe("低");
+    ).toBe("0点");
     const filterDetails = requiredElement<HTMLDetailsElement>(".item-filters");
     expect(filterDetails.open).toBe(false);
     expect(filterDetails.querySelectorAll("select")).toHaveLength(6);
@@ -1694,7 +1738,7 @@ describe("Web UI", () => {
     ).toBe("停滞時間↓");
 
     act(() => {
-      requiredElement<HTMLButtonElement>(".items-table thead th:nth-child(6) button").click();
+      requiredElement<HTMLButtonElement>(".items-table thead th:nth-child(5) button").click();
     });
 
     expect(

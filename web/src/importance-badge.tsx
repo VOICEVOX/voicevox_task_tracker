@@ -3,66 +3,60 @@ import { importanceLevelLabel } from "./model.js";
 import { Pill, type PillVariant } from "./ui.js";
 
 type ScoreWithLevel = PublicItemSummaryDto["importance"];
+type ScoreBadgePresentation = "level_and_score" | "score";
 
 type ImportanceBadgeProps = Readonly<{
   importance: PublicItemSummaryDto["importance"];
-  showLabel: boolean;
-  showScore: boolean;
+  presentation: ScoreBadgePresentation;
 }>;
 
 type AttentionBadgeProps = Readonly<{
   attention: PublicItemSummaryDto["attention"];
-  showLabel: boolean;
-  showScore: boolean;
+  presentation: ScoreBadgePresentation;
 }>;
 
 function ScoreBadge({
   className,
-  label,
+  presentation,
   score,
-  showLabel,
-  showScore,
   variant,
 }: Readonly<{
   className: string;
-  label: string;
+  presentation: ScoreBadgePresentation;
   score: ScoreWithLevel;
-  showLabel: boolean;
-  showScore: boolean;
   variant: PillVariant;
 }>) {
   return (
-    <Pill className={`${className} importance-${score.level}`} tone={score.level} variant={variant}>
-      {showLabel && <span>{label}</span>}
-      <span>{importanceLevelLabel(score.level)}</span>
-      {showScore && <strong class="tabular-nums">{score.score.toString()}点</strong>}
+    <Pill
+      className={`${className} importance-${score.level} tabular-nums ${presentation === "score" ? "min-w-12 justify-center" : ""}`}
+      tone={score.level}
+      variant={variant}
+    >
+      {presentation === "level_and_score" && <span>{importanceLevelLabel(score.level)}</span>}
+      <strong>{score.score.toString()}点</strong>
     </Pill>
   );
 }
 
-/** 重要度のレベルと必要に応じて点数を表示する。 */
-export function ImportanceBadge({ importance, showLabel, showScore }: ImportanceBadgeProps) {
+/** 重要度を指定した一覧向けまたは詳細向けの形式で表示する。 */
+export function ImportanceBadge({ importance, presentation }: ImportanceBadgeProps) {
   return (
     <ScoreBadge
       className="importance-badge"
-      label="重要度"
+      presentation={presentation}
       score={importance}
-      showLabel={showLabel}
-      showScore={showScore}
       variant="outlined"
     />
   );
 }
 
-/** 要対応度のレベルと必要に応じて点数を表示する。 */
-export function AttentionBadge({ attention, showLabel, showScore }: AttentionBadgeProps) {
+/** 要対応度を指定した一覧向けまたは詳細向けの形式で表示する。 */
+export function AttentionBadge({ attention, presentation }: AttentionBadgeProps) {
   return (
     <ScoreBadge
       className="attention-badge"
-      label="要対応度"
+      presentation={presentation}
       score={attention}
-      showLabel={showLabel}
-      showScore={showScore}
       variant="filled"
     />
   );

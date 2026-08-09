@@ -16,9 +16,11 @@ import {
   createTableFilterOptions,
   filterAndSortTableRows,
   formatStallDuration,
+  formatWaitingOnCandidate,
   resolveWaitingSubjects,
+  selectPrimaryWaitingOnCandidate,
   selectWaitingSubjectItemNodeIds,
-  selectWaitingSubjectReasons,
+  selectWaitingSubjectPrimaryCandidate,
   statusLabel,
   waitingOnHistoryLabel,
   waitingOnLabel,
@@ -418,6 +420,42 @@ describe("waitingOn表示", () => {
       ),
     ).toThrowError("waitingOn項目 sample-item-editor-103 の表示名がありません");
   });
+
+  it("primary候補を選び、未選定なら先頭候補へ戻す", () => {
+    const firstCandidate = createWaitingOnCandidate("role", "maintainer", "maintainer");
+    const secondCandidate = createWaitingOnCandidate("role", "reviewer", "reviewer");
+    const selectedItem: PublicItemSummaryDto = {
+      ...identifiedItem,
+      waitingOn: [firstCandidate, secondCandidate],
+      primaryWaitingOn: {
+        index: 0,
+        selectionReason: "先頭候補を選定しました",
+      },
+    };
+    const fallbackItem: PublicItemSummaryDto = {
+      ...selectedItem,
+      primaryWaitingOn: {
+        index: "not_applicable",
+        selectionReason: "primary候補は未選定です",
+      },
+    };
+    const completedItem: PublicItemSummaryDto = {
+      ...selectedItem,
+      status: "terminal_completed",
+      waitingOn: [],
+      primaryWaitingOn: {
+        index: "not_applicable",
+        selectionReason: "完了項目にprimary候補はありません",
+      },
+    };
+
+    expect(selectPrimaryWaitingOnCandidate(selectedItem)).toBe(firstCandidate);
+    expect(selectPrimaryWaitingOnCandidate(fallbackItem)).toBe(firstCandidate);
+    expect(selectPrimaryWaitingOnCandidate(completedItem)).toBeUndefined();
+    expect(formatWaitingOnCandidate(firstCandidate, selectedItem, sampleSummary)).toBe(
+      "メンテナーの誰か",
+    );
+  });
 });
 
 describe("待ち相手", () => {
@@ -611,7 +649,7 @@ describe("待ち相手", () => {
     );
   });
 
-  it("loginまたは所属teamに一致する候補の待ち理由だけを入力順で返す", () => {
+  it("loginまたは所属teamに一致する先頭候補とその理由を返す", () => {
     const item: PublicItemSummaryDto = {
       ...identifiedItem,
       waitingOn: [
@@ -641,11 +679,16 @@ describe("待ち相手", () => {
         },
       ],
     };
+    const expectedCandidate = item.waitingOn[1];
+    assertNonNullable(expectedCandidate, "本人のwaitingOn候補がありません");
 
-    expect(selectWaitingSubjectReasons(item, "hiho", ["voicevox/maintainers"])).toEqual([
-      "本人の確認を待っています",
-      "所属チームの確認を待っています",
-      "担当者の対応を待っています",
+    const selectedCandidate = selectWaitingSubjectPrimaryCandidate(item, "hiho", [
+      "voicevox/maintainers",
     ]);
+    expect(selectedCandidate).toBe(expectedCandidate);
+    expect(selectedCandidate.reasonSummary).toBe("本人の確認を待っています");
+    expect(() => selectWaitingSubjectPrimaryCandidate(item, "missing", [])).toThrowError(
+      `項目 ${item.nodeId} に選択中のwaitingOn候補がありません`,
+    );
   });
 });

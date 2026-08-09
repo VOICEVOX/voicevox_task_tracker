@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
-import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
+import { createItemCardFields, createItemTableColumns } from "./item-list-fields.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
 import { ListCountSummary } from "./list-count-summary.js";
@@ -11,11 +11,9 @@ import {
   createItemDetailsMap,
   createItemTableRows,
   filterAndSortTableRows,
-  formatStallDuration,
-  formatWaitingOn,
   isTableSelectFilterKey,
   searchItemNodeIds,
-  statusLabel,
+  selectPrimaryWaitingOnCandidate,
   type TableFilterOptions,
   type TableFilterKey,
   type ItemTableRow,
@@ -25,9 +23,7 @@ import {
 } from "./model.js";
 import {
   ResponsiveTableCardList,
-  type ResponsiveCardField,
   type ResponsiveListRowPresentation,
-  type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
 import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 import { ActionButton, FORM_CONTROL_CLASS_NAME, Pill } from "./ui.js";
@@ -298,131 +294,18 @@ function ItemTable({
     setPageIndex(0);
   }, [filters, searchState, sort]);
 
-  const tableColumns = [
-    {
-      ariaSort: undefined,
-      cellClassName: "min-w-0",
-      cellKind: "row_header",
-      headerClassName: "whitespace-nowrap",
-      key: "item",
-      label: "項目",
-      renderCell: (row: ItemTableRow) => (
-        <ItemListHeading
-          createItemHref={createItemHref}
-          onSelectItem={onSelectItem}
-          row={row}
-          showFreshnessBadge={true}
-        />
-      ),
-      widthClassName: "w-[32%]",
-    },
-    {
-      ariaSort: undefined,
-      cellClassName: "whitespace-nowrap",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "status",
-      label: "状態",
-      renderCell: (row: ItemTableRow) => statusLabel(row.item.status),
-      widthClassName: "w-[12%]",
-    },
-    {
-      ariaSort: sort.key === "attention" ? sort.direction : "none",
-      cellClassName: "attention-cell whitespace-nowrap",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "attention",
-      label: "要対応度",
-      onSort: () => {
-        updateSort("attention");
-      },
-      renderCell: (row: ItemTableRow) => (
-        <AttentionBadge attention={row.item.attention} showLabel={false} showScore={false} />
-      ),
-      widthClassName: "w-[11%]",
-    },
-    {
-      ariaSort: sort.key === "importance" ? sort.direction : "none",
-      cellClassName: "importance-cell whitespace-nowrap",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "importance",
-      label: "重要度",
-      onSort: () => {
-        updateSort("importance");
-      },
-      renderCell: (row: ItemTableRow) => (
-        <ImportanceBadge importance={row.item.importance} showLabel={false} showScore={false} />
-      ),
-      widthClassName: "w-[10%]",
-    },
-    {
-      ariaSort: undefined,
-      cellClassName: "leading-6 wrap-anywhere",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "waitingOn",
-      label: "待ち相手",
-      renderCell: (row: ItemTableRow) => formatWaitingOn(row.item, summary),
-      widthClassName: "w-[23%]",
-    },
-    {
-      ariaSort: sort.key === "stall" ? sort.direction : "none",
-      cellClassName: "whitespace-nowrap tabular-nums",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "stall",
-      label: "停滞時間",
-      onSort: () => {
-        updateSort("stall");
-      },
-      renderCell: (row: ItemTableRow) => (
-        <strong>{formatStallDuration(row.item.stallSince, now)}</strong>
-      ),
-      widthClassName: "w-[12%]",
-    },
-  ] satisfies readonly ResponsiveTableColumn<ItemTableRow>[];
-  const cardFields = [
-    {
-      className: "",
-      key: "status",
-      label: "状態",
-      renderValue: (row: ItemTableRow) => statusLabel(row.item.status),
-      valueClassName: "font-semibold text-text-primary",
-    },
-    {
-      className: "",
-      key: "attention",
-      label: "要対応度",
-      renderValue: (row: ItemTableRow) => (
-        <AttentionBadge attention={row.item.attention} showLabel={false} showScore={false} />
-      ),
-      valueClassName: "font-semibold text-text-primary",
-    },
-    {
-      className: "",
-      key: "importance",
-      label: "重要度",
-      renderValue: (row: ItemTableRow) => (
-        <ImportanceBadge importance={row.item.importance} showLabel={false} showScore={false} />
-      ),
-      valueClassName: "font-semibold text-text-primary",
-    },
-    {
-      className: "col-span-full border-t border-border-subtle pt-3",
-      key: "waitingOn",
-      label: "待ち相手",
-      renderValue: (row: ItemTableRow) => formatWaitingOn(row.item, summary),
-      valueClassName: "leading-6 text-text-primary",
-    },
-    {
-      className: "",
-      key: "stall",
-      label: "停滞時間",
-      renderValue: (row: ItemTableRow) => formatStallDuration(row.item.stallSince, now),
-      valueClassName: "font-semibold text-text-primary tabular-nums",
-    },
-  ] satisfies readonly ResponsiveCardField<ItemTableRow>[];
+  const itemListFieldOptions = {
+    createItemHref,
+    locale,
+    now,
+    onSelectItem,
+    onSortChange: updateSort,
+    selectPrimaryWaitingOn: (row: ItemTableRow) => selectPrimaryWaitingOnCandidate(row.item),
+    sort,
+    summary,
+  };
+  const tableColumns = createItemTableColumns(itemListFieldOptions);
+  const cardFields = createItemCardFields(itemListFieldOptions);
 
   return (
     <PageSection

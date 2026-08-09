@@ -631,7 +631,8 @@ export function formatWaitingOn(item: PublicItemSummaryDto, summary: PublicSumma
     .join("、");
 }
 
-function formatWaitingOnCandidate(
+/** waitingOn候補を確度区分付きの表示文字列へ変換する。 */
+export function formatWaitingOnCandidate(
   waitingOn: WaitingOnCandidate,
   item: PublicItemSummaryDto,
   summary: PublicSummaryDto,
@@ -640,6 +641,21 @@ function formatWaitingOnCandidate(
   return presentation.fieldQualifier.length === 0
     ? waitingOnLabel(waitingOn, item, summary)
     : `${presentation.fieldQualifier}: ${waitingOnLabel(waitingOn, item, summary)}`;
+}
+
+/** primaryWaitingOnが指す候補を返し、未選定なら先頭候補を返す。 */
+export function selectPrimaryWaitingOnCandidate(
+  item: PublicItemSummaryDto,
+): WaitingOnCandidate | undefined {
+  if (item.waitingOn.length === 0) {
+    return undefined;
+  }
+  if (item.primaryWaitingOn.index === "not_applicable") {
+    return item.waitingOn[0];
+  }
+  const waitingOn = item.waitingOn[item.primaryWaitingOn.index];
+  assertNonNullable(waitingOn, `項目 ${item.nodeId} のprimary waitingOnがありません`);
+  return waitingOn;
 }
 
 function compareStrings(left: string, right: string): number {
@@ -707,31 +723,23 @@ export function collectWaitingSubjectRows(
     });
 }
 
-/** loginまたは所属teamに対応する待ち理由を入力順で返す。 */
-export function selectWaitingSubjectReasons(
+/** loginまたは所属teamに対応する先頭のwaitingOn候補を返す。 */
+export function selectWaitingSubjectPrimaryCandidate(
   item: PublicItemSummaryDto,
   login: string,
   teamIds: readonly string[],
-): readonly string[] {
+): WaitingOnCandidate {
   const subjectKeys = new Set([
     waitingSubjectKey({ kind: "user", login }),
     ...teamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId })),
   ]);
-  const reasons = new Set<string>();
-  return item.waitingOn
-    .filter((waitingOn) =>
-      resolveWaitingOnCandidateSubjects(waitingOn, item).some((subject) =>
-        subjectKeys.has(waitingSubjectKey(subject)),
-      ),
-    )
-    .map((waitingOn) => waitingOn.reasonSummary)
-    .filter((reason) => {
-      if (reasons.has(reason)) {
-        return false;
-      }
-      reasons.add(reason);
-      return true;
-    });
+  const waitingOn = item.waitingOn.find((candidate) =>
+    resolveWaitingOnCandidateSubjects(candidate, item).some((subject) =>
+      subjectKeys.has(waitingSubjectKey(subject)),
+    ),
+  );
+  assertNonNullable(waitingOn, `項目 ${item.nodeId} に選択中のwaitingOn候補がありません`);
+  return waitingOn;
 }
 
 /** loginまたは所属teamの対応を待っている項目のnode ID集合を返す。 */

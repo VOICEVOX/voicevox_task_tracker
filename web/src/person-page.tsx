@@ -2,7 +2,7 @@ import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
-import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
+import { createItemCardFields, createItemTableColumns } from "./item-list-fields.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
 import { ListCountSummary } from "./list-count-summary.js";
@@ -11,23 +11,16 @@ import {
   createEmptyTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
-  formatStallDuration,
-  resolveWaitingSubjects,
   selectWaitingSubjectItemNodeIds,
-  selectWaitingSubjectReasons,
-  statusLabel,
+  selectWaitingSubjectPrimaryCandidate,
   waitingSubjectKey,
-  waitingSubjectLabel,
   type ItemSort,
   type ItemSortKey,
   type ItemTableRow,
-  type WaitingSubject,
 } from "./model.js";
 import {
   ResponsiveTableCardList,
-  type ResponsiveCardField,
   type ResponsiveListRowPresentation,
-  type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
 import { ITEM_SORT_OPTIONS, SortControls } from "./sort-controls.js";
 import { ActionButton } from "./ui.js";
@@ -49,56 +42,6 @@ type PersonPageProps = Readonly<{
   summary: PublicSummaryDto;
   viewerIdentityAvailable: boolean;
 }>;
-
-function selectWaitingDestinations(
-  row: ItemTableRow,
-  login: string,
-  teamIds: readonly string[],
-): readonly WaitingSubject[] {
-  const selectedSubjectKeys = new Set([
-    waitingSubjectKey({ kind: "user", login }),
-    ...teamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId })),
-  ]);
-  const destinations = resolveWaitingSubjects(row.item).filter((subject) =>
-    selectedSubjectKeys.has(waitingSubjectKey(subject)),
-  );
-  if (destinations.length === 0) {
-    throw new TypeError(`項目 ${row.item.nodeId} に選択中の待ち相手がありません`);
-  }
-  return destinations;
-}
-
-function waitingDestinationLabel(subject: WaitingSubject): string {
-  return subject.kind === "user"
-    ? `本人 ${waitingSubjectLabel(subject)}`
-    : `選択した${waitingSubjectLabel(subject)}`;
-}
-
-function PersonWaitingOn({
-  login,
-  row,
-  teamIds,
-}: Readonly<{
-  login: string;
-  row: ItemTableRow;
-  teamIds: readonly string[];
-}>) {
-  const destinations = selectWaitingDestinations(row, login, teamIds);
-  const reasons = selectWaitingSubjectReasons(row.item, login, teamIds);
-  if (reasons.length === 0) {
-    throw new TypeError(`項目 ${row.item.nodeId} に選択中の待ち理由がありません`);
-  }
-  return (
-    <div class="person-waiting-on grid gap-1">
-      <strong class="person-waiting-destinations wrap-anywhere">
-        {destinations.map(waitingDestinationLabel).join("、")}
-      </strong>
-      <span class="person-waiting-reasons text-sm text-text-muted wrap-anywhere">
-        {reasons.join("、")}
-      </span>
-    </div>
-  );
-}
 
 function itemRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
   const stale = row.item.repositoryFreshness === "stale";
@@ -161,135 +104,19 @@ export function PersonPage({
       teamOptions.filter((teamId) => nextTeamKeys.has(waitingSubjectKey({ kind: "team", teamId }))),
     );
   }
-  const tableColumns = [
-    {
-      ariaSort: undefined,
-      cellClassName: "min-w-0",
-      cellKind: "row_header",
-      headerClassName: "whitespace-nowrap",
-      key: "item",
-      label: "項目",
-      renderCell: (row: ItemTableRow) => (
-        <ItemListHeading
-          createItemHref={createItemHref}
-          onSelectItem={onSelectItem}
-          row={row}
-          showFreshnessBadge={true}
-        />
-      ),
-      widthClassName: "w-[32%]",
-    },
-    {
-      ariaSort: undefined,
-      cellClassName: "whitespace-nowrap",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "status",
-      label: "状態",
-      renderCell: (row: ItemTableRow) => statusLabel(row.item.status),
-      widthClassName: "w-[12%]",
-    },
-    {
-      ariaSort: sort.key === "attention" ? sort.direction : "none",
-      cellClassName: "attention-cell whitespace-nowrap",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "attention",
-      label: "要対応度",
-      onSort: () => {
-        onSortChange("attention");
-      },
-      renderCell: (row: ItemTableRow) => (
-        <AttentionBadge attention={row.item.attention} showLabel={false} showScore={false} />
-      ),
-      widthClassName: "w-[11%]",
-    },
-    {
-      ariaSort: sort.key === "importance" ? sort.direction : "none",
-      cellClassName: "importance-cell whitespace-nowrap",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "importance",
-      label: "重要度",
-      onSort: () => {
-        onSortChange("importance");
-      },
-      renderCell: (row: ItemTableRow) => (
-        <ImportanceBadge importance={row.item.importance} showLabel={false} showScore={false} />
-      ),
-      widthClassName: "w-[10%]",
-    },
-    {
-      ariaSort: undefined,
-      cellClassName: "leading-6 wrap-anywhere",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "waitingOn",
-      label: "待ち相手",
-      renderCell: (row: ItemTableRow) => (
-        <PersonWaitingOn login={login} row={row} teamIds={selectedTeamIds} />
-      ),
-      widthClassName: "w-[23%]",
-    },
-    {
-      ariaSort: sort.key === "stall" ? sort.direction : "none",
-      cellClassName: "whitespace-nowrap tabular-nums",
-      cellKind: "data",
-      headerClassName: "whitespace-nowrap",
-      key: "stall",
-      label: "停滞時間",
-      onSort: () => {
-        onSortChange("stall");
-      },
-      renderCell: (row: ItemTableRow) => (
-        <strong>{formatStallDuration(row.item.stallSince, now)}</strong>
-      ),
-      widthClassName: "w-[12%]",
-    },
-  ] satisfies readonly ResponsiveTableColumn<ItemTableRow>[];
-  const cardFields = [
-    {
-      className: "",
-      key: "status",
-      label: "状態",
-      renderValue: (row: ItemTableRow) => statusLabel(row.item.status),
-      valueClassName: "font-semibold text-text-primary",
-    },
-    {
-      className: "",
-      key: "attention",
-      label: "要対応度",
-      renderValue: (row: ItemTableRow) => (
-        <AttentionBadge attention={row.item.attention} showLabel={false} showScore={false} />
-      ),
-      valueClassName: "font-semibold text-text-primary",
-    },
-    {
-      className: "",
-      key: "importance",
-      label: "重要度",
-      renderValue: (row: ItemTableRow) => (
-        <ImportanceBadge importance={row.item.importance} showLabel={false} showScore={false} />
-      ),
-      valueClassName: "font-semibold text-text-primary",
-    },
-    {
-      className: "col-span-full border-t border-border-subtle pt-3",
-      key: "waitingOn",
-      label: "待ち相手",
-      renderValue: (row: ItemTableRow) => (
-        <PersonWaitingOn login={login} row={row} teamIds={selectedTeamIds} />
-      ),
-      valueClassName: "leading-6 text-text-primary",
-    },
-    {
-      className: "",
-      key: "stall",
-      label: "停滞時間",
-      renderValue: (row: ItemTableRow) => formatStallDuration(row.item.stallSince, now),
-      valueClassName: "font-semibold text-text-primary tabular-nums",
-    },
-  ] satisfies readonly ResponsiveCardField<ItemTableRow>[];
+  const itemListFieldOptions = {
+    createItemHref,
+    locale,
+    now,
+    onSelectItem,
+    onSortChange,
+    selectPrimaryWaitingOn: (row: ItemTableRow) =>
+      selectWaitingSubjectPrimaryCandidate(row.item, login, selectedTeamIds),
+    sort,
+    summary,
+  };
+  const tableColumns = createItemTableColumns(itemListFieldOptions);
+  const cardFields = createItemCardFields(itemListFieldOptions);
 
   return (
     <PageSection
