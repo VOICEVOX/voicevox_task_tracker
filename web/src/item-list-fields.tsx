@@ -72,7 +72,7 @@ function WaitingOnStatus({
           </span>
         )}
       </span>
-      <Pill className="item-waiting-status" tone="neutral" variant="filled">
+      <Pill className="item-waiting-status" tone="neutral">
         {statusLabel(row.item.status)}
       </Pill>
       {reason != null && reason.length > 0 && (

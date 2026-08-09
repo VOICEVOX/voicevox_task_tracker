@@ -965,7 +965,7 @@ describe("Web UI", () => {
     expect(highTableAttentionBadge.textContent).toBe("25点");
     expect(highTableAttentionBadge.classList).toContain("bg-importance-medium-background");
     expect(highTableBadge.textContent).toBe("63点");
-    expect(highTableBadge.classList).not.toContain("bg-importance-high-background");
+    expect(highTableBadge.classList).toContain("bg-importance-high-background");
     expect(
       requiredElement<HTMLElement>(
         '.person-items-table tr[data-node-id="sample-item-engine-204"] .attention-badge',
@@ -1712,7 +1712,7 @@ describe("Web UI", () => {
       requiredElement<HTMLElement>(
         '.items-table tr[data-node-id="sample-item-engine-204"] .importance-badge',
       ).classList,
-    ).toContain("border-importance-low-border");
+    ).toContain("bg-importance-low-background");
     expect(
       [...currentContainer().querySelectorAll(".items-table .importance-badge")].every(
         (badge) => badge.textContent?.endsWith("点") === true,

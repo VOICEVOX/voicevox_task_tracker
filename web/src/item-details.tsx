@@ -419,7 +419,7 @@ function WaitingOnCandidateItem({
         </strong>
         {primaryBlockerNodeId === candidate.candidateId &&
           item.primaryWaitingOn.index === candidateIndex && (
-            <Pill className="primary-blocker-badge" tone="danger" variant="filled">
+            <Pill className="primary-blocker-badge" tone="danger">
               主要ブロッカー
             </Pill>
           )}
@@ -651,7 +651,7 @@ export function ItemDetailsContent({
               {decisionFieldLabel("現在の状態", presentation)}
             </dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <Pill className="current-status-badge" tone="neutral" variant="filled">
+              <Pill className="current-status-badge" tone="neutral">
                 {statusLabel(item.status)}
               </Pill>
             </dd>
@@ -849,7 +849,6 @@ export function ItemDetailsContent({
                         <Pill
                           className={`importance-factor-source source-${source.kind}`}
                           tone={source.tone}
-                          variant="filled"
                         >
                           {source.label}
                         </Pill>

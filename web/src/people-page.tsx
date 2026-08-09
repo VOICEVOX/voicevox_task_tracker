@@ -63,7 +63,7 @@ function WaitingSubjectName({
         <span class="min-w-0 text-text-primary wrap-anywhere">{row.label}</span>
       )}
       {viewer && (
-        <Pill className="viewer-person-badge" tone="neutral" variant="filled">
+        <Pill className="viewer-person-badge" tone="neutral">
           <span aria-hidden="true">自分</span>
           <span class="visually-hidden sr-only">自分のアカウントです</span>
         </Pill>

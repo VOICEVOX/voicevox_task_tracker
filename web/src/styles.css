@@ -43,9 +43,9 @@
   --color-importance-medium-text: #6b4400;
   --color-importance-medium-background: #fdf0d5;
   --color-importance-medium-border: #c08a2a;
-  --color-importance-low-text: #4b5a55;
-  --color-importance-low-background: #eceadf;
-  --color-importance-low-border: #8b988f;
+  --color-importance-low-text: #1e4b7a;
+  --color-importance-low-background: #e4eef8;
+  --color-importance-low-border: #4a7ba8;
   --color-graph-grid: color-mix(in srgb, var(--color-text-secondary) 5%, transparent);
   --color-graph-edge-authoritative: #3f5a52;
   --color-graph-edge-inferred: #8a6a4a;

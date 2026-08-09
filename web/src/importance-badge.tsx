@@ -1,6 +1,6 @@
 import { type PublicItemSummaryDto } from "../../src/pages/public-dto.js";
 import { importanceLevelLabel } from "./model.js";
-import { Pill, type PillVariant } from "./ui.js";
+import { Pill } from "./ui.js";
 
 type ScoreWithLevel = PublicItemSummaryDto["importance"];
 type ScoreBadgePresentation = "level_and_score" | "score";
@@ -19,18 +19,15 @@ function ScoreBadge({
   className,
   presentation,
   score,
-  variant,
 }: Readonly<{
   className: string;
   presentation: ScoreBadgePresentation;
   score: ScoreWithLevel;
-  variant: PillVariant;
 }>) {
   return (
     <Pill
       className={`${className} importance-${score.level} font-mono tabular-nums ${presentation === "score" ? "min-w-12 justify-center" : ""}`}
       tone={score.level}
-      variant={variant}
     >
       {presentation === "level_and_score" && <span>{importanceLevelLabel(score.level)}</span>}
       <strong>{score.score.toString()}点</strong>
@@ -40,24 +37,10 @@ function ScoreBadge({
 
 /** 重要度を指定した一覧向けまたは詳細向けの形式で表示する。 */
 export function ImportanceBadge({ importance, presentation }: ImportanceBadgeProps) {
-  return (
-    <ScoreBadge
-      className="importance-badge"
-      presentation={presentation}
-      score={importance}
-      variant="outlined"
-    />
-  );
+  return <ScoreBadge className="importance-badge" presentation={presentation} score={importance} />;
 }
 
 /** 要対応度を指定した一覧向けまたは詳細向けの形式で表示する。 */
 export function AttentionBadge({ attention, presentation }: AttentionBadgeProps) {
-  return (
-    <ScoreBadge
-      className="attention-badge"
-      presentation={presentation}
-      score={attention}
-      variant="filled"
-    />
-  );
+  return <ScoreBadge className="attention-badge" presentation={presentation} score={attention} />;
 }

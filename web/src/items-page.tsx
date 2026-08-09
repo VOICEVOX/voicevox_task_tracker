@@ -338,11 +338,7 @@ function ItemTable({
           <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
             <span class="ml-1 inline-flex max-w-[calc(100%_-_2rem)] flex-wrap items-center gap-x-3 gap-y-1 align-middle">
               <span>列ごとの絞り込み</span>
-              <Pill
-                className="filter-summary-count font-mono tabular-nums"
-                tone="neutral"
-                variant="filled"
-              >
+              <Pill className="filter-summary-count font-mono tabular-nums" tone="neutral">
                 {activeFilterCount === 0 ? "条件なし" : `${activeFilterCount.toString()}件適用中`}
               </Pill>
             </span>

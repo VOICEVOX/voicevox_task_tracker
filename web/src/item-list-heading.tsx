@@ -52,13 +52,12 @@ export function ItemListHeading({
           <Pill
             className={`item-type-badge item-type-${row.item.type}`}
             tone={itemTypeTone(row.item.type)}
-            variant="filled"
           >
             {row.typeText}
           </Pill>
         </span>
         {showFreshnessBadge && row.item.repositoryFreshness === "stale" && (
-          <Pill className="freshness-badge freshness-stale" tone="warning" variant="filled">
+          <Pill className="freshness-badge freshness-stale" tone="warning">
             古い観測値
           </Pill>
         )}
