@@ -82,10 +82,10 @@
       "status": "waiting_for_merge",
       "waitingOn": [
         {
-          "kind": "role",
-          "candidateId": "maintainer",
+          "kind": "user",
+          "candidateId": "sample-maintainer",
           "role": "merge_decider",
-          "reasonSummary": "確認が完了し、メンテナーのマージ判断を待っています",
+          "reasonSummary": "確認が完了し、sample-maintainerさんのマージ判断を待っています",
           "confidence": 1
         }
       ],
@@ -212,10 +212,10 @@
       "status": "waiting_for_decision",
       "waitingOn": [
         {
-          "kind": "role",
-          "candidateId": "maintainer",
+          "kind": "user",
+          "candidateId": "sample-maintainer",
           "role": "maintainer",
-          "reasonSummary": "配布方針についてメンテナーの判断が必要です",
+          "reasonSummary": "配布方針についてsample-maintainerさんの判断が必要です",
           "confidence": 0.95
         }
       ],
@@ -404,10 +404,10 @@
       "status": "waiting_for_assessment",
       "waitingOn": [
         {
-          "kind": "role",
-          "candidateId": "maintainer",
+          "kind": "user",
+          "candidateId": "sample-maintainer",
           "role": "maintainer",
-          "reasonSummary": "メンテナーによる要件の内容確認を待っています",
+          "reasonSummary": "sample-maintainerさんによる要件の内容確認を待っています",
           "confidence": 1
         }
       ],

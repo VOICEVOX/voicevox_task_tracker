@@ -679,6 +679,7 @@ describe("Web UI", () => {
       { subject: "@HiHo", itemCount: "2" },
       { subject: "@aoirint", itemCount: "1" },
       { subject: "@sample-bug-author", itemCount: "1" },
+      { subject: "@sample-maintainer", itemCount: "1" },
       { subject: "チーム VOICEVOX/Maintainers", itemCount: "1" },
       { subject: "チーム VOICEVOX/Reviewers", itemCount: "1" },
     ]);
@@ -714,6 +715,7 @@ describe("Web UI", () => {
       "@HiHo",
       "@aoirint",
       "@sample-bug-author",
+      "@sample-maintainer",
       "チーム VOICEVOX/Maintainers",
       "チーム VOICEVOX/Reviewers",
     ]);
@@ -726,7 +728,7 @@ describe("Web UI", () => {
       "チーム宛の待ちは、担当者ページで所属チームを選ぶとその人の担当に加わります。",
     );
     expect(currentContainer().textContent).toContain(
-      "レビュワーの誰か待ちなど、待ち相手を特定できない項目が5件あります。",
+      "レビュワーの誰か待ちなど、待ち相手を特定できない項目が4件あります。",
     );
   });
 
@@ -1644,7 +1646,7 @@ describe("Web UI", () => {
       '.items-table tr[data-node-id="sample-item-editor-101"] .importance-badge',
     );
     expect(waitingOnStatusCell?.querySelector(".item-primary-waiting-on")?.textContent).toBe(
-      "マージ判断者の誰か",
+      "マージ判断者 @sample-maintainer",
     );
     expect(waitingOnStatusCell?.querySelector(".item-waiting-status")?.textContent).toBe(
       "マージ待ち",
@@ -1659,7 +1661,7 @@ describe("Web UI", () => {
       ]),
     );
     expect(waitingOnStatusCell?.querySelector(".item-waiting-reason")?.textContent).toBe(
-      "確認が完了し、メンテナーのマージ判断を待っています",
+      "確認が完了し、sample-maintainerさんのマージ判断を待っています",
     );
     expect(waitingOnStatusCell?.nextElementSibling).toBe(attentionCell);
     expect(attentionCell.nextElementSibling).toBe(highImportanceCell);
