@@ -705,28 +705,6 @@ function normalizeNativeHierarchyEvents(
   );
 }
 
-function normalizeCurrentReviewRequestSnapshots(
-  detail: Extract<GitHubItemDetail, { type: "pull_request" }>,
-  pullRequestCreatedAt: UtcIsoDateTime,
-): readonly NormalizedEvent[] {
-  return Object.freeze(
-    detail.reviewRequests.current
-      .filter(hasIdentifiedReviewRequestTarget)
-      .filter((request) => request.requestedAt.status === "unavailable")
-      .map((request) =>
-        Object.freeze({
-          kind: "review_request",
-          sourceId: request.sourceId,
-          itemNodeId: detail.nodeId,
-          occurredAt: pullRequestCreatedAt,
-          actor: GITHUB_SYSTEM_ACTOR,
-          target: normalizeReviewRequestTarget(request.target),
-          action: "added",
-        } satisfies NormalizedEvent),
-      ),
-  );
-}
-
 function compareNormalizedEvents(left: NormalizedEvent, right: NormalizedEvent): number {
   if (left.occurredAt < right.occurredAt) {
     return -1;
@@ -792,7 +770,6 @@ function normalizeEvents(options: NormalizeGitHubEventsOptions): readonly Normal
         );
       }
     }
-    events.push(...normalizeCurrentReviewRequestSnapshots(options.detail, options.item.createdAt));
     events.push(
       normalizePushEvent(options.detail.nodeId, options.item.createdAt, options.detail.headCommit),
     );

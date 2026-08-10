@@ -34,6 +34,7 @@ const CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT = 5;
 
 /** Codexを利用できず決定論的判定へ縮退した理由。 */
 export type CodexUnavailableReason =
+  | "input_validation_failed"
   | "timeout"
   | "rate_limited"
   | "invalid_json"
@@ -394,6 +395,8 @@ function createCodexNotification(
 
 function unavailableUncertainty(reason: CodexUnavailableReason): string {
   switch (reason) {
+    case "input_validation_failed":
+      return "Codex入力の検証に失敗したため決定論的判定だけを表示しています";
     case "timeout":
       return "Codexがtimeoutしたため決定論的判定だけを表示しています";
     case "rate_limited":
@@ -411,13 +414,50 @@ function unavailableUncertainty(reason: CodexUnavailableReason): string {
   }
 }
 
-function unresolvedRelationCoverage(input: CodexAnalysisInput): CodexRelationCoverage {
+function unresolvedRelationCoverage(
+  relationCandidateIds: readonly string[],
+): CodexRelationCoverage {
   return Object.freeze({
     status: "fallback",
-    unresolvedCandidateIds: Object.freeze(
-      input.candidates.relations.map((candidate) => candidate.id),
-    ),
+    unresolvedCandidateIds: Object.freeze([...relationCandidateIds]),
   });
+}
+
+function reduceUnavailableCodexAnalysis(
+  deterministicDecision: DeterministicCodexDecision,
+  relationCandidateIds: readonly string[],
+  reason: CodexUnavailableReason,
+  errorType: string,
+): CodexAnalysisReduction {
+  const uncertainty = unavailableUncertainty(reason);
+  return Object.freeze({
+    decision: createDecision("deterministic", deterministicDecision, uncertainty),
+    displayMode: "fallback",
+    importanceAssessment: createUnavailableImportanceAssessment(),
+    ai: Object.freeze({
+      status: "unavailable",
+      reason,
+      errorType,
+    }),
+    relationAssessments: Object.freeze([]),
+    relationCoverage: unresolvedRelationCoverage(relationCandidateIds),
+    notification: createFallbackNotification(uncertainty),
+  });
+}
+
+/** Codex入力の検証失敗を決定論的判定へ縮退する。 */
+export function reduceCodexInputValidationFailure(
+  deterministicDecision: DeterministicCodexDecision,
+  relationCandidateIds: readonly string[],
+  errorType: string,
+): CodexAnalysisReduction {
+  validateDecision(deterministicDecision);
+  return reduceUnavailableCodexAnalysis(
+    deterministicDecision,
+    relationCandidateIds,
+    "input_validation_failed",
+    errorType,
+  );
 }
 
 /** 検証済みCodex出力だけを決定論的判定へ統合するpure reducer。 */
@@ -430,20 +470,12 @@ export function reduceCodexAnalysis(
   validateDecision(deterministicDecision);
 
   if (attempt.status === "unavailable") {
-    const uncertainty = unavailableUncertainty(attempt.reason);
-    return Object.freeze({
-      decision: createDecision("deterministic", deterministicDecision, uncertainty),
-      displayMode: "fallback",
-      importanceAssessment: createUnavailableImportanceAssessment(),
-      ai: Object.freeze({
-        status: "unavailable",
-        reason: attempt.reason,
-        errorType: attempt.errorType,
-      }),
-      relationAssessments: Object.freeze([]),
-      relationCoverage: unresolvedRelationCoverage(analysisInput),
-      notification: createFallbackNotification(uncertainty),
-    });
+    return reduceUnavailableCodexAnalysis(
+      deterministicDecision,
+      analysisInput.candidates.relations.map((candidate) => candidate.id),
+      attempt.reason,
+      attempt.errorType,
+    );
   }
 
   const stateConfidence = effectiveStateConfidence(attempt.output);

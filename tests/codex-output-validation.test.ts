@@ -402,8 +402,73 @@ describe("Codex出力のsemantic検証", () => {
       }
       expect(error.issues).toContainEqual({
         path: "/evidence/0/sourceId",
-        code: "unknown_source_id",
-        message: "入力に存在しないsource IDを参照しています",
+        code: "unknown_source_id_absent_from_input",
+        message: "入力に一度も現れないsource IDを参照しています",
+      });
+    }
+  });
+
+  it("未知source IDがない正常系では入力全体を走査しない", () => {
+    const input = createInput();
+    let enumerationCount = 0;
+    const deterministicSignals = new Proxy(input.deterministicSignals, {
+      ownKeys: (target) => {
+        enumerationCount += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+
+    validateCodexAnalysisOutput(createOutput(0.9), {
+      ...input,
+      deterministicSignals,
+    });
+
+    expect(enumerationCount).toBe(0);
+  });
+
+  it("sourcesにないsource IDが入力の値にあるかどうかを分類する", () => {
+    const input = createCodexAnalysisInput({
+      ...createInput(),
+      deterministicSignals: {
+        copiedValue: "comment:copied-from-input",
+        "comment:field-name-only": true,
+      },
+    });
+    const output = createOutput(0.9);
+    const errorAction = () =>
+      validateCodexAnalysisOutput(
+        {
+          ...output,
+          evidence: [
+            {
+              ...output.evidence[0],
+              sourceId: "comment:copied-from-input",
+            },
+            {
+              ...output.evidence[0],
+              sourceId: "comment:field-name-only",
+            },
+          ],
+        },
+        input,
+      );
+
+    expect(errorAction).toThrow(CodexOutputSemanticValidationError);
+    try {
+      errorAction();
+    } catch (error: unknown) {
+      if (!(error instanceof CodexOutputSemanticValidationError)) {
+        throw error;
+      }
+      expect(error.issues).toContainEqual({
+        path: "/evidence/0/sourceId",
+        code: "unknown_source_id_present_in_input",
+        message: "sourcesには存在せず入力の別領域にあるsource IDを参照しています",
+      });
+      expect(error.issues).toContainEqual({
+        path: "/evidence/1/sourceId",
+        code: "unknown_source_id_absent_from_input",
+        message: "入力に一度も現れないsource IDを参照しています",
       });
     }
   });
@@ -553,7 +618,7 @@ describe("Codex出力検証失敗の診断要約", () => {
           },
           {
             path: "/evidence/0/sourceId",
-            code: "unknown_source_id",
+            code: "unknown_source_id_absent_from_input",
           },
         ],
       },

@@ -863,12 +863,6 @@ describe("GitHubイベント正規化", () => {
 
     const firstPullRequestEvents = normalizePullRequestAt(observedAt);
     const secondPullRequestEvents = normalizePullRequestAt(secondObservedAt);
-    const firstReviewRequestOccurredAt = firstPullRequestEvents.find(
-      (event) => event.sourceId === unavailableReviewRequestSourceId,
-    )?.occurredAt;
-    const secondReviewRequestOccurredAt = secondPullRequestEvents.find(
-      (event) => event.sourceId === unavailableReviewRequestSourceId,
-    )?.occurredAt;
 
     expect(
       firstPullRequestEvents.find((event) => event.sourceId === currentReviewRequestSourceId),
@@ -876,8 +870,12 @@ describe("GitHubイベント正規化", () => {
     expect(
       secondPullRequestEvents.find((event) => event.sourceId === currentReviewRequestSourceId),
     ).toBeUndefined();
-    expect(firstReviewRequestOccurredAt).toBe("2026-07-01T00:00:00.000Z");
-    expect(secondReviewRequestOccurredAt).toBe(firstReviewRequestOccurredAt);
+    expect(
+      firstPullRequestEvents.find((event) => event.sourceId === unavailableReviewRequestSourceId),
+    ).toBeUndefined();
+    expect(
+      secondPullRequestEvents.find((event) => event.sourceId === unavailableReviewRequestSourceId),
+    ).toBeUndefined();
   });
 
   it("GitHub Bot型、設定判定、通常アカウント、取得不能を区別する", () => {

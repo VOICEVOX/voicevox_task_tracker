@@ -124,7 +124,7 @@ ai:
   enabled: true
   authentication: auth-json
   model: gpt-5.6-luna
-  promptVersion: v11
+  promptVersion: v12
   confidence:
     high: 0.85
     medium: 0.65

@@ -160,7 +160,7 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 決定論的規則versionとprompt versionは手で更新する定数です。
 `tests/rules-version-hash.test.ts`が判定に関わるファイルの内容hashを記録しており、
 判定ロジックやプロンプトを変えるとテストが失敗してversionの更新要否を判断させます。
-現行の決定論的規則versionはIssueが`issue-v10`、Pull Requestが`pull-request-v8`です。
+現行の決定論的規則versionはIssueが`issue-v10`、Pull Requestが`pull-request-v9`です。
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
@@ -308,7 +308,7 @@ Discordはtransport例外とHTTP 429、503だけを同じ設定で再試行し�
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
-`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v6`です。
+`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v12`です。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch

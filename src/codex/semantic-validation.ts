@@ -184,6 +184,25 @@ function validateSourceIdUniqueness(
   }
 }
 
+function collectInputStrings(value: unknown, strings: Set<string>): void {
+  if (typeof value === "string") {
+    strings.add(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectInputStrings(entry, strings);
+    }
+    return;
+  }
+  if (typeof value !== "object" || value == null) {
+    return;
+  }
+  for (const entry of Object.values(value)) {
+    collectInputStrings(entry, strings);
+  }
+}
+
 function validateSourceReferences(
   output: SchemaValidCodexAnalysisOutput,
   input: CodexAnalysisInput,
@@ -194,15 +213,26 @@ function validateSourceReferences(
   if (!Number.isFinite(evaluatedAt)) {
     throw new TypeError("Codex入力の判定時刻が不正です");
   }
+  let inputStrings: ReadonlySet<string> | undefined;
 
   for (const reference of collectReferencedSourceIds(output)) {
     const source = knownSources.get(reference.sourceId);
     if (source == null) {
+      if (inputStrings == null) {
+        const collectedInputStrings = new Set<string>();
+        collectInputStrings(input, collectedInputStrings);
+        inputStrings = collectedInputStrings;
+      }
+      const sourceIdAppearsInInput = inputStrings.has(reference.sourceId);
       issues.push(
         createIssue(
           reference.path,
-          "unknown_source_id",
-          "入力に存在しないsource IDを参照しています",
+          sourceIdAppearsInInput
+            ? "unknown_source_id_present_in_input"
+            : "unknown_source_id_absent_from_input",
+          sourceIdAppearsInInput
+            ? "sourcesには存在せず入力の別領域にあるsource IDを参照しています"
+            : "入力に一度も現れないsource IDを参照しています",
         ),
       );
       continue;

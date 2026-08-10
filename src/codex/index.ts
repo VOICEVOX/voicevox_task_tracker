@@ -113,6 +113,7 @@ export {
   classifyCodexUnavailableReason,
   executeValidatedCodexAnalysis,
   reduceCodexAnalysis,
+  reduceCodexInputValidationFailure,
   runCodexAnalysisWithFallback,
   type CodexAnalysisAttempt,
   type CodexAnalysisReduction,

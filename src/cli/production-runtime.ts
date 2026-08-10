@@ -9,10 +9,12 @@ import {
   hashCanonicalJson,
   prepareAiAnalysisCandidate,
   reduceCodexAnalysis,
+  reduceCodexInputValidationFailure,
   runAiAnalyses,
   serializeCanonicalJson,
   type executeCodexAnalysis,
   type AiAnalysisCandidate,
+  type AiAnalysisRunFailure,
   type AiAnalysisRunIdentity,
   type AiAnalysisRunResult,
   type CodexAnalysisInput,
@@ -1549,6 +1551,46 @@ function createNativeBlockers(
   return Object.freeze(blockers);
 }
 
+function addMirroredNativeBlockerSourceRecords(
+  sourceRecords: Map<string, unknown>,
+  item: FreshObservedGitHubItem,
+  relationCandidates: readonly RelationCandidate[],
+): void {
+  for (const candidate of relationCandidates) {
+    if (
+      candidate.provenance !== "native" ||
+      candidate.relation.type !== "blocks" ||
+      candidate.relation.blocked.nodeId !== item.nodeId
+    ) {
+      continue;
+    }
+    const currentEvent = item.events.find(
+      (event) =>
+        event.kind === "relation" &&
+        event.provenance === "native" &&
+        event.relationType === "blocks" &&
+        candidate.sourceIds.includes(event.sourceId),
+    );
+    if (currentEvent == null) {
+      continue;
+    }
+    for (const sourceId of candidate.sourceIds) {
+      if (sourceRecords.has(sourceId)) {
+        continue;
+      }
+      sourceRecords.set(
+        sourceId,
+        Object.freeze({
+          id: sourceId,
+          kind: currentEvent.kind,
+          actorType: currentEvent.actor.type,
+          createdAt: currentEvent.occurredAt,
+        }),
+      );
+    }
+  }
+}
+
 function createIssueRequestCandidates(
   item: Extract<FreshObservedGitHubItem, { type: "issue" }>,
   detail: Extract<GitHubItemDetail, { type: "issue" }>,
@@ -1951,6 +1993,7 @@ function createCodexInput(
       }),
     );
   }
+  addMirroredNativeBlockerSourceRecords(sourceRecords, analysis.item, relationCandidates);
   sourceRecords.set(
     analysis.detail.bodySourceId,
     Object.freeze({
@@ -1975,6 +2018,9 @@ function createCodexInput(
     );
   }
   if (analysis.detail.type === "pull_request") {
+    if (analysis.item.type !== "pull_request") {
+      throw new TypeError("Pull RequestのCodex入力にIssueの観測値が指定されています");
+    }
     for (const thread of analysis.detail.reviewThreads) {
       for (const comment of thread.comments) {
         const event = analysis.item.events.find(
@@ -2004,6 +2050,33 @@ function createCodexInput(
           actorType: event?.actor.type ?? "system",
           createdAt: review.submittedAt,
           content: review.body,
+        }),
+      );
+    }
+    for (const request of analysis.detail.reviewRequests.current) {
+      if (request.requestedAt.status === "unavailable") {
+        continue;
+      }
+      sourceRecords.set(
+        request.sourceId,
+        Object.freeze({
+          id: request.sourceId,
+          kind: "review_request",
+          actorType: "system",
+          createdAt: request.requestedAt.value,
+        }),
+      );
+    }
+    if (analysis.item.mergeState.autoMerge.status === "enabled") {
+      const autoMerge = analysis.item.mergeState.autoMerge;
+      sourceRecords.set(
+        autoMerge.sourceId,
+        Object.freeze({
+          id: autoMerge.sourceId,
+          kind: "auto_merge_request",
+          actorType: autoMerge.enabledBy.type,
+          createdAt: autoMerge.enabledAt,
+          mergeMethod: autoMerge.mergeMethod,
         }),
       );
     }
@@ -2095,9 +2168,11 @@ function createAiCandidates(
   identity: AiAnalysisRunIdentity,
 ): Readonly<{
   candidates: readonly PreparedAiAnalysisCandidate[];
+  failures: readonly AiAnalysisRunFailure[];
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
 }> {
   const inputByNodeId = new Map<GitHubNodeId, CodexAnalysisInput>();
+  const failures: AiAnalysisRunFailure[] = [];
   const previousGraph = previousGraphSnapshot(state);
   const previousGraphAnalysis =
     previousGraph == null
@@ -2117,8 +2192,21 @@ function createAiCandidates(
       repository.items.map((item) => [item.nodeId, item.aiAnalysisFingerprint] as const),
     ),
   );
-  const candidates = deterministicAnalysis.items.map((analysis) => {
-    const input = createCodexInput(collection.evaluatedAt, analysis);
+  const candidates: PreparedAiAnalysisCandidate[] = [];
+  for (const analysis of deterministicAnalysis.items) {
+    let input: CodexAnalysisInput;
+    try {
+      input = createCodexInput(collection.evaluatedAt, analysis);
+    } catch (error: unknown) {
+      failures.push(
+        Object.freeze({
+          candidateId: analysis.item.nodeId,
+          reason: "input_validation_failed",
+          errorType: error instanceof Error ? error.name : typeof error,
+        }),
+      );
+      continue;
+    }
     inputByNodeId.set(analysis.item.nodeId, input);
     const naturalLanguageProgressCandidate = analysis.item.events.some(
       (event) => event.kind === "comment" && event.actor.type === "human" && !event.bodyEmpty,
@@ -2164,44 +2252,59 @@ function createAiCandidates(
       `${serializeCanonicalJson(input)}\n`,
       configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
     );
-    return prepareAiAnalysisCandidate(
-      Object.freeze({
-        id: analysis.item.nodeId,
-        deterministicResolution:
-          analysis.decision.determination === "determined" &&
-          !naturalLanguageProgressCandidate &&
-          relationAssessmentCandidates.every((candidate) => candidate.authority === "authoritative")
-            ? "high_confidence"
-            : "ambiguous",
-        input,
-        graphNeighborhood: Object.freeze(
-          analysis.relationCandidates.map((candidate) => candidate.id),
-        ),
-        previousFingerprint:
-          previousAiFingerprintByNodeId.get(analysis.item.nodeId) ??
-          Object.freeze({
-            status: "unavailable",
-          }),
-        priority: Object.freeze({
-          severityCandidate: analysis.decision.determination === "codex_candidate",
-          ownerUnknown: analysis.decision.waitingOn.some(
-            (waitingOn) => waitingOn.kind === "unknown",
+    candidates.push(
+      prepareAiAnalysisCandidate(
+        Object.freeze({
+          id: analysis.item.nodeId,
+          deterministicResolution:
+            analysis.decision.determination === "determined" &&
+            !naturalLanguageProgressCandidate &&
+            relationAssessmentCandidates.every(
+              (candidate) => candidate.authority === "authoritative",
+            )
+              ? "high_confidence"
+              : "ambiguous",
+          input,
+          graphNeighborhood: Object.freeze(
+            analysis.relationCandidates.map((candidate) => candidate.id),
           ),
-          changedBlocker,
-          downstreamImpact: Object.freeze({
-            openNodeCount: previousImpact?.openNodeCount ?? 0,
-            repositoryCount: previousImpact?.repositoryCount ?? 0,
+          previousFingerprint:
+            previousAiFingerprintByNodeId.get(analysis.item.nodeId) ??
+            Object.freeze({
+              status: "unavailable",
+            }),
+          priority: Object.freeze({
+            severityCandidate: analysis.decision.determination === "codex_candidate",
+            ownerUnknown: analysis.decision.waitingOn.some(
+              (waitingOn) => waitingOn.kind === "unknown",
+            ),
+            changedBlocker,
+            downstreamImpact: Object.freeze({
+              openNodeCount: previousImpact?.openNodeCount ?? 0,
+              repositoryCount: previousImpact?.repositoryCount ?? 0,
+            }),
           }),
-        }),
-        estimatedCostUsd: estimatedCost.estimatedCostUsd,
-      } satisfies AiAnalysisCandidate),
-      identity,
+          estimatedCostUsd: estimatedCost.estimatedCostUsd,
+        } satisfies AiAnalysisCandidate),
+        identity,
+      ),
     );
-  });
+  }
   return Object.freeze({
     candidates: Object.freeze(candidates),
+    failures: Object.freeze(failures),
     inputByNodeId,
   });
+}
+
+function codexFallbackDiagnostic(failure: AiAnalysisRunFailure): string {
+  return safeCodexFallbackDiagnostic(
+    failure.candidateId,
+    failure.reason,
+    failure.errorType,
+    failure.diagnostic,
+    failure.validationDiagnostic,
+  );
 }
 
 async function analyzeCodex(
@@ -2229,23 +2332,24 @@ async function analyzeCodex(
     identity,
   );
   if (!configuration.config.ai.enabled) {
+    const fallback = prepared.failures.length > 0;
     return Object.freeze({
       stage: Object.freeze({
         run: undefined,
         inputByNodeId: prepared.inputByNodeId,
       }),
-      status: "success",
+      status: fallback ? "fallback" : "success",
       aiCallCount: 0,
       aiCacheHitCount: 0,
       estimatedInputTokens: 0,
-      diagnostics: Object.freeze([]),
+      diagnostics: Object.freeze(prepared.failures.map(codexFallbackDiagnostic)),
     });
   }
   const codexCredentials = configuration.credentials.codex;
   if (!codexCredentials.enabled) {
     throw new TypeError("AIが有効ですがCodex認証情報がありません");
   }
-  const run = await runAiAnalyses(
+  const executedRun = await runAiAnalyses(
     prepared.candidates,
     {
       identity,
@@ -2284,6 +2388,10 @@ async function analyzeCodex(
       executedAt: () => collection.evaluatedAt,
     },
   );
+  const run = Object.freeze({
+    ...executedRun,
+    failures: Object.freeze([...prepared.failures, ...executedRun.failures]),
+  }) satisfies AiAnalysisRunResult;
   const fallback = run.failures.length > 0 || run.deferred.length > 0;
   return Object.freeze({
     stage: Object.freeze({
@@ -2295,15 +2403,7 @@ async function analyzeCodex(
     aiCacheHitCount: run.results.filter((result) => result.origin === "cache").length,
     estimatedInputTokens: Math.ceil(run.usage.inputCharacters / 4),
     diagnostics: Object.freeze([
-      ...run.failures.map((failure) =>
-        safeCodexFallbackDiagnostic(
-          failure.candidateId,
-          failure.reason,
-          failure.errorType,
-          failure.diagnostic,
-          failure.validationDiagnostic,
-        ),
-      ),
+      ...run.failures.map(codexFallbackDiagnostic),
       ...run.deferred.map(
         (deferred) => `codex_deferred item=${deferred.candidateId} reason=${deferred.reason}`,
       ),
@@ -2365,9 +2465,9 @@ function reductionForAnalysis(
     return undefined;
   }
   const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
-  assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
   const result = run.results.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (result != null) {
+    assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
     return reduceCodexAnalysis(
       input,
       deterministicCodexDecision(analysis.decision),
@@ -2380,6 +2480,22 @@ function reductionForAnalysis(
   }
   const failure = run.failures.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (failure != null) {
+    if (input == null) {
+      if (failure.reason !== "input_validation_failed") {
+        throw new TypeError(
+          `Codex入力がない項目の失敗理由が入力検証ではありません。対象: ${analysis.item.nodeId}`,
+        );
+      }
+      const relationCandidateIds = deduplicateByStableId(
+        selectRelationAssessmentCandidates(analysis.item.nodeId, analysis.relationCandidates),
+        (candidate) => candidate.id,
+      ).map((candidate) => candidate.id);
+      return reduceCodexInputValidationFailure(
+        deterministicCodexDecision(analysis.decision),
+        relationCandidateIds,
+        failure.errorType,
+      );
+    }
     return reduceCodexAnalysis(
       input,
       deterministicCodexDecision(analysis.decision),
@@ -2393,6 +2509,7 @@ function reductionForAnalysis(
   }
   const deferred = run.deferred.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (deferred != null) {
+    assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
     return reduceCodexAnalysis(
       input,
       deterministicCodexDecision(analysis.decision),

@@ -25,7 +25,7 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Pull Request判定へ適用した決定規則のversion。 */
-export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v8";
+export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v9";
 
 /** 依存グラフからPull Request判定へ渡すblocker。 */
 export type PullRequestBlocker = Readonly<{
@@ -123,6 +123,7 @@ type LabelEventReplay = Readonly<{
 }>;
 
 type ResolvedReviewRequest = Readonly<{
+  requestSourceId: SourceId;
   waitingOn: WaitingOn;
   basis: PullRequestTransitionBasis;
 }>;
@@ -691,16 +692,17 @@ function createAutomationDecision(
   }>[] = [];
 
   if (pullRequest.mergeState.mergeQueue.status === "queued") {
+    const basis = resolveMergeQueueBasis(pullRequest, headBasis);
     automation.push({
       waitingOn: createWaitingOn({
         kind: "automation",
         candidateId: "merge_queue",
         role: "ci",
         reasonSummary: "merge queueの処理中です",
-        sourceIds: [pullRequest.mergeState.mergeQueue.sourceId],
+        sourceIds: basis.sourceIds,
         confidence: 1,
       }),
-      basis: resolveMergeQueueBasis(pullRequest, headBasis),
+      basis,
       nextAction: "merge queueの完了を待つ",
     });
   }
@@ -910,7 +912,6 @@ function createReviewThreadDecision(
 ): PullRequestStateDecision | undefined {
   const commentsBySourceId = getCommentEventsBySourceId(input.pullRequest);
   const actionable: Readonly<{
-    threadSourceId: SourceId;
     sourceIds: readonly SourceId[];
     occurredAt: UtcIsoDateTime;
     latestHumanComment: HumanCommentEvent;
@@ -937,7 +938,7 @@ function createReviewThreadDecision(
       continue;
     }
 
-    const sourceIds = [thread.sourceId, ...reviewerComments.map((comment) => comment.sourceId)];
+    const sourceIds = reviewerComments.map((comment) => comment.sourceId);
     if (thread.isOutdated) {
       addUncertainty(
         context,
@@ -958,7 +959,6 @@ function createReviewThreadDecision(
     ) {
       const authorRepliedSourceIds = [
         ...new Set([
-          thread.sourceId,
           ...reviewerComments.map((comment) => comment.sourceId),
           latestHumanComment.sourceId,
         ]),
@@ -974,7 +974,6 @@ function createReviewThreadDecision(
     const firstComment = [...reviewerComments].sort(compareEvents)[0];
     assertNonNullable(firstComment, "review threadのhuman commentを取得できませんでした");
     actionable.push({
-      threadSourceId: thread.sourceId,
       sourceIds,
       occurredAt: firstComment.occurredAt,
       latestHumanComment,
@@ -1012,10 +1011,7 @@ function createReviewThreadDecision(
       context,
       "actionableなreview threadの後にauthorがスレッド外で発言しているため対応済みまたは質問返しか判断できません",
       [
-        ...threadsBeforeAuthorComments.flatMap((thread) => [
-          thread.threadSourceId,
-          thread.latestHumanComment.sourceId,
-        ]),
+        ...threadsBeforeAuthorComments.map((thread) => thread.latestHumanComment.sourceId),
         ...laterAuthorComments.map((comment) => comment.sourceId),
       ],
       input.confidenceThresholds.medium,
@@ -1029,10 +1025,7 @@ function createReviewThreadDecision(
     addUncertainty(
       context,
       "未解決review threadの最終human commentがauthor対応を求める内容か判断できません",
-      threadsWithBodyBearingLatestComment.flatMap((thread) => [
-        thread.threadSourceId,
-        thread.latestHumanComment.sourceId,
-      ]),
+      threadsWithBodyBearingLatestComment.map((thread) => thread.latestHumanComment.sourceId),
       input.confidenceThresholds.medium,
     );
   }
@@ -1103,14 +1096,15 @@ function resolveHumanReviewRequests(
     const basis =
       request.requestedAt.status === "available"
         ? createBasis([request.sourceId], request.requestedAt.value, "event")
-        : createBasis([request.sourceId], pullRequest.createdAt, "inferred");
+        : createBasis([pullRequest.sourceId], pullRequest.createdAt, "inferred");
     const resolved = Object.freeze({
+      requestSourceId: request.sourceId,
       waitingOn: createWaitingOn({
         kind,
         candidateId,
         role: "reviewer",
         reasonSummary: "現行のreview requestがあります",
-        sourceIds: [request.sourceId],
+        sourceIds: basis.sourceIds,
         confidence: 1,
       }),
       basis,
@@ -1242,24 +1236,26 @@ function createReviewRequestDecision(
   const primary = reviewRequests[0];
   assertNonNullable(primary, "primary review requestを選定できませんでした");
   const sourceIds = reviewRequests.flatMap((request) => request.waitingOn.sourceIds);
-  const resolvedUserRequestSourceIds = new Set(
-    reviewRequests.flatMap((request) =>
-      request.waitingOn.kind === "user" ? request.waitingOn.sourceIds : [],
-    ),
-  );
+  const resolvedUserRequestsBySourceId = new Map<SourceId, ResolvedReviewRequest>();
+  for (const request of reviewRequests) {
+    if (request.waitingOn.kind === "user") {
+      resolvedUserRequestsBySourceId.set(request.requestSourceId, request);
+    }
+  }
   const bodyBearingHumanSpeechEvents = getBodyBearingHumanSpeechEvents(input.pullRequest);
   const reviewerSpeechForRequests = input.pullRequest.reviewRequests.flatMap((request) => {
+    const resolvedRequest = resolvedUserRequestsBySourceId.get(request.sourceId);
     if (
       request.target.type !== "user" ||
       request.target.actor.type !== "human" ||
-      !resolvedUserRequestSourceIds.has(request.sourceId)
+      resolvedRequest == null
     ) {
       return [];
     }
     const reviewerActor = request.target.actor;
     return bodyBearingHumanSpeechEvents
       .filter((event) => event.actor.nodeId === reviewerActor.nodeId)
-      .map((event) => ({ request, event }));
+      .map((event) => ({ request, resolvedRequest, event }));
   });
   const reviewerSpeechAfterRequests = reviewerSpeechForRequests.filter(
     ({ request, event }) =>
@@ -1269,8 +1265,8 @@ function createReviewRequestDecision(
     addUncertainty(
       context,
       "review依頼後にreviewerが発言しているためauthor対応が必要か判断できません",
-      reviewerSpeechAfterRequests.flatMap(({ request, event }) => [
-        request.sourceId,
+      reviewerSpeechAfterRequests.flatMap(({ resolvedRequest, event }) => [
+        ...resolvedRequest.waitingOn.sourceIds,
         event.sourceId,
       ]),
       input.confidenceThresholds.medium,
@@ -1283,8 +1279,8 @@ function createReviewRequestDecision(
     addUncertainty(
       context,
       "review依頼時刻が不明なためreviewerの発言が依頼前か後か判断できません",
-      reviewerSpeechWithUnavailableRequestedAt.flatMap(({ request, event }) => [
-        request.sourceId,
+      reviewerSpeechWithUnavailableRequestedAt.flatMap(({ resolvedRequest, event }) => [
+        ...resolvedRequest.waitingOn.sourceIds,
         event.sourceId,
       ]),
       input.confidenceThresholds.medium,

@@ -488,19 +488,21 @@ describe("観測時刻に依存しない遷移基準", () => {
 
   it("時刻不明のreview requestにはPull Request作成時刻を使う", () => {
     const reviewRequest = createUnavailableReviewRequest("unavailable-request");
+    const pullRequest = createOpenPullRequest();
     const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
       createInput({
-        ...createOpenPullRequest(),
+        ...pullRequest,
         reviewRequests: [reviewRequest],
       }),
     );
 
     expect(earlierDecision.status).toBe("waiting_for_review");
     expect(earlierDecision.statusBasis).toEqual({
-      sourceIds: [reviewRequest.sourceId],
+      sourceIds: [pullRequest.sourceId],
       occurredAt: pullRequestCreatedAt,
       precision: "inferred",
     });
+    expect(earlierDecision.waitingOn[0]?.sourceIds).toEqual([pullRequest.sourceId]);
     expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
     expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
   });
@@ -543,6 +545,7 @@ describe("観測時刻に依存しない遷移基準", () => {
       occurredAt: currentAddition.occurredAt,
       precision: "event",
     });
+    expect(earlierDecision.waitingOn[0]?.sourceIds).toEqual([currentAddition.sourceId]);
     expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
     expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
   });
@@ -569,6 +572,7 @@ describe("観測時刻に依存しない遷移基準", () => {
       occurredAt: headPushedAt,
       precision: "event",
     });
+    expect(earlierDecision.waitingOn[0]?.sourceIds).toEqual([pullRequest.headCommit.sourceId]);
     expect(laterDecision.statusBasis).toEqual(earlierDecision.statusBasis);
     expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
   });
@@ -1365,7 +1369,9 @@ describe("reviewと責務の遷移", () => {
       })),
     } satisfies FreshObservedGitHubPullRequest;
 
-    expect(determinePullRequestState(createInput(unresolved)).status).toBe("waiting_for_revision");
+    const unresolvedDecision = determinePullRequestState(createInput(unresolved));
+    expect(unresolvedDecision.status).toBe("waiting_for_revision");
+    expect(unresolvedDecision.waitingOn[0]?.sourceIds).toEqual([comment.sourceId]);
     expect(determinePullRequestState(createInput(resolved)).status).toBe("waiting_for_review");
   });
 

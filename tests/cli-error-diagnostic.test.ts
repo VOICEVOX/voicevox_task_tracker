@@ -115,14 +115,14 @@ describe("safeErrorDiagnostic", () => {
           },
           {
             path: "/evidence/0/sourceId",
-            code: "unknown_source_id",
+            code: "unknown_source_id_present_in_input",
           },
         ],
       },
     );
 
     expect(diagnostic).toBe(
-      "codex_fallback item=I_fixture reason=semantic_validation_failed errorType=CodexOutputSemanticValidationError validationIssueCount=2 validationIssue0Path=/item/nodeId validationIssue0Code=item_node_id_mismatch validationIssue1Path=/evidence/0/sourceId validationIssue1Code=unknown_source_id",
+      "codex_fallback item=I_fixture reason=semantic_validation_failed errorType=CodexOutputSemanticValidationError validationIssueCount=2 validationIssue0Path=/item/nodeId validationIssue0Code=item_node_id_mismatch validationIssue1Path=/evidence/0/sourceId validationIssue1Code=unknown_source_id_present_in_input",
     );
     expect(diagnostic.length).toBeLessThanOrEqual(1000);
   });

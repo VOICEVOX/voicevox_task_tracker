@@ -198,6 +198,39 @@ describe("Codex分析入力", () => {
       });
     }).toThrow();
   });
+
+  it("構造化領域のsource ID参照に対応するrecordがなければ拒否する", () => {
+    const input = createInput("通常の本文");
+
+    expect(() =>
+      createCodexAnalysisInput({
+        ...input,
+        candidates: {
+          ...input.candidates,
+          waitingOn: [
+            {
+              id: "role:maintainer",
+              sourceIds: ["comment:not-found"],
+            },
+          ],
+        },
+      }),
+    ).toThrow(
+      "Codex入力のsource ID参照に対応するrecordがありません。対象: /candidates/waitingOn/0/sourceIds/0",
+    );
+    expect(() =>
+      createCodexAnalysisInput({
+        ...input,
+        deterministicSignals: {
+          nested: {
+            latestMeaningfulSourceId: "comment:not-found",
+          },
+        },
+      }),
+    ).toThrow(
+      "Codex入力のsource ID参照に対応するrecordがありません。対象: /deterministicSignals/nested/latestMeaningfulSourceId",
+    );
+  });
 });
 
 describe("Codex CLI隔離実行", () => {

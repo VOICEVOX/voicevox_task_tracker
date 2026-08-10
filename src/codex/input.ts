@@ -118,12 +118,79 @@ const codexAnalysisInputSchema = z
     }
   });
 
+function jsonPointerPath(parent: string, field: string): string {
+  const escapedField = field.replaceAll("~", "~0").replaceAll("/", "~1");
+  return `${parent}/${escapedField}`;
+}
+
+function sourceReferenceCardinality(field: string): "single" | "multiple" | undefined {
+  if (field === "sourceId" || field.endsWith("SourceId")) {
+    return "single";
+  }
+  if (field === "sourceIds" || field.endsWith("SourceIds")) {
+    return "multiple";
+  }
+  return undefined;
+}
+
+function assertSourceReference(value: unknown, path: string, sourceIds: ReadonlySet<string>): void {
+  if (value == null) {
+    return;
+  }
+  if (typeof value !== "string") {
+    throw new TypeError(`Codex入力のsource ID参照は文字列にしてください。対象: ${path}`);
+  }
+  if (!sourceIds.has(value)) {
+    throw new TypeError(`Codex入力のsource ID参照に対応するrecordがありません。対象: ${path}`);
+  }
+}
+
+function assertSourceReferences(
+  value: unknown,
+  path: string,
+  sourceIds: ReadonlySet<string>,
+): void {
+  if (Array.isArray(value)) {
+    for (const [index, entry] of value.entries()) {
+      assertSourceReferences(entry, jsonPointerPath(path, index.toString()), sourceIds);
+    }
+    return;
+  }
+  if (typeof value !== "object" || value == null) {
+    return;
+  }
+  for (const [field, entry] of Object.entries(value)) {
+    const entryPath = jsonPointerPath(path, field);
+    const cardinality = sourceReferenceCardinality(field);
+    if (cardinality === "single") {
+      assertSourceReference(entry, entryPath, sourceIds);
+    } else if (cardinality === "multiple") {
+      if (!Array.isArray(entry)) {
+        throw new TypeError(
+          `Codex入力のsource ID参照は文字列配列にしてください。対象: ${entryPath}`,
+        );
+      }
+      for (const [index, sourceId] of entry.entries()) {
+        assertSourceReference(sourceId, jsonPointerPath(entryPath, index.toString()), sourceIds);
+      }
+    }
+    assertSourceReferences(entry, entryPath, sourceIds);
+  }
+}
+
+function assertSourceIntegrity(input: CodexAnalysisInput): void {
+  const sourceIds = new Set(input.sources.map((source) => source.id));
+  assertSourceReferences(input, "", sourceIds);
+}
+
 /** Codexへ渡すsource ID付きの分析入力。 */
 export type CodexAnalysisInput = z.output<typeof codexAnalysisInputSchema>;
 
 /** 未検証の値からCodex分析入力を組み立てる。 */
 export function createCodexAnalysisInput(value: unknown): CodexAnalysisInput {
-  return codexAnalysisInputSchema.parse(value);
+  const input = codexAnalysisInputSchema.parse(value);
+  assertSourceIntegrity(input);
+  return input;
 }
 
 /** Codex分析入力を未信頼データ用のJSONへ変換する。 */

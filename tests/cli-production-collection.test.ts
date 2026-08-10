@@ -730,6 +730,7 @@ function createCodexOutput(
   input: CodexAnalysisInput,
   options: Readonly<{
     status:
+      | "waiting_for_review"
       | "waiting_for_revision"
       | "waiting_for_reply"
       | "waiting_for_automation"
@@ -2594,7 +2595,7 @@ describe("本番収集の接続", () => {
         body: "blocker側にも同じnative依存があります",
         observedAt,
         nativeDependencies: Object.freeze([blockedBy]),
-        duplicateComments: false,
+        duplicateComments: true,
       }),
     );
     fixture.details.set(
@@ -2610,7 +2611,7 @@ describe("本番収集の接続", () => {
     const config = await createTestConfig({
       explicitIncludes: [],
       retentionDays: 180,
-      aiEnabled: false,
+      aiEnabled: true,
     });
     const harness = createCollectionHarness({ repositories: [fixture], config });
 
@@ -2620,7 +2621,11 @@ describe("本番収集の接続", () => {
     const relations = snapshot.relations.filter(
       (relation) => relation.fromNodeId === blocker.nodeId && relation.toNodeId === blocked.nodeId,
     );
-    const sourceIds = [blockedBy.sourceId, blocking.sourceId].sort();
+    const input = harness.codexInputs.find((candidate) => candidate.item.nodeId === blocked.nodeId);
+    const relationSourceIds = [blockedBy.sourceId, blocking.sourceId].sort();
+    const relationSourceIdSet = new Set<string>(relationSourceIds);
+    const relationCreatedAt =
+      blocked.createdAt > blocker.createdAt ? blocked.createdAt : blocker.createdAt;
 
     expect(result.exitCode).toBe(0);
     expect(trackedItem).toMatchObject({
@@ -2630,12 +2635,225 @@ describe("本番収集の接続", () => {
       waitingOn: [
         {
           candidateId: blocker.nodeId,
-          sourceIds,
+          sourceIds: relationSourceIds,
         },
       ],
     });
     expect(relations).toHaveLength(1);
-    expect(relations[0]?.evidence.map((evidence) => evidence.sourceId).sort()).toEqual(sourceIds);
+    expect(relations[0]?.evidence.map((evidence) => evidence.sourceId).sort()).toEqual(
+      relationSourceIds,
+    );
+    expect(
+      input?.sources
+        .filter((source) => relationSourceIdSet.has(source.id))
+        .map((source) => ({
+          id: source.id,
+          kind: source.kind,
+          actorType: source.actorType,
+          createdAt: source.createdAt,
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+    ).toEqual(
+      relationSourceIds.map((sourceId) => ({
+        id: sourceId,
+        kind: "relation",
+        actorType: "system",
+        createdAt: relationCreatedAt,
+      })),
+    );
+  });
+
+  it("片側だけのnative blocker sourceでCodex入力が不正でも項目単位でfallbackする", async () => {
+    const repository = createRepository(
+      "R_asymmetric_native_blocker",
+      "asymmetric-native-blocker",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const blocked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "asymmetric-native-blocked",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const blocker = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "asymmetric-native-blocker",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const blocking = createNativeBlocking(blocker, blocked);
+    fixture.openItems = [blocked, blocker];
+    fixture.details.set(
+      blocked.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item: blocked,
+          body: "現在項目側ではnative dependencyを取得できません",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: true,
+        }),
+        nativeDependencies: Object.freeze({
+          availability: "unavailable",
+          reason: "api_not_supported",
+        }),
+      }),
+    );
+    fixture.details.set(
+      blocker.nodeId,
+      createIssueDetail({
+        item: blocker,
+        body: "相手項目側だけにnative dependencyがあります",
+        observedAt,
+        nativeDependencies: Object.freeze([blocking]),
+        duplicateComments: true,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        if (input.item.nodeId !== blocker.nodeId) {
+          throw new TypeError("不正なCodex入力の項目がAI呼び出しへ渡されました");
+        }
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("非対称native blocker fixtureのsourceがありません");
+        }
+        return Promise.resolve(
+          createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: requireCodexAuthorCandidateId(input),
+              kind: "user",
+              role: "author",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        );
+      },
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    if (result.command !== "dry-run") {
+      throw new TypeError("非対称native blocker fixtureがdry-run結果を返しませんでした");
+    }
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+    const blockedSnapshot = snapshot.items.find((item) => item.nodeId === blocked.nodeId);
+    const blockerSnapshot = snapshot.items.find((item) => item.nodeId === blocker.nodeId);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.result.report.status).toBe("fallback");
+    expect(harness.codexInputs.map((input) => input.item.nodeId)).toEqual([blocker.nodeId]);
+    expect(snapshot.run.status).toBe("fallback");
+    expect(snapshot.ai).toEqual({
+      enabled: true,
+      available: true,
+      degraded: true,
+    });
+    expect(blockedSnapshot).toMatchObject({
+      status: "waiting_for_unblock",
+      waitingOn: [
+        {
+          candidateId: blocker.nodeId,
+          sourceIds: [blocking.sourceId],
+        },
+      ],
+      aiAnalysis: {
+        status: "failed",
+      },
+    });
+    expect(blockedSnapshot?.uncertainties).toContain(
+      "Codex入力の検証に失敗したため決定論的判定だけを表示しています",
+    );
+    expect(blockerSnapshot?.aiAnalysis).toMatchObject({
+      status: "used",
+    });
+    expect(result.result.report.diagnostics).toContain(
+      `codex_fallback item=${blocked.nodeId} reason=input_validation_failed errorType=TypeError`,
+    );
+  });
+
+  it("Codex入力のschema検証失敗も項目単位でfallbackする", async () => {
+    const repository = createRepository(
+      "R_invalid_codex_input_schema",
+      "invalid-codex-input-schema",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const item = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "invalid-codex-input-schema",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const invalidSourceId = z.string().brand<"SourceId">().parse("invalid-source-id");
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item,
+          body: "",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: true,
+        }),
+        bodySourceId: invalidSourceId,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    if (result.command !== "dry-run") {
+      throw new TypeError("Codex入力schema違反fixtureがdry-run結果を返しませんでした");
+    }
+    const snapshot = requireDryRunSnapshot(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.result.report.status).toBe("fallback");
+    expect(harness.codexExecutionCount()).toBe(0);
+    expect(snapshot.run.status).toBe("fallback");
+    expect(snapshot.ai).toEqual({
+      enabled: true,
+      available: false,
+      degraded: true,
+    });
+    expect(snapshot.items[0]?.aiAnalysis).toEqual({
+      status: "failed",
+    });
+    expect(result.result.report.diagnostics).toContain(
+      `codex_fallback item=${item.nodeId} reason=input_validation_failed errorType=ZodError`,
+    );
   });
 
   it("PR本文と両側native closing情報を1件のauthoritative implements edgeへ統合する", async () => {
@@ -5532,6 +5750,377 @@ describe("本番判定入力の接続", () => {
         actorType: "human",
         createdAt: observedAt,
         content: "",
+      },
+    ]);
+  });
+
+  it("時刻付きの現行review requestをsource recordとしてCodexへ渡す", async () => {
+    const repository = createRepository(
+      "R_codex_review_request",
+      "codex-review-request",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const requestedAt = createUtcIsoDateTime("2026-07-31T12:00:00.000Z");
+    const item = createPullRequestItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "review-request-source",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    const detail = createFailedCheckPullRequestDetail(item, observedAt);
+    const activityComment = createDuplicateComments(item, requestedAt)[0];
+    if (activityComment == null) {
+      throw new TypeError("review request用のhuman commentがありません");
+    }
+    const reviewRequestNodeId = createGitHubNodeId("RR_codex_review_request");
+    const reviewRequestSourceId = buildSourceId("github_review_request", reviewRequestNodeId);
+    const reviewerNodeId = createGitHubNodeId("U_codex_review_request");
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...detail,
+        comments: Object.freeze([activityComment]),
+        reviewRequests: Object.freeze({
+          current: Object.freeze([
+            Object.freeze({
+              sourceId: reviewRequestSourceId,
+              nodeId: reviewRequestNodeId,
+              target: Object.freeze({
+                type: "user",
+                sourceId: buildSourceId("github_user", reviewerNodeId),
+                nodeId: reviewerNodeId,
+                login: "codex-reviewer",
+                apiType: "User",
+              }),
+              requestedAt: Object.freeze({
+                status: "available",
+                value: requestedAt,
+              }),
+            }),
+          ]),
+          history: Object.freeze([]),
+        }),
+        mergeState: Object.freeze({
+          ...detail.mergeState,
+          checks: Object.freeze({
+            status: "not_configured",
+          }),
+        }),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) =>
+        Promise.resolve(
+          createCodexOutput(input, {
+            status: "waiting_for_review",
+            waitingOn: {
+              candidateId: "codex-reviewer",
+              kind: "user",
+              role: "reviewer",
+              sourceId: reviewRequestSourceId,
+            },
+            latestMeaningfulSourceId: activityComment.sourceId,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        ),
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const input = harness.codexInputs[0];
+    if (input == null) {
+      throw new TypeError("review requestを確認するCodex入力がありません");
+    }
+
+    expect(result.exitCode).toBe(0);
+    expect(input.sources.filter((source) => source.id === reviewRequestSourceId)).toEqual([
+      {
+        id: reviewRequestSourceId,
+        kind: "review_request",
+        actorType: "system",
+        createdAt: requestedAt,
+      },
+    ]);
+    expect(input.deterministicSignals["waitingOn"]).toMatchObject([
+      {
+        candidateId: "codex-reviewer",
+        sourceIds: [reviewRequestSourceId],
+      },
+    ]);
+  });
+
+  it("review threadの現在状態IDを使わずcomment sourceへ根拠を差し替える", async () => {
+    const repository = createRepository(
+      "R_codex_review_thread",
+      "codex-review-thread",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const commentAt = createUtcIsoDateTime("2026-07-31T12:00:00.000Z");
+    const item = createPullRequestItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "review-thread-source",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    const detail = createFailedCheckPullRequestDetail(item, observedAt);
+    const reviewer = Object.freeze({
+      status: "identified",
+      account: Object.freeze({
+        sourceId: buildSourceId("github_account", "U_codex_review_thread"),
+        nodeId: createGitHubNodeId("U_codex_review_thread"),
+        login: "thread-reviewer",
+        apiType: "User",
+      }),
+    } satisfies (typeof detail.reviewThreads)[number]["resolvedBy"]);
+    const threadSourceId = buildSourceId(
+      "github_pull_request_review_thread",
+      "PRRT_codex_review_thread",
+    );
+    const commentSourceId = buildSourceId(
+      "github_pull_request_review_comment",
+      "PRRC_codex_review_thread",
+    );
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...detail,
+        reviewThreads: Object.freeze([
+          Object.freeze({
+            sourceId: threadSourceId,
+            nodeId: createGitHubNodeId("PRRT_codex_review_thread"),
+            sequence: 0,
+            isResolved: false,
+            isOutdated: false,
+            path: "src/example.ts",
+            resolvedBy: reviewer,
+            comments: Object.freeze([
+              Object.freeze({
+                sourceId: commentSourceId,
+                nodeId: createGitHubNodeId("PRRC_codex_review_thread"),
+                sequence: 0,
+                author: reviewer,
+                body: "この条件を修正してください",
+                createdAt: commentAt,
+                updatedAt: commentAt,
+                url: `${item.url}#discussion_r_codex_review_thread`,
+              } satisfies (typeof detail.reviewThreads)[number]["comments"][number]),
+            ]),
+          } satisfies (typeof detail.reviewThreads)[number]),
+        ]),
+        mergeState: Object.freeze({
+          ...detail.mergeState,
+          checks: Object.freeze({
+            status: "not_configured",
+          }),
+        }),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) =>
+        Promise.resolve(
+          createCodexOutput(input, {
+            status: "waiting_for_revision",
+            waitingOn: {
+              candidateId: requireCodexAuthorCandidateId(input),
+              kind: "user",
+              role: "author",
+              sourceId: commentSourceId,
+            },
+            latestMeaningfulSourceId: commentSourceId,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        ),
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const input = harness.codexInputs[0];
+    if (input == null) {
+      throw new TypeError("review threadを確認するCodex入力がありません");
+    }
+
+    expect(result.exitCode).toBe(0);
+    expect(input.sources.some((source) => source.id === threadSourceId)).toBe(false);
+    expect(input.sources.some((source) => source.id === commentSourceId)).toBe(true);
+    expect(input.deterministicSignals["waitingOn"]).toMatchObject([
+      {
+        sourceIds: [commentSourceId],
+      },
+    ]);
+    expect(input.candidates.waitingOn).toContainEqual(
+      expect.objectContaining({
+        sourceIds: [commentSourceId],
+      }),
+    );
+  });
+
+  it("auto-mergeをrecord化しmerge queueを追加イベントへ差し替える", async () => {
+    const repository = createRepository("R_codex_automation", "codex-automation", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const queuedAt = createUtcIsoDateTime("2026-07-31T10:00:00.000Z");
+    const autoMergeEnabledAt = createUtcIsoDateTime("2026-07-31T11:00:00.000Z");
+    const item = createPullRequestItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "automation-source",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    const detail = createFailedCheckPullRequestDetail(item, observedAt);
+    const activityComment = createDuplicateComments(item, autoMergeEnabledAt)[0];
+    if (activityComment == null) {
+      throw new TypeError("automation用のhuman commentがありません");
+    }
+    const actor = Object.freeze({
+      status: "identified",
+      account: Object.freeze({
+        sourceId: buildSourceId("github_account", "U_codex_automation"),
+        nodeId: createGitHubNodeId("U_codex_automation"),
+        login: "automation-operator",
+        apiType: "User",
+      }),
+    } satisfies (typeof detail.reviews)[number]["author"]);
+    const mergeQueueSourceId = buildSourceId("github_merge_queue_entry", "MQE_codex_automation");
+    const queueEventSourceId = buildSourceId("github_timeline_event", "ATMQE_codex_automation");
+    const autoMergeSourceId = buildSourceId("github_auto_merge_request", item.nodeId);
+    const autoMergeEventSourceId = buildSourceId("github_timeline_event", "AMEE_codex_automation");
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...detail,
+        comments: Object.freeze([activityComment]),
+        timeline: Object.freeze([
+          Object.freeze({
+            sourceId: queueEventSourceId,
+            nodeId: createGitHubNodeId("ATMQE_codex_automation"),
+            sequence: 0,
+            occurredAt: queuedAt,
+            actor,
+            kind: "added_to_merge_queue",
+          } satisfies GitHubTimelineEvent),
+          Object.freeze({
+            sourceId: autoMergeEventSourceId,
+            nodeId: createGitHubNodeId("AMEE_codex_automation"),
+            sequence: 1,
+            occurredAt: autoMergeEnabledAt,
+            actor,
+            kind: "auto_merge_enabled",
+          } satisfies GitHubTimelineEvent),
+        ]),
+        mergeState: Object.freeze({
+          ...detail.mergeState,
+          autoMerge: Object.freeze({
+            status: "enabled",
+            sourceId: autoMergeSourceId,
+            enabledAt: autoMergeEnabledAt,
+            enabledBy: actor,
+            mergeMethod: "squash",
+          }),
+          mergeQueue: Object.freeze({
+            status: "queued",
+            sourceId: mergeQueueSourceId,
+            nodeId: createGitHubNodeId("MQE_codex_automation"),
+          }),
+          checks: Object.freeze({
+            status: "not_configured",
+          }),
+        }),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) =>
+        Promise.resolve(
+          createCodexOutput(input, {
+            status: "waiting_for_automation",
+            waitingOn: {
+              candidateId: "merge_queue",
+              kind: "automation",
+              role: "ci",
+              sourceId: queueEventSourceId,
+            },
+            latestMeaningfulSourceId: activityComment.sourceId,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        ),
+    });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    const input = harness.codexInputs[0];
+    if (input == null) {
+      throw new TypeError("automationを確認するCodex入力がありません");
+    }
+
+    expect(result.exitCode).toBe(0);
+    expect(input.sources.filter((source) => source.id === autoMergeSourceId)).toEqual([
+      {
+        id: autoMergeSourceId,
+        kind: "auto_merge_request",
+        actorType: "human",
+        createdAt: autoMergeEnabledAt,
+        mergeMethod: "squash",
+      },
+    ]);
+    expect(input.sources.some((source) => source.id === mergeQueueSourceId)).toBe(false);
+    expect(input.sources.some((source) => source.id === queueEventSourceId)).toBe(true);
+    expect(input.sources.some((source) => source.id === autoMergeEventSourceId)).toBe(true);
+    expect(input.deterministicSignals["waitingOn"]).toMatchObject([
+      {
+        candidateId: "merge_queue",
+        sourceIds: [queueEventSourceId],
+      },
+      {
+        candidateId: "auto_merge",
+        sourceIds: [autoMergeSourceId],
       },
     ]);
   });
