@@ -50,6 +50,7 @@ export type OfflineAnalysisMetrics = Readonly<{
   activeEdgeCount: number;
   aiCallCount: number;
   aiCacheHitCount: number;
+  aiRetainedResultCount: number;
   estimatedInputTokens: number;
   staleRepositoryCount: number;
 }>;
@@ -341,6 +342,7 @@ function addMetrics(
     activeEdgeCount: left.activeEdgeCount + right.activeEdgeCount,
     aiCallCount: left.aiCallCount + right.aiCallCount,
     aiCacheHitCount: left.aiCacheHitCount + right.aiCacheHitCount,
+    aiRetainedResultCount: left.aiRetainedResultCount + right.aiRetainedResultCount,
     estimatedInputTokens: left.estimatedInputTokens + right.estimatedInputTokens,
     staleRepositoryCount: left.staleRepositoryCount + right.staleRepositoryCount,
   };
@@ -356,6 +358,7 @@ function emptyOfflineMetrics(): OfflineAnalysisMetrics {
     activeEdgeCount: 0,
     aiCallCount: 0,
     aiCacheHitCount: 0,
+    aiRetainedResultCount: 0,
     estimatedInputTokens: 0,
     staleRepositoryCount: 0,
   });

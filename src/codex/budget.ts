@@ -97,10 +97,14 @@ function comparePriority(left: AiAnalysisPriority, right: AiAnalysisPriority): n
   if (openNodeCount !== 0) {
     return openNodeCount;
   }
-  return compareNumberDescending(
+  const repositoryCount = compareNumberDescending(
     left.downstreamImpact.repositoryCount,
     right.downstreamImpact.repositoryCount,
   );
+  if (repositoryCount !== 0) {
+    return repositoryCount;
+  }
+  return compareBooleanPriority(left.previouslyDeferred, right.previouslyDeferred);
 }
 
 function validateNonNegativeSafeInteger(value: number, name: string): void {

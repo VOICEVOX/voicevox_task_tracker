@@ -41,6 +41,7 @@ run reportの主な確認項目は次のとおりです。
 | `metrics.activeEdgeCount`           | 有効な関係edge数                                                              |
 | `metrics.aiCallCount`               | Codexを実行した件数                                                           |
 | `metrics.aiCacheHitCount`           | AI cacheを再利用した件数                                                      |
+| `metrics.aiRetainedResultCount`     | AI分析対象へ入れず前回のAI結果を保持した件数                                  |
 | `metrics.estimatedInputTokens`      | Codex入力tokenの見積り                                                        |
 | `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                  |
 | `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                  |
@@ -342,6 +343,7 @@ Actions上でCodexの認証エラーが起きた場合は、まず過去の`coll
 `fallback`はAI分析に失敗または延期した項目を決定論的判定と利用可能な前回結果へ縮退した完全runです。
 項目一覧を`AI推定が最新でない`で絞り込み、各行の警告アイコンと項目詳細の注記で対象を特定します。
 原因はrun reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から追います。
+`metrics.aiCacheHitCount`が0でも`metrics.aiRetainedResultCount`が1以上なら、未変更項目のAI結果はAI分析対象へ入れず保持されています。
 対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。
 `failure`が`state_persistence`より前ならstateは更新されません。
 `pages`か`discord`で失敗した場合はstate commit後の可能性があるため、snapshotのrun IDとPagesの生成時刻を比較し、両者が同じrunか確認します。

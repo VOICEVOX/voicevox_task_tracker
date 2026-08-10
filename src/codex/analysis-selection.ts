@@ -28,6 +28,7 @@ export type PreviousAiAnalysisFingerprint =
 
 /** 予算不足時のCodex分析優先順位。 */
 export type AiAnalysisPriority = Readonly<{
+  previouslyDeferred: boolean;
   severityCandidate: boolean;
   ownerUnknown: boolean;
   changedBlocker: boolean;

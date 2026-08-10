@@ -71,6 +71,7 @@ export type CodexAnalysisStageResult<Value> = Readonly<{
   value: Value;
   aiCallCount: number;
   aiCacheHitCount: number;
+  aiRetainedResultCount: number;
   estimatedInputTokens: number;
   diagnostics: readonly string[];
 }>;
@@ -583,6 +584,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       metrics = updateMetrics(metrics, {
         aiCallCount: codexAnalysis.aiCallCount,
         aiCacheHitCount: codexAnalysis.aiCacheHitCount,
+        aiRetainedResultCount: codexAnalysis.aiRetainedResultCount,
         estimatedInputTokens: codexAnalysis.estimatedInputTokens,
       });
       const runStatus = codexAnalysis.status;

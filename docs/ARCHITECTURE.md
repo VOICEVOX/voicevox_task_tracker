@@ -164,9 +164,9 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
-初回に判定する項目と、判定規則の変更で再判定する項目は、timelineを`since`なしの全履歴で取得します。
+詳細取得対象に選んだ項目は、理由にかかわらずtimelineを`since`なしの全履歴で取得します。
 停滞起点はtimelineイベントの再生から決めるため、過去のイベントが見えていないと下限まで落ちてしまいます。
-GitHubの`updated_at`が進んだだけの項目は、前回の停滞起点を引き継ぐので増分窓のままにします。
+同じGitHub状態ならtimeline sourceとrelationが毎回一致し、AI入力hashと隣接graph hashも安定します。
 
 ## 停滞起点の決定論性
 
@@ -277,6 +277,7 @@ Codex入力の判定時刻は未来のsource参照を拒否するsemantic検証�
 判定時刻を入力hashから除外するため、run開始時刻だけが異なる入力は同じcache keyになります。
 call数、入力文字数、推定費用の上限を超えた候補を優先順位に従って延期できる設計です。
 本番経路は実入力から推定費用を算出し、blocker変化と前回graphのdownstream impactを予算不足時の優先順位へ反映します。
+これらの条件が同じ候補では、前回延期された項目をnode ID順より先にします。
 
 予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`件まで同時に実行します。
 判定結果と失敗の並びは完了順ではなく予算計画順へ再構成するため、並列度を変えてもrun reportとstateのbyte列は変わりません。

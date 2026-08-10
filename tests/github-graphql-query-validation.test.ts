@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { buildSchema, parse, validate } from "graphql";
 import { describe, expect, it } from "vitest";
 
-import { createUtcIsoDateTime } from "../src/domain/index.js";
 import { ITEM_IDENTIFIER_QUERY } from "../src/github/item-enumeration-queries.js";
 import {
   CHECK_CONTEXT_PAGE_QUERY,
@@ -12,7 +11,6 @@ import {
   createItemDetailQuery,
   createNativeDependencyPageQuery,
   createTimelinePageQuery,
-  type GitHubItemDetailEventWindow,
   ITEM_DETAIL_CAPABILITIES_QUERY,
   PULL_REQUEST_HEAD_COMMIT_QUERY,
   REVIEW_PAGE_QUERY,
@@ -35,24 +33,6 @@ const schema = buildSchema(
     assumeValidSDL: true,
   },
 );
-const eventWindows = [
-  {
-    name: "初回取得",
-    eventWindow: {
-      mode: "initial",
-    },
-  },
-  {
-    name: "差分取得",
-    eventWindow: {
-      mode: "incremental",
-      since: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
-    },
-  },
-] satisfies readonly Readonly<{
-  name: string;
-  eventWindow: GitHubItemDetailEventWindow;
-}>[];
 const capabilityAvailabilities = [
   "available",
   "unavailable",
@@ -108,25 +88,18 @@ const fixedQueryCases = [
   },
 ] satisfies readonly QueryCase[];
 const itemDetailQueryCases = capabilityAvailabilities.flatMap((nativeDependencies) =>
-  capabilityAvailabilities.flatMap((nativeHierarchy) =>
-    eventWindows.map(({ name, eventWindow }) => ({
-      name: `詳細 ${name} 依存関係${nativeDependencies} 階層${nativeHierarchy}`,
-      query: createItemDetailQuery(
-        {
-          nativeDependencies,
-          nativeHierarchy,
-        },
-        eventWindow,
-      ),
-    })),
-  ),
-);
-const timelineQueryCases = itemTypes.flatMap((itemType) =>
-  eventWindows.map(({ name, eventWindow }) => ({
-    name: `タイムライン ${itemType} ${name}`,
-    query: createTimelinePageQuery(itemType, eventWindow),
+  capabilityAvailabilities.map((nativeHierarchy) => ({
+    name: `詳細 依存関係${nativeDependencies} 階層${nativeHierarchy}`,
+    query: createItemDetailQuery({
+      nativeDependencies,
+      nativeHierarchy,
+    }),
   })),
 );
+const timelineQueryCases = itemTypes.map((itemType) => ({
+  name: `タイムライン ${itemType}`,
+  query: createTimelinePageQuery(itemType),
+}));
 const dependencyQueryCases = dependencyDirections.map((direction) => ({
   name: `依存関係次ページ ${direction}`,
   query: createNativeDependencyPageQuery(direction),
@@ -139,12 +112,12 @@ const queryCases: readonly QueryCase[] = [
 ];
 
 describe("GitHub GraphQLクエリ", () => {
-  it("送信しうる25件を列挙する", () => {
+  it("送信しうる19件を列挙する", () => {
     expect(fixedQueryCases).toHaveLength(11);
-    expect(itemDetailQueryCases).toHaveLength(8);
-    expect(timelineQueryCases).toHaveLength(4);
+    expect(itemDetailQueryCases).toHaveLength(4);
+    expect(timelineQueryCases).toHaveLength(2);
     expect(dependencyQueryCases).toHaveLength(2);
-    expect(queryCases).toHaveLength(25);
+    expect(queryCases).toHaveLength(19);
   });
 
   it.each(queryCases)("$nameを公式schemaで検証できる", ({ query }) => {

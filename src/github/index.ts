@@ -42,7 +42,6 @@ export {
 export {
   collectGitHubItemDetails,
   type CollectGitHubItemDetailsOptions,
-  type GitHubItemDetailEventWindow,
   type GitHubItemDetailTarget,
 } from "./item-detail-collection.js";
 export {
@@ -103,7 +102,6 @@ export {
 export {
   planIncrementalItemCollection,
   type CurrentAnalysisRulesFingerprints,
-  type IncrementalItemDetailTarget,
   type IncrementalItemCollectionPlan,
   type PlanIncrementalItemCollectionOptions,
   type PreviousAnalysisRulesFingerprint,

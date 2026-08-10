@@ -434,7 +434,6 @@ describe("Issue詳細収集", () => {
         targets: [
           {
             item,
-            eventWindow: Object.freeze({ mode: "initial" }),
           },
         ],
         observedAt,
@@ -491,7 +490,6 @@ describe("Issue詳細収集", () => {
         targets: [
           {
             item,
-            eventWindow: Object.freeze({ mode: "initial" }),
           },
         ],
         observedAt,
@@ -533,7 +531,6 @@ describe("Issue詳細収集", () => {
         targets: [
           {
             item,
-            eventWindow: Object.freeze({ mode: "initial" }),
           },
         ],
         observedAt,
@@ -542,11 +539,10 @@ describe("Issue詳細収集", () => {
     ).rejects.toBe(wrappedError);
   });
 
-  it("同じ詳細収集で項目ごとのtimeline取得窓を使う", async () => {
+  it("同じ詳細収集の全項目でtimelineを全履歴取得する", async () => {
     const allowlist = createAllowlist();
-    const fullHistoryItem = createItem(allowlist, "I_full_history", 1, "issue");
-    const incrementalItem = createItem(allowlist, "I_incremental", 2, "issue");
-    const since = createUtcIsoDateTime("2026-07-31T23:55:00Z");
+    const firstItem = createItem(allowlist, "I_first", 1, "issue");
+    const secondItem = createItem(allowlist, "I_second", 2, "issue");
     const mock = createGraphqlHttpMock((operation, variables) => {
       if (operation === "GitHubItemDetailCapabilities") {
         return createCapabilitiesResponse("unavailable");
@@ -570,15 +566,10 @@ describe("Issue詳細収集", () => {
       allowlist,
       targets: [
         {
-          item: fullHistoryItem,
-          eventWindow: Object.freeze({ mode: "initial" }),
+          item: firstItem,
         },
         {
-          item: incrementalItem,
-          eventWindow: Object.freeze({
-            mode: "incremental",
-            since,
-          }),
+          item: secondItem,
         },
       ],
       observedAt,
@@ -587,24 +578,24 @@ describe("Issue詳細収集", () => {
     const detailRequests = mock.requests.filter(
       (request) => request.operation === "GitHubItemDetail",
     );
-    const fullHistoryRequest = detailRequests.find(
-      (request) => request.variables["itemId"] === fullHistoryItem.nodeId,
+    const firstRequest = detailRequests.find(
+      (request) => request.variables["itemId"] === firstItem.nodeId,
     );
-    const incrementalRequest = detailRequests.find(
-      (request) => request.variables["itemId"] === incrementalItem.nodeId,
+    const secondRequest = detailRequests.find(
+      (request) => request.variables["itemId"] === secondItem.nodeId,
     );
-    if (fullHistoryRequest == null || incrementalRequest == null) {
-      throw new Error("項目別timeline取得窓のGraphQL requestが不足しています");
+    if (firstRequest == null || secondRequest == null) {
+      throw new Error("全履歴timelineのGraphQL requestが不足しています");
     }
 
     expect(collection.items.map((item) => item.nodeId)).toEqual([
-      fullHistoryItem.nodeId,
-      incrementalItem.nodeId,
+      firstItem.nodeId,
+      secondItem.nodeId,
     ]);
-    expect(fullHistoryRequest.variables).not.toHaveProperty("since");
-    expect(fullHistoryRequest.query).not.toContain("$since");
-    expect(incrementalRequest.variables).toMatchObject({ since });
-    expect(incrementalRequest.query).toContain("$since");
+    expect(firstRequest.variables).not.toHaveProperty("since");
+    expect(firstRequest.query).not.toContain("$since");
+    expect(secondRequest.variables).not.toHaveProperty("since");
+    expect(secondRequest.query).not.toContain("$since");
   });
 
   it("100件を超えるコメントの順序とIDを保持し、native関係とinbound sourceを返す", async () => {
@@ -768,7 +759,6 @@ describe("Issue詳細収集", () => {
       targets: [
         {
           item,
-          eventWindow: Object.freeze({ mode: "initial" }),
         },
       ],
       observedAt,
@@ -1013,7 +1003,6 @@ describe("Issue詳細収集", () => {
       targets: [
         {
           item,
-          eventWindow: Object.freeze({ mode: "initial" }),
         },
       ],
       observedAt,
@@ -1108,7 +1097,6 @@ describe("Issue詳細収集", () => {
       targets: [
         {
           item,
-          eventWindow: Object.freeze({ mode: "initial" }),
         },
       ],
       observedAt,
@@ -1330,7 +1318,6 @@ async function collectPullRequestNullableFieldFixture(
     targets: [
       {
         item,
-        eventWindow: Object.freeze({ mode: "initial" }),
       },
     ],
     observedAt,
@@ -1636,7 +1623,6 @@ describe("Pull Request詳細収集", () => {
       targets: [
         {
           item,
-          eventWindow: Object.freeze({ mode: "initial" }),
         },
       ],
       observedAt,
@@ -1682,7 +1668,6 @@ describe("Pull Request詳細収集", () => {
       targets: [
         {
           item,
-          eventWindow: Object.freeze({ mode: "initial" }),
         },
       ],
       observedAt,
@@ -1743,7 +1728,6 @@ describe("Pull Request詳細収集", () => {
       targets: [
         {
           item,
-          eventWindow: Object.freeze({ mode: "initial" }),
         },
       ],
       observedAt,
@@ -1803,7 +1787,6 @@ describe("Pull Request詳細収集", () => {
         targets: [
           {
             item,
-            eventWindow: Object.freeze({ mode: "initial" }),
           },
         ],
         observedAt,
@@ -2065,7 +2048,6 @@ describe("Pull Request詳細収集", () => {
       targets: [
         {
           item,
-          eventWindow: Object.freeze({ mode: "initial" }),
         },
       ],
       observedAt,
@@ -2305,7 +2287,6 @@ describe("Pull Request詳細収集", () => {
         targets: [
           {
             item,
-            eventWindow: Object.freeze({ mode: "initial" }),
           },
         ],
         observedAt,
@@ -2354,7 +2335,6 @@ describe("Pull Request詳細収集", () => {
       allowlist,
       targets: fixtures.map((fixture) => ({
         item: fixture.item,
-        eventWindow: Object.freeze({ mode: "initial" }),
       })),
       observedAt,
       graphql: mock.graphql,

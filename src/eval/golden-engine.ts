@@ -134,6 +134,7 @@ export type GoldenFixtureAnalysisResult = Readonly<{
     activeEdgeCount: number;
     aiCallCount: number;
     aiCacheHitCount: number;
+    aiRetainedResultCount: number;
     estimatedInputTokens: number;
     staleRepositoryCount: number;
   }>;
@@ -1371,6 +1372,7 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
       activeEdgeCount: reconciled.activeEdges.length,
       aiCallCount: 0,
       aiCacheHitCount: 0,
+      aiRetainedResultCount: 0,
       estimatedInputTokens: 0,
       staleRepositoryCount: 0,
     }),
@@ -1676,6 +1678,7 @@ function analyzeLargeFixture(
       activeEdgeCount: edges.length,
       aiCallCount: 0,
       aiCacheHitCount: 0,
+      aiRetainedResultCount: 0,
       estimatedInputTokens: 0,
       staleRepositoryCount: 0,
     }),

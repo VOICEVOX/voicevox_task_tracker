@@ -408,6 +408,7 @@ function createRunReport(
       activeEdgeCount: snapshot.relations.filter((relation) => relation.active).length,
       aiCallCount: 0,
       aiCacheHitCount: 0,
+      aiRetainedResultCount: 0,
       estimatedInputTokens: 0,
       githubApiRemaining: 5000,
       staleRepositoryCount: 0,

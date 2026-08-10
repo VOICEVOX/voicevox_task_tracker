@@ -26,7 +26,6 @@ import {
   createItemDetailQuery,
   createNativeDependencyPageQuery,
   createTimelinePageQuery,
-  type GitHubItemDetailEventWindow,
   ITEM_DETAIL_CAPABILITIES_QUERY,
   PULL_REQUEST_HEAD_COMMIT_QUERY,
   REVIEW_PAGE_QUERY,
@@ -73,15 +72,7 @@ import {
   type PublicRepositoryAllowlist,
 } from "./public-repository-allowlist.js";
 
-export { type GitHubItemDetailEventWindow } from "./item-detail-queries.js";
-
 const CONNECTION_PAGE_SIZE = 100;
-
-function eventWindowVariables(
-  window: GitHubItemDetailEventWindow,
-): Readonly<Record<string, unknown>> {
-  return window.mode === "initial" ? Object.freeze({}) : Object.freeze({ since: window.since });
-}
 
 const opaqueIdSchema = z.string().min(1).regex(/^\S+$/u);
 const shaSchema = z.string().min(1).regex(/^\S+$/u);
@@ -631,10 +622,9 @@ type RawCheckContext = z.output<typeof checkContextSchema>;
 type RawTimelineNode = z.output<typeof timelineNodeSchema>;
 type RawActor = NonNullable<z.output<typeof actorSchema>>;
 
-/** 項目ごとの詳細取得対象とtimeline取得窓。 */
+/** 詳細取得対象のGitHub項目。 */
 export type GitHubItemDetailTarget = Readonly<{
   item: EnumeratedGitHubItem;
-  eventWindow: GitHubItemDetailEventWindow;
 }>;
 
 export type CollectGitHubItemDetailsOptions = Readonly<{
@@ -961,12 +951,11 @@ function normalizeComments(nodes: readonly RawComment[]): readonly GitHubIssueCo
 async function collectTimelineNodes(
   item: EnumeratedGitHubItem,
   initialConnection: z.output<typeof timelineConnectionSchema>,
-  eventWindow: GitHubItemDetailEventWindow,
   graphql: Graphql,
 ): Promise<readonly RawTimelineNode[]> {
   const nodes = [...initialConnection.nodes];
   let pageInfo = initialConnection.pageInfo;
-  const query = createTimelinePageQuery(item.type, eventWindow);
+  const query = createTimelinePageQuery(item.type);
   for (;;) {
     const cursor = requireConnectionCursor(pageInfo, "timeline events");
     if (cursor == null) {
@@ -975,7 +964,6 @@ async function collectTimelineNodes(
     const response = await graphql(query, {
       itemId: item.nodeId,
       after: cursor,
-      ...eventWindowVariables(eventWindow),
     });
     const parsed = parseGraphqlResponse(
       itemTimelinePageResponseSchema,
@@ -2293,18 +2281,12 @@ function validateItemRepositoryAlias(
 
 async function collectIssueDetail(
   item: EnumeratedGitHubItem,
-  eventWindow: GitHubItemDetailEventWindow,
   issue: z.output<typeof baseIssueSchema>,
   capabilities: GitHubItemDetailCapabilities,
   options: CollectGitHubItemDetailsOptions,
 ): Promise<GitHubItemDetail> {
   const commentNodes = await collectCommentNodes(item, issue.comments, options.graphql);
-  const timelineNodes = await collectTimelineNodes(
-    item,
-    issue.timelineItems,
-    eventWindow,
-    options.graphql,
-  );
+  const timelineNodes = await collectTimelineNodes(item, issue.timelineItems, options.graphql);
   const timeline = normalizeTimeline(timelineNodes);
   return Object.freeze({
     sourceId: buildProductionSourceId("github_item_detail", item.nodeId),
@@ -2330,7 +2312,6 @@ async function collectIssueDetail(
 
 async function collectPullRequestDetail(
   item: EnumeratedGitHubItem,
-  eventWindow: GitHubItemDetailEventWindow,
   pullRequest: z.output<typeof basePullRequestSchema>,
   options: CollectGitHubItemDetailsOptions,
 ): Promise<GitHubItemDetail> {
@@ -2355,7 +2336,6 @@ async function collectPullRequestDetail(
   const timelineNodes = await collectTimelineNodes(
     item,
     pullRequest.timelineItems,
-    eventWindow,
     options.graphql,
   );
   const timeline = normalizeTimeline(timelineNodes);
@@ -2486,15 +2466,13 @@ function warnUnavailableEvidence(
 
 async function collectItemDetail(
   item: EnumeratedGitHubItem,
-  eventWindow: GitHubItemDetailEventWindow,
   repository: PublicRepository,
   capabilities: GitHubItemDetailCapabilities,
   options: CollectGitHubItemDetailsOptions,
 ): Promise<GitHubItemDetail> {
   validateItemRepositoryAlias(item, repository);
-  const response = await options.graphql(createItemDetailQuery(capabilities, eventWindow), {
+  const response = await options.graphql(createItemDetailQuery(capabilities), {
     itemId: item.nodeId,
-    ...eventWindowVariables(eventWindow),
   });
   const parsed = parseGraphqlResponse(
     baseItemDetailResponseSchema,
@@ -2510,8 +2488,8 @@ async function collectItemDetail(
   assertItemResponseType(responseItem.__typename, item, `${item.displayReference} details`);
   const detail =
     responseItem.__typename === "Issue"
-      ? await collectIssueDetail(item, eventWindow, responseItem, capabilities, options)
-      : await collectPullRequestDetail(item, eventWindow, responseItem, options);
+      ? await collectIssueDetail(item, responseItem, capabilities, options)
+      : await collectPullRequestDetail(item, responseItem, options);
   warnUnavailableEvidence(item, repository, detail);
   return detail;
 }
@@ -2520,21 +2498,13 @@ async function collectItemDetail(
 export async function collectGitHubItemDetails(
   options: CollectGitHubItemDetailsOptions,
 ): Promise<GitHubItemDetailCollection> {
-  for (const target of options.targets) {
-    if (
-      target.eventWindow.mode === "incremental" &&
-      target.eventWindow.since > options.observedAt
-    ) {
-      throw new RangeError("増分イベント取得起点は詳細観測時刻以前にしてください");
-    }
-  }
   validateDetailTargets(options.allowlist, options.targets);
   const capabilities = await discoverCapabilities(options.graphql);
   const details: GitHubItemDetail[] = [];
-  for (const { item, eventWindow } of options.targets) {
+  for (const { item } of options.targets) {
     const repository = options.allowlist.require(item.repositoryId);
     try {
-      details.push(await collectItemDetail(item, eventWindow, repository, capabilities, options));
+      details.push(await collectItemDetail(item, repository, capabilities, options));
     } catch (error: unknown) {
       if (error instanceof GitHubItemDetailCollectionError) {
         throw error;

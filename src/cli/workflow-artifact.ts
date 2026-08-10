@@ -129,6 +129,7 @@ const runMetadataMetricsSchema = z.strictObject({
   activeEdgeCount: nonNegativeIntegerSchema,
   aiCallCount: nonNegativeIntegerSchema,
   aiCacheHitCount: nonNegativeIntegerSchema,
+  aiRetainedResultCount: nonNegativeIntegerSchema,
   estimatedInputTokens: nonNegativeIntegerSchema,
   githubApiRemaining: nonNegativeIntegerSchema,
   staleRepositoryCount: nonNegativeIntegerSchema,

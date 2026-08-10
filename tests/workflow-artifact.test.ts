@@ -26,6 +26,7 @@ function emptyRunMetadataMetrics(): WorkflowRunMetadata["metrics"] {
     activeEdgeCount: 0,
     aiCallCount: 0,
     aiCacheHitCount: 0,
+    aiRetainedResultCount: 0,
     estimatedInputTokens: 0,
     githubApiRemaining: 0,
     staleRepositoryCount: 0,

@@ -14,7 +14,6 @@ import {
   GitHubResponseValidationError,
   createGitHubBodyFingerprint,
   createPublicRepositoryAllowlist,
-  deduplicateByStableId,
   enumerateGitHubItemsByIdentifiers,
   enumerateOpenGitHubItems,
   planIncrementalItemCollection,
@@ -669,43 +668,23 @@ describe("増分項目収集", () => {
       items: currentItems,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(previousItems, "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds,
-      overlapMilliseconds: 300_000,
     });
 
-    expect(plan.mode).toBe("incremental");
-    if (plan.mode !== "incremental") {
-      throw new Error("incremental plan fixtureではありません");
-    }
-    expect(plan.since).toBe("2026-07-31T23:55:00.000Z");
     expect(plan.changedItemNodeIds).toHaveLength(10);
-    expect(plan.detailTargets).toHaveLength(12);
-    expect(new Set(plan.detailTargets.map((target) => target.nodeId))).toEqual(
+    expect(plan.detailItemNodeIds).toHaveLength(12);
+    expect(new Set(plan.detailItemNodeIds)).toEqual(
       new Set([
         ...plan.changedItemNodeIds,
         createGitHubNodeId("I_adjacent_a"),
         createGitHubNodeId("I_adjacent_b"),
       ]),
     );
-    expect(plan.detailTargets.map((target) => target.nodeId)).not.toContain("I_item_1");
-    expect(
-      plan.detailTargets
-        .filter((target) => target.eventWindow.mode === "incremental")
-        .every(
-          (target) =>
-            target.eventWindow.mode === "incremental" && target.eventWindow.since === plan.since,
-        ),
-    ).toBe(true);
-    expect(
-      plan.detailTargets
-        .filter((target) => target.eventWindow.mode === "initial")
-        .map((target) => target.nodeId),
-    ).toEqual([createGitHubNodeId("I_adjacent_a"), createGitHubNodeId("I_adjacent_b")]);
+    expect(plan.detailItemNodeIds).not.toContain("I_item_1");
   });
 
   it("repository rename後もnode IDが同じ項目を別項目へ分裂させない", async () => {
@@ -731,13 +710,11 @@ describe("増分項目収集", () => {
       items: currentItems,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(previousItems, "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
-      overlapMilliseconds: 300_000,
     });
 
     expect(previousItem.nodeId).toBe(currentItem.nodeId);
@@ -745,7 +722,7 @@ describe("増分項目収集", () => {
     expect(previousItem.displayReference).toBe("VOICEVOX/old-name#1");
     expect(currentItem.displayReference).toBe("VOICEVOX/new-name#1");
     expect(plan.changedItemNodeIds).toEqual([]);
-    expect(plan.detailTargets).toEqual([]);
+    expect(plan.detailItemNodeIds).toEqual([]);
     expect(plan.currentItemFingerprints).toHaveLength(1);
   });
 
@@ -764,27 +741,18 @@ describe("増分項目収集", () => {
       items,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(items, "used"),
       currentAnalysisRulesFingerprints: changedAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
-      overlapMilliseconds: 300_000,
     });
 
     expect(plan.changedItemNodeIds).toEqual([item.nodeId]);
-    expect(plan.detailTargets).toEqual([
-      {
-        nodeId: item.nodeId,
-        eventWindow: {
-          mode: "initial",
-        },
-      },
-    ]);
+    expect(plan.detailItemNodeIds).toEqual([item.nodeId]);
   });
 
-  it("判定規則変更項目とupdated_at変更項目へ異なるtimeline取得窓を割り当てる", async () => {
+  it("判定規則変更項目とupdated_at変更項目と隣接項目を全履歴取得対象にする", async () => {
     const previousItems = await enumerateFixture("R_example", "example", [
       createItemMetadata(1, {}),
       createItemMetadata(2, {
@@ -809,7 +777,7 @@ describe("増分項目収集", () => {
     const updatedPullRequest = currentItems[1];
     const adjacentPullRequest = currentItems[2];
     if (rulesChangedIssue == null || updatedPullRequest == null || adjacentPullRequest == null) {
-      throw new Error("取得窓混在fixtureが不足しています");
+      throw new Error("全履歴取得fixtureが不足しています");
     }
     const changedAnalysisRulesFingerprints = Object.freeze({
       ...initialAnalysisRulesFingerprints,
@@ -820,37 +788,18 @@ describe("増分項目収集", () => {
       items: currentItems,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(previousItems, "used"),
       currentAnalysisRulesFingerprints: changedAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set([adjacentPullRequest.nodeId]),
-      overlapMilliseconds: 300_000,
     });
 
     expect(plan.changedItemNodeIds).toEqual([rulesChangedIssue.nodeId, updatedPullRequest.nodeId]);
-    expect(plan.detailTargets).toEqual([
-      {
-        nodeId: rulesChangedIssue.nodeId,
-        eventWindow: {
-          mode: "initial",
-        },
-      },
-      {
-        nodeId: updatedPullRequest.nodeId,
-        eventWindow: {
-          mode: "incremental",
-          since: "2026-07-31T23:55:00.000Z",
-        },
-      },
-      {
-        nodeId: adjacentPullRequest.nodeId,
-        eventWindow: {
-          mode: "incremental",
-          since: "2026-07-31T23:55:00.000Z",
-        },
-      },
+    expect(plan.detailItemNodeIds).toEqual([
+      rulesChangedIssue.nodeId,
+      updatedPullRequest.nodeId,
+      adjacentPullRequest.nodeId,
     ]);
   });
 
@@ -872,27 +821,18 @@ describe("増分項目収集", () => {
       items: currentItems,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(previousItems, initialAnalysisRulesFingerprints),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses([], "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
-      overlapMilliseconds: 300_000,
     });
 
     expect(plan.changedItemNodeIds).toEqual(currentItems.map((item) => item.nodeId));
-    expect(plan.detailTargets).toEqual(
-      currentItems.map((item) => ({
-        nodeId: item.nodeId,
-        eventWindow: {
-          mode: "initial",
-        },
-      })),
-    );
+    expect(plan.detailItemNodeIds).toEqual(currentItems.map((item) => item.nodeId));
   });
 
-  it("隣接項目は前回判定済みなら増分、未判定なら全履歴で取得する", async () => {
+  it("隣接項目は前回判定の有無にかかわらず全履歴取得対象にする", async () => {
     const items = await enumerateFixture("R_example", "example", [
       createItemMetadata(1, {}),
       createItemMetadata(2, {}),
@@ -900,38 +840,22 @@ describe("増分項目収集", () => {
     const analyzedItem = items[0];
     const unanalyzedItem = items[1];
     if (analyzedItem == null || unanalyzedItem == null) {
-      throw new Error("隣接項目取得窓fixtureが不足しています");
+      throw new Error("隣接項目の全履歴取得fixtureが不足しています");
     }
 
     const plan = planIncrementalItemCollection({
       items,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses([analyzedItem], "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set([analyzedItem.nodeId, unanalyzedItem.nodeId]),
-      overlapMilliseconds: 300_000,
     });
 
     expect(plan.changedItemNodeIds).toEqual([]);
-    expect(plan.detailTargets).toEqual([
-      {
-        nodeId: analyzedItem.nodeId,
-        eventWindow: {
-          mode: "incremental",
-          since: "2026-07-31T23:55:00.000Z",
-        },
-      },
-      {
-        nodeId: unanalyzedItem.nodeId,
-        eventWindow: {
-          mode: "initial",
-        },
-      },
-    ]);
+    expect(plan.detailItemNodeIds).toEqual([analyzedItem.nodeId, unanalyzedItem.nodeId]);
   });
 
   it("Issue規則だけが変わったときPull Requestを詳細取得対象にしない", async () => {
@@ -955,18 +879,16 @@ describe("増分項目収集", () => {
       items,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(items, "used"),
       currentAnalysisRulesFingerprints: changedAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
-      overlapMilliseconds: 300_000,
     });
 
     expect(plan.changedItemNodeIds).toEqual([issue.nodeId]);
-    expect(plan.detailTargets.map((target) => target.nodeId)).toEqual([issue.nodeId]);
-    expect(plan.detailTargets.map((target) => target.nodeId)).not.toContain(pullRequest.nodeId);
+    expect(plan.detailItemNodeIds).toEqual([issue.nodeId]);
+    expect(plan.detailItemNodeIds).not.toContain(pullRequest.nodeId);
   });
 
   it("前回判定済みでない項目は判定規則fingerprintが未保持でも詳細取得対象にしない", async () => {
@@ -980,17 +902,15 @@ describe("増分項目収集", () => {
       items,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItemsWithoutAnalysisRulesFingerprint(items),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses([], "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
-      overlapMilliseconds: 300_000,
     });
 
     expect(plan.changedItemNodeIds).toEqual([]);
-    expect(plan.detailTargets).toEqual([]);
+    expect(plan.detailItemNodeIds).toEqual([]);
   });
 
   it("前回判定済みの項目は判定規則fingerprintが未保持なら詳細取得対象にする", async () => {
@@ -1004,28 +924,19 @@ describe("増分項目収集", () => {
       items,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItemsWithoutAnalysisRulesFingerprint(items),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses([item], "used"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
-      overlapMilliseconds: 300_000,
     });
 
     expect(plan.changedItemNodeIds).toEqual([item.nodeId]);
-    expect(plan.detailTargets).toEqual([
-      {
-        nodeId: item.nodeId,
-        eventWindow: {
-          mode: "initial",
-        },
-      },
-    ]);
+    expect(plan.detailItemNodeIds).toEqual([item.nodeId]);
   });
 
   it.each(["failed", "deferred"] satisfies readonly TrackedItemAiAnalysis["status"][])(
-    "前回AI分析が%sの未変更項目を増分詳細取得対象にする",
+    "前回AI分析が%sの未変更項目を全履歴詳細取得対象にする",
     async (status) => {
       const items = await enumerateFixture("R_example", "example", [createItemMetadata(1, {})]);
       const item = items[0];
@@ -1037,25 +948,15 @@ describe("増分項目収集", () => {
         items,
         previous: {
           status: "successful",
-          completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
           items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
         },
         previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(items, status),
         currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
         adjacentItemNodeIds: new Set(),
-        overlapMilliseconds: 300_000,
       });
 
       expect(plan.changedItemNodeIds).toEqual([]);
-      expect(plan.detailTargets).toEqual([
-        {
-          nodeId: item.nodeId,
-          eventWindow: {
-            mode: "incremental",
-            since: "2026-07-31T23:55:00.000Z",
-          },
-        },
-      ]);
+      expect(plan.detailItemNodeIds).toEqual([item.nodeId]);
     },
   );
 
@@ -1066,48 +967,14 @@ describe("増分項目収集", () => {
       items,
       previous: {
         status: "successful",
-        completedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
         items: createPreviousCollectionItems(items, initialAnalysisRulesFingerprints),
       },
       previousAiAnalysisStatusesByNodeId: createPreviousAiAnalysisStatuses(items, "not_recorded"),
       currentAnalysisRulesFingerprints: initialAnalysisRulesFingerprints,
       adjacentItemNodeIds: new Set(),
-      overlapMilliseconds: 300_000,
     });
 
     expect(plan.changedItemNodeIds).toEqual([]);
-    expect(plan.detailTargets).toEqual([]);
-  });
-});
-
-describe("overlap重複排除", () => {
-  it("同じevent IDがoverlap範囲へ2回現れても1件に畳み込む", () => {
-    const events = [
-      {
-        eventId: "E_event_1",
-        observedAt: "2026-07-31T23:59:00Z",
-      },
-      {
-        eventId: "E_event_2",
-        observedAt: "2026-08-01T00:00:00Z",
-      },
-      {
-        eventId: "E_event_1",
-        observedAt: "2026-08-01T00:01:00Z",
-      },
-    ];
-
-    const deduplicated = deduplicateByStableId(events, (event) => event.eventId);
-
-    expect(deduplicated).toEqual([
-      {
-        eventId: "E_event_1",
-        observedAt: "2026-08-01T00:01:00Z",
-      },
-      {
-        eventId: "E_event_2",
-        observedAt: "2026-08-01T00:00:00Z",
-      },
-    ]);
+    expect(plan.detailItemNodeIds).toEqual([]);
   });
 });

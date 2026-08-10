@@ -93,9 +93,10 @@ function createInput(id: string, body: string): CodexAnalysisInput {
 }
 
 function createPriority(
-  kind: "severity" | "owner" | "blocker" | "impact" | "ordinary",
+  kind: "deferred" | "severity" | "owner" | "blocker" | "impact" | "ordinary",
 ): AiAnalysisPriority {
   return Object.freeze({
+    previouslyDeferred: kind === "deferred",
     severityCandidate: kind === "severity",
     ownerUnknown: kind === "owner",
     changedBlocker: kind === "blocker",
@@ -842,6 +843,82 @@ describe("AI run予算", () => {
       estimatedInputTokens: 3,
       estimatedCostUsd: 0.000003,
     });
+  });
+
+  it("新しい高優先候補を前回延期された低優先候補より先に選ぶ", async () => {
+    const candidates = [
+      createCandidate({
+        id: "new-severity",
+        body: "新しい高優先候補",
+        deterministicResolution: "ambiguous",
+        previousFingerprint: unavailablePreviousFingerprint,
+        priority: createPriority("severity"),
+        graphVersion: 1,
+        estimatedCostUsd: 0.1,
+      }),
+      createCandidate({
+        id: "previously-deferred",
+        body: "前回延期された候補",
+        deterministicResolution: "ambiguous",
+        previousFingerprint: unavailablePreviousFingerprint,
+        priority: createPriority("deferred"),
+        graphVersion: 1,
+        estimatedCostUsd: 0.1,
+      }),
+    ];
+    const execute = createExecutor();
+
+    const result = await runAiAnalyses(candidates, createConfiguration(1, 1_000_000, 10, 1), {
+      cache: new MemoryAiCacheStore(),
+      execute,
+      executedAt: () => fixedExecutedAt,
+    });
+
+    expect(result.results.map((value) => value.candidateId)).toEqual(["new-severity"]);
+    expect(result.deferred).toEqual([
+      {
+        candidateId: "previously-deferred",
+        reason: "call_limit",
+      },
+    ]);
+  });
+
+  it("ほかの優先条件が同じなら前回延期された候補をnode ID順より先に選ぶ", async () => {
+    const candidates = [
+      createCandidate({
+        id: "a-new",
+        body: "新しい同順位候補",
+        deterministicResolution: "ambiguous",
+        previousFingerprint: unavailablePreviousFingerprint,
+        priority: createPriority("ordinary"),
+        graphVersion: 1,
+        estimatedCostUsd: 0.1,
+      }),
+      createCandidate({
+        id: "z-deferred",
+        body: "前回延期された同順位候補",
+        deterministicResolution: "ambiguous",
+        previousFingerprint: unavailablePreviousFingerprint,
+        priority: createPriority("deferred"),
+        graphVersion: 1,
+        estimatedCostUsd: 0.1,
+      }),
+    ];
+    const execute = createExecutor();
+
+    const result = await runAiAnalyses(candidates, createConfiguration(1, 1_000_000, 10, 1), {
+      cache: new MemoryAiCacheStore(),
+      execute,
+      executedAt: () => fixedExecutedAt,
+    });
+
+    expect(result.results.map((value) => value.candidateId)).toEqual(["z-deferred"]);
+    expect(result.deferred).toEqual([
+      {
+        candidateId: "a-new",
+        reason: "call_limit",
+      },
+    ]);
   });
 
   it("10候補で上限3回なら優先順位どおり3件を分析して残りをdeferredにする", async () => {

@@ -1,6 +1,5 @@
 import { parse, visit } from "graphql";
 
-import { type UtcIsoDateTime } from "../domain/index.js";
 import { type GitHubItemDetailCapabilities } from "./item-detail-types.js";
 
 const DETAIL_ACTOR_FIELDS_FRAGMENT = `
@@ -635,29 +634,8 @@ const PULL_REQUEST_TIMELINE_ITEM_TYPES = `
   ]
 `;
 
-/** 詳細イベントを初回全件またはoverlap起点から取得する範囲。 */
-export type GitHubItemDetailEventWindow =
-  | Readonly<{
-      mode: "initial";
-    }>
-  | Readonly<{
-      mode: "incremental";
-      since: UtcIsoDateTime;
-    }>;
-
-function timelineSinceVariableDeclaration(window: GitHubItemDetailEventWindow): string {
-  return window.mode === "initial" ? "" : ", $since: DateTime!";
-}
-
-function timelineSinceArgument(window: GitHubItemDetailEventWindow): string {
-  return window.mode === "initial" ? "" : ", since: $since";
-}
-
 /** GitHub項目の詳細取得クエリを生成する。 */
-export function createItemDetailQuery(
-  capabilities: GitHubItemDetailCapabilities,
-  eventWindow: GitHubItemDetailEventWindow,
-): string {
+export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities): string {
   const dependencyFields =
     capabilities.nativeDependencies === "available"
       ? `
@@ -700,7 +678,7 @@ export function createItemDetailQuery(
       : "";
 
   return appendRequiredFragments(`
-    query GitHubItemDetail($itemId: ID!${timelineSinceVariableDeclaration(eventWindow)}) {
+    query GitHubItemDetail($itemId: ID!) {
       item: node(id: $itemId) {
         __typename
         ... on Issue {
@@ -715,7 +693,7 @@ export function createItemDetailQuery(
               endCursor
             }
           }
-          timelineItems(first: 100, itemTypes: ${ISSUE_TIMELINE_ITEM_TYPES}${timelineSinceArgument(eventWindow)}) {
+          timelineItems(first: 100, itemTypes: ${ISSUE_TIMELINE_ITEM_TYPES}) {
             nodes {
               ...DetailIssueTimelineFields
             }
@@ -808,7 +786,7 @@ export function createItemDetailQuery(
               }
             }
           }
-          timelineItems(first: 100, itemTypes: ${PULL_REQUEST_TIMELINE_ITEM_TYPES}${timelineSinceArgument(eventWindow)}) {
+          timelineItems(first: 100, itemTypes: ${PULL_REQUEST_TIMELINE_ITEM_TYPES}) {
             nodes {
               ...DetailPullRequestTimelineFields
             }
@@ -874,13 +852,10 @@ export const COMMENT_PAGE_QUERY = appendRequiredFragments(`
 `);
 
 /** GitHub項目のタイムライン次ページ取得クエリを生成する。 */
-export function createTimelinePageQuery(
-  itemType: "issue" | "pull_request",
-  eventWindow: GitHubItemDetailEventWindow,
-): string {
+export function createTimelinePageQuery(itemType: "issue" | "pull_request"): string {
   if (itemType === "issue") {
     return appendRequiredFragments(`
-      query GitHubIssueTimelinePage($itemId: ID!, $after: String!${timelineSinceVariableDeclaration(eventWindow)}) {
+      query GitHubIssueTimelinePage($itemId: ID!, $after: String!) {
         item: node(id: $itemId) {
           __typename
           ... on Issue {
@@ -889,7 +864,6 @@ export function createTimelinePageQuery(
               first: 100
               after: $after
               itemTypes: ${ISSUE_TIMELINE_ITEM_TYPES}
-              ${eventWindow.mode === "initial" ? "" : "since: $since"}
             ) {
               nodes {
                 ...DetailIssueTimelineFields
@@ -905,7 +879,7 @@ export function createTimelinePageQuery(
     `);
   }
   return appendRequiredFragments(`
-    query GitHubPullRequestTimelinePage($itemId: ID!, $after: String!${timelineSinceVariableDeclaration(eventWindow)}) {
+    query GitHubPullRequestTimelinePage($itemId: ID!, $after: String!) {
       item: node(id: $itemId) {
         __typename
         ... on PullRequest {
@@ -914,7 +888,6 @@ export function createTimelinePageQuery(
             first: 100
             after: $after
             itemTypes: ${PULL_REQUEST_TIMELINE_ITEM_TYPES}
-            ${eventWindow.mode === "initial" ? "" : "since: $since"}
           ) {
             nodes {
               ...DetailPullRequestTimelineFields

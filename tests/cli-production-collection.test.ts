@@ -36,7 +36,6 @@ import {
   GitHubRetryExhaustedError,
   type EnumeratedGitHubItem,
   type GitHubItemDetail,
-  type GitHubItemDetailEventWindow,
   type GitHubItemMilestone,
   type GitHubInboundCrossReferenceCandidate,
   type GitHubIssueComment,
@@ -93,7 +92,6 @@ interface RepositoryFixture {
 type DetailCall = Readonly<{
   targets: readonly Readonly<{
     nodeId: GitHubNodeId;
-    eventWindow: GitHubItemDetailEventWindow;
   }>[];
 }>;
 
@@ -365,7 +363,7 @@ function createDuplicateComments(
         apiType: "User",
       }),
     }),
-    body: "overlapで重複したコメント",
+    body: "重複したコメント",
     createdAt: occurredAt,
     updatedAt: occurredAt,
     url: `${item.url}#issuecomment-${nodeId}`,
@@ -890,7 +888,6 @@ function createCollectionHarness(
             input.targets.map((target) =>
               Object.freeze({
                 nodeId: target.item.nodeId,
-                eventWindow: target.eventWindow,
               }),
             ),
           ),
@@ -2065,10 +2062,6 @@ describe("本番収集の接続", () => {
           targets: [
             {
               nodeId: item.nodeId,
-              eventWindow: {
-                mode: "incremental",
-                since: "2026-07-31T23:55:00.000Z",
-              },
             },
           ],
         },
@@ -4465,9 +4458,6 @@ describe("本番収集の接続", () => {
       [secondTracked.nodeId],
       [secondReferenced.nodeId],
     ]);
-    expect(harness.detailCalls[1]?.targets[0]?.eventWindow).toEqual({
-      mode: "initial",
-    });
     expect(snapshot.items.map((item) => item.nodeId)).toEqual(
       expect.arrayContaining([secondTracked.nodeId, secondReferenced.nodeId]),
     );
@@ -4565,9 +4555,6 @@ describe("本番収集の接続", () => {
         targets: [
           {
             nodeId: item.nodeId,
-            eventWindow: {
-              mode: "initial",
-            },
           },
         ],
       },
@@ -4575,7 +4562,7 @@ describe("本番収集の接続", () => {
     expect(snapshot.items.map((candidate) => candidate.nodeId)).toContain(item.nodeId);
   });
 
-  it("fingerprint変更項目とgraph隣接nodeだけをoverlap起点で詳細取得する", async () => {
+  it("fingerprint変更項目とgraph隣接nodeだけを全履歴で詳細取得する", async () => {
     const repository = createRepository("R_incremental", "incremental", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
@@ -4655,10 +4642,6 @@ describe("本番収集の接続", () => {
     expect(harness.detailCalls[0]).toEqual({
       targets: [first, changed, blocker].map((item) => ({
         nodeId: item.nodeId,
-        eventWindow: {
-          mode: "incremental",
-          since: "2026-07-31T23:55:00.000Z",
-        },
       })),
     });
     expect(requireDryRunSnapshot(harness.artifacts).items).toHaveLength(4);
@@ -4729,15 +4712,9 @@ describe("本番収集の接続", () => {
         targets: [
           {
             nodeId: secondTracked.nodeId,
-            eventWindow: {
-              mode: "initial",
-            },
           },
           {
             nodeId: secondUntracked.nodeId,
-            eventWindow: {
-              mode: "initial",
-            },
           },
         ],
       },
@@ -5253,8 +5230,18 @@ describe("本番収集の接続", () => {
     });
 
     expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    const firstFiles = await harness.stateAdapter.readBranchFiles("tracker-state");
+    const firstSnapshotSource = firstFiles.get("state/snapshot.json");
+    if (firstSnapshotSource == null) {
+      throw new TypeError("AI結果保持metricの初回snapshotがありません");
+    }
+    const firstSnapshot = parseStateSnapshot(new TextDecoder().decode(firstSnapshotSource));
+    const expectedRetainedResultCount = firstSnapshot.items.filter(
+      (item) => item.aiAnalysis.status === "used",
+    ).length;
     const firstCodexExecutionCount = harness.codexExecutionCount();
     expect(firstCodexExecutionCount).toBeGreaterThan(0);
+    expect(expectedRetainedResultCount).toBeGreaterThan(0);
     harness.detailCalls.length = 0;
     harness.artifacts.length = 0;
     const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
@@ -5286,6 +5273,11 @@ describe("本番収集の接続", () => {
     expect(harness.detailCalls).toHaveLength(0);
     expect(harness.codexExecutionCount()).toBe(firstCodexExecutionCount);
     expect(harness.artifacts.at(-1)).toMatchObject({
+      metrics: {
+        aiCallCount: 0,
+        aiCacheHitCount: 0,
+        aiRetainedResultCount: expectedRetainedResultCount,
+      },
       result: {
         notificationSelection: {
           candidates: [
@@ -7682,9 +7674,6 @@ describe("本番判定入力の接続", () => {
           targets: [
             {
               nodeId: item.nodeId,
-              eventWindow: {
-                mode: "initial",
-              },
             },
           ],
         },
@@ -7873,7 +7862,7 @@ describe("本番判定入力の接続", () => {
     expect(second).toEqual(first);
   });
 
-  it("inferred edge解消時に本文未変更の隣接項目を再分類する", async () => {
+  it("同一GitHub状態でcache keyを維持し、inferred edge解消時に隣接項目を再分類する", async () => {
     const repository = createRepository("R_reclassify", "reclassify", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
@@ -7959,6 +7948,10 @@ describe("本番判定入力の接続", () => {
     if (firstAiFingerprint.status !== "available") {
       throw new TypeError("初回Codex分析fingerprintが保存されていません");
     }
+    const firstTrackedItem = firstSnapshot.items.find((item) => item.nodeId === blocked.nodeId);
+    if (firstTrackedItem?.aiAnalysis.status !== "used") {
+      throw new TypeError("初回Codex分析のcache keyが保存されていません");
+    }
     expect(firstSnapshot.items.find((item) => item.nodeId === blocked.nodeId)?.status).toBe(
       "waiting_for_unblock",
     );
@@ -7979,6 +7972,12 @@ describe("本番判定入力の接続", () => {
       unchangedSnapshot,
       blocked.nodeId,
     ).aiAnalysisFingerprint;
+    const secondTrackedItem = unchangedSnapshot.items.find(
+      (item) => item.nodeId === blocked.nodeId,
+    );
+    if (secondTrackedItem?.aiAnalysis.status !== "used") {
+      throw new TypeError("同一GitHub状態のcache keyが保存されていません");
+    }
     const unchangedMetrics = z
       .object({
         metrics: z.object({
@@ -8007,6 +8006,7 @@ describe("本番判定入力の接続", () => {
     );
     expect(blockedInputsBeforeChange).toHaveLength(1);
     expect(secondAiFingerprint).toEqual(firstAiFingerprint);
+    expect(secondTrackedItem.aiAnalysis.cacheKey).toBe(firstTrackedItem.aiAnalysis.cacheKey);
 
     relationExists = false;
     const thirdObservedAt = createUtcIsoDateTime(THIRD_RUN_AT);

@@ -550,7 +550,7 @@ describe("観測時刻に依存しない遷移基準", () => {
     expect(laterDecision.responsibilityBasis).toEqual(earlierDecision.responsibilityBasis);
   });
 
-  it("merge queue追加イベントが取得窓に無ければhead basisを使う", () => {
+  it("merge queue追加イベントが無ければhead basisを使う", () => {
     const pullRequest = createOpenPullRequest();
     const [earlierDecision, laterDecision] = determineAtTwoObservedTimes(
       createInput({
@@ -559,8 +559,8 @@ describe("観測時刻に依存しない遷移基準", () => {
           ...pullRequest.mergeState,
           mergeQueue: {
             status: "queued",
-            sourceId: buildSourceId("github_merge_queue_entry", "windowed"),
-            nodeId: createGitHubNodeId("MQ_windowed"),
+            sourceId: buildSourceId("github_merge_queue_entry", "without-addition"),
+            nodeId: createGitHubNodeId("MQ_without_addition"),
           },
         },
       }),
@@ -738,11 +738,11 @@ describe("観測時刻に依存しない遷移基準", () => {
   });
 });
 
-describe("timeline取得窓が途中から始まるdraft判定", () => {
-  it("draft変換イベントだけが窓にある現在draftのPRを判定する", () => {
+describe("draft lifecycleイベントの境界条件", () => {
+  it("draft変換イベントだけがある現在draftのPRを判定する", () => {
     const converted = createDraftLifecycleEvent(
       "converted_to_draft",
-      "windowed-converted",
+      "converted-only",
       createUtcIsoDateTime("2026-07-31T06:00:00Z"),
     );
     const decision = determinePullRequestState(
@@ -761,10 +761,10 @@ describe("timeline取得窓が途中から始まるdraft判定", () => {
     });
   });
 
-  it("ready for reviewイベントだけが窓にある現在non-draftのPRを判定する", () => {
+  it("ready for reviewイベントだけがある現在non-draftのPRを判定する", () => {
     const ready = createDraftLifecycleEvent(
       "ready_for_review",
-      "windowed-ready",
+      "ready-only",
       createUtcIsoDateTime("2026-07-31T06:00:00Z"),
     );
     const decision = determinePullRequestState(
@@ -782,7 +782,7 @@ describe("timeline取得窓が途中から始まるdraft判定", () => {
     });
   });
 
-  it("イベントが窓にないPRを現在のdraft状態ごとに判定する", () => {
+  it("lifecycleイベントがないPRを現在のdraft状態ごとに判定する", () => {
     const draftDecision = determinePullRequestState(
       createInput({
         ...createOpenPullRequest(),

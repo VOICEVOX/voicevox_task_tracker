@@ -1,12 +1,9 @@
 import {
-  createUtcIsoDateTime,
   isRetryableTrackedItemAiAnalysisStatus,
   type GitHubNodeId,
   type TrackedItemAiAnalysis,
-  type UtcIsoDateTime,
 } from "../domain/index.js";
 import { type EnumeratedGitHubItem, type Sha256Fingerprint } from "./item-enumeration.js";
-import { type GitHubItemDetailEventWindow } from "./item-detail-queries.js";
 
 /** 項目種別ごとの現在の判定規則fingerprint。 */
 export type CurrentAnalysisRulesFingerprints = Readonly<
@@ -28,11 +25,6 @@ type PreviousItemCollectionValue = Readonly<{
   analysisRulesFingerprint: PreviousAnalysisRulesFingerprint;
 }>;
 
-type ChangedItem = Readonly<{
-  nodeId: GitHubNodeId;
-  timelineWindow: "full_history" | "incremental";
-}>;
-
 /** 前回成功時点の項目fingerprintと判定規則fingerprint。 */
 export type PreviousItemCollection =
   | Readonly<{
@@ -40,33 +32,15 @@ export type PreviousItemCollection =
     }>
   | Readonly<{
       status: "successful";
-      completedAt: UtcIsoDateTime;
       items: ReadonlyMap<GitHubNodeId, PreviousItemCollectionValue>;
     }>;
 
-type IncrementalItemCollectionPlanFields = Readonly<{
+/** 変更項目と全履歴の詳細取得対象を含む収集計画。 */
+export type IncrementalItemCollectionPlan = Readonly<{
   changedItemNodeIds: readonly GitHubNodeId[];
-  detailTargets: readonly IncrementalItemDetailTarget[];
+  detailItemNodeIds: readonly GitHubNodeId[];
   currentItemFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>;
 }>;
-
-/** 詳細取得対象のnode IDとtimeline取得窓。 */
-export type IncrementalItemDetailTarget = Readonly<{
-  nodeId: GitHubNodeId;
-  eventWindow: GitHubItemDetailEventWindow;
-}>;
-
-/** 項目ごとのtimeline取得窓を含む詳細取得計画。 */
-export type IncrementalItemCollectionPlan =
-  | (IncrementalItemCollectionPlanFields &
-      Readonly<{
-        mode: "initial";
-      }>)
-  | (IncrementalItemCollectionPlanFields &
-      Readonly<{
-        mode: "incremental";
-        since: UtcIsoDateTime;
-      }>);
 
 export type PlanIncrementalItemCollectionOptions = Readonly<{
   items: readonly EnumeratedGitHubItem[];
@@ -74,22 +48,7 @@ export type PlanIncrementalItemCollectionOptions = Readonly<{
   previousAiAnalysisStatusesByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemAiAnalysis["status"]>;
   currentAnalysisRulesFingerprints: CurrentAnalysisRulesFingerprints;
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>;
-  overlapMilliseconds: number;
 }>;
-
-function validateOverlapMilliseconds(overlapMilliseconds: number): void {
-  if (!Number.isSafeInteger(overlapMilliseconds) || overlapMilliseconds < 0) {
-    throw new TypeError("overlapMillisecondsには0以上の安全な整数を指定してください");
-  }
-}
-
-function calculateSince(completedAt: UtcIsoDateTime, overlapMilliseconds: number): UtcIsoDateTime {
-  const sinceDate = new Date(new Date(completedAt).getTime() - overlapMilliseconds);
-  if (Number.isNaN(sinceDate.getTime())) {
-    throw new RangeError("overlap適用後の増分取得起点を表現できません");
-  }
-  return createUtcIsoDateTime(sinceDate.toISOString());
-}
 
 function compareNodeIds(left: GitHubNodeId, right: GitHubNodeId): number {
   if (left < right) {
@@ -114,45 +73,28 @@ function createCurrentFingerprints(
   return fingerprints;
 }
 
-function selectChangedItems(
+function selectChangedItemNodeIds(
   items: readonly EnumeratedGitHubItem[],
   previous: PreviousItemCollection,
   previouslyTrackedItemNodeIds: ReadonlySet<GitHubNodeId>,
   currentAnalysisRulesFingerprints: CurrentAnalysisRulesFingerprints,
-): readonly ChangedItem[] {
+): readonly GitHubNodeId[] {
   if (previous.status === "none") {
-    return Object.freeze(
-      items.map((item) =>
-        Object.freeze({
-          nodeId: item.nodeId,
-          timelineWindow: "full_history",
-        }),
-      ),
-    );
+    return Object.freeze(items.map((item) => item.nodeId));
   }
 
-  const changedItems: ChangedItem[] = [];
+  const changedItemNodeIds: GitHubNodeId[] = [];
   for (const item of items) {
     const previousItem = previous.items.get(item.nodeId);
     const itemFingerprintChanged = previousItem?.itemFingerprint !== item.itemFingerprint;
     if (!previouslyTrackedItemNodeIds.has(item.nodeId)) {
       if (itemFingerprintChanged) {
-        changedItems.push(
-          Object.freeze({
-            nodeId: item.nodeId,
-            timelineWindow: "full_history",
-          }),
-        );
+        changedItemNodeIds.push(item.nodeId);
       }
       continue;
     }
     if (previousItem == null) {
-      changedItems.push(
-        Object.freeze({
-          nodeId: item.nodeId,
-          timelineWindow: "full_history",
-        }),
-      );
+      changedItemNodeIds.push(item.nodeId);
       continue;
     }
     const previousRulesFingerprint = previousItem.analysisRulesFingerprint;
@@ -160,24 +102,14 @@ function selectChangedItems(
       previousRulesFingerprint.status === "unavailable" ||
       previousRulesFingerprint.fingerprint !== currentAnalysisRulesFingerprints[item.type]
     ) {
-      changedItems.push(
-        Object.freeze({
-          nodeId: item.nodeId,
-          timelineWindow: "full_history",
-        }),
-      );
+      changedItemNodeIds.push(item.nodeId);
       continue;
     }
     if (itemFingerprintChanged) {
-      changedItems.push(
-        Object.freeze({
-          nodeId: item.nodeId,
-          timelineWindow: "incremental",
-        }),
-      );
+      changedItemNodeIds.push(item.nodeId);
     }
   }
-  return Object.freeze(changedItems);
+  return Object.freeze(changedItemNodeIds);
 }
 
 function selectAiAnalysisRetryItemNodeIds(
@@ -194,73 +126,37 @@ function selectAiAnalysisRetryItemNodeIds(
   return Object.freeze(nodeIds);
 }
 
-function selectDetailTargets(
-  changedItems: readonly ChangedItem[],
+function selectDetailItemNodeIds(
+  changedItemNodeIds: readonly GitHubNodeId[],
   aiAnalysisRetryItemNodeIds: readonly GitHubNodeId[],
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>,
-  previouslyTrackedItemNodeIds: ReadonlySet<GitHubNodeId>,
-  defaultEventWindow: GitHubItemDetailEventWindow,
-): readonly IncrementalItemDetailTarget[] {
-  const fullHistoryEventWindow = Object.freeze({
-    mode: "initial",
-  }) satisfies GitHubItemDetailEventWindow;
-  const detailTargetsByNodeId = new Map<GitHubNodeId, IncrementalItemDetailTarget>();
-  for (const item of changedItems) {
-    detailTargetsByNodeId.set(
-      item.nodeId,
-      Object.freeze({
-        nodeId: item.nodeId,
-        eventWindow:
-          item.timelineWindow === "full_history" ? fullHistoryEventWindow : defaultEventWindow,
-      }),
-    );
+): readonly GitHubNodeId[] {
+  const detailItemNodeIds = new Set<GitHubNodeId>();
+  for (const nodeId of changedItemNodeIds) {
+    detailItemNodeIds.add(nodeId);
   }
   for (const nodeId of aiAnalysisRetryItemNodeIds) {
-    if (detailTargetsByNodeId.has(nodeId)) {
-      continue;
-    }
-    detailTargetsByNodeId.set(
-      nodeId,
-      Object.freeze({
-        nodeId,
-        eventWindow: defaultEventWindow,
-      }),
-    );
+    detailItemNodeIds.add(nodeId);
   }
   const sortedAdjacentItemNodeIds = [...adjacentItemNodeIds].sort(compareNodeIds);
   for (const nodeId of sortedAdjacentItemNodeIds) {
-    if (detailTargetsByNodeId.has(nodeId)) {
-      continue;
-    }
-    detailTargetsByNodeId.set(
-      nodeId,
-      Object.freeze({
-        nodeId,
-        eventWindow: previouslyTrackedItemNodeIds.has(nodeId)
-          ? defaultEventWindow
-          : fullHistoryEventWindow,
-      }),
-    );
+    detailItemNodeIds.add(nodeId);
   }
-  return Object.freeze([...detailTargetsByNodeId.values()]);
+  return Object.freeze([...detailItemNodeIds]);
 }
 
 function createPlanFields(
-  changedItems: readonly ChangedItem[],
+  changedItemNodeIds: readonly GitHubNodeId[],
   aiAnalysisRetryItemNodeIds: readonly GitHubNodeId[],
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>,
-  previouslyTrackedItemNodeIds: ReadonlySet<GitHubNodeId>,
-  defaultEventWindow: GitHubItemDetailEventWindow,
   currentItemFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>,
-): IncrementalItemCollectionPlanFields {
+): IncrementalItemCollectionPlan {
   return Object.freeze({
-    changedItemNodeIds: Object.freeze(changedItems.map((item) => item.nodeId)),
-    detailTargets: selectDetailTargets(
-      changedItems,
+    changedItemNodeIds,
+    detailItemNodeIds: selectDetailItemNodeIds(
+      changedItemNodeIds,
       aiAnalysisRetryItemNodeIds,
       adjacentItemNodeIds,
-      previouslyTrackedItemNodeIds,
-      defaultEventWindow,
     ),
     currentItemFingerprints,
   });
@@ -270,10 +166,9 @@ function createPlanFields(
 export function planIncrementalItemCollection(
   options: PlanIncrementalItemCollectionOptions,
 ): IncrementalItemCollectionPlan {
-  validateOverlapMilliseconds(options.overlapMilliseconds);
   const currentItemFingerprints = createCurrentFingerprints(options.items);
   const previouslyTrackedItemNodeIds = new Set(options.previousAiAnalysisStatusesByNodeId.keys());
-  const changedItems = selectChangedItems(
+  const changedItemNodeIds = selectChangedItemNodeIds(
     options.items,
     options.previous,
     previouslyTrackedItemNodeIds,
@@ -284,35 +179,10 @@ export function planIncrementalItemCollection(
     options.previousAiAnalysisStatusesByNodeId,
   );
 
-  if (options.previous.status === "none") {
-    const fields = createPlanFields(
-      changedItems,
-      aiAnalysisRetryItemNodeIds,
-      options.adjacentItemNodeIds,
-      previouslyTrackedItemNodeIds,
-      Object.freeze({ mode: "initial" }),
-      currentItemFingerprints,
-    );
-    return Object.freeze({
-      mode: "initial",
-      ...fields,
-    });
-  }
-  const since = calculateSince(options.previous.completedAt, options.overlapMilliseconds);
-  const fields = createPlanFields(
-    changedItems,
+  return createPlanFields(
+    changedItemNodeIds,
     aiAnalysisRetryItemNodeIds,
     options.adjacentItemNodeIds,
-    previouslyTrackedItemNodeIds,
-    Object.freeze({
-      mode: "incremental",
-      since,
-    }),
     currentItemFingerprints,
   );
-  return Object.freeze({
-    mode: "incremental",
-    since,
-    ...fields,
-  });
 }

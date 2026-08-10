@@ -20,6 +20,7 @@ const REQUIRED_METRICS = [
   "activeEdgeCount",
   "aiCacheHitCount",
   "aiCallCount",
+  "aiRetainedResultCount",
   "changedItemCount",
   "durationMilliseconds",
   "estimatedInputTokens",
@@ -255,6 +256,7 @@ function createHarness(behavior: HarnessBehavior): Harness {
         },
         aiCallCount: deterministicAnalysis.resolution === "ambiguous" ? 1 : 0,
         aiCacheHitCount: 0,
+        aiRetainedResultCount: 0,
         estimatedInputTokens: deterministicAnalysis.resolution === "ambiguous" ? 250 : 0,
         diagnostics:
           behavior.aiStatus === "fallback"

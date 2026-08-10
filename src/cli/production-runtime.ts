@@ -126,7 +126,6 @@ import {
   type GitHubClient,
   type GitHubCheckContext,
   type GitHubItemDetail,
-  type GitHubItemDetailEventWindow,
   type PublicRepository,
   type PublicRepositoryAllowlist,
   type PreviousItemCollection,
@@ -232,7 +231,6 @@ const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
 const CODEX_SCHEMA_VERSION = "2";
 const PAGES_BASE_URL = "https://voicevox.github.io";
-const INCREMENTAL_COLLECTION_OVERLAP_MILLISECONDS = 5 * 60 * 1000;
 const GITHUB_MENTION_PATTERN =
   /(?<![A-Za-z0-9-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?:\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,99})))?/gu;
 const CURRENT_DETERMINISTIC_RULES_VERSIONS = Object.freeze({
@@ -789,7 +787,6 @@ function previousItemCollection(
   }
   return Object.freeze({
     status: "successful",
-    completedAt: previous.successfulAt,
     items: new Map(
       previous.items.map((item) => [
         item.nodeId,
@@ -818,20 +815,6 @@ function previousGraphAdjacentNodeIds(state: RuntimeState): ReadonlySet<GitHubNo
     }
   }
   return nodeIds;
-}
-
-function detailEventWindow(
-  plan: ReturnType<typeof planIncrementalItemCollection>,
-): GitHubItemDetailEventWindow {
-  if (plan.mode === "initial") {
-    return Object.freeze({
-      mode: "initial",
-    });
-  }
-  return Object.freeze({
-    mode: "incremental",
-    since: plan.since,
-  });
 }
 
 function explicitIdentifierMatchesItem(
@@ -2192,6 +2175,9 @@ function createAiCandidates(
       repository.items.map((item) => [item.nodeId, item.aiAnalysisFingerprint] as const),
     ),
   );
+  const previousAiAnalysisStatusByNodeId = new Map(
+    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item.aiAnalysis.status]),
+  );
   const candidates: PreparedAiAnalysisCandidate[] = [];
   for (const analysis of deterministicAnalysis.items) {
     let input: CodexAnalysisInput;
@@ -2274,6 +2260,8 @@ function createAiCandidates(
               status: "unavailable",
             }),
           priority: Object.freeze({
+            previouslyDeferred:
+              previousAiAnalysisStatusByNodeId.get(analysis.item.nodeId) === "deferred",
             severityCandidate: analysis.decision.determination === "codex_candidate",
             ownerUnknown: analysis.decision.waitingOn.some(
               (waitingOn) => waitingOn.kind === "unknown",
@@ -2307,6 +2295,15 @@ function codexFallbackDiagnostic(failure: AiAnalysisRunFailure): string {
   );
 }
 
+function countRetainedAiResults(state: RuntimeState, collection: CollectedItems): number {
+  return (previousSnapshot(state)?.items ?? []).filter(
+    (item) =>
+      item.aiAnalysis.status === "used" &&
+      collection.trackedNodeIds.has(item.nodeId) &&
+      !collection.analysisNodeIds.has(item.nodeId),
+  ).length;
+}
+
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
   configuration: RuntimeConfiguration,
@@ -2319,6 +2316,7 @@ async function analyzeCodex(
     status: "success" | "fallback";
     aiCallCount: number;
     aiCacheHitCount: number;
+    aiRetainedResultCount: number;
     estimatedInputTokens: number;
     diagnostics: readonly string[];
   }>
@@ -2341,6 +2339,7 @@ async function analyzeCodex(
       status: fallback ? "fallback" : "success",
       aiCallCount: 0,
       aiCacheHitCount: 0,
+      aiRetainedResultCount: countRetainedAiResults(state, collection),
       estimatedInputTokens: 0,
       diagnostics: Object.freeze(prepared.failures.map(codexFallbackDiagnostic)),
     });
@@ -2401,6 +2400,7 @@ async function analyzeCodex(
     status: fallback ? "fallback" : "success",
     aiCallCount: run.usage.calls,
     aiCacheHitCount: run.results.filter((result) => result.origin === "cache").length,
+    aiRetainedResultCount: countRetainedAiResults(state, collection),
     estimatedInputTokens: Math.ceil(run.usage.inputCharacters / 4),
     diagnostics: Object.freeze([
       ...run.failures.map(codexFallbackDiagnostic),
@@ -4470,6 +4470,7 @@ function persistedMetrics(
     activeEdgeCount: validated.snapshot.relations.filter((relation) => relation.active).length,
     aiCallCount: metrics.aiCallCount,
     aiCacheHitCount: metrics.aiCacheHitCount,
+    aiRetainedResultCount: metrics.aiRetainedResultCount,
     estimatedInputTokens: metrics.estimatedInputTokens,
     githubApiRemaining: metrics.githubApiRemaining,
     staleRepositoryCount: validated.snapshot.repositories.filter(
@@ -4899,37 +4900,13 @@ async function collectFreshRepositoryItemObservations(
     adjacentItemNodeIds: new Set(
       [...adjacentNodeIds].filter((nodeId) => currentNodeIds.has(nodeId)),
     ),
-    overlapMilliseconds: INCREMENTAL_COLLECTION_OVERLAP_MILLISECONDS,
   });
-  const plannedDetailTargetsByNodeId = new Map(
-    plan.detailTargets.map((target) => [target.nodeId, target]),
-  );
   const detailNodeIds = new Set([
-    ...plannedDetailTargetsByNodeId.keys(),
+    ...plan.detailItemNodeIds,
     ...requiredTrackingDetailNodeIds(invocation, configuration, state, repository, enumeratedItems),
   ]);
   const detailItems = enumeratedItems.filter((item) => detailNodeIds.has(item.nodeId));
-  const defaultEventWindow = detailEventWindow(plan);
-  const fullHistoryEventWindow = Object.freeze({
-    mode: "initial",
-  }) satisfies GitHubItemDetailEventWindow;
-  const detailTargets = Object.freeze(
-    detailItems.map((item) => {
-      const plannedTarget = plannedDetailTargetsByNodeId.get(item.nodeId);
-      if (plannedTarget != null) {
-        return Object.freeze({
-          item,
-          eventWindow: plannedTarget.eventWindow,
-        });
-      }
-      return Object.freeze({
-        item,
-        eventWindow: previousAiAnalysisStatusesByNodeId.has(item.nodeId)
-          ? defaultEventWindow
-          : fullHistoryEventWindow,
-      });
-    }),
-  );
+  const detailTargets = Object.freeze(detailItems.map((item) => Object.freeze({ item })));
   const details =
     detailTargets.length === 0
       ? Object.freeze([])
@@ -5655,6 +5632,7 @@ function createDailyDependencies(
         value: analysis.stage,
         aiCallCount: analysis.aiCallCount,
         aiCacheHitCount: analysis.aiCacheHitCount,
+        aiRetainedResultCount: analysis.aiRetainedResultCount,
         estimatedInputTokens: analysis.estimatedInputTokens,
         diagnostics: analysis.diagnostics,
       });
@@ -5973,6 +5951,7 @@ function emptyOfflineMetrics(): OfflineAnalysisMetrics {
     activeEdgeCount: 0,
     aiCallCount: 0,
     aiCacheHitCount: 0,
+    aiRetainedResultCount: 0,
     estimatedInputTokens: 0,
     staleRepositoryCount: 0,
   });
