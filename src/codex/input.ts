@@ -78,7 +78,7 @@ const codexAnalysisInputSchema = z
     }),
     sources: z.array(sourceSchema).min(1, "sourceを1件以上指定してください"),
     deterministicSignals: z.record(z.string(), jsonValueSchema),
-    priorAnalysis: jsonValueSchema,
+    priorAnalysis: z.null(),
   })
   .superRefine((input, context) => {
     const waitingOnIds = new Set<string>();
@@ -181,6 +181,61 @@ function assertSourceReferences(
 function assertSourceIntegrity(input: CodexAnalysisInput): void {
   const sourceIds = new Set(input.sources.map((source) => source.id));
   assertSourceReferences(input, "", sourceIds);
+}
+
+function mapSourceReference(
+  value: unknown,
+  path: string,
+  sourceAliases: ReadonlyMap<string, string>,
+): unknown {
+  if (value == null) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    throw new TypeError(`Codex入力のsource ID参照は文字列にしてください。対象: ${path}`);
+  }
+  const alias = sourceAliases.get(value);
+  if (alias == null) {
+    throw new TypeError(`Codex入力のsource ID参照に対応するrecordがありません。対象: ${path}`);
+  }
+  return alias;
+}
+
+/** Codex入力の構造化されたsource参照だけを変換する。 */
+export function transformCodexSourceReferences(
+  value: unknown,
+  sourceAliases: ReadonlyMap<string, string>,
+  path: string,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry, index) =>
+      transformCodexSourceReferences(entry, sourceAliases, jsonPointerPath(path, index.toString())),
+    );
+  }
+  if (typeof value !== "object" || value == null) {
+    return value;
+  }
+
+  const transformed: Record<string, unknown> = {};
+  for (const [field, entry] of Object.entries(value)) {
+    const entryPath = jsonPointerPath(path, field);
+    const cardinality = sourceReferenceCardinality(field);
+    let transformedEntry: unknown = entry;
+    if (cardinality === "single") {
+      transformedEntry = mapSourceReference(entry, entryPath, sourceAliases);
+    } else if (cardinality === "multiple") {
+      if (!Array.isArray(entry)) {
+        throw new TypeError(
+          `Codex入力のsource ID参照は文字列配列にしてください。対象: ${entryPath}`,
+        );
+      }
+      transformedEntry = entry.map((sourceId, index) =>
+        mapSourceReference(sourceId, jsonPointerPath(entryPath, index.toString()), sourceAliases),
+      );
+    }
+    transformed[field] = transformCodexSourceReferences(transformedEntry, sourceAliases, entryPath);
+  }
+  return transformed;
 }
 
 /** Codexへ渡すsource ID付きの分析入力。 */

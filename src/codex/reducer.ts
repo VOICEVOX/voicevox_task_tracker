@@ -16,6 +16,7 @@ import {
   CodexOutputSemanticValidationError,
   CodexOutputValidationError,
   CodexRateLimitError,
+  CodexTransportAliasError,
   CodexTimeoutError,
   type CodexNonZeroExitDiagnostic,
   type CodexOutputValidationDiagnostic,
@@ -226,6 +227,9 @@ export async function executeValidatedCodexAnalysis(
       output: validateCodexAnalysisOutput(output, input),
     });
   } catch (error: unknown) {
+    if (error instanceof CodexTransportAliasError) {
+      throw error;
+    }
     const diagnostic = nonZeroExitDiagnostic(error);
     const validationDiagnostic = outputValidationDiagnostic(error);
     return Object.freeze({

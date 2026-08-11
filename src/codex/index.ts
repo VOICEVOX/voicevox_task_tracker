@@ -7,6 +7,7 @@ export {
   type CodexAdapterDependencies,
   type CodexAuthentication,
 } from "./adapter.js";
+export { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 export {
   runAiAnalyses,
   type AiAnalysisRunConfiguration,
@@ -76,6 +77,7 @@ export {
   CodexRateLimitError,
   CodexResourceError,
   CodexTemporaryWorkspaceError,
+  CodexTransportAliasError,
   CodexTimeoutError,
   type CodexNonZeroExitDiagnostic,
   type CodexOutputValidationDiagnostic,

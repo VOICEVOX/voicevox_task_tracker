@@ -12,12 +12,13 @@ import {
   reduceCodexInputValidationFailure,
   runAiAnalyses,
   serializeCanonicalJson,
-  type executeCodexAnalysis,
   type AiAnalysisCandidate,
   type AiAnalysisRunFailure,
   type AiAnalysisRunIdentity,
   type AiAnalysisRunResult,
   type CodexAnalysisInput,
+  type CodexAdapterConfiguration,
+  type CodexAdapterDependencies,
   type CodexAnalysisReduction,
   type CodexProcessRunner,
   type DeterministicCodexDecision,
@@ -475,7 +476,11 @@ export type ProductionRuntimeAdapters = Readonly<{
   enumerateGitHubItemsByIdentifiers: typeof enumerateGitHubItemsByIdentifiers;
   enumerateOpenGitHubItems: typeof enumerateOpenGitHubItems;
   collectGitHubItemDetails: typeof collectGitHubItemDetails;
-  executeCodexAnalysis: typeof executeCodexAnalysis;
+  executeCodexAnalysis: (
+    input: CodexAnalysisInput,
+    configuration: CodexAdapterConfiguration,
+    dependencies: CodexAdapterDependencies,
+  ) => Promise<unknown>;
   readReplayFixture: typeof readReplayFixtureFile;
   readReplayState: typeof readReplayStateFile;
   readGoldenFixtures: typeof readGoldenFixtureFiles;

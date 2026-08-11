@@ -99,6 +99,13 @@ export class CodexTemporaryWorkspaceError extends CodexAdapterError {
   }
 }
 
+/** Codex transport aliasの内部変換に失敗したことを表す。 */
+export class CodexTransportAliasError extends CodexAdapterError {
+  public constructor(stage: "input" | "restore" | "canonical_validation", options: ErrorOptions) {
+    super(`Codex transport aliasの内部処理に失敗しました。段階: ${stage}`, options);
+  }
+}
+
 /** Codex出力の検証で見つけた問題。 */
 export type CodexOutputValidationIssue = Readonly<{
   path: string;

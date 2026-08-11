@@ -21,6 +21,7 @@ import {
   createCodexAnalysisInput,
   serializeCodexAnalysisInput,
 } from "./input.js";
+import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
 import {
   type CodexProcessRequest,
   type CodexProcessResult,
@@ -28,6 +29,7 @@ import {
 } from "./process-runner.js";
 import { REASONING_EFFORTS } from "../domain/index.js";
 import { UnreachableError } from "../util/index.js";
+import { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 
 const CODEX_COMMAND = "codex";
 const CODEX_TEMPORARY_DIRECTORY_PREFIX = "voicevox-task-tracker-codex-";
@@ -365,8 +367,7 @@ async function waitBeforeRetry(
   }
 }
 
-/** Codexを隔離実行し、最終メッセージをJSON値として返す。 */
-export async function executeCodexAnalysis(
+async function executeRawCodexAnalysis(
   input: CodexAnalysisInput,
   configurationValue: CodexAdapterConfiguration,
   dependencies: CodexAdapterDependencies,
@@ -395,4 +396,15 @@ export async function executeCodexAnalysis(
       await waitBeforeRetry(attempts, configuration, dependencies);
     }
   }
+}
+
+/** Codexを隔離実行し、IDをcanonical形式へ戻した検証済み出力を返す。 */
+export async function executeCodexAnalysis(
+  input: CodexAnalysisInput,
+  configurationValue: CodexAdapterConfiguration,
+  dependencies: CodexAdapterDependencies,
+): Promise<ValidatedCodexAnalysisOutput> {
+  return executeCodexAnalysisWithTransportAliases(input, (transportInput) =>
+    executeRawCodexAnalysis(transportInput, configurationValue, dependencies),
+  );
 }
