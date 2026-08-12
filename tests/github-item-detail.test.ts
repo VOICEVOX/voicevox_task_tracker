@@ -626,6 +626,34 @@ describe("Issue詳細収集", () => {
         },
       },
       {
+        __typename: "BlockedByAddedEvent",
+        id: "BBAE_added",
+        createdAt: "2026-07-31T02:30:00Z",
+        actor: createActor(2),
+        blockingIssue: createReferencedIssue("I_blocker_event", 101, "OPEN"),
+      },
+      {
+        __typename: "BlockedByRemovedEvent",
+        id: "BBRE_removed",
+        createdAt: "2026-07-31T02:40:00Z",
+        actor: createActor(3),
+        blockingIssue: createReferencedIssue("I_blocker_event", 101, "OPEN"),
+      },
+      {
+        __typename: "BlockingAddedEvent",
+        id: "BAE_added",
+        createdAt: "2026-07-31T02:50:00Z",
+        actor: createActor(4),
+        blockedIssue: createReferencedIssue("I_blocked_event", 102, "OPEN"),
+      },
+      {
+        __typename: "BlockingRemovedEvent",
+        id: "BRE_removed",
+        createdAt: "2026-07-31T02:55:00Z",
+        actor: createActor(5),
+        blockedIssue: createReferencedIssue("I_blocked_event", 102, "OPEN"),
+      },
+      {
         __typename: "LabeledEvent",
         id: "LE_labeled",
         createdAt: "2026-07-31T03:00:00Z",
@@ -786,6 +814,10 @@ describe("Issue詳細収集", () => {
     expect(detail.timeline.map((event) => event.kind)).toEqual([
       "assigned",
       "unassigned",
+      "blocked_by_added",
+      "blocked_by_removed",
+      "blocking_added",
+      "blocking_removed",
       "labeled",
       "unlabeled",
       "closed",
@@ -797,6 +829,19 @@ describe("Issue詳細収集", () => {
       "parent_issue_added",
       "parent_issue_removed",
     ]);
+    const normalizedEvents = normalizeGitHubEvents({
+      item,
+      detail,
+      isBot: () => false,
+    });
+    expect(normalizedEvents.map((event) => event.sourceId)).not.toEqual(
+      expect.arrayContaining([
+        "github_timeline_event:BBAE_added",
+        "github_timeline_event:BBRE_removed",
+        "github_timeline_event:BAE_added",
+        "github_timeline_event:BRE_removed",
+      ]),
+    );
     expect(detail.timeline[0]?.sourceId).toBe("github_timeline_event:AE_assigned");
     const labeledEvent = detail.timeline.find((event) => event.kind === "labeled");
     if (labeledEvent?.kind !== "labeled" || labeledEvent.actor.status !== "identified") {
@@ -945,6 +990,34 @@ describe("Issue詳細収集", () => {
         assignee: null,
       },
       {
+        __typename: "BlockedByAddedEvent",
+        id: "BBAE_unavailable",
+        createdAt: "2026-07-31T02:30:00Z",
+        actor: null,
+        blockingIssue: null,
+      },
+      {
+        __typename: "BlockedByRemovedEvent",
+        id: "BBRE_unavailable",
+        createdAt: "2026-07-31T02:40:00Z",
+        actor: null,
+        blockingIssue: null,
+      },
+      {
+        __typename: "BlockingAddedEvent",
+        id: "BAE_unavailable",
+        createdAt: "2026-07-31T02:50:00Z",
+        actor: null,
+        blockedIssue: null,
+      },
+      {
+        __typename: "BlockingRemovedEvent",
+        id: "BRE_unavailable",
+        createdAt: "2026-07-31T02:55:00Z",
+        actor: null,
+        blockedIssue: null,
+      },
+      {
         __typename: "SubIssueAddedEvent",
         id: "SIAE_unavailable",
         createdAt: "2026-07-31T03:00:00Z",
@@ -1026,6 +1099,50 @@ describe("Issue詳細収集", () => {
         assignee: {
           status: "unavailable",
           reason: "github_did_not_return_actor",
+        },
+      },
+      {
+        kind: "blocked_by_added",
+        actor: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+        blockingIssue: {
+          status: "unavailable",
+          reason: "github_did_not_return_item",
+        },
+      },
+      {
+        kind: "blocked_by_removed",
+        actor: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+        blockingIssue: {
+          status: "unavailable",
+          reason: "github_did_not_return_item",
+        },
+      },
+      {
+        kind: "blocking_added",
+        actor: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+        blockedIssue: {
+          status: "unavailable",
+          reason: "github_did_not_return_item",
+        },
+      },
+      {
+        kind: "blocking_removed",
+        actor: {
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        },
+        blockedIssue: {
+          status: "unavailable",
+          reason: "github_did_not_return_item",
         },
       },
       {

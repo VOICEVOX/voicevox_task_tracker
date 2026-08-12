@@ -232,6 +232,46 @@ const DETAIL_ISSUE_TIMELINE_FIELDS_FRAGMENT = `
         ...DetailAssigneeFields
       }
     }
+    ... on BlockedByAddedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      blockingIssue {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on BlockedByRemovedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      blockingIssue {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on BlockingAddedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      blockedIssue {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on BlockingRemovedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      blockedIssue {
+        ...DetailReferencedItemFields
+      }
+    }
     ... on LabeledEvent {
       id
       createdAt
@@ -370,6 +410,46 @@ const DETAIL_PULL_REQUEST_TIMELINE_FIELDS_FRAGMENT = `
       }
       assignee {
         ...DetailAssigneeFields
+      }
+    }
+    ... on BlockedByAddedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      blockingIssue {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on BlockedByRemovedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      blockingIssue {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on BlockingAddedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      blockedIssue {
+        ...DetailReferencedItemFields
+      }
+    }
+    ... on BlockingRemovedEvent {
+      id
+      createdAt
+      actor {
+        ...DetailActorFields
+      }
+      blockedIssue {
+        ...DetailReferencedItemFields
       }
     }
     ... on LabeledEvent {
@@ -597,6 +677,10 @@ const ISSUE_TIMELINE_ITEM_TYPES = `
     REOPENED_EVENT
     ASSIGNED_EVENT
     UNASSIGNED_EVENT
+    BLOCKED_BY_ADDED_EVENT
+    BLOCKED_BY_REMOVED_EVENT
+    BLOCKING_ADDED_EVENT
+    BLOCKING_REMOVED_EVENT
     LABELED_EVENT
     UNLABELED_EVENT
     CROSS_REFERENCED_EVENT
@@ -616,6 +700,10 @@ const PULL_REQUEST_TIMELINE_ITEM_TYPES = `
     MERGED_EVENT
     ASSIGNED_EVENT
     UNASSIGNED_EVENT
+    BLOCKED_BY_ADDED_EVENT
+    BLOCKED_BY_REMOVED_EVENT
+    BLOCKING_ADDED_EVENT
+    BLOCKING_REMOVED_EVENT
     LABELED_EVENT
     UNLABELED_EVENT
     REVIEW_REQUESTED_EVENT

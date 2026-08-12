@@ -120,6 +120,19 @@ describe("GitHub GraphQLクエリ", () => {
     expect(queryCases).toHaveLength(19);
   });
 
+  it("IssueとPull Requestのtimeline queryに依存関係イベント4種を含める", () => {
+    const queries = [
+      ...itemDetailQueryCases.map(({ query }) => query),
+      ...timelineQueryCases.map(({ query }) => query),
+    ];
+    for (const query of queries) {
+      expect(query).toContain("... on BlockedByAddedEvent");
+      expect(query).toContain("... on BlockedByRemovedEvent");
+      expect(query).toContain("... on BlockingAddedEvent");
+      expect(query).toContain("... on BlockingRemovedEvent");
+    }
+  });
+
   it.each(queryCases)("$nameを公式schemaで検証できる", ({ query }) => {
     const errors = validate(schema, parse(query));
 

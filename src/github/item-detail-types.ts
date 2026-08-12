@@ -215,6 +215,16 @@ export type GitHubTimelineEvent =
       }>)
   | (GitHubTimelineEventBase &
       Readonly<{
+        kind: "blocked_by_added" | "blocked_by_removed";
+        blockingIssue: GitHubTimelineReferencedItem;
+      }>)
+  | (GitHubTimelineEventBase &
+      Readonly<{
+        kind: "blocking_added" | "blocking_removed";
+        blockedIssue: GitHubTimelineReferencedItem;
+      }>)
+  | (GitHubTimelineEventBase &
+      Readonly<{
         kind: "sub_issue_added" | "sub_issue_removed";
         subIssue: GitHubTimelineReferencedItem;
       }>)

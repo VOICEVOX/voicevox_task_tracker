@@ -332,6 +332,22 @@ const unassignedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("UnassignedEvent"),
   assignee: assigneeSchema.nullable(),
 });
+const blockedByAddedEventSchema = timelineEventBaseSchema.extend({
+  __typename: z.literal("BlockedByAddedEvent"),
+  blockingIssue: referencedItemSchema.nullable(),
+});
+const blockedByRemovedEventSchema = timelineEventBaseSchema.extend({
+  __typename: z.literal("BlockedByRemovedEvent"),
+  blockingIssue: referencedItemSchema.nullable(),
+});
+const blockingAddedEventSchema = timelineEventBaseSchema.extend({
+  __typename: z.literal("BlockingAddedEvent"),
+  blockedIssue: referencedItemSchema.nullable(),
+});
+const blockingRemovedEventSchema = timelineEventBaseSchema.extend({
+  __typename: z.literal("BlockingRemovedEvent"),
+  blockedIssue: referencedItemSchema.nullable(),
+});
 const labelSchema = z.object({
   id: opaqueIdSchema,
   name: z.string().min(1),
@@ -1093,6 +1109,42 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
         ...normalizeTimelineBase(event, sequence),
         kind: "unassigned",
         assignee: normalizeAssignee(event.assignee),
+      });
+    }
+    case "BlockedByAddedEvent": {
+      const event = parseGraphqlResponse(blockedByAddedEventSchema, node, "BlockedByAddedEvent");
+      return Object.freeze({
+        ...normalizeTimelineBase(event, sequence),
+        kind: "blocked_by_added",
+        blockingIssue: normalizeTimelineReferencedItem(event.blockingIssue),
+      });
+    }
+    case "BlockedByRemovedEvent": {
+      const event = parseGraphqlResponse(
+        blockedByRemovedEventSchema,
+        node,
+        "BlockedByRemovedEvent",
+      );
+      return Object.freeze({
+        ...normalizeTimelineBase(event, sequence),
+        kind: "blocked_by_removed",
+        blockingIssue: normalizeTimelineReferencedItem(event.blockingIssue),
+      });
+    }
+    case "BlockingAddedEvent": {
+      const event = parseGraphqlResponse(blockingAddedEventSchema, node, "BlockingAddedEvent");
+      return Object.freeze({
+        ...normalizeTimelineBase(event, sequence),
+        kind: "blocking_added",
+        blockedIssue: normalizeTimelineReferencedItem(event.blockedIssue),
+      });
+    }
+    case "BlockingRemovedEvent": {
+      const event = parseGraphqlResponse(blockingRemovedEventSchema, node, "BlockingRemovedEvent");
+      return Object.freeze({
+        ...normalizeTimelineBase(event, sequence),
+        kind: "blocking_removed",
+        blockedIssue: normalizeTimelineReferencedItem(event.blockedIssue),
       });
     }
     case "LabeledEvent": {
