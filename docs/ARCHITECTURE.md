@@ -14,7 +14,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | `src/codex`       | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                | `src/domain`、`src/graph`、`src/persistence`             |
 | `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、Git branch transaction | `src/codex`、`src/domain`、`src/github`                  |
 | `src/pages`       | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                   | `src/domain`、`src/graph`、`src/persistence`、`src/util` |
-| `src/discord`     | 通知候補選別、cooldown、payload分割、mention制限、Webhook送信                            | `src/domain`、`src/graph`                                |
+| `src/discord`     | 通知候補選別、再通知間隔、payload分割、mention制限、Webhook送信                          | `src/domain`、`src/graph`                                |
 | `src/eval`        | golden fixtureの解析と期待値比較                                                         | 判定、graph、公開DTO、通知の各pure処理                   |
 | `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                        | `src/cli`と全実処理モジュール                            |
 | `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                       | 上記の全モジュール                                       |
@@ -322,7 +322,7 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 | `state/snapshot.json`               | 要対応度、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 8の最新snapshot |
 | `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                           |
 | `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                               |
-| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                                 |
+| `state/notification-ledger.json`    | 予約期限、送信結果、再通知間隔を持つ通知ledger                                               |
 | `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                        |
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
@@ -343,7 +343,7 @@ Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しま�
 通知予約はrun開始時刻から24時間だけ有効です。
 予約期限は日次workflow内の排他用leaseであり通知方針ではないため、設定項目にせず日次周期と同じ24時間へ固定します。
 期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。
-cooldownと同日抑制は送信済みentryだけへ適用します。
+再通知間隔と同日抑制は送信済みentryだけへ適用します。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
 PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。

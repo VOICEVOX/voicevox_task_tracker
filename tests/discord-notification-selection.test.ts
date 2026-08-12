@@ -37,7 +37,7 @@ const PREVIOUS_STALL_SINCE = createUtcIsoDateTime("2026-08-05T00:00:00Z");
 const PREVIOUS_OBSERVED_AT = createUtcIsoDateTime("2026-08-09T00:00:00Z");
 const settings = Object.freeze({
   maxItemsPerDigest: 10,
-  cooldownDays: Object.freeze({
+  repeatDays: Object.freeze({
     urgent: 3,
     critical: 2,
   }),
@@ -856,24 +856,18 @@ describe("ledgerとcooldown", () => {
     expect(notifiedDays).toEqual([0, 3, 6]);
   });
 
-  it("cooldownが0日でも同日の重複だけは抑える", () => {
-    const noCooldownSettings = Object.freeze({
+  it("repeatDaysに0日を指定した選別入力を拒否する", () => {
+    const invalidSettings = Object.freeze({
       ...settings,
-      cooldownDays: Object.freeze({
+      repeatDays: Object.freeze({
         urgent: 0,
         critical: 0,
       }),
     });
-    const first = selectDiscordNotifications(
-      createInput(NOW, [overdueItem("watch")], [], noCooldownSettings),
-    );
-    const sentLedger = markReservationsSent(first.ledgerReservations, NOW);
-    const rerun = selectDiscordNotifications(
-      createInput(addHours(NOW, 12), [overdueItem("urgent")], sentLedger, noCooldownSettings),
-    );
 
-    expect(first.action).toBe("create_digest");
-    expect(rerun.action).toBe("skip_digest");
+    expect(() =>
+      selectDiscordNotifications(createInput(NOW, [overdueItem("watch")], [], invalidSettings)),
+    ).toThrow("urgent repeat日数");
   });
 
   it("reservedは24時間だけ抑制し、期限切れ後は再送しない理由も候補へ戻す", () => {

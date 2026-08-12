@@ -232,7 +232,7 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 - recent draft。
 - confidence<0.65のAI-only判定（owner unknown警告を除く）。
 
-通知0件なら投稿しない。unchanged urgentは3日、criticalは2日のcooldownを置く。
+通知0件なら投稿しない。`repeatDays`で指定する再通知間隔はurgentを3日、criticalを2日とする。
 
 ## 10. 追跡対象への追加規則
 
@@ -467,21 +467,21 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 
 ### 11.11 Discord通知
 
-| ID        | 規範 | 要求                                                                                                                                                                                                    | 受入要約                                                                                    |
-| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `NTF-001` | MUST | 08:00 JST日次起動 — scheduleを毎日23:00 UTC（08:00 JST）に設定し、workflow_dispatchも提供しなければならない。                                                                                           | `AT-NTF-001`: workflow YAMLのcronと手動triggerを静的検査する。                              |
-| `NTF-002` | MUST | Pages後通知 — 通常digestは最新Pagesのdeployment成功後にだけ送信しなければならない。                                                                                                                     | `AT-NTF-002`: Pages失敗fixtureで通常digestが送られない。                                    |
-| `NTF-003` | MUST | Discord Incoming Webhook — v1通知はDiscord Incoming Webhookを使用し、URLをActions secretから取得しなければならない。                                                                                    | `AT-NTF-003`: secretなしで明示エラー、secret値はlogに出ない。                               |
-| `NTF-004` | MUST | mention既定無効 — 既定payloadはallowed_mentionsで全mentionを無効化しなければならない。                                                                                                                  | `AT-NTF-004`: @everyone/@user文字列fixtureでも実mentionが許可されない。                     |
-| `NTF-005` | MUST | mention allowlist — 有効化時も設定済みDiscord IDだけをallowed_mentions.usersへ含めなければならない。                                                                                                    | `AT-NTF-005`: 未登録GitHubユーザー名はplain text表示になる。                                |
-| `NTF-006` | MUST | 通知選別 — threshold crossing、urgent/critical停滞、owner不明48h超、責務遷移、newly unblocked高impact、cycleを主要通知候補としなければならない。                                                        | `AT-NTF-006`: 各reason fixtureがcandidateになる。                                           |
-| `NTF-007` | MUST | digest構成 — digestを「停止要因」「内容確認または担当が未確定」「新規解消・重要変化」に分け、各itemにrepo#number、title、waitingOn、duration、reason、URLを含めなければならない。                       | `AT-NTF-007`: payload snapshotが必須項目を満たす。                                          |
-| `NTF-008` | MUST | Discord制限内分割 — embed/文字数/件数のDiscord制限を事前計算し、安全上限を超える場合は複数messageへ分割しなければならない。                                                                             | `AT-NTF-008`: 長文20件fixtureがAPI rejectなしの複数payloadになる。                          |
-| `NTF-009` | MUST | noise抑制 — freshな作業中、bot-only更新、unchanged watch、recent draft、低信頼AI-only、automation dashboardを既定digestから除外しなければならない。                                                     | `AT-NTF-009`: noise fixture群が候補0件になる。                                              |
-| `NTF-010` | MUST | 重複/cooldown — notification ledgerの予約は24時間だけ再送を抑え、期限切れ後は再送可能にしなければならない。cooldownは送信済み記録だけへ適用し、urgentは既定3日、criticalは既定2日としなければならない。 | `AT-NTF-010`: 期限内と期限切れの予約、同日再実行、連日fixtureで期待回数になる。             |
-| `NTF-011` | MUST | 空digest抑制 — 通知対象が0件なら通常digestを送信してはならない。                                                                                                                                        | `AT-NTF-011`: 0 candidate fixtureでwebhook callが0件になる。                                |
-| `NTF-012` | MUST | 運用障害通知 — 収集・Pages・Discord自身の重大障害を通常item digestと区別し、設定により同一または別webhookへ1件だけ通知できなければならない。                                                            | `AT-NTF-012`: 連続retry失敗fixtureで重複しないops alertが生成される。                       |
-| `NTF-013` | MUST | 永続化済みrun照合 — 通常digestの送信前にworkflow artifactのsnapshotとtracker-state branchの永続化済みsnapshotでrun IDが一致することを検証し、不一致なら送信せず失敗しなければならない。                 | `AT-NTF-013`: 同じrunなら送信adapterが呼ばれ、異なるrunなら呼ばれず日本語エラーで失敗する。 |
+| ID        | 規範 | 要求                                                                                                                                                                                                                      | 受入要約                                                                                    |
+| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `NTF-001` | MUST | 08:00 JST日次起動 — scheduleを毎日23:00 UTC（08:00 JST）に設定し、workflow_dispatchも提供しなければならない。                                                                                                             | `AT-NTF-001`: workflow YAMLのcronと手動triggerを静的検査する。                              |
+| `NTF-002` | MUST | Pages後通知 — 通常digestは最新Pagesのdeployment成功後にだけ送信しなければならない。                                                                                                                                       | `AT-NTF-002`: Pages失敗fixtureで通常digestが送られない。                                    |
+| `NTF-003` | MUST | Discord Incoming Webhook — v1通知はDiscord Incoming Webhookを使用し、URLをActions secretから取得しなければならない。                                                                                                      | `AT-NTF-003`: secretなしで明示エラー、secret値はlogに出ない。                               |
+| `NTF-004` | MUST | mention既定無効 — 既定payloadはallowed_mentionsで全mentionを無効化しなければならない。                                                                                                                                    | `AT-NTF-004`: @everyone/@user文字列fixtureでも実mentionが許可されない。                     |
+| `NTF-005` | MUST | mention allowlist — 有効化時も設定済みDiscord IDだけをallowed_mentions.usersへ含めなければならない。                                                                                                                      | `AT-NTF-005`: 未登録GitHubユーザー名はplain text表示になる。                                |
+| `NTF-006` | MUST | 通知選別 — threshold crossing、urgent/critical停滞、owner不明48h超、責務遷移、newly unblocked高impact、cycleを主要通知候補としなければならない。                                                                          | `AT-NTF-006`: 各reason fixtureがcandidateになる。                                           |
+| `NTF-007` | MUST | digest構成 — digestを「停止要因」「内容確認または担当が未確定」「新規解消・重要変化」に分け、各itemにrepo#number、title、waitingOn、duration、reason、URLを含めなければならない。                                         | `AT-NTF-007`: payload snapshotが必須項目を満たす。                                          |
+| `NTF-008` | MUST | Discord制限内分割 — embed/文字数/件数のDiscord制限を事前計算し、安全上限を超える場合は複数messageへ分割しなければならない。                                                                                               | `AT-NTF-008`: 長文20件fixtureがAPI rejectなしの複数payloadになる。                          |
+| `NTF-009` | MUST | noise抑制 — freshな作業中、bot-only更新、unchanged watch、recent draft、低信頼AI-only、automation dashboardを既定digestから除外しなければならない。                                                                       | `AT-NTF-009`: noise fixture群が候補0件になる。                                              |
+| `NTF-010` | MUST | 重複/再通知間隔 — notification ledgerの予約は24時間だけ再送を抑え、期限切れ後は再送可能にしなければならない。`repeatDays`で指定する再通知間隔は送信済み記録だけへ適用し、urgentは3日、criticalは2日としなければならない。 | `AT-NTF-010`: 期限内と期限切れの予約、同日再実行、連日fixtureで期待回数になる。             |
+| `NTF-011` | MUST | 空digest抑制 — 通知対象が0件なら通常digestを送信してはならない。                                                                                                                                                          | `AT-NTF-011`: 0 candidate fixtureでwebhook callが0件になる。                                |
+| `NTF-012` | MUST | 運用障害通知 — 収集・Pages・Discord自身の重大障害を通常item digestと区別し、設定により同一または別webhookへ1件だけ通知できなければならない。                                                                              | `AT-NTF-012`: 連続retry失敗fixtureで重複しないops alertが生成される。                       |
+| `NTF-013` | MUST | 永続化済みrun照合 — 通常digestの送信前にworkflow artifactのsnapshotとtracker-state branchの永続化済みsnapshotでrun IDが一致することを検証し、不一致なら送信せず失敗しなければならない。                                   | `AT-NTF-013`: 同じrunなら送信adapterが呼ばれ、異なるrunなら呼ばれず日本語エラーで失敗する。 |
 
 ### 11.12 永続化
 
@@ -491,7 +491,7 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 | `DAT-002` | MUST | state branch — 永続状態を専用orphan branch tracker-stateへGit管理しなければならない。                                                                                                                  | `AT-DAT-002`: 初回bootstrapでbranchが作成され、以後同branchへbot commitされる。                                                                  |
 | `DAT-003` | MUST | current snapshot — tracker-stateにschema version 8のcurrent snapshotをcanonical JSONで保存し、各追跡項目に`attention`と`aiAnalysis.status`を持たせなければならない。                                   | `AT-DAT-003`: 同一入力2回でvolatile fieldを除くbyte列が一致し、snapshot schemaが`attention`のscoreとlevel、および6種類のAI利用statusを検証する。 |
 | `DAT-004` | MUST | 日次履歴 — 日次差分またはevent historyを日付単位で保持し、previous→currentを再構成できなければならない。                                                                                               | `AT-DAT-004`: 任意2日間のowner/edge/severity差分を再生できる。                                                                                   |
-| `DAT-005` | MUST | AI cacheと通知ledger — AI cache、analysis metadata、予約期限と送信結果を持つnotification ledgerをstate branchで保持しなければならない。                                                                | `AT-DAT-005`: runnerを破棄して再実行してもcache hit、予約期限、cooldownが維持される。                                                            |
+| `DAT-005` | MUST | AI cacheと通知ledger — AI cache、analysis metadata、予約期限と送信結果を持つnotification ledgerをstate branchで保持しなければならない。                                                                | `AT-DAT-005`: runnerを破棄して再実行してもcache hit、予約期限、repeatDaysによる再通知間隔が維持される。                                          |
 | `DAT-006` | MUST | atomic/canonical/public-safe commit — validation完了後だけsorted/canonical stateをatomic commitし、secret、raw token、private repoのID、owner/name、repository URL、不要な全文本文を含めてはならない。 | `AT-DAT-006`: 失敗途中でlast good commitが変わらず、secret scan/private sentinel testが成功する。                                                |
 
 `config.yml`に設定したメンテナのGitHubユーザー名は公開情報としてwaitingOnと履歴へ保存できる。

@@ -104,7 +104,7 @@ const SEVERITY_THRESHOLDS = Object.freeze({
 }) satisfies SeverityThresholds;
 const NOTIFICATION_SETTINGS = Object.freeze({
   maxItemsPerDigest: 100,
-  cooldownDays: Object.freeze({
+  repeatDays: Object.freeze({
     urgent: 3,
     critical: 2,
   }),

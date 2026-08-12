@@ -76,6 +76,10 @@ describe("設定の読み込みと検証", () => {
       "Renovate Dashboard",
     ]);
     expect(config.notifications.discord.mentions.enabled).toBe(false);
+    expect(config.notifications.discord.repeatDays).toEqual({
+      urgent: 3,
+      critical: 2,
+    });
     expect(config.state.runReportsDirectory).toBe("state/run-reports");
   });
 
@@ -497,6 +501,30 @@ describe("設定の読み込みと検証", () => {
 
     expect(error.message).toContain("notifications.automationNoiseTitles[1]");
     expect(error.message).toContain("空文字は指定できません");
+  });
+
+  it("通知のrepeatDaysに0以下の値を指定できない", () => {
+    for (const [name, target] of [
+      ["urgent", "      urgent: 3"],
+      ["critical", "      critical: 2"],
+    ] as const) {
+      const source = replaceRequired(validConfigSource, target, target.replace(/: \d+$/u, ": 0"));
+      const error = captureConfigError(source);
+
+      expect(error.message).toContain(`notifications.discord.repeatDays.${name}`);
+    }
+  });
+
+  it("通知設定の旧キーを拒否する", () => {
+    const legacySettingKey = ["cooldown", "Days"].join("");
+    const source = replaceRequired(
+      validConfigSource,
+      "    repeatDays:",
+      `    ${legacySettingKey}:`,
+    );
+    const error = captureConfigError(source);
+
+    expect(error.message).toContain(legacySettingKey);
   });
 
   it("state保存先をtracker-state branchのstate配下へ制限する", () => {

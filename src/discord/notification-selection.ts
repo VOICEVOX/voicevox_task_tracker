@@ -118,10 +118,10 @@ export type DiscordNotificationItem = Readonly<{
   graph: DiscordNotificationGraphContext;
 }>;
 
-/** 設定から渡す通知上限、cooldown、noise閾値。 */
+/** 設定から渡す通知上限、再通知間隔、noise閾値。 */
 export type DiscordNotificationSelectionSettings = Readonly<{
   maxItemsPerDigest: number;
-  cooldownDays: Readonly<{
+  repeatDays: Readonly<{
     urgent: number;
     critical: number;
   }>;
@@ -208,6 +208,12 @@ function validateProbability(value: number, context: string): void {
 function validateNonNegativeInteger(value: number, context: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new RangeError(`${context}は0以上の整数にしてください`);
+  }
+}
+
+function validatePositiveInteger(value: number, context: string): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new RangeError(`${context}は1以上の整数にしてください`);
   }
 }
 
@@ -371,8 +377,8 @@ function validateInput(input: SelectDiscordNotificationsInput): number {
   ) {
     throw new RangeError("maxItemsPerDigestは1以上の整数にしてください");
   }
-  validateNonNegativeInteger(input.settings.cooldownDays.urgent, "urgent cooldown日数");
-  validateNonNegativeInteger(input.settings.cooldownDays.critical, "critical cooldown日数");
+  validatePositiveInteger(input.settings.repeatDays.urgent, "urgent repeat日数");
+  validatePositiveInteger(input.settings.repeatDays.critical, "critical repeat日数");
   if (
     !Number.isFinite(input.settings.recentProgressGraceHours) ||
     input.settings.recentProgressGraceHours < 0
@@ -824,18 +830,18 @@ function startOfNextUtcDate(timestamp: number): number {
   return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1);
 }
 
-function cooldownUntil(
+function repeatUntil(
   severity: Severity,
   evaluatedTimestamp: number,
   settings: DiscordNotificationSelectionSettings,
 ): UtcIsoDateTime {
-  const cooldownDays =
+  const repeatDays =
     severity === "urgent"
-      ? settings.cooldownDays.urgent
+      ? settings.repeatDays.urgent
       : severity === "critical"
-        ? settings.cooldownDays.critical
+        ? settings.repeatDays.critical
         : 0;
-  const configuredTimestamp = evaluatedTimestamp + cooldownDays * MILLISECONDS_PER_DAY;
+  const configuredTimestamp = evaluatedTimestamp + repeatDays * MILLISECONDS_PER_DAY;
   const cooldownTimestamp = Math.max(configuredTimestamp, startOfNextUtcDate(evaluatedTimestamp));
   if (!Number.isFinite(cooldownTimestamp)) {
     throw new RangeError("cooldown終了時刻を計算できません");
@@ -922,7 +928,7 @@ function createCandidateDrafts(
         return {
           signal,
           notificationKey,
-          cooldownUntil: cooldownUntil(item.current.severity, evaluatedTimestamp, input.settings),
+          cooldownUntil: repeatUntil(item.current.severity, evaluatedTimestamp, input.settings),
         } satisfies EligibleReason;
       })
       .filter((reason) =>

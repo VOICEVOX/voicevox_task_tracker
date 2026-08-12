@@ -324,7 +324,7 @@ workflowはdefault branchからのscheduleまたは手動実行だけを許可�
 - Pagesの生成時刻がrun reportの`startedAt`と一致し、repository数、item数、stale表示も一致すること
 - private repositoryのID、名前、URL、secret、不要な本文がstateとPagesにないこと
 - 通常digestがPages deploy後にだけ送信され、候補0件なら送信されないこと
-- 同じ候補を含む再実行でcooldownが効くこと
+- 同じ候補を含む再実行でrepeatDaysによる再通知間隔が効くこと
 
 `tracking.startAt: null`なら、最初の完全成功runの時刻がsnapshotへ固定されます。
 収集、Pages、Discordのいずれかで運用対象の失敗が起きたrunでは、`notify-operations`が障害通知を1件送ります。

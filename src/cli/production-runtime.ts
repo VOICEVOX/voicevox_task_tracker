@@ -4385,7 +4385,7 @@ function validateRunCompleteness(
     ledger: notificationLedgerEntries(state, reduction.items),
     settings: {
       maxItemsPerDigest: configuration.config.notifications.discord.maxItemsPerDigest,
-      cooldownDays: configuration.config.notifications.discord.cooldownDays,
+      repeatDays: configuration.config.notifications.discord.repeatDays,
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
       minimumAiConfidence: configuration.config.ai.confidence.medium,
     },

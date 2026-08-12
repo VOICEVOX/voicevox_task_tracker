@@ -430,9 +430,9 @@ const configSchema = z.strictObject({
       operationsWebhookSecretName: requiredStringSchema,
       mentions: mentionsSchema,
       maxItemsPerDigest: positiveIntegerSchema,
-      cooldownDays: z.strictObject({
-        urgent: nonNegativeIntegerSchema,
-        critical: nonNegativeIntegerSchema,
+      repeatDays: z.strictObject({
+        urgent: positiveIntegerSchema,
+        critical: positiveIntegerSchema,
       }),
     }),
   }),

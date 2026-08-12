@@ -54,7 +54,7 @@ Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`
 違反の`message`は入力値を含みうるため残しません。
 
 `tracker-state`は自動更新専用です。
-人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴とcooldownの整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
+人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴と再通知間隔の整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
 
 ## GitHub GraphQL schemaの更新
 
@@ -290,7 +290,7 @@ blockerのseverityとdownstream impactが通知順位を決めます。
 2. automation dashboardのtitleを`notifications.automationNoiseTitles`へ追加するか、対象labelへ`labels.rules.effects.suppressNotifications`を割り当てます。
 3. 通知を減らす状態に対応する`staleness.thresholdsHours`を増やします。
 4. 全状態で直近の進捗を長く猶予する場合は`recentProgressGraceHours`を増やします。
-5. `cooldownDays`を増やし、`maxItemsPerDigest`を減らします。
+5. `repeatDays`を増やし、`maxItemsPerDigest`を減らします。
 6. AI推定が原因なら`ai.confidence.medium`を上げ、実モデルを呼び出すdry-runでAI判定と通知候補の差分を確認します。
 
 通知が少なすぎる場合は逆方向に調整します。
@@ -298,7 +298,7 @@ blockerのseverityとdownstream impactが通知順位を決めます。
 1. maintainer設定、userかteamの指定、review request、native dependency、label規則がstatusとwaitingOnの実態に合うか確認します。
 2. 通知を増やす状態に対応する`staleness.thresholdsHours`を減らします。
 3. 全状態で直近の進捗を短く猶予する場合は`recentProgressGraceHours`を減らします。
-4. `maxItemsPerDigest`を増やし、`cooldownDays`を減らします。
+4. `maxItemsPerDigest`を増やし、`repeatDays`を減らします。
 5. 重要labelへ`priorityWeight`か`severityLift: 1`を設定します。
 6. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目、通知候補を確認します。
 
