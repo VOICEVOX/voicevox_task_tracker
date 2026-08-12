@@ -90,6 +90,20 @@ const DETAIL_REFERENCED_ITEM_FIELDS_FRAGMENT = `
   }
 `;
 
+const DETAIL_USER_CONTENT_EDIT_FIELDS_FRAGMENT = `
+  fragment DetailUserContentEditFields on UserContentEdit {
+    id
+    createdAt
+    deletedAt
+    diff
+    editedAt
+    editor {
+      ...DetailActorFields
+    }
+    updatedAt
+  }
+`;
+
 const DETAIL_ISSUE_COMMENT_FIELDS_FRAGMENT = `
   fragment DetailIssueCommentFields on IssueComment {
     id
@@ -98,7 +112,17 @@ const DETAIL_ISSUE_COMMENT_FIELDS_FRAGMENT = `
     }
     body
     createdAt
+    lastEditedAt
     updatedAt
+    userContentEdits(first: 1) {
+      nodes {
+        ...DetailUserContentEditFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
     url
   }
 `;
@@ -128,7 +152,17 @@ const DETAIL_REVIEW_COMMENT_FIELDS_FRAGMENT = `
     }
     body
     createdAt
+    lastEditedAt
     updatedAt
+    userContentEdits(first: 1) {
+      nodes {
+        ...DetailUserContentEditFields
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
     url
   }
 `;
@@ -597,6 +631,7 @@ const GRAPHQL_FRAGMENT_SOURCES: ReadonlyMap<string, string> = new Map([
   ["DetailReviewRequestTargetFields", DETAIL_REVIEW_REQUEST_TARGET_FIELDS_FRAGMENT],
   ["DetailAssigneeFields", DETAIL_ASSIGNEE_FIELDS_FRAGMENT],
   ["DetailReferencedItemFields", DETAIL_REFERENCED_ITEM_FIELDS_FRAGMENT],
+  ["DetailUserContentEditFields", DETAIL_USER_CONTENT_EDIT_FIELDS_FRAGMENT],
   ["DetailIssueCommentFields", DETAIL_ISSUE_COMMENT_FIELDS_FRAGMENT],
   ["DetailReviewFields", DETAIL_REVIEW_FIELDS_FRAGMENT],
   ["DetailReviewCommentFields", DETAIL_REVIEW_COMMENT_FIELDS_FRAGMENT],
@@ -772,6 +807,16 @@ export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities
         ... on Issue {
           id
           body
+          lastEditedAt
+          userContentEdits(first: 100) {
+            nodes {
+              ...DetailUserContentEditFields
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
           comments(first: 100) {
             nodes {
               ...DetailIssueCommentFields
@@ -796,6 +841,16 @@ export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities
         ... on PullRequest {
           id
           body
+          lastEditedAt
+          userContentEdits(first: 100) {
+            nodes {
+              ...DetailUserContentEditFields
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
           closingIssuesReferences(first: 100) {
             nodes {
               ...DetailReferencedItemFields
@@ -1044,6 +1099,62 @@ export const REVIEW_THREAD_COMMENT_PAGE_QUERY = appendRequiredFragments(`
         comments(first: 100, after: $after) {
           nodes {
             ...DetailReviewCommentFields
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+    }
+  }
+`);
+
+export const USER_CONTENT_EDIT_PAGE_QUERY = appendRequiredFragments(`
+  query GitHubUserContentEditPage($contentId: ID!, $after: String!) {
+    content: node(id: $contentId) {
+      __typename
+      ... on Issue {
+        id
+        userContentEdits(first: 100, after: $after) {
+          nodes {
+            ...DetailUserContentEditFields
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+      ... on PullRequest {
+        id
+        userContentEdits(first: 100, after: $after) {
+          nodes {
+            ...DetailUserContentEditFields
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+      ... on IssueComment {
+        id
+        userContentEdits(first: 100, after: $after) {
+          nodes {
+            ...DetailUserContentEditFields
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+      }
+      ... on PullRequestReviewComment {
+        id
+        userContentEdits(first: 100, after: $after) {
+          nodes {
+            ...DetailUserContentEditFields
           }
           pageInfo {
             hasNextPage

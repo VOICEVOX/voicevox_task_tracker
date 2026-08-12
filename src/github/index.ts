@@ -75,6 +75,8 @@ export {
   type GitHubReviewRequestTimestamp,
   type GitHubTimelineEvent,
   type GitHubTimelineAssignee,
+  type GitHubUserContentEdit,
+  type GitHubUserContentEditCollection,
 } from "./item-detail-types.js";
 export {
   markObservedGitHubItemsStale,

@@ -18,6 +18,7 @@ import {
   REVIEW_THREAD_COMMENT_PAGE_QUERY,
   REVIEW_THREAD_PAGE_QUERY,
   SUB_ISSUE_PAGE_QUERY,
+  USER_CONTENT_EDIT_PAGE_QUERY,
 } from "../src/github/item-detail-queries.js";
 import { type GitHubItemDetailCapabilities } from "../src/github/item-detail-types.js";
 
@@ -86,6 +87,10 @@ const fixedQueryCases = [
     name: "チェックコンテキスト次ページ",
     query: CHECK_CONTEXT_PAGE_QUERY,
   },
+  {
+    name: "UserContentEdit次ページ",
+    query: USER_CONTENT_EDIT_PAGE_QUERY,
+  },
 ] satisfies readonly QueryCase[];
 const itemDetailQueryCases = capabilityAvailabilities.flatMap((nativeDependencies) =>
   capabilityAvailabilities.map((nativeHierarchy) => ({
@@ -112,12 +117,12 @@ const queryCases: readonly QueryCase[] = [
 ];
 
 describe("GitHub GraphQLクエリ", () => {
-  it("送信しうる19件を列挙する", () => {
-    expect(fixedQueryCases).toHaveLength(11);
+  it("送信しうる20件を列挙する", () => {
+    expect(fixedQueryCases).toHaveLength(12);
     expect(itemDetailQueryCases).toHaveLength(4);
     expect(timelineQueryCases).toHaveLength(2);
     expect(dependencyQueryCases).toHaveLength(2);
-    expect(queryCases).toHaveLength(19);
+    expect(queryCases).toHaveLength(20);
   });
 
   it("IssueとPull Requestのtimeline queryに依存関係イベント4種を含める", () => {

@@ -39,6 +39,29 @@ export type GitHubDetailActor =
     }>
   | GitHubUnavailableActor;
 
+/** GitHub detail取得中だけ保持するUserContentEdit。raw diffは後段へ渡してはならない。 */
+export type GitHubUserContentEdit = Readonly<{
+  sourceId: SourceId;
+  sequence: number;
+  createdAt: UtcIsoDateTime;
+  deletedAt: UtcIsoDateTime | null;
+  diff: string | null;
+  editedAt: UtcIsoDateTime;
+  editor: GitHubDetailActor;
+  updatedAt: UtcIsoDateTime;
+}>;
+
+/** UserContentEdit接続の取得結果。 */
+export type GitHubUserContentEditCollection =
+  | Readonly<{
+      availability: "available";
+      edits: readonly GitHubUserContentEdit[];
+    }>
+  | Readonly<{
+      availability: "unavailable";
+      reason: "connection_null";
+    }>;
+
 /** レビュー依頼先となるGitHub userまたはteam。 */
 export type GitHubReviewRequestTarget =
   | Readonly<{
@@ -75,8 +98,10 @@ export type GitHubIssueComment = Readonly<{
   author: GitHubDetailActor;
   body: string;
   createdAt: UtcIsoDateTime;
+  lastEditedAt: UtcIsoDateTime | null;
   updatedAt: UtcIsoDateTime;
   url: GitHubItemUrl;
+  userContentEdits: GitHubUserContentEditCollection;
 }>;
 
 /** Pull Request reviewが対象としたcommitの取得結果。 */
@@ -113,8 +138,10 @@ export type GitHubPullRequestReviewComment = Readonly<{
   author: GitHubDetailActor;
   body: string;
   createdAt: UtcIsoDateTime;
+  lastEditedAt: UtcIsoDateTime | null;
   updatedAt: UtcIsoDateTime;
   url: GitHubItemUrl;
+  userContentEdits: GitHubUserContentEditCollection;
 }>;
 
 /** resolved状態と全文を含むinline review thread取得値。 */
@@ -363,6 +390,8 @@ type GitHubItemDetailFields = Readonly<{
   number: number;
   bodySourceId: SourceId;
   body: string;
+  lastEditedAt: UtcIsoDateTime | null;
+  bodyUserContentEdits: GitHubUserContentEditCollection;
   comments: readonly GitHubIssueComment[];
   timeline: readonly GitHubTimelineEvent[];
   inboundCrossReferences: readonly GitHubInboundCrossReferenceCandidate[];

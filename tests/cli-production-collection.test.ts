@@ -293,6 +293,11 @@ function createFailedCheckPullRequestDetail(
     type: "pull_request",
     bodySourceId: buildSourceId("github_item_body", item.nodeId),
     body: "required checkの失敗原因を判定する",
+    lastEditedAt: null,
+    bodyUserContentEdits: Object.freeze({
+      availability: "unavailable",
+      reason: "connection_null",
+    }),
     comments: Object.freeze([]),
     timeline: Object.freeze([]),
     inboundCrossReferences: Object.freeze([]),
@@ -365,8 +370,13 @@ function createDuplicateComments(
     }),
     body: "重複したコメント",
     createdAt: occurredAt,
+    lastEditedAt: null,
     updatedAt: occurredAt,
     url: `${item.url}#issuecomment-${nodeId}`,
+    userContentEdits: Object.freeze({
+      availability: "unavailable",
+      reason: "connection_null",
+    }),
   } satisfies GitHubIssueComment);
   return Object.freeze([
     comment,
@@ -394,6 +404,11 @@ function createIssueDetail(
     type: "issue",
     bodySourceId: buildSourceId("github_item_body", options.item.nodeId),
     body: options.body,
+    lastEditedAt: null,
+    bodyUserContentEdits: Object.freeze({
+      availability: "unavailable",
+      reason: "connection_null",
+    }),
     comments: options.duplicateComments
       ? createDuplicateComments(options.item, options.observedAt)
       : Object.freeze([]),
@@ -1655,8 +1670,13 @@ describe("本番収集の接続", () => {
       }),
       body: "",
       createdAt: observedAt,
+      lastEditedAt: null,
       updatedAt: observedAt,
       url: `${item.url}#issuecomment-${commentNodeId}`,
+      userContentEdits: Object.freeze({
+        availability: "unavailable",
+        reason: "connection_null",
+      }),
     } satisfies GitHubIssueComment);
     fixture.individualItems.set(item.url, item);
     fixture.details.set(
@@ -3463,8 +3483,13 @@ describe("本番収集の接続", () => {
       }),
       body: `${commentReferenced.url} をコメントから参照します`,
       createdAt: observedAt,
+      lastEditedAt: null,
       updatedAt: observedAt,
       url: tracked.url,
+      userContentEdits: Object.freeze({
+        availability: "unavailable",
+        reason: "connection_null",
+      }),
     } satisfies GitHubIssueComment);
     fixture.openItems = [tracked, bodyReferenced, commentReferenced];
     setIssueDetails(fixture, fixture.openItems, observedAt);
@@ -5672,8 +5697,13 @@ describe("本番判定入力の接続", () => {
                 author: reviewer,
                 body: "この条件は必要でしょうか",
                 createdAt: observedAt,
+                lastEditedAt: null,
                 updatedAt: observedAt,
                 url: `${item.url}#discussion_r1`,
+                userContentEdits: Object.freeze({
+                  availability: "unavailable",
+                  reason: "connection_null",
+                }),
               } satisfies (typeof detail.reviewThreads)[number]["comments"][number]),
             ]),
           } satisfies (typeof detail.reviewThreads)[number]),
@@ -5915,8 +5945,13 @@ describe("本番判定入力の接続", () => {
                 author: reviewer,
                 body: "この条件を修正してください",
                 createdAt: commentAt,
+                lastEditedAt: null,
                 updatedAt: commentAt,
                 url: `${item.url}#discussion_r_codex_review_thread`,
+                userContentEdits: Object.freeze({
+                  availability: "unavailable",
+                  reason: "connection_null",
+                }),
               } satisfies (typeof detail.reviewThreads)[number]["comments"][number]),
             ]),
           } satisfies (typeof detail.reviewThreads)[number]),
@@ -6155,8 +6190,13 @@ describe("本番判定入力の接続", () => {
       }),
       body: "ありがとうございます。今日は暑いですね",
       createdAt: observedAt,
+      lastEditedAt: null,
       updatedAt: observedAt,
       url: `${item.url}#issuecomment-${chatCommentNodeId}`,
+      userContentEdits: Object.freeze({
+        availability: "unavailable",
+        reason: "connection_null",
+      }),
     } satisfies GitHubIssueComment);
     const comments = Object.freeze([meaningfulComment, chatComment]);
     fixture.openItems = [item];
@@ -6362,8 +6402,13 @@ describe("本番判定入力の接続", () => {
       }),
       body: "責務主体が状況をコメントしました",
       createdAt: commentedAt,
+      lastEditedAt: null,
       updatedAt: commentedAt,
       url: `${item.url}#issuecomment-${commentNodeId}`,
+      userContentEdits: Object.freeze({
+        availability: "unavailable",
+        reason: "connection_null",
+      }),
     } satisfies GitHubIssueComment);
     fixture.openItems = [item];
     fixture.details.set(

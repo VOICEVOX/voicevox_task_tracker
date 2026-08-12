@@ -335,8 +335,13 @@ function createProfileComment(
     }),
     body: `次の担当を自然言語から判定します v${changedVersion.toString()}`,
     createdAt: BASELINE_RUN_AT,
+    lastEditedAt: null,
     updatedAt: changedVersion === 1 ? BASELINE_RUN_AT : PROFILE_RUN_AT,
     url: `${item.url}#issuecomment-${item.number.toString()}`,
+    userContentEdits: Object.freeze({
+      availability: "unavailable",
+      reason: "connection_null",
+    }),
   });
 }
 
@@ -366,6 +371,11 @@ function createProfileDetail(
       index < PROFILE_CHANGED_ITEM_COUNT
         ? `自然言語判定を必要とする性能profile本文 v${changedVersion.toString()}`
         : "native dependencyだけを持つ性能profile本文",
+    lastEditedAt: null,
+    bodyUserContentEdits: Object.freeze({
+      availability: "unavailable",
+      reason: "connection_null",
+    }),
     comments:
       index < PROFILE_CHANGED_ITEM_COUNT
         ? Object.freeze([createProfileComment(item, changedVersion)])

@@ -30,6 +30,7 @@ import {
   type GitHubRetryRuntime,
   type PublicRepositoryAllowlist,
 } from "../src/github/index.js";
+import { createItemDetailQuery } from "../src/github/item-detail-queries.js";
 
 type Graphql = GitHubClient["graphql"];
 type GraphqlRequest = Readonly<{
@@ -352,10 +353,25 @@ function createComment(index: number): unknown {
     createdAt: `2026-07-31T${String(Math.floor(index / 60)).padStart(2, "0")}:${String(
       index % 60,
     ).padStart(2, "0")}:00Z`,
+    lastEditedAt: null,
     updatedAt: `2026-07-31T${String(Math.floor(index / 60)).padStart(2, "0")}:${String(
       index % 60,
     ).padStart(2, "0")}:00Z`,
+    userContentEdits: null,
     url: `https://github.com/VOICEVOX/example/issues/1#issuecomment-${index.toString()}`,
+  };
+}
+
+function createUserContentEdit(index: number): unknown {
+  const minute = (index % 60).toString().padStart(2, "0");
+  return {
+    id: `UCE_edit_${index.toString()}`,
+    createdAt: `2026-07-30T00:${minute}:00Z`,
+    deletedAt: null,
+    diff: `+変更${index.toString()}`,
+    editedAt: `2026-07-30T00:${minute}:00Z`,
+    editor: createActor(index),
+    updatedAt: `2026-07-30T00:${minute}:00Z`,
   };
 }
 
@@ -554,6 +570,8 @@ describe("Issue詳細収集", () => {
             __typename: "Issue",
             id: itemNodeId,
             body: "本文",
+            lastEditedAt: null,
+            userContentEdits: null,
             comments: createEmptyConnection(),
             timelineItems: createEmptyConnection(),
           },
@@ -735,6 +753,8 @@ describe("Issue詳細収集", () => {
         __typename: "Issue",
         id: "I_target",
         body: "Codex入力専用のIssue本文",
+        lastEditedAt: null,
+        userContentEdits: null,
         comments: {
           nodes: comments.slice(0, 100),
           pageInfo: createPageInfo(true, "comments-100"),
@@ -963,10 +983,12 @@ describe("Issue詳細収集", () => {
       "DetailReviewFields",
       "DetailReviewRequestTargetFields",
       "DetailReviewThreadFields",
+      "DetailUserContentEditFields",
     ]);
     expect(getFragmentDefinitionNames(getRequestQuery(mock.requests, 2))).toEqual([
       "DetailActorFields",
       "DetailIssueCommentFields",
+      "DetailUserContentEditFields",
     ]);
   });
 
@@ -1056,6 +1078,8 @@ describe("Issue詳細収集", () => {
             __typename: "Issue",
             id: "I_unavailable_timeline_targets",
             body: "本文",
+            lastEditedAt: null,
+            userContentEdits: null,
             comments: createEmptyConnection(),
             timelineItems: {
               nodes: timelineNodes,
@@ -1201,6 +1225,8 @@ describe("Issue詳細収集", () => {
             __typename: "Issue",
             id: "I_no_native",
             body: "",
+            lastEditedAt: null,
+            userContentEdits: null,
             comments: createEmptyConnection(),
             timelineItems: createEmptyConnection(),
           },
@@ -1281,7 +1307,9 @@ function createReviewThread(id: string, isResolved: boolean, index: number): unk
           author: createActor(index),
           body: `inline comment ${index.toString()}`,
           createdAt: `2026-07-31T1${index.toString()}:00:00Z`,
+          lastEditedAt: null,
           updatedAt: `2026-07-31T1${index.toString()}:00:00Z`,
+          userContentEdits: null,
           url: `https://github.com/VOICEVOX/example/pull/7#discussion_r${index.toString()}`,
         },
       ],
@@ -1297,7 +1325,14 @@ function createPullRequestResponse(
     "BEHIND" | "BLOCKED" | "CLEAN" | "DIRTY" | "DRAFT" | "HAS_HOOKS" | "UNKNOWN" | "UNSTABLE",
   checkState: "ERROR" | "EXPECTED" | "FAILURE" | "PENDING" | "SUCCESS",
   checkContexts: readonly unknown[],
-): unknown {
+): Readonly<{
+  item: Readonly<{
+    userContentEdits: unknown;
+    comments: unknown;
+    reviewThreads: unknown;
+    [key: string]: unknown;
+  }>;
+}> {
   const headCommit = {
     id: `C_${itemNodeId}`,
     oid: `head-${itemNodeId}`,
@@ -1317,6 +1352,8 @@ function createPullRequestResponse(
       __typename: "PullRequest",
       id: itemNodeId,
       body: "Codex入力専用のPull Request本文",
+      lastEditedAt: null,
+      userContentEdits: null,
       closingIssuesReferences: createEmptyConnection(),
       headRefOid: `head-${itemNodeId}`,
       headRef: {
@@ -1338,6 +1375,26 @@ function createPullRequestResponse(
         ],
       },
       timelineItems: createEmptyConnection(),
+    },
+  };
+}
+
+function createPullRequestUserContentEditResponse(
+  itemNodeId: string,
+  bodyUserContentEdits: unknown,
+  comments: unknown,
+  reviewThreads: unknown,
+): unknown {
+  const response = createPullRequestResponse(itemNodeId, "MERGEABLE", "CLEAN", "SUCCESS", []);
+  return {
+    ...response,
+    item: {
+      ...response.item,
+      body: "編集履歴を持つPull Request本文",
+      lastEditedAt: "2026-07-30T02:00:00Z",
+      userContentEdits: bodyUserContentEdits,
+      comments,
+      reviewThreads,
     },
   };
 }
@@ -1370,6 +1427,8 @@ function createPullRequestNullableFieldResponse(
       __typename: "PullRequest",
       id: itemNodeId,
       body: "本文",
+      lastEditedAt: null,
+      userContentEdits: null,
       closingIssuesReferences: createEmptyConnection(),
       headRefOid: `head-${itemNodeId}`,
       headRef: {
@@ -1461,6 +1520,8 @@ function createPullRequestHeadCommitResolutionResponse(
       __typename: "PullRequest",
       id: itemNodeId,
       body: "Codex入力専用のPull Request本文",
+      lastEditedAt: null,
+      userContentEdits: null,
       closingIssuesReferences: createEmptyConnection(),
       headRefOid,
       headRef,
@@ -2032,6 +2093,8 @@ describe("Pull Request詳細収集", () => {
         __typename: "PullRequest",
         id: "PR_target",
         body: "Codex入力専用のPull Request本文",
+        lastEditedAt: null,
+        userContentEdits: null,
         closingIssuesReferences: {
           nodes: closingIssues.slice(0, 100),
           pageInfo: createPageInfo(true, "closing-issues-next"),
@@ -2499,5 +2562,458 @@ describe("Pull Request詳細収集", () => {
       "GitHubItemDetail",
       "GitHubItemDetail",
     ]);
+  });
+});
+
+describe("UserContentEdit収集", () => {
+  it("本文の101件目以降を取得し、nullable値とコメントconnection nullを保持する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "I_user_content_edits", 200, "issue");
+    const edits = Array.from({ length: 100 }, (_, index) => createUserContentEdit(index + 1));
+    const firstEdit = edits[0];
+    if (typeof firstEdit !== "object" || firstEdit == null) {
+      throw new Error("UserContentEdit fixtureがありません");
+    }
+    const nullableEdit = {
+      ...firstEdit,
+      deletedAt: "2026-07-30T01:00:00Z",
+      diff: null,
+      editor: null,
+    };
+    edits[0] = nullableEdit;
+    const mock = createGraphqlHttpMock((operation, variables) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("unavailable");
+      }
+      if (operation === "GitHubItemDetail") {
+        return {
+          item: {
+            __typename: "Issue",
+            id: item.nodeId,
+            body: "本文",
+            lastEditedAt: "2026-07-30T01:00:00Z",
+            userContentEdits: {
+              nodes: edits,
+              pageInfo: createPageInfo(true, "body-100"),
+            },
+            comments: {
+              nodes: [
+                {
+                  id: "IC_user_content_edits",
+                  author: createActor(1),
+                  body: "コメント",
+                  createdAt: "2026-07-30T02:00:00Z",
+                  lastEditedAt: null,
+                  updatedAt: "2026-07-30T02:00:00Z",
+                  userContentEdits: null,
+                  url: "https://github.com/VOICEVOX/example/issues/200#issuecomment-1",
+                },
+              ],
+              pageInfo: createPageInfo(false, null),
+            },
+            timelineItems: createEmptyConnection(),
+          },
+        };
+      }
+      if (operation === "GitHubUserContentEditPage") {
+        expect(getStringVariable(variables, "contentId")).toBe(item.nodeId);
+        expect(getStringVariable(variables, "after")).toBe("body-100");
+        return {
+          content: {
+            __typename: "Issue",
+            id: item.nodeId,
+            userContentEdits: {
+              nodes: [createUserContentEdit(101)],
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        };
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [{ item }],
+      observedAt,
+      graphql: mock.graphql,
+    });
+    const detail = requireDetail(collection.items, 0);
+    if (detail.type !== "issue") {
+      throw new Error("Issue detail fixtureではありません");
+    }
+    if (detail.bodyUserContentEdits.availability !== "available") {
+      throw new Error("本文編集履歴fixtureが利用できません");
+    }
+    expect(detail.bodyUserContentEdits.edits).toHaveLength(101);
+    const normalizedNullableEdit = detail.bodyUserContentEdits.edits.find(
+      (edit) => edit.sourceId === "github_user_content_edit:UCE_edit_1",
+    );
+    if (normalizedNullableEdit == null) {
+      throw new Error("nullable UserContentEdit fixtureがありません");
+    }
+    expect(normalizedNullableEdit).toMatchObject({
+      sourceId: "github_user_content_edit:UCE_edit_1",
+      sequence: 0,
+      deletedAt: "2026-07-30T01:00:00.000Z",
+      diff: null,
+      editor: {
+        status: "unavailable",
+        reason: "github_did_not_return_actor",
+      },
+    });
+    const lastEdit = detail.bodyUserContentEdits.edits.find(
+      (edit) => edit.sourceId === "github_user_content_edit:UCE_edit_101",
+    );
+    if (lastEdit == null) {
+      throw new Error("末尾UserContentEdit fixtureがありません");
+    }
+    expect(lastEdit.sequence).toBe(100);
+    const firstComment = detail.comments[0];
+    if (firstComment == null) {
+      throw new Error("Issue comment fixtureがありません");
+    }
+    expect(firstComment.userContentEdits).toEqual({
+      availability: "unavailable",
+      reason: "connection_null",
+    });
+    expect(mock.requests.map((request) => request.operation)).toEqual([
+      "GitHubItemDetailCapabilities",
+      "GitHubItemDetail",
+      "GitHubUserContentEditPage",
+    ]);
+  });
+
+  it("空の編集履歴connectionを利用可能な0件として保持する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "I_user_content_empty", 202, "issue");
+    const mock = createGraphqlHttpMock((operation) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("unavailable");
+      }
+      if (operation === "GitHubItemDetail") {
+        return {
+          item: {
+            __typename: "Issue",
+            id: item.nodeId,
+            body: "本文",
+            lastEditedAt: null,
+            userContentEdits: {
+              nodes: [],
+              pageInfo: createPageInfo(false, null),
+            },
+            comments: createEmptyConnection(),
+            timelineItems: createEmptyConnection(),
+          },
+        };
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [{ item }],
+      observedAt,
+      graphql: mock.graphql,
+    });
+    const detail = requireDetail(collection.items, 0);
+    if (detail.bodyUserContentEdits.availability !== "available") {
+      throw new Error("空の本文編集履歴fixtureが利用できません");
+    }
+    expect(detail.bodyUserContentEdits.edits).toEqual([]);
+  });
+
+  it("Issue commentの編集履歴を追加ページまで収集しlastEditedAtを保持する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "I_comment_user_content_edits", 203, "issue");
+    const commentNodeId = "IC_comment_user_content_edits";
+    const mock = createGraphqlHttpMock((operation, variables) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("unavailable");
+      }
+      if (operation === "GitHubItemDetail") {
+        return {
+          item: {
+            __typename: "Issue",
+            id: item.nodeId,
+            body: "本文",
+            lastEditedAt: null,
+            userContentEdits: {
+              nodes: [],
+              pageInfo: createPageInfo(false, null),
+            },
+            comments: {
+              nodes: [
+                {
+                  id: commentNodeId,
+                  author: createActor(3),
+                  body: "編集されたコメント",
+                  createdAt: "2026-07-30T00:00:00Z",
+                  lastEditedAt: "2026-07-30T00:30:00Z",
+                  updatedAt: "2026-07-30T00:31:00Z",
+                  userContentEdits: {
+                    nodes: [createUserContentEdit(1)],
+                    pageInfo: createPageInfo(true, "comment-1"),
+                  },
+                  url: "https://github.com/VOICEVOX/example/issues/203#issuecomment-1",
+                },
+              ],
+              pageInfo: createPageInfo(false, null),
+            },
+            timelineItems: createEmptyConnection(),
+          },
+        };
+      }
+      if (operation === "GitHubUserContentEditPage") {
+        expect(getStringVariable(variables, "contentId")).toBe(commentNodeId);
+        expect(getStringVariable(variables, "after")).toBe("comment-1");
+        return {
+          content: {
+            __typename: "IssueComment",
+            id: commentNodeId,
+            userContentEdits: {
+              nodes: [createUserContentEdit(2)],
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        };
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [{ item }],
+      observedAt,
+      graphql: mock.graphql,
+    });
+    const detail = requireDetail(collection.items, 0);
+    if (detail.type !== "issue") {
+      throw new Error("Issue detail fixtureではありません");
+    }
+    const comment = detail.comments[0];
+    if (comment == null) {
+      throw new Error("Issue comment fixtureがありません");
+    }
+    expect(comment.lastEditedAt).toBe("2026-07-30T00:30:00.000Z");
+    if (comment.userContentEdits.availability !== "available") {
+      throw new Error("Issue comment編集履歴fixtureが利用できません");
+    }
+    expect(comment.userContentEdits.edits.map((edit) => edit.sourceId)).toEqual([
+      "github_user_content_edit:UCE_edit_1",
+      "github_user_content_edit:UCE_edit_2",
+    ]);
+    expect(mock.requests.map((request) => request.operation)).toEqual([
+      "GitHubItemDetailCapabilities",
+      "GitHubItemDetail",
+      "GitHubUserContentEditPage",
+    ]);
+  });
+
+  it("Pull Request本文とreview commentの編集履歴を追加ページまで収集する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "PR_user_content_edits", 204, "pull_request");
+    const reviewCommentNodeId = "PRRC_user_content_edits";
+    const response = createPullRequestUserContentEditResponse(
+      item.nodeId,
+      {
+        nodes: [createUserContentEdit(10)],
+        pageInfo: createPageInfo(false, null),
+      },
+      createEmptyConnection(),
+      {
+        nodes: [
+          {
+            id: "PRRT_user_content_edits",
+            isResolved: false,
+            isOutdated: false,
+            path: "src/example.ts",
+            resolvedBy: null,
+            comments: {
+              nodes: [
+                {
+                  id: reviewCommentNodeId,
+                  author: createActor(4),
+                  body: "レビューコメント",
+                  createdAt: "2026-07-30T01:00:00Z",
+                  lastEditedAt: "2026-07-30T01:30:00Z",
+                  updatedAt: "2026-07-30T01:31:00Z",
+                  userContentEdits: {
+                    nodes: [createUserContentEdit(11)],
+                    pageInfo: createPageInfo(true, "review-comment-1"),
+                  },
+                  url: "https://github.com/VOICEVOX/example/pull/204#discussion_r1",
+                },
+              ],
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        ],
+        pageInfo: createPageInfo(false, null),
+      },
+    );
+    const mock = createGraphqlHttpMock((operation, variables) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("unavailable");
+      }
+      if (operation === "GitHubItemDetail") {
+        return response;
+      }
+      if (operation === "GitHubUserContentEditPage") {
+        expect(getStringVariable(variables, "contentId")).toBe(reviewCommentNodeId);
+        expect(getStringVariable(variables, "after")).toBe("review-comment-1");
+        return {
+          content: {
+            __typename: "PullRequestReviewComment",
+            id: reviewCommentNodeId,
+            userContentEdits: {
+              nodes: [createUserContentEdit(12)],
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        };
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [{ item }],
+      observedAt,
+      graphql: mock.graphql,
+    });
+    const detail = requireDetail(collection.items, 0);
+    if (detail.type !== "pull_request") {
+      throw new Error("Pull Request detail fixtureではありません");
+    }
+    expect(detail.lastEditedAt).toBe("2026-07-30T02:00:00.000Z");
+    if (detail.bodyUserContentEdits.availability !== "available") {
+      throw new Error("Pull Request本文編集履歴fixtureが利用できません");
+    }
+    expect(detail.bodyUserContentEdits.edits.map((edit) => edit.sourceId)).toEqual([
+      "github_user_content_edit:UCE_edit_10",
+    ]);
+    const thread = detail.reviewThreads[0];
+    if (thread == null) {
+      throw new Error("review thread fixtureがありません");
+    }
+    const reviewComment = thread.comments[0];
+    if (reviewComment == null) {
+      throw new Error("review comment fixtureがありません");
+    }
+    expect(reviewComment.lastEditedAt).toBe("2026-07-30T01:30:00.000Z");
+    if (reviewComment.userContentEdits.availability !== "available") {
+      throw new Error("review comment編集履歴fixtureが利用できません");
+    }
+    expect(reviewComment.userContentEdits.edits.map((edit) => edit.sourceId)).toEqual([
+      "github_user_content_edit:UCE_edit_11",
+      "github_user_content_edit:UCE_edit_12",
+    ]);
+    expect(mock.requests.map((request) => request.operation)).toEqual([
+      "GitHubItemDetailCapabilities",
+      "GitHubItemDetail",
+      "GitHubUserContentEditPage",
+    ]);
+  });
+
+  it("nodes null、cursor欠落、空の次ページをresponse errorとして拒否する", async () => {
+    const cases = [
+      {
+        name: "重複ID",
+        userContentEdits: {
+          nodes: [createUserContentEdit(1), createUserContentEdit(1)],
+          pageInfo: createPageInfo(false, null),
+        },
+        page: null,
+      },
+      {
+        name: "nodes null",
+        userContentEdits: {
+          nodes: null,
+          pageInfo: createPageInfo(false, null),
+        },
+        page: null,
+      },
+      {
+        name: "cursor欠落",
+        userContentEdits: {
+          nodes: [],
+          pageInfo: createPageInfo(true, null),
+        },
+        page: null,
+      },
+      {
+        name: "空の次ページ",
+        userContentEdits: {
+          nodes: [],
+          pageInfo: createPageInfo(true, "body-0"),
+        },
+        page: {
+          content: {
+            __typename: "Issue",
+            id: "I_user_content_invalid",
+            userContentEdits: {
+              nodes: [],
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        },
+      },
+    ] as const;
+    for (const testCase of cases) {
+      const allowlist = createAllowlist();
+      const item = createItem(allowlist, "I_user_content_invalid", 201, "issue");
+      const mock = createGraphqlHttpMock((operation) => {
+        if (operation === "GitHubItemDetailCapabilities") {
+          return createCapabilitiesResponse("unavailable");
+        }
+        if (operation === "GitHubItemDetail") {
+          return {
+            item: {
+              __typename: "Issue",
+              id: item.nodeId,
+              body: "本文",
+              lastEditedAt: null,
+              userContentEdits: testCase.userContentEdits,
+              comments: createEmptyConnection(),
+              timelineItems: createEmptyConnection(),
+            },
+          };
+        }
+        if (operation === "GitHubUserContentEditPage") {
+          return testCase.page;
+        }
+        throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+      });
+      try {
+        await collectGitHubItemDetails({
+          allowlist,
+          targets: [{ item }],
+          observedAt,
+          graphql: mock.graphql,
+        });
+        throw new Error(`${testCase.name}のresponse errorが発生しませんでした`);
+      } catch (error: unknown) {
+        if (!(error instanceof GitHubItemDetailCollectionError)) {
+          throw error;
+        }
+        expect(error.cause).toBeInstanceOf(GitHubResponseValidationError);
+      }
+    }
+  });
+
+  it("Pull Request review submission本文の編集履歴を取得しない", () => {
+    const query = createItemDetailQuery({
+      nativeDependencies: "unavailable",
+      nativeHierarchy: "unavailable",
+    });
+    const reviewFragmentStart = query.indexOf("fragment DetailReviewFields");
+    const reviewCommentFragmentStart = query.indexOf("fragment DetailReviewCommentFields");
+    if (reviewFragmentStart < 0 || reviewCommentFragmentStart < 0) {
+      throw new Error("review fragment fixtureがありません");
+    }
+    expect(query.slice(reviewFragmentStart, reviewCommentFragmentStart)).not.toContain(
+      "userContentEdits",
+    );
+    expect(query.slice(reviewCommentFragmentStart)).toContain("userContentEdits(first: 1)");
   });
 });

@@ -303,8 +303,13 @@ function createDetail(): Extract<GitHubItemDetail, { type: "pull_request" }> {
     author: createAccountActor("B_commenter", "api-bot", "Bot"),
     body: "公開結果へ残してはいけないコメント全文",
     createdAt: occurredAt,
+    lastEditedAt: null,
     updatedAt: occurredAt,
     url: "https://github.com/VOICEVOX/example/pull/1#issuecomment-1",
+    userContentEdits: {
+      availability: "unavailable",
+      reason: "connection_null",
+    },
   } satisfies GitHubIssueComment;
   const timeline = createTimeline();
   return {
@@ -314,6 +319,11 @@ function createDetail(): Extract<GitHubItemDetail, { type: "pull_request" }> {
     number: 1,
     bodySourceId: buildSourceId("github_item_body", "PR_normalization"),
     body: "公開結果へ残してはいけない本文全文",
+    lastEditedAt: null,
+    bodyUserContentEdits: {
+      availability: "unavailable",
+      reason: "connection_null",
+    },
     comments: [comment, comment],
     timeline,
     inboundCrossReferences: [],
@@ -738,6 +748,11 @@ describe("GitHubイベント正規化", () => {
         type: "issue",
         bodySourceId: buildSourceId("github_item_body", item.nodeId),
         body: "本文",
+        lastEditedAt: null,
+        bodyUserContentEdits: {
+          availability: "unavailable",
+          reason: "connection_null",
+        },
         comments: [],
         timeline: [
           {
