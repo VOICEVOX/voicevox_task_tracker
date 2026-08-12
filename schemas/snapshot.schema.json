@@ -76,34 +76,20 @@
       "format": "date-time"
     },
     "trackingStartAt": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["status"],
-          "properties": {
-            "status": {
-              "const": "not_fixed"
-            }
-          }
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value", "source"],
+      "properties": {
+        "status": {
+          "const": "fixed"
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["status", "value", "source"],
-          "properties": {
-            "status": {
-              "const": "fixed"
-            },
-            "value": {
-              "$ref": "#/$defs/dateTime"
-            },
-            "source": {
-              "enum": ["configuration", "first_complete_run"]
-            }
-          }
+        "value": {
+          "$ref": "#/$defs/dateTime"
+        },
+        "source": {
+          "const": "configuration"
         }
-      ]
+      }
     },
     "fingerprint": {
       "type": "string",

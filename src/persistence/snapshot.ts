@@ -368,9 +368,7 @@ function normalizeAccountActor(actor: GitHubAccountActor): GitHubAccountActor {
 
 function assertSnapshotSemantics(snapshot: StateSnapshot): void {
   assertUtcDateTime(snapshot.generatedAt, "generatedAt");
-  if (snapshot.trackingStartAt.status === "fixed") {
-    assertUtcDateTime(snapshot.trackingStartAt.value, "trackingStartAt");
-  }
+  assertUtcDateTime(snapshot.trackingStartAt.value, "trackingStartAt");
   assertUnique(
     snapshot.repositories.map((repository) => repository.id),
     "repository ID",

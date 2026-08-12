@@ -145,20 +145,12 @@ const trackingIncludeSchema = requiredStringSchema.superRefine((value, context) 
   }
 });
 
-const startAtSchema = z
-  .union([
-    z.iso.datetime({
-      offset: true,
-      error: "タイムゾーンを含むISO 8601日時を指定してください",
-    }),
-    z.null(),
-  ])
-  .transform((value) => {
-    if (typeof value === "string") {
-      return new Date(value).toISOString();
-    }
-    return value;
-  });
+const startAtSchema = z.iso
+  .datetime({
+    offset: true,
+    error: "タイムゾーンを含むISO 8601日時を指定してください",
+  })
+  .transform((value) => new Date(value).toISOString());
 
 const maintainerLoginSchema = z
   .string()

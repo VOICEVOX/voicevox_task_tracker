@@ -22,7 +22,7 @@ function createEmptySnapshot(): StateSnapshot {
     trackingStartAt: {
       status: "fixed",
       value: GENERATED_AT,
-      source: "first_complete_run",
+      source: "configuration",
     },
     ai: {
       enabled: false,

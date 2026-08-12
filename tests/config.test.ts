@@ -436,7 +436,7 @@ describe("設定の読み込みと検証", () => {
   it("startAtをUTCへ正規化し、再解析しても変化させない", () => {
     const source = replaceRequired(
       validConfigSource,
-      "startAt: null",
+      'startAt: "2026-01-01T00:00:00+09:00"',
       'startAt: "2026-07-31T08:30:45+09:00"',
     );
 
@@ -446,6 +446,20 @@ describe("設定の読み込みと検証", () => {
     expect(firstConfig.tracking.startAt).toBe("2026-07-30T23:30:45.000Z");
     expect(secondConfig.tracking.startAt).toBe(firstConfig.tracking.startAt);
   });
+
+  it.each(["startAt: null", 'startAt: "2026-01-01T00:00:00"'])(
+    "tracking.startAtを必須の日時文字列として検証する: %s",
+    (startAt) => {
+      const source = replaceRequired(
+        validConfigSource,
+        'startAt: "2026-01-01T00:00:00+09:00"',
+        startAt,
+      );
+      const error = captureConfigError(source);
+
+      expect(error.message).toContain("tracking.startAt");
+    },
+  );
 
   it("追跡対象の明示includeへGitHub node IDを指定できる", () => {
     const source = replaceRequired(

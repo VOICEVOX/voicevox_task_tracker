@@ -86,7 +86,7 @@ export type PersistNotificationLedgerInput = Readonly<{
   knownSecrets: readonly string[];
 }>;
 
-/** 完全成功したrunの追跡開始時刻、通知ledger、run reportを保存する入力。 */
+/** 完全成功したrunの通知ledgerとrun reportを保存する入力。 */
 export type PersistRunCompletionInput = Readonly<{
   snapshot: StateSnapshot;
   notificationLedger: StateNotificationLedger;
@@ -457,33 +457,8 @@ export class StatePersistenceSession {
         cause: new TypeError("state branchのsnapshotを読み取れません"),
       });
     }
-    const snapshotUpdates: StateFileUpdate[] = [];
-    if (currentResult.snapshot.trackingStartAt.status === "not_fixed") {
-      if (snapshot.trackingStartAt.status !== "fixed") {
-        throw new StateSnapshotSemanticError("完全成功したrunのtracking.startAtが確定していません");
-      }
-      const expectedCurrentSnapshot = createStateSnapshot({
-        ...snapshot,
-        trackingStartAt: currentResult.snapshot.trackingStartAt,
-      });
-      if (
-        serializeStateSnapshot(expectedCurrentSnapshot) !==
-        serializeStateSnapshot(currentResult.snapshot)
-      ) {
-        throw new StateSnapshotSemanticError(
-          "run完了時にtracking.startAt以外のsnapshot内容が変化しています",
-        );
-      }
-      snapshotUpdates.push({
-        path: this.#configuration.snapshotPath,
-        bytes: encodeStateFile(serializeStateSnapshot(snapshot)),
-      });
-    } else if (
-      serializeStateSnapshot(snapshot) !== serializeStateSnapshot(currentResult.snapshot)
-    ) {
-      throw new StateSnapshotSemanticError(
-        "run完了時にtracking.startAt以外のsnapshot内容が変化しています",
-      );
+    if (serializeStateSnapshot(snapshot) !== serializeStateSnapshot(currentResult.snapshot)) {
+      throw new StateSnapshotSemanticError("run完了時にsnapshot内容が変化しています");
     }
     const notificationLedger = createStateNotificationLedger(input.notificationLedger);
     assertStatePublicSafety({
@@ -493,7 +468,6 @@ export class StatePersistenceSession {
       knownSecrets: input.knownSecrets,
     });
     const updates: StateFileUpdate[] = [
-      ...snapshotUpdates,
       {
         path: this.#configuration.notificationLedgerPath,
         bytes: encodeStateFile(serializeStateNotificationLedger(notificationLedger)),

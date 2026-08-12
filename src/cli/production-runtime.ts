@@ -52,7 +52,6 @@ import {
   parseSourceId,
   PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
   resolvePullRequestCommitOccurredAt,
-  resolveTrackingStartAt,
   resolveRepositoryMaintainers,
   resolveWaitingOnAccountIdentifiers,
   selectTrackingItems,
@@ -90,7 +89,6 @@ import {
   type TrackedItemInputEvent,
   type TrackingConnection,
   type TrackingNotificationClass,
-  type TrackingRunCompletion,
   type TrackingStartAtState,
   type TrackedItemWorkDecision,
   type UtcIsoDateTime,
@@ -1155,84 +1153,20 @@ function completeRelationCandidates(
   });
 }
 
-function resolveProductionTrackingStartAt(
-  config: Config,
-  previousState: TrackingStartAtState,
-  run: TrackingRunCompletion,
-): TrackingStartAtState {
-  const configured = config.tracking.startAt;
-  return resolveTrackingStartAt({
-    configuredStartAt:
-      configured == null
-        ? Object.freeze({
-            status: "not_configured",
-          })
-        : Object.freeze({
-            status: "configured",
-            value: createUtcIsoDateTime(configured),
-          }),
-    previousState,
-    run,
+function configuredTrackingStartAt(config: Config): TrackingStartAtState {
+  return Object.freeze({
+    status: "fixed",
+    value: createUtcIsoDateTime(config.tracking.startAt),
+    source: "configuration",
   });
 }
 
-function trackingSelectionStartAt(
-  configuration: RuntimeConfiguration,
-  state: RuntimeState,
-  evaluatedAt: UtcIsoDateTime,
-): UtcIsoDateTime {
-  const resolved = resolveProductionTrackingStartAt(
-    configuration.config,
-    previousSnapshot(state)?.trackingStartAt ??
-      Object.freeze({
-        status: "not_fixed",
-      }),
-    Object.freeze({
-      outcome: "incomplete",
-      finishedAt: evaluatedAt,
-    }),
-  );
-  if (resolved.status === "not_fixed") {
-    return evaluatedAt;
-  }
-  return resolved.value;
+function trackingSelectionStartAt(configuration: RuntimeConfiguration): UtcIsoDateTime {
+  return configuredTrackingStartAt(configuration.config).value;
 }
 
-function pendingSnapshotTrackingStartAt(
-  configuration: RuntimeConfiguration,
-  state: RuntimeState,
-  evaluatedAt: UtcIsoDateTime,
-): TrackingStartAtState {
-  return resolveProductionTrackingStartAt(
-    configuration.config,
-    previousSnapshot(state)?.trackingStartAt ??
-      Object.freeze({
-        status: "not_fixed",
-      }),
-    Object.freeze({
-      outcome: "incomplete",
-      finishedAt: evaluatedAt,
-    }),
-  );
-}
-
-function completedSnapshotTrackingStartAt(
-  config: Config,
-  snapshot: StateSnapshot,
-  completedAt: UtcIsoDateTime,
-): TrackingStartAtState {
-  const resolved = resolveProductionTrackingStartAt(
-    config,
-    snapshot.trackingStartAt,
-    Object.freeze({
-      outcome: "complete_success",
-      finishedAt: completedAt,
-    }),
-  );
-  if (resolved.status !== "fixed") {
-    throw new TypeError("完全成功したrunでtracking.startAtを確定できませんでした");
-  }
-  return resolved;
+function pendingSnapshotTrackingStartAt(configuration: RuntimeConfiguration): TrackingStartAtState {
+  return configuredTrackingStartAt(configuration.config);
 }
 
 function authorType(item: FreshObservedGitHubItem): "human" | "bot" | "unknown" {
@@ -1382,7 +1316,7 @@ function collectTrackingCandidates(
     ...externalCandidates,
   ]);
   const result = selectTrackingItems({
-    startAt: trackingSelectionStartAt(configuration, state, evaluatedAt),
+    startAt: trackingSelectionStartAt(configuration),
     evaluatedAt,
     candidates,
     connections: createTrackingConnections(relationCandidates),
@@ -4362,7 +4296,7 @@ function validateRunCompleteness(
   const snapshot = createStateSnapshot({
     schemaVersion: "8",
     generatedAt: collection.evaluatedAt,
-    trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
+    trackingStartAt: pendingSnapshotTrackingStartAt(configuration),
     ai: snapshotAiState(configuration.config, codexAnalysis),
     collection: {
       repositories: collection.collectionRepositories.map((repository) => ({
@@ -4724,7 +4658,6 @@ async function deliverDiscord(
 
 async function persistSuccessfulRunCompletion(
   adapters: ProductionRuntimeAdapters,
-  config: Config,
   state: RuntimeState,
   repositoryInventory: readonly Repository[],
   validated: ValidatedRun,
@@ -4736,12 +4669,8 @@ async function persistSuccessfulRunCompletion(
   knownSecrets: readonly string[],
 ): Promise<void> {
   const completedAt = createUtcIsoDateTime(adapters.now().toISOString());
-  const trackingStartAt = completedSnapshotTrackingStartAt(config, validated.snapshot, completedAt);
   await state.session.persistRunCompletion({
-    snapshot: createStateSnapshot({
-      ...validated.snapshot,
-      trackingStartAt,
-    }),
+    snapshot: validated.snapshot,
     notificationLedger: delivery.notificationLedger,
     runReport: createPersistedRunReport(
       validated.snapshot,
@@ -5729,7 +5658,6 @@ function createDailyDependencies(
     }) =>
       persistSuccessfulRunCompletion(
         adapters,
-        configuration.config,
         state,
         repositoryInventory.inventory,
         validated,
@@ -5881,7 +5809,6 @@ async function notifyWorkflowDiscord(
   );
   await persistSuccessfulRunCompletion(
     adapters,
-    config,
     state,
     workflowArtifactRepositoryInventory(artifact),
     validatedRunFromArtifact(artifact),

@@ -323,7 +323,7 @@ function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
     trackingStartAt: {
       status: "fixed",
       value: TRACKING_START_AT,
-      source: "first_complete_run",
+      source: "configuration",
     },
     ai: options.ai,
     collection: {

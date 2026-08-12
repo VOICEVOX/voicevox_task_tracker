@@ -1055,7 +1055,7 @@ function createSnapshot(
           analyses[0]?.input.createdAt ?? input.evaluatedAt,
         ),
       ),
-      source: "first_complete_run",
+      source: "configuration",
     },
     ai: {
       enabled: true,
@@ -1561,7 +1561,7 @@ function analyzeLargeFixture(
     trackingStartAt: {
       status: "fixed",
       value: "2026-01-01T00:00:00.000Z",
-      source: "first_complete_run",
+      source: "configuration",
     },
     ai: {
       enabled: false,

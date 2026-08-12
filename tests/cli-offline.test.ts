@@ -37,7 +37,7 @@ function emptySnapshot(): StateSnapshot {
     trackingStartAt: {
       status: "fixed",
       value: SCHEDULED_FOR,
-      source: "first_complete_run",
+      source: "configuration",
     },
     ai: {
       enabled: false,

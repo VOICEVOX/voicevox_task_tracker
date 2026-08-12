@@ -47,7 +47,7 @@ function createEmptyWorkflowArtifact(): WorkflowArtifact {
       trackingStartAt: {
         status: "fixed",
         value: NOW,
-        source: "first_complete_run",
+        source: "configuration",
       },
       ai: {
         enabled: false,

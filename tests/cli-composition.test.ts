@@ -225,7 +225,9 @@ function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
       schemaVersion: "8",
       generatedAt: NOW,
       trackingStartAt: {
-        status: "not_fixed",
+        status: "fixed",
+        value: "2025-12-31T15:00:00.000Z",
+        source: "configuration",
       },
       ai: {
         enabled: false,
@@ -585,7 +587,7 @@ describe("CLI合成root", () => {
     expect(codexProcessCount).toBe(0);
   });
 
-  it("初回runはDiscord失敗時にstartAtを確定せず、成功時だけ確定する", async () => {
+  it("設定されたstartAtをDiscord失敗時にも維持する", async () => {
     let stateCommitCount = 0;
     let pagesWriteCount = 0;
     let discordSendCount = 0;
@@ -680,7 +682,9 @@ describe("CLI合成root", () => {
       throw new TypeError("失敗runのsnapshotがありません");
     }
     expect(failedRunSnapshot.snapshot.trackingStartAt).toEqual({
-      status: "not_fixed",
+      status: "fixed",
+      value: "2025-12-31T15:00:00.000Z",
+      source: "configuration",
     });
 
     discordFails = false;
@@ -711,8 +715,8 @@ describe("CLI合成root", () => {
     ]);
     expect(successfulRunSnapshot.snapshot.trackingStartAt).toEqual({
       status: "fixed",
-      value: COMPLETED_AT,
-      source: "first_complete_run",
+      value: "2025-12-31T15:00:00.000Z",
+      source: "configuration",
     });
     expect(persistedReport).toMatchObject({
       startedAt: NOW,
