@@ -110,6 +110,7 @@ export {
   type PreviousItemCollection,
 } from "./incremental-item-collection.js";
 export { assertReadOnlyGraphQL, extractGraphQLRateLimit } from "./graphql.js";
+export { adaptGitHubDependencyEvents } from "./dependency-replay-adapter.js";
 export {
   GitHubRateLimitController,
   graphQLRateLimitSchema,

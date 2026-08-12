@@ -1,10 +1,15 @@
 export { analyzeGraph } from "./analyze-graph.js";
+export { replayDependencyEvents } from "./replay-dependency-events.js";
 export { RelationReferenceConflictError } from "./errors.js";
 export { extractRelationCandidates } from "./extract-relation-candidates.js";
 export { normalizeRelationCandidates } from "./normalize-relation-candidates.js";
 export { deriveBlockedBy, reconcileGraph } from "./reconcile-graph.js";
 export { buildRelationCandidateId } from "./relation-candidate-id.js";
 export { planRelationExpansion } from "./relation-expansion.js";
+export {
+  type DependencyReplayInputEvent,
+  type DependencyReplayResult,
+} from "./dependency-replay-types.js";
 export {
   type AnalyzeGraphInput,
   type AnalyzeGraphResult,
