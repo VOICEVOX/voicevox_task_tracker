@@ -11,10 +11,14 @@ import {
 } from "./canonical-json.js";
 import { AiCacheFormatError, AiCacheReadError, AiCacheWriteError } from "./errors.js";
 import {
+  createGitHubNodeId,
+  createGitHubRepositoryId,
   createUtcIsoDateTime,
   REASONING_EFFORTS,
   type AiCacheEntryId,
   type AnalysisMetadata,
+  type GitHubNodeId,
+  type GitHubRepositoryId,
   type ReasoningEffort,
 } from "../domain/index.js";
 import { assertNonNullable } from "../util/index.js";
@@ -40,6 +44,13 @@ const analysisMetadataSchema = z.strictObject({
 const cacheEntrySchema = z.strictObject({
   cacheKey: sha256HashSchema,
   sourceHash: sha256HashSchema,
+  graphNeighborhoodHash: sha256HashSchema,
+  repository: z.strictObject({
+    repositoryId: nonEmptyStringSchema,
+    owner: nonEmptyStringSchema,
+    name: nonEmptyStringSchema,
+  }),
+  nodeId: nonEmptyStringSchema,
   metadata: analysisMetadataSchema,
   output: z.json(),
 });
@@ -62,6 +73,13 @@ export type AiCacheKey = AiCacheEntryId;
 export type AiCacheEntry = Readonly<{
   cacheKey: AiCacheKey;
   sourceHash: Sha256Hash;
+  graphNeighborhoodHash: Sha256Hash;
+  repository: Readonly<{
+    repositoryId: GitHubRepositoryId;
+    owner: string;
+    name: string;
+  }>;
+  nodeId: GitHubNodeId;
   metadata: AnalysisMetadata;
   output: ReturnType<typeof validateCodexAnalysisSchema>;
 }>;
@@ -137,6 +155,13 @@ export function createAiCacheEntry(value: unknown): AiCacheEntry {
   const entry = Object.freeze({
     cacheKey: parseSha256Hash(parsed.cacheKey),
     sourceHash: parseSha256Hash(parsed.sourceHash),
+    graphNeighborhoodHash: parseSha256Hash(parsed.graphNeighborhoodHash),
+    repository: Object.freeze({
+      repositoryId: createGitHubRepositoryId(parsed.repository.repositoryId),
+      owner: parsed.repository.owner,
+      name: parsed.repository.name,
+    }),
+    nodeId: createGitHubNodeId(parsed.nodeId),
     metadata: Object.freeze({
       deterministicRulesVersion: parsed.metadata.deterministicRulesVersion,
       model: parsed.metadata.model,
@@ -257,6 +282,9 @@ function assertCacheIntegrity(entry: AiCacheEntry, expectedCacheKey: AiCacheKey)
   if (hashCanonicalJson(entry.output) !== entry.metadata.outputHash) {
     throw new TypeError("AI cache entryの出力hashが一致しません");
   }
+  if (entry.nodeId !== entry.output.item.nodeId) {
+    throw new TypeError("AI cache entryのnode IDが出力項目と一致しません");
+  }
 }
 
 /** state.aiCacheDirectoryを使ってAI cacheをファイルへ保存するadapter。 */
@@ -320,26 +348,36 @@ export class FileAiCacheStore implements AiCacheStore {
 /** テストでAI cacheをメモリ上に保持するadapter。 */
 export class MemoryAiCacheStore implements AiCacheStore {
   readonly #entries = new Map<AiCacheKey, AiCacheEntry>();
+  readonly #entriesByNodeId = new Map<GitHubNodeId, Map<AiCacheKey, AiCacheEntry>>();
+
+  /** cache keyからAI cache entryを同期取得する。 */
+  public get(cacheKey: AiCacheKey): AiCacheEntry | undefined {
+    return this.#entries.get(cacheKey);
+  }
 
   /** メモリ上のAI cache entryを決定的な順序で取得する。 */
   public entries(): readonly AiCacheEntry[] {
-    return Object.freeze(
-      [...this.#entries.values()].sort((left, right) =>
-        left.cacheKey < right.cacheKey ? -1 : left.cacheKey > right.cacheKey ? 1 : 0,
-      ),
-    );
+    return Object.freeze([...this.#entries.values()].sort(compareAiCacheEntries));
+  }
+
+  /** node IDに対応するAI cache entryをcache key順で取得する。 */
+  public entriesForNodeId(nodeId: GitHubNodeId): readonly AiCacheEntry[] {
+    const entries = this.#entriesByNodeId.get(nodeId);
+    if (entries == null) {
+      return Object.freeze([]);
+    }
+    return Object.freeze([...entries.values()].sort(compareAiCacheEntries));
   }
 
   public read(cacheKey: AiCacheKey): Promise<AiCacheReadResult> {
-    if (!this.#entries.has(cacheKey)) {
+    const entry = this.get(cacheKey);
+    if (entry == null) {
       return Promise.resolve(
         Object.freeze({
           status: "miss",
         }),
       );
     }
-    const entry = this.#entries.get(cacheKey);
-    assertNonNullable(entry, "存在するAI cache entryを取得できませんでした");
     return Promise.resolve(
       Object.freeze({
         status: "hit",
@@ -351,9 +389,34 @@ export class MemoryAiCacheStore implements AiCacheStore {
   public write(entry: AiCacheEntry): Promise<void> {
     const validated = createAiCacheEntry(entry);
     assertCacheIntegrity(validated, validated.cacheKey);
+    const previous = this.#entries.get(validated.cacheKey);
+    if (previous != null && previous.nodeId !== validated.nodeId) {
+      const previousNodeEntries = this.#entriesByNodeId.get(previous.nodeId);
+      assertNonNullable(previousNodeEntries, "AI cache node indexに既存entryがありません");
+      previousNodeEntries.delete(validated.cacheKey);
+      if (previousNodeEntries.size === 0) {
+        this.#entriesByNodeId.delete(previous.nodeId);
+      }
+    }
     this.#entries.set(validated.cacheKey, validated);
+    let nodeEntries = this.#entriesByNodeId.get(validated.nodeId);
+    if (nodeEntries == null) {
+      nodeEntries = new Map<AiCacheKey, AiCacheEntry>();
+      this.#entriesByNodeId.set(validated.nodeId, nodeEntries);
+    }
+    nodeEntries.set(validated.cacheKey, validated);
     return Promise.resolve();
   }
+}
+
+function compareAiCacheEntries(left: AiCacheEntry, right: AiCacheEntry): number {
+  if (left.cacheKey < right.cacheKey) {
+    return -1;
+  }
+  if (left.cacheKey > right.cacheKey) {
+    return 1;
+  }
+  return 0;
 }
 
 /** state.aiCacheDirectoryを保存先とするファイルAI cacheを生成する。 */

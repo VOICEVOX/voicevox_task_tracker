@@ -1,19 +1,7 @@
 import { StateConfigurationError } from "./errors.js";
 
-const STATE_BRANCH = "tracker-state";
 const STATE_ROOT_DIRECTORY = "state";
 const STATE_PATH_PREFIX = "state/";
-
-/** 永続化が利用する設定のstate節。 */
-export type StatePersistenceConfiguration = Readonly<{
-  branch: string;
-  snapshotPath: string;
-  historyDirectory: string;
-  aiCacheDirectory: string;
-  notificationLedgerPath: string;
-  runReportsDirectory: string;
-  canonicalJson: boolean;
-}>;
 
 /** branchが未作成か特定revisionを指すかを表す。 */
 export type StateBranchHead =
@@ -85,31 +73,6 @@ export function assertValidStateDirectory(path: string): void {
     return;
   }
   assertValidStatePath(path);
-}
-
-/** state設定を永続化境界でも独立して検証する。 */
-export function validateStatePersistenceConfiguration(
-  configuration: StatePersistenceConfiguration,
-): void {
-  if (configuration.branch !== STATE_BRANCH) {
-    throw new StateConfigurationError(`${STATE_BRANCH} branchだけを使用できます`);
-  }
-  if (!configuration.canonicalJson) {
-    throw new StateConfigurationError("canonicalJsonを有効にしてください");
-  }
-  const paths = [
-    configuration.snapshotPath,
-    configuration.historyDirectory,
-    configuration.aiCacheDirectory,
-    configuration.notificationLedgerPath,
-    configuration.runReportsDirectory,
-  ];
-  for (const path of paths) {
-    assertValidStatePath(path);
-  }
-  if (new Set(paths).size !== paths.length) {
-    throw new StateConfigurationError("保存先パスが重複しています");
-  }
 }
 
 /** state設定のdirectoryと安全なファイル名を結合する。 */

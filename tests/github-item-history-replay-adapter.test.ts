@@ -239,6 +239,7 @@ function createDetail(
   return Object.freeze({
     ...common,
     type: "pull_request",
+    reviewDecision: null,
     reviews: [],
     reviewThreads: [],
     reviewRequests: {

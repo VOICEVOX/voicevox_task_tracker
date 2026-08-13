@@ -10,7 +10,9 @@ import {
 import { createWorkflowArtifact, type WorkflowArtifact } from "../src/cli/workflow-artifact.js";
 import {
   createAiCacheEntry,
+  createAiCacheKey,
   hashCanonicalJson,
+  parseSha256Hash,
   serializeCanonicalJson,
   type CodexAnalysisInput,
 } from "../src/codex/index.js";
@@ -32,7 +34,10 @@ import {
 } from "../src/domain/index.js";
 import {
   createGitHubBodyFingerprint,
+  createGitHubPullRequestVolatileMetadataFromDetail,
   createPublicRepositoryAllowlist,
+  GitHubPullRequestVolatileRaceError,
+  GitHubPullRequestVolatileRaceRetryExhaustedError,
   GitHubRetryExhaustedError,
   type EnumeratedGitHubItem,
   type GitHubItemDetail,
@@ -43,16 +48,20 @@ import {
   type GitHubNativeDependency,
   type GitHubReferencedItem,
   type GitHubTimelineEvent,
+  type GitHubUserContentEdit,
+  type GitHubPullRequestVolatileMetadata,
   type PublicRepository,
 } from "../src/github/index.js";
 import { type RelationAssessmentVerdict } from "../src/graph/index.js";
 import {
   CacheOnlyPersistenceSession,
+  createCacheDocument,
   createStateSnapshot,
   MemoryStateBranchAdapter,
   type StateSnapshot,
 } from "../src/persistence/index.js";
 import { type GeneratedPublicData } from "../src/pages/index.js";
+import { assertNonNullable } from "../src/util/index.js";
 
 const PRIVATE_KEY = [
   "-----BEGIN PRIVATE KEY-----",
@@ -91,6 +100,38 @@ type DetailCall = Readonly<{
     nodeId: GitHubNodeId;
   }>[];
 }>;
+
+type VolatileProbeCall = Readonly<{
+  pullRequestNodeIds: readonly GitHubNodeId[];
+}>;
+
+type VolatileProbe = ProductionRuntimeAdapters["probeGitHubPullRequestVolatileMetadataWithRetry"];
+type VolatileProbeInput = Parameters<VolatileProbe>[0];
+type VolatileProbeResult = Awaited<ReturnType<VolatileProbe>>;
+
+async function validateVolatileMetadataAttempts(
+  input: VolatileProbeInput,
+  metadataAttempts: readonly (readonly GitHubPullRequestVolatileMetadata[])[],
+): Promise<VolatileProbeResult> {
+  const validateDetail = input.validateDetail;
+  if (validateDetail == null) {
+    throw new TypeError("volatile metadataのdetail照合callbackがありません");
+  }
+  const races: GitHubPullRequestVolatileRaceError[] = [];
+  for (const metadata of metadataAttempts) {
+    const collection = Object.freeze({ items: Object.freeze([...metadata]) });
+    try {
+      await validateDetail(collection);
+      return collection;
+    } catch (error: unknown) {
+      if (!(error instanceof GitHubPullRequestVolatileRaceError)) {
+        throw error;
+      }
+      races.push(error);
+    }
+  }
+  throw new GitHubPullRequestVolatileRaceRetryExhaustedError(races);
+}
 
 function createRepository(id: string, name: string, observedAt: string): Repository {
   return Object.freeze({
@@ -245,6 +286,16 @@ function createPullRequestItem(
   } satisfies EnumeratedGitHubItem);
 }
 
+function alignPullRequestBodyFingerprint(item: EnumeratedGitHubItem): EnumeratedGitHubItem {
+  if (item.type !== "pull_request") {
+    throw new TypeError("Pull Request以外の本文fingerprintは調整できません");
+  }
+  return Object.freeze({
+    ...item,
+    bodyFingerprint: createGitHubBodyFingerprint("required checkの失敗原因を判定する"),
+  });
+}
+
 function createMergedPullRequestItem(
   options: Readonly<{
     repository: PublicRepository;
@@ -319,6 +370,7 @@ function createFailedCheckPullRequestDetail(
     repositoryId: item.repositoryId,
     number: item.number,
     type: "pull_request",
+    reviewDecision: null,
     bodySourceId: buildSourceId("github_item_body", item.nodeId),
     body: "required checkの失敗原因を判定する",
     lastEditedAt: null,
@@ -500,6 +552,32 @@ function createNativeBlocker(
           ? "merged"
           : blocker.state,
     }),
+  });
+}
+
+function createNativeDependencyTimelineEvent(
+  blocked: EnumeratedGitHubItem,
+  blocker: EnumeratedGitHubItem,
+  action: "added" | "removed",
+  occurredAt: UtcIsoDateTime,
+  sequence: number,
+): GitHubTimelineEvent {
+  return Object.freeze({
+    sourceId: buildSourceId(
+      "github_timeline_event",
+      `${blocked.nodeId}:${blocker.nodeId}:${action}:${sequence.toString()}`,
+    ),
+    nodeId: createGitHubNodeId(
+      `${blocked.nodeId}:${blocker.nodeId}:${action}:${sequence.toString()}`,
+    ),
+    sequence,
+    occurredAt,
+    actor: Object.freeze({
+      status: "unavailable",
+      reason: "github_did_not_return_actor",
+    }),
+    kind: action === "added" ? "blocked_by_added" : "blocked_by_removed",
+    blockingIssue: createReferencedItem(blocker),
   });
 }
 
@@ -894,7 +972,9 @@ function createCollectionHarness(
     repositories: readonly RepositoryFixture[];
     config: Config;
     executeCodexAnalysis?: (input: CodexAnalysisInput) => Promise<unknown>;
+    probeGitHubPullRequestVolatileMetadataWithRetry?: ProductionRuntimeAdapters["probeGitHubPullRequestVolatileMetadataWithRetry"];
     collectionCompletedAt?: string;
+    scheduledRun?: boolean;
   }>,
 ) {
   const stateAdapter = new MemoryStateBranchAdapter();
@@ -903,6 +983,7 @@ function createCollectionHarness(
   const publicData: GeneratedPublicData[] = [];
   const discordCandidateNodeIds: GitHubNodeId[][] = [];
   const detailCalls: DetailCall[] = [];
+  const volatileProbeCalls: VolatileProbeCall[] = [];
   const individualCalls: string[][] = [];
   let normalDiscordCallCount = 0;
   let operationsDiscordCallCount = 0;
@@ -922,6 +1003,12 @@ function createCollectionHarness(
       HOME: "/tmp",
       OPENAI_API_KEY: "production-collection-openai-key",
       PATH: "/usr/bin",
+      ...(options.scheduledRun === true
+        ? Object.freeze({
+            GITHUB_EVENT_NAME: "schedule",
+            GITHUB_RUN_ATTEMPT: "1",
+          })
+        : Object.freeze({})),
     }),
     repositoryPath: join(import.meta.dirname, ".."),
     pagesOutputDirectory: "unused-pages",
@@ -958,6 +1045,27 @@ function createCollectionHarness(
         throw new TypeError(`個別項目fixtureがありません。対象: ${identifier}`);
       });
       return Promise.resolve(Object.freeze(items));
+    },
+    probeGitHubPullRequestVolatileMetadataWithRetry: async (input) => {
+      volatileProbeCalls.push(
+        Object.freeze({ pullRequestNodeIds: Object.freeze([...input.pullRequestNodeIds]) }),
+      );
+      if (options.probeGitHubPullRequestVolatileMetadataWithRetry != null) {
+        return options.probeGitHubPullRequestVolatileMetadataWithRetry(input);
+      }
+      const metadata: GitHubPullRequestVolatileMetadata[] = [];
+      for (const nodeId of input.pullRequestNodeIds) {
+        const detail = options.repositories
+          .map((fixture) => fixture.details.get(nodeId))
+          .find((candidate) => candidate != null);
+        if (detail?.type !== "pull_request") {
+          throw new TypeError(`volatile probe用Pull Request detailがありません。対象: ${nodeId}`);
+        }
+        metadata.push(createGitHubPullRequestVolatileMetadataFromDetail(detail));
+      }
+      const collection = Object.freeze({ items: Object.freeze(metadata) });
+      await input.validateDetail?.(collection);
+      return collection;
     },
     collectGitHubItemDetails: (input) => {
       detailCalls.push(
@@ -1097,6 +1205,7 @@ function createCollectionHarness(
     reportSources,
     codexInputs,
     detailCalls,
+    volatileProbeCalls,
     discordCandidateNodeIds,
     individualCalls,
     stateAdapter,
@@ -1406,7 +1515,10 @@ describe("本番収集の接続", () => {
       retentionDays: 180,
       aiEnabled: false,
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+    });
 
     const result = await harness.runDaily(FIRST_RUN_AT);
 
@@ -1555,10 +1667,14 @@ describe("本番収集の接続", () => {
       retentionDays: 180,
       aiEnabled: false,
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+    });
 
-    const result = await harness.runDry(FIRST_RUN_AT);
-    const snapshot = requireDryRunSnapshot(harness.artifacts);
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const snapshot = artifact.snapshot;
 
     expect(result.exitCode).toBe(0);
     expect(snapshot.run.status).toBe("success");
@@ -1594,7 +1710,10 @@ describe("本番収集の接続", () => {
       retentionDays: 180,
       aiEnabled: true,
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+    });
 
     await harness.runDry(FIRST_RUN_AT);
     const snapshot = requireDryRunSnapshot(harness.artifacts);
@@ -1668,7 +1787,10 @@ describe("本番収集の接続", () => {
       retentionDays: 180,
       aiEnabled: true,
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+    });
 
     const result = await harness.runDry(FIRST_RUN_AT);
     const snapshot = requireDryRunSnapshot(harness.artifacts);
@@ -1813,7 +1935,10 @@ describe("本番収集の接続", () => {
       retentionDays: 180,
       aiEnabled: true,
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+    });
 
     const result = await harness.runDry(FIRST_RUN_AT);
     const snapshot = requireDryRunSnapshot(harness.artifacts);
@@ -2125,6 +2250,569 @@ describe("本番収集の接続", () => {
     );
   });
 
+  it.each([
+    { status: "failed", maxCallsPerRun: 1, secondExecutionFails: true },
+    { status: "deferred", maxCallsPerRun: 0, secondExecutionFails: false },
+  ] as const)("AI $status時はlatest importanceだけを代替する", async (fixtureOptions) => {
+    const repository = createRepository(
+      `R_latest_importance_${fixtureOptions.status}`,
+      `latest-importance-${fixtureOptions.status}`,
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const firstFingerprint = `latest-importance-${fixtureOptions.status}-v1`;
+    const firstItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: firstFingerprint,
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [firstItem];
+    fixture.details.set(
+      firstItem.nodeId,
+      createIssueDetail({
+        item: firstItem,
+        body: "@requested-user へ重要機能の期限対応を依頼します",
+        observedAt: firstObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const baseConfig = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    let executionFails = false;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config: baseConfig,
+      executeCodexAnalysis: (input) => {
+        if (executionFails) {
+          return Promise.reject(new TypeError("latest importance fallback fixture"));
+        }
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("latest importance fixtureのsourceがありません");
+        }
+        return Promise.resolve({
+          ...createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: requireCodexAuthorCandidateId(input),
+              kind: "user",
+              role: "assignee",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: 0.95,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+          importance: {
+            significantFeature: true,
+            explicitDeadline: true,
+            futureRisk: true,
+            rationale: "直近の検証済み重要度です",
+          },
+        });
+      },
+    });
+
+    const firstResult = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    expect(harness.codexExecutionCount()).toBe(1);
+    const firstArtifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    if (firstResult.exitCode !== 0) {
+      throw new TypeError(
+        `初回latest importance生成に失敗しました。${JSON.stringify(firstResult)}`,
+      );
+    }
+    expect(firstArtifact.snapshot.items[0]?.aiAnalysis).toMatchObject({ status: "used" });
+    expect(
+      firstArtifact.snapshot.items[0]?.importance.factors.map((factor) => factor.kind),
+    ).toEqual(["significantFeature", "explicitDeadline", "futureRisk"]);
+    expect(firstArtifact.cacheOnlyPayload.latestImportanceCaches).toHaveLength(1);
+    expect(firstArtifact.cacheOnlyPayload.aiCacheEntries).toHaveLength(1);
+    const firstSession = await CacheOnlyPersistenceSession.open(
+      harness.stateAdapter,
+      baseConfig.state,
+      createPublicRepositoryAllowlist([repository]),
+    );
+    await firstSession.persist({
+      evaluatedAt: firstObservedAt,
+      ...firstArtifact.cacheOnlyPayload,
+      knownSecrets: [],
+    });
+
+    const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
+    const secondFingerprint = `latest-importance-${fixtureOptions.status}-v2`;
+    const secondItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: secondFingerprint,
+      updatedAt: secondObservedAt,
+      observedAt: secondObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [secondItem];
+    fixture.details.set(
+      secondItem.nodeId,
+      createIssueDetail({
+        item: secondItem,
+        body: "@requested-user へ変更後の対応を依頼します",
+        observedAt: secondObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    executionFails = fixtureOptions.secondExecutionFails;
+    harness.setConfig(configWithBudget(baseConfig, fixtureOptions.maxCallsPerRun, 10));
+    harness.artifacts.length = 0;
+
+    const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+    if (result.exitCode !== 0) {
+      throw new TypeError(`latest importance fallbackに失敗しました。${JSON.stringify(result)}`);
+    }
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const tracked = artifact.snapshot.items[0];
+
+    expect(result.exitCode).toBe(0);
+    expect(tracked?.aiAnalysis).toEqual({ status: fixtureOptions.status });
+    expect(tracked?.importance.factors.map((factor) => factor.kind)).toEqual([
+      "significantFeature",
+      "explicitDeadline",
+      "futureRisk",
+    ]);
+    expect(tracked?.status).not.toBe("in_progress");
+    expect(
+      artifact.notificationSelection.candidates.some(
+        (candidate) => candidate.itemNodeId === secondItem.nodeId,
+      ),
+    ).toBe(false);
+    expect(artifact.cacheOnlyPayload.latestImportanceCaches).toEqual(
+      firstArtifact.cacheOnlyPayload.latestImportanceCaches,
+    );
+  });
+
+  it.each([
+    { kind: "version", firstConfidence: 0.95 },
+    { kind: "confidence", firstConfidence: 0.7 },
+  ] as const)("$kind変更後は互換性のないlatest importanceを代替利用しない", async (options) => {
+    const repository = createRepository(
+      `R_latest_incompatible_${options.kind}`,
+      `latest-incompatible-${options.kind}`,
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const firstItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: `latest-incompatible-${options.kind}-v1`,
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [firstItem];
+    fixture.details.set(
+      firstItem.nodeId,
+      createIssueDetail({
+        item: firstItem,
+        body: "@requested-user に対応を依頼します",
+        observedAt: firstObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    let executionFails = false;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        if (executionFails) {
+          return Promise.reject(new TypeError("非互換latest importance fixture"));
+        }
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("非互換latest importance fixtureのsourceがありません");
+        }
+        return Promise.resolve({
+          ...createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: requireCodexAuthorCandidateId(input),
+              kind: "user",
+              role: "assignee",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: options.firstConfidence,
+            relationVerdict: "related",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+          importance: {
+            significantFeature: true,
+            explicitDeadline: true,
+            futureRisk: true,
+            rationale: "変更前の重要度です",
+          },
+        });
+      },
+    });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
+    const secondItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: `latest-incompatible-${options.kind}-v2`,
+      updatedAt: secondObservedAt,
+      observedAt: secondObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [secondItem];
+    fixture.details.set(
+      secondItem.nodeId,
+      createIssueDetail({
+        item: secondItem,
+        body: "@requested-user に変更後の対応を依頼します",
+        observedAt: secondObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const nextConfig =
+      options.kind === "version"
+        ? Object.freeze({
+            ...config,
+            ai: Object.freeze({ ...config.ai, promptVersion: `${config.ai.promptVersion}-v2` }),
+          })
+        : Object.freeze({
+            ...config,
+            ai: Object.freeze({
+              ...config.ai,
+              confidence: Object.freeze({ high: 0.8, medium: 0.8 }),
+            }),
+          });
+    harness.setConfig(nextConfig);
+    executionFails = true;
+    harness.artifacts.length = 0;
+
+    const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("非互換latest importance fixtureのcommandが不正です");
+    }
+
+    expect(result.exitCode).toBe(0);
+    expect(artifact.snapshot.items[0]?.importance.factors).toEqual([]);
+    expect(artifact.cacheOnlyPayload.latestImportanceCaches).toEqual([]);
+    expect(result.result.report.diagnostics).toContainEqual(
+      expect.stringMatching(/node ID: .*cache key:/u),
+    );
+  });
+
+  it("AI失敗時にlatest importanceがなければ決定論的重要度だけを使う", async () => {
+    const repository = createRepository(
+      "R_latest_importance_missing",
+      "latest-importance-missing",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const baseItem = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint: "latest-importance-missing",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const item = Object.freeze({ ...baseItem, labels: Object.freeze(["優先度：高"]) });
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      createIssueDetail({
+        item,
+        body: "@requested-user へ自然言語判定が必要な対応を依頼します",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: () => Promise.reject(new TypeError("AI失敗fixture")),
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    if (result.exitCode !== 0) {
+      throw new TypeError(`latestなしのAI失敗runに失敗しました。${JSON.stringify(result)}`);
+    }
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+
+    expect(artifact.snapshot.items[0]?.aiAnalysis).toEqual({ status: "failed" });
+    expect(artifact.snapshot.items[0]?.importance.factors.map((factor) => factor.kind)).toEqual([
+      "priorityLabel",
+    ]);
+    expect(artifact.cacheOnlyPayload.latestImportanceCaches).toEqual([]);
+    expect(artifact.cacheOnlyPayload.aiCacheEntries).toEqual([]);
+  });
+
+  it("新しいcurrent成功でlatest importanceを更新して過去AI resultも保持する", async () => {
+    const repository = createRepository(
+      "R_latest_importance_update",
+      "latest-importance-update",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const firstItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "latest-importance-update-v1",
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [firstItem];
+    fixture.details.set(
+      firstItem.nodeId,
+      createIssueDetail({
+        item: firstItem,
+        body: "@requested-user へ初回対応を依頼します",
+        observedAt: firstObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    let executionFails = false;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) =>
+        executionFails
+          ? Promise.reject(new TypeError("stale latest index fixture"))
+          : executeSuccessfulCodexAnalysis(input),
+    });
+
+    expect((await harness.runCollectAnalyze(FIRST_RUN_AT)).exitCode).toBe(0);
+    const firstArtifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const firstLatest = firstArtifact.cacheOnlyPayload.latestImportanceCaches[0];
+    if (firstLatest == null) {
+      throw new TypeError("初回latest importanceがありません");
+    }
+    const session = await CacheOnlyPersistenceSession.open(
+      harness.stateAdapter,
+      config.state,
+      createPublicRepositoryAllowlist([repository]),
+    );
+    await session.persist({
+      evaluatedAt: firstObservedAt,
+      ...firstArtifact.cacheOnlyPayload,
+      knownSecrets: [],
+    });
+
+    const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
+    const secondItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "latest-importance-update-v2",
+      updatedAt: secondObservedAt,
+      observedAt: secondObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [secondItem];
+    fixture.details.set(
+      secondItem.nodeId,
+      createIssueDetail({
+        item: secondItem,
+        body: "@requested-user へ更新後の対応を依頼します",
+        observedAt: secondObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    harness.artifacts.length = 0;
+
+    expect((await harness.runCollectAnalyze(SECOND_RUN_AT)).exitCode).toBe(0);
+    const secondArtifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const secondLatest = secondArtifact.cacheOnlyPayload.latestImportanceCaches[0];
+    if (secondLatest == null) {
+      throw new TypeError("更新後latest importanceがありません");
+    }
+
+    expect(secondLatest.metadata.executedAt).toBe(SECOND_RUN_AT);
+    expect(secondLatest.aiCacheReference.cacheKey).not.toBe(firstLatest.aiCacheReference.cacheKey);
+    expect(secondArtifact.cacheOnlyPayload.aiCacheEntries).toHaveLength(2);
+
+    const secondSession = await CacheOnlyPersistenceSession.open(
+      harness.stateAdapter,
+      config.state,
+      createPublicRepositoryAllowlist([repository]),
+    );
+    await secondSession.persist({
+      evaluatedAt: secondObservedAt,
+      ...secondArtifact.cacheOnlyPayload,
+      knownSecrets: [],
+    });
+    const head = await harness.stateAdapter.resolveHead("tracker-state");
+    if (head.status !== "present") {
+      throw new TypeError("stale latest index fixtureのstate branchがありません");
+    }
+    const files = await harness.stateAdapter.readBranchFiles("tracker-state");
+    const latestPath = [...files.keys()].find((path) =>
+      path.startsWith("state/ai-latest-importance/"),
+    );
+    if (latestPath == null) {
+      throw new TypeError("stale latest index fixtureのlatest文書がありません");
+    }
+    await harness.stateAdapter.commit({
+      branch: "tracker-state",
+      expectedHead: head,
+      updates: [
+        {
+          path: latestPath,
+          bytes: new TextEncoder().encode(`${serializeCanonicalJson(firstLatest)}\n`),
+        },
+      ],
+      deletions: [],
+      message: "stale latest index fixture",
+      committedAt: SECOND_RUN_AT,
+    });
+    const thirdObservedAt = createUtcIsoDateTime(THIRD_RUN_AT);
+    const thirdItem = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "latest-importance-update-v3",
+      updatedAt: thirdObservedAt,
+      observedAt: thirdObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [thirdItem];
+    fixture.details.set(
+      thirdItem.nodeId,
+      createIssueDetail({
+        item: thirdItem,
+        body: "@requested-user へ再更新後の対応を依頼します",
+        observedAt: thirdObservedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    executionFails = true;
+    harness.artifacts.length = 0;
+
+    expect((await harness.runCollectAnalyze(THIRD_RUN_AT)).exitCode).toBe(0);
+    const repairedLatest = requireCollectAnalyzeArtifact(harness.artifacts).cacheOnlyPayload
+      .latestImportanceCaches[0];
+
+    expect(repairedLatest?.aiCacheReference.cacheKey).toBe(secondLatest.aiCacheReference.cacheKey);
+  });
+
+  it("latest importance index欠落時にAI resultから再構築する", async () => {
+    const repository = createRepository(
+      "R_latest_importance_rebuild",
+      "latest-importance-rebuild",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const fingerprint = "latest-importance-rebuild-v1";
+    const item = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint,
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      createIssueDetail({
+        item,
+        body: `body-${fingerprint}`,
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+    });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    const head = await harness.stateAdapter.resolveHead("tracker-state");
+    if (head.status !== "present") {
+      throw new TypeError("latest importance再構築fixtureのstate branchがありません");
+    }
+    const files = await harness.stateAdapter.readBranchFiles("tracker-state");
+    const latestPaths = [...files.keys()].filter((path) =>
+      path.startsWith("state/ai-latest-importance/"),
+    );
+    if (latestPaths.length !== 1) {
+      throw new TypeError("latest importance再構築fixtureのindexが1件ではありません");
+    }
+    await harness.stateAdapter.commit({
+      branch: "tracker-state",
+      expectedHead: head,
+      updates: [],
+      deletions: latestPaths,
+      message: "latest importance index欠落fixture",
+      committedAt: FIRST_RUN_AT,
+    });
+    harness.detailCalls.length = 0;
+    harness.artifacts.length = 0;
+
+    const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.detailCalls).toEqual([]);
+    expect(artifact.cacheOnlyPayload.latestImportanceCaches).toHaveLength(1);
+    expect(artifact.cacheOnlyPayload.latestImportanceCaches[0]?.nodeId).toBe(item.nodeId);
+    expect(artifact.cacheOnlyPayload.aiCacheEntries).toHaveLength(1);
+  });
+
   it("両側detailの同じnative依存を1候補へ統合してIssue状態を判定する", async () => {
     const repository = createRepository(
       "R_bidirectional_native_dependency",
@@ -2178,7 +2866,10 @@ describe("本番収集の接続", () => {
       retentionDays: 180,
       aiEnabled: true,
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+    });
 
     const result = await harness.runDry(FIRST_RUN_AT);
     const snapshot = requireDryRunSnapshot(harness.artifacts);
@@ -2414,12 +3105,49 @@ describe("本番収集の接続", () => {
     fixture.openItems = [changedBlocked, otherBlocker, blocker];
     fixture.details.set(
       changedBlocked.nodeId,
-      createIssueDetail({
-        item: changedBlocked,
-        body,
-        observedAt: secondObservedAt,
-        nativeDependencies: Object.freeze([nativeDependency, otherNativeDependency]),
-        duplicateComments: false,
+      Object.freeze({
+        ...createIssueDetail({
+          item: changedBlocked,
+          body,
+          observedAt: secondObservedAt,
+          nativeDependencies: Object.freeze([nativeDependency, otherNativeDependency]),
+          duplicateComments: false,
+        }),
+        lastEditedAt: secondObservedAt,
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([
+            Object.freeze({
+              sourceId: buildSourceId("github_user_content_edit", `${changedBlocked.nodeId}:empty`),
+              sequence: 0,
+              createdAt: changedBlocked.createdAt,
+              deletedAt: null,
+              diff: "",
+              editedAt: changedBlocked.createdAt,
+              editor: Object.freeze({
+                status: "unavailable",
+                reason: "github_did_not_return_actor",
+              }),
+              updatedAt: changedBlocked.createdAt,
+            }),
+            Object.freeze({
+              sourceId: buildSourceId(
+                "github_user_content_edit",
+                `${changedBlocked.nodeId}:relation-added`,
+              ),
+              sequence: 1,
+              createdAt: changedBlocked.createdAt,
+              deletedAt: null,
+              diff: body,
+              editedAt: secondObservedAt,
+              editor: Object.freeze({
+                status: "unavailable",
+                reason: "github_did_not_return_actor",
+              }),
+              updatedAt: secondObservedAt,
+            }),
+          ]),
+        }),
       }),
     );
     harness.artifacts.length = 0;
@@ -2436,12 +3164,6 @@ describe("本番収集の接続", () => {
           relation.toNodeId === blocked.nodeId,
       )
       .sort((left, right) => left.provenance.localeCompare(right.provenance));
-    const sourceIds = [
-      buildSourceId("github_item_body", blocked.nodeId),
-      buildSourceId("github_item_detail", blocked.nodeId),
-      nativeDependency.sourceId,
-    ].sort();
-
     expect(result.exitCode).toBe(0);
     expect(relations).toHaveLength(2);
     expect(relations).toMatchObject([
@@ -2473,10 +3195,400 @@ describe("本番収集の接続", () => {
           candidateId: blocker.nodeId,
           role: "dependency",
           confidence: 1,
-          sourceIds,
+          sourceIds: [
+            buildSourceId("github_user_content_edit", `${changedBlocked.nodeId}:relation-added`),
+          ],
         },
       ],
     });
+  });
+
+  it("本文編集で追加したblocks relationの時刻をstatus起点にする", async () => {
+    const repository = createRepository("R_body_relation_time", "body-relation-time", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const relationAddedAt = createUtcIsoDateTime("2026-07-31T12:00:00.000Z");
+    const blocked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "body-relation-time-blocked",
+      updatedAt: relationAddedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const relationAddedSourceId = buildSourceId(
+      "github_user_content_edit",
+      `${blocked.nodeId}:blocked`,
+    );
+    const blocker = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "body-relation-time-blocker",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const body = `対応は ${blocker.url} にblockedされています`;
+    const baseDetail = createIssueDetail({
+      item: blocked,
+      body,
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    fixture.openItems = [blocked, blocker];
+    fixture.details.set(
+      blocked.nodeId,
+      Object.freeze({
+        ...baseDetail,
+        lastEditedAt: relationAddedAt,
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([
+            Object.freeze({
+              sourceId: buildSourceId("github_user_content_edit", `${blocked.nodeId}:initial`),
+              sequence: 0,
+              createdAt: blocked.createdAt,
+              deletedAt: null,
+              diff: "",
+              editedAt: blocked.createdAt,
+              editor: Object.freeze({
+                status: "unavailable",
+                reason: "github_did_not_return_actor",
+              }),
+              updatedAt: blocked.createdAt,
+            }),
+            Object.freeze({
+              sourceId: relationAddedSourceId,
+              sequence: 1,
+              createdAt: blocked.createdAt,
+              deletedAt: null,
+              diff: body,
+              editedAt: relationAddedAt,
+              editor: Object.freeze({
+                status: "unavailable",
+                reason: "github_did_not_return_actor",
+              }),
+              updatedAt: relationAddedAt,
+            }),
+          ]),
+        }),
+      } satisfies GitHubItemDetail),
+    );
+    fixture.details.set(
+      blocker.nodeId,
+      createIssueDetail({
+        item: blocker,
+        body: "blocker側の本文です",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("本文relation時刻fixtureのsourceがありません");
+        }
+        return Promise.resolve(
+          createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: requireCodexAuthorCandidateId(input),
+              kind: "user",
+              role: "assignee",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: 0.95,
+            relationVerdict:
+              input.item.nodeId === blocked.nodeId
+                ? "current_is_blocked_by_target"
+                : "current_blocks_target",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        );
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    if (result.exitCode !== 0) {
+      throw new TypeError(`本文relation時刻fixtureに失敗しました。${JSON.stringify(result)}`);
+    }
+    const item = requireCollectAnalyzeArtifact(harness.artifacts).snapshot.items.find(
+      (candidate) => candidate.nodeId === blocked.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(item).toMatchObject({
+      status: "waiting_for_unblock",
+      statusSince: relationAddedAt,
+      ownerSince: relationAddedAt,
+      stallSince: relationAddedAt,
+      waitingOn: [
+        expect.objectContaining({
+          candidateId: blocker.nodeId,
+          sourceIds: [relationAddedSourceId],
+        }),
+      ],
+    });
+    expect(
+      requireCollectAnalyzeArtifact(harness.artifacts).pages.details.items.find(
+        (candidate) => candidate.summary.nodeId === blocked.nodeId,
+      )?.evidence,
+    ).toContainEqual(expect.objectContaining({ sourceUrl: blocked.url }));
+  });
+
+  it("本文編集で削除したexact AI blocks relationを現在graphへ戻さずnewly unblockedへ渡す", async () => {
+    const repository = createRepository(
+      "R_body_relation_removed",
+      "body-relation-removed",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const firstObservedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const relationAddedAt = createUtcIsoDateTime("2026-07-31T23:00:00.000Z");
+    const relationRemovedAt = createUtcIsoDateTime("2026-08-01T23:00:00.000Z");
+    const firstBlocked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "body-relation-removed-v1",
+      updatedAt: relationAddedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const prioritizedFirstBlocked = Object.freeze({
+      ...firstBlocked,
+      labels: Object.freeze(["優先度：高"]),
+    });
+    const firstBlocker = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "body-relation-removal-blocker",
+      updatedAt: firstObservedAt,
+      observedAt: firstObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const relationBody = `対応は ${firstBlocker.url} にblockedされています`;
+    const initialEditSourceId = buildSourceId(
+      "github_user_content_edit",
+      `${prioritizedFirstBlocked.nodeId}:initial`,
+    );
+    const addedEditSourceId = buildSourceId(
+      "github_user_content_edit",
+      `${prioritizedFirstBlocked.nodeId}:added`,
+    );
+    const removedEditSourceId = buildSourceId(
+      "github_user_content_edit",
+      `${prioritizedFirstBlocked.nodeId}:removed`,
+    );
+    const createEdit = (
+      sourceId: ReturnType<typeof buildSourceId>,
+      sequence: number,
+      editedAt: UtcIsoDateTime,
+      diff: string,
+    ): GitHubUserContentEdit =>
+      Object.freeze({
+        sourceId,
+        sequence,
+        createdAt: prioritizedFirstBlocked.createdAt,
+        deletedAt: null,
+        diff,
+        editedAt,
+        editor: Object.freeze({
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        }),
+        updatedAt: editedAt,
+      } satisfies GitHubUserContentEdit);
+    const initialDetail = createIssueDetail({
+      item: prioritizedFirstBlocked,
+      body: relationBody,
+      observedAt: firstObservedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    fixture.openItems = [prioritizedFirstBlocked, firstBlocker];
+    fixture.details.set(
+      prioritizedFirstBlocked.nodeId,
+      Object.freeze({
+        ...initialDetail,
+        lastEditedAt: relationAddedAt,
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([
+            createEdit(initialEditSourceId, 0, prioritizedFirstBlocked.createdAt, ""),
+            createEdit(addedEditSourceId, 1, relationAddedAt, relationBody),
+          ]),
+        }),
+      } satisfies GitHubItemDetail),
+    );
+    fixture.details.set(
+      firstBlocker.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item: firstBlocker,
+          body: "blocker側の本文です",
+          observedAt: firstObservedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([]),
+        }),
+      } satisfies GitHubItemDetail),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    let runNumber = 0;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      scheduledRun: true,
+      executeCodexAnalysis: (input) => {
+        if (runNumber > 0) {
+          return Promise.reject(new TypeError("現在入力のAI relation判定を利用しません"));
+        }
+        const source = input.sources[0];
+        if (source == null) {
+          throw new TypeError("本文relation削除fixtureのsourceがありません");
+        }
+        return Promise.resolve(
+          createCodexOutput(input, {
+            status: "in_progress",
+            waitingOn: {
+              candidateId: requireCodexAuthorCandidateId(input),
+              kind: "user",
+              role: "assignee",
+              sourceId: source.id,
+            },
+            latestMeaningfulSourceId: null,
+            confidence: 0.95,
+            relationVerdict:
+              input.item.nodeId === prioritizedFirstBlocked.nodeId
+                ? "current_is_blocked_by_target"
+                : "current_blocks_target",
+            notification: {
+              recommended: false,
+              reasonCode: "none",
+              reasonSummary: "通知しません",
+            },
+          }),
+        );
+      },
+    });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    runNumber += 1;
+    const secondObservedAt = createUtcIsoDateTime(SECOND_RUN_AT);
+    const currentBlocked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "body-relation-removed-v2",
+      updatedAt: relationRemovedAt,
+      observedAt: secondObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const prioritizedCurrentBlocked = Object.freeze({
+      ...currentBlocked,
+      labels: Object.freeze(["優先度：高"]),
+    });
+    const currentBlocker = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "body-relation-removal-blocker",
+      updatedAt: firstObservedAt,
+      observedAt: secondObservedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const currentDetail = createIssueDetail({
+      item: prioritizedCurrentBlocked,
+      body: "",
+      observedAt: secondObservedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    fixture.openItems = [prioritizedCurrentBlocked, currentBlocker];
+    fixture.details.set(
+      prioritizedCurrentBlocked.nodeId,
+      Object.freeze({
+        ...currentDetail,
+        lastEditedAt: relationRemovedAt,
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([
+            createEdit(initialEditSourceId, 0, prioritizedFirstBlocked.createdAt, ""),
+            createEdit(addedEditSourceId, 1, relationAddedAt, relationBody),
+            createEdit(removedEditSourceId, 2, relationRemovedAt, ""),
+          ]),
+        }),
+      } satisfies GitHubItemDetail),
+    );
+    fixture.details.set(
+      currentBlocker.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item: currentBlocker,
+          body: "blocker側の本文です",
+          observedAt: secondObservedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([]),
+        }),
+      } satisfies GitHubItemDetail),
+    );
+    harness.artifacts.length = 0;
+
+    const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    expect(result.exitCode).toBe(0);
+    expect(artifact.snapshot.relations).not.toContainEqual(
+      expect.objectContaining({
+        type: "blocks",
+        fromNodeId: currentBlocker.nodeId,
+        toNodeId: prioritizedCurrentBlocked.nodeId,
+        active: true,
+      }),
+    );
+    expect(
+      artifact.snapshot.items.find((item) => item.nodeId === prioritizedCurrentBlocked.nodeId),
+    ).toMatchObject({
+      importance: {
+        score: 25,
+        factors: [expect.objectContaining({ kind: "priorityLabel" })],
+      },
+      attention: { score: 25 },
+    });
+    expect(
+      artifact.notificationSelection.candidates.find(
+        (candidate) => candidate.itemNodeId === prioritizedCurrentBlocked.nodeId,
+      )?.reasons,
+    ).toContainEqual(
+      expect.objectContaining({
+        reasonCode: "newly_unblocked",
+      }),
+    );
   });
 
   it("automation dashboardをgraphに残しつつ既定digestから除外する", async () => {
@@ -3429,7 +4541,7 @@ describe("本番収集の接続", () => {
     ]);
   });
 
-  it("503のrepositoryを前回値と最終成功時刻付きstaleとして保持して通知から除外する", async () => {
+  it("503のrepository項目を表示へ保持してfresh判定と通知から除外する", async () => {
     const firstRepository = createRepository("R_fresh", "fresh", FIRST_RUN_AT);
     const secondRepository = createRepository("R_stale", "stale", FIRST_RUN_AT);
     const firstFixture = createRepositoryFixture(firstRepository);
@@ -3443,13 +4555,16 @@ describe("本番収集の接続", () => {
       observedAt,
       state: Object.freeze({ state: "open" }),
     });
-    const secondItem = createIssueItem({
-      repository: requirePublicRepository(secondRepository),
-      number: 1,
-      fingerprint: "stale-v1",
-      updatedAt: observedAt,
-      observedAt,
-      state: Object.freeze({ state: "open" }),
+    const secondItem = Object.freeze({
+      ...createIssueItem({
+        repository: requirePublicRepository(secondRepository),
+        number: 1,
+        fingerprint: "stale-v1",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      labels: Object.freeze(["優先度：高"]),
     });
     firstFixture.openItems = [firstItem];
     secondFixture.openItems = [secondItem];
@@ -3465,10 +4580,20 @@ describe("本番収集の接続", () => {
         duplicateComments: false,
       }),
     );
-    const config = await createTestConfig({
+    const baseConfig = await createTestConfig({
       explicitIncludes: [],
       retentionDays: 180,
       aiEnabled: false,
+    });
+    const config = Object.freeze({
+      ...baseConfig,
+      importance: Object.freeze({
+        ...baseConfig.importance,
+        weights: Object.freeze({
+          ...baseConfig.importance.weights,
+          priorityLabelMultiplier: 4,
+        }),
+      }),
     });
     const harness = createCollectionHarness({
       repositories: [firstFixture, secondFixture],
@@ -3476,12 +4601,19 @@ describe("本番収集の接続", () => {
     });
     expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
     secondFixture.enumerationFailsWith503 = true;
+    harness.detailCalls.length = 0;
     harness.artifacts.length = 0;
 
-    const result = await harness.runDry(SECOND_RUN_AT);
-    const snapshot = requireDryRunSnapshot(harness.artifacts);
+    const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const snapshot = artifact.snapshot;
     const staleRepository = snapshot.repositories.find(
       (repository) => repository.id === secondRepository.id,
+    );
+    const freshTrackedItem = snapshot.items.find((item) => item.nodeId === firstItem.nodeId);
+    const staleTrackedItem = snapshot.items.find((item) => item.nodeId === secondItem.nodeId);
+    const stalePublicItem = artifact.pages.details.items.find(
+      (item) => item.summary.nodeId === secondItem.nodeId,
     );
 
     expect(result).toMatchObject({ exitCode: 0 });
@@ -3491,13 +4623,519 @@ describe("本番収集の接続", () => {
       freshness: "stale",
       failedAt: SECOND_RUN_AT,
     });
-    expect(snapshot.items.map((item) => item.nodeId)).not.toContain(secondItem.nodeId);
+    expect(staleTrackedItem).toMatchObject({
+      nodeId: secondItem.nodeId,
+      title: secondItem.title,
+      url: secondItem.url,
+      observedAt: FIRST_RUN_AT,
+      status: "waiting_for_unblock",
+      aiAnalysis: { status: "disabled" },
+      importance: {
+        score: 100,
+        level: "high",
+      },
+      importanceAssessment: { status: "not_available" },
+      attention: { score: 0 },
+    });
+    expect(stalePublicItem?.summary).toMatchObject({
+      nodeId: secondItem.nodeId,
+      title: secondItem.title,
+      url: secondItem.url,
+      observedAt: FIRST_RUN_AT,
+      repositoryFreshness: "stale",
+      blockerNodeIds: [],
+      downstreamImpact: {
+        nodeId: secondItem.nodeId,
+        openNodeCount: 0,
+        repositoryCount: 0,
+      },
+    });
     expect(snapshot.relations).not.toContainEqual(
       expect.objectContaining({
         toNodeId: secondItem.nodeId,
       }),
     );
+    expect(freshTrackedItem?.importance.factors).not.toContainEqual(
+      expect.objectContaining({ kind: "downstreamImpact" }),
+    );
+    expect(freshTrackedItem?.importance.score).toBe(0);
+    expect(freshTrackedItem?.attention.score).toBe(0);
+    expect(
+      harness.detailCalls.flatMap((call) => call.targets.map((target) => target.nodeId)),
+    ).not.toContain(secondItem.nodeId);
+    expect(harness.codexExecutionCount()).toBe(0);
+    expect(artifact.notificationSelection.candidates).toEqual([]);
     expect(harness.discordCandidateNodeIds).toEqual([[]]);
+  });
+
+  it("cacheがないrepositoryの503ではartifactと公開出力とcache保存を行わない", async () => {
+    const repository = createRepository("R_stale_cacheless", "stale-cacheless", FIRST_RUN_AT);
+    const fixture = createRepositoryFixture(repository);
+    fixture.enumerationFailsWith503 = true;
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(1);
+    expect(harness.artifacts).toEqual([]);
+    expect(harness.publicData).toEqual([]);
+    expect(harness.normalDiscordCallCount()).toBe(0);
+    expect(await harness.stateAdapter.resolveHead("tracker-state")).toEqual({ status: "missing" });
+  });
+
+  it.each([
+    {
+      description: "private化",
+      visibility: "private",
+      archived: false,
+      disabled: false,
+    },
+    {
+      description: "archive化",
+      visibility: "public",
+      archived: true,
+      disabled: false,
+    },
+    {
+      description: "disabled化",
+      visibility: "public",
+      archived: false,
+      disabled: true,
+    },
+  ] as const)(
+    "公開cache保存後に追跡repositoryが$descriptionになるとcache境界で停止する",
+    async ({ visibility, archived, disabled }) => {
+      const repository = createRepository(
+        "R_repository_boundary_transition",
+        "repository-boundary-transition",
+        FIRST_RUN_AT,
+      );
+      const publicRepository = requirePublicRepository(repository);
+      const fixture = createRepositoryFixture(repository);
+      const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+      const item = createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "repository-boundary-transition",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      fixture.openItems = [item];
+      fixture.details.set(
+        item.nodeId,
+        createIssueDetail({
+          item,
+          body: "公開cache境界のfixtureです",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+      );
+      const config = await createTestConfig({
+        explicitIncludes: [],
+        retentionDays: 180,
+        aiEnabled: false,
+      });
+      const harness = createCollectionHarness({ repositories: [fixture], config });
+
+      expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+      const headBefore = await harness.stateAdapter.resolveHead("tracker-state");
+      const normalDiscordCallsBefore = harness.normalDiscordCallCount();
+      const invalidRepository: Repository = Object.freeze({
+        ...repository,
+        visibility,
+        archived,
+        disabled,
+      });
+      harness.setInventory([invalidRepository]);
+      harness.artifacts.length = 0;
+      harness.publicData.length = 0;
+      harness.reportSources.clear();
+
+      const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+
+      expect(result.exitCode).toBe(1);
+      expect(harness.artifacts).toEqual([]);
+      expect(harness.publicData).toEqual([]);
+      expect(harness.normalDiscordCallCount()).toBe(normalDiscordCallsBefore);
+      expect(await harness.stateAdapter.resolveHead("tracker-state")).toEqual(headBefore);
+    },
+  );
+
+  it.each(["item cache欠落", "repository index不一致"])(
+    "503のstale復元時に%sなら公開出力を作らず失敗する",
+    async (failureKind) => {
+      const repository = createRepository(
+        `R_stale_invalid_${failureKind === "item cache欠落" ? "missing" : "identity"}`,
+        failureKind === "item cache欠落" ? "stale-cache-missing" : "stale-index-mismatch",
+        FIRST_RUN_AT,
+      );
+      const fixture = createRepositoryFixture(repository);
+      const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+      const item = createIssueItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: `stale-invalid-${failureKind}`,
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      });
+      fixture.openItems = [item];
+      setIssueDetails(fixture, [item], observedAt);
+      const config = await createTestConfig({
+        explicitIncludes: [],
+        retentionDays: 180,
+        aiEnabled: false,
+      });
+      const harness = createCollectionHarness({ repositories: [fixture], config });
+      expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+      const head = await harness.stateAdapter.resolveHead("tracker-state");
+      if (head.status !== "present") {
+        throw new TypeError("stale不整合fixtureのstate branchがありません");
+      }
+      const files = await harness.stateAdapter.readBranchFiles("tracker-state");
+      const itemPath = [...files.keys()].find((path) => path.startsWith("state/github-items/"));
+      const repositoryFile = [...files].find(([path]) =>
+        path.startsWith("state/github-repositories/"),
+      );
+      assertNonNullable(itemPath, "stale不整合fixtureのitem cache pathがありません");
+      assertNonNullable(repositoryFile, "stale不整合fixtureのrepository cacheがありません");
+      if (failureKind === "item cache欠落") {
+        await harness.stateAdapter.commit({
+          branch: "tracker-state",
+          expectedHead: head,
+          updates: [],
+          deletions: [itemPath],
+          message: "stale item cache欠落fixture",
+          committedAt: FIRST_RUN_AT,
+        });
+      } else {
+        const repositoryDocument = createCacheDocument(
+          JSON.parse(new TextDecoder().decode(repositoryFile[1])),
+        );
+        if (repositoryDocument.kind !== "github_repository") {
+          throw new TypeError("stale不整合fixtureがrepository cacheではありません");
+        }
+        const repositoryIndex = repositoryDocument.items[0];
+        assertNonNullable(repositoryIndex, "stale不整合fixtureのrepository indexがありません");
+        const invalidDocument = createCacheDocument({
+          ...repositoryDocument,
+          items: [
+            {
+              ...repositoryIndex,
+              itemFingerprint: createGitHubBodyFingerprint("stale-index-mismatch"),
+            },
+          ],
+        });
+        await harness.stateAdapter.commit({
+          branch: "tracker-state",
+          expectedHead: head,
+          updates: [
+            {
+              path: repositoryFile[0],
+              bytes: new TextEncoder().encode(`${serializeCanonicalJson(invalidDocument)}\n`),
+            },
+          ],
+          deletions: [],
+          message: "stale repository index不一致fixture",
+          committedAt: FIRST_RUN_AT,
+        });
+      }
+      const corruptedHead = await harness.stateAdapter.resolveHead("tracker-state");
+      fixture.enumerationFailsWith503 = true;
+      harness.artifacts.length = 0;
+      harness.publicData.length = 0;
+
+      const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+
+      expect(result.exitCode).toBe(1);
+      expect(harness.artifacts).toEqual([]);
+      expect(harness.publicData).toEqual([]);
+      expect(await harness.stateAdapter.resolveHead("tracker-state")).toEqual(corruptedHead);
+    },
+  );
+
+  it("AI有効でも503のstale項目はdetailとCodexと過去AI重要度を使わない", async () => {
+    const repository = createRepository("R_stale_ai_enabled", "stale-ai-enabled", FIRST_RUN_AT);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "stale-ai-enabled",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      labels: Object.freeze(["優先度：高"]),
+    });
+    fixture.openItems = [item];
+    setIssueDetails(fixture, [item], observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+    });
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    const codexExecutionCount = harness.codexExecutionCount();
+    const cacheSession = await CacheOnlyPersistenceSession.open(
+      harness.stateAdapter,
+      config.state,
+      createPublicRepositoryAllowlist([repository]),
+    );
+    const loaded = await cacheSession.load({
+      evaluatedAt: observedAt,
+      knownSecrets: [],
+    });
+    if (loaded.status !== "available") {
+      throw new TypeError("stale AI有効fixtureのcacheがありません");
+    }
+    harness.setConfig(
+      Object.freeze({
+        ...config,
+        ai: Object.freeze({
+          ...config.ai,
+          promptVersion: "stale-ai-enabled-v2",
+        }),
+      }),
+    );
+    fixture.enumerationFailsWith503 = true;
+    harness.detailCalls.length = 0;
+    harness.artifacts.length = 0;
+
+    const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const staleItem = artifact.snapshot.items.find((candidate) => candidate.nodeId === item.nodeId);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.detailCalls).toEqual([]);
+    expect(harness.codexExecutionCount()).toBe(codexExecutionCount);
+    expect(staleItem).toMatchObject({
+      aiAnalysis: { status: "not_recorded" },
+      importanceAssessment: { status: "not_available" },
+      importance: {
+        score: 25,
+        factors: [expect.objectContaining({ kind: "priorityLabel" })],
+      },
+    });
+    expect(artifact.cacheOnlyPayload.repositoryCaches).toEqual(loaded.repositoryCaches);
+    expect(artifact.cacheOnlyPayload.itemCaches).toEqual(loaded.itemCaches);
+    expect(artifact.cacheOnlyPayload.latestImportanceCaches).toEqual(loaded.latestImportanceCaches);
+    expect(artifact.cacheOnlyPayload.aiCacheEntries).toEqual(loaded.aiCacheEntries);
+  });
+
+  it("503のterminal項目を180日目まで表示し期限後は表示しない", async () => {
+    const repository = createRepository(
+      "R_stale_terminal_retention",
+      "stale-terminal-retention",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const terminalAt = createUtcIsoDateTime("2026-02-03T00:00:00.000Z");
+    const item = replaceCreatedAt(
+      createIssueItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "stale-terminal-retention",
+        updatedAt: terminalAt,
+        observedAt,
+        state: Object.freeze({ state: "closed", closedAt: terminalAt }),
+      }),
+      createUtcIsoDateTime("2026-01-01T00:00:00.000Z"),
+    );
+    fixture.openItems = [item];
+    setIssueDetails(fixture, [item], observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    fixture.enumerationFailsWith503 = true;
+    harness.detailCalls.length = 0;
+    harness.artifacts.length = 0;
+
+    expect((await harness.runCollectAnalyze(SECOND_RUN_AT)).exitCode).toBe(0);
+    expect(requireCollectAnalyzeArtifact(harness.artifacts).snapshot.items).toContainEqual(
+      expect.objectContaining({ nodeId: item.nodeId, observedAt: FIRST_RUN_AT }),
+    );
+    expect(harness.detailCalls).toEqual([]);
+    harness.artifacts.length = 0;
+
+    expect((await harness.runCollectAnalyze(THIRD_RUN_AT)).exitCode).toBe(0);
+    expect(
+      requireCollectAnalyzeArtifact(harness.artifacts).snapshot.items.map(
+        (candidate) => candidate.nodeId,
+      ),
+    ).not.toContain(item.nodeId);
+    expect(harness.detailCalls).toEqual([]);
+  });
+
+  it("closeとmergeしたterminal endpointのblocks edgeをruntimeとPagesでinactiveにする", async () => {
+    const repository = createRepository("R_terminal_edges", "terminal-edges", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const closedAt = createUtcIsoDateTime("2026-07-31T12:00:00.000Z");
+    const mergedAt = createUtcIsoDateTime("2026-07-31T16:00:00.000Z");
+    const blocked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "terminal-edge-blocked",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const closedBlocker = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "terminal-edge-closed-blocker",
+      updatedAt: closedAt,
+      observedAt,
+      state: Object.freeze({ state: "closed", closedAt }),
+    });
+    const mergedBlocker = createMergedPullRequestItem({
+      repository: publicRepository,
+      number: 3,
+      fingerprint: "terminal-edge-merged-blocker",
+      mergedAt,
+      observedAt,
+    });
+    const blockedDetail = createIssueDetail({
+      item: blocked,
+      body: "終了した依存項目を待ちません",
+      observedAt,
+      nativeDependencies: Object.freeze([
+        createNativeBlocker(blocked, closedBlocker),
+        createNativeBlocker(blocked, mergedBlocker),
+      ]),
+      duplicateComments: false,
+    });
+    fixture.openItems = [blocked];
+    fixture.individualItems.set(closedBlocker.nodeId, closedBlocker);
+    fixture.individualItems.set(mergedBlocker.nodeId, mergedBlocker);
+    fixture.details.set(
+      blocked.nodeId,
+      Object.freeze({
+        ...blockedDetail,
+        timeline: Object.freeze([
+          createNativeDependencyTimelineEvent(
+            blocked,
+            closedBlocker,
+            "added",
+            blocked.createdAt,
+            0,
+          ),
+          createNativeDependencyTimelineEvent(
+            blocked,
+            mergedBlocker,
+            "added",
+            blocked.createdAt,
+            1,
+          ),
+        ]),
+      }),
+    );
+    fixture.details.set(
+      closedBlocker.nodeId,
+      createIssueDetail({
+        item: closedBlocker,
+        body: "完了したIssueです",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    fixture.details.set(
+      mergedBlocker.nodeId,
+      createFailedCheckPullRequestDetail(mergedBlocker, observedAt),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const blockedSnapshotItem = artifact.snapshot.items.find(
+      (item) => item.nodeId === blocked.nodeId,
+    );
+    const blockedSummary = artifact.pages.summary.items.find(
+      (item) => item.nodeId === blocked.nodeId,
+    );
+    const terminalRelations = artifact.snapshot.relations.filter(
+      (relation) => relation.toNodeId === blocked.nodeId,
+    );
+    const terminalPageEdges = artifact.pages.details.graph.edges.filter(
+      (edge) => edge.toNodeId === blocked.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("terminal edge fixtureのcommandが不正です");
+    }
+    expect(result.result.report.metrics.activeEdgeCount).toBe(0);
+    expect(artifact.runMetadata.metrics.activeEdgeCount).toBe(0);
+    expect(blockedSnapshotItem?.waitingOn).not.toContainEqual(
+      expect.objectContaining({ candidateId: closedBlocker.nodeId }),
+    );
+    expect(blockedSnapshotItem?.waitingOn).not.toContainEqual(
+      expect.objectContaining({ candidateId: mergedBlocker.nodeId }),
+    );
+    expect(terminalRelations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fromNodeId: closedBlocker.nodeId,
+          toNodeId: blocked.nodeId,
+          active: false,
+          removedAt: closedAt,
+        }),
+        expect.objectContaining({
+          fromNodeId: mergedBlocker.nodeId,
+          toNodeId: blocked.nodeId,
+          active: false,
+          removedAt: mergedAt,
+        }),
+      ]),
+    );
+    expect(terminalPageEdges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fromNodeId: closedBlocker.nodeId,
+          toNodeId: blocked.nodeId,
+          active: false,
+        }),
+        expect.objectContaining({
+          fromNodeId: mergedBlocker.nodeId,
+          toNodeId: blocked.nodeId,
+          active: false,
+        }),
+      ]),
+    );
+    expect(blockedSummary).toMatchObject({
+      blockerNodeIds: [],
+      downstreamImpact: {
+        nodeId: blocked.nodeId,
+        openNodeCount: 0,
+        repositoryCount: 0,
+      },
+    });
   });
 
   it("warm cacheはdetailを再取得せずcold runとgraph重要度attention通知候補が一致する", async () => {
@@ -3512,10 +5150,41 @@ describe("本番収集の接続", () => {
         observedAt,
         state: Object.freeze({ state: "open" }),
       });
+    const executeWarmEquivalentCodexAnalysis = (input: CodexAnalysisInput): Promise<unknown> => {
+      const source = input.sources[0];
+      if (source == null) {
+        throw new TypeError("warm equivalence fixtureのsourceがありません");
+      }
+      return Promise.resolve({
+        ...createCodexOutput(input, {
+          status: "in_progress",
+          waitingOn: {
+            candidateId: requireCodexAuthorCandidateId(input),
+            kind: "user",
+            role: "assignee",
+            sourceId: source.id,
+          },
+          latestMeaningfulSourceId: null,
+          confidence: 0.95,
+          relationVerdict: "related",
+          notification: {
+            recommended: false,
+            reasonCode: "none",
+            reasonSummary: "通知しません",
+          },
+        }),
+        importance: {
+          significantFeature: true,
+          explicitDeadline: true,
+          futureRisk: false,
+          rationale: "warmとcoldの重要度を一致させるfixtureです",
+        },
+      });
+    };
     const config = await createTestConfig({
       explicitIncludes: [],
       retentionDays: 180,
-      aiEnabled: false,
+      aiEnabled: true,
     });
     const warmFixture = createRepositoryFixture(repository);
     const firstItem = createObservedItem(createUtcIsoDateTime(FIRST_RUN_AT));
@@ -3530,9 +5199,15 @@ describe("本番収集の接続", () => {
         duplicateComments: false,
       }),
     );
-    const warmHarness = createCollectionHarness({ repositories: [warmFixture], config });
+    const warmHarness = createCollectionHarness({
+      repositories: [warmFixture],
+      config,
+      executeCodexAnalysis: executeWarmEquivalentCodexAnalysis,
+    });
 
     expect((await warmHarness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    const warmCodexExecutionCount = warmHarness.codexExecutionCount();
+    expect(warmCodexExecutionCount).toBe(1);
     const persistedPaths = [
       ...(await warmHarness.stateAdapter.readBranchFiles("tracker-state")).keys(),
     ];
@@ -3587,13 +5262,19 @@ describe("本番収集の接続", () => {
         duplicateComments: false,
       }),
     );
-    const coldHarness = createCollectionHarness({ repositories: [coldFixture], config });
+    const coldHarness = createCollectionHarness({
+      repositories: [coldFixture],
+      config,
+      executeCodexAnalysis: executeWarmEquivalentCodexAnalysis,
+    });
     const coldResult = await coldHarness.runCollectAnalyze(SECOND_RUN_AT);
     const coldArtifact = requireCollectAnalyzeArtifact(coldHarness.artifacts);
 
     expect(warmResult.exitCode).toBe(0);
     expect(coldResult.exitCode).toBe(0);
     expect(warmHarness.detailCalls).toEqual([]);
+    expect(warmHarness.codexExecutionCount()).toBe(warmCodexExecutionCount);
+    expect(coldHarness.codexExecutionCount()).toBe(1);
     expect(coldHarness.detailCalls).toEqual([
       {
         targets: [{ nodeId: firstItem.nodeId }],
@@ -3602,11 +5283,662 @@ describe("本番収集の接続", () => {
     expect(warmHarness.individualCalls).toEqual([]);
     expect(coldHarness.individualCalls).toEqual([]);
     expect(warmArtifact.snapshot.items).toEqual(coldArtifact.snapshot.items);
+    expect(
+      warmArtifact.snapshot.items.map((item) => ({
+        nodeId: item.nodeId,
+        importance: item.importance,
+        attention: item.attention,
+      })),
+    ).toEqual(
+      coldArtifact.snapshot.items.map((item) => ({
+        nodeId: item.nodeId,
+        importance: item.importance,
+        attention: item.attention,
+      })),
+    );
     expect(warmArtifact.snapshot.relations).toEqual(coldArtifact.snapshot.relations);
     expect(warmArtifact.pages.details).toEqual(coldArtifact.pages.details);
     expect(warmArtifact.notificationSelection.candidates).toEqual(
       coldArtifact.notificationSelection.candidates,
     );
+    expect(warmHarness.volatileProbeCalls).toEqual([]);
+    expect(coldHarness.volatileProbeCalls).toEqual([]);
+  });
+
+  it("Pull Requestのvolatile差分だけでdetailを再取得して次のwarm runでは省略する", async () => {
+    const repository = createRepository("R_volatile_warm", "volatile-warm", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const createItem = (observedAt: UtcIsoDateTime): EnumeratedGitHubItem =>
+      alignPullRequestBodyFingerprint(
+        createPullRequestItem({
+          repository: publicRepository,
+          number: 1,
+          fingerprint: "volatile-warm",
+          updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+          observedAt,
+        }),
+      );
+    const firstItem = createItem(createUtcIsoDateTime(FIRST_RUN_AT));
+    const firstDetail = createFailedCheckPullRequestDetail(
+      firstItem,
+      createUtcIsoDateTime(FIRST_RUN_AT),
+    );
+    fixture.openItems = [firstItem];
+    fixture.details.set(firstItem.nodeId, firstDetail);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    harness.detailCalls.length = 0;
+    harness.volatileProbeCalls.length = 0;
+    const secondItem = createItem(createUtcIsoDateTime(SECOND_RUN_AT));
+    const secondDetail = Object.freeze({
+      ...firstDetail,
+      mergeState: Object.freeze({
+        ...firstDetail.mergeState,
+        mergeState: "blocked",
+      }),
+      observedAt: createUtcIsoDateTime(SECOND_RUN_AT),
+    } satisfies GitHubItemDetail);
+    fixture.openItems = [secondItem];
+    fixture.details.set(secondItem.nodeId, secondDetail);
+
+    const changedResult = await harness.runDaily(SECOND_RUN_AT);
+    expect(changedResult.exitCode).toBe(0);
+    expect(harness.volatileProbeCalls).toEqual([{ pullRequestNodeIds: [secondItem.nodeId] }]);
+    expect(harness.detailCalls).toEqual([
+      {
+        targets: [{ nodeId: secondItem.nodeId }],
+      },
+    ]);
+    const session = await CacheOnlyPersistenceSession.open(
+      harness.stateAdapter,
+      config.state,
+      createPublicRepositoryAllowlist([repository]),
+    );
+    const loaded = await session.load({
+      evaluatedAt: createUtcIsoDateTime(SECOND_RUN_AT),
+      knownSecrets: Object.freeze([]),
+    });
+    if (loaded.status !== "available") {
+      throw new TypeError("volatile差分保存後のcacheを読み取れません");
+    }
+    const repositoryItem = loaded.repositoryCaches[0]?.items[0];
+    const itemCache = loaded.itemCaches[0];
+    if (repositoryItem == null || itemCache == null) {
+      throw new TypeError("volatile差分保存後のrepositoryまたはitem cacheがありません");
+    }
+    expect(repositoryItem.itemFingerprint).toBe(itemCache.itemFingerprint);
+    expect(itemCache.itemFingerprint).not.toBe(secondItem.itemFingerprint);
+
+    harness.detailCalls.length = 0;
+    harness.volatileProbeCalls.length = 0;
+    const thirdItem = createItem(createUtcIsoDateTime(THIRD_RUN_AT));
+    fixture.openItems = [thirdItem];
+    fixture.details.set(
+      thirdItem.nodeId,
+      Object.freeze({
+        ...secondDetail,
+        observedAt: createUtcIsoDateTime(THIRD_RUN_AT),
+      }),
+    );
+
+    const warmResult = await harness.runCollectAnalyze(THIRD_RUN_AT);
+
+    expect(warmResult.exitCode).toBe(0);
+    expect(harness.volatileProbeCalls).toEqual([{ pullRequestNodeIds: [thirdItem.nodeId] }]);
+    expect(harness.detailCalls).toEqual([]);
+  });
+
+  it("probe競合とdetail照合raceでは試行全体をやり直して成功試行だけを使う", async () => {
+    const repository = createRepository("R_volatile_retry", "volatile-retry", FIRST_RUN_AT);
+    const fixture = createRepositoryFixture(repository);
+    const item = alignPullRequestBodyFingerprint(
+      createPullRequestItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "volatile-retry",
+        updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      }),
+    );
+    const detail = createFailedCheckPullRequestDetail(item, createUtcIsoDateTime(FIRST_RUN_AT));
+    const actualMetadata = createGitHubPullRequestVolatileMetadataFromDetail(detail);
+    const mismatchedMetadata = createGitHubPullRequestVolatileMetadataFromDetail(
+      Object.freeze({
+        ...detail,
+        mergeState: Object.freeze({
+          ...detail.mergeState,
+          mergeState: "blocked",
+        }),
+      }),
+    );
+    fixture.openItems = [item];
+    fixture.details.set(item.nodeId, detail);
+    let attemptCount = 0;
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      probeGitHubPullRequestVolatileMetadataWithRetry: async (input) => {
+        const validateDetail = input.validateDetail;
+        if (validateDetail == null) {
+          throw new TypeError("volatile retry fixtureのdetail照合callbackがありません");
+        }
+        const races: GitHubPullRequestVolatileRaceError[] = [];
+        const attempts = Object.freeze([
+          Object.freeze({ status: "probe_race" }),
+          Object.freeze({ status: "metadata", value: mismatchedMetadata }),
+          Object.freeze({ status: "metadata", value: actualMetadata }),
+        ]);
+        for (const attempt of attempts) {
+          attemptCount += 1;
+          if (attempt.status === "probe_race") {
+            races.push(
+              new GitHubPullRequestVolatileRaceError("check_context_page", item.nodeId, {
+                cause: new TypeError("probe中にcheckが変化しました"),
+              }),
+            );
+            continue;
+          }
+          const collection = Object.freeze({ items: Object.freeze([attempt.value]) });
+          try {
+            await validateDetail(collection);
+            return collection;
+          } catch (error: unknown) {
+            if (!(error instanceof GitHubPullRequestVolatileRaceError)) {
+              throw error;
+            }
+            races.push(error);
+          }
+        }
+        throw new GitHubPullRequestVolatileRaceRetryExhaustedError(races);
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(0);
+    expect(attemptCount).toBe(3);
+    expect(harness.detailCalls).toEqual([
+      { targets: [{ nodeId: item.nodeId }] },
+      { targets: [{ nodeId: item.nodeId }] },
+    ]);
+    expect(harness.artifacts).toHaveLength(1);
+  });
+
+  it("volatile detail raceが3回続けば部分artifactとcacheとPagesを残さない", async () => {
+    const repository = createRepository(
+      "R_volatile_retry_exhausted",
+      "volatile-retry-exhausted",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const item = alignPullRequestBodyFingerprint(
+      createPullRequestItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "volatile-retry-exhausted",
+        updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      }),
+    );
+    const detail = createFailedCheckPullRequestDetail(item, createUtcIsoDateTime(FIRST_RUN_AT));
+    const mismatchedMetadata = createGitHubPullRequestVolatileMetadataFromDetail(
+      Object.freeze({
+        ...detail,
+        mergeState: Object.freeze({
+          ...detail.mergeState,
+          mergeability: "conflicting",
+        }),
+      }),
+    );
+    fixture.openItems = [item];
+    fixture.details.set(item.nodeId, detail);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      probeGitHubPullRequestVolatileMetadataWithRetry: (input) =>
+        validateVolatileMetadataAttempts(input, [
+          [mismatchedMetadata],
+          [mismatchedMetadata],
+          [mismatchedMetadata],
+        ]),
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const head = await harness.stateAdapter.resolveHead("tracker-state");
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("volatile retry exhaustion fixtureがcollect-analyze結果ではありません");
+    }
+
+    expect(result.exitCode).toBe(1);
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "incremental_collection",
+      complete: false,
+    });
+    expect(result.result.effects).toEqual({
+      cacheCommitted: false,
+      pagesBuilt: false,
+      discordAttempted: false,
+      artifactWritten: false,
+    });
+    expect(harness.detailCalls).toHaveLength(3);
+    expect(harness.artifacts).toEqual([]);
+    expect(harness.publicData).toEqual([]);
+    expect(head).toEqual({ status: "missing" });
+  });
+
+  it("relation expansionで追加したPull Requestもprobe後のfingerprintで保存する", async () => {
+    const repository = createRepository(
+      "R_volatile_relation_expansion",
+      "volatile-relation-expansion",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const root = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "volatile-expansion-root",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const target = alignPullRequestBodyFingerprint(
+      createPullRequestItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "volatile-expansion-target",
+        updatedAt: observedAt,
+        observedAt,
+      }),
+    );
+    fixture.openItems = [root];
+    fixture.individualItems.set(target.nodeId, target);
+    fixture.details.set(
+      root.nodeId,
+      createIssueDetail({
+        item: root,
+        body: "Pull Requestの完了を待ちます",
+        observedAt,
+        nativeDependencies: Object.freeze([createNativeBlocker(root, target)]),
+        duplicateComments: false,
+      }),
+    );
+    fixture.details.set(target.nodeId, createFailedCheckPullRequestDetail(target, observedAt));
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const repositoryItem = artifact.cacheOnlyPayload.repositoryCaches
+      .flatMap((document) => document.items)
+      .find((candidate) => candidate.nodeId === target.nodeId);
+    const itemCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (document) => document.nodeId === target.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.individualCalls).toContainEqual([target.nodeId]);
+    expect(harness.volatileProbeCalls).toEqual([{ pullRequestNodeIds: [target.nodeId] }]);
+    expect(harness.detailCalls).toEqual([
+      { targets: [{ nodeId: root.nodeId }] },
+      { targets: [{ nodeId: target.nodeId }] },
+    ]);
+    expect(repositoryItem?.itemFingerprint).toBe(itemCache?.itemFingerprint);
+    expect(itemCache?.itemFingerprint).not.toBe(target.itemFingerprint);
+  });
+
+  it("503でstaleになったrepositoryではPull Request probeを呼ばない", async () => {
+    const repository = createRepository("R_volatile_stale", "volatile-stale", FIRST_RUN_AT);
+    const fixture = createRepositoryFixture(repository);
+    const item = alignPullRequestBodyFingerprint(
+      createPullRequestItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "volatile-stale",
+        updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      }),
+    );
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      createFailedCheckPullRequestDetail(item, createUtcIsoDateTime(FIRST_RUN_AT)),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
+    fixture.enumerationFailsWith503 = true;
+    harness.volatileProbeCalls.length = 0;
+
+    const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.volatileProbeCalls).toEqual([]);
+  });
+
+  it("現在の解析versionと異なるexact AI entryはfresh詳細から再判定する", async () => {
+    const repository = createRepository(
+      "R_exact_ai_identity_refresh",
+      "exact-ai-identity-refresh",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const fingerprint = "@requested-user に対応をお願いします";
+    const item = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint,
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      createIssueDetail({
+        item,
+        body: `body-${fingerprint}`,
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const coldHarness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+    });
+
+    expect((await coldHarness.runCollectAnalyze(FIRST_RUN_AT)).exitCode).toBe(0);
+    const coldArtifact = requireCollectAnalyzeArtifact(coldHarness.artifacts);
+    const currentEntryValue = coldArtifact.cacheOnlyPayload.aiCacheEntries[0];
+    const currentItemCache = coldArtifact.cacheOnlyPayload.itemCaches[0];
+    if (currentEntryValue == null || currentItemCache == null) {
+      throw new TypeError("exact AI identity fixtureのcache payloadがありません");
+    }
+    const currentEntry = createAiCacheEntry(currentEntryValue);
+    if (currentItemCache.aiCacheReference.status !== "available") {
+      throw new TypeError("exact AI identity fixtureのitem cache参照がありません");
+    }
+    const incompatibleIdentity = Object.freeze({
+      deterministicRulesVersion: currentEntry.metadata.deterministicRulesVersion,
+      model: `${currentEntry.metadata.model}-incompatible`,
+      reasoningEffort: currentEntry.metadata.reasoningEffort,
+      backendVersion: currentEntry.metadata.backendVersion,
+      promptVersion: currentEntry.metadata.promptVersion,
+      schemaVersion: currentEntry.metadata.schemaVersion,
+    });
+    const incompatibleEntry = createAiCacheEntry({
+      ...currentEntry,
+      cacheKey: createAiCacheKey({
+        ...incompatibleIdentity,
+        inputHash: parseSha256Hash(currentEntry.metadata.inputHash),
+      }),
+      metadata: {
+        ...currentEntry.metadata,
+        model: incompatibleIdentity.model,
+      },
+    });
+    const incompatibleItemCache = createCacheDocument({
+      ...currentItemCache,
+      aiCacheReference: {
+        ...currentItemCache.aiCacheReference,
+        cacheKey: incompatibleEntry.cacheKey,
+        identityHash: hashCanonicalJson(incompatibleIdentity),
+      },
+    });
+    if (incompatibleItemCache.kind !== "github_item") {
+      throw new TypeError("exact AI identity fixtureのitem cacheを生成できません");
+    }
+    const warmHarness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+    });
+    const session = await CacheOnlyPersistenceSession.open(
+      warmHarness.stateAdapter,
+      config.state,
+      createPublicRepositoryAllowlist([repository]),
+    );
+    await session.persist({
+      ...coldArtifact.cacheOnlyPayload,
+      itemCaches: Object.freeze([incompatibleItemCache]),
+      aiCacheEntries: Object.freeze([incompatibleEntry]),
+      latestImportanceCaches: Object.freeze([]),
+      evaluatedAt: observedAt,
+      knownSecrets: Object.freeze([]),
+    });
+
+    const result = await warmHarness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(0);
+    expect(warmHarness.detailCalls).toEqual([
+      {
+        targets: [{ nodeId: item.nodeId }],
+      },
+    ]);
+    expect(warmHarness.codexInputs).toHaveLength(1);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("exact AI identity fixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.result.report.diagnostics).toContainEqual(
+      expect.stringContaining("現在の解析versionと互換性がない"),
+    );
+  });
+
+  it("exactな責務epochだけをresponsibility changed通知へ渡す", async () => {
+    const repository = createRepository(
+      "R_temporal_responsibility",
+      "temporal-responsibility",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const assignedAt = createUtcIsoDateTime("2026-07-31T22:00:00.000Z");
+    const assignee = Object.freeze({
+      nodeId: createGitHubNodeId("U_temporal_responsibility"),
+      login: "temporal-responsibility",
+      apiType: "User",
+    });
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "temporal-responsibility",
+        updatedAt: assignedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      assignees: Object.freeze([assignee]),
+      labels: Object.freeze(["優先度：高"]),
+    });
+    const detail = createIssueDetail({
+      item,
+      body: "担当者が決まりました",
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...detail,
+        timeline: Object.freeze([
+          Object.freeze({
+            sourceId: buildSourceId("github_timeline_event", `${item.nodeId}:assigned`),
+            nodeId: createGitHubNodeId(`${item.nodeId}:assigned`),
+            sequence: 0,
+            occurredAt: assignedAt,
+            actor: Object.freeze({
+              status: "identified",
+              account: Object.freeze({
+                sourceId: buildSourceId("github_account", assignee.nodeId),
+                ...assignee,
+              }),
+            }),
+            kind: "assigned",
+            assignee: Object.freeze({
+              type: "account",
+              account: Object.freeze({
+                sourceId: buildSourceId("github_account", assignee.nodeId),
+                ...assignee,
+              }),
+            }),
+          } satisfies GitHubTimelineEvent),
+        ]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      scheduledRun: true,
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const candidate = artifact.notificationSelection.candidates.find(
+      (current) => current.itemNodeId === item.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(candidate?.reasons).toContainEqual({ reasonCode: "responsibility_changed" });
+  });
+
+  it("cycleの作成と解消と再作成をexact eventから通知へ渡す", async () => {
+    const repository = createRepository("R_temporal_cycle", "temporal-cycle", FIRST_RUN_AT);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const firstCycleAt = createUtcIsoDateTime("2026-07-31T20:00:00.000Z");
+    const removedAt = createUtcIsoDateTime("2026-07-31T21:00:00.000Z");
+    const recreatedAt = createUtcIsoDateTime("2026-07-31T22:00:00.000Z");
+    const first = Object.freeze({
+      ...createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "temporal-cycle-first",
+        updatedAt: recreatedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      labels: Object.freeze(["優先度：高"]),
+    });
+    const second = Object.freeze({
+      ...createIssueItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "temporal-cycle-second",
+        updatedAt: recreatedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      labels: Object.freeze(["優先度：高"]),
+    });
+    const firstDetail = createIssueDetail({
+      item: first,
+      body: "二つ目の項目を待ちます",
+      observedAt,
+      nativeDependencies: Object.freeze([createNativeBlocker(first, second)]),
+      duplicateComments: false,
+    });
+    const secondDetail = createIssueDetail({
+      item: second,
+      body: "一つ目の項目を待ちます",
+      observedAt,
+      nativeDependencies: Object.freeze([createNativeBlocker(second, first)]),
+      duplicateComments: false,
+    });
+    fixture.openItems = [first, second];
+    fixture.details.set(
+      first.nodeId,
+      Object.freeze({
+        ...firstDetail,
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([]),
+        }),
+        timeline: Object.freeze([
+          createNativeDependencyTimelineEvent(first, second, "added", first.createdAt, 0),
+        ]),
+      }),
+    );
+    fixture.details.set(
+      second.nodeId,
+      Object.freeze({
+        ...secondDetail,
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([]),
+        }),
+        timeline: Object.freeze([
+          createNativeDependencyTimelineEvent(second, first, "added", firstCycleAt, 0),
+          createNativeDependencyTimelineEvent(second, first, "removed", removedAt, 1),
+          createNativeDependencyTimelineEvent(second, first, "added", recreatedAt, 2),
+        ]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      scheduledRun: true,
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const cycleCandidates = artifact.notificationSelection.candidates.filter((candidate) =>
+      candidate.reasons.some((reason) => reason.reasonCode === "dependency_cycle"),
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(new Set(cycleCandidates.map((candidate) => candidate.itemNodeId))).toEqual(
+      new Set([first.nodeId, second.nodeId]),
+    );
+    expect(artifact.snapshot.relations.filter((relation) => relation.active)).toHaveLength(2);
   });
 
   it("AI無効時もsemantic不整合なAI cache参照をfresh詳細で正規化する", async () => {
@@ -4824,34 +7156,100 @@ describe("本番収集の接続", () => {
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
     const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
-    const recommendedItem = createIssueItem({
-      repository: publicRepository,
-      number: 1,
-      fingerprint: "notification-recommended",
-      updatedAt: observedAt,
-      observedAt,
-      state: Object.freeze({ state: "open" }),
+    const notificationEvidenceAt = createUtcIsoDateTime("2026-07-31T23:00:00.000Z");
+    const unrelatedEvidenceAt = createUtcIsoDateTime("2026-07-31T23:30:00.000Z");
+    const notificationBody = "@requested-user に対応をお願いします";
+    const unrelatedCommentSourceId = buildSourceId(
+      "github_issue_comment",
+      "IC_notification_unrelated",
+    );
+    const unrelatedComment = Object.freeze({
+      sourceId: unrelatedCommentSourceId,
+      nodeId: createGitHubNodeId("IC_notification_unrelated"),
+      sequence: 0,
+      author: Object.freeze({
+        status: "unavailable",
+        reason: "github_did_not_return_actor",
+      }),
+      body: "通知とは無関係な新しい根拠です",
+      createdAt: unrelatedEvidenceAt,
+      lastEditedAt: unrelatedEvidenceAt,
+      updatedAt: unrelatedEvidenceAt,
+      url: "https://github.com/VOICEVOX/codex-notification/issues/1#issuecomment-unrelated",
+      userContentEdits: Object.freeze({
+        availability: "unavailable",
+        reason: "connection_null",
+      }),
+    } satisfies GitHubIssueComment);
+    const recommendedItem = Object.freeze({
+      ...createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "notification-recommended",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      bodyFingerprint: createGitHubBodyFingerprint(notificationBody),
     });
-    const notRecommendedItem = createIssueItem({
-      repository: publicRepository,
-      number: 2,
-      fingerprint: "notification-not-recommended",
-      updatedAt: observedAt,
-      observedAt,
-      state: Object.freeze({ state: "open" }),
+    const commentRecommendedItem = Object.freeze({
+      ...createIssueItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "notification-comment-recommended",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      bodyFingerprint: createGitHubBodyFingerprint(notificationBody),
     });
-    const items = [recommendedItem, notRecommendedItem];
+    const commentSourceId = buildSourceId("github_issue_comment", "IC_notification_edited");
+    const items = [recommendedItem, commentRecommendedItem];
     fixture.openItems = items;
     for (const item of items) {
+      const detail = createIssueDetail({
+        item,
+        body: notificationBody,
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      });
       fixture.details.set(
         item.nodeId,
-        createIssueDetail({
-          item,
-          body: "@requested-user に対応をお願いします",
-          observedAt,
-          nativeDependencies: Object.freeze([]),
-          duplicateComments: false,
-        }),
+        item.nodeId === recommendedItem.nodeId
+          ? Object.freeze({
+              ...detail,
+              lastEditedAt: notificationEvidenceAt,
+              comments: Object.freeze([unrelatedComment]),
+            })
+          : Object.freeze({
+              ...detail,
+              comments: Object.freeze([
+                Object.freeze({
+                  sourceId: commentSourceId,
+                  nodeId: createGitHubNodeId("IC_notification_edited"),
+                  sequence: 0,
+                  author: Object.freeze({
+                    status: "identified",
+                    account: Object.freeze({
+                      sourceId: buildSourceId("github_account", "U_notification_commenter"),
+                      nodeId: createGitHubNodeId("U_notification_commenter"),
+                      login: "notification-commenter",
+                      apiType: "User",
+                    }),
+                  }),
+                  body: "編集済みの通知根拠です",
+                  createdAt: createUtcIsoDateTime("2026-07-30T00:00:00.000Z"),
+                  lastEditedAt: notificationEvidenceAt,
+                  updatedAt: notificationEvidenceAt,
+                  url: `${item.url}#issuecomment-notification-edited`,
+                  userContentEdits: Object.freeze({
+                    availability: "unavailable",
+                    reason: "connection_null",
+                  }),
+                } satisfies GitHubIssueComment),
+              ]),
+            }),
       );
     }
     const config = await createTestConfig({
@@ -4862,14 +7260,30 @@ describe("本番収集の接続", () => {
     const harness = createCollectionHarness({
       repositories: [fixture],
       config,
+      scheduledRun: true,
       executeCodexAnalysis: (input) => {
-        const source = input.sources.find((candidate) => candidate.kind === "body");
+        const expectedSourceKind =
+          input.item.nodeId === recommendedItem.nodeId ? "body" : "comment";
+        const source = input.sources.find((candidate) => candidate.kind === expectedSourceKind);
         if (source == null) {
-          throw new TypeError("通知提案fixtureのbody sourceがありません");
+          throw new TypeError("通知提案fixtureの編集済みsourceがありません");
         }
-        const recommended = input.item.nodeId === recommendedItem.nodeId;
-        return Promise.resolve(
-          createCodexOutput(input, {
+        const evidence = [
+          {
+            sourceId: source.id,
+            supports: "notification",
+            summary: "通知提案のexact根拠です",
+          },
+        ];
+        if (input.item.nodeId === recommendedItem.nodeId) {
+          evidence.push({
+            sourceId: unrelatedCommentSourceId,
+            supports: "status",
+            summary: "通知とは無関係な新しい根拠です",
+          });
+        }
+        return Promise.resolve({
+          ...createCodexOutput(input, {
             status: "in_progress",
             waitingOn: {
               candidateId: "requested-user",
@@ -4880,33 +7294,79 @@ describe("本番収集の接続", () => {
             latestMeaningfulSourceId: null,
             confidence: 0.7,
             relationVerdict: "related",
-            notification: recommended
-              ? {
-                  recommended: true,
-                  reasonCode: "review_overdue",
-                  reasonSummary: "レビュー状況の確認が必要です",
-                }
-              : {
-                  recommended: false,
-                  reasonCode: "none",
-                  reasonSummary: "通知は不要です",
-                },
+            notification: {
+              recommended: true,
+              reasonCode: "review_overdue",
+              reasonSummary: "レビュー状況の確認が必要です",
+            },
           }),
-        );
+          evidence,
+        });
       },
     });
 
-    const result = await harness.runDry(FIRST_RUN_AT);
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    if (result.exitCode !== 0) {
+      throw new TypeError(`通知提案cold fixtureに失敗しました。${JSON.stringify(result)}`);
+    }
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const coldSources = Object.freeze(
+      harness.codexInputs.map((input) => {
+        const expectedSourceKind =
+          input.item.nodeId === recommendedItem.nodeId ? "body" : "comment";
+        const source = input.sources.find((candidate) => candidate.kind === expectedSourceKind);
+        if (source == null) {
+          throw new TypeError("cold通知提案fixtureの編集済みsourceがありません");
+        }
+        return Object.freeze({ nodeId: input.item.nodeId, createdAt: source.createdAt });
+      }),
+    );
+    const warmHarness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      scheduledRun: true,
+      executeCodexAnalysis: () =>
+        Promise.reject(new TypeError("warm通知提案fixtureはCodexを再実行しません")),
+    });
+    const session = await CacheOnlyPersistenceSession.open(
+      warmHarness.stateAdapter,
+      config.state,
+      createPublicRepositoryAllowlist([repository]),
+    );
+    await session.persist({
+      ...artifact.cacheOnlyPayload,
+      evaluatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      knownSecrets: Object.freeze([]),
+    });
+
+    const warmResult = await warmHarness.runCollectAnalyze(FIRST_RUN_AT);
+    if (warmResult.exitCode !== 0) {
+      throw new TypeError(`通知提案warm fixtureに失敗しました。${JSON.stringify(warmResult)}`);
+    }
+    const warmArtifact = requireCollectAnalyzeArtifact(warmHarness.artifacts);
 
     expect(result.exitCode).toBe(0);
+    expect(warmResult.exitCode).toBe(0);
     expect(harness.codexInputs).toHaveLength(2);
-    expect(harness.artifacts.at(-1)).toMatchObject({
-      result: {
-        notificationSelection: {
-          candidates: [],
-        },
-      },
-    });
+    expect(warmHarness.codexInputs).toEqual([]);
+    expect(coldSources).toEqual([
+      { nodeId: recommendedItem.nodeId, createdAt: notificationEvidenceAt },
+      { nodeId: commentRecommendedItem.nodeId, createdAt: notificationEvidenceAt },
+    ]);
+    if (warmHarness.detailCalls.length !== 0) {
+      throw new TypeError(
+        `warm通知提案fixtureがdetailを再取得しました。${JSON.stringify(warmResult)}`,
+      );
+    }
+    expect(warmHarness.detailCalls).toEqual([]);
+    expect(warmArtifact.notificationSelection.candidates).toEqual(
+      artifact.notificationSelection.candidates,
+    );
+    expect(
+      artifact.notificationSelection.candidates.filter((candidate) =>
+        candidate.reasons.some((reason) => reason.reasonCode === "review_overdue"),
+      ),
+    ).toHaveLength(2);
   });
 
   it("Codexのuser候補とauthor待ちにGitHub loginを使う", async () => {
@@ -5607,7 +8067,7 @@ describe("本番収集の接続", () => {
     expect(transitionTimes(second.item)).toEqual(transitionTimes(first.item));
   });
 
-  it("primary blockerと全blockerと外部ghostをstateと公開DTOへ運ぶ", async () => {
+  it("外部ghostをtemporal graphとblocker判定から除外する", async () => {
     const repository = createRepository("R_blockers", "blockers", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
@@ -5662,25 +8122,16 @@ describe("本番収集の接続", () => {
     const publicItem = artifact.pages.summary.items.find((item) => item.nodeId === blocked.nodeId);
 
     expect(result.exitCode).toBe(0);
-    expect(trackedItem?.waitingOn).toHaveLength(3);
+    expect(trackedItem?.waitingOn).toHaveLength(2);
     expect(trackedItem?.primaryWaitingOn.index).toBe(0);
     expect(trackedItem?.primaryWaitingOn.selectionReason).not.toBe("");
-    expect(snapshot.externalReferences).toEqual([
-      expect.objectContaining({
-        kind: "external_reference",
-        repositoryFullName: "external-owner/external-repository",
-        directNotification: "not_eligible",
-      }),
-    ]);
+    expect(snapshot.externalReferences).toEqual([]);
     expect(publicItem?.primaryWaitingOn).toEqual(trackedItem?.primaryWaitingOn);
     expect(new Set(publicItem?.blockerNodeIds)).toEqual(
-      new Set([firstBlocker.nodeId, secondBlocker.nodeId, "external:github:I_external_blocker"]),
+      new Set([firstBlocker.nodeId, secondBlocker.nodeId]),
     );
-    expect(artifact.pages.details.graph.nodes).toContainEqual(
-      expect.objectContaining({
-        kind: "external_reference",
-        displayReference: "external-owner/external-repository#42",
-      }),
+    expect(artifact.pages.details.graph.nodes).not.toContainEqual(
+      expect.objectContaining({ kind: "external_reference" }),
     );
   });
 
@@ -5760,6 +8211,14 @@ describe("本番収集の接続", () => {
     const issueClosedAt = createUtcIsoDateTime("2026-08-02T08:00:00.000Z");
     const pullRequestMergedAt = createUtcIsoDateTime("2026-08-02T16:00:00.000Z");
     const resolutionObservedAt = createUtcIsoDateTime("2026-08-03T00:00:00.000Z");
+    const withAvailableEmptyBodyHistory = (detail: GitHubItemDetail): GitHubItemDetail =>
+      Object.freeze({
+        ...detail,
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([]),
+        }),
+      });
     const runResolutionAt = async (
       startedAt: string,
     ): Promise<
@@ -5808,24 +8267,77 @@ describe("本番収集の接続", () => {
         state: Object.freeze({ state: "open" }),
       });
       fixture.openItems = [blocked, issueBlocker, pullRequestBlocker, edgeBlocker];
-      setIssueDetails(fixture, [blocked, issueBlocker, edgeBlocker], firstObservedAt);
       fixture.details.set(
-        pullRequestBlocker.nodeId,
-        createFailedCheckPullRequestDetail(pullRequestBlocker, firstObservedAt),
+        issueBlocker.nodeId,
+        withAvailableEmptyBodyHistory(
+          createIssueDetail({
+            item: issueBlocker,
+            body: "本文",
+            observedAt: firstObservedAt,
+            nativeDependencies: Object.freeze([]),
+            duplicateComments: false,
+          }),
+        ),
       );
       fixture.details.set(
+        edgeBlocker.nodeId,
+        withAvailableEmptyBodyHistory(
+          createIssueDetail({
+            item: edgeBlocker,
+            body: "本文",
+            observedAt: firstObservedAt,
+            nativeDependencies: Object.freeze([]),
+            duplicateComments: false,
+          }),
+        ),
+      );
+      fixture.details.set(
+        pullRequestBlocker.nodeId,
+        withAvailableEmptyBodyHistory(
+          createFailedCheckPullRequestDetail(pullRequestBlocker, firstObservedAt),
+        ),
+      );
+      const initialBlockedDetail = createIssueDetail({
+        item: blocked,
+        body: "IssueとPull Requestの完了を待ちます",
+        observedAt: firstObservedAt,
+        nativeDependencies: Object.freeze([
+          createNativeBlocker(blocked, issueBlocker),
+          createNativeBlocker(blocked, pullRequestBlocker),
+          createNativeBlocker(blocked, edgeBlocker),
+        ]),
+        duplicateComments: false,
+      });
+      fixture.details.set(
         blocked.nodeId,
-        createIssueDetail({
-          item: blocked,
-          body: "IssueとPull Requestの完了を待ちます",
-          observedAt: firstObservedAt,
-          nativeDependencies: Object.freeze([
-            createNativeBlocker(blocked, issueBlocker),
-            createNativeBlocker(blocked, pullRequestBlocker),
-            createNativeBlocker(blocked, edgeBlocker),
-          ]),
-          duplicateComments: false,
-        }),
+        withAvailableEmptyBodyHistory(
+          Object.freeze({
+            ...initialBlockedDetail,
+            timeline: Object.freeze([
+              createNativeDependencyTimelineEvent(
+                blocked,
+                issueBlocker,
+                "added",
+                blocked.createdAt,
+                0,
+              ),
+              createNativeDependencyTimelineEvent(
+                blocked,
+                pullRequestBlocker,
+                "added",
+                blocked.createdAt,
+                1,
+              ),
+              createNativeDependencyTimelineEvent(
+                blocked,
+                edgeBlocker,
+                "added",
+                blocked.createdAt,
+                2,
+              ),
+            ]),
+          }),
+        ),
       );
       const config = await createTestConfig({
         explicitIncludes: [],
@@ -5872,27 +8384,83 @@ describe("本番収集の接続", () => {
       fixture.openItems = [currentBlocked, currentEdgeBlocker];
       fixture.individualItems.set(closedIssueBlocker.nodeId, closedIssueBlocker);
       fixture.individualItems.set(mergedPullRequestBlocker.nodeId, mergedPullRequestBlocker);
-      setIssueDetails(
-        fixture,
-        [currentBlocked, closedIssueBlocker, currentEdgeBlocker],
-        resolutionObservedAt,
+      fixture.details.set(
+        closedIssueBlocker.nodeId,
+        withAvailableEmptyBodyHistory(
+          createIssueDetail({
+            item: closedIssueBlocker,
+            body: "本文",
+            observedAt: resolutionObservedAt,
+            nativeDependencies: Object.freeze([]),
+            duplicateComments: false,
+          }),
+        ),
+      );
+      fixture.details.set(
+        currentEdgeBlocker.nodeId,
+        withAvailableEmptyBodyHistory(
+          createIssueDetail({
+            item: currentEdgeBlocker,
+            body: "本文",
+            observedAt: resolutionObservedAt,
+            nativeDependencies: Object.freeze([]),
+            duplicateComments: false,
+          }),
+        ),
       );
       fixture.details.set(
         mergedPullRequestBlocker.nodeId,
-        createFailedCheckPullRequestDetail(mergedPullRequestBlocker, resolutionObservedAt),
+        withAvailableEmptyBodyHistory(
+          createFailedCheckPullRequestDetail(mergedPullRequestBlocker, resolutionObservedAt),
+        ),
       );
+      const currentBlockedDetail = createIssueDetail({
+        item: currentBlocked,
+        body: "IssueとPull Requestの完了を待ちます",
+        observedAt: resolutionObservedAt,
+        nativeDependencies: Object.freeze([
+          createNativeBlocker(currentBlocked, closedIssueBlocker),
+          createNativeBlocker(currentBlocked, mergedPullRequestBlocker),
+        ]),
+        duplicateComments: false,
+      });
       fixture.details.set(
         currentBlocked.nodeId,
-        createIssueDetail({
-          item: currentBlocked,
-          body: "IssueとPull Requestの完了を待ちます",
-          observedAt: resolutionObservedAt,
-          nativeDependencies: Object.freeze([
-            createNativeBlocker(currentBlocked, closedIssueBlocker),
-            createNativeBlocker(currentBlocked, mergedPullRequestBlocker),
-          ]),
-          duplicateComments: false,
-        }),
+        withAvailableEmptyBodyHistory(
+          Object.freeze({
+            ...currentBlockedDetail,
+            timeline: Object.freeze([
+              createNativeDependencyTimelineEvent(
+                currentBlocked,
+                closedIssueBlocker,
+                "added",
+                currentBlocked.createdAt,
+                0,
+              ),
+              createNativeDependencyTimelineEvent(
+                currentBlocked,
+                mergedPullRequestBlocker,
+                "added",
+                currentBlocked.createdAt,
+                1,
+              ),
+              createNativeDependencyTimelineEvent(
+                currentBlocked,
+                currentEdgeBlocker,
+                "added",
+                currentBlocked.createdAt,
+                2,
+              ),
+              createNativeDependencyTimelineEvent(
+                currentBlocked,
+                currentEdgeBlocker,
+                "removed",
+                issueClosedAt,
+                3,
+              ),
+            ]),
+          }),
+        ),
       );
       harness.artifacts.length = 0;
 
@@ -6216,7 +8784,11 @@ describe("本番収集の接続", () => {
     );
     executedNodeIds.length = 0;
 
-    expect((await harness.runDaily(FOURTH_RUN_AT)).exitCode).toBe(0);
+    const fourthRun = await harness.runDaily(FOURTH_RUN_AT);
+    if (fourthRun.exitCode !== 0) {
+      throw new TypeError(`4回目のAI優先順位runに失敗しました。${JSON.stringify(fourthRun)}`);
+    }
+    expect(fourthRun.exitCode).toBe(0);
     expect(executedNodeIds).toEqual([changedBlockerTarget.nodeId]);
   });
 });

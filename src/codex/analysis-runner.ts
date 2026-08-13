@@ -10,6 +10,7 @@ import {
   createAiCacheEntry,
   createAiCacheKey,
   determineAiCacheReuse,
+  type AiCacheEntry,
   type AiCacheIdentity,
   type AiCacheKey,
   type AiCacheStore,
@@ -94,6 +95,20 @@ type CandidateExecutionOutcome =
       failure: AiAnalysisRunFailure;
     }>;
 
+function assertAiCacheEntryOwnership(
+  entry: AiCacheEntry,
+  candidate: PreparedAiAnalysisCandidate,
+): void {
+  if (
+    entry.nodeId !== candidate.id ||
+    entry.repository.repositoryId !== candidate.repository.repositoryId ||
+    entry.repository.owner !== candidate.repository.owner ||
+    entry.repository.name !== candidate.repository.name
+  ) {
+    throw new TypeError("AI cache entryの項目またはrepositoryが分析候補と一致しません");
+  }
+}
+
 function createCacheIdentity(
   candidate: PreparedAiAnalysisCandidate,
   identity: AiAnalysisRunIdentity,
@@ -138,6 +153,7 @@ async function resolveCacheEntries(
     const cacheKey = createAiCacheKey(identity);
     const cached = await cache.read(cacheKey);
     if (cached.status === "hit") {
+      assertAiCacheEntryOwnership(cached.entry, candidate);
       const reuse = determineAiCacheReuse(cached.entry, identity, candidate.fingerprint.sourceHash);
       if (reuse.status === "reusable") {
         try {
@@ -246,6 +262,9 @@ async function executeSelectedCandidates(
         const entry = createAiCacheEntry({
           cacheKey: createAiCacheKey(cacheMiss.identity),
           sourceHash: candidate.fingerprint.sourceHash,
+          graphNeighborhoodHash: candidate.fingerprint.graphNeighborhoodHash,
+          repository: candidate.repository,
+          nodeId: candidate.id,
           metadata,
           output,
         });

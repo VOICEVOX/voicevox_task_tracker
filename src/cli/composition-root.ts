@@ -9,6 +9,7 @@ import {
   discoverRepositoryInventory,
   enumerateGitHubItemsByIdentifiers,
   enumerateOpenGitHubItems,
+  probeGitHubPullRequestVolatileMetadataWithRetry,
 } from "../github/index.js";
 import { writePublicDataFiles } from "../pages/index.js";
 import { CacheOnlyPersistenceSession, GitStateBranchAdapter } from "../persistence/index.js";
@@ -34,6 +35,7 @@ type ConcreteOperationName =
   | "discoverRepositoryInventory"
   | "enumerateGitHubItemsByIdentifiers"
   | "enumerateOpenGitHubItems"
+  | "probeGitHubPullRequestVolatileMetadataWithRetry"
   | "executeCodexAnalysis"
   | "loadConfig"
   | "openCacheSession"
@@ -65,6 +67,7 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
     discoverRepositoryInventory,
     enumerateGitHubItemsByIdentifiers,
     enumerateOpenGitHubItems,
+    probeGitHubPullRequestVolatileMetadataWithRetry,
     collectGitHubItemDetails,
     executeCodexAnalysis,
     readReplayFixture: readReplayFixtureFile,

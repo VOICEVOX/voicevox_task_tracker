@@ -438,8 +438,18 @@ function parseLatestImportanceCache(
   return document;
 }
 
-function parseAiCache(value: unknown, knownSecrets: readonly string[]): AiCacheEntry {
+function parseAiCache(
+  value: unknown,
+  allowlist: PublicRepositoryAllowlist,
+  knownSecrets: readonly string[],
+): AiCacheEntry {
   const entry = createAiCacheEntry(value);
+  assertRepositoryAllowlisted(
+    allowlist,
+    entry.repository.repositoryId,
+    entry.repository.owner,
+    entry.repository.name,
+  );
   assertCacheDocumentPublicSafety({
     document: entry,
     knownSecrets,
@@ -537,9 +547,7 @@ function referencedAiCacheKeys(documents: CacheOnlyDocumentSet): ReadonlySet<str
     }
   }
   for (const latest of documents.latestImportanceCaches) {
-    if (latest.aiCacheReference.status === "available") {
-      keys.add(latest.aiCacheReference.cacheKey);
-    }
+    keys.add(latest.aiCacheReference.cacheKey);
   }
   return keys;
 }
@@ -568,7 +576,9 @@ function itemIndexFromDocument(
 }
 
 function assertAiCacheReferenceMatches(
-  reference: GitHubItemCacheDocument["aiCacheReference"],
+  reference:
+    | GitHubItemCacheDocument["aiCacheReference"]
+    | AiLatestImportanceCacheDocument["aiCacheReference"],
   aiCachesByKey: ReadonlyMap<string, AiCacheEntry>,
 ): AiCacheEntry | undefined {
   if (reference.status !== "available") {
@@ -593,6 +603,12 @@ function assertAiCacheReferenceMatches(
   ) {
     throw new CacheDocumentSemanticError("AI cache entryと参照のfingerprintが一致しません");
   }
+  if (
+    "graphNeighborhoodHash" in reference &&
+    entry.graphNeighborhoodHash !== reference.graphNeighborhoodHash
+  ) {
+    throw new CacheDocumentSemanticError("AI cache entryと参照のgraph近傍hashが一致しません");
+  }
   return entry;
 }
 
@@ -602,7 +618,7 @@ function assertAiOutputItemMatches(
   context: string,
 ): ReturnType<typeof validateCodexAnalysisSchema> {
   const output = validateCodexAnalysisSchema(entry.output);
-  if (output.item.nodeId !== nodeId) {
+  if (entry.nodeId !== nodeId || output.item.nodeId !== nodeId) {
     throw new CacheDocumentSemanticError(`${context}のnode IDがAI cache entryと一致しません`);
   }
   return output;
@@ -703,6 +719,15 @@ function assertDocumentSetConsistency(documents: CacheOnlyDocumentSet): void {
     const aiCacheEntry = assertAiCacheReferenceMatches(item.aiCacheReference, aiCachesByKey);
     if (aiCacheEntry != null) {
       assertAiOutputItemMatches(aiCacheEntry, item.nodeId, "item cache");
+      if (
+        aiCacheEntry.repository.repositoryId !== item.repository.repositoryId ||
+        aiCacheEntry.repository.owner !== item.repository.owner ||
+        aiCacheEntry.repository.name !== item.repository.name
+      ) {
+        throw new CacheDocumentSemanticError(
+          "item cacheのrepositoryがAI cache entryと一致しません",
+        );
+      }
     }
   }
   for (const latest of documents.latestImportanceCaches) {
@@ -724,14 +749,30 @@ function assertDocumentSetConsistency(documents: CacheOnlyDocumentSet): void {
       throw new CacheDocumentSemanticError("latest importanceには利用可能なAI cache参照が必要です");
     }
     const output = assertAiOutputItemMatches(aiCacheEntry, latest.nodeId, "latest importance");
+    if (
+      aiCacheEntry.repository.repositoryId !== latest.repository.repositoryId ||
+      aiCacheEntry.repository.owner !== latest.repository.owner ||
+      aiCacheEntry.repository.name !== latest.repository.name
+    ) {
+      throw new CacheDocumentSemanticError(
+        "latest importanceのrepositoryがAI cache entryと一致しません",
+      );
+    }
     assertAiOutputImportanceMatches(output, latest);
     assertLatestImportanceMetadataMatches(latest, aiCacheEntry);
   }
   for (const entry of documents.aiCacheEntries) {
-    if (!referencedKeys.has(entry.cacheKey)) {
-      throw new CacheDocumentSemanticError(
-        "allowlist済みitemまたはlatest importanceから参照されないAI cache entryがあります",
-      );
+    const item = itemCachesByNodeId.get(entry.nodeId);
+    const repository = repositoryCachesById.get(entry.repository.repositoryId);
+    if (
+      !referencedKeys.has(entry.cacheKey) &&
+      (item == null ||
+        repository == null ||
+        item.repositoryId !== entry.repository.repositoryId ||
+        repository.repository.owner !== entry.repository.owner ||
+        repository.repository.name !== entry.repository.name)
+    ) {
+      throw new CacheDocumentSemanticError("保持対象itemに属さない未参照AI cache entryがあります");
     }
   }
 }
@@ -884,20 +925,21 @@ function pruneExpired(
   const latestImportanceCaches = documents.latestImportanceCaches.filter(
     (document) => !expiredNodeIds.has(document.nodeId),
   );
-  const retainedDocuments = {
-    repositoryCaches,
-    itemCaches,
-    latestImportanceCaches,
-    aiCacheEntries: documents.aiCacheEntries,
-  } satisfies CacheOnlyDocumentSet;
-  const retainedAiCacheKeys = referencedAiCacheKeys(retainedDocuments);
+  const retainedItemsByNodeId = new Map(itemCaches.map((document) => [document.nodeId, document]));
   return sortDocuments({
     repositoryCaches,
     itemCaches,
     latestImportanceCaches,
-    aiCacheEntries: documents.aiCacheEntries.filter((entry) =>
-      retainedAiCacheKeys.has(entry.cacheKey),
-    ),
+    aiCacheEntries: documents.aiCacheEntries.filter((entry) => {
+      const item = retainedItemsByNodeId.get(entry.nodeId);
+      if (item?.repository.repositoryId !== entry.repository.repositoryId) {
+        return false;
+      }
+      return (
+        item.repository.owner === entry.repository.owner &&
+        item.repository.name === entry.repository.name
+      );
+    }),
   });
 }
 
@@ -952,9 +994,10 @@ function parseLatestImportanceCaches(
 
 function parseAiCaches(
   values: readonly unknown[],
+  allowlist: PublicRepositoryAllowlist,
   knownSecrets: readonly string[],
 ): readonly AiCacheEntry[] {
-  const entries = values.map((value) => parseAiCache(value, knownSecrets));
+  const entries = values.map((value) => parseAiCache(value, allowlist, knownSecrets));
   assertUniqueKeys(
     entries.map((entry) => entry.cacheKey),
     "AI cache",
@@ -1078,7 +1121,7 @@ function parseInput(
       allowlist,
       input.knownSecrets,
     ),
-    aiCacheEntries: parseAiCaches(input.aiCacheEntries, input.knownSecrets),
+    aiCacheEntries: parseAiCaches(input.aiCacheEntries, allowlist, input.knownSecrets),
   });
   assertNoFutureTimestamps(documents, evaluatedAt);
   assertDocumentSetConsistency(documents);
@@ -1257,7 +1300,7 @@ export class CacheOnlyPersistenceSession {
       if (!SHA256_FILE_KEY_PATTERN.test(key)) {
         throw createFormatError("AI cache", new TypeError("AI cacheのpath keyが不正です"));
       }
-      const entry = parseAiCache(parseJson(source, "AI cache"), knownSecrets);
+      const entry = parseAiCache(parseJson(source, "AI cache"), this.#allowlist, knownSecrets);
       if (entry.cacheKey.slice("sha256:".length) !== key) {
         throw createFormatError("AI cache", new TypeError("AI cacheのpath keyが一致しません"));
       }

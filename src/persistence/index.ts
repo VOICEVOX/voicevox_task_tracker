@@ -1,14 +1,12 @@
 export {
   assertValidStatePath,
   joinStatePath,
-  validateStatePersistenceConfiguration,
   type StateBranchAdapter,
   type StateBranchCommitRequest,
   type StateBranchCommitResult,
   type StateBranchHead,
   type StateFileReadResult,
   type StateFileUpdate,
-  type StatePersistenceConfiguration,
 } from "./branch-adapter.js";
 export {
   hashCanonicalJson,
@@ -31,6 +29,7 @@ export {
   CacheDocumentSemanticError,
   type AiLatestImportanceCacheDocument,
   type AiCacheReference,
+  type LatestImportanceAiCacheReference,
   type CacheExplicitRequestCandidate,
   type CacheHistory,
   type CacheItemIndex,
@@ -54,7 +53,6 @@ export {
   StateBranchReadError,
   StateConfigurationError,
   StateFormatError,
-  StateHistoryError,
   StatePersistenceError,
   StatePublicSafetyError,
   StateSnapshotSchemaError,
@@ -65,24 +63,6 @@ export {
   GitStateBranchAdapter,
   type GitStateBranchAdapterOptions,
 } from "./git-state-branch-adapter.js";
-export {
-  appendStateHistoryRecord,
-  createStateHistoryInputEvents,
-  createStateHistoryRecord,
-  diffStateHistory,
-  parseStateHistoryRecords,
-  replayStateHistory,
-  serializeStateHistoryRecords,
-  type ReplayedStateHistory,
-  type StateHistoryDiff,
-  type StateHistoryDifference,
-  type StateHistoryEdge,
-  type StateHistoryEvent,
-  type StateHistoryInputEvent,
-  type StateHistoryRecord,
-  type StateHistoryResponsibility,
-  type StateHistoryValue,
-} from "./history.js";
 export { MemoryStateBranchAdapter } from "./memory-state-branch-adapter.js";
 export {
   assertStatePublicSafety,
@@ -106,14 +86,6 @@ export {
   type StateSnapshot,
 } from "./snapshot.js";
 export {
-  StatePersistenceSession,
-  type PersistNotificationLedgerInput,
-  type PersistRunCompletionInput,
-  type PersistStateTransactionInput,
-  type PersistStateTransactionResult,
-  type StateSnapshotReadResult,
-} from "./state-persistence-session.js";
-export {
   CacheOnlyPersistenceSession,
   validateCacheOnlyPersistenceInput,
   validateCacheOnlyStateFiles,
@@ -126,13 +98,3 @@ export {
   type CacheOnlyStateFiles,
   type CacheOnlyValidatedDocuments,
 } from "./cache-only-session.js";
-export {
-  createEmptyStateNotificationLedger,
-  createStateNotificationLedger,
-  createStateRunReport,
-  parseStateNotificationLedger,
-  serializeStateNotificationLedger,
-  serializeStateRunReport,
-  type StateNotificationLedger,
-  type StateRunReport,
-} from "./state-documents.js";

@@ -1,6 +1,7 @@
 import {
   createLabelEffectsResolver,
   type Evidence,
+  type GraphNodeId,
   type LabelRule,
   type Relation,
   type TrackedItem,
@@ -48,7 +49,7 @@ export type PublicDtoGenerationOptions = Readonly<{
   timezone: PublicSummaryDto["timezone"];
 }>;
 
-/** 永続化済みstateから公開DTOを生成する入力。 */
+/** 検証済みsnapshotから公開DTOを生成する入力。 */
 export type GeneratePublicDataInput = PagesPublicSafetyInput &
   Readonly<{
     options: PublicDtoGenerationOptions;
@@ -197,7 +198,35 @@ function createPublicGraphEdge(relation: Relation): PublicGraphEdgeDto {
   };
 }
 
+function isFreshGraphRelation(
+  relation: Relation,
+  freshItemNodeIds: ReadonlySet<string>,
+  externalReferenceNodeIds: ReadonlySet<string>,
+): boolean {
+  const fromIsFreshItem = freshItemNodeIds.has(relation.fromNodeId);
+  const toIsFreshItem = freshItemNodeIds.has(relation.toNodeId);
+  if (!fromIsFreshItem && !toIsFreshItem) {
+    return false;
+  }
+  const fromIsEligible = fromIsFreshItem || externalReferenceNodeIds.has(relation.fromNodeId);
+  const toIsEligible = toIsFreshItem || externalReferenceNodeIds.has(relation.toNodeId);
+  return fromIsEligible && toIsEligible;
+}
+
 function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
+  const repositoriesById = new Map(
+    snapshot.repositories.map((repository) => [repository.id, repository]),
+  );
+  const freshItemNodeIds = new Set<string>(
+    snapshot.items.flatMap((item) => {
+      const repository = repositoriesById.get(item.repositoryId);
+      assertNonNullable(repository, `item ${item.nodeId}のrepositoryがありません`);
+      return repository.freshness === "fresh" ? [item.nodeId] : [];
+    }),
+  );
+  const externalReferenceNodeIds = new Set<string>(
+    snapshot.externalReferences.map((reference) => reference.nodeId),
+  );
   const graphNodeIds = new Set([
     ...snapshot.items.map((item) => item.nodeId),
     ...snapshot.externalReferences.map((reference) => reference.nodeId),
@@ -210,9 +239,23 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
     }
   }
 
-  const analysisEdges = snapshot.relations.map(createAnalysisEdge);
+  const relations = snapshot.relations.filter((relation) =>
+    isFreshGraphRelation(relation, freshItemNodeIds, externalReferenceNodeIds),
+  );
+  const graphExternalReferenceNodeIds = new Set<string>(
+    relations.flatMap((relation) =>
+      [relation.fromNodeId, relation.toNodeId].filter((nodeId) =>
+        externalReferenceNodeIds.has(nodeId),
+      ),
+    ),
+  );
+  const items = snapshot.items.filter((item) => freshItemNodeIds.has(item.nodeId));
+  const externalReferences = snapshot.externalReferences.filter((reference) =>
+    graphExternalReferenceNodeIds.has(reference.nodeId),
+  );
+  const analysisEdges = relations.map(createAnalysisEdge);
   const analysisNodes: GraphAnalysisNode[] = [
-    ...snapshot.items.map((item) =>
+    ...items.map((item) =>
       Object.freeze({
         kind: item.type,
         nodeId: item.nodeId,
@@ -221,7 +264,7 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
         directNotification: "eligible",
       } satisfies GraphAnalysisNode),
     ),
-    ...snapshot.externalReferences.map((reference) =>
+    ...externalReferences.map((reference) =>
       Object.freeze({
         kind: reference.kind,
         nodeId: reference.nodeId,
@@ -240,7 +283,7 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
       availability: "unavailable",
     },
   });
-  const nodes: PublicGraphNodeDto[] = snapshot.items.map((item) => ({
+  const nodes: PublicGraphNodeDto[] = items.map((item) => ({
     nodeId: item.nodeId,
     kind: item.type,
     repositoryId: item.repositoryId,
@@ -249,7 +292,7 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
     severity: item.severity,
   }));
   nodes.push(
-    ...snapshot.externalReferences.map((reference) => ({
+    ...externalReferences.map((reference) => ({
       nodeId: reference.nodeId,
       kind: reference.kind,
       repositoryFullName: reference.repositoryFullName,
@@ -259,7 +302,7 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
       state: reference.state,
     })),
   );
-  const edges = snapshot.relations.map(createPublicGraphEdge);
+  const edges = relations.map(createPublicGraphEdge);
 
   return Object.freeze({
     analysis,
@@ -268,34 +311,36 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
   });
 }
 
-function createBlockersByNodeId(snapshot: StateSnapshot): ReadonlyMap<string, readonly string[]> {
+function createBlockersByNodeId(
+  snapshot: StateSnapshot,
+  graph: PublicGraph,
+): ReadonlyMap<string, readonly string[]> {
+  const graphNodeByNodeId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
   const itemByNodeId = new Map<string, TrackedItem>(
-    snapshot.items.map((item) => [item.nodeId, item]),
+    snapshot.items
+      .filter((item) => {
+        const graphNode = graphNodeByNodeId.get(item.nodeId);
+        return graphNode != null && graphNode.kind !== "external_reference";
+      })
+      .map((item) => [item.nodeId, item]),
   );
-  const graphStateByNodeId = new Map<string, TrackedItem["state"]>();
-  for (const item of snapshot.items) {
-    graphStateByNodeId.set(item.nodeId, item.state);
-  }
-  for (const reference of snapshot.externalReferences) {
-    graphStateByNodeId.set(reference.nodeId, reference.state);
-  }
   const blockersByNodeId = new Map<string, Set<string>>();
-  for (const relation of snapshot.relations) {
-    if (!relation.active || relation.type !== "blocks") {
+  for (const edge of graph.edges) {
+    if (!edge.active || edge.type !== "blocks") {
       continue;
     }
-    const blockerState = graphStateByNodeId.get(relation.fromNodeId);
-    const blocked = itemByNodeId.get(relation.toNodeId);
-    assertNonNullable(blockerState, `blocks relation ${relation.id}のblockerがありません`);
-    assertNonNullable(blocked, `blocks relation ${relation.id}のblocked itemがありません`);
-    if (blockerState !== "open" || blocked.state !== "open") {
+    const blocker = graphNodeByNodeId.get(edge.fromNodeId);
+    const blocked = itemByNodeId.get(edge.toNodeId);
+    assertNonNullable(blocker, `blocks relation ${edge.id}のblockerがありません`);
+    assertNonNullable(blocked, `blocks relation ${edge.id}のblocked itemがありません`);
+    if (blocker.state !== "open" || blocked.state !== "open") {
       continue;
     }
     const blockers = blockersByNodeId.get(blocked.nodeId);
     if (blockers == null) {
-      blockersByNodeId.set(blocked.nodeId, new Set([relation.fromNodeId]));
+      blockersByNodeId.set(blocked.nodeId, new Set([edge.fromNodeId]));
     } else {
-      blockers.add(relation.fromNodeId);
+      blockers.add(edge.fromNodeId);
     }
   }
   return new Map(
@@ -370,6 +415,16 @@ function createItemSummary(
     downstreamImpact: {
       ...downstreamImpact,
     },
+  };
+}
+
+function createEmptyDownstreamImpact(
+  nodeId: GraphNodeId,
+): AnalyzeGraphResult["downstreamImpacts"][number] {
+  return {
+    nodeId,
+    openNodeCount: 0,
+    repositoryCount: 0,
   };
 }
 
@@ -464,7 +519,7 @@ function latestRepositoryObservedAt(repositories: readonly SnapshotRepository[])
   );
 }
 
-/** 永続化済みsnapshotから副作用なしで公開DTOを生成する。 */
+/** 検証済みsnapshotから副作用なしで公開DTOを生成する。 */
 export function generatePublicData(input: GeneratePublicDataInput): GeneratedPublicData {
   assertPagesPublicSafety(input);
   validateOptions(input.options);
@@ -482,20 +537,25 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   const repositoriesById = new Map(
     snapshot.repositories.map((repository) => [repository.id, repository]),
   );
-  const blockersByNodeId = createBlockersByNodeId(snapshot);
+  const blockersByNodeId = createBlockersByNodeId(snapshot, graph);
   const resolveLabelEffects = createLabelEffectsResolver(input.options.labelRules);
   const impactByNodeId = new Map(
     graph.analysis.downstreamImpacts.map((impact) => [impact.nodeId, impact]),
   );
   const itemSummaries = snapshot.items.map((item) => {
     const repository = repositoriesById.get(item.repositoryId);
-    const impact = impactByNodeId.get(item.nodeId);
     assertNonNullable(repository, `item ${item.nodeId}のrepositoryがありません`);
+    const impact =
+      repository.freshness === "stale"
+        ? createEmptyDownstreamImpact(item.nodeId)
+        : impactByNodeId.get(item.nodeId);
     assertNonNullable(impact, `item ${item.nodeId}のdownstream impactがありません`);
     return createItemSummary(
       item,
       repository,
-      blockersByNodeId.get(item.nodeId) ?? Object.freeze([]),
+      repository.freshness === "stale"
+        ? Object.freeze([])
+        : (blockersByNodeId.get(item.nodeId) ?? Object.freeze([])),
       impact,
       resolveLabelEffects(`${repository.owner}/${repository.name}`, item.labels).priorityWeight,
     );

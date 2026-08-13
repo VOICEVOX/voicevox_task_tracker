@@ -79,13 +79,6 @@ export class StateZodValidationError extends StateFormatError implements ZodErro
   }
 }
 
-/** state履歴を一意に生成または再生できないことを表す。 */
-export class StateHistoryError extends StatePersistenceError {
-  public constructor(message: string) {
-    super(`state履歴を処理できません。${message}`, {});
-  }
-}
-
 /** state branchの読み取りに失敗したことを表す。 */
 export class StateBranchReadError extends StatePersistenceError {
   public constructor(options: ErrorOptions) {

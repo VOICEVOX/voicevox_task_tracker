@@ -46,11 +46,17 @@ export type TemporalBlocksNodeStateHistory = Readonly<{
       }>;
 }>;
 
+/** 復元不能なrelation mutationが影響し得るorigin item。 */
+export type TemporalBlocksLocalRelationUnknown = Readonly<{
+  originItemNodeId: GraphNodeId;
+}>;
+
 /** relation mutationの履歴入力。resolved以外は現在graphを変更しない。 */
 export type TemporalBlocksRelationHistory =
   | Readonly<{
       status: "exact";
       mutations: readonly DependencyReplayInputEvent[];
+      localUnknowns: readonly TemporalBlocksLocalRelationUnknown[];
     }>
   | Readonly<{
       status: "unknown";
@@ -253,6 +259,13 @@ const relationHistorySchema = z.discriminatedUnion("status", [
           unresolvedRelationEventSchema,
         ]),
       ),
+      localUnknowns: z.array(
+        z
+          .object({
+            originItemNodeId: nodeIdSchema,
+          })
+          .strict(),
+      ),
     })
     .strict(),
   z
@@ -378,6 +391,21 @@ function validateInput(input: TemporalBlocksGraphReplayInput): void {
         `relation mutation ${mutationIndex.toString()} の発生時刻`,
       );
     });
+    const currentNodeIds = new Set(input.current.nodes.map((node) => node.nodeId));
+    const localUnknownNodeIds = new Set<GraphNodeId>();
+    for (const localUnknown of input.relationHistory.localUnknowns) {
+      if (!currentNodeIds.has(localUnknown.originItemNodeId)) {
+        throw new TypeError(
+          `局所relation unknownが存在しないnodeを参照しています。対象: ${localUnknown.originItemNodeId}`,
+        );
+      }
+      if (localUnknownNodeIds.has(localUnknown.originItemNodeId)) {
+        throw new TypeError(
+          `局所relation unknownのorigin nodeが重複しています。対象: ${localUnknown.originItemNodeId}`,
+        );
+      }
+      localUnknownNodeIds.add(localUnknown.originItemNodeId);
+    }
   }
   for (const edge of input.current.canonicalBlocksEdges) {
     if (edge.fromNodeId === edge.toNodeId) {
@@ -431,6 +459,53 @@ function eventSignature(event: DependencyReplayInputEvent): string {
   ]);
 }
 
+function relationSourceSignature(event: DependencyReplayInputEvent): string {
+  return JSON.stringify(["relation", event.originItemNodeId, event.occurredAt, event.sequence]);
+}
+
+function compareDependencyReplayEvents(
+  left: DependencyReplayInputEvent,
+  right: DependencyReplayInputEvent,
+): -1 | 0 | 1 {
+  const occurredAtOrder = compareStrings(left.occurredAt, right.occurredAt);
+  if (occurredAtOrder !== 0) {
+    return occurredAtOrder;
+  }
+  const sequenceOrder = compareNumbers(left.sequence, right.sequence);
+  if (sequenceOrder !== 0) {
+    return sequenceOrder;
+  }
+  const sourceOrder = compareSourceIds(left.sourceId, right.sourceId);
+  if (sourceOrder !== 0) {
+    return sourceOrder;
+  }
+  const originOrder = compareStrings(left.originItemNodeId, right.originItemNodeId);
+  if (originOrder !== 0) {
+    return originOrder;
+  }
+  if (left.status !== right.status) {
+    return left.status === "resolved" ? -1 : 1;
+  }
+  if (left.status === "resolved" && right.status === "resolved") {
+    const fromOrder = compareStrings(left.fromNodeId, right.fromNodeId);
+    if (fromOrder !== 0) {
+      return fromOrder;
+    }
+    const toOrder = compareStrings(left.toNodeId, right.toNodeId);
+    if (toOrder !== 0) {
+      return toOrder;
+    }
+    return left.action === right.action ? 0 : left.action === "added" ? -1 : 1;
+  }
+  if (left.status !== "unresolved" || right.status !== "unresolved") {
+    throw new TypeError("依存関係イベントのstatusが不正です");
+  }
+  if (left.action !== right.action) {
+    return left.action === "added" ? -1 : 1;
+  }
+  return left.direction === right.direction ? 0 : left.direction === "blocked_by" ? -1 : 1;
+}
+
 function stateEpochSignature(nodeId: GraphNodeId, epoch: TemporalBlocksStateEpoch): string {
   return JSON.stringify(["state", nodeId, epoch.state, epoch.occurredAt, epoch.sequence ?? 0]);
 }
@@ -460,21 +535,15 @@ function deduplicateRelationEvents(
   events: readonly DependencyReplayInputEvent[],
   sourceSignatures: Map<SourceId, string>,
 ): readonly DependencyReplayInputEvent[] {
-  const eventsBySourceId = new Map<SourceId, DependencyReplayInputEvent>();
+  const eventsBySourceId = new Map<string, DependencyReplayInputEvent>();
   for (const event of events) {
-    mergeSourceSignatures(sourceSignatures, [[event.sourceId, eventSignature(event)]]);
-    const existing = eventsBySourceId.get(event.sourceId);
-    if (existing == null) {
-      eventsBySourceId.set(event.sourceId, event);
-      continue;
-    }
-    if (eventSignature(existing) !== eventSignature(event)) {
-      throw new TypeError(
-        `同じsource IDが異なるrelation mutationを指しています。対象: ${event.sourceId}`,
-      );
+    mergeSourceSignatures(sourceSignatures, [[event.sourceId, relationSourceSignature(event)]]);
+    const eventKey = JSON.stringify([event.sourceId, eventSignature(event)]);
+    if (!eventsBySourceId.has(eventKey)) {
+      eventsBySourceId.set(eventKey, event);
     }
   }
-  return Object.freeze([...eventsBySourceId.values()]);
+  return Object.freeze([...eventsBySourceId.values()].sort(compareDependencyReplayEvents));
 }
 
 function compareEpochSources(
@@ -1223,18 +1292,26 @@ function relationCurrentMismatch(
   const deduplicatedEvents = deduplicateRelationEvents(relationHistory.mutations, sourceSignatures);
   const replayed = replayDependencyEvents(deduplicatedEvents);
   const relationGroups = createRelationEpochGroups(deduplicatedEvents, sourceSignatures);
+  const localUnknownNodeIds = new Set(
+    relationHistory.localUnknowns.map((localUnknown) => localUnknown.originItemNodeId),
+  );
+  const isComparableEdge = (edge: DependencyReplayEdge): boolean =>
+    !localUnknownNodeIds.has(edge.fromNodeId) && !localUnknownNodeIds.has(edge.toNodeId);
   const replayedActiveEdges = replayed.relations
     .filter((relation) => relation.current.status === "active")
-    .map((relation) => relation.edge);
+    .map((relation) => relation.edge)
+    .filter(isComparableEdge);
+  const comparableCurrentEdges = currentEdges.filter(isComparableEdge);
   const hasUnknownEndpoint = deduplicatedEvents.some(
     (event) =>
       event.status === "resolved" &&
+      isComparableEdge(event) &&
       (!currentNodeIds.has(event.fromNodeId) || !currentNodeIds.has(event.toNodeId)),
   );
   return Object.freeze({
     groups: relationGroups.groups,
     unresolvedEvents: relationGroups.unresolvedEvents,
-    mismatch: hasUnknownEndpoint || !sameEdgeSet(replayedActiveEdges, currentEdges),
+    mismatch: hasUnknownEndpoint || !sameEdgeSet(replayedActiveEdges, comparableCurrentEdges),
   });
 }
 
@@ -1370,6 +1447,17 @@ function replayFacts(
   }
   for (const mark of unresolvedMarks.cycles) {
     addUnknownMark(unknownCycleMarks, mark);
+  }
+  if (input.relationHistory.status === "exact") {
+    for (const localUnknown of input.relationHistory.localUnknowns) {
+      const mark: UnknownMark = {
+        scope: "node",
+        nodeIds: [localUnknown.originItemNodeId],
+        reason: "relation_mutation_unresolved",
+      };
+      addUnknownMark(unknownNewlyUnblockedMarks, mark);
+      addUnknownMark(unknownCycleMarks, mark);
+    }
   }
 
   if (input.relationHistory.status === "unknown") {
@@ -1508,7 +1596,13 @@ function replayFacts(
         continue;
       }
       const relationUnknownForNode = [...unknownNewlyUnblockedMarks.values()].find(
-        (mark) => mark.scope === "global" || mark.nodeIds.includes(node.nodeId),
+        (mark) =>
+          mark.scope === "global" ||
+          mark.nodeIds.some(
+            (nodeId) =>
+              nodeId === node.nodeId ||
+              beforeBlockers.some((blocker) => blocker.fromNodeId === nodeId),
+          ),
       );
       if (relationUnknownForNode != null) {
         newlyUnblockedFacts.push(createUnknownFact(relationUnknownForNode));

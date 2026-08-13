@@ -79,6 +79,37 @@ export type CachedTemporalBlocksGraphInput = Readonly<{
   documents: readonly GitHubItemCacheDocument[];
 }>;
 
+/** fresh detailまたはcache文書からtemporal blocks graphへ渡す項目。 */
+export type MixedTemporalBlocksGraphItem =
+  | Readonly<{
+      kind: "fresh";
+      detail: GitHubItemDetail;
+      itemCreatedAt: UtcIsoDateTime;
+      replay: ReplayItemHistoryResult;
+    }>
+  | Readonly<{
+      kind: "cached";
+      document: GitHubItemCacheDocument;
+    }>;
+
+/** 追跡対象だけを含むと呼び出し側が保証した現在graph。 */
+export type MixedTemporalBlocksGraphCurrent = Readonly<{
+  scope: "eligible_tracked_items_only";
+  nodes: readonly TemporalBlocksCurrentNode[];
+  canonicalBlocksEdges: readonly DependencyReplayEdge[];
+}>;
+
+/** fresh detailとcache文書を混在させてtemporal blocks graphへ渡す引数。 */
+export type MixedTemporalBlocksGraphInput = Readonly<{
+  current: MixedTemporalBlocksGraphCurrent;
+  notificationHistory: Readonly<{
+    exactBlocksEdges: readonly DependencyReplayEdge[];
+    relationCandidates: readonly RelationCandidate[];
+  }>;
+  relationCandidates: readonly RelationCandidate[];
+  items: readonly MixedTemporalBlocksGraphItem[];
+}>;
+
 type RelationEventResolution =
   | Readonly<{
       status: "resolved";
@@ -99,6 +130,7 @@ type RelationEventHistory =
 
 /** 関係mutationの時刻または端点を確定できなかった診断。 */
 export type TemporalBlocksUnknownRelationMutation = Readonly<{
+  originItemNodeId: GraphNodeId;
   contentSourceId: SourceId;
   reason:
     | "connection_unavailable"
@@ -133,6 +165,7 @@ type CacheCandidateNode = Readonly<{
 }>;
 
 function createUnknownRelationMutation(
+  originItemNodeId: GraphNodeId,
   contentSourceId: SourceId,
   reason: TemporalBlocksUnknownRelationMutation["reason"],
   metadata: Readonly<{
@@ -142,12 +175,13 @@ function createUnknownRelationMutation(
   }>,
 ): TemporalBlocksUnknownRelationMutation {
   const diagnostic: {
+    originItemNodeId: GraphNodeId;
     contentSourceId: SourceId;
     reason: TemporalBlocksUnknownRelationMutation["reason"];
     sourceId?: SourceId;
     editedAt?: UtcIsoDateTime;
     sequence?: number;
-  } = { contentSourceId, reason };
+  } = { originItemNodeId, contentSourceId, reason };
   if (metadata.sourceId != null) {
     diagnostic.sourceId = metadata.sourceId;
   }
@@ -196,7 +230,31 @@ function compareDependencyEvents(
   if (sourceOrder !== 0) {
     return sourceOrder;
   }
-  return compareStrings(left.originItemNodeId, right.originItemNodeId);
+  const originOrder = compareStrings(left.originItemNodeId, right.originItemNodeId);
+  if (originOrder !== 0) {
+    return originOrder;
+  }
+  if (left.status !== right.status) {
+    return left.status === "resolved" ? -1 : 1;
+  }
+  if (left.status === "resolved" && right.status === "resolved") {
+    const fromOrder = compareStrings(left.fromNodeId, right.fromNodeId);
+    if (fromOrder !== 0) {
+      return fromOrder;
+    }
+    const toOrder = compareStrings(left.toNodeId, right.toNodeId);
+    if (toOrder !== 0) {
+      return toOrder;
+    }
+    return left.action === right.action ? 0 : left.action === "added" ? -1 : 1;
+  }
+  if (left.status !== "unresolved" || right.status !== "unresolved") {
+    throw new TypeError("依存関係イベントのstatusが不正です");
+  }
+  if (left.action !== right.action) {
+    return left.action === "added" ? -1 : 1;
+  }
+  return left.direction === right.direction ? 0 : left.direction === "blocked_by" ? -1 : 1;
 }
 
 function createSequenceMap(
@@ -239,6 +297,10 @@ function compareUnknownRelationMutations(
   left: TemporalBlocksUnknownRelationMutation,
   right: TemporalBlocksUnknownRelationMutation,
 ): -1 | 0 | 1 {
+  const originOrder = compareStrings(left.originItemNodeId, right.originItemNodeId);
+  if (originOrder !== 0) {
+    return originOrder;
+  }
   const leftEditedAt = left.editedAt;
   const rightEditedAt = right.editedAt;
   if (leftEditedAt == null && rightEditedAt != null) {
@@ -608,11 +670,17 @@ function edgeKey(edge: DependencyReplayEdge): string {
   return `${edge.fromNodeId}\u0000${edge.toNodeId}`;
 }
 
+function compareEdges(left: DependencyReplayEdge, right: DependencyReplayEdge): -1 | 0 | 1 {
+  const fromOrder = compareStrings(left.fromNodeId, right.fromNodeId);
+  return fromOrder === 0 ? compareStrings(left.toNodeId, right.toNodeId) : fromOrder;
+}
+
 function relationMutationEvent(
   originItemNodeId: GraphNodeId,
   mutation: Pick<RelationMutation, "relation" | "action" | "editedAt" | "sourceId" | "sequence">,
   endpoints: readonly RelationEndpoint[],
   canonicalEdges: readonly DependencyReplayEdge[],
+  historicalExactBlocksEdges: readonly DependencyReplayEdge[],
 ): RelationEventResolution {
   const targetNodeIds = new Set(
     endpoints
@@ -623,11 +691,18 @@ function relationMutationEvent(
       )
       .map((endpoint) => endpoint.nodeId),
   );
-  const possibleEdges = canonicalEdges.filter((edge) =>
-    edge.fromNodeId === originItemNodeId
-      ? targetNodeIds.has(edge.toNodeId)
-      : edge.toNodeId === originItemNodeId && targetNodeIds.has(edge.fromNodeId),
-  );
+  const preferredEdges =
+    mutation.action === "removed" ? historicalExactBlocksEdges : canonicalEdges;
+  const fallbackEdges = mutation.action === "removed" ? canonicalEdges : historicalExactBlocksEdges;
+  const matchingEdges = (edges: readonly DependencyReplayEdge[]): readonly DependencyReplayEdge[] =>
+    edges.filter((edge) =>
+      edge.fromNodeId === originItemNodeId
+        ? targetNodeIds.has(edge.toNodeId)
+        : edge.toNodeId === originItemNodeId && targetNodeIds.has(edge.fromNodeId),
+    );
+  const preferredMatches = matchingEdges(preferredEdges);
+  const possibleEdges =
+    preferredMatches.length === 0 ? matchingEdges(fallbackEdges) : preferredMatches;
   const edgeKeys = new Set(possibleEdges.map(edgeKey));
   if (edgeKeys.size !== 1) {
     return Object.freeze({ status: "unknown" });
@@ -651,9 +726,11 @@ function relationMutationEvent(
   });
 }
 
-function relationMutationSourceIsSupported(contentSourceId: SourceId): boolean {
+function assertRelationMutationSourceKind(contentSourceId: SourceId): void {
   const kind = parseSourceId(contentSourceId).kind;
-  return kind === "github_item_body" || kind === "github_issue_comment";
+  if (kind !== "github_item_body" && kind !== "github_issue_comment") {
+    throw new TypeError(`relation mutationのcontent source kindが不正です。対象: ${kind}`);
+  }
 }
 
 function createRelationMutationHistory(
@@ -661,26 +738,30 @@ function createRelationMutationHistory(
   results: readonly FreshRelationMutationResult[],
   endpoints: readonly RelationEndpoint[],
   canonicalEdges: readonly DependencyReplayEdge[],
+  historicalExactBlocksEdges: readonly DependencyReplayEdge[],
   unknownRelationMutations: TemporalBlocksUnknownRelationMutation[],
 ): RelationEventHistory {
   const events: DependencyReplayInputEvent[] = [];
   for (const sourceResult of results) {
-    if (sourceResult.kind !== "item_body" && sourceResult.kind !== "issue_comment") {
-      continue;
-    }
     if (sourceResult.result.status !== "available") {
       unknownRelationMutations.push(
-        createUnknownRelationMutation(sourceResult.contentSourceId, sourceResult.result.reason, {
-          sourceId: sourceResult.result.sourceId ?? null,
-          editedAt: sourceResult.result.editedAt ?? null,
-          sequence: sourceResult.result.sequence ?? null,
-        }),
+        createUnknownRelationMutation(
+          originItemNodeId,
+          sourceResult.contentSourceId,
+          sourceResult.result.reason,
+          {
+            sourceId: sourceResult.result.sourceId ?? null,
+            editedAt: sourceResult.result.editedAt ?? null,
+            sequence: sourceResult.result.sequence ?? null,
+          },
+        ),
       );
       continue;
     }
     if (sourceResult.result.temporalKnowledge.status !== "exact") {
       unknownRelationMutations.push(
         createUnknownRelationMutation(
+          originItemNodeId,
           sourceResult.contentSourceId,
           sourceResult.result.temporalKnowledge.reason,
           { sourceId: null, editedAt: null, sequence: null },
@@ -689,10 +770,17 @@ function createRelationMutationHistory(
       continue;
     }
     for (const mutation of sourceResult.result.mutations) {
-      const resolved = relationMutationEvent(originItemNodeId, mutation, endpoints, canonicalEdges);
+      const resolved = relationMutationEvent(
+        originItemNodeId,
+        mutation,
+        endpoints,
+        canonicalEdges,
+        historicalExactBlocksEdges,
+      );
       if (resolved.status === "unknown") {
         unknownRelationMutations.push(
           createUnknownRelationMutation(
+            originItemNodeId,
             sourceResult.contentSourceId,
             "relation_endpoint_unavailable",
             {
@@ -715,20 +803,15 @@ function createCachedRelationMutationHistory(
   results: readonly CachedRelationMutationResult[],
   endpoints: readonly RelationEndpoint[],
   canonicalEdges: readonly DependencyReplayEdge[],
+  historicalExactBlocksEdges: readonly DependencyReplayEdge[],
   unknownRelationMutations: TemporalBlocksUnknownRelationMutation[],
 ): RelationEventHistory {
   const events: DependencyReplayInputEvent[] = [];
   for (const result of results) {
-    if (!relationMutationSourceIsSupported(result.contentSourceId)) {
-      const kind = parseSourceId(result.contentSourceId).kind;
-      if (kind === "github_pull_request_review_comment") {
-        continue;
-      }
-      continue;
-    }
+    assertRelationMutationSourceKind(result.contentSourceId);
     if (result.status !== "available") {
       unknownRelationMutations.push(
-        createUnknownRelationMutation(result.contentSourceId, result.reason, {
+        createUnknownRelationMutation(originItemNodeId, result.contentSourceId, result.reason, {
           sourceId: result.sourceId ?? null,
           editedAt: result.editedAt ?? null,
           sequence: result.sequence ?? null,
@@ -738,23 +821,39 @@ function createCachedRelationMutationHistory(
     }
     if (result.temporalKnowledge.status !== "exact") {
       unknownRelationMutations.push(
-        createUnknownRelationMutation(result.contentSourceId, result.temporalKnowledge.reason, {
-          sourceId: null,
-          editedAt: null,
-          sequence: null,
-        }),
+        createUnknownRelationMutation(
+          originItemNodeId,
+          result.contentSourceId,
+          result.temporalKnowledge.reason,
+          {
+            sourceId: null,
+            editedAt: null,
+            sequence: null,
+          },
+        ),
       );
       continue;
     }
     for (const mutation of result.mutations) {
-      const resolved = relationMutationEvent(originItemNodeId, mutation, endpoints, canonicalEdges);
+      const resolved = relationMutationEvent(
+        originItemNodeId,
+        mutation,
+        endpoints,
+        canonicalEdges,
+        historicalExactBlocksEdges,
+      );
       if (resolved.status === "unknown") {
         unknownRelationMutations.push(
-          createUnknownRelationMutation(result.contentSourceId, "relation_endpoint_unavailable", {
-            sourceId: mutation.sourceId,
-            editedAt: mutation.editedAt,
-            sequence: mutation.sequence,
-          }),
+          createUnknownRelationMutation(
+            originItemNodeId,
+            result.contentSourceId,
+            "relation_endpoint_unavailable",
+            {
+              sourceId: mutation.sourceId,
+              editedAt: mutation.editedAt,
+              sequence: mutation.sequence,
+            },
+          ),
         );
         continue;
       }
@@ -768,11 +867,9 @@ function createRelationEndpoints(
   candidates: readonly RelationCandidate[],
 ): readonly RelationEndpoint[] {
   return Object.freeze(
-    candidates
-      .filter((candidate) => candidate.relation.type === "blocks")
-      .flatMap((candidate) =>
-        relationNodes(candidate.relation).map((node) => relationNodeReference(node)),
-      ),
+    candidates.flatMap((candidate) =>
+      relationNodes(candidate.relation).map((node) => relationNodeReference(node)),
+    ),
   );
 }
 
@@ -780,27 +877,95 @@ function createCacheRelationEndpoints(
   candidates: readonly GitHubItemCacheRelationCandidate[],
 ): readonly RelationEndpoint[] {
   return Object.freeze(
-    candidates
-      .filter((candidate) => candidate.relation.type === "blocks")
-      .flatMap((candidate) =>
-        cacheRelationNodes(candidate.relation).map((node) => cacheRelationNodeReference(node)),
-      ),
+    candidates.flatMap((candidate) =>
+      cacheRelationNodes(candidate.relation).map((node) => cacheRelationNodeReference(node)),
+    ),
   );
+}
+
+function relationSourceSignature(event: DependencyReplayInputEvent): string {
+  return JSON.stringify(["relation", event.originItemNodeId, event.occurredAt, event.sequence]);
+}
+
+function relationEventSignature(event: DependencyReplayInputEvent): string {
+  if (event.status === "resolved") {
+    return JSON.stringify([
+      event.status,
+      event.sourceId,
+      event.originItemNodeId,
+      event.fromNodeId,
+      event.toNodeId,
+      event.action,
+      event.occurredAt,
+      event.sequence,
+    ]);
+  }
+  return JSON.stringify([
+    event.status,
+    event.sourceId,
+    event.originItemNodeId,
+    event.direction,
+    event.action,
+    event.occurredAt,
+    event.sequence,
+    event.reason,
+  ]);
 }
 
 function mergeRelationHistories(
   histories: readonly RelationEventHistory[],
+  unknownRelationMutations: readonly TemporalBlocksUnknownRelationMutation[],
 ): TemporalBlocksGraphReplayInput["relationHistory"] {
+  const sourceSignatures = new Map<SourceId, string>();
+  const sourceActionsByEdge = new Map<SourceId, Map<string, "added" | "removed">>();
+  const eventsBySignature = new Map<string, DependencyReplayInputEvent>();
+  for (const history of histories) {
+    if (history.status !== "exact") {
+      continue;
+    }
+    for (const event of history.events) {
+      const sourceSignature = relationSourceSignature(event);
+      const existingSourceSignature = sourceSignatures.get(event.sourceId);
+      if (existingSourceSignature != null && existingSourceSignature !== sourceSignature) {
+        throw new TypeError(
+          `同じsource IDが異なる関係イベントを指しています。対象: ${event.sourceId}`,
+        );
+      }
+      sourceSignatures.set(event.sourceId, sourceSignature);
+      if (event.status === "resolved") {
+        const edgeActions =
+          sourceActionsByEdge.get(event.sourceId) ?? new Map<string, "added" | "removed">();
+        const key = edgeKey(event);
+        const existingAction = edgeActions.get(key);
+        if (existingAction != null && existingAction !== event.action) {
+          throw new TypeError(
+            `同じsource IDの同じedgeでactionが衝突しています。対象: ${event.sourceId}`,
+          );
+        }
+        edgeActions.set(key, event.action);
+        sourceActionsByEdge.set(event.sourceId, edgeActions);
+      }
+      const eventSignature = relationEventSignature(event);
+      if (!eventsBySignature.has(eventSignature)) {
+        eventsBySignature.set(eventSignature, event);
+      }
+    }
+  }
+  const events = [...eventsBySignature.values()].sort(compareDependencyEvents);
   if (histories.some((history) => history.status === "unknown")) {
     return Object.freeze({
       status: "unknown",
       reason: "history_unavailable",
     });
   }
-  const events = histories.flatMap((history) => (history.status === "exact" ? history.events : []));
   return Object.freeze({
     status: "exact",
-    mutations: Object.freeze([...events].sort(compareDependencyEvents)),
+    mutations: Object.freeze(events),
+    localUnknowns: Object.freeze(
+      [...new Set(unknownRelationMutations.map((mutation) => mutation.originItemNodeId))]
+        .sort(compareStrings)
+        .map((originItemNodeId) => Object.freeze({ originItemNodeId })),
+    ),
   });
 }
 
@@ -816,109 +981,244 @@ function assertUniqueStateHistoryNodes(histories: readonly TemporalBlocksNodeSta
   }
 }
 
-function createFreshInput(
-  input: FreshTemporalBlocksGraphInput,
-): TemporalBlocksGraphReplayAdapterResult {
-  const stateHistories: TemporalBlocksNodeStateHistory[] = [];
-  const relationHistories: RelationEventHistory[] = [];
-  const unknownRelationMutations: TemporalBlocksUnknownRelationMutation[] = [];
-  const endpoints = createRelationEndpoints(input.relationCandidates);
-  const stateHistoryNodeIds = new Set<GraphNodeId>();
-  for (const item of input.items) {
-    if (stateHistoryNodeIds.has(item.detail.nodeId)) {
-      throw new TypeError(`fresh detailのnode IDが重複しています。対象: ${item.detail.nodeId}`);
+type TemporalBlocksGraphCurrent = Readonly<{
+  nodes: readonly TemporalBlocksCurrentNode[];
+  canonicalBlocksEdges: readonly DependencyReplayEdge[];
+}>;
+
+function validateCurrentGraph(current: TemporalBlocksGraphCurrent): void {
+  const nodeIds = new Set<GraphNodeId>();
+  for (const node of current.nodes) {
+    if (nodeIds.has(node.nodeId)) {
+      throw new TypeError(
+        `temporal blocks graphのcurrent nodeが重複しています。対象: ${node.nodeId}`,
+      );
     }
-    stateHistoryNodeIds.add(item.detail.nodeId);
-    assertCurrentState(input.current.nodes, item.detail.nodeId, item.replay.currentState);
-    const sequences = createSequenceMap(item.detail.timeline);
-    stateHistories.push(mapStateHistory(item.detail.nodeId, item.replay, sequences));
-    relationHistories.push({
-      status: "exact",
-      events: adaptFreshDependencyEvents(item.detail.nodeId, item.detail.timeline),
-    });
-    const mutationResults = [
-      adaptGitHubRelationMutationSource({
-        kind: "item_body",
-        contentSourceId: item.detail.bodySourceId,
-        contentCreatedAt: item.itemCreatedAt,
-        currentMarkdown: item.detail.body,
-        history: item.detail.bodyUserContentEdits,
-      }),
-      ...item.detail.comments.map((comment) =>
-        adaptGitHubRelationMutationSource({
-          kind: "issue_comment",
-          contentSourceId: comment.sourceId,
-          contentCreatedAt: comment.createdAt,
-          currentMarkdown: comment.body,
-          history: comment.userContentEdits,
-        }),
-      ),
-    ];
-    const mutationHistory = createRelationMutationHistory(
-      item.detail.nodeId,
-      mutationResults,
-      endpoints,
-      input.current.canonicalBlocksEdges,
-      unknownRelationMutations,
-    );
-    relationHistories.push(mutationHistory);
+    nodeIds.add(node.nodeId);
   }
-  assertUniqueStateHistoryNodes(stateHistories);
-  const sortedUnknownRelationMutations = Object.freeze(
-    [...unknownRelationMutations].sort(compareUnknownRelationMutations),
-  );
+  const edgeKeys = new Set<string>();
+  for (const edge of current.canonicalBlocksEdges) {
+    if (!nodeIds.has(edge.fromNodeId) || !nodeIds.has(edge.toNodeId)) {
+      throw new TypeError("temporal blocks graphのcurrent edgeが存在しないnodeを参照しています");
+    }
+    if (edge.fromNodeId === edge.toNodeId) {
+      throw new TypeError("temporal blocks graphのcurrent edgeは同じnodeを接続できません");
+    }
+    const key = edgeKey(edge);
+    if (edgeKeys.has(key)) {
+      throw new TypeError(`temporal blocks graphのcurrent edgeが重複しています。対象: ${key}`);
+    }
+    edgeKeys.add(key);
+  }
+}
+
+function assertMixedCurrentScope(scope: unknown): asserts scope is "eligible_tracked_items_only" {
+  if (scope !== "eligible_tracked_items_only") {
+    throw new TypeError("temporal blocks graphのcurrent scopeが不正です");
+  }
+}
+
+function normalizeMixedCurrent(
+  current: MixedTemporalBlocksGraphCurrent,
+): TemporalBlocksGraphCurrent {
+  assertMixedCurrentScope(current.scope);
+  validateCurrentGraph(current);
   return Object.freeze({
-    input: Object.freeze({
-      current: input.current,
-      nodeStateHistories: Object.freeze(stateHistories),
-      relationHistory: mergeRelationHistories(relationHistories),
-    }),
-    unknownRelationMutations: sortedUnknownRelationMutations,
+    nodes: Object.freeze(
+      [...current.nodes].sort((left, right) => compareStrings(left.nodeId, right.nodeId)),
+    ),
+    canonicalBlocksEdges: Object.freeze([...current.canonicalBlocksEdges].sort(compareEdges)),
   });
 }
 
-function createCacheInput(
-  input: CachedTemporalBlocksGraphInput,
+function assertUniqueInputEventSources(sources: readonly TemporalBlocksGraphSource[]): void {
+  const sourceIds = new Set<SourceId>();
+  const addSourceId = (sourceId: SourceId): void => {
+    if (sourceIds.has(sourceId)) {
+      throw new TypeError(`同じsource IDのイベントが重複しています。対象: ${sourceId}`);
+    }
+    sourceIds.add(sourceId);
+  };
+  for (const source of sources) {
+    if (source.kind === "fresh") {
+      for (const event of source.detail.timeline) {
+        addSourceId(event.sourceId);
+      }
+      continue;
+    }
+    if (source.document.history.status === "complete") {
+      for (const event of source.document.history.events) {
+        addSourceId(event.sourceId);
+      }
+    }
+  }
+}
+
+type TemporalBlocksGraphSource = MixedTemporalBlocksGraphItem;
+
+function createGraphInput(
+  current: TemporalBlocksGraphCurrent,
+  historicalExactBlocksEdges: readonly DependencyReplayEdge[],
+  relationCandidates: readonly RelationCandidate[],
+  historicalExactRelationCandidates: readonly RelationCandidate[],
+  cacheRelationCandidates: readonly GitHubItemCacheRelationCandidate[],
+  sources: readonly TemporalBlocksGraphSource[],
 ): TemporalBlocksGraphReplayAdapterResult {
   const stateHistories: TemporalBlocksNodeStateHistory[] = [];
   const relationHistories: RelationEventHistory[] = [];
   const unknownRelationMutations: TemporalBlocksUnknownRelationMutation[] = [];
-  const candidates = input.documents.flatMap((document) => document.relationCandidates);
-  const endpoints = createCacheRelationEndpoints(candidates);
+  const endpoints = Object.freeze([
+    ...createRelationEndpoints(relationCandidates),
+    ...createRelationEndpoints(historicalExactRelationCandidates),
+    ...createCacheRelationEndpoints(cacheRelationCandidates),
+  ]);
+  assertUniqueInputEventSources(sources);
   const stateHistoryNodeIds = new Set<GraphNodeId>();
-  for (const document of input.documents) {
-    if (stateHistoryNodeIds.has(document.nodeId)) {
-      throw new TypeError(`cache itemのnode IDが重複しています。対象: ${document.nodeId}`);
+  for (const source of sources) {
+    if (source.kind === "fresh") {
+      if (stateHistoryNodeIds.has(source.detail.nodeId)) {
+        throw new TypeError(
+          `temporal blocks graphのfresh item node IDが重複しています。対象: ${source.detail.nodeId}`,
+        );
+      }
+      stateHistoryNodeIds.add(source.detail.nodeId);
+      assertCurrentState(current.nodes, source.detail.nodeId, source.replay.currentState);
+      const sequences = createSequenceMap(source.detail.timeline);
+      stateHistories.push(mapStateHistory(source.detail.nodeId, source.replay, sequences));
+      relationHistories.push({
+        status: "exact",
+        events: adaptFreshDependencyEvents(source.detail.nodeId, source.detail.timeline),
+      });
+      const mutationResults = [
+        adaptGitHubRelationMutationSource({
+          kind: "item_body",
+          contentSourceId: source.detail.bodySourceId,
+          contentCreatedAt: source.itemCreatedAt,
+          currentMarkdown: source.detail.body,
+          history: source.detail.bodyUserContentEdits,
+        }),
+        ...source.detail.comments.map((comment) =>
+          adaptGitHubRelationMutationSource({
+            kind: "issue_comment",
+            contentSourceId: comment.sourceId,
+            contentCreatedAt: comment.createdAt,
+            currentMarkdown: comment.body,
+            history: comment.userContentEdits,
+          }),
+        ),
+      ];
+      relationHistories.push(
+        createRelationMutationHistory(
+          source.detail.nodeId,
+          mutationResults,
+          endpoints,
+          current.canonicalBlocksEdges,
+          historicalExactBlocksEdges,
+          unknownRelationMutations,
+        ),
+      );
+      continue;
     }
-    stateHistoryNodeIds.add(document.nodeId);
-    assertCurrentState(input.current.nodes, document.nodeId, document.replay.currentState);
+
+    if (stateHistoryNodeIds.has(source.document.nodeId)) {
+      throw new TypeError(
+        `temporal blocks graphのcache item node IDが重複しています。対象: ${source.document.nodeId}`,
+      );
+    }
+    stateHistoryNodeIds.add(source.document.nodeId);
+    assertCurrentState(current.nodes, source.document.nodeId, source.document.replay.currentState);
     const sequences = createSequenceMap(
-      document.history.status === "complete" ? document.history.events : [],
+      source.document.history.status === "complete" ? source.document.history.events : [],
     );
-    stateHistories.push(mapCacheStateHistory(document, sequences));
-    relationHistories.push(adaptCacheDependencyEvents(document.nodeId, document.history));
+    stateHistories.push(mapCacheStateHistory(source.document, sequences));
+    relationHistories.push(
+      adaptCacheDependencyEvents(source.document.nodeId, source.document.history),
+    );
     relationHistories.push(
       createCachedRelationMutationHistory(
-        document.nodeId,
-        document.relationMutations,
+        source.document.nodeId,
+        source.document.relationMutations,
         endpoints,
-        input.current.canonicalBlocksEdges,
+        current.canonicalBlocksEdges,
+        historicalExactBlocksEdges,
         unknownRelationMutations,
       ),
     );
   }
   assertUniqueStateHistoryNodes(stateHistories);
+  const sortedStateHistories = Object.freeze(
+    [...stateHistories].sort((left, right) => compareStrings(left.nodeId, right.nodeId)),
+  );
   const sortedUnknownRelationMutations = Object.freeze(
     [...unknownRelationMutations].sort(compareUnknownRelationMutations),
   );
   return Object.freeze({
     input: Object.freeze({
-      current: input.current,
-      nodeStateHistories: Object.freeze(stateHistories),
-      relationHistory: mergeRelationHistories(relationHistories),
+      current,
+      nodeStateHistories: sortedStateHistories,
+      relationHistory: mergeRelationHistories(relationHistories, sortedUnknownRelationMutations),
     }),
     unknownRelationMutations: sortedUnknownRelationMutations,
   });
+}
+
+function createFreshSource(item: FreshTemporalBlocksItem): MixedTemporalBlocksGraphItem {
+  return Object.freeze({
+    kind: "fresh",
+    detail: item.detail,
+    itemCreatedAt: item.itemCreatedAt,
+    replay: item.replay,
+  });
+}
+
+function createCachedSource(document: GitHubItemCacheDocument): MixedTemporalBlocksGraphItem {
+  return Object.freeze({ kind: "cached", document });
+}
+
+function createFreshInput(
+  input: FreshTemporalBlocksGraphInput,
+): TemporalBlocksGraphReplayAdapterResult {
+  validateCurrentGraph(input.current);
+  return createGraphInput(
+    input.current,
+    [],
+    input.relationCandidates,
+    [],
+    [],
+    input.items.map(createFreshSource),
+  );
+}
+
+function createCacheInput(
+  input: CachedTemporalBlocksGraphInput,
+): TemporalBlocksGraphReplayAdapterResult {
+  const candidates = input.documents.flatMap((document) => document.relationCandidates);
+  validateCurrentGraph(input.current);
+  return createGraphInput(
+    input.current,
+    [],
+    [],
+    [],
+    candidates,
+    input.documents.map(createCachedSource),
+  );
+}
+
+function createMixedInput(
+  input: MixedTemporalBlocksGraphInput,
+): TemporalBlocksGraphReplayAdapterResult {
+  const current = normalizeMixedCurrent(input.current);
+  const cacheRelationCandidates = input.items.flatMap((item) =>
+    item.kind === "cached" ? item.document.relationCandidates : [],
+  );
+  return createGraphInput(
+    current,
+    input.notificationHistory.exactBlocksEdges,
+    input.relationCandidates,
+    input.notificationHistory.relationCandidates,
+    cacheRelationCandidates,
+    input.items,
+  );
 }
 
 /** fresh GitHub detailからtemporal blocks graph replay入力を正規化する。 */
@@ -933,4 +1233,11 @@ export function adaptCachedTemporalBlocksGraph(
   input: CachedTemporalBlocksGraphInput,
 ): TemporalBlocksGraphReplayAdapterResult {
   return createCacheInput(input);
+}
+
+/** fresh detailとcache文書を一つのtemporal blocks graph replay入力へ正規化する。 */
+export function adaptMixedTemporalBlocksGraph(
+  input: MixedTemporalBlocksGraphInput,
+): TemporalBlocksGraphReplayAdapterResult {
+  return createMixedInput(input);
 }

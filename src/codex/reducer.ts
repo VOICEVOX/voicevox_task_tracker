@@ -27,7 +27,10 @@ import {
   type CodexConfidenceThresholds,
 } from "./confidence.js";
 import { type CodexAnalysisInput } from "./input.js";
-import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
+import {
+  type SchemaValidCodexAnalysisOutput,
+  type ValidatedCodexAnalysisOutput,
+} from "./output-types.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
 import {
   listNativeRelationConstraints,
@@ -332,7 +335,12 @@ function validateDecision(value: DeterministicCodexDecision): void {
   }
 }
 
-function effectiveStateConfidence(output: ValidatedCodexAnalysisOutput): number {
+type ImportanceSelectableCodexOutput = Pick<
+  SchemaValidCodexAnalysisOutput,
+  "confidence" | "importance" | "waitingOn"
+>;
+
+function effectiveStateConfidence(output: ImportanceSelectableCodexOutput): number {
   let confidence = output.confidence;
   for (const waitingOn of output.waitingOn) {
     confidence = Math.min(confidence, waitingOn.confidence);
@@ -374,7 +382,7 @@ function createUnavailableImportanceAssessment(): NaturalLanguageImportanceAsses
 }
 
 function createImportanceAssessment(
-  output: ValidatedCodexAnalysisOutput,
+  output: ImportanceSelectableCodexOutput,
   classification: CodexConfidenceClassification,
 ): NaturalLanguageImportanceAssessmentState {
   if (classification.level === "low") {
@@ -389,6 +397,17 @@ function createImportanceAssessment(
       rationale: output.importance.rationale,
     }),
   });
+}
+
+/** reducerと同じconfidence規則で自然言語重要度の採用可否を決める。 */
+export function selectCodexImportanceAssessment(
+  output: ImportanceSelectableCodexOutput,
+  confidenceThresholds: CodexConfidenceThresholds,
+): NaturalLanguageImportanceAssessmentState {
+  return createImportanceAssessment(
+    output,
+    classifyCodexConfidence(effectiveStateConfidence(output), confidenceThresholds),
+  );
 }
 
 function createCodexNotification(
@@ -480,7 +499,7 @@ function reduceValidatedCodexAnalysis(
 ): CodexAnalysisReduction {
   const stateConfidence = effectiveStateConfidence(output);
   const classification = classifyCodexConfidence(stateConfidence, confidenceThresholds);
-  const importanceAssessment = createImportanceAssessment(output, classification);
+  const importanceAssessment = selectCodexImportanceAssessment(output, confidenceThresholds);
   const relationAssessments = createRelationAssessments(output);
   const completeCoverage = Object.freeze({
     status: "complete",

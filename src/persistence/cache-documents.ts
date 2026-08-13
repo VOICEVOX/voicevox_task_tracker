@@ -811,6 +811,14 @@ const aiCacheReferenceSchema = z.discriminatedUnion("status", [
   }),
 ]);
 
+const latestImportanceAiCacheReferenceSchema = z.strictObject({
+  status: z.literal("available"),
+  cacheKey: sha256HashSchema,
+  sourceHash: sha256HashSchema,
+  inputHash: sha256HashSchema,
+  identityHash: sha256HashSchema,
+});
+
 const cacheAiAnalysisStatusSchema = z.enum([
   "used",
   "failed",
@@ -885,7 +893,7 @@ const aiLatestImportanceCacheSchema = z.strictObject({
   nodeId: githubNodeIdSchema,
   importance: latestImportanceSchema,
   confidence: z.number().min(0).max(1),
-  aiCacheReference: aiCacheReferenceSchema,
+  aiCacheReference: latestImportanceAiCacheReferenceSchema,
   metadata: aiMetadataSchema,
 });
 
@@ -901,6 +909,9 @@ type ParsedCacheItemIndex = z.output<typeof cacheItemIndexSchema>;
 type ParsedCacheTemporalEvent = z.output<typeof cacheTemporalEventSchema>;
 type ParsedCacheHistory = z.output<typeof cacheHistorySchema>;
 type ParsedAiCacheReference = z.output<typeof aiCacheReferenceSchema>;
+type ParsedLatestImportanceAiCacheReference = z.output<
+  typeof latestImportanceAiCacheReferenceSchema
+>;
 type ParsedCacheRelationCandidate = z.output<typeof cacheRelationCandidateSchema>;
 type ParsedCacheNormalizedEvent = z.output<typeof cacheNormalizedEventSchema>;
 type ParsedCacheRelationReference = z.output<typeof cacheRelationReferenceSchema>;
@@ -945,6 +956,9 @@ export type { CodexCacheValidationContext } from "../codex/semantic-validation.j
 
 /** 完全一致AI cacheへの参照または利用不能状態。 */
 export type AiCacheReference = ParsedAiCacheReference;
+
+/** latest importance専用のgraph非依存AI cache参照。 */
+export type LatestImportanceAiCacheReference = ParsedLatestImportanceAiCacheReference;
 
 /** キャッシュ文書の公開検証へ渡す秘密値一覧。 */
 export type CacheDocumentSafetyInput = Readonly<{
@@ -1131,6 +1145,40 @@ function assertSourceIdList(
     if (previous != null && compareStrings(previous, sourceId) >= 0) {
       throw new CacheDocumentSemanticError(`${context}のsource IDが決定的な順序で並んでいません`);
     }
+  }
+}
+
+function assertRelationIntervalSourceIdList(
+  sourceIds: readonly SourceId[],
+  context: string,
+  relationKey: string,
+  occurredAt: UtcIsoDateTime,
+  seenSourceIds: Map<SourceId, Readonly<{ relationKey: string; occurredAt: UtcIsoDateTime }>>,
+): void {
+  if (sourceIds.length === 0) {
+    throw new CacheDocumentSemanticError(`${context}のsource IDが空です`);
+  }
+  for (let index = 0; index < sourceIds.length; index += 1) {
+    const sourceId = sourceIds[index];
+    if (sourceId == null) {
+      throw new CacheDocumentSemanticError(`${context}のsource IDがありません`);
+    }
+    const previous = sourceIds[index - 1];
+    if (previous != null && compareStrings(previous, sourceId) >= 0) {
+      throw new CacheDocumentSemanticError(`${context}のsource IDが決定的な順序で並んでいません`);
+    }
+    const existing = seenSourceIds.get(sourceId);
+    if (existing != null) {
+      if (existing.relationKey === relationKey && existing.occurredAt === occurredAt) {
+        throw new CacheDocumentSemanticError(`${context}のsource IDが重複しています`);
+      }
+      if (existing.occurredAt !== occurredAt) {
+        throw new CacheDocumentSemanticError(
+          "relation intervalのsource IDが異なる時刻を指しています",
+        );
+      }
+    }
+    seenSourceIds.set(sourceId, { relationKey, occurredAt });
   }
 }
 
@@ -1786,13 +1834,55 @@ function compareRelationMutations(
   return compareStrings(left.action, right.action);
 }
 
+interface RelationMutationSourceOccurrence {
+  contentSourceId: SourceId;
+  editedAt: UtcIsoDateTime;
+  sequence: number;
+  relationKey: string | null;
+  action: "added" | "removed" | null;
+}
+
+function registerRelationMutationSource(
+  candidate: Readonly<{
+    sourceId: SourceId;
+    contentSourceId: SourceId;
+    editedAt: UtcIsoDateTime;
+    sequence: number;
+    relationKey: string | null;
+    action: "added" | "removed" | null;
+  }>,
+  seenSourceIds: Map<SourceId, RelationMutationSourceOccurrence[]>,
+): void {
+  const occurrences = seenSourceIds.get(candidate.sourceId) ?? [];
+  for (const occurrence of occurrences) {
+    if (
+      occurrence.contentSourceId !== candidate.contentSourceId ||
+      occurrence.editedAt !== candidate.editedAt ||
+      occurrence.sequence !== candidate.sequence
+    ) {
+      throw new CacheDocumentSemanticError(
+        "relation mutationのsource IDが異なる編集を指しています",
+      );
+    }
+    if (
+      occurrence.relationKey == null ||
+      candidate.relationKey == null ||
+      (occurrence.relationKey === candidate.relationKey && occurrence.action === candidate.action)
+    ) {
+      throw new CacheDocumentSemanticError("relation mutationのedgeとactionが重複しています");
+    }
+  }
+  occurrences.push(candidate);
+  seenSourceIds.set(candidate.sourceId, occurrences);
+}
+
 function assertRelationMutationList(
   candidates: readonly ParsedCacheRelationMutation[],
   contentSourceId: SourceId,
   createdAt: UtcIsoDateTime,
   observedAt: UtcIsoDateTime,
   context: string,
-  seenSourceIds: Set<SourceId>,
+  seenSourceIds: Map<SourceId, RelationMutationSourceOccurrence[]>,
 ): void {
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index];
@@ -1802,10 +1892,14 @@ function assertRelationMutationList(
     if (candidate.contentSourceId !== contentSourceId) {
       throw new CacheDocumentSemanticError("relation mutationのcontent source IDが一致しません");
     }
-    if (seenSourceIds.has(candidate.sourceId)) {
-      throw new CacheDocumentSemanticError("relation mutationのsource IDが重複しています");
-    }
-    seenSourceIds.add(candidate.sourceId);
+    registerRelationMutationSource(
+      {
+        ...candidate,
+        relationKey: relationReferenceKey(candidate.relation),
+        action: candidate.action,
+      },
+      seenSourceIds,
+    );
     assertTimestampRange(candidate.editedAt, createdAt, observedAt, `${context}.editedAt`);
     const previous = candidates[index - 1];
     if (previous != null && compareRelationMutations(previous, candidate) > 0) {
@@ -1826,7 +1920,10 @@ function assertRelationIntervals(
   const currentReferenceKeys = new Set(currentReferences.map(relationReferenceKey));
   const finalActiveReferenceKeys = new Set<string>();
   const intervalsByReference = new Map<string, ParsedCacheRelationInterval[]>();
-  const intervalSourceIds = new Set<SourceId>();
+  const intervalSourceIds = new Map<
+    SourceId,
+    Readonly<{ relationKey: string; occurredAt: UtcIsoDateTime }>
+  >();
   const allRemovalMutations = [...mutations, ...unmatchedRemovals].filter(
     (mutation) => mutation.action === "removed",
   );
@@ -1835,13 +1932,15 @@ function assertRelationIntervals(
     if (interval == null) {
       throw new CacheDocumentSemanticError("relation intervalがありません");
     }
-    assertSourceIdList(
+    const relationKey = relationReferenceKey(interval.relation);
+    assertRelationIntervalSourceIdList(
       interval.addedSourceIds,
       "relation intervalのaddedSourceIds",
+      relationKey,
+      interval.addedAt,
       intervalSourceIds,
     );
     assertTimestampRange(interval.addedAt, createdAt, observedAt, "relation interval.addedAt");
-    const relationKey = relationReferenceKey(interval.relation);
     const previous = intervals[index - 1];
     if (
       previous != null &&
@@ -1870,9 +1969,11 @@ function assertRelationIntervals(
       if (previousReferenceInterval?.status === "removed") {
         throw new CacheDocumentSemanticError("removed relation intervalが重複しています");
       }
-      assertSourceIdList(
+      assertRelationIntervalSourceIdList(
         interval.removedSourceIds,
         "relation intervalのremovedSourceIds",
+        relationKey,
+        interval.removedAt,
         intervalSourceIds,
       );
       assertTimestampRange(
@@ -1947,11 +2048,17 @@ function assertCacheRelationMutations(
   observedAt: UtcIsoDateTime,
 ): void {
   const contentSourceIds = new Set<SourceId>();
-  const mutationSourceIds = new Set<SourceId>();
+  const mutationSourceIds = new Map<SourceId, RelationMutationSourceOccurrence[]>();
   for (let index = 0; index < mutations.length; index += 1) {
     const mutation = mutations[index];
     if (mutation == null) {
       throw new CacheDocumentSemanticError("relation mutationがありません");
+    }
+    const contentSourceKind = parseSourceId(mutation.contentSourceId).kind;
+    if (contentSourceKind !== "github_item_body" && contentSourceKind !== "github_issue_comment") {
+      throw new CacheDocumentSemanticError(
+        "relation mutationのcontent source kindがrelation対象外です",
+      );
     }
     if (contentSourceIds.has(mutation.contentSourceId)) {
       throw new CacheDocumentSemanticError("relation mutationのcontent source IDが重複しています");
@@ -1979,10 +2086,20 @@ function assertCacheRelationMutations(
         );
       }
       if (mutation.sourceId != null) {
-        if (mutationSourceIds.has(mutation.sourceId)) {
-          throw new CacheDocumentSemanticError("relation mutationのsource IDが重複しています");
+        if (mutation.editedAt == null || mutation.sequence == null) {
+          throw new CacheDocumentSemanticError("unknown relation mutationの編集根拠が不完全です");
         }
-        mutationSourceIds.add(mutation.sourceId);
+        registerRelationMutationSource(
+          {
+            sourceId: mutation.sourceId,
+            contentSourceId: mutation.contentSourceId,
+            editedAt: mutation.editedAt,
+            sequence: mutation.sequence,
+            relationKey: null,
+            action: null,
+          },
+          mutationSourceIds,
+        );
       }
       continue;
     }
@@ -2293,9 +2410,6 @@ function assertCacheDocumentSemantics(document: CacheDocument): void {
       assertRepositoryIdentity(document.repository);
       if (document.repository.repositoryId === "") {
         throw new CacheDocumentSemanticError("latest importanceのrepositoryIdが空です");
-      }
-      if (document.aiCacheReference.status !== "available") {
-        throw new CacheDocumentSemanticError("latest importanceには完全一致AI cache参照が必要です");
       }
       if (document.importance.rationale.trim().length === 0) {
         throw new CacheDocumentSemanticError("latest importanceのrationaleは空にできません");

@@ -1,11 +1,19 @@
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { z } from "zod";
+
 import {
   createCodexEnvironment,
   createCodexAnalysisInput,
   createCodexCacheValidationContext,
+  createImportanceCacheCandidate,
+  createImportanceCacheEntry,
+  createImportanceCacheEntryFromAiResult,
+  createImportanceCacheEntryFromCacheContext,
+  createImportanceCacheEntryFromLatest,
   parseCodexCacheValidationContext,
+  parseSha256Hash,
   estimateAiInputCost,
   getCodexEnvironmentVariableAllowlist,
   hashCanonicalJson,
@@ -13,7 +21,10 @@ import {
   reduceCachedCodexAnalysis,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
+  resolveImportance,
   runAiAnalyses,
+  selectCodexImportanceAssessment,
+  selectLatestImportanceCacheEntry,
   serializeCanonicalJson,
   MemoryAiCacheStore,
   type AiAnalysisCandidate,
@@ -29,7 +40,11 @@ import {
   type CodexProcessRunner,
   type DeterministicCodexDecision,
   type PreparedAiAnalysisCandidate,
+  type ImportanceCacheContext,
+  type ImportanceCacheEntry,
+  type ImportanceCacheState,
   type ReducedCodexDecision,
+  type VerifiedImportanceResult,
   type ValidatedCodexAnalysisOutput,
 } from "../codex/index.js";
 import { type Config, type loadConfig } from "../config/index.js";
@@ -78,6 +93,7 @@ import {
   type PullRequestCheckFailureAssessment,
   type PrimaryWaitingOn,
   type Relation,
+  type ReplayItemHistoryResult,
   type RetentionItemState,
   type Repository,
   type SourceId,
@@ -89,6 +105,8 @@ import {
   type NaturalLanguageImportanceAssessmentState,
   type DependencyResolutionProgress,
   type ExternalGhostNode,
+  type GitHubItemDisplayReference,
+  type ImportanceDownstreamImpact,
   type NormalizedEvent,
   type TrackedItem,
   type TrackedItemAiAnalysis,
@@ -106,6 +124,7 @@ import {
   type DiscordDigestDelivery,
   type DiscordDeliverySettings,
   type DiscordNotificationItem,
+  type DiscordNotificationEvent,
   type DiscordNotificationSelection,
   type DiscordOperationsIncident,
   type NormalDigestRunContext,
@@ -118,13 +137,14 @@ import {
   collectRepositoriesWithStaleFallback,
   createPublicRepositoryAllowlist,
   deduplicateByStableId,
+  finalizeGitHubItemsWithVolatileMetadata,
   type discoverRepositoryInventory,
   type enumerateGitHubItemsByIdentifiers,
   type enumerateOpenGitHubItems,
-  markObservedGitHubItemsStale,
   normalizeObservedGitHubItems,
   planIncrementalItemCollection,
   parseGitHubAppCredentials,
+  type probeGitHubPullRequestVolatileMetadataWithRetry,
   type CreateGitHubClientOptions,
   type CurrentAnalysisRulesFingerprints,
   type EnumeratedGitHubItem,
@@ -139,11 +159,12 @@ import {
   type PublicRepositoryAllowlist,
   type PreviousItemCollection,
   type RepositoryCollectionResult,
-  type StaleObservedGitHubItem,
   adaptGitHubItemDetailRelationMutations,
+  adaptMixedTemporalBlocksGraph,
   replayGitHubItemHistory,
   createGitHubItemCacheDocument,
   restoreGitHubItemCacheForAnalysis,
+  validateGitHubPullRequestVolatileMetadata,
   validateGitHubItemCacheAiEntry,
   type GitHubItemCacheAnalysisObservation,
   type GitHubItemCacheAnalysisSource,
@@ -154,15 +175,18 @@ import {
   normalizeRelationCandidates,
   planRelationExpansion,
   reconcileGraph,
+  replayDependencyEvents,
+  replayTemporalBlocksGraph,
   type AnalyzeGraphResult,
   type CandidateRelation,
   type PublicGitHubRelationItem,
   type ReconciledGraphEdge,
   type GraphAnalysisNode,
-  type GraphAnalysisSnapshot,
   type ReconcileGraphResult,
+  type TemporalBlocksGraphReplayResult,
   type RelationCandidate,
   type RelationCandidateAssessment,
+  type RelationAssessmentVerdict,
   type RelationCandidateNode,
   type RelationCandidateId,
 } from "../graph/index.js";
@@ -182,6 +206,7 @@ import {
   type SnapshotCollectionItem,
   type SnapshotCollectionRepository,
   type SnapshotRepository,
+  type SnapshotTrackedItem,
   type StateBranchAdapter,
   type StateSnapshot,
   type GitHubRepositoryCacheDocument,
@@ -251,6 +276,9 @@ const CODEX_SCHEMA_VERSION = "2";
 const PAGES_BASE_URL = "https://voicevox.github.io";
 const GITHUB_MENTION_PATTERN =
   /(?<![A-Za-z0-9-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?:\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,99})))?/gu;
+const GITHUB_ITEM_DISPLAY_REFERENCE_SCHEMA = z.custom<GitHubItemDisplayReference>(
+  (value) => typeof value === "string" && /^[^/\s]+\/[^#\s]+#[1-9]\d*$/u.test(value),
+);
 const CURRENT_DETERMINISTIC_RULES_VERSIONS = Object.freeze({
   issue: ISSUE_DETERMINISTIC_RULES_VERSION,
   pull_request: PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
@@ -335,6 +363,7 @@ type RuntimeItemAnalysisSource =
       kind: "fresh";
       item: FreshObservedGitHubItem;
       detail: GitHubItemDetail;
+      replay: ReplayItemHistoryResult;
     }>
   | Readonly<{
       kind: "cached";
@@ -343,6 +372,15 @@ type RuntimeItemAnalysisSource =
       analysis: GitHubItemCacheAnalysisSource;
       exactAi: ExactCachedAiAnalysis | undefined;
     }>;
+
+type StaleDisplayItemAnalysisSource = Readonly<{
+  kind: "stale_display";
+  item: CachedObservedGitHubItem;
+  repositoryIndex: CacheItemIndex;
+  document: GitHubItemCacheDocument;
+  analysis: GitHubItemCacheAnalysisSource;
+  failedAt: UtcIsoDateTime;
+}>;
 
 type CachedItemAnalysisRestoreResult =
   | Readonly<{
@@ -355,19 +393,28 @@ type CachedItemAnalysisRestoreResult =
       diagnostics: readonly string[];
     }>;
 
+type ExactAiRelationNotificationHistory = Readonly<{
+  exactBlocksEdges: readonly Readonly<{
+    fromNodeId: GraphNodeId;
+    toNodeId: GraphNodeId;
+  }>[];
+  relationCandidates: readonly RelationCandidate[];
+}>;
+
 type CollectedItems = Readonly<{
   evaluatedAt: UtcIsoDateTime;
   enumeratedItems: readonly EnumeratedGitHubItem[];
   details: readonly GitHubItemDetail[];
   observedItems: readonly RuntimeObservedGitHubItem[];
   analysisSources: readonly RuntimeItemAnalysisSource[];
-  staleItems: readonly StaleObservedGitHubItem<SnapshotCollectionItem>[];
+  staleDisplaySources: readonly StaleDisplayItemAnalysisSource[];
   trackedNodeIds: ReadonlySet<GitHubNodeId>;
   trackingNotificationClassByNodeId: ReadonlyMap<GitHubNodeId, TrackingNotificationClass>;
   analysisNodeIds: ReadonlySet<GitHubNodeId>;
   changedNodeIds: ReadonlySet<GitHubNodeId>;
   externalReferences: readonly ExternalGhostNode[];
   relationCandidates: readonly RelationCandidate[];
+  exactAiRelationNotificationHistory: ExactAiRelationNotificationHistory;
   repositoryResults: readonly RepositoryCollectionResult<SnapshotCollectionRepository>[];
   collectionRepositories: readonly SnapshotCollectionRepository[];
 }>;
@@ -383,6 +430,7 @@ type FreshRepositoryItemCollection = Readonly<{
 
 type FreshRepositoryRuntimeCollection = FreshRepositoryItemCollection &
   Readonly<{
+    provisionalEnumeratedItems: readonly EnumeratedGitHubItem[];
     state: SnapshotCollectionRepository;
   }>;
 
@@ -433,12 +481,19 @@ type CodexAnalysis = Readonly<{
   run: AiAnalysisRunResult | undefined;
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
   exactCachedByNodeId: ReadonlyMap<GitHubNodeId, ExactCachedAiAnalysis>;
+  latestImportanceByNodeId: ReadonlyMap<GitHubNodeId, AiLatestImportanceCacheDocument>;
+  fallbackImportanceByNodeId: ReadonlyMap<
+    GitHubNodeId,
+    Extract<NaturalLanguageImportanceAssessmentState, { status: "available" }>
+  >;
+  rejectedAiCacheKeys: ReadonlySet<AiCacheEntry["cacheKey"]>;
 }>;
 
 type ReducedItemAnalysis = Readonly<{
   item: RuntimeObservedGitHubItem;
   decision: ReducedCodexDecision;
   notificationRecommendation: DiscordNotificationItem["notificationRecommendation"];
+  aiNotificationEvents: readonly DiscordNotificationEvent[];
   primaryWaitingOn: PrimaryWaitingOn;
   staleness: StalenessResult;
   importanceAssessment: NaturalLanguageImportanceAssessmentState;
@@ -468,17 +523,18 @@ type ReducedAnalysis = Readonly<{
 }>;
 
 type GraphResult = Readonly<{
-  edges: readonly ReconciledGraphEdge[];
+  displayEdges: readonly ReconciledGraphEdge[];
+  analysisEdges: readonly ReconciledGraphEdge[];
   externalReferences: readonly ExternalGhostNode[];
   analysis: AnalyzeGraphResult;
-  previousAnalysis:
-    | Readonly<{
-        availability: "unavailable";
-      }>
-    | Readonly<{
-        availability: "available";
-        value: AnalyzeGraphResult;
-      }>;
+  temporal: TemporalBlocksGraphReplayResult;
+  activeBlockIntervalsByEdgeKey: ReadonlyMap<
+    string,
+    Readonly<{
+      addedAt: UtcIsoDateTime;
+      sourceIds: readonly [SourceId, ...SourceId[]];
+    }>
+  >;
 }>;
 
 type RuntimeCachePayload = CacheOnlyValidatedDocuments;
@@ -541,6 +597,7 @@ export type ProductionRuntimeAdapters = Readonly<{
   discoverRepositoryInventory: typeof discoverRepositoryInventory;
   enumerateGitHubItemsByIdentifiers: typeof enumerateGitHubItemsByIdentifiers;
   enumerateOpenGitHubItems: typeof enumerateOpenGitHubItems;
+  probeGitHubPullRequestVolatileMetadataWithRetry: typeof probeGitHubPullRequestVolatileMetadataWithRetry;
   collectGitHubItemDetails: typeof collectGitHubItemDetails;
   executeCodexAnalysis: (
     input: CodexAnalysisInput,
@@ -771,6 +828,12 @@ function loadedRepositoryCacheDocuments(
   state: RuntimeState,
 ): readonly GitHubRepositoryCacheDocument[] {
   return state.loaded.status === "available" ? state.loaded.repositoryCaches : [];
+}
+
+function loadedLatestImportanceCacheDocuments(
+  state: RuntimeState,
+): readonly AiLatestImportanceCacheDocument[] {
+  return state.loaded.status === "available" ? state.loaded.latestImportanceCaches : [];
 }
 
 function snapshotCollectionItemFromCache(
@@ -2074,13 +2137,54 @@ function createCodexSourceOccurredAtById(
   item: FreshObservedGitHubItem,
   detail: GitHubItemDetail,
 ): ReadonlyMap<SourceId, UtcIsoDateTime> {
-  const sourceOccurredAtById = new Map(createEarliestRelationSourceOccurredAtById([item]));
-  addCodexSourceOccurredAt(sourceOccurredAtById, item.sourceId, item.createdAt);
-  addCodexSourceOccurredAt(sourceOccurredAtById, detail.bodySourceId, item.createdAt);
-  for (const comment of detail.comments) {
-    addCodexSourceOccurredAt(sourceOccurredAtById, comment.sourceId, comment.createdAt);
+  const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
+  const currentContentSourceIds = new Set<SourceId>([
+    detail.bodySourceId,
+    ...detail.comments.map((comment) => comment.sourceId),
+    ...(detail.type === "pull_request"
+      ? [
+          ...detail.reviews.map((review) => review.sourceId),
+          ...detail.reviewThreads.flatMap((thread) =>
+            thread.comments.map((comment) => comment.sourceId),
+          ),
+        ]
+      : []),
+  ]);
+  for (const event of item.events) {
+    if (currentContentSourceIds.has(event.sourceId)) {
+      continue;
+    }
+    setEarliestRelationSourceOccurredAt(sourceOccurredAtById, event.sourceId, event.occurredAt);
   }
-  if (detail.type !== "pull_request" || detail.mergeState.checks.status !== "configured") {
+  addCodexSourceOccurredAt(sourceOccurredAtById, item.sourceId, item.createdAt);
+  addCodexSourceOccurredAt(
+    sourceOccurredAtById,
+    detail.bodySourceId,
+    detail.lastEditedAt ?? item.createdAt,
+  );
+  for (const comment of detail.comments) {
+    addCodexSourceOccurredAt(
+      sourceOccurredAtById,
+      comment.sourceId,
+      comment.lastEditedAt ?? comment.createdAt,
+    );
+  }
+  if (detail.type !== "pull_request") {
+    return sourceOccurredAtById;
+  }
+  for (const review of detail.reviews) {
+    addCodexSourceOccurredAt(sourceOccurredAtById, review.sourceId, review.submittedAt);
+  }
+  for (const thread of detail.reviewThreads) {
+    for (const comment of thread.comments) {
+      addCodexSourceOccurredAt(
+        sourceOccurredAtById,
+        comment.sourceId,
+        comment.lastEditedAt ?? comment.createdAt,
+      );
+    }
+  }
+  if (detail.mergeState.checks.status !== "configured") {
     return sourceOccurredAtById;
   }
   const headOccurredAt = resolvePullRequestCommitOccurredAt(detail.headCommit, item.createdAt);
@@ -2193,7 +2297,7 @@ function createCodexInput(
       id: detail.bodySourceId,
       kind: "body",
       actorType: codexActorType(item),
-      createdAt: item.createdAt,
+      createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, detail.bodySourceId),
       content: detail.body,
     }),
   );
@@ -2205,7 +2309,7 @@ function createCodexInput(
         id: comment.sourceId,
         kind: "comment",
         actorType: event?.actor.type ?? "system",
-        createdAt: comment.createdAt,
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, comment.sourceId),
         content: comment.body,
       }),
     );
@@ -2223,7 +2327,7 @@ function createCodexInput(
             id: comment.sourceId,
             kind: "comment",
             actorType: event?.actor.type ?? "system",
-            createdAt: comment.createdAt,
+            createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, comment.sourceId),
             content: comment.body,
           }),
         );
@@ -2237,7 +2341,7 @@ function createCodexInput(
           id: review.sourceId,
           kind: "review",
           actorType: event?.actor.type ?? "system",
-          createdAt: review.submittedAt,
+          createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, review.sourceId),
           content: review.body,
         }),
       );
@@ -2346,6 +2450,57 @@ function createCodexInput(
   });
 }
 
+function freshRepositoryIds(collection: CollectedItems): ReadonlySet<GitHubRepositoryId> {
+  return new Set(
+    collection.repositoryResults.flatMap((result) =>
+      result.freshness === "fresh" ? [result.repository.id] : [],
+    ),
+  );
+}
+
+function createCurrentPlanningGraphAnalysis(
+  configuration: RuntimeConfiguration,
+  collection: CollectedItems,
+  deterministicAnalysis: DeterministicAnalysis,
+): AnalyzeGraphResult {
+  const freshRepositoryIdSet = freshRepositoryIds(collection);
+  const items = deterministicAnalysis.items.filter((analysis) =>
+    freshRepositoryIdSet.has(analysis.item.repositoryId),
+  );
+  const nodeIds = new Set<GraphNodeId>(items.map((analysis) => analysis.item.nodeId));
+  const candidates = collection.relationCandidates.filter((candidate) =>
+    relationNodes(candidate.relation).every(
+      (node) => node.scope === "organization" && nodeIds.has(node.nodeId),
+    ),
+  );
+  const reconciled = reconcileGraph({
+    previousGraph: {
+      edges: [],
+      historyEvents: [],
+    },
+    candidates,
+    assessments: [],
+    sourceOccurredAtById: createEarliestRelationSourceOccurredAtById(collection.observedItems),
+    minimumInferredConfidence: configuration.config.ai.confidence.medium,
+    reconciledAt: collection.evaluatedAt,
+  });
+  return analyzeGraph({
+    current: {
+      nodes: items.map((analysis) => ({
+        kind: analysis.item.type,
+        nodeId: analysis.item.nodeId,
+        repositoryId: analysis.item.repositoryId,
+        state: analysis.item.state,
+        directNotification: "eligible",
+      })),
+      edges: reconciled.edges,
+    },
+    previous: {
+      availability: "unavailable",
+    },
+  });
+}
+
 function createAiCandidates(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
@@ -2359,24 +2514,28 @@ function createAiCandidates(
 }> {
   const inputByNodeId = new Map<GitHubNodeId, CodexAnalysisInput>();
   const failures: AiAnalysisRunFailure[] = [];
-  const previousGraph = previousGraphSnapshot(
-    state,
+  const currentPlanningGraphAnalysis = createCurrentPlanningGraphAnalysis(
     configuration,
-    exactCachedAiByNodeId(deterministicAnalysis),
+    collection,
+    deterministicAnalysis,
   );
-  const previousGraphAnalysis =
-    previousGraph == null
-      ? undefined
-      : analyzeGraph({
-          current: previousGraph,
-          previous: {
-            availability: "unavailable",
-          },
-        });
-  const previousImpactByNodeId = new Map(
-    (previousGraphAnalysis?.downstreamImpacts ?? []).map((impact) => [impact.nodeId, impact]),
+  const currentImpactByNodeId = new Map(
+    currentPlanningGraphAnalysis.downstreamImpacts.map((impact) => [impact.nodeId, impact]),
   );
-  const previousRelations: readonly Relation[] = previousGraph?.edges ?? [];
+  const loadedCandidatesByNodeId = new Map(
+    loadedItemCacheDocuments(state).map((document) => [
+      document.nodeId,
+      new Set(
+        document.relationCandidates
+          .filter(
+            (candidate) =>
+              candidate.relation.type === "blocks" &&
+              candidate.relation.blocked.nodeId === document.nodeId,
+          )
+          .map((candidate) => candidate.id),
+      ),
+    ]),
+  );
   const previousAiFingerprintByNodeId = new Map(
     loadedItemCacheDocuments(state).flatMap((item) =>
       item.aiCacheReference.status === "available"
@@ -2426,16 +2585,8 @@ function createAiCandidates(
       analysis.item.nodeId,
       analysis.relationCandidates,
     );
-    const previousIncomingBlockers = new Set<string>(
-      previousRelations
-        .filter(
-          (relation) =>
-            relation.active &&
-            relation.type === "blocks" &&
-            relation.toNodeId === analysis.item.nodeId,
-        )
-        .map((relation) => relation.id),
-    );
+    const loadedIncomingBlockers =
+      loadedCandidatesByNodeId.get(analysis.item.nodeId) ?? new Set<string>();
     const currentPotentialBlockers = new Set<string>(
       analysis.relationCandidates
         .filter((candidate) => {
@@ -2456,9 +2607,9 @@ function createAiCandidates(
     );
     const changedBlocker =
       relatedNodeChanged ||
-      previousIncomingBlockers.size !== currentPotentialBlockers.size ||
-      [...previousIncomingBlockers].some((id) => !currentPotentialBlockers.has(id));
-    const previousImpact = previousImpactByNodeId.get(analysis.item.nodeId);
+      loadedIncomingBlockers.size !== currentPotentialBlockers.size ||
+      [...loadedIncomingBlockers].some((id) => !currentPotentialBlockers.has(id));
+    const currentImpact = currentImpactByNodeId.get(analysis.item.nodeId);
     const estimatedCost = estimateAiInputCost(
       `${serializeCanonicalJson(input)}\n`,
       configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
@@ -2467,6 +2618,9 @@ function createAiCandidates(
       prepareAiAnalysisCandidate(
         Object.freeze({
           id: analysis.item.nodeId,
+          repository: cacheRepositoryIdentity(
+            findRepository(deterministicAnalysis.inventory, analysis.item.repositoryId),
+          ),
           deterministicResolution:
             analysis.decision.determination === "determined" &&
             !naturalLanguageProgressCandidate &&
@@ -2493,8 +2647,8 @@ function createAiCandidates(
             ),
             changedBlocker,
             downstreamImpact: Object.freeze({
-              openNodeCount: previousImpact?.openNodeCount ?? 0,
-              repositoryCount: previousImpact?.repositoryCount ?? 0,
+              openNodeCount: currentImpact?.openNodeCount ?? 0,
+              repositoryCount: currentImpact?.repositoryCount ?? 0,
             }),
           }),
           estimatedCostUsd: estimatedCost.estimatedCostUsd,
@@ -2533,6 +2687,433 @@ function exactCachedAiByNodeId(
   );
 }
 
+type PreparedImportanceCaches = Readonly<{
+  latestImportanceByNodeId: ReadonlyMap<GitHubNodeId, AiLatestImportanceCacheDocument>;
+  fallbackImportanceByNodeId: ReadonlyMap<
+    GitHubNodeId,
+    Extract<NaturalLanguageImportanceAssessmentState, { status: "available" }>
+  >;
+  rejectedAiCacheKeys: ReadonlySet<AiCacheEntry["cacheKey"]>;
+  diagnostics: readonly string[];
+}>;
+
+function importanceCacheState(
+  document: AiLatestImportanceCacheDocument | undefined,
+): ImportanceCacheState {
+  return document == null
+    ? Object.freeze({ status: "not_available" })
+    : Object.freeze({ status: "available", document });
+}
+
+function runtimeImportanceCacheContext(
+  inventory: RepositoryInventory,
+  evaluatedAt: UtcIsoDateTime,
+  nodeId: GitHubNodeId,
+  repository: PublicRepository,
+  aiCacheEntries: readonly ImportanceCacheEntry[],
+): ImportanceCacheContext {
+  return Object.freeze({
+    nodeId,
+    repository: cacheRepositoryIdentity(repository),
+    repositoryAllowlist: Object.freeze(
+      inventory.allowlist.repositories.map(cacheRepositoryIdentity),
+    ),
+    evaluatedAt,
+    aiCacheEntries,
+  });
+}
+
+function requireRuntimeAiCacheEntry(
+  state: RuntimeState,
+  cacheKey: AiCacheEntry["cacheKey"],
+): AiCacheEntry {
+  const entry = state.aiCache.get(cacheKey);
+  assertNonNullable(entry, `重要度cacheが参照するAI entryがありません。対象: ${cacheKey}`);
+  return entry;
+}
+
+function verifiedImportanceResult(
+  nodeId: GitHubNodeId,
+  repository: PublicRepository,
+  entry: ImportanceCacheEntry,
+  fingerprint: Omit<AiAnalysisFingerprint, "graphNeighborhoodHash">,
+): VerifiedImportanceResult {
+  return Object.freeze({
+    nodeId,
+    repository: cacheRepositoryIdentity(repository),
+    importance: entry.importance,
+    confidence: entry.confidence,
+    fingerprint: Object.freeze({
+      sourceHash: fingerprint.sourceHash,
+      inputHash: fingerprint.inputHash,
+      identityHash: fingerprint.identityHash,
+    }),
+    entry,
+  });
+}
+
+function currentVerifiedImportanceResult(
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  inventory: RepositoryInventory,
+  analysis: DeterministicItemAnalysis,
+  run: AiAnalysisRunResult | undefined,
+  inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>,
+  exactCachedByNodeId: ReadonlyMap<GitHubNodeId, ExactCachedAiAnalysis>,
+): VerifiedImportanceResult | undefined {
+  const nodeId = analysis.item.nodeId;
+  const repository = findRepository(inventory, analysis.item.repositoryId);
+  const exact = exactCachedByNodeId.get(nodeId);
+  if (exact != null) {
+    if (analysis.source.kind !== "cached") {
+      throw new TypeError(`fresh解析sourceにwarm AI結果があります。対象: ${nodeId}`);
+    }
+    if (
+      selectCodexImportanceAssessment(exact.output, configuration.config.ai.confidence).status ===
+      "not_available"
+    ) {
+      return undefined;
+    }
+    const entry = createImportanceCacheEntryFromCacheContext(
+      exact.entry,
+      analysis.source.analysis.analysisFacts.codexValidationContext,
+    );
+    return verifiedImportanceResult(nodeId, repository, entry, exact.fingerprint);
+  }
+  const result = run?.results.find((candidate) => candidate.candidateId === nodeId);
+  if (result == null) {
+    return undefined;
+  }
+  if (
+    selectCodexImportanceAssessment(result.output, configuration.config.ai.confidence).status ===
+    "not_available"
+  ) {
+    return undefined;
+  }
+  const input = inputByNodeId.get(nodeId);
+  assertNonNullable(input, `重要度cache生成用のCodex入力がありません。対象: ${nodeId}`);
+  const fullEntry = requireRuntimeAiCacheEntry(state, result.cacheKey);
+  const entry = createImportanceCacheEntry(fullEntry, input);
+  if (
+    entry.cacheKey !== result.cacheKey ||
+    entry.metadata.outputHash !== hashCanonicalJson(result.output)
+  ) {
+    throw new TypeError(`Codex実行結果と重要度cache用AI entryが一致しません。対象: ${nodeId}`);
+  }
+  return verifiedImportanceResult(nodeId, repository, entry, result.fingerprint);
+}
+
+function importanceEntryForLatestDocument(
+  state: RuntimeState,
+  document: AiLatestImportanceCacheDocument,
+): ImportanceCacheEntry {
+  const reference = document.aiCacheReference;
+  return createImportanceCacheEntryFromLatest(
+    requireRuntimeAiCacheEntry(state, reference.cacheKey),
+    document,
+  );
+}
+
+function aiEntryMatchesRunIdentity(entry: AiCacheEntry, identity: AiAnalysisRunIdentity): boolean {
+  return (
+    entry.metadata.deterministicRulesVersion === identity.deterministicRulesVersion &&
+    entry.metadata.model === identity.model &&
+    entry.metadata.reasoningEffort === identity.reasoningEffort &&
+    entry.metadata.backendVersion === identity.backendVersion &&
+    entry.metadata.promptVersion === identity.promptVersion &&
+    entry.metadata.schemaVersion === identity.schemaVersion
+  );
+}
+
+function historicalImportanceEntryDiagnostic(
+  configuration: RuntimeConfiguration,
+  identity: AiAnalysisRunIdentity,
+  entry: AiCacheEntry,
+): string | undefined {
+  if (!aiEntryMatchesRunIdentity(entry, identity)) {
+    return `過去の重要度AI entryは現在の解析versionと互換性がないため除外します。node ID: ${entry.nodeId}。cache key: ${entry.cacheKey}`;
+  }
+  if (
+    selectCodexImportanceAssessment(entry.output, configuration.config.ai.confidence).status ===
+    "not_available"
+  ) {
+    return `過去の重要度AI entryは現在のconfidence閾値を満たさないため除外します。node ID: ${entry.nodeId}。cache key: ${entry.cacheKey}`;
+  }
+  return undefined;
+}
+
+function validateLoadedImportanceCacheSources(
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  identity: AiAnalysisRunIdentity,
+  preservedNodeIds: ReadonlySet<GitHubNodeId>,
+): Readonly<{
+  documents: readonly AiLatestImportanceCacheDocument[];
+  rejectedAiCacheKeys: ReadonlySet<AiCacheEntry["cacheKey"]>;
+  diagnostics: readonly string[];
+}> {
+  const rejectedAiCacheKeys = new Set<AiCacheEntry["cacheKey"]>();
+  const diagnostics: string[] = [];
+  for (const item of loadedItemCacheDocuments(state)) {
+    if (preservedNodeIds.has(item.nodeId)) {
+      continue;
+    }
+    const reference = item.aiCacheReference;
+    if (reference.status !== "available") {
+      continue;
+    }
+    const entry = requireRuntimeAiCacheEntry(state, reference.cacheKey);
+    try {
+      const validation = validateGitHubItemCacheAiEntry(item, {
+        status: "available",
+        value: entry,
+      });
+      if (validation.status !== "validated") {
+        throw new TypeError("利用可能なAI参照を検証済みにできません");
+      }
+    } catch (error: unknown) {
+      if (!(error instanceof Error)) {
+        throw error;
+      }
+      rejectedAiCacheKeys.add(reference.cacheKey);
+      diagnostics.push(
+        `warm cacheのAI semantic validationに失敗したためlatest importanceから除外します。node ID: ${item.nodeId}。cache key: ${reference.cacheKey}。原因: ${error.message}`,
+      );
+    }
+  }
+  const documents: AiLatestImportanceCacheDocument[] = [];
+  for (const document of loadedLatestImportanceCacheDocuments(state)) {
+    if (preservedNodeIds.has(document.nodeId)) {
+      documents.push(document);
+      continue;
+    }
+    const cacheKey = document.aiCacheReference.cacheKey;
+    importanceEntryForLatestDocument(state, document);
+    if (rejectedAiCacheKeys.has(cacheKey)) {
+      continue;
+    }
+    const diagnostic = historicalImportanceEntryDiagnostic(
+      configuration,
+      identity,
+      requireRuntimeAiCacheEntry(state, cacheKey),
+    );
+    if (diagnostic != null) {
+      diagnostics.push(diagnostic);
+      continue;
+    }
+    documents.push(document);
+  }
+  return Object.freeze({
+    documents: Object.freeze(documents),
+    rejectedAiCacheKeys,
+    diagnostics: Object.freeze([...new Set(diagnostics)]),
+  });
+}
+
+function reconstructLatestImportanceFromAiEntries(
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  inventory: RepositoryInventory,
+  evaluatedAt: UtcIsoDateTime,
+  nodeId: GitHubNodeId,
+  repository: PublicRepository,
+  rejectedAiCacheKeys: ReadonlySet<AiCacheEntry["cacheKey"]>,
+  identity: AiAnalysisRunIdentity,
+): Readonly<{
+  document: AiLatestImportanceCacheDocument | undefined;
+  diagnostics: readonly string[];
+}> {
+  const diagnostics: string[] = [];
+  const candidates = state.aiCache
+    .entriesForNodeId(nodeId)
+    .filter(
+      (entry) =>
+        !rejectedAiCacheKeys.has(entry.cacheKey) &&
+        entry.repository.repositoryId === repository.id &&
+        entry.repository.owner === repository.owner &&
+        entry.repository.name === repository.name,
+    )
+    .flatMap((fullEntry) => {
+      const diagnostic = historicalImportanceEntryDiagnostic(configuration, identity, fullEntry);
+      if (diagnostic != null) {
+        diagnostics.push(diagnostic);
+        return [];
+      }
+      const entry = createImportanceCacheEntryFromAiResult(fullEntry);
+      return [entry];
+    });
+  const selection = selectLatestImportanceCacheEntry(candidates);
+  if (selection.status === "not_available") {
+    return Object.freeze({ document: undefined, diagnostics: Object.freeze(diagnostics) });
+  }
+  const latest = selection.entry;
+  const document = createImportanceCacheCandidate({
+    context: runtimeImportanceCacheContext(
+      inventory,
+      evaluatedAt,
+      nodeId,
+      repository,
+      Object.freeze([]),
+    ),
+    current: verifiedImportanceResult(nodeId, repository, latest, {
+      sourceHash: latest.sourceHash,
+      inputHash: parseSha256Hash(latest.metadata.inputHash),
+      identityHash: hashCanonicalJson({
+        backendVersion: latest.metadata.backendVersion,
+        deterministicRulesVersion: latest.metadata.deterministicRulesVersion,
+        model: latest.metadata.model,
+        promptVersion: latest.metadata.promptVersion,
+        reasoningEffort: latest.metadata.reasoningEffort,
+        schemaVersion: latest.metadata.schemaVersion,
+      }),
+    }),
+    previous: Object.freeze({ status: "not_available" }),
+  });
+  return Object.freeze({ document, diagnostics: Object.freeze(diagnostics) });
+}
+
+function prepareImportanceCaches(
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  inventory: RepositoryInventory,
+  collection: CollectedItems,
+  deterministicAnalysis: DeterministicAnalysis,
+  run: AiAnalysisRunResult | undefined,
+  inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>,
+  exactCachedByNodeId: ReadonlyMap<GitHubNodeId, ExactCachedAiAnalysis>,
+): PreparedImportanceCaches {
+  const identity = createAiAnalysisRunIdentity(configuration.config);
+  const staleDisplayNodeIds = new Set(
+    collection.staleDisplaySources.map((source) => source.item.nodeId),
+  );
+  const loaded = validateLoadedImportanceCacheSources(
+    configuration,
+    state,
+    identity,
+    staleDisplayNodeIds,
+  );
+  const diagnostics = [...loaded.diagnostics];
+  const rejectedAiCacheKeys = new Set(loaded.rejectedAiCacheKeys);
+  for (const result of run?.results ?? []) {
+    if (result.origin === "executed") {
+      rejectedAiCacheKeys.delete(result.cacheKey);
+    }
+  }
+  const latestImportanceByNodeId = new Map(
+    loaded.documents
+      .filter((document) => collection.trackedNodeIds.has(document.nodeId))
+      .map((document) => [document.nodeId, document]),
+  );
+  for (const analysis of deterministicAnalysis.items) {
+    const repository = findRepository(inventory, analysis.item.repositoryId);
+    const reconstructed = reconstructLatestImportanceFromAiEntries(
+      configuration,
+      state,
+      inventory,
+      collection.evaluatedAt,
+      analysis.item.nodeId,
+      repository,
+      rejectedAiCacheKeys,
+      identity,
+    );
+    diagnostics.push(...reconstructed.diagnostics);
+    if (reconstructed.document != null) {
+      latestImportanceByNodeId.set(analysis.item.nodeId, reconstructed.document);
+    } else {
+      latestImportanceByNodeId.delete(analysis.item.nodeId);
+    }
+  }
+  for (const analysis of deterministicAnalysis.items) {
+    const current = currentVerifiedImportanceResult(
+      configuration,
+      state,
+      inventory,
+      analysis,
+      run,
+      inputByNodeId,
+      exactCachedByNodeId,
+    );
+    if (current == null) {
+      continue;
+    }
+    const previous = latestImportanceByNodeId.get(analysis.item.nodeId);
+    if (
+      previous != null &&
+      Date.parse(current.entry.metadata.executedAt) < Date.parse(previous.metadata.executedAt)
+    ) {
+      continue;
+    }
+    const previousEntries =
+      previous == null
+        ? Object.freeze([])
+        : Object.freeze([importanceEntryForLatestDocument(state, previous)]);
+    const repository = findRepository(inventory, analysis.item.repositoryId);
+    const context = runtimeImportanceCacheContext(
+      inventory,
+      collection.evaluatedAt,
+      analysis.item.nodeId,
+      repository,
+      previousEntries,
+    );
+    latestImportanceByNodeId.set(
+      analysis.item.nodeId,
+      createImportanceCacheCandidate({
+        context,
+        current,
+        previous: importanceCacheState(previous),
+      }),
+    );
+  }
+
+  const fallbackImportanceByNodeId = new Map<
+    GitHubNodeId,
+    Extract<NaturalLanguageImportanceAssessmentState, { status: "available" }>
+  >();
+  for (const analysis of deterministicAnalysis.items) {
+    const nodeId = analysis.item.nodeId;
+    const failure = run?.failures.find((candidate) => candidate.candidateId === nodeId);
+    const deferred = run?.deferred.find((candidate) => candidate.candidateId === nodeId);
+    if (failure == null && deferred == null) {
+      continue;
+    }
+    const latest = latestImportanceByNodeId.get(nodeId);
+    const latestEntries =
+      latest == null
+        ? Object.freeze([])
+        : Object.freeze([importanceEntryForLatestDocument(state, latest)]);
+    const repository = findRepository(inventory, analysis.item.repositoryId);
+    const resolution = resolveImportance({
+      context: runtimeImportanceCacheContext(
+        inventory,
+        collection.evaluatedAt,
+        nodeId,
+        repository,
+        latestEntries,
+      ),
+      current:
+        failure != null
+          ? Object.freeze({ status: "execution_failed" })
+          : Object.freeze({ status: "budget_deferred" }),
+      latest: importanceCacheState(latest),
+    });
+    if (resolution.status === "fallback") {
+      fallbackImportanceByNodeId.set(
+        nodeId,
+        Object.freeze({
+          status: "available",
+          value: resolution.importance,
+        }),
+      );
+    }
+  }
+  return Object.freeze({
+    latestImportanceByNodeId,
+    fallbackImportanceByNodeId,
+    rejectedAiCacheKeys,
+    diagnostics: Object.freeze([...new Set(diagnostics)]),
+  });
+}
+
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
   configuration: RuntimeConfiguration,
@@ -2561,18 +3142,33 @@ async function analyzeCodex(
   );
   if (!configuration.config.ai.enabled) {
     const fallback = prepared.failures.length > 0;
+    const importanceCaches = prepareImportanceCaches(
+      configuration,
+      state,
+      deterministicAnalysis.inventory,
+      collection,
+      deterministicAnalysis,
+      undefined,
+      prepared.inputByNodeId,
+      exactCachedByNodeId,
+    );
+    const { diagnostics: importanceDiagnostics, ...importanceCacheStage } = importanceCaches;
     return Object.freeze({
       stage: Object.freeze({
         run: undefined,
         inputByNodeId: prepared.inputByNodeId,
         exactCachedByNodeId,
+        ...importanceCacheStage,
       }),
       status: fallback ? "fallback" : "success",
       aiCallCount: 0,
       aiCacheHitCount: 0,
       aiRetainedResultCount: exactCachedByNodeId.size,
       estimatedInputTokens: 0,
-      diagnostics: Object.freeze(prepared.failures.map(codexFallbackDiagnostic)),
+      diagnostics: Object.freeze([
+        ...prepared.failures.map(codexFallbackDiagnostic),
+        ...importanceDiagnostics,
+      ]),
     });
   }
   const codexCredentials = configuration.credentials.codex;
@@ -2622,12 +3218,24 @@ async function analyzeCodex(
     ...executedRun,
     failures: Object.freeze([...prepared.failures, ...executedRun.failures]),
   }) satisfies AiAnalysisRunResult;
+  const importanceCaches = prepareImportanceCaches(
+    configuration,
+    state,
+    deterministicAnalysis.inventory,
+    collection,
+    deterministicAnalysis,
+    run,
+    prepared.inputByNodeId,
+    exactCachedByNodeId,
+  );
+  const { diagnostics: importanceDiagnostics, ...importanceCacheStage } = importanceCaches;
   const fallback = run.failures.length > 0 || run.deferred.length > 0;
   return Object.freeze({
     stage: Object.freeze({
       run,
       inputByNodeId: prepared.inputByNodeId,
       exactCachedByNodeId,
+      ...importanceCacheStage,
     }),
     status: fallback ? "fallback" : "success",
     aiCallCount: run.usage.calls,
@@ -2640,6 +3248,7 @@ async function analyzeCodex(
       ...run.deferred.map(
         (deferred) => `codex_deferred item=${deferred.candidateId} reason=${deferred.reason}`,
       ),
+      ...importanceDiagnostics,
     ]),
   });
 }
@@ -2978,7 +3587,6 @@ function naturalLanguageProgressAssessments(
 }
 
 function graphNodeState(
-  _state: RuntimeState,
   deterministicAnalysis: DeterministicAnalysis,
   graph: GraphResult,
   nodeId: GraphNodeId,
@@ -2999,28 +3607,36 @@ function graphNodeState(
 }
 
 function graphBlockers(
-  state: RuntimeState,
+  collection: CollectedItems,
   deterministicAnalysis: DeterministicAnalysis,
   graph: GraphResult,
   item: RuntimeObservedGitHubItem,
 ): readonly IssueBlocker[] {
   const blockersByCandidateId = new Map<GraphNodeId, IssueBlocker>();
-  for (const edge of graph.edges) {
+  const sourceOccurredAtById = createDependencySourceOccurredAtById(collection);
+  for (const edge of graph.analysisEdges) {
     if (!edge.active || edge.type !== "blocks" || edge.toNodeId !== item.nodeId) {
       continue;
     }
-    const edgeSourceIds = nonEmptySourceIds(
-      edge.evidence.map((evidence) => evidence.sourceId),
-      `blocker edge ${edge.id}`,
+    const activeInterval = graph.activeBlockIntervalsByEdgeKey.get(
+      temporalEdgeKey(edge.fromNodeId, edge.toNodeId),
     );
-    const edgeBecameBlockingAt = edge.provenance === "native" ? item.createdAt : edge.firstSeenAt;
+    const edgeSourceIds =
+      activeInterval?.sourceIds ??
+      nonEmptySourceIds(
+        edge.evidence.map((evidence) => evidence.sourceId),
+        `blocker edge ${edge.id}`,
+      );
+    const edgeBecameBlockingAt =
+      activeInterval?.addedAt ??
+      earliestDependencySourceOccurredAt(sourceOccurredAtById, edge.id, edgeSourceIds);
     const existing = blockersByCandidateId.get(edge.fromNodeId);
     if (existing == null) {
       blockersByCandidateId.set(
         edge.fromNodeId,
         Object.freeze({
           candidateId: edge.fromNodeId,
-          state: graphNodeState(state, deterministicAnalysis, graph, edge.fromNodeId),
+          state: graphNodeState(deterministicAnalysis, graph, edge.fromNodeId),
           authority: edge.authoritative ? "authoritative" : "inferred",
           confidence: edge.confidence,
           sourceIds: edgeSourceIds,
@@ -3056,10 +3672,31 @@ function graphBlockers(
   );
 }
 
+function earliestDependencySourceOccurredAt(
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+  edgeId: ReconciledGraphEdge["id"],
+  sourceIds: readonly [SourceId, ...SourceId[]],
+): UtcIsoDateTime {
+  const occurredAts = sourceIds.map((sourceId) => {
+    const occurredAt = sourceOccurredAtById.get(sourceId);
+    assertNonNullable(
+      occurredAt,
+      `blocker edge ${edgeId}の根拠発生時刻がありません。対象: ${sourceId}`,
+    );
+    return occurredAt;
+  });
+  const firstOccurredAt = occurredAts[0];
+  assertNonNullable(firstOccurredAt, `blocker edge ${edgeId}の根拠発生時刻がありません`);
+  return occurredAts.reduce(
+    (earliest, occurredAt) => (occurredAt < earliest ? occurredAt : earliest),
+    firstOccurredAt,
+  );
+}
+
 function reassessDeterministicAnalysis(
   evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
-  state: RuntimeState,
+  collection: CollectedItems,
   inventory: RepositoryInventory,
   deterministicAnalysis: DeterministicAnalysis,
   analysis: DeterministicItemAnalysis,
@@ -3074,7 +3711,7 @@ function reassessDeterministicAnalysis(
   const blockers =
     graph == null
       ? createNativeBlockers(analysis.item, analysis.relationCandidates)
-      : graphBlockers(state, deterministicAnalysis, graph, analysis.item);
+      : graphBlockers(collection, deterministicAnalysis, graph, analysis.item);
   if (analysis.item.type === "issue") {
     return Object.freeze({
       ...analysis,
@@ -3114,72 +3751,6 @@ function enumeratedTerminalAt(item: EnumeratedGitHubItem | undefined): UtcIsoDat
   return item.state === "closed" ? item.closedAt : undefined;
 }
 
-function previousBlockerEdges(
-  state: RuntimeState,
-  configuration: RuntimeConfiguration,
-  exactCachedByNodeId: ReadonlyMap<GitHubNodeId, ExactCachedAiAnalysis>,
-  blockedNodeId: GraphNodeId,
-): ReadonlyMap<GraphNodeId, readonly (Relation & Readonly<{ active: true }>)[]> {
-  const edgesByBlockerNodeId = new Map<GraphNodeId, (Relation & Readonly<{ active: true }>)[]>();
-  for (const edge of previousGraphSnapshot(state, configuration, exactCachedByNodeId)?.edges ??
-    []) {
-    if (!edge.active || edge.type !== "blocks" || edge.toNodeId !== blockedNodeId) {
-      continue;
-    }
-    const edges = edgesByBlockerNodeId.get(edge.fromNodeId) ?? [];
-    edges.push(edge);
-    edgesByBlockerNodeId.set(edge.fromNodeId, edges);
-  }
-  return edgesByBlockerNodeId;
-}
-
-function relationRemovalEventOccurredAts(
-  collection: CollectedItems,
-  edge: Relation,
-): readonly UtcIsoDateTime[] {
-  const latestEvent = collection.observedItems
-    .flatMap((item) => item.events)
-    .filter(
-      (event) =>
-        event.kind === "relation" &&
-        event.target.type === "node" &&
-        event.relationType === edge.type &&
-        event.provenance === edge.provenance &&
-        event.occurredAt >= edge.firstSeenAt &&
-        (event.direction === "from_item"
-          ? event.itemNodeId === edge.fromNodeId && event.target.nodeId === edge.toNodeId
-          : event.itemNodeId === edge.toNodeId && event.target.nodeId === edge.fromNodeId),
-    )
-    .sort((left, right) => {
-      if (left.occurredAt !== right.occurredAt) {
-        return left.occurredAt.localeCompare(right.occurredAt);
-      }
-      return left.sourceId.localeCompare(right.sourceId);
-    })
-    .at(-1);
-  return Object.freeze(
-    latestEvent?.kind === "relation" && latestEvent.action === "removed"
-      ? [latestEvent.occurredAt]
-      : [],
-  );
-}
-
-function editedRelationSourceOccurredAts(
-  collection: CollectedItems,
-  edge: Relation,
-): readonly UtcIsoDateTime[] {
-  const evidenceSourceIds = new Set(edge.evidence.map((evidence) => evidence.sourceId));
-  return Object.freeze(
-    collection.details.flatMap((detail) =>
-      detail.comments.flatMap((comment) =>
-        evidenceSourceIds.has(comment.sourceId) && comment.updatedAt !== comment.createdAt
-          ? [comment.updatedAt]
-          : [],
-      ),
-    ),
-  );
-}
-
 function createDependencySourceOccurredAtById(
   collection: CollectedItems,
 ): ReadonlyMap<SourceId, UtcIsoDateTime> {
@@ -3212,109 +3783,25 @@ function createDependencySourceOccurredAtById(
   return sourceOccurredAtById;
 }
 
-function resolvedSourceOccurredAts(
-  sourceIds: readonly SourceId[],
-  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
-): readonly UtcIsoDateTime[] {
-  return Object.freeze(
-    [...new Set(sourceIds)].flatMap((sourceId) => {
-      const occurredAt = sourceOccurredAtById.get(sourceId);
-      return occurredAt == null ? [] : [occurredAt];
-    }),
-  );
-}
-
-function relationResolutionOccurredAt(
-  collection: CollectedItems,
-  graph: GraphResult,
-  relationAssessments: readonly RelationCandidateAssessment[],
-  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
-  edge: Relation & Readonly<{ active: true }>,
-): UtcIsoDateTime {
-  const removalEventOccurredAts = relationRemovalEventOccurredAts(collection, edge);
-  if (removalEventOccurredAts.length > 0) {
-    return latestUtcIsoDateTime(removalEventOccurredAts, `relation ${edge.id}の削除イベント`);
-  }
-  const currentCandidate = collection.relationCandidates.find(
-    (candidate) => candidate.id === edge.id,
-  );
-  if (currentCandidate == null) {
-    const editedSourceOccurredAts = editedRelationSourceOccurredAts(collection, edge);
-    return editedSourceOccurredAts.length === 0
-      ? edge.firstSeenAt
-      : latestUtcIsoDateTime(editedSourceOccurredAts, `relation ${edge.id}の根拠編集`);
-  }
-  const currentEdge = graph.edges.find((candidate) => candidate.id === edge.id);
-  const currentEdgeOccurredAts = resolvedSourceOccurredAts(
-    currentEdge?.evidence.map((evidence) => evidence.sourceId) ?? [],
-    sourceOccurredAtById,
-  );
-  const assessment = relationAssessments.find((candidate) => candidate.candidateId === edge.id);
-  const assessmentOccurredAts = resolvedSourceOccurredAts(
-    assessment?.sourceIds ?? [],
-    sourceOccurredAtById,
-  );
-  const occurredAts = [...currentEdgeOccurredAts, ...assessmentOccurredAts];
-  return occurredAts.length === 0
-    ? edge.firstSeenAt
-    : latestUtcIsoDateTime(occurredAts, `relation ${edge.id}の再判定根拠`);
-}
-
 function dependencyResolutions(
-  state: RuntimeState,
-  configuration: RuntimeConfiguration,
-  exactCachedByNodeId: ReadonlyMap<GitHubNodeId, ExactCachedAiAnalysis>,
-  collection: CollectedItems,
   graph: GraphResult | undefined,
-  relationAssessments: readonly RelationCandidateAssessment[],
   analysis: DeterministicItemAnalysis,
 ): readonly DependencyResolutionProgress[] {
-  if (graph?.analysis.newlyUnblockedNodeIds.includes(analysis.item.nodeId) !== true) {
+  if (graph == null) {
     return Object.freeze([]);
   }
-  const edgesByBlockerNodeId = previousBlockerEdges(
-    state,
-    configuration,
-    exactCachedByNodeId,
-    analysis.item.nodeId,
+  return Object.freeze(
+    graph.temporal.newlyUnblockedFacts.flatMap((fact) =>
+      fact.status === "exact" && fact.value.blockedNodeId === analysis.item.nodeId
+        ? [
+            Object.freeze({
+              occurredAt: fact.value.occurredAt,
+              sourceIds: fact.value.sourceIds,
+            }),
+          ]
+        : [],
+    ),
   );
-  if (edgesByBlockerNodeId.size === 0) {
-    throw new TypeError(`newly unblocked項目 ${analysis.item.nodeId}の前回blockerがありません`);
-  }
-  const enumeratedItemsByNodeId = new Map<GraphNodeId, EnumeratedGitHubItem>(
-    collection.enumeratedItems.map((item) => [item.nodeId, item]),
-  );
-  const sourceOccurredAtById = createDependencySourceOccurredAtById(collection);
-  const blockerResolutionOccurredAts = [...edgesByBlockerNodeId].map(([blockerNodeId, edges]) => {
-    const terminalAt = enumeratedTerminalAt(enumeratedItemsByNodeId.get(blockerNodeId));
-    if (terminalAt != null) {
-      return terminalAt;
-    }
-    return latestUtcIsoDateTime(
-      edges.map((edge) =>
-        relationResolutionOccurredAt(
-          collection,
-          graph,
-          relationAssessments,
-          sourceOccurredAtById,
-          edge,
-        ),
-      ),
-      `blocker ${blockerNodeId}の関係解消`,
-    );
-  });
-  const sourceIds = [...edgesByBlockerNodeId.values()]
-    .flat()
-    .flatMap((edge) => edge.evidence.map((evidence) => evidence.sourceId));
-  return Object.freeze([
-    Object.freeze({
-      occurredAt: latestUtcIsoDateTime(
-        [analysis.item.createdAt, ...blockerResolutionOccurredAts],
-        `newly unblocked項目 ${analysis.item.nodeId}`,
-      ),
-      sourceIds: nonEmptySourceIds(sourceIds, `newly unblocked項目 ${analysis.item.nodeId}`),
-    }),
-  ]);
 }
 
 function primaryWaitingOnForDecision(
@@ -3519,12 +4006,12 @@ function trackedItemAiAnalysis(
   });
 }
 
-function createTrackedItem(
+function createTrackedItemFromAnalysis(
   analysis: DeterministicItemAnalysis,
   decision: ReducedCodexDecision,
   primaryWaitingOn: PrimaryWaitingOn,
   staleness: StalenessResult,
-  codexAnalysis: CodexAnalysis,
+  aiAnalysis: TrackedItemAiAnalysis,
 ): PendingTrackedItem {
   const commonFields = {
     nodeId: analysis.item.nodeId,
@@ -3559,7 +4046,7 @@ function createTrackedItem(
       analysis.item.type === "issue"
         ? "not_applicable"
         : aggregatePullRequestCheckState(analysis.item.mergeState),
-    aiAnalysis: trackedItemAiAnalysis(codexAnalysis, analysis),
+    aiAnalysis,
     inputEvents: trackedItemInputEvents(analysis),
     confidence: decision.confidence,
     evidence: decision.evidence,
@@ -3579,10 +4066,23 @@ function createTrackedItem(
   });
 }
 
+function createTrackedItem(
+  analysis: DeterministicItemAnalysis,
+  decision: ReducedCodexDecision,
+  primaryWaitingOn: PrimaryWaitingOn,
+  staleness: StalenessResult,
+  codexAnalysis: CodexAnalysis,
+): PendingTrackedItem {
+  return createTrackedItemFromAnalysis(
+    analysis,
+    decision,
+    primaryWaitingOn,
+    staleness,
+    trackedItemAiAnalysis(codexAnalysis, analysis),
+  );
+}
+
 function blockedParentContext(
-  state: RuntimeState,
-  configuration: RuntimeConfiguration,
-  exactCachedByNodeId: ReadonlyMap<GitHubNodeId, ExactCachedAiAnalysis>,
   decision: ReducedCodexDecision,
   graph: GraphResult | undefined,
 ): BlockedParentContext {
@@ -3594,18 +4094,8 @@ function blockedParentContext(
   const firstWaitingOn = decision.waitingOn[0];
   assertNonNullable(firstWaitingOn, "blocked項目にwaitingOnがありません");
   const previousSeverityByNodeId = new Map<string, Severity>();
-  const previousGraph = previousGraphSnapshot(state, configuration, exactCachedByNodeId);
-  const previousImpact =
-    previousGraph == null
-      ? Object.freeze([])
-      : analyzeGraph({
-          current: previousGraph,
-          previous: {
-            availability: "unavailable",
-          },
-        }).downstreamImpacts;
   const downstreamImpactByNodeId = new Map<string, number>(
-    (graph?.analysis.downstreamImpacts ?? previousImpact).map((impact) => [
+    (graph?.analysis.downstreamImpacts ?? []).map((impact) => [
       impact.nodeId,
       impact.openNodeCount,
     ]),
@@ -3637,7 +4127,6 @@ function trackedItemStaleness(staleness: StalenessResult): TrackedItemStaleness 
 
 function reduceAnalysisPass(
   configuration: RuntimeConfiguration,
-  state: RuntimeState,
   inventory: RepositoryInventory,
   collection: CollectedItems,
   deterministicAnalysis: DeterministicAnalysis,
@@ -3650,17 +4139,13 @@ function reduceAnalysisPass(
   const stalenessByNodeId = new Map<GitHubNodeId, TrackedItemStaleness>();
   const relationAssessments: RelationCandidateAssessment[] = [];
   const unresolvedAiRelationCandidateIds = new Set<RelationCandidateId>();
-  const previousImportanceAssessmentByNodeId = new Map<
-    GitHubNodeId,
-    NaturalLanguageImportanceAssessmentState
-  >();
   let runStatus: ReducedAnalysis["runStatus"] = "success";
   for (const originalAnalysis of deterministicAnalysis.items) {
     const output = codexOutputForAnalysis(originalAnalysis, codexAnalysis);
     const analysis = reassessDeterministicAnalysis(
       collection.evaluatedAt,
       configuration,
-      state,
+      collection,
       inventory,
       deterministicAnalysis,
       originalAnalysis,
@@ -3705,47 +4190,39 @@ function reduceAnalysisPass(
       decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
       events: analysis.item.events,
       responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
-      dependencyResolutions: dependencyResolutions(
-        state,
-        configuration,
-        codexAnalysis.exactCachedByNodeId,
-        collection,
-        graph,
-        reduction?.relationAssessments ?? [],
-        analysis,
-      ),
+      dependencyResolutions: dependencyResolutions(graph, analysis),
       naturalLanguageAssessments: naturalLanguageProgressAssessments(analysis, output),
       minimumAiConfidence: configuration.config.ai.confidence.medium,
       repositoryFullName: repositoryFullName(repository),
       currentLabels: analysis.item.labels,
       resolveLabelEffects,
       thresholdsHours: configuration.config.staleness.thresholdsHours,
-      blockedParentContext: blockedParentContext(
-        state,
-        configuration,
-        codexAnalysis.exactCachedByNodeId,
-        decision,
-        graph,
-      ),
+      blockedParentContext: blockedParentContext(decision, graph),
     });
+    const notificationRecommendation =
+      reduction == null
+        ? Object.freeze({
+            availability: "not_available",
+          } satisfies DiscordNotificationItem["notificationRecommendation"])
+        : Object.freeze({
+            availability: "available",
+            value: reduction.notification,
+          } satisfies DiscordNotificationItem["notificationRecommendation"]);
     currentItems.push(
       Object.freeze({
         item: analysis.item,
         decision,
-        notificationRecommendation:
-          reduction == null
-            ? Object.freeze({
-                availability: "not_available",
-              })
-            : Object.freeze({
-                availability: "available",
-                value: reduction.notification,
-              }),
+        notificationRecommendation,
+        aiNotificationEvents: createAiNotificationEvents(
+          analysis,
+          output,
+          notificationRecommendation,
+        ),
         primaryWaitingOn,
         staleness,
         importanceAssessment: resolveImportanceAssessment(
           reduction?.importanceAssessment,
-          previousImportanceAssessmentByNodeId.get(analysis.item.nodeId),
+          codexAnalysis.fallbackImportanceByNodeId.get(analysis.item.nodeId),
         ),
       }),
     );
@@ -3767,7 +4244,6 @@ function reduceAnalysisPass(
 
 function reduceAllAnalyses(
   configuration: RuntimeConfiguration,
-  state: RuntimeState,
   inventory: RepositoryInventory,
   collection: CollectedItems,
   deterministicAnalysis: DeterministicAnalysis,
@@ -3775,22 +4251,15 @@ function reduceAllAnalyses(
 ): ReducedAnalysis {
   const initialReduction = reduceAnalysisPass(
     configuration,
-    state,
     inventory,
     collection,
     deterministicAnalysis,
     codexAnalysis,
     undefined,
   );
-  const provisionalGraph = reconcileCurrentGraph(
-    configuration,
-    state,
-    collection,
-    initialReduction,
-  );
+  const provisionalGraph = reconcileCurrentGraph(configuration, collection, initialReduction);
   return reduceAnalysisPass(
     configuration,
-    state,
     inventory,
     collection,
     deterministicAnalysis,
@@ -3807,136 +4276,6 @@ function graphAnalysisNode(item: PendingTrackedItem): GraphAnalysisNode {
     state: item.state,
     directNotification: "eligible",
   });
-}
-
-function externalGraphAnalysisNode(reference: ExternalGhostNode): GraphAnalysisNode {
-  return Object.freeze({
-    kind: reference.kind,
-    nodeId: reference.nodeId,
-    repositoryFullName: reference.repositoryFullName,
-    state: reference.state,
-    directNotification: reference.directNotification,
-  });
-}
-
-function previousGraphSnapshot(
-  state: RuntimeState,
-  configuration: RuntimeConfiguration,
-  exactCachedByNodeId: ReadonlyMap<GitHubNodeId, ExactCachedAiAnalysis>,
-): GraphAnalysisSnapshot | undefined {
-  const documents = loadedItemCacheDocuments(state);
-  if (documents.length === 0) {
-    return undefined;
-  }
-  const firstDocument = documents[0];
-  assertNonNullable(firstDocument, "previous graphの基準item cache文書がありません");
-  const sources = documents.map((document) => {
-    const restored = restoreGitHubItemCacheForAnalysis(document, {
-      mode: "fresh",
-      bodyFingerprint: document.bodyFingerprint,
-      itemFingerprint: document.itemFingerprint,
-      analysisRulesFingerprint: document.analysisRulesFingerprint,
-    });
-    if (restored.status === "cache_miss") {
-      throw new TypeError(`読み込み済みitem cacheを復元できません。対象: ${document.nodeId}`);
-    }
-    return restored.source;
-  });
-  const candidates = normalizeRelationCandidates(
-    sources.flatMap((source) => source.relationCandidates),
-  );
-  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
-  const assessments: RelationCandidateAssessment[] = [];
-  for (const [nodeId, exact] of exactCachedByNodeId) {
-    for (const relation of exact.output.relations) {
-      if (!candidateIds.has(relation.candidateId)) {
-        continue;
-      }
-      assessments.push(
-        Object.freeze({
-          candidateId: relation.candidateId,
-          currentNodeId: nodeId,
-          verdict: relation.verdict,
-          reasonSummary: relation.reasonSummary,
-          sourceIds: relation.sourceIds,
-          confidence: Math.min(exact.output.confidence, relation.confidence),
-        }),
-      );
-    }
-  }
-  const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
-  for (const source of sources) {
-    setEarliestRelationSourceOccurredAt(
-      sourceOccurredAtById,
-      source.observation.bodySourceId,
-      source.observation.createdAt,
-    );
-    for (const event of source.observation.events) {
-      setEarliestRelationSourceOccurredAt(sourceOccurredAtById, event.sourceId, event.occurredAt);
-    }
-  }
-  const reconciled = reconcileGraph({
-    previousGraph: {
-      edges: [],
-      historyEvents: [],
-    },
-    candidates,
-    assessments,
-    sourceOccurredAtById,
-    minimumInferredConfidence: configuration.config.ai.confidence.medium,
-    reconciledAt: documents.reduce(
-      (latest, document) => (document.observedAt > latest ? document.observedAt : latest),
-      firstDocument.observedAt,
-    ),
-  });
-  const nodes = new Map<GraphNodeId, GraphAnalysisNode>();
-  for (const document of documents) {
-    nodes.set(document.nodeId, {
-      kind: document.type,
-      nodeId: document.nodeId,
-      repositoryId: document.repositoryId,
-      state: document.state,
-      directNotification: "eligible",
-    });
-  }
-  for (const candidate of candidates) {
-    for (const node of relationNodes(candidate.relation)) {
-      if (node.scope === "external_public") {
-        nodes.set(node.nodeId, {
-          kind: "external_reference",
-          nodeId: node.nodeId,
-          repositoryFullName: `${node.repositoryOwner}/${node.repositoryName}`,
-          state: node.state,
-          directNotification: "not_eligible",
-        });
-      }
-    }
-  }
-  return Object.freeze({
-    nodes: Object.freeze([...nodes.values()]),
-    edges: reconciled.edges,
-  });
-}
-
-function preserveStaleGraphEdges(
-  collection: CollectedItems,
-  previousEdges: readonly ReconciledGraphEdge[],
-  reconciledEdges: readonly ReconciledGraphEdge[],
-): readonly ReconciledGraphEdge[] {
-  const staleNodeIds = new Set<string>(collection.staleItems.map((item) => item.nodeId));
-  const preservedEdges = new Map(
-    previousEdges
-      .filter((edge) => staleNodeIds.has(edge.fromNodeId) || staleNodeIds.has(edge.toNodeId))
-      .map((edge) => [edge.id, edge]),
-  );
-  const result = reconciledEdges.map((edge) => preservedEdges.get(edge.id) ?? edge);
-  const resultIds = new Set(result.map((edge) => edge.id));
-  for (const edgeId of preservedEdges.keys()) {
-    if (!resultIds.has(edgeId)) {
-      throw new TypeError(`stale repositoryの前回edgeがありません。対象: ${edgeId}`);
-    }
-  }
-  return Object.freeze(result);
 }
 
 function retainGraphEdgesForAvailableNodes(
@@ -3978,20 +4317,181 @@ function createEarliestRelationSourceOccurredAtById(
   return sourceOccurredAtById;
 }
 
+function temporalEdgeKey(fromNodeId: GraphNodeId, toNodeId: GraphNodeId): string {
+  return `${fromNodeId}\u0000${toNodeId}`;
+}
+
+function currentTerminalAt(collection: CollectedItems, nodeId: GraphNodeId): UtcIsoDateTime {
+  const enumerated = collection.enumeratedItems.find((item) => item.nodeId === nodeId);
+  const enumeratedAt = enumeratedTerminalAt(enumerated);
+  if (enumeratedAt != null) {
+    return enumeratedAt;
+  }
+  const source = collection.analysisSources.find((candidate) => candidate.item.nodeId === nodeId);
+  if (source?.kind === "cached" && source.document.lifecycle.kind === "terminal") {
+    return source.document.lifecycle.terminalAt;
+  }
+  throw new TypeError(`terminal nodeの確定時刻がありません。対象: ${nodeId}`);
+}
+
+function applyTemporalBlockActivity(
+  collection: CollectedItems,
+  edges: readonly ReconciledGraphEdge[],
+  temporal: TemporalBlocksGraphReplayResult,
+): readonly ReconciledGraphEdge[] {
+  const activeKeys = new Set(
+    temporal.currentGraph.activeBlocksEdges.map((edge) =>
+      temporalEdgeKey(edge.fromNodeId, edge.toNodeId),
+    ),
+  );
+  const stateByNodeId = new Map(
+    temporal.currentGraph.nodes.map((node) => [node.nodeId, node.state]),
+  );
+  return Object.freeze(
+    edges.map((edge): ReconciledGraphEdge => {
+      if (edge.type !== "blocks") {
+        return edge;
+      }
+      if (!stateByNodeId.has(edge.fromNodeId) || !stateByNodeId.has(edge.toNodeId)) {
+        return edge;
+      }
+      const key = temporalEdgeKey(edge.fromNodeId, edge.toNodeId);
+      if (activeKeys.has(key)) {
+        return edge;
+      }
+      const terminalNodeIds = [edge.fromNodeId, edge.toNodeId].filter(
+        (nodeId) => stateByNodeId.get(nodeId) !== "open",
+      );
+      const firstTerminalNodeId = terminalNodeIds[0];
+      assertNonNullable(
+        firstTerminalNodeId,
+        `inactive blocks edge ${edge.id}のterminal nodeがありません`,
+      );
+      const terminalAts = terminalNodeIds.map((nodeId) => currentTerminalAt(collection, nodeId));
+      const firstTerminalAt = terminalAts[0];
+      assertNonNullable(firstTerminalAt, `inactive blocks edge ${edge.id}の確定時刻がありません`);
+      const removedAt = terminalAts.reduce(
+        (earliest, terminalAt) => (terminalAt < earliest ? terminalAt : earliest),
+        firstTerminalAt,
+      );
+      return Object.freeze({
+        ...edge,
+        active: false,
+        removedAt,
+      });
+    }),
+  );
+}
+
+function createTemporalGraphReplay(
+  collection: CollectedItems,
+  eligibleItems: readonly PendingTrackedItem[],
+  currentEdges: readonly ReconciledGraphEdge[],
+  relationCandidates: readonly RelationCandidate[],
+): Readonly<{
+  replay: TemporalBlocksGraphReplayResult;
+  activeBlockIntervalsByEdgeKey: GraphResult["activeBlockIntervalsByEdgeKey"];
+}> {
+  const currentNodeIds = new Set<GraphNodeId>(eligibleItems.map((item) => item.nodeId));
+  const canonicalEdgesByKey = new Map<
+    string,
+    Readonly<{ fromNodeId: GraphNodeId; toNodeId: GraphNodeId }>
+  >();
+  for (const edge of currentEdges) {
+    if (
+      edge.type !== "blocks" ||
+      !currentNodeIds.has(edge.fromNodeId) ||
+      !currentNodeIds.has(edge.toNodeId)
+    ) {
+      continue;
+    }
+    const key = temporalEdgeKey(edge.fromNodeId, edge.toNodeId);
+    canonicalEdgesByKey.set(
+      key,
+      Object.freeze({ fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId }),
+    );
+  }
+  const sourceByNodeId = new Map(
+    collection.analysisSources.map((source) => [source.item.nodeId, source]),
+  );
+  const items = eligibleItems.map((item) => {
+    const source = sourceByNodeId.get(item.nodeId);
+    assertNonNullable(source, `temporal replay対象の解析sourceがありません。対象: ${item.nodeId}`);
+    return source.kind === "fresh"
+      ? Object.freeze({
+          kind: "fresh",
+          detail: source.detail,
+          itemCreatedAt: source.item.createdAt,
+          replay: source.replay,
+        })
+      : Object.freeze({
+          kind: "cached",
+          document: source.document,
+        });
+  });
+  const adapter = adaptMixedTemporalBlocksGraph({
+    current: {
+      scope: "eligible_tracked_items_only",
+      nodes: eligibleItems.map((item) => ({ nodeId: item.nodeId, state: item.state })),
+      canonicalBlocksEdges: Object.freeze([...canonicalEdgesByKey.values()]),
+    },
+    notificationHistory: collection.exactAiRelationNotificationHistory,
+    relationCandidates: relationCandidates.filter((candidate) =>
+      relationNodes(candidate.relation).every(
+        (node) => node.scope === "organization" && currentNodeIds.has(node.nodeId),
+      ),
+    ),
+    items,
+  });
+  const replay = replayTemporalBlocksGraph(adapter.input);
+  const activeBlockIntervalsByEdgeKey = new Map<
+    string,
+    Readonly<{
+      addedAt: UtcIsoDateTime;
+      sourceIds: readonly [SourceId, ...SourceId[]];
+    }>
+  >();
+  if (adapter.input.relationHistory.status === "exact") {
+    const activeEdgeKeys = new Set(
+      replay.currentGraph.activeBlocksEdges.map((edge) =>
+        temporalEdgeKey(edge.fromNodeId, edge.toNodeId),
+      ),
+    );
+    for (const relation of replayDependencyEvents(adapter.input.relationHistory.mutations)
+      .relations) {
+      const key = temporalEdgeKey(relation.edge.fromNodeId, relation.edge.toNodeId);
+      const currentInterval = relation.intervals.at(-1);
+      assertNonNullable(currentInterval, `active blocks edge ${key}のintervalがありません`);
+      if (currentInterval.status !== "active" || !activeEdgeKeys.has(key)) {
+        continue;
+      }
+      activeBlockIntervalsByEdgeKey.set(
+        key,
+        Object.freeze({
+          addedAt: currentInterval.addedAt,
+          sourceIds: currentInterval.sourceIds,
+        }),
+      );
+    }
+  }
+  return Object.freeze({ replay, activeBlockIntervalsByEdgeKey });
+}
+
 function reconcileCurrentGraph(
   configuration: RuntimeConfiguration,
-  state: RuntimeState,
   collection: CollectedItems,
   reduction: ReducedAnalysis,
 ): GraphResult {
-  const previous = previousGraphSnapshot(
-    state,
-    configuration,
-    new Map<GitHubNodeId, ExactCachedAiAnalysis>(),
+  const freshRepositoryIdSet = freshRepositoryIds(collection);
+  const eligibleItems = reduction.items.filter((item) =>
+    freshRepositoryIdSet.has(item.repositoryId),
   );
-  const nodeIds = new Set(reduction.items.map((item) => item.nodeId));
+  const nodeIds = new Set<GraphNodeId>(eligibleItems.map((item) => item.nodeId));
   const candidates = collection.relationCandidates.filter((candidate) => {
     const nodes = relationNodes(candidate.relation);
+    if (candidate.relation.type === "blocks") {
+      return nodes.every((node) => node.scope === "organization" && nodeIds.has(node.nodeId));
+    }
     return (
       nodes.some((node) => node.scope === "organization" && nodeIds.has(node.nodeId)) &&
       nodes.every((node) => node.scope === "external_public" || nodeIds.has(node.nodeId))
@@ -4000,7 +4500,7 @@ function reconcileCurrentGraph(
   const candidateIds = new Set(candidates.map((candidate) => candidate.id));
   const reconciled: ReconcileGraphResult = reconcileGraph({
     previousGraph: {
-      edges: previous?.edges ?? [],
+      edges: [],
       historyEvents: [],
     },
     candidates,
@@ -4011,11 +4511,13 @@ function reconcileCurrentGraph(
     minimumInferredConfidence: configuration.config.ai.confidence.medium,
     reconciledAt: collection.evaluatedAt,
   });
-  const reconciledEdges = preserveStaleGraphEdges(
+  const temporalContext = createTemporalGraphReplay(
     collection,
-    previous?.edges ?? [],
-    reconciled.edges,
+    eligibleItems,
+    reconciled.activeEdges,
+    candidates,
   );
+  const temporal = temporalContext.replay;
   const externalReferencesByNodeId = new Map(
     [
       ...collection.externalReferences,
@@ -4041,53 +4543,39 @@ function reconcileCurrentGraph(
     ].map((reference) => [reference.nodeId, reference]),
   );
   const availableNodeIds = new Set<string>([
-    ...reduction.items.map((item) => item.nodeId),
+    ...eligibleItems.map((item) => item.nodeId),
     ...externalReferencesByNodeId.keys(),
   ]);
-  const edges = retainGraphEdgesForAvailableNodes(reconciledEdges, availableNodeIds);
+  const currentEdges = retainGraphEdgesForAvailableNodes(reconciled.edges, availableNodeIds);
+  const eligibleCurrentEdges = currentEdges.filter(
+    (edge) => nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId),
+  );
+  const analysisEdges = applyTemporalBlockActivity(collection, eligibleCurrentEdges, temporal);
+  const analysisEdgesById = new Map(analysisEdges.map((edge) => [edge.id, edge]));
+  const edges = Object.freeze(currentEdges.map((edge) => analysisEdgesById.get(edge.id) ?? edge));
   const referencedNodeIds = new Set(edges.flatMap((edge) => [edge.fromNodeId, edge.toNodeId]));
   const externalReferences = Object.freeze(
     [...externalReferencesByNodeId.values()]
       .filter((reference) => referencedNodeIds.has(reference.nodeId))
       .sort((left, right) => left.nodeId.localeCompare(right.nodeId)),
   );
-  const graphNodes = [
-    ...reduction.items.map(graphAnalysisNode),
-    ...externalReferences.map(externalGraphAnalysisNode),
-  ];
+  const graphNodes = eligibleItems.map(graphAnalysisNode);
   const analysis = analyzeGraph({
     current: {
       nodes: graphNodes,
-      edges,
+      edges: analysisEdges,
     },
-    previous:
-      previous == null
-        ? {
-            availability: "unavailable",
-          }
-        : {
-            availability: "available",
-            snapshot: previous,
-          },
+    previous: {
+      availability: "unavailable",
+    },
   });
   return Object.freeze({
-    edges,
+    displayEdges: edges,
+    analysisEdges,
     externalReferences,
     analysis,
-    previousAnalysis:
-      previous == null
-        ? Object.freeze({
-            availability: "unavailable",
-          })
-        : Object.freeze({
-            availability: "available",
-            value: analyzeGraph({
-              current: previous,
-              previous: {
-                availability: "unavailable",
-              },
-            }),
-          }),
+    temporal,
+    activeBlockIntervalsByEdgeKey: temporalContext.activeBlockIntervalsByEdgeKey,
   });
 }
 
@@ -4210,6 +4698,121 @@ function notificationLatestChange(
   return windowEvents.some((event) => event.actor.type === "human") ? "human" : "bot_only";
 }
 
+function responsibilityChangedEvents(
+  source: RuntimeItemAnalysisSource,
+): readonly DiscordNotificationEvent[] {
+  const epochs =
+    source.kind === "fresh"
+      ? source.replay.responsibilityEpochs
+      : source.document.replay.responsibilityEpochs;
+  if (epochs.status === "unknown") {
+    return Object.freeze([]);
+  }
+  const normalizedEpochs = epochs.value.map((epoch) =>
+    Object.freeze({
+      targetSignature: serializeCanonicalJson(epoch.targets),
+      occurredAt: epoch.occurredAt,
+      sourceIds: epoch.sourceIds,
+    }),
+  );
+  const events: DiscordNotificationEvent[] = [];
+  for (let index = 1; index < normalizedEpochs.length; index += 1) {
+    const previous = normalizedEpochs[index - 1];
+    const current = normalizedEpochs[index];
+    assertNonNullable(previous, "責務epochの直前値がありません");
+    assertNonNullable(current, "責務epochの現在値がありません");
+    if (previous.targetSignature === current.targetSignature) {
+      continue;
+    }
+    nonEmptySourceIds(current.sourceIds, `責務変更 ${source.item.nodeId}`);
+    events.push(
+      Object.freeze({
+        kind: "responsibility_changed",
+        occurredAt: current.occurredAt,
+      }),
+    );
+  }
+  return Object.freeze(events);
+}
+
+function createAiNotificationEvents(
+  analysis: DeterministicItemAnalysis,
+  output: ValidatedCodexAnalysisOutput | undefined,
+  recommendation: DiscordNotificationItem["notificationRecommendation"],
+): readonly DiscordNotificationEvent[] {
+  if (
+    output == null ||
+    recommendation.availability !== "available" ||
+    !recommendation.value.recommended ||
+    recommendation.value.reasonCode === "none"
+  ) {
+    return Object.freeze([]);
+  }
+  const notificationEvidence = output.evidence.filter(
+    (evidence) => evidence.supports === "notification",
+  );
+  if (notificationEvidence.length === 0) {
+    return Object.freeze([]);
+  }
+  const sourceOccurredAtById = analysisSourceOccurredAtById(analysis);
+  const occurredAts: UtcIsoDateTime[] = [];
+  for (const evidence of notificationEvidence) {
+    const occurredAt = sourceOccurredAtById.get(evidence.sourceId);
+    if (occurredAt == null) {
+      return Object.freeze([]);
+    }
+    occurredAts.push(occurredAt);
+  }
+  return Object.freeze([
+    Object.freeze({
+      kind: "ai_notification",
+      reasonCode: recommendation.value.reasonCode,
+      occurredAt: latestUtcIsoDateTime(occurredAts, `AI通知 ${analysis.item.nodeId}`),
+    }),
+  ]);
+}
+
+function temporalNotificationEvents(
+  graph: GraphResult,
+  source: RuntimeItemAnalysisSource,
+  aiNotificationEvents: readonly DiscordNotificationEvent[],
+): readonly DiscordNotificationEvent[] {
+  const newlyUnblockedEvents = graph.temporal.newlyUnblockedFacts.flatMap(
+    (fact): DiscordNotificationEvent[] =>
+      fact.status === "exact" && fact.value.blockedNodeId === source.item.nodeId
+        ? [
+            Object.freeze({
+              kind: "newly_unblocked",
+              occurredAt: fact.value.occurredAt,
+            }),
+          ]
+        : [],
+  );
+  return Object.freeze([
+    ...newlyUnblockedEvents,
+    ...responsibilityChangedEvents(source),
+    ...aiNotificationEvents,
+  ]);
+}
+
+function temporalDependencyCycles(
+  graph: GraphResult,
+  nodeId: GitHubNodeId,
+): DiscordNotificationItem["graph"]["dependencyCycles"] {
+  return Object.freeze(
+    graph.temporal.cycleCreatedFacts.flatMap((fact) =>
+      fact.status === "exact" && fact.value.nodeIds.includes(nodeId)
+        ? [
+            Object.freeze({
+              cycleId: fact.value.id,
+              occurredAt: fact.value.occurredAt,
+            }),
+          ]
+        : [],
+    ),
+  );
+}
+
 function notificationItem(
   configuration: RuntimeConfiguration,
   inventory: RepositoryInventory,
@@ -4218,6 +4821,7 @@ function notificationItem(
   item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
+  source: RuntimeItemAnalysisSource,
   currentEvents: readonly NormalizedEvent[],
   referenceAt: UtcIsoDateTime,
 ): DiscordNotificationItem {
@@ -4256,10 +4860,16 @@ function notificationItem(
       stallSince: item.stallSince,
       lastProgressAt: item.lastProgressAt,
     },
-    events: Object.freeze([]),
+    events: temporalNotificationEvents(
+      graph,
+      source,
+      analysisState.availability === "available"
+        ? analysisState.value.aiNotificationEvents
+        : Object.freeze([]),
+    ),
     graph: Object.freeze({
       downstreamImpact,
-      dependencyCycles: Object.freeze([]),
+      dependencyCycles: temporalDependencyCycles(graph, item.nodeId),
     }),
   });
 }
@@ -4286,6 +4896,9 @@ function notificationItems(
   const currentEventsByNodeId = new Map(
     collection.observedItems.map((item) => [item.nodeId, item.events]),
   );
+  const sourceByNodeId = new Map(
+    collection.analysisSources.map((source) => [source.item.nodeId, source]),
+  );
   return Object.freeze(
     reduction.items.flatMap((item) => {
       if (staleRepositoryIds.has(item.repositoryId)) {
@@ -4294,6 +4907,8 @@ function notificationItems(
       const staleness = reduction.stalenessByNodeId.get(item.nodeId);
       assertNonNullable(staleness, `通知対象 ${item.nodeId}のseverity再計算結果がありません`);
       const current = currentItemsByNodeId.get(item.nodeId);
+      const source = sourceByNodeId.get(item.nodeId);
+      assertNonNullable(source, `通知対象 ${item.nodeId}の解析sourceがありません`);
       return [
         notificationItem(
           configuration,
@@ -4310,6 +4925,7 @@ function notificationItems(
                 availability: "available",
                 value: current,
               }),
+          source,
           currentEventsByNodeId.get(item.nodeId) ?? Object.freeze([]),
           referenceAt,
         ),
@@ -4346,23 +4962,16 @@ function snapshotAiState(config: Config, codexAnalysis: CodexAnalysis): Snapshot
   });
 }
 
-function createTrackedItemWithImportance(
+function createTrackedItemWithResolvedImportance(
   evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
   inventory: RepositoryInventory,
-  graph: GraphResult,
   resolveLabelEffects: ReturnType<typeof createLabelEffectsResolver>,
   item: PendingTrackedItem,
+  downstreamImpact: ImportanceDownstreamImpact,
   naturalLanguageAssessment: NaturalLanguageImportanceAssessmentState,
 ): TrackedItemWithImportanceAssessment {
   const repository = findRepository(inventory, item.repositoryId);
-  const downstreamImpact = graph.analysis.downstreamImpacts.find(
-    (impact) => impact.nodeId === item.nodeId,
-  );
-  assertNonNullable(
-    downstreamImpact,
-    `重要度計算対象 ${item.nodeId}のdownstream impactがありません`,
-  );
   const labelEffects = resolveLabelEffects(repositoryFullName(repository), item.labels);
   const deterministicImportance = calculateImportance({
     priorityWeight: labelEffects.priorityWeight,
@@ -4383,6 +4992,232 @@ function createTrackedItemWithImportance(
       levels: configuration.config.importance.levels,
     }),
   });
+}
+
+function createTrackedItemWithImportance(
+  evaluatedAt: UtcIsoDateTime,
+  configuration: RuntimeConfiguration,
+  inventory: RepositoryInventory,
+  graph: GraphResult,
+  resolveLabelEffects: ReturnType<typeof createLabelEffectsResolver>,
+  item: PendingTrackedItem,
+  naturalLanguageAssessment: NaturalLanguageImportanceAssessmentState,
+): TrackedItemWithImportanceAssessment {
+  const downstreamImpact = graph.analysis.downstreamImpacts.find(
+    (impact) => impact.nodeId === item.nodeId,
+  );
+  assertNonNullable(
+    downstreamImpact,
+    `重要度計算対象 ${item.nodeId}のdownstream impactがありません`,
+  );
+  return createTrackedItemWithResolvedImportance(
+    evaluatedAt,
+    configuration,
+    inventory,
+    resolveLabelEffects,
+    item,
+    downstreamImpact,
+    naturalLanguageAssessment,
+  );
+}
+
+function staleDisplayRuntimeAnalysisSource(
+  source: StaleDisplayItemAnalysisSource,
+): Extract<RuntimeItemAnalysisSource, { kind: "cached" }> {
+  return Object.freeze({
+    kind: "cached",
+    item: source.item,
+    document: source.document,
+    analysis: source.analysis,
+    exactAi: undefined,
+  });
+}
+
+function createStaleDisplayDeterministicAnalysis(
+  evaluatedAt: UtcIsoDateTime,
+  configuration: RuntimeConfiguration,
+  inventory: RepositoryInventory,
+  source: StaleDisplayItemAnalysisSource,
+): DeterministicItemAnalysis {
+  if (source.analysis.replay.currentState !== source.repositoryIndex.state) {
+    throw new TypeError(
+      `stale item cacheのreplayとrepository indexの状態が一致しません。対象: ${source.item.nodeId}`,
+    );
+  }
+  const item = source.item;
+  const repository = findRepository(inventory, item.repositoryId);
+  const repositoryName = repositoryFullName(repository);
+  const maintainers = resolveRepositoryMaintainers(
+    configuration.config.maintainers,
+    repositoryName,
+  );
+  const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
+  const labelEffects = resolveLabelEffects(repositoryName, item.labels);
+  const notificationClass = classifyTrackingNotification({
+    authorType: authorType(item),
+    title: item.title,
+    automationNoiseTitles: configuration.config.notifications.automationNoiseTitles,
+    notificationsSuppressedByLabel: labelEffects.suppressNotifications,
+  });
+  const runtimeSource = staleDisplayRuntimeAnalysisSource(source);
+  const relationCandidates = candidatesForNode(item.nodeId, source.analysis.relationCandidates);
+  const blockers = createNativeBlockers(item, relationCandidates);
+  if (item.type === "issue") {
+    return Object.freeze({
+      item,
+      source: runtimeSource,
+      decision: determineIssueState({
+        issue: item,
+        blockers,
+        explicitRequestCandidates: issueRequestCandidatesForSource(runtimeSource),
+        explicitRequestAssessment: Object.freeze({ status: "not_assessed" }),
+        maintainers,
+        confidenceThresholds: configuration.config.ai.confidence,
+        evaluatedAt,
+      }),
+      notificationClass,
+      relationCandidates,
+    });
+  }
+  return Object.freeze({
+    item,
+    source: runtimeSource,
+    decision: determinePullRequestState({
+      pullRequest: item,
+      blockers,
+      checkFailureAssessment: Object.freeze({ cause: "not_assessed" }),
+      labelEffects,
+      maintainers,
+      confidenceThresholds: configuration.config.ai.confidence,
+      evaluatedAt,
+    }),
+    notificationClass,
+    relationCandidates,
+  });
+}
+
+function staleDisplayItemRetentionState(
+  source: StaleDisplayItemAnalysisSource,
+): RetentionItemState {
+  const lifecycle = source.repositoryIndex.lifecycle;
+  if (lifecycle.kind === "open") {
+    return Object.freeze({ state: "open" });
+  }
+  return Object.freeze({
+    state: source.repositoryIndex.state === "merged" ? "merged" : "closed",
+    terminalAt: lifecycle.terminalAt,
+  });
+}
+
+function createStaleSnapshotTrackedItem(
+  evaluatedAt: UtcIsoDateTime,
+  configuration: RuntimeConfiguration,
+  inventory: RepositoryInventory,
+  source: StaleDisplayItemAnalysisSource,
+  resolveLabelEffects: ReturnType<typeof createLabelEffectsResolver>,
+): SnapshotTrackedItem {
+  const analysis = createStaleDisplayDeterministicAnalysis(
+    evaluatedAt,
+    configuration,
+    inventory,
+    source,
+  );
+  const decision = reducedDeterministicDecision(analysis.decision);
+  const primaryWaitingOn = primaryWaitingOnForDecision(analysis.decision, decision);
+  const basis = transitionBasisForDecision(analysis, decision);
+  const repository = findRepository(inventory, analysis.item.repositoryId);
+  const staleness = calculateStaleness({
+    createdAt: analysis.item.createdAt,
+    evaluatedAt,
+    currentDecision: {
+      status: decision.status,
+      waitingOn: decision.waitingOn,
+      confidence: decision.confidence,
+      statusBasis: basis.statusBasis,
+      responsibilityBasis: basis.responsibilityBasis,
+    },
+    decisionBasis: "deterministic",
+    events: analysis.item.events,
+    responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
+    dependencyResolutions: Object.freeze([]),
+    naturalLanguageAssessments: Object.freeze([]),
+    minimumAiConfidence: configuration.config.ai.confidence.medium,
+    repositoryFullName: repositoryFullName(repository),
+    currentLabels: analysis.item.labels,
+    resolveLabelEffects,
+    thresholdsHours: configuration.config.staleness.thresholdsHours,
+    blockedParentContext: blockedParentContext(decision, undefined),
+  });
+  const pending = createTrackedItemFromAnalysis(
+    analysis,
+    decision,
+    primaryWaitingOn,
+    staleness,
+    configuration.config.ai.enabled
+      ? Object.freeze({ status: "not_recorded" })
+      : Object.freeze({ status: "disabled" }),
+  );
+  const item = createTrackedItemWithResolvedImportance(
+    evaluatedAt,
+    configuration,
+    inventory,
+    resolveLabelEffects,
+    pending,
+    Object.freeze({ openNodeCount: 0, repositoryCount: 0 }),
+    unavailableImportanceAssessment(),
+  );
+  const trackedStaleness = trackedItemStaleness(staleness);
+  return Object.freeze({
+    ...item,
+    attention: calculateAttention({
+      importanceScore: item.importance.score,
+      elapsedHours: trackedStaleness.elapsedHours,
+      waitClass: trackedStaleness.waitClass,
+      thresholdsHours: configuration.config.staleness.thresholdsHours,
+      recencyFloor: configuration.config.attention.recencyFloor,
+      levels: configuration.config.attention.levels,
+    }),
+    severity: trackedStaleness.severity,
+    severityContext: trackedStaleness.severityContext,
+  });
+}
+
+function createStaleSnapshotTrackedItems(
+  evaluatedAt: UtcIsoDateTime,
+  configuration: RuntimeConfiguration,
+  inventory: RepositoryInventory,
+  collection: CollectedItems,
+  freshNodeIds: ReadonlySet<GitHubNodeId>,
+  resolveLabelEffects: ReturnType<typeof createLabelEffectsResolver>,
+): readonly SnapshotTrackedItem[] {
+  const items: SnapshotTrackedItem[] = [];
+  for (const source of collection.staleDisplaySources) {
+    if (freshNodeIds.has(source.item.nodeId)) {
+      throw new TypeError(
+        `fresh項目とstale表示項目のnode IDが重複しています。対象: ${source.item.nodeId}`,
+      );
+    }
+    if (
+      !shouldKeepPreviousTrackedItemInActiveDataset(
+        evaluatedAt,
+        configuration,
+        source.item,
+        staleDisplayItemRetentionState(source),
+      )
+    ) {
+      continue;
+    }
+    items.push(
+      createStaleSnapshotTrackedItem(
+        evaluatedAt,
+        configuration,
+        inventory,
+        source,
+        resolveLabelEffects,
+      ),
+    );
+  }
+  return Object.freeze(items.sort((left, right) => left.nodeId.localeCompare(right.nodeId)));
 }
 
 type CompleteCacheHistory = Extract<CacheHistory, { status: "complete" }>;
@@ -4635,12 +5470,6 @@ function createItemCacheDocuments(
     const detail = source.detail;
     const enumeratedItem = findEnumeratedItem(collection, observation.nodeId);
     const repository = findRepository(inventory, observation.repositoryId);
-    const replay = replayGitHubItemHistory({
-      item: enumeratedItem,
-      detail,
-      trackingStartAt: trackingSelectionStartAt(configuration),
-      isBot: createGitHubBotPredicate(configuration.config.actors.bots),
-    });
     const relationMutations = adaptGitHubItemDetailRelationMutations(
       detail,
       observation.createdAt,
@@ -4678,7 +5507,7 @@ function createItemCacheDocuments(
       lifecycle: cacheLifecycleForItem(enumeratedItem),
       relationCandidates: candidatesForNode(observation.nodeId, collection.relationCandidates),
       relationMutations,
-      replay,
+      replay: source.replay,
       history: createCacheHistory(enumeratedItem, detail),
       analysisFacts: {
         bodyEmpty: detail.body.length === 0,
@@ -4794,24 +5623,31 @@ function createRuntimeCachePayload(
       document.aiCacheReference.status === "available" ? [document.aiCacheReference.cacheKey] : [],
     ),
   );
-  const loadedLatestImportanceCaches: readonly AiLatestImportanceCacheDocument[] =
-    state.loaded.status === "available" ? state.loaded.latestImportanceCaches : [];
-  const latestImportanceCaches = loadedLatestImportanceCaches.filter((document) =>
-    retainedNodeIds.has(document.nodeId),
-  );
+  const latestImportanceCaches = [...codexAnalysis.latestImportanceByNodeId.values()]
+    .filter((document) => retainedNodeIds.has(document.nodeId))
+    .sort((left, right) => left.nodeId.localeCompare(right.nodeId));
   for (const document of latestImportanceCaches) {
-    if (document.aiCacheReference.status !== "available") {
-      throw new TypeError(
-        `latest importanceが利用可能なAI cacheを参照していません。対象: ${document.nodeId}`,
-      );
-    }
     referencedAiCacheKeys.add(document.aiCacheReference.cacheKey);
   }
-  const aiCacheEntries = state.aiCache
-    .entries()
-    .filter((entry) => referencedAiCacheKeys.has(entry.cacheKey));
+  const retainedItemCachesByNodeId = new Map(
+    itemCaches.map((document) => [document.nodeId, document]),
+  );
+  const aiCacheEntries = state.aiCache.entries().filter((entry) => {
+    if (codexAnalysis.rejectedAiCacheKeys.has(entry.cacheKey)) {
+      return false;
+    }
+    const item = retainedItemCachesByNodeId.get(entry.nodeId);
+    if (item?.repository.repositoryId !== entry.repository.repositoryId) {
+      return false;
+    }
+    return (
+      item.repository.owner === entry.repository.owner &&
+      item.repository.name === entry.repository.name
+    );
+  });
+  const aiCacheEntryKeys = new Set(aiCacheEntries.map((entry) => entry.cacheKey));
   for (const cacheKey of referencedAiCacheKeys) {
-    if (!aiCacheEntries.some((entry) => entry.cacheKey === cacheKey)) {
+    if (!aiCacheEntryKeys.has(cacheKey)) {
       throw new TypeError(`cache文書が参照するAI cache entryがありません。対象: ${cacheKey}`);
     }
   }
@@ -4850,10 +5686,6 @@ function validateRunCompleteness(
   const currentAnalysisByNodeId = new Map(
     reduction.currentItems.map((analysis) => [analysis.item.nodeId, analysis]),
   );
-  const previousImportanceAssessmentByNodeId = new Map<
-    GitHubNodeId,
-    NaturalLanguageImportanceAssessmentState
-  >();
   const items = reduction.items.map((item) => {
     const currentAnalysis = currentAnalysisByNodeId.get(item.nodeId);
     return createTrackedItemWithImportance(
@@ -4863,12 +5695,34 @@ function validateRunCompleteness(
       graph,
       resolveLabelEffects,
       item,
-      resolveImportanceAssessment(
-        currentAnalysis?.importanceAssessment,
-        previousImportanceAssessmentByNodeId.get(item.nodeId),
-      ),
+      resolveImportanceAssessment(currentAnalysis?.importanceAssessment, undefined),
     );
   });
+  const freshSnapshotItems = items.map((item): SnapshotTrackedItem => {
+    const staleness = reduction.stalenessByNodeId.get(item.nodeId);
+    assertNonNullable(staleness, `追跡項目 ${item.nodeId}のseverity再計算結果がありません`);
+    return Object.freeze({
+      ...item,
+      attention: calculateAttention({
+        importanceScore: item.importance.score,
+        elapsedHours: staleness.elapsedHours,
+        waitClass: staleness.waitClass,
+        thresholdsHours: configuration.config.staleness.thresholdsHours,
+        recencyFloor: configuration.config.attention.recencyFloor,
+        levels: configuration.config.attention.levels,
+      }),
+      severity: staleness.severity,
+      severityContext: staleness.severityContext,
+    });
+  });
+  const staleSnapshotItems = createStaleSnapshotTrackedItems(
+    collection.evaluatedAt,
+    configuration,
+    inventory,
+    collection,
+    new Set(freshSnapshotItems.map((item) => item.nodeId)),
+    resolveLabelEffects,
+  );
   const previousCollectionItems = previousCollectionItemsByNodeId(state);
   const currentAnalysisRulesFingerprints = createCurrentAnalysisRulesFingerprints(
     configuration.config,
@@ -4973,25 +5827,9 @@ function validateRunCompleteness(
       })),
     },
     repositories: snapshotRepositories(collection),
-    items: items.map((item) => {
-      const staleness = reduction.stalenessByNodeId.get(item.nodeId);
-      assertNonNullable(staleness, `追跡項目 ${item.nodeId}のseverity再計算結果がありません`);
-      return {
-        ...item,
-        attention: calculateAttention({
-          importanceScore: item.importance.score,
-          elapsedHours: staleness.elapsedHours,
-          waitClass: staleness.waitClass,
-          thresholdsHours: configuration.config.staleness.thresholdsHours,
-          recencyFloor: configuration.config.attention.recencyFloor,
-          levels: configuration.config.attention.levels,
-        }),
-        severity: staleness.severity,
-        severityContext: staleness.severityContext,
-      };
-    }),
+    items: Object.freeze([...freshSnapshotItems, ...staleSnapshotItems]),
     externalReferences: graph.externalReferences,
-    relations: graph.edges.map(toStateRelation),
+    relations: graph.displayEdges.map(toStateRelation),
     run: {
       id: invocation.runId,
       status: reduction.runStatus,
@@ -5350,6 +6188,182 @@ function previousRepositoryValues(state: RuntimeState): ReadonlyMap<
   );
 }
 
+function createStaleDisplayReference(
+  repository: PublicRepository,
+  number: number,
+): GitHubItemDisplayReference {
+  return GITHUB_ITEM_DISPLAY_REFERENCE_SCHEMA.parse(
+    `${repository.owner}/${repository.name}#${number.toString()}`,
+  );
+}
+
+function assertStaleRepositoryCacheIdentity(
+  result: Extract<RepositoryCollectionResult<SnapshotCollectionRepository>, { freshness: "stale" }>,
+  repositoryCache: GitHubRepositoryCacheDocument,
+): void {
+  const repository = result.repository;
+  if (
+    repositoryCache.repository.repositoryId !== repository.id ||
+    repositoryCache.repository.owner !== repository.owner ||
+    repositoryCache.repository.name !== repository.name
+  ) {
+    throw new TypeError(
+      `stale repositoryの公開識別情報とcache文書が一致しません。対象: ${repository.id}`,
+    );
+  }
+  if (
+    repositoryCache.successfulAt !== result.lastSuccessfulAt ||
+    result.previousValue.successfulAt !== result.lastSuccessfulAt ||
+    result.previousValue.repositoryId !== repository.id
+  ) {
+    throw new TypeError(
+      `stale repositoryの最終成功時刻またはrepository IDが一致しません。対象: ${repository.id}`,
+    );
+  }
+  if (result.failedAt < result.lastSuccessfulAt) {
+    throw new RangeError(
+      `stale repositoryの失敗時刻は最終成功時刻以後にしてください。対象: ${repository.id}`,
+    );
+  }
+  const previousItemsByNodeId = new Map(
+    result.previousValue.items.map((item) => [item.nodeId, item]),
+  );
+  if (previousItemsByNodeId.size !== repositoryCache.items.length) {
+    throw new TypeError(
+      `stale repositoryの前回項目とrepository indexの件数が一致しません。対象: ${repository.id}`,
+    );
+  }
+  for (const index of repositoryCache.items) {
+    const previous = previousItemsByNodeId.get(index.nodeId);
+    assertNonNullable(
+      previous,
+      `stale repository indexに対応する前回項目がありません。対象: ${index.nodeId}`,
+    );
+    const terminalAt = index.lifecycle.kind === "open" ? null : index.lifecycle.terminalAt;
+    const state = index.lifecycle.kind === "open" ? "open" : "closed";
+    if (
+      previous.repositoryId !== repository.id ||
+      previous.itemFingerprint !== index.itemFingerprint ||
+      previous.observedAt !== index.observedAt ||
+      previous.state !== state ||
+      previous.terminalAt !== terminalAt
+    ) {
+      throw new TypeError(
+        `stale repositoryの前回項目とrepository indexが一致しません。対象: ${index.nodeId}`,
+      );
+    }
+  }
+}
+
+function assertStaleItemCacheIdentity(
+  repository: PublicRepository,
+  repositoryIndex: CacheItemIndex,
+  document: GitHubItemCacheDocument,
+): void {
+  if (
+    document.repository.repositoryId !== repository.id ||
+    document.repository.owner !== repository.owner ||
+    document.repository.name !== repository.name ||
+    document.repositoryId !== repository.id
+  ) {
+    throw new TypeError(
+      `stale item cacheのrepository識別情報が一致しません。対象: ${repositoryIndex.nodeId}`,
+    );
+  }
+  if (
+    serializeCanonicalJson(repositoryIndex) !==
+    serializeCanonicalJson(cacheItemIndexFromDocument(document))
+  ) {
+    throw new TypeError(
+      `stale repository indexとitem cache文書が一致しません。対象: ${repositoryIndex.nodeId}`,
+    );
+  }
+}
+
+function restoreStaleDisplayItemSources(
+  state: RuntimeState,
+  repositoryResults: readonly RepositoryCollectionResult<SnapshotCollectionRepository>[],
+): readonly StaleDisplayItemAnalysisSource[] {
+  const repositoryCachesById = new Map(
+    loadedRepositoryCacheDocuments(state).map((document) => [
+      document.repository.repositoryId,
+      document,
+    ]),
+  );
+  const itemCachesByNodeId = new Map(
+    loadedItemCacheDocuments(state).map((document) => [document.nodeId, document]),
+  );
+  const restoredNodeIds = new Set<GitHubNodeId>();
+  const sources: StaleDisplayItemAnalysisSource[] = [];
+  for (const result of repositoryResults) {
+    if (result.freshness === "fresh") {
+      continue;
+    }
+    const repositoryCache = repositoryCachesById.get(result.repository.id);
+    assertNonNullable(
+      repositoryCache,
+      `stale repositoryのcache文書がありません。対象: ${result.repository.id}`,
+    );
+    assertStaleRepositoryCacheIdentity(result, repositoryCache);
+    for (const repositoryIndex of repositoryCache.items) {
+      if (restoredNodeIds.has(repositoryIndex.nodeId)) {
+        throw new TypeError(
+          `stale repository indexのnode IDが重複しています。対象: ${repositoryIndex.nodeId}`,
+        );
+      }
+      const itemCache = itemCachesByNodeId.get(repositoryIndex.nodeId);
+      assertNonNullable(
+        itemCache,
+        `stale repository indexに対応するitem cache文書がありません。対象: ${repositoryIndex.nodeId}`,
+      );
+      assertStaleItemCacheIdentity(result.repository, repositoryIndex, itemCache);
+      const restored = restoreGitHubItemCacheForAnalysis(itemCache, {
+        mode: "stale",
+        failedAt: result.failedAt,
+      });
+      if (restored.status !== "hit" || restored.freshness !== "stale") {
+        throw new TypeError(
+          `stale item cacheを表示用に復元できません。対象: ${repositoryIndex.nodeId}`,
+        );
+      }
+      const observation = restored.source.observation;
+      if (
+        observation.nodeId !== repositoryIndex.nodeId ||
+        observation.repositoryId !== result.repository.id ||
+        observation.type !== repositoryIndex.type ||
+        observation.number !== repositoryIndex.number ||
+        observation.url !== repositoryIndex.url ||
+        observation.observedAt !== repositoryIndex.observedAt
+      ) {
+        throw new TypeError(
+          `stale item cacheの観測値とrepository indexが一致しません。対象: ${repositoryIndex.nodeId}`,
+        );
+      }
+      restoredNodeIds.add(repositoryIndex.nodeId);
+      sources.push(
+        Object.freeze({
+          kind: "stale_display",
+          item: Object.freeze({
+            ...observation,
+            repositoryId: result.repository.id,
+            displayReference: createStaleDisplayReference(
+              result.repository,
+              repositoryIndex.number,
+            ),
+          }),
+          repositoryIndex,
+          document: restored.document,
+          analysis: restored.source,
+          failedAt: restored.failedAt,
+        }),
+      );
+    }
+  }
+  return Object.freeze(
+    sources.sort((left, right) => left.item.nodeId.localeCompare(right.item.nodeId)),
+  );
+}
+
 function cachedObservedItem(
   item: EnumeratedGitHubItem,
   source: GitHubItemCacheAnalysisSource,
@@ -5429,9 +6443,7 @@ function restoreCachedItemAnalysisSource(
   try {
     const reference = restored.document.aiCacheReference;
     const entry =
-      reference.status === "available"
-        ? state.aiCache.entries().find((candidate) => candidate.cacheKey === reference.cacheKey)
-        : undefined;
+      reference.status === "available" ? state.aiCache.get(reference.cacheKey) : undefined;
     const validation = validateGitHubItemCacheAiEntry(
       restored.document,
       entry == null ? { status: "missing" } : { status: "available", value: entry },
@@ -5439,6 +6451,21 @@ function restoreCachedItemAnalysisSource(
     if (validation.status === "validated") {
       if (reference.status !== "available") {
         throw new TypeError(`検証済みAI entryのcache参照がありません。対象: ${item.nodeId}`);
+      }
+      if (
+        configuration.config.ai.enabled &&
+        !aiEntryMatchesRunIdentity(
+          validation.entry,
+          createAiAnalysisRunIdentity(configuration.config),
+        )
+      ) {
+        return Object.freeze({
+          status: "detail_required",
+          reason: "exact_ai_refresh",
+          diagnostics: Object.freeze([
+            `warm cacheが参照するAI entryは現在の解析versionと互換性がないためfresh詳細を再取得します。対象: ${item.nodeId}。cache key: ${reference.cacheKey}`,
+          ]),
+        });
       }
       if (reference.graphNeighborhoodHash !== cachedGraphNeighborhoodHash(restored.source)) {
         return Object.freeze({
@@ -5512,6 +6539,141 @@ function restoreCachedItemAnalysisSource(
       analysis: restored.source,
       exactAi,
     }),
+  });
+}
+
+function historicalExactBlockEdge(
+  candidate: RelationCandidate,
+  currentNodeId: GitHubNodeId,
+  verdict: RelationAssessmentVerdict,
+): Readonly<{ fromNodeId: GraphNodeId; toNodeId: GraphNodeId }> | undefined {
+  if (candidate.authority !== "inferred") {
+    return undefined;
+  }
+  const [firstNode, secondNode] = relationNodes(candidate.relation);
+  let targetNode: RelationCandidateNode | undefined;
+  if (firstNode.nodeId === currentNodeId) {
+    targetNode = secondNode;
+  } else if (secondNode.nodeId === currentNodeId) {
+    targetNode = firstNode;
+  }
+  assertNonNullable(
+    targetNode,
+    `過去のexact AI relation候補に現在項目がありません。対象: ${candidate.id}`,
+  );
+  if (verdict === "current_is_blocked_by_target") {
+    return Object.freeze({ fromNodeId: targetNode.nodeId, toNodeId: currentNodeId });
+  }
+  if (verdict === "current_blocks_target") {
+    return Object.freeze({ fromNodeId: currentNodeId, toNodeId: targetNode.nodeId });
+  }
+  return undefined;
+}
+
+function createExactAiRelationNotificationHistory(
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  evaluatedAt: UtcIsoDateTime,
+  trackedNodeIds: ReadonlySet<GitHubNodeId>,
+  staleRepositoryIds: ReadonlySet<GitHubRepositoryId>,
+  diagnostics: string[],
+): ExactAiRelationNotificationHistory {
+  const identity = createAiAnalysisRunIdentity(configuration.config);
+  const edgesByKey = new Map<
+    string,
+    Readonly<{ fromNodeId: GraphNodeId; toNodeId: GraphNodeId }>
+  >();
+  const candidatesById = new Map<RelationCandidateId, RelationCandidate>();
+  for (const document of loadedItemCacheDocuments(state)) {
+    if (
+      !trackedNodeIds.has(document.nodeId) ||
+      staleRepositoryIds.has(document.repositoryId) ||
+      document.aiCacheReference.status !== "available"
+    ) {
+      continue;
+    }
+    const reference = document.aiCacheReference;
+    const entry = state.aiCache.get(reference.cacheKey);
+    if (entry == null) {
+      diagnostics.push(
+        `過去のexact AI relation参照先がないため一回通知から除外します。node ID: ${document.nodeId}。cache key: ${reference.cacheKey}`,
+      );
+      continue;
+    }
+    if (!aiEntryMatchesRunIdentity(entry, identity)) {
+      diagnostics.push(
+        `過去のexact AI relationは現在の解析versionと互換性がないため一回通知から除外します。node ID: ${document.nodeId}。cache key: ${reference.cacheKey}`,
+      );
+      continue;
+    }
+    let validation: ReturnType<typeof validateGitHubItemCacheAiEntry>;
+    try {
+      validation = validateGitHubItemCacheAiEntry(document, {
+        status: "available",
+        value: entry,
+      });
+    } catch (error: unknown) {
+      if (!(error instanceof Error)) {
+        throw error;
+      }
+      diagnostics.push(
+        `過去のexact AI relationのsemantic validationに失敗したため一回通知から除外します。node ID: ${document.nodeId}。cache key: ${reference.cacheKey}。原因: ${error.message}`,
+      );
+      continue;
+    }
+    if (validation.status !== "validated") {
+      throw new TypeError(
+        `利用可能な過去のexact AI relation参照を検証済みにできません。対象: ${document.nodeId}`,
+      );
+    }
+    const restored = restoreGitHubItemCacheForAnalysis(document, {
+      mode: "stale",
+      failedAt: evaluatedAt,
+    });
+    if (restored.status !== "hit") {
+      throw new TypeError(`過去のitem cacheを履歴用に復元できません。対象: ${document.nodeId}`);
+    }
+    const candidatesByCurrentId = new Map(
+      restored.source.relationCandidates.map((candidate) => [candidate.id, candidate]),
+    );
+    for (const relation of validation.output.relations) {
+      if (
+        Math.min(validation.output.confidence, relation.confidence) <
+        configuration.config.ai.confidence.medium
+      ) {
+        continue;
+      }
+      const candidate = candidatesByCurrentId.get(relation.candidateId);
+      assertNonNullable(
+        candidate,
+        `検証済みAI relationの候補がitem cacheにありません。対象: ${relation.candidateId}`,
+      );
+      if (
+        !relationNodes(candidate.relation).every(
+          (node) => node.scope === "organization" && trackedNodeIds.has(node.nodeId),
+        )
+      ) {
+        continue;
+      }
+      const edge = historicalExactBlockEdge(candidate, document.nodeId, relation.verdict);
+      if (edge == null) {
+        continue;
+      }
+      edgesByKey.set(temporalEdgeKey(edge.fromNodeId, edge.toNodeId), edge);
+      candidatesById.set(candidate.id, candidate);
+    }
+  }
+  return Object.freeze({
+    exactBlocksEdges: Object.freeze(
+      [...edgesByKey.values()].sort((left, right) =>
+        temporalEdgeKey(left.fromNodeId, left.toNodeId).localeCompare(
+          temporalEdgeKey(right.fromNodeId, right.toNodeId),
+        ),
+      ),
+    ),
+    relationCandidates: Object.freeze(
+      [...candidatesById.values()].sort((left, right) => left.id.localeCompare(right.id)),
+    ),
   });
 }
 
@@ -5616,6 +6778,12 @@ async function collectFreshRepositoryItemObservations(
         kind: "fresh",
         item: observation,
         detail,
+        replay: replayGitHubItemHistory({
+          item,
+          detail,
+          trackingStartAt: trackingSelectionStartAt(configuration),
+          isBot: createGitHubBotPredicate(configuration.config.actors.bots),
+        }),
       });
     }
     const source = cachedSourcesByNodeId.get(item.nodeId);
@@ -5630,6 +6798,78 @@ async function collectFreshRepositoryItemObservations(
     changedNodeIds: plan.changedItemNodeIds,
     diagnostics: Object.freeze(diagnostics),
   });
+}
+
+function validateCollectedPullRequestVolatileMetadata(
+  finalized: ReturnType<typeof finalizeGitHubItemsWithVolatileMetadata>,
+  collection: FreshRepositoryItemCollection,
+): void {
+  for (const detail of collection.details) {
+    if (detail.type !== "pull_request") {
+      continue;
+    }
+    const metadata = finalized.volatileMetadataByNodeId.get(detail.nodeId);
+    assertNonNullable(
+      metadata,
+      `詳細取得したPull Requestのvolatile metadataがありません。対象: ${detail.nodeId}`,
+    );
+    validateGitHubPullRequestVolatileMetadata(metadata, detail);
+  }
+}
+
+async function collectRepositoryItemObservationsWithVolatileMetadata(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  authentication: GitHubClient,
+  repository: PublicRepository,
+  provisionalItems: readonly EnumeratedGitHubItem[],
+  adjacentNodeIds: ReadonlySet<GitHubNodeId>,
+): Promise<FreshRepositoryItemCollection> {
+  const pullRequestNodeIds = provisionalItems.flatMap((item) =>
+    item.type === "pull_request" ? [item.nodeId] : [],
+  );
+  if (pullRequestNodeIds.length === 0) {
+    return collectFreshRepositoryItemObservations(
+      adapters,
+      invocation,
+      configuration,
+      state,
+      authentication,
+      repository,
+      provisionalItems,
+      adjacentNodeIds,
+    );
+  }
+  let successfulCollection: FreshRepositoryItemCollection | undefined;
+  await adapters.probeGitHubPullRequestVolatileMetadataWithRetry({
+    pullRequestNodeIds,
+    graphql: authentication.graphql,
+    validateDetail: async (probe) => {
+      const finalized = finalizeGitHubItemsWithVolatileMetadata({
+        items: provisionalItems,
+        volatileMetadata: probe.items,
+      });
+      const collection = await collectFreshRepositoryItemObservations(
+        adapters,
+        invocation,
+        configuration,
+        state,
+        authentication,
+        repository,
+        finalized.items,
+        adjacentNodeIds,
+      );
+      validateCollectedPullRequestVolatileMetadata(finalized, collection);
+      successfulCollection = collection;
+    },
+  });
+  assertNonNullable(
+    successfulCollection,
+    "Pull Request volatile metadataのdetail照合結果がありません",
+  );
+  return successfulCollection;
 }
 
 async function collectFreshRepositoryItems(
@@ -5670,7 +6910,7 @@ async function collectFreshRepositoryItems(
     [...openItems, ...resolvedNodeItems, ...individuallyEnumeratedItems],
     (item) => item.nodeId,
   );
-  const itemCollection = await collectFreshRepositoryItemObservations(
+  const itemCollection = await collectRepositoryItemObservationsWithVolatileMetadata(
     adapters,
     invocation,
     configuration,
@@ -5681,7 +6921,12 @@ async function collectFreshRepositoryItems(
     adjacentNodeIds,
   );
   return Object.freeze({
-    state: createSnapshotCollectionRepository(repository, invocation.startedAt, enumeratedItems),
+    state: createSnapshotCollectionRepository(
+      repository,
+      invocation.startedAt,
+      itemCollection.enumeratedItems,
+    ),
+    provisionalEnumeratedItems: enumeratedItems,
     ...itemCollection,
   });
 }
@@ -5716,6 +6961,9 @@ async function collectAdditionalRelationItems(
   current: FreshRepositoryRuntimeCollection,
 ): Promise<FreshRepositoryRuntimeCollection> {
   const currentItemsByNodeId = new Map(current.enumeratedItems.map((item) => [item.nodeId, item]));
+  const currentProvisionalItemsByNodeId = new Map(
+    current.provisionalEnumeratedItems.map((item) => [item.nodeId, item]),
+  );
   const missingNodeIds = requestedNodeIds.filter((nodeId) => !currentItemsByNodeId.has(nodeId));
   const individuallyEnumeratedItems =
     missingNodeIds.length === 0
@@ -5733,12 +6981,13 @@ async function collectAdditionalRelationItems(
   );
   const detailTargets = requestedNodeIds.map((nodeId) => {
     const item =
-      currentItemsByNodeId.get(nodeId) ?? individuallyEnumeratedItemsByNodeId.get(nodeId);
+      currentProvisionalItemsByNodeId.get(nodeId) ??
+      individuallyEnumeratedItemsByNodeId.get(nodeId);
     assertNonNullable(item, `関係先追加取得対象の列挙値がありません。対象: ${nodeId}`);
     return item;
   });
   validateRelationExpansionEnumeration(repository, requestedNodeIds, detailTargets);
-  const additions = await collectFreshRepositoryItemObservations(
+  const additions = await collectRepositoryItemObservationsWithVolatileMetadata(
     adapters,
     invocation,
     configuration,
@@ -5750,6 +6999,10 @@ async function collectAdditionalRelationItems(
   );
   const mergedEnumeratedItems = deduplicateByStableId(
     [...current.enumeratedItems, ...additions.enumeratedItems],
+    (item) => item.nodeId,
+  );
+  const mergedProvisionalEnumeratedItems = deduplicateByStableId(
+    [...current.provisionalEnumeratedItems, ...detailTargets],
     (item) => item.nodeId,
   );
   const mergedDetails = deduplicateByStableId(
@@ -5771,6 +7024,7 @@ async function collectAdditionalRelationItems(
       invocation.startedAt,
       mergedEnumeratedItems,
     ),
+    provisionalEnumeratedItems: mergedProvisionalEnumeratedItems,
     enumeratedItems: mergedEnumeratedItems,
     details: mergedDetails,
     observedItems: mergedObservedItems,
@@ -6141,6 +7395,7 @@ function finalizeRuntimeItemAnalysisSource(
       kind: "fresh",
       item: finalizeFreshObservedItemObservation(source.item, evaluatedAt),
       detail: finalizeItemDetailObservation(source.detail, evaluatedAt),
+      replay: source.replay,
     });
   }
   return Object.freeze({
@@ -6252,7 +7507,6 @@ async function collectProductionItems(
     }),
   );
 
-  const staleItems: StaleObservedGitHubItem<SnapshotCollectionItem>[] = [];
   const collectionRepositories: SnapshotCollectionRepository[] = [];
   const staleRepositoryIds = new Set<GitHubRepositoryId>();
   const diagnostics: string[] = [...expanded.diagnostics];
@@ -6263,15 +7517,9 @@ async function collectProductionItems(
     }
     staleRepositoryIds.add(result.repository.id);
     collectionRepositories.push(result.previousValue);
-    staleItems.push(
-      ...markObservedGitHubItemsStale({
-        previousItems: result.previousValue.items,
-        failedAt: result.failedAt,
-        diagnostic: result.diagnostic,
-      }),
-    );
     diagnostics.push(result.diagnostic.message);
   }
+  const staleDisplaySources = restoreStaleDisplayItemSources(state, repositoryResults);
   if (expanded.droppedRelationCandidateCount > 0) {
     diagnostics.push(
       `端点を取得できなかった関係候補を${expanded.droppedRelationCandidateCount.toString()}件除外しました`,
@@ -6297,6 +7545,14 @@ async function collectProductionItems(
     ),
   );
   const uniqueObservedItems = Object.freeze(uniqueAnalysisSources.map((source) => source.item));
+  const freshNodeIds = new Set(uniqueObservedItems.map((item) => item.nodeId));
+  for (const source of staleDisplaySources) {
+    if (freshNodeIds.has(source.item.nodeId)) {
+      throw new TypeError(
+        `fresh項目とstale表示項目のnode IDが重複しています。対象: ${source.item.nodeId}`,
+      );
+    }
+  }
   const changedNodeIds = expanded.changedNodeIds;
   const relationCandidates = expanded.relationCandidates;
   const tracking = expanded.tracking;
@@ -6309,11 +7565,17 @@ async function collectProductionItems(
       selected.item.notificationClass,
     ]),
   );
-  for (const item of loadedItemCacheDocuments(state)) {
-    if (staleRepositoryIds.has(item.repositoryId)) {
-      trackedNodeIds.add(item.nodeId);
-    }
+  for (const source of staleDisplaySources) {
+    trackedNodeIds.add(source.item.nodeId);
   }
+  const exactAiRelationNotificationHistory = createExactAiRelationNotificationHistory(
+    configuration,
+    state,
+    expanded.evaluatedAt,
+    trackedNodeIds,
+    staleRepositoryIds,
+    diagnostics,
+  );
   const observedNodeIds = new Set(uniqueObservedItems.map((item) => item.nodeId));
   const analysisNodeIds = new Set<GitHubNodeId>();
   for (const [nodeId] of tracking.workByNodeId) {
@@ -6328,13 +7590,14 @@ async function collectProductionItems(
       details: uniqueDetails,
       observedItems: uniqueObservedItems,
       analysisSources: uniqueAnalysisSources,
-      staleItems: Object.freeze(staleItems),
+      staleDisplaySources,
       trackedNodeIds,
       trackingNotificationClassByNodeId,
       analysisNodeIds,
       changedNodeIds,
       externalReferences: tracking.result.ghostNodes,
       relationCandidates,
+      exactAiRelationNotificationHistory,
       repositoryResults,
       collectionRepositories: Object.freeze(collectionRepositories),
     }),
@@ -6461,19 +7724,18 @@ function createDailyDependencies(
       Promise.resolve(
         reduceAllAnalyses(
           configuration,
-          deterministicAnalysis.state,
           deterministicAnalysis.inventory,
           collection,
           deterministicAnalysis,
           codexAnalysis,
         ),
       ),
-    reconcileGraph: ({ configuration, cache: state, collection, reduction }) => {
-      const graph = reconcileCurrentGraph(configuration, state, collection, reduction);
+    reconcileGraph: ({ configuration, collection, reduction }) => {
+      const graph = reconcileCurrentGraph(configuration, collection, reduction);
       return Promise.resolve(
         Object.freeze({
           value: graph,
-          activeEdgeCount: graph.edges.filter((edge) => edge.active).length,
+          activeEdgeCount: graph.analysisEdges.filter((edge) => edge.active).length,
         }),
       );
     },

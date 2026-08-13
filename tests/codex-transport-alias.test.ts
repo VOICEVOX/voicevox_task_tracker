@@ -195,7 +195,12 @@ function createCandidate(
   previousFingerprint: PreviousAiAnalysisFingerprint,
 ): AiAnalysisCandidate {
   return {
-    id: "I_cache",
+    id: input.item.nodeId,
+    repository: {
+      repositoryId: "R_transport_alias",
+      owner: "VOICEVOX",
+      name: "transport-alias",
+    },
     deterministicResolution: "ambiguous",
     input,
     graphNeighborhood: {

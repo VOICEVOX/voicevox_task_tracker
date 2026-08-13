@@ -26,6 +26,7 @@ const productionSourceIdKindSchema = z.enum([
   "github_merge_queue_entry",
   "github_item_detail",
   "github_item_body",
+  "github_user_content_edit",
 ]);
 
 /** 本番のGitHub収集で生成するsource IDの種別。 */

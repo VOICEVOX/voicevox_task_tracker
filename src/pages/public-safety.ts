@@ -57,7 +57,7 @@ export type PagesRepositoryAllowlistEntry = Readonly<{
   name: Repository["name"];
 }>;
 
-/** Pages公開allowlist検証へ渡す永続化済み入力とrun内情報。 */
+/** Pages公開allowlist検証へ渡す検証済みsnapshotとrun内情報。 */
 export type PagesPublicSafetyInput = Readonly<{
   snapshot: StateSnapshot;
   repositoryAllowlist: readonly PagesRepositoryAllowlistEntry[];

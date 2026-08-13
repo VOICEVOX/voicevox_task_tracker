@@ -1,6 +1,12 @@
 import { hashCanonicalJson, serializeCanonicalJson, type Sha256Hash } from "./canonical-json.js";
 import { type AiCacheIdentity } from "./cache.js";
 import { type CodexAnalysisInput } from "./input.js";
+import {
+  createGitHubNodeId,
+  createGitHubRepositoryId,
+  type GitHubNodeId,
+  type GitHubRepositoryId,
+} from "../domain/index.js";
 
 /** AI実行とcache再現性を固定する実行設定とversion情報。 */
 export type AiAnalysisRunIdentity = Omit<AiCacheIdentity, "inputHash">;
@@ -41,6 +47,11 @@ export type AiAnalysisPriority = Readonly<{
 /** Codexへ送る可能性がある項目。 */
 export type AiAnalysisCandidate = Readonly<{
   id: string;
+  repository: Readonly<{
+    repositoryId: string;
+    owner: string;
+    name: string;
+  }>;
   deterministicResolution: DeterministicAnalysisResolution;
   input: CodexAnalysisInput;
   graphNeighborhood: unknown;
@@ -50,8 +61,14 @@ export type AiAnalysisCandidate = Readonly<{
 }>;
 
 /** hashと入力文字数を確定したCodex分析候補。 */
-export type PreparedAiAnalysisCandidate = AiAnalysisCandidate &
+export type PreparedAiAnalysisCandidate = Omit<AiAnalysisCandidate, "id" | "repository"> &
   Readonly<{
+    id: GitHubNodeId;
+    repository: Readonly<{
+      repositoryId: GitHubRepositoryId;
+      owner: string;
+      name: string;
+    }>;
     fingerprint: AiAnalysisFingerprint;
     normalizedInput: string;
     inputCharacters: number;
@@ -69,17 +86,6 @@ export type AiAnalysisSelection = Readonly<{
   }>[];
 }>;
 
-/** 前回AI結果の安全な再利用判定。 */
-export type PreviousAiResultReuseDecision<Result> =
-  | Readonly<{
-      status: "reusable";
-      result: Result;
-    }>
-  | Readonly<{
-      status: "stale";
-      reason: "source_hash_changed" | "input_hash_changed";
-    }>;
-
 function countUnicodeCharacters(value: string): number {
   let count = 0;
   for (const character of value) {
@@ -91,10 +97,17 @@ function countUnicodeCharacters(value: string): number {
   return count;
 }
 
-function validateCandidateId(id: string): void {
-  if (id.length === 0) {
-    throw new TypeError("Codex分析候補IDは空にできません");
+function validateCandidateRepository(
+  candidate: AiAnalysisCandidate,
+): PreparedAiAnalysisCandidate["repository"] {
+  if (candidate.repository.owner.length === 0 || candidate.repository.name.length === 0) {
+    throw new TypeError("Codex分析候補のrepository ownerとnameは空にできません");
   }
+  return Object.freeze({
+    repositoryId: createGitHubRepositoryId(candidate.repository.repositoryId),
+    owner: candidate.repository.owner,
+    name: candidate.repository.name,
+  });
 }
 
 /** run開始時刻を除いたinput hash値を生成する。 */
@@ -109,7 +122,11 @@ export function prepareAiAnalysisCandidate(
   candidate: AiAnalysisCandidate,
   identity: AiAnalysisRunIdentity,
 ): PreparedAiAnalysisCandidate {
-  validateCandidateId(candidate.id);
+  const id = createGitHubNodeId(candidate.id);
+  if (candidate.input.item.nodeId !== id) {
+    throw new TypeError("Codex分析候補IDが入力項目のnode IDと一致しません");
+  }
+  const repository = validateCandidateRepository(candidate);
   const normalizedInput = `${serializeCanonicalJson(candidate.input)}\n`;
   const graphNeighborhoodHash = hashCanonicalJson(candidate.graphNeighborhood);
   const fingerprint = Object.freeze({
@@ -123,6 +140,8 @@ export function prepareAiAnalysisCandidate(
   });
   return Object.freeze({
     ...candidate,
+    id,
+    repository,
     fingerprint,
     normalizedInput,
     inputCharacters: countUnicodeCharacters(normalizedInput),
@@ -180,29 +199,5 @@ export function selectAiAnalysisCandidates(
   return Object.freeze({
     selected: Object.freeze(selected),
     skipped: Object.freeze(skipped.map((value) => Object.freeze(value))),
-  });
-}
-
-/** sourceと正規化入力のhashが一致する前回AI結果だけを再利用する。 */
-export function determinePreviousAiResultReuse<Result>(
-  currentFingerprint: AiAnalysisFingerprint,
-  previousFingerprint: AiAnalysisFingerprint,
-  previousResult: Result,
-): PreviousAiResultReuseDecision<Result> {
-  if (currentFingerprint.sourceHash !== previousFingerprint.sourceHash) {
-    return Object.freeze({
-      status: "stale",
-      reason: "source_hash_changed",
-    });
-  }
-  if (currentFingerprint.inputHash !== previousFingerprint.inputHash) {
-    return Object.freeze({
-      status: "stale",
-      reason: "input_hash_changed",
-    });
-  }
-  return Object.freeze({
-    status: "reusable",
-    result: previousResult,
   });
 }

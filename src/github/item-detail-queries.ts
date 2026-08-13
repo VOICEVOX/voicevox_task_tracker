@@ -861,6 +861,7 @@ export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities
             }
           }
           headRefOid
+          reviewDecision
           headRef {
             target {
               ... on Commit {

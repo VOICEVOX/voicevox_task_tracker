@@ -16,9 +16,18 @@ import {
   type CacheRepositoryIdentity,
 } from "../persistence/cache-documents.js";
 import { createAiCacheEntry, createAiCacheKey, type AiCacheKey } from "./cache.js";
-import { hashCanonicalJson, parseSha256Hash, type Sha256Hash } from "./canonical-json.js";
+import {
+  hashCanonicalJson,
+  parseSha256Hash,
+  serializeCanonicalJson,
+  type Sha256Hash,
+} from "./canonical-json.js";
 import { type CodexAnalysisInput } from "./input.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
+import {
+  validateCodexAnalysisOutputAgainstCacheContext,
+  type CodexCacheValidationContext,
+} from "./semantic-validation.js";
 
 const repositorySchema = z.strictObject({
   repositoryId: z.string().min(1),
@@ -36,7 +45,6 @@ const importanceSchema = z.strictObject({
 const fingerprintSchema = z.strictObject({
   sourceHash: z.string().min(1),
   inputHash: z.string().min(1),
-  graphNeighborhoodHash: z.string().min(1),
   identityHash: z.string().min(1),
 });
 
@@ -56,6 +64,7 @@ const cacheEntryReferenceShape = z.strictObject({
   cacheKey: z.string().min(1),
   sourceHash: z.string().min(1),
   nodeId: z.string().min(1),
+  repository: repositorySchema,
   importance: importanceSchema,
   confidence: z.number().min(0).max(1),
   metadata: cacheMetadataSchema,
@@ -112,6 +121,7 @@ export type ImportanceCacheEntry = Readonly<{
   cacheKey: AiCacheKey;
   sourceHash: Sha256Hash;
   nodeId: GitHubNodeId;
+  repository: ImportanceCacheRepository;
   importance: Readonly<{
     significantFeature: boolean;
     explicitDeadline: boolean;
@@ -135,7 +145,6 @@ export type ImportanceCacheContext = Readonly<{
 export type ImportanceCacheFingerprint = Readonly<{
   sourceHash: Sha256Hash;
   inputHash: Sha256Hash;
-  graphNeighborhoodHash: Sha256Hash;
   identityHash: Sha256Hash;
 }>;
 
@@ -196,6 +205,11 @@ export type CreateImportanceCacheCandidateInput = Readonly<{
   previous: ImportanceCacheState;
 }>;
 
+/** 同一nodeの重要度entryから最新を選んだ結果を表す。 */
+export type LatestImportanceCacheEntrySelection =
+  | Readonly<{ status: "available"; entry: ImportanceCacheEntry }>
+  | Readonly<{ status: "not_available" }>;
+
 type ValidatedContext = Readonly<{
   nodeId: GitHubNodeId;
   repository: ImportanceCacheRepository;
@@ -233,21 +247,104 @@ function validateTime(value: unknown): UtcIsoDateTime {
   return parsed;
 }
 
-/** 完全なAI cache entryを重要度の代替判定用へ縮約する。 */
+function createValidatedImportanceCacheEntry(
+  entry: ReturnType<typeof createAiCacheEntry>,
+  output: ReturnType<typeof createAiCacheEntry>["output"],
+): ImportanceCacheEntry {
+  return {
+    cacheKey: entry.cacheKey,
+    sourceHash: entry.sourceHash,
+    nodeId: validateNodeId(entry.nodeId),
+    repository: validateRepository(entry.repository),
+    importance: validateImportance(output.importance),
+    confidence: output.confidence,
+    metadata: entry.metadata,
+  };
+}
+
+/** AI entry自身の縮約済み識別情報と出力schemaから重要度用entryを再構築する。 */
+export function createImportanceCacheEntryFromAiResult(value: unknown): ImportanceCacheEntry {
+  const entry = createAiCacheEntry(value);
+  if (entry.nodeId !== entry.output.item.nodeId) {
+    throw new Error("AIエントリのnode IDが出力と一致しません");
+  }
+  return createValidatedImportanceCacheEntry(entry, entry.output);
+}
+
+/** 完全なAI cache entryを現在のAI入力で検証して重要度用へ縮約する。 */
 export function createImportanceCacheEntry(
   value: unknown,
   input: CodexAnalysisInput,
 ): ImportanceCacheEntry {
   const entry = createAiCacheEntry(value);
   const output = validateCodexAnalysisOutput(entry.output, input);
-  return {
-    cacheKey: entry.cacheKey,
-    sourceHash: entry.sourceHash,
-    nodeId: validateNodeId(output.item.nodeId),
-    importance: validateImportance(output.importance),
-    confidence: output.confidence,
-    metadata: entry.metadata,
-  };
+  if (entry.nodeId !== output.item.nodeId) {
+    throw new Error("AIエントリのnode IDが出力と一致しません");
+  }
+  return createValidatedImportanceCacheEntry(entry, output);
+}
+
+/** raw非保持cache contextで再検証したAI entryを重要度用へ縮約する。 */
+export function createImportanceCacheEntryFromCacheContext(
+  value: unknown,
+  context: CodexCacheValidationContext,
+): ImportanceCacheEntry {
+  const entry = createAiCacheEntry(value);
+  const output = validateCodexAnalysisOutputAgainstCacheContext(entry.output, context);
+  if (entry.nodeId !== output.item.nodeId) {
+    throw new Error("AIエントリのnode IDが出力と一致しません");
+  }
+  return createValidatedImportanceCacheEntry(entry, output);
+}
+
+/** latest importance文書と完全なAI entryを照合して重要度用へ縮約する。 */
+export function createImportanceCacheEntryFromLatest(
+  value: unknown,
+  latestValue: unknown,
+): ImportanceCacheEntry {
+  const entry = createAiCacheEntry(value);
+  const latest = createCacheDocument(latestValue);
+  if (latest.kind !== "ai_latest_importance") {
+    throw new Error("重要度キャッシュ文書の種別が不正です");
+  }
+  const reduced = createImportanceCacheEntryFromAiResult(entry);
+  const reference = latest.aiCacheReference;
+  if (
+    reduced.cacheKey !== reference.cacheKey ||
+    reduced.sourceHash !== reference.sourceHash ||
+    reduced.metadata.inputHash !== reference.inputHash ||
+    calculateIdentityHash(reduced) !== reference.identityHash
+  ) {
+    throw new Error("重要度キャッシュのAI参照がAIエントリと一致しません");
+  }
+  if (reduced.nodeId !== latest.nodeId) {
+    throw new Error("重要度キャッシュのnode IDがAIエントリと一致しません");
+  }
+  if (
+    reduced.repository.repositoryId !== latest.repository.repositoryId ||
+    reduced.repository.owner !== latest.repository.owner ||
+    reduced.repository.name !== latest.repository.name
+  ) {
+    throw new Error("重要度キャッシュのリポジトリがAIエントリと一致しません");
+  }
+  if (!importanceEquals(reduced.importance, latest.importance)) {
+    throw new Error("重要度キャッシュの重要度がAIエントリと一致しません");
+  }
+  if (reduced.confidence !== latest.confidence) {
+    throw new Error("重要度キャッシュのconfidenceがAIエントリと一致しません");
+  }
+  if (
+    reduced.metadata.deterministicRulesVersion !== latest.metadata.deterministicRulesVersion ||
+    reduced.metadata.model !== latest.metadata.model ||
+    reduced.metadata.reasoningEffort !== latest.metadata.reasoningEffort ||
+    reduced.metadata.backendVersion !== latest.metadata.backendVersion ||
+    reduced.metadata.promptVersion !== latest.metadata.promptVersion ||
+    reduced.metadata.schemaVersion !== latest.metadata.analysisSchemaVersion ||
+    reduced.metadata.executedAt !== latest.metadata.executedAt
+  ) {
+    throw new Error("重要度キャッシュのメタデータがAIエントリと一致しません");
+  }
+  return reduced;
 }
 
 function validateCacheEntry(value: unknown): ImportanceCacheEntry {
@@ -283,6 +380,7 @@ function validateCacheEntry(value: unknown): ImportanceCacheEntry {
     cacheKey,
     sourceHash: parseSha256Hash(parsed.sourceHash),
     nodeId: validateNodeId(parsed.nodeId),
+    repository: validateRepository(parsed.repository),
     importance: validateImportance(parsed.importance),
     confidence: parsed.confidence,
     metadata,
@@ -296,6 +394,31 @@ function compareTimes(left: UtcIsoDateTime, right: UtcIsoDateTime): number {
     throw new Error("日時を比較できません");
   }
   return leftMilliseconds - rightMilliseconds;
+}
+
+/** 実行時刻とcache keyの安定順で最新の重要度entryを選ぶ。 */
+export function selectLatestImportanceCacheEntry(
+  values: readonly unknown[],
+): LatestImportanceCacheEntrySelection {
+  const entries = values.map(validateCacheEntry);
+  const cacheKeys = new Set<AiCacheKey>();
+  for (const entry of entries) {
+    if (cacheKeys.has(entry.cacheKey)) {
+      throw new Error(`最新重要度候補のAI cache keyが重複しています。対象: ${entry.cacheKey}`);
+    }
+    cacheKeys.add(entry.cacheKey);
+  }
+  entries.sort((left, right) => {
+    const timeComparison = compareTimes(right.metadata.executedAt, left.metadata.executedAt);
+    if (timeComparison !== 0) {
+      return timeComparison;
+    }
+    return left.cacheKey < right.cacheKey ? -1 : left.cacheKey > right.cacheKey ? 1 : 0;
+  });
+  const entry = entries[0];
+  return entry == null
+    ? Object.freeze({ status: "not_available" })
+    : Object.freeze({ status: "available", entry });
 }
 
 function validateContext(context: unknown): ValidatedContext {
@@ -331,6 +454,14 @@ function validateContext(context: unknown): ValidatedContext {
     if (compareTimes(entry.metadata.executedAt, evaluatedAt) > 0) {
       throw new Error("評価時刻より新しいAIキャッシュは利用できません");
     }
+    if (
+      entry.nodeId !== nodeId ||
+      entry.repository.repositoryId !== repository.repositoryId ||
+      entry.repository.owner !== repository.owner ||
+      entry.repository.name !== repository.name
+    ) {
+      throw new Error("AIキャッシュの項目またはリポジトリが対象と一致しません");
+    }
   }
 
   return { nodeId, repository, repositoryAllowlist, evaluatedAt, aiCacheEntries };
@@ -357,7 +488,6 @@ function validateFingerprint(value: unknown): ImportanceCacheFingerprint {
   return {
     sourceHash: parseSha256Hash(parsed.sourceHash),
     inputHash: parseSha256Hash(parsed.inputHash),
-    graphNeighborhoodHash: parseSha256Hash(parsed.graphNeighborhoodHash),
     identityHash: parseSha256Hash(parsed.identityHash),
   };
 }
@@ -396,6 +526,13 @@ function validateVerifiedResult(
   const entry = validateCacheEntry(parsed.entry);
   if (entry.nodeId !== nodeId) {
     throw new Error("AIエントリのnode IDが結果と一致しません");
+  }
+  if (
+    entry.repository.repositoryId !== repository.repositoryId ||
+    entry.repository.owner !== repository.owner ||
+    entry.repository.name !== repository.name
+  ) {
+    throw new Error("AIエントリのリポジトリが結果と一致しません");
   }
   if (!importanceEquals(entry.importance, importance)) {
     throw new Error("AIエントリの重要度が結果と一致しません");
@@ -456,9 +593,6 @@ function validateLatestCache(
     throw new Error("評価時刻より新しい重要度キャッシュは利用できません");
   }
   const reference = document.aiCacheReference;
-  if (reference.status !== "available") {
-    throw new Error("重要度キャッシュには利用可能なAI参照が必要です");
-  }
   const entry = context.aiCacheEntries.find(
     (candidate) => candidate.cacheKey === reference.cacheKey,
   );
@@ -476,6 +610,13 @@ function validateLatestCache(
   }
   if (entry.nodeId !== document.nodeId) {
     throw new Error("重要度キャッシュのnode IDがAIエントリと一致しません");
+  }
+  if (
+    entry.repository.repositoryId !== document.repository.repositoryId ||
+    entry.repository.owner !== document.repository.owner ||
+    entry.repository.name !== document.repository.name
+  ) {
+    throw new Error("重要度キャッシュのリポジトリがAIエントリと一致しません");
   }
   if (!importanceEquals(entry.importance, document.importance)) {
     throw new Error("重要度キャッシュの重要度がAIエントリと一致しません");
@@ -530,12 +671,6 @@ export function createImportanceCacheCandidate(
   const parsedInput = parseInput<z.infer<typeof candidateInputShape>>(candidateInputShape, input);
   const context = validateContext(parsedInput.context);
   const current = validateVerifiedResult(parsedInput.current, context);
-  if (parsedInput.previous.status === "available") {
-    const previous = validateLatestCache(parsedInput.previous, context);
-    if (compareTimes(previous.metadata.executedAt, current.entry.metadata.executedAt) >= 0) {
-      throw new Error("新しいAI結果の実行時刻が直近キャッシュより後でなければなりません");
-    }
-  }
   const document: AiLatestImportanceCacheDocument = {
     schemaVersion: CACHE_DOCUMENT_SCHEMA_VERSION,
     kind: "ai_latest_importance",
@@ -548,7 +683,6 @@ export function createImportanceCacheCandidate(
       cacheKey: current.entry.cacheKey,
       sourceHash: current.fingerprint.sourceHash,
       inputHash: current.fingerprint.inputHash,
-      graphNeighborhoodHash: current.fingerprint.graphNeighborhoodHash,
       identityHash: current.fingerprint.identityHash,
     },
     metadata: {
@@ -564,6 +698,24 @@ export function createImportanceCacheCandidate(
   const validatedDocument = createCacheDocument(document);
   if (validatedDocument.kind !== "ai_latest_importance") {
     throw new Error("重要度キャッシュ候補の種別が不正です");
+  }
+  if (parsedInput.previous.status === "available") {
+    const previous = validateLatestCache(parsedInput.previous, context);
+    const timeComparison = compareTimes(
+      previous.metadata.executedAt,
+      current.entry.metadata.executedAt,
+    );
+    if (timeComparison > 0) {
+      throw new Error(
+        `新しいAI結果の実行時刻が直近キャッシュより前です。node ID: ${context.nodeId}。現在: ${current.entry.metadata.executedAt}。直近: ${previous.metadata.executedAt}`,
+      );
+    }
+    if (timeComparison === 0) {
+      if (serializeCanonicalJson(previous) === serializeCanonicalJson(validatedDocument)) {
+        return previous;
+      }
+      return validatedDocument;
+    }
   }
   return validatedDocument;
 }

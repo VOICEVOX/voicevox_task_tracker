@@ -143,6 +143,7 @@ function resolveProductionEvidenceSourceUrl(
     case "github_merge_queue_entry":
     case "github_item_detail":
     case "github_item_body":
+    case "github_user_content_edit":
       return itemSourceUrl(sourceId, sourceItems, sourceOwnersById);
     default:
       throw new UnreachableError(kind);

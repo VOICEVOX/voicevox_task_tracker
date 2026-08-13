@@ -109,6 +109,19 @@ type ItemFixtureOptions = Readonly<{
   waitingOnRole: WaitingOnRole;
   observedAt: string;
   title: string;
+  importance?: Readonly<{
+    score: number;
+    level: "low" | "medium" | "high";
+    factors: readonly Readonly<{
+      kind: "priorityLabel";
+      points: number;
+      detail: string;
+    }>[];
+  }>;
+  attention?: Readonly<{
+    score: number;
+    level: "low" | "medium" | "high";
+  }>;
 }>;
 
 type SnapshotFixtureOptions = Readonly<{
@@ -118,6 +131,7 @@ type SnapshotFixtureOptions = Readonly<{
   generatedAt: string;
   repositories: readonly RepositoryFixture[];
   items: readonly unknown[];
+  externalReferences?: readonly unknown[];
   relations: readonly unknown[];
 }>;
 
@@ -185,7 +199,7 @@ function createItem(options: ItemFixtureOptions): unknown {
     url: itemUrl,
     title: options.title,
     milestone: null,
-    importance: {
+    importance: options.importance ?? {
       score: 25,
       level: "medium",
       factors: [
@@ -196,7 +210,7 @@ function createItem(options: ItemFixtureOptions): unknown {
         },
       ],
     },
-    attention: {
+    attention: options.attention ?? {
       score: 25,
       level: "medium",
     },
@@ -344,7 +358,7 @@ function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
         : {}),
     })),
     items: options.items,
-    externalReferences: [],
+    externalReferences: options.externalReferences ?? [],
     relations: options.relations,
     run: {
       id: options.runId,
@@ -1450,6 +1464,198 @@ describe("公開DTO生成", () => {
       observedAt: STALE_OBSERVED_AT,
       repositoryFreshness: "stale",
     });
+  });
+
+  it("stale項目を表示へ残し、current graphと影響計算から除外する", () => {
+    const freshItem = createItem({
+      nodeId: "I_CURRENT_GRAPH",
+      repositoryId: PUBLIC_REPOSITORY_ID,
+      repositoryName: "public",
+      number: 1,
+      status: "waiting_for_assessment",
+      severity: "watch",
+      waitingOnKind: "role",
+      waitingOnRole: "maintainer",
+      observedAt: FRESH_OBSERVED_AT,
+      title: "現在の項目",
+    });
+    const staleItem = createItem({
+      nodeId: "I_STALE_GRAPH",
+      repositoryId: STALE_REPOSITORY_ID,
+      repositoryName: "stale",
+      number: 2,
+      status: "waiting_for_review",
+      severity: "critical",
+      waitingOnKind: "team",
+      waitingOnRole: "reviewer",
+      observedAt: STALE_OBSERVED_AT,
+      title: "高重要度の古い項目",
+      importance: {
+        score: 100,
+        level: "high",
+        factors: [
+          {
+            kind: "priorityLabel",
+            points: 100,
+            detail: "高重要度のfixtureです",
+          },
+        ],
+      },
+      attention: {
+        score: 100,
+        level: "high",
+      },
+    });
+    const externalNodeId = "I_STALE_EXTERNAL_GHOST";
+    const staleSnapshot = createSnapshot({
+      runId: "run-stale-graph",
+      runStatus: "fallback",
+      ai: {
+        enabled: false,
+        available: false,
+        degraded: false,
+      },
+      generatedAt: GENERATED_AT,
+      repositories: [
+        {
+          id: PUBLIC_REPOSITORY_ID,
+          name: "public",
+          observedAt: FRESH_OBSERVED_AT,
+          freshness: "fresh",
+        },
+        {
+          id: STALE_REPOSITORY_ID,
+          name: "stale",
+          observedAt: STALE_OBSERVED_AT,
+          freshness: "stale",
+          failedAt: FRESH_OBSERVED_AT,
+        },
+      ],
+      items: [freshItem, staleItem],
+      externalReferences: [
+        {
+          kind: "external_reference",
+          nodeId: externalNodeId,
+          repositoryFullName: "external/example",
+          number: 3,
+          url: "https://github.com/external/example/issues/3",
+          title: "stale由来のghost",
+          state: "open",
+          recursiveTracking: "not_allowed",
+          directNotification: "not_eligible",
+        },
+      ],
+      relations: [
+        createRelation("rel:stale-to-current", "I_STALE_GRAPH", "I_CURRENT_GRAPH", "blocks"),
+        createRelation("rel:stale-to-ghost", "I_STALE_GRAPH", externalNodeId, "related_to"),
+      ],
+    });
+    const freshSnapshot = createSnapshot({
+      runId: "run-stale-graph",
+      runStatus: "success",
+      ai: {
+        enabled: false,
+        available: false,
+        degraded: false,
+      },
+      generatedAt: GENERATED_AT,
+      repositories: [
+        {
+          id: PUBLIC_REPOSITORY_ID,
+          name: "public",
+          observedAt: FRESH_OBSERVED_AT,
+          freshness: "fresh",
+        },
+      ],
+      items: [freshItem],
+      relations: [],
+    });
+    const generationOptions = {
+      ...defaultGenerationOptions,
+      maxInitialGraphNodes: 1,
+    } satisfies PublicDtoGenerationOptions;
+
+    const generated = generateFixture(
+      staleSnapshot,
+      createInventory([
+        {
+          id: PUBLIC_REPOSITORY_ID,
+          name: "public",
+          visibility: "public",
+        },
+        {
+          id: STALE_REPOSITORY_ID,
+          name: "stale",
+          visibility: "public",
+        },
+      ]),
+      [],
+      generationOptions,
+    );
+    const baseline = generateFixture(
+      freshSnapshot,
+      createInventory([
+        {
+          id: PUBLIC_REPOSITORY_ID,
+          name: "public",
+          visibility: "public",
+        },
+      ]),
+      [],
+      generationOptions,
+    );
+    const generatedFreshItem = generated.summary.items.find(
+      (item) => item.nodeId === "I_CURRENT_GRAPH",
+    );
+    const baselineFreshItem = baseline.summary.items.find(
+      (item) => item.nodeId === "I_CURRENT_GRAPH",
+    );
+    const generatedStaleItem = generated.summary.items.find(
+      (item) => item.nodeId === "I_STALE_GRAPH",
+    );
+    const generatedStaleDetails = generated.details.items.find(
+      (item) => item.summary.nodeId === "I_STALE_GRAPH",
+    );
+
+    expect(generatedFreshItem).toEqual(baselineFreshItem);
+    expect(generated.summary.graph).toEqual(baseline.summary.graph);
+    expect(generated.details.graph).toEqual(baseline.details.graph);
+    expect(generated.summary.graph.nodes).toEqual([
+      {
+        nodeId: "I_CURRENT_GRAPH",
+        kind: "issue",
+      },
+    ]);
+    expect(generated.details.graph.edges).toEqual([]);
+    expect(generated.details.graph.frontierNodeIds).toEqual(baseline.details.graph.frontierNodeIds);
+    expect(generated.summary.items).toHaveLength(2);
+    expect(generatedStaleItem).toMatchObject({
+      title: "高重要度の古い項目",
+      url: "https://github.com/VOICEVOX/stale/issues/2",
+      observedAt: STALE_OBSERVED_AT,
+      repositoryFreshness: "stale",
+      importance: {
+        score: 100,
+        level: "high",
+      },
+      attention: {
+        score: 100,
+        level: "high",
+      },
+      blockerNodeIds: [],
+      downstreamImpact: {
+        nodeId: "I_STALE_GRAPH",
+        openNodeCount: 0,
+        repositoryCount: 0,
+      },
+    });
+    expect(generatedStaleDetails?.summary).toEqual(generatedStaleItem);
+    expect(generated.details.graph.nodes).not.toContainEqual(
+      expect.objectContaining({ nodeId: "I_STALE_GRAPH" }),
+    );
+    expect(generated.details.graph.nodes).not.toContainEqual(
+      expect.objectContaining({ nodeId: externalNodeId }),
+    );
   });
 });
 

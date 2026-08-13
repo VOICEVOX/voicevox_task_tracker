@@ -542,6 +542,9 @@ function createAiEntryForDocument(document: GitHubItemCacheDocument): AiCacheEnt
   return createAiCacheEntry({
     cacheKey,
     sourceHash: hashCanonicalJson({ source: "item-cache-validation" }),
+    graphNeighborhoodHash: bodyFingerprint,
+    repository,
+    nodeId: document.nodeId,
     metadata: {
       deterministicRulesVersion: identity.deterministicRulesVersion,
       model: identity.model,
@@ -682,6 +685,14 @@ describe("GitHub item cache adapter", () => {
   it("exact AI entryをcache contextのnode、URL、source範囲で再検証する", () => {
     const unavailableDocument = createDocument();
     const entry = createAiEntryForDocument(unavailableDocument);
+    const identityHash = hashCanonicalJson({
+      backendVersion: entry.metadata.backendVersion,
+      deterministicRulesVersion: entry.metadata.deterministicRulesVersion,
+      model: entry.metadata.model,
+      promptVersion: entry.metadata.promptVersion,
+      reasoningEffort: entry.metadata.reasoningEffort,
+      schemaVersion: entry.metadata.schemaVersion,
+    });
     const document = createDocument(
       {
         status: "available",
@@ -689,7 +700,7 @@ describe("GitHub item cache adapter", () => {
         sourceHash: entry.sourceHash,
         inputHash: parseSha256Hash(entry.metadata.inputHash),
         graphNeighborhoodHash: bodyFingerprint,
-        identityHash: itemFingerprint,
+        identityHash,
       },
       { status: "complete", events: [] },
     );

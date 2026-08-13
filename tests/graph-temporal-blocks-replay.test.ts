@@ -95,6 +95,29 @@ function resolvedRelation(
   };
 }
 
+function unresolvedRelation(
+  source: string,
+  originItemNodeId: GraphNodeId,
+  direction: "blocked_by" | "blocking",
+  action: "added" | "removed",
+  occurredAt: ReturnType<typeof time>,
+  sequence: number,
+): Extract<
+  TemporalBlocksGraphReplayInput["relationHistory"],
+  { status: "exact" }
+>["mutations"][number] {
+  return {
+    status: "unresolved",
+    sourceId: sourceId(source),
+    originItemNodeId,
+    direction,
+    action,
+    occurredAt,
+    sequence,
+    reason: "related_node_unavailable",
+  };
+}
+
 function currentNodes(
   nodes: readonly [GraphNodeId, ...GraphNodeId[]],
   state: TemporalBlocksCurrentNode["state"] = "open",
@@ -120,6 +143,7 @@ function input(
     relationHistory: {
       status: "exact",
       mutations,
+      localUnknowns: [],
     },
   };
 }
@@ -318,6 +342,7 @@ describe("replayTemporalBlocksGraph", () => {
             reason: "related_node_unavailable",
           },
         ],
+        localUnknowns: [],
       },
     });
 
@@ -355,6 +380,7 @@ describe("replayTemporalBlocksGraph", () => {
           resolvedRelation("a-add", nodeA, nodeX, "added", time("01"), 0),
           resolvedRelation("a-remove", nodeA, nodeX, "removed", time("02"), 0),
         ],
+        localUnknowns: [],
       },
     });
 
@@ -408,6 +434,7 @@ describe("replayTemporalBlocksGraph", () => {
       relationHistory: {
         status: "exact",
         mutations: [],
+        localUnknowns: [],
       },
     });
 
@@ -442,6 +469,7 @@ describe("replayTemporalBlocksGraph", () => {
       relationHistory: {
         status: "exact",
         mutations: [resolvedRelation("add", nodeA, nodeX, "added", time("01"), 0)],
+        localUnknowns: [],
       },
     });
 
@@ -514,6 +542,184 @@ describe("replayTemporalBlocksGraph", () => {
             ]),
           ],
           [],
+        ),
+      ),
+    ).toThrowError(TypeError);
+  });
+
+  it("同じ編集sourceの複数edge mutationを一つのbatchで扱う", () => {
+    const sharedSource = "shared-edit";
+    const result = replayTemporalBlocksGraph(
+      input(
+        currentNodes([nodeA, nodeB]),
+        [edge(nodeA, nodeB), edge(nodeB, nodeA)],
+        openHistories([nodeA, nodeB]),
+        [
+          resolvedRelation(sharedSource, nodeA, nodeB, "added", time("01"), 1, nodeA),
+          resolvedRelation(sharedSource, nodeB, nodeA, "added", time("01"), 1, nodeA),
+        ],
+      ),
+    );
+
+    expect(
+      result.cycleCreatedFacts.some(
+        (fact) =>
+          fact.status === "exact" &&
+          fact.value.sourceIds.length === 1 &&
+          fact.value.sourceIds[0] === sourceId(sharedSource),
+      ),
+    ).toBe(true);
+    expect(result.newlyUnblockedFacts).toEqual([]);
+    expect(result.currentGraph.activeBlocksEdges).toEqual([edge(nodeA, nodeB), edge(nodeB, nodeA)]);
+  });
+
+  it("同じ編集sourceのresolvedとunresolvedと異なるedgeとactionを共存させる", () => {
+    const sharedSource = "shared-mixed-edit";
+    const mutations = [
+      resolvedRelation(sharedSource, nodeA, nodeX, "added", time("01"), 1, nodeX),
+      resolvedRelation(sharedSource, nodeB, nodeX, "removed", time("01"), 1, nodeX),
+      unresolvedRelation(sharedSource, nodeX, "blocked_by", "added", time("01"), 1),
+    ];
+    const result = replayTemporalBlocksGraph(
+      input(
+        currentNodes([nodeA, nodeB, nodeX]),
+        [edge(nodeA, nodeX)],
+        openHistories([nodeA, nodeB, nodeX]),
+        mutations,
+      ),
+    );
+
+    expect(result.currentGraph.activeBlocksEdges).toEqual([edge(nodeA, nodeX)]);
+    expect(result.newlyUnblockedFacts).toContainEqual({
+      status: "unknown",
+      scope: "node",
+      nodeIds: [nodeX],
+      reason: "relation_mutation_unresolved",
+    });
+  });
+
+  it("同じ編集sourceの同一edgeでactionが衝突したら拒否する", () => {
+    const sharedSource = "shared-edge-action-conflict";
+    expect(() =>
+      replayTemporalBlocksGraph(
+        input(currentNodes([nodeA, nodeX]), [], openHistories([nodeA, nodeX]), [
+          resolvedRelation(sharedSource, nodeA, nodeX, "added", time("01"), 1, nodeX),
+          resolvedRelation(sharedSource, nodeA, nodeX, "removed", time("01"), 1, nodeX),
+        ]),
+      ),
+    ).toThrow("同じsource IDの同じedgeでactionが衝突");
+  });
+
+  it("局所relation unknownは影響nodeのnewly unblockedだけを抑止する", () => {
+    const mutations = [
+      resolvedRelation("unknown-add", nodeA, nodeX, "added", time("01"), 1),
+      resolvedRelation("exact-add", nodeB, nodeC, "added", time("01"), 2),
+      resolvedRelation("unknown-remove", nodeA, nodeX, "removed", time("02"), 1),
+      resolvedRelation("exact-remove", nodeB, nodeC, "removed", time("02"), 2),
+    ];
+    const replayInput = input(
+      currentNodes([nodeA, nodeB, nodeC, nodeX]),
+      [],
+      openHistories([nodeA, nodeB, nodeC, nodeX]),
+      mutations,
+    );
+    const result = replayTemporalBlocksGraph({
+      ...replayInput,
+      relationHistory: {
+        status: "exact",
+        mutations,
+        localUnknowns: [{ originItemNodeId: nodeA }],
+      },
+    });
+
+    expect(result.newlyUnblockedFacts).toContainEqual({
+      status: "unknown",
+      scope: "node",
+      nodeIds: [nodeA],
+      reason: "relation_mutation_unresolved",
+    });
+    expect(result.newlyUnblockedFacts).toContainEqual({
+      status: "exact",
+      value: {
+        blockedNodeId: nodeC,
+        occurredAt: time("02"),
+        sourceIds: [sourceId("exact-remove")],
+        blockerNodeIds: [nodeB],
+      },
+    });
+    expect(
+      result.newlyUnblockedFacts.some(
+        (fact) => fact.status === "exact" && fact.value.blockedNodeId === nodeX,
+      ),
+    ).toBe(false);
+  });
+
+  it("局所relation unknownは影響componentのcycleだけを抑止する", () => {
+    const mutations = [
+      resolvedRelation("unknown-cycle-a-x", nodeA, nodeX, "added", time("01"), 1),
+      resolvedRelation("unknown-cycle-x-a", nodeX, nodeA, "added", time("01"), 2),
+      resolvedRelation("exact-cycle-b-c", nodeB, nodeC, "added", time("01"), 3),
+      resolvedRelation("exact-cycle-c-b", nodeC, nodeB, "added", time("01"), 4),
+    ];
+    const replayInput = input(
+      currentNodes([nodeA, nodeB, nodeC, nodeX]),
+      [edge(nodeA, nodeX), edge(nodeB, nodeC), edge(nodeC, nodeB), edge(nodeX, nodeA)],
+      openHistories([nodeA, nodeB, nodeC, nodeX]),
+      mutations,
+    );
+    const result = replayTemporalBlocksGraph({
+      ...replayInput,
+      relationHistory: {
+        status: "exact",
+        mutations,
+        localUnknowns: [{ originItemNodeId: nodeA }],
+      },
+    });
+
+    expect(result.cycleCreatedFacts).toContainEqual({
+      status: "unknown",
+      scope: "node",
+      nodeIds: [nodeA],
+      reason: "relation_mutation_unresolved",
+    });
+    expect(
+      result.cycleCreatedFacts.some(
+        (fact) =>
+          fact.status === "exact" &&
+          fact.value.nodeIds.length === 2 &&
+          fact.value.nodeIds[0] === nodeB &&
+          fact.value.nodeIds[1] === nodeC,
+      ),
+    ).toBe(true);
+    expect(
+      result.cycleCreatedFacts.some(
+        (fact) =>
+          fact.status === "exact" &&
+          fact.value.nodeIds.some((nodeId) => nodeId === nodeA || nodeId === nodeX),
+      ),
+    ).toBe(false);
+  });
+
+  it("同じsource IDの時刻、origin、state event衝突を拒否する", () => {
+    expect(() =>
+      replayTemporalBlocksGraph(
+        input(currentNodes([nodeA, nodeX]), [edge(nodeA, nodeX)], openHistories([nodeA, nodeX]), [
+          resolvedRelation("relation-conflict", nodeA, nodeX, "added", time("01"), 0),
+          resolvedRelation("relation-conflict", nodeA, nodeX, "removed", time("02"), 0),
+        ]),
+      ),
+    ).toThrowError(TypeError);
+
+    expect(() =>
+      replayTemporalBlocksGraph(
+        input(
+          currentNodes([nodeA, nodeX]),
+          [edge(nodeA, nodeX)],
+          [
+            stateHistory(nodeA, [stateEpoch("open", time("00"), "state-conflict", 0)]),
+            ...openHistories([nodeX]),
+          ],
+          [resolvedRelation("state-conflict", nodeA, nodeX, "added", time("01"), 0)],
         ),
       ),
     ).toThrowError(TypeError);

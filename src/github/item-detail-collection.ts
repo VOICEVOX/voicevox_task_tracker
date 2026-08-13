@@ -58,6 +58,7 @@ import {
   type GitHubNativeHierarchyCollection,
   type GitHubPullRequestCommit,
   type GitHubPullRequestMergeState,
+  type GitHubPullRequestReviewDecision,
   type GitHubPullRequestReview,
   type GitHubPullRequestReviewComment,
   type GitHubPullRequestReviewRequests,
@@ -499,6 +500,7 @@ const basePullRequestSchema = z.object({
   userContentEdits: userContentEditConnectionSchema.nullable(),
   closingIssuesReferences: referencedItemConnectionSchema,
   headRefOid: shaSchema,
+  reviewDecision: z.enum(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"]).nullable(),
   headRef: headRefSchema,
   mergeable: z.enum(["CONFLICTING", "MERGEABLE", "UNKNOWN"]),
   mergeStateStatus: z.enum([
@@ -2425,6 +2427,23 @@ function normalizeMergeQueue(
   });
 }
 
+function normalizeReviewDecision(
+  reviewDecision: z.output<typeof basePullRequestSchema>["reviewDecision"],
+): GitHubPullRequestReviewDecision {
+  switch (reviewDecision) {
+    case "APPROVED":
+      return "approved";
+    case "CHANGES_REQUESTED":
+      return "changes_requested";
+    case "REVIEW_REQUIRED":
+      return "review_required";
+    case null:
+      return null;
+    default:
+      throw new UnreachableError(reviewDecision);
+  }
+}
+
 async function normalizePullRequestMergeState(
   pullRequest: z.output<typeof basePullRequestSchema>,
   headCommit: z.output<typeof headCommitSchema>,
@@ -2581,6 +2600,7 @@ async function collectPullRequestDetail(
     repositoryId: item.repositoryId,
     number: item.number,
     type: "pull_request",
+    reviewDecision: normalizeReviewDecision(pullRequest.reviewDecision),
     bodySourceId: buildProductionSourceId("github_item_body", item.nodeId),
     body: pullRequest.body,
     lastEditedAt: pullRequest.lastEditedAt,

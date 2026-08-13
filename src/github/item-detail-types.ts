@@ -383,6 +383,10 @@ export type GitHubPullRequestReviewRequests = Readonly<{
   >[];
 }>;
 
+/** Pull Requestの現在review判定。 */
+export type GitHubPullRequestReviewDecision =
+  "approved" | "changes_requested" | "review_required" | null;
+
 type GitHubItemDetailFields = Readonly<{
   sourceId: SourceId;
   nodeId: GitHubNodeId;
@@ -409,6 +413,7 @@ export type GitHubItemDetail =
   | (GitHubItemDetailFields &
       Readonly<{
         type: "pull_request";
+        reviewDecision: GitHubPullRequestReviewDecision;
         reviews: readonly GitHubPullRequestReview[];
         reviewThreads: readonly GitHubPullRequestReviewThread[];
         reviewRequests: GitHubPullRequestReviewRequests;

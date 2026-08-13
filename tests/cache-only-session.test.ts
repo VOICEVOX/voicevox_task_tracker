@@ -142,6 +142,13 @@ function createAiCacheFixture(): AiCacheEntry {
   return createAiCacheEntry({
     cacheKey: createAiCacheKey(identity),
     sourceHash: hashCanonicalJson({ fixture: "cache-only-source" }),
+    graphNeighborhoodHash: GRAPH_HASH,
+    repository: {
+      repositoryId,
+      owner: "VOICEVOX",
+      name: "cache-only-fixture",
+    },
+    nodeId: itemNodeId,
     metadata: {
       ...identity,
       outputHash: hashCanonicalJson(output),
@@ -175,12 +182,42 @@ function createOrphanAiCacheFixture(): AiCacheEntry {
   return createAiCacheEntry({
     cacheKey: createAiCacheKey(identity),
     sourceHash: hashCanonicalJson({ fixture: "orphan-cache-source" }),
+    graphNeighborhoodHash: GRAPH_HASH,
+    repository: {
+      repositoryId,
+      owner: "VOICEVOX",
+      name: "cache-only-fixture",
+    },
+    nodeId: "I_CACHE_ONLY_ORPHAN",
     metadata: {
       ...identity,
       outputHash: hashCanonicalJson(output),
       executedAt: observedAt,
     },
     output,
+  });
+}
+
+function createUnreferencedRetainedAiCacheFixture(): AiCacheEntry {
+  const entry = createAiCacheFixture();
+  const identity = {
+    deterministicRulesVersion: entry.metadata.deterministicRulesVersion,
+    model: "retained-fixture-model",
+    reasoningEffort: entry.metadata.reasoningEffort,
+    backendVersion: entry.metadata.backendVersion,
+    promptVersion: entry.metadata.promptVersion,
+    schemaVersion: entry.metadata.schemaVersion,
+    inputHash: hashCanonicalJson({ fixture: "retained-cache-input" }),
+  } satisfies AiCacheIdentity;
+  return createAiCacheEntry({
+    ...entry,
+    cacheKey: createAiCacheKey(identity),
+    sourceHash: hashCanonicalJson({ fixture: "retained-cache-source" }),
+    metadata: {
+      ...identity,
+      outputHash: hashCanonicalJson(entry.output),
+      executedAt: entry.metadata.executedAt,
+    },
   });
 }
 
@@ -537,6 +574,10 @@ function createRepositoryCacheWithOpenItem(): GitHubRepositoryCacheDocument {
 }
 
 function createLatestImportanceCache(): AiLatestImportanceCacheDocument {
+  const reference = createAiCacheReference();
+  if (reference.status !== "available") {
+    throw new TypeError("latest importance fixtureに利用可能なAI参照がありません");
+  }
   return {
     schemaVersion: "2",
     kind: "ai_latest_importance",
@@ -553,7 +594,13 @@ function createLatestImportanceCache(): AiLatestImportanceCacheDocument {
       rationale: "cache-only fixtureの重要度理由です",
     },
     confidence: 0.9,
-    aiCacheReference: createAiCacheReference(),
+    aiCacheReference: {
+      status: "available",
+      cacheKey: reference.cacheKey,
+      sourceHash: reference.sourceHash,
+      inputHash: reference.inputHash,
+      identityHash: reference.identityHash,
+    },
     metadata: {
       deterministicRulesVersion: "issue-v1",
       model: "fixture-model",
@@ -1024,24 +1071,53 @@ describe("cache-only永続化session", () => {
     ).rejects.toThrow("latest importanceのmetadataがAI cache entryと一致しません");
   });
 
-  it("item cacheのnode IDとAI outputのnode IDが一致しなければ拒否する", async () => {
+  it("AI cache entryのnode IDとAI outputのnode IDが一致しなければ拒否する", () => {
     const entry = createAiCacheFixture();
-    const mismatchedEntry = replaceAiCacheOutput(
-      entry,
-      createAiOutput(
-        "I_CACHE_ONLY_OTHER",
-        "https://github.com/VOICEVOX/cache-only-fixture/issues/99",
-        {
-          significantFeature: true,
-          explicitDeadline: false,
-          futureRisk: true,
-          rationale: "cache-only fixtureの重要度理由です",
-        },
-        0.9,
-      ),
+    const output = createAiOutput(
+      "I_CACHE_ONLY_OTHER",
+      "https://github.com/VOICEVOX/cache-only-fixture/issues/99",
+      {
+        significantFeature: true,
+        explicitDeadline: false,
+        futureRisk: true,
+        rationale: "cache-only fixtureの重要度理由です",
+      },
+      0.9,
     );
-    const adapter = new MemoryStateBranchAdapter();
-    const session = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
+    expect(() =>
+      createAiCacheEntry({
+        ...entry,
+        metadata: {
+          ...entry.metadata,
+          outputHash: hashCanonicalJson(output),
+        },
+        output,
+      }),
+    ).toThrow("AI cache entryのnode IDが出力項目と一致しません");
+  });
+
+  it("item cacheのnode IDとAI cache entryのnode IDが一致しなければ拒否する", async () => {
+    const entry = createAiCacheFixture();
+    const output = createAiOutput(
+      "I_CACHE_ONLY_OTHER",
+      "https://github.com/VOICEVOX/cache-only-fixture/issues/99",
+      entry.output.importance,
+      entry.output.confidence,
+    );
+    const mismatchedEntry = createAiCacheEntry({
+      ...entry,
+      nodeId: "I_CACHE_ONLY_OTHER",
+      metadata: {
+        ...entry.metadata,
+        outputHash: hashCanonicalJson(output),
+      },
+      output,
+    });
+    const session = await CacheOnlyPersistenceSession.open(
+      new MemoryStateBranchAdapter(),
+      configuration,
+      allowlist,
+    );
 
     await expect(
       session.persist({
@@ -1049,6 +1125,62 @@ describe("cache-only永続化session", () => {
         aiCacheEntries: [mismatchedEntry],
       }),
     ).rejects.toThrow("item cacheのnode IDがAI cache entryと一致しません");
+  });
+
+  it("AI cache entryのrepository identityを公開allowlistへ照合する", async () => {
+    const entry = createAiCacheFixture();
+    const mismatchedEntry = createAiCacheEntry({
+      ...entry,
+      repository: {
+        ...entry.repository,
+        name: "not-allowlisted",
+      },
+    });
+    const session = await CacheOnlyPersistenceSession.open(
+      new MemoryStateBranchAdapter(),
+      configuration,
+      allowlist,
+    );
+
+    await expect(
+      session.persist({
+        ...createPersistenceInput(retainedAt),
+        aiCacheEntries: [mismatchedEntry],
+      }),
+    ).rejects.toBeInstanceOf(GitHubPublicBoundaryViolationError);
+  });
+
+  it("item cacheとAI cache entryのrepositoryが一致しなければ拒否する", async () => {
+    const otherRepository: Repository = {
+      id: createGitHubRepositoryId("R_CACHE_ONLY_OTHER"),
+      owner: "VOICEVOX",
+      name: "cache-only-other",
+      visibility: "public",
+      archived: false,
+      disabled: false,
+      observedAt: repositoryObservedAt,
+    };
+    const entry = createAiCacheFixture();
+    const mismatchedEntry = createAiCacheEntry({
+      ...entry,
+      repository: {
+        repositoryId: otherRepository.id,
+        owner: otherRepository.owner,
+        name: otherRepository.name,
+      },
+    });
+    const session = await CacheOnlyPersistenceSession.open(
+      new MemoryStateBranchAdapter(),
+      configuration,
+      createPublicRepositoryAllowlist([publicRepository, otherRepository]),
+    );
+
+    await expect(
+      session.persist({
+        ...createPersistenceInput(retainedAt),
+        aiCacheEntries: [mismatchedEntry],
+      }),
+    ).rejects.toThrow("item cacheのrepositoryがAI cache entryと一致しません");
   });
 
   it("latest importanceのimportanceがAI outputと一致しなければ拒否する", async () => {
@@ -1103,20 +1235,20 @@ describe("cache-only永続化session", () => {
     ).rejects.toThrow("latest importanceがAI cache entryのconfidenceと一致しません");
   });
 
-  it("graphNeighborhoodHashはAI entryから導出せず参照整合だけを検証する", async () => {
-    const reference = {
-      ...createAiCacheReference(),
+  it("item cacheのexact参照とAI entryのgraph近傍hash不一致を拒否する", async () => {
+    const reference = createAiCacheReference();
+    if (reference.status !== "available") {
+      throw new TypeError("exact参照fixtureが利用可能ではありません");
+    }
+    const mismatchedReference = {
+      ...reference,
       graphNeighborhoodHash: parseSha256Hash(
         "sha256:9999999999999999999999999999999999999999999999999999999999999999",
       ),
     };
     const item = {
       ...createItemCache(),
-      aiCacheReference: reference,
-    };
-    const latest = {
-      ...createLatestImportanceCache(),
-      aiCacheReference: reference,
+      aiCacheReference: mismatchedReference,
     };
     const adapter = new MemoryStateBranchAdapter();
     const session = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
@@ -1125,9 +1257,8 @@ describe("cache-only永続化session", () => {
       session.persist({
         ...createPersistenceInput(retainedAt),
         itemCaches: [item],
-        latestImportanceCaches: [latest],
       }),
-    ).resolves.toBeDefined();
+    ).rejects.toThrow("graph近傍hashが一致しません");
   });
 
   it("availableなAI cache参照に対応するentryがなければ拒否する", async () => {
@@ -1142,7 +1273,28 @@ describe("cache-only永続化session", () => {
     ).rejects.toThrow("availableなAI cache参照に対応するentryがありません");
   });
 
-  it("allowlist済みdocumentから参照されないAI cache entryをpersistで拒否する", async () => {
+  it("保持対象itemに属する未参照AI resultをindex再構築用に保持する", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const session = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
+    const retained = createUnreferencedRetainedAiCacheFixture();
+
+    await session.persist({
+      ...createPersistenceInput(retainedAt),
+      aiCacheEntries: [createAiCacheFixture(), retained],
+    });
+    const loaded = await session.load({
+      evaluatedAt: retainedAt,
+      knownSecrets: [],
+    });
+
+    expect(loaded).toMatchObject({ status: "available" });
+    if (loaded.status !== "available") {
+      throw new TypeError("保持対象itemのAI resultを読み取れません");
+    }
+    expect(loaded.aiCacheEntries.map((entry) => entry.cacheKey)).toContain(retained.cacheKey);
+  });
+
+  it("保持対象itemに属さない未参照AI cache entryをpersistで拒否する", async () => {
     const adapter = new MemoryStateBranchAdapter();
     const session = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
     const orphan = createOrphanAiCacheFixture();
@@ -1152,9 +1304,7 @@ describe("cache-only永続化session", () => {
         ...createPersistenceInput(retainedAt),
         aiCacheEntries: [createAiCacheFixture(), orphan],
       }),
-    ).rejects.toThrow(
-      "allowlist済みitemまたはlatest importanceから参照されないAI cache entryがあります",
-    );
+    ).rejects.toThrow("保持対象itemに属さない未参照AI cache entryがあります");
   });
 
   it("branchに残るorphan AI cache entryをloadで拒否する", async () => {
@@ -1186,8 +1336,6 @@ describe("cache-only永続化session", () => {
         evaluatedAt: retainedAt,
         knownSecrets: [],
       }),
-    ).rejects.toThrow(
-      "allowlist済みitemまたはlatest importanceから参照されないAI cache entryがあります",
-    );
+    ).rejects.toThrow("保持対象itemに属さない未参照AI cache entryがあります");
   });
 });

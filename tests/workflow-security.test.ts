@@ -202,6 +202,7 @@ describe("日次workflow", () => {
         contents: "read",
       },
       "collect-analyze": {
+        actions: "read",
         contents: "read",
       },
       "persist-cache": {
@@ -370,7 +371,6 @@ describe("日次workflow", () => {
     expect(collectCommands).toContain('--scheduled-for "$scheduled_for"');
     expect(collectCommands).toContain('"$GITHUB_EVENT_NAME" == "schedule"');
     expect(collectCommands).toContain('"$GITHUB_EVENT_NAME" == "workflow_dispatch"');
-    expect(collectCommands).toContain("today 23:00");
     expect(collectCommands).toContain("pnpm build:workflow-cli");
     expect(collectCommands).toContain(
       "git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state",
@@ -410,6 +410,41 @@ describe("日次workflow", () => {
         );
       }
     }
+  });
+
+  it("scheduleの基準時刻をActions APIのrun作成時刻から固定する", async () => {
+    const workflow = await readDailyWorkflow();
+    const collectJob = workflow.jobs["collect-analyze"];
+    if (collectJob == null) {
+      throw new TypeError("収集jobがありません");
+    }
+    const collectStep = requiredStep(collectJob, "収集と解析を実行");
+    const collectRun = collectStep.run;
+    if (collectRun == null) {
+      throw new TypeError("収集stepにrunがありません");
+    }
+    const scheduleStart = collectRun.indexOf('if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]');
+    const manualStart = collectRun.indexOf(
+      'elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]',
+    );
+    if (scheduleStart < 0 || manualStart <= scheduleStart) {
+      throw new TypeError("scheduleとworkflow_dispatchの分岐がありません");
+    }
+    const scheduleBranch = collectRun.slice(scheduleStart, manualStart);
+
+    expect(collectJob.permissions).toEqual({ actions: "read", contents: "read" });
+    expect(collectStep.env?.["GH_TOKEN"]).toBe("${{ github.token }}");
+    expect(scheduleBranch).toContain("gh api");
+    expect(scheduleBranch).toContain('"/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"');
+    expect(scheduleBranch).toContain("--jq '.created_at'");
+    expect(scheduleBranch).toContain("run_created_at");
+    expect(scheduleBranch).toContain("scheduled_for_epoch");
+    expect(scheduleBranch).toContain("23:00:00 UTC");
+    expect(scheduleBranch).toContain("86400");
+    expect(scheduleBranch).not.toContain("current_time");
+    expect(scheduleBranch).toContain('if [[ -z "$run_created_at" ]]; then');
+    expect(scheduleBranch).toContain("exit 1");
+    expect(collectRun).toContain('scheduled_for="$current_time"');
   });
 
   it("Codex CLIをexact versionで固定して収集jobへinstallする", async () => {
@@ -480,6 +515,7 @@ describe("日次workflow", () => {
       "CODEX_HOME",
       "GH_APP_ID",
       "GH_APP_PRIVATE_KEY",
+      "GH_TOKEN",
       "REPOSITORY_FILTER",
     ]);
     expect(collectionStep.env["CODEX_HOME"]).toBe(authenticationDirectory);

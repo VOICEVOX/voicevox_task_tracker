@@ -4,6 +4,7 @@ import {
   type CodexCacheValidationContext,
 } from "../codex/semantic-validation.js";
 import { createAiCacheEntry, type AiCacheEntry } from "../codex/cache.js";
+import { hashCanonicalJson } from "../codex/canonical-json.js";
 import { type ValidatedCodexAnalysisOutput } from "../codex/output-types.js";
 import {
   type CandidateRelation,
@@ -1240,9 +1241,26 @@ export function validateGitHubItemCacheAiEntry(
   if (
     entry.cacheKey !== document.aiCacheReference.cacheKey ||
     entry.sourceHash !== document.aiCacheReference.sourceHash ||
-    entry.metadata.inputHash !== document.aiCacheReference.inputHash
+    entry.metadata.inputHash !== document.aiCacheReference.inputHash ||
+    entry.graphNeighborhoodHash !== document.aiCacheReference.graphNeighborhoodHash ||
+    hashCanonicalJson({
+      backendVersion: entry.metadata.backendVersion,
+      deterministicRulesVersion: entry.metadata.deterministicRulesVersion,
+      model: entry.metadata.model,
+      promptVersion: entry.metadata.promptVersion,
+      reasoningEffort: entry.metadata.reasoningEffort,
+      schemaVersion: entry.metadata.schemaVersion,
+    }) !== document.aiCacheReference.identityHash
   ) {
     throw new TypeError("item cacheのAI参照とentryが一致しません");
+  }
+  if (
+    entry.nodeId !== document.nodeId ||
+    entry.repository.repositoryId !== document.repository.repositoryId ||
+    entry.repository.owner !== document.repository.owner ||
+    entry.repository.name !== document.repository.name
+  ) {
+    throw new TypeError("item cacheの項目またはrepositoryがAI entryと一致しません");
   }
   if (
     Date.parse(entry.metadata.executedAt) >

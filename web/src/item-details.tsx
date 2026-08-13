@@ -416,7 +416,7 @@ function hasItemDependencies(view: ItemGraphView): boolean {
   return view.sourceEdges.length > 0 || view.omittedSourceNodeCount > 0;
 }
 
-/** 選択した項目の判定根拠と変更履歴を表示する。 */
+/** 選択した項目の判定根拠を表示する。 */
 export function ItemDetailsContent({
   clearSelectionHref,
   createItemHref,

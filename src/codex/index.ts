@@ -17,7 +17,6 @@ export {
   type AiAnalysisRunResult,
 } from "./analysis-runner.js";
 export {
-  determinePreviousAiResultReuse,
   prepareAiAnalysisCandidate,
   selectAiAnalysisCandidates,
   type AiAnalysisCandidate,
@@ -29,7 +28,6 @@ export {
   type DeterministicAnalysisResolution,
   type PreparedAiAnalysisCandidate,
   type PreviousAiAnalysisFingerprint,
-  type PreviousAiResultReuseDecision,
 } from "./analysis-selection.js";
 export {
   estimateAiInputCost,
@@ -96,7 +94,11 @@ export {
 export {
   createImportanceCacheCandidate,
   createImportanceCacheEntry,
+  createImportanceCacheEntryFromAiResult,
+  createImportanceCacheEntryFromCacheContext,
+  createImportanceCacheEntryFromLatest,
   resolveImportance,
+  selectLatestImportanceCacheEntry,
   type CreateImportanceCacheCandidateInput,
   type ImportanceAiRunState,
   type ImportanceCacheContext,
@@ -105,6 +107,7 @@ export {
   type ImportanceCacheRepository,
   type ImportanceCacheRepositoryAllowlist,
   type ImportanceCacheState,
+  type LatestImportanceCacheEntrySelection,
   type ImportanceResolution,
   type ResolveImportanceInput,
   type VerifiedImportanceResult,
@@ -134,6 +137,7 @@ export {
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
   runCodexAnalysisWithFallback,
+  selectCodexImportanceAssessment,
   type CodexAnalysisAttempt,
   type CodexAnalysisReduction,
   type CodexRelationCoverage,

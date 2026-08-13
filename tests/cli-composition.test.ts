@@ -216,6 +216,8 @@ function createUnavailableProductionRuntimeAdapters(
     enumerateGitHubItemsByIdentifiers: () =>
       Promise.reject(new TypeError("個別項目は収集しません")),
     enumerateOpenGitHubItems: () => Promise.reject(new TypeError("項目は収集しません")),
+    probeGitHubPullRequestVolatileMetadataWithRetry: () =>
+      Promise.reject(new TypeError("Pull Request volatile metadataは収集しません")),
     collectGitHubItemDetails: () => Promise.reject(new TypeError("詳細は収集しません")),
     executeCodexAnalysis: () => Promise.reject(new TypeError("Codexは実行しません")),
     readReplayFixture: () => Promise.reject(new TypeError("replay fixtureは読みません")),
@@ -623,6 +625,8 @@ describe("CLI合成root", () => {
       discoverRepositoryInventory: () => Promise.resolve(Object.freeze([])),
       enumerateGitHubItemsByIdentifiers: () => Promise.resolve(Object.freeze([])),
       enumerateOpenGitHubItems: () => Promise.resolve(Object.freeze([])),
+      probeGitHubPullRequestVolatileMetadataWithRetry: () =>
+        Promise.reject(new TypeError("Pull Request volatile metadataは収集しません")),
       collectGitHubItemDetails: () =>
         Promise.resolve(
           Object.freeze({
@@ -872,6 +876,8 @@ describe("CLI合成root", () => {
         enumerateGitHubItemsByIdentifiers: () =>
           Promise.reject(new TypeError("個別項目は収集しません")),
         enumerateOpenGitHubItems: () => Promise.reject(new TypeError("項目は収集しません")),
+        probeGitHubPullRequestVolatileMetadataWithRetry: () =>
+          Promise.reject(new TypeError("Pull Request volatile metadataは収集しません")),
         collectGitHubItemDetails: () => Promise.reject(new TypeError("詳細は収集しません")),
         executeCodexAnalysis: () => Promise.reject(new TypeError("Codexは実行しません")),
         readReplayFixture: () => Promise.reject(new TypeError("replay fixtureは読みません")),

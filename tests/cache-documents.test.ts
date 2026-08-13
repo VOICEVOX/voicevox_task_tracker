@@ -303,6 +303,10 @@ function createValidRepository(): GitHubRepositoryCacheDocument {
 }
 
 function createValidLatestImportance(): AiLatestImportanceCacheDocument {
+  const reference = createAvailableAiCacheReference();
+  if (reference.status !== "available") {
+    throw new TypeError("latest importance fixtureに利用可能なAI参照がありません");
+  }
   return {
     schemaVersion: "2",
     kind: "ai_latest_importance",
@@ -315,7 +319,13 @@ function createValidLatestImportance(): AiLatestImportanceCacheDocument {
       rationale: "重要度の理由です",
     },
     confidence: 0.8,
-    aiCacheReference: createAvailableAiCacheReference(),
+    aiCacheReference: {
+      status: "available",
+      cacheKey: reference.cacheKey,
+      sourceHash: reference.sourceHash,
+      inputHash: reference.inputHash,
+      identityHash: reference.identityHash,
+    },
     metadata: {
       deterministicRulesVersion: "issue-v1",
       model: "model-v1",
@@ -753,6 +763,24 @@ describe("cache文書契約", () => {
     ).toThrow("relation intervalとcurrent referenceが一致しません");
   });
 
+  it("relation mutationのcontent source kindをrelation対象だけに制限する", () => {
+    const relationMutation = createAvailableRelationMutation();
+    expect(() =>
+      createCacheDocument({
+        ...createValidItem(),
+        relationMutations: [
+          {
+            ...relationMutation,
+            contentSourceId: buildSourceId(
+              "github_pull_request_review_comment",
+              "cache-review-comment",
+            ),
+          },
+        ],
+      }),
+    ).toThrow("relation mutationのcontent source kindがrelation対象外です");
+  });
+
   it("relationの削除後再追加をactive intervalとして受理する", () => {
     const relation = {
       repositoryOwner: REPOSITORY.owner,
@@ -1071,7 +1099,7 @@ describe("cache文書契約", () => {
     expect(() => createCacheDocument(value)).toThrow("GitHub URL");
   });
 
-  it("latest importanceは完全一致AI cache参照を必須にする", () => {
+  it("latest importanceは利用可能なAI cache参照を必須にする", () => {
     const value = {
       ...createValidLatestImportance(),
       aiCacheReference: {
@@ -1079,7 +1107,7 @@ describe("cache文書契約", () => {
       },
     };
 
-    expect(() => createCacheDocument(value)).toThrow("完全一致AI cache参照");
+    expect(() => createCacheDocument(value)).toThrow("cache文書のschema検証に失敗しました");
   });
 
   it("latest importanceのrationaleを非空かつ120文字以内で検証する", () => {

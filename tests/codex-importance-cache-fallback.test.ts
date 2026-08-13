@@ -23,6 +23,7 @@ import {
   createImportanceCacheEntry,
   createImportanceCacheCandidate,
   resolveImportance,
+  selectLatestImportanceCacheEntry,
   type ImportanceCacheContext,
   type ImportanceCacheEntry,
   type ImportanceCacheRepository,
@@ -155,6 +156,9 @@ function createFullEntry(
   return createAiCacheEntry({
     cacheKey: createAiCacheKey(identity),
     sourceHash: hashCanonicalJson({ source: marker }),
+    graphNeighborhoodHash: hashCanonicalJson({ graph: marker }),
+    repository: REPOSITORY,
+    nodeId,
     metadata: {
       ...identity,
       outputHash: hashCanonicalJson(output),
@@ -212,7 +216,6 @@ function createResult(
     fingerprint: {
       sourceHash: fixture.reference.sourceHash,
       inputHash: parseSha256Hash(fixture.reference.metadata.inputHash),
-      graphNeighborhoodHash: fixture.graphNeighborhoodHash,
       identityHash: fixture.identityHash,
     },
     entry: fixture.reference,
@@ -253,7 +256,6 @@ function createLatest(
       cacheKey: fixture.reference.cacheKey,
       sourceHash: fixture.reference.sourceHash,
       inputHash: parseSha256Hash(fixture.reference.metadata.inputHash),
-      graphNeighborhoodHash: fixture.graphNeighborhoodHash,
       identityHash: fixture.identityHash,
     },
     metadata: {
@@ -507,9 +509,10 @@ describe("重要度キャッシュ代替判定", () => {
     ).toThrow();
   });
 
-  it("新しい検証済み結果からキャッシュ候補を作り、前回より古い結果を拒否する", () => {
+  it("新しい結果で更新し、同じexact結果を保持して前回より古い結果を拒否する", () => {
     const previous = createEntry("previous", createUtcIsoDateTime("2026-08-10T00:00:00Z"));
     const current = createEntry("current", createUtcIsoDateTime("2026-08-12T00:00:00Z"));
+    const older = createEntry("older", createUtcIsoDateTime("2026-08-09T00:00:00Z"));
     const previousDocument = createLatest(previous);
     const candidate = createImportanceCacheCandidate({
       context: createContext([previous.reference]),
@@ -519,18 +522,64 @@ describe("重要度キャッシュ代替判定", () => {
 
     expect(candidate.nodeId).toBe(NODE_ID);
     expect(candidate.aiCacheReference.status).toBe("available");
-    if (candidate.aiCacheReference.status === "available") {
-      expect(candidate.aiCacheReference.cacheKey).toBe(current.reference.cacheKey);
-    }
+    expect(candidate.aiCacheReference.cacheKey).toBe(current.reference.cacheKey);
     expect(candidate.importance).toEqual(createImportance("result"));
 
-    expect(() =>
+    expect(
       createImportanceCacheCandidate({
         context: createContext([previous.reference]),
         current: createResult(previous),
         previous: available(previousDocument),
       }),
+    ).toEqual(previousDocument);
+
+    expect(() =>
+      createImportanceCacheCandidate({
+        context: createContext([previous.reference]),
+        current: createResult(older),
+        previous: available(previousDocument),
+      }),
     ).toThrow();
+  });
+
+  it("同じ実行時刻の異なるcurrent結果は前回indexを決定的に更新する", () => {
+    const executedAt = createUtcIsoDateTime("2026-08-12T00:00:00Z");
+    const previous = createEntry("same-time-previous", executedAt);
+    const current = createEntry("same-time-current", executedAt);
+
+    const candidate = createImportanceCacheCandidate({
+      context: createContext([previous.reference]),
+      current: createResult(current),
+      previous: available(createLatest(previous)),
+    });
+
+    expect(candidate.aiCacheReference.cacheKey).toBe(current.reference.cacheKey);
+    expect(candidate.importance).toEqual(current.importance);
+  });
+
+  it("同じ実行時刻のAI resultは入力順に依存せずcache key順で選ぶ", () => {
+    const executedAt = createUtcIsoDateTime("2026-08-12T00:00:00Z");
+    const first = createEntry("tie-first", executedAt);
+    const second = createEntry("tie-second", executedAt);
+    const expected =
+      first.reference.cacheKey < second.reference.cacheKey ? first.reference : second.reference;
+
+    expect(selectLatestImportanceCacheEntry([first.reference, second.reference])).toEqual({
+      status: "available",
+      entry: expected,
+    });
+    expect(selectLatestImportanceCacheEntry([second.reference, first.reference])).toEqual({
+      status: "available",
+      entry: expected,
+    });
+  });
+
+  it("同じAI cache keyが重複した最新重要度候補を拒否する", () => {
+    const entry = createEntry("duplicate-key", createUtcIsoDateTime("2026-08-12T00:00:00Z"));
+
+    expect(() => selectLatestImportanceCacheEntry([entry.reference, entry.reference])).toThrow(
+      /AI cache keyが重複/u,
+    );
   });
 
   it("キャッシュ文書の余計なフィールドを拒否する", () => {

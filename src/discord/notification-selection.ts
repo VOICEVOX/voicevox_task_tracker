@@ -271,7 +271,7 @@ function validateEvent(item: DiscordNotificationItem, event: DiscordNotification
 function validateEvents(item: DiscordNotificationItem): void {
   const cycleIds = item.events
     .filter((event) => event.kind === "dependency_cycle")
-    .map((event) => event.cycleId);
+    .map((event) => JSON.stringify([event.cycleId, event.occurredAt]));
   if (new Set(cycleIds).size !== cycleIds.length) {
     throw new TypeError(`${item.nodeId}のdependency cycle IDが重複しています`);
   }
@@ -287,7 +287,9 @@ function validateGraphContext(item: DiscordNotificationItem): void {
   }
   validateNonNegativeInteger(impact.openNodeCount, `${item.nodeId}のdownstream open node数`);
   validateNonNegativeInteger(impact.repositoryCount, `${item.nodeId}のdownstream repository数`);
-  const cycleIds = item.graph.dependencyCycles.map((cycle) => cycle.cycleId);
+  const cycleIds = item.graph.dependencyCycles.map((cycle) =>
+    JSON.stringify([cycle.cycleId, cycle.occurredAt]),
+  );
   if (new Set(cycleIds).size !== cycleIds.length) {
     throw new TypeError(`${item.nodeId}のdependency cycle IDが重複しています`);
   }

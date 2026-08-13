@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { type GitHubNodeId } from "../domain/index.js";
 import { TaskTrackerError } from "../util/task-tracker-error.js";
 import {
   createZodErrorDiagnostics,
@@ -187,6 +188,45 @@ export class GitHubApiBudgetExceededError extends GitHubClientError {
 export class GitHubResponseValidationError extends GitHubClientError {
   public constructor(context: string, options: ErrorOptions) {
     super(`GitHub APIレスポンスが不正です。対象: ${context}`, options);
+  }
+}
+
+/** Pull Requestのvolatile競合の発生箇所。 */
+export type GitHubPullRequestVolatileRaceKind =
+  "review_request_page" | "check_context_page" | "detail";
+
+/** Pull Requestのvolatile値が取得中に変化したことを表す。 */
+export class GitHubPullRequestVolatileRaceError extends GitHubResponseValidationError {
+  public readonly kind: GitHubPullRequestVolatileRaceKind;
+  public readonly nodeId: GitHubNodeId;
+
+  public constructor(
+    kind: GitHubPullRequestVolatileRaceKind,
+    nodeId: GitHubNodeId,
+    options: ErrorOptions,
+  ) {
+    super(`Pull Request volatile値の競合。対象: ${nodeId}`, options);
+    this.kind = kind;
+    this.nodeId = nodeId;
+  }
+}
+
+/** Pull Requestのvolatile値の再取得上限へ到達したことを表す。 */
+export class GitHubPullRequestVolatileRaceRetryExhaustedError extends GitHubClientError {
+  public readonly attempts: number;
+  public readonly races: readonly GitHubPullRequestVolatileRaceError[];
+
+  public constructor(races: readonly GitHubPullRequestVolatileRaceError[]) {
+    const lastRace = races[races.length - 1];
+    if (lastRace == null) {
+      throw new TypeError("Pull Request volatile値の競合履歴が空です");
+    }
+    super(
+      `Pull Request volatile値の再取得上限へ到達しました。attempts: ${races.length.toString()}`,
+      { cause: lastRace },
+    );
+    this.attempts = races.length;
+    this.races = Object.freeze([...races]);
   }
 }
 

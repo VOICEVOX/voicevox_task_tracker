@@ -24,6 +24,7 @@ import {
 import {
   createGitHubBodyFingerprint,
   createPublicRepositoryAllowlist,
+  probeGitHubPullRequestVolatileMetadataWithRetry,
   type EnumeratedGitHubItem,
   type GitHubDetailActor,
   type GitHubIssueComment,
@@ -48,8 +49,9 @@ const PROFILE_ROOT_ITEM_COUNT = 300;
 const PROFILE_REPOSITORY_NAME = "performance-profile";
 const PROFILE_REPOSITORY_ID = createGitHubRepositoryId("R_performance_profile");
 const PROFILE_MAINTAINER_LOGIN = "performance-maintainer";
+const PROFILE_ITEM_BODY = "自然言語判定を必要とする性能profile本文";
 const PROFILE_START_AT = createUtcIsoDateTime("2026-01-01T00:00:00.000Z");
-const PROFILE_RUN_AT = createUtcIsoDateTime("2026-08-02T00:00:00.000Z");
+const PROFILE_RUN_AT = createUtcIsoDateTime("2026-08-01T23:00:00.000Z");
 const GITHUB_API_LIMIT = 15_000;
 const GITHUB_CONNECTION_PAGE_SIZE = 100;
 const GITHUB_API_BUDGET_RATIO = 0.7;
@@ -232,7 +234,7 @@ function createProfileItems(
         number,
         url: `https://github.com/VOICEVOX/${PROFILE_REPOSITORY_NAME}/issues/${number.toString()}`,
         title: `性能profile項目 ${number.toString().padStart(4, "0")}`,
-        bodyFingerprint: createGitHubBodyFingerprint(`performance-body-${index.toString()}-v1`),
+        bodyFingerprint: createGitHubBodyFingerprint(PROFILE_ITEM_BODY),
         bodyLocator: Object.freeze({
           kind: "github_item_body",
           repositoryId: repository.id,
@@ -249,7 +251,13 @@ function createProfileItems(
         }),
         createdAt: createUtcIsoDateTime("2026-07-01T00:00:00.000Z"),
         updatedAt: observedAt,
-        assignees: Object.freeze([]),
+        assignees: Object.freeze([
+          Object.freeze({
+            nodeId: createGitHubNodeId(`U_performance_assignee_${number.toString()}`),
+            login: `performance-assignee-${number.toString()}`,
+            apiType: "User",
+          }),
+        ]),
         labels: Object.freeze([]),
         milestone: null,
         itemFingerprint: createGitHubBodyFingerprint(`performance-item-${index.toString()}-v1`),
@@ -329,7 +337,7 @@ function createProfileComment(
       }),
     }),
     body: "次の担当を自然言語から判定します",
-    createdAt: createUtcIsoDateTime("2026-07-01T00:00:00.000Z"),
+    createdAt: createUtcIsoDateTime("2026-07-02T00:00:00.000Z"),
     lastEditedAt: null,
     updatedAt: observedAt,
     url: `${item.url}#issuecomment-${item.number.toString()}`,
@@ -391,7 +399,7 @@ function createProfileDetail(
     number: item.number,
     type: "issue",
     bodySourceId: buildSourceId("github_item_body", item.nodeId),
-    body: "自然言語判定を必要とする性能profile本文",
+    body: PROFILE_ITEM_BODY,
     lastEditedAt: null,
     bodyUserContentEdits: Object.freeze({
       availability: "unavailable",
@@ -497,6 +505,7 @@ async function createPerformanceConfig(repositoryPath: string): Promise<Config> 
       budget: Object.freeze({
         ...base.ai.budget,
         maxCallsPerRun: PROFILE_COLD_ITEM_COUNT,
+        maxTotalInputCharactersPerRun: 30_000_000,
       }),
     }),
     notifications: Object.freeze({
@@ -560,6 +569,7 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
     },
     enumerateGitHubItemsByIdentifiers: () =>
       Promise.reject(new TypeError("性能profileでは項目の個別取得を行いません")),
+    probeGitHubPullRequestVolatileMetadataWithRetry,
     collectGitHubItemDetails: (input) => {
       apiBudget.consume(input.targets.length + 1);
       const itemsByNodeId = new Map(currentItems.map((item) => [item.nodeId, item]));
@@ -659,14 +669,14 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
       const startedAt = performance.now();
       const execution = await runDaily(PROFILE_RUN_AT);
       const durationMilliseconds = performance.now() - startedAt;
-      assertNonNullable(generatedPublicData, "性能profileでPages公開データが生成されませんでした");
+      const publicData = requireGeneratedPublicData(generatedPublicData, execution);
       return Object.freeze({
         execution,
         durationMilliseconds,
         githubApiUsed: apiBudget.used(),
         githubApiRemaining: apiBudget.remaining(),
         notificationCandidateCount,
-        generatedPublicData,
+        generatedPublicData: publicData,
         config,
       });
     },
@@ -681,6 +691,23 @@ function requireDailyMetrics(execution: CliExecutionResult) {
     throw new TypeError("性能profileの日次runが失敗しました");
   }
   return execution.result.report.metrics;
+}
+
+function requireGeneratedPublicData(
+  generatedPublicData: GeneratedPublicData | undefined,
+  execution: CliExecutionResult,
+): GeneratedPublicData {
+  if (generatedPublicData != null) {
+    return generatedPublicData;
+  }
+  if (execution.command !== "daily") {
+    throw new TypeError("性能profileがdailyコマンドを通っていません");
+  }
+  const report = execution.result.report;
+  const failedStage = report.status === "failure" ? report.failedStage : report.status;
+  throw new TypeError(
+    `性能profileでPages公開データが生成されませんでした。stage=${failedStage} diagnostics=${report.diagnostics.join(" / ")}`,
+  );
 }
 
 /** OPS-004の測定値を全閾値へ照合する。 */

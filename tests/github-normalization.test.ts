@@ -329,6 +329,7 @@ function createDetail(): Extract<GitHubItemDetail, { type: "pull_request" }> {
     inboundCrossReferences: [],
     observedAt,
     type: "pull_request",
+    reviewDecision: "approved",
     reviews: [
       {
         sourceId: buildSourceId("github_pull_request_review", "V_review"),

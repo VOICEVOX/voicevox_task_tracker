@@ -83,25 +83,7 @@ describe("GitHub relation mutation adapter", () => {
     });
   });
 
-  it("Pull Request review commentをrelation mutationへ変換する", () => {
-    const source = {
-      kind: "pull_request_review_comment",
-      contentSourceId: sourceId("github_pull_request_review_comment", "adapter-review-comment"),
-      contentCreatedAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
-      currentMarkdown: "https://github.com/VOICEVOX/example/issues/1",
-      history: editCollection(),
-    } satisfies GitHubRelationMutationSource;
-
-    const adapted = adaptGitHubRelationMutationSource(source);
-
-    expect(adapted.result).toMatchObject({
-      status: "available",
-      temporalKnowledge: { status: "exact" },
-    });
-    expect(JSON.stringify(adapted)).not.toContain("adapter-only raw snapshot");
-  });
-
-  it("item detailの結果にPull Request review commentを含める", () => {
+  it("item detailの結果にPull Request review commentを含めない", () => {
     const observedAt = createUtcIsoDateTime("2026-08-01T00:00:00Z");
     const repositoryId = createGitHubRepositoryId("R_relation_adapter");
     const publicRepositoryId = createPublicRepositoryAllowlist([
@@ -136,6 +118,7 @@ describe("GitHub relation mutation adapter", () => {
       inboundCrossReferences: [],
       observedAt,
       type: "pull_request",
+      reviewDecision: null,
       reviews: [],
       reviewThreads: [
         {
@@ -192,16 +175,11 @@ describe("GitHub relation mutation adapter", () => {
 
     const results = adaptGitHubItemDetailRelationMutations(detail, observedAt);
 
-    expect(results).toHaveLength(2);
+    expect(results).toHaveLength(1);
     expect(results[0]?.kind).toBe("item_body");
     expect(results[0]?.result).toMatchObject({
       status: "available",
       temporalKnowledge: { status: "exact", intervals: [{ addedAt: observedAt }] },
-    });
-    expect(results[1]?.kind).toBe("pull_request_review_comment");
-    expect(results[1]?.result).toMatchObject({
-      status: "available",
-      temporalKnowledge: { status: "exact" },
     });
   });
 });

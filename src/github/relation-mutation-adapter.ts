@@ -6,7 +6,6 @@ import {
 import {
   type GitHubIssueComment,
   type GitHubItemDetail,
-  type GitHubPullRequestReviewComment,
   type GitHubUserContentEditCollection,
 } from "./item-detail-types.js";
 import { type UtcIsoDateTime } from "../domain/index.js";
@@ -27,10 +26,6 @@ export type GitHubRelationMutationSource =
   | (GitHubRelationMutationContentSource &
       Readonly<{
         kind: "issue_comment";
-      }>)
-  | (GitHubRelationMutationContentSource &
-      Readonly<{
-        kind: "pull_request_review_comment";
       }>);
 
 export type GitHubRelationMutationSourceResult = Readonly<{
@@ -95,19 +90,7 @@ function createIssueCommentSource(comment: GitHubIssueComment): GitHubRelationMu
   });
 }
 
-function createPullRequestReviewCommentSource(
-  comment: GitHubPullRequestReviewComment,
-): GitHubRelationMutationSource {
-  return Object.freeze({
-    kind: "pull_request_review_comment",
-    contentSourceId: comment.sourceId,
-    contentCreatedAt: comment.createdAt,
-    currentMarkdown: comment.body,
-    history: comment.userContentEdits,
-  });
-}
-
-/** GitHub item detailの本文、コメント、inline review commentをmutation結果へ変換する。 */
+/** GitHub item detailの本文とIssue commentをrelation mutationへ変換する。 */
 export function adaptGitHubItemDetailRelationMutations(
   detail: GitHubItemDetail,
   itemCreatedAt: UtcIsoDateTime,
@@ -124,14 +107,5 @@ export function adaptGitHubItemDetailRelationMutations(
       adaptGitHubRelationMutationSource(createIssueCommentSource(comment)),
     ),
   ];
-  if (detail.type === "pull_request") {
-    results.push(
-      ...detail.reviewThreads.flatMap((thread) =>
-        thread.comments.map((comment) =>
-          adaptGitHubRelationMutationSource(createPullRequestReviewCommentSource(comment)),
-        ),
-      ),
-    );
-  }
   return Object.freeze(results);
 }

@@ -125,6 +125,37 @@ function compareEventPosition(
   return compareStrings(left.sourceId, right.sourceId);
 }
 
+function compareDependencyInputEvents(
+  left: DependencyReplayInputEvent,
+  right: DependencyReplayInputEvent,
+): -1 | 0 | 1 {
+  const positionOrder = compareEventPosition(left, right);
+  if (positionOrder !== 0) {
+    return positionOrder;
+  }
+  if (left.status !== right.status) {
+    return left.status === "resolved" ? -1 : 1;
+  }
+  if (left.status === "resolved" && right.status === "resolved") {
+    const fromOrder = compareStrings(left.fromNodeId, right.fromNodeId);
+    if (fromOrder !== 0) {
+      return fromOrder;
+    }
+    const toOrder = compareStrings(left.toNodeId, right.toNodeId);
+    if (toOrder !== 0) {
+      return toOrder;
+    }
+    return left.action === right.action ? 0 : left.action === "added" ? -1 : 1;
+  }
+  if (left.status !== "unresolved" || right.status !== "unresolved") {
+    throw new TypeError("依存関係イベントのstatusが不正です");
+  }
+  if (left.action !== right.action) {
+    return left.action === "added" ? -1 : 1;
+  }
+  return left.direction === right.direction ? 0 : left.direction === "blocked_by" ? -1 : 1;
+}
+
 function validateOccurredAt(occurredAt: UtcIsoDateTime, context: string): void {
   if (createUtcIsoDateTime(occurredAt) !== occurredAt) {
     throw new TypeError(`${context}はUTCへ正規化してください`);
@@ -161,6 +192,7 @@ function eventSignature(event: DependencyReplayInputEvent): string {
       event.toNodeId,
       event.action,
       event.occurredAt,
+      event.sequence,
     ]);
   }
   return JSON.stringify([
@@ -169,8 +201,13 @@ function eventSignature(event: DependencyReplayInputEvent): string {
     event.direction,
     event.action,
     event.occurredAt,
+    event.sequence,
     event.reason,
   ]);
+}
+
+function relationSourceSignature(event: DependencyReplayInputEvent): string {
+  return JSON.stringify(["relation", event.originItemNodeId, event.occurredAt, event.sequence]);
 }
 
 function edgeKey(edge: DependencyReplayEdge): string {
@@ -263,7 +300,19 @@ function compareCanonicalEventGroups(
   left: CanonicalEventGroup,
   right: CanonicalEventGroup,
 ): -1 | 0 | 1 {
-  return compareEventPosition(left, right);
+  const positionOrder = compareEventPosition(left, right);
+  if (positionOrder !== 0) {
+    return positionOrder;
+  }
+  const fromOrder = compareStrings(left.edge.fromNodeId, right.edge.fromNodeId);
+  if (fromOrder !== 0) {
+    return fromOrder;
+  }
+  const toOrder = compareStrings(left.edge.toNodeId, right.edge.toNodeId);
+  if (toOrder !== 0) {
+    return toOrder;
+  }
+  return left.action === right.action ? 0 : left.action === "added" ? -1 : 1;
 }
 
 function createMutableActiveInterval(group: CanonicalEventGroup): MutableActiveInterval {
@@ -458,26 +507,41 @@ export function replayDependencyEvents(
   events: readonly DependencyReplayInputEvent[],
 ): DependencyReplayResult {
   validateInputEvents(events);
-  const eventsBySourceId = new Map<SourceId, DependencyReplayInputEvent>();
+  const eventsBySignature = new Map<string, DependencyReplayInputEvent>();
+  const sourceSignatures = new Map<SourceId, string>();
+  const sourceActionsByEdge = new Map<SourceId, Map<string, DependencyReplayAction>>();
   for (const event of events) {
-    const existing = eventsBySourceId.get(event.sourceId);
-    if (existing == null) {
-      eventsBySourceId.set(event.sourceId, event);
-      continue;
-    }
-    if (eventSignature(existing) !== eventSignature(event)) {
+    const sourceSignature = relationSourceSignature(event);
+    const existingSourceSignature = sourceSignatures.get(event.sourceId);
+    if (existingSourceSignature != null && existingSourceSignature !== sourceSignature) {
       throw new TypeError(
         `同じsource IDが異なる依存関係イベントを指しています。対象: ${event.sourceId}`,
       );
     }
-    if (compareEventPosition(event, existing) < 0) {
-      eventsBySourceId.set(event.sourceId, event);
+    sourceSignatures.set(event.sourceId, sourceSignature);
+    if (event.status === "resolved") {
+      const edgeActions =
+        sourceActionsByEdge.get(event.sourceId) ?? new Map<string, DependencyReplayAction>();
+      const key = edgeKey(event);
+      const existingAction = edgeActions.get(key);
+      if (existingAction != null && existingAction !== event.action) {
+        throw new TypeError(
+          `同じsource IDの同じedgeでactionが衝突しています。対象: ${event.sourceId}`,
+        );
+      }
+      edgeActions.set(key, event.action);
+      sourceActionsByEdge.set(event.sourceId, edgeActions);
+    }
+    const eventKey = JSON.stringify([event.sourceId, eventSignature(event)]);
+    const existing = eventsBySignature.get(eventKey);
+    if (existing == null || compareDependencyInputEvents(event, existing) < 0) {
+      eventsBySignature.set(eventKey, event);
     }
   }
 
   const resolvedEvents: ResolvedDependencyReplayEvent[] = [];
   const unresolvedEvents: UnresolvedDependencyReplayEvent[] = [];
-  for (const event of eventsBySourceId.values()) {
+  for (const event of [...eventsBySignature.values()].sort(compareDependencyInputEvents)) {
     if (event.status === "resolved") {
       resolvedEvents.push(event);
     } else {

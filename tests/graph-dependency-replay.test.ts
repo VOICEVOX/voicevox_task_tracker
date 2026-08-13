@@ -205,8 +205,8 @@ describe("GitHub依存関係イベントadapter", () => {
 });
 
 describe("依存関係interval reducer", () => {
-  it("同一source IDの同一内容を1件にし、異なる内容を拒否する", () => {
-    const event = createResolvedEvent({
+  it("同一source IDの同一編集による複数edgeを保持し完全同一eventだけdedupeする", () => {
+    const firstEdge = createResolvedEvent({
       sourceIdValue: "same-source",
       originItemNodeId: "I_blocker",
       fromNodeId: "I_blocker",
@@ -214,52 +214,120 @@ describe("依存関係interval reducer", () => {
       action: "added",
       sequence: 0,
     });
-    const deduplicated = replayDependencyEvents([event, event]);
-    expect(deduplicated.transitions).toHaveLength(1);
-    expect(deduplicated.relations[0]?.intervals).toHaveLength(1);
+    const secondEdge = createResolvedEvent({
+      sourceIdValue: "same-source",
+      originItemNodeId: "I_blocker",
+      fromNodeId: "I_blocker",
+      toNodeId: "I_other",
+      action: "added",
+      sequence: 0,
+    });
+    const first = replayDependencyEvents([secondEdge, firstEdge, firstEdge, secondEdge]);
+    const second = replayDependencyEvents([firstEdge, secondEdge]);
 
-    expect(() =>
-      replayDependencyEvents([
-        event,
-        createResolvedEvent({
-          sourceIdValue: "same-source",
-          originItemNodeId: "I_blocker",
-          fromNodeId: "I_blocker",
-          toNodeId: "I_other",
-          action: "added",
-          sequence: 0,
-        }),
-      ]),
-    ).toThrow("同じsource IDが異なる依存関係イベントを指しています");
+    expect(first).toEqual(second);
+    expect(first.transitions).toHaveLength(2);
+    expect(first.transitions.map((transition) => transition.sourceIds)).toEqual([
+      [sourceId("same-source")],
+      [sourceId("same-source")],
+    ]);
+    expect(first.relations).toHaveLength(2);
+    expect(first.relations.every((relation) => relation.intervals[0].status === "active")).toBe(
+      true,
+    );
   });
 
-  it("同一source IDのsequence差を内容差にせず決定的に低い値を採用する", () => {
-    const addWithHighSequence = createResolvedEvent({
-      sourceIdValue: "same-sequence-source",
+  it("同一source IDのorigin、時刻、sequence差を真のconflictとして拒否する", () => {
+    const base = createResolvedEvent({
+      sourceIdValue: "same-identity-source",
       originItemNodeId: "I_blocker",
       fromNodeId: "I_blocker",
       toNodeId: "I_blocked",
       action: "added",
-      sequence: 2,
+      sequence: 0,
     });
-    const addWithLowSequence = { ...addWithHighSequence, sequence: 0 };
-    const remove = createResolvedEvent({
-      sourceIdValue: "same-time-remove",
+    const conflicts: readonly ResolvedDependencyReplayEvent[] = [
+      { ...base, originItemNodeId: createGitHubNodeId("I_blocked") },
+      { ...base, occurredAt: createUtcIsoDateTime("2026-08-01T01:00:00Z") },
+      { ...base, sequence: 1 },
+    ];
+    for (const conflict of conflicts) {
+      expect(() => replayDependencyEvents([base, conflict])).toThrow(
+        "同じsource IDが異なる依存関係イベントを指しています",
+      );
+    }
+  });
+
+  it("同一source IDの同一edgeのaction違いを拒否する", () => {
+    const added = createResolvedEvent({
+      sourceIdValue: "same-edge-action",
       originItemNodeId: "I_blocker",
       fromNodeId: "I_blocker",
       toNodeId: "I_blocked",
+      action: "added",
+      sequence: 0,
+    });
+    const removed = { ...added, action: "removed" as const };
+    expect(() => replayDependencyEvents([added, removed])).toThrow(
+      "同じsource IDの同じedgeでactionが衝突",
+    );
+  });
+
+  it("同一source IDのresolved、unresolved、複数edgeとactionを同じ編集として保持する", () => {
+    const unresolved: DependencyReplayInputEvent = {
+      status: "unresolved",
+      sourceId: sourceId("same-edit-source"),
+      originItemNodeId: createGitHubNodeId("I_blocker"),
+      direction: "blocking",
       action: "removed",
-      sequence: 1,
+      occurredAt: createUtcIsoDateTime(defaultOccurredAt),
+      sequence: 0,
+      reason: "related_node_unavailable",
+    };
+    const firstResolved = createResolvedEvent({
+      sourceIdValue: "same-edit-source",
+      originItemNodeId: "I_blocker",
+      fromNodeId: "I_blocker",
+      toNodeId: "I_blocked",
+      action: "added",
+      sequence: 0,
+    });
+    const secondResolved = createResolvedEvent({
+      sourceIdValue: "same-edit-source",
+      originItemNodeId: "I_blocker",
+      fromNodeId: "I_blocker",
+      toNodeId: "I_other",
+      action: "removed",
+      sequence: 0,
     });
 
-    const coldResult = replayDependencyEvents([addWithHighSequence, remove, addWithLowSequence]);
-    const warmResult = replayDependencyEvents([addWithLowSequence, remove, addWithHighSequence]);
+    const result = replayDependencyEvents([unresolved, secondResolved, firstResolved]);
 
-    expect(coldResult).toEqual(warmResult);
-    expect(coldResult.transitions.map((transition) => transition.kind)).toEqual([
-      "added",
-      "removed",
-    ]);
+    expect(result.unresolvedEvents).toEqual([unresolved]);
+    expect(result.relations).toHaveLength(1);
+    expect(result.relations[0]?.edge).toEqual({
+      fromNodeId: createGitHubNodeId("I_blocker"),
+      toNodeId: createGitHubNodeId("I_blocked"),
+    });
+    expect(result.relations[0]?.current.status).toBe("active");
+    expect(result.transitions).toContainEqual({
+      kind: "added",
+      edge: {
+        fromNodeId: createGitHubNodeId("I_blocker"),
+        toNodeId: createGitHubNodeId("I_blocked"),
+      },
+      occurredAt: createUtcIsoDateTime(defaultOccurredAt),
+      sourceIds: [sourceId("same-edit-source")],
+    });
+    expect(result.transitions).toContainEqual({
+      kind: "unmatched_removed",
+      edge: {
+        fromNodeId: createGitHubNodeId("I_blocker"),
+        toNodeId: createGitHubNodeId("I_other"),
+      },
+      occurredAt: createUtcIsoDateTime(defaultOccurredAt),
+      sourceIds: [sourceId("same-edit-source")],
+    });
   });
 
   it("mirroredな追加と削除を一つのtransitionへ統合する", () => {

@@ -1356,6 +1356,7 @@ function createPullRequestResponse(
       userContentEdits: null,
       closingIssuesReferences: createEmptyConnection(),
       headRefOid: `head-${itemNodeId}`,
+      reviewDecision: null,
       headRef: {
         target: headCommit,
       },
@@ -1431,6 +1432,7 @@ function createPullRequestNullableFieldResponse(
       userContentEdits: null,
       closingIssuesReferences: createEmptyConnection(),
       headRefOid: `head-${itemNodeId}`,
+      reviewDecision: null,
       headRef: {
         target: headCommit,
       },
@@ -1524,6 +1526,7 @@ function createPullRequestHeadCommitResolutionResponse(
       userContentEdits: null,
       closingIssuesReferences: createEmptyConnection(),
       headRefOid,
+      reviewDecision: null,
       headRef,
       mergeable: "MERGEABLE",
       mergeStateStatus: "CLEAN",
@@ -2100,6 +2103,7 @@ describe("Pull Request詳細収集", () => {
           pageInfo: createPageInfo(true, "closing-issues-next"),
         },
         headRefOid: "new-head-sha",
+        reviewDecision: null,
         headRef: null,
         mergeable: "MERGEABLE",
         mergeStateStatus: "BLOCKED",
