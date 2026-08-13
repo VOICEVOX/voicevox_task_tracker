@@ -12,8 +12,8 @@
           "role": "assignee"
         }
       ],
-      "severity": "watch",
-      "stallSince": "2026-07-20T00:00:00.000Z"
+      "severity": "none",
+      "stallSince": "2026-08-01T00:00:00.000Z"
     }
   ],
   "relations": [],

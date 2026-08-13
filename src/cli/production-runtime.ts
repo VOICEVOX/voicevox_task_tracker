@@ -56,8 +56,6 @@ import {
   resolveWaitingOnAccountIdentifiers,
   selectTrackingItems,
   type LabelRule,
-  type NotificationLedgerEntry,
-  type OperationsAlertLedgerEntry,
   type GitHubNodeId,
   type GitHubRepositoryId,
   type GraphNodeId,
@@ -84,6 +82,7 @@ import {
   type NaturalLanguageImportanceAssessmentState,
   type DependencyResolutionProgress,
   type ExternalGhostNode,
+  type NormalizedEvent,
   type TrackedItem,
   type TrackedItemAiAnalysis,
   type TrackedItemInputEvent,
@@ -94,6 +93,7 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
+  isOneTimeNotificationDue,
   selectDiscordNotifications,
   type sendDiscordDigest,
   type DiscordDigestDelivery,
@@ -101,6 +101,7 @@ import {
   type DiscordNotificationItem,
   type DiscordNotificationSelection,
   type DiscordOperationsIncident,
+  type NormalDigestRunContext,
   type DiscordSecretProvider,
   type DiscordWebhookHttpClient,
 } from "../discord/index.js";
@@ -158,7 +159,6 @@ import {
 } from "../pages/index.js";
 import {
   createStateHistoryInputEvents,
-  createStateNotificationLedger,
   createStateRunReport,
   createStateSnapshot,
   type StatePersistenceSession,
@@ -418,7 +418,6 @@ type GraphResult = Readonly<{
 type ValidatedRun = Readonly<{
   snapshot: StateSnapshot;
   historyInputEvents: readonly StateHistoryInputEvent[];
-  notificationLedger: StateNotificationLedger;
   notificationSelection: DiscordNotificationSelection;
 }>;
 
@@ -436,10 +435,7 @@ type DiscordDeliveryResult = Readonly<{
   delivery: DiscordDigestDelivery;
 }>;
 
-type DiscordResult = DiscordDeliveryResult &
-  Readonly<{
-    notificationLedger: StateNotificationLedger;
-  }>;
+type DiscordResult = DiscordDeliveryResult;
 
 export type ProductionTypes = DailyTransactionTypeMap &
   Readonly<{
@@ -693,7 +689,7 @@ function githubApiRemaining(client: GitHubClient): number {
   return client.getRateLimitSnapshot()?.remaining ?? 0;
 }
 
-function previousSnapshot(state: RuntimeState): StateSnapshot | undefined {
+function previousSnapshot(state: Pick<RuntimeState, "snapshot">): StateSnapshot | undefined {
   return state.snapshot.status === "available" ? state.snapshot.snapshot : undefined;
 }
 
@@ -3865,63 +3861,6 @@ function snapshotRepositories(collection: CollectedItems): readonly SnapshotRepo
   );
 }
 
-function notificationLedgerEntries(
-  state: RuntimeState,
-  items: readonly PendingTrackedItem[],
-): readonly NotificationLedgerEntry[] {
-  const itemsByNodeId = new Map<string, PendingTrackedItem>(
-    items.map((item) => [item.nodeId, item]),
-  );
-  const entries: NotificationLedgerEntry[] = [];
-  for (const entry of state.notificationLedger.entries) {
-    const item = itemsByNodeId.get(entry.itemNodeId);
-    if (item == null) {
-      continue;
-    }
-    const fields = {
-      notificationKey: entry.notificationKey,
-      itemNodeId: item.nodeId,
-      reasonCode: entry.reasonCode,
-      severity: entry.severity,
-      reservedAt: createUtcIsoDateTime(entry.reservedAt),
-      cooldownUntil: createUtcIsoDateTime(entry.cooldownUntil),
-    };
-    if (entry.status === "reserved") {
-      entries.push(
-        Object.freeze({
-          ...fields,
-          status: "reserved",
-          expiresAt: createUtcIsoDateTime(entry.expiresAt),
-        }),
-      );
-    } else {
-      entries.push(
-        Object.freeze({
-          ...fields,
-          status: "sent",
-          sentAt: createUtcIsoDateTime(entry.sentAt),
-          discordMessageId: entry.discordMessageId,
-        }),
-      );
-    }
-  }
-  return Object.freeze(entries);
-}
-
-function notificationLatestChange(
-  current: ReducedItemAnalysis,
-  previous: TrackedItem | undefined,
-): DiscordNotificationItem["latestChange"] {
-  if (previous == null || current.item.githubUpdatedAt === previous.githubUpdatedAt) {
-    return "none";
-  }
-  return current.item.events.some(
-    (event) => event.actor.type === "human" && event.occurredAt > previous.observedAt,
-  )
-    ? "human"
-    : "bot_only";
-}
-
 type NotificationAnalysisState =
   | Readonly<{
       availability: "not_available";
@@ -3972,20 +3911,34 @@ function notificationDraftState(
       : "ready_for_review";
 }
 
+function notificationLatestChange(
+  events: readonly NormalizedEvent[],
+  referenceAt: UtcIsoDateTime,
+): DiscordNotificationItem["latestChange"] {
+  const windowEvents = events.filter((event) =>
+    isOneTimeNotificationDue({
+      eventAt: event.occurredAt,
+      referenceAt,
+    }),
+  );
+  if (windowEvents.length === 0) {
+    return "none";
+  }
+  return windowEvents.some((event) => event.actor.type === "human") ? "human" : "bot_only";
+}
+
 function notificationItem(
   configuration: RuntimeConfiguration,
-  state: RuntimeState,
   inventory: RepositoryInventory,
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
   graph: GraphResult,
   item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
+  currentEvents: readonly NormalizedEvent[],
+  referenceAt: UtcIsoDateTime,
 ): DiscordNotificationItem {
   const repository = findRepository(inventory, item.repositoryId);
-  const previous = previousSnapshot(state)?.items.find(
-    (candidate) => candidate.nodeId === item.nodeId,
-  );
   const downstreamImpact = graph.analysis.downstreamImpacts.find(
     (impact) => impact.nodeId === item.nodeId,
   );
@@ -3994,22 +3947,6 @@ function notificationItem(
     repositoryFullName(repository),
     item.labels,
   );
-  const cycleIds = graph.analysis.dependencyCycles
-    .filter((cycle) => cycle.nodeIds.includes(item.nodeId))
-    .map((cycle) => cycle.id);
-  const previousDependencyCycles: DiscordNotificationItem["graph"]["previousDependencyCycles"] =
-    graph.previousAnalysis.availability === "unavailable"
-      ? Object.freeze({
-          availability: "not_available",
-        })
-      : Object.freeze({
-          availability: "available",
-          cycleIds: Object.freeze(
-            graph.previousAnalysis.value.dependencyCycles
-              .filter((cycle) => cycle.nodeIds.includes(item.nodeId))
-              .map((cycle) => cycle.id),
-          ),
-        });
   return Object.freeze({
     nodeId: item.nodeId,
     createdAt: item.createdAt,
@@ -4017,10 +3954,7 @@ function notificationItem(
     repositoryFreshness: "fresh",
     notificationClass: item.notificationClass,
     notificationsSuppressedByLabel: labelEffects.suppressNotifications,
-    latestChange:
-      analysisState.availability === "available"
-        ? notificationLatestChange(analysisState.value, previous)
-        : "none",
+    latestChange: notificationLatestChange(currentEvents, referenceAt),
     decisionBasis: notificationDecisionBasis(item, staleness, analysisState),
     notificationRecommendation:
       analysisState.availability === "available"
@@ -4039,37 +3973,21 @@ function notificationItem(
       stallSince: item.stallSince,
       lastProgressAt: item.lastProgressAt,
     },
-    previous:
-      previous == null
-        ? Object.freeze({
-            availability: "not_available",
-          })
-        : Object.freeze({
-            availability: "available",
-            value: Object.freeze({
-              status: previous.status,
-              waitingOn: previous.waitingOn,
-              severity: previous.severity,
-              stallSince: previous.stallSince,
-              observedAt: previous.observedAt,
-            }),
-          }),
+    events: Object.freeze([]),
     graph: Object.freeze({
       downstreamImpact,
-      newlyUnblocked: graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId),
-      currentDependencyCycleIds: cycleIds,
-      previousDependencyCycles,
+      dependencyCycles: Object.freeze([]),
     }),
   });
 }
 
 function notificationItems(
   configuration: RuntimeConfiguration,
-  state: RuntimeState,
   inventory: RepositoryInventory,
   collection: CollectedItems,
   reduction: ReducedAnalysis,
   graph: GraphResult,
+  referenceAt: UtcIsoDateTime,
 ): readonly DiscordNotificationItem[] {
   const staleRepositoryIds = new Set<GitHubRepositoryId>(
     collection.repositoryResults
@@ -4082,6 +4000,9 @@ function notificationItems(
   const enumeratedItemsByNodeId = new Map(
     collection.enumeratedItems.map((item) => [item.nodeId, item]),
   );
+  const currentEventsByNodeId = new Map(
+    collection.observedItems.map((item) => [item.nodeId, item.events]),
+  );
   return Object.freeze(
     reduction.items.flatMap((item) => {
       if (staleRepositoryIds.has(item.repositoryId)) {
@@ -4093,7 +4014,6 @@ function notificationItems(
       return [
         notificationItem(
           configuration,
-          state,
           inventory,
           enumeratedItemsByNodeId,
           graph,
@@ -4107,27 +4027,12 @@ function notificationItems(
                 availability: "available",
                 value: current,
               }),
+          currentEventsByNodeId.get(item.nodeId) ?? Object.freeze([]),
+          referenceAt,
         ),
       ];
     }),
   );
-}
-
-function mergeNotificationLedger(
-  state: RuntimeState,
-  selection: DiscordNotificationSelection,
-): StateNotificationLedger {
-  const entries = new Map(
-    state.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
-  );
-  for (const reservation of selection.ledgerReservations) {
-    entries.set(reservation.notificationKey, reservation);
-  }
-  return createStateNotificationLedger({
-    schemaVersion: "2",
-    entries: [...entries.values()],
-    operationsAlerts: state.notificationLedger.operationsAlerts,
-  });
 }
 
 function snapshotAiState(config: Config, codexAnalysis: CodexAnalysis): SnapshotAiState {
@@ -4216,6 +4121,7 @@ function createTrackedItemWithImportance(
 
 function validateRunCompleteness(
   invocation: DailyRunInvocation,
+  digestRunContext: NormalDigestRunContext,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   inventory: RepositoryInventory,
@@ -4378,20 +4284,27 @@ function validateRunCompleteness(
     }
   }
   const notificationSelection = selectDiscordNotifications({
-    evaluatedAt: collection.evaluatedAt,
-    items: notificationItems(configuration, state, inventory, collection, reduction, graph),
-    ledger: notificationLedgerEntries(state, reduction.items),
+    referenceAt: invocation.scheduledFor,
+    runContext: digestRunContext,
+    items: notificationItems(
+      configuration,
+      inventory,
+      collection,
+      reduction,
+      graph,
+      invocation.scheduledFor,
+    ),
     settings: {
       maxItemsPerDigest: configuration.config.notifications.discord.maxItemsPerDigest,
       repeatDays: configuration.config.notifications.discord.repeatDays,
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
       minimumAiConfidence: configuration.config.ai.confidence.medium,
+      severityThresholds: configuration.config.staleness.thresholdsHours,
     },
   });
   return Object.freeze({
     snapshot,
     historyInputEvents: stateHistoryInputEvents(reduction),
-    notificationLedger: mergeNotificationLedger(state, notificationSelection),
     notificationSelection,
   });
 }
@@ -4465,6 +4378,32 @@ function discordDeliverySettings(config: Config): DiscordDeliverySettings {
   });
 }
 
+/** 環境変数と予定時刻から通常digestのworkflow contextを作成する。 */
+export function normalDigestRunContext(
+  environment: Readonly<NodeJS.ProcessEnv>,
+  scheduledFor: UtcIsoDateTime,
+): NormalDigestRunContext {
+  const runAttempt = Number(environment["GITHUB_RUN_ATTEMPT"] ?? "1");
+  if (!Number.isSafeInteger(runAttempt) || runAttempt <= 0) {
+    throw new TypeError("GITHUB_RUN_ATTEMPTは正の安全な整数にしてください");
+  }
+  const eventName = environment["GITHUB_EVENT_NAME"];
+  if (eventName == null || eventName === "workflow_dispatch") {
+    return Object.freeze({
+      eventName: "workflow_dispatch",
+      runAttempt,
+    });
+  }
+  if (eventName !== "schedule") {
+    throw new TypeError(`通常digestに対応しないworkflow eventです: ${eventName}`);
+  }
+  return Object.freeze({
+    eventName: "schedule",
+    runAttempt,
+    scheduledFor,
+  });
+}
+
 function createCollectAnalyzeArtifact(
   invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
@@ -4484,7 +4423,6 @@ function createCollectAnalyzeArtifact(
     })),
     snapshot: validated.snapshot,
     historyInputEvents: validated.historyInputEvents,
-    notificationLedger: validated.notificationLedger,
     notificationSelection: validated.notificationSelection,
     runMetadata: createRunMetadata(invocation, validated, metrics, diagnostics),
     aiCacheEntries: state.session.pendingAiCacheEntries(),
@@ -4508,7 +4446,7 @@ async function persistValidatedRun(
   const result = await state.session.persist({
     snapshot: validated.snapshot,
     historyInputEvents: validated.historyInputEvents,
-    notificationLedger: validated.notificationLedger,
+    notificationLedger: state.notificationLedger,
     repositoryInventory: inventory.inventory,
     knownSecrets: configuration.credentials.knownSecrets,
   });
@@ -4559,16 +4497,6 @@ function environmentSecretProvider(
   });
 }
 
-function operationsAlertLedgerEntry(
-  entry: StateNotificationLedger["operationsAlerts"][number],
-): OperationsAlertLedgerEntry {
-  return Object.freeze({
-    ...entry,
-    occurredAt: createUtcIsoDateTime(entry.occurredAt),
-    sentAt: createUtcIsoDateTime(entry.sentAt),
-  });
-}
-
 async function deliverDiscord(
   adapters: ProductionRuntimeAdapters,
   settings: DiscordDeliverySettings,
@@ -4577,24 +4505,12 @@ async function deliverDiscord(
 ): Promise<
   Readonly<{
     value: DiscordDeliveryResult;
-    notificationLedger: StateNotificationLedger;
     notificationCount: number;
     discordSentAt: UtcIsoDateTime | null;
   }>
 > {
-  const sentNotificationEntries: NotificationLedgerEntry[] = [];
-  const notificationEntriesByKey = new Map(
-    validated.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
-  );
-  const operationsAlertsByKey = new Map<string, OperationsAlertLedgerEntry>(
-    validated.notificationLedger.operationsAlerts.map((entry) => [
-      entry.alertKey,
-      operationsAlertLedgerEntry(entry),
-    ]),
-  );
   const delivery = await adapters.sendDiscord({
     candidates: validated.notificationSelection.candidates,
-    ledgerReservations: validated.notificationSelection.ledgerReservations,
     items: validated.snapshot.items,
     generatedAt: validated.snapshot.generatedAt,
     pagesDeployment: {
@@ -4610,42 +4526,18 @@ async function deliverDiscord(
         sleep: adapters.sleep,
         random: adapters.random,
       },
-      ledger: {
-        hasOperationsAlert: (alertKey) => Promise.resolve(operationsAlertsByKey.has(alertKey)),
-        recordNotifications: (entries) => {
-          sentNotificationEntries.push(...entries);
-          for (const entry of entries) {
-            notificationEntriesByKey.set(entry.notificationKey, entry);
-          }
-          return Promise.resolve();
-        },
-        recordOperationsAlert: (entry) => {
-          operationsAlertsByKey.set(entry.alertKey, entry);
-          return Promise.resolve();
-        },
-      },
     },
   });
   let sentAt: UtcIsoDateTime | null = null;
   if (delivery.status === "sent") {
-    const entries = delivery.ledgerEntries.filter((entry) => entry.status === "sent");
-    const firstEntry = entries[0];
-    assertNonNullable(firstEntry, "Discord送信結果に送信済みledger entryがありません");
-    sentAt = entries.reduce(
-      (latest, entry) => (entry.sentAt > latest ? entry.sentAt : latest),
-      firstEntry.sentAt,
-    );
+    sentAt = currentRuntimeTime(adapters);
   }
   return Object.freeze({
     value: Object.freeze({
       delivery,
     }),
-    notificationLedger: createStateNotificationLedger({
-      schemaVersion: "2",
-      entries: [...notificationEntriesByKey.values()],
-      operationsAlerts: [...operationsAlertsByKey.values()],
-    }),
-    notificationCount: sentNotificationEntries.length,
+    notificationCount:
+      delivery.status === "sent" ? validated.notificationSelection.candidates.length : 0,
     discordSentAt: sentAt,
   });
 }
@@ -4657,7 +4549,6 @@ async function persistSuccessfulRunCompletion(
   validated: ValidatedRun,
   runMetadata: WorkflowRunMetadata,
   delivery: Readonly<{
-    notificationLedger: StateNotificationLedger;
     notificationCount: number;
   }>,
   knownSecrets: readonly string[],
@@ -4665,7 +4556,7 @@ async function persistSuccessfulRunCompletion(
   const completedAt = createUtcIsoDateTime(adapters.now().toISOString());
   await state.session.persistRunCompletion({
     snapshot: validated.snapshot,
-    notificationLedger: delivery.notificationLedger,
+    notificationLedger: state.notificationLedger,
     runReport: createPersistedRunReport(
       validated.snapshot,
       runMetadata,
@@ -4680,8 +4571,7 @@ async function persistSuccessfulRunCompletion(
 async function deliverOperationsAlert(
   adapters: ProductionRuntimeAdapters,
   config: Config,
-  knownSecrets: readonly string[],
-  state: RuntimeState,
+  state: Pick<RuntimeState, "snapshot">,
   incident: DiscordOperationsIncident,
 ): Promise<
   Readonly<{
@@ -4690,18 +4580,8 @@ async function deliverOperationsAlert(
     discordSentAt: UtcIsoDateTime | null;
   }>
 > {
-  const notificationEntriesByKey = new Map(
-    state.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
-  );
-  const operationsAlertsByKey = new Map<string, OperationsAlertLedgerEntry>(
-    state.notificationLedger.operationsAlerts.map((entry) => [
-      entry.alertKey,
-      operationsAlertLedgerEntry(entry),
-    ]),
-  );
   const delivery = await adapters.sendDiscord({
     candidates: [],
-    ledgerReservations: [],
     items: previousSnapshot(state)?.items ?? [],
     generatedAt: incident.occurredAt,
     pagesDeployment: {
@@ -4720,64 +4600,24 @@ async function deliverOperationsAlert(
         sleep: adapters.sleep,
         random: adapters.random,
       },
-      ledger: {
-        hasOperationsAlert: (alertKey) => Promise.resolve(operationsAlertsByKey.has(alertKey)),
-        recordNotifications: (entries) => {
-          for (const entry of entries) {
-            notificationEntriesByKey.set(entry.notificationKey, entry);
-          }
-          return Promise.resolve();
-        },
-        recordOperationsAlert: (entry) => {
-          operationsAlertsByKey.set(entry.alertKey, entry);
-          return Promise.resolve();
-        },
-      },
     },
   });
-  if (delivery.status !== "skipped" || delivery.reason !== "pages_deployment_failed") {
-    return Object.freeze({
-      value: Object.freeze({
-        delivery,
-        notificationLedger: state.notificationLedger,
-      }),
-      notificationCount: 0,
-      discordSentAt: null,
-    });
-  }
-  const operationsDelivery = delivery.operationsAlert;
-  if (operationsDelivery.status !== "sent") {
-    return Object.freeze({
-      value: Object.freeze({
-        delivery,
-        notificationLedger: state.notificationLedger,
-      }),
-      notificationCount: 0,
-      discordSentAt: null,
-    });
-  }
-  const notificationLedger = createStateNotificationLedger({
-    schemaVersion: "2",
-    entries: [...notificationEntriesByKey.values()],
-    operationsAlerts: [...operationsAlertsByKey.values()],
-  });
-  const persistenceInput = Object.freeze({
-    notificationLedger,
-    committedAt: operationsDelivery.ledgerEntry.sentAt,
-    knownSecrets,
-  });
-  if (state.snapshot.status === "missing_branch") {
-    await state.session.persistInitialOperationsNotificationLedger(persistenceInput);
-  } else {
-    await state.session.persistNotificationLedger(persistenceInput);
-  }
   return Object.freeze({
     value: Object.freeze({
       delivery,
-      notificationLedger,
     }),
-    notificationCount: 1,
-    discordSentAt: operationsDelivery.ledgerEntry.sentAt,
+    notificationCount:
+      delivery.status === "skipped" &&
+      delivery.reason === "pages_deployment_failed" &&
+      delivery.operationsAlert.status === "sent"
+        ? 1
+        : 0,
+    discordSentAt:
+      delivery.status === "skipped" &&
+      delivery.reason === "pages_deployment_failed" &&
+      delivery.operationsAlert.status === "sent"
+        ? currentRuntimeTime(adapters)
+        : null,
   });
 }
 
@@ -5600,6 +5440,7 @@ function createDailyDependencies(
           status: "complete",
           value: validateRunCompleteness(
             invocation,
+            normalDigestRunContext(adapters.environment, invocation.scheduledFor),
             configuration,
             state,
             repositoryInventory,
@@ -5633,7 +5474,6 @@ function createDailyDependencies(
       return Object.freeze({
         value: Object.freeze({
           ...result.value,
-          notificationLedger: result.notificationLedger,
         }),
         notificationCount: result.notificationCount,
         discordSentAt: result.discordSentAt,
@@ -5645,7 +5485,6 @@ function createDailyDependencies(
       state,
       repositoryInventory,
       validated,
-      discord,
       metrics,
       diagnostics,
     }) =>
@@ -5656,24 +5495,17 @@ function createDailyDependencies(
         validated,
         createRunMetadata(invocation, validated, metrics, diagnostics),
         {
-          notificationLedger: discord.notificationLedger,
           notificationCount: metrics.notificationCount,
         },
         configuration.credentials.knownSecrets,
       ),
     sendOperationsAlert: ({ invocation, configuration, state, kind, retryAttempts }) =>
-      deliverOperationsAlert(
-        adapters,
-        configuration.config,
-        configuration.credentials.knownSecrets,
-        state,
-        {
-          incidentId: `${invocation.runId}:${kind}`,
-          kind,
-          occurredAt: invocation.startedAt,
-          retryAttempts,
-        },
-      ),
+      deliverOperationsAlert(adapters, configuration.config, state, {
+        incidentId: `${invocation.runId}:${kind}`,
+        kind,
+        occurredAt: invocation.startedAt,
+        retryAttempts,
+      }),
     writeDryRunArtifact: (path, artifact) => adapters.writeJsonArtifact(path, artifact),
     writeCollectAnalyzeArtifact: (path, input) =>
       adapters.writeJsonArtifact(
@@ -5696,7 +5528,6 @@ function validatedRunFromArtifact(artifact: WorkflowArtifact): ValidatedRun {
   return Object.freeze({
     snapshot: artifact.snapshot,
     historyInputEvents: artifact.historyInputEvents,
-    notificationLedger: artifact.notificationLedger,
     notificationSelection: artifact.notificationSelection,
   });
 }
@@ -5719,7 +5550,7 @@ async function persistWorkflowState(
   await session.persist({
     snapshot: artifact.snapshot,
     historyInputEvents: artifact.historyInputEvents,
-    notificationLedger: artifact.notificationLedger,
+    notificationLedger: await session.loadNotificationLedger(),
     repositoryInventory: workflowArtifactRepositoryInventory(artifact),
     knownSecrets: [],
   });
@@ -5793,7 +5624,6 @@ async function notifyWorkflowDiscord(
     Object.freeze({
       snapshot: artifact.snapshot,
       historyInputEvents: artifact.historyInputEvents,
-      notificationLedger: state.notificationLedger,
       notificationSelection: artifact.notificationSelection,
     }),
     command.pagesUrl,
@@ -5819,20 +5649,8 @@ async function notifyWorkflowOperations(
     config.state,
   );
   const snapshot = await session.loadSnapshot();
-  const state = Object.freeze({
-    session,
-    snapshot,
-    notificationLedger: await session.loadNotificationLedger(),
-  });
-  const knownSecrets = config.notifications.discord.enabled
-    ? Object.freeze([
-        requireEnvironmentValue(
-          adapters.environment,
-          config.notifications.discord.operationsWebhookSecretName,
-        ),
-      ])
-    : Object.freeze([]);
-  await deliverOperationsAlert(adapters, config, knownSecrets, state, {
+  const state = Object.freeze({ snapshot });
+  await deliverOperationsAlert(adapters, config, state, {
     incidentId: command.incidentId,
     kind: command.incidentKind,
     occurredAt: command.occurredAt,

@@ -78,22 +78,14 @@ export class DiscordWebhookResponseError extends DiscordError {
   }
 }
 
-/** Discord通知ledgerの読み書きが失敗したことを表す。 */
-export class DiscordLedgerError extends DiscordError {
-  public constructor(action: "read" | "write", options: ErrorOptions) {
-    const actionText = action === "read" ? "読み取り" : "記録";
-    super(`Discord通知ledgerの${actionText}に失敗しました`, options);
-  }
-}
-
 /** 通常digestの送信失敗と運用障害通知の結果をまとめて表す。 */
 export class DiscordDigestDeliveryError extends DiscordError {
   public readonly digestId: string;
-  public readonly operationsAlertStatus: "sent" | "already_recorded" | "failed";
+  public readonly operationsAlertStatus: "sent" | "failed";
 
   public constructor(
     digestId: string,
-    operationsAlertStatus: "sent" | "already_recorded" | "failed",
+    operationsAlertStatus: "sent" | "failed",
     options: ErrorOptions,
   ) {
     super(

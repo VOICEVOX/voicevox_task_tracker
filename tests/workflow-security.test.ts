@@ -218,7 +218,7 @@ describe("日次workflow", () => {
         contents: "write",
       },
       "notify-operations": {
-        contents: "write",
+        contents: "read",
       },
       "report-workflow": {
         contents: "read",
@@ -331,6 +331,9 @@ describe("日次workflow", () => {
     expect(operationsCommands).toContain("incident_kind=collection");
     expect(operationsCommands).toContain("incident_kind=pages");
     expect(operationsCommands).toContain("incident_kind=discord");
+    expect(operationsCommands).not.toContain(
+      "git push origin refs/heads/tracker-state:refs/heads/tracker-state",
+    );
     expect(operationsCommands).not.toContain("curl");
     for (const jobName of ["persist-state", "build-pages", "notify-discord"] as const) {
       expect(JSON.stringify(workflow.jobs[jobName])).toContain("actions/download-artifact@");

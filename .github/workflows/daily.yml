@@ -280,7 +280,8 @@ jobs:
     if: >-
       success() &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      github.event_name == 'schedule' &&
+      github.run_attempt == 1
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -327,7 +328,7 @@ jobs:
       needs.notify-discord.result == 'failure')
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: ソースコードを取得
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -378,9 +379,6 @@ jobs:
             --kind "$incident_kind" \
             --incident-id "$INCIDENT_ID:$incident_kind" \
             --occurred-at "$occurred_at"
-      - name: 通知ledgerを更新
-        run: git push origin refs/heads/tracker-state:refs/heads/tracker-state
-
   report-workflow:
     needs:
       - test-eval

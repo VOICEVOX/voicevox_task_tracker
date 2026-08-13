@@ -7,6 +7,9 @@ const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
 const JST_OFFSET_MILLISECONDS = 9 * MILLISECONDS_PER_HOUR;
 const JST_NOTIFICATION_HOUR = 8;
 
+/** Discord通知の決定論的判定規則version。 */
+export const DISCORD_NOTIFICATION_DETERMINISTIC_RULES_VERSION = "discord-notification-v3";
+
 /** 決定論的な再通知間隔の日数。 */
 export type DeterministicNotificationRepeatDays = Readonly<{
   urgent: number;

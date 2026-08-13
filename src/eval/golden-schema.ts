@@ -175,6 +175,7 @@ const fixedAiAnalysisSchema = z.strictObject({
 const standardGoldenInputSchema = z.strictObject({
   kind: z.literal("standard"),
   evaluatedAt: dateTimeSchema,
+  notificationReferenceAt: dateTimeSchema,
   repositories: z.array(repositorySchema).min(1),
   items: z.array(z.discriminatedUnion("type", [issueSchema, pullRequestSchema])).min(1),
   relations: z.array(relationSchema),

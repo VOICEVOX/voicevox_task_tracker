@@ -17,10 +17,8 @@ import { createPublicRepositoryAllowlist } from "../github/index.js";
 import {
   assertStatePublicSafety,
   createStateHistoryInputEvents,
-  createStateNotificationLedger,
   createStateSnapshot,
   StatePublicSafetyError,
-  type StateNotificationLedger,
   type StateHistoryInputEvent,
   type StateSnapshot,
 } from "../persistence/index.js";
@@ -66,8 +64,6 @@ const notificationReasonCodeSchema = z.enum([
 ]);
 const selectedReasonSchema = z.strictObject({
   reasonCode: notificationReasonCodeSchema,
-  notificationKey: z.string().min(1).max(1000),
-  cooldownUntil: dateTimeSchema,
 });
 const notificationCandidateSchema = z.strictObject({
   itemNodeId: nodeIdSchema,
@@ -81,27 +77,15 @@ const notificationCandidateSchema = z.strictObject({
   }),
   priorityWeight: z.number(),
 });
-const ledgerReservationSchema = z.strictObject({
-  notificationKey: z.string().min(1).max(1000),
-  itemNodeId: nodeIdSchema,
-  reasonCode: notificationReasonCodeSchema,
-  severity: severitySchema,
-  reservedAt: dateTimeSchema,
-  expiresAt: dateTimeSchema,
-  cooldownUntil: dateTimeSchema,
-  status: z.literal("reserved"),
-});
 const notificationSelectionSchema = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("skip_digest"),
-    reason: z.literal("no_candidates"),
+    reason: z.enum(["no_candidates", "manual", "rerun"]),
     candidates: z.tuple([]),
-    ledgerReservations: z.tuple([]),
   }),
   z.strictObject({
     action: z.literal("create_digest"),
     candidates: z.array(notificationCandidateSchema).min(1),
-    ledgerReservations: z.array(ledgerReservationSchema).min(1),
   }),
 ]);
 const discordSettingsSchema = z.strictObject({
@@ -166,7 +150,6 @@ const workflowArtifactSchema = z.strictObject({
   repositoryAllowlist: z.array(repositoryAllowlistEntrySchema),
   snapshot: z.unknown(),
   historyInputEvents: z.array(z.unknown()),
-  notificationLedger: z.unknown(),
   notificationSelection: z.unknown(),
   runMetadata: runMetadataSchema,
   aiCacheEntries: z.array(z.unknown()),
@@ -195,7 +178,6 @@ export type WorkflowArtifact = Readonly<{
   repositoryAllowlist: readonly WorkflowArtifactRepositoryAllowlistEntry[];
   snapshot: StateSnapshot;
   historyInputEvents: readonly StateHistoryInputEvent[];
-  notificationLedger: StateNotificationLedger;
   notificationSelection: DiscordNotificationSelection;
   runMetadata: WorkflowRunMetadata;
   aiCacheEntries: readonly AiCacheEntry[];
@@ -226,9 +208,8 @@ function createNotificationSelection(value: unknown): DiscordNotificationSelecti
   if (result.data.action === "skip_digest") {
     return Object.freeze({
       action: "skip_digest",
-      reason: "no_candidates",
+      reason: result.data.reason,
       candidates: emptyValues(),
-      ledgerReservations: emptyValues(),
     });
   }
   const candidates = result.data.candidates.map((candidate) =>
@@ -243,7 +224,6 @@ function createNotificationSelection(value: unknown): DiscordNotificationSelecti
   return Object.freeze({
     action: "create_digest",
     candidates: nonEmptyValues(candidates, "通知候補"),
-    ledgerReservations: nonEmptyValues(result.data.ledgerReservations, "通知予約"),
   });
 }
 
@@ -335,16 +315,9 @@ function assertRunConsistency(snapshot: StateSnapshot, metadata: WorkflowRunMeta
 
 function assertNotificationSelectionConsistency(
   snapshot: StateSnapshot,
-  ledger: StateNotificationLedger,
   selection: DiscordNotificationSelection,
 ): void {
   const itemIds = new Set(snapshot.items.map((item) => item.nodeId));
-  const reservations = new Map(
-    selection.ledgerReservations.map((entry) => [entry.notificationKey, entry]),
-  );
-  const ledgerEntries = new Map(ledger.entries.map((entry) => [entry.notificationKey, entry]));
-  const reasonKeys: string[] = [];
-
   for (const candidate of selection.candidates) {
     if (!itemIds.has(candidate.itemNodeId)) {
       throw new TypeError("workflow artifactの通知候補がsnapshot外の項目を参照しています");
@@ -355,41 +328,9 @@ function assertNotificationSelectionConsistency(
     ) {
       throw new TypeError("workflow artifactの通知候補内で項目または主理由が一致しません");
     }
-    for (const reason of candidate.reasons) {
-      reasonKeys.push(reason.notificationKey);
-      const reservation = reservations.get(reason.notificationKey);
-      if (reservation == null) {
-        throw new TypeError("workflow artifactの通知候補に対応する予約がありません");
-      }
-      if (
-        reservation.itemNodeId !== candidate.itemNodeId ||
-        reservation.reasonCode !== reason.reasonCode ||
-        reservation.severity !== candidate.severity ||
-        reservation.cooldownUntil !== reason.cooldownUntil
-      ) {
-        throw new TypeError("workflow artifactの通知候補と予約が一致しません");
-      }
-      const ledgerEntry = ledgerEntries.get(reason.notificationKey);
-      if (ledgerEntry == null) {
-        throw new TypeError("workflow artifactの通知予約がledgerにありません");
-      }
-      if (ledgerEntry.status !== "reserved") {
-        throw new TypeError("workflow artifactの通知予約がledgerへ反映されていません");
-      }
-      if (
-        ledgerEntry.itemNodeId !== reservation.itemNodeId ||
-        ledgerEntry.reasonCode !== reservation.reasonCode ||
-        ledgerEntry.severity !== reservation.severity ||
-        ledgerEntry.reservedAt !== reservation.reservedAt ||
-        ledgerEntry.expiresAt !== reservation.expiresAt ||
-        ledgerEntry.cooldownUntil !== reservation.cooldownUntil
-      ) {
-        throw new TypeError("workflow artifactの通知予約がledgerへ反映されていません");
-      }
-    }
   }
-  if (new Set(reasonKeys).size !== reasonKeys.length || reasonKeys.length !== reservations.size) {
-    throw new TypeError("workflow artifactの通知候補と予約の対応が一意ではありません");
+  if (selection.action === "create_digest" && selection.candidates.length === 0) {
+    throw new TypeError("workflow artifactの通知候補がありません");
   }
 }
 
@@ -417,7 +358,6 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   }
   const snapshot = createStateSnapshot(result.data.snapshot);
   const historyInputEvents = createStateHistoryInputEvents(result.data.historyInputEvents);
-  const notificationLedger = createStateNotificationLedger(result.data.notificationLedger);
   const notificationSelection = createNotificationSelection(result.data.notificationSelection);
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
   const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
@@ -427,7 +367,6 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     repositoryAllowlist: createRepositoryAllowlist(result.data.repositoryAllowlist),
     snapshot,
     historyInputEvents,
-    notificationLedger,
     notificationSelection,
     runMetadata,
     aiCacheEntries,
@@ -446,7 +385,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     }),
   } satisfies WorkflowArtifact);
   assertRunConsistency(snapshot, runMetadata);
-  assertNotificationSelectionConsistency(snapshot, notificationLedger, notificationSelection);
+  assertNotificationSelectionConsistency(snapshot, notificationSelection);
   assertWorkflowArtifactPublicSafety(artifact, repositoryInventory(snapshot), []);
   return artifact;
 }
@@ -487,7 +426,6 @@ export function assertWorkflowArtifactPublicSafety(
     additionalValues: [
       artifact.repositoryAllowlist,
       artifact.historyInputEvents,
-      artifact.notificationLedger,
       artifact.notificationSelection,
       artifact.runMetadata,
       ...artifact.aiCacheEntries,

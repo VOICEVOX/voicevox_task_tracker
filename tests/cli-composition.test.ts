@@ -7,15 +7,9 @@ import { describe, expect, it } from "vitest";
 import { loadConfig, type Config } from "../src/config/index.js";
 import {
   sendDiscordDigest,
-  type DiscordDigestDelivery,
   type DiscordWebhookHttpRequest,
   type DiscordWebhookPayload,
 } from "../src/discord/index.js";
-import {
-  createGitHubNodeId,
-  createUtcIsoDateTime,
-  type NotificationLedgerEntry,
-} from "../src/domain/index.js";
 import {
   createCliApplication,
   createWorkflowArtifact,
@@ -24,8 +18,10 @@ import {
 } from "../src/cli/index.js";
 import {
   createProductionCliApplication,
+  normalDigestRunContext,
   type ProductionRuntimeAdapters,
 } from "../src/cli/production-runtime.js";
+import { createUtcIsoDateTime } from "../src/domain/index.js";
 import {
   StatePersistenceSession,
   createStateRunReport,
@@ -258,16 +254,10 @@ function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
         complete: true,
       },
     },
-    notificationLedger: {
-      schemaVersion: "2",
-      entries: [],
-      operationsAlerts: [],
-    },
     notificationSelection: {
       action: "skip_digest",
       reason: "no_candidates",
       candidates: [],
-      ledgerReservations: [],
     },
     runMetadata: {
       scheduledFor: NOW,
@@ -297,6 +287,34 @@ function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
 }
 
 describe("CLI合成root", () => {
+  it("GITHUB_EVENT_NAME未設定はmanual扱いにし、明示されないworkflow eventは拒否する", () => {
+    const scheduledFor = createUtcIsoDateTime("2026-07-31T23:00:00.000Z");
+
+    expect(normalDigestRunContext({}, scheduledFor)).toEqual({
+      eventName: "workflow_dispatch",
+      runAttempt: 1,
+    });
+    expect(
+      normalDigestRunContext({ GITHUB_EVENT_NAME: "workflow_dispatch" }, scheduledFor),
+    ).toEqual({
+      eventName: "workflow_dispatch",
+      runAttempt: 1,
+    });
+    expect(
+      normalDigestRunContext(
+        { GITHUB_EVENT_NAME: "schedule", GITHUB_RUN_ATTEMPT: "2" },
+        scheduledFor,
+      ),
+    ).toEqual({
+      eventName: "schedule",
+      runAttempt: 2,
+      scheduledFor,
+    });
+    expect(() => normalDigestRunContext({ GITHUB_EVENT_NAME: "push" }, scheduledFor)).toThrow(
+      "通常digestに対応しないworkflow eventです: push",
+    );
+  });
+
   it("GitHub App認証情報が無い場合は環境変数名を示して失敗する", async () => {
     const harness = createHarness({});
     const application = createCliApplication(harness.adapters);
@@ -494,7 +512,7 @@ describe("CLI合成root", () => {
     const runtimeAdapters: ProductionRuntimeAdapters = Object.freeze({
       ...harness.adapters,
       loadConfig: async (path) => withoutExplicitIncludes(await loadConfig(path)),
-      openStateSession: (adapter, configuration) =>
+      openStateSession: (adapter: StateBranchAdapter, configuration: Config["state"]) =>
         StatePersistenceSession.open(adapter, configuration),
       discoverRepositoryInventory: () => Promise.resolve(Object.freeze([])),
       enumerateGitHubItemsByIdentifiers: () => Promise.resolve(Object.freeze([])),
@@ -552,7 +570,7 @@ describe("CLI合成root", () => {
         pagesWriteCount += 1;
         return Promise.reject(new TypeError("Pagesは書きません"));
       },
-      sendDiscord: () => {
+      sendDiscord: async () => {
         discordSendCount += 1;
         return Promise.reject(new TypeError("Discordへ送信しません"));
       },
@@ -567,6 +585,8 @@ describe("CLI合成root", () => {
       "unused-artifact.json",
       "--report",
       "unused-report.json",
+      "--scheduled-for",
+      "2026-07-30T23:00:00.000Z",
     ]);
 
     expect(result.exitCode).toBe(0);
@@ -600,7 +620,7 @@ describe("CLI合成root", () => {
     const runtimeAdapters: ProductionRuntimeAdapters = Object.freeze({
       ...harness.adapters,
       loadConfig,
-      openStateSession: (adapter, configuration) =>
+      openStateSession: (adapter: StateBranchAdapter, configuration: Config["state"]) =>
         StatePersistenceSession.open(adapter, configuration),
       discoverRepositoryInventory: () =>
         Promise.reject(new TypeError("GitHub inventoryは呼びません")),
@@ -625,29 +645,18 @@ describe("CLI合成root", () => {
           detailsBytes: 1,
         });
       },
-      sendDiscord: async (input) => {
+      sendDiscord: () => {
         discordSendCount += 1;
         if (discordFails) {
-          throw new TypeError("Discord送信fixtureが失敗しました");
+          return Promise.reject(new TypeError("Discord送信fixtureが失敗しました"));
         }
-        const ledgerEntry = Object.freeze({
-          notificationKey: "notification:composition:sent",
-          itemNodeId: createGitHubNodeId("I_COMPOSITION_SENT"),
-          reasonCode: "assessment_overdue",
-          severity: "urgent",
-          reservedAt: createUtcIsoDateTime(NOW),
-          cooldownUntil: createUtcIsoDateTime("2026-08-03T00:00:00.000Z"),
-          status: "sent",
-          sentAt: createUtcIsoDateTime(COMPLETED_AT),
-          discordMessageId: "discord-message-composition",
-        } satisfies NotificationLedgerEntry);
-        await input.dependencies.ledger.recordNotifications([ledgerEntry]);
-        return Object.freeze({
-          status: "sent",
-          digestId: "digest-composition",
-          discordMessageIds: Object.freeze([ledgerEntry.discordMessageId]),
-          ledgerEntries: Object.freeze([ledgerEntry]),
-        } satisfies DiscordDigestDelivery);
+        return Promise.resolve(
+          Object.freeze({
+            status: "sent",
+            digestId: "digest-composition",
+            discordMessageIds: Object.freeze(["discord-message-composition"]),
+          }),
+        );
       },
     });
     const application = createProductionCliApplication(runtimeAdapters);
@@ -722,7 +731,7 @@ describe("CLI合成root", () => {
       startedAt: NOW,
       finishedAt: COMPLETED_AT,
       metrics: {
-        notificationCount: 1,
+        notificationCount: 0,
         durationMilliseconds: 300_000,
       },
     });
@@ -753,7 +762,7 @@ describe("CLI合成root", () => {
       incidentId: "workflow-run-123:collection",
       processName: "GitHub収集",
       summary: "GitHub収集がretry上限に達したため、公開処理を停止しました",
-      expectedStateCommitCount: 2,
+      expectedStateCommitCount: 1,
     },
     {
       stateStatus: "available",
@@ -761,7 +770,7 @@ describe("CLI合成root", () => {
       incidentId: "workflow-run-123:discord",
       processName: "Discord通知",
       summary: "通常digestのDiscord送信がretry上限に達しました",
-      expectedStateCommitCount: 2,
+      expectedStateCommitCount: 1,
     },
     {
       stateStatus: "missing_branch",
@@ -769,10 +778,10 @@ describe("CLI合成root", () => {
       incidentId: "workflow-run-initial:collection",
       processName: "GitHub収集",
       summary: "GitHub収集がretry上限に達したため、公開処理を停止しました",
-      expectedStateCommitCount: 1,
+      expectedStateCommitCount: 0,
     },
   ])(
-    "$stateStatusの$incidentKind運用障害stageが1件だけ送りledgerで重複を抑止する",
+    "$stateStatusの$incidentKind運用障害stageは送信済み状態を保持せず毎回送る",
     async ({
       stateStatus,
       incidentKind,
@@ -849,11 +858,10 @@ describe("CLI合成root", () => {
       const config = await loadConfig(join(import.meta.dirname, "fixtures/config.valid.yml"));
       const session = await StatePersistenceSession.open(stateAdapter, config.state);
       const snapshot = await session.loadSnapshot();
-      const ledger = await session.loadNotificationLedger();
 
       expect([first.exitCode, second.exitCode]).toEqual([0, 0]);
-      expect(snapshot.status).toBe(stateStatus === "available" ? "available" : "operations_only");
-      expect(payloads).toHaveLength(1);
+      expect(snapshot.status).toBe(stateStatus);
+      expect(payloads).toHaveLength(2);
       expect(payloads[0]?.content).toContain("VOICEVOX Task Tracker 運用障害");
       expect(payloads[0]?.embeds[0]?.fields).toContainEqual(
         expect.objectContaining({
@@ -867,12 +875,6 @@ describe("CLI合成root", () => {
           value: summary,
         }),
       );
-      expect(ledger.operationsAlerts).toEqual([
-        expect.objectContaining({
-          incidentId,
-          kind: incidentKind,
-        }),
-      ]);
       expect(stateCommitCount).toBe(expectedStateCommitCount);
     },
   );

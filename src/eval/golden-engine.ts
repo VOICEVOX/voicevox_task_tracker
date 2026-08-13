@@ -45,7 +45,11 @@ import {
   type UtcIsoDateTime,
   type WaitingOn,
 } from "../domain/index.js";
-import { selectDiscordNotifications, type DiscordNotificationItem } from "../discord/index.js";
+import {
+  selectDiscordNotifications,
+  type DiscordNotificationEvent,
+  type DiscordNotificationItem,
+} from "../discord/index.js";
 import {
   analyzeGraph,
   reconcileGraph,
@@ -110,6 +114,7 @@ const NOTIFICATION_SETTINGS = Object.freeze({
   }),
   recentProgressGraceHours: 24,
   minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,
+  severityThresholds: SEVERITY_THRESHOLDS,
 });
 const MAINTAINERS = Object.freeze(["fixture-maintainer"]);
 
@@ -821,23 +826,6 @@ function createStaleness(
 ): StalenessResult {
   const evaluatedAt = createUtcIsoDateTime(input.evaluatedAt);
   const basis = transitionBasis(evaluatedAt, deterministic, decision);
-  const previousState: Parameters<typeof calculateStaleness>[0]["previousState"] =
-    item.previousState.availability === "not_available"
-      ? Object.freeze({
-          availability: "not_available",
-        })
-      : Object.freeze({
-          availability: "available",
-          value: Object.freeze({
-            status: decision.status,
-            waitingOn: decision.waitingOn,
-            statusSince: createUtcIsoDateTime(item.previousState.statusSince),
-            ownerSince: createUtcIsoDateTime(item.previousState.ownerSince),
-            stallSince: createUtcIsoDateTime(item.previousState.stallSince),
-            lastProgressAt: createUtcIsoDateTime(item.previousState.lastProgressAt),
-            lastHumanActivityAt: createUtcIsoDateTime(item.previousState.lastHumanActivityAt),
-          }),
-        });
   const blockedParentContext = createBlockedParentContext(
     decision.status,
     decision.waitingOn,
@@ -854,7 +842,6 @@ function createStaleness(
       responsibilityBasis: basis.responsibilityBasis,
     }),
     decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
-    previousState,
     events:
       item.type === "issue"
         ? createIssueObservation(item).events
@@ -1161,36 +1148,119 @@ function findDownstreamImpact(
   return impact;
 }
 
-function notificationPrevious(analysis: ItemAnalysis): DiscordNotificationItem["previous"] {
-  const previous = analysis.input.previousState;
-  if (previous.availability === "not_available") {
-    return Object.freeze({
-      availability: "not_available",
-    });
+function notificationReferenceAt(input: StandardGoldenInput): UtcIsoDateTime {
+  const referenceAt = createUtcIsoDateTime(input.notificationReferenceAt);
+  const referenceTimestamp = Date.parse(referenceAt);
+  const evaluatedTimestamp = Date.parse(input.evaluatedAt);
+  const jstDate = new Date(referenceTimestamp + 9 * 60 * 60 * 1000);
+  if (
+    jstDate.getUTCHours() !== 8 ||
+    jstDate.getUTCMinutes() !== 0 ||
+    jstDate.getUTCSeconds() !== 0 ||
+    jstDate.getUTCMilliseconds() !== 0
+  ) {
+    throw new RangeError("golden通知基準時刻は08:00 JSTにしてください");
   }
-  return Object.freeze({
-    availability: "available",
-    value: Object.freeze({
-      status: analysis.decision.status,
-      waitingOn: analysis.decision.waitingOn,
-      severity: previous.severity,
-      stallSince: createUtcIsoDateTime(previous.stallSince),
-      observedAt: createUtcIsoDateTime(previous.observedAt),
-    }),
+  if (referenceTimestamp > evaluatedTimestamp) {
+    throw new RangeError("golden通知基準時刻はevaluatedAt以前にしてください");
+  }
+  return referenceAt;
+}
+
+function matchesResponsibilityWaitingOn(
+  item: GoldenItemInput,
+  event: Extract<GoldenItemInput["events"][number], { kind: "assignee" | "review_request" }>,
+  waitingOn: readonly WaitingOn[],
+): boolean {
+  if (event.kind === "assignee") {
+    return waitingOn.some(
+      (value) =>
+        value.kind === "user" &&
+        value.role === "assignee" &&
+        (value.candidateId === event.assignee.login || value.candidateId === event.assignee.nodeId),
+    );
+  }
+  if (item.type !== "pull_request") {
+    return false;
+  }
+  const request = item.reviewRequests.find(
+    (candidate) => reviewRequestTargetNodeId(candidate.target) === event.target.nodeId,
+  );
+  if (request == null) {
+    return false;
+  }
+  const candidateId =
+    request.target.type === "user"
+      ? request.target.actor.login
+      : `${ORGANIZATION}/${request.target.slug}`;
+  return waitingOn.some((value) => value.candidateId === candidateId && value.role === "reviewer");
+}
+
+function reviewRequestTargetNodeId(
+  target: Extract<GoldenItemInput, { type: "pull_request" }>["reviewRequests"][number]["target"],
+): string {
+  return target.type === "user" ? target.actor.nodeId : target.nodeId;
+}
+
+function matchesResponsibilityBasis(
+  item: GoldenItemInput,
+  event: Extract<GoldenItemInput["events"][number], { kind: "assignee" | "review_request" }>,
+  sourceIds: readonly SourceId[],
+): boolean {
+  if (event.kind === "assignee") {
+    return sourceIds.includes(eventSourceId(event.id));
+  }
+  if (item.type !== "pull_request") {
+    return false;
+  }
+  const request = item.reviewRequests.find(
+    (candidate) => reviewRequestTargetNodeId(candidate.target) === event.target.nodeId,
+  );
+  return request != null && sourceIds.includes(buildSourceId("golden_review_request", request.id));
+}
+
+function responsibilityEvents(
+  item: GoldenItemInput,
+  analysis: ItemAnalysis,
+): readonly DiscordNotificationEvent[] {
+  if (analysis.decision.origin !== "deterministic") {
+    return Object.freeze([]);
+  }
+  const basis = analysis.deterministicDecision.responsibilityBasis;
+  if (basis.precision !== "event") {
+    return Object.freeze([]);
+  }
+  const event = item.events.find((candidate) => {
+    if (
+      (candidate.kind !== "assignee" && candidate.kind !== "review_request") ||
+      candidate.action !== "added" ||
+      createUtcIsoDateTime(candidate.occurredAt) !== basis.occurredAt
+    ) {
+      return false;
+    }
+    return (
+      matchesResponsibilityBasis(item, candidate, basis.sourceIds) &&
+      matchesResponsibilityWaitingOn(item, candidate, analysis.decision.waitingOn)
+    );
   });
+  if (event == null || (event.kind !== "assignee" && event.kind !== "review_request")) {
+    return Object.freeze([]);
+  }
+  return Object.freeze([
+    Object.freeze({
+      kind: "responsibility_changed",
+      occurredAt: createUtcIsoDateTime(event.occurredAt),
+    }),
+  ]);
 }
 
 function selectNotifications(
-  input: StandardGoldenInput,
+  referenceAt: UtcIsoDateTime,
   analyses: readonly ItemAnalysis[],
   graph: ReturnType<typeof analyzeGraph>,
-  previousGraphAvailable: boolean,
 ): readonly StandardGoldenOutput["notifications"][number][] {
   const notificationItems = analyses.map((analysis): DiscordNotificationItem => {
     const nodeId = createGitHubNodeId(analysis.input.nodeId);
-    const cycleIds = graph.dependencyCycles
-      .filter((cycle) => cycle.nodeIds.includes(nodeId))
-      .map((cycle) => cycle.id);
     return Object.freeze({
       nodeId,
       createdAt: createUtcIsoDateTime(analysis.input.createdAt),
@@ -1225,26 +1295,21 @@ function selectNotifications(
         stallSince: analysis.staleness.stallSince,
         lastProgressAt: analysis.staleness.lastProgressAt,
       }),
-      previous: notificationPrevious(analysis),
+      events: responsibilityEvents(analysis.input, analysis),
       graph: Object.freeze({
         downstreamImpact: findDownstreamImpact(nodeId, graph.downstreamImpacts),
-        newlyUnblocked: graph.newlyUnblockedNodeIds.includes(nodeId),
-        currentDependencyCycleIds: Object.freeze(cycleIds),
-        previousDependencyCycles: previousGraphAvailable
-          ? Object.freeze({
-              availability: "available",
-              cycleIds: Object.freeze([]),
-            })
-          : Object.freeze({
-              availability: "not_available",
-            }),
+        dependencyCycles: Object.freeze([]),
       }),
     });
   });
   const selection = selectDiscordNotifications({
-    evaluatedAt: createUtcIsoDateTime(input.evaluatedAt),
+    referenceAt,
+    runContext: {
+      eventName: "schedule",
+      runAttempt: 1,
+      scheduledFor: referenceAt,
+    },
     items: notificationItems,
-    ledger: Object.freeze([]),
     settings: NOTIFICATION_SETTINGS,
   });
   return selection.candidates.map((candidate) => ({
@@ -1264,6 +1329,7 @@ function waitingOnOutput(
 }
 
 function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalysisResult {
+  const referenceAt = notificationReferenceAt(input);
   const repositories = createRepositoryMap(input);
   const items = createItemMap(input);
   for (const item of input.items) {
@@ -1333,7 +1399,7 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
   const publication = publicationStatus(snapshot, inventory);
   const notifications =
     publication.status === "published"
-      ? selectNotifications(input, analyses, graph, previousGraphAvailable)
+      ? selectNotifications(referenceAt, analyses, graph)
       : Object.freeze([]);
   const output = goldenEvalOutputSchema.parse({
     schemaVersion: "1",

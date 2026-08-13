@@ -67,16 +67,10 @@ function createEmptyWorkflowArtifact(): WorkflowArtifact {
         complete: true,
       },
     },
-    notificationLedger: {
-      schemaVersion: "2",
-      entries: [],
-      operationsAlerts: [],
-    },
     notificationSelection: {
       action: "skip_digest",
       reason: "no_candidates",
       candidates: [],
-      ledgerReservations: [],
     },
     runMetadata: {
       scheduledFor: NOW,
@@ -145,6 +139,20 @@ describe("workflow artifact", () => {
     expect(() => {
       assertWorkflowArtifactPublicSafety(artifact, [], [secret]);
     }).toThrow(StatePublicSafetyError);
+  });
+
+  it("通知ledgerを含む旧artifactをstrict schemaで拒否する", () => {
+    const source = createEmptyWorkflowArtifact();
+    expect(() =>
+      createWorkflowArtifact({
+        ...source,
+        notificationLedger: {
+          schemaVersion: "2",
+          entries: [],
+          operationsAlerts: [],
+        },
+      }),
+    ).toThrow();
   });
 
   it("前stageのartifactが無ければ明示的に失敗する", async () => {
