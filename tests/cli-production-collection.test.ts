@@ -6216,6 +6216,92 @@ describe("本番収集の接続", () => {
     expect(candidate?.reasons).toContainEqual({ reasonCode: "responsibility_changed" });
   });
 
+  it("同時刻の責務addとremoveが相殺される場合はresponsibility changed通知を作らない", async () => {
+    const repository = createRepository(
+      "R_temporal_responsibility_noop",
+      "temporal-responsibility-noop",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const responsibilityAt = createUtcIsoDateTime("2026-07-31T22:00:00.000Z");
+    const assignee = Object.freeze({
+      nodeId: createGitHubNodeId("U_temporal_responsibility_noop"),
+      login: "temporal-responsibility-noop",
+      apiType: "User",
+    });
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "temporal-responsibility-noop",
+        updatedAt: responsibilityAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      labels: Object.freeze(["優先度：高"]),
+    });
+    const detail = createIssueDetail({
+      item,
+      body: "同時刻の責務変更",
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    const account = Object.freeze({
+      sourceId: buildSourceId("github_account", assignee.nodeId),
+      ...assignee,
+    });
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...detail,
+        timeline: Object.freeze([
+          Object.freeze({
+            sourceId: buildSourceId("github_timeline_event", `${item.nodeId}:assigned`),
+            nodeId: createGitHubNodeId(`${item.nodeId}:assigned`),
+            sequence: 0,
+            occurredAt: responsibilityAt,
+            actor: Object.freeze({ status: "identified", account }),
+            kind: "assigned",
+            assignee: Object.freeze({ type: "account", account }),
+          } satisfies GitHubTimelineEvent),
+          Object.freeze({
+            sourceId: buildSourceId("github_timeline_event", `${item.nodeId}:unassigned`),
+            nodeId: createGitHubNodeId(`${item.nodeId}:unassigned`),
+            sequence: 1,
+            occurredAt: responsibilityAt,
+            actor: Object.freeze({ status: "identified", account }),
+            kind: "unassigned",
+            assignee: Object.freeze({ type: "account", account }),
+          } satisfies GitHubTimelineEvent),
+        ]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      scheduledRun: true,
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const candidate = artifact.notificationSelection.candidates.find(
+      (current) => current.itemNodeId === item.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(candidate?.reasons ?? []).not.toContainEqual({
+      reasonCode: "responsibility_changed",
+    });
+  });
+
   it("cycleの作成と解消と再作成をexact eventから通知へ渡す", async () => {
     const repository = createRepository("R_temporal_cycle", "temporal-cycle", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);

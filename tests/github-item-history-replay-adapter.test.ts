@@ -5,6 +5,7 @@ import {
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
+  ResponsibilityReplayMismatchError,
   type GitHubNodeId,
   type UtcIsoDateTime,
 } from "../src/domain/index.js";
@@ -26,12 +27,14 @@ import {
   type GitHubItemDetail,
   type GitHubNativeDependencyCollection,
   type GitHubNativeHierarchyCollection,
+  type GitHubPullRequestReview,
+  type GitHubReviewRequestTarget,
   type GitHubTimelineEvent,
   type GitHubUserContentEditCollection,
 } from "../src/github/item-detail-types.js";
 import { createPublicRepositoryAllowlist } from "../src/github/public-repository-allowlist.js";
 
-const createdAt = createUtcIsoDateTime("2026-08-01T00:00:00Z");
+const createdAt = createUtcIsoDateTime("2026-07-01T00:00:00Z");
 const observedAt = createUtcIsoDateTime("2026-08-01T12:00:00Z");
 const trackingStartAt = createUtcIsoDateTime("2026-08-01T04:00:00Z");
 const repositoryGlobalId = createGitHubRepositoryId("R_replay_adapter");
@@ -59,11 +62,23 @@ const reviewerAccount: GitHubItemAccount = Object.freeze({
   login: "reviewer",
   apiType: "User",
 });
+const botAccount: GitHubItemAccount = Object.freeze({
+  nodeId: createGitHubNodeId("BOT_kgDOCnlnWA"),
+  login: "copilot-pull-request-reviewer",
+  apiType: "Bot",
+});
 const identifiedActor: GitHubDetailActor = Object.freeze({
   status: "identified",
   account: Object.freeze({
     sourceId: buildSourceId("github_actor", humanAccount.nodeId),
     ...humanAccount,
+  }),
+});
+const identifiedBotActor: GitHubDetailActor = Object.freeze({
+  status: "identified",
+  account: Object.freeze({
+    sourceId: buildSourceId("github_actor", botAccount.nodeId),
+    ...botAccount,
   }),
 });
 const unavailableActor: GitHubDetailActor = Object.freeze({
@@ -272,6 +287,86 @@ function createDetail(
   } satisfies GitHubItemDetail);
 }
 
+function withReviews(
+  detail: GitHubItemDetail,
+  reviews: readonly GitHubPullRequestReview[],
+): GitHubItemDetail {
+  if (detail.type !== "pull_request") {
+    throw new TypeError("review fixtureにはPull Requestが必要です");
+  }
+  return Object.freeze({
+    ...detail,
+    reviews,
+  });
+}
+
+function createReviewRequestEvent(
+  target: GitHubReviewRequestTarget,
+  occurredAt: UtcIsoDateTime,
+  sequence: number,
+  name: string,
+): GitHubTimelineEvent {
+  return Object.freeze({
+    sourceId: sourceId("github_timeline_event", name),
+    nodeId: createGitHubNodeId(`TE_${name}`),
+    sequence,
+    occurredAt,
+    actor: identifiedActor,
+    kind: "review_requested",
+    target,
+  } satisfies GitHubTimelineEvent);
+}
+
+function createReviewRequestRemovedEvent(
+  target: GitHubReviewRequestTarget,
+  occurredAt: UtcIsoDateTime,
+  sequence: number,
+  name: string,
+): GitHubTimelineEvent {
+  return Object.freeze({
+    sourceId: sourceId("github_timeline_event", name),
+    nodeId: createGitHubNodeId(`TE_${name}`),
+    sequence,
+    occurredAt,
+    actor: identifiedActor,
+    kind: "review_request_removed",
+    target,
+  } satisfies GitHubTimelineEvent);
+}
+
+function createCurrentReviewRequest(
+  target: GitHubReviewRequestTarget,
+  requestedAt: UtcIsoDateTime,
+  name: string,
+): GitHubCurrentReviewRequest {
+  return Object.freeze({
+    sourceId: sourceId("github_review_request", name),
+    nodeId: createGitHubNodeId(`RR_${name}`),
+    target,
+    requestedAt: { status: "available", value: requestedAt },
+  } satisfies GitHubCurrentReviewRequest);
+}
+
+function createReview(
+  author: GitHubDetailActor,
+  submittedAt: UtcIsoDateTime,
+  state: GitHubPullRequestReview["state"],
+  sequence: number,
+  name: string,
+): GitHubPullRequestReview {
+  return Object.freeze({
+    sourceId: sourceId("github_pull_request_review", name),
+    nodeId: createGitHubNodeId(`PRR_${name}`),
+    sequence,
+    state,
+    author,
+    commit: { status: "unavailable", reason: "github_did_not_return_commit" },
+    submittedAt,
+    body: "review",
+    url: pullRequestUrl,
+  } satisfies GitHubPullRequestReview);
+}
+
 function createStateEvent(
   kind: "closed" | "reopened" | "merged",
   nodeId: GitHubNodeId,
@@ -393,6 +488,335 @@ describe("GitHub item history replay adapter", () => {
         state: "merged",
       },
     });
+  });
+
+  it("activeなUser review requestは同じUserの後続reviewで責務を閉じる", () => {
+    const requestAt = createUtcIsoDateTime("2026-07-13T15:01:08Z");
+    const reviewAt = createUtcIsoDateTime("2026-07-13T15:03:36Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", botAccount.nodeId),
+      nodeId: botAccount.nodeId,
+      login: botAccount.login,
+      apiType: botAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const request = createReviewRequestEvent(target, requestAt, 0, "pr133-request");
+    const review = createReview(identifiedBotActor, reviewAt, "commented", 0, "pr133-review");
+    const detail = withReviews(createDetail(item, [request], []), [review]);
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentResponsibilities).toEqual([]);
+    expect(result.orderedEvents.at(-1)).toMatchObject({
+      kind: "review_request",
+      sourceId: review.sourceId,
+      action: "removed",
+      target: { type: "user", nodeId: botAccount.nodeId },
+    });
+    expect(result.responsibilityEpochs.status).toBe("known");
+    if (result.responsibilityEpochs.status !== "known") {
+      throw new TypeError("責務履歴がknownではありません");
+    }
+    expect(result.responsibilityEpochs.value.at(-1)?.targets).toEqual([]);
+  });
+
+  it("Bot review requestにmatching reviewがない場合は不一致を維持する", () => {
+    const requestAt = createUtcIsoDateTime("2026-08-01T05:03:36Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", botAccount.nodeId),
+      nodeId: botAccount.nodeId,
+      login: botAccount.login,
+      apiType: botAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const request = createReviewRequestEvent(target, requestAt, 0, "bot-request-without-review");
+    const detail = createDetail(item, [request], []);
+
+    expect(() => replayGitHubItemHistory(createReplayOptions(item, detail))).toThrow(
+      ResponsibilityReplayMismatchError,
+    );
+  });
+
+  it("humanのreview requestも同じUserのreviewで責務を閉じる", () => {
+    const requestAt = createUtcIsoDateTime("2026-08-01T05:03:36Z");
+    const reviewAt = createUtcIsoDateTime("2026-08-01T05:04:36Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", humanAccount.nodeId),
+      nodeId: humanAccount.nodeId,
+      login: humanAccount.login,
+      apiType: humanAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const request = createReviewRequestEvent(target, requestAt, 0, "human-request");
+    const review = createReview(identifiedActor, reviewAt, "commented", 0, "human-review");
+    const detail = withReviews(createDetail(item, [request], []), [review]);
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentResponsibilities).toEqual([]);
+    expect(result.orderedEvents.at(-1)).toMatchObject({
+      kind: "review_request",
+      sourceId: review.sourceId,
+      action: "removed",
+      target: { type: "user", nodeId: humanAccount.nodeId },
+    });
+  });
+
+  it("同時刻の合成removeと別Userの追加を一つの責務epochへ統合する", () => {
+    const requestAAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
+    const sameTime = createUtcIsoDateTime("2026-08-01T05:03:36Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const targetA = {
+      type: "user",
+      sourceId: sourceId("github_user", humanAccount.nodeId),
+      nodeId: humanAccount.nodeId,
+      login: humanAccount.login,
+      apiType: humanAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const targetB = {
+      type: "user",
+      sourceId: sourceId("github_user", reviewerAccount.nodeId),
+      nodeId: reviewerAccount.nodeId,
+      login: reviewerAccount.login,
+      apiType: reviewerAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const requestA = createReviewRequestEvent(targetA, requestAAt, 0, "same-time-a-request");
+    const requestB = createReviewRequestEvent(targetB, sameTime, 1, "same-time-b-request");
+    const reviewA = createReview(identifiedActor, sameTime, "commented", 0, "same-time-a-review");
+    const currentRequestB = createCurrentReviewRequest(targetB, sameTime, "same-time-b-current");
+    const detail = withReviews(createDetail(item, [requestA, requestB], [currentRequestB]), [
+      reviewA,
+    ]);
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentResponsibilities).toEqual([
+      { kind: "review_request", target: "user", nodeId: reviewerAccount.nodeId },
+    ]);
+    expect(result.responsibilityEpochs.status).toBe("known");
+    if (result.responsibilityEpochs.status !== "known") {
+      throw new TypeError("責務履歴がknownではありません");
+    }
+    const sameTimeEpochs = result.responsibilityEpochs.value.filter(
+      (epoch) => epoch.occurredAt === sameTime,
+    );
+    expect(sameTimeEpochs).toHaveLength(1);
+    expect(sameTimeEpochs[0]).toEqual({
+      occurredAt: sameTime,
+      sourceIds: [requestB.sourceId, reviewA.sourceId].sort(),
+      targets: [{ kind: "review_request", target: "user", nodeId: reviewerAccount.nodeId }],
+    });
+  });
+
+  it("同じUserのreview requestとreviewを交互に処理する", () => {
+    const firstRequestAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
+    const firstReviewAt = createUtcIsoDateTime("2026-08-01T05:03:36Z");
+    const secondRequestAt = createUtcIsoDateTime("2026-08-01T05:05:36Z");
+    const secondReviewAt = createUtcIsoDateTime("2026-08-01T05:07:36Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", humanAccount.nodeId),
+      nodeId: humanAccount.nodeId,
+      login: humanAccount.login,
+      apiType: humanAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const firstRequest = createReviewRequestEvent(
+      target,
+      firstRequestAt,
+      0,
+      "interleaved-first-request",
+    );
+    const secondRequest = createReviewRequestEvent(
+      target,
+      secondRequestAt,
+      1,
+      "interleaved-second-request",
+    );
+    const detail = withReviews(createDetail(item, [firstRequest, secondRequest], []), [
+      createReview(identifiedActor, firstReviewAt, "commented", 0, "interleaved-first-review"),
+      createReview(identifiedActor, secondReviewAt, "commented", 1, "interleaved-second-review"),
+    ]);
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentResponsibilities).toEqual([]);
+    expect(result.orderedEvents.filter((event) => event.kind === "review_request")).toHaveLength(4);
+  });
+
+  it("review後の明示removeは合成removeを重ねない", () => {
+    const requestAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
+    const reviewAt = createUtcIsoDateTime("2026-08-01T05:03:36Z");
+    const removeAt = createUtcIsoDateTime("2026-08-01T05:05:36Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", humanAccount.nodeId),
+      nodeId: humanAccount.nodeId,
+      login: humanAccount.login,
+      apiType: humanAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const request = createReviewRequestEvent(target, requestAt, 0, "explicit-after-review-request");
+    const remove = createReviewRequestRemovedEvent(
+      target,
+      removeAt,
+      1,
+      "explicit-after-review-remove",
+    );
+    const review = createReview(identifiedActor, reviewAt, "approved", 0, "explicit-after-review");
+    const detail = withReviews(createDetail(item, [request, remove], []), [review]);
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentResponsibilities).toEqual([]);
+    expect(
+      result.orderedEvents.filter(
+        (event) => event.kind === "review_request" && event.action === "removed",
+      ),
+    ).toHaveLength(1);
+    expect(result.orderedEvents.at(-1)?.sourceId).toBe(remove.sourceId);
+  });
+
+  it("明示remove後の再requestは後続reviewで閉じる", () => {
+    const requestAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
+    const removeAt = createUtcIsoDateTime("2026-08-01T05:02:08Z");
+    const secondRequestAt = createUtcIsoDateTime("2026-08-01T05:03:08Z");
+    const reviewAt = createUtcIsoDateTime("2026-08-01T05:04:08Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", humanAccount.nodeId),
+      nodeId: humanAccount.nodeId,
+      login: humanAccount.login,
+      apiType: humanAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const request = createReviewRequestEvent(target, requestAt, 0, "re-request-first");
+    const remove = createReviewRequestRemovedEvent(target, removeAt, 1, "re-request-remove");
+    const secondRequest = createReviewRequestEvent(target, secondRequestAt, 2, "re-request-second");
+    const review = createReview(
+      identifiedActor,
+      reviewAt,
+      "changes_requested",
+      0,
+      "re-request-review",
+    );
+    const detail = withReviews(createDetail(item, [request, remove, secondRequest], []), [review]);
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentResponsibilities).toEqual([]);
+    expect(
+      result.orderedEvents.filter(
+        (event) => event.kind === "review_request" && event.action === "removed",
+      ),
+    ).toHaveLength(2);
+    expect(result.orderedEvents.at(-1)?.sourceId).toBe(review.sourceId);
+  });
+
+  it("requestと同時刻のreviewは順序不明のため不一致にする", () => {
+    const requestAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", humanAccount.nodeId),
+      nodeId: humanAccount.nodeId,
+      login: humanAccount.login,
+      apiType: humanAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const request = createReviewRequestEvent(target, requestAt, 0, "same-time-request");
+    const review = createReview(identifiedActor, requestAt, "dismissed", 0, "same-time-review");
+    const detail = withReviews(createDetail(item, [request], []), [review]);
+
+    expect(() => replayGitHubItemHistory(createReplayOptions(item, detail))).toThrow(
+      ResponsibilityReplayMismatchError,
+    );
+  });
+
+  it("現行User requestが残る場合はmatching reviewがあっても合成removeを作らない", () => {
+    const requestAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", humanAccount.nodeId),
+      nodeId: humanAccount.nodeId,
+      login: humanAccount.login,
+      apiType: humanAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const requestEvent = createReviewRequestEvent(target, requestAt, 0, "current-request-event");
+    const currentRequest = createCurrentReviewRequest(target, requestAt, "current-request");
+    const review = createReview(
+      identifiedActor,
+      createUtcIsoDateTime("2026-08-01T05:02:08Z"),
+      "commented",
+      0,
+      "current-request-review",
+    );
+    const detail = withReviews(createDetail(item, [requestEvent], [currentRequest]), [review]);
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentResponsibilities).toEqual([
+      { kind: "review_request", target: "user", nodeId: humanAccount.nodeId },
+    ]);
+    expect(
+      result.orderedEvents.some(
+        (event) =>
+          event.kind === "review_request" &&
+          event.sourceId === review.sourceId &&
+          event.action === "removed",
+      ),
+    ).toBe(false);
+  });
+
+  it.each(["approved", "changes_requested", "commented", "dismissed"] as const)(
+    "%s reviewは提出済みreviewとして扱う",
+    (state) => {
+      const requestAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
+      const reviewAt = createUtcIsoDateTime("2026-08-01T05:02:08Z");
+      const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+      const target = {
+        type: "user",
+        sourceId: sourceId("github_user", humanAccount.nodeId),
+        nodeId: humanAccount.nodeId,
+        login: humanAccount.login,
+        apiType: humanAccount.apiType,
+      } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+      const request = createReviewRequestEvent(
+        target,
+        requestAt,
+        0,
+        `review-state-${state}-request`,
+      );
+      const review = createReview(identifiedActor, reviewAt, state, 0, `review-state-${state}`);
+      const detail = withReviews(createDetail(item, [request], []), [review]);
+
+      const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+      expect(result.currentResponsibilities).toEqual([]);
+    },
+  );
+
+  it("Teamのreview requestはreviewがあっても不一致を維持する", () => {
+    const requestAt = createUtcIsoDateTime("2026-08-01T05:03:36Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "team",
+      sourceId: sourceId("github_team", "reviewers"),
+      nodeId: createGitHubNodeId("T_replay_adapter_reviewers"),
+      organizationLogin: "VOICEVOX",
+      slug: "reviewers",
+      name: "reviewers",
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "team" }>;
+    const request = createReviewRequestEvent(target, requestAt, 0, "team-request");
+    const review = createReview(identifiedActor, requestAt, "commented", 0, "team-review");
+    const detail = withReviews(createDetail(item, [request], []), [review]);
+
+    expect(() => replayGitHubItemHistory(createReplayOptions(item, detail))).toThrow(
+      ResponsibilityReplayMismatchError,
+    );
   });
 
   it("項目作成時刻と観測時刻の境界を含むIssue履歴を扱う", () => {

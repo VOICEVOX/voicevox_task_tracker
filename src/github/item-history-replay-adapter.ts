@@ -10,6 +10,7 @@ import { type GitHubBotPredicate } from "./item-normalization.js";
 import {
   type GitHubDetailActor,
   type GitHubItemDetail,
+  type GitHubPullRequestReview,
   type GitHubReviewRequestTarget,
   type GitHubReviewRequestTimestamp,
   type GitHubTimelineAssignee,
@@ -49,6 +50,13 @@ type ReplayTimelineEvent =
       Readonly<{
         kind: "closed" | "reopened" | "merged" | "ready_for_review" | "converted_to_draft";
       }>);
+
+type IdentifiedUserReviewRequestTarget = Extract<GitHubReviewRequestTarget, { type: "user" }>;
+
+type ReplayTimelineAdaptation = Readonly<{
+  timelineEvent: ReplayTimelineEvent;
+  event: ReplayEvent;
+}>;
 
 function normalizeAccountActor(
   account: Pick<GitHubItemAccount, "nodeId" | "login" | "apiType">,
@@ -257,6 +265,230 @@ function adaptTimelineEvent(
   }
 }
 
+function compareReplayEvents(left: ReplayEvent, right: ReplayEvent): -1 | 0 | 1 {
+  if (left.occurredAt < right.occurredAt) {
+    return -1;
+  }
+  if (left.occurredAt > right.occurredAt) {
+    return 1;
+  }
+  if (left.sequence < right.sequence) {
+    return -1;
+  }
+  if (left.sequence > right.sequence) {
+    return 1;
+  }
+  if (left.sourceId < right.sourceId) {
+    return -1;
+  }
+  if (left.sourceId > right.sourceId) {
+    return 1;
+  }
+  return 0;
+}
+
+function compareReviews(left: GitHubPullRequestReview, right: GitHubPullRequestReview): -1 | 0 | 1 {
+  if (left.submittedAt < right.submittedAt) {
+    return -1;
+  }
+  if (left.submittedAt > right.submittedAt) {
+    return 1;
+  }
+  if (left.sequence < right.sequence) {
+    return -1;
+  }
+  if (left.sequence > right.sequence) {
+    return 1;
+  }
+  if (left.sourceId < right.sourceId) {
+    return -1;
+  }
+  if (left.sourceId > right.sourceId) {
+    return 1;
+  }
+  return 0;
+}
+
+function isIdentifiedUserReviewRequestTarget(
+  target: GitHubReviewRequestTarget,
+): target is IdentifiedUserReviewRequestTarget {
+  if ("status" in target || target.type !== "user") {
+    return false;
+  }
+  return true;
+}
+
+function isMatchingUserReviewAfter(
+  review: GitHubPullRequestReview,
+  target: IdentifiedUserReviewRequestTarget,
+  requestedAt: UtcIsoDateTime,
+): boolean {
+  if (review.submittedAt <= requestedAt || review.author.status === "unavailable") {
+    return false;
+  }
+  return review.author.account.nodeId === target.nodeId;
+}
+
+function isMatchingUserReviewBetween(
+  review: GitHubPullRequestReview,
+  target: IdentifiedUserReviewRequestTarget,
+  requestedAt: UtcIsoDateTime,
+  nextRequestedAt: UtcIsoDateTime,
+): boolean {
+  return (
+    isMatchingUserReviewAfter(review, target, requestedAt) && review.submittedAt < nextRequestedAt
+  );
+}
+
+function createSyntheticReviewRequestRemoval(
+  item: EnumeratedGitHubItem,
+  target: IdentifiedUserReviewRequestTarget,
+  review: GitHubPullRequestReview,
+  sequence: number,
+  isBot: GitHubBotPredicate,
+): ReplayEvent {
+  if (review.author.status === "unavailable") {
+    throw new TypeError("review提出者の取得結果がありません");
+  }
+  return Object.freeze({
+    kind: "review_request",
+    sourceId: review.sourceId,
+    itemNodeId: item.nodeId,
+    occurredAt: review.submittedAt,
+    actor: normalizeActor(review.author, isBot),
+    target: Object.freeze({
+      type: "user",
+      nodeId: target.nodeId,
+    }),
+    action: "removed",
+    sequence,
+  });
+}
+
+function findNextUserReviewRequestBoundary(
+  timelineEvents: readonly ReplayTimelineEvent[],
+  requestIndex: number,
+  targetNodeId: GitHubNodeId,
+):
+  | Extract<ReplayTimelineEvent, { kind: "review_requested" | "review_request_removed" }>
+  | undefined {
+  for (const event of timelineEvents.slice(requestIndex + 1)) {
+    if (
+      (event.kind !== "review_requested" && event.kind !== "review_request_removed") ||
+      !isIdentifiedUserReviewRequestTarget(event.target) ||
+      event.target.nodeId !== targetNodeId
+    ) {
+      continue;
+    }
+    return event;
+  }
+  return undefined;
+}
+
+function hasCurrentUserReviewRequest(
+  detail: Extract<GitHubItemDetail, { type: "pull_request" }>,
+  targetNodeId: GitHubNodeId,
+): boolean {
+  return detail.reviewRequests.current.some(
+    (request) =>
+      isIdentifiedUserReviewRequestTarget(request.target) && request.target.nodeId === targetNodeId,
+  );
+}
+
+function findFirstMatchingReview(
+  reviews: readonly GitHubPullRequestReview[],
+  target: IdentifiedUserReviewRequestTarget,
+  requestedAt: UtcIsoDateTime,
+): GitHubPullRequestReview | undefined {
+  return reviews.find((review) => isMatchingUserReviewAfter(review, target, requestedAt));
+}
+
+function findFirstMatchingReviewBetween(
+  reviews: readonly GitHubPullRequestReview[],
+  target: IdentifiedUserReviewRequestTarget,
+  requestedAt: UtcIsoDateTime,
+  nextRequestedAt: UtcIsoDateTime,
+): GitHubPullRequestReview | undefined {
+  return reviews.find((review) =>
+    isMatchingUserReviewBetween(review, target, requestedAt, nextRequestedAt),
+  );
+}
+
+function findReviewForRequest(
+  detail: Extract<GitHubItemDetail, { type: "pull_request" }>,
+  reviews: readonly GitHubPullRequestReview[],
+  target: IdentifiedUserReviewRequestTarget,
+  requestedAt: UtcIsoDateTime,
+  nextBoundary:
+    | Extract<ReplayTimelineEvent, { kind: "review_requested" | "review_request_removed" }>
+    | undefined,
+): GitHubPullRequestReview | undefined {
+  if (nextBoundary == null) {
+    if (hasCurrentUserReviewRequest(detail, target.nodeId)) {
+      return undefined;
+    }
+    return findFirstMatchingReview(reviews, target, requestedAt);
+  }
+  if (nextBoundary.kind !== "review_requested") {
+    return undefined;
+  }
+  return findFirstMatchingReviewBetween(reviews, target, requestedAt, nextBoundary.occurredAt);
+}
+
+function createSyntheticReviewRequestRemovals(
+  item: EnumeratedGitHubItem,
+  detail: Extract<GitHubItemDetail, { type: "pull_request" }>,
+  adaptations: readonly ReplayTimelineAdaptation[],
+  isBot: GitHubBotPredicate,
+): readonly ReplayEvent[] {
+  const timelineEvents = adaptations
+    .slice()
+    .sort((left, right) => compareReplayEvents(left.event, right.event))
+    .map((adaptation) => adaptation.timelineEvent);
+  const reviews = detail.reviews.slice().sort(compareReviews);
+  const syntheticEvents: ReplayEvent[] = [];
+  const maximumTimelineSequence = adaptations.reduce(
+    (maximum, adaptation) => Math.max(maximum, adaptation.event.sequence),
+    0,
+  );
+  for (const [requestIndex, timelineEvent] of timelineEvents.entries()) {
+    if (
+      timelineEvent.kind !== "review_requested" ||
+      !isIdentifiedUserReviewRequestTarget(timelineEvent.target)
+    ) {
+      continue;
+    }
+    const nextBoundary = findNextUserReviewRequestBoundary(
+      timelineEvents,
+      requestIndex,
+      timelineEvent.target.nodeId,
+    );
+    if (nextBoundary?.kind === "review_request_removed") {
+      continue;
+    }
+    const review = findReviewForRequest(
+      detail,
+      reviews,
+      timelineEvent.target,
+      timelineEvent.occurredAt,
+      nextBoundary,
+    );
+    if (review == null) {
+      continue;
+    }
+    syntheticEvents.push(
+      createSyntheticReviewRequestRemoval(
+        item,
+        timelineEvent.target,
+        review,
+        maximumTimelineSequence + 1 + review.sequence,
+        isBot,
+      ),
+    );
+  }
+  return Object.freeze(syntheticEvents);
+}
+
 function createCurrentItem(
   item: EnumeratedGitHubItem,
   detail: GitHubItemDetail,
@@ -346,13 +578,27 @@ export function replayGitHubItemHistory(
 ): ReplayItemHistoryResult {
   validateItemAndDetail(options.item, options.detail);
   const currentItem = createCurrentItem(options.item, options.detail, options.isBot);
-  const events: ReplayEvent[] = [];
+  const adaptations: ReplayTimelineAdaptation[] = [];
   for (const timelineEvent of options.detail.timeline) {
     if (!isReplayTimelineEvent(timelineEvent)) {
       continue;
     }
     const adaptation = adaptTimelineEvent(options.item, timelineEvent, options.isBot);
-    events.push(adaptation.event);
+    adaptations.push({
+      timelineEvent,
+      event: adaptation.event,
+    });
+  }
+  const events = adaptations.map((adaptation) => adaptation.event);
+  if (options.detail.type === "pull_request") {
+    events.push(
+      ...createSyntheticReviewRequestRemovals(
+        options.item,
+        options.detail,
+        adaptations,
+        options.isBot,
+      ),
+    );
   }
   return replayItemHistory({
     trackingStartAt: options.trackingStartAt,

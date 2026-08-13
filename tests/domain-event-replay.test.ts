@@ -347,6 +347,59 @@ describe("イベント再生", () => {
     });
   });
 
+  it("同時刻の責務イベントを一つのepochへ統合してsource IDを並べる", () => {
+    const sameTime = createUtcIsoDateTime("2026-08-01T02:00:00Z");
+    const assigneeNodeId = createGitHubNodeId("U_replay_same_time_assignee");
+    const reviewerNodeId = createGitHubNodeId("U_replay_same_time_reviewer");
+    const request: ReplayCurrentReviewRequest = {
+      sourceId: buildSourceId("github_review_request", "same-time-reviewer"),
+      target: { type: "user", nodeId: reviewerNodeId },
+      requestedAt: { status: "available", value: sameTime },
+    };
+    const assigneeEvent = createAssigneeEvent(
+      "added",
+      "same-time-assignee",
+      assigneeNodeId,
+      sameTime,
+      1,
+    );
+    const reviewRequestEvent = createReviewRequestEvent(
+      "added",
+      "same-time-review-request",
+      { type: "user", nodeId: reviewerNodeId },
+      sameTime,
+      2,
+    );
+    const result = replayItemHistory({
+      trackingStartAt,
+      currentItem: createPullRequest({
+        assignees: [{ ...humanActor, nodeId: assigneeNodeId }],
+        reviewRequests: [request],
+      }),
+      history: {
+        availability: "available",
+        events: [reviewRequestEvent, assigneeEvent],
+      },
+    });
+
+    expect(result.responsibilityEpochs.status).toBe("known");
+    if (result.responsibilityEpochs.status !== "known") {
+      throw new TypeError("責務履歴がknownではありません");
+    }
+    const sameTimeEpochs = result.responsibilityEpochs.value.filter(
+      (epoch) => epoch.occurredAt === sameTime,
+    );
+    expect(sameTimeEpochs).toHaveLength(1);
+    expect(sameTimeEpochs[0]).toEqual({
+      occurredAt: sameTime,
+      sourceIds: [assigneeEvent.sourceId, reviewRequestEvent.sourceId].sort(),
+      targets: [
+        { kind: "assignee", nodeId: assigneeNodeId },
+        { kind: "review_request", target: "user", nodeId: reviewerNodeId },
+      ],
+    });
+  });
+
   it("現行review requestのrequestedAt取得不能を責務履歴だけunknownにする", () => {
     const reviewerNodeId = createGitHubNodeId("U_replay_history_unavailable_reviewer");
     const request: ReplayCurrentReviewRequest = {

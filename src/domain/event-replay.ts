@@ -703,9 +703,31 @@ function replayResponsibilityEpochs(
   const epochs: ReplayResponsibilityEpoch[] = [
     createResponsibilityEpoch([], item.createdAt, [item.sourceId]),
   ];
+  let pendingEpoch:
+    | Readonly<{
+        occurredAt: UtcIsoDateTime;
+        sourceIds: SourceId[];
+      }>
+    | undefined;
+  const flushPendingEpoch = (): void => {
+    if (pendingEpoch == null) {
+      return;
+    }
+    epochs.push(
+      createResponsibilityEpoch(
+        sortResponsibilityTargets([...active.values()]),
+        pendingEpoch.occurredAt,
+        pendingEpoch.sourceIds,
+      ),
+    );
+    pendingEpoch = undefined;
+  };
   for (const event of events) {
     if (event.kind !== "assignee" && event.kind !== "review_request") {
       continue;
+    }
+    if (pendingEpoch != null && pendingEpoch.occurredAt !== event.occurredAt) {
+      flushPendingEpoch();
     }
     let target: ReplayResponsibilityTarget;
     if (event.kind === "assignee") {
@@ -730,12 +752,13 @@ function replayResponsibilityEpochs(
         throw new TypeError(`activeでない責務対象をremovedできません。対象: ${key}`);
       }
     }
-    epochs.push(
-      createResponsibilityEpoch(sortResponsibilityTargets([...active.values()]), event.occurredAt, [
-        event.sourceId,
-      ]),
-    );
+    pendingEpoch ??= {
+      occurredAt: event.occurredAt,
+      sourceIds: [],
+    };
+    pendingEpoch.sourceIds.push(event.sourceId);
   }
+  flushPendingEpoch();
   return createKnown(Object.freeze(epochs));
 }
 
