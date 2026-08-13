@@ -39,17 +39,6 @@ export type MeaningfulProgress = Readonly<{
   confidence: number;
 }>;
 
-/** 前回までに確定した活動時刻。 */
-export type PreviousActivityState =
-  | Readonly<{
-      status: "not_available";
-    }>
-  | Readonly<{
-      status: "available";
-      lastProgressAt: UtcIsoDateTime;
-      lastHumanActivityAt: UtcIsoDateTime;
-    }>;
-
 /** 意味のある進捗を算出する入力。 */
 export type MeaningfulProgressInput = Readonly<{
   createdAt: UtcIsoDateTime;
@@ -58,7 +47,6 @@ export type MeaningfulProgressInput = Readonly<{
   dependencyResolutions: readonly DependencyResolutionProgress[];
   naturalLanguageAssessments: readonly NaturalLanguageProgressAssessment[];
   minimumAiConfidence: number;
-  previousActivity: PreviousActivityState;
   repositoryFullName: string;
   resolveLabelEffects: LabelEffectsResolver;
 }>;
@@ -125,7 +113,7 @@ function compareProgress(left: MeaningfulProgress, right: MeaningfulProgress): -
   if (left.occurredAt > right.occurredAt) {
     return 1;
   }
-  const sourceComparison = compareSourceIds(left.sourceIds[0], right.sourceIds[0]);
+  const sourceComparison = compareSourceIdLists(left.sourceIds, right.sourceIds);
   if (sourceComparison !== 0) {
     return sourceComparison;
   }
@@ -149,6 +137,27 @@ function compareCandidates(
     return 1;
   }
   return compareSourceIds(left.sourceId, right.sourceId);
+}
+
+function compareSourceIdLists(left: readonly SourceId[], right: readonly SourceId[]): -1 | 0 | 1 {
+  const commonLength = Math.min(left.length, right.length);
+  for (let index = 0; index < commonLength; index += 1) {
+    const leftSourceId = left[index];
+    const rightSourceId = right[index];
+    assertNonNullable(leftSourceId, "進捗のsource IDがありません");
+    assertNonNullable(rightSourceId, "進捗のsource IDがありません");
+    const sourceComparison = compareSourceIds(leftSourceId, rightSourceId);
+    if (sourceComparison !== 0) {
+      return sourceComparison;
+    }
+  }
+  if (left.length < right.length) {
+    return -1;
+  }
+  if (left.length > right.length) {
+    return 1;
+  }
+  return 0;
 }
 
 function validateSourceIds(sourceIds: readonly SourceId[], context: string): void {
@@ -190,25 +199,6 @@ function validateInput(input: MeaningfulProgressInput): void {
     const occurredAt = parseTimestamp(resolution.occurredAt, "依存解消時刻");
     if (occurredAt < createdAt || occurredAt > evaluatedAt) {
       throw new RangeError("依存解消時刻は項目作成時刻以後かつ判定時刻以前にしてください");
-    }
-  }
-
-  if (input.previousActivity.status === "available") {
-    const lastProgressAt = parseTimestamp(
-      input.previousActivity.lastProgressAt,
-      "前回の最終進捗時刻",
-    );
-    const lastHumanActivityAt = parseTimestamp(
-      input.previousActivity.lastHumanActivityAt,
-      "前回の最終human活動時刻",
-    );
-    if (
-      lastProgressAt < createdAt ||
-      lastProgressAt > evaluatedAt ||
-      lastHumanActivityAt < createdAt ||
-      lastHumanActivityAt > evaluatedAt
-    ) {
-      throw new RangeError("前回の活動時刻は項目作成時刻以後かつ判定時刻以前にしてください");
     }
   }
 }
@@ -391,12 +381,6 @@ export function determineMeaningfulProgress(
   }
 
   const sortedProgress = Object.freeze(progress.sort(compareProgress));
-  const previousProgress =
-    input.previousActivity.status === "available" ? [input.previousActivity.lastProgressAt] : [];
-  const previousHumanActivity =
-    input.previousActivity.status === "available"
-      ? [input.previousActivity.lastHumanActivityAt]
-      : [];
   const humanEventTimes = input.events
     .filter(
       (event) => !isExcludedFromProgressAndHumanActivity(event) && event.actor.type === "human",
@@ -406,14 +390,9 @@ export function determineMeaningfulProgress(
   return Object.freeze({
     lastProgressAt: latestTimestamp([
       input.createdAt,
-      ...previousProgress,
       ...sortedProgress.map((entry) => entry.occurredAt),
     ]),
-    lastHumanActivityAt: latestTimestamp([
-      input.createdAt,
-      ...previousHumanActivity,
-      ...humanEventTimes,
-    ]),
+    lastHumanActivityAt: latestTimestamp([input.createdAt, ...humanEventTimes]),
     progress: sortedProgress,
     naturalLanguageCandidates: candidates,
   });

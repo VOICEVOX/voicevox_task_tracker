@@ -9,6 +9,7 @@ import {
   recalculateStalenessSeverity,
   resolveWaitingOnAccountIdentifiers,
   type CalculateStalenessInput,
+  type DependencyResolutionProgress,
   type GitHubAccountActor,
   type NaturalLanguageProgressAssessment,
   type NormalizedEvent,
@@ -16,7 +17,6 @@ import {
   type SourceId,
   type StateDecisionForStaleness,
   type Status,
-  type StalenessResult,
   type UtcIsoDateTime,
   type WaitClass,
   type WaitingOn,
@@ -223,9 +223,6 @@ function createBaseInput(): CalculateStalenessInput {
       confidence: 1,
     }),
     decisionBasis: "deterministic",
-    previousState: {
-      availability: "not_available",
-    },
     events: [],
     responsibleAccountIdentifiers: new Set<string>(),
     dependencyResolutions: [],
@@ -257,13 +254,6 @@ function createResponsibleInput(waitingOn: WaitingOn): CalculateStalenessInput {
       confidence: 1,
     }),
     responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers([waitingOn]),
-  });
-}
-
-function previousState(result: StalenessResult): CalculateStalenessInput["previousState"] {
-  return Object.freeze({
-    availability: "available",
-    value: result,
   });
 }
 
@@ -321,12 +311,10 @@ describe("停滞時間", () => {
     const sourceId = buildSourceId("responsibility", "bot");
     const waitingOn = createWaitingOn("user", bot.login, "maintainer", sourceId);
     const input = createResponsibleInput(waitingOn);
-    const initial = calculateStaleness(input);
     const botComment = createComment("preview-update", addHours(CREATED_AT, 30), bot);
     const result = calculateStaleness({
       ...input,
       evaluatedAt: addHours(CREATED_AT, 72),
-      previousState: previousState(initial),
       events: [botComment],
     });
 
@@ -430,7 +418,6 @@ describe("停滞時間", () => {
 
   it("maintainerからreviewerへの責務移動をreview request時刻へ反映する", () => {
     const input = createBaseInput();
-    const initial = calculateStaleness(input);
     const requestedAt = addHours(CREATED_AT, 36);
     const reviewRequest = createReviewRequest("reviewer", requestedAt);
     const reviewer = createWaitingOn("user", "reviewer", "reviewer", reviewRequest.sourceId);
@@ -447,7 +434,6 @@ describe("停滞時間", () => {
         precision: "event",
         confidence: 1,
       }),
-      previousState: previousState(initial),
       events: [reviewRequest],
     });
 
@@ -466,26 +452,6 @@ describe("停滞時間", () => {
   it("同じstatusでもwaitingOnの実体が変わればownerSinceとstallSinceを更新する", () => {
     const input = createBaseInput();
     const firstRequest = createReviewRequest("first-reviewer", addHours(CREATED_AT, 12));
-    const firstReviewer = createWaitingOn(
-      "user",
-      "first-reviewer",
-      "reviewer",
-      firstRequest.sourceId,
-    );
-    const first = calculateStaleness({
-      ...input,
-      currentDecision: createDecision({
-        status: "waiting_for_review",
-        waitingOn: [firstReviewer],
-        statusAt: firstRequest.occurredAt,
-        ownerAt: firstRequest.occurredAt,
-        statusSourceId: firstRequest.sourceId,
-        ownerSourceId: firstRequest.sourceId,
-        precision: "event",
-        confidence: 1,
-      }),
-      events: [firstRequest],
-    });
     const secondRequest = createReviewRequest("second-reviewer", addHours(CREATED_AT, 30));
     const secondReviewer = createWaitingOn(
       "user",
@@ -506,7 +472,6 @@ describe("停滞時間", () => {
         precision: "event",
         confidence: 1,
       }),
-      previousState: previousState(first),
       events: [firstRequest, secondRequest],
     });
 
@@ -517,7 +482,6 @@ describe("停滞時間", () => {
 
   it("waitingOnが同じでもstatusが変わればownerSinceとstallSinceを更新する", () => {
     const input = createBaseInput();
-    const initial = calculateStaleness(input);
     const changedAt = addHours(CREATED_AT, 30);
     const sourceId = buildSourceId("status", "maintainer-decision");
     const maintainer = createWaitingOn("role", "maintainer", "maintainer", sourceId);
@@ -534,7 +498,6 @@ describe("停滞時間", () => {
         precision: "event",
         confidence: 1,
       }),
-      previousState: previousState(initial),
     });
 
     expect(result.statusSince).toBe(changedAt);
@@ -618,6 +581,63 @@ describe("停滞時間", () => {
     expect(
       result.meaningfulProgress.every((progress) => progress.determination === "deterministic"),
     ).toBe(true);
+  });
+
+  it("同じイベント列を再計算してもsnapshotなしで同じ結果を返す", () => {
+    const input = createBaseInput();
+    const push = createPush("cold-warm-push", addHours(CREATED_AT, 10), bot);
+    const review = createReview("cold-warm-review", addHours(CREATED_AT, 20), human, "approved");
+    const dependencyResolvedAt = addHours(CREATED_AT, 30);
+    const dependencyResolution = Object.freeze({
+      occurredAt: dependencyResolvedAt,
+      sourceIds: [buildSourceId("dependency", "cold-warm")],
+    } satisfies DependencyResolutionProgress);
+    const first = calculateStaleness({
+      ...input,
+      evaluatedAt: addHours(CREATED_AT, 48),
+      events: [push, review],
+      dependencyResolutions: [dependencyResolution],
+    });
+    const second = calculateStaleness({
+      ...input,
+      evaluatedAt: addHours(CREATED_AT, 48),
+      events: [push, review],
+      dependencyResolutions: [dependencyResolution],
+    });
+
+    expect(second).toEqual(first);
+  });
+
+  it("イベント入力順を変えても進捗の順序と時刻を安定して返す", () => {
+    const input = createBaseInput();
+    const occurredAt = addHours(CREATED_AT, 10);
+    const push = createPush("ordered-push", occurredAt, bot);
+    const review = createReview("ordered-review", occurredAt, human, "approved");
+    const dependencyResolution = Object.freeze({
+      occurredAt: addHours(CREATED_AT, 20),
+      sourceIds: [buildSourceId("dependency", "ordered")],
+    } satisfies DependencyResolutionProgress);
+    const first = calculateStaleness({
+      ...input,
+      evaluatedAt: addHours(CREATED_AT, 48),
+      events: [push, review],
+      dependencyResolutions: [dependencyResolution],
+    });
+    const second = calculateStaleness({
+      ...input,
+      evaluatedAt: addHours(CREATED_AT, 48),
+      events: [review, push],
+      dependencyResolutions: [dependencyResolution],
+    });
+
+    expect(second).toEqual(first);
+    expect(first.meaningfulProgress.map((progress) => progress.sourceIds[0])).toEqual([
+      push.sourceId,
+      review.sourceId,
+      dependencyResolution.sourceIds[0],
+    ]);
+    expect(first.lastProgressAt).toBe(dependencyResolution.occurredAt);
+    expect(first.stallSince).toBe(dependencyResolution.occurredAt);
   });
 
   it("設定で進捗扱いしたラベルだけstallSinceを更新する", () => {
@@ -868,7 +888,6 @@ describe("wait classとseverity", () => {
     const result = calculateStaleness({
       ...base,
       evaluatedAt: addHours(CREATED_AT, 72),
-      previousState: previousState(initial),
       events: [labelEvent],
       currentLabels: ["優先度：高"],
       resolveLabelEffects: resolver,

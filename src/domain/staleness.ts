@@ -6,7 +6,6 @@ import {
   type MeaningfulProgress,
   type NaturalLanguageProgressAssessment,
   type NaturalLanguageProgressCandidate,
-  type PreviousActivityState,
 } from "./meaningful-progress.js";
 import {
   compareSeverity,
@@ -47,7 +46,7 @@ export type StateDecisionForStaleness = Readonly<{
   responsibilityBasis: StalenessTransitionBasis;
 }>;
 
-/** 次回判定との比較に保存する停滞時刻の状態。 */
+/** 復元した状態、責務、停滞の時刻を含む状態。 */
 export type StalenessState = Readonly<{
   status: Status;
   waitingOn: readonly WaitingOn[];
@@ -57,16 +56,6 @@ export type StalenessState = Readonly<{
   lastProgressAt: UtcIsoDateTime;
   lastHumanActivityAt: UtcIsoDateTime;
 }>;
-
-/** 初回判定または前回の停滞時刻状態。 */
-export type PreviousStalenessState =
-  | Readonly<{
-      availability: "not_available";
-    }>
-  | Readonly<{
-      availability: "available";
-      value: StalenessState;
-    }>;
 
 /** blocked親の代わりに通知順位へ使うblocker情報。 */
 export type BlockerRanking = Readonly<{
@@ -124,7 +113,6 @@ export type CalculateStalenessInput = Readonly<{
   evaluatedAt: UtcIsoDateTime;
   currentDecision: StateDecisionForStaleness;
   decisionBasis: StalenessSeverityContext["decisionBasis"];
-  previousState: PreviousStalenessState;
   events: readonly NormalizedEvent[];
   responsibleAccountIdentifiers: ReadonlySet<string>;
   dependencyResolutions: readonly DependencyResolutionProgress[];
@@ -288,59 +276,7 @@ function validateInput(input: CalculateStalenessInput): void {
     evaluatedAt,
   );
 
-  if (input.previousState.availability === "available") {
-    validateStatusAndWaitingOn(
-      input.previousState.value.status,
-      input.previousState.value.waitingOn,
-      "前回状態",
-    );
-    validateTimestampRange(
-      input.previousState.value.statusSince,
-      "前回statusSince",
-      createdAt,
-      evaluatedAt,
-    );
-    validateTimestampRange(
-      input.previousState.value.ownerSince,
-      "前回ownerSince",
-      createdAt,
-      evaluatedAt,
-    );
-    validateTimestampRange(
-      input.previousState.value.stallSince,
-      "前回stallSince",
-      createdAt,
-      evaluatedAt,
-    );
-    validateTimestampRange(
-      input.previousState.value.lastProgressAt,
-      "前回lastProgressAt",
-      createdAt,
-      evaluatedAt,
-    );
-    validateTimestampRange(
-      input.previousState.value.lastHumanActivityAt,
-      "前回lastHumanActivityAt",
-      createdAt,
-      evaluatedAt,
-    );
-  }
   validateBlockedParentContext(input);
-}
-
-function sameWaitingOnEntities(left: readonly WaitingOn[], right: readonly WaitingOn[]): boolean {
-  if (left.length !== right.length) {
-    return false;
-  }
-  return left.every((waitingOn, index) => {
-    const other = right[index];
-    assertNonNullable(other, "比較対象のwaitingOnがありません");
-    return (
-      waitingOn.kind === other.kind &&
-      waitingOn.candidateId === other.candidateId &&
-      waitingOn.role === other.role
-    );
-  });
 }
 
 function latestTimestamp(values: readonly UtcIsoDateTime[]): UtcIsoDateTime {
@@ -381,51 +317,17 @@ function determineTransitionTimes(
   ownerSince: UtcIsoDateTime;
   stallSince: UtcIsoDateTime;
 }> {
-  if (input.previousState.availability === "not_available") {
-    const ownerSince = latestTimestamp([
-      input.currentDecision.statusBasis.occurredAt,
-      input.currentDecision.responsibilityBasis.occurredAt,
-    ]);
-    return Object.freeze({
-      statusSince: input.currentDecision.statusBasis.occurredAt,
-      ownerSince,
-      stallSince: latestTimestamp([
-        ownerSince,
-        lastProgressAt,
-        ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
-      ]),
-    });
-  }
-
-  const previous = input.previousState.value;
-  const statusChanged = previous.status !== input.currentDecision.status;
-  const responsibilityChanged = !sameWaitingOnEntities(
-    previous.waitingOn,
-    input.currentDecision.waitingOn,
-  );
-  const statusSince = statusChanged
-    ? input.currentDecision.statusBasis.occurredAt
-    : previous.statusSince;
-  let ownerSince = previous.ownerSince;
-  if (statusChanged && responsibilityChanged) {
-    ownerSince = latestTimestamp([
-      input.currentDecision.statusBasis.occurredAt,
-      input.currentDecision.responsibilityBasis.occurredAt,
-    ]);
-  } else if (statusChanged) {
-    ownerSince = input.currentDecision.statusBasis.occurredAt;
-  } else if (responsibilityChanged) {
-    ownerSince = input.currentDecision.responsibilityBasis.occurredAt;
-  }
-
+  const ownerSince = latestTimestamp([
+    input.currentDecision.statusBasis.occurredAt,
+    input.currentDecision.responsibilityBasis.occurredAt,
+  ]);
   return Object.freeze({
-    statusSince,
+    statusSince: input.currentDecision.statusBasis.occurredAt,
     ownerSince,
     stallSince: latestTimestamp([
       ownerSince,
       lastProgressAt,
       ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
-      ...(statusChanged || responsibilityChanged ? [] : [previous.stallSince]),
     ]),
   });
 }
@@ -618,20 +520,7 @@ export function recalculateStalenessSeverity(
   });
 }
 
-function createPreviousActivityState(previousState: PreviousStalenessState): PreviousActivityState {
-  if (previousState.availability === "not_available") {
-    return Object.freeze({
-      status: "not_available",
-    });
-  }
-  return Object.freeze({
-    status: "available",
-    lastProgressAt: previousState.value.lastProgressAt,
-    lastHumanActivityAt: previousState.value.lastHumanActivityAt,
-  });
-}
-
-/** 前回状態、状態機械の遷移根拠、進捗イベントから停滞時間とseverityを算出する。 */
+/** 状態機械の遷移根拠と進捗イベントから停滞時間とseverityを算出する。 */
 export function calculateStaleness(input: CalculateStalenessInput): StalenessResult {
   validateInput(input);
   const progress = determineMeaningfulProgress({
@@ -641,7 +530,6 @@ export function calculateStaleness(input: CalculateStalenessInput): StalenessRes
     dependencyResolutions: input.dependencyResolutions,
     naturalLanguageAssessments: input.naturalLanguageAssessments,
     minimumAiConfidence: input.minimumAiConfidence,
-    previousActivity: createPreviousActivityState(input.previousState),
     repositoryFullName: input.repositoryFullName,
     resolveLabelEffects: input.resolveLabelEffects,
   });

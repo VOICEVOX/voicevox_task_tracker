@@ -63,7 +63,6 @@ export {
   type MeaningfulProgressResult,
   type NaturalLanguageProgressAssessment,
   type NaturalLanguageProgressCandidate,
-  type PreviousActivityState,
 } from "./meaningful-progress.js";
 export {
   replayItemHistory,
@@ -117,7 +116,6 @@ export {
   type BlockedParentSeverityReason,
   type BlockerRanking,
   type CalculateStalenessInput,
-  type PreviousStalenessState,
   type RecalculatedStalenessSeverity,
   type RecalculateStalenessSeverityInput,
   type StalenessElapsedHours,

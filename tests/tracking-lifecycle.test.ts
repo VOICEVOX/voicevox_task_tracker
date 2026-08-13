@@ -209,9 +209,6 @@ describe("追跡対象への追加", () => {
       dependencyResolutions: [],
       naturalLanguageAssessments: [],
       minimumAiConfidence: 0.65,
-      previousActivity: {
-        status: "not_available",
-      },
       repositoryFullName: "VOICEVOX/example",
       resolveLabelEffects: createLabelEffectsResolver([]),
     });
