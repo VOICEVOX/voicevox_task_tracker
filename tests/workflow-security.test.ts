@@ -204,7 +204,7 @@ describe("日次workflow", () => {
       "collect-analyze": {
         contents: "read",
       },
-      "persist-state": {
+      "persist-cache": {
         contents: "write",
       },
       "build-pages": {
@@ -215,7 +215,7 @@ describe("日次workflow", () => {
         "id-token": "write",
       },
       "notify-discord": {
-        contents: "write",
+        contents: "read",
       },
       "notify-operations": {
         contents: "read",
@@ -244,7 +244,7 @@ describe("日次workflow", () => {
       [
         "test-eval",
         "collect-analyze",
-        "persist-state",
+        "persist-cache",
         "build-pages",
         "deploy-pages",
         "notify-discord",
@@ -262,7 +262,21 @@ describe("日次workflow", () => {
     expect(workflowReportUpload.with?.["path"]).toBe("artifacts/run-reports/workflow.json");
     expect(workflowReportUpload.with?.["name"]).toContain("${{ github.run_id }}");
     expect(workflowReportUpload.with?.["name"]).toContain("${{ github.run_attempt }}");
-    expect(JSON.stringify(workflow.jobs["persist-state"])).not.toContain(
+    const summaryStep = requiredStep(reportJob, "workflow結果をjob summaryへ追加");
+    expect(summaryStep.if).toBe("always()");
+    expect(summaryStep.run).toContain("GITHUB_STEP_SUMMARY");
+    for (const resultName of [
+      "TEST_EVAL_RESULT",
+      "COLLECT_ANALYZE_RESULT",
+      "BUILD_PAGES_RESULT",
+      "DEPLOY_PAGES_RESULT",
+      "NOTIFY_DISCORD_RESULT",
+      "PERSIST_CACHE_RESULT",
+      "NOTIFY_OPERATIONS_RESULT",
+    ]) {
+      expect(summaryStep.run).toContain(resultName);
+    }
+    expect(JSON.stringify(workflow.jobs["persist-cache"])).not.toContain(
       "artifacts/run-reports/workflow.json",
     );
     expect(JSON.stringify(workflow.jobs["build-pages"])).not.toContain(
@@ -274,15 +288,24 @@ describe("日次workflow", () => {
     const workflow = await readDailyWorkflow();
     const notifyJob = workflow.jobs["notify-discord"];
     const deployJob = workflow.jobs["deploy-pages"];
+    const buildJob = workflow.jobs["build-pages"];
+    const persistCacheJob = workflow.jobs["persist-cache"];
 
     expect(notifyJob).toBeDefined();
     expect(deployJob).toBeDefined();
-    if (notifyJob == null || deployJob == null) {
+    expect(buildJob).toBeDefined();
+    expect(persistCacheJob).toBeDefined();
+    if (notifyJob == null || deployJob == null || buildJob == null || persistCacheJob == null) {
       throw new TypeError("Pages deployまたはDiscord通知jobがありません");
     }
-    expect(needs(notifyJob)).toContain("deploy-pages");
+    expect(needs(buildJob)).toEqual(["collect-analyze"]);
+    expect(needs(deployJob)).toEqual(["build-pages"]);
+    expect(needs(notifyJob)).toEqual(["collect-analyze", "deploy-pages"]);
     expect(notifyJob.if).toContain("success()");
-    expect(needs(deployJob)).toContain("build-pages");
+    expect(notifyJob.if).toContain("workflow_dispatch");
+    expect(notifyJob.if).not.toContain("github.run_attempt");
+    expect(needs(persistCacheJob)).toEqual(["notify-discord"]);
+    expect(persistCacheJob.if).toBeUndefined();
   });
 
   it("各jobが検証済みartifactを対応するCLI stageへ渡す", async () => {
@@ -291,7 +314,7 @@ describe("日次workflow", () => {
       workflow.jobs["collect-analyze"] ?? { permissions: {}, steps: [] },
     ).join("\n");
     const persistCommands = runCommands(
-      workflow.jobs["persist-state"] ?? { permissions: {}, steps: [] },
+      workflow.jobs["persist-cache"] ?? { permissions: {}, steps: [] },
     ).join("\n");
     const buildCommands = runCommands(
       workflow.jobs["build-pages"] ?? { permissions: {}, steps: [] },
@@ -312,32 +335,40 @@ describe("日次workflow", () => {
     expect(collectCommands).toContain(
       "git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state",
     );
-    expect(persistCommands).toContain("tracker-run.mjs persist-state");
+    expect(persistCommands).toContain("tracker-run.mjs persist-cache");
     expect(persistCommands).toContain(
       "git push origin refs/heads/tracker-state:refs/heads/tracker-state",
     );
     expect(buildCommands).toContain("tracker-run.mjs build-pages");
-    expect(buildCommands).toContain(
-      "git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state",
-    );
+    expect(buildCommands).not.toContain("git fetch");
     expect(notifyCommands).toContain("tracker-run.mjs notify-discord");
     expect(notifyCommands).not.toContain("curl");
     expect(operationsCommands).toContain("tracker:run notify-operations");
-    expect(operationsCommands).toContain("git ls-remote --exit-code --heads origin tracker-state");
-    expect(operationsCommands).toContain(
-      "git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state",
-    );
-    expect(operationsCommands).toContain('elif [[ "$state_branch_status" -ne 2 ]]');
+    expect(operationsCommands).not.toContain("git fetch");
+    expect(operationsCommands).not.toContain("git ls-remote");
     expect(operationsCommands).toContain("incident_kind=collection");
     expect(operationsCommands).toContain("incident_kind=pages");
     expect(operationsCommands).toContain("incident_kind=discord");
+    expect(JSON.stringify(workflow.jobs["notify-operations"])).toContain("PERSIST_CACHE_RESULT");
     expect(operationsCommands).not.toContain(
       "git push origin refs/heads/tracker-state:refs/heads/tracker-state",
     );
     expect(operationsCommands).not.toContain("curl");
-    for (const jobName of ["persist-state", "build-pages", "notify-discord"] as const) {
+    for (const jobName of ["persist-cache", "build-pages", "notify-discord"] as const) {
       expect(JSON.stringify(workflow.jobs[jobName])).toContain("actions/download-artifact@");
       expect(JSON.stringify(workflow.jobs[jobName])).toContain("validated-public-run");
+    }
+    expect(persistCommands).toContain("git fetch --no-tags origin refs/heads/tracker-state");
+    expect(notifyCommands).not.toContain("git fetch");
+    expect(
+      runCommands(workflow.jobs["report-workflow"] ?? { permissions: {}, steps: [] }).join("\n"),
+    ).not.toContain("git fetch");
+    for (const [jobName, job] of Object.entries(workflow.jobs)) {
+      if (jobName !== "collect-analyze" && jobName !== "persist-cache") {
+        expect(JSON.stringify(job), jobName).not.toContain(
+          "git fetch --no-tags origin refs/heads/tracker-state",
+        );
+      }
     }
   });
 
@@ -509,7 +540,7 @@ describe("日次workflow", () => {
     const workflow = await readDailyWorkflow();
     const workflowSource = await readFile(DAILY_WORKFLOW_PATH, "utf8");
     const collectSource = JSON.stringify(workflow.jobs["collect-analyze"]);
-    const persistSource = JSON.stringify(workflow.jobs["persist-state"]);
+    const persistSource = JSON.stringify(workflow.jobs["persist-cache"]);
     const buildSource = JSON.stringify(workflow.jobs["build-pages"]);
     const notifySource = JSON.stringify(workflow.jobs["notify-discord"]);
     const operationsSource = JSON.stringify(workflow.jobs["notify-operations"]);
@@ -629,16 +660,23 @@ describe("workflow security", () => {
       "collect-analyze",
     );
     const operationsJob = dailyWorkflow.jobs["notify-operations"];
+    expect(needs(operationsJob ?? { permissions: {}, steps: [] })).toContain("test-eval");
     expect(needs(operationsJob ?? { permissions: {}, steps: [] })).toContain("collect-analyze");
     expect(needs(operationsJob ?? { permissions: {}, steps: [] })).toContain("build-pages");
     expect(needs(operationsJob ?? { permissions: {}, steps: [] })).toContain("deploy-pages");
     expect(needs(operationsJob ?? { permissions: {}, steps: [] })).toContain("notify-discord");
+    expect(needs(operationsJob ?? { permissions: {}, steps: [] })).toContain("persist-cache");
     expect(operationsJob?.if).toContain("needs.collect-analyze.result == 'failure'");
+    expect(operationsJob?.if).toContain("needs.test-eval.result == 'failure'");
     expect(operationsJob?.if).toContain("needs.build-pages.result == 'failure'");
     expect(operationsJob?.if).toContain("needs.deploy-pages.result == 'failure'");
     expect(operationsJob?.if).toContain("needs.notify-discord.result == 'failure'");
+    expect(operationsJob?.if).toContain("needs.persist-cache.result == 'failure'");
     expect(JSON.stringify(operationsJob)).toContain(
       '"NOTIFY_DISCORD_RESULT":"${{ needs.notify-discord.result }}"',
+    );
+    expect(JSON.stringify(operationsJob)).toContain(
+      '"TEST_EVAL_RESULT":"${{ needs.test-eval.result }}"',
     );
   });
 
