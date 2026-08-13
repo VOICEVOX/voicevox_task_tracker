@@ -66,6 +66,14 @@ export {
   type PreviousActivityState,
 } from "./meaningful-progress.js";
 export {
+  replayItemHistory,
+  type ReplayCurrentItem,
+  type ReplayEvent,
+  type ReplayHistory,
+  type ReplayItemHistoryInput,
+  type ReplayItemHistoryResult,
+} from "./event-replay.js";
+export {
   determineIssueState,
   ISSUE_DETERMINISTIC_RULES_VERSION,
   type IssueBlocker,
