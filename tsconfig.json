@@ -23,7 +23,9 @@
     "verbatimModuleSyntax": true,
     "isolatedModules": true,
     "moduleDetection": "force",
-    "noEmit": true
+    "noEmit": true,
+    "incremental": true,
+    "tsBuildInfoFile": "node_modules/.cache/typescript/tsconfig.tsbuildinfo"
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "workflow.vite.config.ts"],
   "exclude": ["coverage", "dist", "node_modules"]

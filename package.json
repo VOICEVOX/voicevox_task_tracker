@@ -18,8 +18,8 @@
     "typecheck": "tsc --project tsconfig.json && tsc --project web/tsconfig.json",
     "test": "vitest run",
     "lint": "eslint --cache .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format": "prettier --cache --write .",
+    "format:check": "prettier --cache --check ."
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",
