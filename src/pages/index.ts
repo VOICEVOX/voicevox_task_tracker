@@ -21,7 +21,6 @@ export {
   type PublicGraphEdgeDto,
   type PublicGraphNodeDto,
   type PublicItemDetailsDto,
-  type PublicItemHistoryEventDto,
   type PublicItemSummaryDto,
   type PublicSummaryDto,
 } from "./public-dto.js";

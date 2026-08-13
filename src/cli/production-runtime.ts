@@ -171,7 +171,6 @@ import {
   type StateBranchAdapter,
   type StateNotificationLedger,
   type StateRunReport,
-  type StateHistoryRecord,
   type StateHistoryInputEvent,
   type StateSnapshot,
   type StateSnapshotReadResult,
@@ -425,7 +424,6 @@ type ValidatedRun = Readonly<{
 
 type PersistedRun = Readonly<{
   result: PersistStateTransactionResult;
-  historyRecords: readonly StateHistoryRecord[];
 }>;
 
 type PagesResult = Readonly<{
@@ -4514,10 +4512,8 @@ async function persistValidatedRun(
     repositoryInventory: inventory.inventory,
     knownSecrets: configuration.credentials.knownSecrets,
   });
-  const historyRecords = await state.session.loadHistoryRecords();
   return Object.freeze({
     result,
-    historyRecords,
   });
 }
 
@@ -4531,13 +4527,11 @@ async function buildPublicPages(
   inventory: readonly Repository[],
   repositoryAllowlist: PagesPublicSafetyInput["repositoryAllowlist"],
   validated: ValidatedRun,
-  historyRecords: readonly StateHistoryRecord[],
   outputDirectory: string,
   knownSecrets: readonly string[],
 ): Promise<PagesResult> {
   const data = generatePublicData({
     snapshot: validated.snapshot,
-    historyRecords,
     repositoryAllowlist,
     repositoryInventory: inventory,
     knownSecrets,
@@ -5619,14 +5613,13 @@ function createDailyDependencies(
       ),
     persistState: ({ configuration, state, repositoryInventory, validated }) =>
       persistValidatedRun(configuration, state, repositoryInventory, validated),
-    buildPages: ({ configuration, repositoryInventory, validated, persisted }) =>
+    buildPages: ({ configuration, repositoryInventory, validated }) =>
       buildPublicPages(
         adapters,
         configuration.config,
         repositoryInventory.inventory,
         repositoryInventory.allowlist.repositories,
         validated,
-        persisted.historyRecords,
         adapters.pagesOutputDirectory,
         configuration.credentials.knownSecrets,
       ),
@@ -5754,14 +5747,12 @@ async function buildWorkflowPages(
   ) {
     throw new TypeError("Pages生成対象のrunがtracker-state branchにありません");
   }
-  const historyRecords = await session.loadHistoryRecords();
   await buildPublicPages(
     adapters,
     config,
     workflowArtifactRepositoryInventory(artifact),
     artifact.repositoryAllowlist,
     validatedRunFromArtifact(artifact),
-    historyRecords,
     resolve(adapters.repositoryPath, command.outputDirectory),
     [],
   );

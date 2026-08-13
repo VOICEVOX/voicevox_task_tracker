@@ -2335,22 +2335,16 @@ describe("Web UI", () => {
     expect(currentAction.textContent?.match(/VOICEVOX\/sample-editor#103/gu)).toHaveLength(1);
 
     const disclosures = [...details.querySelectorAll<HTMLDetailsElement>(".detail-disclosure")];
-    expect(disclosures).toHaveLength(2);
+    expect(disclosures).toHaveLength(1);
     expect(disclosures.every((disclosure) => !disclosure.open)).toBe(true);
     expect(
       disclosures.map((disclosure) => disclosure.querySelector("summary h4 > span")?.textContent),
-    ).toEqual(["判定の根拠", "履歴"]);
+    ).toEqual(["判定の根拠"]);
     expect(
       [...details.querySelectorAll("h3, h4")].map(
         (heading) => heading.querySelector("span:first-child")?.textContent ?? heading.textContent,
       ),
-    ).toEqual([
-      "サンプル配布処理を実装する",
-      "現在の状況と次の行動",
-      "依存関係",
-      "判定の根拠",
-      "履歴",
-    ]);
+    ).toEqual(["サンプル配布処理を実装する", "現在の状況と次の行動", "依存関係", "判定の根拠"]);
     expect(
       [...details.querySelectorAll("h3, h4")].every((heading) =>
         heading.classList.contains("font-display"),
@@ -2366,7 +2360,6 @@ describe("Web UI", () => {
     );
     expect(currentStatus.textContent).toBe("ブロック解消待ち");
     expect(requiredElement<HTMLDetailsElement>(".decision-details").open).toBe(false);
-    expect(requiredElement<HTMLDetailsElement>(".history-details").open).toBe(false);
     expect(details.textContent).not.toContain("各種時刻");
     expect(details.textContent).not.toContain("作成時刻");
     expect(details.textContent).not.toContain("GitHubの更新時刻");
@@ -2401,21 +2394,6 @@ describe("Web UI", () => {
     const evidenceItem = requiredElement<HTMLElement>(".evidence-list li");
     expect(evidenceItem.querySelector("code")).toBeNull();
     expect(evidenceItem.querySelector("span")).toBeNull();
-    const historyDetails = requiredElement<HTMLDetailsElement>(".history-details");
-    expect(historyDetails.querySelector("summary h4 > span")?.textContent).toBe("履歴");
-    expect(historyDetails.querySelectorAll(".history-event")).toHaveLength(1);
-    expect(historyDetails.querySelector(".history-event h5")?.textContent).toBe(
-      "状態と待ち相手の変更",
-    );
-    expect(historyDetails.textContent).not.toContain("前回との差分");
-    expect(historyDetails.textContent).not.toContain("Run ");
-    expect(historyDetails.textContent).toContain("作業中・当時の担当者");
-    expect(historyDetails.textContent).not.toContain("担当者 @sample-implementer");
-    expect(historyDetails.textContent).toContain(
-      "ブロック解消待ち・VOICEVOX/sample-editor#103、example/sample-distribution#42",
-    );
-    expect(historyDetails.textContent).not.toContain("severity");
-    expect(historyDetails.querySelector(".history-expand-button")).toBeNull();
     expect(details.textContent).not.toContain("最終human activity");
     expect(details.textContent).not.toContain("最終進捗");
     expect(details.textContent).not.toContain("現在statusの開始");
@@ -2536,58 +2514,6 @@ describe("Web UI", () => {
       otherCandidates.querySelector("summary")?.click();
     });
     expect(otherCandidates.open).toBe(true);
-  });
-
-  it("履歴を新しい順の5件まで表示し、残りがあれば全件へ展開する", async () => {
-    const targetNodeId = "sample-item-engine-204";
-    const sourceDetails = sampleDetails.items.find(
-      (details) => details.summary.nodeId === targetNodeId,
-    );
-    assertNonNullable(sourceDetails, "履歴展開テスト用の項目詳細がありません");
-    const sourceHistory = sourceDetails.history[0];
-    assertNonNullable(sourceHistory, "履歴展開テスト用の履歴がありません");
-    const history = Array.from({ length: 7 }, (_, index) => ({
-      ...sourceHistory,
-      recordedAt: new Date(Date.UTC(2026, 6, 25 + index, 0, 5)).toISOString(),
-    }));
-    const configuredDetails = createPublicDetailsDto({
-      ...sampleDetails,
-      items: sampleDetails.items.map((details) =>
-        details.summary.nodeId === targetNodeId
-          ? {
-              ...details,
-              history,
-            }
-          : details,
-      ),
-    });
-    window.history.replaceState({}, "", "/voicevox_task_tracker/items/sample-engine/204");
-    renderAppWithDetails(sampleSummary, configuredDetails);
-    await flushUi();
-
-    const historyDetails = requiredElement<HTMLDetailsElement>(".history-details");
-    act(() => {
-      historyDetails.open = true;
-    });
-    const newestFirst = history.map((event) => event.recordedAt).reverse();
-    expect(
-      [...historyDetails.querySelectorAll<HTMLTimeElement>(".history-list time")].map(
-        (time) => time.dateTime,
-      ),
-    ).toEqual(newestFirst.slice(0, 5));
-    const expandButton = requiredElement<HTMLButtonElement>(".history-expand-button");
-    expect(expandButton.textContent).toBe("すべての履歴を表示");
-    expect(expandButton.getAttribute("aria-expanded")).toBe("false");
-    act(() => {
-      expandButton.click();
-    });
-    expect(
-      [...historyDetails.querySelectorAll<HTMLTimeElement>(".history-list time")].map(
-        (time) => time.dateTime,
-      ),
-    ).toEqual(newestFirst);
-    expect(expandButton.textContent).toBe("最新5件のみ表示");
-    expect(expandButton.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("項目詳細の依存グラフで中心項目を示し他の項目へ遷移する", async () => {

@@ -1124,7 +1124,6 @@ function publicationStatus(
   try {
     generatePublicData({
       snapshot,
-      historyRecords: Object.freeze([]),
       repositoryAllowlist: createPublicRepositoryAllowlist(inventory).repositories,
       repositoryInventory: inventory,
       knownSecrets: Object.freeze([]),
@@ -1600,7 +1599,6 @@ function analyzeLargeFixture(
   });
   const generated = generatePublicData({
     snapshot,
-    historyRecords: Object.freeze([]),
     repositoryAllowlist: createPublicRepositoryAllowlist(repositories).repositories,
     repositoryInventory: repositories,
     knownSecrets: Object.freeze([]),

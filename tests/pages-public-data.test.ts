@@ -19,10 +19,8 @@ import {
   type WaitingOnRole,
 } from "../src/domain/index.js";
 import {
-  createStateHistoryRecord,
   createStateSnapshot,
   type SnapshotAiState,
-  type StateHistoryRecord,
   type StateSnapshot,
 } from "../src/persistence/index.js";
 import {
@@ -38,6 +36,7 @@ import {
   PagesPublicSafetyError,
   PublicSummarySizeError,
   createEvidenceSourceUrlMap,
+  createPublicDetailsDto,
   generatePublicData,
   resolveEvidenceSourceUrl,
   writePublicDataFiles,
@@ -477,14 +476,12 @@ function createGraphEvidenceSnapshot(
 
 function generateFixture(
   snapshot: StateSnapshot,
-  historyRecords: readonly StateHistoryRecord[],
   repositoryInventory: readonly Repository[],
   knownSecrets: readonly string[],
   options: PublicDtoGenerationOptions,
 ): GeneratedPublicData {
   return generatePublicData({
     snapshot,
-    historyRecords,
     repositoryAllowlist: createPublicRepositoryAllowlist(repositoryInventory).repositories,
     repositoryInventory,
     knownSecrets,
@@ -637,13 +634,7 @@ describe("公開evidence URL", () => {
       },
     ]);
 
-    const generated = generateFixture(
-      snapshot,
-      [],
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(snapshot, publicInventory(), [], defaultGenerationOptions);
 
     expect(generated.details.graph.edges[0]).toEqual({
       id: "rel:edge-evidence",
@@ -684,13 +675,7 @@ describe("公開evidence URL", () => {
       }),
     });
 
-    const generated = generateFixture(
-      snapshot,
-      [],
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(snapshot, publicInventory(), [], defaultGenerationOptions);
 
     const targetItem = generated.details.items.find(
       (item) => item.summary.nodeId === "I_EDGE_FROM",
@@ -765,13 +750,7 @@ describe("公開evidence URL", () => {
       })),
     });
 
-    const generated = generateFixture(
-      snapshot,
-      [],
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(snapshot, publicInventory(), [], defaultGenerationOptions);
 
     expect(
       generated.details.items.map((item) => ({
@@ -841,7 +820,6 @@ describe("Pages公開安全性", () => {
     expect(() =>
       generatePublicData({
         snapshot,
-        historyRecords: [],
         repositoryAllowlist: createPublicRepositoryAllowlist(publicInventory()).repositories,
         repositoryInventory: snapshotDerivedInventory,
         knownSecrets: [],
@@ -903,7 +881,7 @@ describe("Pages公開安全性", () => {
       },
     ]);
 
-    expect(() => generateFixture(snapshot, [], inventory, [], defaultGenerationOptions)).toThrow(
+    expect(() => generateFixture(snapshot, inventory, [], defaultGenerationOptions)).toThrow(
       PagesPublicSafetyError,
     );
   });
@@ -936,7 +914,7 @@ describe("Pages公開安全性", () => {
       },
     ]);
 
-    expect(() => generateFixture(snapshot, [], inventory, [], defaultGenerationOptions)).toThrow(
+    expect(() => generateFixture(snapshot, inventory, [], defaultGenerationOptions)).toThrow(
       PagesPublicSafetyError,
     );
   });
@@ -950,16 +928,10 @@ describe("Pages公開安全性", () => {
     };
 
     expect(() =>
-      generateFixture(snapshotWithBody, [], publicInventory(), [], defaultGenerationOptions),
+      generateFixture(snapshotWithBody, publicInventory(), [], defaultGenerationOptions),
     ).toThrow(PagesPublicSafetyError);
 
-    const generated = generateFixture(
-      snapshot,
-      [],
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(snapshot, publicInventory(), [], defaultGenerationOptions);
     const serialized = JSON.stringify(generated);
     expect(serialized).not.toContain(fullBody);
     expect(serialized).not.toContain('"body"');
@@ -975,7 +947,7 @@ describe("Pages公開安全性", () => {
 
     let caught: unknown;
     try {
-      generateFixture(snapshot, [], publicInventory(), [secret], defaultGenerationOptions);
+      generateFixture(snapshot, publicInventory(), [secret], defaultGenerationOptions);
     } catch (error: unknown) {
       caught = error;
     }
@@ -988,6 +960,24 @@ describe("Pages公開安全性", () => {
 });
 
 describe("公開DTO生成", () => {
+  it("details DTOの履歴フィールドをstrict schemaで拒否する", () => {
+    const generated = generateFixture(
+      createSingleItemSnapshot("履歴フィールド拒否fixture"),
+      publicInventory(),
+      [],
+      defaultGenerationOptions,
+    );
+    const legacyDetails = {
+      ...generated.details,
+      items: generated.details.items.map((item) => ({
+        ...item,
+        history: [],
+      })),
+    };
+
+    expect(() => createPublicDetailsDto(legacyDetails)).toThrow();
+  });
+
   it("milestoneを期限込みでsummaryとdetails内のsummaryへ公開する", () => {
     const source = createSingleItemSnapshot("milestone公開fixture");
     const snapshot = createStateSnapshot({
@@ -1004,13 +994,7 @@ describe("公開DTO生成", () => {
       })),
     });
 
-    const generated = generateFixture(
-      snapshot,
-      [],
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(snapshot, publicInventory(), [], defaultGenerationOptions);
     const expectedMilestone = {
       nodeId: "M_PUBLIC",
       number: 2,
@@ -1038,13 +1022,7 @@ describe("公開DTO生成", () => {
       })),
     });
 
-    const generated = generateFixture(
-      snapshot,
-      [],
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(snapshot, publicInventory(), [], defaultGenerationOptions);
 
     expect(generated.summary.items[0]?.aiAnalysis).toEqual({
       status: "used",
@@ -1066,13 +1044,7 @@ describe("公開DTO生成", () => {
       },
     });
 
-    const generated = generateFixture(
-      snapshot,
-      [],
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(snapshot, publicInventory(), [], defaultGenerationOptions);
 
     expect(snapshot.run.status).toBe("success");
     expect(generated.summary.ai).toEqual({
@@ -1157,13 +1129,7 @@ describe("公開DTO生成", () => {
       ],
     });
 
-    const generated = generateFixture(
-      snapshot,
-      [],
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(snapshot, publicInventory(), [], defaultGenerationOptions);
 
     expect(generated.summary.graph.nodes).toContainEqual({
       nodeId: externalNodeId,
@@ -1262,73 +1228,18 @@ describe("公開DTO生成", () => {
       maxInitialGraphNodes: 1,
     } satisfies PublicDtoGenerationOptions;
 
-    const generated = generateFixture(snapshot, [], publicInventory(), [], options);
+    const generated = generateFixture(snapshot, publicInventory(), [], options);
 
     expect(generated.summary.graph.nodes.map((node) => node.nodeId)).toEqual(["I_HIGH_ATTENTION"]);
   });
 
-  it("fixtureのgraph、根拠、履歴を公開DTOへ反映する", () => {
+  it("fixtureのgraphと根拠を公開DTOへ反映する", () => {
     const repository = {
       id: PUBLIC_REPOSITORY_ID,
       name: "public",
       observedAt: FRESH_OBSERVED_AT,
       freshness: "fresh",
     } satisfies RepositoryFixture;
-    const previous = createSnapshot({
-      runId: "run-previous",
-      runStatus: "success",
-      ai: {
-        enabled: true,
-        available: true,
-        degraded: false,
-      },
-      generatedAt: "2026-07-31T00:00:00.000Z",
-      repositories: [
-        {
-          ...repository,
-          observedAt: "2026-07-30T23:55:00.000Z",
-        },
-      ],
-      items: [
-        createItem({
-          nodeId: "I_A",
-          repositoryId: PUBLIC_REPOSITORY_ID,
-          repositoryName: "public",
-          number: 1,
-          status: "waiting_for_assessment",
-          severity: "watch",
-          waitingOnKind: "role",
-          waitingOnRole: "maintainer",
-          observedAt: "2026-07-30T23:55:00.000Z",
-          title: "項目A",
-        }),
-        createItem({
-          nodeId: "I_B",
-          repositoryId: PUBLIC_REPOSITORY_ID,
-          repositoryName: "public",
-          number: 2,
-          status: "waiting_for_assessment",
-          severity: "none",
-          waitingOnKind: "role",
-          waitingOnRole: "maintainer",
-          observedAt: "2026-07-30T23:55:00.000Z",
-          title: "項目B",
-        }),
-        createItem({
-          nodeId: "I_C",
-          repositoryId: PUBLIC_REPOSITORY_ID,
-          repositoryName: "public",
-          number: 3,
-          status: "unknown",
-          severity: "none",
-          waitingOnKind: "unknown",
-          waitingOnRole: "unknown",
-          observedAt: "2026-07-30T23:55:00.000Z",
-          title: "項目C",
-        }),
-      ],
-      relations: [],
-    });
     const current = createSnapshot({
       runId: "run-current",
       runStatus: "success",
@@ -1382,18 +1293,7 @@ describe("公開DTO生成", () => {
         createRelation("rel:B-A", "I_B", "I_A", "blocks"),
       ],
     });
-    const historyRecords = [
-      createStateHistoryRecord(undefined, previous, "2026-07-31", previous.repositories, []),
-      createStateHistoryRecord(previous, current, "2026-08-01", current.repositories, []),
-    ];
-
-    const generated = generateFixture(
-      current,
-      historyRecords,
-      publicInventory(),
-      [],
-      defaultGenerationOptions,
-    );
+    const generated = generateFixture(current, publicInventory(), [], defaultGenerationOptions);
 
     expect(generated.summary.confidenceThresholds).toEqual(
       defaultGenerationOptions.confidenceThresholds,
@@ -1457,27 +1357,7 @@ describe("公開DTO生成", () => {
     });
     expect(itemA?.evidence[0]).not.toHaveProperty("sourceId");
     expect(itemA?.evidence[0]).not.toHaveProperty("supports");
-    expect(itemA?.history).toHaveLength(2);
-    expect(itemA?.history.at(-1)).not.toHaveProperty("runId");
-    expect(itemA?.history.at(-1)).toMatchObject({
-      kind: "responsibility_changed",
-      before: {
-        state: "present",
-        value: {
-          status: "waiting_for_assessment",
-        },
-      },
-      after: {
-        state: "present",
-        value: {
-          status: "waiting_for_unblock",
-        },
-      },
-    });
-    const serializedHistory = JSON.stringify(itemA?.history.at(-1));
-    expect(serializedHistory).not.toContain('"sourceIds"');
-    expect(serializedHistory).not.toContain('"reasonSummary"');
-    expect(serializedHistory).not.toContain('"confidence"');
+    expect(itemA).not.toHaveProperty("history");
   });
 
   it("stale repositoryとAI unavailableを項目まで明示する", () => {
@@ -1546,7 +1426,7 @@ describe("公開DTO生成", () => {
       },
     ]);
 
-    const generated = generateFixture(snapshot, [], inventory, [], defaultGenerationOptions);
+    const generated = generateFixture(snapshot, inventory, [], defaultGenerationOptions);
     const staleRepository = generated.summary.repositories.find(
       (repository) => repository.id === STALE_REPOSITORY_ID,
     );
@@ -1628,7 +1508,7 @@ describe("公開summaryサイズと書き出し", () => {
       timezone: defaultGenerationOptions.timezone,
     } satisfies PublicDtoGenerationOptions;
 
-    const generated = generateFixture(snapshot, [], publicInventory(), [], options);
+    const generated = generateFixture(snapshot, publicInventory(), [], options);
 
     expect(generated.summary.items).toHaveLength(itemCount);
     expect(generated.summary.graph.nodes).toHaveLength(100);
@@ -1646,7 +1526,7 @@ describe("公開summaryサイズと書き出し", () => {
       timezone: defaultGenerationOptions.timezone,
     } satisfies PublicDtoGenerationOptions;
 
-    expect(() => generateFixture(snapshot, [], publicInventory(), [], options)).toThrow(
+    expect(() => generateFixture(snapshot, publicInventory(), [], options)).toThrow(
       PublicSummarySizeError,
     );
   });
@@ -1654,7 +1534,6 @@ describe("公開summaryサイズと書き出し", () => {
   it("薄いadapterがsummaryとdetailsを別ファイルへ書き出す", async () => {
     const generated = generateFixture(
       createSingleItemSnapshot("書き出しfixture"),
-      [],
       publicInventory(),
       [],
       defaultGenerationOptions,
