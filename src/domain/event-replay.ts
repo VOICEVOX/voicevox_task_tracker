@@ -1,16 +1,60 @@
 import { type SourceId } from "./source-id.js";
 import {
+  type Actor,
   type GitHubAccountActor,
   type GitHubNodeId,
   type NormalizedEvent,
   type UtcIsoDateTime,
 } from "./types.js";
 
-/** 正規化イベントにタイムライン内の決定論的な順序を付けた入力。 */
-export type ReplayEvent = NormalizedEvent &
+type ReplayActor =
+  | Actor
+  | Readonly<{
+      status: "unavailable";
+      reason: "actor_unavailable";
+    }>;
+
+type ReplayEventWithAvailability<Event extends NormalizedEvent> = Event extends unknown
+  ? Omit<Event, "actor"> &
+      Readonly<{
+        actor: ReplayActor;
+        sequence: number;
+      }>
+  : never;
+
+type NormalizedAssigneeEvent = Extract<NormalizedEvent, { kind: "assignee" }>;
+type NormalizedReviewRequestEvent = Extract<NormalizedEvent, { kind: "review_request" }>;
+
+type ReplayAssigneeEvent = Omit<ReplayEventWithAvailability<NormalizedAssigneeEvent>, "assignee"> &
   Readonly<{
-    sequence: number;
+    assignee:
+      | GitHubAccountActor
+      | Readonly<{
+          status: "unavailable";
+          reason: "actor_unavailable";
+        }>;
   }>;
+
+type ReplayReviewRequestEvent = Omit<
+  ReplayEventWithAvailability<NormalizedReviewRequestEvent>,
+  "target"
+> &
+  Readonly<{
+    target:
+      | NormalizedReviewRequestEvent["target"]
+      | Readonly<{
+          status: "unavailable";
+          reason: "actor_unavailable";
+        }>;
+  }>;
+
+/** 正規化イベントにタイムライン内の決定論的な順序を付けた入力。 */
+export type ReplayEvent =
+  | ReplayAssigneeEvent
+  | ReplayReviewRequestEvent
+  | ReplayEventWithAvailability<
+      Exclude<NormalizedEvent, NormalizedAssigneeEvent | NormalizedReviewRequestEvent>
+    >;
 
 /** 履歴から復元した値が既知かどうかを表す。 */
 type ReplayKnowledge<Value> =
@@ -606,7 +650,7 @@ function resolveCurrentResponsibilities(
 function replayResponsibilityEpochs(
   item: ReplayCurrentItem,
   events: readonly ReplayEvent[],
-): readonly ReplayResponsibilityEpoch[] {
+): ReplayKnowledge<readonly ReplayResponsibilityEpoch[]> {
   const active = new Map<string, ReplayResponsibilityTarget>();
   const epochs: ReplayResponsibilityEpoch[] = [
     createResponsibilityEpoch([], item.createdAt, [item.sourceId]),
@@ -615,10 +659,18 @@ function replayResponsibilityEpochs(
     if (event.kind !== "assignee" && event.kind !== "review_request") {
       continue;
     }
-    const target =
-      event.kind === "assignee"
-        ? createAssigneeTarget(event.assignee.nodeId)
-        : createReviewRequestTarget(event.target);
+    let target: ReplayResponsibilityTarget;
+    if (event.kind === "assignee") {
+      if ("status" in event.assignee) {
+        return createUnknown("actor_unavailable");
+      }
+      target = createAssigneeTarget(event.assignee.nodeId);
+    } else {
+      if ("status" in event.target) {
+        return createUnknown("actor_unavailable");
+      }
+      target = createReviewRequestTarget(event.target);
+    }
     const key = responsibilityTargetKey(target);
     if (event.action === "added") {
       if (active.has(key)) {
@@ -636,7 +688,7 @@ function replayResponsibilityEpochs(
       ]),
     );
   }
-  return Object.freeze(epochs);
+  return createKnown(Object.freeze(epochs));
 }
 
 function sameResponsibilityTargets(
@@ -652,13 +704,16 @@ function sameResponsibilityTargets(
 
 function validateCurrentResponsibilities(
   item: ReplayCurrentItem,
-  epochs: readonly ReplayResponsibilityEpoch[],
+  epochs: ReplayKnowledge<readonly ReplayResponsibilityEpoch[]>,
 ): void {
+  if (epochs.status === "unknown") {
+    return;
+  }
   const current = resolveCurrentResponsibilities(item);
   if (current.some((target) => "status" in target)) {
     return;
   }
-  const latest = epochs.at(-1);
+  const latest = epochs.value.at(-1);
   if (latest == null || !sameResponsibilityTargets(latest.targets, current)) {
     throw new TypeError("責務イベントの再生結果と現行GitHub状態が一致しません");
   }
@@ -703,13 +758,19 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
   const currentResponsibilities = resolveCurrentResponsibilities(input.currentItem);
   const responsibilityEpochs = replayResponsibilityEpochs(input.currentItem, orderedEvents);
   validateCurrentResponsibilities(input.currentItem, responsibilityEpochs);
-  const latestResponsibilityEpoch = responsibilityEpochs.at(-1);
-  if (latestResponsibilityEpoch == null) {
-    throw new TypeError("責務区間を1件も復元できませんでした");
-  }
-  const currentOwnerEpoch = currentResponsibilities.some((target) => "status" in target)
-    ? createUnknown("actor_unavailable")
-    : createKnown(latestResponsibilityEpoch);
+  const currentOwnerEpoch =
+    responsibilityEpochs.status === "unknown" ||
+    currentResponsibilities.some((target) => "status" in target)
+      ? createUnknown("actor_unavailable")
+      : createKnown(
+          (() => {
+            const latestResponsibilityEpoch = responsibilityEpochs.value.at(-1);
+            if (latestResponsibilityEpoch == null) {
+              throw new TypeError("責務区間を1件も復元できませんでした");
+            }
+            return latestResponsibilityEpoch;
+          })(),
+        );
 
   if (input.currentItem.type === "issue") {
     return Object.freeze({
@@ -722,7 +783,7 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
       currentStateEpoch: createKnown(currentStateEpoch),
       draftEpochs: createNotApplicable(),
       currentDraftEpoch: createNotApplicable(),
-      responsibilityEpochs: createKnown(responsibilityEpochs),
+      responsibilityEpochs,
       currentOwnerEpoch,
     });
   }
@@ -742,7 +803,7 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
     currentStateEpoch: createKnown(currentStateEpoch),
     draftEpochs: createKnown(draftEpochs),
     currentDraftEpoch: createKnown(currentDraftEpoch),
-    responsibilityEpochs: createKnown(responsibilityEpochs),
+    responsibilityEpochs,
     currentOwnerEpoch,
   });
 }
