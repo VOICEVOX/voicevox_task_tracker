@@ -100,7 +100,7 @@ function createEmptyWorkflowArtifact(): WorkflowArtifact {
 function parseWorkflowStageCommand(args: readonly string[]): WorkflowStageCliCommand {
   const command = parseCliArguments(args);
   if (
-    command.kind !== "persist-state" &&
+    command.kind !== "persist-cache" &&
     command.kind !== "build-pages" &&
     command.kind !== "notify-discord" &&
     command.kind !== "notify-operations" &&
@@ -169,20 +169,20 @@ describe("workflow artifact", () => {
 
 describe("workflow stage", () => {
   it("各stageを単独で対応する副作用境界へ渡す", async () => {
-    const persistState = vi.fn(() => Promise.resolve());
+    const persistCache = vi.fn(() => Promise.resolve());
     const buildPages = vi.fn(() => Promise.resolve());
     const notifyDiscord = vi.fn(() => Promise.resolve());
     const notifyOperations = vi.fn(() => Promise.resolve());
     const reportWorkflow = vi.fn(() => Promise.resolve());
     const runner = new WorkflowStageRunner({
-      persistState,
+      persistCache,
       buildPages,
       notifyDiscord,
       notifyOperations,
       reportWorkflow,
     });
     const commands = [
-      parseWorkflowStageCommand(["persist-state"]),
+      parseWorkflowStageCommand(["persist-cache"]),
       parseWorkflowStageCommand(["build-pages"]),
       parseWorkflowStageCommand(["notify-discord", "--pages-url", PAGES_URL]),
       parseWorkflowStageCommand([
@@ -204,7 +204,7 @@ describe("workflow stage", () => {
         "success",
         "--collect-analyze-result",
         "success",
-        "--persist-state-result",
+        "--persist-cache-result",
         "success",
         "--build-pages-result",
         "success",
@@ -221,7 +221,7 @@ describe("workflow stage", () => {
       await runner.run(command);
     }
 
-    expect(persistState).toHaveBeenCalledOnce();
+    expect(persistCache).toHaveBeenCalledOnce();
     expect(buildPages).toHaveBeenCalledOnce();
     expect(notifyDiscord).toHaveBeenCalledOnce();
     expect(notifyOperations).toHaveBeenCalledOnce();
@@ -234,14 +234,14 @@ describe("workflow stage", () => {
       await readWorkflowArtifactFile(missingPath);
     };
     const runner = new WorkflowStageRunner({
-      persistState: readMissingArtifact,
+      persistCache: readMissingArtifact,
       buildPages: readMissingArtifact,
       notifyDiscord: readMissingArtifact,
       notifyOperations: readMissingArtifact,
       reportWorkflow: readMissingArtifact,
     });
     const commands = [
-      parseWorkflowStageCommand(["persist-state"]),
+      parseWorkflowStageCommand(["persist-cache"]),
       parseWorkflowStageCommand(["build-pages"]),
       parseWorkflowStageCommand(["notify-discord", "--pages-url", PAGES_URL]),
       parseWorkflowStageCommand([

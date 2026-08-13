@@ -84,8 +84,8 @@ describe("CLI引数解析", () => {
       repositoryFilter: ["VOICEVOX/voicevox"],
       artifactPath: "artifacts/workflow/validated-run.json",
     });
-    expect(parseCliArguments(["persist-state"])).toEqual({
-      kind: "persist-state",
+    expect(parseCliArguments(["persist-cache"])).toEqual({
+      kind: "persist-cache",
       configPath: "config.yml",
       artifactPath: "artifacts/workflow/validated-run.json",
     });
@@ -154,7 +154,7 @@ describe("CLI引数解析", () => {
         "success",
         "--collect-analyze-result",
         "failure",
-        "--persist-state-result",
+        "--persist-cache-result",
         "skipped",
         "--build-pages-result",
         "skipped",
@@ -174,7 +174,7 @@ describe("CLI引数解析", () => {
       jobResults: {
         "test-eval": "success",
         "collect-analyze": "failure",
-        "persist-state": "skipped",
+        "persist-cache": "skipped",
         "build-pages": "skipped",
         "deploy-pages": "skipped",
         "notify-discord": "skipped",
@@ -228,6 +228,28 @@ describe("CLI引数解析", () => {
       ["notify-discord"],
       ["notify-discord", "--pages-url", "http://example.com/"],
       ["report-workflow", "--run-id", "123", "--run-attempt", "0"],
+      ["persist-state"],
+      [
+        "report-workflow",
+        "--run-id",
+        "123",
+        "--run-attempt",
+        "1",
+        "--test-eval-result",
+        "success",
+        "--collect-analyze-result",
+        "success",
+        "--persist-state-result",
+        "success",
+        "--build-pages-result",
+        "success",
+        "--deploy-pages-result",
+        "success",
+        "--notify-discord-result",
+        "success",
+        "--notify-operations-result",
+        "skipped",
+      ],
     ];
     for (const args of invalidArguments) {
       expect(() => parseCliArguments(args)).toThrow(CliUsageError);

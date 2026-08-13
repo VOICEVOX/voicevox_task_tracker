@@ -75,7 +75,7 @@ function successfulJobResults(): WorkflowJobResults {
   return Object.freeze({
     "test-eval": "success",
     "collect-analyze": "success",
-    "persist-state": "success",
+    "persist-cache": "success",
     "build-pages": "success",
     "deploy-pages": "success",
     "notify-discord": "success",
@@ -98,7 +98,7 @@ describe("workflow run report", () => {
       jobs: {
         "test-eval": "success",
         "collect-analyze": "failure",
-        "persist-state": "skipped",
+        "persist-cache": "skipped",
         "build-pages": "skipped",
         "deploy-pages": "skipped",
         "notify-discord": "skipped",
@@ -150,7 +150,7 @@ describe("workflow run report", () => {
       jobs: {
         "test-eval": "failure",
         "collect-analyze": "skipped",
-        "persist-state": "skipped",
+        "persist-cache": "skipped",
         "build-pages": "skipped",
         "deploy-pages": "skipped",
         "notify-discord": "skipped",

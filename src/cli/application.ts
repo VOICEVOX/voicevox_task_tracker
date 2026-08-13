@@ -22,7 +22,7 @@ export type CliExecutionResult =
     }>
   | Readonly<{
       command:
-        | "persist-state"
+        | "persist-cache"
         | "build-pages"
         | "notify-discord"
         | "notify-operations"
@@ -80,7 +80,7 @@ export class CliApplication<Types extends DailyTransactionTypeMap> {
           result: coordinated.value,
         });
       }
-      case "persist-state":
+      case "persist-cache":
       case "build-pages":
       case "notify-discord":
       case "notify-operations":

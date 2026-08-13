@@ -89,7 +89,7 @@ export function createTrackerRunCliArguments(args: readonly string[]): readonly 
   if (
     args[0] === "eval" ||
     args[0] === "collect-analyze" ||
-    args[0] === "persist-state" ||
+    args[0] === "persist-cache" ||
     args[0] === "build-pages" ||
     args[0] === "notify-discord" ||
     args[0] === "notify-operations" ||
@@ -145,8 +145,8 @@ export async function runTrackerCommand<Result>(
 
 function topLevelDiagnosticStage(command: CliCommand): RunStage | "unknown" {
   switch (command.kind) {
-    case "persist-state":
-      return "state_persistence";
+    case "persist-cache":
+      return "cache_persistence";
     case "build-pages":
       return "pages";
     case "notify-discord":

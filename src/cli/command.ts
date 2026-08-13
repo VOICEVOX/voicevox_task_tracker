@@ -62,9 +62,9 @@ export type CollectAnalyzeCliCommand = OnlineCommandFields &
     artifactPath: string;
   }>;
 
-/** 検証済みworkflow artifactをstate branchへ保存するCLI入力。 */
-export type PersistStateCliCommand = Readonly<{
-  kind: "persist-state";
+/** 検証済みworkflow artifactをcacheへ保存するCLI入力。 */
+export type PersistCacheCliCommand = Readonly<{
+  kind: "persist-cache";
   configPath: string;
   artifactPath: string;
 }>;
@@ -151,7 +151,7 @@ export type CliCommand =
   | DryRunCliCommand
   | BackfillCliCommand
   | CollectAnalyzeCliCommand
-  | PersistStateCliCommand
+  | PersistCacheCliCommand
   | BuildPagesCliCommand
   | NotifyDiscordCliCommand
   | NotifyOperationsCliCommand
@@ -354,10 +354,10 @@ function parseCollectAnalyze(args: readonly string[]): CollectAnalyzeCliCommand 
   });
 }
 
-function parsePersistState(args: readonly string[]): PersistStateCliCommand {
+function parsePersistCache(args: readonly string[]): PersistCacheCliCommand {
   const options = parseOptions(args, new Set(["--artifact", "--config"]));
   return Object.freeze({
-    kind: "persist-state",
+    kind: "persist-cache",
     configPath: singleOption(options, "--config", DEFAULT_CONFIG_PATH),
     artifactPath: singleOption(options, "--artifact", DEFAULT_WORKFLOW_ARTIFACT_PATH),
   });
@@ -488,7 +488,7 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
       "--notify-discord-result",
       "--notify-operations-result",
       "--output",
-      "--persist-state-result",
+      "--persist-cache-result",
       "--run-attempt",
       "--run-id",
       "--test-eval-result",
@@ -512,7 +512,7 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
     jobResults: Object.freeze({
       "test-eval": parseWorkflowJobResult(options, "--test-eval-result"),
       "collect-analyze": parseWorkflowJobResult(options, "--collect-analyze-result"),
-      "persist-state": parseWorkflowJobResult(options, "--persist-state-result"),
+      "persist-cache": parseWorkflowJobResult(options, "--persist-cache-result"),
       "build-pages": parseWorkflowJobResult(options, "--build-pages-result"),
       "deploy-pages": parseWorkflowJobResult(options, "--deploy-pages-result"),
       "notify-discord": parseWorkflowJobResult(options, "--notify-discord-result"),
@@ -618,8 +618,8 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
       return parseBackfill(options);
     case "collect-analyze":
       return parseCollectAnalyze(options);
-    case "persist-state":
-      return parsePersistState(options);
+    case "persist-cache":
+      return parsePersistCache(options);
     case "build-pages":
       return parseBuildPages(options);
     case "notify-discord":
@@ -647,11 +647,11 @@ export function formatCliUsage(): string {
     "  voicevox-task-tracker dry-run [--config PATH] [--artifact PATH] [--report PATH]",
     "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--repository VOICEVOX/REPO]",
     "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--scheduled-for ISO] [--artifact PATH]",
-    "  voicevox-task-tracker persist-state [--config PATH] [--artifact PATH]",
+    "  voicevox-task-tracker persist-cache [--config PATH] [--artifact PATH]",
     "  voicevox-task-tracker build-pages [--config PATH] [--artifact PATH] [--output PATH]",
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",
     "  voicevox-task-tracker notify-operations --kind collection|pages|discord --incident-id ID --occurred-at ISO",
-    "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --test-eval-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --notify-operations-result RESULT",
+    "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --test-eval-result RESULT --collect-analyze-result RESULT --persist-cache-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --notify-operations-result RESULT",
     "  voicevox-task-tracker verify-state --state-directory PATH",
     "  voicevox-task-tracker replay (--fixture PATH | --state PATH) [--artifact PATH]",
     "  voicevox-task-tracker eval --fixtures PATH [--artifact PATH]",

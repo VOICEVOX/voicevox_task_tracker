@@ -18,7 +18,7 @@ export {
   type HelpCliCommand,
   type NotifyDiscordCliCommand,
   type NotifyOperationsCliCommand,
-  type PersistStateCliCommand,
+  type PersistCacheCliCommand,
   type ReportWorkflowCliCommand,
   type ReplayCliCommand,
   type ReplaySource,
