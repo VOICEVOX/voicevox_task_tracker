@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createAiCacheEntry,
+  createAiCacheKey,
+  createCodexAnalysisInput,
+  createCodexCacheValidationContext,
+  hashCanonicalJson,
+  type AiCacheEntry,
+} from "../src/codex/index.js";
+import {
   buildSourceId,
   createGitHubNodeId,
   createGitHubRepositoryId,
@@ -11,6 +19,8 @@ import {
 import {
   createGitHubItemCacheDocument,
   restoreGitHubItemCache,
+  restoreGitHubItemCacheForAnalysis,
+  validateGitHubItemCacheAiEntry,
 } from "../src/github/item-cache-adapter.js";
 import {
   type FreshObservedGitHubIssue,
@@ -18,6 +28,7 @@ import {
 } from "../src/github/item-normalization.js";
 import { createPublicRepositoryAllowlist } from "../src/github/public-repository-allowlist.js";
 import { parseSha256Hash } from "../src/persistence/canonical-json.js";
+import { type GitHubItemCacheDocument } from "../src/persistence/cache-documents.js";
 
 const repositoryId = createGitHubRepositoryId("R_ITEM_CACHE_ADAPTER");
 const repository = {
@@ -372,7 +383,16 @@ const pullRequestReplay: ReplayItemHistoryResult = {
   },
 };
 
-function createDocument() {
+function createDocument(): GitHubItemCacheDocument;
+function createDocument(
+  aiCacheReference: GitHubItemCacheDocument["aiCacheReference"],
+  history: GitHubItemCacheDocument["history"],
+): GitHubItemCacheDocument;
+function createDocument(
+  ...args: [] | [GitHubItemCacheDocument["aiCacheReference"], GitHubItemCacheDocument["history"]]
+): GitHubItemCacheDocument {
+  const aiCacheReference = args[0] ?? { status: "unavailable" };
+  const history = args[1] ?? { status: "complete", events: [] };
   return createGitHubItemCacheDocument({
     repository,
     observation,
@@ -418,13 +438,117 @@ function createDocument() {
     ],
     relationMutations: [],
     replay,
-    history: {
-      status: "complete",
-      events: [],
+    history,
+    analysisFacts: createAnalysisFacts(observation),
+    aiCacheReference,
+  });
+}
+
+function createAnalysisFacts(sourceObservation: FreshObservedGitHubItem) {
+  return {
+    bodyEmpty: false,
+    explicitRequestCandidates: [
+      {
+        sourceId: sourceObservation.bodySourceId,
+        occurredAt: sourceObservation.createdAt,
+      },
+    ],
+    mentionedWaitingOnCandidates: [],
+    codexValidationContext: {
+      schemaVersion: "1" as const,
+      purpose: "semantic_validation_only" as const,
+      now: sourceObservation.observedAt,
+      item: {
+        nodeId: sourceObservation.nodeId,
+        url: sourceObservation.url,
+        type: sourceObservation.type,
+      },
+      candidates: {
+        waitingOn: [],
+        relations: [],
+      },
+      sources: [
+        {
+          id: sourceObservation.sourceId,
+          kind: "item",
+          actorType: "system" as const,
+          createdAt: sourceObservation.createdAt,
+        },
+        {
+          id: sourceObservation.bodySourceId,
+          kind: "body",
+          actorType: "system" as const,
+          createdAt: sourceObservation.createdAt,
+        },
+      ],
+      nativeRelationConstraints: [],
     },
-    aiCacheReference: {
-      status: "unavailable",
+  };
+}
+
+function createAiEntryForDocument(document: GitHubItemCacheDocument): AiCacheEntry {
+  const inputHash = hashCanonicalJson({ fixture: "item-cache-validation" });
+  const identity = {
+    deterministicRulesVersion: "issue-v1",
+    model: "fixture-model",
+    reasoningEffort: "medium" as const,
+    backendVersion: "fixture-backend",
+    promptVersion: "fixture-prompt",
+    schemaVersion: "1",
+    inputHash,
+  };
+  const cacheKey = createAiCacheKey(identity);
+  const output = {
+    schemaVersion: "2" as const,
+    item: {
+      nodeId: document.nodeId,
+      url: document.url,
     },
+    status: "terminal_completed" as const,
+    waitingOn: [],
+    nextAction: "完了を確認する",
+    relations: [],
+    progress: {
+      latestMeaningfulSourceId: null,
+      reasonSummary: "意味のある進捗を確認する",
+      confidence: 1,
+    },
+    importance: {
+      significantFeature: false,
+      explicitDeadline: false,
+      futureRisk: false,
+      rationale: "fixture",
+    },
+    evidence: [
+      {
+        sourceId: document.currentObservation.sourceId,
+        supports: "status" as const,
+        summary: "現在の状態を確認しました",
+      },
+    ],
+    confidence: 1,
+    uncertainties: [],
+    notification: {
+      recommended: false,
+      reasonCode: "none",
+      reasonSummary: "通知不要です",
+    },
+  };
+  return createAiCacheEntry({
+    cacheKey,
+    sourceHash: hashCanonicalJson({ source: "item-cache-validation" }),
+    metadata: {
+      deterministicRulesVersion: identity.deterministicRulesVersion,
+      model: identity.model,
+      reasoningEffort: identity.reasoningEffort,
+      backendVersion: identity.backendVersion,
+      promptVersion: identity.promptVersion,
+      schemaVersion: identity.schemaVersion,
+      inputHash,
+      outputHash: hashCanonicalJson(output),
+      executedAt: observedAt,
+    },
+    output,
   });
 }
 
@@ -446,6 +570,168 @@ describe("GitHub item cache adapter", () => {
     expect(Object.hasOwn(document, "body")).toBe(false);
     expect(JSON.stringify(document)).not.toContain('"diff"');
     expect(JSON.stringify(document)).not.toContain("cache fixtureのraw本文");
+  });
+
+  it("warm解析sourceがcold文書の決定論的事実とunknown履歴を保持する", () => {
+    const coldDocument = createDocument(
+      { status: "unavailable" },
+      {
+        status: "unavailable",
+        reason: "redacted",
+      },
+    );
+    const restored = restoreGitHubItemCacheForAnalysis(coldDocument, {
+      mode: "fresh",
+      bodyFingerprint,
+      itemFingerprint,
+      analysisRulesFingerprint,
+    });
+
+    expect(restored.status).toBe("hit");
+    if (restored.status !== "hit") {
+      throw new Error("item cacheを復元できません");
+    }
+    expect(restored.source.observation).toEqual(coldDocument.currentObservation);
+    expect(restored.source.relationCandidates).toEqual(coldDocument.relationCandidates);
+    expect(restored.source.relationMutations).toEqual(coldDocument.relationMutations);
+    expect(restored.source.replay).toEqual(coldDocument.replay);
+    expect(restored.source.analysisFacts).toEqual(coldDocument.analysisFacts);
+    expect(restored.source.history).toEqual({
+      status: "unavailable",
+      reason: "redacted",
+    });
+    expect(JSON.stringify(coldDocument)).not.toContain("raw本文のfixture");
+    expect(JSON.stringify(coldDocument)).not.toContain("raw commentのfixture");
+    expect(JSON.stringify(coldDocument)).not.toContain("raw reviewのfixture");
+    expect(JSON.stringify(coldDocument)).not.toContain("raw diffのfixture");
+    expect(JSON.stringify(coldDocument.analysisFacts.codexValidationContext)).not.toContain(
+      "inputHash",
+    );
+  });
+
+  it("Codex入力からraw値を除いたstrict contextを生成する", () => {
+    const input = createCodexAnalysisInput({
+      schemaVersion: "1",
+      now: observedAt,
+      item: {
+        nodeId,
+        url: itemUrl,
+        type: "issue",
+        title: "raw title marker",
+        content: "raw content marker",
+      },
+      candidates: {
+        waitingOn: [
+          {
+            id: "requested-user",
+            kind: "user",
+            sourceIds: [buildSourceId("github_item_body", "I_ITEM_CACHE_ADAPTER")],
+          },
+        ],
+        relations: [
+          {
+            id: "rel:target",
+            targetUrl,
+          },
+        ],
+      },
+      sources: [
+        {
+          id: buildSourceId("github_item_body", "I_ITEM_CACHE_ADAPTER"),
+          kind: "body",
+          actorType: "human",
+          createdAt,
+        },
+      ],
+      deterministicSignals: {
+        nativeBlockedBy: ["rel:target"],
+      },
+      priorAnalysis: null,
+    });
+    const context = createCodexCacheValidationContext(input);
+
+    expect(context.item).toEqual({
+      nodeId,
+      url: itemUrl,
+      type: "issue",
+    });
+    expect(JSON.stringify(context)).not.toContain("raw title marker");
+    expect(JSON.stringify(context)).not.toContain("raw content marker");
+    expect(JSON.stringify(context)).not.toContain("inputHash");
+    expect(context.nativeRelationConstraints).toEqual([
+      {
+        candidateId: "rel:target",
+        verdict: "current_is_blocked_by_target",
+      },
+    ]);
+  });
+
+  it("exact AI entryをcache contextのnode、URL、source範囲で再検証する", () => {
+    const unavailableDocument = createDocument();
+    const entry = createAiEntryForDocument(unavailableDocument);
+    const document = createDocument(
+      {
+        status: "available",
+        cacheKey: entry.cacheKey,
+        sourceHash: entry.sourceHash,
+        inputHash: parseSha256Hash(entry.metadata.inputHash),
+        graphNeighborhoodHash: bodyFingerprint,
+        identityHash: itemFingerprint,
+      },
+      { status: "complete", events: [] },
+    );
+    const validation = validateGitHubItemCacheAiEntry(document, {
+      status: "available",
+      value: entry,
+    });
+
+    expect(validation.status).toBe("validated");
+    if (validation.status !== "validated") {
+      throw new Error("AI entryを検証できません");
+    }
+    expect(validation.output.item.nodeId).toBe(document.nodeId);
+    expect(validation.output.item.url).toBe(document.url);
+    expect(validation.output.evidence[0]?.sourceId).toBe(document.currentObservation.sourceId);
+    expect(JSON.stringify(document)).not.toContain("完了を確認する");
+
+    const futureEntry = createAiCacheEntry({
+      ...entry,
+      metadata: {
+        ...entry.metadata,
+        executedAt: "2026-01-06T00:00:00Z",
+      },
+    });
+    expect(() =>
+      validateGitHubItemCacheAiEntry(document, {
+        status: "available",
+        value: futureEntry,
+      }),
+    ).toThrow("実行時刻がsemantic validation contextより後です");
+  });
+
+  it("AI参照またはentryがない場合はunavailableまたはcache missを返す", () => {
+    const document = createDocument();
+    expect(validateGitHubItemCacheAiEntry(document, { status: "missing" })).toEqual({
+      status: "unavailable",
+      reason: "ai_cache_reference_unavailable",
+    });
+
+    const entry = createAiEntryForDocument(document);
+    const referencedDocument = createDocument(
+      {
+        status: "available",
+        cacheKey: entry.cacheKey,
+        sourceHash: entry.sourceHash,
+        inputHash: parseSha256Hash(entry.metadata.inputHash),
+        graphNeighborhoodHash: bodyFingerprint,
+        identityHash: itemFingerprint,
+      },
+      { status: "complete", events: [] },
+    );
+    expect(validateGitHubItemCacheAiEntry(referencedDocument, { status: "missing" })).toEqual({
+      status: "cache_miss",
+      reason: "ai_cache_entry_unavailable",
+    });
   });
 
   it("current fingerprintが変われば明示的なcache missにする", () => {
@@ -507,6 +793,7 @@ describe("GitHub item cache adapter", () => {
         status: "complete",
         events: [],
       },
+      analysisFacts: createAnalysisFacts(pullRequestObservation),
       aiCacheReference: {
         status: "unavailable",
       },
@@ -562,6 +849,7 @@ describe("GitHub item cache adapter", () => {
         status: "complete",
         events: [],
       },
+      analysisFacts: createAnalysisFacts(manyPullRequestObservation),
       aiCacheReference: {
         status: "unavailable",
       },

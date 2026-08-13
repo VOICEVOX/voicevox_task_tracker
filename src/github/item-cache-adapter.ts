@@ -1,5 +1,11 @@
 import { type FreshObservedGitHubItem } from "./item-normalization.js";
 import {
+  validateCodexAnalysisOutputAgainstCacheContext,
+  type CodexCacheValidationContext,
+} from "../codex/semantic-validation.js";
+import { createAiCacheEntry, type AiCacheEntry } from "../codex/cache.js";
+import { type ValidatedCodexAnalysisOutput } from "../codex/output-types.js";
+import {
   type CandidateRelation,
   type RelationCandidate,
   type RelationCandidateNode,
@@ -15,14 +21,17 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
+  CACHE_DOCUMENT_SCHEMA_VERSION,
   createCacheDocument,
   type AiCacheReference,
   type CacheHistory,
+  type CacheExplicitRequestCandidate,
   type CacheItemIndex,
   type CacheLifecycle,
   type CacheRepositoryIdentity,
   type GitHubItemCacheDocument,
   type GitHubItemCacheObservation,
+  type CacheMentionedWaitingOnCandidate,
   type GitHubItemCacheRelationCandidate,
   type GitHubItemCacheRelationMutationResult,
   type GitHubItemCacheReplay,
@@ -42,6 +51,12 @@ export type CreateGitHubItemCacheDocumentInput = Readonly<{
   relationMutations: readonly RelationMutationResult[];
   replay: ReplayItemHistoryResult;
   history: CacheHistory;
+  analysisFacts: Readonly<{
+    bodyEmpty: boolean;
+    explicitRequestCandidates: readonly CacheExplicitRequestCandidate[];
+    mentionedWaitingOnCandidates: readonly CacheMentionedWaitingOnCandidate[];
+    codexValidationContext: CodexCacheValidationContext;
+  }>;
   aiCacheReference: AiCacheReference;
 }>;
 
@@ -472,7 +487,10 @@ function mapNormalizedEvent(
   return { ...event };
 }
 
-function mapObservation(observation: FreshObservedGitHubItem): GitHubItemCacheObservation {
+function mapObservation(
+  observation: FreshObservedGitHubItem,
+  analysisFacts: CreateGitHubItemCacheDocumentInput["analysisFacts"],
+): GitHubItemCacheObservation {
   const freshness: GitHubItemCacheObservation["freshness"] = "fresh";
   const common = {
     freshness,
@@ -483,6 +501,7 @@ function mapObservation(observation: FreshObservedGitHubItem): GitHubItemCacheOb
     url: observation.url,
     title: observation.title,
     bodySourceId: observation.bodySourceId,
+    bodyEmpty: analysisFacts.bodyEmpty,
     bodyFingerprint: observation.bodyFingerprint,
     itemFingerprint: observation.itemFingerprint,
     createdAt: observation.createdAt,
@@ -656,7 +675,7 @@ export function createGitHubItemCacheDocument(
 ): GitHubItemCacheDocument {
   assertInputIdentity(input);
   const parsed = createCacheDocument({
-    schemaVersion: "1",
+    schemaVersion: CACHE_DOCUMENT_SCHEMA_VERSION,
     kind: "github_item",
     repository: input.repository,
     nodeId: input.observation.nodeId,
@@ -674,7 +693,12 @@ export function createGitHubItemCacheDocument(
     updatedAt: input.observation.githubUpdatedAt,
     observedAt: input.observation.observedAt,
     lifecycle: input.lifecycle,
-    currentObservation: mapObservation(input.observation),
+    currentObservation: mapObservation(input.observation, input.analysisFacts),
+    analysisFacts: {
+      explicitRequestCandidates: input.analysisFacts.explicitRequestCandidates,
+      mentionedWaitingOnCandidates: input.analysisFacts.mentionedWaitingOnCandidates,
+      codexValidationContext: input.analysisFacts.codexValidationContext,
+    },
     relationCandidates: input.relationCandidates
       .map(mapRelationCandidate)
       .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)),
@@ -751,5 +775,135 @@ export function restoreGitHubItemCache(
     freshness: "stale",
     document: parsed,
     failedAt: input.failedAt,
+  };
+}
+
+/** item cache文書をraw detailなしで判定へ渡せる構造化sourceへ復元する。 */
+export type GitHubItemCacheAnalysisSource = Readonly<{
+  observation: GitHubItemCacheObservation;
+  relationCandidates: readonly GitHubItemCacheDocument["relationCandidates"][number][];
+  relationMutations: readonly GitHubItemCacheDocument["relationMutations"][number][];
+  replay: GitHubItemCacheDocument["replay"];
+  history: GitHubItemCacheDocument["history"];
+  analysisFacts: GitHubItemCacheDocument["analysisFacts"];
+}>;
+
+/** warm item sourceの復元結果。cache missは推測せず明示する。 */
+export type GitHubItemCacheAnalysisRestoration =
+  | Readonly<{
+      status: "hit";
+      freshness: "fresh";
+      document: GitHubItemCacheDocument;
+      source: GitHubItemCacheAnalysisSource;
+    }>
+  | Readonly<{
+      status: "hit";
+      freshness: "stale";
+      document: GitHubItemCacheDocument;
+      source: GitHubItemCacheAnalysisSource;
+      failedAt: UtcIsoDateTime;
+    }>
+  | Readonly<{
+      status: "cache_miss";
+      reason: "current_fingerprint_mismatch";
+    }>;
+
+function createAnalysisSource(document: GitHubItemCacheDocument): GitHubItemCacheAnalysisSource {
+  return {
+    observation: document.currentObservation,
+    relationCandidates: document.relationCandidates,
+    relationMutations: document.relationMutations,
+    replay: document.replay,
+    history: document.history,
+    analysisFacts: document.analysisFacts,
+  };
+}
+
+/** current observationとcache済みの決定論的事実をwarm解析sourceへ復元する。 */
+export function restoreGitHubItemCacheForAnalysis(
+  value: unknown,
+  input: RestoreGitHubItemCacheInput,
+): GitHubItemCacheAnalysisRestoration {
+  const restored = restoreGitHubItemCache(value, input);
+  if (restored.status === "cache_miss") {
+    return restored;
+  }
+  if (restored.freshness === "fresh") {
+    return {
+      ...restored,
+      source: createAnalysisSource(restored.document),
+    };
+  }
+  return {
+    ...restored,
+    source: createAnalysisSource(restored.document),
+  };
+}
+
+/** exact AI entryのcache参照、schema、semanticをwarm contextで再検証する入力。 */
+export type GitHubItemCacheAiEntryInput =
+  | Readonly<{
+      status: "missing";
+    }>
+  | Readonly<{
+      status: "available";
+      value: unknown;
+    }>;
+
+/** exact AI entryの利用可否をraw detailなしで表す結果。 */
+export type GitHubItemCacheAiValidation =
+  | Readonly<{
+      status: "validated";
+      entry: AiCacheEntry;
+      output: ValidatedCodexAnalysisOutput;
+    }>
+  | Readonly<{
+      status: "unavailable";
+      reason: "ai_cache_reference_unavailable";
+    }>
+  | Readonly<{
+      status: "cache_miss";
+      reason: "ai_cache_entry_unavailable";
+    }>;
+
+/** item cacheの参照entryと出力をschema・semantic検証する。 */
+export function validateGitHubItemCacheAiEntry(
+  document: GitHubItemCacheDocument,
+  input: GitHubItemCacheAiEntryInput,
+): GitHubItemCacheAiValidation {
+  if (document.aiCacheReference.status !== "available") {
+    return {
+      status: "unavailable",
+      reason: "ai_cache_reference_unavailable",
+    };
+  }
+  if (input.status === "missing") {
+    return {
+      status: "cache_miss",
+      reason: "ai_cache_entry_unavailable",
+    };
+  }
+  const entry = createAiCacheEntry(input.value);
+  if (
+    entry.cacheKey !== document.aiCacheReference.cacheKey ||
+    entry.sourceHash !== document.aiCacheReference.sourceHash ||
+    entry.metadata.inputHash !== document.aiCacheReference.inputHash
+  ) {
+    throw new TypeError("item cacheのAI参照とentryが一致しません");
+  }
+  if (
+    Date.parse(entry.metadata.executedAt) >
+    Date.parse(document.analysisFacts.codexValidationContext.now)
+  ) {
+    throw new TypeError("AI entryの実行時刻がsemantic validation contextより後です");
+  }
+  const output = validateCodexAnalysisOutputAgainstCacheContext(
+    entry.output,
+    document.analysisFacts.codexValidationContext,
+  );
+  return {
+    status: "validated",
+    entry,
+    output,
   };
 }

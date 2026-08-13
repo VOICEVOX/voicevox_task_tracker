@@ -279,7 +279,7 @@ function createItemCache(): GitHubItemCacheDocument {
     targets: [],
   };
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "github_item",
     repository: {
       repositoryId,
@@ -297,6 +297,7 @@ function createItemCache(): GitHubItemCacheDocument {
       url: "https://github.com/VOICEVOX/cache-only-fixture/issues/1",
       title: "cache-only fixture",
       bodySourceId: buildSourceId("github_item_body", itemNodeId),
+      bodyEmpty: true,
       bodyFingerprint: BODY_FINGERPRINT,
       itemFingerprint: ITEM_FINGERPRINT,
       createdAt,
@@ -314,6 +315,39 @@ function createItemCache(): GitHubItemCacheDocument {
       stateReason: null,
       closedAt: terminalAt,
       draft: "not_applicable",
+    },
+    analysisFacts: {
+      explicitRequestCandidates: [],
+      mentionedWaitingOnCandidates: [],
+      codexValidationContext: {
+        schemaVersion: "1",
+        purpose: "semantic_validation_only",
+        now: observedAt,
+        item: {
+          nodeId: itemNodeId,
+          url: "https://github.com/VOICEVOX/cache-only-fixture/issues/1",
+          type: "issue",
+        },
+        candidates: {
+          waitingOn: [],
+          relations: [],
+        },
+        sources: [
+          {
+            id: itemSourceId,
+            kind: "item",
+            actorType: "system",
+            createdAt,
+          },
+          {
+            id: buildSourceId("github_item_body", itemNodeId),
+            kind: "body",
+            actorType: "system",
+            createdAt,
+          },
+        ],
+        nativeRelationConstraints: [],
+      },
     },
     relationCandidates: [],
     relationMutations: [],
@@ -366,6 +400,17 @@ function createOpenItemCache(): GitHubItemCacheDocument {
       state: "open",
       stateReason: null,
       closedAt: null,
+    },
+    analysisFacts: {
+      ...cache.analysisFacts,
+      codexValidationContext: {
+        ...cache.analysisFacts.codexValidationContext,
+        item: {
+          nodeId: openItemNodeId,
+          url: "https://github.com/VOICEVOX/cache-only-fixture/issues/2",
+          type: "issue",
+        },
+      },
     },
     relationCandidates: [
       {
@@ -469,7 +514,7 @@ function createRelationMutationResult(
 
 function createRepositoryCache(): GitHubRepositoryCacheDocument {
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "github_repository",
     repository: {
       repositoryId,
@@ -490,7 +535,7 @@ function createRepositoryCacheWithOpenItem(): GitHubRepositoryCacheDocument {
 
 function createLatestImportanceCache(): AiLatestImportanceCacheDocument {
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "ai_latest_importance",
     repository: {
       repositoryId,
@@ -912,6 +957,17 @@ describe("cache-only永続化session", () => {
         ...createItemCache().currentObservation,
         number: 2,
         url: "https://github.com/VOICEVOX/cache-only-fixture/issues/2",
+      },
+      analysisFacts: {
+        ...createItemCache().analysisFacts,
+        codexValidationContext: {
+          ...createItemCache().analysisFacts.codexValidationContext,
+          item: {
+            nodeId: itemNodeId,
+            url: "https://github.com/VOICEVOX/cache-only-fixture/issues/2",
+            type: "issue",
+          },
+        },
       },
     };
 

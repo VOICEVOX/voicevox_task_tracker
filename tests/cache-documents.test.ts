@@ -131,6 +131,7 @@ function createCurrentObservation(): GitHubItemCacheDocument["currentObservation
     url: "https://github.com/VOICEVOX/example/issues/1",
     title: "cache item",
     bodySourceId: buildSourceId("github_item_body", ITEM_NODE_ID),
+    bodyEmpty: true,
     bodyFingerprint: BODY_FINGERPRINT,
     itemFingerprint: ITEM_FINGERPRINT,
     createdAt: CREATED_AT,
@@ -190,12 +191,47 @@ function createReplay(): GitHubItemCacheDocument["replay"] {
 }
 
 function createValidItem(): GitHubItemCacheDocument {
+  const itemSourceId = buildSourceId("github_item", ITEM_NODE_ID);
+  const bodySourceId = buildSourceId("github_item_body", ITEM_NODE_ID);
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "github_item",
     repository: REPOSITORY,
     ...createTerminalIndex(),
     currentObservation: createCurrentObservation(),
+    analysisFacts: {
+      explicitRequestCandidates: [],
+      mentionedWaitingOnCandidates: [],
+      codexValidationContext: {
+        schemaVersion: "1",
+        purpose: "semantic_validation_only",
+        now: OBSERVED_AT,
+        item: {
+          nodeId: ITEM_NODE_ID,
+          url: "https://github.com/VOICEVOX/example/issues/1",
+          type: "issue",
+        },
+        candidates: {
+          waitingOn: [],
+          relations: [],
+        },
+        sources: [
+          {
+            id: itemSourceId,
+            kind: "item",
+            actorType: "system",
+            createdAt: CREATED_AT,
+          },
+          {
+            id: bodySourceId,
+            kind: "body",
+            actorType: "system",
+            createdAt: CREATED_AT,
+          },
+        ],
+        nativeRelationConstraints: [],
+      },
+    },
     relationCandidates: [],
     relationMutations: [],
     replay: createReplay(),
@@ -256,7 +292,7 @@ function createAvailableRelationMutation(): ExactRelationResult {
 
 function createValidRepository(): GitHubRepositoryCacheDocument {
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "github_repository",
     repository: REPOSITORY,
     successfulAt: OBSERVED_AT,
@@ -266,7 +302,7 @@ function createValidRepository(): GitHubRepositoryCacheDocument {
 
 function createValidLatestImportance(): AiLatestImportanceCacheDocument {
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "ai_latest_importance",
     repository: REPOSITORY,
     nodeId: ITEM_NODE_ID,
@@ -347,6 +383,15 @@ describe("cache文書契約", () => {
     };
 
     expect(() => createCacheDocument(value)).toThrow(CacheDocumentSchemaError);
+  });
+
+  it("旧cache schema versionを互換扱いせず拒否する", () => {
+    const legacyValue: Record<string, unknown> = {
+      ...createValidItem(),
+      schemaVersion: "1",
+    };
+
+    expect(() => createCacheDocument(legacyValue)).toThrow(CacheDocumentSchemaError);
   });
 
   it("schema検証のZod error causeとissueCountを保持する", () => {
@@ -563,6 +608,57 @@ describe("cache文書契約", () => {
     };
 
     expect(() => createCacheDocument(value)).toThrow("createdAtからobservedAtの範囲");
+  });
+
+  it("空のhuman commentをexplicit request候補へ保存できない", () => {
+    const document = createValidItem();
+    const commentSourceId = buildSourceId("github_comment", "empty-human");
+    const value = {
+      ...document,
+      currentObservation: {
+        ...document.currentObservation,
+        events: [
+          {
+            sourceId: commentSourceId,
+            itemNodeId: ITEM_NODE_ID,
+            occurredAt: UPDATED_AT,
+            actor: {
+              type: "human" as const,
+              nodeId: ACTOR_NODE_ID,
+              login: "human",
+            },
+            kind: "comment" as const,
+            bodyFingerprint: BODY_FINGERPRINT,
+            bodyEmpty: true,
+          },
+        ],
+      },
+      analysisFacts: {
+        ...document.analysisFacts,
+        explicitRequestCandidates: [
+          {
+            sourceId: commentSourceId,
+            occurredAt: UPDATED_AT,
+          },
+        ],
+        codexValidationContext: {
+          ...document.analysisFacts.codexValidationContext,
+          sources: [
+            ...document.analysisFacts.codexValidationContext.sources,
+            {
+              id: commentSourceId,
+              kind: "comment",
+              actorType: "human" as const,
+              createdAt: UPDATED_AT,
+            },
+          ],
+        },
+      },
+    };
+
+    expect(() => createCacheDocument(value)).toThrow(
+      "空のcommentをexplicit request候補にできません",
+    );
   });
 
   it("replay epochの時系列とcurrent値の改ざんを拒否する", () => {

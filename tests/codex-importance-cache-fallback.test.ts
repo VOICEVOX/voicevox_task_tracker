@@ -242,7 +242,7 @@ function createLatest(
   importance: VerifiedImportanceResult["importance"] = fixture.importance,
 ): AiLatestImportanceCacheDocument {
   return {
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "ai_latest_importance",
     repository,
     nodeId,

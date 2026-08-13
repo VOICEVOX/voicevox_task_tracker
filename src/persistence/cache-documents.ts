@@ -1,5 +1,6 @@
 import { z, type ZodError } from "zod";
 
+import { cacheValidationContextSchema } from "../codex/semantic-validation.js";
 import {
   buildSourceId,
   createGitHubNodeId,
@@ -20,7 +21,7 @@ import {
 import { StatePersistenceError } from "./errors.js";
 
 /** cache文書schemaのversion。 */
-export const CACHE_DOCUMENT_SCHEMA_VERSION = "1";
+export const CACHE_DOCUMENT_SCHEMA_VERSION = "2";
 /** terminal itemを保持する日数。 */
 export const CACHE_TERMINAL_RETENTION_DAYS = 180;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -399,6 +400,7 @@ const cacheObservationCommonShape = {
   url: githubItemUrlSchema,
   title: nonEmptyStringSchema,
   bodySourceId: sourceIdSchema,
+  bodyEmpty: z.boolean(),
   bodyFingerprint: sha256HashSchema,
   itemFingerprint: sha256HashSchema,
   createdAt: utcIsoDateTimeSchema,
@@ -747,6 +749,23 @@ const cacheHistorySchema = z.discriminatedUnion("status", [
   }),
 ]);
 
+const cacheExplicitRequestCandidateSchema = z.strictObject({
+  sourceId: sourceIdSchema,
+  occurredAt: utcIsoDateTimeSchema,
+});
+
+const cacheMentionedWaitingOnCandidateSchema = z.strictObject({
+  id: nonEmptyStringSchema,
+  kind: z.enum(["user", "team"]),
+  sourceIds: z.array(sourceIdSchema).min(1),
+});
+
+const cacheAnalysisFactsSchema = z.strictObject({
+  explicitRequestCandidates: z.array(cacheExplicitRequestCandidateSchema),
+  mentionedWaitingOnCandidates: z.array(cacheMentionedWaitingOnCandidateSchema),
+  codexValidationContext: cacheValidationContextSchema,
+});
+
 const aiCacheReferenceSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("available"),
@@ -793,6 +812,7 @@ const githubItemCacheSchema = z.strictObject({
   repository: cacheRepositoryIdentitySchema,
   ...cacheItemIndexSchema.shape,
   currentObservation: cacheCurrentObservationSchema,
+  analysisFacts: cacheAnalysisFactsSchema,
   relationCandidates: z.array(cacheRelationCandidateSchema),
   relationMutations: z.array(cacheRelationMutationResultSchema),
   replay: cacheReplaySchema,
@@ -844,6 +864,7 @@ type ParsedCacheRelationCandidate = z.output<typeof cacheRelationCandidateSchema
 type ParsedCacheNormalizedEvent = z.output<typeof cacheNormalizedEventSchema>;
 type ParsedCacheRelationReference = z.output<typeof cacheRelationReferenceSchema>;
 type ParsedCacheRelationMutationResult = z.output<typeof cacheRelationMutationResultSchema>;
+type ParsedCacheAnalysisFacts = z.output<typeof cacheAnalysisFactsSchema>;
 type ParsedCacheRelationMutation = Extract<
   ParsedCacheRelationMutationResult,
   { status: "available" }
@@ -866,6 +887,20 @@ export type CacheItemIndex = ParsedCacheItemIndex;
 
 /** 完全取得済みまたは取得不能な履歴。 */
 export type CacheHistory = ParsedCacheHistory;
+
+/** raw本文を含まないwarm解析用の構造化事実。 */
+export type GitHubItemCacheAnalysisFacts = ParsedCacheAnalysisFacts;
+
+/** explicit request候補のsource IDと発生時刻。 */
+export type CacheExplicitRequestCandidate =
+  ParsedCacheAnalysisFacts["explicitRequestCandidates"][number];
+
+/** GitHub mentionから得たuserまたはteam候補。 */
+export type CacheMentionedWaitingOnCandidate =
+  ParsedCacheAnalysisFacts["mentionedWaitingOnCandidates"][number];
+
+/** Codex出力のsemantic再検証に必要なraw非保持context。 */
+export type { CodexCacheValidationContext } from "../codex/semantic-validation.js";
 
 /** 完全一致AI cacheへの参照または利用不能状態。 */
 export type AiCacheReference = ParsedAiCacheReference;
@@ -1430,8 +1465,165 @@ function assertCacheNormalizedEvents(
   }
 }
 
+function compareExplicitRequestCandidates(
+  left: ParsedCacheAnalysisFacts["explicitRequestCandidates"][number],
+  right: ParsedCacheAnalysisFacts["explicitRequestCandidates"][number],
+): number {
+  if (left.occurredAt < right.occurredAt) {
+    return -1;
+  }
+  if (left.occurredAt > right.occurredAt) {
+    return 1;
+  }
+  return compareStrings(left.sourceId, right.sourceId);
+}
+
+function compareMentionedCandidates(
+  left: ParsedCacheAnalysisFacts["mentionedWaitingOnCandidates"][number],
+  right: ParsedCacheAnalysisFacts["mentionedWaitingOnCandidates"][number],
+): number {
+  const leftKey = `${left.kind}:${left.id.toLowerCase()}`;
+  const rightKey = `${right.kind}:${right.id.toLowerCase()}`;
+  const keyComparison = compareStrings(leftKey, rightKey);
+  return keyComparison !== 0
+    ? keyComparison
+    : compareSourceIdLists(left.sourceIds, right.sourceIds);
+}
+
+function assertCacheAnalysisFacts(
+  facts: ParsedCacheAnalysisFacts,
+  document: Extract<CacheDocument, { kind: "github_item" }>,
+): void {
+  const explicitSourceIds = new Set<SourceId>();
+  const contextSourceIds = new Set(facts.codexValidationContext.sources.map((source) => source.id));
+  for (let index = 0; index < facts.explicitRequestCandidates.length; index += 1) {
+    const candidate = facts.explicitRequestCandidates[index];
+    if (candidate == null) {
+      throw new CacheDocumentSemanticError("explicit request候補がありません");
+    }
+    if (explicitSourceIds.has(candidate.sourceId)) {
+      throw new CacheDocumentSemanticError("explicit request候補のsource IDが重複しています");
+    }
+    explicitSourceIds.add(candidate.sourceId);
+    if (!contextSourceIds.has(candidate.sourceId)) {
+      throw new CacheDocumentSemanticError("explicit request候補のsource IDがcontextにありません");
+    }
+    assertTimestampRange(
+      candidate.occurredAt,
+      document.createdAt,
+      document.observedAt,
+      "explicit request候補.occurredAt",
+    );
+    const previous = facts.explicitRequestCandidates[index - 1];
+    if (previous != null && compareExplicitRequestCandidates(previous, candidate) > 0) {
+      throw new CacheDocumentSemanticError("explicit request候補が決定的な順序で並んでいません");
+    }
+    if (candidate.sourceId !== document.currentObservation.bodySourceId) {
+      const event = document.currentObservation.events.find(
+        (value) => value.sourceId === candidate.sourceId,
+      );
+      if (event?.kind !== "comment") {
+        throw new CacheDocumentSemanticError(
+          "explicit request候補が本文またはcommentを参照していません",
+        );
+      }
+      if (event.actor.type !== "human") {
+        throw new CacheDocumentSemanticError(
+          "explicit request候補のcomment actorがhumanではありません",
+        );
+      }
+      if (event.bodyEmpty) {
+        throw new CacheDocumentSemanticError("空のcommentをexplicit request候補にできません");
+      }
+      if (event.occurredAt !== candidate.occurredAt) {
+        throw new CacheDocumentSemanticError("explicit request候補の時刻がcommentと一致しません");
+      }
+    } else if (document.currentObservation.bodyEmpty) {
+      throw new CacheDocumentSemanticError("空の本文をexplicit request候補にできません");
+    } else if (candidate.occurredAt !== document.createdAt) {
+      throw new CacheDocumentSemanticError(
+        "explicit request候補の本文時刻がcreatedAtと一致しません",
+      );
+    }
+  }
+  if (
+    document.type === "issue" &&
+    !document.currentObservation.bodyEmpty &&
+    !explicitSourceIds.has(document.currentObservation.bodySourceId)
+  ) {
+    throw new CacheDocumentSemanticError("非空Issue本文がexplicit request候補にありません");
+  }
+  if (
+    document.type === "issue" &&
+    document.currentObservation.bodyEmpty &&
+    explicitSourceIds.has(document.currentObservation.bodySourceId)
+  ) {
+    throw new CacheDocumentSemanticError("空Issue本文がexplicit request候補に含まれています");
+  }
+
+  const mentionedCandidateKeys = new Set<string>();
+  for (let index = 0; index < facts.mentionedWaitingOnCandidates.length; index += 1) {
+    const candidate = facts.mentionedWaitingOnCandidates[index];
+    if (candidate == null) {
+      throw new CacheDocumentSemanticError("mention候補がありません");
+    }
+    const key = `${candidate.kind}:${candidate.id.toLowerCase()}`;
+    if (mentionedCandidateKeys.has(key)) {
+      throw new CacheDocumentSemanticError("mention候補が重複しています");
+    }
+    mentionedCandidateKeys.add(key);
+    const sourceIds = new Set<SourceId>();
+    assertSourceIdList(candidate.sourceIds, "mention候補", sourceIds);
+    for (const sourceId of candidate.sourceIds) {
+      if (!contextSourceIds.has(sourceId)) {
+        throw new CacheDocumentSemanticError("mention候補のsource IDがcontextにありません");
+      }
+      if (sourceId === document.currentObservation.bodySourceId) {
+        if (document.currentObservation.bodyEmpty) {
+          throw new CacheDocumentSemanticError("空の本文をmention候補のsourceにできません");
+        }
+        continue;
+      }
+      const event = document.currentObservation.events.find((value) => value.sourceId === sourceId);
+      if (event?.kind !== "comment") {
+        throw new CacheDocumentSemanticError("mention候補が本文またはcommentを参照していません");
+      }
+      if (event.bodyEmpty) {
+        throw new CacheDocumentSemanticError("空のcommentをmention候補のsourceにできません");
+      }
+    }
+    const previous = facts.mentionedWaitingOnCandidates[index - 1];
+    if (previous != null && compareMentionedCandidates(previous, candidate) > 0) {
+      throw new CacheDocumentSemanticError("mention候補が決定的な順序で並んでいません");
+    }
+  }
+
+  if (
+    facts.codexValidationContext.item.nodeId !== document.nodeId ||
+    facts.codexValidationContext.item.url !== document.url ||
+    facts.codexValidationContext.item.type !== document.type
+  ) {
+    throw new CacheDocumentSemanticError(
+      "Codex cache validation contextのitem identityがcache itemと一致しません",
+    );
+  }
+  for (const source of facts.codexValidationContext.sources) {
+    assertTimestampRange(
+      source.createdAt,
+      document.createdAt,
+      document.observedAt,
+      "Codex cache validation context.source.createdAt",
+    );
+  }
+}
+
 function assertCacheObservation(document: Extract<CacheDocument, { kind: "github_item" }>): void {
   const observation = document.currentObservation;
+  if (observation.events.some((event) => event.sourceId === observation.bodySourceId)) {
+    throw new CacheDocumentSemanticError(
+      "current observationの本文source IDがeventと重複しています",
+    );
+  }
   if (
     observation.nodeId !== document.nodeId ||
     observation.repositoryId !== document.repositoryId ||
@@ -2017,6 +2209,7 @@ function assertCacheDocumentSemantics(document: CacheDocument): void {
       assertItemUrl(document);
       assertItemIndex(document);
       assertCacheObservation(document);
+      assertCacheAnalysisFacts(document.analysisFacts, document);
       assertCacheRelationCandidates(document.relationCandidates);
       assertCacheRelationMutations(
         document.relationMutations,

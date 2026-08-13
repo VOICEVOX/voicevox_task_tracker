@@ -120,7 +120,13 @@ export {
 export {
   createGitHubItemCacheDocument,
   restoreGitHubItemCache,
+  restoreGitHubItemCacheForAnalysis,
+  validateGitHubItemCacheAiEntry,
   type CreateGitHubItemCacheDocumentInput,
+  type GitHubItemCacheAiEntryInput,
+  type GitHubItemCacheAiValidation,
+  type GitHubItemCacheAnalysisRestoration,
+  type GitHubItemCacheAnalysisSource,
   type GitHubItemCacheRestoration,
   type RestoreGitHubItemCacheInput,
 } from "./item-cache-adapter.js";

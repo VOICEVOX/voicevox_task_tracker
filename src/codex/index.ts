@@ -145,7 +145,11 @@ export {
 } from "./reducer.js";
 export { validateCodexAnalysisSchema } from "./schema-validation.js";
 export {
+  createCodexCacheValidationContext,
   listNativeRelationConstraints,
+  parseCodexCacheValidationContext,
+  validateCodexAnalysisOutputAgainstCacheContext,
   validateCodexAnalysisSemantics,
+  type CodexCacheValidationContext,
   type NativeRelationConstraint,
 } from "./semantic-validation.js";

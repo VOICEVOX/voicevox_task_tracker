@@ -1,6 +1,9 @@
+import { z } from "zod";
+
 import {
   buildSourceId,
   createGitHubNodeId,
+  createUtcIsoDateTime,
   isTerminalStatus,
   parseSourceId,
   type GitHubItemUrl,
@@ -14,10 +17,105 @@ import {
   type SchemaValidCodexAnalysisOutput,
   type ValidatedCodexAnalysisOutput,
 } from "./output-types.js";
+import { validateCodexAnalysisSchema } from "./schema-validation.js";
 
 const TARGET_ORGANIZATION = "VOICEVOX";
 const URL_IN_TEXT_PATTERN = /https?:\/\/[^\s<>"']+/gu;
 const URL_TRAILING_PUNCTUATION_PATTERN = /[),.;:!?、。！？）】]+$/u;
+
+const cacheValidationSourceIdSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^\S+$/u)
+  .superRefine((value, context) => {
+    try {
+      createSourceId(value);
+    } catch (error: unknown) {
+      if (!(error instanceof TypeError)) {
+        throw error;
+      }
+      context.addIssue({
+        code: "custom",
+        message: "正規形式のsource IDを指定してください",
+      });
+    }
+  });
+
+const cacheValidationGitHubItemUrlSchema = z.custom<GitHubItemUrl>(
+  (value) =>
+    typeof value === "string" &&
+    value.length <= 4096 &&
+    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/(?:issues|pull)\/[1-9]\d*\/?$/u.test(value),
+  {
+    error: "GitHub IssueまたはPull Request URLを指定してください",
+  },
+);
+
+export const cacheValidationContextSchema = z.strictObject({
+  schemaVersion: z.literal("1"),
+  purpose: z.literal("semantic_validation_only"),
+  now: z.iso
+    .datetime({
+      offset: true,
+      error: "タイムゾーンを含むISO 8601日時を指定してください",
+    })
+    .transform(createUtcIsoDateTime),
+  item: z.strictObject({
+    nodeId: z.string().min(1).max(512).regex(/^\S+$/u).transform(createGitHubNodeId),
+    url: cacheValidationGitHubItemUrlSchema,
+    type: z.enum(["issue", "pull_request"]),
+  }),
+  candidates: z.strictObject({
+    waitingOn: z.array(
+      z.strictObject({
+        id: z.string().min(1).max(512).regex(/^\S+$/u),
+        kind: z.enum(["user", "team", "role", "item", "automation", "unknown"]),
+        sourceIds: z.array(cacheValidationSourceIdSchema).min(1),
+      }),
+    ),
+    relations: z.array(
+      z.strictObject({
+        id: z
+          .string()
+          .max(512)
+          .regex(/^rel:\S+$/u),
+        targetUrl: cacheValidationGitHubItemUrlSchema,
+      }),
+    ),
+  }),
+  sources: z.array(
+    z.strictObject({
+      id: cacheValidationSourceIdSchema,
+      kind: z.string().min(1).max(128).regex(/^\S+$/u),
+      actorType: z.enum(["human", "bot", "system"]),
+      createdAt: z.iso
+        .datetime({
+          offset: true,
+          error: "タイムゾーンを含むISO 8601日時を指定してください",
+        })
+        .transform(createUtcIsoDateTime),
+    }),
+  ),
+  nativeRelationConstraints: z.array(
+    z.strictObject({
+      candidateId: z.string().regex(/^rel:\S+$/u),
+      verdict: z.enum([
+        "current_is_blocked_by_target",
+        "current_blocks_target",
+        "current_implements_target",
+        "target_is_subtask_of_current",
+        "current_is_subtask_of_target",
+        "duplicates",
+        "related",
+        "none",
+      ]),
+    }),
+  ),
+});
+
+/** raw本文を含めずCodex出力を意味検証するためのcache context。 */
+export type CodexCacheValidationContext = z.output<typeof cacheValidationContextSchema>;
 
 /** authoritative relationとCodex判定を比較するための制約。 */
 export type NativeRelationConstraint = Readonly<{
@@ -659,4 +757,207 @@ export function validateCodexAnalysisSemantics(
     throw new CodexOutputSemanticValidationError(issues);
   }
   return createValidatedOutput(output, knownSources);
+}
+
+function compareStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
+}
+
+function sortedUniqueStrings(values: readonly string[], context: string): readonly string[] {
+  const uniqueValues = [...new Set(values)].sort(compareStrings);
+  if (uniqueValues.length !== values.length) {
+    throw new TypeError(`${context}が重複しています`);
+  }
+  return Object.freeze(uniqueValues);
+}
+
+function requireStringArray(value: unknown, context: string): readonly string[] {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    throw new TypeError(`${context}は文字列配列にしてください`);
+  }
+  return value;
+}
+
+function requireWaitingOnKind(
+  value: unknown,
+): "user" | "team" | "role" | "item" | "automation" | "unknown" {
+  if (
+    value !== "user" &&
+    value !== "team" &&
+    value !== "role" &&
+    value !== "item" &&
+    value !== "automation" &&
+    value !== "unknown"
+  ) {
+    throw new TypeError("waitingOn候補のkindが不正です");
+  }
+  return value;
+}
+
+function assertCacheValidationContextIntegrity(context: CodexCacheValidationContext): void {
+  const sourceIds = new Set(context.sources.map((source) => source.id));
+  if (sourceIds.size !== context.sources.length) {
+    throw new TypeError("Codex cache validation contextのsource IDが重複しています");
+  }
+  const waitingOnIds = new Set<string>();
+  for (const candidate of context.candidates.waitingOn) {
+    if (waitingOnIds.has(candidate.id)) {
+      throw new TypeError("Codex cache validation contextのwaitingOn候補が重複しています");
+    }
+    waitingOnIds.add(candidate.id);
+    const candidateKind = candidate.id.split(":").at(0);
+    if (
+      candidateKind != null &&
+      ["user", "team", "role", "item", "automation", "unknown"].includes(candidateKind) &&
+      candidateKind !== candidate.kind
+    ) {
+      throw new TypeError("Codex cache validation contextのwaitingOn候補のkindが不整合です");
+    }
+    for (const sourceId of candidate.sourceIds) {
+      if (!sourceIds.has(sourceId)) {
+        throw new TypeError(
+          `Codex cache validation contextのsource IDがsourcesにありません。対象: ${sourceId}`,
+        );
+      }
+    }
+  }
+  const relationIds = new Set<string>();
+  for (const candidate of context.candidates.relations) {
+    if (relationIds.has(candidate.id)) {
+      throw new TypeError("Codex cache validation contextのrelation候補が重複しています");
+    }
+    relationIds.add(candidate.id);
+  }
+  const nativeCandidateIds = new Set<string>();
+  for (const constraint of context.nativeRelationConstraints) {
+    if (nativeCandidateIds.has(constraint.candidateId)) {
+      throw new TypeError("Codex cache validation contextのnative relation制約が重複しています");
+    }
+    if (!relationIds.has(constraint.candidateId)) {
+      throw new TypeError(
+        "Codex cache validation contextのnative relation制約がrelation候補にありません",
+      );
+    }
+    nativeCandidateIds.add(constraint.candidateId);
+  }
+}
+
+function semanticInputFromCacheContext(context: CodexCacheValidationContext): CodexAnalysisInput {
+  const nativeSignals: {
+    nativeBlockedBy: string[];
+    nativeBlocking: string[];
+    nativeParent: string[];
+    nativeSubIssues: string[];
+  } = {
+    nativeBlockedBy: [],
+    nativeBlocking: [],
+    nativeParent: [],
+    nativeSubIssues: [],
+  };
+  for (const constraint of context.nativeRelationConstraints) {
+    switch (constraint.verdict) {
+      case "current_is_blocked_by_target":
+        nativeSignals.nativeBlockedBy.push(constraint.candidateId);
+        break;
+      case "current_blocks_target":
+        nativeSignals.nativeBlocking.push(constraint.candidateId);
+        break;
+      case "current_is_subtask_of_target":
+        nativeSignals.nativeParent.push(constraint.candidateId);
+        break;
+      case "target_is_subtask_of_current":
+        nativeSignals.nativeSubIssues.push(constraint.candidateId);
+        break;
+    }
+  }
+  return {
+    schemaVersion: "1",
+    now: context.now,
+    item: {
+      nodeId: context.item.nodeId,
+      url: context.item.url,
+      type: context.item.type,
+      title: "cache-validation",
+    },
+    candidates: context.candidates,
+    sources: context.sources,
+    deterministicSignals: nativeSignals,
+    priorAnalysis: null,
+  };
+}
+
+/** Codex入力からraw本文を除いたsemantic validation contextを生成する。 */
+export function createCodexCacheValidationContext(
+  input: CodexAnalysisInput,
+): CodexCacheValidationContext {
+  const context = cacheValidationContextSchema.parse({
+    schemaVersion: "1",
+    purpose: "semantic_validation_only",
+    now: input.now,
+    item: {
+      nodeId: input.item.nodeId,
+      url: input.item.url,
+      type: input.item.type,
+    },
+    candidates: {
+      waitingOn: input.candidates.waitingOn
+        .map((candidate) => ({
+          id: candidate.id,
+          kind: requireWaitingOnKind(candidate["kind"]),
+          sourceIds: sortedUniqueStrings(
+            requireStringArray(candidate["sourceIds"], "waitingOn候補のsource ID"),
+            "waitingOn候補のsource ID",
+          ),
+        }))
+        .sort((left, right) => compareStrings(left.id, right.id)),
+      relations: input.candidates.relations
+        .map((candidate) => ({
+          id: candidate.id,
+          targetUrl: candidate.targetUrl,
+        }))
+        .sort((left, right) => compareStrings(left.id, right.id)),
+    },
+    sources: input.sources
+      .map((source) => ({
+        id: source.id,
+        kind: source.kind,
+        actorType: source.actorType,
+        createdAt: source.createdAt,
+      }))
+      .sort((left, right) => compareStrings(left.id, right.id)),
+    nativeRelationConstraints: listNativeRelationConstraints(input)
+      .map((constraint) => ({
+        candidateId: constraint.candidateId,
+        verdict: constraint.verdict,
+      }))
+      .sort((left, right) => compareStrings(left.candidateId, right.candidateId)),
+  });
+  assertCacheValidationContextIntegrity(context);
+  return context;
+}
+
+/** 未検証値をstrictなCodex cache validation contextへ変換する。 */
+export function parseCodexCacheValidationContext(value: unknown): CodexCacheValidationContext {
+  const context = cacheValidationContextSchema.parse(value);
+  assertCacheValidationContextIntegrity(context);
+  return context;
+}
+
+/** cache化したcontextでCodex出力のschemaとsemanticを再検証する。 */
+export function validateCodexAnalysisOutputAgainstCacheContext(
+  value: unknown,
+  context: CodexCacheValidationContext,
+): ValidatedCodexAnalysisOutput {
+  const validatedContext = parseCodexCacheValidationContext(context);
+  const schemaValidOutput = validateCodexAnalysisSchema(value);
+  return validateCodexAnalysisSemantics(
+    schemaValidOutput,
+    semanticInputFromCacheContext(validatedContext),
+  );
 }

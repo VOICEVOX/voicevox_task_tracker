@@ -10,6 +10,7 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
+  CACHE_DOCUMENT_SCHEMA_VERSION,
   createCacheDocument,
   type AiLatestImportanceCacheDocument,
   type CacheRepositoryIdentity,
@@ -536,7 +537,7 @@ export function createImportanceCacheCandidate(
     }
   }
   const document: AiLatestImportanceCacheDocument = {
-    schemaVersion: "1",
+    schemaVersion: CACHE_DOCUMENT_SCHEMA_VERSION,
     kind: "ai_latest_importance",
     repository: context.repository,
     nodeId: context.nodeId,
