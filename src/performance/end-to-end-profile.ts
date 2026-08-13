@@ -35,9 +35,9 @@ import {
 } from "../github/index.js";
 import { PUBLIC_SUMMARY_GZIP_LIMIT_BYTES, type GeneratedPublicData } from "../pages/index.js";
 import {
+  CacheOnlyPersistenceSession,
   MemoryStateBranchAdapter,
   serializeCanonicalJson,
-  StatePersistenceSession,
 } from "../persistence/index.js";
 import { assertNonNullable } from "../util/index.js";
 
@@ -547,8 +547,8 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
     repositoryPath,
     pagesOutputDirectory: "unused-performance-pages",
     loadConfig: () => Promise.resolve(config),
-    openStateSession: (adapter, stateConfiguration) =>
-      StatePersistenceSession.open(adapter, stateConfiguration),
+    openCacheSession: (adapter, stateConfiguration, allowlist) =>
+      CacheOnlyPersistenceSession.open(adapter, stateConfiguration, allowlist),
     discoverRepositoryInventory: () => {
       apiBudget.consume(1);
       return Promise.resolve(Object.freeze([createRepository(currentRunAt)]));
