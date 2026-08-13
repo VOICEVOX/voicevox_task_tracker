@@ -94,6 +94,22 @@ export {
   type CodexAnalysisInput,
 } from "./input.js";
 export {
+  createImportanceCacheCandidate,
+  createImportanceCacheEntry,
+  resolveImportance,
+  type CreateImportanceCacheCandidateInput,
+  type ImportanceAiRunState,
+  type ImportanceCacheContext,
+  type ImportanceCacheEntry,
+  type ImportanceCacheFingerprint,
+  type ImportanceCacheRepository,
+  type ImportanceCacheRepositoryAllowlist,
+  type ImportanceCacheState,
+  type ImportanceResolution,
+  type ResolveImportanceInput,
+  type VerifiedImportanceResult,
+} from "./importance-cache-fallback.js";
+export {
   type SchemaValidCodexAnalysisOutput,
   type SchemaValidCodexEvidence,
   type SchemaValidCodexImportance,
