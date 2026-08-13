@@ -2,6 +2,11 @@ export { analyzeGraph } from "./analyze-graph.js";
 export { replayDependencyEvents } from "./replay-dependency-events.js";
 export { RelationReferenceConflictError } from "./errors.js";
 export { extractRelationCandidates } from "./extract-relation-candidates.js";
+export {
+  extractRelationMutations,
+  type RelationMutationInput,
+  type RelationMutationResult,
+} from "./relation-mutation.js";
 export { normalizeRelationCandidates } from "./normalize-relation-candidates.js";
 export { deriveBlockedBy, reconcileGraph } from "./reconcile-graph.js";
 export { buildRelationCandidateId } from "./relation-candidate-id.js";

@@ -35,6 +35,7 @@ const GITHUB_ITEM_URL_IN_TEXT_PATTERN =
   /https:\/\/github\.com\/([a-z\d](?:[a-z\d-]{0,38}))\/([a-z\d_.-]+)\/(issues|pull)\/([1-9]\d*)/giu;
 const GITHUB_SHORTHAND_IN_TEXT_PATTERN =
   /(?<![a-z\d_.-])(?:([a-z\d](?:[a-z\d-]{0,38}))\/([a-z\d_.-]+))?#([1-9]\d*)(?![a-z\d_])/giu;
+const MARKDOWN_REFERENCE_SYNTAX_PATTERN = /\[([^\]\n]+)\]\[([^\]\n]*)\]/gu;
 const TASK_LIST_MARKER_PATTERN = /^\[[ xX]\](?:[ \t]|$)/u;
 const CLOSING_KEYWORD_PATTERN =
   /(?:^|[\s(,:;])(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*$/iu;
@@ -53,6 +54,7 @@ type MarkdownReference = Readonly<{
   repositoryName: string;
   itemType: "issue" | "pull_request" | null;
   number: number;
+  syntax: "github_url" | "repository_shorthand" | "local_shorthand";
   start: number;
   end: number;
 }>;
@@ -424,7 +426,7 @@ function isReferenceBoundary(value: string, end: number): boolean {
 
 function findMarkdownReferences(
   value: string,
-  currentItem: PublicGitHubRelationItem,
+  currentItem: Pick<PublicGitHubRelationItem, "repositoryOwner" | "repositoryName">,
 ): readonly MarkdownReference[] {
   const references: MarkdownReference[] = [];
 
@@ -449,6 +451,7 @@ function findMarkdownReferences(
         repositoryName,
         itemType: itemPath.toLowerCase() === "issues" ? "issue" : "pull_request",
         number,
+        syntax: "github_url",
         start: match.index,
         end,
       }),
@@ -475,6 +478,10 @@ function findMarkdownReferences(
         repositoryName: specifiedRepository ?? currentItem.repositoryName,
         itemType: null,
         number,
+        syntax:
+          specifiedOwner == null && specifiedRepository == null
+            ? "local_shorthand"
+            : "repository_shorthand",
         start: match.index,
         end,
       }),
@@ -487,6 +494,102 @@ function findMarkdownReferences(
       return startComparison !== 0 ? startComparison : right.end - left.end;
     }),
   );
+}
+
+export type RelationTextReference = Readonly<{
+  repositoryOwner: string;
+  repositoryName: string;
+  itemType: "issue" | "pull_request" | null;
+  number: number;
+}>;
+
+export type RelationTextParseResult =
+  | Readonly<{
+      status: "available";
+      references: readonly RelationTextReference[];
+    }>
+  | Readonly<{
+      status: "unknown";
+      reason: "markdown_reference_definition";
+    }>;
+
+function hasUnknownMarkdownReferenceDefinition(
+  node: Nodes,
+  definitions: MarkdownDefinitionIndex,
+): boolean {
+  if (node.type === "linkReference" && !definitions.has(node.identifier)) {
+    return true;
+  }
+  return childNodes(node).some((child) =>
+    hasUnknownMarkdownReferenceDefinition(child, definitions),
+  );
+}
+
+function normalizeMarkdownReferenceIdentifier(value: string): string {
+  return value.trim().replace(/\s+/gu, " ").toLowerCase();
+}
+
+function hasUnknownMarkdownReferenceSyntax(
+  value: string,
+  definitions: MarkdownDefinitionIndex,
+): boolean {
+  for (const match of value.matchAll(MARKDOWN_REFERENCE_SYNTAX_PATTERN)) {
+    const label = match[1];
+    const identifier = match[2];
+    assertNonNullable(label, "Markdown参照のlabelを取得できません");
+    assertNonNullable(identifier, "Markdown参照のidentifierを取得できません");
+    const referenceIdentifier = identifier.length === 0 ? label : identifier;
+    const resolvedIdentifier = normalizeMarkdownReferenceIdentifier(referenceIdentifier);
+    if (!definitions.has(resolvedIdentifier)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Markdownから時系列再構築に使える明示参照だけを抽出する。 */
+export function parseRelationTextReferences(value: string): RelationTextParseResult {
+  const tree = fromMarkdown(value);
+  const definitions = collectDefinitionIndex(tree);
+  if (hasUnknownMarkdownReferenceDefinition(tree, definitions)) {
+    return Object.freeze({
+      status: "unknown",
+      reason: "markdown_reference_definition",
+    });
+  }
+  const references: MarkdownReference[] = [];
+  const unknownReferenceValues: string[] = [];
+  visitMarkdownProse(tree, definitions, false, (renderedValue) => {
+    if (hasUnknownMarkdownReferenceSyntax(renderedValue, definitions)) {
+      unknownReferenceValues.push(renderedValue);
+      return;
+    }
+    references.push(
+      ...findMarkdownReferences(renderedValue, {
+        repositoryOwner: "",
+        repositoryName: "",
+      }),
+    );
+  });
+  if (unknownReferenceValues.length > 0) {
+    return Object.freeze({
+      status: "unknown",
+      reason: "markdown_reference_definition",
+    });
+  }
+  return Object.freeze({
+    status: "available",
+    references: Object.freeze(
+      references
+        .filter(
+          (reference) =>
+            reference.syntax === "github_url" || reference.syntax === "repository_shorthand",
+        )
+        .map(({ repositoryOwner, repositoryName, itemType, number }) =>
+          Object.freeze({ repositoryOwner, repositoryName, itemType, number }),
+        ),
+    ),
+  });
 }
 
 function isClosingReference(value: string, reference: MarkdownReference): boolean {

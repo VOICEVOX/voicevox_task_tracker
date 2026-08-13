@@ -112,6 +112,12 @@ export {
 export { assertReadOnlyGraphQL, extractGraphQLRateLimit } from "./graphql.js";
 export { adaptGitHubDependencyEvents } from "./dependency-replay-adapter.js";
 export {
+  adaptGitHubItemDetailRelationMutations,
+  adaptGitHubRelationMutationSource,
+  type GitHubRelationMutationSource,
+  type GitHubRelationMutationSourceResult,
+} from "./relation-mutation-adapter.js";
+export {
   GitHubRateLimitController,
   graphQLRateLimitSchema,
   isGitHubApiBudgetExceeded,
