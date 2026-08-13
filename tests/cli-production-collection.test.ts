@@ -734,6 +734,7 @@ async function replaceStateSnapshot(
         bytes: new TextEncoder().encode(serializeStateSnapshot(snapshot)),
       },
     ],
+    deletions: [],
     message: "停滞起点の保存値を置き換えるfixture",
     committedAt,
   });

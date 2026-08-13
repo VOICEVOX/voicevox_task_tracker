@@ -46,6 +46,7 @@ export type StateBranchCommitRequest = Readonly<{
   branch: string;
   expectedHead: StateBranchHead;
   updates: readonly StateFileUpdate[];
+  deletions: readonly string[];
   message: string;
   committedAt: string;
 }>;

@@ -127,7 +127,7 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     if (request.branch !== "tracker-state") {
       return Promise.reject(new StateConfigurationError("tracker-state branchだけを更新できます"));
     }
-    if (request.updates.length === 0) {
+    if (request.updates.length === 0 && request.deletions.length === 0) {
       return Promise.reject(
         new StateBranchCommitError({
           cause: new TypeError("commitするstateファイルがありません"),
@@ -142,7 +142,25 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
         }),
       );
     }
+    const deletions = request.deletions;
+    if (new Set(deletions).size !== deletions.length) {
+      return Promise.reject(
+        new StateBranchCommitError({
+          cause: new TypeError("commit内で削除対象のstateファイルが重複しています"),
+        }),
+      );
+    }
+    if (deletions.some((path) => paths.includes(path))) {
+      return Promise.reject(
+        new StateBranchCommitError({
+          cause: new TypeError("同じstateファイルを更新と削除の両方へ指定できません"),
+        }),
+      );
+    }
     for (const path of paths) {
+      assertValidStatePath(path);
+    }
+    for (const path of deletions) {
       assertValidStatePath(path);
     }
 
@@ -173,6 +191,9 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     }
     for (const update of request.updates) {
       files.set(update.path, copyBytes(update.bytes));
+    }
+    for (const path of deletions) {
+      files.delete(path);
     }
 
     const behavior = this.#nextCommitBehavior;

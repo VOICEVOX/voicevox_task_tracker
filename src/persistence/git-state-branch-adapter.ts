@@ -100,7 +100,7 @@ function validateBranch(branch: string): void {
 
 function validateCommitRequest(request: StateBranchCommitRequest): void {
   validateBranch(request.branch);
-  if (request.updates.length === 0) {
+  if (request.updates.length === 0 && request.deletions.length === 0) {
     throw new StateConfigurationError("commitするstateファイルがありません");
   }
   if (request.message.length === 0 || request.message.length > 1000) {
@@ -113,7 +113,17 @@ function validateCommitRequest(request: StateBranchCommitRequest): void {
   if (new Set(paths).size !== paths.length) {
     throw new StateConfigurationError("commit内でstateファイルが重複しています");
   }
+  const deletions = request.deletions;
+  if (new Set(deletions).size !== deletions.length) {
+    throw new StateConfigurationError("commit内で削除対象のstateファイルが重複しています");
+  }
+  if (deletions.some((path) => paths.includes(path))) {
+    throw new StateConfigurationError("同じstateファイルを更新と削除の両方へ指定できません");
+  }
   for (const path of paths) {
+    assertValidStatePath(path);
+  }
+  for (const path of deletions) {
     assertValidStatePath(path);
   }
   if (
@@ -349,6 +359,16 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
             parseObjectId(blob.stdout),
             update.path,
           ],
+          input: {
+            status: "none",
+          },
+          environment: indexEnvironment,
+          acceptedExitCodes: new Set([0]),
+        });
+      }
+      for (const path of request.deletions) {
+        await this.#runGit({
+          arguments: ["update-index", "--force-remove", "--", path],
           input: {
             status: "none",
           },

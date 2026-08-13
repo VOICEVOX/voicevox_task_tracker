@@ -1845,6 +1845,7 @@ describe("メモリstate branch transaction", () => {
           bytes: new TextEncoder().encode("不完全なstate fixture\n"),
         },
       ],
+      deletions: [],
       message: "incomplete state fixture",
       committedAt: fixedItemAt,
     });
@@ -2331,6 +2332,67 @@ describe("メモリstate branch transaction", () => {
 });
 
 describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, () => {
+  it("明示的なdeletionsで既存stateファイルをGit indexから削除する", async () => {
+    const temporaryDirectory = await mkdtemp(join(tmpdir(), "voicevox-state-git-delete-test-"));
+    try {
+      await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", temporaryDirectory]);
+      const adapter = new GitStateBranchAdapter({
+        repositoryPath: temporaryDirectory,
+        gitExecutable: "git",
+        authorName: "VOICEVOX Task Tracker",
+        authorEmail: "voicevox-task-tracker@example.com",
+      });
+      const first = await adapter.commit({
+        branch: "tracker-state",
+        expectedHead: {
+          status: "missing",
+        },
+        updates: [
+          {
+            path: "state/remove.json",
+            bytes: new TextEncoder().encode("remove\n"),
+          },
+          {
+            path: "state/keep.json",
+            bytes: new TextEncoder().encode("keep\n"),
+          },
+        ],
+        deletions: [],
+        message: "create deletion fixture",
+        committedAt: "2026-08-01T00:00:00.000Z",
+      });
+      const second = await adapter.commit({
+        branch: "tracker-state",
+        expectedHead: {
+          status: "present",
+          revision: first.revision,
+        },
+        updates: [
+          {
+            path: "state/keep.json",
+            bytes: new TextEncoder().encode("keep-next\n"),
+          },
+        ],
+        deletions: ["state/remove.json"],
+        message: "delete state fixture",
+        committedAt: "2026-08-02T00:00:00.000Z",
+      });
+
+      const removed = await adapter.readFile(second.revision, "state/remove.json");
+      const kept = await adapter.readFile(second.revision, "state/keep.json");
+      const paths = await adapter.listFiles(second.revision, "state");
+
+      expect(removed).toEqual({ status: "missing" });
+      expect(kept.status).toBe("present");
+      expect(paths).toEqual(["state/keep.json"]);
+    } finally {
+      await rm(temporaryDirectory, {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+
   it("mainを変えず、初回orphan tracker-stateと後続commitを作成する", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "voicevox-state-git-test-"));
     try {

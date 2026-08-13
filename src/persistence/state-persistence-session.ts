@@ -390,6 +390,7 @@ export class StatePersistenceSession {
       branch: this.#configuration.branch,
       expectedHead: this.#head,
       updates: [update],
+      deletions: [],
       message: `tracker notification ledger ${input.committedAt}`,
       committedAt: input.committedAt,
     });
@@ -482,6 +483,7 @@ export class StatePersistenceSession {
       branch: this.#configuration.branch,
       expectedHead: this.#head,
       updates,
+      deletions: [],
       message: `tracker run completion ${snapshot.run.id}`,
       committedAt: runReport.finishedAt,
     });
@@ -556,6 +558,7 @@ export class StatePersistenceSession {
       branch: this.#configuration.branch,
       expectedHead: this.#head,
       updates,
+      deletions: [],
       message: `tracker state ${runDate} ${snapshot.run.id}`,
       committedAt: snapshot.generatedAt,
     });
