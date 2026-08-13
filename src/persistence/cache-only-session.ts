@@ -1,4 +1,5 @@
 import { createAiCacheEntry, type AiCacheEntry } from "../codex/cache.js";
+import { validateCodexAnalysisSchema } from "../codex/schema-validation.js";
 import { createUtcIsoDateTime, type GitHubNodeId, type UtcIsoDateTime } from "../domain/index.js";
 import { PublicRepositoryAllowlist } from "../github/public-repository-allowlist.js";
 import { GitHubPublicBoundaryViolationError } from "../github/errors.js";
@@ -238,6 +239,109 @@ function assertRepositoryAllowlisted(
   }
 }
 
+type CacheRelationCandidateRelation =
+  GitHubItemCacheDocument["relationCandidates"][number]["relation"];
+type CacheRelationCandidateNodeFor<Relation> = Relation extends {
+  blocker: infer Node;
+}
+  ? Node
+  : Relation extends { parent: infer Node }
+    ? Node
+    : Relation extends { implementation: infer Node }
+      ? Node
+      : Relation extends { referencing: infer Node }
+        ? Node
+        : never;
+type CacheRelationCandidateNode = CacheRelationCandidateNodeFor<CacheRelationCandidateRelation>;
+type CacheRelationReference = Extract<
+  GitHubItemCacheDocument["relationMutations"][number],
+  { status: "available" }
+>["currentReferences"][number];
+
+function isAllowlistedRepository(
+  allowlist: PublicRepositoryAllowlist,
+  owner: string,
+  name: string,
+): boolean {
+  return allowlist.repositories.some(
+    (repository) =>
+      repository.owner.toLowerCase() === owner.toLowerCase() &&
+      repository.name.toLowerCase() === name.toLowerCase(),
+  );
+}
+
+function isAllowlistedOrganizationOwner(
+  allowlist: PublicRepositoryAllowlist,
+  owner: string,
+): boolean {
+  return allowlist.repositories.some(
+    (repository) => repository.owner.toLowerCase() === owner.toLowerCase(),
+  );
+}
+
+function relationCandidateNodes(
+  relation: CacheRelationCandidateRelation,
+): readonly CacheRelationCandidateNode[] {
+  switch (relation.type) {
+    case "blocks":
+      return [relation.blocker, relation.blocked];
+    case "parent_of":
+      return [relation.parent, relation.subtask];
+    case "implements":
+      return [relation.implementation, relation.target];
+    case "unclassified":
+      return [relation.referencing, relation.referenced];
+  }
+}
+
+function relationMutationReferences(
+  result: Extract<GitHubItemCacheDocument["relationMutations"][number], { status: "available" }>,
+): readonly CacheRelationReference[] {
+  const references: CacheRelationReference[] = [
+    ...result.currentReferences,
+    ...result.replayedReferences,
+    ...result.mutations.map((mutation) => mutation.relation),
+    ...result.unmatchedRemovals.map((mutation) => mutation.relation),
+  ];
+  if (result.temporalKnowledge.status === "exact") {
+    references.push(...result.temporalKnowledge.intervals.map((interval) => interval.relation));
+  }
+  return references;
+}
+
+function assertRelationPublicBoundary(
+  document: GitHubItemCacheDocument,
+  allowlist: PublicRepositoryAllowlist,
+): void {
+  let violationCount = 0;
+  for (const candidate of document.relationCandidates) {
+    for (const node of relationCandidateNodes(candidate.relation)) {
+      if (
+        node.scope === "organization" &&
+        !isAllowlistedRepository(allowlist, node.repositoryOwner, node.repositoryName)
+      ) {
+        violationCount += 1;
+      }
+    }
+  }
+  for (const result of document.relationMutations) {
+    if (result.status !== "available") {
+      continue;
+    }
+    for (const reference of relationMutationReferences(result)) {
+      if (
+        isAllowlistedOrganizationOwner(allowlist, reference.repositoryOwner) &&
+        !isAllowlistedRepository(allowlist, reference.repositoryOwner, reference.repositoryName)
+      ) {
+        violationCount += 1;
+      }
+    }
+  }
+  if (violationCount > 0) {
+    throw new GitHubPublicBoundaryViolationError(violationCount);
+  }
+}
+
 function assertDocumentSafety(document: CacheDocument, knownSecrets: readonly string[]): void {
   assertCacheDocumentPublicSafety({
     document,
@@ -279,6 +383,7 @@ function parseItemCache(
     document.repository.owner,
     document.repository.name,
   );
+  assertRelationPublicBoundary(document, allowlist);
   assertDocumentSafety(document, knownSecrets);
   return document;
 }
@@ -367,6 +472,50 @@ function sortDocuments(documents: CacheOnlyDocumentSet): CacheOnlyDocumentSet {
   });
 }
 
+function assertNoFutureTimestamps(
+  documents: CacheOnlyDocumentSet,
+  evaluatedAt: UtcIsoDateTime,
+): void {
+  const evaluatedAtTimestamp = Date.parse(evaluatedAt);
+  if (!Number.isFinite(evaluatedAtTimestamp)) {
+    throw new StateFormatError("cache-only", {
+      cause: new TypeError("cacheの評価日時が不正です"),
+    });
+  }
+  const assertNotFuture = (value: UtcIsoDateTime, context: string): void => {
+    if (Date.parse(value) > evaluatedAtTimestamp) {
+      throw new CacheDocumentSemanticError(`${context}はevaluatedAt以後にできません`);
+    }
+  };
+  for (const repository of documents.repositoryCaches) {
+    assertNotFuture(repository.successfulAt, "repository successfulAt");
+  }
+  for (const item of documents.itemCaches) {
+    assertNotFuture(item.observedAt, "item observedAt");
+  }
+  for (const latest of documents.latestImportanceCaches) {
+    assertNotFuture(latest.metadata.executedAt, "latest importance executedAt");
+  }
+  for (const entry of documents.aiCacheEntries) {
+    assertNotFuture(entry.metadata.executedAt, "AI cache entry executedAt");
+  }
+}
+
+function referencedAiCacheKeys(documents: CacheOnlyDocumentSet): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const item of documents.itemCaches) {
+    if (item.aiCacheReference.status === "available") {
+      keys.add(item.aiCacheReference.cacheKey);
+    }
+  }
+  for (const latest of documents.latestImportanceCaches) {
+    if (latest.aiCacheReference.status === "available") {
+      keys.add(latest.aiCacheReference.cacheKey);
+    }
+  }
+  return keys;
+}
+
 function itemIndexFromDocument(
   document: GitHubItemCacheDocument,
 ): GitHubRepositoryCacheDocument["items"][number] {
@@ -416,6 +565,39 @@ function assertAiCacheReferenceMatches(
     throw new CacheDocumentSemanticError("AI cache entryと参照のfingerprintが一致しません");
   }
   return entry;
+}
+
+function assertAiOutputItemMatches(
+  entry: AiCacheEntry,
+  nodeId: GitHubNodeId,
+  context: string,
+): ReturnType<typeof validateCodexAnalysisSchema> {
+  const output = validateCodexAnalysisSchema(entry.output);
+  if (output.item.nodeId !== nodeId) {
+    throw new CacheDocumentSemanticError(`${context}のnode IDがAI cache entryと一致しません`);
+  }
+  return output;
+}
+
+function assertAiOutputImportanceMatches(
+  output: ReturnType<typeof validateCodexAnalysisSchema>,
+  latest: AiLatestImportanceCacheDocument,
+): void {
+  if (
+    output.importance.significantFeature !== latest.importance.significantFeature ||
+    output.importance.explicitDeadline !== latest.importance.explicitDeadline ||
+    output.importance.futureRisk !== latest.importance.futureRisk ||
+    output.importance.rationale !== latest.importance.rationale
+  ) {
+    throw new CacheDocumentSemanticError(
+      "latest importanceがAI cache entryのimportanceと一致しません",
+    );
+  }
+  if (output.confidence !== latest.confidence) {
+    throw new CacheDocumentSemanticError(
+      "latest importanceがAI cache entryのconfidenceと一致しません",
+    );
+  }
 }
 
 function assertLatestImportanceMetadataMatches(
@@ -487,8 +669,12 @@ function assertDocumentSetConsistency(documents: CacheOnlyDocumentSet): void {
     }
   }
   const aiCachesByKey = new Map(documents.aiCacheEntries.map((entry) => [entry.cacheKey, entry]));
+  const referencedKeys = referencedAiCacheKeys(documents);
   for (const item of documents.itemCaches) {
-    assertAiCacheReferenceMatches(item.aiCacheReference, aiCachesByKey);
+    const aiCacheEntry = assertAiCacheReferenceMatches(item.aiCacheReference, aiCachesByKey);
+    if (aiCacheEntry != null) {
+      assertAiOutputItemMatches(aiCacheEntry, item.nodeId, "item cache");
+    }
   }
   for (const latest of documents.latestImportanceCaches) {
     const repository = repositoryCachesById.get(latest.repository.repositoryId);
@@ -508,29 +694,119 @@ function assertDocumentSetConsistency(documents: CacheOnlyDocumentSet): void {
     if (aiCacheEntry == null) {
       throw new CacheDocumentSemanticError("latest importanceには利用可能なAI cache参照が必要です");
     }
+    const output = assertAiOutputItemMatches(aiCacheEntry, latest.nodeId, "latest importance");
+    assertAiOutputImportanceMatches(output, latest);
     assertLatestImportanceMetadataMatches(latest, aiCacheEntry);
+  }
+  for (const entry of documents.aiCacheEntries) {
+    if (!referencedKeys.has(entry.cacheKey)) {
+      throw new CacheDocumentSemanticError(
+        "allowlist済みitemまたはlatest importanceから参照されないAI cache entryがあります",
+      );
+    }
   }
 }
 
 function terminalItemExpired(
   item: GitHubItemCacheDocument["lifecycle"],
   evaluatedAt: number,
+  protectedNodeIds: ReadonlySet<string>,
+  nodeId: string,
 ): boolean {
-  return item.kind === "terminal" && evaluatedAt > Date.parse(item.expiresAt);
+  return (
+    item.kind === "terminal" &&
+    evaluatedAt > Date.parse(item.expiresAt) &&
+    !protectedNodeIds.has(nodeId)
+  );
 }
 
 function itemIndexExpired(
   item: GitHubRepositoryCacheDocument["items"][number],
   evaluatedAt: number,
+  protectedNodeIds: ReadonlySet<string>,
 ): boolean {
-  return terminalItemExpired(item.lifecycle, evaluatedAt);
+  return terminalItemExpired(item.lifecycle, evaluatedAt, protectedNodeIds, item.nodeId);
+}
+
+function relationReferenceKey(
+  reference: Readonly<{
+    repositoryOwner: string;
+    repositoryName: string;
+    number: number;
+  }>,
+): string {
+  return `${reference.repositoryOwner.toLowerCase()}/${reference.repositoryName.toLowerCase()}#${reference.number.toString()}`;
+}
+
+function addRelationCandidateNodeIds(
+  candidate: GitHubItemCacheDocument["relationCandidates"][number],
+  protectedNodeIds: Set<string>,
+): void {
+  switch (candidate.relation.type) {
+    case "blocks":
+      protectedNodeIds.add(candidate.relation.blocker.nodeId);
+      protectedNodeIds.add(candidate.relation.blocked.nodeId);
+      return;
+    case "parent_of":
+      protectedNodeIds.add(candidate.relation.parent.nodeId);
+      protectedNodeIds.add(candidate.relation.subtask.nodeId);
+      return;
+    case "implements":
+      protectedNodeIds.add(candidate.relation.implementation.nodeId);
+      protectedNodeIds.add(candidate.relation.target.nodeId);
+      return;
+    case "unclassified":
+      protectedNodeIds.add(candidate.relation.referencing.nodeId);
+      protectedNodeIds.add(candidate.relation.referenced.nodeId);
+      return;
+  }
+}
+
+function createProtectedNodeIds(documents: CacheOnlyDocumentSet): ReadonlySet<string> {
+  const protectedNodeIds = new Set<string>();
+  const nodeIdsByReferenceKey = new Map<string, string>();
+  for (const repository of documents.repositoryCaches) {
+    for (const item of repository.items) {
+      nodeIdsByReferenceKey.set(
+        relationReferenceKey({
+          repositoryOwner: repository.repository.owner,
+          repositoryName: repository.repository.name,
+          number: item.number,
+        }),
+        item.nodeId,
+      );
+    }
+  }
+  for (const item of documents.itemCaches) {
+    if (item.state !== "open") {
+      continue;
+    }
+    for (const candidate of item.relationCandidates) {
+      addRelationCandidateNodeIds(candidate, protectedNodeIds);
+    }
+    for (const mutationResult of item.relationMutations) {
+      if (mutationResult.status !== "available") {
+        continue;
+      }
+      for (const reference of mutationResult.currentReferences) {
+        const nodeId = nodeIdsByReferenceKey.get(relationReferenceKey(reference));
+        if (nodeId != null) {
+          protectedNodeIds.add(nodeId);
+        }
+      }
+    }
+  }
+  return protectedNodeIds;
 }
 
 function filterRepositoryCache(
   document: GitHubRepositoryCacheDocument,
   evaluatedAt: number,
+  protectedNodeIds: ReadonlySet<string>,
 ): GitHubRepositoryCacheDocument {
-  const items = document.items.filter((item) => !itemIndexExpired(item, evaluatedAt));
+  const items = document.items.filter(
+    (item) => !itemIndexExpired(item, evaluatedAt, protectedNodeIds),
+  );
   if (items.length === document.items.length) {
     return document;
   }
@@ -554,17 +830,23 @@ function pruneExpired(
       cause: new TypeError("cacheの評価日時が不正です"),
     });
   }
+  const protectedNodeIds = createProtectedNodeIds(documents);
   const expiredNodeIds = new Set<GitHubNodeId>();
   const repositoryCaches = documents.repositoryCaches.map((document) => {
     for (const item of document.items) {
-      if (itemIndexExpired(item, evaluatedAt)) {
+      if (itemIndexExpired(item, evaluatedAt, protectedNodeIds)) {
         expiredNodeIds.add(item.nodeId);
       }
     }
-    return filterRepositoryCache(document, evaluatedAt);
+    return filterRepositoryCache(document, evaluatedAt, protectedNodeIds);
   });
   const itemCaches = documents.itemCaches.filter((document) => {
-    const expired = terminalItemExpired(document.lifecycle, evaluatedAt);
+    const expired = terminalItemExpired(
+      document.lifecycle,
+      evaluatedAt,
+      protectedNodeIds,
+      document.nodeId,
+    );
     if (expired) {
       expiredNodeIds.add(document.nodeId);
     }
@@ -573,11 +855,20 @@ function pruneExpired(
   const latestImportanceCaches = documents.latestImportanceCaches.filter(
     (document) => !expiredNodeIds.has(document.nodeId),
   );
-  return sortDocuments({
+  const retainedDocuments = {
     repositoryCaches,
     itemCaches,
     latestImportanceCaches,
     aiCacheEntries: documents.aiCacheEntries,
+  } satisfies CacheOnlyDocumentSet;
+  const retainedAiCacheKeys = referencedAiCacheKeys(retainedDocuments);
+  return sortDocuments({
+    repositoryCaches,
+    itemCaches,
+    latestImportanceCaches,
+    aiCacheEntries: documents.aiCacheEntries.filter((entry) =>
+      retainedAiCacheKeys.has(entry.cacheKey),
+    ),
   });
 }
 
@@ -658,6 +949,8 @@ function parseInput(
     ),
     aiCacheEntries: parseAiCaches(input.aiCacheEntries, input.knownSecrets),
   });
+  assertNoFutureTimestamps(documents, evaluatedAt);
+  assertDocumentSetConsistency(documents);
   const pruned = pruneExpired(documents, evaluatedAt);
   assertDocumentSetConsistency(pruned);
   return pruned;
@@ -756,7 +1049,10 @@ export class CacheOnlyPersistenceSession {
     return new CacheOnlyPersistenceSession(adapter, configuration, allowlist, head);
   }
 
-  async #readStoredState(knownSecrets: readonly string[]): Promise<StoredCacheOnlyState> {
+  async #readStoredState(
+    knownSecrets: readonly string[],
+    evaluatedAt: UtcIsoDateTime,
+  ): Promise<StoredCacheOnlyState> {
     validateKnownSecrets(knownSecrets);
     if (this.#head.status === "missing") {
       return Object.freeze({
@@ -852,6 +1148,7 @@ export class CacheOnlyPersistenceSession {
       documents.aiCacheEntries.map((entry) => entry.cacheKey),
       "AI cache",
     );
+    assertNoFutureTimestamps(documents, evaluatedAt);
     assertDocumentSetConsistency(documents);
     return Object.freeze({
       ...documents,
@@ -862,7 +1159,7 @@ export class CacheOnlyPersistenceSession {
   /** session開始時点のcache-only branchを評価時刻で読み取る。 */
   public async load(input: CacheOnlyLoadInput): Promise<CacheOnlyLoadedState> {
     const evaluatedAt = parseEvaluatedAt(input.evaluatedAt);
-    const stored = await this.#readStoredState(input.knownSecrets);
+    const stored = await this.#readStoredState(input.knownSecrets, evaluatedAt);
     if (this.#head.status === "missing") {
       return Object.freeze({
         status: "missing_branch",
@@ -879,7 +1176,7 @@ export class CacheOnlyPersistenceSession {
   /** 検証済みcache-only集合でbranchを完全置換するcommitを作成する。 */
   public async persist(input: CacheOnlyPersistenceInput): Promise<CacheOnlyPersistenceResult> {
     const evaluatedAt = parseEvaluatedAt(input.evaluatedAt);
-    const stored = await this.#readStoredState(input.knownSecrets);
+    const stored = await this.#readStoredState(input.knownSecrets, evaluatedAt);
     const documents = parseInput(input, this.#allowlist);
     const updates = createUpdates(documents, this.#configuration);
     const updatePaths = new Set(updates.map((update) => update.path));

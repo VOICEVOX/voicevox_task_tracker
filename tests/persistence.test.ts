@@ -463,7 +463,40 @@ function createCacheEntry(): AiCacheEntry {
     inputHash,
   });
   const output = {
-    result: "cached",
+    schemaVersion: "2",
+    item: {
+      nodeId: "I_cache_fixture",
+      url: "https://github.com/VOICEVOX/example/issues/1",
+    },
+    status: "terminal_completed",
+    waitingOn: [],
+    nextAction: "確認する",
+    relations: [],
+    progress: {
+      latestMeaningfulSourceId: null,
+      reasonSummary: "進捗を確認する",
+      confidence: 0.8,
+    },
+    importance: {
+      significantFeature: false,
+      explicitDeadline: false,
+      futureRisk: false,
+      rationale: "cache fixture",
+    },
+    evidence: [
+      {
+        sourceId: "body:fixture",
+        supports: "uncertainty",
+        summary: "cache fixture",
+      },
+    ],
+    confidence: 0.8,
+    uncertainties: [],
+    notification: {
+      recommended: false,
+      reasonCode: "none",
+      reasonSummary: "通知しません",
+    },
   };
   return createAiCacheEntry({
     cacheKey,
@@ -2070,23 +2103,6 @@ describe("メモリstate branch transaction", () => {
   });
 
   it("AI cache内の不要な本文全文フィールドを拒否する", async () => {
-    const adapter = new MemoryStateBranchAdapter();
-    const snapshot = createSnapshot({
-      runId: "run-full-content",
-      generatedAt: "2026-07-31T00:00:00.000Z",
-      repositoryIds: [publicRepositoryId],
-      responsibility: {
-        status: "waiting_for_assessment",
-        kind: "role",
-        candidateId: "role:maintainer",
-        role: "maintainer",
-      },
-      severity: "watch",
-      edge: {
-        status: "absent",
-      },
-    });
-    const session = await StatePersistenceSession.open(adapter, stateConfiguration);
     const inputHash = hashCanonicalJson({
       input: "full-content",
     });
@@ -2102,39 +2118,28 @@ describe("メモリstate branch transaction", () => {
     const output = {
       body: "保存してはいけない本文です",
     };
-    await session.aiCache.write(
-      createAiCacheEntry({
-        cacheKey,
-        sourceHash: hashCanonicalJson({
-          source: "fixture",
-        }),
-        metadata: {
-          deterministicRulesVersion: "rules-v1",
-          model: "codex-model",
-          reasoningEffort: "medium",
-          backendVersion: "codex-cli-1",
-          promptVersion: "prompt-v1",
-          schemaVersion: "schema-v1",
-          inputHash,
-          outputHash: hashCanonicalJson(output),
-          executedAt: fixedItemAt,
-        },
-        output,
-      }),
-    );
-
     await expect(
-      session.persist({
-        snapshot,
-        historyInputEvents: [],
-        notificationLedger: createEmptyStateNotificationLedger(),
-        repositoryInventory: createRepositoryInventory(false),
-        knownSecrets: [],
-      }),
-    ).rejects.toThrow(StatePublicSafetyError);
-    expect(await adapter.resolveHead("tracker-state")).toEqual({
-      status: "missing",
-    });
+      Promise.resolve().then(() =>
+        createAiCacheEntry({
+          cacheKey,
+          sourceHash: hashCanonicalJson({
+            source: "fixture",
+          }),
+          metadata: {
+            deterministicRulesVersion: "rules-v1",
+            model: "codex-model",
+            reasoningEffort: "medium",
+            backendVersion: "codex-cli-1",
+            promptVersion: "prompt-v1",
+            schemaVersion: "schema-v1",
+            inputHash,
+            outputHash: hashCanonicalJson(output),
+            executedAt: fixedItemAt,
+          },
+          output,
+        }),
+      ),
+    ).rejects.toThrow();
   });
 
   it("runnerを破棄してもAI cache hitと通知cooldownを読み戻す", async () => {

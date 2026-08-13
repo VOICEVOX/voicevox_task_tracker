@@ -454,14 +454,14 @@ describe("重要度キャッシュ代替判定", () => {
   });
 
   it("rationaleが120文字を超えるAIエントリを拒否する", () => {
-    const entry = createFullEntry(
-      "long",
-      createUtcIsoDateTime("2026-08-12T00:00:00Z"),
-      NODE_ID,
-      "あ".repeat(121),
-    );
-
-    expect(() => createImportanceCacheEntry(entry, createInput(NODE_ID))).toThrow();
+    expect(() =>
+      createFullEntry(
+        "long",
+        createUtcIsoDateTime("2026-08-12T00:00:00Z"),
+        NODE_ID,
+        "あ".repeat(121),
+      ),
+    ).toThrow();
   });
 
   it("入力に存在しないsource IDを持つAIエントリを拒否する", () => {

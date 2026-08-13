@@ -18,6 +18,7 @@ import {
   type ReasoningEffort,
 } from "../domain/index.js";
 import { assertNonNullable } from "../util/index.js";
+import { validateCodexAnalysisSchema } from "./schema-validation.js";
 
 const CACHE_KEY_PREFIX = "sha256:";
 const nonEmptyStringSchema = z.string().min(1, "空文字は指定できません");
@@ -62,7 +63,7 @@ export type AiCacheEntry = Readonly<{
   cacheKey: AiCacheKey;
   sourceHash: Sha256Hash;
   metadata: AnalysisMetadata;
-  output: unknown;
+  output: ReturnType<typeof validateCodexAnalysisSchema>;
 }>;
 
 /** AI cacheの読み取り結果。 */
@@ -132,6 +133,7 @@ export function createAiCacheKey(identity: AiCacheIdentity): AiCacheKey {
 /** 未検証の値からAI cache entryを生成する。 */
 export function createAiCacheEntry(value: unknown): AiCacheEntry {
   const parsed = cacheEntrySchema.parse(value);
+  const output = validateCodexAnalysisSchema(parsed.output);
   const entry = Object.freeze({
     cacheKey: parseSha256Hash(parsed.cacheKey),
     sourceHash: parseSha256Hash(parsed.sourceHash),
@@ -146,7 +148,7 @@ export function createAiCacheEntry(value: unknown): AiCacheEntry {
       outputHash: parseSha256Hash(parsed.metadata.outputHash),
       executedAt: createUtcIsoDateTime(parsed.metadata.executedAt),
     }),
-    output: parsed.output,
+    output,
   });
   assertCacheIntegrity(entry, entry.cacheKey);
   return entry;

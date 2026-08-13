@@ -118,6 +118,13 @@ export {
   type GitHubRelationMutationSourceResult,
 } from "./relation-mutation-adapter.js";
 export {
+  createGitHubItemCacheDocument,
+  restoreGitHubItemCache,
+  type CreateGitHubItemCacheDocumentInput,
+  type GitHubItemCacheRestoration,
+  type RestoreGitHubItemCacheInput,
+} from "./item-cache-adapter.js";
+export {
   GitHubRateLimitController,
   graphQLRateLimitSchema,
   isGitHubApiBudgetExceeded,

@@ -92,6 +92,45 @@ function createInput(id: string, body: string): CodexAnalysisInput {
   return createInputAt(id, body, "2026-07-30T23:00:00Z");
 }
 
+function createSchemaValidOutput(nodeId: string): Record<string, unknown> {
+  return {
+    schemaVersion: "2",
+    item: {
+      nodeId,
+      url: "https://github.com/VOICEVOX/example/issues/1",
+    },
+    status: "terminal_completed",
+    waitingOn: [],
+    nextAction: "確認する",
+    relations: [],
+    progress: {
+      latestMeaningfulSourceId: null,
+      reasonSummary: "進捗を確認する",
+      confidence: 0.8,
+    },
+    importance: {
+      significantFeature: false,
+      explicitDeadline: false,
+      futureRisk: false,
+      rationale: "cache fixture",
+    },
+    evidence: [
+      {
+        sourceId: "body:current",
+        supports: "uncertainty",
+        summary: "cache fixture",
+      },
+    ],
+    confidence: 0.8,
+    uncertainties: [],
+    notification: {
+      recommended: false,
+      reasonCode: "none",
+      reasonSummary: "通知しません",
+    },
+  };
+}
+
 function createPriority(
   kind: "deferred" | "severity" | "owner" | "blocker" | "impact" | "ordinary",
 ): AiAnalysisPriority {
@@ -430,6 +469,36 @@ describe("Codex分析対象の絞り込み", () => {
 });
 
 describe("content-addressed AI cache", () => {
+  it("AI cache entryのoutputはstrictなCodex schemaを必須にする", () => {
+    const inputHash = hashCanonicalJson({ input: "invalid-output" });
+    expect(() =>
+      createAiCacheEntry({
+        cacheKey: createAiCacheKey({
+          deterministicRulesVersion: "rules-v1",
+          model: "model-a",
+          reasoningEffort: "medium",
+          backendVersion: "backend-a",
+          promptVersion: "prompt-a",
+          schemaVersion: "schema-a",
+          inputHash,
+        }),
+        sourceHash: hashCanonicalJson({ source: "invalid-output" }),
+        metadata: {
+          deterministicRulesVersion: "rules-v1",
+          model: "model-a",
+          reasoningEffort: "medium",
+          backendVersion: "backend-a",
+          promptVersion: "prompt-a",
+          schemaVersion: "schema-a",
+          inputHash,
+          outputHash: hashCanonicalJson({ result: "invalid" }),
+          executedAt: fixedExecutedAt,
+        },
+        output: { result: "invalid" },
+      }),
+    ).toThrow("Codex出力がJSON Schemaに適合しません");
+  });
+
   it("JSONのキー順に依存せず同じhashを生成する", () => {
     const left = {
       nested: {
@@ -500,9 +569,7 @@ describe("content-addressed AI cache", () => {
     const cache = new MemoryAiCacheStore();
     const baseCacheKey = cacheKeys.at(0);
     assertNonNullable(baseCacheKey, "基準となるAI cache keyがありません");
-    const output = {
-      result: "cached",
-    };
+    const output = createSchemaValidOutput("I_cache_fixture");
     await cache.write(
       createAiCacheEntry({
         cacheKey: baseCacheKey,
@@ -566,9 +633,7 @@ describe("content-addressed AI cache", () => {
     const sourceHash = hashCanonicalJson({
       sources: "same",
     });
-    const output = {
-      result: "cached",
-    };
+    const output = createSchemaValidOutput("I_cache_fixture");
     const entry = createAiCacheEntry({
       cacheKey: createAiCacheKey(identity),
       sourceHash,

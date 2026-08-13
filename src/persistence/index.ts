@@ -39,6 +39,10 @@ export {
   type CacheDocumentSafetyInput,
   type CacheRepositoryIdentity,
   type GitHubItemCacheDocument,
+  type GitHubItemCacheObservation,
+  type GitHubItemCacheRelationCandidate,
+  type GitHubItemCacheRelationMutationResult,
+  type GitHubItemCacheReplay,
   type GitHubRepositoryCacheDocument,
 } from "./cache-documents.js";
 export {
