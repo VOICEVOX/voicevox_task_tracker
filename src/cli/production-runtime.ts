@@ -163,8 +163,8 @@ import {
   adaptMixedTemporalBlocksGraph,
   replayGitHubItemHistory,
   createGitHubItemCacheDocument,
+  createGitHubPullRequestVolatileMetadataFromDetail,
   restoreGitHubItemCacheForAnalysis,
-  validateGitHubPullRequestVolatileMetadata,
   validateGitHubItemCacheAiEntry,
   type GitHubItemCacheAnalysisObservation,
   type GitHubItemCacheAnalysisSource,
@@ -6800,21 +6800,85 @@ async function collectFreshRepositoryItemObservations(
   });
 }
 
-function validateCollectedPullRequestVolatileMetadata(
-  finalized: ReturnType<typeof finalizeGitHubItemsWithVolatileMetadata>,
+function rebaseFreshRepositoryItemCollectionWithDetailVolatileMetadata(
+  provisionalItems: readonly EnumeratedGitHubItem[],
+  probeFinalized: ReturnType<typeof finalizeGitHubItemsWithVolatileMetadata>,
   collection: FreshRepositoryItemCollection,
-): void {
+  configuration: RuntimeConfiguration,
+): FreshRepositoryItemCollection {
+  const volatileMetadataByNodeId = new Map(probeFinalized.volatileMetadataByNodeId);
   for (const detail of collection.details) {
     if (detail.type !== "pull_request") {
       continue;
     }
-    const metadata = finalized.volatileMetadataByNodeId.get(detail.nodeId);
+    const metadata = volatileMetadataByNodeId.get(detail.nodeId);
     assertNonNullable(
       metadata,
       `詳細取得したPull Requestのvolatile metadataがありません。対象: ${detail.nodeId}`,
     );
-    validateGitHubPullRequestVolatileMetadata(metadata, detail);
+    volatileMetadataByNodeId.set(
+      detail.nodeId,
+      createGitHubPullRequestVolatileMetadataFromDetail(detail),
+    );
   }
+  const finalized = finalizeGitHubItemsWithVolatileMetadata({
+    items: provisionalItems,
+    volatileMetadata: [...volatileMetadataByNodeId.values()],
+  });
+  const finalizedItemsByNodeId = new Map(finalized.items.map((item) => [item.nodeId, item]));
+  const freshSources = collection.analysisSources.filter(
+    (source): source is Extract<RuntimeItemAnalysisSource, { kind: "fresh" }> =>
+      source.kind === "fresh",
+  );
+  const freshItems = freshSources.map((source) => {
+    const item = finalizedItemsByNodeId.get(source.item.nodeId);
+    assertNonNullable(item, `詳細取得したitemの最終値がありません。対象: ${source.item.nodeId}`);
+    return item;
+  });
+  const freshObservedItems = normalizeObservedGitHubItems({
+    items: freshItems,
+    details: freshSources.map((source) => source.detail),
+    isBot: createGitHubBotPredicate(configuration.config.actors.bots),
+  });
+  const freshObservedItemsByNodeId = new Map(freshObservedItems.map((item) => [item.nodeId, item]));
+  const previousItemsByNodeId = new Map(probeFinalized.items.map((item) => [item.nodeId, item]));
+  const changedNodeIds = new Set(collection.changedNodeIds);
+  const analysisSources = collection.analysisSources.map((source): RuntimeItemAnalysisSource => {
+    if (source.kind === "cached") {
+      return source;
+    }
+    const item = finalizedItemsByNodeId.get(source.item.nodeId);
+    const observation = freshObservedItemsByNodeId.get(source.item.nodeId);
+    const previousItem = previousItemsByNodeId.get(source.item.nodeId);
+    assertNonNullable(item, `詳細取得したitemの最終値がありません。対象: ${source.item.nodeId}`);
+    assertNonNullable(
+      observation,
+      `詳細取得したfresh観測値がありません。対象: ${source.item.nodeId}`,
+    );
+    assertNonNullable(previousItem, `probe後のitemがありません。対象: ${source.item.nodeId}`);
+    if (item.itemFingerprint !== previousItem.itemFingerprint) {
+      changedNodeIds.add(source.item.nodeId);
+    }
+    return Object.freeze({
+      kind: "fresh",
+      item: observation,
+      detail: source.detail,
+      replay: replayGitHubItemHistory({
+        item,
+        detail: source.detail,
+        trackingStartAt: trackingSelectionStartAt(configuration),
+        isBot: createGitHubBotPredicate(configuration.config.actors.bots),
+      }),
+    });
+  });
+  return Object.freeze({
+    enumeratedItems: finalized.items,
+    details: collection.details,
+    observedItems: Object.freeze(analysisSources.map((source) => source.item)),
+    analysisSources: Object.freeze(analysisSources),
+    changedNodeIds: Object.freeze([...changedNodeIds]),
+    diagnostics: collection.diagnostics,
+  });
 }
 
 async function collectRepositoryItemObservationsWithVolatileMetadata(
@@ -6850,7 +6914,7 @@ async function collectRepositoryItemObservationsWithVolatileMetadata(
       sleep: adapters.sleep,
     },
     validateDetail: async (probe) => {
-      const finalized = finalizeGitHubItemsWithVolatileMetadata({
+      const probeFinalized = finalizeGitHubItemsWithVolatileMetadata({
         items: provisionalItems,
         volatileMetadata: probe.items,
       });
@@ -6861,11 +6925,15 @@ async function collectRepositoryItemObservationsWithVolatileMetadata(
         state,
         authentication,
         repository,
-        finalized.items,
+        probeFinalized.items,
         adjacentNodeIds,
       );
-      validateCollectedPullRequestVolatileMetadata(finalized, collection);
-      successfulCollection = collection;
+      successfulCollection = rebaseFreshRepositoryItemCollectionWithDetailVolatileMetadata(
+        provisionalItems,
+        probeFinalized,
+        collection,
+        configuration,
+      );
     },
   });
   assertNonNullable(

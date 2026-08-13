@@ -12,7 +12,6 @@ import {
   type GitHubReviewRequestTarget,
 } from "./item-detail-types.js";
 import { type Sha256Fingerprint } from "./item-enumeration.js";
-import { GitHubPullRequestVolatileRaceError } from "./errors.js";
 import { type GitHubNodeId, type SourceId, type UtcIsoDateTime } from "../domain/index.js";
 
 export type { GitHubPullRequestReviewDecision } from "./item-detail-types.js";
@@ -287,6 +286,11 @@ export function createGitHubPullRequestVolatileMetadata(
 export function createGitHubPullRequestVolatileMetadataFromDetail(
   detail: Extract<GitHubItemDetail, { type: "pull_request" }>,
 ): GitHubPullRequestVolatileMetadata {
+  if (detail.headSha !== detail.headCommit.sha) {
+    throw new TypeError(
+      `Pull Request detailのhead SHAとCommit identityが一致しません。対象: ${detail.nodeId}`,
+    );
+  }
   const reviewRequests = detail.reviewRequests.current.map(normalizeReviewRequest);
   return createGitHubPullRequestVolatileMetadata({
     nodeId: detail.nodeId,
@@ -301,20 +305,4 @@ export function createGitHubPullRequestVolatileMetadataFromDetail(
       checks: detail.mergeState.checks,
     },
   });
-}
-
-/** probeとPull Request detailのvolatile metadataが一致することを検証する。 */
-export function validateGitHubPullRequestVolatileMetadata(
-  expected: GitHubPullRequestVolatileMetadata,
-  detail: Extract<GitHubItemDetail, { type: "pull_request" }>,
-): GitHubPullRequestVolatileMetadata {
-  const actual = createGitHubPullRequestVolatileMetadataFromDetail(detail);
-  if (actual.currentMetadataFingerprint !== expected.currentMetadataFingerprint) {
-    throw new GitHubPullRequestVolatileRaceError("detail", detail.nodeId, {
-      cause: new TypeError(
-        `probeとPull Request detailのvolatile metadataが一致しません。対象: ${detail.nodeId}`,
-      ),
-    });
-  }
-  return actual;
 }

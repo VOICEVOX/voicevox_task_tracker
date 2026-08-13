@@ -31,7 +31,6 @@ import {
   createGitHubPullRequestVolatileMetadata,
   createGitHubPullRequestVolatileMetadataFingerprint,
   createGitHubPullRequestVolatileMetadataFromDetail,
-  validateGitHubPullRequestVolatileMetadata,
   type GitHubPullRequestReviewDecision,
   type GitHubPullRequestVolatileMetadataInput,
   type GitHubPullRequestVolatileMergeState,
@@ -2019,24 +2018,15 @@ describe("Pull Request volatile metadata", () => {
     );
   });
 
-  it("full detailとのvolatile metadata不一致を拒否する", () => {
-    const expected = createGitHubPullRequestVolatileMetadata(createMetadataInput({}));
-    expect(validateGitHubPullRequestVolatileMetadata(expected, createDetail())).toEqual(expected);
-    const changed = createGitHubPullRequestVolatileMetadata(
-      createMetadataInput({ headSha: "different-head" }),
+  it("full detailのhead SHAとCommit identity不一致を拒否する", () => {
+    const invalidDetail = Object.freeze({
+      ...createDetail(),
+      headSha: "different-head",
+    } satisfies GitHubItemDetail);
+
+    expect(() => createGitHubPullRequestVolatileMetadataFromDetail(invalidDetail)).toThrow(
+      TypeError,
     );
-    let thrown: unknown;
-    try {
-      validateGitHubPullRequestVolatileMetadata(changed, createDetail());
-    } catch (error: unknown) {
-      thrown = error;
-    }
-    expect(thrown).toBeInstanceOf(GitHubPullRequestVolatileRaceError);
-    if (!(thrown instanceof GitHubPullRequestVolatileRaceError)) {
-      throw new Error("detail照合race errorがありません");
-    }
-    expect(thrown.kind).toBe("detail");
-    expect(thrown.cause).toBeInstanceOf(TypeError);
   });
 
   it("head SHAとreview decisionの変更をfingerprintへ反映する", () => {

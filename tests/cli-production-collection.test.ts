@@ -36,6 +36,7 @@ import {
   createGitHubBodyFingerprint,
   createGitHubPullRequestVolatileMetadataFromDetail,
   createPublicRepositoryAllowlist,
+  finalizeGitHubItemsWithVolatileMetadata,
   GitHubPullRequestVolatileRaceError,
   GitHubPullRequestVolatileRaceRetryExhaustedError,
   GitHubRetryExhaustedError,
@@ -104,34 +105,6 @@ type DetailCall = Readonly<{
 type VolatileProbeCall = Readonly<{
   pullRequestNodeIds: readonly GitHubNodeId[];
 }>;
-
-type VolatileProbe = ProductionRuntimeAdapters["probeGitHubPullRequestVolatileMetadataWithRetry"];
-type VolatileProbeInput = Parameters<VolatileProbe>[0];
-type VolatileProbeResult = Awaited<ReturnType<VolatileProbe>>;
-
-async function validateVolatileMetadataAttempts(
-  input: VolatileProbeInput,
-  metadataAttempts: readonly (readonly GitHubPullRequestVolatileMetadata[])[],
-): Promise<VolatileProbeResult> {
-  const validateDetail = input.validateDetail;
-  if (validateDetail == null) {
-    throw new TypeError("volatile metadataのdetail照合callbackがありません");
-  }
-  const races: GitHubPullRequestVolatileRaceError[] = [];
-  for (const metadata of metadataAttempts) {
-    const collection = Object.freeze({ items: Object.freeze([...metadata]) });
-    try {
-      await validateDetail(collection);
-      return collection;
-    } catch (error: unknown) {
-      if (!(error instanceof GitHubPullRequestVolatileRaceError)) {
-        throw error;
-      }
-      races.push(error);
-    }
-  }
-  throw new GitHubPullRequestVolatileRaceRetryExhaustedError(races);
-}
 
 function createRepository(id: string, name: string, observedAt: string): Repository {
   return Object.freeze({
@@ -5379,23 +5352,34 @@ describe("本番収集の接続", () => {
     harness.detailCalls.length = 0;
     harness.volatileProbeCalls.length = 0;
     const thirdItem = createItem(createUtcIsoDateTime(THIRD_RUN_AT));
+    const thirdDetail = Object.freeze({
+      ...secondDetail,
+      observedAt: createUtcIsoDateTime(THIRD_RUN_AT),
+    } satisfies GitHubItemDetail);
     fixture.openItems = [thirdItem];
-    fixture.details.set(
-      thirdItem.nodeId,
-      Object.freeze({
-        ...secondDetail,
-        observedAt: createUtcIsoDateTime(THIRD_RUN_AT),
-      }),
-    );
+    fixture.details.set(thirdItem.nodeId, thirdDetail);
 
     const warmResult = await harness.runCollectAnalyze(THIRD_RUN_AT);
+    const warmArtifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const warmSnapshotItem = requireCollectionItem(warmArtifact.snapshot, thirdItem.nodeId);
+    const warmItemCache = warmArtifact.cacheOnlyPayload.itemCaches.find(
+      (document) => document.nodeId === thirdItem.nodeId,
+    );
+    const expectedWarmItem = finalizeGitHubItemsWithVolatileMetadata({
+      items: [thirdItem],
+      volatileMetadata: [createGitHubPullRequestVolatileMetadataFromDetail(thirdDetail)],
+    }).items[0];
 
     expect(warmResult.exitCode).toBe(0);
     expect(harness.volatileProbeCalls).toEqual([{ pullRequestNodeIds: [thirdItem.nodeId] }]);
     expect(harness.detailCalls).toEqual([]);
+    expect(warmSnapshotItem.itemFingerprint).toBe(expectedWarmItem?.itemFingerprint);
+    expect(warmItemCache?.currentObservation.itemFingerprint).toBe(
+      expectedWarmItem?.itemFingerprint,
+    );
   });
 
-  it("probe競合とdetail照合raceでは試行全体をやり直して成功試行だけを使う", async () => {
+  it("probeとdetailでvolatile値が変化してもdetailの値を正本にして保存する", async () => {
     const repository = createRepository("R_volatile_retry", "volatile-retry", FIRST_RUN_AT);
     const fixture = createRepositoryFixture(repository);
     const item = alignPullRequestBodyFingerprint(
@@ -5438,7 +5422,6 @@ describe("本番収集の接続", () => {
         const attempts = Object.freeze([
           Object.freeze({ status: "probe_race" }),
           Object.freeze({ status: "metadata", value: mismatchedMetadata }),
-          Object.freeze({ status: "metadata", value: actualMetadata }),
         ]);
         for (const attempt of attempts) {
           attemptCount += 1;
@@ -5466,17 +5449,37 @@ describe("本番収集の接続", () => {
     });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const expectedItem = finalizeGitHubItemsWithVolatileMetadata({
+      items: [item],
+      volatileMetadata: [actualMetadata],
+    }).items[0];
+    const repositoryItem = artifact.cacheOnlyPayload.repositoryCaches
+      .flatMap((document) => document.items)
+      .find((candidate) => candidate.nodeId === item.nodeId);
+    const itemCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (document) => document.nodeId === item.nodeId,
+    );
+    const snapshotItem = requireCollectionItem(artifact.snapshot, item.nodeId);
 
     expect(result.exitCode).toBe(0);
-    expect(attemptCount).toBe(3);
-    expect(harness.detailCalls).toEqual([
-      { targets: [{ nodeId: item.nodeId }] },
-      { targets: [{ nodeId: item.nodeId }] },
-    ]);
+    expect(attemptCount).toBe(2);
+    expect(harness.detailCalls).toEqual([{ targets: [{ nodeId: item.nodeId }] }]);
     expect(harness.artifacts).toHaveLength(1);
+    expect(expectedItem).toBeDefined();
+    expect(snapshotItem.itemFingerprint).toBe(expectedItem?.itemFingerprint);
+    expect(repositoryItem?.itemFingerprint).toBe(expectedItem?.itemFingerprint);
+    expect(itemCache?.itemFingerprint).toBe(expectedItem?.itemFingerprint);
+    expect(itemCache?.currentObservation.itemFingerprint).toBe(expectedItem?.itemFingerprint);
+    expect(itemCache?.itemFingerprint).not.toBe(
+      finalizeGitHubItemsWithVolatileMetadata({
+        items: [item],
+        volatileMetadata: [mismatchedMetadata],
+      }).items[0]?.itemFingerprint,
+    );
   });
 
-  it("volatile detail raceが5回続けば部分artifactとcacheとPagesを残さない", async () => {
+  it("detail取得失敗では部分artifactとcacheとPagesを残さない", async () => {
     const repository = createRepository(
       "R_volatile_retry_exhausted",
       "volatile-retry-exhausted",
@@ -5493,15 +5496,7 @@ describe("本番収集の接続", () => {
       }),
     );
     const detail = createFailedCheckPullRequestDetail(item, createUtcIsoDateTime(FIRST_RUN_AT));
-    const mismatchedMetadata = createGitHubPullRequestVolatileMetadataFromDetail(
-      Object.freeze({
-        ...detail,
-        mergeState: Object.freeze({
-          ...detail.mergeState,
-          mergeability: "conflicting",
-        }),
-      }),
-    );
+    const actualMetadata = createGitHubPullRequestVolatileMetadataFromDetail(detail);
     fixture.openItems = [item];
     fixture.details.set(item.nodeId, detail);
     const config = await createTestConfig({
@@ -5512,14 +5507,10 @@ describe("本番収集の接続", () => {
     const harness = createCollectionHarness({
       repositories: [fixture],
       config,
-      probeGitHubPullRequestVolatileMetadataWithRetry: (input) =>
-        validateVolatileMetadataAttempts(input, [
-          [mismatchedMetadata],
-          [mismatchedMetadata],
-          [mismatchedMetadata],
-          [mismatchedMetadata],
-          [mismatchedMetadata],
-        ]),
+      probeGitHubPullRequestVolatileMetadataWithRetry: async (input) => {
+        await input.validateDetail?.(Object.freeze({ items: Object.freeze([actualMetadata]) }));
+        throw new TypeError("detail取得fixture失敗");
+      },
     });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
@@ -5540,7 +5531,70 @@ describe("本番収集の接続", () => {
       discordAttempted: false,
       artifactWritten: false,
     });
-    expect(harness.detailCalls).toHaveLength(5);
+    expect(harness.detailCalls).toHaveLength(1);
+    expect(harness.artifacts).toEqual([]);
+    expect(harness.publicData).toEqual([]);
+    expect(head).toEqual({ status: "missing" });
+  });
+
+  it("detailのPull Request identity不整合では部分artifactとcacheとPagesを残さない", async () => {
+    const repository = createRepository(
+      "R_volatile_identity_mismatch",
+      "volatile-identity-mismatch",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const item = alignPullRequestBodyFingerprint(
+      createPullRequestItem({
+        repository: requirePublicRepository(repository),
+        number: 1,
+        fingerprint: "volatile-identity-mismatch",
+        updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      }),
+    );
+    const detail = createFailedCheckPullRequestDetail(item, createUtcIsoDateTime(FIRST_RUN_AT));
+    const actualMetadata = createGitHubPullRequestVolatileMetadataFromDetail(detail);
+    const invalidDetail = Object.freeze({
+      ...detail,
+      headSha: "different-head-sha",
+    } satisfies GitHubItemDetail);
+    fixture.openItems = [item];
+    fixture.details.set(item.nodeId, invalidDetail);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      probeGitHubPullRequestVolatileMetadataWithRetry: async (input) => {
+        const collection = Object.freeze({ items: Object.freeze([actualMetadata]) });
+        await input.validateDetail?.(collection);
+        return collection;
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const head = await harness.stateAdapter.resolveHead("tracker-state");
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("volatile identity mismatch fixtureがcollect-analyze結果ではありません");
+    }
+
+    expect(result.exitCode).toBe(1);
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "incremental_collection",
+      complete: false,
+    });
+    expect(result.result.effects).toEqual({
+      cacheCommitted: false,
+      pagesBuilt: false,
+      discordAttempted: false,
+      artifactWritten: false,
+    });
+    expect(harness.detailCalls).toEqual([{ targets: [{ nodeId: item.nodeId }] }]);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
     expect(head).toEqual({ status: "missing" });

@@ -59,7 +59,6 @@ export {
   createGitHubPullRequestVolatileMetadata,
   createGitHubPullRequestVolatileMetadataFingerprint,
   createGitHubPullRequestVolatileMetadataFromDetail,
-  validateGitHubPullRequestVolatileMetadata,
   type GitHubPullRequestReviewDecision,
   type GitHubPullRequestVolatileMergeState,
   type GitHubPullRequestVolatileMetadata,
