@@ -39,9 +39,6 @@ const statePathSchema = requiredStringSchema.superRefine((value, context) => {
     });
   }
 });
-const stateJsonPathSchema = statePathSchema.refine((value) => value.endsWith(".json"), {
-  message: ".jsonで終わるパスを指定してください",
-});
 const webBasePathSchema = requiredStringSchema
   .regex(WEB_BASE_PATH_PATTERN, "先頭と末尾がスラッシュの絶対base pathを指定してください")
   .refine(
@@ -274,33 +271,38 @@ const stateSchema = z
     branch: z.literal(STATE_BRANCH, {
       error: `${STATE_BRANCH}を指定してください`,
     }),
-    snapshotPath: stateJsonPathSchema,
-    historyDirectory: statePathSchema,
+    repositoryCacheDirectory: statePathSchema,
+    itemCacheDirectory: statePathSchema,
+    latestImportanceDirectory: statePathSchema,
     aiCacheDirectory: statePathSchema,
-    notificationLedgerPath: stateJsonPathSchema,
-    runReportsDirectory: statePathSchema,
     canonicalJson: z.literal(true, {
       error: "canonicalJsonはtrueにしてください",
     }),
   })
   .superRefine((state, context) => {
     const paths: readonly (readonly [string, string])[] = [
-      ["snapshotPath", state.snapshotPath],
-      ["historyDirectory", state.historyDirectory],
+      ["repositoryCacheDirectory", state.repositoryCacheDirectory],
+      ["itemCacheDirectory", state.itemCacheDirectory],
+      ["latestImportanceDirectory", state.latestImportanceDirectory],
       ["aiCacheDirectory", state.aiCacheDirectory],
-      ["notificationLedgerPath", state.notificationLedgerPath],
-      ["runReportsDirectory", state.runReportsDirectory],
     ];
-    const seen = new Set<string>();
-    for (const [name, path] of paths) {
-      if (seen.has(path)) {
-        context.addIssue({
-          code: "custom",
-          path: [name],
-          message: "state内の別の保存先と同じパスは指定できません",
-        });
+    for (const [index, [name, path]] of paths.entries()) {
+      for (const [previousIndex, [previousName, previousPath]] of paths.entries()) {
+        if (index <= previousIndex) {
+          continue;
+        }
+        if (
+          path === previousPath ||
+          path.startsWith(`${previousPath}/`) ||
+          previousPath.startsWith(`${path}/`)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: [name],
+            message: `state内の${previousName}と同一または入れ子の保存先は指定できません`,
+          });
+        }
       }
-      seen.add(path);
     }
   });
 

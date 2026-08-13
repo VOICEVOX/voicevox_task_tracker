@@ -126,11 +126,10 @@ notifications:
 
 state:
   branch: tracker-state
-  snapshotPath: state/snapshot.json
-  historyDirectory: state/history
-  aiCacheDirectory: state/ai-cache
-  notificationLedgerPath: state/notification-ledger.json
-  runReportsDirectory: state/run-reports
+  repositoryCacheDirectory: state/github-repositories
+  itemCacheDirectory: state/github-items
+  latestImportanceDirectory: state/ai-latest-importance
+  aiCacheDirectory: state/ai-results
   canonicalJson: true
 
 web:
