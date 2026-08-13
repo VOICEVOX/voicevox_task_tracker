@@ -308,6 +308,46 @@ describe("日次workflow", () => {
     expect(persistCacheJob.if).toBeUndefined();
   });
 
+  it("artifactからPages deploy、Discord、cache保存、reportまでを順序付けmanualとrerunでも通知jobを起動する", async () => {
+    const workflow = await readDailyWorkflow();
+    const collectJob = workflow.jobs["collect-analyze"];
+    const buildJob = workflow.jobs["build-pages"];
+    const deployJob = workflow.jobs["deploy-pages"];
+    const notifyJob = workflow.jobs["notify-discord"];
+    const persistCacheJob = workflow.jobs["persist-cache"];
+    const reportJob = workflow.jobs["report-workflow"];
+    if (
+      collectJob == null ||
+      buildJob == null ||
+      deployJob == null ||
+      notifyJob == null ||
+      persistCacheJob == null ||
+      reportJob == null
+    ) {
+      throw new TypeError("日次workflowの公開処理jobがありません");
+    }
+
+    const artifactUpload = requiredStep(collectJob, "公開可能なrun artifactを保存");
+    const buildArtifactDownload = requiredStep(buildJob, "公開可能なrun artifactを取得");
+    const notifyArtifactDownload = requiredStep(notifyJob, "公開可能なrun artifactを取得");
+    const persistArtifactDownload = requiredStep(persistCacheJob, "公開可能なrun artifactを取得");
+    expect(artifactUpload.with?.["name"]).toBe("validated-public-run");
+    expect(buildArtifactDownload.with?.["name"]).toBe("validated-public-run");
+    expect(notifyArtifactDownload.with?.["name"]).toBe("validated-public-run");
+    expect(persistArtifactDownload.with?.["name"]).toBe("validated-public-run");
+
+    expect(needs(buildJob)).toEqual(["collect-analyze"]);
+    expect(needs(deployJob)).toEqual(["build-pages"]);
+    expect(needs(notifyJob)).toEqual(["collect-analyze", "deploy-pages"]);
+    expect(needs(persistCacheJob)).toEqual(["notify-discord"]);
+    expect(needs(reportJob)).toContain("persist-cache");
+    expect(notifyJob.if).toContain("github.event_name == 'schedule'");
+    expect(notifyJob.if).toContain("github.event_name == 'workflow_dispatch'");
+    expect(notifyJob.if).not.toContain("github.run_attempt");
+    expect(persistCacheJob.if).toBeUndefined();
+    expect(reportJob.if).toContain("always()");
+  });
+
   it("各jobが検証済みartifactを対応するCLI stageへ渡す", async () => {
     const workflow = await readDailyWorkflow();
     const collectCommands = runCommands(

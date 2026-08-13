@@ -38,7 +38,7 @@ type FixtureTypes = DailyTransactionTypeMap &
       schemaVersion: 1;
     }>;
     cache: Readonly<{
-      lastGoodHash: string;
+      lastGoodCacheHash: string;
     }>;
     authentication: Readonly<{
       installationId: number;
@@ -60,7 +60,7 @@ type FixtureTypes = DailyTransactionTypeMap &
       activeEdgeCount: number;
     }>;
     validated: Readonly<{
-      snapshotHash: string;
+      cacheHash: string;
     }>;
     pages: Readonly<{
       pagesUrl: string;
@@ -84,6 +84,7 @@ type HarnessBehavior = Readonly<{
   completeness: "complete" | "incomplete";
   deterministicResolution: "clear" | "ambiguous";
   failConfiguration: boolean;
+  failCacheLoading: boolean;
   failCachePersistence: boolean;
   failDiscord: boolean;
   pagesFailureCount: number;
@@ -105,7 +106,7 @@ type Harness = Readonly<{
     cacheCommits: number;
   };
   cache: {
-    lastGoodHash: string;
+    lastGoodCacheHash: string;
   };
 }>;
 
@@ -128,6 +129,7 @@ function defaultBehavior(): HarnessBehavior {
     completeness: "complete",
     deterministicResolution: "clear",
     failConfiguration: false,
+    failCacheLoading: false,
     failCachePersistence: false,
     failDiscord: false,
     pagesFailureCount: 0,
@@ -169,7 +171,7 @@ function createHarness(behavior: HarnessBehavior): Harness {
     cacheCommits: 0,
   };
   const cache = {
-    lastGoodHash: "sha256:last-good",
+    lastGoodCacheHash: "sha256:last-good-cache",
   };
   let remainingPagesFailures = behavior.pagesFailureCount;
 
@@ -185,8 +187,11 @@ function createHarness(behavior: HarnessBehavior): Harness {
     },
     loadCaches: () => {
       events.push("cache_loading");
+      if (behavior.failCacheLoading) {
+        throw new TypeError("cache読み込みfixtureが失敗しました");
+      }
       return Promise.resolve({
-        lastGoodHash: cache.lastGoodHash,
+        lastGoodCacheHash: cache.lastGoodCacheHash,
       });
     },
     authenticateGitHub: () => {
@@ -289,7 +294,7 @@ function createHarness(behavior: HarnessBehavior): Harness {
       return Promise.resolve({
         status: "complete",
         value: {
-          snapshotHash: "sha256:new-state",
+          cacheHash: "sha256:new-cache",
         },
         diagnostics: Object.freeze([]),
       });
@@ -300,7 +305,7 @@ function createHarness(behavior: HarnessBehavior): Harness {
         return Promise.reject(new TypeError("cache保存fixtureが失敗しました"));
       }
       counters.cacheCommits += 1;
-      cache.lastGoodHash = validated.snapshotHash;
+      cache.lastGoodCacheHash = validated.cacheHash;
       committedCommands.push(invocation.command);
       return Promise.resolve();
     },
@@ -398,7 +403,7 @@ function expectRequiredMetrics(report: RunReport): void {
 }
 
 describe("Daily transaction", () => {
-  it("Daily transactionの全段階を決定論、Codex、公開副作用の順に実行する", async () => {
+  it("cache-only日次transactionを決定論、Codex、公開、cache保存、reportの順に実行する", async () => {
     const harness = createHarness(defaultBehavior());
     const result = await harness.runner.run(parseOnlineCommand(scheduledArgs("daily")));
 
@@ -461,7 +466,7 @@ describe("Daily transaction", () => {
       status: "success",
       complete: true,
       result: {
-        snapshotHash: "sha256:new-state",
+        cacheHash: "sha256:new-cache",
       },
     });
     expect(harness.artifacts[0]).not.toHaveProperty("collection");
@@ -469,7 +474,7 @@ describe("Daily transaction", () => {
     expect(harness.counters.cacheCommits).toBe(0);
     expect(harness.counters.pagesBuilds).toBe(0);
     expect(harness.counters.discordCalls).toBe(0);
-    expect(harness.cache.lastGoodHash).toBe("sha256:last-good");
+    expect(harness.cache.lastGoodCacheHash).toBe("sha256:last-good-cache");
   });
 
   it("collect-analyzeは検証済み成果物を書き、後続stageの副作用を実行しない", async () => {
@@ -496,7 +501,7 @@ describe("Daily transaction", () => {
     expect(harness.artifactPaths).toEqual(["artifacts/workflow/validated-run.json"]);
     expect(harness.artifacts[0]).toMatchObject({
       validated: {
-        snapshotHash: "sha256:new-state",
+        cacheHash: "sha256:new-cache",
       },
       status: "success",
     });
@@ -529,10 +534,10 @@ describe("Daily transaction", () => {
       diagnostics: ["private_sentinel_detected"],
     });
     expect(harness.artifacts[0]).not.toHaveProperty("result");
-    expect(harness.cache.lastGoodHash).toBe("sha256:last-good");
+    expect(harness.cache.lastGoodCacheHash).toBe("sha256:last-good-cache");
   });
 
-  it("同じrunを同時実行してもcache commitと通常digestを1回にする", async () => {
+  it("同じrunを同時実行してもcache保存と通常digestを1回にする", async () => {
     const harness = createHarness({
       ...defaultBehavior(),
       deterministicResolution: "ambiguous",
@@ -551,7 +556,7 @@ describe("Daily transaction", () => {
     expect(harness.counters.cacheCommits).toBe(1);
     expect(harness.counters.pagesBuilds).toBe(1);
     expect(harness.counters.discordCalls).toBe(1);
-    expect(harness.cache.lastGoodHash).toBe("sha256:new-state");
+    expect(harness.cache.lastGoodCacheHash).toBe("sha256:new-cache");
   });
 
   it("Pagesが失敗したらcacheを保存せず再実行で公開とcacheを揃える", async () => {
@@ -572,7 +577,7 @@ describe("Daily transaction", () => {
       discordAttempted: true,
       artifactWritten: false,
     });
-    expect(harness.cache.lastGoodHash).toBe("sha256:last-good");
+    expect(harness.cache.lastGoodCacheHash).toBe("sha256:last-good-cache");
 
     const second = await harness.runner.run(command);
     expect(second.value.report.status).toBe("success");
@@ -581,7 +586,7 @@ describe("Daily transaction", () => {
     expect(harness.counters.discordCalls).toBe(2);
     expect(harness.events).toContain("operations_alert");
     expect(harness.operationsRetryAttempts).toEqual([1]);
-    expect(harness.cache.lastGoodHash).toBe("sha256:new-state");
+    expect(harness.cache.lastGoodCacheHash).toBe("sha256:new-cache");
   });
 
   it("Discordが失敗したらcacheを保存しない", async () => {
@@ -604,7 +609,7 @@ describe("Daily transaction", () => {
     expect(harness.counters.cacheCommits).toBe(0);
   });
 
-  it.each([429, 503] as const)("%iのretry上限後もlast goodを維持する", async (status) => {
+  it.each([429, 503] as const)("%iのretry上限後も既存cacheを維持する", async (status) => {
     const harness = createHarness({
       ...defaultBehavior(),
       collectionFailure: {
@@ -624,7 +629,38 @@ describe("Daily transaction", () => {
     expect(harness.counters.discordCalls).toBe(1);
     expect(harness.events).toContain("operations_alert");
     expect(harness.operationsRetryAttempts).toEqual([3]);
-    expect(harness.cache.lastGoodHash).toBe("sha256:last-good");
+    expect(harness.cache.lastGoodCacheHash).toBe("sha256:last-good-cache");
+  });
+
+  it("cache読み込み失敗でも運用障害通知を試みcache保存へ進まない", async () => {
+    const harness = createHarness({
+      ...defaultBehavior(),
+      failCacheLoading: true,
+    });
+    const result = await harness.runner.run(parseOnlineCommand(scheduledArgs("daily")));
+
+    expect(result.value.report).toMatchObject({
+      status: "failure",
+      complete: false,
+      failedStage: "cache_loading",
+    });
+    expect(result.value.effects).toEqual({
+      cacheCommitted: false,
+      pagesBuilt: false,
+      discordAttempted: true,
+      artifactWritten: false,
+    });
+    expect(harness.events).toEqual([
+      "configuration",
+      "authentication",
+      "repository_inventory",
+      "cache_loading",
+      "operations_alert",
+      "report",
+    ]);
+    expect(harness.operationsRetryAttempts).toEqual([1]);
+    expect(harness.counters.cacheCommits).toBe(0);
+    expect(harness.cache.lastGoodCacheHash).toBe("sha256:last-good-cache");
   });
 
   it("dry-run後のall-open backfillだけが指定範囲をcommitする", async () => {

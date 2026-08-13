@@ -22,14 +22,10 @@ import {
   type ProductionRuntimeAdapters,
 } from "../src/cli/production-runtime.js";
 import { createUtcIsoDateTime } from "../src/domain/index.js";
-import {
-  StatePersistenceSession,
-  createStateRunReport,
-  type StateBranchAdapter,
-} from "../src/persistence/index.js";
+import { createPublicSummaryDto, measurePublicSummarySize } from "../src/pages/index.js";
+import { CacheOnlyPersistenceSession, type StateBranchAdapter } from "../src/persistence/index.js";
 
 const NOW = "2026-07-31T00:00:00.000Z";
-const COMPLETED_AT = "2026-07-31T00:05:00.000Z";
 const PRIVATE_KEY = [
   "-----BEGIN PRIVATE KEY-----",
   "canary-private-key-material",
@@ -141,9 +137,11 @@ function createMissingStateAdapter(onCommit: () => void): StateBranchAdapter {
   });
 }
 
-function createMutableStateAdapter(
-  onCommit: () => void,
-): StateBranchAdapter & Readonly<{ readCurrentFile: (path: string) => Uint8Array | undefined }> {
+function createMutableStateAdapter(onCommit: () => void): StateBranchAdapter &
+  Readonly<{
+    currentPaths: () => readonly string[];
+    seedCurrentFile: (path: string, bytes: Uint8Array) => void;
+  }> {
   const files = new Map<string, Uint8Array>();
   let revision: string | undefined;
   return Object.freeze({
@@ -175,10 +173,17 @@ function createMutableStateAdapter(
       Promise.resolve(
         Object.freeze([...files.keys()].filter((path) => path.startsWith(`${directory}/`))),
       ),
-    readCurrentFile: (path) => files.get(path),
+    currentPaths: () => Object.freeze([...files.keys()].sort()),
+    seedCurrentFile: (path, bytes) => {
+      files.set(path, Uint8Array.from(bytes));
+      revision = "0000000000000000000000000000000000000001";
+    },
     commit: (request) => {
       for (const update of request.updates) {
-        files.set(update.path, update.bytes);
+        files.set(update.path, Uint8Array.from(update.bytes));
+      }
+      for (const path of request.deletions) {
+        files.delete(path);
       }
       revision = "0000000000000000000000000000000000000001";
       onCommit();
@@ -192,7 +197,74 @@ function createMutableStateAdapter(
   });
 }
 
-function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
+const openCacheSession: ProductionRuntimeAdapters["openCacheSession"] = (
+  adapter,
+  configuration,
+  allowlist,
+) => CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
+
+function createUnavailableProductionRuntimeAdapters(
+  harness: Harness,
+  stateAdapter: StateBranchAdapter,
+): ProductionRuntimeAdapters {
+  return Object.freeze({
+    ...harness.adapters,
+    loadConfig,
+    openCacheSession,
+    discoverRepositoryInventory: () =>
+      Promise.reject(new TypeError("GitHub inventoryは呼びません")),
+    enumerateGitHubItemsByIdentifiers: () =>
+      Promise.reject(new TypeError("個別項目は収集しません")),
+    enumerateOpenGitHubItems: () => Promise.reject(new TypeError("項目は収集しません")),
+    collectGitHubItemDetails: () => Promise.reject(new TypeError("詳細は収集しません")),
+    executeCodexAnalysis: () => Promise.reject(new TypeError("Codexは実行しません")),
+    readReplayFixture: () => Promise.reject(new TypeError("replay fixtureは読みません")),
+    readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),
+    readGoldenFixtures: () => Promise.reject(new TypeError("golden fixtureは読みません")),
+    readWorkflowArtifact: () => Promise.reject(new TypeError("workflow artifactは読みません")),
+    verifyStateDirectory: () => Promise.reject(new TypeError("永続stateは検証しません")),
+    createStateBranchAdapter: () => stateAdapter,
+  });
+}
+
+function createEmptyWorkflowArtifact(
+  runId: string,
+  reason: "no_candidates" | "manual" | "rerun",
+): WorkflowArtifact {
+  const repositoryId = "R_composition_fixture";
+  const repositoryOwner = "VOICEVOX";
+  const repositoryName = "voicevox_task_tracker";
+  const summary = createPublicSummaryDto({
+    schemaVersion: "5",
+    runId,
+    generatedAt: NOW,
+    observedAt: NOW,
+    timezone: "Asia/Tokyo",
+    ai: {
+      enabled: false,
+      available: false,
+      degraded: false,
+    },
+    confidenceThresholds: {
+      high: 0.8,
+      medium: 0.5,
+    },
+    repositories: [
+      {
+        id: repositoryId,
+        name: repositoryName,
+        fullName: `${repositoryOwner}/${repositoryName}`,
+        freshness: {
+          status: "fresh",
+        },
+      },
+    ],
+    items: [],
+    graph: {
+      nodes: [],
+      maxNodes: 1,
+    },
+  });
   const metrics = {
     repositoryCount: 1,
     itemCount: 0,
@@ -207,16 +279,15 @@ function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
     scheduleDelayMilliseconds: 0,
   };
   return createWorkflowArtifact({
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "validated_public_run",
     repositoryAllowlist: [
       {
-        id: "R_composition_fixture",
-        owner: "VOICEVOX",
-        name: "voicevox_task_tracker",
+        id: repositoryId,
+        owner: repositoryOwner,
+        name: repositoryName,
       },
     ],
-    historyInputEvents: [],
     snapshot: {
       schemaVersion: "8",
       generatedAt: NOW,
@@ -231,13 +302,19 @@ function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
         degraded: false,
       },
       collection: {
-        repositories: [],
+        repositories: [
+          {
+            repositoryId,
+            successfulAt: NOW,
+            items: [],
+          },
+        ],
       },
       repositories: [
         {
-          id: "R_composition_fixture",
-          owner: "VOICEVOX",
-          name: "voicevox_task_tracker",
+          id: repositoryId,
+          owner: repositoryOwner,
+          name: repositoryName,
           visibility: "public",
           archived: false,
           disabled: false,
@@ -256,7 +333,7 @@ function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
     },
     notificationSelection: {
       action: "skip_digest",
-      reason: "no_candidates",
+      reason,
       candidates: [],
     },
     runMetadata: {
@@ -265,7 +342,39 @@ function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
       metrics,
       diagnostics: [],
     },
-    aiCacheEntries: [],
+    pages: {
+      summary,
+      details: {
+        schemaVersion: "5",
+        runId,
+        generatedAt: NOW,
+        items: [],
+        graph: {
+          nodes: [],
+          edges: [],
+          frontierNodeIds: [],
+        },
+      },
+      summarySize: measurePublicSummarySize(summary, 1_000_000),
+    },
+    cacheOnlyPayload: {
+      repositoryCaches: [
+        {
+          schemaVersion: "2",
+          kind: "github_repository",
+          repository: {
+            repositoryId,
+            owner: repositoryOwner,
+            name: repositoryName,
+          },
+          successfulAt: NOW,
+          items: [],
+        },
+      ],
+      itemCaches: [],
+      latestImportanceCaches: [],
+      aiCacheEntries: [],
+    },
     pagesUrl: "https://voicevox.github.io/voicevox_task_tracker/",
     discordSettings: {
       enabled: true,
@@ -273,9 +382,7 @@ function createEmptyWorkflowArtifact(runId: string): WorkflowArtifact {
       operationsWebhookSecretName: "DISCORD_OPERATIONS_WEBHOOK_URL",
       mentions: {
         enabled: false,
-        users: {
-          Hiroshiba: "123456789012345678",
-        },
+        users: {},
       },
       retry: {
         maxAttempts: 3,
@@ -512,8 +619,7 @@ describe("CLI合成root", () => {
     const runtimeAdapters: ProductionRuntimeAdapters = Object.freeze({
       ...harness.adapters,
       loadConfig: async (path) => withoutExplicitIncludes(await loadConfig(path)),
-      openStateSession: (adapter: StateBranchAdapter, configuration: Config["state"]) =>
-        StatePersistenceSession.open(adapter, configuration),
+      openCacheSession,
       discoverRepositoryInventory: () => Promise.resolve(Object.freeze([])),
       enumerateGitHubItemsByIdentifiers: () => Promise.resolve(Object.freeze([])),
       enumerateOpenGitHubItems: () => Promise.resolve(Object.freeze([])),
@@ -595,7 +701,7 @@ describe("CLI合成root", () => {
       throw new TypeError("dry-runの実行結果ではありません");
     }
     expect(result.result.effects).toEqual({
-      stateCommitted: false,
+      cacheCommitted: false,
       pagesBuilt: false,
       discordAttempted: false,
       artifactWritten: true,
@@ -607,151 +713,104 @@ describe("CLI合成root", () => {
     expect(codexProcessCount).toBe(0);
   });
 
-  it("設定されたstartAtをDiscord失敗時にも維持する", async () => {
+  it.each(["manual", "rerun"] as const)(
+    "検証済みartifactからPagesを構築し%sの空候補を通常送信しない",
+    async (reason) => {
+      let pagesWriteCount = 0;
+      let discordHttpCallCount = 0;
+      const artifact = createEmptyWorkflowArtifact(
+        "tracker-run:composition-workflow-stage",
+        reason,
+      );
+      const harness = createHarness({});
+      const stateAdapter = createMutableStateAdapter(() => {
+        throw new TypeError("PagesとDiscordはcacheを更新しません");
+      });
+      const runtimeAdapters: ProductionRuntimeAdapters = Object.freeze({
+        ...createUnavailableProductionRuntimeAdapters(harness, stateAdapter),
+        readWorkflowArtifact: () => Promise.resolve(artifact),
+        writePublicData: (_outputDirectory, data) => {
+          pagesWriteCount += 1;
+          expect(data).toEqual(artifact.pages);
+          return Promise.resolve({
+            summaryPath: "web/public/data/summary.json",
+            detailsPath: "web/public/data/details.json",
+            summaryBytes: 1,
+            detailsBytes: 1,
+          });
+        },
+        discordHttpClient: Object.freeze({
+          execute: () => {
+            discordHttpCallCount += 1;
+            throw new TypeError("manualの空候補はDiscord secretを読みません");
+          },
+        }),
+        sendDiscord: sendDiscordDigest,
+      });
+      const application = createProductionCliApplication(runtimeAdapters);
+
+      const pagesResult = await application.run([
+        "build-pages",
+        "--config",
+        "tests/fixtures/config.valid.yml",
+        "--output",
+        "unused-pages",
+      ]);
+      const notifyResult = await application.run([
+        "notify-discord",
+        "--config",
+        "tests/fixtures/config.valid.yml",
+        "--pages-url",
+        "https://voicevox.github.io/voicevox_task_tracker/",
+      ]);
+
+      expect([pagesResult.exitCode, notifyResult.exitCode]).toEqual([0, 0]);
+      expect(pagesWriteCount).toBe(1);
+      expect(discordHttpCallCount).toBe(0);
+      expect((await stateAdapter.resolveHead("tracker-state")).status).toBe("missing");
+      expect(harness.externalAdapterCalls.count).toBe(0);
+    },
+  );
+
+  it("persist-cacheはartifactのcache-only payloadだけでbranchを完全置換する", async () => {
     let stateCommitCount = 0;
-    let pagesWriteCount = 0;
-    let discordSendCount = 0;
-    let discordFails = true;
-    let artifact = createEmptyWorkflowArtifact("tracker-run:composition-workflow-stage");
-    const harness = createHarness({});
+    const artifact = createEmptyWorkflowArtifact(
+      "tracker-run:composition-workflow-stage",
+      "manual",
+    );
     const stateAdapter = createMutableStateAdapter(() => {
       stateCommitCount += 1;
     });
+    for (const path of [
+      "state/snapshot.json",
+      "state/history/2026-07-31.jsonl",
+      "state/notification-ledger.json",
+      "state/run-reports/2026-07-31.json",
+    ]) {
+      stateAdapter.seedCurrentFile(path, new TextEncoder().encode("旧state"));
+    }
+    const harness = createHarness({});
     const runtimeAdapters: ProductionRuntimeAdapters = Object.freeze({
-      ...harness.adapters,
-      loadConfig,
-      openStateSession: (adapter: StateBranchAdapter, configuration: Config["state"]) =>
-        StatePersistenceSession.open(adapter, configuration),
-      discoverRepositoryInventory: () =>
-        Promise.reject(new TypeError("GitHub inventoryは呼びません")),
-      enumerateGitHubItemsByIdentifiers: () =>
-        Promise.reject(new TypeError("個別項目は収集しません")),
-      enumerateOpenGitHubItems: () => Promise.reject(new TypeError("項目は収集しません")),
-      collectGitHubItemDetails: () => Promise.reject(new TypeError("詳細は収集しません")),
-      executeCodexAnalysis: () => Promise.reject(new TypeError("Codexは実行しません")),
-      readReplayFixture: () => Promise.reject(new TypeError("replay fixtureは読みません")),
-      readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),
-      readGoldenFixtures: () => Promise.reject(new TypeError("golden fixtureは読みません")),
+      ...createUnavailableProductionRuntimeAdapters(harness, stateAdapter),
       readWorkflowArtifact: () => Promise.resolve(artifact),
-      verifyStateDirectory: () => Promise.reject(new TypeError("永続stateは検証しません")),
-      createStateBranchAdapter: () => stateAdapter,
-      now: () => new Date(COMPLETED_AT),
-      writePublicData: () => {
-        pagesWriteCount += 1;
-        return Promise.resolve({
-          summaryPath: "web/public/data/summary.json",
-          detailsPath: "web/public/data/details.json",
-          summaryBytes: 1,
-          detailsBytes: 1,
-        });
-      },
-      sendDiscord: () => {
-        discordSendCount += 1;
-        if (discordFails) {
-          return Promise.reject(new TypeError("Discord送信fixtureが失敗しました"));
-        }
-        return Promise.resolve(
-          Object.freeze({
-            status: "sent",
-            digestId: "digest-composition",
-            discordMessageIds: Object.freeze(["discord-message-composition"]),
-          }),
-        );
-      },
     });
     const application = createProductionCliApplication(runtimeAdapters);
 
-    const persistResult = await application.run([
-      "persist-state",
+    const result = await application.run([
+      "persist-cache",
       "--config",
       "tests/fixtures/config.valid.yml",
     ]);
-    const pagesResult = await application.run([
-      "build-pages",
-      "--config",
-      "tests/fixtures/config.valid.yml",
-      "--output",
-      "unused-pages",
-    ]);
-    await expect(
-      application.run([
-        "notify-discord",
-        "--config",
-        "tests/fixtures/config.valid.yml",
-        "--pages-url",
-        "https://voicevox.github.io/voicevox_task_tracker/",
-      ]),
-    ).rejects.toThrow("Discord送信fixtureが失敗しました");
-    const failedRunSession = await StatePersistenceSession.open(
-      stateAdapter,
-      (await loadConfig(join(import.meta.dirname, "fixtures/config.valid.yml"))).state,
-    );
-    const failedRunSnapshot = await failedRunSession.loadSnapshot();
-    if (failedRunSnapshot.status !== "available") {
-      throw new TypeError("失敗runのsnapshotがありません");
-    }
-    expect(failedRunSnapshot.snapshot.trackingStartAt).toEqual({
-      status: "fixed",
-      value: "2025-12-31T15:00:00.000Z",
-      source: "configuration",
-    });
 
-    discordFails = false;
-    const notifyResult = await application.run([
-      "notify-discord",
-      "--config",
-      "tests/fixtures/config.valid.yml",
-      "--pages-url",
-      "https://voicevox.github.io/voicevox_task_tracker/",
-    ]);
-    const successfulRunSession = await StatePersistenceSession.open(
-      stateAdapter,
-      (await loadConfig(join(import.meta.dirname, "fixtures/config.valid.yml"))).state,
-    );
-    const successfulRunSnapshot = await successfulRunSession.loadSnapshot();
-    if (successfulRunSnapshot.status !== "available") {
-      throw new TypeError("成功runのsnapshotがありません");
-    }
-    const reportSource = stateAdapter.readCurrentFile("state/run-reports/2026-07-31.json");
-    if (reportSource == null) {
-      throw new TypeError("成功runの永続reportがありません");
-    }
-    const parseJson: (source: string) => unknown = JSON.parse;
-    const persistedReport = createStateRunReport(parseJson(new TextDecoder().decode(reportSource)));
-
-    expect([persistResult.exitCode, pagesResult.exitCode, notifyResult.exitCode]).toEqual([
-      0, 0, 0,
-    ]);
-    expect(successfulRunSnapshot.snapshot.trackingStartAt).toEqual({
-      status: "fixed",
-      value: "2025-12-31T15:00:00.000Z",
-      source: "configuration",
-    });
-    expect(persistedReport).toMatchObject({
-      startedAt: NOW,
-      finishedAt: COMPLETED_AT,
-      metrics: {
-        notificationCount: 0,
-        durationMilliseconds: 300_000,
-      },
-    });
-    expect(stateCommitCount).toBe(2);
-    expect(pagesWriteCount).toBe(1);
-    expect(discordSendCount).toBe(2);
-
-    artifact = createEmptyWorkflowArtifact("tracker-run:different-workflow-stage");
-    await expect(
-      application.run([
-        "notify-discord",
-        "--config",
-        "tests/fixtures/config.valid.yml",
-        "--pages-url",
-        "https://voicevox.github.io/voicevox_task_tracker/",
-      ]),
-    ).rejects.toThrow(
-      "Discord通知対象のworkflow artifactとtracker-state branchでrunが一致しません",
-    );
-    expect(discordSendCount).toBe(2);
+    const paths = stateAdapter.currentPaths();
+    expect(result.exitCode).toBe(0);
+    expect(stateCommitCount).toBe(1);
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).toMatch(/^state\/github-repositories\/[^/]+\.json$/u);
+    expect(paths).not.toContain("state/snapshot.json");
+    expect(paths).not.toContain("state/notification-ledger.json");
+    expect(paths).not.toContain("state/run-reports/2026-07-31.json");
+    expect(paths).not.toContain("state/history/2026-07-31.jsonl");
     expect(harness.externalAdapterCalls.count).toBe(0);
   });
 
@@ -781,7 +840,7 @@ describe("CLI合成root", () => {
       expectedStateCommitCount: 0,
     },
   ])(
-    "$stateStatusの$incidentKind運用障害stageは送信済み状態を保持せず毎回送る",
+    "$stateStatusの$incidentKind運用障害通知はcache有無に依存せず毎回送る",
     async ({
       stateStatus,
       incidentKind,
@@ -792,7 +851,10 @@ describe("CLI合成root", () => {
     }) => {
       let stateCommitCount = 0;
       const payloads: DiscordWebhookPayload[] = [];
-      const artifact = createEmptyWorkflowArtifact("tracker-run:composition-workflow-stage");
+      const artifact = createEmptyWorkflowArtifact(
+        "tracker-run:composition-workflow-stage",
+        "manual",
+      );
       const operationsWebhookUrl =
         "https://discord.com/api/webhooks/123456789012345678/operations-fixture-token";
       const harness = createHarness({
@@ -804,8 +866,7 @@ describe("CLI合成root", () => {
       const runtimeAdapters: ProductionRuntimeAdapters = Object.freeze({
         ...harness.adapters,
         loadConfig,
-        openStateSession: (adapter, configuration) =>
-          StatePersistenceSession.open(adapter, configuration),
+        openCacheSession,
         discoverRepositoryInventory: () =>
           Promise.reject(new TypeError("GitHub inventoryは呼びません")),
         enumerateGitHubItemsByIdentifiers: () =>
@@ -838,7 +899,7 @@ describe("CLI合成root", () => {
       const application = createProductionCliApplication(runtimeAdapters);
 
       if (stateStatus === "available") {
-        await application.run(["persist-state", "--config", "tests/fixtures/config.valid.yml"]);
+        await application.run(["persist-cache", "--config", "tests/fixtures/config.valid.yml"]);
       }
       const command = [
         "notify-operations",
@@ -855,12 +916,10 @@ describe("CLI合成root", () => {
       ];
       const first = await application.run(command);
       const second = await application.run(command);
-      const config = await loadConfig(join(import.meta.dirname, "fixtures/config.valid.yml"));
-      const session = await StatePersistenceSession.open(stateAdapter, config.state);
-      const snapshot = await session.loadSnapshot();
+      const head = await stateAdapter.resolveHead("tracker-state");
 
       expect([first.exitCode, second.exitCode]).toEqual([0, 0]);
-      expect(snapshot.status).toBe(stateStatus);
+      expect(head.status).toBe(stateStatus === "available" ? "present" : "missing");
       expect(payloads).toHaveLength(2);
       expect(payloads[0]?.content).toContain("VOICEVOX Task Tracker 運用障害");
       expect(payloads[0]?.embeds[0]?.fields).toContainEqual(
