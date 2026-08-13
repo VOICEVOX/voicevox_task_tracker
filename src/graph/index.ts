@@ -1,5 +1,10 @@
 export { analyzeGraph } from "./analyze-graph.js";
 export { replayDependencyEvents } from "./replay-dependency-events.js";
+export {
+  replayTemporalBlocksGraph,
+  type TemporalBlocksGraphReplayInput,
+  type TemporalBlocksGraphReplayResult,
+} from "./temporal-blocks-graph-replay.js";
 export { RelationReferenceConflictError } from "./errors.js";
 export { extractRelationCandidates } from "./extract-relation-candidates.js";
 export {
