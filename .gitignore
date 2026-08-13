@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.eslintcache
 *.log
 *.tsbuildinfo
 .pnpm-store/

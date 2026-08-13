@@ -17,7 +17,7 @@
     "tracker:run": "node dist/cli/tracker-run.js",
     "typecheck": "tsc --project tsconfig.json && tsc --project web/tsconfig.json",
     "test": "vitest run",
-    "lint": "eslint .",
+    "lint": "eslint --cache .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
