@@ -89,6 +89,7 @@ function createIssue(
     createdAt,
     observedAt,
     state: "open",
+    closedAt: null,
     assignees: [],
     reviewRequests: [],
     ...overrides,
@@ -105,6 +106,8 @@ function createPullRequest(
     createdAt,
     observedAt,
     state: "open",
+    closedAt: null,
+    mergedAt: null,
     draft: false,
     assignees: [],
     reviewRequests: [],
@@ -229,7 +232,12 @@ describe("イベント再生", () => {
     const mergedAt = createUtcIsoDateTime("2026-08-01T03:00:00Z");
     const result = replayItemHistory({
       trackingStartAt,
-      currentItem: createPullRequest({ state: "merged", draft: false }),
+      currentItem: createPullRequest({
+        state: "merged",
+        closedAt: mergedAt,
+        mergedAt,
+        draft: false,
+      }),
       history: {
         availability: "available",
         events: [
@@ -302,6 +310,7 @@ describe("イベント再生", () => {
     const request: ReplayCurrentReviewRequest = {
       sourceId: buildSourceId("github_review_request", "reviewer"),
       target: { type: "user", nodeId: reviewerNodeId },
+      requestedAt: { status: "available", value: requestedAt },
     };
     const result = replayItemHistory({
       trackingStartAt,
@@ -334,6 +343,33 @@ describe("イベント再生", () => {
         sourceIds: [buildSourceId("github_timeline_event", "unassign")],
         targets: [{ kind: "review_request", target: "user", nodeId: reviewerNodeId }],
       },
+    });
+  });
+
+  it("現行review requestのrequestedAt取得不能を責務履歴だけunknownにする", () => {
+    const reviewerNodeId = createGitHubNodeId("U_replay_history_unavailable_reviewer");
+    const request: ReplayCurrentReviewRequest = {
+      sourceId: buildSourceId("github_review_request", "history-unavailable"),
+      target: { type: "user", nodeId: reviewerNodeId },
+      requestedAt: { status: "unavailable", reason: "history_unavailable" },
+    };
+    const result = replayItemHistory({
+      trackingStartAt,
+      currentItem: createPullRequest({ reviewRequests: [request] }),
+      history: { availability: "available", events: [] },
+    });
+
+    expect(result.currentResponsibilities).toEqual([
+      { kind: "review_request", target: "user", nodeId: reviewerNodeId },
+    ]);
+    expect(result.stateEpochs.status).toBe("known");
+    expect(result.responsibilityEpochs).toEqual({
+      status: "unknown",
+      reason: "history_unavailable",
+    });
+    expect(result.currentOwnerEpoch).toEqual({
+      status: "unknown",
+      reason: "history_unavailable",
     });
   });
 
@@ -372,10 +408,12 @@ describe("イベント再生", () => {
     const firstRequest: ReplayCurrentReviewRequest = {
       sourceId: buildSourceId("github_review_request", "duplicate-first"),
       target: { type: "user", nodeId: reviewerNodeId },
+      requestedAt: { status: "available", value: createdAt },
     };
     const secondRequest: ReplayCurrentReviewRequest = {
       sourceId: buildSourceId("github_review_request", "duplicate-second"),
       target: { type: "user", nodeId: reviewerNodeId },
+      requestedAt: { status: "available", value: createdAt },
     };
     expect(() =>
       replayItemHistory({
@@ -498,11 +536,13 @@ describe("イベント再生", () => {
     const unavailableRequest: ReplayCurrentReviewRequest = {
       sourceId: buildSourceId("github_review_request", "unavailable"),
       target: { status: "unavailable", reason: "actor_unavailable" },
+      requestedAt: { status: "unavailable", reason: "history_unavailable" },
     };
     const result = replayItemHistory({
       trackingStartAt,
       currentItem: createPullRequest({
         state: "closed",
+        closedAt: observedAt,
         reviewRequests: [unavailableRequest],
       }),
       history: {
@@ -523,10 +563,12 @@ describe("イベント再生", () => {
     const firstRequest: ReplayCurrentReviewRequest = {
       sourceId: buildSourceId("github_review_request", "unavailable-first"),
       target: { status: "unavailable", reason: "actor_unavailable" },
+      requestedAt: { status: "unavailable", reason: "history_unavailable" },
     };
     const secondRequest: ReplayCurrentReviewRequest = {
       sourceId: buildSourceId("github_review_request", "unavailable-second"),
       target: { status: "unavailable", reason: "actor_unavailable" },
+      requestedAt: { status: "unavailable", reason: "history_unavailable" },
     };
     const result = replayItemHistory({
       trackingStartAt,
@@ -557,7 +599,7 @@ describe("イベント再生", () => {
     expect(() =>
       replayItemHistory({
         trackingStartAt,
-        currentItem: createIssue({ state: "closed" }),
+        currentItem: createIssue({ state: "closed", closedAt: observedAt }),
         history: {
           availability: "available",
           events: [],

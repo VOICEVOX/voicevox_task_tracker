@@ -233,6 +233,35 @@ describe("依存関係interval reducer", () => {
     ).toThrow("同じsource IDが異なる依存関係イベントを指しています");
   });
 
+  it("同一source IDのsequence差を内容差にせず決定的に低い値を採用する", () => {
+    const addWithHighSequence = createResolvedEvent({
+      sourceIdValue: "same-sequence-source",
+      originItemNodeId: "I_blocker",
+      fromNodeId: "I_blocker",
+      toNodeId: "I_blocked",
+      action: "added",
+      sequence: 2,
+    });
+    const addWithLowSequence = { ...addWithHighSequence, sequence: 0 };
+    const remove = createResolvedEvent({
+      sourceIdValue: "same-time-remove",
+      originItemNodeId: "I_blocker",
+      fromNodeId: "I_blocker",
+      toNodeId: "I_blocked",
+      action: "removed",
+      sequence: 1,
+    });
+
+    const coldResult = replayDependencyEvents([addWithHighSequence, remove, addWithLowSequence]);
+    const warmResult = replayDependencyEvents([addWithLowSequence, remove, addWithHighSequence]);
+
+    expect(coldResult).toEqual(warmResult);
+    expect(coldResult.transitions.map((transition) => transition.kind)).toEqual([
+      "added",
+      "removed",
+    ]);
+  });
+
   it("mirroredな追加と削除を一つのtransitionへ統合する", () => {
     const addedAt = "2026-08-01T00:00:00Z";
     const removedAt = "2026-08-02T00:00:00Z";

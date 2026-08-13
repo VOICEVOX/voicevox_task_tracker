@@ -161,7 +161,6 @@ function eventSignature(event: DependencyReplayInputEvent): string {
       event.toNodeId,
       event.action,
       event.occurredAt,
-      event.sequence,
     ]);
   }
   return JSON.stringify([
@@ -170,7 +169,6 @@ function eventSignature(event: DependencyReplayInputEvent): string {
     event.direction,
     event.action,
     event.occurredAt,
-    event.sequence,
     event.reason,
   ]);
 }
@@ -471,6 +469,9 @@ export function replayDependencyEvents(
       throw new TypeError(
         `同じsource IDが異なる依存関係イベントを指しています。対象: ${event.sourceId}`,
       );
+    }
+    if (compareEventPosition(event, existing) < 0) {
+      eventsBySourceId.set(event.sourceId, event);
     }
   }
 

@@ -13,7 +13,7 @@ import { type UtcIsoDateTime } from "../domain/index.js";
 
 type GitHubRelationMutationContentSource = Readonly<{
   contentSourceId: GitHubItemDetail["bodySourceId"];
-  contentCreatedAt: UtcIsoDateTime | null;
+  contentCreatedAt: UtcIsoDateTime;
   currentMarkdown: string;
   history: GitHubUserContentEditCollection;
 }>;
@@ -33,17 +33,10 @@ export type GitHubRelationMutationSource =
         kind: "pull_request_review_comment";
       }>);
 
-/** relation sourceではないPull Request review commentを抑止した結果。 */
-export type GitHubSuppressedRelationMutation = Readonly<{
-  status: "suppressed";
-  contentSourceId: GitHubPullRequestReviewComment["sourceId"];
-  reason: "pull_request_review_comment";
-}>;
-
 export type GitHubRelationMutationSourceResult = Readonly<{
   kind: GitHubRelationMutationSource["kind"];
   contentSourceId: GitHubRelationMutationSource["contentSourceId"];
-  result: RelationMutationResult | GitHubSuppressedRelationMutation;
+  result: RelationMutationResult;
 }>;
 
 function adaptHistory(collection: GitHubUserContentEditCollection): RelationMutationHistory {
@@ -71,10 +64,7 @@ function adaptHistory(collection: GitHubUserContentEditCollection): RelationMuta
 }
 
 function createContentSourceResult(
-  source: GitHubRelationMutationContentSource &
-    Readonly<{
-      kind: "item_body" | "issue_comment";
-    }>,
+  source: GitHubRelationMutationSource,
 ): GitHubRelationMutationSourceResult {
   return Object.freeze({
     kind: source.kind,
@@ -92,17 +82,6 @@ function createContentSourceResult(
 export function adaptGitHubRelationMutationSource(
   source: GitHubRelationMutationSource,
 ): GitHubRelationMutationSourceResult {
-  if (source.kind === "pull_request_review_comment") {
-    return Object.freeze({
-      kind: source.kind,
-      contentSourceId: source.contentSourceId,
-      result: Object.freeze({
-        status: "suppressed",
-        contentSourceId: source.contentSourceId,
-        reason: "pull_request_review_comment",
-      }),
-    });
-  }
   return createContentSourceResult(source);
 }
 
@@ -116,15 +95,28 @@ function createIssueCommentSource(comment: GitHubIssueComment): GitHubRelationMu
   });
 }
 
-/** GitHub item detailのrelation対象本文だけをmutation結果へ変換する。 */
+function createPullRequestReviewCommentSource(
+  comment: GitHubPullRequestReviewComment,
+): GitHubRelationMutationSource {
+  return Object.freeze({
+    kind: "pull_request_review_comment",
+    contentSourceId: comment.sourceId,
+    contentCreatedAt: comment.createdAt,
+    currentMarkdown: comment.body,
+    history: comment.userContentEdits,
+  });
+}
+
+/** GitHub item detailの本文、コメント、inline review commentをmutation結果へ変換する。 */
 export function adaptGitHubItemDetailRelationMutations(
   detail: GitHubItemDetail,
+  itemCreatedAt: UtcIsoDateTime,
 ): readonly GitHubRelationMutationSourceResult[] {
   const results: GitHubRelationMutationSourceResult[] = [
     adaptGitHubRelationMutationSource({
       kind: "item_body",
       contentSourceId: detail.bodySourceId,
-      contentCreatedAt: null,
+      contentCreatedAt: itemCreatedAt,
       currentMarkdown: detail.body,
       history: detail.bodyUserContentEdits,
     }),
@@ -132,5 +124,14 @@ export function adaptGitHubItemDetailRelationMutations(
       adaptGitHubRelationMutationSource(createIssueCommentSource(comment)),
     ),
   ];
+  if (detail.type === "pull_request") {
+    results.push(
+      ...detail.reviewThreads.flatMap((thread) =>
+        thread.comments.map((comment) =>
+          adaptGitHubRelationMutationSource(createPullRequestReviewCommentSource(comment)),
+        ),
+      ),
+    );
+  }
   return Object.freeze(results);
 }

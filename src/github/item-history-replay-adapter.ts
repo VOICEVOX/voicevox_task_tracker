@@ -11,6 +11,7 @@ import {
   type GitHubDetailActor,
   type GitHubItemDetail,
   type GitHubReviewRequestTarget,
+  type GitHubReviewRequestTimestamp,
   type GitHubTimelineAssignee,
   type GitHubTimelineEvent,
 } from "./item-detail-types.js";
@@ -23,6 +24,11 @@ export type ReplayGitHubItemHistoryOptions = Readonly<{
   trackingStartAt: UtcIsoDateTime;
   isBot: GitHubBotPredicate;
 }>;
+
+type ReplayCurrentReviewRequest = Extract<
+  ReplayCurrentItem,
+  { type: "pull_request" }
+>["reviewRequests"][number];
 
 type TimelineAdaptation = Readonly<{
   status: "available";
@@ -102,6 +108,21 @@ function normalizeReviewRequestTarget(target: GitHubReviewRequestTarget):
       type: target.type,
       nodeId: target.nodeId,
     }),
+  });
+}
+
+function normalizeReviewRequestRequestedAt(
+  requestedAt: GitHubReviewRequestTimestamp,
+): ReplayCurrentReviewRequest["requestedAt"] {
+  if (requestedAt.status === "available") {
+    return Object.freeze({
+      status: "available",
+      value: requestedAt.value,
+    });
+  }
+  return Object.freeze({
+    status: "unavailable",
+    reason: "history_unavailable",
   });
 }
 
@@ -253,6 +274,7 @@ function createCurrentItem(
       createdAt: item.createdAt,
       observedAt: detail.observedAt,
       state: item.state,
+      closedAt: item.closedAt,
       assignees,
       reviewRequests,
     });
@@ -272,11 +294,13 @@ function createCurrentItem(
             status: "unavailable",
             reason: "actor_unavailable",
           }),
+          requestedAt: normalizeReviewRequestRequestedAt(request.requestedAt),
         });
       }
       return Object.freeze({
         sourceId: request.sourceId,
         target: target.target,
+        requestedAt: normalizeReviewRequestRequestedAt(request.requestedAt),
       });
     }),
   );
@@ -287,6 +311,8 @@ function createCurrentItem(
     createdAt: item.createdAt,
     observedAt: detail.observedAt,
     state,
+    closedAt: item.closedAt,
+    mergedAt: item.mergeStatus === "merged" ? item.mergedAt : null,
     draft: item.draft,
     assignees,
     reviewRequests,

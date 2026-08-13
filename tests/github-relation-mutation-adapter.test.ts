@@ -21,7 +21,7 @@ function sourceId(kind: string, value: string): SourceId {
   return buildSourceId(kind, value);
 }
 
-function editCollection(): GitHubUserContentEditCollection {
+function editCollection(): Extract<GitHubUserContentEditCollection, { availability: "available" }> {
   return {
     availability: "available",
     edits: [
@@ -83,7 +83,7 @@ describe("GitHub relation mutation adapter", () => {
     });
   });
 
-  it("Pull Request review commentからmutationを生成しない", () => {
+  it("Pull Request review commentをrelation mutationへ変換する", () => {
     const source = {
       kind: "pull_request_review_comment",
       contentSourceId: sourceId("github_pull_request_review_comment", "adapter-review-comment"),
@@ -94,14 +94,14 @@ describe("GitHub relation mutation adapter", () => {
 
     const adapted = adaptGitHubRelationMutationSource(source);
 
-    expect(adapted.result).toEqual({
-      status: "suppressed",
-      contentSourceId: source.contentSourceId,
-      reason: "pull_request_review_comment",
+    expect(adapted.result).toMatchObject({
+      status: "available",
+      temporalKnowledge: { status: "exact" },
     });
+    expect(JSON.stringify(adapted)).not.toContain("adapter-only raw snapshot");
   });
 
-  it("item detailの結果にPull Request review commentを含めない", () => {
+  it("item detailの結果にPull Request review commentを含める", () => {
     const observedAt = createUtcIsoDateTime("2026-08-01T00:00:00Z");
     const repositoryId = createGitHubRepositoryId("R_relation_adapter");
     const publicRepositoryId = createPublicRepositoryAllowlist([
@@ -125,11 +125,11 @@ describe("GitHub relation mutation adapter", () => {
       repositoryId: publicRepositoryId,
       number: 1,
       bodySourceId: sourceId("github_item_body", "adapter-detail"),
-      body: "",
+      body: "https://github.com/VOICEVOX/example/issues/1",
       lastEditedAt: null,
       bodyUserContentEdits: {
         availability: "available",
-        edits: [],
+        edits: editCollection().edits,
       },
       comments: [],
       timeline: [],
@@ -155,14 +155,14 @@ describe("GitHub relation mutation adapter", () => {
               nodeId: createGitHubNodeId("PRRC_adapter_detail"),
               sequence: 0,
               author: unavailableActor,
-              body: "review comment",
+              body: "https://github.com/VOICEVOX/example/issues/1",
               createdAt: observedAt,
               lastEditedAt: null,
               updatedAt: observedAt,
               url: "https://github.com/VOICEVOX/example/pull/1#discussion_r1",
               userContentEdits: {
                 availability: "available",
-                edits: [],
+                edits: editCollection().edits,
               },
             },
           ],
@@ -190,9 +190,18 @@ describe("GitHub relation mutation adapter", () => {
       },
     } satisfies GitHubItemDetail;
 
-    const results = adaptGitHubItemDetailRelationMutations(detail);
+    const results = adaptGitHubItemDetailRelationMutations(detail, observedAt);
 
-    expect(results).toHaveLength(1);
+    expect(results).toHaveLength(2);
     expect(results[0]?.kind).toBe("item_body");
+    expect(results[0]?.result).toMatchObject({
+      status: "available",
+      temporalKnowledge: { status: "exact", intervals: [{ addedAt: observedAt }] },
+    });
+    expect(results[1]?.kind).toBe("pull_request_review_comment");
+    expect(results[1]?.result).toMatchObject({
+      status: "available",
+      temporalKnowledge: { status: "exact" },
+    });
   });
 });

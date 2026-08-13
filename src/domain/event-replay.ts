@@ -84,6 +84,15 @@ type ReplayReviewRequestTarget =
 type ReplayCurrentReviewRequest = Readonly<{
   sourceId: SourceId;
   target: ReplayReviewRequestTarget;
+  requestedAt:
+    | Readonly<{
+        status: "available";
+        value: UtcIsoDateTime;
+      }>
+    | Readonly<{
+        status: "unavailable";
+        reason: "history_unavailable";
+      }>;
 }>;
 
 /** 現行GitHub項目の状態と責務。 */
@@ -95,6 +104,7 @@ export type ReplayCurrentItem =
       createdAt: UtcIsoDateTime;
       observedAt: UtcIsoDateTime;
       state: "open" | "closed";
+      closedAt: UtcIsoDateTime | null;
       assignees: readonly GitHubAccountActor[];
       reviewRequests: readonly [];
     }>
@@ -105,6 +115,8 @@ export type ReplayCurrentItem =
       createdAt: UtcIsoDateTime;
       observedAt: UtcIsoDateTime;
       state: "open" | "closed" | "merged";
+      closedAt: UtcIsoDateTime | null;
+      mergedAt: UtcIsoDateTime | null;
       draft: boolean;
       assignees: readonly GitHubAccountActor[];
       reviewRequests: readonly ReplayCurrentReviewRequest[];
@@ -368,8 +380,27 @@ function validateCurrentItem(input: ReplayItemHistoryInput): void {
     assigneeNodeIds.add(assignee.nodeId);
   }
 
+  if (currentItem.state === "open") {
+    if (currentItem.closedAt != null) {
+      throw new TypeError("open項目にはclosedAtを指定できません");
+    }
+  } else {
+    if (currentItem.closedAt == null) {
+      throw new TypeError("terminal項目にはclosedAtが必要です");
+    }
+    parseTimestamp(currentItem.closedAt, "項目closedAt");
+  }
+
   if (currentItem.type !== "pull_request") {
     return;
+  }
+  if (currentItem.state === "merged") {
+    if (currentItem.mergedAt == null) {
+      throw new TypeError("merge済みPull RequestにはmergedAtが必要です");
+    }
+    parseTimestamp(currentItem.mergedAt, "項目mergedAt");
+  } else if (currentItem.mergedAt != null) {
+    throw new TypeError("merge済みでないPull RequestにはmergedAtを指定できません");
   }
   const reviewRequestSourceIds = new Set<SourceId>();
   const reviewRequestTargetKeys = new Set<string>();
@@ -378,6 +409,12 @@ function validateCurrentItem(input: ReplayItemHistoryInput): void {
       throw new TypeError(`現行review requestが重複しています。対象: ${request.sourceId}`);
     }
     reviewRequestSourceIds.add(request.sourceId);
+    if (request.requestedAt.status === "available") {
+      parseTimestamp(
+        request.requestedAt.value,
+        `現行review request ${request.sourceId}のrequestedAt`,
+      );
+    }
     if ("status" in request.target) {
       continue;
     }
@@ -719,6 +756,42 @@ function validateCurrentResponsibilities(
   }
 }
 
+function hasUnavailableCurrentReviewRequestTimestamp(item: ReplayCurrentItem): boolean {
+  return (
+    item.type === "pull_request" &&
+    item.reviewRequests.some((request) => request.requestedAt.status === "unavailable")
+  );
+}
+
+function currentStateEpochMatchesCurrentTerminalTimestamp(
+  item: ReplayCurrentItem,
+  epoch: ReplayStateEpoch,
+): boolean {
+  if (item.state === "open") {
+    return true;
+  }
+  if (item.closedAt == null || epoch.occurredAt !== item.closedAt) {
+    return false;
+  }
+  if (item.type === "pull_request" && item.state === "merged") {
+    return item.mergedAt != null && epoch.occurredAt === item.mergedAt;
+  }
+  return true;
+}
+
+function currentResponsibilityUnknownReason(
+  item: ReplayCurrentItem,
+): ReplayUnknownReason | undefined {
+  const currentResponsibilities = resolveCurrentResponsibilities(item);
+  if (currentResponsibilities.some((target) => "status" in target)) {
+    return "actor_unavailable";
+  }
+  if (hasUnavailableCurrentReviewRequestTimestamp(item)) {
+    return "history_unavailable";
+  }
+  return undefined;
+}
+
 function replayUnavailableResult(
   input: ReplayItemHistoryInput,
   reason: "history_unavailable" | "actor_unavailable",
@@ -750,27 +823,40 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
 
   const orderedEvents = deduplicateAndSortEvents(input);
   assertEventKindsForItem(input.currentItem, orderedEvents);
-  const stateEpochs = replayStateEpochs(input.currentItem, orderedEvents);
-  const currentStateEpoch = stateEpochs.at(-1);
-  if (currentStateEpoch == null) {
+  const replayedStateEpochs = replayStateEpochs(input.currentItem, orderedEvents);
+  const replayedCurrentStateEpoch = replayedStateEpochs.at(-1);
+  if (replayedCurrentStateEpoch == null) {
     throw new TypeError("状態区間を1件も復元できませんでした");
   }
+  const stateHistoryAvailable = currentStateEpochMatchesCurrentTerminalTimestamp(
+    input.currentItem,
+    replayedCurrentStateEpoch,
+  );
+  const stateEpochs = stateHistoryAvailable
+    ? createKnown(replayedStateEpochs)
+    : createUnknown("history_unavailable");
+  const currentStateEpoch = stateHistoryAvailable
+    ? createKnown(replayedCurrentStateEpoch)
+    : createUnknown("history_unavailable");
   const currentResponsibilities = resolveCurrentResponsibilities(input.currentItem);
-  const responsibilityEpochs = replayResponsibilityEpochs(input.currentItem, orderedEvents);
+  const responsibilityUnknownReason = currentResponsibilityUnknownReason(input.currentItem);
+  const responsibilityEpochs =
+    responsibilityUnknownReason != null
+      ? createUnknown(responsibilityUnknownReason)
+      : replayResponsibilityEpochs(input.currentItem, orderedEvents);
   validateCurrentResponsibilities(input.currentItem, responsibilityEpochs);
-  const currentOwnerEpoch =
-    responsibilityEpochs.status === "unknown" ||
-    currentResponsibilities.some((target) => "status" in target)
-      ? createUnknown("actor_unavailable")
-      : createKnown(
-          (() => {
-            const latestResponsibilityEpoch = responsibilityEpochs.value.at(-1);
-            if (latestResponsibilityEpoch == null) {
-              throw new TypeError("責務区間を1件も復元できませんでした");
-            }
-            return latestResponsibilityEpoch;
-          })(),
-        );
+  let currentOwnerEpoch: ReplayKnowledge<ReplayResponsibilityEpoch>;
+  if (responsibilityUnknownReason != null) {
+    currentOwnerEpoch = createUnknown(responsibilityUnknownReason);
+  } else if (responsibilityEpochs.status === "unknown") {
+    currentOwnerEpoch = createUnknown(responsibilityEpochs.reason);
+  } else {
+    const latestResponsibilityEpoch = responsibilityEpochs.value.at(-1);
+    if (latestResponsibilityEpoch == null) {
+      throw new TypeError("責務区間を1件も復元できませんでした");
+    }
+    currentOwnerEpoch = createKnown(latestResponsibilityEpoch);
+  }
 
   if (input.currentItem.type === "issue") {
     return Object.freeze({
@@ -779,8 +865,8 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
       currentState: input.currentItem.state,
       currentDraft: createNotApplicable(),
       currentResponsibilities,
-      stateEpochs: createKnown(stateEpochs),
-      currentStateEpoch: createKnown(currentStateEpoch),
+      stateEpochs,
+      currentStateEpoch,
       draftEpochs: createNotApplicable(),
       currentDraftEpoch: createNotApplicable(),
       responsibilityEpochs,
@@ -799,8 +885,8 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
     currentState: input.currentItem.state,
     currentDraft: createCurrentDraft(input.currentItem.draft),
     currentResponsibilities,
-    stateEpochs: createKnown(stateEpochs),
-    currentStateEpoch: createKnown(currentStateEpoch),
+    stateEpochs,
+    currentStateEpoch,
     draftEpochs: createKnown(draftEpochs),
     currentDraftEpoch: createKnown(currentDraftEpoch),
     responsibilityEpochs,

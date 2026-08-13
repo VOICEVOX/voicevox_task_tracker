@@ -413,6 +413,34 @@ describe("GitHub item history replay adapter", () => {
     });
   });
 
+  it("現行terminal時刻とstate epochが一致しない場合はstate履歴だけunknownにする", () => {
+    const item = createItem("pull_request", "closed", {
+      nodeId: pullRequestNodeId,
+      closedAt: observedAt,
+      mergedAt: observedAt,
+    });
+    const detail = createDetail(
+      item,
+      [
+        createStateEvent("merged", pullRequestNodeId, createdAt, 0),
+        createStateEvent("closed", pullRequestNodeId, createdAt, 1),
+      ],
+      [],
+    );
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentState).toBe("merged");
+    expect(result.stateEpochs).toEqual({
+      status: "unknown",
+      reason: "history_unavailable",
+    });
+    expect(result.currentStateEpoch).toEqual({
+      status: "unknown",
+      reason: "history_unavailable",
+    });
+  });
+
   it("対象イベントのactor取得不能をsystemへ変換せずunknownへ渡す", () => {
     const item = createItem("issue", "closed", { nodeId: issueNodeId, closedAt: observedAt });
     const detail = createDetail(
@@ -470,6 +498,45 @@ describe("GitHub item history replay adapter", () => {
     expect(result.responsibilityEpochs).toEqual({
       status: "unknown",
       reason: "actor_unavailable",
+    });
+  });
+
+  it("現行review requestのrequestedAt取得不能を責務履歴だけunknownにする", () => {
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const detail = createDetail(
+      item,
+      [],
+      [
+        {
+          sourceId: sourceId("github_review_request", "history-unavailable"),
+          nodeId: createGitHubNodeId("RR_history_unavailable"),
+          target: {
+            type: "user",
+            sourceId: sourceId("github_user", reviewerAccount.nodeId),
+            nodeId: reviewerAccount.nodeId,
+            login: reviewerAccount.login,
+            apiType: reviewerAccount.apiType,
+          },
+          requestedAt: { status: "unavailable", reason: "timeline_event_not_found" },
+        },
+      ],
+    );
+
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+
+    expect(result.currentResponsibilities).toContainEqual({
+      kind: "review_request",
+      target: "user",
+      nodeId: reviewerAccount.nodeId,
+    });
+    expect(result.stateEpochs.status).toBe("known");
+    expect(result.currentOwnerEpoch).toEqual({
+      status: "unknown",
+      reason: "history_unavailable",
+    });
+    expect(result.responsibilityEpochs).toEqual({
+      status: "unknown",
+      reason: "history_unavailable",
     });
   });
 
