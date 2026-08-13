@@ -130,6 +130,7 @@ export {
 export {
   classifyCodexUnavailableReason,
   executeValidatedCodexAnalysis,
+  reduceCachedCodexAnalysis,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
   runCodexAnalysisWithFallback,

@@ -400,6 +400,7 @@ function createDocument(
     draftState: "not_applicable",
     analysisRulesFingerprint,
     deterministicRulesVersion: "issue-v1",
+    aiAnalysisStatus: aiCacheReference.status === "available" ? "used" : "not_required",
     lifecycle: {
       kind: "terminal",
       terminalAt,
@@ -454,6 +455,10 @@ function createAnalysisFacts(sourceObservation: FreshObservedGitHubItem) {
       },
     ],
     mentionedWaitingOnCandidates: [],
+    inputEvents: sourceObservation.events.map((event) => ({
+      sourceId: event.sourceId,
+      url: sourceObservation.url,
+    })),
     codexValidationContext: {
       schemaVersion: "1" as const,
       purpose: "semantic_validation_only" as const,
@@ -591,8 +596,16 @@ describe("GitHub item cache adapter", () => {
     if (restored.status !== "hit") {
       throw new Error("item cacheを復元できません");
     }
-    expect(restored.source.observation).toEqual(coldDocument.currentObservation);
-    expect(restored.source.relationCandidates).toEqual(coldDocument.relationCandidates);
+    expect(restored.source.observation).toMatchObject(coldDocument.currentObservation);
+    expect(restored.source.relationCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "rel:fixture",
+          authority: "inferred",
+          provenance: "explicit_text",
+        }),
+      ]),
+    );
     expect(restored.source.relationMutations).toEqual(coldDocument.relationMutations);
     expect(restored.source.replay).toEqual(coldDocument.replay);
     expect(restored.source.analysisFacts).toEqual(coldDocument.analysisFacts);
@@ -781,6 +794,7 @@ describe("GitHub item cache adapter", () => {
       draftState: "ready_for_review",
       analysisRulesFingerprint,
       deterministicRulesVersion: "pull-request-v1",
+      aiAnalysisStatus: "not_required",
       lifecycle: {
         kind: "terminal",
         terminalAt,
@@ -826,6 +840,7 @@ describe("GitHub item cache adapter", () => {
       draftState: "ready_for_review",
       analysisRulesFingerprint,
       deterministicRulesVersion: "pull-request-v1",
+      aiAnalysisStatus: "not_required",
       lifecycle: {
         kind: "terminal",
         terminalAt,

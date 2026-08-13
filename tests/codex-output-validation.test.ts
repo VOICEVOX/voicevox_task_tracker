@@ -10,7 +10,9 @@ import {
   CodexTimeoutError,
   classifyCodexConfidence,
   createCodexAnalysisInput,
+  createCodexCacheValidationContext,
   executeValidatedCodexAnalysis,
+  reduceCachedCodexAnalysis,
   reduceCodexAnalysis,
   runCodexAnalysisWithFallback,
   validateCodexAnalysisOutput,
@@ -74,9 +76,13 @@ function createInput(): CodexAnalysisInput {
       waitingOn: [
         {
           id: "role:maintainer",
+          kind: "role",
+          sourceIds: ["body:current"],
         },
         {
           id: "item:blocker",
+          kind: "item",
+          sourceIds: ["native:dependency"],
         },
       ],
       relations: [
@@ -684,6 +690,24 @@ describe("Codex出力検証失敗の診断要約", () => {
 });
 
 describe("confidence境界とreducer統合", () => {
+  it("raw非保持cache contextでもfresh入力と同じreducer結果を返す", () => {
+    const input = createInput();
+    const deterministic = createDeterministicDecision("codex_candidate");
+    const attempt = createValidatedAttempt(input, 0.85);
+    if (attempt.status !== "validated") {
+      throw new TypeError("検証済みCodex出力fixtureがありません");
+    }
+
+    expect(
+      reduceCachedCodexAnalysis(
+        createCodexCacheValidationContext(input),
+        deterministic,
+        attempt.output,
+        defaultConfidenceThresholds,
+      ),
+    ).toEqual(reduceCodexAnalysis(input, deterministic, attempt, defaultConfidenceThresholds));
+  });
+
   it("0.85をhigh、0.65をmedium、その未満をlowとして表示と通知を変える", () => {
     const input = createInput();
     const deterministic = createDeterministicDecision("codex_candidate");

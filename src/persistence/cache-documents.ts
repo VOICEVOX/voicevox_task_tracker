@@ -110,6 +110,31 @@ const githubItemUrlSchema = z.custom<GitHubItemUrl>(
     error: "GitHub IssueまたはPull Request URLが不正です",
   },
 );
+const githubInputEventUrlSchema = z.custom<GitHubItemUrl>(
+  (value) => {
+    if (typeof value !== "string" || value.length > MAX_CACHE_STRING_LENGTH) {
+      return false;
+    }
+    try {
+      const url = new URL(value);
+      return (
+        url.protocol === "https:" &&
+        url.hostname === "github.com" &&
+        url.port.length === 0 &&
+        url.username.length === 0 &&
+        url.password.length === 0
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof TypeError)) {
+        throw error;
+      }
+      return false;
+    }
+  },
+  {
+    error: "GitHub入力イベントURLが不正です",
+  },
+);
 const eventKindSchema = z.enum([
   "comment",
   "push",
@@ -763,6 +788,12 @@ const cacheMentionedWaitingOnCandidateSchema = z.strictObject({
 const cacheAnalysisFactsSchema = z.strictObject({
   explicitRequestCandidates: z.array(cacheExplicitRequestCandidateSchema),
   mentionedWaitingOnCandidates: z.array(cacheMentionedWaitingOnCandidateSchema),
+  inputEvents: z.array(
+    z.strictObject({
+      sourceId: sourceIdSchema,
+      url: githubInputEventUrlSchema,
+    }),
+  ),
   codexValidationContext: cacheValidationContextSchema,
 });
 
@@ -780,6 +811,15 @@ const aiCacheReferenceSchema = z.discriminatedUnion("status", [
   }),
 ]);
 
+const cacheAiAnalysisStatusSchema = z.enum([
+  "used",
+  "failed",
+  "deferred",
+  "not_required",
+  "disabled",
+  "not_recorded",
+]);
+
 const cacheItemIndexSchema = z.strictObject({
   nodeId: githubNodeIdSchema,
   repositoryId: githubRepositoryIdSchema,
@@ -792,6 +832,7 @@ const cacheItemIndexSchema = z.strictObject({
   itemFingerprint: sha256HashSchema,
   analysisRulesFingerprint: sha256HashSchema,
   deterministicRulesVersion: nonEmptyStringSchema,
+  aiAnalysisStatus: cacheAiAnalysisStatusSchema,
   createdAt: utcIsoDateTimeSchema,
   updatedAt: utcIsoDateTimeSchema,
   observedAt: utcIsoDateTimeSchema,
@@ -1496,6 +1537,25 @@ function assertCacheAnalysisFacts(
 ): void {
   const explicitSourceIds = new Set<SourceId>();
   const contextSourceIds = new Set(facts.codexValidationContext.sources.map((source) => source.id));
+  const inputEventSourceIds = new Set<SourceId>();
+  for (const inputEvent of facts.inputEvents) {
+    if (inputEventSourceIds.has(inputEvent.sourceId)) {
+      throw new CacheDocumentSemanticError("入力イベントのsource IDが重複しています");
+    }
+    const event = document.currentObservation.events.find(
+      (candidate) => candidate.sourceId === inputEvent.sourceId,
+    );
+    if (event == null) {
+      throw new CacheDocumentSemanticError("入力イベントが現在観測値のeventにありません");
+    }
+    if (!inputEvent.url.startsWith(document.url)) {
+      throw new CacheDocumentSemanticError("入力イベントURLがitem URLと一致しません");
+    }
+    inputEventSourceIds.add(inputEvent.sourceId);
+  }
+  if (inputEventSourceIds.size !== document.currentObservation.events.length) {
+    throw new CacheDocumentSemanticError("現在観測値の全eventに入力イベントURLが必要です");
+  }
   for (let index = 0; index < facts.explicitRequestCandidates.length; index += 1) {
     const candidate = facts.explicitRequestCandidates[index];
     if (candidate == null) {
@@ -2217,6 +2277,14 @@ function assertCacheDocumentSemantics(document: CacheDocument): void {
         document.observedAt,
       );
       assertCacheReplay(document.replay, document);
+      if (
+        (document.aiAnalysisStatus === "used") !==
+        (document.aiCacheReference.status === "available")
+      ) {
+        throw new CacheDocumentSemanticError(
+          "item cacheのAI分析statusとAI cache参照が一致しません",
+        );
+      }
       if (document.history.status === "complete") {
         assertTemporalEvents(document.history.events, document.createdAt, document.observedAt);
       }

@@ -114,6 +114,19 @@ export {
   type StateSnapshotReadResult,
 } from "./state-persistence-session.js";
 export {
+  CacheOnlyPersistenceSession,
+  validateCacheOnlyPersistenceInput,
+  validateCacheOnlyStateFiles,
+  type CacheOnlyLoadInput,
+  type CacheOnlyLoadedState,
+  type CacheOnlyPersistenceConfiguration,
+  type CacheOnlyPersistenceInput,
+  type CacheOnlyPersistenceResult,
+  type CacheOnlyStateFile,
+  type CacheOnlyStateFiles,
+  type CacheOnlyValidatedDocuments,
+} from "./cache-only-session.js";
+export {
   createEmptyStateNotificationLedger,
   createStateNotificationLedger,
   createStateRunReport,

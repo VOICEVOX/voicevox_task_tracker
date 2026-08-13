@@ -8,6 +8,7 @@ import { type ValidatedCodexAnalysisOutput } from "../codex/output-types.js";
 import {
   type CandidateRelation,
   type RelationCandidate,
+  type RelationCandidateId,
   type RelationCandidateNode,
 } from "../graph/relation-candidate-types.js";
 import {
@@ -16,8 +17,17 @@ import {
   type RelationMutationResult,
 } from "../graph/relation-mutation.js";
 import {
+  createExternalReferenceNodeId,
+  createGitHubNodeId,
   createUtcIsoDateTime,
+  type FreshObservedGitHubIssue as DomainFreshObservedGitHubIssue,
+  type FreshObservedGitHubPullRequest as DomainFreshObservedGitHubPullRequest,
+  type GitHubItemUrl,
+  type NormalizedEvent,
+  type ObservedGitHubHeadChecks,
+  type ObservedGitHubItemState,
   type ReplayItemHistoryResult,
+  type SourceId,
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
@@ -37,6 +47,7 @@ import {
   type GitHubItemCacheReplay,
 } from "../persistence/cache-documents.js";
 import { parseSha256Hash } from "../persistence/canonical-json.js";
+import { assertNonNullable } from "../util/index.js";
 
 /** GitHub item cache文書を生成する入力。raw本文は受け取らない。 */
 export type CreateGitHubItemCacheDocumentInput = Readonly<{
@@ -46,6 +57,7 @@ export type CreateGitHubItemCacheDocumentInput = Readonly<{
   draftState: CacheItemIndex["draftState"];
   analysisRulesFingerprint: CacheItemIndex["analysisRulesFingerprint"];
   deterministicRulesVersion: string;
+  aiAnalysisStatus: CacheItemIndex["aiAnalysisStatus"];
   lifecycle: CacheLifecycle;
   relationCandidates: readonly RelationCandidate[];
   relationMutations: readonly RelationMutationResult[];
@@ -55,6 +67,10 @@ export type CreateGitHubItemCacheDocumentInput = Readonly<{
     bodyEmpty: boolean;
     explicitRequestCandidates: readonly CacheExplicitRequestCandidate[];
     mentionedWaitingOnCandidates: readonly CacheMentionedWaitingOnCandidate[];
+    inputEvents: readonly Readonly<{
+      sourceId: SourceId;
+      url: GitHubItemUrl;
+    }>[];
     codexValidationContext: CodexCacheValidationContext;
   }>;
   aiCacheReference: AiCacheReference;
@@ -148,6 +164,18 @@ type ReplayResponsibilityEpoch = Extract<
   ReplayItemHistoryResult["responsibilityEpochs"],
   { status: "known" }
 >["value"][number];
+type CacheIssueObservation = Extract<GitHubItemCacheObservation, { type: "issue" }>;
+type CachePullRequestObservation = Extract<GitHubItemCacheObservation, { type: "pull_request" }>;
+
+/** rawを含まずdomain判定へ渡せるitem cache観測値。 */
+export type GitHubItemCacheAnalysisObservation =
+  | (Omit<CacheIssueObservation, "events" | "state" | "stateReason" | "closedAt"> &
+      DomainFreshObservedGitHubIssue)
+  | (Omit<
+      CachePullRequestObservation,
+      "events" | "state" | "stateReason" | "closedAt" | "mergeState"
+    > &
+      DomainFreshObservedGitHubPullRequest);
 
 function mapRelationNode(node: RelationCandidateNode): CacheRelationNode {
   if (node.scope === "organization") {
@@ -214,6 +242,329 @@ function mapRelationCandidate(candidate: RelationCandidate): GitHubItemCacheRela
     authority: candidate.authority,
     provenance: candidate.provenance,
     relation: mapCandidateRelation(candidate.relation),
+  };
+}
+
+function restoreRelationNode(node: CacheRelationNode): RelationCandidateNode {
+  if (node.scope === "organization") {
+    return {
+      ...node,
+      nodeId: createGitHubNodeId(node.nodeId),
+    };
+  }
+  return {
+    ...node,
+    nodeId: createExternalReferenceNodeId(node.nodeId),
+    githubNodeId: createGitHubNodeId(node.githubNodeId),
+  };
+}
+
+function restoreCandidateRelation(
+  relation: GitHubItemCacheRelationCandidate["relation"],
+): CandidateRelation {
+  switch (relation.type) {
+    case "blocks":
+      return {
+        type: "blocks",
+        blocker: restoreRelationNode(relation.blocker),
+        blocked: restoreRelationNode(relation.blocked),
+      };
+    case "parent_of":
+      return {
+        type: "parent_of",
+        parent: restoreRelationNode(relation.parent),
+        subtask: restoreRelationNode(relation.subtask),
+      };
+    case "implements":
+      return {
+        type: "implements",
+        implementation: restoreRelationNode(relation.implementation),
+        target: restoreRelationNode(relation.target),
+      };
+    case "unclassified":
+      return {
+        type: "unclassified",
+        referencing: restoreRelationNode(relation.referencing),
+        referenced: restoreRelationNode(relation.referenced),
+      };
+  }
+}
+
+function restoreRelationCandidateId(value: string): RelationCandidateId {
+  if (!value.startsWith("rel:") || value.length === "rel:".length) {
+    throw new TypeError("item cacheのrelation candidate IDが不正です");
+  }
+  return `rel:${value.slice("rel:".length)}`;
+}
+
+function createSourceIdTuple(sourceIds: readonly SourceId[]): readonly [SourceId, ...SourceId[]] {
+  const [firstSourceId, ...remainingSourceIds] = sourceIds;
+  assertNonNullable(firstSourceId, "item cacheのrelation candidateにsource IDがありません");
+  return Object.freeze([firstSourceId, ...remainingSourceIds]);
+}
+
+function restoreRelationCandidate(candidate: GitHubItemCacheRelationCandidate): RelationCandidate {
+  const common = {
+    id: restoreRelationCandidateId(candidate.id),
+    sourceIds: createSourceIdTuple(candidate.sourceIds),
+  };
+  const relation = restoreCandidateRelation(candidate.relation);
+  switch (candidate.provenance) {
+    case "native":
+      if (candidate.authority !== "authoritative" || relation.type === "unclassified") {
+        throw new TypeError("item cacheのnative relation候補が不整合です");
+      }
+      return {
+        ...common,
+        authority: "authoritative",
+        provenance: "native",
+        relation,
+      };
+    case "explicit_text":
+      if (candidate.authority !== "inferred" || relation.type !== "unclassified") {
+        throw new TypeError("item cacheのexplicit text relation候補が不整合です");
+      }
+      return {
+        ...common,
+        authority: "inferred",
+        provenance: "explicit_text",
+        relation,
+      };
+    case "closing_keyword":
+      if (candidate.authority !== "inferred" || relation.type !== "implements") {
+        throw new TypeError("item cacheのclosing keyword relation候補が不整合です");
+      }
+      return {
+        ...common,
+        authority: "inferred",
+        provenance: "closing_keyword",
+        relation,
+      };
+    case "checklist":
+      if (candidate.authority !== "inferred" || relation.type !== "parent_of") {
+        throw new TypeError("item cacheのchecklist relation候補が不整合です");
+      }
+      return {
+        ...common,
+        authority: "inferred",
+        provenance: "checklist",
+        relation,
+      };
+    case "cross_reference":
+      if (
+        candidate.authority !== "inferred" ||
+        (relation.type !== "unclassified" && relation.type !== "implements")
+      ) {
+        throw new TypeError("item cacheのcross reference relation候補が不整合です");
+      }
+      return {
+        ...common,
+        authority: "inferred",
+        provenance: "cross_reference",
+        relation,
+      };
+  }
+}
+
+function restoreItemState(observation: GitHubItemCacheObservation): ObservedGitHubItemState {
+  if (observation.state === "open") {
+    if (
+      observation.closedAt != null ||
+      observation.stateReason === "completed" ||
+      observation.stateReason === "not_planned" ||
+      observation.stateReason === "duplicate"
+    ) {
+      throw new TypeError("item cacheのopen状態が不整合です");
+    }
+    return {
+      state: "open",
+      stateReason: observation.stateReason,
+      closedAt: null,
+    };
+  }
+  if (observation.closedAt == null || observation.stateReason === "reopened") {
+    throw new TypeError("item cacheのclosed状態が不整合です");
+  }
+  return {
+    state: "closed",
+    stateReason: observation.stateReason,
+    closedAt: observation.closedAt,
+  };
+}
+
+function restoreNormalizedEvent(
+  event: GitHubItemCacheObservation["events"][number],
+): NormalizedEvent {
+  const common = {
+    sourceId: event.sourceId,
+    itemNodeId: event.itemNodeId,
+    occurredAt: event.occurredAt,
+    actor: event.actor,
+  };
+  switch (event.kind) {
+    case "comment":
+      return {
+        ...common,
+        kind: "comment",
+        bodyFingerprint: event.bodyFingerprint,
+        bodyEmpty: event.bodyEmpty,
+        ...(event.replyToCommentNodeId == null
+          ? {}
+          : { replyToCommentNodeId: event.replyToCommentNodeId }),
+      };
+    case "push":
+      return {
+        ...common,
+        kind: "push",
+        headCommitSha: event.headCommitSha,
+        forcePush: event.forcePush,
+      };
+    case "review":
+      return event.commitStatus === "available"
+        ? {
+            ...common,
+            kind: "review",
+            state: event.state,
+            bodyFingerprint: event.bodyFingerprint,
+            bodyEmpty: event.bodyEmpty,
+            commitStatus: "available",
+            commitSha: event.commitSha,
+          }
+        : {
+            ...common,
+            kind: "review",
+            state: event.state,
+            bodyFingerprint: event.bodyFingerprint,
+            bodyEmpty: event.bodyEmpty,
+            commitStatus: "unavailable",
+          };
+    case "review_request":
+      return {
+        ...common,
+        kind: "review_request",
+        target: event.target,
+        action: event.action,
+      };
+    case "label":
+      return {
+        ...common,
+        kind: "label",
+        labelName: event.labelName,
+        action: event.action,
+      };
+    case "assignee":
+      return {
+        ...common,
+        kind: "assignee",
+        assignee: event.assignee,
+        action: event.action,
+      };
+    case "state":
+      return event.state === "closed"
+        ? {
+            ...common,
+            kind: "state",
+            state: "closed",
+            stateReason: event.stateReason,
+          }
+        : {
+            ...common,
+            kind: "state",
+            state: event.state,
+          };
+    case "relation":
+      return {
+        ...common,
+        kind: "relation",
+        relationType: event.relationType,
+        target:
+          event.target.type === "node"
+            ? { type: "node", nodeId: createGitHubNodeId(event.target.nodeId) }
+            : event.target,
+        action: event.action,
+        provenance: event.provenance,
+        direction: event.direction,
+      };
+    case "ready_for_review":
+    case "converted_to_draft":
+    case "added_to_merge_queue":
+    case "removed_from_merge_queue":
+    case "auto_merge_enabled":
+    case "auto_merge_disabled":
+      return {
+        ...common,
+        kind: event.kind,
+      };
+  }
+}
+
+function restoreHeadChecks(
+  checks: CachePullRequestObservation["mergeState"]["checks"],
+): ObservedGitHubHeadChecks {
+  if (checks.status === "not_configured") {
+    return checks;
+  }
+  return {
+    status: "configured",
+    sourceId: checks.sourceId,
+    nodeId: checks.nodeId,
+    combinedState: checks.combinedState,
+    contexts: checks.contexts.map((context) => {
+      if (context.type === "commit_status") {
+        return {
+          type: "commit_status",
+          sourceId: context.sourceId,
+          state: context.state,
+          createdAt: context.createdAt,
+        };
+      }
+      if (context.status === "completed") {
+        if (context.conclusion === "not_completed" || context.completedAt == null) {
+          throw new TypeError("item cacheの完了check runが不整合です");
+        }
+        return {
+          type: "check_run",
+          sourceId: context.sourceId,
+          status: "completed",
+          conclusion: context.conclusion,
+          completedAt: context.completedAt,
+        };
+      }
+      if (context.conclusion !== "not_completed" || context.completedAt != null) {
+        throw new TypeError("item cacheの未完了check runが不整合です");
+      }
+      return {
+        type: "check_run",
+        sourceId: context.sourceId,
+        status: context.status,
+        conclusion: "not_completed",
+        completedAt: null,
+      };
+    }),
+  };
+}
+
+function restoreAnalysisObservation(
+  observation: GitHubItemCacheObservation,
+): GitHubItemCacheAnalysisObservation {
+  const state = restoreItemState(observation);
+  if (observation.type === "issue") {
+    return {
+      ...observation,
+      ...state,
+      events: observation.events.map(restoreNormalizedEvent),
+      type: "issue",
+    };
+  }
+  return {
+    ...observation,
+    ...state,
+    events: observation.events.map(restoreNormalizedEvent),
+    type: "pull_request",
+    mergeState: {
+      ...observation.mergeState,
+      checks: restoreHeadChecks(observation.mergeState.checks),
+    },
   };
 }
 
@@ -689,6 +1040,7 @@ export function createGitHubItemCacheDocument(
     itemFingerprint: input.observation.itemFingerprint,
     analysisRulesFingerprint: input.analysisRulesFingerprint,
     deterministicRulesVersion: input.deterministicRulesVersion,
+    aiAnalysisStatus: input.aiAnalysisStatus,
     createdAt: input.observation.createdAt,
     updatedAt: input.observation.githubUpdatedAt,
     observedAt: input.observation.observedAt,
@@ -697,6 +1049,7 @@ export function createGitHubItemCacheDocument(
     analysisFacts: {
       explicitRequestCandidates: input.analysisFacts.explicitRequestCandidates,
       mentionedWaitingOnCandidates: input.analysisFacts.mentionedWaitingOnCandidates,
+      inputEvents: input.analysisFacts.inputEvents,
       codexValidationContext: input.analysisFacts.codexValidationContext,
     },
     relationCandidates: input.relationCandidates
@@ -780,8 +1133,8 @@ export function restoreGitHubItemCache(
 
 /** item cache文書をraw detailなしで判定へ渡せる構造化sourceへ復元する。 */
 export type GitHubItemCacheAnalysisSource = Readonly<{
-  observation: GitHubItemCacheObservation;
-  relationCandidates: readonly GitHubItemCacheDocument["relationCandidates"][number][];
+  observation: GitHubItemCacheAnalysisObservation;
+  relationCandidates: readonly RelationCandidate[];
   relationMutations: readonly GitHubItemCacheDocument["relationMutations"][number][];
   replay: GitHubItemCacheDocument["replay"];
   history: GitHubItemCacheDocument["history"];
@@ -810,8 +1163,8 @@ export type GitHubItemCacheAnalysisRestoration =
 
 function createAnalysisSource(document: GitHubItemCacheDocument): GitHubItemCacheAnalysisSource {
   return {
-    observation: document.currentObservation,
-    relationCandidates: document.relationCandidates,
+    observation: restoreAnalysisObservation(document.currentObservation),
+    relationCandidates: document.relationCandidates.map(restoreRelationCandidate),
     relationMutations: document.relationMutations,
     replay: document.replay,
     history: document.history,

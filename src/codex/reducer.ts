@@ -29,7 +29,10 @@ import {
 import { type CodexAnalysisInput } from "./input.js";
 import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
-import { listNativeRelationConstraints } from "./semantic-validation.js";
+import {
+  listNativeRelationConstraints,
+  type CodexCacheValidationContext,
+} from "./semantic-validation.js";
 
 const CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT = 5;
 
@@ -134,6 +137,11 @@ export type RunCodexAnalysisWithFallbackInput = Readonly<{
 /** 1件のCodex実行へ注入する副作用境界。 */
 export type RunCodexAnalysisWithFallbackDependencies = Readonly<{
   execute: (input: CodexAnalysisInput) => Promise<unknown>;
+}>;
+
+type ValidatedCodexReductionContext = Readonly<{
+  relationCandidateIds: readonly string[];
+  hasNativeBlocker: boolean;
 }>;
 
 function httpStatusFromError(error: unknown): number | undefined {
@@ -464,28 +472,16 @@ export function reduceCodexInputValidationFailure(
   );
 }
 
-/** 検証済みCodex出力だけを決定論的判定へ統合するpure reducer。 */
-export function reduceCodexAnalysis(
-  analysisInput: CodexAnalysisInput,
+function reduceValidatedCodexAnalysis(
+  context: ValidatedCodexReductionContext,
   deterministicDecision: DeterministicCodexDecision,
-  attempt: CodexAnalysisAttempt,
+  output: ValidatedCodexAnalysisOutput,
   confidenceThresholds: CodexConfidenceThresholds,
 ): CodexAnalysisReduction {
-  validateDecision(deterministicDecision);
-
-  if (attempt.status === "unavailable") {
-    return reduceUnavailableCodexAnalysis(
-      deterministicDecision,
-      analysisInput.candidates.relations.map((candidate) => candidate.id),
-      attempt.reason,
-      attempt.errorType,
-    );
-  }
-
-  const stateConfidence = effectiveStateConfidence(attempt.output);
+  const stateConfidence = effectiveStateConfidence(output);
   const classification = classifyCodexConfidence(stateConfidence, confidenceThresholds);
-  const importanceAssessment = createImportanceAssessment(attempt.output, classification);
-  const relationAssessments = createRelationAssessments(attempt.output);
+  const importanceAssessment = createImportanceAssessment(output, classification);
+  const relationAssessments = createRelationAssessments(output);
   const completeCoverage = Object.freeze({
     status: "complete",
   }) satisfies CodexRelationCoverage;
@@ -508,10 +504,7 @@ export function reduceCodexAnalysis(
     });
   }
 
-  const hasNativeBlocker = listNativeRelationConstraints(analysisInput).some(
-    (constraint) => constraint.verdict === "current_is_blocked_by_target",
-  );
-  if (hasNativeBlocker) {
+  if (context.hasNativeBlocker) {
     return Object.freeze({
       decision: createDecision("deterministic", deterministicDecision, undefined),
       displayMode: "confirmed",
@@ -552,12 +545,12 @@ export function reduceCodexAnalysis(
     decision: createDecision(
       "codex",
       {
-        status: attempt.output.status,
-        waitingOn: attempt.output.waitingOn,
-        nextAction: attempt.output.nextAction,
+        status: output.status,
+        waitingOn: output.waitingOn,
+        nextAction: output.nextAction,
         confidence: stateConfidence,
-        evidence: attempt.output.evidence,
-        uncertainties: attempt.output.uncertainties,
+        evidence: output.evidence,
+        uncertainties: output.uncertainties,
       },
       additionalUncertainty,
     ),
@@ -570,8 +563,59 @@ export function reduceCodexAnalysis(
     }),
     relationAssessments,
     relationCoverage: completeCoverage,
-    notification: createCodexNotification(attempt.output, classification),
+    notification: createCodexNotification(output, classification),
   });
+}
+
+/** 検証済みCodex出力だけを決定論的判定へ統合するpure reducer。 */
+export function reduceCodexAnalysis(
+  analysisInput: CodexAnalysisInput,
+  deterministicDecision: DeterministicCodexDecision,
+  attempt: CodexAnalysisAttempt,
+  confidenceThresholds: CodexConfidenceThresholds,
+): CodexAnalysisReduction {
+  validateDecision(deterministicDecision);
+
+  if (attempt.status === "unavailable") {
+    return reduceUnavailableCodexAnalysis(
+      deterministicDecision,
+      analysisInput.candidates.relations.map((candidate) => candidate.id),
+      attempt.reason,
+      attempt.errorType,
+    );
+  }
+  return reduceValidatedCodexAnalysis(
+    {
+      relationCandidateIds: analysisInput.candidates.relations.map((candidate) => candidate.id),
+      hasNativeBlocker: listNativeRelationConstraints(analysisInput).some(
+        (constraint) => constraint.verdict === "current_is_blocked_by_target",
+      ),
+    },
+    deterministicDecision,
+    attempt.output,
+    confidenceThresholds,
+  );
+}
+
+/** raw非保持contextで再検証済みのCodex出力を決定論的判定へ統合する。 */
+export function reduceCachedCodexAnalysis(
+  context: CodexCacheValidationContext,
+  deterministicDecision: DeterministicCodexDecision,
+  output: ValidatedCodexAnalysisOutput,
+  confidenceThresholds: CodexConfidenceThresholds,
+): CodexAnalysisReduction {
+  validateDecision(deterministicDecision);
+  return reduceValidatedCodexAnalysis(
+    {
+      relationCandidateIds: context.candidates.relations.map((candidate) => candidate.id),
+      hasNativeBlocker: context.nativeRelationConstraints.some(
+        (constraint) => constraint.verdict === "current_is_blocked_by_target",
+      ),
+    },
+    deterministicDecision,
+    output,
+    confidenceThresholds,
+  );
 }
 
 /** Codex実行、二段階検証、fallback reducerを1件分実行する。 */

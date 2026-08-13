@@ -208,6 +208,7 @@ function createItemIndex(): GitHubRepositoryCacheDocument["items"][number] {
     itemFingerprint: ITEM_FINGERPRINT,
     analysisRulesFingerprint: RULES_FINGERPRINT,
     deterministicRulesVersion: "issue-v1",
+    aiAnalysisStatus: "used",
     createdAt,
     updatedAt,
     observedAt,
@@ -224,6 +225,7 @@ const openItemNodeId = createGitHubNodeId("I_CACHE_ONLY_OPEN");
 function createOpenItemIndex(): GitHubRepositoryCacheDocument["items"][number] {
   return {
     ...createItemIndex(),
+    aiAnalysisStatus: "not_required",
     nodeId: openItemNodeId,
     number: 2,
     url: "https://github.com/VOICEVOX/cache-only-fixture/issues/2",
@@ -319,6 +321,7 @@ function createItemCache(): GitHubItemCacheDocument {
     analysisFacts: {
       explicitRequestCandidates: [],
       mentionedWaitingOnCandidates: [],
+      inputEvents: [],
       codexValidationContext: {
         schemaVersion: "1",
         purpose: "semantic_validation_only",

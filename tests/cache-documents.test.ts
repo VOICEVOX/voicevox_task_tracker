@@ -67,6 +67,7 @@ function createOpenIndex(): GitHubRepositoryCacheDocument["items"][number] {
     itemFingerprint: ITEM_FINGERPRINT,
     analysisRulesFingerprint: RULES_FINGERPRINT,
     deterministicRulesVersion: "issue-v1",
+    aiAnalysisStatus: "used",
     createdAt: CREATED_AT,
     updatedAt: UPDATED_AT,
     observedAt: OBSERVED_AT,
@@ -202,6 +203,7 @@ function createValidItem(): GitHubItemCacheDocument {
     analysisFacts: {
       explicitRequestCandidates: [],
       mentionedWaitingOnCandidates: [],
+      inputEvents: [],
       codexValidationContext: {
         schemaVersion: "1",
         purpose: "semantic_validation_only",
@@ -635,6 +637,12 @@ describe("cache文書契約", () => {
       },
       analysisFacts: {
         ...document.analysisFacts,
+        inputEvents: [
+          {
+            sourceId: commentSourceId,
+            url: document.url,
+          },
+        ],
         explicitRequestCandidates: [
           {
             sourceId: commentSourceId,
@@ -860,6 +868,7 @@ describe("cache文書契約", () => {
     const manyRelatedNodeIds = Array.from({ length: 101 }, (_, index) =>
       createGitHubNodeId(`N_bulk_${index.toString().padStart(3, "0")}`),
     );
+    const validItem = createValidItem();
 
     expect(() =>
       createCacheDocument({
@@ -886,7 +895,7 @@ describe("cache文書契約", () => {
     ).not.toThrow();
     expect(() =>
       createCacheDocument({
-        ...createValidItem(),
+        ...validItem,
         currentObservation: {
           ...createCurrentObservation(),
           labels: Array.from(
@@ -894,6 +903,13 @@ describe("cache文書契約", () => {
             (_, index) => `label-${index.toString().padStart(3, "0")}`,
           ),
           events: manyEvents,
+        },
+        analysisFacts: {
+          ...validItem.analysisFacts,
+          inputEvents: manyEvents.map((event) => ({
+            sourceId: event.sourceId,
+            url: validItem.url,
+          })),
         },
         history: {
           ...createCompleteHistory(),

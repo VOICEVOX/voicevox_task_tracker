@@ -321,6 +321,15 @@ export class FileAiCacheStore implements AiCacheStore {
 export class MemoryAiCacheStore implements AiCacheStore {
   readonly #entries = new Map<AiCacheKey, AiCacheEntry>();
 
+  /** メモリ上のAI cache entryを決定的な順序で取得する。 */
+  public entries(): readonly AiCacheEntry[] {
+    return Object.freeze(
+      [...this.#entries.values()].sort((left, right) =>
+        left.cacheKey < right.cacheKey ? -1 : left.cacheKey > right.cacheKey ? 1 : 0,
+      ),
+    );
+  }
+
   public read(cacheKey: AiCacheKey): Promise<AiCacheReadResult> {
     if (!this.#entries.has(cacheKey)) {
       return Promise.resolve(

@@ -559,6 +559,7 @@ function itemIndexFromDocument(
     itemFingerprint: document.itemFingerprint,
     analysisRulesFingerprint: document.analysisRulesFingerprint,
     deterministicRulesVersion: document.deterministicRulesVersion,
+    aiAnalysisStatus: document.aiAnalysisStatus,
     createdAt: document.createdAt,
     updatedAt: document.updatedAt,
     observedAt: document.observedAt,

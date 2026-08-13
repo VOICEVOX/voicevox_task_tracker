@@ -180,6 +180,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       cache: Types["cache"];
       repositoryInventory: Types["repositoryInventory"];
       collection: Types["collection"];
+      deterministicAnalysis: Types["deterministicAnalysis"];
       codexAnalysis: Types["codexAnalysis"];
       reduction: Types["reduction"];
       graph: Types["graph"];
@@ -607,6 +608,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         cache,
         repositoryInventory: repositoryInventory.value,
         collection: collection.value,
+        deterministicAnalysis,
         codexAnalysis: codexAnalysis.value,
         reduction,
         graph: graph.value,

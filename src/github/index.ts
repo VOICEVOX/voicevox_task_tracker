@@ -126,6 +126,7 @@ export {
   type GitHubItemCacheAiEntryInput,
   type GitHubItemCacheAiValidation,
   type GitHubItemCacheAnalysisRestoration,
+  type GitHubItemCacheAnalysisObservation,
   type GitHubItemCacheAnalysisSource,
   type GitHubItemCacheRestoration,
   type RestoreGitHubItemCacheInput,
