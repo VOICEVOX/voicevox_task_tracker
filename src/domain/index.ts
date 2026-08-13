@@ -66,6 +66,7 @@ export {
 } from "./meaningful-progress.js";
 export {
   replayItemHistory,
+  ResponsibilityReplayMismatchError,
   type ReplayCurrentItem,
   type ReplayEvent,
   type ReplayHistory,

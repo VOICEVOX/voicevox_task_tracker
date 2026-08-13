@@ -10,6 +10,7 @@ import {
   type DryRunCliCommand,
 } from "./command.js";
 import { safeErrorDiagnostic } from "./error-diagnostic.js";
+import { ResponsibilityReplayRetryExhaustedError } from "./errors.js";
 import { RunCoordinator, type CoordinatedRunResult } from "./run-coordinator.js";
 import {
   createEmptyRunMetrics,
@@ -457,7 +458,10 @@ function operationsAlertKind(stage: RunStage): "collection" | "pages" | undefine
 }
 
 function operationsAlertRetryAttempts(error: unknown): number {
-  return error instanceof GitHubRetryExhaustedError ? error.attempts : 1;
+  return error instanceof GitHubRetryExhaustedError ||
+    error instanceof ResponsibilityReplayRetryExhaustedError
+    ? error.attempts
+    : 1;
 }
 
 /** Daily transactionを順序保証付きで実行する。 */

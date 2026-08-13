@@ -75,6 +75,7 @@ import {
   resolvePullRequestCommitOccurredAt,
   resolveRepositoryMaintainers,
   resolveWaitingOnAccountIdentifiers,
+  ResponsibilityReplayMismatchError,
   selectTrackingItems,
   type LabelRule,
   type GitHubNodeId,
@@ -242,6 +243,7 @@ import {
   CliCredentialsError,
   CliExecutableError,
   CliRelationExpansionLimitError,
+  ResponsibilityReplayRetryExhaustedError,
 } from "./errors.js";
 import { safeCodexFallbackDiagnostic } from "./error-diagnostic.js";
 import {
@@ -421,6 +423,7 @@ type CollectedItems = Readonly<{
 
 type FreshRepositoryItemCollection = Readonly<{
   enumeratedItems: readonly EnumeratedGitHubItem[];
+  reenumeratedItems: readonly EnumeratedGitHubItem[];
   details: readonly GitHubItemDetail[];
   observedItems: readonly RuntimeObservedGitHubItem[];
   analysisSources: readonly RuntimeItemAnalysisSource[];
@@ -6677,6 +6680,198 @@ function createExactAiRelationNotificationHistory(
   });
 }
 
+type FreshReplaySource = Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>;
+
+type FreshReplayResolution = Readonly<{
+  item: EnumeratedGitHubItem;
+  detail: GitHubItemDetail;
+  observation: FreshObservedGitHubItem;
+  source: FreshReplaySource;
+  reenumeratedItem: EnumeratedGitHubItem | undefined;
+}>;
+
+function calculateResponsibilityReplayRetryDelayMilliseconds(
+  retryNumber: number,
+  settings: Config["operations"]["retry"],
+): number {
+  if (!Number.isSafeInteger(retryNumber) || retryNumber < 1) {
+    throw new TypeError("責務再生retry番号には1以上の安全な整数を指定してください");
+  }
+  return Math.min(
+    settings.maxDelaySeconds * 1000,
+    settings.initialDelaySeconds * 1000 * 2 ** (retryNumber - 1),
+  );
+}
+
+function createFreshReplaySource(
+  item: EnumeratedGitHubItem,
+  detail: GitHubItemDetail,
+  observation: FreshObservedGitHubItem,
+  configuration: RuntimeConfiguration,
+  isBot: ReturnType<typeof createGitHubBotPredicate>,
+): FreshReplaySource {
+  return Object.freeze({
+    kind: "fresh",
+    item: observation,
+    detail,
+    replay: replayGitHubItemHistory({
+      item,
+      detail,
+      trackingStartAt: trackingSelectionStartAt(configuration),
+      isBot,
+    }),
+  });
+}
+
+function validateResponsibilityReplayRetryEnumeration(
+  repository: PublicRepository,
+  expectedItem: EnumeratedGitHubItem,
+  items: readonly EnumeratedGitHubItem[],
+): EnumeratedGitHubItem {
+  if (items.length !== 1) {
+    throw new TypeError(
+      `責務再生retryの再列挙結果件数が不正です。対象: ${expectedItem.nodeId} 件数: ${items.length.toString()}`,
+    );
+  }
+  const item = items[0];
+  assertNonNullable(item, `責務再生retryの再列挙結果がありません。対象: ${expectedItem.nodeId}`);
+  if (
+    item.repositoryId !== repository.id ||
+    item.nodeId !== expectedItem.nodeId ||
+    item.number !== expectedItem.number ||
+    item.type !== expectedItem.type
+  ) {
+    throw new TypeError(
+      `責務再生retryの再列挙結果が要求項目と一致しません。対象: ${expectedItem.nodeId}`,
+    );
+  }
+  return item;
+}
+
+async function collectResponsibilityReplayRetryItem(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  authentication: GitHubClient,
+  repository: PublicRepository,
+  expectedItem: EnumeratedGitHubItem,
+  isBot: ReturnType<typeof createGitHubBotPredicate>,
+): Promise<
+  Readonly<{
+    item: EnumeratedGitHubItem;
+    detail: GitHubItemDetail;
+    observation: FreshObservedGitHubItem;
+  }>
+> {
+  const allowlist = createPublicRepositoryAllowlist([repository]);
+  const enumeratedItems = await adapters.enumerateGitHubItemsByIdentifiers({
+    allowlist,
+    identifiers: [expectedItem.nodeId],
+    observedAt: invocation.startedAt,
+    request: authentication.request,
+    graphql: authentication.graphql,
+  });
+  const item = validateResponsibilityReplayRetryEnumeration(
+    repository,
+    expectedItem,
+    enumeratedItems,
+  );
+  const details = (
+    await adapters.collectGitHubItemDetails({
+      allowlist,
+      targets: Object.freeze([Object.freeze({ item })]),
+      observedAt: invocation.startedAt,
+      graphql: authentication.graphql,
+    })
+  ).items;
+  if (details.length !== 1) {
+    throw new TypeError(
+      `責務再生retryの詳細取得結果件数が不正です。対象: ${item.nodeId} 件数: ${details.length.toString()}`,
+    );
+  }
+  const detail = details[0];
+  assertNonNullable(detail, `責務再生retryの詳細取得結果がありません。対象: ${item.nodeId}`);
+  const observations = normalizeObservedGitHubItems({
+    items: Object.freeze([item]),
+    details: Object.freeze([detail]),
+    isBot,
+  });
+  const observation = observations[0];
+  assertNonNullable(observation, `責務再生retryの観測値がありません。対象: ${item.nodeId}`);
+  return Object.freeze({ item, detail, observation });
+}
+
+async function replayFreshItemWithResponsibilityRetry(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  configuration: RuntimeConfiguration,
+  authentication: GitHubClient,
+  repository: PublicRepository,
+  item: EnumeratedGitHubItem,
+  detail: GitHubItemDetail,
+  observation: FreshObservedGitHubItem,
+  isBot: ReturnType<typeof createGitHubBotPredicate>,
+): Promise<FreshReplayResolution> {
+  try {
+    return Object.freeze({
+      item,
+      detail,
+      observation,
+      source: createFreshReplaySource(item, detail, observation, configuration, isBot),
+      reenumeratedItem: undefined,
+    });
+  } catch (error: unknown) {
+    if (!(error instanceof ResponsibilityReplayMismatchError)) {
+      throw error;
+    }
+    let lastError = error;
+    for (
+      let retryNumber = 1;
+      retryNumber < configuration.config.operations.retry.maxAttempts;
+      retryNumber += 1
+    ) {
+      await adapters.sleep(
+        calculateResponsibilityReplayRetryDelayMilliseconds(
+          retryNumber,
+          configuration.config.operations.retry,
+        ),
+      );
+      const refreshed = await collectResponsibilityReplayRetryItem(
+        adapters,
+        invocation,
+        authentication,
+        repository,
+        item,
+        isBot,
+      );
+      try {
+        return Object.freeze({
+          ...refreshed,
+          source: createFreshReplaySource(
+            refreshed.item,
+            refreshed.detail,
+            refreshed.observation,
+            configuration,
+            isBot,
+          ),
+          reenumeratedItem: refreshed.item,
+        });
+      } catch (retryError: unknown) {
+        if (!(retryError instanceof ResponsibilityReplayMismatchError)) {
+          throw retryError;
+        }
+        lastError = retryError;
+      }
+    }
+    throw new ResponsibilityReplayRetryExhaustedError(
+      item.nodeId,
+      configuration.config.operations.retry.maxAttempts,
+      {
+        cause: lastError,
+      },
+    );
+  }
+}
+
 async function collectFreshRepositoryItemObservations(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -6766,36 +6961,64 @@ async function collectFreshRepositoryItemObservations(
     details,
     isBot: createGitHubBotPredicate(configuration.config.actors.bots),
   });
+  const isBot = createGitHubBotPredicate(configuration.config.actors.bots);
   const freshObservedItemsByNodeId = new Map(observedItems.map((item) => [item.nodeId, item]));
   const detailsByNodeId = new Map(details.map((detail) => [detail.nodeId, detail]));
-  const analysisSources = enumeratedItems.map((item): RuntimeItemAnalysisSource => {
+  const enumeratedItemsByNodeId = new Map(enumeratedItems.map((item) => [item.nodeId, item]));
+  const reenumeratedItemsByNodeId = new Map<GitHubNodeId, EnumeratedGitHubItem>();
+  const analysisSources: RuntimeItemAnalysisSource[] = [];
+  for (const item of enumeratedItems) {
     if (detailNodeIds.has(item.nodeId)) {
       const observation = freshObservedItemsByNodeId.get(item.nodeId);
       const detail = detailsByNodeId.get(item.nodeId);
       assertNonNullable(observation, `fresh観測値がありません。対象: ${item.nodeId}`);
       assertNonNullable(detail, `fresh詳細がありません。対象: ${item.nodeId}`);
-      return Object.freeze({
-        kind: "fresh",
-        item: observation,
+      const resolved = await replayFreshItemWithResponsibilityRetry(
+        adapters,
+        invocation,
+        configuration,
+        authentication,
+        repository,
+        item,
         detail,
-        replay: replayGitHubItemHistory({
-          item,
-          detail,
-          trackingStartAt: trackingSelectionStartAt(configuration),
-          isBot: createGitHubBotPredicate(configuration.config.actors.bots),
-        }),
-      });
+        observation,
+        isBot,
+      );
+      analysisSources.push(resolved.source);
+      detailsByNodeId.set(resolved.detail.nodeId, resolved.detail);
+      freshObservedItemsByNodeId.set(resolved.observation.nodeId, resolved.observation);
+      if (resolved.reenumeratedItem != null) {
+        enumeratedItemsByNodeId.set(resolved.reenumeratedItem.nodeId, resolved.reenumeratedItem);
+        reenumeratedItemsByNodeId.set(resolved.reenumeratedItem.nodeId, resolved.reenumeratedItem);
+      }
+      continue;
     }
     const source = cachedSourcesByNodeId.get(item.nodeId);
     assertNonNullable(source, `warm解析sourceがありません。対象: ${item.nodeId}`);
-    return source;
+    analysisSources.push(source);
+  }
+  const finalDetails = details.map((detail) => {
+    const replacement = detailsByNodeId.get(detail.nodeId);
+    assertNonNullable(replacement, `fresh詳細の最終値がありません。対象: ${detail.nodeId}`);
+    return replacement;
   });
+  const changedNodeIds = new Set(plan.changedItemNodeIds);
+  for (const nodeId of reenumeratedItemsByNodeId.keys()) {
+    changedNodeIds.add(nodeId);
+  }
   return Object.freeze({
-    enumeratedItems: Object.freeze([...enumeratedItems]),
-    details,
+    enumeratedItems: Object.freeze(
+      enumeratedItems.map((item) => {
+        const replacement = enumeratedItemsByNodeId.get(item.nodeId);
+        assertNonNullable(replacement, `fresh列挙値の最終値がありません。対象: ${item.nodeId}`);
+        return replacement;
+      }),
+    ),
+    reenumeratedItems: Object.freeze([...reenumeratedItemsByNodeId.values()]),
+    details: Object.freeze(finalDetails),
     observedItems: Object.freeze(analysisSources.map((source) => source.item)),
     analysisSources: Object.freeze(analysisSources),
-    changedNodeIds: plan.changedItemNodeIds,
+    changedNodeIds: Object.freeze([...changedNodeIds]),
     diagnostics: Object.freeze(diagnostics),
   });
 }
@@ -6821,8 +7044,12 @@ function rebaseFreshRepositoryItemCollectionWithDetailVolatileMetadata(
       createGitHubPullRequestVolatileMetadataFromDetail(detail),
     );
   }
+  const baseItemsByNodeId = new Map(provisionalItems.map((item) => [item.nodeId, item]));
+  for (const item of collection.reenumeratedItems) {
+    baseItemsByNodeId.set(item.nodeId, item);
+  }
   const finalized = finalizeGitHubItemsWithVolatileMetadata({
-    items: provisionalItems,
+    items: [...baseItemsByNodeId.values()],
     volatileMetadata: [...volatileMetadataByNodeId.values()],
   });
   const finalizedItemsByNodeId = new Map(finalized.items.map((item) => [item.nodeId, item]));
@@ -6873,6 +7100,7 @@ function rebaseFreshRepositoryItemCollectionWithDetailVolatileMetadata(
   });
   return Object.freeze({
     enumeratedItems: finalized.items,
+    reenumeratedItems: collection.reenumeratedItems,
     details: collection.details,
     observedItems: Object.freeze(analysisSources.map((source) => source.item)),
     analysisSources: Object.freeze(analysisSources),
@@ -6991,13 +7219,17 @@ async function collectFreshRepositoryItems(
     enumeratedItems,
     adjacentNodeIds,
   );
+  const provisionalItemsByNodeId = new Map(enumeratedItems.map((item) => [item.nodeId, item]));
+  for (const item of itemCollection.reenumeratedItems) {
+    provisionalItemsByNodeId.set(item.nodeId, item);
+  }
   return Object.freeze({
     state: createSnapshotCollectionRepository(
       repository,
       invocation.startedAt,
       itemCollection.enumeratedItems,
     ),
-    provisionalEnumeratedItems: enumeratedItems,
+    provisionalEnumeratedItems: Object.freeze([...provisionalItemsByNodeId.values()]),
     ...itemCollection,
   });
 }
@@ -7073,7 +7305,7 @@ async function collectAdditionalRelationItems(
     (item) => item.nodeId,
   );
   const mergedProvisionalEnumeratedItems = deduplicateByStableId(
-    [...current.provisionalEnumeratedItems, ...detailTargets],
+    [...current.provisionalEnumeratedItems, ...detailTargets, ...additions.reenumeratedItems],
     (item) => item.nodeId,
   );
   const mergedDetails = deduplicateByStableId(
@@ -7096,6 +7328,10 @@ async function collectAdditionalRelationItems(
       mergedEnumeratedItems,
     ),
     provisionalEnumeratedItems: mergedProvisionalEnumeratedItems,
+    reenumeratedItems: deduplicateByStableId(
+      [...current.reenumeratedItems, ...additions.reenumeratedItems],
+      (item) => item.nodeId,
+    ),
     enumeratedItems: mergedEnumeratedItems,
     details: mergedDetails,
     observedItems: mergedObservedItems,

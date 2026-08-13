@@ -9,8 +9,9 @@ import {
   type OnlineCliCommand,
   type RunReport,
 } from "../src/cli/index.js";
+import { ResponsibilityReplayRetryExhaustedError } from "../src/cli/errors.js";
 import { SecretRedactor, executeWithGitHubRetry } from "../src/github/index.js";
-import { createUtcIsoDateTime } from "../src/domain/index.js";
+import { createGitHubNodeId, createUtcIsoDateTime } from "../src/domain/index.js";
 
 const NOW = "2026-07-31T00:00:00.000Z";
 const FINISHED_AT = "2026-07-31T00:00:01.000Z";
@@ -76,6 +77,9 @@ type CollectionFailure =
     }>
   | Readonly<{
       status: 429 | 503;
+    }>
+  | Readonly<{
+      status: "responsibility_replay";
     }>;
 
 type HarnessBehavior = Readonly<{
@@ -210,6 +214,13 @@ function createHarness(behavior: HarnessBehavior): Harness {
     },
     collectIncrementalItems: async () => {
       events.push("incremental_collection");
+      if (behavior.collectionFailure.status === "responsibility_replay") {
+        throw new ResponsibilityReplayRetryExhaustedError(
+          createGitHubNodeId("I_responsibility_replay_retry_exhausted"),
+          4,
+          { cause: new Error("責務再生retry上限fixture") },
+        );
+      }
       if (behavior.collectionFailure.status !== "none") {
         const failureStatus = behavior.collectionFailure.status;
         await executeWithGitHubRetry(
@@ -630,6 +641,26 @@ describe("Daily transaction", () => {
     expect(harness.events).toContain("operations_alert");
     expect(harness.operationsRetryAttempts).toEqual([3]);
     expect(harness.cache.lastGoodCacheHash).toBe("sha256:last-good-cache");
+  });
+
+  it("責務再生retry上限のattemptsを運用障害通知へ渡す", async () => {
+    const harness = createHarness({
+      ...defaultBehavior(),
+      collectionFailure: {
+        status: "responsibility_replay",
+      },
+    });
+    const result = await harness.runner.run(parseOnlineCommand(scheduledArgs("daily")));
+
+    expect(result.value.report).toMatchObject({
+      status: "failure",
+      complete: false,
+      failedStage: "incremental_collection",
+    });
+    expect(harness.operationsRetryAttempts).toEqual([4]);
+    expect(harness.counters.discordCalls).toBe(1);
+    expect(harness.counters.pagesBuilds).toBe(0);
+    expect(harness.counters.cacheCommits).toBe(0);
   });
 
   it("cache読み込み失敗でも運用障害通知を試みcache保存へ進まない", async () => {

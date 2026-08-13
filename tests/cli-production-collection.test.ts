@@ -946,6 +946,8 @@ function createCollectionHarness(
     config: Config;
     executeCodexAnalysis?: (input: CodexAnalysisInput) => Promise<unknown>;
     probeGitHubPullRequestVolatileMetadataWithRetry?: ProductionRuntimeAdapters["probeGitHubPullRequestVolatileMetadataWithRetry"];
+    collectGitHubItemDetails?: ProductionRuntimeAdapters["collectGitHubItemDetails"];
+    sleep?: ProductionRuntimeAdapters["sleep"];
     collectionCompletedAt?: string;
     scheduledRun?: boolean;
   }>,
@@ -958,6 +960,7 @@ function createCollectionHarness(
   const detailCalls: DetailCall[] = [];
   const volatileProbeCalls: VolatileProbeCall[] = [];
   const individualCalls: string[][] = [];
+  const sleepDelays: number[] = [];
   let normalDiscordCallCount = 0;
   let operationsDiscordCallCount = 0;
   let codexExecutionCount = 0;
@@ -1052,6 +1055,9 @@ function createCollectionHarness(
           ),
         }),
       );
+      if (options.collectGitHubItemDetails != null) {
+        return options.collectGitHubItemDetails(input);
+      }
       const items = input.targets.map((target) => {
         const item = target.item;
         const fixture = fixturesByRepositoryId.get(item.repositoryId);
@@ -1119,7 +1125,10 @@ function createCollectionHarness(
       execute: () => Promise.reject(new TypeError("Discord HTTPは呼びません")),
     }),
     now: () => new Date(currentTime),
-    sleep: () => Promise.resolve(),
+    sleep: (delayMilliseconds) => {
+      sleepDelays.push(delayMilliseconds);
+      return options.sleep?.(delayMilliseconds) ?? Promise.resolve();
+    },
     random: () => 0,
     writeStandardOutput: () => Promise.resolve(),
     writeJsonArtifact: (_path, value) => {
@@ -1181,6 +1190,7 @@ function createCollectionHarness(
     volatileProbeCalls,
     discordCandidateNodeIds,
     individualCalls,
+    sleepDelays,
     stateAdapter,
     publicData,
     codexExecutionCount: () => codexExecutionCount,
@@ -5479,6 +5489,221 @@ describe("本番収集の接続", () => {
     );
   });
 
+  it("責務再生不一致では対象nodeだけ現行itemとdetailを再取得して反映する", async () => {
+    const repository = createRepository(
+      "R_responsibility_replay_retry",
+      "responsibility-replay-retry",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const assignee = Object.freeze({
+      nodeId: createGitHubNodeId("U_responsibility_replay_retry"),
+      login: "responsibility-replay-retry",
+      apiType: "User" as const,
+    });
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "responsibility-replay-retry-initial",
+        updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        state: Object.freeze({ state: "open" }),
+      }),
+      assignees: Object.freeze([assignee]),
+    }) satisfies EnumeratedGitHubItem;
+    const refreshedItem = Object.freeze({
+      ...item,
+      title: "再列挙後の項目",
+      itemFingerprint: createGitHubBodyFingerprint("responsibility-replay-retry-refreshed"),
+    }) satisfies EnumeratedGitHubItem;
+    const otherItem = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "responsibility-replay-retry-other",
+      updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      state: Object.freeze({ state: "open" }),
+    });
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const initialDetail = createIssueDetail({
+      item,
+      body: "初回detail",
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    const otherDetail = createIssueDetail({
+      item: otherItem,
+      body: "別項目detail",
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    const assignmentEvent = Object.freeze({
+      sourceId: buildSourceId("github_timeline_event", "responsibility-replay-retry-assigned"),
+      nodeId: createGitHubNodeId("TE_responsibility_replay_retry_assigned"),
+      sequence: 0,
+      occurredAt: createUtcIsoDateTime("2026-07-02T00:00:00.000Z"),
+      actor: Object.freeze({
+        status: "unavailable",
+        reason: "github_did_not_return_actor",
+      }),
+      kind: "assigned",
+      assignee: Object.freeze({
+        type: "account",
+        account: Object.freeze({
+          sourceId: buildSourceId("github_actor", assignee.nodeId),
+          ...assignee,
+        }),
+      }),
+    } satisfies GitHubTimelineEvent);
+    const refreshedDetail = Object.freeze({
+      ...initialDetail,
+      body: "再取得後detail",
+      timeline: Object.freeze([assignmentEvent]),
+    }) satisfies GitHubItemDetail;
+    fixture.openItems = [item, otherItem];
+    fixture.individualItems.set(item.nodeId, refreshedItem);
+    let detailCollectionAttempt = 0;
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      collectGitHubItemDetails: (input) => {
+        detailCollectionAttempt += 1;
+        if (detailCollectionAttempt === 1) {
+          return Promise.resolve(
+            Object.freeze({
+              capabilities: Object.freeze({
+                nativeDependencies: "available",
+                nativeHierarchy: "available",
+              }),
+              items: Object.freeze(
+                input.targets.map((target) =>
+                  target.item.nodeId === item.nodeId ? initialDetail : otherDetail,
+                ),
+              ),
+            }),
+          );
+        }
+        if (input.targets.length !== 1 || input.targets[0]?.item.nodeId !== item.nodeId) {
+          throw new TypeError("責務再生retryが対象node以外を取得しました");
+        }
+        return Promise.resolve(
+          Object.freeze({
+            capabilities: Object.freeze({
+              nativeDependencies: "available",
+              nativeHierarchy: "available",
+            }),
+            items: Object.freeze([refreshedDetail]),
+          }),
+        );
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const snapshotItem = requireCollectionItem(artifact.snapshot, item.nodeId);
+    const repositoryItem = artifact.cacheOnlyPayload.repositoryCaches
+      .flatMap((document) => document.items)
+      .find((candidate) => candidate.nodeId === item.nodeId);
+    const itemCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (document) => document.nodeId === item.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(detailCollectionAttempt).toBe(2);
+    expect(harness.individualCalls).toEqual([[item.nodeId]]);
+    expect(harness.detailCalls).toEqual([
+      { targets: [{ nodeId: item.nodeId }, { nodeId: otherItem.nodeId }] },
+      { targets: [{ nodeId: item.nodeId }] },
+    ]);
+    expect(snapshotItem.itemFingerprint).toBe(refreshedItem.itemFingerprint);
+    expect(repositoryItem?.itemFingerprint).toBe(refreshedItem.itemFingerprint);
+    expect(itemCache?.currentObservation.title).toBe(refreshedItem.title);
+    expect(itemCache?.currentObservation.events).toContainEqual(
+      expect.objectContaining({
+        kind: "assignee",
+        action: "added",
+        itemNodeId: item.nodeId,
+      }),
+    );
+    expect(itemCache?.replay.currentResponsibilities).toEqual([
+      { kind: "assignee", nodeId: assignee.nodeId },
+    ]);
+  });
+
+  it("責務再生retryの再列挙number不一致ではdetailを追加取得しない", async () => {
+    const repository = createRepository(
+      "R_responsibility_replay_retry_number_mismatch",
+      "responsibility-replay-retry-number-mismatch",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const assignee = Object.freeze({
+      nodeId: createGitHubNodeId("U_responsibility_replay_retry_number_mismatch"),
+      login: "responsibility-replay-retry-number-mismatch",
+      apiType: "User" as const,
+    });
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "responsibility-replay-retry-number-mismatch",
+        updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        state: Object.freeze({ state: "open" }),
+      }),
+      assignees: Object.freeze([assignee]),
+    }) satisfies EnumeratedGitHubItem;
+    const mismatchedItem = Object.freeze({
+      ...item,
+      number: 2,
+    }) satisfies EnumeratedGitHubItem;
+    const detail = createIssueDetail({
+      item,
+      body: "責務再生retryのnumber不一致fixture",
+      observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    fixture.openItems = [item];
+    fixture.individualItems.set(item.nodeId, mismatchedItem);
+    fixture.details.set(item.nodeId, detail);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const head = await harness.stateAdapter.resolveHead("tracker-state");
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("責務再生retry number不一致fixtureがcollect-analyze結果ではありません");
+    }
+
+    expect(result.exitCode).toBe(1);
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "incremental_collection",
+      complete: false,
+    });
+    expect(harness.individualCalls).toEqual([[item.nodeId]]);
+    expect(harness.detailCalls).toEqual([{ targets: [{ nodeId: item.nodeId }] }]);
+    expect(harness.sleepDelays).toEqual([2000]);
+    expect(harness.artifacts).toEqual([]);
+    expect(harness.publicData).toEqual([]);
+    expect(head).toEqual({ status: "missing" });
+  });
+
   it("detail取得失敗では部分artifactとcacheとPagesを残さない", async () => {
     const repository = createRepository(
       "R_volatile_retry_exhausted",
@@ -5532,6 +5757,95 @@ describe("本番収集の接続", () => {
       artifactWritten: false,
     });
     expect(harness.detailCalls).toHaveLength(1);
+    expect(harness.artifacts).toEqual([]);
+    expect(harness.publicData).toEqual([]);
+    expect(head).toEqual({ status: "missing" });
+  });
+
+  it("責務再生不一致が上限まで続けば設定どおり待機して全体を失敗させる", async () => {
+    const repository = createRepository(
+      "R_responsibility_replay_retry_exhausted",
+      "responsibility-replay-retry-exhausted",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const assignee = Object.freeze({
+      nodeId: createGitHubNodeId("U_responsibility_replay_retry_exhausted"),
+      login: "responsibility-replay-retry-exhausted",
+      apiType: "User" as const,
+    });
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "responsibility-replay-retry-exhausted",
+        updatedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+        state: Object.freeze({ state: "open" }),
+      }),
+      assignees: Object.freeze([assignee]),
+    }) satisfies EnumeratedGitHubItem;
+    const detail = createIssueDetail({
+      item,
+      body: "責務再生retry上限fixture",
+      observedAt: createUtcIsoDateTime(FIRST_RUN_AT),
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    fixture.openItems = [item];
+    fixture.individualItems.set(item.nodeId, item);
+    fixture.details.set(item.nodeId, detail);
+    const baseConfig = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const config = Object.freeze({
+      ...baseConfig,
+      operations: Object.freeze({
+        ...baseConfig.operations,
+        retry: Object.freeze({
+          ...baseConfig.operations.retry,
+          maxAttempts: 3,
+          initialDelaySeconds: 2,
+          maxDelaySeconds: 3,
+        }),
+      }),
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const head = await harness.stateAdapter.resolveHead("tracker-state");
+
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("責務再生retry上限fixtureがcollect-analyze結果ではありません");
+    }
+
+    expect(result.exitCode).toBe(1);
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "incremental_collection",
+      complete: false,
+    });
+    expect(
+      result.result.report.diagnostics.some((diagnostic) =>
+        diagnostic.includes("ResponsibilityReplayRetryExhaustedError"),
+      ),
+    ).toBe(true);
+    expect(harness.individualCalls).toEqual([[item.nodeId], [item.nodeId]]);
+    expect(harness.detailCalls).toEqual([
+      { targets: [{ nodeId: item.nodeId }] },
+      { targets: [{ nodeId: item.nodeId }] },
+      { targets: [{ nodeId: item.nodeId }] },
+    ]);
+    expect(harness.sleepDelays).toEqual([2000, 3000]);
+    expect(result.result.effects).toEqual({
+      cacheCommitted: false,
+      pagesBuilt: false,
+      discordAttempted: false,
+      artifactWritten: false,
+    });
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
     expect(head).toEqual({ status: "missing" });
@@ -5595,6 +5909,8 @@ describe("本番収集の接続", () => {
       artifactWritten: false,
     });
     expect(harness.detailCalls).toEqual([{ targets: [{ nodeId: item.nodeId }] }]);
+    expect(harness.individualCalls).toEqual([]);
+    expect(harness.sleepDelays).toEqual([]);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
     expect(head).toEqual({ status: "missing" });

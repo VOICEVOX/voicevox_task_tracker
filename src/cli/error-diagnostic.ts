@@ -19,6 +19,7 @@ import {
   CliCredentialsError,
   CliExecutableError,
   CliRelationExpansionLimitError,
+  ResponsibilityReplayRetryExhaustedError,
 } from "./errors.js";
 import { type RunStage } from "./run-report.js";
 
@@ -291,6 +292,10 @@ function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): v
       key: "relationExpansionUnfetchedCount",
       value: error.unfetchedCount.toString(),
     });
+  }
+  if (error instanceof ResponsibilityReplayRetryExhaustedError) {
+    fields.push({ key: "itemNodeId", value: error.itemNodeId });
+    fields.push({ key: "attempts", value: error.attempts.toString() });
   }
   if (error instanceof RelationReferenceConflictError) {
     fields.push({ key: "relationReferenceConflictKind", value: error.conflictKind });

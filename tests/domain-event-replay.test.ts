@@ -5,6 +5,7 @@ import {
   createGitHubNodeId,
   createUtcIsoDateTime,
   replayItemHistory,
+  ResponsibilityReplayMismatchError,
   type Actor,
   type GitHubAccountActor,
   type GitHubNodeId,
@@ -530,6 +531,33 @@ describe("イベント再生", () => {
         history: { availability: "available", events: [first, different] },
       }),
     ).toThrow("同じsource IDに異なるイベント内容があります");
+  });
+
+  it("責務集合の不一致だけは対象node IDを持つ専用エラーにする", () => {
+    const result = () =>
+      replayItemHistory({
+        trackingStartAt,
+        currentItem: createIssue({
+          assignees: [humanActor],
+        }),
+        history: {
+          availability: "available",
+          events: [],
+        },
+      });
+
+    expect(result).toThrow(ResponsibilityReplayMismatchError);
+    try {
+      result();
+      throw new TypeError("責務集合不一致のfixtureが例外を投げませんでした");
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(ResponsibilityReplayMismatchError);
+      if (!(error instanceof ResponsibilityReplayMismatchError)) {
+        throw error;
+      }
+      expect(error.itemNodeId).toBe(issueNodeId);
+      expect(error.message).toBe("責務イベントの再生結果と現行GitHub状態が一致しません");
+    }
   });
 
   it("履歴取得不能と現行target取得不能をunknownで保持する", () => {

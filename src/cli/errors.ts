@@ -1,3 +1,4 @@
+import { type GitHubNodeId } from "../domain/index.js";
 import { TaskTrackerError } from "../util/index.js";
 
 /** CLIの引数が利用規約へ適合しないことを表す。 */
@@ -86,5 +87,20 @@ export class CliRelationExpansionLimitError extends TaskTrackerError {
     this.limit = limit;
     this.fetchedCount = fetchedCount;
     this.unfetchedCount = unfetchedCount;
+  }
+}
+
+/** 責務イベントの再生整合性retry上限へ到達したことを表す。 */
+export class ResponsibilityReplayRetryExhaustedError extends TaskTrackerError {
+  public readonly itemNodeId: GitHubNodeId;
+  public readonly attempts: number;
+
+  public constructor(itemNodeId: GitHubNodeId, attempts: number, options: ErrorOptions) {
+    super(
+      `責務イベントの再生整合性retry上限へ到達しました。対象: ${itemNodeId} attempts: ${attempts.toString()}`,
+      options,
+    );
+    this.itemNodeId = itemNodeId;
+    this.attempts = attempts;
   }
 }

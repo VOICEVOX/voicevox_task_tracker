@@ -56,6 +56,17 @@ export type ReplayEvent =
       Exclude<NormalizedEvent, NormalizedAssigneeEvent | NormalizedReviewRequestEvent>
     >;
 
+/** 責務イベントの再生結果と現行値が一致しないことを表す。 */
+export class ResponsibilityReplayMismatchError extends TypeError {
+  public readonly itemNodeId: GitHubNodeId;
+
+  public constructor(itemNodeId: GitHubNodeId) {
+    super("責務イベントの再生結果と現行GitHub状態が一致しません");
+    this.name = new.target.name;
+    this.itemNodeId = itemNodeId;
+  }
+}
+
 /** 履歴から復元した値が既知かどうかを表す。 */
 type ReplayKnowledge<Value> =
   | Readonly<{
@@ -752,7 +763,7 @@ function validateCurrentResponsibilities(
   }
   const latest = epochs.value.at(-1);
   if (latest == null || !sameResponsibilityTargets(latest.targets, current)) {
-    throw new TypeError("責務イベントの再生結果と現行GitHub状態が一致しません");
+    throw new ResponsibilityReplayMismatchError(item.nodeId);
   }
 }
 

@@ -8,7 +8,9 @@ import {
   CliCredentialsError,
   CliExecutableError,
   CliRelationExpansionLimitError,
+  ResponsibilityReplayRetryExhaustedError,
 } from "../src/cli/errors.js";
+import { ResponsibilityReplayMismatchError, createGitHubNodeId } from "../src/domain/index.js";
 import {
   GitHubGraphQLResponseError,
   GitHubItemDetailCollectionError,
@@ -470,6 +472,18 @@ describe("safeErrorDiagnostic", () => {
     expect(diagnostic).not.toContain(url);
     expect(diagnostic).not.toContain(title);
     expect(diagnostic).not.toContain(body);
+  });
+
+  it("責務再生retry枯渇エラーからcause連鎖と安全な項目識別情報を診断へ出す", () => {
+    const itemNodeId = createGitHubNodeId("I_public_repository_42");
+    const cause = new ResponsibilityReplayMismatchError(itemNodeId);
+    const error = new ResponsibilityReplayRetryExhaustedError(itemNodeId, 4, { cause });
+    delete error.stack;
+    delete cause.stack;
+
+    expect(safeErrorDiagnostic("incremental_collection", error)).toBe(
+      "stage=incremental_collection errorType=ResponsibilityReplayRetryExhaustedError<-ResponsibilityReplayMismatchError itemNodeId=I_public_repository_42 attempts=4",
+    );
   });
 
   it("関係参照の複数の食い違いから固定語彙だけを診断へ出す", () => {
