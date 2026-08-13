@@ -25,7 +25,9 @@ import { buildProductionSourceId } from "./production-source-id.js";
 
 const PROBE_BATCH_SIZE = 50;
 const CONNECTION_PAGE_SIZE = 100;
-const MAX_VOLATILE_PROBE_ATTEMPTS = 3;
+const MAX_VOLATILE_PROBE_ATTEMPTS = 5;
+const VOLATILE_PROBE_INITIAL_DELAY_MILLISECONDS = 2_000;
+const VOLATILE_PROBE_MAX_DELAY_MILLISECONDS = 16_000;
 
 const nodeIdSchema = z.string().min(1).regex(/^\S+$/u);
 const shaSchema = z.string().min(1).regex(/^\S+$/u);
@@ -443,10 +445,16 @@ export type GitHubPullRequestVolatileProbeCollection = Readonly<{
   items: readonly GitHubPullRequestVolatileMetadata[];
 }>;
 
+/** PR volatile probeの再試行へ注入する実行時依存。 */
+export type GitHubPullRequestVolatileProbeRuntime = Readonly<{
+  sleep: (delayMilliseconds: number) => Promise<void>;
+}>;
+
 /** PR volatile probeとdetail照合を同じ再試行単位で実行する入力。 */
 export type ProbeGitHubPullRequestVolatileMetadataWithRetryOptions =
   ProbeGitHubPullRequestVolatileMetadataOptions &
     Readonly<{
+      runtime: GitHubPullRequestVolatileProbeRuntime;
       validateDetail?: (
         collection: GitHubPullRequestVolatileProbeCollection,
       ) => void | Promise<void>;
@@ -469,6 +477,13 @@ function createRaceError(
   return new GitHubPullRequestVolatileRaceError(kind, nodeId, {
     cause: new TypeError(message),
   });
+}
+
+function calculateVolatileProbeRetryDelayMilliseconds(attempt: number): number {
+  return Math.min(
+    VOLATILE_PROBE_MAX_DELAY_MILLISECONDS,
+    VOLATILE_PROBE_INITIAL_DELAY_MILLISECONDS * 2 ** attempt,
+  );
 }
 
 function parseGraphqlResponse<Schema extends z.ZodType>(
@@ -1512,7 +1527,7 @@ export async function probeGitHubPullRequestVolatileMetadata(
   return Object.freeze({ items: Object.freeze(items) });
 }
 
-/** PR volatile probeを競合時だけ最大3回やり直し、detail照合も同じ試行へ含める。 */
+/** PR volatile probeを競合時だけ最大5回やり直し、detail照合も同じ試行へ含める。 */
 export async function probeGitHubPullRequestVolatileMetadataWithRetry(
   options: ProbeGitHubPullRequestVolatileMetadataWithRetryOptions,
 ): Promise<GitHubPullRequestVolatileProbeCollection> {
@@ -1529,6 +1544,9 @@ export async function probeGitHubPullRequestVolatileMetadataWithRetry(
         throw error;
       }
       races.push(error);
+    }
+    if (attempt + 1 < MAX_VOLATILE_PROBE_ATTEMPTS) {
+      await options.runtime.sleep(calculateVolatileProbeRetryDelayMilliseconds(attempt));
     }
   }
   throw new GitHubPullRequestVolatileRaceRetryExhaustedError(races);

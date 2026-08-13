@@ -74,6 +74,7 @@ export {
   probeGitHubPullRequestVolatileMetadata,
   probeGitHubPullRequestVolatileMetadataWithRetry,
   type GitHubPullRequestVolatileProbeCollection,
+  type GitHubPullRequestVolatileProbeRuntime,
   type ProbeGitHubPullRequestVolatileMetadataOptions,
   type ProbeGitHubPullRequestVolatileMetadataWithRetryOptions,
 } from "./item-volatile-probe.js";

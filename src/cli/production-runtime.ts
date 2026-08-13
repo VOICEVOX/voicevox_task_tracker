@@ -6846,6 +6846,9 @@ async function collectRepositoryItemObservationsWithVolatileMetadata(
   await adapters.probeGitHubPullRequestVolatileMetadataWithRetry({
     pullRequestNodeIds,
     graphql: authentication.graphql,
+    runtime: {
+      sleep: adapters.sleep,
+    },
     validateDetail: async (probe) => {
       const finalized = finalizeGitHubItemsWithVolatileMetadata({
         items: provisionalItems,

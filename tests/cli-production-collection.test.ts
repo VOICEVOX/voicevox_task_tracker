@@ -5476,7 +5476,7 @@ describe("本番収集の接続", () => {
     expect(harness.artifacts).toHaveLength(1);
   });
 
-  it("volatile detail raceが3回続けば部分artifactとcacheとPagesを残さない", async () => {
+  it("volatile detail raceが5回続けば部分artifactとcacheとPagesを残さない", async () => {
     const repository = createRepository(
       "R_volatile_retry_exhausted",
       "volatile-retry-exhausted",
@@ -5517,6 +5517,8 @@ describe("本番収集の接続", () => {
           [mismatchedMetadata],
           [mismatchedMetadata],
           [mismatchedMetadata],
+          [mismatchedMetadata],
+          [mismatchedMetadata],
         ]),
     });
 
@@ -5538,7 +5540,7 @@ describe("本番収集の接続", () => {
       discordAttempted: false,
       artifactWritten: false,
     });
-    expect(harness.detailCalls).toHaveLength(3);
+    expect(harness.detailCalls).toHaveLength(5);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
     expect(head).toEqual({ status: "missing" });

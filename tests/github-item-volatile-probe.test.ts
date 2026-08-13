@@ -40,6 +40,7 @@ import {
 import {
   probeGitHubPullRequestVolatileMetadata,
   probeGitHubPullRequestVolatileMetadataWithRetry,
+  type GitHubPullRequestVolatileProbeRuntime,
 } from "../src/github/item-volatile-probe.js";
 
 type Graphql = GitHubClient["graphql"];
@@ -68,6 +69,10 @@ const githubSchema = buildSchema(
     assumeValidSDL: true,
   },
 );
+
+const volatileProbeRuntime = Object.freeze({
+  sleep: (): Promise<void> => Promise.resolve(),
+}) satisfies GitHubPullRequestVolatileProbeRuntime;
 
 function operationName(query: string): string {
   const match = /\bquery\s+([A-Za-z_][A-Za-z0-9_]*)/u.exec(query);
@@ -353,6 +358,7 @@ async function runCheckPaginationSnapshotRace(
   const result = await probeGitHubPullRequestVolatileMetadataWithRetry({
     pullRequestNodeIds: [createGitHubNodeId(nodeId)],
     graphql: mock.graphql,
+    runtime: volatileProbeRuntime,
   });
   return { result, initialProbeCount, callCount: mock.calls.length };
 }
@@ -400,6 +406,7 @@ async function runReviewRequestPaginationRace(anomaly: "empty" | "duplicate"): P
   const result = await probeGitHubPullRequestVolatileMetadataWithRetry({
     pullRequestNodeIds: [createGitHubNodeId(nodeId)],
     graphql: mock.graphql,
+    runtime: volatileProbeRuntime,
   });
   return { result, initialProbeCount, callCount: mock.calls.length };
 }
@@ -447,6 +454,7 @@ async function runCheckContextPaginationRace(anomaly: "empty" | "duplicate"): Pr
   const result = await probeGitHubPullRequestVolatileMetadataWithRetry({
     pullRequestNodeIds: [createGitHubNodeId(nodeId)],
     graphql: mock.graphql,
+    runtime: volatileProbeRuntime,
   });
   return { result, initialProbeCount, callCount: mock.calls.length };
 }
@@ -831,6 +839,7 @@ describe("Pull Request volatile metadata", () => {
     const result = await probeGitHubPullRequestVolatileMetadataWithRetry({
       pullRequestNodeIds: [createGitHubNodeId("PR_same_count_review")],
       graphql: mock.graphql,
+      runtime: volatileProbeRuntime,
     });
 
     expect(result.items[0]?.reviewRequests).toEqual([]);
@@ -887,6 +896,7 @@ describe("Pull Request volatile metadata", () => {
     const result = await probeGitHubPullRequestVolatileMetadataWithRetry({
       pullRequestNodeIds: [createGitHubNodeId("PR_total_count_review")],
       graphql: mock.graphql,
+      runtime: volatileProbeRuntime,
     });
 
     expect(result.items[0]?.reviewRequests).toEqual([]);
@@ -955,6 +965,7 @@ describe("Pull Request volatile metadata", () => {
     const result = await probeGitHubPullRequestVolatileMetadataWithRetry({
       pullRequestNodeIds: [createGitHubNodeId("PR_same_count_check")],
       graphql: mock.graphql,
+      runtime: volatileProbeRuntime,
     });
 
     expect(result.items[0]?.mergeState.checks).toEqual({ status: "not_configured" });
@@ -1039,6 +1050,7 @@ describe("Pull Request volatile metadata", () => {
       await probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId(nodeId)],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       });
     } catch (error: unknown) {
       thrown = error;
@@ -1093,6 +1105,7 @@ describe("Pull Request volatile metadata", () => {
       await probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId(nodeId)],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       });
     } catch (error: unknown) {
       thrown = error;
@@ -1152,6 +1165,7 @@ describe("Pull Request volatile metadata", () => {
       probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_initial_empty_review")],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       }),
     ).rejects.toBeInstanceOf(GitHubResponseValidationError);
     expect(mock.calls).toHaveLength(1);
@@ -1178,6 +1192,7 @@ describe("Pull Request volatile metadata", () => {
       probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_initial_empty_check")],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       }),
     ).rejects.toBeInstanceOf(GitHubResponseValidationError);
     expect(mock.calls).toHaveLength(1);
@@ -1205,6 +1220,7 @@ describe("Pull Request volatile metadata", () => {
       probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_initial_duplicate_review")],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       }),
     ).rejects.toBeInstanceOf(GitHubResponseValidationError);
     expect(mock.calls).toHaveLength(1);
@@ -1232,6 +1248,7 @@ describe("Pull Request volatile metadata", () => {
       probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_initial_duplicate_check")],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       }),
     ).rejects.toBeInstanceOf(GitHubResponseValidationError);
     expect(mock.calls).toHaveLength(1);
@@ -1454,6 +1471,7 @@ describe("Pull Request volatile metadata", () => {
     const result = await probeGitHubPullRequestVolatileMetadataWithRetry({
       pullRequestNodeIds: [createGitHubNodeId("PR_retry")],
       graphql: mock.graphql,
+      runtime: volatileProbeRuntime,
     });
 
     expect(result.items).toHaveLength(1);
@@ -1469,6 +1487,7 @@ describe("Pull Request volatile metadata", () => {
       probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_schema_error")],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       }),
     ).rejects.toBeInstanceOf(GitHubResponseSchemaValidationError);
     expect(mock.calls).toHaveLength(1);
@@ -1496,6 +1515,7 @@ describe("Pull Request volatile metadata", () => {
       await probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_initial_total_count")],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       });
     } catch (error: unknown) {
       thrown = error;
@@ -1528,6 +1548,7 @@ describe("Pull Request volatile metadata", () => {
       await probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_initial_check_total_count")],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       });
     } catch (error: unknown) {
       thrown = error;
@@ -1539,6 +1560,7 @@ describe("Pull Request volatile metadata", () => {
   });
 
   it("認証、予算、通常APIエラーは再取得しない", async () => {
+    const delays: number[] = [];
     const errors = [
       new GitHubAuthenticationError("probe test", { cause: new TypeError("認証失敗") }),
       new GitHubApiBudgetExceededError({
@@ -1560,13 +1582,27 @@ describe("Pull Request volatile metadata", () => {
         probeGitHubPullRequestVolatileMetadataWithRetry({
           pullRequestNodeIds: [createGitHubNodeId("PR_non_race_error")],
           graphql: mock.graphql,
+          runtime: {
+            sleep: (delayMilliseconds: number): Promise<void> => {
+              delays.push(delayMilliseconds);
+              return Promise.resolve();
+            },
+          },
         }),
       ).rejects.toBe(error);
       expect(mock.calls).toHaveLength(1);
     }
+    expect(delays).toEqual([]);
   });
 
-  it("競合が3回続いた場合は部分結果を返さず専用エラーにする", async () => {
+  it("競合が5回続いた場合はbackoff後も部分結果を返さず専用エラーにする", async () => {
+    const delays: number[] = [];
+    const runtime = Object.freeze({
+      sleep: (delayMilliseconds: number): Promise<void> => {
+        delays.push(delayMilliseconds);
+        return Promise.resolve();
+      },
+    }) satisfies GitHubPullRequestVolatileProbeRuntime;
     const mock = createGraphql((operation, variables) => {
       if (operation === "GitHubPullRequestVolatileProbe") {
         const nodeId = getNodeIds(variables)[0];
@@ -1610,20 +1646,31 @@ describe("Pull Request volatile metadata", () => {
       probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_retry_exhausted")],
         graphql: mock.graphql,
+        runtime,
       }),
     ).rejects.toMatchObject({
       constructor: GitHubPullRequestVolatileRaceRetryExhaustedError,
-      attempts: 3,
+      attempts: 5,
       races: [
+        { kind: "review_request_page" },
+        { kind: "review_request_page" },
         { kind: "review_request_page" },
         { kind: "review_request_page" },
         { kind: "review_request_page" },
       ],
     });
-    expect(mock.calls).toHaveLength(6);
+    expect(delays).toEqual([2_000, 4_000, 8_000, 16_000]);
+    expect(mock.calls).toHaveLength(10);
   });
 
   it("detail照合の競合もprobe全体の再取得で回復する", async () => {
+    const delays: number[] = [];
+    const runtime = Object.freeze({
+      sleep: (delayMilliseconds: number): Promise<void> => {
+        delays.push(delayMilliseconds);
+        return Promise.resolve();
+      },
+    }) satisfies GitHubPullRequestVolatileProbeRuntime;
     let detailValidationCount = 0;
     const mock = createGraphql((operation, variables) => {
       if (operation !== "GitHubPullRequestVolatileProbe") {
@@ -1639,6 +1686,7 @@ describe("Pull Request volatile metadata", () => {
     const result = await probeGitHubPullRequestVolatileMetadataWithRetry({
       pullRequestNodeIds: [createGitHubNodeId("PR_detail_retry")],
       graphql: mock.graphql,
+      runtime,
       validateDetail: () => {
         detailValidationCount += 1;
         if (detailValidationCount === 1) {
@@ -1653,7 +1701,40 @@ describe("Pull Request volatile metadata", () => {
 
     expect(result.items).toHaveLength(1);
     expect(detailValidationCount).toBe(2);
+    expect(delays).toEqual([2_000]);
     expect(mock.calls).toHaveLength(2);
+  });
+
+  it("sleepの失敗は競合として再試行せずそのまま伝播する", async () => {
+    const sleepError = new TypeError("sleepに失敗しました");
+    const mock = createGraphql((operation, variables) => {
+      if (operation !== "GitHubPullRequestVolatileProbe") {
+        throw new Error(`予期しないqueryです。対象: ${operation}`);
+      }
+      const nodeId = getNodeIds(variables)[0];
+      if (nodeId == null) {
+        throw new Error("probe node IDがありません");
+      }
+      return createProbeResponse([createProbeNode(nodeId, {})]);
+    });
+
+    await expect(
+      probeGitHubPullRequestVolatileMetadataWithRetry({
+        pullRequestNodeIds: [createGitHubNodeId("PR_sleep_error")],
+        graphql: mock.graphql,
+        runtime: {
+          sleep: () => Promise.reject(sleepError),
+        },
+        validateDetail: () => {
+          throw new GitHubPullRequestVolatileRaceError(
+            "detail",
+            createGitHubNodeId("PR_sleep_error"),
+            { cause: new TypeError("detailが変化しました") },
+          );
+        },
+      }),
+    ).rejects.toBe(sleepError);
+    expect(mock.calls).toHaveLength(1);
   });
 
   it("最終ページのendCursorを受理し、追加queryを行わない", async () => {
@@ -1918,6 +1999,7 @@ describe("Pull Request volatile metadata", () => {
       probeGitHubPullRequestVolatileMetadataWithRetry({
         pullRequestNodeIds: [createGitHubNodeId("PR_check_identity")],
         graphql: mock.graphql,
+        runtime: volatileProbeRuntime,
       }),
     ).rejects.toMatchObject({
       constructor: GitHubResponseValidationError,
