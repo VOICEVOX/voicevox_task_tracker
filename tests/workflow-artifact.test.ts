@@ -13,6 +13,11 @@ import {
   type WorkflowRunMetadata,
   type WorkflowStageCliCommand,
 } from "../src/cli/index.js";
+import {
+  measurePublicSummarySize,
+  type PublicDetailsDto,
+  type PublicSummaryDto,
+} from "../src/pages/index.js";
 import { StatePublicSafetyError } from "../src/persistence/index.js";
 
 const NOW = "2026-07-31T00:00:00.000Z";
@@ -36,11 +41,43 @@ function emptyRunMetadataMetrics(): WorkflowRunMetadata["metrics"] {
 
 function createEmptyWorkflowArtifact(): WorkflowArtifact {
   const runId = "tracker-run:workflow-artifact-fixture";
+  const summary: PublicSummaryDto = {
+    schemaVersion: "5",
+    runId,
+    generatedAt: NOW,
+    observedAt: NOW,
+    timezone: "Asia/Tokyo",
+    ai: {
+      enabled: false,
+      available: false,
+      degraded: false,
+    },
+    confidenceThresholds: {
+      high: 0.8,
+      medium: 0.5,
+    },
+    repositories: [],
+    items: [],
+    graph: {
+      nodes: [],
+      maxNodes: 1,
+    },
+  };
+  const details: PublicDetailsDto = {
+    schemaVersion: "5",
+    runId,
+    generatedAt: NOW,
+    items: [],
+    graph: {
+      nodes: [],
+      edges: [],
+      frontierNodeIds: [],
+    },
+  };
   return createWorkflowArtifact({
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "validated_public_run",
     repositoryAllowlist: [],
-    historyInputEvents: [],
     snapshot: {
       schemaVersion: "8",
       generatedAt: NOW,
@@ -78,7 +115,17 @@ function createEmptyWorkflowArtifact(): WorkflowArtifact {
       metrics: emptyRunMetadataMetrics(),
       diagnostics: [],
     },
-    aiCacheEntries: [],
+    pages: {
+      summary,
+      details,
+      summarySize: measurePublicSummarySize(summary, 1_000_000),
+    },
+    cacheOnlyPayload: {
+      repositoryCaches: [],
+      itemCaches: [],
+      latestImportanceCaches: [],
+      aiCacheEntries: [],
+    },
     pagesUrl: PAGES_URL,
     discordSettings: {
       enabled: false,
@@ -116,7 +163,7 @@ describe("workflow artifact", () => {
     const artifact = createEmptyWorkflowArtifact();
 
     expect(artifact).toMatchObject({
-      schemaVersion: "1",
+      schemaVersion: "2",
       kind: "validated_public_run",
       pagesUrl: PAGES_URL,
       notificationSelection: {
@@ -153,6 +200,114 @@ describe("workflow artifact", () => {
         },
       }),
     ).toThrow();
+  });
+
+  it("historyInputEventsを含む旧artifactをschema v2で拒否する", () => {
+    const source = createEmptyWorkflowArtifact();
+    expect(() =>
+      createWorkflowArtifact({
+        ...source,
+        schemaVersion: "1",
+        historyInputEvents: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      createWorkflowArtifact({
+        ...source,
+        historyInputEvents: [],
+      }),
+    ).toThrow();
+  });
+
+  it("Pages DTOのrun ID、件数、実測値を再検証する", () => {
+    const source = createEmptyWorkflowArtifact();
+    expect(() =>
+      createWorkflowArtifact({
+        ...source,
+        pages: {
+          ...source.pages,
+          summary: {
+            ...source.pages.summary,
+            runId: "tracker-run:other",
+          },
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createWorkflowArtifact({
+        ...source,
+        pages: {
+          ...source.pages,
+          summarySize: {
+            ...source.pages.summarySize,
+            gzipBytes: source.pages.summarySize.gzipBytes + 1,
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("cache-only payloadのstrict schemaとraw本文を拒否する", () => {
+    const source = createEmptyWorkflowArtifact();
+    expect(() =>
+      createWorkflowArtifact({
+        ...source,
+        cacheOnlyPayload: {
+          ...source.cacheOnlyPayload,
+          repositoryCaches: [{ kind: "github_repository" }],
+        },
+      }),
+    ).toThrow();
+    const forbiddenFields: readonly ("body" | "comment" | "diff")[] = ["body", "comment", "diff"];
+    for (const forbiddenField of forbiddenFields) {
+      expect(() =>
+        createWorkflowArtifact({
+          ...source,
+          cacheOnlyPayload: {
+            ...source.cacheOnlyPayload,
+            itemCaches: [{ [forbiddenField]: "GitHub由来のraw値" }],
+          },
+        }),
+      ).toThrow();
+    }
+  });
+
+  it("通知候補とrepository allowlistの整合性を拒否する", () => {
+    const source = createEmptyWorkflowArtifact();
+    expect(() =>
+      createWorkflowArtifact({
+        ...source,
+        notificationSelection: {
+          action: "create_digest",
+          candidates: [
+            {
+              itemNodeId: "I_missing",
+              reasonCode: "owner_unknown",
+              reasons: [{ reasonCode: "owner_unknown" }],
+              severity: "watch",
+              downstreamImpact: {
+                nodeId: "I_missing",
+                openNodeCount: 0,
+                repositoryCount: 0,
+              },
+              priorityWeight: 1,
+            },
+          ],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createWorkflowArtifact({
+        ...source,
+        repositoryAllowlist: [
+          {
+            id: "R_not_in_snapshot",
+            owner: "VOICEVOX",
+            name: "not-in-snapshot",
+          },
+        ],
+      }),
+    ).toThrow(StatePublicSafetyError);
   });
 
   it("前stageのartifactが無ければ明示的に失敗する", async () => {

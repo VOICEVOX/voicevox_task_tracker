@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
-import { createAiCacheEntry, type AiCacheEntry } from "../codex/index.js";
+import { type AiCacheEntry } from "../codex/index.js";
 import {
   createGitHubNodeId,
   createGitHubRepositoryId,
@@ -14,14 +14,23 @@ import {
   type DiscordNotificationSelection,
 } from "../discord/index.js";
 import { createPublicRepositoryAllowlist } from "../github/index.js";
+import { PublicRepositoryAllowlist } from "../github/public-repository-allowlist.js";
+import {
+  assertPublicSummarySize,
+  createPublicDetailsDto,
+  createPublicSummaryDto,
+  type GeneratedPublicData,
+} from "../pages/index.js";
 import {
   assertStatePublicSafety,
-  createStateHistoryInputEvents,
   createStateSnapshot,
   StatePublicSafetyError,
-  type StateHistoryInputEvent,
+  type AiLatestImportanceCacheDocument,
+  type GitHubItemCacheDocument,
+  type GitHubRepositoryCacheDocument,
   type StateSnapshot,
 } from "../persistence/index.js";
+import { validateCacheOnlyPersistenceInput } from "../persistence/cache-only-session.js";
 import { assertNonNullable } from "../util/index.js";
 import { CliWorkflowArtifactError } from "./errors.js";
 
@@ -145,14 +154,19 @@ const runMetadataSchema = z
     }
   });
 const workflowArtifactSchema = z.strictObject({
-  schemaVersion: z.literal("1"),
+  schemaVersion: z.literal("2"),
   kind: z.literal("validated_public_run"),
   repositoryAllowlist: z.array(repositoryAllowlistEntrySchema),
   snapshot: z.unknown(),
-  historyInputEvents: z.array(z.unknown()),
   notificationSelection: z.unknown(),
   runMetadata: runMetadataSchema,
-  aiCacheEntries: z.array(z.unknown()),
+  pages: z.unknown(),
+  cacheOnlyPayload: z.strictObject({
+    repositoryCaches: z.array(z.unknown()),
+    itemCaches: z.array(z.unknown()),
+    latestImportanceCaches: z.array(z.unknown()),
+    aiCacheEntries: z.array(z.unknown()),
+  }),
   pagesUrl: z.url(),
   discordSettings: discordSettingsSchema,
 });
@@ -173,16 +187,24 @@ export type WorkflowRunMetadata = Readonly<{
 
 /** collect-analyzeが後続jobへ渡す公開可能な検証済み成果物。 */
 export type WorkflowArtifact = Readonly<{
-  schemaVersion: "1";
+  schemaVersion: "2";
   kind: "validated_public_run";
   repositoryAllowlist: readonly WorkflowArtifactRepositoryAllowlistEntry[];
   snapshot: StateSnapshot;
-  historyInputEvents: readonly StateHistoryInputEvent[];
   notificationSelection: DiscordNotificationSelection;
   runMetadata: WorkflowRunMetadata;
-  aiCacheEntries: readonly AiCacheEntry[];
+  pages: GeneratedPublicData;
+  cacheOnlyPayload: WorkflowArtifactCacheOnlyPayload;
   pagesUrl: string;
   discordSettings: DiscordDeliverySettings;
+}>;
+
+/** workflow artifactへ渡すcache-only payload。 */
+export type WorkflowArtifactCacheOnlyPayload = Readonly<{
+  repositoryCaches: readonly GitHubRepositoryCacheDocument[];
+  itemCaches: readonly GitHubItemCacheDocument[];
+  latestImportanceCaches: readonly AiLatestImportanceCacheDocument[];
+  aiCacheEntries: readonly AiCacheEntry[];
 }>;
 
 function nonEmptyValues<Value>(
@@ -227,24 +249,51 @@ function createNotificationSelection(value: unknown): DiscordNotificationSelecti
   });
 }
 
-function compareStrings(left: string, right: string): number {
-  if (left < right) {
-    return -1;
-  }
-  if (left > right) {
-    return 1;
-  }
-  return 0;
+function createArtifactPublicRepositoryAllowlist(
+  repositories: readonly WorkflowArtifactRepositoryAllowlistEntry[],
+  observedAt: StateSnapshot["generatedAt"],
+): PublicRepositoryAllowlist {
+  const inventory: readonly Repository[] = repositories.map((repository) => ({
+    id: repository.id,
+    owner: repository.owner,
+    name: repository.name,
+    visibility: "public",
+    archived: false,
+    disabled: false,
+    observedAt,
+  }));
+  return PublicRepositoryAllowlist.create(inventory);
 }
 
-function createAiCacheEntries(values: readonly unknown[]): readonly AiCacheEntry[] {
-  const entries = values.map((value) => createAiCacheEntry(value));
-  const cacheKeys = entries.map((entry) => entry.cacheKey);
-  if (new Set(cacheKeys).size !== cacheKeys.length) {
-    throw new TypeError("workflow artifactのAI cache keyが重複しています");
+function createCacheOnlyPayload(
+  value: unknown,
+  allowlist: PublicRepositoryAllowlist,
+  evaluatedAt: StateSnapshot["generatedAt"],
+  knownSecrets: readonly string[],
+): WorkflowArtifactCacheOnlyPayload {
+  const result = z
+    .strictObject({
+      repositoryCaches: z.array(z.unknown()),
+      itemCaches: z.array(z.unknown()),
+      latestImportanceCaches: z.array(z.unknown()),
+      aiCacheEntries: z.array(z.unknown()),
+    })
+    .safeParse(value);
+  if (!result.success) {
+    throw new TypeError("workflow artifactのcache-only payloadがschemaに適合しません", {
+      cause: result.error,
+    });
   }
-  return Object.freeze(
-    [...entries].sort((left, right) => compareStrings(left.cacheKey, right.cacheKey)),
+  return validateCacheOnlyPersistenceInput(
+    {
+      evaluatedAt,
+      repositoryCaches: result.data.repositoryCaches,
+      itemCaches: result.data.itemCaches,
+      latestImportanceCaches: result.data.latestImportanceCaches,
+      aiCacheEntries: result.data.aiCacheEntries,
+      knownSecrets,
+    },
+    allowlist,
   );
 }
 
@@ -313,6 +362,30 @@ function assertRunConsistency(snapshot: StateSnapshot, metadata: WorkflowRunMeta
   }
 }
 
+function assertPagesConsistency(snapshot: StateSnapshot, pages: GeneratedPublicData): void {
+  if (pages.summary.runId !== snapshot.run.id || pages.details.runId !== snapshot.run.id) {
+    throw new TypeError("workflow artifactのPages DTOとsnapshotのrun IDが一致しません");
+  }
+  if (
+    pages.summary.repositories.length !== snapshot.repositories.length ||
+    pages.summary.items.length !== snapshot.items.length ||
+    pages.details.items.length !== snapshot.items.length
+  ) {
+    throw new TypeError("workflow artifactのPages DTOとsnapshotの件数が一致しません");
+  }
+  const snapshotItemIds = new Set(snapshot.items.map((item) => item.nodeId));
+  const summaryItemIds = new Set(pages.summary.items.map((item) => item.nodeId));
+  const detailsItemIds = new Set(pages.details.items.map((item) => item.summary.nodeId));
+  if (
+    summaryItemIds.size !== pages.summary.items.length ||
+    detailsItemIds.size !== pages.details.items.length ||
+    [...snapshotItemIds].some((nodeId) => !summaryItemIds.has(nodeId)) ||
+    [...snapshotItemIds].some((nodeId) => !detailsItemIds.has(nodeId))
+  ) {
+    throw new TypeError("workflow artifactのPages DTOとsnapshotの項目が一致しません");
+  }
+}
+
 function assertNotificationSelectionConsistency(
   snapshot: StateSnapshot,
   selection: DiscordNotificationSelection,
@@ -348,6 +421,47 @@ function normalizePagesUrl(value: string): string {
   return url.href;
 }
 
+function createPages(value: unknown): GeneratedPublicData {
+  const result = z
+    .strictObject({
+      summary: z.unknown(),
+      details: z.unknown(),
+      summarySize: z.strictObject({
+        uncompressedBytes: nonNegativeIntegerSchema,
+        gzipBytes: nonNegativeIntegerSchema,
+        maximumBytes: nonNegativeIntegerSchema,
+      }),
+    })
+    .safeParse(value);
+  if (!result.success) {
+    throw new TypeError("workflow artifactのPages DTOがschemaに適合しません", {
+      cause: result.error,
+    });
+  }
+  const summary = createPublicSummaryDto(result.data.summary);
+  const details = createPublicDetailsDto(result.data.details);
+  const summarySize = assertPublicSummarySize(summary, result.data.summarySize.maximumBytes);
+  if (
+    summarySize.uncompressedBytes !== result.data.summarySize.uncompressedBytes ||
+    summarySize.gzipBytes !== result.data.summarySize.gzipBytes
+  ) {
+    throw new TypeError("workflow artifactのPages summary実測値が一致しません");
+  }
+  if (summary.runId !== details.runId || summary.generatedAt !== details.generatedAt) {
+    throw new TypeError("workflow artifactのPages DTOのrun情報が一致しません");
+  }
+  if (summary.items.length !== details.items.length) {
+    throw new TypeError("workflow artifactのPages DTOの項目件数が一致しません");
+  }
+  return Object.freeze({
+    summary,
+    details,
+    summarySize: Object.freeze({
+      ...summarySize,
+    }),
+  });
+}
+
 /** workflow artifactを独立した公開境界で再検証する。 */
 export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const result = workflowArtifactSchema.safeParse(value);
@@ -357,19 +471,29 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     });
   }
   const snapshot = createStateSnapshot(result.data.snapshot);
-  const historyInputEvents = createStateHistoryInputEvents(result.data.historyInputEvents);
   const notificationSelection = createNotificationSelection(result.data.notificationSelection);
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
-  const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
+  const pages = createPages(result.data.pages);
+  const repositoryAllowlist = createRepositoryAllowlist(result.data.repositoryAllowlist);
+  const publicRepositoryAllowlist = createArtifactPublicRepositoryAllowlist(
+    repositoryAllowlist,
+    snapshot.generatedAt,
+  );
+  const cacheOnlyPayload = createCacheOnlyPayload(
+    result.data.cacheOnlyPayload,
+    publicRepositoryAllowlist,
+    snapshot.generatedAt,
+    [],
+  );
   const artifact = Object.freeze({
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "validated_public_run",
-    repositoryAllowlist: createRepositoryAllowlist(result.data.repositoryAllowlist),
+    repositoryAllowlist,
     snapshot,
-    historyInputEvents,
     notificationSelection,
     runMetadata,
-    aiCacheEntries,
+    pages,
+    cacheOnlyPayload,
     pagesUrl: normalizePagesUrl(result.data.pagesUrl),
     discordSettings: Object.freeze({
       ...result.data.discordSettings,
@@ -385,6 +509,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     }),
   } satisfies WorkflowArtifact);
   assertRunConsistency(snapshot, runMetadata);
+  assertPagesConsistency(snapshot, pages);
   assertNotificationSelectionConsistency(snapshot, notificationSelection);
   assertWorkflowArtifactPublicSafety(artifact, repositoryInventory(snapshot), []);
   return artifact;
@@ -420,15 +545,30 @@ export function assertWorkflowArtifactPublicSafety(
   knownSecrets: readonly string[],
 ): void {
   assertRepositoryAllowlistConsistency(artifact, inventory);
+  const publicRepositoryAllowlist = createArtifactPublicRepositoryAllowlist(
+    artifact.repositoryAllowlist,
+    artifact.snapshot.generatedAt,
+  );
+  validateCacheOnlyPersistenceInput(
+    {
+      evaluatedAt: artifact.snapshot.generatedAt,
+      repositoryCaches: artifact.cacheOnlyPayload.repositoryCaches,
+      itemCaches: artifact.cacheOnlyPayload.itemCaches,
+      latestImportanceCaches: artifact.cacheOnlyPayload.latestImportanceCaches,
+      aiCacheEntries: artifact.cacheOnlyPayload.aiCacheEntries,
+      knownSecrets,
+    },
+    publicRepositoryAllowlist,
+  );
   assertStatePublicSafety({
     snapshot: artifact.snapshot,
     repositoryInventory: inventory,
     additionalValues: [
       artifact.repositoryAllowlist,
-      artifact.historyInputEvents,
       artifact.notificationSelection,
       artifact.runMetadata,
-      ...artifact.aiCacheEntries,
+      artifact.pages,
+      artifact.cacheOnlyPayload,
       artifact.pagesUrl,
       artifact.discordSettings,
     ],

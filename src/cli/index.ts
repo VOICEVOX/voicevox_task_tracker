@@ -100,6 +100,7 @@ export {
   readWorkflowArtifactFile,
   workflowArtifactRepositoryInventory,
   type WorkflowArtifact,
+  type WorkflowArtifactCacheOnlyPayload,
   type WorkflowArtifactRepositoryAllowlistEntry,
   type WorkflowRunMetadata,
 } from "./workflow-artifact.js";
