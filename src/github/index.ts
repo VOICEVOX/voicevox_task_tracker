@@ -131,6 +131,19 @@ export {
   type RestoreGitHubItemCacheInput,
 } from "./item-cache-adapter.js";
 export {
+  replayGitHubItemHistory,
+  type ReplayGitHubItemHistoryOptions,
+} from "./item-history-replay-adapter.js";
+export {
+  adaptCachedTemporalBlocksGraph,
+  adaptFreshTemporalBlocksGraph,
+  type CachedTemporalBlocksGraphInput,
+  type FreshTemporalBlocksGraphInput,
+  type FreshTemporalBlocksItem,
+  type TemporalBlocksGraphReplayAdapterResult,
+  type TemporalBlocksUnknownRelationMutation,
+} from "./temporal-blocks-graph-adapter.js";
+export {
   GitHubRateLimitController,
   graphQLRateLimitSchema,
   isGitHubApiBudgetExceeded,

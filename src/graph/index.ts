@@ -2,8 +2,11 @@ export { analyzeGraph } from "./analyze-graph.js";
 export { replayDependencyEvents } from "./replay-dependency-events.js";
 export {
   replayTemporalBlocksGraph,
+  type TemporalBlocksCurrentNode,
   type TemporalBlocksGraphReplayInput,
+  type TemporalBlocksNodeStateHistory,
   type TemporalBlocksGraphReplayResult,
+  type TemporalBlocksStateEpoch,
 } from "./temporal-blocks-graph-replay.js";
 export { RelationReferenceConflictError } from "./errors.js";
 export { extractRelationCandidates } from "./extract-relation-candidates.js";
