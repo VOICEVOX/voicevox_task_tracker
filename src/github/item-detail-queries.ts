@@ -176,7 +176,7 @@ const DETAIL_REVIEW_THREAD_FIELDS_FRAGMENT = `
     resolvedBy {
       ...DetailActorFields
     }
-    comments(first: 100) {
+    comments(first: 1) {
       nodes {
         ...DetailReviewCommentFields
       }

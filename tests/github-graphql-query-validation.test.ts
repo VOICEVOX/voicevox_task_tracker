@@ -155,6 +155,20 @@ describe("GitHub GraphQLクエリ", () => {
     }
   });
 
+  it("review threadの初期コメント取得を1件に制限し、次ページqueryで続きを取得する", () => {
+    for (const { query } of itemDetailQueryCases) {
+      const fragmentStart = query.indexOf("fragment DetailReviewThreadFields");
+      if (fragmentStart < 0) {
+        throw new Error("review thread fragmentがありません");
+      }
+      const fragmentEnd = query.indexOf("\n  fragment ", fragmentStart + 1);
+      const fragment = query.slice(fragmentStart, fragmentEnd < 0 ? query.length : fragmentEnd);
+      expect(fragment).toContain("comments(first: 1)");
+      expect(fragment).not.toContain("comments(first: 100)");
+    }
+    expect(REVIEW_THREAD_COMMENT_PAGE_QUERY).toContain("comments(first: 100, after: $after)");
+  });
+
   it.each(queryCases)("$nameを公式schemaで検証できる", ({ query }) => {
     const errors = validate(schema, parse(query));
 

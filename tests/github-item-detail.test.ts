@@ -2567,6 +2567,120 @@ describe("Pull Request詳細収集", () => {
       "GitHubItemDetail",
     ]);
   });
+
+  it("review threadとコメントの複数ページを順序付きで収集する", async () => {
+    const allowlist = createAllowlist();
+    const item = createItem(allowlist, "PR_review_thread_pages", 205, "pull_request");
+    const secondThreadId = "PRRT_page_2";
+    const secondThread = {
+      id: secondThreadId,
+      isResolved: true,
+      isOutdated: false,
+      path: "src/page-2.ts",
+      resolvedBy: createActor(2),
+      comments: {
+        nodes: [
+          {
+            id: "PRRC_page_2_1",
+            author: createActor(20),
+            body: "ページ2の1件目",
+            createdAt: "2026-07-31T02:00:00Z",
+            lastEditedAt: null,
+            updatedAt: "2026-07-31T02:01:00Z",
+            userContentEdits: null,
+            url: "https://github.com/VOICEVOX/example/pull/205#discussion_r21",
+          },
+        ],
+        pageInfo: createPageInfo(true, "review-thread-comment-page-2"),
+      },
+    };
+    const response = createPullRequestUserContentEditResponse(
+      item.nodeId,
+      null,
+      createEmptyConnection(),
+      {
+        nodes: [createReviewThread("PRRT_page_1", false, 1)],
+        pageInfo: createPageInfo(true, "review-thread-page-2"),
+      },
+    );
+    const mock = createGraphqlHttpMock((operation, variables) => {
+      if (operation === "GitHubItemDetailCapabilities") {
+        return createCapabilitiesResponse("unavailable");
+      }
+      if (operation === "GitHubItemDetail") {
+        return response;
+      }
+      if (operation === "GitHubPullRequestReviewThreadPage") {
+        expect(getStringVariable(variables, "itemId")).toBe(item.nodeId);
+        expect(getStringVariable(variables, "after")).toBe("review-thread-page-2");
+        return {
+          item: {
+            __typename: "PullRequest",
+            id: item.nodeId,
+            reviewThreads: {
+              nodes: [secondThread],
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        };
+      }
+      if (operation === "GitHubPullRequestReviewThreadCommentPage") {
+        expect(getStringVariable(variables, "threadId")).toBe(secondThreadId);
+        expect(getStringVariable(variables, "after")).toBe("review-thread-comment-page-2");
+        return {
+          thread: {
+            __typename: "PullRequestReviewThread",
+            id: secondThreadId,
+            comments: {
+              nodes: [
+                {
+                  id: "PRRC_page_2_2",
+                  author: createActor(21),
+                  body: "ページ2の2件目",
+                  createdAt: "2026-07-31T02:02:00Z",
+                  lastEditedAt: null,
+                  updatedAt: "2026-07-31T02:03:00Z",
+                  userContentEdits: null,
+                  url: "https://github.com/VOICEVOX/example/pull/205#discussion_r22",
+                },
+              ],
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        };
+      }
+      throw new Error(`未定義のGraphQL operationです。対象: ${operation}`);
+    });
+
+    const collection = await collectGitHubItemDetails({
+      allowlist,
+      targets: [{ item }],
+      observedAt,
+      graphql: mock.graphql,
+    });
+    const detail = requireDetail(collection.items, 0);
+    if (detail.type !== "pull_request") {
+      throw new Error("Pull Request detail fixtureではありません");
+    }
+    expect(detail.reviewThreads.map((thread) => thread.nodeId)).toEqual([
+      createGitHubNodeId("PRRT_page_1"),
+      createGitHubNodeId(secondThreadId),
+    ]);
+    expect(detail.reviewThreads.map((thread) => thread.sequence)).toEqual([0, 1]);
+    expect(
+      detail.reviewThreads.map((thread) => thread.comments.map((comment) => comment.nodeId)),
+    ).toEqual([
+      [createGitHubNodeId("PRRC_comment_1")],
+      [createGitHubNodeId("PRRC_page_2_1"), createGitHubNodeId("PRRC_page_2_2")],
+    ]);
+    expect(detail.reviewThreads[1]?.comments.map((comment) => comment.sequence)).toEqual([0, 1]);
+    expect(mock.requests.map((request) => request.operation)).toEqual([
+      "GitHubItemDetailCapabilities",
+      "GitHubItemDetail",
+      "GitHubPullRequestReviewThreadPage",
+      "GitHubPullRequestReviewThreadCommentPage",
+    ]);
+  });
 });
 
 describe("UserContentEdit収集", () => {
@@ -2817,6 +2931,8 @@ describe("UserContentEdit収集", () => {
     const allowlist = createAllowlist();
     const item = createItem(allowlist, "PR_user_content_edits", 204, "pull_request");
     const reviewCommentNodeId = "PRRC_user_content_edits";
+    const pagedReviewCommentNodeId = "PRRC_user_content_edits_page_2";
+    const reviewThreadNodeId = "PRRT_user_content_edits";
     const response = createPullRequestUserContentEditResponse(
       item.nodeId,
       {
@@ -2827,7 +2943,7 @@ describe("UserContentEdit収集", () => {
       {
         nodes: [
           {
-            id: "PRRT_user_content_edits",
+            id: reviewThreadNodeId,
             isResolved: false,
             isOutdated: false,
             path: "src/example.ts",
@@ -2848,7 +2964,7 @@ describe("UserContentEdit収集", () => {
                   url: "https://github.com/VOICEVOX/example/pull/204#discussion_r1",
                 },
               ],
-              pageInfo: createPageInfo(false, null),
+              pageInfo: createPageInfo(true, "review-comment-page-1"),
             },
           },
         ],
@@ -2862,15 +2978,58 @@ describe("UserContentEdit収集", () => {
       if (operation === "GitHubItemDetail") {
         return response;
       }
+      if (operation === "GitHubPullRequestReviewThreadCommentPage") {
+        expect(getStringVariable(variables, "threadId")).toBe(reviewThreadNodeId);
+        expect(getStringVariable(variables, "after")).toBe("review-comment-page-1");
+        return {
+          thread: {
+            __typename: "PullRequestReviewThread",
+            id: reviewThreadNodeId,
+            comments: {
+              nodes: [
+                {
+                  id: pagedReviewCommentNodeId,
+                  author: createActor(5),
+                  body: "2件目のレビューコメント",
+                  createdAt: "2026-07-30T01:10:00Z",
+                  lastEditedAt: null,
+                  updatedAt: "2026-07-30T01:11:00Z",
+                  userContentEdits: {
+                    nodes: [createUserContentEdit(13)],
+                    pageInfo: createPageInfo(true, "review-comment-page-2"),
+                  },
+                  url: "https://github.com/VOICEVOX/example/pull/204#discussion_r2",
+                },
+              ],
+              pageInfo: createPageInfo(false, null),
+            },
+          },
+        };
+      }
       if (operation === "GitHubUserContentEditPage") {
-        expect(getStringVariable(variables, "contentId")).toBe(reviewCommentNodeId);
-        expect(getStringVariable(variables, "after")).toBe("review-comment-1");
+        const contentId = getStringVariable(variables, "contentId");
+        const after = getStringVariable(variables, "after");
+        if (contentId === reviewCommentNodeId) {
+          expect(after).toBe("review-comment-1");
+          return {
+            content: {
+              __typename: "PullRequestReviewComment",
+              id: reviewCommentNodeId,
+              userContentEdits: {
+                nodes: [createUserContentEdit(12)],
+                pageInfo: createPageInfo(false, null),
+              },
+            },
+          };
+        }
+        expect(contentId).toBe(pagedReviewCommentNodeId);
+        expect(after).toBe("review-comment-page-2");
         return {
           content: {
             __typename: "PullRequestReviewComment",
-            id: reviewCommentNodeId,
+            id: pagedReviewCommentNodeId,
             userContentEdits: {
-              nodes: [createUserContentEdit(12)],
+              nodes: [createUserContentEdit(14)],
               pageInfo: createPageInfo(false, null),
             },
           },
@@ -2912,9 +3071,26 @@ describe("UserContentEdit収集", () => {
       "github_user_content_edit:UCE_edit_11",
       "github_user_content_edit:UCE_edit_12",
     ]);
+    expect(thread.comments.map((comment) => comment.nodeId)).toEqual([
+      createGitHubNodeId(reviewCommentNodeId),
+      createGitHubNodeId(pagedReviewCommentNodeId),
+    ]);
+    const pagedReviewComment = thread.comments[1];
+    if (pagedReviewComment == null) {
+      throw new Error("ページ取得review comment fixtureがありません");
+    }
+    if (pagedReviewComment.userContentEdits.availability !== "available") {
+      throw new Error("ページ取得review comment編集履歴fixtureが利用できません");
+    }
+    expect(pagedReviewComment.userContentEdits.edits.map((edit) => edit.sourceId)).toEqual([
+      "github_user_content_edit:UCE_edit_13",
+      "github_user_content_edit:UCE_edit_14",
+    ]);
     expect(mock.requests.map((request) => request.operation)).toEqual([
       "GitHubItemDetailCapabilities",
       "GitHubItemDetail",
+      "GitHubPullRequestReviewThreadCommentPage",
+      "GitHubUserContentEditPage",
       "GitHubUserContentEditPage",
     ]);
   });
