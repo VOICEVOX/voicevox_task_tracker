@@ -1,6 +1,11 @@
 import { createAiCacheEntry, type AiCacheEntry } from "../codex/cache.js";
 import { validateCodexAnalysisSchema } from "../codex/schema-validation.js";
-import { createUtcIsoDateTime, type GitHubNodeId, type UtcIsoDateTime } from "../domain/index.js";
+import {
+  createUtcIsoDateTime,
+  type GitHubNodeId,
+  type Repository,
+  type UtcIsoDateTime,
+} from "../domain/index.js";
 import { PublicRepositoryAllowlist } from "../github/public-repository-allowlist.js";
 import { GitHubPublicBoundaryViolationError } from "../github/errors.js";
 import {
@@ -35,6 +40,12 @@ const STATE_ROOT_DIRECTORY = "state";
 const JSON_FILE_PATTERN = /^[A-Za-z0-9._-]+\.json$/u;
 const CACHE_FILE_KEY_PATTERN = /^[A-Za-z0-9._-]+$/u;
 const SHA256_FILE_KEY_PATTERN = /^[0-9a-f]{64}$/u;
+const CACHE_ONLY_VERIFICATION_DIRECTORIES = Object.freeze({
+  repositoryCaches: "state/github-repositories",
+  itemCaches: "state/github-items",
+  latestImportanceCaches: "state/ai-latest-importance",
+  aiCacheEntries: "state/ai-results",
+});
 
 /** cache-only永続化が利用する保存先。 */
 export type CacheOnlyPersistenceConfiguration = Readonly<{
@@ -81,12 +92,29 @@ export type CacheOnlyPersistenceResult = StateBranchCommitResult &
     deletedPaths: readonly string[];
   }>;
 
-type CacheOnlyDocumentSet = Readonly<{
+/** cache-only検証へ渡すstate内のJSON文書と相対path。 */
+export type CacheOnlyStateFile = Readonly<{
+  path: string;
+  value: unknown;
+}>;
+
+/** cache-onlyの4種類の文書を分類した入力。 */
+export type CacheOnlyStateFiles = Readonly<{
+  repositoryCaches: readonly CacheOnlyStateFile[];
+  itemCaches: readonly CacheOnlyStateFile[];
+  latestImportanceCaches: readonly CacheOnlyStateFile[];
+  aiCacheEntries: readonly CacheOnlyStateFile[];
+}>;
+
+/** cache-only文書を検証した結果。 */
+export type CacheOnlyValidatedDocuments = Readonly<{
   repositoryCaches: readonly GitHubRepositoryCacheDocument[];
   itemCaches: readonly GitHubItemCacheDocument[];
   latestImportanceCaches: readonly AiLatestImportanceCacheDocument[];
   aiCacheEntries: readonly AiCacheEntry[];
 }>;
+
+type CacheOnlyDocumentSet = CacheOnlyValidatedDocuments;
 
 type StoredCacheOnlyState = CacheOnlyDocumentSet &
   Readonly<{
@@ -933,6 +961,108 @@ function parseAiCaches(
   return Object.freeze(entries);
 }
 
+function createVerificationAllowlist(
+  files: readonly CacheOnlyStateFile[],
+  knownSecrets: readonly string[],
+): PublicRepositoryAllowlist {
+  const repositories: Repository[] = files.map((file) => {
+    const document = createCacheDocument(file.value);
+    if (document.kind !== "github_repository") {
+      throw createFormatError(
+        "repository cache",
+        new TypeError("repository cacheのkindが不正です"),
+      );
+    }
+    assertDocumentSafety(document, knownSecrets);
+    return {
+      id: document.repository.repositoryId,
+      owner: document.repository.owner,
+      name: document.repository.name,
+      visibility: "public",
+      archived: false,
+      disabled: false,
+      observedAt: document.successfulAt,
+    };
+  });
+  return PublicRepositoryAllowlist.create(repositories);
+}
+
+function validateStateFilePaths(
+  files: CacheOnlyStateFiles,
+  documents: CacheOnlyValidatedDocuments,
+): void {
+  const validatePaths = (
+    filesToValidate: readonly CacheOnlyStateFile[],
+    directory: string,
+    expectedKeys: readonly string[],
+  ): void => {
+    const remainingKeys = new Set(expectedKeys);
+    for (const file of filesToValidate) {
+      const key = pathFileKey(file.path, directory);
+      if (!remainingKeys.delete(key)) {
+        throw createFormatError(
+          "cache-only",
+          new TypeError("cache fileのpathと文書の識別子が一致しません"),
+        );
+      }
+    }
+    if (remainingKeys.size > 0) {
+      throw createFormatError(
+        "cache-only",
+        new TypeError("cache文書に対応するcache fileがありません"),
+      );
+    }
+  };
+  validatePaths(
+    files.repositoryCaches,
+    CACHE_ONLY_VERIFICATION_DIRECTORIES.repositoryCaches,
+    documents.repositoryCaches.map((document) =>
+      identityFileKey("github_repository", document.repository.repositoryId),
+    ),
+  );
+  validatePaths(
+    files.itemCaches,
+    CACHE_ONLY_VERIFICATION_DIRECTORIES.itemCaches,
+    documents.itemCaches.map((document) => identityFileKey("github_item", document.nodeId)),
+  );
+  validatePaths(
+    files.latestImportanceCaches,
+    CACHE_ONLY_VERIFICATION_DIRECTORIES.latestImportanceCaches,
+    documents.latestImportanceCaches.map((document) =>
+      identityFileKey("ai_latest_importance", document.nodeId),
+    ),
+  );
+  validatePaths(
+    files.aiCacheEntries,
+    CACHE_ONLY_VERIFICATION_DIRECTORIES.aiCacheEntries,
+    documents.aiCacheEntries.map((entry) => entry.cacheKey.slice("sha256:".length)),
+  );
+}
+
+/** cache-only stateの4種類の文書と文書間整合性を検証する。 */
+export function validateCacheOnlyStateFiles(
+  input: Readonly<{
+    evaluatedAt: UtcIsoDateTime;
+    files: CacheOnlyStateFiles;
+    knownSecrets: readonly string[];
+  }>,
+): CacheOnlyValidatedDocuments {
+  const allowlist = createVerificationAllowlist(input.files.repositoryCaches, input.knownSecrets);
+  const documents = validateCacheOnlyPersistenceInput(
+    {
+      evaluatedAt: input.evaluatedAt,
+      repositoryCaches: input.files.repositoryCaches.map((file) => file.value),
+      itemCaches: input.files.itemCaches.map((file) => file.value),
+      latestImportanceCaches: input.files.latestImportanceCaches.map((file) => file.value),
+      aiCacheEntries: input.files.aiCacheEntries.map((file) => file.value),
+      knownSecrets: input.knownSecrets,
+    },
+    allowlist,
+  );
+  validateStateFilePaths(input.files, documents);
+  return documents;
+}
+
 function parseInput(
   input: CacheOnlyPersistenceInput,
   allowlist: PublicRepositoryAllowlist,
@@ -951,9 +1081,15 @@ function parseInput(
   });
   assertNoFutureTimestamps(documents, evaluatedAt);
   assertDocumentSetConsistency(documents);
-  const pruned = pruneExpired(documents, evaluatedAt);
-  assertDocumentSetConsistency(pruned);
-  return pruned;
+  return documents;
+}
+
+/** cache-only persistence payloadをschemaと文書間整合性まで検証する。 */
+export function validateCacheOnlyPersistenceInput(
+  input: CacheOnlyPersistenceInput,
+  allowlist: PublicRepositoryAllowlist,
+): CacheOnlyValidatedDocuments {
+  return parseInput(input, allowlist);
 }
 
 function createDocumentUpdate(path: string, document: CacheDocument): StateFileUpdate {
@@ -1177,7 +1313,8 @@ export class CacheOnlyPersistenceSession {
   public async persist(input: CacheOnlyPersistenceInput): Promise<CacheOnlyPersistenceResult> {
     const evaluatedAt = parseEvaluatedAt(input.evaluatedAt);
     const stored = await this.#readStoredState(input.knownSecrets, evaluatedAt);
-    const documents = parseInput(input, this.#allowlist);
+    const validated = validateCacheOnlyPersistenceInput(input, this.#allowlist);
+    const documents = pruneExpired(validated, evaluatedAt);
     const updates = createUpdates(documents, this.#configuration);
     const updatePaths = new Set(updates.map((update) => update.path));
     const deletedPaths = Object.freeze(

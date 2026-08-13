@@ -707,7 +707,7 @@ describe("workflow security", () => {
     expect(allCiStep.with?.["self"]).toBe("merge_gatekeeper");
   });
 
-  it("CIのqualityと実state検証を権限分離する", async () => {
+  it("CIのqualityとcache-only state検証を権限分離する", async () => {
     const workflow = await readWorkflow(CI_WORKFLOW_PATH);
     const qualityJob = workflow.jobs["quality"];
     const verifyStateJob = workflow.jobs["verify-state"];
@@ -730,8 +730,9 @@ describe("workflow security", () => {
     }
     expect(qualityJob.permissions).toEqual({ contents: "read" });
     expect(verifyStateJob.permissions).toEqual({ contents: "read" });
+    expect(verifyStateJob.if).toBe("github.event_name == 'workflow_dispatch'");
 
-    const stateCheckout = requiredStep(verifyStateJob, "永続stateを取得");
+    const stateCheckout = requiredStep(verifyStateJob, "cache-only stateを取得");
     expect(stateCheckout.uses).toBe("actions/checkout@11d5960a326750d5838078e36cf38b85af677262");
     expect(stateCheckout.with).toMatchObject({
       ref: "tracker-state",

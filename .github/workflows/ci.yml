@@ -46,6 +46,7 @@ jobs:
         run: pnpm build:web
 
   verify-state:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -55,7 +56,7 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: 永続stateを取得
+      - name: cache-only stateを取得
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: tracker-state
@@ -71,5 +72,5 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: CLIをビルド
         run: pnpm build
-      - name: 永続stateを検証
+      - name: cache-only stateを検証
         run: pnpm tracker:run verify-state --state-directory tracker-state/state
