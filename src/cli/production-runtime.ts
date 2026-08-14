@@ -119,6 +119,7 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
+  evaluateNormalDigestRun,
   isOneTimeNotificationDue,
   selectDiscordNotifications,
   type sendDiscordDigest,
@@ -5861,17 +5862,20 @@ function validateRunCompleteness(
       throw new TypeError(`決定規則versionの保存対象項目がありません。対象: ${nodeId}`);
     }
   }
+  const notificationItemsForRun = evaluateNormalDigestRun(digestRunContext).allowed
+    ? notificationItems(
+        configuration,
+        inventory,
+        collection,
+        reduction,
+        graph,
+        invocation.scheduledFor,
+      )
+    : Object.freeze([]);
   const notificationSelection = selectDiscordNotifications({
     referenceAt: invocation.scheduledFor,
     runContext: digestRunContext,
-    items: notificationItems(
-      configuration,
-      inventory,
-      collection,
-      reduction,
-      graph,
-      invocation.scheduledFor,
-    ),
+    items: notificationItemsForRun,
     settings: {
       maxItemsPerDigest: configuration.config.notifications.discord.maxItemsPerDigest,
       repeatDays: configuration.config.notifications.discord.repeatDays,

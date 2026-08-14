@@ -1396,6 +1396,20 @@ function createCollectionHarness(
         scheduledFor(at),
       ]);
     },
+    runCollectAnalyzeAt: (at: string, scheduledAt: string) => {
+      currentTime = at;
+      return application.run([
+        "collect-analyze",
+        "--config",
+        "unused-config.yml",
+        "--artifact",
+        "unused-artifact.json",
+        "--report",
+        "unused-report.json",
+        "--scheduled-for",
+        scheduledAt,
+      ]);
+    },
   };
 }
 
@@ -6555,6 +6569,80 @@ describe("本番収集の接続", () => {
 
     expect(result.exitCode).toBe(0);
     expect(candidate?.reasons).toContainEqual({ reasonCode: "responsibility_changed" });
+  });
+
+  it("workflow_dispatchは非08:00時刻でも通知項目を作らず通常digestをskipする", async () => {
+    const repository = createRepository(
+      "R_manual_notification_window",
+      "manual-notification-window",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const assignedAt = createUtcIsoDateTime("2026-07-31T22:00:00.000Z");
+    const assignee = Object.freeze({
+      nodeId: createGitHubNodeId("U_manual_notification_window"),
+      login: "manual-notification-window",
+      apiType: "User" as const,
+    });
+    const item = Object.freeze({
+      ...createIssueItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "manual-notification-window",
+        updatedAt: assignedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      assignees: Object.freeze([assignee]),
+    });
+    const detail = createIssueDetail({
+      item,
+      body: "workflow_dispatchの通知時刻fixture",
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    });
+    const account = Object.freeze({
+      sourceId: buildSourceId("github_account", assignee.nodeId),
+      ...assignee,
+    });
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...detail,
+        timeline: Object.freeze([
+          Object.freeze({
+            sourceId: buildSourceId("github_timeline_event", `${item.nodeId}:assigned`),
+            nodeId: createGitHubNodeId(`${item.nodeId}:assigned`),
+            sequence: 0,
+            occurredAt: assignedAt,
+            actor: Object.freeze({ status: "identified", account }),
+            kind: "assigned",
+            assignee: Object.freeze({ type: "account", account }),
+          } satisfies GitHubTimelineEvent),
+        ]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyzeAt(FIRST_RUN_AT, FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+
+    expect(result.exitCode).toBe(0);
+    expect(artifact.notificationSelection).toEqual({
+      action: "skip_digest",
+      reason: "manual",
+      candidates: [],
+    });
+    expect(harness.normalDiscordCallCount()).toBe(0);
   });
 
   it("同時刻の責務addとremoveが相殺される場合はresponsibility changed通知を作らない", async () => {
