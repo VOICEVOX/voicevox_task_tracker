@@ -32,6 +32,26 @@ GitHub由来の本文、comment、label、ユーザー名はuntrusted dataとし
 `tracker:run`はビルドを兼ねません。CLI変更後は`pnpm build`を実行してください。
 性能profileは5,000 items、10,000 edgesを30分以内で処理できるかを確認します。
 
+## 実サービスを使う限定確認
+
+mockを使うテストの後、日次workflow全体を実行する前に、変更したadapter境界だけを実サービスへ接続して確認します。
+本番の`daily`、`backfill`、`collect-analyze`、`dry-run`は全公開リポジトリを収集するため、この工程では使いません。
+対象adapterの既存関数を呼ぶ一時scriptまたはテスト用harnessを`/tmp`へ置き、確認後に削除します。
+
+限定確認は次の上限を守ります。
+
+- GitHubは公開リポジトリ1件、明示したIssueまたはPull Requestを合計3件まで取得する。
+- 選んだ項目のpaginationは最後まで取得するが、関係のない項目やリポジトリへ展開しない。
+- Organization inventoryを変更した場合だけrepository metadataを確認し、IssueとPull Requestの詳細は取得しない。
+- Codexは3回まで、同時実行数は1件とし、選んだ項目以外を入力しない。
+- Pages、Discord、cache保存のadapterは呼び出さず、`tracker-state` branchを変更しない。
+- 認証情報はローカル環境変数から渡し、fixture、引数、ログ、artifactへ書かない。
+- raw本文、comment、diffを保存せず、対象件数、API呼び出し数、Codex呼び出し数、schemaとsemantic検証結果だけを記録する。
+
+通常の開発では、mockを使うunitとintegration test、限定確認、default branchの`workflow_dispatch`の順に進めます。
+限定確認は再現性のあるテストを置き換えません。
+実サービスで見つかった問題は匿名化したfixtureへ追加し、同じ問題の確認に実サービスを繰り返し使わないでください。
+
 ## pure層の開発
 
 `src/domain`と`src/graph`へnetwork、filesystem、日時取得、乱数を持ち込まないでください。
