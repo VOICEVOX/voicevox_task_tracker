@@ -665,6 +665,89 @@ function createIssueDetailWithInboundCrossReferences(
   });
 }
 
+function createInferredRelationFixture(observedAt: UtcIsoDateTime): Readonly<{
+  repository: Repository;
+  fixture: RepositoryFixture;
+  items: readonly EnumeratedGitHubItem[];
+  referencing: EnumeratedGitHubItem;
+}> {
+  const repository = createRepository(
+    "R_semantic_retry_relation",
+    "semantic-retry-relation",
+    observedAt,
+  );
+  const publicRepository = requirePublicRepository(repository);
+  const fixture = createRepositoryFixture(repository);
+  const referencing = createIssueItem({
+    repository: publicRepository,
+    number: 1,
+    fingerprint: "semantic-retry-referencing",
+    updatedAt: observedAt,
+    observedAt,
+    state: Object.freeze({
+      state: "closed",
+      closedAt: observedAt,
+    }),
+  });
+  const referenced = createIssueItem({
+    repository: publicRepository,
+    number: 2,
+    fingerprint: "semantic-retry-referenced",
+    updatedAt: observedAt,
+    observedAt,
+    state: Object.freeze({
+      state: "closed",
+      closedAt: observedAt,
+    }),
+  });
+  const blocker = createIssueItem({
+    repository: publicRepository,
+    number: 3,
+    fingerprint: "semantic-retry-blocker",
+    updatedAt: observedAt,
+    observedAt,
+    state: Object.freeze({
+      state: "closed",
+      closedAt: observedAt,
+    }),
+  });
+  const items = Object.freeze([referencing, referenced, blocker]);
+  for (const item of items) {
+    fixture.individualItems.set(item.url, item);
+  }
+  fixture.details.set(
+    referencing.nodeId,
+    createIssueDetail({
+      item: referencing,
+      body: `${referenced.url} を参照します`,
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    }),
+  );
+  fixture.details.set(
+    referenced.nodeId,
+    createIssueDetail({
+      item: referenced,
+      body: "本文",
+      observedAt,
+      nativeDependencies: Object.freeze([createNativeBlocker(referenced, blocker)]),
+      duplicateComments: false,
+    }),
+  );
+  fixture.details.set(
+    blocker.nodeId,
+    createIssueDetail({
+      item: blocker,
+      body: "本文",
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    }),
+  );
+  return Object.freeze({ repository, fixture, items, referencing });
+}
+
 function createExternalNativeBlocker(
   blocked: EnumeratedGitHubItem,
   options: Readonly<{
@@ -911,6 +994,40 @@ function createCodexOutput(
     confidence: options.confidence,
     uncertainties: [],
     notification: options.notification,
+  };
+}
+
+function createCodexOutputWithUnknownRelationSource(input: CodexAnalysisInput) {
+  const source = input.sources[0];
+  if (source == null) {
+    throw new TypeError("semantic再試行fixtureのsourceがありません");
+  }
+  const output = createCodexOutput(input, {
+    status: "in_progress",
+    waitingOn: {
+      candidateId: requireCodexAuthorCandidateId(input),
+      kind: "user",
+      role: "author",
+      sourceId: source.id,
+    },
+    latestMeaningfulSourceId: null,
+    confidence: 0.95,
+    relationVerdict: "related",
+    notification: {
+      recommended: false,
+      reasonCode: "none",
+      reasonSummary: "通知しません",
+    },
+  });
+  if (output.relations.length === 0) {
+    throw new TypeError("semantic再試行fixtureのinferred relationがありません");
+  }
+  return {
+    ...output,
+    relations: output.relations.map((relation) => ({
+      ...relation,
+      sourceIds: [buildSourceId("github_item_body", "semantic-retry-unknown-relation-source")],
+    })),
   };
 }
 
@@ -1910,6 +2027,84 @@ describe("本番収集の接続", () => {
     });
   });
 
+  it("inferred relationの未知source IDを1回再試行してartifactとcacheを作成する", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const relationFixture = createInferredRelationFixture(observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: relationFixture.items.map((item) => item.url),
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    let executionCount = 0;
+    const harness = createCollectionHarness({
+      repositories: [relationFixture.fixture],
+      config,
+      executeCodexAnalysis: (input) => {
+        executionCount += 1;
+        if (executionCount === 1) {
+          return Promise.resolve(createCodexOutputWithUnknownRelationSource(input));
+        }
+        return executeSuccessfulCodexAnalysis(input);
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("semantic再試行fixtureがcollect-analyze結果ではありません");
+    }
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const trackedItem = artifact.snapshot.items.find(
+      (item) => item.nodeId === relationFixture.referencing.nodeId,
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(harness.codexExecutionCount()).toBe(2);
+    expect(trackedItem?.aiAnalysis).toMatchObject({ status: "used" });
+    expect(artifact.cacheOnlyPayload.aiCacheEntries).toHaveLength(1);
+    expect(artifact.cacheOnlyPayload.aiCacheEntries[0]?.nodeId).toBe(
+      relationFixture.referencing.nodeId,
+    );
+  });
+
+  it("inferred relationの未知source IDが再試行後も不正ならcompletenessで公開副作用を止める", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const relationFixture = createInferredRelationFixture(observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: relationFixture.items.map((item) => item.url),
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [relationFixture.fixture],
+      config,
+      executeCodexAnalysis: (input) =>
+        Promise.resolve(createCodexOutputWithUnknownRelationSource(input)),
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("semantic停止fixtureがcollect-analyze結果ではありません");
+    }
+
+    expect(result.exitCode).toBe(1);
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "completeness_validation",
+      complete: false,
+    });
+    expect(harness.codexExecutionCount()).toBe(2);
+    expect(harness.artifacts).toEqual([]);
+    expect(harness.publicData).toEqual([]);
+    expect(harness.normalDiscordCallCount()).toBe(0);
+    expect(result.result.effects).toEqual({
+      cacheCommitted: false,
+      pagesBuilt: false,
+      discordAttempted: false,
+      artifactWritten: false,
+    });
+    expect(await harness.stateAdapter.resolveHead("tracker-state")).toEqual({ status: "missing" });
+  });
+
   it("AI対象がない正常runを利用可能として保存する", async () => {
     const repository = createRepository("R_ai_no_targets", "ai-no-targets", FIRST_RUN_AT);
     const fixture = createRepositoryFixture(repository);
@@ -2020,7 +2215,7 @@ describe("本番収集の接続", () => {
     const snapshot = requireDryRunSnapshot(harness.artifacts);
 
     expect(result.exitCode).toBe(0);
-    expect(harness.codexExecutionCount()).toBe(2);
+    expect(harness.codexExecutionCount()).toBe(3);
     expect(snapshot.run.status).toBe("fallback");
     expect(snapshot.ai).toEqual({
       enabled: true,
@@ -8172,8 +8367,8 @@ describe("本番収集の接続", () => {
     const snapshot = requireDryRunSnapshot(harness.artifacts);
 
     expect(result.exitCode).toBe(0);
-    expect(harness.codexExecutionCount()).toBe(1);
-    expect(harness.codexInputs).toHaveLength(1);
+    expect(harness.codexExecutionCount()).toBe(2);
+    expect(harness.codexInputs).toHaveLength(2);
     expect(input.item).not.toHaveProperty("authorCandidateId");
     expect(input.candidates.waitingOn).toEqual([
       expect.objectContaining({

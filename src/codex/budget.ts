@@ -50,6 +50,11 @@ type BudgetDecision =
       reason: AiAnalysisDeferReason;
     }>;
 
+type BudgetUsageState = Readonly<{
+  usage: AiBudgetUsage;
+  usedEstimatedCostMicroUsd: number;
+}>;
+
 function compareBooleanPriority(left: boolean, right: boolean): number {
   if (left === right) {
     return 0;
@@ -228,6 +233,26 @@ function determineBudgetDecision(
   });
 }
 
+function addCandidateUsage(
+  candidate: PreparedAiAnalysisCandidate,
+  state: BudgetUsageState,
+): BudgetUsageState {
+  const candidateCostMicroUsd = convertEstimatedCostToMicroUsd(
+    candidate.estimatedCostUsd,
+    "estimate_up",
+    "Codex分析候補の見積費用",
+  );
+  const usedEstimatedCostMicroUsd = state.usedEstimatedCostMicroUsd + candidateCostMicroUsd;
+  return Object.freeze({
+    usage: Object.freeze({
+      calls: state.usage.calls + 1,
+      inputCharacters: state.usage.inputCharacters + candidate.inputCharacters,
+      estimatedCostUsd: usedEstimatedCostMicroUsd / MICRO_USD_PER_USD,
+    }),
+    usedEstimatedCostMicroUsd,
+  });
+}
+
 /** 規定の優先順位でcache missへrun予算を配分する。 */
 export function planAiAnalysisBudget(
   candidates: readonly PreparedAiAnalysisCandidate[],
@@ -263,21 +288,70 @@ export function planAiAnalysisBudget(
       continue;
     }
     selected.push(candidate);
-    usedEstimatedCostMicroUsd += convertEstimatedCostToMicroUsd(
-      candidate.estimatedCostUsd,
-      "estimate_up",
-      "Codex分析候補の見積費用",
-    );
-    usage = Object.freeze({
-      calls: usage.calls + 1,
-      inputCharacters: usage.inputCharacters + candidate.inputCharacters,
-      estimatedCostUsd: usedEstimatedCostMicroUsd / MICRO_USD_PER_USD,
+    const nextState = addCandidateUsage(candidate, {
+      usage,
+      usedEstimatedCostMicroUsd,
     });
+    usage = nextState.usage;
+    usedEstimatedCostMicroUsd = nextState.usedEstimatedCostMicroUsd;
   }
 
   return Object.freeze({
     selected: Object.freeze(selected),
     deferred: Object.freeze(deferred.map((value) => Object.freeze(value))),
     usage,
+  });
+}
+
+/** 追加のCodex呼び出しを同一run予算へ同期的に予約する。 */
+export function createAiBudgetReservationController(
+  budget: AiRunBudget,
+  initialCandidates: readonly PreparedAiAnalysisCandidate[],
+): Readonly<{
+  tryReserve: (candidate: PreparedAiAnalysisCandidate) => boolean;
+  usage: () => AiBudgetUsage;
+}> {
+  validateBudget(budget);
+  let usage: AiBudgetUsage = Object.freeze({
+    calls: 0,
+    inputCharacters: 0,
+    estimatedCostUsd: 0,
+  });
+  let usedCostMicroUsd = 0;
+
+  for (const candidate of initialCandidates) {
+    validateCandidate(candidate);
+    const decision = determineBudgetDecision(candidate, budget, usage, usedCostMicroUsd);
+    if (decision.status === "deferred") {
+      throw new RangeError(
+        `初期候補がrun予算の制約でdeferredになりました。対象: ${candidate.id} 理由: ${decision.reason}`,
+      );
+    }
+    const nextState = addCandidateUsage(candidate, {
+      usage,
+      usedEstimatedCostMicroUsd: usedCostMicroUsd,
+    });
+    usage = nextState.usage;
+    usedCostMicroUsd = nextState.usedEstimatedCostMicroUsd;
+  }
+
+  return Object.freeze({
+    tryReserve(candidate: PreparedAiAnalysisCandidate): boolean {
+      validateCandidate(candidate);
+      const decision = determineBudgetDecision(candidate, budget, usage, usedCostMicroUsd);
+      if (decision.status === "deferred") {
+        return false;
+      }
+      const nextState = addCandidateUsage(candidate, {
+        usage,
+        usedEstimatedCostMicroUsd: usedCostMicroUsd,
+      });
+      usage = nextState.usage;
+      usedCostMicroUsd = nextState.usedEstimatedCostMicroUsd;
+      return true;
+    },
+    usage(): AiBudgetUsage {
+      return usage;
+    },
   });
 }

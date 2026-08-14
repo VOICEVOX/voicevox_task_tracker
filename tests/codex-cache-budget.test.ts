@@ -16,6 +16,7 @@ import {
   prepareAiAnalysisCandidate as prepareCandidateWithIdentity,
   runAiAnalyses as runPreparedAiAnalyses,
   serializeCanonicalJson,
+  CodexTransportAliasError,
   type AiAnalysisCandidate,
   type AiAnalysisPriority,
   type AiAnalysisRunConfiguration,
@@ -27,6 +28,7 @@ import {
   type PreparedAiAnalysisCandidate,
   type PreviousAiAnalysisFingerprint,
 } from "../src/codex/index.js";
+import { createAiBudgetReservationController } from "../src/codex/budget.js";
 import { assertNonNullable } from "../src/util/index.js";
 
 const unavailablePreviousFingerprint = Object.freeze({
@@ -89,6 +91,26 @@ function createInputAt(id: string, body: string, now: string): CodexAnalysisInpu
 
 function createInput(id: string, body: string): CodexAnalysisInput {
   return createInputAt(id, body, "2026-07-30T23:00:00Z");
+}
+
+function createInputWithRelation(id: string, body: string): CodexAnalysisInput {
+  const input = createInput(id, body);
+  return createCodexAnalysisInput({
+    ...input,
+    candidates: {
+      ...input.candidates,
+      relations: [
+        {
+          id: "rel:semantic-retry-unknown-source",
+          targetUrl: "https://github.com/VOICEVOX/example/issues/2",
+        },
+      ],
+    },
+    deterministicSignals: {
+      ...input.deterministicSignals,
+      relationCandidateIds: ["rel:semantic-retry-unknown-source"],
+    },
+  });
 }
 
 function createSchemaValidOutput(nodeId: string): Record<string, unknown> {
@@ -200,6 +222,22 @@ function createCandidate(options: {
   });
 }
 
+function createRelationCandidate(id: string, body: string): AiAnalysisCandidate {
+  const candidate = createCandidate({
+    id,
+    body,
+    deterministicResolution: "ambiguous",
+    previousFingerprint: unavailablePreviousFingerprint,
+    priority: createPriority("ordinary"),
+    graphVersion: 1,
+    estimatedCostUsd: 0.1,
+  });
+  return Object.freeze({
+    ...candidate,
+    input: createInputWithRelation(id, body),
+  });
+}
+
 function createConfiguration(
   maxCallsPerRun: number,
   maxTotalInputCharactersPerRun: number,
@@ -297,6 +335,50 @@ function createExecutorOutput(input: CodexAnalysisInput) {
       reasonCode: "none",
       reasonSummary: "通知の必要性を確定できません",
     },
+  };
+}
+
+function createSemanticInvalidOutput(input: CodexAnalysisInput) {
+  const output = createExecutorOutput(input);
+  return {
+    ...output,
+    item: {
+      ...output.item,
+      nodeId: "I_semantic_invalid",
+    },
+  };
+}
+
+function createSemanticInvalidSourceOutput(input: CodexAnalysisInput) {
+  const output = createExecutorOutput(input);
+  const evidence = output.evidence.at(0);
+  assertNonNullable(evidence, "semantic検証fixtureのevidenceがありません");
+  return {
+    ...output,
+    evidence: [
+      {
+        ...evidence,
+        sourceId: "source:semantic-invalid",
+      },
+    ],
+  };
+}
+
+function createRelationOutput(input: CodexAnalysisInput, sourceId: string) {
+  const output = createExecutorOutput(input);
+  const relation = input.candidates.relations.at(0);
+  assertNonNullable(relation, "semantic検証fixtureのrelation候補がありません");
+  return {
+    ...output,
+    relations: [
+      {
+        candidateId: relation.id,
+        verdict: "none",
+        reasonSummary: "関係を確定できません",
+        sourceIds: [sourceId],
+        confidence: 0.8,
+      },
+    ],
   };
 }
 
@@ -1429,6 +1511,406 @@ describe("AI runの候補単位fallback", () => {
         errorType: "HttpFixtureError",
       },
     ]);
+  });
+
+  it("semantic検証失敗だけを1回再試行し、成功した結果を保存する", async () => {
+    const candidate = createCandidate({
+      id: "I_semantic_retry",
+      body: "semantic検証を再試行する",
+      deterministicResolution: "ambiguous",
+      previousFingerprint: unavailablePreviousFingerprint,
+      priority: createPriority("ordinary"),
+      graphVersion: 1,
+      estimatedCostUsd: 0.1,
+    });
+    const cache = new MemoryAiCacheStore();
+    let executionCount = 0;
+    const execute = vi.fn((input: CodexAnalysisInput): Promise<unknown> => {
+      executionCount += 1;
+      return Promise.resolve(
+        executionCount === 1 ? createSemanticInvalidOutput(input) : createExecutorOutput(input),
+      );
+    });
+
+    const dependencies = {
+      cache,
+      execute,
+      executedAt: () => fixedExecutedAt,
+    };
+    const result = await runAiAnalyses(
+      [candidate],
+      createConfiguration(2, 1_000_000, 1, 1),
+      dependencies,
+    );
+    const cachedResult = await runAiAnalyses(
+      [candidate],
+      createConfiguration(2, 1_000_000, 1, 1),
+      dependencies,
+    );
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(result.usage).toEqual({
+      calls: 2,
+      inputCharacters: prepareAiAnalysisCandidate(candidate).inputCharacters * 2,
+      estimatedCostUsd: 0.2,
+    });
+    expect(result.results.map((value) => value.candidateId)).toEqual(["I_semantic_retry"]);
+    expect(result.failures).toEqual([]);
+    expect(cachedResult.results.map((value) => value.origin)).toEqual(["cache"]);
+    expect(cachedResult.usage).toEqual({
+      calls: 0,
+      inputCharacters: 0,
+      estimatedCostUsd: 0,
+    });
+  });
+
+  it("micro USDの境界で初回費用を正確に記録し、再試行を拒否する", async () => {
+    const candidate = createCandidate({
+      id: "I_semantic_retry_cost_boundary",
+      body: "micro USDの境界を検証する",
+      deterministicResolution: "ambiguous",
+      previousFingerprint: unavailablePreviousFingerprint,
+      priority: createPriority("ordinary"),
+      graphVersion: 1,
+      estimatedCostUsd: 0.000249,
+    });
+    const execute = vi.fn((input: CodexAnalysisInput): Promise<unknown> =>
+      Promise.resolve(createSemanticInvalidOutput(input)),
+    );
+
+    const result = await runAiAnalyses(
+      [candidate],
+      createConfiguration(2, 1_000_000, 0.000497, 1),
+      {
+        cache: new MemoryAiCacheStore(),
+        execute,
+        executedAt: () => fixedExecutedAt,
+      },
+    );
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(result.usage).toEqual({
+      calls: 1,
+      inputCharacters: prepareAiAnalysisCandidate(candidate).inputCharacters,
+      estimatedCostUsd: 0.000249,
+    });
+    expect(result.failures).toHaveLength(1);
+  });
+
+  it("項目別入力上限を超える初期候補をdeferred理由付きで拒否する", () => {
+    const candidate = createCandidate({
+      id: "I_initial_item_limit",
+      body: "初期候補の項目別入力上限を検証する",
+      deterministicResolution: "ambiguous",
+      previousFingerprint: unavailablePreviousFingerprint,
+      priority: createPriority("ordinary"),
+      graphVersion: 1,
+      estimatedCostUsd: 0.1,
+    });
+    const prepared = prepareAiAnalysisCandidate(candidate);
+
+    expect(() =>
+      createAiBudgetReservationController(
+        {
+          maxCallsPerRun: 1,
+          maxInputCharactersPerItem: prepared.inputCharacters - 1,
+          maxTotalInputCharactersPerRun: 1_000_000,
+          maxEstimatedCostUsdPerRun: 1,
+        },
+        [prepared],
+      ),
+    ).toThrow("item_input_character_limit");
+  });
+
+  it("未知のrelation source IDを含むsemantic失敗を再試行し、関係結果を保存する", async () => {
+    const candidate = createRelationCandidate(
+      "I_semantic_relation_retry",
+      "relationのsemantic検証を再試行する",
+    );
+    const execute = vi
+      .fn<(input: CodexAnalysisInput) => Promise<unknown>>()
+      .mockImplementationOnce((input) =>
+        Promise.resolve(createRelationOutput(input, "source:semantic-invalid")),
+      )
+      .mockImplementationOnce((input) =>
+        Promise.resolve(createRelationOutput(input, "body:current")),
+      );
+    const cache = new MemoryAiCacheStore();
+    const configuration = createConfiguration(2, 1_000_000, 1, 1);
+    const dependencies = {
+      cache,
+      execute,
+      executedAt: () => fixedExecutedAt,
+    };
+
+    const result = await runAiAnalyses([candidate], configuration, dependencies);
+    const cachedResult = await runAiAnalyses([candidate], configuration, dependencies);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]?.output.relations[0]?.sourceIds).toEqual(["body:current"]);
+    expect(result.usage.calls).toBe(2);
+    expect(cachedResult.results[0]?.origin).toBe("cache");
+    expect(cachedResult.usage.calls).toBe(0);
+  });
+
+  it("2回ともsemantic検証に失敗した場合は2回目の失敗へ縮退する", async () => {
+    const candidate = createCandidate({
+      id: "I_semantic_failed",
+      body: "semantic検証に2回失敗する",
+      deterministicResolution: "ambiguous",
+      previousFingerprint: unavailablePreviousFingerprint,
+      priority: createPriority("ordinary"),
+      graphVersion: 1,
+      estimatedCostUsd: 0.1,
+    });
+    let executionCount = 0;
+    const execute = vi.fn((input: CodexAnalysisInput): Promise<unknown> => {
+      executionCount += 1;
+      return Promise.resolve(
+        executionCount === 1
+          ? createSemanticInvalidOutput(input)
+          : createSemanticInvalidSourceOutput(input),
+      );
+    });
+
+    const cache = new MemoryAiCacheStore();
+    const dependencies = {
+      cache,
+      execute,
+      executedAt: () => fixedExecutedAt,
+    };
+    const configuration = createConfiguration(2, 1_000_000, 1, 1);
+    const result = await runAiAnalyses([candidate], configuration, dependencies);
+    const second = await runAiAnalyses([candidate], configuration, dependencies);
+
+    expect(execute).toHaveBeenCalledTimes(4);
+    expect(result.results).toEqual([]);
+    expect(result.failures).toEqual([
+      {
+        candidateId: "I_semantic_failed",
+        reason: "semantic_validation_failed",
+        errorType: "CodexOutputSemanticValidationError",
+        validationDiagnostic: {
+          issueCount: 1,
+          issues: [
+            {
+              path: "/evidence/0/sourceId",
+              code: "unknown_source_id_absent_from_input",
+            },
+          ],
+        },
+      },
+    ]);
+    expect(result.usage).toEqual({
+      calls: 2,
+      inputCharacters: prepareAiAnalysisCandidate(candidate).inputCharacters * 2,
+      estimatedCostUsd: 0.2,
+    });
+    expect(second.results).toEqual([]);
+    expect(second.failures).toEqual(result.failures);
+    expect(second.usage).toEqual(result.usage);
+  });
+
+  it("初回semantic検証失敗後の通常transport失敗は2回目の失敗へ縮退する", async () => {
+    const candidate = createCandidate({
+      id: "I_semantic_transport_failed",
+      body: "semantic後のtransport失敗",
+      deterministicResolution: "ambiguous",
+      previousFingerprint: unavailablePreviousFingerprint,
+      priority: createPriority("ordinary"),
+      graphVersion: 1,
+      estimatedCostUsd: 0.1,
+    });
+    let executionCount = 0;
+    const execute = vi.fn((input: CodexAnalysisInput): Promise<unknown> => {
+      executionCount += 1;
+      if (executionCount === 1) {
+        return Promise.resolve(createSemanticInvalidOutput(input));
+      }
+      return Promise.reject(new HttpFixtureError(503));
+    });
+
+    const result = await runAiAnalyses([candidate], createConfiguration(2, 1_000_000, 1, 1), {
+      cache: new MemoryAiCacheStore(),
+      execute,
+      executedAt: () => fixedExecutedAt,
+    });
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(result.failures).toEqual([
+      {
+        candidateId: "I_semantic_transport_failed",
+        reason: "service_unavailable",
+        errorType: "HttpFixtureError",
+      },
+    ]);
+    expect(result.usage.calls).toBe(2);
+  });
+
+  it("CodexTransportAliasErrorはsemantic再試行後も呼び出し側へ伝播する", async () => {
+    const candidate = createCandidate({
+      id: "I_semantic_alias_failed",
+      body: "semantic後のalias失敗",
+      deterministicResolution: "ambiguous",
+      previousFingerprint: unavailablePreviousFingerprint,
+      priority: createPriority("ordinary"),
+      graphVersion: 1,
+      estimatedCostUsd: 0.1,
+    });
+    let executionCount = 0;
+    const aliasError = new CodexTransportAliasError("restore", {
+      cause: new Error("alias fixture"),
+    });
+    const execute = vi.fn((input: CodexAnalysisInput): Promise<unknown> => {
+      executionCount += 1;
+      if (executionCount === 1) {
+        return Promise.resolve(createSemanticInvalidOutput(input));
+      }
+      return Promise.reject(aliasError);
+    });
+
+    await expect(
+      runAiAnalyses([candidate], createConfiguration(2, 1_000_000, 1, 1), {
+        cache: new MemoryAiCacheStore(),
+        execute,
+        executedAt: () => fixedExecutedAt,
+      }),
+    ).rejects.toBe(aliasError);
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    {
+      name: "call上限",
+      maxCallsPerRun: 1,
+      maxTotalInputCharactersPerRun: 1_000_000,
+      maxEstimatedCostUsdPerRun: 1,
+    },
+    {
+      name: "入力文字数上限",
+      maxCallsPerRun: 2,
+      maxTotalInputCharactersPerRun: 1,
+      maxEstimatedCostUsdPerRun: 1,
+    },
+    {
+      name: "費用上限",
+      maxCallsPerRun: 2,
+      maxTotalInputCharactersPerRun: 1_000_000,
+      maxEstimatedCostUsdPerRun: 0.1,
+    },
+  ])(
+    "予算の余力がない場合はsemantic再試行しない $name",
+    async ({ maxCallsPerRun, maxTotalInputCharactersPerRun, maxEstimatedCostUsdPerRun }) => {
+      const candidate = createCandidate({
+        id: `I_semantic_budget_${maxCallsPerRun.toString()}_${maxEstimatedCostUsdPerRun.toString()}`,
+        body: "semantic再試行の予算不足",
+        deterministicResolution: "ambiguous",
+        previousFingerprint: unavailablePreviousFingerprint,
+        priority: createPriority("ordinary"),
+        graphVersion: 1,
+        estimatedCostUsd: 0.1,
+      });
+      const execute = vi.fn((input: CodexAnalysisInput): Promise<unknown> =>
+        Promise.resolve(createSemanticInvalidOutput(input)),
+      );
+      const prepared = prepareAiAnalysisCandidate(candidate);
+      const totalInputLimit =
+        maxTotalInputCharactersPerRun === 1
+          ? prepared.inputCharacters
+          : maxTotalInputCharactersPerRun;
+      const result = await runAiAnalyses(
+        [candidate],
+        createConfiguration(maxCallsPerRun, totalInputLimit, maxEstimatedCostUsdPerRun, 1),
+        {
+          cache: new MemoryAiCacheStore(),
+          execute,
+          executedAt: () => fixedExecutedAt,
+        },
+      );
+
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(result.results).toEqual([]);
+      expect(result.failures[0]?.reason).toBe("semantic_validation_failed");
+      expect(result.usage).toEqual({
+        calls: 1,
+        inputCharacters: prepared.inputCharacters,
+        estimatedCostUsd: 0.1,
+      });
+    },
+  );
+
+  it("並列workerのsemantic再試行は共有予算を超えない", async () => {
+    const candidates = [
+      createRelationCandidate("I_semantic_concurrent_1", "並列semantic失敗1"),
+      createRelationCandidate("I_semantic_concurrent_2", "並列semantic失敗2"),
+    ];
+    const execute = vi.fn(
+      (input: CodexAnalysisInput): Promise<unknown> =>
+        new Promise((resolve) => {
+          setTimeout(() => {
+            resolve(createRelationOutput(input, "source:semantic-invalid"));
+          }, 0);
+        }),
+    );
+
+    const result = await runAiAnalyses(candidates, createConfiguration(3, 1_000_000, 1, 2), {
+      cache: new MemoryAiCacheStore(),
+      execute,
+      executedAt: () => fixedExecutedAt,
+    });
+
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(result.usage.calls).toBe(3);
+    expect(result.failures).toHaveLength(2);
+  });
+
+  it("schema検証失敗は追加再試行しない", async () => {
+    const candidate = createCandidate({
+      id: "I_schema_failed",
+      body: "schema検証に失敗する",
+      deterministicResolution: "ambiguous",
+      previousFingerprint: unavailablePreviousFingerprint,
+      priority: createPriority("ordinary"),
+      graphVersion: 1,
+      estimatedCostUsd: 0.1,
+    });
+    const execute = vi.fn((input: CodexAnalysisInput): Promise<unknown> =>
+      Promise.resolve({
+        ...createExecutorOutput(input),
+        extra: true,
+      }),
+    );
+
+    const result = await runAiAnalyses([candidate], createConfiguration(1, 1_000_000, 1, 1), {
+      cache: new MemoryAiCacheStore(),
+      execute,
+      executedAt: () => fixedExecutedAt,
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(result.results).toEqual([]);
+    expect(result.failures).toEqual([
+      {
+        candidateId: "I_schema_failed",
+        reason: "schema_validation_failed",
+        errorType: "CodexOutputSchemaValidationError",
+        validationDiagnostic: {
+          issueCount: 1,
+          issues: [
+            {
+              path: "$",
+              code: "additionalProperties",
+            },
+          ],
+        },
+      },
+    ]);
+    expect(result.usage).toEqual({
+      calls: 1,
+      inputCharacters: prepareAiAnalysisCandidate(candidate).inputCharacters,
+      estimatedCostUsd: 0.1,
+    });
   });
 
   it("schema不適合出力をcacheへ保存しない", async () => {
