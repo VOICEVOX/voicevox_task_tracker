@@ -10,7 +10,13 @@ import {
   type RunReport,
 } from "../src/cli/index.js";
 import { ResponsibilityReplayRetryExhaustedError } from "../src/cli/errors.js";
-import { SecretRedactor, executeWithGitHubRetry } from "../src/github/index.js";
+import {
+  GitHubGraphQLResponseError,
+  GitHubGraphQLRetryExhaustedError,
+  GitHubItemDetailCollectionError,
+  SecretRedactor,
+  executeWithGitHubRetry,
+} from "../src/github/index.js";
 import { createGitHubNodeId, createUtcIsoDateTime } from "../src/domain/index.js";
 
 const NOW = "2026-07-31T00:00:00.000Z";
@@ -94,6 +100,9 @@ type CollectionFailure =
     }>
   | Readonly<{
       status: "responsibility_replay";
+    }>
+  | Readonly<{
+      status: "graphql_response_retry_exhausted";
     }>;
 
 type HarnessBehavior = Readonly<{
@@ -228,6 +237,22 @@ function createHarness(behavior: HarnessBehavior): Harness {
     },
     collectIncrementalItems: async () => {
       events.push("incremental_collection");
+      if (behavior.collectionFailure.status === "graphql_response_retry_exhausted") {
+        const graphqlError = new GitHubGraphQLResponseError(
+          {
+            operationName: "GitHubItemDetail",
+            queryHash: "0123456789abcdef",
+            errorCount: 1,
+            errors: [],
+            requestId: "REQUEST_FIXTURE",
+          },
+          { cause: new Error("GraphQL retry fixture") },
+        );
+        const retryError = new GitHubGraphQLRetryExhaustedError(4, { cause: graphqlError });
+        throw new GitHubItemDetailCollectionError("VOICEVOX", "example", 42, {
+          cause: retryError,
+        });
+      }
       if (behavior.collectionFailure.status === "responsibility_replay") {
         throw new ResponsibilityReplayRetryExhaustedError(
           createGitHubNodeId("I_responsibility_replay_retry_exhausted"),
@@ -665,6 +690,26 @@ describe("Daily transaction", () => {
       ...defaultBehavior(),
       collectionFailure: {
         status: "responsibility_replay",
+      },
+    });
+    const result = await harness.runner.run(parseOnlineCommand(scheduledArgs("daily")));
+
+    expect(result.value.report).toMatchObject({
+      status: "failure",
+      complete: false,
+      failedStage: "incremental_collection",
+    });
+    expect(harness.operationsRetryAttempts).toEqual([4]);
+    expect(harness.counters.discordCalls).toBe(1);
+    expect(harness.counters.pagesBuilds).toBe(0);
+    expect(harness.counters.cacheCommits).toBe(0);
+  });
+
+  it("項目詳細に包まれたGraphQL retry上限のattemptsを運用障害通知へ渡す", async () => {
+    const harness = createHarness({
+      ...defaultBehavior(),
+      collectionFailure: {
+        status: "graphql_response_retry_exhausted",
       },
     });
     const result = await harness.runner.run(parseOnlineCommand(scheduledArgs("daily")));

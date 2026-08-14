@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   GitHubApiBudgetExceededError,
   GitHubGraphQLReadOnlyViolationError,
+  GitHubGraphQLResponseError,
+  GitHubGraphQLRetryExhaustedError,
   GitHubRateLimitController,
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
@@ -15,6 +17,7 @@ import {
   type GitHubRetryRuntime,
   type GitHubRetrySettings,
 } from "../src/github/index.js";
+import { safeErrorDiagnostic } from "../src/cli/error-diagnostic.js";
 
 function createApiError(
   status: number,
@@ -40,6 +43,22 @@ function createRetryRuntime(delays: number[], now: Date, randomValue: number): G
     random: () => randomValue,
     now: () => now,
   };
+}
+
+function createGraphQLResponseError(
+  errorCount: number,
+  errors: GitHubGraphQLResponseError["errors"],
+): GitHubGraphQLResponseError {
+  return new GitHubGraphQLResponseError(
+    {
+      operationName: "RetryFixture",
+      queryHash: "0123456789abcdef",
+      errorCount,
+      errors,
+      requestId: "REQUEST_FIXTURE",
+    },
+    { cause: new Error("GraphQL response details") },
+  );
 }
 
 const retrySettings = {
@@ -207,6 +226,103 @@ describe("GitHub API retry", () => {
       expect(error.message).not.toContain(token);
       expect(error.cause.message).not.toContain(token);
     }
+  });
+
+  it("診断情報のないGraphQL response errorを設定回数までretryする", async () => {
+    const delays: number[] = [];
+    const runtime = createRetryRuntime(delays, new Date("2026-08-01T00:00:00Z"), 0);
+    let attempts = 0;
+
+    const result = await executeWithGitHubRetry(
+      async () => {
+        await Promise.resolve();
+        attempts += 1;
+        if (attempts < 3) {
+          throw createGraphQLResponseError(1, []);
+        }
+        return "成功";
+      },
+      retrySettings,
+      runtime,
+      new SecretRedactor(["canary"]),
+    );
+
+    expect(result).toBe("成功");
+    expect(attempts).toBe(3);
+    expect(delays).toEqual([1000, 2000]);
+  });
+
+  it("診断情報のあるGraphQL response errorはretryしない", async () => {
+    const delays: number[] = [];
+    const runtime = createRetryRuntime(delays, new Date("2026-08-01T00:00:00Z"), 0);
+    const error = createGraphQLResponseError(1, [{ code: "FORBIDDEN" }]);
+    let attempts = 0;
+
+    await expect(
+      executeWithGitHubRetry(
+        async () => {
+          await Promise.resolve();
+          attempts += 1;
+          throw error;
+        },
+        retrySettings,
+        runtime,
+        new SecretRedactor(["canary"]),
+      ),
+    ).rejects.toBe(error);
+
+    expect(attempts).toBe(1);
+    expect(delays).toEqual([]);
+  });
+
+  it("診断情報のないGraphQL response errorが上限に達したら専用エラーにする", async () => {
+    const delays: number[] = [];
+    const runtime = createRetryRuntime(delays, new Date("2026-08-01T00:00:00Z"), 0);
+    let attempts = 0;
+    let lastError: GitHubGraphQLResponseError | undefined;
+    const rawMessage = "graphql raw message canary";
+    const secret = "ghs_graphql_secret_canary";
+
+    try {
+      await executeWithGitHubRetry(
+        async () => {
+          await Promise.resolve();
+          attempts += 1;
+          lastError = new GitHubGraphQLResponseError(
+            {
+              operationName: "RetryFixture",
+              queryHash: "0123456789abcdef",
+              errorCount: 1,
+              errors: [],
+              requestId: "REQUEST_FIXTURE",
+            },
+            { cause: new Error(`${rawMessage} ${secret}`) },
+          );
+          throw lastError;
+        },
+        retrySettings,
+        runtime,
+        new SecretRedactor(["canary"]),
+      );
+      throw new Error("GitHubGraphQLRetryExhaustedErrorが発生しませんでした");
+    } catch (error: unknown) {
+      if (!(error instanceof GitHubGraphQLRetryExhaustedError)) {
+        throw error;
+      }
+      expect(error.attempts).toBe(4);
+      expect(error.cause).toBe(lastError);
+      const diagnostic = safeErrorDiagnostic("incremental_collection", error);
+      expect(diagnostic).toContain("attempts=4");
+      expect(diagnostic).toContain("operation=RetryFixture");
+      expect(diagnostic).toContain("queryHash=0123456789abcdef");
+      expect(diagnostic).toContain("gqlErrorCount=1");
+      expect(diagnostic).toContain("requestId=REQUEST_FIXTURE");
+      expect(diagnostic).not.toContain(rawMessage);
+      expect(diagnostic).not.toContain(secret);
+    }
+
+    expect(attempts).toBe(4);
+    expect(delays).toEqual([1000, 2000, 4000]);
   });
 });
 

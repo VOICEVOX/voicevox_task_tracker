@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { createUtcIsoDateTime, type UtcIsoDateTime } from "../domain/index.js";
-import { GitHubRetryExhaustedError } from "../github/index.js";
+import { GitHubGraphQLRetryExhaustedError, GitHubRetryExhaustedError } from "../github/index.js";
 import { serializeCanonicalJson } from "../persistence/index.js";
 import {
   type BackfillCliCommand,
@@ -458,10 +458,26 @@ function operationsAlertKind(stage: RunStage): "collection" | "pages" | undefine
 }
 
 function operationsAlertRetryAttempts(error: unknown): number {
-  return error instanceof GitHubRetryExhaustedError ||
-    error instanceof ResponsibilityReplayRetryExhaustedError
-    ? error.attempts
-    : 1;
+  const retryErrorCauseDepthLimit = 5;
+  const visited = new Set<Error>();
+  let current: unknown = error;
+  let depth = 0;
+  while (current instanceof Error && depth < retryErrorCauseDepthLimit) {
+    if (visited.has(current)) {
+      return 1;
+    }
+    visited.add(current);
+    if (
+      current instanceof GitHubRetryExhaustedError ||
+      current instanceof GitHubGraphQLRetryExhaustedError ||
+      current instanceof ResponsibilityReplayRetryExhaustedError
+    ) {
+      return current.attempts;
+    }
+    current = current.cause;
+    depth += 1;
+  }
+  return 1;
 }
 
 /** Daily transactionを順序保証付きで実行する。 */

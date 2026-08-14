@@ -323,6 +323,67 @@ describe("GitHub App認証とOctokitクライアント", () => {
     });
   });
 
+  it("GraphQL本文の診断情報なしエラーをretryして成功する", async () => {
+    const now = new Date("2026-08-01T00:00:00Z");
+    const delays: number[] = [];
+    const rawMessage = "graphql response message canary";
+    const mock = createFetchMock([
+      () => createTokenResponse("ghs_graphql_retry", "2026-08-01T01:00:00Z"),
+      () =>
+        createJsonResponse(
+          {
+            data: {
+              viewer: {
+                login: "partial-response-canary",
+              },
+            },
+            errors: [{ message: rawMessage }],
+          },
+          200,
+          {},
+        ),
+      () =>
+        createJsonResponse(
+          {
+            data: {
+              viewer: {
+                login: "octocat",
+              },
+              voicevoxTaskTrackerRateLimit: {
+                cost: 1,
+                limit: 5000,
+                remaining: 4999,
+                resetAt: "2026-08-01T01:00:00Z",
+              },
+            },
+          },
+          200,
+          {},
+        ),
+    ]);
+    const client = await createGitHubClient(
+      createClientOptions(
+        {
+          appId: 123,
+          privateKey,
+          installationId: 456,
+        },
+        mock.fetch,
+        createRuntime(() => now, delays),
+      ),
+    );
+
+    const response = await client.graphql("query { viewer { login } }", {});
+
+    expect(response).toEqual({
+      viewer: {
+        login: "octocat",
+      },
+    });
+    expect(mock.requests).toHaveLength(3);
+    expect(delays).toEqual([1000]);
+  });
+
   it("GraphQL errorsから安全な診断情報と秘匿処理済みcauseを保持する", async () => {
     const now = new Date("2026-08-01T00:00:00Z");
     const variableCanary = "variable-value-canary";

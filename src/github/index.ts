@@ -15,6 +15,7 @@ export {
   GitHubGraphQLDocumentError,
   GitHubGraphQLReadOnlyViolationError,
   GitHubGraphQLResponseError,
+  GitHubGraphQLRetryExhaustedError,
   GitHubItemDetailCollectionError,
   GitHubPublicBoundaryViolationError,
   GitHubPullRequestVolatileRaceError,

@@ -6,6 +6,7 @@ import {
 } from "../codex/index.js";
 import {
   GitHubGraphQLResponseError,
+  GitHubGraphQLRetryExhaustedError,
   GitHubItemDetailCollectionError,
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
@@ -326,7 +327,11 @@ function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): v
   ) {
     appendZodDiagnostics(fields, error);
   }
-  if (error instanceof GitHubRequestError || error instanceof GitHubRetryExhaustedError) {
+  if (
+    error instanceof GitHubRequestError ||
+    error instanceof GitHubRetryExhaustedError ||
+    error instanceof GitHubGraphQLRetryExhaustedError
+  ) {
     fields.push({ key: "attempts", value: error.attempts.toString() });
   }
 }

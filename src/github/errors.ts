@@ -172,6 +172,16 @@ export class GitHubGraphQLResponseError extends GitHubClientError {
   }
 }
 
+/** GitHub GraphQLのretry上限へ到達したことを表す。 */
+export class GitHubGraphQLRetryExhaustedError extends GitHubClientError {
+  public readonly attempts: number;
+
+  public constructor(attempts: number, options: ErrorOptions) {
+    super(`GitHub GraphQLのretry上限へ到達しました。attempts: ${attempts.toString()}`, options);
+    this.attempts = attempts;
+  }
+}
+
 /** GitHub API予算の安全余裕へ到達したことを表す。 */
 export class GitHubApiBudgetExceededError extends GitHubClientError {
   public readonly snapshot: GitHubRateLimitSnapshot;
