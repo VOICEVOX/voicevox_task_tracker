@@ -902,7 +902,7 @@ export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities
               endCursor
             }
           }
-          reviewThreads(first: 50) {
+          reviewThreads(first: 19) {
             nodes {
               ...DetailReviewThreadFields
             }

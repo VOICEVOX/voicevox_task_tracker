@@ -157,7 +157,9 @@ describe("GitHub GraphQLクエリ", () => {
 
   it("review threadの初期取得件数を制限し、次ページqueryで続きを取得する", () => {
     for (const { query } of itemDetailQueryCases) {
-      expect(query).toContain("reviewThreads(first: 50)");
+      expect(query).toContain("reviewThreads(first: 19)");
+      expect(query).not.toContain("reviewThreads(first: 20)");
+      expect(query).not.toContain("reviewThreads(first: 50)");
       expect(query).not.toContain("reviewThreads(first: 100)");
       const fragmentStart = query.indexOf("fragment DetailReviewThreadFields");
       if (fragmentStart < 0) {

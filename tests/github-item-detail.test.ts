@@ -2572,11 +2572,11 @@ describe("Pull Request詳細収集", () => {
   it("review threadとコメントの複数ページを順序付きで収集する", async () => {
     const allowlist = createAllowlist();
     const item = createItem(allowlist, "PR_review_thread_pages", 205, "pull_request");
-    const initialThreadPageCount = 50;
+    const initialThreadPageCount = 19;
     const secondThreadPageCount = 100;
     const initialThreadPageCursor = "review-thread-page-2";
     const secondThreadPageCursor = "review-thread-page-3";
-    const commentPageThreadId = "PRRT_page_51";
+    const commentPageThreadId = "PRRT_page_20";
     const commentPageThread = {
       id: commentPageThreadId,
       isResolved: true,
@@ -2618,9 +2618,9 @@ describe("Pull Request詳細収集", () => {
         );
       }),
     ];
-    const finalPageThreads = [createReviewThread("PRRT_page_151", false, 151)];
-    expect(initialThreads).toHaveLength(50);
-    expect(secondPageThreads).toHaveLength(100);
+    const finalPageThreads = [createReviewThread("PRRT_page_120", false, 120)];
+    expect(initialThreads).toHaveLength(initialThreadPageCount);
+    expect(secondPageThreads).toHaveLength(secondThreadPageCount);
     expect(finalPageThreads).toHaveLength(1);
     const response = createPullRequestUserContentEditResponse(
       item.nodeId,
@@ -2707,19 +2707,19 @@ describe("Pull Request詳細収集", () => {
     if (detail.type !== "pull_request") {
       throw new Error("Pull Request detail fixtureではありません");
     }
-    expect(detail.reviewThreads).toHaveLength(151);
+    expect(detail.reviewThreads).toHaveLength(120);
     expect(detail.reviewThreads.map((thread) => thread.nodeId)).toEqual(
-      Array.from({ length: 151 }, (_, index) =>
+      Array.from({ length: 120 }, (_, index) =>
         createGitHubNodeId(`PRRT_page_${(index + 1).toString()}`),
       ),
     );
     expect(detail.reviewThreads.map((thread) => thread.sequence)).toEqual(
-      Array.from({ length: 151 }, (_, index) => index),
+      Array.from({ length: 120 }, (_, index) => index),
     );
     expect(detail.reviewThreads[0]?.comments.map((comment) => comment.nodeId)).toEqual([
       createGitHubNodeId("PRRC_comment_1"),
     ]);
-    const commentPageThreadDetail = detail.reviewThreads[50];
+    const commentPageThreadDetail = detail.reviewThreads[19];
     if (commentPageThreadDetail == null) {
       throw new Error("review threadコメントページfixtureがありません");
     }
@@ -2729,8 +2729,8 @@ describe("Pull Request詳細収集", () => {
       createGitHubNodeId("PRRC_page_2_2"),
     ]);
     expect(commentPageThreadDetail.comments.map((comment) => comment.sequence)).toEqual([0, 1]);
-    expect(detail.reviewThreads[150]?.comments.map((comment) => comment.nodeId)).toEqual([
-      createGitHubNodeId("PRRC_comment_151"),
+    expect(detail.reviewThreads[119]?.comments.map((comment) => comment.nodeId)).toEqual([
+      createGitHubNodeId("PRRC_comment_120"),
     ]);
     expect(threadPageCursors).toEqual([initialThreadPageCursor, secondThreadPageCursor]);
     expect(mock.requests.map((request) => request.operation)).toEqual([
