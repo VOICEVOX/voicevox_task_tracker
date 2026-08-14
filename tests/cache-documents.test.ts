@@ -679,6 +679,95 @@ describe("cache文書契約", () => {
     );
   });
 
+  it("explicit request候補のcomment sourceがcontextにない場合は拒否する", () => {
+    const document = createValidItem();
+    const commentSourceId = buildSourceId("github_comment", "missing-explicit-context");
+    const value = {
+      ...document,
+      currentObservation: {
+        ...document.currentObservation,
+        events: [
+          {
+            sourceId: commentSourceId,
+            itemNodeId: ITEM_NODE_ID,
+            occurredAt: UPDATED_AT,
+            actor: {
+              type: "human" as const,
+              nodeId: ACTOR_NODE_ID,
+              login: "human",
+            },
+            kind: "comment" as const,
+            bodyFingerprint: BODY_FINGERPRINT,
+            bodyEmpty: false,
+          },
+        ],
+      },
+      analysisFacts: {
+        ...document.analysisFacts,
+        inputEvents: [
+          {
+            sourceId: commentSourceId,
+            url: document.url,
+          },
+        ],
+        explicitRequestCandidates: [
+          {
+            sourceId: commentSourceId,
+            occurredAt: UPDATED_AT,
+          },
+        ],
+      },
+    };
+
+    expect(() => createCacheDocument(value)).toThrow(
+      "explicit request候補のsource IDがcontextにありません",
+    );
+  });
+
+  it("mention候補のcomment sourceがcontextにない場合は拒否する", () => {
+    const document = createValidItem();
+    const commentSourceId = buildSourceId("github_comment", "missing-mention-context");
+    const value = {
+      ...document,
+      currentObservation: {
+        ...document.currentObservation,
+        events: [
+          {
+            sourceId: commentSourceId,
+            itemNodeId: ITEM_NODE_ID,
+            occurredAt: UPDATED_AT,
+            actor: {
+              type: "human" as const,
+              nodeId: ACTOR_NODE_ID,
+              login: "human",
+            },
+            kind: "comment" as const,
+            bodyFingerprint: BODY_FINGERPRINT,
+            bodyEmpty: false,
+          },
+        ],
+      },
+      analysisFacts: {
+        ...document.analysisFacts,
+        inputEvents: [
+          {
+            sourceId: commentSourceId,
+            url: document.url,
+          },
+        ],
+        mentionedWaitingOnCandidates: [
+          {
+            id: "requested-user",
+            kind: "user" as const,
+            sourceIds: [commentSourceId],
+          },
+        ],
+      },
+    };
+
+    expect(() => createCacheDocument(value)).toThrow("mention候補のsource IDがcontextにありません");
+  });
+
   it("replay epochの時系列とcurrent値の改ざんを拒否する", () => {
     const document = createValidItem();
     const stateEpochs = document.replay.stateEpochs;

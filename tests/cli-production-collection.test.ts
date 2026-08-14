@@ -4134,6 +4134,120 @@ describe("本番収集の接続", () => {
     });
   });
 
+  it("relation expansionで取得した未追跡Issueのcomment sourceをcache contextへ含める", async () => {
+    const repository = createRepository(
+      "R_relation_expansion_cache_comment",
+      "relation-expansion-cache-comment",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const commentOccurredAt = createUtcIsoDateTime("2025-12-02T00:00:00.000Z");
+    const root = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "relation-expansion-cache-comment-root",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const target = createOldIssueItem(
+      publicRepository,
+      2,
+      "relation-expansion-cache-comment-target",
+      observedAt,
+    );
+    const comment = createDuplicateComments(target, commentOccurredAt)[0];
+    if (comment == null) {
+      throw new TypeError("cache contextのcomment fixtureを作成できません");
+    }
+    const targetComment = Object.freeze({
+      ...comment,
+      body: "@requested-user へ対応します",
+      createdAt: commentOccurredAt,
+      updatedAt: commentOccurredAt,
+      url: `${target.url}#issuecomment-${comment.nodeId}`,
+    });
+    fixture.openItems = [root];
+    fixture.individualItems.set(target.nodeId, target);
+    fixture.details.set(
+      root.nodeId,
+      createIssueDetailWithInboundCrossReferences(root, [target], observedAt),
+    );
+    fixture.details.set(
+      target.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item: target,
+          body: "本文",
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        comments: Object.freeze([targetComment]),
+      }),
+    );
+    const baseConfig = await createTestConfig({
+      explicitIncludes: [root.url],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const config = Object.freeze({
+      ...baseConfig,
+      tracking: Object.freeze({
+        ...baseConfig.tracking,
+        autoInclude: Object.freeze({
+          ...baseConfig.tracking.autoInclude,
+          createdAfterStart: false,
+          changedAfterStart: false,
+          referencedByTracked: false,
+          referencesTracked: false,
+        }),
+      }),
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const targetCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (item) => item.nodeId === target.nodeId,
+    );
+    if (targetCache == null) {
+      throw new TypeError("未追跡relation targetのcache文書がありません");
+    }
+    const commentSource = targetCache.analysisFacts.codexValidationContext.sources.find(
+      (source) => source.id === targetComment.sourceId,
+    );
+    const mentionedCandidate = targetCache.analysisFacts.mentionedWaitingOnCandidates.find(
+      (candidate) => candidate.id === "requested-user" && candidate.kind === "user",
+    );
+    if (mentionedCandidate == null) {
+      throw new TypeError("未追跡relation targetのmention候補がありません");
+    }
+
+    expect(result.exitCode).toBe(0);
+    expect(artifact.snapshot.items.map((item) => item.nodeId)).toContain(root.nodeId);
+    expect(artifact.snapshot.items.map((item) => item.nodeId)).not.toContain(target.nodeId);
+    expect(targetCache.aiAnalysisStatus).toBe("not_recorded");
+    expect(targetCache.analysisFacts.explicitRequestCandidates).toContainEqual({
+      sourceId: targetComment.sourceId,
+      occurredAt: commentOccurredAt,
+    });
+    expect(mentionedCandidate.sourceIds).toEqual([targetComment.sourceId]);
+    expect(commentSource).toEqual({
+      id: targetComment.sourceId,
+      kind: "comment",
+      actorType: "human",
+      createdAt: commentOccurredAt,
+    });
+    expect(commentSource).not.toHaveProperty("content");
+  });
+
   it("関係先のURL列挙結果が要求項目と一致しなければdetailを取得しない", async () => {
     const repository = createRepository(
       "R_relation_expansion_mismatch",

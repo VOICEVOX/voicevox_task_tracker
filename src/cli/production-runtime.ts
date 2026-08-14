@@ -5348,11 +5348,36 @@ function createCacheHistory(item: EnumeratedGitHubItem, detail: GitHubItemDetail
 
 function createCacheValidationContext(
   item: FreshObservedGitHubItem,
+  detail: GitHubItemDetail,
   analysis: DeterministicItemAnalysis | undefined,
 ): import("../codex/index.js").CodexCacheValidationContext {
   if (analysis != null) {
     return createCodexCacheValidationContext(createCodexInput(item.observedAt, analysis));
   }
+  const sourceOccurredAtById = createCodexSourceOccurredAtById(item, detail);
+  const sourceRecords = [
+    {
+      id: item.sourceId,
+      kind: "item",
+      actorType: codexActorType(item),
+      createdAt: item.createdAt,
+    },
+    {
+      id: detail.bodySourceId,
+      kind: "item_body",
+      actorType: codexActorType(item),
+      createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, detail.bodySourceId),
+    },
+    ...detail.comments.map((comment) => {
+      const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+      return {
+        id: comment.sourceId,
+        kind: "comment",
+        actorType: event?.actor.type ?? "system",
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, comment.sourceId),
+      };
+    }),
+  ];
   return parseCodexCacheValidationContext({
     schemaVersion: "1",
     purpose: "semantic_validation_only",
@@ -5366,20 +5391,7 @@ function createCacheValidationContext(
       waitingOn: [],
       relations: [],
     },
-    sources: [
-      {
-        id: item.sourceId,
-        kind: "item",
-        actorType: authorType(item),
-        createdAt: item.createdAt,
-      },
-      {
-        id: item.bodySourceId,
-        kind: "item_body",
-        actorType: authorType(item),
-        createdAt: item.createdAt,
-      },
-    ],
+    sources: sourceRecords,
     nativeRelationConstraints: [],
   });
 }
@@ -5531,7 +5543,7 @@ function createItemCacheDocuments(
           sourceId: event.sourceId,
           url: trackedItemInputEventUrl(observation, detail, event),
         })),
-        codexValidationContext: createCacheValidationContext(observation, deterministic),
+        codexValidationContext: createCacheValidationContext(observation, detail, deterministic),
       },
       aiCacheReference,
     });
