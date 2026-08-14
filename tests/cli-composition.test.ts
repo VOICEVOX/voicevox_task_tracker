@@ -396,15 +396,17 @@ function createEmptyWorkflowArtifact(
 }
 
 describe("CLI合成root", () => {
-  it("GITHUB_EVENT_NAME未設定はmanual扱いにし、明示されないworkflow eventは拒否する", () => {
+  it("通常digestのworkflow環境変数を検証し、manualとscheduleを扱う", () => {
     const scheduledFor = createUtcIsoDateTime("2026-07-31T23:00:00.000Z");
 
-    expect(normalDigestRunContext({}, scheduledFor)).toEqual({
-      eventName: "workflow_dispatch",
-      runAttempt: 1,
-    });
+    expect(() => normalDigestRunContext({ GITHUB_RUN_ATTEMPT: "1" }, scheduledFor)).toThrow(
+      "GITHUB_EVENT_NAMEはworkflow_dispatchまたはscheduleを指定してください",
+    );
     expect(
-      normalDigestRunContext({ GITHUB_EVENT_NAME: "workflow_dispatch" }, scheduledFor),
+      normalDigestRunContext(
+        { GITHUB_EVENT_NAME: "workflow_dispatch", GITHUB_RUN_ATTEMPT: "1" },
+        scheduledFor,
+      ),
     ).toEqual({
       eventName: "workflow_dispatch",
       runAttempt: 1,
@@ -419,8 +421,11 @@ describe("CLI合成root", () => {
       runAttempt: 2,
       scheduledFor,
     });
-    expect(() => normalDigestRunContext({ GITHUB_EVENT_NAME: "push" }, scheduledFor)).toThrow(
-      "通常digestに対応しないworkflow eventです: push",
+    expect(() =>
+      normalDigestRunContext({ GITHUB_EVENT_NAME: "push", GITHUB_RUN_ATTEMPT: "1" }, scheduledFor),
+    ).toThrow("GITHUB_EVENT_NAMEはworkflow_dispatchまたはscheduleを指定してください");
+    expect(() => normalDigestRunContext({ GITHUB_EVENT_NAME: "schedule" }, scheduledFor)).toThrow(
+      "GITHUB_RUN_ATTEMPTを指定してください",
     );
   });
 
@@ -614,6 +619,8 @@ describe("CLI合成root", () => {
     const harness = createHarness({
       GH_APP_ID: "123",
       GH_APP_PRIVATE_KEY: PRIVATE_KEY,
+      GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_RUN_ATTEMPT: "1",
       HOME: "/tmp",
       OPENAI_API_KEY: OPENAI_SECRET,
       PATH: "/usr/bin",
@@ -717,7 +724,7 @@ describe("CLI合成root", () => {
     expect(codexProcessCount).toBe(0);
   });
 
-  it.each(["manual", "rerun"] as const)(
+  it.each(["manual", "rerun"] satisfies readonly ["manual", "rerun"])(
     "検証済みartifactからPagesを構築し%sの空候補を通常送信しない",
     async (reason) => {
       let pagesWriteCount = 0;

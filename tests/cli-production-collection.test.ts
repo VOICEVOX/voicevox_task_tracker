@@ -15,6 +15,7 @@ import {
   parseSha256Hash,
   serializeCanonicalJson,
   type CodexAnalysisInput,
+  type SchemaValidCodexAnalysisOutput,
 } from "../src/codex/index.js";
 import { loadConfig, type Config } from "../src/config/index.js";
 import { type DiscordDigestDelivery } from "../src/discord/index.js";
@@ -44,6 +45,7 @@ import {
   type GitHubItemDetail,
   type GitHubItemMilestone,
   type GitHubInboundCrossReferenceCandidate,
+  type GitHubItemAccount,
   type GitHubIssueComment,
   type GitHubNativeClosingIssue,
   type GitHubNativeDependency,
@@ -943,7 +945,7 @@ function createCodexOutput(
       reasonSummary: string;
     }>;
   }>,
-) {
+): SchemaValidCodexAnalysisOutput {
   const evidenceSource = input.sources[0];
   if (evidenceSource == null) {
     throw new TypeError("Codex入力にsourceがありません");
@@ -997,7 +999,9 @@ function createCodexOutput(
   };
 }
 
-function createCodexOutputWithUnknownRelationSource(input: CodexAnalysisInput) {
+function createCodexOutputWithUnknownRelationSource(
+  input: CodexAnalysisInput,
+): SchemaValidCodexAnalysisOutput {
   const source = input.sources[0];
   if (source == null) {
     throw new TypeError("semantic再試行fixtureのsourceがありません");
@@ -1057,6 +1061,32 @@ function executeSuccessfulCodexAnalysis(input: CodexAnalysisInput): Promise<unkn
   );
 }
 
+type CollectionHarnessApplication = ReturnType<typeof createProductionCliApplication>;
+type CollectionHarnessRunResult = ReturnType<CollectionHarnessApplication["run"]>;
+type CollectionHarness = Readonly<{
+  artifacts: unknown[];
+  reportSources: Map<string, string>;
+  codexInputs: CodexAnalysisInput[];
+  detailCalls: DetailCall[];
+  volatileProbeCalls: VolatileProbeCall[];
+  discordCandidateNodeIds: GitHubNodeId[][];
+  individualCalls: string[][];
+  sleepDelays: number[];
+  stateAdapter: MemoryStateBranchAdapter;
+  publicData: GeneratedPublicData[];
+  codexExecutionCount: () => number;
+  normalDiscordCallCount: () => number;
+  operationsDiscordCallCount: () => number;
+  setInventory: (value: readonly Repository[]) => void;
+  setConfig: (value: Config) => void;
+  runDaily: (at: string) => CollectionHarnessRunResult;
+  runAllOpenBackfill: (at: string, repositoryFullName: string) => CollectionHarnessRunResult;
+  runDry: (at: string) => CollectionHarnessRunResult;
+  readSnapshot: (at: string) => Promise<StateSnapshot>;
+  runCollectAnalyze: (at: string) => CollectionHarnessRunResult;
+  runCollectAnalyzeAt: (at: string, scheduledAt: string) => CollectionHarnessRunResult;
+}>;
+
 function createCollectionHarness(
   options: Readonly<{
     repositories: readonly RepositoryFixture[];
@@ -1068,7 +1098,7 @@ function createCollectionHarness(
     collectionCompletedAt?: string;
     scheduledRun?: boolean;
   }>,
-) {
+): CollectionHarness {
   const stateAdapter = new MemoryStateBranchAdapter();
   const artifacts: unknown[] = [];
   const reportSources = new Map<string, string>();
@@ -1101,7 +1131,10 @@ function createCollectionHarness(
             GITHUB_EVENT_NAME: "schedule",
             GITHUB_RUN_ATTEMPT: "1",
           })
-        : Object.freeze({})),
+        : Object.freeze({
+            GITHUB_EVENT_NAME: "workflow_dispatch",
+            GITHUB_RUN_ATTEMPT: "1",
+          })),
     }),
     repositoryPath: join(import.meta.dirname, ".."),
     pagesOutputDirectory: "unused-pages",
@@ -1244,7 +1277,8 @@ function createCollectionHarness(
     now: () => new Date(currentTime),
     sleep: (delayMilliseconds) => {
       sleepDelays.push(delayMilliseconds);
-      return options.sleep?.(delayMilliseconds) ?? Promise.resolve();
+      assertNonNullable(options.sleep, "collection harnessのsleepがありません");
+      return options.sleep(delayMilliseconds);
     },
     random: () => 0,
     writeStandardOutput: () => Promise.resolve(),
@@ -2445,7 +2479,11 @@ describe("本番収集の接続", () => {
   it.each([
     { status: "failed", maxCallsPerRun: 1, secondExecutionFails: true },
     { status: "deferred", maxCallsPerRun: 0, secondExecutionFails: false },
-  ] as const)("AI $status時はlatest importanceだけを代替する", async (fixtureOptions) => {
+  ] satisfies readonly {
+    status: "failed" | "deferred";
+    maxCallsPerRun: number;
+    secondExecutionFails: boolean;
+  }[])("AI $status時はlatest importanceだけを代替する", async (fixtureOptions) => {
     const repository = createRepository(
       `R_latest_importance_${fixtureOptions.status}`,
       `latest-importance-${fixtureOptions.status}`,
@@ -2597,7 +2635,10 @@ describe("本番収集の接続", () => {
   it.each([
     { kind: "version", firstConfidence: 0.95 },
     { kind: "confidence", firstConfidence: 0.7 },
-  ] as const)("$kind変更後は互換性のないlatest importanceを代替利用しない", async (options) => {
+  ] satisfies readonly {
+    kind: "version" | "confidence";
+    firstConfidence: number;
+  }[])("$kind変更後は互換性のないlatest importanceを代替利用しない", async (options) => {
     const repository = createRepository(
       `R_latest_incompatible_${options.kind}`,
       `latest-incompatible-${options.kind}`,
@@ -5159,7 +5200,12 @@ describe("本番収集の接続", () => {
       archived: false,
       disabled: true,
     },
-  ] as const)(
+  ] satisfies readonly {
+    description: string;
+    visibility: "private" | "public";
+    archived: boolean;
+    disabled: boolean;
+  }[])(
     "公開cache保存後に追跡repositoryが$descriptionになるとcache境界で停止する",
     async ({ visibility, archived, disabled }) => {
       const repository = createRepository(
@@ -5969,8 +6015,8 @@ describe("本番収集の接続", () => {
     const assignee = Object.freeze({
       nodeId: createGitHubNodeId("U_responsibility_replay_retry"),
       login: "responsibility-replay-retry",
-      apiType: "User" as const,
-    });
+      apiType: "User",
+    }) satisfies GitHubItemAccount;
     const item = Object.freeze({
       ...createIssueItem({
         repository: publicRepository,
@@ -6044,6 +6090,7 @@ describe("本番収集の接続", () => {
     const harness = createCollectionHarness({
       repositories: [fixture],
       config,
+      sleep: () => Promise.resolve(),
       collectGitHubItemDetails: (input) => {
         detailCollectionAttempt += 1;
         if (detailCollectionAttempt === 1) {
@@ -6119,8 +6166,8 @@ describe("本番収集の接続", () => {
     const assignee = Object.freeze({
       nodeId: createGitHubNodeId("U_responsibility_replay_retry_number_mismatch"),
       login: "responsibility-replay-retry-number-mismatch",
-      apiType: "User" as const,
-    });
+      apiType: "User",
+    }) satisfies GitHubItemAccount;
     const item = Object.freeze({
       ...createIssueItem({
         repository: publicRepository,
@@ -6151,7 +6198,11 @@ describe("本番収集の接続", () => {
       retentionDays: 180,
       aiEnabled: false,
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+    });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
     const head = await harness.stateAdapter.resolveHead("tracker-state");
@@ -6242,8 +6293,8 @@ describe("本番収集の接続", () => {
     const assignee = Object.freeze({
       nodeId: createGitHubNodeId("U_responsibility_replay_retry_exhausted"),
       login: "responsibility-replay-retry-exhausted",
-      apiType: "User" as const,
-    });
+      apiType: "User",
+    }) satisfies GitHubItemAccount;
     const item = Object.freeze({
       ...createIssueItem({
         repository: publicRepository,
@@ -6282,7 +6333,11 @@ describe("本番収集の接続", () => {
         }),
       }),
     });
-    const harness = createCollectionHarness({ repositories: [fixture], config });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+    });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
     const head = await harness.stateAdapter.resolveHead("tracker-state");
@@ -6698,8 +6753,8 @@ describe("本番収集の接続", () => {
     const assignee = Object.freeze({
       nodeId: createGitHubNodeId("U_manual_notification_window"),
       login: "manual-notification-window",
-      apiType: "User" as const,
-    });
+      apiType: "User",
+    }) satisfies GitHubItemAccount;
     const item = Object.freeze({
       ...createIssueItem({
         repository: publicRepository,
@@ -8448,7 +8503,11 @@ describe("本番収集の接続", () => {
         if (candidate.author.kind !== "account") {
           throw new TypeError("Codex作者候補fixtureの作者アカウントがありません");
         }
-        return [candidate.nodeId, candidate.author.account] as const;
+        const pair: readonly [GitHubNodeId, GitHubItemAccount] = [
+          candidate.nodeId,
+          candidate.author.account,
+        ];
+        return pair;
       }),
     );
     for (const input of harness.codexInputs) {

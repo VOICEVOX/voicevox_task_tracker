@@ -12,6 +12,7 @@ import {
   createImportanceCacheEntryFromAiResult,
   createImportanceCacheEntryFromCacheContext,
   createImportanceCacheEntryFromLatest,
+  CodexOutputValidationError,
   parseCodexCacheValidationContext,
   parseSha256Hash,
   estimateAiInputCost,
@@ -282,6 +283,18 @@ const GITHUB_MENTION_PATTERN =
 const GITHUB_ITEM_DISPLAY_REFERENCE_SCHEMA = z.custom<GitHubItemDisplayReference>(
   (value) => typeof value === "string" && /^[^/\s]+\/[^#\s]+#[1-9]\d*$/u.test(value),
 );
+const normalDigestEnvironmentSchema = z.strictObject({
+  GITHUB_EVENT_NAME: z.enum(["workflow_dispatch", "schedule"], {
+    error: "GITHUB_EVENT_NAMEはworkflow_dispatchまたはscheduleを指定してください",
+  }),
+  GITHUB_RUN_ATTEMPT: z
+    .string({ error: "GITHUB_RUN_ATTEMPTを指定してください" })
+    .regex(/^[1-9]\d*$/u, "GITHUB_RUN_ATTEMPTは正の整数文字列にしてください")
+    .refine(
+      (value) => Number.isSafeInteger(Number(value)),
+      "GITHUB_RUN_ATTEMPTは安全な整数の範囲内にしてください",
+    ),
+});
 const CURRENT_DETERMINISTIC_RULES_VERSIONS = Object.freeze({
   issue: ISSUE_DETERMINISTIC_RULES_VERSION,
   pull_request: PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
@@ -932,7 +945,9 @@ function previousCollectionItemsByNodeId(
     loadedRepositoryCacheDocuments(state).flatMap((repository) =>
       repository.items.map((item) => {
         const publicRepository = state.allowlist.require(repository.repository.repositoryId);
-        return [item.nodeId, snapshotCollectionItemFromCache(item, publicRepository.id)] as const;
+        const collectionItem = snapshotCollectionItemFromCache(item, publicRepository.id);
+        const pair: readonly [GitHubNodeId, SnapshotCollectionItem] = [item.nodeId, collectionItem];
+        return pair;
       }),
     ),
   );
@@ -2547,25 +2562,29 @@ function createAiCandidates(
       ),
     ]),
   );
-  const previousAiFingerprintByNodeId = new Map(
-    loadedItemCacheDocuments(state).flatMap((item) =>
-      item.aiCacheReference.status === "available"
-        ? [
-            [
-              item.nodeId,
-              {
-                status: "available",
-                fingerprint: {
-                  sourceHash: item.aiCacheReference.sourceHash,
-                  inputHash: item.aiCacheReference.inputHash,
-                  graphNeighborhoodHash: item.aiCacheReference.graphNeighborhoodHash,
-                  identityHash: item.aiCacheReference.identityHash,
-                },
-              },
-            ] as const,
-          ]
-        : [],
-    ),
+  const previousAiFingerprintByNodeId = new Map<
+    GitHubNodeId,
+    SnapshotCollectionItem["aiAnalysisFingerprint"]
+  >(
+    loadedItemCacheDocuments(state).flatMap((item) => {
+      if (item.aiCacheReference.status !== "available") {
+        return [];
+      }
+      const fingerprint: SnapshotCollectionItem["aiAnalysisFingerprint"] = Object.freeze({
+        status: "available",
+        fingerprint: Object.freeze({
+          sourceHash: item.aiCacheReference.sourceHash,
+          inputHash: item.aiCacheReference.inputHash,
+          graphNeighborhoodHash: item.aiCacheReference.graphNeighborhoodHash,
+          identityHash: item.aiCacheReference.identityHash,
+        }),
+      });
+      const pair: readonly [GitHubNodeId, SnapshotCollectionItem["aiAnalysisFingerprint"]] = [
+        item.nodeId,
+        fingerprint,
+      ];
+      return [pair];
+    }),
   );
   const previousAiAnalysisStatusByNodeId = new Map<GitHubNodeId, TrackedItemAiAnalysis["status"]>(
     loadedItemCacheDocuments(state).map((item) => [item.nodeId, item.aiAnalysisStatus]),
@@ -2883,7 +2902,7 @@ function validateLoadedImportanceCacheSources(
         throw new TypeError("利用可能なAI参照を検証済みにできません");
       }
     } catch (error: unknown) {
-      if (!(error instanceof Error)) {
+      if (!(error instanceof CodexOutputValidationError)) {
         throw error;
       }
       rejectedAiCacheKeys.add(reference.cacheKey);
@@ -5369,11 +5388,17 @@ function createCacheValidationContext(
       createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, detail.bodySourceId),
     },
     ...detail.comments.map((comment) => {
-      const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+      const event: NormalizedEvent | undefined = item.events.find(
+        (candidate) => candidate.sourceId === comment.sourceId,
+      );
+      assertNonNullable(
+        event,
+        `commentに対応するactor eventがありません。対象: ${comment.sourceId}`,
+      );
       return {
         id: comment.sourceId,
         kind: "comment",
-        actorType: event?.actor.type ?? "system",
+        actorType: event.actor.type,
         createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, comment.sourceId),
       };
     }),
@@ -5775,30 +5800,40 @@ function validateRunCompleteness(
   const observedItemsByNodeId = new Map(
     collection.observedItems.map((item) => [item.nodeId, item]),
   );
-  const analysisRulesFingerprintByNodeId = new Map(
+  const analysisRulesFingerprintByNodeId = new Map<
+    GitHubNodeId,
+    SnapshotCollectionItem["analysisRulesFingerprint"]
+  >(
     [...collection.analysisNodeIds].map((nodeId) => {
       const item = observedItemsByNodeId.get(nodeId);
       assertNonNullable(item, `再判定対象の観測項目がありません。対象: ${nodeId}`);
-      return [
+      const fingerprint: SnapshotCollectionItem["analysisRulesFingerprint"] = Object.freeze({
+        status: "available",
+        fingerprint: currentAnalysisRulesFingerprints[item.type],
+      });
+      const pair: readonly [GitHubNodeId, SnapshotCollectionItem["analysisRulesFingerprint"]] = [
         nodeId,
-        Object.freeze({
-          status: "available",
-          fingerprint: currentAnalysisRulesFingerprints[item.type],
-        }),
-      ] as const;
+        fingerprint,
+      ];
+      return pair;
     }),
   );
-  const deterministicRulesVersionByNodeId = new Map(
+  const deterministicRulesVersionByNodeId = new Map<
+    GitHubNodeId,
+    SnapshotCollectionItem["deterministicRulesVersion"]
+  >(
     [...collection.analysisNodeIds].map((nodeId) => {
       const item = observedItemsByNodeId.get(nodeId);
       assertNonNullable(item, `再判定対象の観測項目がありません。対象: ${nodeId}`);
-      return [
+      const version: SnapshotCollectionItem["deterministicRulesVersion"] = Object.freeze({
+        status: "available",
+        version: CURRENT_DETERMINISTIC_RULES_VERSIONS[item.type],
+      });
+      const pair: readonly [GitHubNodeId, SnapshotCollectionItem["deterministicRulesVersion"]] = [
         nodeId,
-        Object.freeze({
-          status: "available",
-          version: CURRENT_DETERMINISTIC_RULES_VERSIONS[item.type],
-        }),
-      ] as const;
+        version,
+      ];
+      return pair;
     }),
   );
   const persistedAiFingerprintNodeIds = new Set<string>();
@@ -5961,19 +5996,16 @@ export function normalDigestRunContext(
   environment: Readonly<NodeJS.ProcessEnv>,
   scheduledFor: UtcIsoDateTime,
 ): NormalDigestRunContext {
-  const runAttempt = Number(environment["GITHUB_RUN_ATTEMPT"] ?? "1");
-  if (!Number.isSafeInteger(runAttempt) || runAttempt <= 0) {
-    throw new TypeError("GITHUB_RUN_ATTEMPTは正の安全な整数にしてください");
-  }
-  const eventName = environment["GITHUB_EVENT_NAME"];
-  if (eventName == null || eventName === "workflow_dispatch") {
+  const parsedEnvironment = normalDigestEnvironmentSchema.parse({
+    GITHUB_EVENT_NAME: environment["GITHUB_EVENT_NAME"],
+    GITHUB_RUN_ATTEMPT: environment["GITHUB_RUN_ATTEMPT"],
+  });
+  const runAttempt = Number(parsedEnvironment.GITHUB_RUN_ATTEMPT);
+  if (parsedEnvironment.GITHUB_EVENT_NAME === "workflow_dispatch") {
     return Object.freeze({
       eventName: "workflow_dispatch",
       runAttempt,
     });
-  }
-  if (eventName !== "schedule") {
-    throw new TypeError(`通常digestに対応しないworkflow eventです: ${eventName}`);
   }
   return Object.freeze({
     eventName: "schedule",
@@ -6524,7 +6556,7 @@ function restoreCachedItemAnalysisSource(
       });
     }
   } catch (error: unknown) {
-    if (!(error instanceof Error)) {
+    if (!(error instanceof CodexOutputValidationError)) {
       throw error;
     }
     return Object.freeze({
@@ -6639,7 +6671,7 @@ function createExactAiRelationNotificationHistory(
         value: entry,
       });
     } catch (error: unknown) {
-      if (!(error instanceof Error)) {
+      if (!(error instanceof CodexOutputValidationError)) {
         throw error;
       }
       diagnostics.push(
@@ -6705,13 +6737,22 @@ function createExactAiRelationNotificationHistory(
 
 type FreshReplaySource = Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>;
 
-type FreshReplayResolution = Readonly<{
-  item: EnumeratedGitHubItem;
-  detail: GitHubItemDetail;
-  observation: FreshObservedGitHubItem;
-  source: FreshReplaySource;
-  reenumeratedItem: EnumeratedGitHubItem | undefined;
-}>;
+type FreshReplayResolution =
+  | Readonly<{
+      reenumeration: "not_performed";
+      item: EnumeratedGitHubItem;
+      detail: GitHubItemDetail;
+      observation: FreshObservedGitHubItem;
+      source: FreshReplaySource;
+    }>
+  | Readonly<{
+      reenumeration: "performed";
+      item: EnumeratedGitHubItem;
+      detail: GitHubItemDetail;
+      observation: FreshObservedGitHubItem;
+      source: FreshReplaySource;
+      reenumeratedItem: EnumeratedGitHubItem;
+    }>;
 
 function calculateResponsibilityReplayRetryDelayMilliseconds(
   retryNumber: number,
@@ -6836,11 +6877,11 @@ async function replayFreshItemWithResponsibilityRetry(
 ): Promise<FreshReplayResolution> {
   try {
     return Object.freeze({
+      reenumeration: "not_performed",
       item,
       detail,
       observation,
       source: createFreshReplaySource(item, detail, observation, configuration, isBot),
-      reenumeratedItem: undefined,
     });
   } catch (error: unknown) {
     if (!(error instanceof ResponsibilityReplayMismatchError)) {
@@ -6869,6 +6910,7 @@ async function replayFreshItemWithResponsibilityRetry(
       try {
         return Object.freeze({
           ...refreshed,
+          reenumeration: "performed",
           source: createFreshReplaySource(
             refreshed.item,
             refreshed.detail,
@@ -7010,7 +7052,7 @@ async function collectFreshRepositoryItemObservations(
       analysisSources.push(resolved.source);
       detailsByNodeId.set(resolved.detail.nodeId, resolved.detail);
       freshObservedItemsByNodeId.set(resolved.observation.nodeId, resolved.observation);
-      if (resolved.reenumeratedItem != null) {
+      if (resolved.reenumeration === "performed") {
         enumeratedItemsByNodeId.set(resolved.reenumeratedItem.nodeId, resolved.reenumeratedItem);
         reenumeratedItemsByNodeId.set(resolved.reenumeratedItem.nodeId, resolved.reenumeratedItem);
       }
