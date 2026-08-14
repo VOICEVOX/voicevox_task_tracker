@@ -1294,6 +1294,7 @@ function createReview(
 }
 
 function createReviewThread(id: string, isResolved: boolean, index: number): unknown {
+  const timestamp = new Date(Date.parse("2026-07-31T00:00:00Z") + index * 60 * 1000).toISOString();
   return {
     id,
     isResolved,
@@ -1306,9 +1307,9 @@ function createReviewThread(id: string, isResolved: boolean, index: number): unk
           id: `PRRC_comment_${index.toString()}`,
           author: createActor(index),
           body: `inline comment ${index.toString()}`,
-          createdAt: `2026-07-31T1${index.toString()}:00:00Z`,
+          createdAt: timestamp,
           lastEditedAt: null,
-          updatedAt: `2026-07-31T1${index.toString()}:00:00Z`,
+          updatedAt: timestamp,
           userContentEdits: null,
           url: `https://github.com/VOICEVOX/example/pull/7#discussion_r${index.toString()}`,
         },
@@ -2571,9 +2572,13 @@ describe("Pull Request詳細収集", () => {
   it("review threadとコメントの複数ページを順序付きで収集する", async () => {
     const allowlist = createAllowlist();
     const item = createItem(allowlist, "PR_review_thread_pages", 205, "pull_request");
-    const secondThreadId = "PRRT_page_2";
-    const secondThread = {
-      id: secondThreadId,
+    const initialThreadPageCount = 50;
+    const secondThreadPageCount = 100;
+    const initialThreadPageCursor = "review-thread-page-2";
+    const secondThreadPageCursor = "review-thread-page-3";
+    const commentPageThreadId = "PRRT_page_51";
+    const commentPageThread = {
+      id: commentPageThreadId,
       isResolved: true,
       isOutdated: false,
       path: "src/page-2.ts",
@@ -2594,15 +2599,39 @@ describe("Pull Request詳細収集", () => {
         pageInfo: createPageInfo(true, "review-thread-comment-page-2"),
       },
     };
+    const initialThreads = Array.from({ length: initialThreadPageCount }, (_, index) => {
+      const pageNumber = index + 1;
+      return createReviewThread(
+        `PRRT_page_${pageNumber.toString()}`,
+        pageNumber % 2 === 0,
+        pageNumber,
+      );
+    });
+    const secondPageThreads = [
+      commentPageThread,
+      ...Array.from({ length: secondThreadPageCount - 1 }, (_, index) => {
+        const pageNumber = index + initialThreadPageCount + 2;
+        return createReviewThread(
+          `PRRT_page_${pageNumber.toString()}`,
+          pageNumber % 2 === 0,
+          pageNumber,
+        );
+      }),
+    ];
+    const finalPageThreads = [createReviewThread("PRRT_page_151", false, 151)];
+    expect(initialThreads).toHaveLength(50);
+    expect(secondPageThreads).toHaveLength(100);
+    expect(finalPageThreads).toHaveLength(1);
     const response = createPullRequestUserContentEditResponse(
       item.nodeId,
       null,
       createEmptyConnection(),
       {
-        nodes: [createReviewThread("PRRT_page_1", false, 1)],
-        pageInfo: createPageInfo(true, "review-thread-page-2"),
+        nodes: initialThreads,
+        pageInfo: createPageInfo(true, initialThreadPageCursor),
       },
     );
+    const threadPageCursors: string[] = [];
     const mock = createGraphqlHttpMock((operation, variables) => {
       if (operation === "GitHubItemDetailCapabilities") {
         return createCapabilitiesResponse("unavailable");
@@ -2612,25 +2641,41 @@ describe("Pull Request詳細収集", () => {
       }
       if (operation === "GitHubPullRequestReviewThreadPage") {
         expect(getStringVariable(variables, "itemId")).toBe(item.nodeId);
-        expect(getStringVariable(variables, "after")).toBe("review-thread-page-2");
-        return {
-          item: {
-            __typename: "PullRequest",
-            id: item.nodeId,
-            reviewThreads: {
-              nodes: [secondThread],
-              pageInfo: createPageInfo(false, null),
+        const after = getStringVariable(variables, "after");
+        threadPageCursors.push(after);
+        if (after === initialThreadPageCursor) {
+          return {
+            item: {
+              __typename: "PullRequest",
+              id: item.nodeId,
+              reviewThreads: {
+                nodes: secondPageThreads,
+                pageInfo: createPageInfo(true, secondThreadPageCursor),
+              },
             },
-          },
-        };
+          };
+        }
+        if (after === secondThreadPageCursor) {
+          return {
+            item: {
+              __typename: "PullRequest",
+              id: item.nodeId,
+              reviewThreads: {
+                nodes: finalPageThreads,
+                pageInfo: createPageInfo(false, null),
+              },
+            },
+          };
+        }
+        throw new Error(`未定義のreview thread page cursorです。対象: ${after}`);
       }
       if (operation === "GitHubPullRequestReviewThreadCommentPage") {
-        expect(getStringVariable(variables, "threadId")).toBe(secondThreadId);
+        expect(getStringVariable(variables, "threadId")).toBe(commentPageThreadId);
         expect(getStringVariable(variables, "after")).toBe("review-thread-comment-page-2");
         return {
           thread: {
             __typename: "PullRequestReviewThread",
-            id: secondThreadId,
+            id: commentPageThreadId,
             comments: {
               nodes: [
                 {
@@ -2662,21 +2707,36 @@ describe("Pull Request詳細収集", () => {
     if (detail.type !== "pull_request") {
       throw new Error("Pull Request detail fixtureではありません");
     }
-    expect(detail.reviewThreads.map((thread) => thread.nodeId)).toEqual([
-      createGitHubNodeId("PRRT_page_1"),
-      createGitHubNodeId(secondThreadId),
+    expect(detail.reviewThreads).toHaveLength(151);
+    expect(detail.reviewThreads.map((thread) => thread.nodeId)).toEqual(
+      Array.from({ length: 151 }, (_, index) =>
+        createGitHubNodeId(`PRRT_page_${(index + 1).toString()}`),
+      ),
+    );
+    expect(detail.reviewThreads.map((thread) => thread.sequence)).toEqual(
+      Array.from({ length: 151 }, (_, index) => index),
+    );
+    expect(detail.reviewThreads[0]?.comments.map((comment) => comment.nodeId)).toEqual([
+      createGitHubNodeId("PRRC_comment_1"),
     ]);
-    expect(detail.reviewThreads.map((thread) => thread.sequence)).toEqual([0, 1]);
-    expect(
-      detail.reviewThreads.map((thread) => thread.comments.map((comment) => comment.nodeId)),
-    ).toEqual([
-      [createGitHubNodeId("PRRC_comment_1")],
-      [createGitHubNodeId("PRRC_page_2_1"), createGitHubNodeId("PRRC_page_2_2")],
+    const commentPageThreadDetail = detail.reviewThreads[50];
+    if (commentPageThreadDetail == null) {
+      throw new Error("review threadコメントページfixtureがありません");
+    }
+    expect(commentPageThreadDetail.nodeId).toBe(createGitHubNodeId(commentPageThreadId));
+    expect(commentPageThreadDetail.comments.map((comment) => comment.nodeId)).toEqual([
+      createGitHubNodeId("PRRC_page_2_1"),
+      createGitHubNodeId("PRRC_page_2_2"),
     ]);
-    expect(detail.reviewThreads[1]?.comments.map((comment) => comment.sequence)).toEqual([0, 1]);
+    expect(commentPageThreadDetail.comments.map((comment) => comment.sequence)).toEqual([0, 1]);
+    expect(detail.reviewThreads[150]?.comments.map((comment) => comment.nodeId)).toEqual([
+      createGitHubNodeId("PRRC_comment_151"),
+    ]);
+    expect(threadPageCursors).toEqual([initialThreadPageCursor, secondThreadPageCursor]);
     expect(mock.requests.map((request) => request.operation)).toEqual([
       "GitHubItemDetailCapabilities",
       "GitHubItemDetail",
+      "GitHubPullRequestReviewThreadPage",
       "GitHubPullRequestReviewThreadPage",
       "GitHubPullRequestReviewThreadCommentPage",
     ]);

@@ -155,8 +155,10 @@ describe("GitHub GraphQLクエリ", () => {
     }
   });
 
-  it("review threadの初期コメント取得を1件に制限し、次ページqueryで続きを取得する", () => {
+  it("review threadの初期取得件数を制限し、次ページqueryで続きを取得する", () => {
     for (const { query } of itemDetailQueryCases) {
+      expect(query).toContain("reviewThreads(first: 50)");
+      expect(query).not.toContain("reviewThreads(first: 100)");
       const fragmentStart = query.indexOf("fragment DetailReviewThreadFields");
       if (fragmentStart < 0) {
         throw new Error("review thread fragmentがありません");
@@ -166,6 +168,7 @@ describe("GitHub GraphQLクエリ", () => {
       expect(fragment).toContain("comments(first: 1)");
       expect(fragment).not.toContain("comments(first: 100)");
     }
+    expect(REVIEW_THREAD_PAGE_QUERY).toContain("reviewThreads(first: 100, after: $after)");
     expect(REVIEW_THREAD_COMMENT_PAGE_QUERY).toContain("comments(first: 100, after: $after)");
   });
 
