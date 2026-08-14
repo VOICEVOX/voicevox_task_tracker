@@ -21,6 +21,7 @@ import {
   type CodexAnalysisInput,
   type CodexUnavailableReason,
   type DeterministicCodexDecision,
+  type SchemaValidCodexAnalysisOutput,
 } from "../src/codex/index.js";
 import {
   buildSourceId,
@@ -113,7 +114,7 @@ function createInput(): CodexAnalysisInput {
   });
 }
 
-function createOutput(confidence: number) {
+function createOutput(confidence: number): SchemaValidCodexAnalysisOutput {
   return {
     schemaVersion: "2",
     item: {

@@ -7,7 +7,7 @@ import {
   createProductionCliApplication,
   type ProductionRuntimeAdapters,
 } from "../cli/production-runtime.js";
-import { type CliExecutionResult } from "../cli/index.js";
+import { type CliExecutionResult, type RunMetrics } from "../cli/index.js";
 import { type CodexAnalysisInput } from "../codex/index.js";
 import { loadConfig, type Config } from "../config/index.js";
 import { type DiscordDigestDelivery } from "../discord/index.js";
@@ -683,7 +683,7 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
   });
 }
 
-function requireDailyMetrics(execution: CliExecutionResult) {
+function requireDailyMetrics(execution: CliExecutionResult): RunMetrics {
   if (execution.command !== "daily") {
     throw new TypeError("性能profileがdailyコマンドを通っていません");
   }

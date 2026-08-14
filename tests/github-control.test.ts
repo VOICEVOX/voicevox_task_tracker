@@ -118,7 +118,7 @@ describe("GitHub API retry", () => {
     expect(delays).toEqual([3000]);
   });
 
-  it.each([502, 504] as const)("%iを指数backoffとjitterでretryする", async (status) => {
+  it.each([502, 504])("%iを指数backoffとjitterでretryする", async (status) => {
     const delays: number[] = [];
     const runtime = createRetryRuntime(delays, new Date("2026-08-01T00:00:00Z"), 0);
     let attempts = 0;
@@ -142,7 +142,7 @@ describe("GitHub API retry", () => {
     expect(delays).toEqual([1000]);
   });
 
-  it.each([502, 503, 504] as const)("%iが上限まで失敗したら停止する", async (status) => {
+  it.each([502, 503, 504])("%iが上限まで失敗したら停止する", async (status) => {
     const delays: number[] = [];
     const runtime = createRetryRuntime(delays, new Date("2026-08-01T00:00:00Z"), 0);
     let attempts = 0;

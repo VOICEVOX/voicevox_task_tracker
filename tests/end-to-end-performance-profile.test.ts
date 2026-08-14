@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import {
   assertEndToEndPerformanceProfilePassed,
   evaluateEndToEndPerformanceMeasurement,
+  type EndToEndPerformanceMeasurement,
 } from "../src/performance/end-to-end-profile.js";
 
-function createPassingMeasurement() {
+function createPassingMeasurement(): EndToEndPerformanceMeasurement {
   return Object.freeze({
     durationMilliseconds: 1_000,
     githubApi: Object.freeze({

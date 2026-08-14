@@ -93,9 +93,9 @@ function createInput(nodeId: GitHubNodeId): CodexAnalysisInput {
 function createFullEntry(
   marker: string,
   executedAt: UtcIsoDateTime,
-  nodeId: GitHubNodeId = NODE_ID,
-  rationale: string = createImportance(marker === "current" ? "result" : marker).rationale,
-  options: OutputOptions = VALID_OUTPUT_OPTIONS,
+  nodeId: GitHubNodeId,
+  rationale: string,
+  options: OutputOptions,
 ): AiCacheEntry {
   const inputHash = hashCanonicalJson({ input: marker });
   const identity = {
@@ -168,12 +168,12 @@ function createFullEntry(
   });
 }
 
-function createEntry(
+function createEntryWithOptions(
   marker: string,
   executedAt: UtcIsoDateTime,
-  nodeId: GitHubNodeId = NODE_ID,
-  rationale: string = createImportance(marker === "current" ? "result" : marker).rationale,
-  options: OutputOptions = VALID_OUTPUT_OPTIONS,
+  nodeId: GitHubNodeId,
+  rationale: string,
+  options: OutputOptions,
 ): EntryFixture {
   const entry = createFullEntry(marker, executedAt, nodeId, rationale, options);
   const reference = createImportanceCacheEntry(entry, createInput(nodeId));
@@ -194,6 +194,16 @@ function createEntry(
   };
 }
 
+function createEntry(marker: string, executedAt: UtcIsoDateTime): EntryFixture {
+  return createEntryWithOptions(
+    marker,
+    executedAt,
+    NODE_ID,
+    createImportance(marker === "current" ? "result" : marker).rationale,
+    VALID_OUTPUT_OPTIONS,
+  );
+}
+
 function createImportance(marker: string): VerifiedImportanceResult["importance"] {
   return {
     significantFeature: marker === "new",
@@ -203,10 +213,10 @@ function createImportance(marker: string): VerifiedImportanceResult["importance"
   };
 }
 
-function createResult(
+function createResultWithOptions(
   fixture: EntryFixture,
-  nodeId: GitHubNodeId = NODE_ID,
-  repository: ImportanceCacheRepository = REPOSITORY,
+  nodeId: GitHubNodeId,
+  repository: ImportanceCacheRepository,
 ): VerifiedImportanceResult {
   return {
     nodeId,
@@ -222,12 +232,16 @@ function createResult(
   };
 }
 
-function createContext(
-  aiCacheEntries: readonly ImportanceCacheEntry[] = [],
-  repository: ImportanceCacheRepository = REPOSITORY,
-  repositoryAllowlist: readonly ImportanceCacheRepository[] = [REPOSITORY],
-  nodeId: GitHubNodeId = NODE_ID,
-  evaluatedAt: UtcIsoDateTime = EVALUATED_AT,
+function createResult(fixture: EntryFixture): VerifiedImportanceResult {
+  return createResultWithOptions(fixture, NODE_ID, REPOSITORY);
+}
+
+function createContextWithOptions(
+  aiCacheEntries: readonly ImportanceCacheEntry[],
+  repository: ImportanceCacheRepository,
+  repositoryAllowlist: readonly ImportanceCacheRepository[],
+  nodeId: GitHubNodeId,
+  evaluatedAt: UtcIsoDateTime,
 ): ImportanceCacheContext {
   return {
     nodeId,
@@ -238,11 +252,15 @@ function createContext(
   };
 }
 
-function createLatest(
+function createContext(aiCacheEntries: readonly ImportanceCacheEntry[]): ImportanceCacheContext {
+  return createContextWithOptions(aiCacheEntries, REPOSITORY, [REPOSITORY], NODE_ID, EVALUATED_AT);
+}
+
+function createLatestWithOptions(
   fixture: EntryFixture,
-  nodeId: GitHubNodeId = NODE_ID,
-  repository: ImportanceCacheRepository = REPOSITORY,
-  importance: VerifiedImportanceResult["importance"] = fixture.importance,
+  nodeId: GitHubNodeId,
+  repository: ImportanceCacheRepository,
+  importance: VerifiedImportanceResult["importance"],
 ): AiLatestImportanceCacheDocument {
   return {
     schemaVersion: "2",
@@ -270,6 +288,10 @@ function createLatest(
   };
 }
 
+function createLatest(fixture: EntryFixture): AiLatestImportanceCacheDocument {
+  return createLatestWithOptions(fixture, NODE_ID, REPOSITORY, fixture.importance);
+}
+
 function available(document: AiLatestImportanceCacheDocument): ImportanceCacheState {
   return { status: "available", document };
 }
@@ -280,7 +302,7 @@ describe("重要度キャッシュ代替判定", () => {
 
     expect(
       resolveImportance({
-        context: createContext(),
+        context: createContext([]),
         current: { status: "available", result: createResult(current) },
         latest: { status: "not_available" },
       }),
@@ -316,7 +338,7 @@ describe("重要度キャッシュ代替判定", () => {
   it("キャッシュがなければnot_availableを返す", () => {
     expect(
       resolveImportance({
-        context: createContext(),
+        context: createContext([]),
         current: { status: "execution_failed" },
         latest: { status: "not_available" },
       }),
@@ -333,7 +355,9 @@ describe("重要度キャッシュ代替判定", () => {
       resolveImportance({
         context: createContext([cached.reference]),
         current: { status: "execution_failed" },
-        latest: available(createLatest(cached, OTHER_NODE_ID)),
+        latest: available(
+          createLatestWithOptions(cached, OTHER_NODE_ID, REPOSITORY, cached.importance),
+        ),
       }),
     ).toThrow();
   });
@@ -341,7 +365,13 @@ describe("重要度キャッシュ代替判定", () => {
   it("allowlistと一致しないリポジトリを拒否する", () => {
     expect(() =>
       resolveImportance({
-        context: createContext([], REPOSITORY, [OTHER_REPOSITORY]),
+        context: createContextWithOptions(
+          [],
+          REPOSITORY,
+          [OTHER_REPOSITORY],
+          NODE_ID,
+          EVALUATED_AT,
+        ),
         current: { status: "execution_failed" },
         latest: { status: "not_available" },
       }),
@@ -353,7 +383,7 @@ describe("重要度キャッシュ代替判定", () => {
 
     expect(() =>
       resolveImportance({
-        context: createContext(),
+        context: createContext([]),
         current: { status: "execution_failed" },
         latest: available(createLatest(cached)),
       }),
@@ -361,17 +391,21 @@ describe("重要度キャッシュ代替判定", () => {
   });
 
   it("AIエントリと異なるnodeのlatest cacheを拒否する", () => {
-    const otherNodeEntry = createEntry(
+    const otherNodeEntry = createEntryWithOptions(
       "cached",
       createUtcIsoDateTime("2026-08-11T00:00:00Z"),
       OTHER_NODE_ID,
+      createImportance("cached").rationale,
+      VALID_OUTPUT_OPTIONS,
     );
 
     expect(() =>
       resolveImportance({
         context: createContext([otherNodeEntry.reference]),
         current: { status: "execution_failed" },
-        latest: available(createLatest(otherNodeEntry, NODE_ID)),
+        latest: available(
+          createLatestWithOptions(otherNodeEntry, NODE_ID, REPOSITORY, otherNodeEntry.importance),
+        ),
       }),
     ).toThrow();
   });
@@ -420,7 +454,7 @@ describe("重要度キャッシュ代替判定", () => {
 
     expect(() =>
       resolveImportance({
-        context: createContext(),
+        context: createContext([]),
         current: {
           status: "available",
           result: {
@@ -442,7 +476,7 @@ describe("重要度キャッシュ代替判定", () => {
 
     expect(() =>
       resolveImportance({
-        context: createContext(),
+        context: createContext([]),
         current: {
           status: "available",
           result: {
@@ -462,6 +496,7 @@ describe("重要度キャッシュ代替判定", () => {
         createUtcIsoDateTime("2026-08-12T00:00:00Z"),
         NODE_ID,
         "あ".repeat(121),
+        VALID_OUTPUT_OPTIONS,
       ),
     ).toThrow();
   });

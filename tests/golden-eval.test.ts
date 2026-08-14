@@ -9,6 +9,7 @@ import {
   readGoldenFixtureFiles,
   type GoldenFixture,
   type OfflineAnalysisMetrics,
+  type OfflineAnalysisResult,
   type OfflineRunDependencies,
 } from "../src/cli/index.js";
 import {
@@ -353,11 +354,11 @@ describe("回帰基準と性能", () => {
             throw new TypeError("評価済みfixtureがありません");
           }
           return Promise.resolve({
-            status: "success" as const,
+            status: "success",
             output: createRegressedOutput(evaluated.fixture.name, evaluated.analysis.output),
             metrics: emptyMetrics(),
             diagnostics: Object.freeze([]),
-          });
+          } satisfies OfflineAnalysisResult);
         },
         replayState: () => Promise.reject(new TypeError("state replayは実行しません")),
       },

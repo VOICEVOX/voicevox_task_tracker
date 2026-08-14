@@ -14,6 +14,7 @@ import {
   type AiAnalysisRunIdentity,
   type CodexAnalysisInput,
   type PreviousAiAnalysisFingerprint,
+  type SchemaValidCodexAnalysisOutput,
 } from "../src/codex/index.js";
 import { assertNonNullable } from "../src/util/index.js";
 
@@ -133,7 +134,7 @@ function createMinimalInput(sourceId: string, relationId: string | undefined): C
   });
 }
 
-function createOutput(input: CodexAnalysisInput) {
+function createOutput(input: CodexAnalysisInput): SchemaValidCodexAnalysisOutput {
   const firstSource = input.sources.at(0);
   assertNonNullable(firstSource, "Codex transport testのsourceがありません");
   const secondSource = input.sources.at(1) ?? firstSource;

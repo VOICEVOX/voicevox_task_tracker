@@ -18,6 +18,7 @@ import {
 } from "../src/github/item-enumeration.js";
 import {
   createGitHubPullRequestVolatileMetadata,
+  type GitHubPullRequestVolatileMetadata,
   type GitHubPullRequestReviewDecision,
   type GitHubVolatileReviewRequest,
 } from "../src/github/item-volatile-metadata.js";
@@ -91,7 +92,7 @@ function createMetadata(
       "behind" | "blocked" | "clean" | "dirty" | "draft" | "has_hooks" | "unknown" | "unstable";
     checks?: GitHubHeadChecks;
   }>,
-) {
+): GitHubPullRequestVolatileMetadata {
   return createGitHubPullRequestVolatileMetadata({
     nodeId: createGitHubNodeId(nodeIdValue),
     headSha,

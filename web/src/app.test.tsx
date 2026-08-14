@@ -484,17 +484,20 @@ describe("Web UI", () => {
   it.each([
     ["利用不可", { enabled: true, available: false, degraded: true }],
     ["縮退", { enabled: true, available: true, degraded: true }],
-  ] as const)("AIの%sだけではトップ項目一覧へ全体通知を表示しない", (_state, ai) => {
-    renderApp({
-      ...sampleSummary,
-      ai,
-    });
+  ] satisfies readonly [string, { enabled: boolean; available: boolean; degraded: boolean }][])(
+    "AIの%sだけではトップ項目一覧へ全体通知を表示しない",
+    (_state, ai) => {
+      renderApp({
+        ...sampleSummary,
+        ai,
+      });
 
-    expect(currentContainer().querySelector(".ai-state-notice")).toBeNull();
-    expect(currentContainer().textContent).not.toContain(
-      "AI分析は設定で無効です。確定ルールで表示しています。",
-    );
-  });
+      expect(currentContainer().querySelector(".ai-state-notice")).toBeNull();
+      expect(currentContainer().textContent).not.toContain(
+        "AI分析は設定で無効です。確定ルールで表示しています。",
+      );
+    },
+  );
 
   it.each([
     {

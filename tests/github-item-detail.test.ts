@@ -3198,7 +3198,7 @@ describe("UserContentEdit収集", () => {
           },
         },
       },
-    ] as const;
+    ];
     for (const testCase of cases) {
       const allowlist = createAllowlist();
       const item = createItem(allowlist, "I_user_content_invalid", 201, "issue");

@@ -29,12 +29,12 @@ const repositoryCache = {
   items: [],
 };
 
-const cacheDirectories = [
+const cacheDirectories: readonly [
   "github-repositories",
   "github-items",
   "ai-latest-importance",
   "ai-results",
-] as const;
+] = ["github-repositories", "github-items", "ai-latest-importance", "ai-results"];
 
 async function createStateDirectory(): Promise<string> {
   const stateDirectory = await mkdtemp(join(tmpdir(), "voicevox-verify-state-test-"));

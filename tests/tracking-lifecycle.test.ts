@@ -758,7 +758,7 @@ describe("追跡後のライフサイクル", () => {
         action: "suppress",
         reason: "terminal_unchanged",
       },
-    } as const;
+    } satisfies ReturnType<typeof determineTrackedItemWork>;
 
     expect(changed).toEqual(expected);
     expect(unavailable).toEqual(expected);

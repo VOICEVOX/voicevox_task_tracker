@@ -17,7 +17,7 @@ const NOW = "2026-07-31T00:00:00.000Z";
 const FINISHED_AT = "2026-07-31T00:00:01.000Z";
 const NOW_UTC = createUtcIsoDateTime(NOW);
 const SCHEDULED_FOR = "2026-07-30T23:00:00.000Z";
-const REQUIRED_METRICS = [
+const REQUIRED_METRICS: readonly [
   "activeEdgeCount",
   "aiCacheHitCount",
   "aiCallCount",
@@ -31,7 +31,21 @@ const REQUIRED_METRICS = [
   "repositoryCount",
   "scheduleDelayMilliseconds",
   "staleRepositoryCount",
-] as const;
+] = [
+  "activeEdgeCount",
+  "aiCacheHitCount",
+  "aiCallCount",
+  "aiRetainedResultCount",
+  "changedItemCount",
+  "durationMilliseconds",
+  "estimatedInputTokens",
+  "githubApiRemaining",
+  "itemCount",
+  "notificationCount",
+  "repositoryCount",
+  "scheduleDelayMilliseconds",
+  "staleRepositoryCount",
+];
 
 type FixtureTypes = DailyTransactionTypeMap &
   Readonly<{
@@ -620,28 +634,31 @@ describe("Daily transaction", () => {
     expect(harness.counters.cacheCommits).toBe(0);
   });
 
-  it.each([429, 503] as const)("%iのretry上限後も既存cacheを維持する", async (status) => {
-    const harness = createHarness({
-      ...defaultBehavior(),
-      collectionFailure: {
-        status,
-      },
-    });
-    const result = await harness.runner.run(parseOnlineCommand(scheduledArgs("daily")));
+  it.each([429, 503] satisfies readonly [429, 503])(
+    "%iのretry上限後も既存cacheを維持する",
+    async (status) => {
+      const harness = createHarness({
+        ...defaultBehavior(),
+        collectionFailure: {
+          status,
+        },
+      });
+      const result = await harness.runner.run(parseOnlineCommand(scheduledArgs("daily")));
 
-    expect(result.value.report).toMatchObject({
-      status: "failure",
-      complete: false,
-      failedStage: "incremental_collection",
-    });
-    expect(harness.counters.apiAttempts).toBe(3);
-    expect(harness.counters.cacheCommits).toBe(0);
-    expect(harness.counters.pagesBuilds).toBe(0);
-    expect(harness.counters.discordCalls).toBe(1);
-    expect(harness.events).toContain("operations_alert");
-    expect(harness.operationsRetryAttempts).toEqual([3]);
-    expect(harness.cache.lastGoodCacheHash).toBe("sha256:last-good-cache");
-  });
+      expect(result.value.report).toMatchObject({
+        status: "failure",
+        complete: false,
+        failedStage: "incremental_collection",
+      });
+      expect(harness.counters.apiAttempts).toBe(3);
+      expect(harness.counters.cacheCommits).toBe(0);
+      expect(harness.counters.pagesBuilds).toBe(0);
+      expect(harness.counters.discordCalls).toBe(1);
+      expect(harness.events).toContain("operations_alert");
+      expect(harness.operationsRetryAttempts).toEqual([3]);
+      expect(harness.cache.lastGoodCacheHash).toBe("sha256:last-good-cache");
+    },
+  );
 
   it("責務再生retry上限のattemptsを運用障害通知へ渡す", async () => {
     const harness = createHarness({

@@ -654,8 +654,10 @@ function collectFragmentSpreadNames(source: string): readonly string[] {
 
 const GRAPHQL_FRAGMENT_DEPENDENCIES: ReadonlyMap<string, readonly string[]> = new Map(
   [...GRAPHQL_FRAGMENT_SOURCES].map(
-    ([fragmentName, fragmentSource]) =>
-      [fragmentName, collectFragmentSpreadNames(fragmentSource)] as const,
+    ([fragmentName, fragmentSource]): readonly [string, readonly string[]] => [
+      fragmentName,
+      collectFragmentSpreadNames(fragmentSource),
+    ],
   ),
 );
 const GRAPHQL_QUERY_CACHE = new Map<string, string>();

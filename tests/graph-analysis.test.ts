@@ -131,7 +131,10 @@ function runAnalysis(
   });
 }
 
-function impactFor(result: AnalyzeGraphResult, nodeId: GraphNodeId) {
+function impactFor(
+  result: AnalyzeGraphResult,
+  nodeId: GraphNodeId,
+): AnalyzeGraphResult["downstreamImpacts"][number] {
   const impact = result.downstreamImpacts.find((entry) => entry.nodeId === nodeId);
   if (impact == null) {
     throw new TypeError(`node ${nodeId}のdownstream impactがありません`);

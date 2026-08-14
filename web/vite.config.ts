@@ -15,7 +15,7 @@ function createGitHubPagesFallbackPlugin(): Plugin {
   return {
     name: "github-pages-fallback",
     apply: "build",
-    async closeBundle() {
+    async closeBundle(): Promise<void> {
       const indexPath = resolve(outputDirectory, "index.html");
       await Promise.all([
         copyFile(indexPath, resolve(outputDirectory, "404.html")),

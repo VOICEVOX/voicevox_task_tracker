@@ -2,7 +2,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 
 import {
   MemoryAiCacheStore,
@@ -27,6 +27,7 @@ import {
   type CodexAnalysisInput,
   type PreparedAiAnalysisCandidate,
   type PreviousAiAnalysisFingerprint,
+  type SchemaValidCodexAnalysisOutput,
 } from "../src/codex/index.js";
 import { createAiBudgetReservationController } from "../src/codex/budget.js";
 import { assertNonNullable } from "../src/util/index.js";
@@ -288,7 +289,7 @@ function runAiAnalyses(
   );
 }
 
-function createExecutorOutput(input: CodexAnalysisInput) {
+function createExecutorOutput(input: CodexAnalysisInput): SchemaValidCodexAnalysisOutput {
   const source = input.sources.at(0);
   assertNonNullable(source, "Codex分析入力のsourceがありません");
   return {
@@ -338,7 +339,7 @@ function createExecutorOutput(input: CodexAnalysisInput) {
   };
 }
 
-function createSemanticInvalidOutput(input: CodexAnalysisInput) {
+function createSemanticInvalidOutput(input: CodexAnalysisInput): SchemaValidCodexAnalysisOutput {
   const output = createExecutorOutput(input);
   return {
     ...output,
@@ -349,7 +350,9 @@ function createSemanticInvalidOutput(input: CodexAnalysisInput) {
   };
 }
 
-function createSemanticInvalidSourceOutput(input: CodexAnalysisInput) {
+function createSemanticInvalidSourceOutput(
+  input: CodexAnalysisInput,
+): SchemaValidCodexAnalysisOutput {
   const output = createExecutorOutput(input);
   const evidence = output.evidence.at(0);
   assertNonNullable(evidence, "semantic検証fixtureのevidenceがありません");
@@ -364,7 +367,10 @@ function createSemanticInvalidSourceOutput(input: CodexAnalysisInput) {
   };
 }
 
-function createRelationOutput(input: CodexAnalysisInput, sourceId: string) {
+function createRelationOutput(
+  input: CodexAnalysisInput,
+  sourceId: string,
+): SchemaValidCodexAnalysisOutput {
   const output = createExecutorOutput(input);
   const relation = input.candidates.relations.at(0);
   assertNonNullable(relation, "semantic検証fixtureのrelation候補がありません");
@@ -382,7 +388,7 @@ function createRelationOutput(input: CodexAnalysisInput, sourceId: string) {
   };
 }
 
-function createExecutor() {
+function createExecutor(): Mock<(input: CodexAnalysisInput) => Promise<unknown>> {
   return vi.fn((input: CodexAnalysisInput): Promise<unknown> =>
     Promise.resolve(createExecutorOutput(input)),
   );

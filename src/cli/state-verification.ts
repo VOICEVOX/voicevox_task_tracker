@@ -12,12 +12,12 @@ import {
 import { type VerifyStateCliCommand } from "./command.js";
 import { CliStateVerificationError } from "./errors.js";
 
-const CACHE_DIRECTORY_NAMES = Object.freeze([
+const CACHE_DIRECTORY_NAMES: readonly [
   "github-repositories",
   "github-items",
   "ai-latest-importance",
   "ai-results",
-] as const);
+] = Object.freeze(["github-repositories", "github-items", "ai-latest-importance", "ai-results"]);
 const JSON_FILE_PATTERN = /^[A-Za-z0-9._-]+\.json$/u;
 
 type CacheDirectoryName = (typeof CACHE_DIRECTORY_NAMES)[number];

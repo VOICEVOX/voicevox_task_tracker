@@ -22,9 +22,11 @@ import {
   type GitHubRestRequest,
   type GitHubRestResponse,
   type PublicRepositoryAllowlist,
+  type PreviousItemCollection,
 } from "../src/github/index.js";
 
 type ItemType = "issue" | "pull_request";
+type PreviousCollectionItems = Extract<PreviousItemCollection, { status: "successful" }>["items"];
 
 type ItemMetadataOverrides = Readonly<{
   nodeId?: string;
@@ -108,7 +110,7 @@ const initialAnalysisRulesFingerprints = Object.freeze({
 function createPreviousCollectionItems(
   items: readonly EnumeratedGitHubItem[],
   analysisRulesFingerprints: CurrentAnalysisRulesFingerprints,
-) {
+): PreviousCollectionItems {
   return new Map(
     items.map((item) => [
       item.nodeId,
@@ -125,7 +127,7 @@ function createPreviousCollectionItems(
 
 function createPreviousCollectionItemsWithoutAnalysisRulesFingerprint(
   items: readonly EnumeratedGitHubItem[],
-) {
+): PreviousCollectionItems {
   return new Map(
     items.map((item) => [
       item.nodeId,

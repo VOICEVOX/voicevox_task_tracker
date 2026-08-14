@@ -6,6 +6,7 @@ import {
   type EvalCliCommand,
   type GoldenFixture,
   type OfflineAnalysisMetrics,
+  type OfflineAnalysisResult,
   type OfflineRunDependencies,
   type ReplayCliCommand,
   type ReplayFixture,
@@ -91,15 +92,15 @@ function createHarness(
   const reports: RunReport[] = [];
   const replayFixture = vi.fn((fixture: ReplayFixture) =>
     Promise.resolve({
-      status: "success" as const,
+      status: "success",
       output: analyzeFixture(fixture),
       metrics: emptyMetrics(),
       diagnostics: Object.freeze([]),
-    }),
+    } satisfies OfflineAnalysisResult),
   );
   const replayState = vi.fn(() =>
     Promise.resolve({
-      status: "success" as const,
+      status: "success",
       output: {
         source: "state",
       },
@@ -109,7 +110,7 @@ function createHarness(
         changedItemCount: 0,
       },
       diagnostics: Object.freeze([]),
-    }),
+    } satisfies OfflineAnalysisResult),
   );
   const dependencies = {
     engine: {

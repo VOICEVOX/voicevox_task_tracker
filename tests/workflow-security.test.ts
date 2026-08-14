@@ -394,7 +394,7 @@ describe("日次workflow", () => {
       "git push origin refs/heads/tracker-state:refs/heads/tracker-state",
     );
     expect(operationsCommands).not.toContain("curl");
-    for (const jobName of ["persist-cache", "build-pages", "notify-discord"] as const) {
+    for (const jobName of ["persist-cache", "build-pages", "notify-discord"]) {
       expect(JSON.stringify(workflow.jobs[jobName])).toContain("actions/download-artifact@");
       expect(JSON.stringify(workflow.jobs[jobName])).toContain("validated-public-run");
     }

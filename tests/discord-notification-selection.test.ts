@@ -223,7 +223,11 @@ describe("Discord notification selection", () => {
       ["reply_overdue", "waiting_for_reply", "reply"],
       ["merge_overdue", "waiting_for_merge", "merge"],
       ["automation_stuck", "waiting_for_automation", "automation"],
-    ] as const;
+    ] satisfies readonly [
+      NotificationReasonCode,
+      Status,
+      DiscordNotificationItem["current"]["waitClass"],
+    ][];
     for (const [reasonCode, status, waitClass] of cases) {
       const item = overdueItem(`I_${reasonCode}`, "urgent", waitClass, {
         status,

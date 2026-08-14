@@ -373,7 +373,7 @@ function createStateEvent(
   nodeId: GitHubNodeId,
   occurredAt: UtcIsoDateTime,
   sequence: number,
-  actor: GitHubDetailActor = identifiedActor,
+  actor: GitHubDetailActor,
 ): GitHubTimelineEvent {
   return Object.freeze({
     sourceId: sourceId("github_timeline_event", `${nodeId}:${kind}:${sequence.toString()}`),
@@ -425,7 +425,7 @@ describe("GitHub item history replay adapter", () => {
     const detail = createDetail(
       item,
       [
-        createStateEvent("merged", pullRequestNodeId, mergedAt, 6),
+        createStateEvent("merged", pullRequestNodeId, mergedAt, 6, identifiedActor),
         {
           sourceId: sourceId("github_timeline_event", "ready"),
           nodeId: createGitHubNodeId("TE_ready"),
@@ -443,7 +443,7 @@ describe("GitHub item history replay adapter", () => {
           kind: "review_requested",
           target: request.target,
         },
-        createStateEvent("closed", pullRequestNodeId, mergedAt, 7),
+        createStateEvent("closed", pullRequestNodeId, mergedAt, 7, identifiedActor),
         {
           sourceId: sourceId("github_timeline_event", "assigned"),
           nodeId: createGitHubNodeId("TE_assigned"),
@@ -501,8 +501,14 @@ describe("GitHub item history replay adapter", () => {
       mergedAt,
       closedAt: mergedAt,
     });
-    const merged = createStateEvent("merged", pullRequestNodeId, mergedAt, 1);
-    const laterClosed = createStateEvent("closed", pullRequestNodeId, laterClosedAt, 2);
+    const merged = createStateEvent("merged", pullRequestNodeId, mergedAt, 1, identifiedActor);
+    const laterClosed = createStateEvent(
+      "closed",
+      pullRequestNodeId,
+      laterClosedAt,
+      2,
+      identifiedActor,
+    );
 
     const result = replayGitHubItemHistory(
       createReplayOptions(item, createDetail(item, [laterClosed, merged], [])),
@@ -813,33 +819,30 @@ describe("GitHub item history replay adapter", () => {
     ).toBe(false);
   });
 
-  it.each(["approved", "changes_requested", "commented", "dismissed"] as const)(
-    "%s reviewは提出済みreviewとして扱う",
-    (state) => {
-      const requestAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
-      const reviewAt = createUtcIsoDateTime("2026-08-01T05:02:08Z");
-      const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
-      const target = {
-        type: "user",
-        sourceId: sourceId("github_user", humanAccount.nodeId),
-        nodeId: humanAccount.nodeId,
-        login: humanAccount.login,
-        apiType: humanAccount.apiType,
-      } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
-      const request = createReviewRequestEvent(
-        target,
-        requestAt,
-        0,
-        `review-state-${state}-request`,
-      );
-      const review = createReview(identifiedActor, reviewAt, state, 0, `review-state-${state}`);
-      const detail = withReviews(createDetail(item, [request], []), [review]);
+  it.each(["approved", "changes_requested", "commented", "dismissed"] satisfies readonly [
+    "approved",
+    "changes_requested",
+    "commented",
+    "dismissed",
+  ])("%s reviewは提出済みreviewとして扱う", (state) => {
+    const requestAt = createUtcIsoDateTime("2026-08-01T05:01:08Z");
+    const reviewAt = createUtcIsoDateTime("2026-08-01T05:02:08Z");
+    const item = createItem("pull_request", "open", { nodeId: pullRequestNodeId });
+    const target = {
+      type: "user",
+      sourceId: sourceId("github_user", humanAccount.nodeId),
+      nodeId: humanAccount.nodeId,
+      login: humanAccount.login,
+      apiType: humanAccount.apiType,
+    } satisfies Extract<GitHubReviewRequestTarget, { type: "user" }>;
+    const request = createReviewRequestEvent(target, requestAt, 0, `review-state-${state}-request`);
+    const review = createReview(identifiedActor, reviewAt, state, 0, `review-state-${state}`);
+    const detail = withReviews(createDetail(item, [request], []), [review]);
 
-      const result = replayGitHubItemHistory(createReplayOptions(item, detail));
+    const result = replayGitHubItemHistory(createReplayOptions(item, detail));
 
-      expect(result.currentResponsibilities).toEqual([]);
-    },
-  );
+    expect(result.currentResponsibilities).toEqual([]);
+  });
 
   it("Teamのreview requestはreviewがあっても不一致を維持する", () => {
     const requestAt = createUtcIsoDateTime("2026-08-01T05:03:36Z");
@@ -866,7 +869,11 @@ describe("GitHub item history replay adapter", () => {
       nodeId: issueNodeId,
       closedAt: observedAt,
     });
-    const detail = createDetail(item, [createStateEvent("closed", issueNodeId, observedAt, 0)], []);
+    const detail = createDetail(
+      item,
+      [createStateEvent("closed", issueNodeId, observedAt, 0, identifiedActor)],
+      [],
+    );
 
     const result = replayGitHubItemHistory(createReplayOptions(item, detail));
 
@@ -889,8 +896,8 @@ describe("GitHub item history replay adapter", () => {
     const detail = createDetail(
       item,
       [
-        createStateEvent("merged", pullRequestNodeId, createdAt, 0),
-        createStateEvent("closed", pullRequestNodeId, createdAt, 1),
+        createStateEvent("merged", pullRequestNodeId, createdAt, 0, identifiedActor),
+        createStateEvent("closed", pullRequestNodeId, createdAt, 1, identifiedActor),
       ],
       [],
     );
@@ -1037,7 +1044,11 @@ describe("GitHub item history replay adapter", () => {
 
   it("現行観測値と再生結果が一致しない場合は例外にする", () => {
     const item = createItem("issue", "open", { nodeId: issueNodeId });
-    const detail = createDetail(item, [createStateEvent("closed", issueNodeId, observedAt, 0)], []);
+    const detail = createDetail(
+      item,
+      [createStateEvent("closed", issueNodeId, observedAt, 0, identifiedActor)],
+      [],
+    );
 
     expect(() => replayGitHubItemHistory(createReplayOptions(item, detail))).toThrow(
       "イベント再生結果と現行GitHub状態が一致しません",
@@ -1046,7 +1057,7 @@ describe("GitHub item history replay adapter", () => {
 
   it("同じsource IDの同一イベントは再生器の規則で一件へ統合する", () => {
     const item = createItem("issue", "closed", { nodeId: issueNodeId, closedAt: observedAt });
-    const event = createStateEvent("closed", issueNodeId, observedAt, 0);
+    const event = createStateEvent("closed", issueNodeId, observedAt, 0, identifiedActor);
     const detail = createDetail(item, [event, event], []);
 
     const result = replayGitHubItemHistory(createReplayOptions(item, detail));

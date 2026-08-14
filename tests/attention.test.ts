@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateAttention,
   type CalculateAttentionInput,
+  type ImportanceLevel,
   type SeverityThresholds,
   type StalenessWaitClass,
 } from "../src/domain/index.js";
@@ -126,7 +127,10 @@ describe("要対応度", () => {
     { importanceScore: 40, expectedLevel: "high" },
     { importanceScore: 20, expectedLevel: "medium" },
     { importanceScore: 19, expectedLevel: "low" },
-  ] as const)(
+  ] satisfies readonly {
+    importanceScore: number;
+    expectedLevel: ImportanceLevel;
+  }[])(
     "要対応度$importanceScore点を$expectedLevel levelにする",
     ({ importanceScore, expectedLevel }) => {
       expect(

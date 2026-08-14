@@ -512,7 +512,7 @@ describe("設定の読み込みと検証", () => {
     for (const [name, target] of [
       ["urgent", "      urgent: 3"],
       ["critical", "      critical: 2"],
-    ] as const) {
+    ] satisfies readonly [string, string][]) {
       const source = replaceRequired(validConfigSource, target, target.replace(/: \d+$/u, ": 0"));
       const error = captureConfigError(source);
 
