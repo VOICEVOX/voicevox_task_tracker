@@ -302,6 +302,180 @@ describe("イベント再生", () => {
     });
   });
 
+  it("IssueとPull Requestの重複ClosedEventをeventLogへ残し状態区間を増やさない", () => {
+    const fixtureCreatedAt = createUtcIsoDateTime("2023-02-01T00:00:00Z");
+    const fixtureObservedAt = createUtcIsoDateTime("2024-06-20T00:00:00Z");
+    const fixtureTrackingStartAt = createUtcIsoDateTime("2023-02-01T00:00:00Z");
+    const firstClosedAt = createUtcIsoDateTime("2023-02-07T22:43:09Z");
+    const duplicateClosedAt = createUtcIsoDateTime("2023-02-07T22:48:28Z");
+    const firstReopenedAt = createUtcIsoDateTime("2023-02-07T22:48:32Z");
+    const secondClosedAt = createUtcIsoDateTime("2023-02-12T06:52:39Z");
+    const secondReopenedAt = createUtcIsoDateTime("2024-06-19T16:02:26Z");
+    const cases = [
+      {
+        nodeId: issueNodeId,
+        currentItem: createIssue({
+          createdAt: fixtureCreatedAt,
+          observedAt: fixtureObservedAt,
+        }),
+      },
+      {
+        nodeId: pullRequestNodeId,
+        currentItem: createPullRequest({
+          createdAt: fixtureCreatedAt,
+          observedAt: fixtureObservedAt,
+        }),
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const firstClosed = createStateEvent(
+        testCase.nodeId,
+        "voicevox-engine-618-closed-1",
+        "closed",
+        firstClosedAt,
+        1,
+      );
+      const duplicateClosed = createStateEvent(
+        testCase.nodeId,
+        "voicevox-engine-618-closed-2",
+        "closed",
+        duplicateClosedAt,
+        2,
+      );
+      const firstReopened = createStateEvent(
+        testCase.nodeId,
+        "voicevox-engine-618-reopened-1",
+        "reopened",
+        firstReopenedAt,
+        3,
+      );
+      const secondClosed = createStateEvent(
+        testCase.nodeId,
+        "voicevox-engine-618-closed-3",
+        "closed",
+        secondClosedAt,
+        4,
+      );
+      const secondReopened = createStateEvent(
+        testCase.nodeId,
+        "voicevox-engine-618-reopened-2",
+        "reopened",
+        secondReopenedAt,
+        5,
+      );
+      const result = replayItemHistory({
+        trackingStartAt: fixtureTrackingStartAt,
+        currentItem: testCase.currentItem,
+        history: {
+          availability: "available",
+          events: [secondReopened, secondClosed, firstReopened, duplicateClosed, firstClosed],
+        },
+      });
+
+      expect(result.stateEpochs).toEqual({
+        status: "known",
+        value: [
+          {
+            occurredAt: fixtureCreatedAt,
+            sourceIds: [testCase.currentItem.sourceId],
+            state: "open",
+          },
+          {
+            occurredAt: firstClosedAt,
+            sourceIds: [firstClosed.sourceId],
+            state: "closed",
+          },
+          {
+            occurredAt: firstReopenedAt,
+            sourceIds: [firstReopened.sourceId],
+            state: "open",
+          },
+          {
+            occurredAt: secondClosedAt,
+            sourceIds: [secondClosed.sourceId],
+            state: "closed",
+          },
+          {
+            occurredAt: secondReopenedAt,
+            sourceIds: [secondReopened.sourceId],
+            state: "open",
+          },
+        ],
+      });
+      expect(result.orderedEvents.map((event) => event.sourceId)).toEqual([
+        firstClosed.sourceId,
+        duplicateClosed.sourceId,
+        firstReopened.sourceId,
+        secondClosed.sourceId,
+        secondReopened.sourceId,
+      ]);
+    }
+  });
+
+  it("Pull Requestのmergeと同時刻closeは許容し後刻closeは拒否する", () => {
+    const fixtureCreatedAt = createUtcIsoDateTime("2023-02-01T00:00:00Z");
+    const mergedAt = createUtcIsoDateTime("2024-06-19T16:00:00Z");
+    const laterClosedAt = createUtcIsoDateTime("2024-06-19T16:00:01Z");
+    const fixtureObservedAt = createUtcIsoDateTime("2024-06-20T00:00:00Z");
+    const merged = createStateEvent(
+      pullRequestNodeId,
+      "merge-after-close-merged",
+      "merged",
+      mergedAt,
+      1,
+    );
+    const sameTimeClosed = createStateEvent(
+      pullRequestNodeId,
+      "merge-after-close-same-time-closed",
+      "closed",
+      mergedAt,
+      2,
+    );
+    const currentItem = createPullRequest({
+      createdAt: fixtureCreatedAt,
+      observedAt: fixtureObservedAt,
+      state: "merged",
+      closedAt: mergedAt,
+      mergedAt,
+    });
+
+    const result = replayItemHistory({
+      trackingStartAt: fixtureCreatedAt,
+      currentItem,
+      history: {
+        availability: "available",
+        events: [sameTimeClosed, merged],
+      },
+    });
+    expect(result.currentStateEpoch).toEqual({
+      status: "known",
+      value: {
+        occurredAt: mergedAt,
+        sourceIds: [sameTimeClosed.sourceId, merged.sourceId].sort(),
+        state: "merged",
+      },
+    });
+
+    const laterClosed = createStateEvent(
+      pullRequestNodeId,
+      "merge-after-close-later-closed",
+      "closed",
+      laterClosedAt,
+      3,
+    );
+    expect(() =>
+      replayItemHistory({
+        trackingStartAt: fixtureCreatedAt,
+        currentItem,
+        history: {
+          availability: "available",
+          events: [laterClosed, merged],
+        },
+      }),
+    ).toThrow("open状態以外をcloseできません");
+  });
+
   it("assigneeとreview requestの変更からcurrent owner epochを復元する", () => {
     const assigneeNodeId = createGitHubNodeId("U_replay_assignee");
     const reviewerNodeId = createGitHubNodeId("U_replay_reviewer");
