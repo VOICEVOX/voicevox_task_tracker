@@ -6,17 +6,19 @@ import {
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
+  type SourceId,
 } from "../src/domain/index.js";
 import {
   assertCacheDocumentSemantic,
   assertCacheDocumentPublicSafety,
-  CacheDocumentPublicSafetyError,
-  CacheDocumentSchemaError,
   CacheDocumentSemanticError,
   createCacheDocument,
   createCacheTerminalExpiry,
   parseCacheDocument,
   serializeCacheDocument,
+  StatePublicSafetyError,
+  StateFormatError,
+  StateZodValidationError,
   type AiLatestImportanceCacheDocument,
   type CacheRepositoryIdentity,
   type GitHubItemCacheDocument,
@@ -394,7 +396,7 @@ describe("cache文書契約", () => {
       unknown: true,
     };
 
-    expect(() => createCacheDocument(value)).toThrow(CacheDocumentSchemaError);
+    expect(() => createCacheDocument(value)).toThrow(StateZodValidationError);
   });
 
   it("旧cache schema versionを互換扱いせず拒否する", () => {
@@ -403,10 +405,10 @@ describe("cache文書契約", () => {
       schemaVersion: "1",
     };
 
-    expect(() => createCacheDocument(legacyValue)).toThrow(CacheDocumentSchemaError);
+    expect(() => createCacheDocument(legacyValue)).toThrow(StateZodValidationError);
   });
 
-  it("schema検証のZod error causeとissueCountを保持する", () => {
+  it("schema検証のZod診断とcauseを保持する", () => {
     let thrown: unknown;
     try {
       createCacheDocument({
@@ -416,12 +418,17 @@ describe("cache文書契約", () => {
     } catch (error: unknown) {
       thrown = error;
     }
-    if (!(thrown instanceof CacheDocumentSchemaError)) {
-      throw new Error("CacheDocumentSchemaErrorではありません");
+    if (!(thrown instanceof StateZodValidationError)) {
+      throw new Error("StateZodValidationErrorではありません");
     }
 
-    expect(thrown.cause).toBeInstanceOf(ZodError);
     expect(thrown.issueCount).toBeGreaterThan(0);
+    expect(thrown.issues).toHaveLength(thrown.issueCount);
+    if (!(thrown.cause instanceof TypeError)) {
+      throw new Error("schema検証のcauseがTypeErrorではありません");
+    }
+    expect(thrown.cause.message).toContain("cache文書のschema検証に失敗しました");
+    expect(thrown.cause.cause).toBeInstanceOf(ZodError);
   });
 
   it("型付け済み文書のsemantic検証はschemaと公開安全性を再検証しない", () => {
@@ -446,7 +453,7 @@ describe("cache文書契約", () => {
     };
 
     const execute = () => createCacheDocument(value);
-    expect(execute).toThrow(CacheDocumentPublicSafetyError);
+    expect(execute).toThrow(StatePublicSafetyError);
     expect(execute).toThrow("forbidden_content_field");
   });
 
@@ -458,7 +465,7 @@ describe("cache文書契約", () => {
         [fieldName]: "保存禁止の本文",
       };
 
-      expect(() => createCacheDocument(value)).toThrow(CacheDocumentPublicSafetyError);
+      expect(() => createCacheDocument(value)).toThrow(StatePublicSafetyError);
       expect(() => createCacheDocument(value)).toThrow("forbidden_content_field");
     },
   );
@@ -472,7 +479,7 @@ describe("cache文書契約", () => {
     };
 
     const execute = () => createCacheDocument(value);
-    expect(execute).toThrow(CacheDocumentPublicSafetyError);
+    expect(execute).toThrow(StatePublicSafetyError);
     expect(execute).toThrow("credential_field");
     expect(execute).toThrow("secret");
   });
@@ -533,7 +540,7 @@ describe("cache文書契約", () => {
       },
     };
 
-    expect(() => createCacheDocument(value)).toThrow(CacheDocumentSchemaError);
+    expect(() => createCacheDocument(value)).toThrow(StateZodValidationError);
   });
 
   it("temporal eventの決定的sort違反を拒否する", () => {
@@ -635,11 +642,11 @@ describe("cache文書契約", () => {
             itemNodeId: ITEM_NODE_ID,
             occurredAt: UPDATED_AT,
             actor: {
-              type: "human" as const,
+              type: "human" satisfies "human",
               nodeId: ACTOR_NODE_ID,
               login: "human",
             },
-            kind: "comment" as const,
+            kind: "comment" satisfies "comment",
             bodyFingerprint: BODY_FINGERPRINT,
             bodyEmpty: true,
           },
@@ -666,7 +673,7 @@ describe("cache文書契約", () => {
             {
               id: commentSourceId,
               kind: "comment",
-              actorType: "human" as const,
+              actorType: "human" satisfies "human",
               createdAt: UPDATED_AT,
             },
           ],
@@ -692,11 +699,11 @@ describe("cache文書契約", () => {
             itemNodeId: ITEM_NODE_ID,
             occurredAt: UPDATED_AT,
             actor: {
-              type: "human" as const,
+              type: "human" satisfies "human",
               nodeId: ACTOR_NODE_ID,
               login: "human",
             },
-            kind: "comment" as const,
+            kind: "comment" satisfies "comment",
             bodyFingerprint: BODY_FINGERPRINT,
             bodyEmpty: false,
           },
@@ -737,11 +744,11 @@ describe("cache文書契約", () => {
             itemNodeId: ITEM_NODE_ID,
             occurredAt: UPDATED_AT,
             actor: {
-              type: "human" as const,
+              type: "human" satisfies "human",
               nodeId: ACTOR_NODE_ID,
               login: "human",
             },
-            kind: "comment" as const,
+            kind: "comment" satisfies "comment",
             bodyFingerprint: BODY_FINGERPRINT,
             bodyEmpty: false,
           },
@@ -758,7 +765,7 @@ describe("cache文書契約", () => {
         mentionedWaitingOnCandidates: [
           {
             id: "requested-user",
-            kind: "user" as const,
+            kind: "user" satisfies "user",
             sourceIds: [commentSourceId],
           },
         ],
@@ -870,11 +877,38 @@ describe("cache文書契約", () => {
     ).toThrow("relation mutationのcontent source kindがrelation対象外です");
   });
 
+  it("unknown relation mutationの編集根拠は全項目またはなしにする", () => {
+    const base = {
+      status: "unknown",
+      contentSourceId: buildSourceId("github_item_body", ITEM_NODE_ID),
+      reason: "diff_null",
+    } satisfies Readonly<{
+      status: "unknown";
+      contentSourceId: SourceId;
+      reason: "diff_null";
+    }>;
+    const editSourceId = buildSourceId("github_user_content_edit", "incomplete");
+    const incompleteValues = [
+      { ...base, sourceId: editSourceId },
+      { ...base, editedAt: UPDATED_AT },
+      { ...base, sequence: 0 },
+    ];
+
+    for (const relationMutation of incompleteValues) {
+      expect(() =>
+        createCacheDocument({
+          ...createValidItem(),
+          relationMutations: [relationMutation],
+        }),
+      ).toThrow(StateZodValidationError);
+    }
+  });
+
   it("relationの削除後再追加をactive intervalとして受理する", () => {
     const relation = {
       repositoryOwner: REPOSITORY.owner,
       repositoryName: REPOSITORY.name,
-      itemType: "issue" as const,
+      itemType: "issue" satisfies "issue",
       number: 2,
     };
     const contentSourceId = buildSourceId("github_item_body", ITEM_NODE_ID);
@@ -939,33 +973,33 @@ describe("cache文書契約", () => {
 
   it("GitHubの全ページ取得結果を任意の配列上限で拒否しない", () => {
     const candidateNode = (index: number) => ({
-      scope: "organization" as const,
-      kind: "issue" as const,
+      scope: "organization" satisfies "organization",
+      kind: "issue" satisfies "issue",
       nodeId: createGitHubNodeId(`I_bulk_${index.toString().padStart(4, "0")}`),
       repositoryOwner: REPOSITORY.owner,
       repositoryName: REPOSITORY.name,
       number: index + 2,
       url: `https://github.com/${REPOSITORY.owner}/${REPOSITORY.name}/issues/${(index + 2).toString()}`,
-      state: "open" as const,
+      state: "open" satisfies "open",
     });
     const relationCandidates = Array.from({ length: 1001 }, (_, index) => ({
       id: `rel:bulk-${index.toString().padStart(4, "0")}`,
       sourceIds: [buildSourceId("relation", `bulk-${index.toString().padStart(4, "0")}`)],
-      authority: "inferred" as const,
-      provenance: "explicit_text" as const,
+      authority: "inferred" satisfies "inferred",
+      provenance: "explicit_text" satisfies "explicit_text",
       relation: {
-        type: "unclassified" as const,
+        type: "unclassified" satisfies "unclassified",
         referencing: candidateNode(index),
         referenced: candidateNode(index + 1001),
       },
     }));
     const relationMutationResults = Array.from({ length: 1001 }, (_, index) => ({
-      status: "unknown" as const,
+      status: "unknown" satisfies "unknown",
       contentSourceId: buildSourceId(
         "github_item_body",
         `bulk-${index.toString().padStart(4, "0")}`,
       ),
-      reason: "diff_null" as const,
+      reason: "diff_null" satisfies "diff_null",
     }));
     const manySourceIds = Array.from({ length: 31 }, (_, index) =>
       buildSourceId("relation", `source-${index.toString().padStart(3, "0")}`),
@@ -975,10 +1009,10 @@ describe("cache文書契約", () => {
       itemNodeId: ITEM_NODE_ID,
       occurredAt: UPDATED_AT,
       actor: {
-        type: "system" as const,
+        type: "system" satisfies "system",
         name: "github",
       },
-      kind: "comment" as const,
+      kind: "comment" satisfies "comment",
       bodyFingerprint: BODY_FINGERPRINT,
       bodyEmpty: false,
     }));
@@ -1108,11 +1142,11 @@ describe("cache文書契約", () => {
       replay: {
         ...valid.replay,
         stateEpochs: {
-          status: "known" as const,
+          status: "known" satisfies "known",
           value: [valid.replay.stateEpochs.value[0], incorrectEpoch],
         },
         currentStateEpoch: {
-          status: "known" as const,
+          status: "known" satisfies "known",
           value: incorrectEpoch,
         },
       },
@@ -1128,7 +1162,7 @@ describe("cache文書契約", () => {
     const value = {
       ...createValidItem(),
       lifecycle: {
-        kind: "terminal" as const,
+        kind: "terminal" satisfies "terminal",
         terminalAt,
         expiresAt: createCacheTerminalExpiry(terminalAt),
       },
@@ -1154,7 +1188,7 @@ describe("cache文書契約", () => {
     const value = {
       ...createValidItem(),
       history: {
-        status: "complete" as const,
+        status: "complete" satisfies "complete",
         events: [
           {
             ...createCompleteHistory().events[0],
@@ -1196,7 +1230,7 @@ describe("cache文書契約", () => {
       },
     };
 
-    expect(() => createCacheDocument(value)).toThrow("cache文書のschema検証に失敗しました");
+    expect(() => createCacheDocument(value)).toThrow(StateZodValidationError);
   });
 
   it("latest importanceのrationaleを非空かつ120文字以内で検証する", () => {
@@ -1216,7 +1250,7 @@ describe("cache文書契約", () => {
         rationale: "",
       },
     };
-    expect(() => createCacheDocument(emptyValue)).toThrow(CacheDocumentSchemaError);
+    expect(() => createCacheDocument(emptyValue)).toThrow(StateZodValidationError);
 
     const oversizedValue = {
       ...createValidLatestImportance(),
@@ -1225,7 +1259,7 @@ describe("cache文書契約", () => {
         rationale: "あ".repeat(121),
       },
     };
-    expect(() => createCacheDocument(oversizedValue)).toThrow(CacheDocumentSchemaError);
+    expect(() => createCacheDocument(oversizedValue)).toThrow(StateZodValidationError);
   });
 
   it("latest importanceのrationaleも公開安全性検査の対象にする", () => {
@@ -1237,21 +1271,20 @@ describe("cache文書契約", () => {
       },
     };
 
-    expect(() => createCacheDocument(value)).toThrow(CacheDocumentPublicSafetyError);
+    expect(() => createCacheDocument(value)).toThrow(StatePublicSafetyError);
   });
 
-  it("JSON構文エラーのcauseとissueCountを保持する", () => {
+  it("JSON構文エラーのcauseを保持する", () => {
     let thrown: unknown;
     try {
       parseCacheDocument("{");
     } catch (error: unknown) {
       thrown = error;
     }
-    if (!(thrown instanceof CacheDocumentSchemaError)) {
-      throw new Error("CacheDocumentSchemaErrorではありません");
+    if (!(thrown instanceof StateFormatError)) {
+      throw new Error("StateFormatErrorではありません");
     }
 
     expect(thrown.cause).toBeInstanceOf(SyntaxError);
-    expect(thrown.issueCount).toBe(1);
   });
 });

@@ -267,7 +267,7 @@ describe("依存関係interval reducer", () => {
       action: "added",
       sequence: 0,
     });
-    const removed = { ...added, action: "removed" as const };
+    const removed: ResolvedDependencyReplayEvent = { ...added, action: "removed" };
     expect(() => replayDependencyEvents([added, removed])).toThrow(
       "同じsource IDの同じedgeでactionが衝突",
     );

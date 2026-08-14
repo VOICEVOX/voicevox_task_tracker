@@ -48,7 +48,20 @@ function stateEpoch(
     state,
     occurredAt,
     sourceIds: [sourceId(source)],
-    sequence,
+    position: { kind: "timeline", sequence },
+  };
+}
+
+function initialStateEpoch(
+  state: TemporalBlocksStateEpoch["state"],
+  occurredAt: ReturnType<typeof time>,
+  source: string,
+): TemporalBlocksStateEpoch {
+  return {
+    state,
+    occurredAt,
+    sourceIds: [sourceId(source)],
+    position: { kind: "initial" },
   };
 }
 
@@ -71,14 +84,14 @@ function openHistories(nodes: readonly GraphNodeId[]): readonly TemporalBlocksNo
   );
 }
 
-function resolvedRelation(
+function resolvedRelationWithOrigin(
   source: string,
   fromNodeId: GraphNodeId,
   toNodeId: GraphNodeId,
   action: "added" | "removed",
   occurredAt: ReturnType<typeof time>,
   sequence: number,
-  originItemNodeId: GraphNodeId = toNodeId,
+  originItemNodeId: GraphNodeId,
 ): Extract<
   TemporalBlocksGraphReplayInput["relationHistory"],
   { status: "exact" }
@@ -93,6 +106,28 @@ function resolvedRelation(
     occurredAt,
     sequence,
   };
+}
+
+function resolvedRelation(
+  source: string,
+  fromNodeId: GraphNodeId,
+  toNodeId: GraphNodeId,
+  action: "added" | "removed",
+  occurredAt: ReturnType<typeof time>,
+  sequence: number,
+): Extract<
+  TemporalBlocksGraphReplayInput["relationHistory"],
+  { status: "exact" }
+>["mutations"][number] {
+  return resolvedRelationWithOrigin(
+    source,
+    fromNodeId,
+    toNodeId,
+    action,
+    occurredAt,
+    sequence,
+    toNodeId,
+  );
 }
 
 function unresolvedRelation(
@@ -118,11 +153,17 @@ function unresolvedRelation(
   };
 }
 
-function currentNodes(
+function currentNodesWithState(
   nodes: readonly [GraphNodeId, ...GraphNodeId[]],
-  state: TemporalBlocksCurrentNode["state"] = "open",
+  state: TemporalBlocksCurrentNode["state"],
 ): readonly TemporalBlocksCurrentNode[] {
   return nodes.map((nodeId) => ({ nodeId, state }));
+}
+
+function currentNodes(
+  nodes: readonly [GraphNodeId, ...GraphNodeId[]],
+): readonly TemporalBlocksCurrentNode[] {
+  return currentNodesWithState(nodes, "open");
 }
 
 function input(
@@ -149,6 +190,55 @@ function input(
 }
 
 describe("replayTemporalBlocksGraph", () => {
+  it("initialとtimelineのstate epoch positionを受け入れる", () => {
+    const result = replayTemporalBlocksGraph(
+      input(
+        currentNodesWithState([nodeA], "closed"),
+        [],
+        [
+          stateHistory(nodeA, [
+            initialStateEpoch("open", time("00"), "initial"),
+            stateEpoch("closed", time("00"), "closed", 1),
+          ]),
+        ],
+        [],
+      ),
+    );
+
+    expect(result.newlyUnblockedFacts).toEqual([]);
+    expect(result.cycleCreatedFacts).toEqual([]);
+  });
+
+  it("state epoch positionのproperty順に依存しない", () => {
+    const sharedSourceId = sourceId("same-position");
+    const sharedSourceIds: readonly [SourceId] = [sharedSourceId];
+    const result = replayTemporalBlocksGraph(
+      input(
+        currentNodes([nodeA]),
+        [],
+        [
+          stateHistory(nodeA, [
+            {
+              state: "open",
+              occurredAt: time("00"),
+              sourceIds: sharedSourceIds,
+              position: { kind: "timeline", sequence: 1 },
+            },
+            {
+              state: "open",
+              occurredAt: time("00"),
+              sourceIds: sharedSourceIds,
+              position: { sequence: 1, kind: "timeline" },
+            },
+          ]),
+        ],
+        [],
+      ),
+    );
+
+    expect(result.currentGraph.nodes).toEqual(currentNodes([nodeA]));
+  });
+
   it("複数blockerでは最後のopen blockerがなくなった時刻だけを返す", () => {
     const relation = edge(nodeA, nodeX);
     const relationB = edge(nodeB, nodeX);
@@ -277,7 +367,7 @@ describe("replayTemporalBlocksGraph", () => {
     const result = replayTemporalBlocksGraph(
       input(currentNodes([nodeA, nodeB]), cycleEdges, openHistories([nodeA, nodeB]), [
         resolvedRelation("add-ab", nodeA, nodeB, "added", time("01"), 0),
-        resolvedRelation("add-ab-mirrored", nodeA, nodeB, "added", time("01"), 0, nodeA),
+        resolvedRelationWithOrigin("add-ab-mirrored", nodeA, nodeB, "added", time("01"), 0, nodeA),
         resolvedRelation("add-ba", nodeB, nodeA, "added", time("01"), 1),
         resolvedRelation("remove-ba", nodeB, nodeA, "removed", time("02"), 0),
         resolvedRelation("add-ba-again", nodeB, nodeA, "added", time("03"), 0),
@@ -555,8 +645,8 @@ describe("replayTemporalBlocksGraph", () => {
         [edge(nodeA, nodeB), edge(nodeB, nodeA)],
         openHistories([nodeA, nodeB]),
         [
-          resolvedRelation(sharedSource, nodeA, nodeB, "added", time("01"), 1, nodeA),
-          resolvedRelation(sharedSource, nodeB, nodeA, "added", time("01"), 1, nodeA),
+          resolvedRelationWithOrigin(sharedSource, nodeA, nodeB, "added", time("01"), 1, nodeA),
+          resolvedRelationWithOrigin(sharedSource, nodeB, nodeA, "added", time("01"), 1, nodeA),
         ],
       ),
     );
@@ -576,8 +666,8 @@ describe("replayTemporalBlocksGraph", () => {
   it("同じ編集sourceのresolvedとunresolvedと異なるedgeとactionを共存させる", () => {
     const sharedSource = "shared-mixed-edit";
     const mutations = [
-      resolvedRelation(sharedSource, nodeA, nodeX, "added", time("01"), 1, nodeX),
-      resolvedRelation(sharedSource, nodeB, nodeX, "removed", time("01"), 1, nodeX),
+      resolvedRelationWithOrigin(sharedSource, nodeA, nodeX, "added", time("01"), 1, nodeX),
+      resolvedRelationWithOrigin(sharedSource, nodeB, nodeX, "removed", time("01"), 1, nodeX),
       unresolvedRelation(sharedSource, nodeX, "blocked_by", "added", time("01"), 1),
     ];
     const result = replayTemporalBlocksGraph(
@@ -603,8 +693,8 @@ describe("replayTemporalBlocksGraph", () => {
     expect(() =>
       replayTemporalBlocksGraph(
         input(currentNodes([nodeA, nodeX]), [], openHistories([nodeA, nodeX]), [
-          resolvedRelation(sharedSource, nodeA, nodeX, "added", time("01"), 1, nodeX),
-          resolvedRelation(sharedSource, nodeA, nodeX, "removed", time("01"), 1, nodeX),
+          resolvedRelationWithOrigin(sharedSource, nodeA, nodeX, "added", time("01"), 1, nodeX),
+          resolvedRelationWithOrigin(sharedSource, nodeA, nodeX, "removed", time("01"), 1, nodeX),
         ]),
       ),
     ).toThrow("同じsource IDの同じedgeでactionが衝突");

@@ -7,6 +7,7 @@ import {
   type SourceId,
   type UtcIsoDateTime,
 } from "../domain/index.js";
+import { assertNonNullable } from "../util/index.js";
 import {
   type DependencyReplayEdge,
   type DependencyReplayInputEvent,
@@ -15,7 +16,11 @@ import {
   type RelationCandidate,
   type RelationCandidateNode,
 } from "../graph/relation-candidate-types.js";
-import { type RelationMutation } from "../graph/relation-mutation.js";
+import {
+  type RelationMutation,
+  type RelationMutationResult,
+  type RelationMutationUnknown,
+} from "../graph/relation-mutation.js";
 import {
   type TemporalBlocksCurrentNode,
   type TemporalBlocksGraphReplayInput,
@@ -26,7 +31,6 @@ import {
   type CacheHistory,
   type GitHubItemCacheDocument,
   type GitHubItemCacheRelationCandidate,
-  type GitHubItemCacheRelationMutationResult,
 } from "../persistence/cache-documents.js";
 import {
   type GitHubItemDetail,
@@ -37,6 +41,7 @@ import {
   adaptGitHubRelationMutationSource,
   type GitHubRelationMutationSourceResult,
 } from "./relation-mutation-adapter.js";
+import { restoreGitHubItemCacheRelationMutationResult } from "./item-cache-adapter.js";
 
 type RelationReference = Readonly<{
   repositoryOwner: string;
@@ -51,7 +56,6 @@ type RelationEndpoint = RelationReference &
   }>;
 
 type FreshRelationMutationResult = GitHubRelationMutationSourceResult;
-type CachedRelationMutationResult = GitHubItemCacheRelationMutationResult;
 
 /** fresh detailからtemporal blocks graph replay入力を作る項目。 */
 export type FreshTemporalBlocksItem = Readonly<{
@@ -128,8 +132,7 @@ type RelationEventHistory =
       status: "unknown";
     }>;
 
-/** 関係mutationの時刻または端点を確定できなかった診断。 */
-export type TemporalBlocksUnknownRelationMutation = Readonly<{
+type TemporalBlocksUnknownRelationMutationBase = Readonly<{
   originItemNodeId: GraphNodeId;
   contentSourceId: SourceId;
   reason:
@@ -143,10 +146,24 @@ export type TemporalBlocksUnknownRelationMutation = Readonly<{
     | "current_mismatch"
     | "preexisting_relation"
     | "relation_endpoint_unavailable";
-  sourceId?: SourceId;
-  editedAt?: UtcIsoDateTime;
-  sequence?: number;
 }>;
+
+type TemporalBlocksUnknownRelationMutationEdit =
+  | Readonly<{
+      status: "available";
+      sourceId: SourceId;
+      editedAt: UtcIsoDateTime;
+      sequence: number;
+    }>
+  | Readonly<{
+      status: "unavailable";
+    }>;
+
+/** 関係mutationの時刻または端点を確定できなかった診断。 */
+export type TemporalBlocksUnknownRelationMutation = TemporalBlocksUnknownRelationMutationBase &
+  Readonly<{
+    edit: TemporalBlocksUnknownRelationMutationEdit;
+  }>;
 
 /** temporal blocks graph replayへ渡す入力と、確定不能な局所診断。 */
 export type TemporalBlocksGraphReplayAdapterResult = Readonly<{
@@ -154,44 +171,70 @@ export type TemporalBlocksGraphReplayAdapterResult = Readonly<{
   unknownRelationMutations: readonly TemporalBlocksUnknownRelationMutation[];
 }>;
 
-type CacheCandidateNode = Readonly<{
+type CacheCandidateNodeBase = Readonly<{
   nodeId: string;
   repositoryOwner: string;
   repositoryName: string;
   number: number;
-  scope: "organization" | "external_public";
-  kind: "issue" | "pull_request" | "external_reference";
-  githubItemType?: "issue" | "pull_request";
 }>;
+
+type CacheCandidateNode =
+  | (CacheCandidateNodeBase &
+      Readonly<{
+        scope: "organization";
+        kind: "issue" | "pull_request";
+      }>)
+  | (CacheCandidateNodeBase &
+      Readonly<{
+        scope: "external_public";
+        kind: "external_reference";
+        githubItemType: "issue" | "pull_request";
+      }>);
+
+type UnknownRelationMutationMetadata = TemporalBlocksUnknownRelationMutationEdit;
+
+function createUnknownRelationMutationMetadata(
+  metadata: UnknownRelationMutationMetadata | RelationMutationUnknown,
+): UnknownRelationMutationMetadata {
+  if (metadata.status === "unknown") {
+    if (metadata.edit.status === "unavailable") {
+      return Object.freeze({ status: "unavailable" });
+    }
+    return Object.freeze({
+      status: "available",
+      sourceId: metadata.edit.sourceId,
+      editedAt: metadata.edit.editedAt,
+      sequence: metadata.edit.sequence,
+    });
+  }
+  return Object.freeze(metadata);
+}
 
 function createUnknownRelationMutation(
   originItemNodeId: GraphNodeId,
   contentSourceId: SourceId,
   reason: TemporalBlocksUnknownRelationMutation["reason"],
-  metadata: Readonly<{
-    sourceId: SourceId | null;
-    editedAt: UtcIsoDateTime | null;
-    sequence: number | null;
-  }>,
+  metadata: UnknownRelationMutationMetadata,
 ): TemporalBlocksUnknownRelationMutation {
-  const diagnostic: {
-    originItemNodeId: GraphNodeId;
-    contentSourceId: SourceId;
-    reason: TemporalBlocksUnknownRelationMutation["reason"];
-    sourceId?: SourceId;
-    editedAt?: UtcIsoDateTime;
-    sequence?: number;
-  } = { originItemNodeId, contentSourceId, reason };
-  if (metadata.sourceId != null) {
-    diagnostic.sourceId = metadata.sourceId;
+  if (metadata.status === "available") {
+    return Object.freeze({
+      originItemNodeId,
+      contentSourceId,
+      reason,
+      edit: Object.freeze({
+        status: "available",
+        sourceId: metadata.sourceId,
+        editedAt: metadata.editedAt,
+        sequence: metadata.sequence,
+      }),
+    });
   }
-  if (metadata.editedAt != null) {
-    diagnostic.editedAt = metadata.editedAt;
-  }
-  if (metadata.sequence != null) {
-    diagnostic.sequence = metadata.sequence;
-  }
-  return Object.freeze(diagnostic);
+  return Object.freeze({
+    originItemNodeId,
+    contentSourceId,
+    reason,
+    edit: Object.freeze({ status: "unavailable" }),
+  });
 }
 
 function compareStrings(left: string, right: string): -1 | 0 | 1 {
@@ -234,10 +277,10 @@ function compareDependencyEvents(
   if (originOrder !== 0) {
     return originOrder;
   }
-  if (left.status !== right.status) {
-    return left.status === "resolved" ? -1 : 1;
-  }
-  if (left.status === "resolved" && right.status === "resolved") {
+  if (left.status === "resolved") {
+    if (right.status === "unresolved") {
+      return -1;
+    }
     const fromOrder = compareStrings(left.fromNodeId, right.fromNodeId);
     if (fromOrder !== 0) {
       return fromOrder;
@@ -248,8 +291,8 @@ function compareDependencyEvents(
     }
     return left.action === right.action ? 0 : left.action === "added" ? -1 : 1;
   }
-  if (left.status !== "unresolved" || right.status !== "unresolved") {
-    throw new TypeError("依存関係イベントのstatusが不正です");
+  if (right.status === "resolved") {
+    return 1;
   }
   if (left.action !== right.action) {
     return left.action === "added" ? -1 : 1;
@@ -270,15 +313,28 @@ function createSequenceMap(
   return sequences;
 }
 
-function epochSequence(
-  sourceIds: readonly SourceId[],
+function epochPosition(
+  sourceIds: readonly [SourceId, ...SourceId[]],
+  initialSourceId: SourceId,
   sequences: ReadonlyMap<SourceId, number>,
-): number {
-  const values = sourceIds.flatMap((sourceId) => {
+): TemporalBlocksStateEpoch["position"] {
+  if (sourceIds.length === 1 && sourceIds[0] === initialSourceId) {
+    return Object.freeze({ kind: "initial" });
+  }
+  const values = sourceIds.map((sourceId) => {
     const sequence = sequences.get(sourceId);
-    return sequence == null ? [] : [sequence];
+    assertNonNullable(
+      sequence,
+      `state epochのsource IDに対応するtimeline sequenceがありません。対象: ${sourceId}`,
+    );
+    return sequence;
   });
-  return values.length === 0 ? 0 : Math.min(...values);
+  const firstSequence = values[0];
+  assertNonNullable(firstSequence, "state epochのtimeline sequenceがありません");
+  return Object.freeze({
+    kind: "timeline",
+    sequence: Math.min(firstSequence, ...values.slice(1)),
+  });
 }
 
 function createSourceIdTuple(sourceIds: readonly SourceId[]): readonly [SourceId, ...SourceId[]] {
@@ -286,9 +342,7 @@ function createSourceIdTuple(sourceIds: readonly SourceId[]): readonly [SourceId
     throw new TypeError("temporal blocks state epochのsource IDが重複しています");
   }
   const [firstSourceId, ...remainingSourceIds] = sourceIds;
-  if (firstSourceId == null) {
-    throw new TypeError("temporal blocks state epochのsource IDがありません");
-  }
+  assertNonNullable(firstSourceId, "temporal blocks state epochのsource IDがありません");
   const tuple: [SourceId, ...SourceId[]] = [firstSourceId, ...remainingSourceIds];
   return Object.freeze(tuple);
 }
@@ -301,37 +355,25 @@ function compareUnknownRelationMutations(
   if (originOrder !== 0) {
     return originOrder;
   }
-  const leftEditedAt = left.editedAt;
-  const rightEditedAt = right.editedAt;
-  if (leftEditedAt == null && rightEditedAt != null) {
+  if (left.edit.status === "unavailable" && right.edit.status === "available") {
     return 1;
   }
-  if (leftEditedAt != null && rightEditedAt == null) {
+  if (left.edit.status === "available" && right.edit.status === "unavailable") {
     return -1;
   }
-  if (leftEditedAt != null && rightEditedAt != null) {
-    const editedAtOrder = compareStrings(leftEditedAt, rightEditedAt);
+  if (left.edit.status === "available" && right.edit.status === "available") {
+    const editedAtOrder = compareStrings(left.edit.editedAt, right.edit.editedAt);
     if (editedAtOrder !== 0) {
       return editedAtOrder;
     }
-  }
-  const leftSequence = left.sequence;
-  const rightSequence = right.sequence;
-  if (leftSequence == null && rightSequence != null) {
-    return 1;
-  }
-  if (leftSequence != null && rightSequence == null) {
-    return -1;
-  }
-  if (leftSequence != null && rightSequence != null) {
-    const sequenceOrder = compareNumbers(leftSequence, rightSequence);
+    const sequenceOrder = compareNumbers(left.edit.sequence, right.edit.sequence);
     if (sequenceOrder !== 0) {
       return sequenceOrder;
     }
-  }
-  const sourceOrder = compareStrings(left.sourceId ?? "", right.sourceId ?? "");
-  if (sourceOrder !== 0) {
-    return sourceOrder;
+    const sourceOrder = compareStrings(left.edit.sourceId, right.edit.sourceId);
+    if (sourceOrder !== 0) {
+      return sourceOrder;
+    }
   }
   const contentSourceOrder = compareStrings(left.contentSourceId, right.contentSourceId);
   if (contentSourceOrder !== 0) {
@@ -346,19 +388,22 @@ function mapStateEpoch(
     occurredAt: UtcIsoDateTime;
     sourceIds: readonly SourceId[];
   }>,
+  initialSourceId: SourceId,
   sequences: ReadonlyMap<SourceId, number>,
 ): TemporalBlocksStateEpoch {
+  const sourceIds = createSourceIdTuple(epoch.sourceIds);
   return Object.freeze({
     state: epoch.state,
     occurredAt: epoch.occurredAt,
-    sourceIds: createSourceIdTuple(epoch.sourceIds),
-    sequence: epochSequence(epoch.sourceIds, sequences),
+    sourceIds,
+    position: epochPosition(sourceIds, initialSourceId, sequences),
   });
 }
 
 function mapStateHistory(
   nodeId: GraphNodeId,
   replay: ReplayItemHistoryResult,
+  initialSourceId: SourceId,
   sequences: ReadonlyMap<SourceId, number>,
 ): TemporalBlocksNodeStateHistory {
   if (replay.stateEpochs.status === "unknown") {
@@ -375,7 +420,7 @@ function mapStateHistory(
     history: {
       status: "exact",
       epochs: Object.freeze(
-        replay.stateEpochs.value.map((epoch) => mapStateEpoch(epoch, sequences)),
+        replay.stateEpochs.value.map((epoch) => mapStateEpoch(epoch, initialSourceId, sequences)),
       ),
     },
   });
@@ -383,6 +428,7 @@ function mapStateHistory(
 
 function mapCacheStateHistory(
   document: GitHubItemCacheDocument,
+  initialSourceId: SourceId,
   sequences: ReadonlyMap<SourceId, number>,
 ): TemporalBlocksNodeStateHistory {
   const replay = document.replay;
@@ -400,7 +446,7 @@ function mapCacheStateHistory(
     history: {
       status: "exact",
       epochs: Object.freeze(
-        replay.stateEpochs.value.map((epoch) => mapStateEpoch(epoch, sequences)),
+        replay.stateEpochs.value.map((epoch) => mapStateEpoch(epoch, initialSourceId, sequences)),
       ),
     },
   });
@@ -412,9 +458,10 @@ function assertCurrentState(
   state: TemporalBlocksCurrentNode["state"],
 ): void {
   const currentNode = currentNodes.find((candidate) => candidate.nodeId === nodeId);
-  if (currentNode == null) {
-    throw new TypeError(`temporal blocks graphのcurrent nodeがありません。対象: ${nodeId}`);
-  }
+  assertNonNullable(
+    currentNode,
+    `temporal blocks graphのcurrent nodeがありません。対象: ${nodeId}`,
+  );
   if (currentNode.state !== state) {
     throw new TypeError(`temporal blocks graphのcurrent stateが一致しません。対象: ${nodeId}`);
   }
@@ -600,9 +647,6 @@ function relationNodeReference(node: RelationCandidateNode): RelationEndpoint {
 
 function cacheRelationNodeReference(node: CacheCandidateNode): RelationEndpoint {
   if (node.scope === "organization") {
-    if (node.kind === "external_reference") {
-      throw new TypeError("organization relation nodeのkindが不正です");
-    }
     return Object.freeze({
       nodeId: createGitHubNodeId(node.nodeId),
       repositoryOwner: node.repositoryOwner,
@@ -610,9 +654,6 @@ function cacheRelationNodeReference(node: CacheCandidateNode): RelationEndpoint 
       itemType: node.kind,
       number: node.number,
     });
-  }
-  if (node.githubItemType == null) {
-    throw new TypeError("cache relation nodeのGitHub item種別がありません");
   }
   return Object.freeze({
     nodeId: createExternalReferenceNodeId(node.nodeId),
@@ -749,11 +790,7 @@ function createRelationMutationHistory(
           originItemNodeId,
           sourceResult.contentSourceId,
           sourceResult.result.reason,
-          {
-            sourceId: sourceResult.result.sourceId ?? null,
-            editedAt: sourceResult.result.editedAt ?? null,
-            sequence: sourceResult.result.sequence ?? null,
-          },
+          createUnknownRelationMutationMetadata(sourceResult.result),
         ),
       );
       continue;
@@ -764,7 +801,7 @@ function createRelationMutationHistory(
           originItemNodeId,
           sourceResult.contentSourceId,
           sourceResult.result.temporalKnowledge.reason,
-          { sourceId: null, editedAt: null, sequence: null },
+          createUnknownRelationMutationMetadata({ status: "unavailable" }),
         ),
       );
       continue;
@@ -783,11 +820,12 @@ function createRelationMutationHistory(
             originItemNodeId,
             sourceResult.contentSourceId,
             "relation_endpoint_unavailable",
-            {
+            createUnknownRelationMutationMetadata({
+              status: "available",
               sourceId: mutation.sourceId,
               editedAt: mutation.editedAt,
               sequence: mutation.sequence,
-            },
+            }),
           ),
         );
         continue;
@@ -800,7 +838,7 @@ function createRelationMutationHistory(
 
 function createCachedRelationMutationHistory(
   originItemNodeId: GraphNodeId,
-  results: readonly CachedRelationMutationResult[],
+  results: readonly RelationMutationResult[],
   endpoints: readonly RelationEndpoint[],
   canonicalEdges: readonly DependencyReplayEdge[],
   historicalExactBlocksEdges: readonly DependencyReplayEdge[],
@@ -811,11 +849,12 @@ function createCachedRelationMutationHistory(
     assertRelationMutationSourceKind(result.contentSourceId);
     if (result.status !== "available") {
       unknownRelationMutations.push(
-        createUnknownRelationMutation(originItemNodeId, result.contentSourceId, result.reason, {
-          sourceId: result.sourceId ?? null,
-          editedAt: result.editedAt ?? null,
-          sequence: result.sequence ?? null,
-        }),
+        createUnknownRelationMutation(
+          originItemNodeId,
+          result.contentSourceId,
+          result.reason,
+          createUnknownRelationMutationMetadata(result),
+        ),
       );
       continue;
     }
@@ -825,11 +864,7 @@ function createCachedRelationMutationHistory(
           originItemNodeId,
           result.contentSourceId,
           result.temporalKnowledge.reason,
-          {
-            sourceId: null,
-            editedAt: null,
-            sequence: null,
-          },
+          createUnknownRelationMutationMetadata({ status: "unavailable" }),
         ),
       );
       continue;
@@ -848,11 +883,12 @@ function createCachedRelationMutationHistory(
             originItemNodeId,
             result.contentSourceId,
             "relation_endpoint_unavailable",
-            {
+            createUnknownRelationMutationMetadata({
+              status: "available",
               sourceId: mutation.sourceId,
               editedAt: mutation.editedAt,
               sequence: mutation.sequence,
-            },
+            }),
           ),
         );
         continue;
@@ -1084,7 +1120,9 @@ function createGraphInput(
       stateHistoryNodeIds.add(source.detail.nodeId);
       assertCurrentState(current.nodes, source.detail.nodeId, source.replay.currentState);
       const sequences = createSequenceMap(source.detail.timeline);
-      stateHistories.push(mapStateHistory(source.detail.nodeId, source.replay, sequences));
+      stateHistories.push(
+        mapStateHistory(source.detail.nodeId, source.replay, source.detail.sourceId, sequences),
+      );
       relationHistories.push({
         status: "exact",
         events: adaptFreshDependencyEvents(source.detail.nodeId, source.detail.timeline),
@@ -1130,14 +1168,16 @@ function createGraphInput(
     const sequences = createSequenceMap(
       source.document.history.status === "complete" ? source.document.history.events : [],
     );
-    stateHistories.push(mapCacheStateHistory(source.document, sequences));
+    stateHistories.push(
+      mapCacheStateHistory(source.document, source.document.currentObservation.sourceId, sequences),
+    );
     relationHistories.push(
       adaptCacheDependencyEvents(source.document.nodeId, source.document.history),
     );
     relationHistories.push(
       createCachedRelationMutationHistory(
         source.document.nodeId,
-        source.document.relationMutations,
+        source.document.relationMutations.map(restoreGitHubItemCacheRelationMutationResult),
         endpoints,
         current.canonicalBlocksEdges,
         historicalExactBlocksEdges,

@@ -24,8 +24,6 @@ export {
   createCacheTerminalExpiry,
   parseCacheDocument,
   serializeCacheDocument,
-  CacheDocumentPublicSafetyError,
-  CacheDocumentSchemaError,
   CacheDocumentSemanticError,
   type AiLatestImportanceCacheDocument,
   type AiCacheReference,

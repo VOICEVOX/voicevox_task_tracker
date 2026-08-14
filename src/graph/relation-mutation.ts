@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { createUtcIsoDateTime, type SourceId, type UtcIsoDateTime } from "../domain/index.js";
+import { assertNonNullable } from "../util/index.js";
 import {
   parseRelationTextReferences,
   type RelationTextReference,
@@ -82,15 +83,28 @@ type RelationMutationUnknownReason =
   | "unsupported_diff_format"
   | "markdown_reference_definition";
 
-/** relation mutationを復元できなかった診断。raw diffは含めない。 */
-export type RelationMutationUnknown = Readonly<{
+type RelationMutationUnknownBase = Readonly<{
   status: "unknown";
   contentSourceId: SourceId;
   reason: RelationMutationUnknownReason;
-  sourceId?: SourceId;
-  editedAt?: UtcIsoDateTime;
-  sequence?: number;
 }>;
+
+type RelationMutationUnknownEdit =
+  | Readonly<{
+      status: "available";
+      sourceId: SourceId;
+      editedAt: UtcIsoDateTime;
+      sequence: number;
+    }>
+  | Readonly<{
+      status: "unavailable";
+    }>;
+
+/** relation mutationを復元できなかった診断。raw diffは含めない。 */
+export type RelationMutationUnknown = RelationMutationUnknownBase &
+  Readonly<{
+    edit: RelationMutationUnknownEdit;
+  }>;
 
 type RelationMutationAvailableExactResult = Readonly<{
   status: "available";
@@ -259,9 +273,7 @@ function compareMutations(left: RelationMutation, right: RelationMutation): -1 |
 function createSourceIdTuple(sourceIds: ReadonlySet<SourceId>): readonly [SourceId, ...SourceId[]] {
   const sortedSourceIds = [...sourceIds].sort(compareStrings);
   const firstSourceId = sortedSourceIds[0];
-  if (firstSourceId == null) {
-    throw new TypeError("relation mutationのsource IDがありません");
-  }
+  assertNonNullable(firstSourceId, "relation mutationのsource IDがありません");
   return Object.freeze([firstSourceId, ...sortedSourceIds.slice(1)]);
 }
 
@@ -296,17 +308,24 @@ function unknownResult(
   reason: RelationMutationUnknownReason,
   edit: RelationMutationEdit | undefined,
 ): RelationMutationUnknown {
+  if (edit == null) {
+    return Object.freeze({
+      status: "unknown",
+      contentSourceId,
+      reason,
+      edit: Object.freeze({ status: "unavailable" }),
+    });
+  }
   return Object.freeze({
     status: "unknown",
     contentSourceId,
     reason,
-    ...(edit == null
-      ? {}
-      : {
-          sourceId: edit.sourceId,
-          editedAt: edit.editedAt,
-          sequence: edit.sequence,
-        }),
+    edit: Object.freeze({
+      status: "available",
+      sourceId: edit.sourceId,
+      editedAt: edit.editedAt,
+      sequence: edit.sequence,
+    }),
   });
 }
 
@@ -441,9 +460,7 @@ function applyMutation(
       return;
     }
     const lastInterval = relation.intervals.at(-1);
-    if (lastInterval == null) {
-      throw new TypeError("relation mutationのintervalがありません");
-    }
+    assertNonNullable(lastInterval, "relation mutationのintervalがありません");
     if (lastInterval.status === "active") {
       lastInterval.addedSourceIds.add(mutation.sourceId);
       lastInterval.lastConfirmedAt = mutation.editedAt;
@@ -457,9 +474,7 @@ function applyMutation(
     return;
   }
   const lastInterval = relation.intervals.at(-1);
-  if (lastInterval == null) {
-    throw new TypeError("relation mutationのintervalがありません");
-  }
+  assertNonNullable(lastInterval, "relation mutationのintervalがありません");
   if (lastInterval.status === "removed") {
     unmatchedRemovals.push(mutation);
     return;
@@ -481,9 +496,7 @@ function confirmSnapshot(
 ): void {
   for (const reference of snapshot) {
     const relation = relationsByKey.get(referenceKey(reference));
-    if (relation == null) {
-      throw new TypeError("relation mutationのsnapshotに対応するintervalがありません");
-    }
+    assertNonNullable(relation, "relation mutationのsnapshotに対応するintervalがありません");
     const lastInterval = relation.intervals.at(-1);
     if (lastInterval?.status !== "active") {
       throw new TypeError("relation mutationのsnapshotがactive intervalと一致しません");
@@ -588,15 +601,12 @@ function createTransitions(
   const mutations: RelationMutation[] = [];
   const transitions: SnapshotTransition[] = [];
   const firstSnapshot = snapshots[0];
-  if (firstSnapshot == null) {
-    throw new TypeError("relation mutationのsnapshotがありません");
-  }
+  assertNonNullable(firstSnapshot, "relation mutationのsnapshotがありません");
   for (let index = 1; index < snapshots.length; index += 1) {
     const previousSnapshot = snapshots[index - 1];
     const snapshot = snapshots[index];
-    if (previousSnapshot == null || snapshot == null) {
-      throw new TypeError("relation mutationのsnapshot順序が不正です");
-    }
+    assertNonNullable(previousSnapshot, "relation mutationのsnapshot順序が不正です");
+    assertNonNullable(snapshot, "relation mutationのsnapshot順序が不正です");
     const transitionMutations: RelationMutation[] = [];
     appendDifference(
       transitionMutations,
@@ -740,9 +750,8 @@ export function extractRelationMutations(input: RelationMutationInput): Relation
   }
   const firstSnapshot = snapshots[0];
   const lastSnapshot = snapshots.at(-1);
-  if (firstSnapshot == null || lastSnapshot == null) {
-    throw new TypeError("relation mutationのsnapshotがありません");
-  }
+  assertNonNullable(firstSnapshot, "relation mutationのsnapshotがありません");
+  assertNonNullable(lastSnapshot, "relation mutationのsnapshotがありません");
   const transitionResult = createTransitions(snapshots, input.contentSourceId);
   const replayedSet = replayReferenceSet(firstSnapshot.references, transitionResult.transitions);
   const currentMatches = sameReferenceSets(currentSnapshot, lastSnapshot.references);

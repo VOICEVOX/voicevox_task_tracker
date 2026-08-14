@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { type GitHubNodeId } from "../domain/index.js";
+import { assertNonNullable } from "../util/index.js";
 import { TaskTrackerError } from "../util/task-tracker-error.js";
 import {
   createZodErrorDiagnostics,
@@ -218,9 +219,7 @@ export class GitHubPullRequestVolatileRaceRetryExhaustedError extends GitHubClie
 
   public constructor(races: readonly GitHubPullRequestVolatileRaceError[]) {
     const lastRace = races[races.length - 1];
-    if (lastRace == null) {
-      throw new TypeError("Pull Request volatile値の競合履歴が空です");
-    }
+    assertNonNullable(lastRace, "Pull Request volatile値の競合履歴が空です");
     super(
       `Pull Request volatile値の再取得上限へ到達しました。attempts: ${races.length.toString()}`,
       { cause: lastRace },

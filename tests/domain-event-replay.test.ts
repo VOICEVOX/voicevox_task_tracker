@@ -81,7 +81,7 @@ function createStateEvent(
 }
 
 function createIssue(
-  overrides: Partial<Extract<ReplayCurrentItem, { type: "issue" }>> = {},
+  overrides: Partial<Extract<ReplayCurrentItem, { type: "issue" }>>,
 ): Extract<ReplayCurrentItem, { type: "issue" }> {
   return {
     type: "issue",
@@ -98,7 +98,7 @@ function createIssue(
 }
 
 function createPullRequest(
-  overrides: Partial<Extract<ReplayCurrentItem, { type: "pull_request" }>> = {},
+  overrides: Partial<Extract<ReplayCurrentItem, { type: "pull_request" }>>,
 ): Extract<ReplayCurrentItem, { type: "pull_request" }> {
   return {
     type: "pull_request",
@@ -168,7 +168,7 @@ describe("イベント再生", () => {
     const reopenedAt = createUtcIsoDateTime("2026-08-01T03:00:00Z");
     const result = replayItemHistory({
       trackingStartAt,
-      currentItem: createIssue(),
+      currentItem: createIssue({}),
       history: {
         availability: "available",
         events: [
@@ -212,7 +212,7 @@ describe("イベント再生", () => {
     const futureTrackingStartAt = createUtcIsoDateTime("2026-08-02T00:00:00Z");
     const result = replayItemHistory({
       trackingStartAt: futureTrackingStartAt,
-      currentItem: createIssue(),
+      currentItem: createIssue({}),
       history: { availability: "available", events: [] },
     });
 
@@ -326,7 +326,7 @@ describe("イベント再生", () => {
           observedAt: fixtureObservedAt,
         }),
       },
-    ] as const;
+    ];
 
     for (const testCase of cases) {
       const firstClosed = createStateEvent(
@@ -687,7 +687,7 @@ describe("イベント再生", () => {
     expect(() =>
       replayItemHistory({
         trackingStartAt,
-        currentItem: createPullRequest(),
+        currentItem: createPullRequest({}),
         history: { availability: "available", events: [removed] },
       }),
     ).toThrow("activeでない責務対象をremovedできません");
@@ -720,7 +720,7 @@ describe("イベント再生", () => {
     const reviewAt = createUtcIsoDateTime("2026-08-01T07:00:00Z");
     const result = replayItemHistory({
       trackingStartAt,
-      currentItem: createPullRequest(),
+      currentItem: createPullRequest({}),
       history: {
         availability: "available",
         events: [
@@ -806,7 +806,7 @@ describe("イベント再生", () => {
     const second = withSequence({ ...first, sequence: 1 }, 1);
     const result = replayItemHistory({
       trackingStartAt,
-      currentItem: createIssue(),
+      currentItem: createIssue({}),
       history: { availability: "available", events: [first, second] },
     });
     expect(result.orderedEvents).toHaveLength(1);
@@ -816,7 +816,7 @@ describe("イベント再生", () => {
     expect(() =>
       replayItemHistory({
         trackingStartAt,
-        currentItem: createIssue(),
+        currentItem: createIssue({}),
         history: { availability: "available", events: [first, different] },
       }),
     ).toThrow("同じsource IDに異なるイベント内容があります");
@@ -905,7 +905,7 @@ describe("イベント再生", () => {
     expect(() =>
       replayItemHistory({
         trackingStartAt,
-        currentItem: createIssue(),
+        currentItem: createIssue({}),
         history: {
           availability: "available",
           events: [createStateEvent(issueNodeId, "invalid-reopen", "reopened", reopenedAt, 1)],

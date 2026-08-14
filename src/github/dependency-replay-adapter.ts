@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { type DependencyReplayInputEvent } from "../graph/dependency-replay-types.js";
 import { type GitHubNodeId } from "../domain/index.js";
-import { UnreachableError } from "../util/index.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { type GitHubReferencedItem, type GitHubTimelineEvent } from "./item-detail-types.js";
 
 type GitHubDependencyTimelineEvent = Extract<
@@ -50,9 +50,7 @@ function isDependencyTimelineEvent(
 }
 
 function resolveRelatedNode(item: GitHubDependencyRelatedItem | null): RelatedNodeResolution {
-  if (item == null) {
-    throw new TypeError("依存関係イベントの相手項目がありません");
-  }
+  assertNonNullable(item, "依存関係イベントの相手項目がありません");
   if ("status" in item) {
     const validation = unavailableReferencedItemSchema.safeParse(item);
     if (!validation.success) {

@@ -148,6 +148,10 @@ type CacheAvailableMutation = Extract<
   GitHubItemCacheRelationMutationResult,
   { status: "available" }
 >;
+type ExactRelationMutationKnowledge = Extract<
+  Extract<RelationMutationResult, { status: "available" }>["temporalKnowledge"],
+  { status: "exact" }
+>;
 type FreshObservedGitHubPullRequest = Extract<FreshObservedGitHubItem, { type: "pull_request" }>;
 type FreshConfiguredChecks = Extract<
   FreshObservedGitHubPullRequest["mergeState"]["checks"],
@@ -660,27 +664,44 @@ function mapRelationInterval(interval: RelationMutationInterval): CacheRelationI
   };
 }
 
+function restoreRelationInterval(interval: CacheRelationInterval): RelationMutationInterval {
+  if (interval.status === "active") {
+    return {
+      status: "active",
+      relation: interval.relation,
+      addedAt: interval.addedAt,
+      addedSourceIds: createSourceIdTuple(interval.addedSourceIds),
+      lastConfirmedAt: interval.lastConfirmedAt,
+    };
+  }
+  return {
+    status: "removed",
+    relation: interval.relation,
+    addedAt: interval.addedAt,
+    addedSourceIds: createSourceIdTuple(interval.addedSourceIds),
+    removedAt: interval.removedAt,
+    removedSourceIds: createSourceIdTuple(interval.removedSourceIds),
+  };
+}
+
 function mapRelationMutationResult(
   result: RelationMutationResult,
 ): GitHubItemCacheRelationMutationResult {
   if (result.status === "unknown") {
-    if (result.sourceId == null) {
+    if (result.edit.status === "unavailable") {
       return {
         status: "unknown",
         contentSourceId: result.contentSourceId,
         reason: result.reason,
       };
     }
-    if (result.editedAt == null || result.sequence == null) {
-      throw new TypeError("unknown relation mutationの編集根拠が不完全です");
-    }
     return {
       status: "unknown",
       contentSourceId: result.contentSourceId,
       reason: result.reason,
-      sourceId: result.sourceId,
-      editedAt: result.editedAt,
-      sequence: result.sequence,
+      sourceId: result.edit.sourceId,
+      editedAt: result.edit.editedAt,
+      sequence: result.edit.sequence,
     };
   }
   const temporalKnowledge: CacheAvailableMutation["temporalKnowledge"] =
@@ -706,6 +727,62 @@ function mapRelationMutationResult(
       .map(mapRelationMutation)
       .sort(compareRelationMutations),
   };
+}
+
+/** item cacheのflatなrelation mutation結果をgraph用のedit unionへ復元する。 */
+export function restoreGitHubItemCacheRelationMutationResult(
+  result: GitHubItemCacheRelationMutationResult,
+): RelationMutationResult {
+  if (result.status === "available") {
+    if (result.temporalKnowledge.status === "exact") {
+      if (result.consistency !== "consistent") {
+        throw new TypeError("item cacheのexact relation mutationが不整合です");
+      }
+      const temporalKnowledge: ExactRelationMutationKnowledge = {
+        status: "exact",
+        intervals: result.temporalKnowledge.intervals.map(restoreRelationInterval),
+      };
+      return Object.freeze({
+        status: "available",
+        contentSourceId: result.contentSourceId,
+        currentReferences: result.currentReferences,
+        replayedReferences: result.replayedReferences,
+        consistency: result.consistency,
+        temporalKnowledge,
+        mutations: result.mutations,
+        unmatchedRemovals: result.unmatchedRemovals,
+      });
+    }
+    return Object.freeze({
+      status: "available",
+      contentSourceId: result.contentSourceId,
+      currentReferences: result.currentReferences,
+      replayedReferences: result.replayedReferences,
+      consistency: result.consistency,
+      temporalKnowledge: result.temporalKnowledge,
+      mutations: result.mutations,
+      unmatchedRemovals: result.unmatchedRemovals,
+    });
+  }
+  if ("sourceId" in result) {
+    return Object.freeze({
+      status: "unknown",
+      contentSourceId: result.contentSourceId,
+      reason: result.reason,
+      edit: Object.freeze({
+        status: "available",
+        sourceId: result.sourceId,
+        editedAt: result.editedAt,
+        sequence: result.sequence,
+      }),
+    });
+  }
+  return Object.freeze({
+    status: "unknown",
+    contentSourceId: result.contentSourceId,
+    reason: result.reason,
+    edit: Object.freeze({ status: "unavailable" }),
+  });
 }
 
 function mapObservationAuthor(
@@ -1136,7 +1213,7 @@ export function restoreGitHubItemCache(
 export type GitHubItemCacheAnalysisSource = Readonly<{
   observation: GitHubItemCacheAnalysisObservation;
   relationCandidates: readonly RelationCandidate[];
-  relationMutations: readonly GitHubItemCacheDocument["relationMutations"][number][];
+  relationMutations: readonly RelationMutationResult[];
   replay: GitHubItemCacheDocument["replay"];
   history: GitHubItemCacheDocument["history"];
   analysisFacts: GitHubItemCacheDocument["analysisFacts"];
@@ -1166,7 +1243,7 @@ function createAnalysisSource(document: GitHubItemCacheDocument): GitHubItemCach
   return {
     observation: restoreAnalysisObservation(document.currentObservation),
     relationCandidates: document.relationCandidates.map(restoreRelationCandidate),
-    relationMutations: document.relationMutations,
+    relationMutations: document.relationMutations.map(restoreGitHubItemCacheRelationMutationResult),
     replay: document.replay,
     history: document.history,
     analysisFacts: document.analysisFacts,

@@ -24,12 +24,19 @@ export type TemporalBlocksCurrentNode = Readonly<{
   state: TemporalBlocksNodeState;
 }>;
 
-/** GitHubのstate replayから得たepoch。sequenceがない場合は0として扱う。 */
+/** GitHubのstate replayから得たepoch。 */
 export type TemporalBlocksStateEpoch = Readonly<{
   state: TemporalBlocksNodeState;
   occurredAt: UtcIsoDateTime;
   sourceIds: readonly [SourceId, ...SourceId[]];
-  sequence?: number;
+  position:
+    | Readonly<{
+        kind: "initial";
+      }>
+    | Readonly<{
+        kind: "timeline";
+        sequence: number;
+      }>;
 }>;
 
 /** node state履歴の確実性。 */
@@ -161,7 +168,7 @@ type StateEpochGroup = Readonly<{
   nodeId: GraphNodeId;
   state: TemporalBlocksNodeState;
   occurredAt: UtcIsoDateTime;
-  sequence: number;
+  position: TemporalBlocksStateEpoch["position"];
   sourceIds: readonly [SourceId, ...SourceId[]];
 }>;
 
@@ -171,7 +178,7 @@ type RelationEpochGroup = Readonly<{
   action: "added" | "removed";
   occurredAt: UtcIsoDateTime;
   originItemNodeId: GraphNodeId;
-  sequence: number;
+  position: Extract<TemporalBlocksStateEpoch["position"], { kind: "timeline" }>;
   sourceIds: readonly [SourceId, ...SourceId[]];
 }>;
 
@@ -198,12 +205,19 @@ const sourceIdSchema = z.string().min(3);
 const occurredAtSchema = z.string().min(1);
 const stateSchema = z.enum(["open", "closed", "merged"]);
 const sourceIdsSchema = z.array(sourceIdSchema).min(1);
+const stateEpochPositionSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("initial") }),
+  z.strictObject({
+    kind: z.literal("timeline"),
+    sequence: z.number().int().nonnegative(),
+  }),
+]);
 const stateEpochSchema = z
   .object({
     state: stateSchema,
     occurredAt: occurredAtSchema,
     sourceIds: sourceIdsSchema,
-    sequence: z.number().int().nonnegative().optional(),
+    position: stateEpochPositionSchema,
   })
   .strict();
 const nodeStateHistorySchema = z
@@ -419,9 +433,19 @@ function compareEventPosition(left: TemporalEvent, right: TemporalEvent): -1 | 0
   if (timeOrder !== 0) {
     return timeOrder;
   }
-  const sequenceOrder = compareNumbers(left.sequence, right.sequence);
-  if (sequenceOrder !== 0) {
-    return sequenceOrder;
+  if (left.position.kind === "initial") {
+    if (right.position.kind === "timeline" && right.position.sequence > 0) {
+      return -1;
+    }
+  } else if (right.position.kind === "initial") {
+    if (left.position.sequence > 0) {
+      return 1;
+    }
+  } else {
+    const sequenceOrder = compareNumbers(left.position.sequence, right.position.sequence);
+    if (sequenceOrder !== 0) {
+      return sequenceOrder;
+    }
   }
   const leftSourceId = left.sourceIds[0];
   const rightSourceId = right.sourceIds[0];
@@ -483,10 +507,10 @@ function compareDependencyReplayEvents(
   if (originOrder !== 0) {
     return originOrder;
   }
-  if (left.status !== right.status) {
-    return left.status === "resolved" ? -1 : 1;
-  }
-  if (left.status === "resolved" && right.status === "resolved") {
+  if (left.status === "resolved") {
+    if (right.status === "unresolved") {
+      return -1;
+    }
     const fromOrder = compareStrings(left.fromNodeId, right.fromNodeId);
     if (fromOrder !== 0) {
       return fromOrder;
@@ -497,8 +521,8 @@ function compareDependencyReplayEvents(
     }
     return left.action === right.action ? 0 : left.action === "added" ? -1 : 1;
   }
-  if (left.status !== "unresolved" || right.status !== "unresolved") {
-    throw new TypeError("依存関係イベントのstatusが不正です");
+  if (right.status === "resolved") {
+    return 1;
   }
   if (left.action !== right.action) {
     return left.action === "added" ? -1 : 1;
@@ -506,8 +530,27 @@ function compareDependencyReplayEvents(
   return left.direction === right.direction ? 0 : left.direction === "blocked_by" ? -1 : 1;
 }
 
+type StateEpochPositionSignature = readonly ["initial"] | readonly ["timeline", number];
+
+function stateEpochPositionSignature(
+  position: TemporalBlocksStateEpoch["position"],
+): StateEpochPositionSignature {
+  if (position.kind === "initial") {
+    const signature: ["initial"] = ["initial"];
+    return Object.freeze(signature);
+  }
+  const signature: ["timeline", number] = ["timeline", position.sequence];
+  return Object.freeze(signature);
+}
+
 function stateEpochSignature(nodeId: GraphNodeId, epoch: TemporalBlocksStateEpoch): string {
-  return JSON.stringify(["state", nodeId, epoch.state, epoch.occurredAt, epoch.sequence ?? 0]);
+  return JSON.stringify([
+    "state",
+    nodeId,
+    epoch.state,
+    epoch.occurredAt,
+    stateEpochPositionSignature(epoch.position),
+  ]);
 }
 
 function sourceSignaturesForStateEpoch(
@@ -546,17 +589,6 @@ function deduplicateRelationEvents(
   return Object.freeze([...eventsBySourceId.values()].sort(compareDependencyReplayEvents));
 }
 
-function compareEpochSources(
-  left: TemporalBlocksStateEpoch,
-  right: TemporalBlocksStateEpoch,
-): -1 | 0 | 1 {
-  const leftSourceId = left.sourceIds[0];
-  const rightSourceId = right.sourceIds[0];
-  assertNonNullable(leftSourceId, "node state epochのsource IDがありません");
-  assertNonNullable(rightSourceId, "node state epochのsource IDがありません");
-  return compareSourceIds(leftSourceId, rightSourceId);
-}
-
 function createStateEpochGroups(
   entries: readonly StateHistoryEntry[],
   sourceSignatures: Map<SourceId, string>,
@@ -567,7 +599,7 @@ function createStateEpochGroups(
       nodeId: GraphNodeId;
       state: TemporalBlocksNodeState;
       occurredAt: UtcIsoDateTime;
-      sequence: number;
+      position: TemporalBlocksStateEpoch["position"];
       sourceIds: Set<SourceId>;
     }
   >();
@@ -577,15 +609,19 @@ function createStateEpochGroups(
     }
     for (const epoch of entry.history.epochs) {
       mergeSourceSignatures(sourceSignatures, sourceSignaturesForStateEpoch(entry.nodeId, epoch));
-      const sequence = epoch.sequence ?? 0;
-      const key = JSON.stringify([entry.nodeId, epoch.state, epoch.occurredAt, sequence]);
+      const key = JSON.stringify([
+        entry.nodeId,
+        epoch.state,
+        epoch.occurredAt,
+        stateEpochPositionSignature(epoch.position),
+      ]);
       const existing = groupsByKey.get(key);
       if (existing == null) {
         groupsByKey.set(key, {
           nodeId: entry.nodeId,
           state: epoch.state,
           occurredAt: epoch.occurredAt,
-          sequence,
+          position: epoch.position,
           sourceIds: new Set(epoch.sourceIds),
         });
         continue;
@@ -603,7 +639,7 @@ function createStateEpochGroups(
           nodeId: group.nodeId,
           state: group.state,
           occurredAt: group.occurredAt,
-          sequence: group.sequence,
+          position: group.position,
           sourceIds: createSourceIdTuple(group.sourceIds),
         }),
       )
@@ -626,7 +662,7 @@ function createRelationEpochGroups(
       action: "added" | "removed";
       occurredAt: UtcIsoDateTime;
       originItemNodeId: GraphNodeId;
-      sequence: number;
+      position: Extract<TemporalBlocksStateEpoch["position"], { kind: "timeline" }>;
       sourceId: SourceId;
       sourceIds: Set<SourceId>;
     }
@@ -646,7 +682,7 @@ function createRelationEpochGroups(
         action: event.action,
         occurredAt: event.occurredAt,
         originItemNodeId: event.originItemNodeId,
-        sequence: event.sequence,
+        position: { kind: "timeline", sequence: event.sequence },
         sourceId: event.sourceId,
         sourceIds: new Set([event.sourceId]),
       });
@@ -659,7 +695,7 @@ function createRelationEpochGroups(
       action: event.action,
       occurredAt: event.occurredAt,
       originItemNodeId: event.originItemNodeId,
-      sequence: event.sequence,
+      position: { kind: "timeline", sequence: event.sequence },
       sourceIds: createSingleSourceIdTuple(event.sourceId),
     };
     const existingPosition: RelationEpochGroup = {
@@ -668,12 +704,12 @@ function createRelationEpochGroups(
       action: existing.action,
       occurredAt: existing.occurredAt,
       originItemNodeId: existing.originItemNodeId,
-      sequence: existing.sequence,
+      position: existing.position,
       sourceIds: createSingleSourceIdTuple(existing.sourceId),
     };
     if (compareEventPosition(eventPosition, existingPosition) < 0) {
       existing.originItemNodeId = event.originItemNodeId;
-      existing.sequence = event.sequence;
+      existing.position = { kind: "timeline", sequence: event.sequence };
       existing.sourceId = event.sourceId;
     }
   }
@@ -686,7 +722,7 @@ function createRelationEpochGroups(
           action: group.action,
           occurredAt: group.occurredAt,
           originItemNodeId: group.originItemNodeId,
-          sequence: group.sequence,
+          position: group.position,
           sourceIds: createSourceIdTuple(group.sourceIds),
         }),
       )
@@ -699,7 +735,7 @@ function createRelationEpochGroups(
       action: left.action,
       occurredAt: left.occurredAt,
       originItemNodeId: left.originItemNodeId,
-      sequence: left.sequence,
+      position: { kind: "timeline", sequence: left.sequence },
       sourceIds: createSingleSourceIdTuple(left.sourceId),
     };
     const rightEvent: RelationEpochGroup = {
@@ -708,7 +744,7 @@ function createRelationEpochGroups(
       action: right.action,
       occurredAt: right.occurredAt,
       originItemNodeId: right.originItemNodeId,
-      sequence: right.sequence,
+      position: { kind: "timeline", sequence: right.sequence },
       sourceIds: createSingleSourceIdTuple(right.sourceId),
     };
     return compareEventPosition(leftEvent, rightEvent);
@@ -766,7 +802,7 @@ function validateStateTransitions(entries: readonly StateHistoryEntry[]): void {
         nodeId: entry.nodeId,
         state: left.state,
         occurredAt: left.occurredAt,
-        sequence: left.sequence ?? 0,
+        position: left.position,
         sourceIds: left.sourceIds,
       };
       const rightEvent: StateEpochGroup = {
@@ -774,7 +810,7 @@ function validateStateTransitions(entries: readonly StateHistoryEntry[]): void {
         nodeId: entry.nodeId,
         state: right.state,
         occurredAt: right.occurredAt,
-        sequence: right.sequence ?? 0,
+        position: right.position,
         sourceIds: right.sourceIds,
       };
       return compareEventPosition(leftEvent, rightEvent);
@@ -1218,14 +1254,23 @@ function stateCurrentMismatchNodes(
       continue;
     }
     const sortedEpochs = [...entry.history.epochs].sort((left, right) => {
-      const leftSequence = left.sequence ?? 0;
-      const rightSequence = right.sequence ?? 0;
-      const timeOrder = compareStrings(left.occurredAt, right.occurredAt);
-      if (timeOrder !== 0) {
-        return timeOrder;
-      }
-      const sequenceOrder = compareNumbers(leftSequence, rightSequence);
-      return sequenceOrder !== 0 ? sequenceOrder : compareEpochSources(left, right);
+      const leftEvent: StateEpochGroup = {
+        kind: "state",
+        nodeId: entry.nodeId,
+        state: left.state,
+        occurredAt: left.occurredAt,
+        position: left.position,
+        sourceIds: left.sourceIds,
+      };
+      const rightEvent: StateEpochGroup = {
+        kind: "state",
+        nodeId: entry.nodeId,
+        state: right.state,
+        occurredAt: right.occurredAt,
+        position: right.position,
+        sourceIds: right.sourceIds,
+      };
+      return compareEventPosition(leftEvent, rightEvent);
     });
     const lastEpoch = sortedEpochs.at(-1);
     if (lastEpoch == null) {
@@ -1253,7 +1298,13 @@ function collectStateEntries(
 }
 
 function createStateEventSignature(event: StateEpochGroup): string {
-  return JSON.stringify([event.kind, event.nodeId, event.state, event.occurredAt, event.sequence]);
+  return JSON.stringify([
+    event.kind,
+    event.nodeId,
+    event.state,
+    event.occurredAt,
+    stateEpochPositionSignature(event.position),
+  ]);
 }
 
 function validateStateEventSourceConflicts(

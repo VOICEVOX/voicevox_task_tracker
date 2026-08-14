@@ -12,7 +12,6 @@ import {
   type GitHubNodeId,
   type GitHubRepositoryId,
   type NormalizedEvent,
-  type NotificationLedgerEntry,
 } from "../src/domain/index.js";
 
 describe("ドメイン識別子", () => {
@@ -312,48 +311,5 @@ describe("追跡項目の最新イベントアクター", () => {
       status: "present",
       actor: largerSourceEvent.actor,
     });
-  });
-});
-
-describe("通知ledger", () => {
-  const entryBase = {
-    notificationKey: "I_kwDOItem:review_overdue:urgent",
-    itemNodeId: createGitHubNodeId("I_kwDOItem"),
-    reasonCode: "review_overdue",
-    severity: "urgent",
-    reservedAt: createUtcIsoDateTime("2026-07-31T00:00:00Z"),
-    cooldownUntil: createUtcIsoDateTime("2026-08-03T00:00:00Z"),
-  } satisfies Omit<
-    Extract<NotificationLedgerEntry, { status: "sent" }>,
-    "status" | "sentAt" | "discordMessageId"
-  >;
-
-  function describeLedgerEntry(entry: NotificationLedgerEntry): string {
-    switch (entry.status) {
-      case "reserved":
-        return `reserved:${entry.reservedAt}`;
-      case "sent":
-        return `sent:${entry.sentAt}:${entry.discordMessageId}`;
-    }
-  }
-
-  it("予約済みと送信済みを区別する", () => {
-    const reservedEntry = {
-      ...entryBase,
-      status: "reserved",
-      expiresAt: createUtcIsoDateTime("2026-08-01T00:00:00Z"),
-    } satisfies NotificationLedgerEntry;
-    const sentEntry = {
-      ...entryBase,
-      status: "sent",
-      sentAt: createUtcIsoDateTime("2026-07-31T00:01:00Z"),
-      discordMessageId: "discord-message-1",
-    } satisfies NotificationLedgerEntry;
-
-    expect(describeLedgerEntry(reservedEntry)).toBe("reserved:2026-07-31T00:00:00.000Z");
-    expect(reservedEntry).not.toHaveProperty("sentAt");
-    expect(reservedEntry).not.toHaveProperty("discordMessageId");
-    expect(sentEntry).not.toHaveProperty("expiresAt");
-    expect(describeLedgerEntry(sentEntry)).toBe("sent:2026-07-31T00:01:00.000Z:discord-message-1");
   });
 });

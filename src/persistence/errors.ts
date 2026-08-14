@@ -71,6 +71,7 @@ export class StateZodValidationError extends StateFormatError implements ZodErro
     super(kind, {
       cause: new TypeError(
         `${kind}のschema検証に失敗しました。問題件数: ${diagnostics.issueCount.toString()}`,
+        { cause: error },
       ),
     });
     this.issueCount = diagnostics.issueCount;

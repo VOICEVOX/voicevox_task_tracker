@@ -6,6 +6,7 @@ import {
   type NormalizedEvent,
   type UtcIsoDateTime,
 } from "./types.js";
+import { assertNonNullable } from "../util/index.js";
 
 type ReplayActor =
   | Actor
@@ -243,12 +244,9 @@ export type ReplayItemHistoryResult = Readonly<{
 }>;
 
 function createSourceIds(sourceIds: readonly SourceId[]): readonly [SourceId, ...SourceId[]] {
-  const uniqueSourceIds = [...new Set(sourceIds)].sort();
-  const firstSourceId = uniqueSourceIds[0];
-  if (firstSourceId == null) {
-    throw new TypeError("復元根拠のsource IDが1件もありません");
-  }
-  return Object.freeze([firstSourceId, ...uniqueSourceIds.slice(1)]);
+  const [firstSourceId, ...remainingSourceIds] = [...new Set(sourceIds)].sort();
+  assertNonNullable(firstSourceId, "復元根拠のsource IDが1件もありません");
+  return Object.freeze([firstSourceId, ...remainingSourceIds]);
 }
 
 function createFact(occurredAt: UtcIsoDateTime, sourceIds: readonly SourceId[]): ReplayFact {
@@ -396,20 +394,18 @@ function validateCurrentItem(input: ReplayItemHistoryInput): void {
       throw new TypeError("open項目にはclosedAtを指定できません");
     }
   } else {
-    if (currentItem.closedAt == null) {
-      throw new TypeError("terminal項目にはclosedAtが必要です");
-    }
-    parseTimestamp(currentItem.closedAt, "項目closedAt");
+    const closedAt = currentItem.closedAt;
+    assertNonNullable(closedAt, "terminal項目にはclosedAtが必要です");
+    parseTimestamp(closedAt, "項目closedAt");
   }
 
   if (currentItem.type !== "pull_request") {
     return;
   }
   if (currentItem.state === "merged") {
-    if (currentItem.mergedAt == null) {
-      throw new TypeError("merge済みPull RequestにはmergedAtが必要です");
-    }
-    parseTimestamp(currentItem.mergedAt, "項目mergedAt");
+    const mergedAt = currentItem.mergedAt;
+    assertNonNullable(mergedAt, "merge済みPull RequestにはmergedAtが必要です");
+    parseTimestamp(mergedAt, "項目mergedAt");
   } else if (currentItem.mergedAt != null) {
     throw new TypeError("merge済みでないPull RequestにはmergedAtを指定できません");
   }
@@ -506,9 +502,7 @@ function replayStateEpochs(
   let eventIndex = 0;
   while (eventIndex < stateEvents.length) {
     const event = stateEvents[eventIndex];
-    if (event == null) {
-      throw new TypeError("stateイベントのindexが範囲外です");
-    }
+    assertNonNullable(event, "stateイベントのindexが範囲外です");
     const sameTimeEvents: StateEvent[] = [event];
     let nextIndex = eventIndex + 1;
     while (
@@ -516,18 +510,14 @@ function replayStateEpochs(
       stateEvents[nextIndex]?.occurredAt === event.occurredAt
     ) {
       const sameTimeEvent = stateEvents[nextIndex];
-      if (sameTimeEvent == null) {
-        throw new TypeError("同時刻stateイベントのindexが範囲外です");
-      }
+      assertNonNullable(sameTimeEvent, "同時刻stateイベントのindexが範囲外です");
       sameTimeEvents.push(sameTimeEvent);
       nextIndex += 1;
     }
     const mergedEvents = sameTimeEvents.filter((value) => value.state === "merged");
     if (mergedEvents.length > 0) {
       const mergedEvent = mergedEvents[0];
-      if (mergedEvent == null) {
-        throw new TypeError("mergedイベントを取得できませんでした");
-      }
+      assertNonNullable(mergedEvent, "mergedイベントを取得できませんでした");
       if (item.type !== "pull_request") {
         throw new TypeError(`Issueをmergeできません。対象: ${mergedEvent.sourceId}`);
       }
@@ -704,14 +694,18 @@ function replayResponsibilityEpochs(
   const epochs: ReplayResponsibilityEpoch[] = [
     createResponsibilityEpoch([], item.createdAt, [item.sourceId]),
   ];
-  let pendingEpoch:
+  type PendingEpoch =
     | Readonly<{
+        status: "empty";
+      }>
+    | Readonly<{
+        status: "pending";
         occurredAt: UtcIsoDateTime;
         sourceIds: SourceId[];
-      }>
-    | undefined;
+      }>;
+  let pendingEpoch: PendingEpoch = { status: "empty" };
   const flushPendingEpoch = (): void => {
-    if (pendingEpoch == null) {
+    if (pendingEpoch.status === "empty") {
       return;
     }
     epochs.push(
@@ -721,13 +715,13 @@ function replayResponsibilityEpochs(
         pendingEpoch.sourceIds,
       ),
     );
-    pendingEpoch = undefined;
+    pendingEpoch = { status: "empty" };
   };
   for (const event of events) {
     if (event.kind !== "assignee" && event.kind !== "review_request") {
       continue;
     }
-    if (pendingEpoch != null && pendingEpoch.occurredAt !== event.occurredAt) {
+    if (pendingEpoch.status === "pending" && pendingEpoch.occurredAt !== event.occurredAt) {
       flushPendingEpoch();
     }
     let target: ReplayResponsibilityTarget;
@@ -753,11 +747,15 @@ function replayResponsibilityEpochs(
         throw new TypeError(`activeでない責務対象をremovedできません。対象: ${key}`);
       }
     }
-    pendingEpoch ??= {
-      occurredAt: event.occurredAt,
-      sourceIds: [],
-    };
-    pendingEpoch.sourceIds.push(event.sourceId);
+    if (pendingEpoch.status === "empty") {
+      pendingEpoch = {
+        status: "pending",
+        occurredAt: event.occurredAt,
+        sourceIds: [event.sourceId],
+      };
+    } else {
+      pendingEpoch.sourceIds.push(event.sourceId);
+    }
   }
   flushPendingEpoch();
   return createKnown(Object.freeze(epochs));
@@ -860,9 +858,7 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
   assertEventKindsForItem(input.currentItem, orderedEvents);
   const replayedStateEpochs = replayStateEpochs(input.currentItem, orderedEvents);
   const replayedCurrentStateEpoch = replayedStateEpochs.at(-1);
-  if (replayedCurrentStateEpoch == null) {
-    throw new TypeError("状態区間を1件も復元できませんでした");
-  }
+  assertNonNullable(replayedCurrentStateEpoch, "状態区間を1件も復元できませんでした");
   const stateHistoryAvailable = currentStateEpochMatchesCurrentTerminalTimestamp(
     input.currentItem,
     replayedCurrentStateEpoch,
@@ -887,9 +883,7 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
     currentOwnerEpoch = createUnknown(responsibilityEpochs.reason);
   } else {
     const latestResponsibilityEpoch = responsibilityEpochs.value.at(-1);
-    if (latestResponsibilityEpoch == null) {
-      throw new TypeError("責務区間を1件も復元できませんでした");
-    }
+    assertNonNullable(latestResponsibilityEpoch, "責務区間を1件も復元できませんでした");
     currentOwnerEpoch = createKnown(latestResponsibilityEpoch);
   }
 
@@ -911,9 +905,7 @@ export function replayItemHistory(input: ReplayItemHistoryInput): ReplayItemHist
 
   const draftEpochs = replayDraftEpochs(input.currentItem, orderedEvents);
   const currentDraftEpoch = draftEpochs.at(-1);
-  if (currentDraftEpoch == null) {
-    throw new TypeError("draft区間を1件も復元できませんでした");
-  }
+  assertNonNullable(currentDraftEpoch, "draft区間を1件も復元できませんでした");
   return Object.freeze({
     trackingStartAt: input.trackingStartAt,
     orderedEvents,

@@ -49,6 +49,16 @@ type ParsedGitHubItemUrl = Readonly<{
 
 type MarkdownDefinitionIndex = ReadonlyMap<string, string>;
 
+type MarkdownReferenceContext =
+  | Readonly<{
+      status: "available";
+      repositoryOwner: string;
+      repositoryName: string;
+    }>
+  | Readonly<{
+      status: "unavailable";
+    }>;
+
 type MarkdownReference = Readonly<{
   repositoryOwner: string;
   repositoryName: string;
@@ -426,7 +436,7 @@ function isReferenceBoundary(value: string, end: number): boolean {
 
 function findMarkdownReferences(
   value: string,
-  currentItem: Pick<PublicGitHubRelationItem, "repositoryOwner" | "repositoryName">,
+  currentItem: MarkdownReferenceContext,
 ): readonly MarkdownReference[] {
   const references: MarkdownReference[] = [];
 
@@ -472,10 +482,23 @@ function findMarkdownReferences(
     if (!Number.isSafeInteger(number) || !isReferenceBoundary(value, end)) {
       continue;
     }
+    let repositoryOwner: string;
+    let repositoryName: string;
+    if (specifiedOwner == null) {
+      if (currentItem.status === "unavailable") {
+        continue;
+      }
+      repositoryOwner = currentItem.repositoryOwner;
+      repositoryName = currentItem.repositoryName;
+    } else {
+      assertNonNullable(specifiedRepository, "GitHub短縮参照からrepository名を取得できません");
+      repositoryOwner = specifiedOwner;
+      repositoryName = specifiedRepository;
+    }
     references.push(
       Object.freeze({
-        repositoryOwner: specifiedOwner ?? currentItem.repositoryOwner,
-        repositoryName: specifiedRepository ?? currentItem.repositoryName,
+        repositoryOwner,
+        repositoryName,
         itemType: null,
         number,
         syntax:
@@ -564,12 +587,7 @@ export function parseRelationTextReferences(value: string): RelationTextParseRes
       unknownReferenceValues.push(renderedValue);
       return;
     }
-    references.push(
-      ...findMarkdownReferences(renderedValue, {
-        repositoryOwner: "",
-        repositoryName: "",
-      }),
-    );
+    references.push(...findMarkdownReferences(renderedValue, { status: "unavailable" }));
   });
   if (unknownReferenceValues.length > 0) {
     return Object.freeze({
@@ -825,7 +843,11 @@ function addTextCandidates(
   const tree = fromMarkdown(source.markdown);
   const definitions = collectDefinitionIndex(tree);
   visitMarkdownProse(tree, definitions, skipTaskListItems, (value) => {
-    for (const reference of findMarkdownReferences(value, input.item)) {
+    for (const reference of findMarkdownReferences(value, {
+      status: "available",
+      repositoryOwner: input.item.repositoryOwner,
+      repositoryName: input.item.repositoryName,
+    })) {
       const referencedNode = resolveReferenceItem(reference, index, input.organization);
       if (referencedNode == null || isSameNode(currentNode, referencedNode)) {
         continue;
@@ -865,7 +887,11 @@ function collectDirectChecklistReferences(
       case "heading":
       case "tableCell": {
         const value = renderPhrasingChildren(node.children, definitions);
-        for (const reference of findMarkdownReferences(value, input.item)) {
+        for (const reference of findMarkdownReferences(value, {
+          status: "available",
+          repositoryOwner: input.item.repositoryOwner,
+          repositoryName: input.item.repositoryName,
+        })) {
           const resolvedNode = resolveReferenceItem(reference, index, input.organization);
           if (resolvedNode != null) {
             nodesById.set(resolvedNode.nodeId, resolvedNode);

@@ -21,14 +21,13 @@ import {
   serializeCanonicalJson,
 } from "../src/persistence/canonical-json.js";
 import {
-  CacheDocumentPublicSafetyError,
-  CacheDocumentSchemaError,
   CacheDocumentSemanticError,
   createCacheTerminalExpiry,
   type AiLatestImportanceCacheDocument,
   type GitHubItemCacheDocument,
   type GitHubRepositoryCacheDocument,
 } from "../src/persistence/cache-documents.js";
+import { StatePublicSafetyError, StateZodValidationError } from "../src/persistence/errors.js";
 import { MemoryStateBranchAdapter } from "../src/persistence/memory-state-branch-adapter.js";
 import {
   CacheOnlyPersistenceSession,
@@ -982,7 +981,7 @@ describe("cache-only永続化session", () => {
         ...createPersistenceInput(retainedAt),
         repositoryCaches: [unsafeRepository],
       }),
-    ).rejects.toThrow(CacheDocumentPublicSafetyError);
+    ).rejects.toThrow(StatePublicSafetyError);
     await expect(
       session.persist({
         ...createPersistenceInput(retainedAt),
@@ -993,7 +992,7 @@ describe("cache-only永続化session", () => {
           },
         ],
       }),
-    ).rejects.toThrow(CacheDocumentSchemaError);
+    ).rejects.toThrow(StateZodValidationError);
   });
 
   it("repository indexとitem documentの不一致を拒否する", async () => {

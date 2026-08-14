@@ -192,6 +192,7 @@ describe("relation mutation replay", () => {
       status: "unknown",
       contentSourceId: contentSourceId("relation-mutation"),
       reason: "connection_unavailable",
+      edit: { status: "unavailable" },
     });
   });
 

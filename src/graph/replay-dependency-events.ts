@@ -133,10 +133,10 @@ function compareDependencyInputEvents(
   if (positionOrder !== 0) {
     return positionOrder;
   }
-  if (left.status !== right.status) {
-    return left.status === "resolved" ? -1 : 1;
-  }
-  if (left.status === "resolved" && right.status === "resolved") {
+  if (left.status === "resolved") {
+    if (right.status === "unresolved") {
+      return -1;
+    }
     const fromOrder = compareStrings(left.fromNodeId, right.fromNodeId);
     if (fromOrder !== 0) {
       return fromOrder;
@@ -147,8 +147,8 @@ function compareDependencyInputEvents(
     }
     return left.action === right.action ? 0 : left.action === "added" ? -1 : 1;
   }
-  if (left.status !== "unresolved" || right.status !== "unresolved") {
-    throw new TypeError("依存関係イベントのstatusが不正です");
+  if (right.status === "resolved") {
+    return 1;
   }
   if (left.action !== right.action) {
     return left.action === "added" ? -1 : 1;

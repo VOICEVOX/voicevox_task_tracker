@@ -1,4 +1,4 @@
-import { z, type ZodError } from "zod";
+import { z } from "zod";
 
 import { cacheValidationContextSchema } from "../codex/semantic-validation.js";
 import {
@@ -18,7 +18,7 @@ import {
   serializeCanonicalJson,
   serializeCanonicalJsonLine,
 } from "./canonical-json.js";
-import { StatePersistenceError } from "./errors.js";
+import { StateFormatError, StatePersistenceError, StatePublicSafetyError } from "./errors.js";
 
 /** cache文書schemaのversion。 */
 export const CACHE_DOCUMENT_SCHEMA_VERSION = "2";
@@ -642,32 +642,43 @@ const cacheRelationTemporalKnowledgeSchema = z.discriminatedUnion("status", [
   }),
 ]);
 
-const cacheRelationMutationResultSchema = z.discriminatedUnion("status", [
+const cacheRelationMutationAvailableResultSchema = z.strictObject({
+  status: z.literal("available"),
+  contentSourceId: sourceIdSchema,
+  currentReferences: z.array(cacheRelationReferenceSchema),
+  replayedReferences: z.array(cacheRelationReferenceSchema),
+  consistency: z.enum(["consistent", "history_incomplete", "mismatch"]),
+  temporalKnowledge: cacheRelationTemporalKnowledgeSchema,
+  mutations: z.array(cacheRelationMutationSchema),
+  unmatchedRemovals: z.array(cacheRelationMutationSchema),
+});
+
+const cacheRelationMutationUnknownBaseShape = {
+  status: z.literal("unknown"),
+  contentSourceId: sourceIdSchema,
+  reason: z.enum([
+    "connection_unavailable",
+    "current_markdown_reference_definition",
+    "diff_null",
+    "deleted_edit",
+    "unsupported_diff_format",
+    "markdown_reference_definition",
+  ]),
+};
+
+const cacheRelationMutationUnknownResultSchema = z.union([
+  z.strictObject(cacheRelationMutationUnknownBaseShape),
   z.strictObject({
-    status: z.literal("available"),
-    contentSourceId: sourceIdSchema,
-    currentReferences: z.array(cacheRelationReferenceSchema),
-    replayedReferences: z.array(cacheRelationReferenceSchema),
-    consistency: z.enum(["consistent", "history_incomplete", "mismatch"]),
-    temporalKnowledge: cacheRelationTemporalKnowledgeSchema,
-    mutations: z.array(cacheRelationMutationSchema),
-    unmatchedRemovals: z.array(cacheRelationMutationSchema),
+    ...cacheRelationMutationUnknownBaseShape,
+    sourceId: sourceIdSchema,
+    editedAt: utcIsoDateTimeSchema,
+    sequence: z.number().int().nonnegative(),
   }),
-  z.strictObject({
-    status: z.literal("unknown"),
-    contentSourceId: sourceIdSchema,
-    reason: z.enum([
-      "connection_unavailable",
-      "current_markdown_reference_definition",
-      "diff_null",
-      "deleted_edit",
-      "unsupported_diff_format",
-      "markdown_reference_definition",
-    ]),
-    sourceId: sourceIdSchema.optional(),
-    editedAt: utcIsoDateTimeSchema.optional(),
-    sequence: z.number().int().nonnegative().optional(),
-  }),
+]);
+
+const cacheRelationMutationResultSchema = z.union([
+  cacheRelationMutationAvailableResultSchema,
+  cacheRelationMutationUnknownResultSchema,
 ]);
 
 const cacheFactSchema = z.strictObject({
@@ -992,36 +1003,10 @@ export type AiLatestImportanceCacheDocument = z.output<typeof aiLatestImportance
 /** cache-only branchへ保存できる文書のstrict discriminated union。 */
 export type CacheDocument = z.output<typeof cacheDocumentSchema>;
 
-/** キャッシュ文書のschema検証に失敗したことを表す。 */
-export class CacheDocumentSchemaError extends StatePersistenceError {
-  public readonly issueCount: number;
-
-  public constructor(error: ZodError, cause: unknown) {
-    super(`cache文書のschema検証に失敗しました。問題件数: ${error.issues.length.toString()}`, {
-      cause,
-    });
-    this.issueCount = error.issues.length;
-  }
-}
-
 /** キャッシュ文書の意味検証に失敗したことを表す。 */
 export class CacheDocumentSemanticError extends StatePersistenceError {
   public constructor(message: string) {
     super(`cache文書の意味検証に失敗しました。${message}`, {});
-  }
-}
-
-/** キャッシュ文書へ保存できない値を検出したことを表す。 */
-export class CacheDocumentPublicSafetyError extends StatePersistenceError {
-  public readonly violationCodes: readonly string[];
-
-  public constructor(violationCodes: readonly string[]) {
-    const uniqueCodes = [...new Set(violationCodes)].sort();
-    super(
-      `cache文書の公開安全性違反を検出しました。分類: ${uniqueCodes.join(", ")}。保存を中止しました`,
-      {},
-    );
-    this.violationCodes = Object.freeze(uniqueCodes);
   }
 }
 
@@ -1086,7 +1071,7 @@ function scanUnsafeValues(
 
 function assertKnownSecrets(knownSecrets: readonly string[]): void {
   if (knownSecrets.some((secret) => secret.length === 0)) {
-    throw new CacheDocumentPublicSafetyError(["empty_known_secret"]);
+    throw new StatePublicSafetyError(["empty_known_secret"]);
   }
 }
 
@@ -2071,24 +2056,13 @@ function assertCacheRelationMutations(
       );
     }
     if (mutation.status !== "available") {
-      const hasSourceId = mutation.sourceId != null;
-      const hasEditedAt = mutation.editedAt != null;
-      const hasSequence = mutation.sequence != null;
-      if (hasSourceId !== hasEditedAt || hasSourceId !== hasSequence) {
-        throw new CacheDocumentSemanticError("unknown relation mutationの編集根拠が不完全です");
-      }
-      if (mutation.editedAt != null) {
+      if ("sourceId" in mutation) {
         assertTimestampRange(
           mutation.editedAt,
           createdAt,
           observedAt,
           "unknown relation mutation.editedAt",
         );
-      }
-      if (mutation.sourceId != null) {
-        if (mutation.editedAt == null || mutation.sequence == null) {
-          throw new CacheDocumentSemanticError("unknown relation mutationの編集根拠が不完全です");
-        }
         registerRelationMutationSource(
           {
             sourceId: mutation.sourceId,
@@ -2426,11 +2400,11 @@ function assertCacheDocumentSemantics(document: CacheDocument): void {
 function parseCacheDocumentValue(value: unknown): CacheDocument {
   const safetyViolations = scanUnsafeValues([value], []);
   if (safetyViolations.length > 0) {
-    throw new CacheDocumentPublicSafetyError(safetyViolations);
+    throw new StatePublicSafetyError(safetyViolations);
   }
   const result = cacheDocumentSchema.safeParse(value);
   if (!result.success) {
-    throw new CacheDocumentSchemaError(result.error, result.error);
+    throw StateFormatError.fromZodError("cache文書", result.error);
   }
   assertCacheDocumentSemantics(result.data);
   return result.data;
@@ -2451,7 +2425,7 @@ export function assertCacheDocumentPublicSafety(input: CacheDocumentSafetyInput)
   assertKnownSecrets(input.knownSecrets);
   const violationCodes = scanUnsafeValues([input.document], input.knownSecrets);
   if (violationCodes.length > 0) {
-    throw new CacheDocumentPublicSafetyError(violationCodes);
+    throw new StatePublicSafetyError(violationCodes);
   }
 }
 
@@ -2467,16 +2441,9 @@ export function parseCacheDocument(source: string): CacheDocument {
     const parseJson: (text: string) => unknown = JSON.parse;
     value = parseJson(source);
   } catch (error: unknown) {
-    throw new CacheDocumentSchemaError(
-      new z.ZodError([
-        {
-          code: "custom",
-          path: [],
-          message: "JSON構文が不正です",
-        },
-      ]),
-      error,
-    );
+    throw new StateFormatError("cache文書", {
+      cause: new SyntaxError("JSON構文が不正です", { cause: error }),
+    });
   }
   return createCacheDocument(value);
 }

@@ -20,6 +20,7 @@ import {
   type GitHubIssueComment,
   type GitHubItemDetail,
   type GitHubReferencedItem,
+  type GitHubTimelineEvent,
   type GitHubUserContentEdit,
   type GitHubUserContentEditCollection,
 } from "../src/github/item-detail-types.js";
@@ -37,7 +38,10 @@ import {
 } from "../src/github/relation-mutation-adapter.js";
 import { type RelationCandidate } from "../src/graph/relation-candidate-types.js";
 import { replayDependencyEvents } from "../src/graph/replay-dependency-events.js";
-import { replayTemporalBlocksGraph } from "../src/graph/temporal-blocks-graph-replay.js";
+import {
+  replayTemporalBlocksGraph,
+  type TemporalBlocksCurrentNode,
+} from "../src/graph/temporal-blocks-graph-replay.js";
 
 const createdAt = createUtcIsoDateTime("2026-08-01T00:00:00Z");
 const observedAt = createUtcIsoDateTime("2026-08-01T12:00:00Z");
@@ -78,13 +82,17 @@ function createReplay(
   nodeId: ReturnType<typeof createGitHubNodeId>,
   type: "issue" | "pull_request",
 ): ReplayItemHistoryResult {
-  const itemSourceId = sourceId("github_item", nodeId);
+  const itemSourceId = sourceId("github_item_detail", nodeId);
   const itemSourceIds: readonly [SourceId] = [itemSourceId];
   const stateEpoch = {
     occurredAt: createdAt,
     sourceIds: itemSourceIds,
-    state: "open" as const,
-  };
+    state: "open",
+  } satisfies Readonly<{
+    occurredAt: ReturnType<typeof createUtcIsoDateTime>;
+    sourceIds: readonly [SourceId];
+    state: "open" | "closed" | "merged";
+  }>;
   const responsibilityEpoch = {
     occurredAt: createdAt,
     sourceIds: itemSourceIds,
@@ -116,6 +124,28 @@ function createReplay(
     responsibilityEpochs: { status: "known", value: [responsibilityEpoch] },
     currentOwnerEpoch: { status: "known", value: responsibilityEpoch },
   } satisfies ReplayItemHistoryResult;
+}
+
+function createReplayWithStateSourceId(
+  nodeId: ReturnType<typeof createGitHubNodeId>,
+  type: "issue" | "pull_request",
+  stateSourceId: SourceId,
+): ReplayItemHistoryResult {
+  const replay = createReplay(nodeId, type);
+  const stateSourceIds: readonly [SourceId] = [stateSourceId];
+  const stateEpoch: Extract<
+    ReplayItemHistoryResult["stateEpochs"],
+    { status: "known" }
+  >["value"][number] = {
+    occurredAt: createdAt,
+    sourceIds: stateSourceIds,
+    state: "open",
+  };
+  return {
+    ...replay,
+    stateEpochs: { status: "known", value: [stateEpoch] },
+    currentStateEpoch: { status: "known", value: stateEpoch },
+  };
 }
 
 function createReferencedItem(
@@ -172,9 +202,9 @@ function createCurrentGraph(
     fromNodeId: ReturnType<typeof createGitHubNodeId>;
     toNodeId: ReturnType<typeof createGitHubNodeId>;
   }>[],
-) {
+): Omit<MixedTemporalBlocksGraphCurrent, "scope"> {
   return {
-    nodes: nodes.map((nodeId) => ({ nodeId, state: "open" as const })),
+    nodes: nodes.map((nodeId): TemporalBlocksCurrentNode => ({ nodeId, state: "open" })),
     canonicalBlocksEdges,
   };
 }
@@ -312,7 +342,7 @@ function createObservation(
   );
   return {
     freshness: "fresh",
-    sourceId: sourceId("github_item", nodeId),
+    sourceId: sourceId("github_item_detail", nodeId),
     nodeId,
     createdAt,
     author: { status: "unavailable", reason: "deleted_account" },
@@ -538,6 +568,26 @@ describe("GitHub temporal blocks graph adapter", () => {
     });
   });
 
+  it("state epochのtimeline source IDにsequenceがなければ例外にする", () => {
+    const detail = createIssueDetail(blockedNodeId, {
+      body: "",
+      bodyUserContentEdits: availableEmptyEdits,
+    });
+    const replay = createReplayWithStateSourceId(
+      blockedNodeId,
+      "issue",
+      sourceId("github_state_event", "missing-sequence"),
+    );
+
+    expect(() =>
+      adaptFreshTemporalBlocksGraph({
+        current: createCurrentGraph([blockedNodeId], []),
+        relationCandidates: [],
+        items: [{ detail, itemCreatedAt: createdAt, replay }],
+      }),
+    ).toThrow("timeline sequence");
+  });
+
   it("本文履歴のunknownをnative dependencyの履歴全体へ波及させない", () => {
     const detail = createIssueDetail(blockedNodeId, {
       body: "",
@@ -566,6 +616,7 @@ describe("GitHub temporal blocks graph adapter", () => {
         originItemNodeId: blockedNodeId,
         contentSourceId: detail.bodySourceId,
         reason: "connection_unavailable",
+        edit: { status: "unavailable" },
       },
     ]);
   });
@@ -988,9 +1039,12 @@ describe("GitHub temporal blocks graph adapter", () => {
       originItemNodeId: blockedNodeId,
       contentSourceId: detail.bodySourceId,
       reason: "relation_endpoint_unavailable",
-      sourceId: editSourceId,
-      editedAt: bodyEditedAt,
-      sequence: 1,
+      edit: {
+        status: "available",
+        sourceId: editSourceId,
+        editedAt: bodyEditedAt,
+        sequence: 1,
+      },
     });
     expect(replay.newlyUnblockedFacts).toContainEqual({
       status: "unknown",
@@ -1024,7 +1078,7 @@ describe("GitHub temporal blocks graph adapter", () => {
         body: "",
         bodyUserContentEdits: availableEmptyEdits,
       }),
-      type: "pull_request" as const,
+      type: "pull_request",
       reviewDecision: null,
       reviews: [],
       reviewThreads: [
@@ -1091,13 +1145,13 @@ describe("GitHub temporal blocks graph adapter", () => {
   });
 
   it("同じsource IDのtimelineイベントを受けたら例外にする", () => {
-    const event = {
+    const event: GitHubTimelineEvent = {
       sourceId: blockedBySourceId,
       nodeId: createGitHubNodeId("TE_temporal_blocks_duplicate"),
       sequence: 1,
       occurredAt: dependencyAt,
       actor: unavailableActor,
-      kind: "blocked_by_added" as const,
+      kind: "blocked_by_added",
       blockingIssue: createReferencedItem(blockerNodeId, 1),
     };
     const detail = createIssueDetail(blockedNodeId, {
@@ -1279,6 +1333,7 @@ describe("GitHub temporal blocks graph adapter", () => {
         originItemNodeId: blockedNodeId,
         contentSourceId: detail.bodySourceId,
         reason: "connection_unavailable",
+        edit: { status: "unavailable" },
       },
     ]);
   });
