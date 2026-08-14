@@ -557,12 +557,9 @@ function replayStateEpochs(
       }
       state = "open";
     } else if (event.state === "closed") {
-      if (state === "closed") {
+      if (state === "closed" || state === "merged") {
         eventIndex += 1;
         continue;
-      }
-      if (state !== "open") {
-        throw new TypeError(`open状態以外をcloseできません。対象: ${event.sourceId}`);
       }
       state = "closed";
     } else {

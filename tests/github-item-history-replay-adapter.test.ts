@@ -123,6 +123,7 @@ function createItem(
   state: "open" | "closed",
   options: Readonly<{
     nodeId: GitHubNodeId;
+    createdAt?: UtcIsoDateTime;
     assignees?: readonly GitHubItemAccount[];
     draft?: boolean;
     mergedAt?: UtcIsoDateTime;
@@ -146,7 +147,7 @@ function createItem(
     bodyFingerprint: createGitHubBodyFingerprint("body"),
     bodyLocator,
     author: itemAuthor,
-    createdAt,
+    createdAt: options.createdAt ?? createdAt,
     updatedAt: observedAt,
     assignees: options.assignees ?? [],
     labels: [],
@@ -485,6 +486,47 @@ describe("GitHub item history replay adapter", () => {
           sourceId("github_timeline_event", `${pullRequestNodeId}:closed:7`),
           sourceId("github_timeline_event", `${pullRequestNodeId}:merged:6`),
         ],
+        state: "merged",
+      },
+    });
+  });
+
+  it("merged後の後刻ClosedEventを状態変化なしで再生する", () => {
+    const fixtureCreatedAt = createUtcIsoDateTime("2026-06-20T00:00:00Z");
+    const mergedAt = createUtcIsoDateTime("2026-06-21T01:57:42Z");
+    const laterClosedAt = createUtcIsoDateTime("2026-06-21T01:57:43Z");
+    const item = createItem("pull_request", "closed", {
+      nodeId: pullRequestNodeId,
+      createdAt: fixtureCreatedAt,
+      mergedAt,
+      closedAt: mergedAt,
+    });
+    const merged = createStateEvent("merged", pullRequestNodeId, mergedAt, 1);
+    const laterClosed = createStateEvent("closed", pullRequestNodeId, laterClosedAt, 2);
+
+    const result = replayGitHubItemHistory(
+      createReplayOptions(item, createDetail(item, [laterClosed, merged], [])),
+    );
+
+    expect(result.orderedEvents.map((event) => event.sourceId)).toEqual([
+      merged.sourceId,
+      laterClosed.sourceId,
+    ]);
+    expect(result.stateEpochs.status).toBe("known");
+    if (result.stateEpochs.status !== "known") {
+      throw new TypeError("状態epochが不明です");
+    }
+    expect(result.stateEpochs.value).toHaveLength(2);
+    expect(result.stateEpochs.value.at(-1)).toEqual({
+      occurredAt: mergedAt,
+      sourceIds: [merged.sourceId],
+      state: "merged",
+    });
+    expect(result.currentStateEpoch).toEqual({
+      status: "known",
+      value: {
+        occurredAt: mergedAt,
+        sourceIds: [merged.sourceId],
         state: "merged",
       },
     });

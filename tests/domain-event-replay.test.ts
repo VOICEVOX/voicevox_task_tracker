@@ -413,7 +413,7 @@ describe("イベント再生", () => {
     }
   });
 
-  it("Pull Requestのmergeと同時刻closeは許容し後刻closeは拒否する", () => {
+  it("Pull Requestのmergeと同時刻および後刻closeを状態変化なしで扱う", () => {
     const fixtureCreatedAt = createUtcIsoDateTime("2023-02-01T00:00:00Z");
     const mergedAt = createUtcIsoDateTime("2024-06-19T16:00:00Z");
     const laterClosedAt = createUtcIsoDateTime("2024-06-19T16:00:01Z");
@@ -464,16 +464,78 @@ describe("イベント再生", () => {
       laterClosedAt,
       3,
     );
+    const laterResult = replayItemHistory({
+      trackingStartAt: fixtureCreatedAt,
+      currentItem,
+      history: {
+        availability: "available",
+        events: [laterClosed, merged],
+      },
+    });
+    expect(laterResult.orderedEvents.map((event) => event.sourceId)).toEqual([
+      merged.sourceId,
+      laterClosed.sourceId,
+    ]);
+    expect(laterResult.stateEpochs).toEqual({
+      status: "known",
+      value: [
+        {
+          occurredAt: fixtureCreatedAt,
+          sourceIds: [currentItem.sourceId],
+          state: "open",
+        },
+        {
+          occurredAt: mergedAt,
+          sourceIds: [merged.sourceId],
+          state: "merged",
+        },
+      ],
+    });
+    expect(laterResult.currentStateEpoch).toEqual({
+      status: "known",
+      value: {
+        occurredAt: mergedAt,
+        sourceIds: [merged.sourceId],
+        state: "merged",
+      },
+    });
+
+    const reopenedAt = createUtcIsoDateTime("2024-06-19T16:00:02Z");
+    const reopened = createStateEvent(
+      pullRequestNodeId,
+      "merge-after-close-reopened",
+      "reopened",
+      reopenedAt,
+      4,
+    );
     expect(() =>
       replayItemHistory({
         trackingStartAt: fixtureCreatedAt,
         currentItem,
         history: {
           availability: "available",
-          events: [laterClosed, merged],
+          events: [reopened, laterClosed, merged],
         },
       }),
-    ).toThrow("open状態以外をcloseできません");
+    ).toThrow("open状態からreopenできません");
+
+    const remerged = createStateEvent(
+      pullRequestNodeId,
+      "merge-after-close-remerged",
+      "merged",
+      reopenedAt,
+      5,
+    );
+    expect(() =>
+      replayItemHistory({
+        trackingStartAt: fixtureCreatedAt,
+        currentItem,
+        history: {
+          availability: "available",
+          events: [remerged, laterClosed, merged],
+        },
+      }),
+    ).toThrow("open状態以外をmergeできません");
   });
 
   it("assigneeとreview requestの変更からcurrent owner epochを復元する", () => {
