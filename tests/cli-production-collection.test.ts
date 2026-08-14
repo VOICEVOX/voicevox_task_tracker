@@ -3925,6 +3925,156 @@ describe("本番収集の接続", () => {
     });
   });
 
+  it("関係先のURL列挙結果が要求項目と一致しなければdetailを取得しない", async () => {
+    const repository = createRepository(
+      "R_relation_expansion_mismatch",
+      "relation-expansion-mismatch",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const root = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "relation-expansion-mismatch-root",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const target = createOldIssueItem(
+      publicRepository,
+      2,
+      "relation-expansion-mismatch-target",
+      observedAt,
+    );
+    const mismatchedTargets = Object.freeze([
+      Object.freeze({
+        ...target,
+        nodeId: createGitHubNodeId("I_relation-expansion-mismatch-other"),
+      }),
+      Object.freeze({
+        ...target,
+        url: `https://github.com/${publicRepository.owner}/${publicRepository.name}/issues/3` satisfies GitHubItemUrl,
+      }),
+    ] satisfies readonly EnumeratedGitHubItem[]);
+    fixture.openItems = [root];
+    fixture.details.set(
+      root.nodeId,
+      createIssueDetail({
+        item: root,
+        body: "本文",
+        observedAt,
+        nativeDependencies: Object.freeze([createNativeBlocker(root, target)]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    for (const mismatchedTarget of mismatchedTargets) {
+      fixture.individualItems.set(target.url, mismatchedTarget);
+      const harness = createCollectionHarness({ repositories: [fixture], config });
+
+      const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+      if (result.command !== "collect-analyze") {
+        throw new TypeError("関係先URL不一致fixtureがcollect-analyze結果ではありません");
+      }
+
+      expect(result.exitCode).toBe(1);
+      expect(result.result.report).toMatchObject({
+        status: "failure",
+        failedStage: "incremental_collection",
+        complete: false,
+      });
+      expect(harness.individualCalls).toEqual([[target.url]]);
+      expect(harness.detailCalls).toEqual([{ targets: [{ nodeId: root.nodeId }] }]);
+      expect(harness.artifacts).toEqual([]);
+      expect(harness.publicData).toEqual([]);
+    }
+  });
+
+  it("同じ関係先node IDの異なるURLを後勝ちで採用しない", async () => {
+    const repository = createRepository(
+      "R_relation_expansion_conflict",
+      "relation-expansion-conflict",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const firstRoot = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "relation-expansion-conflict-first",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const secondRoot = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "relation-expansion-conflict-second",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const target = createOldIssueItem(
+      publicRepository,
+      3,
+      "relation-expansion-conflict-target",
+      observedAt,
+    );
+    const conflictingTarget = Object.freeze({
+      ...target,
+      url: `https://github.com/${publicRepository.owner.toLowerCase()}/${publicRepository.name}/issues/3` satisfies GitHubItemUrl,
+    }) satisfies EnumeratedGitHubItem;
+    fixture.openItems = [firstRoot, secondRoot];
+    fixture.details.set(
+      firstRoot.nodeId,
+      createIssueDetail({
+        item: firstRoot,
+        body: "本文",
+        observedAt,
+        nativeDependencies: Object.freeze([createNativeBlocker(firstRoot, target)]),
+        duplicateComments: false,
+      }),
+    );
+    fixture.details.set(
+      secondRoot.nodeId,
+      createIssueDetail({
+        item: secondRoot,
+        body: "本文",
+        observedAt,
+        nativeDependencies: Object.freeze([createNativeBlocker(secondRoot, conflictingTarget)]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("関係先競合fixtureがcollect-analyze結果ではありません");
+    }
+
+    expect(result.exitCode).toBe(1);
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "incremental_collection",
+      complete: false,
+    });
+    expect(harness.individualCalls).toEqual([]);
+    expect(harness.artifacts).toEqual([]);
+    expect(harness.publicData).toEqual([]);
+  });
+
   it("open列挙に含まれないinbound cross-reference元を同じrunで追跡候補へ入れる", async () => {
     const repository = createRepository(
       "R_relation_expansion_inbound",
@@ -3965,7 +4115,7 @@ describe("本番収集の接続", () => {
     const snapshot = requireDryRunSnapshot(harness.artifacts);
 
     expect(result.exitCode).toBe(0);
-    expect(harness.individualCalls).toEqual([[source.nodeId]]);
+    expect(harness.individualCalls).toEqual([[source.url]]);
     expect(snapshot.items.map((item) => item.nodeId)).toEqual(
       expect.arrayContaining([tracked.nodeId, source.nodeId]),
     );
@@ -4045,7 +4195,7 @@ describe("本番収集の接続", () => {
     const snapshot = requireDryRunSnapshot(harness.artifacts);
 
     expect(result.exitCode).toBe(0);
-    expect(harness.individualCalls).toEqual([[source.nodeId]]);
+    expect(harness.individualCalls).toEqual([[source.url]]);
     expect(snapshot.items.map((item) => item.nodeId)).toEqual(
       expect.arrayContaining([tracked.nodeId, source.nodeId]),
     );
@@ -4128,11 +4278,7 @@ describe("本番収集の接続", () => {
     const snapshot = requireDryRunSnapshot(harness.artifacts);
 
     expect(result.exitCode).toBe(0);
-    expect(harness.individualCalls).toEqual([
-      [depthOne.nodeId],
-      [depthTwo.nodeId],
-      [depthThree.nodeId],
-    ]);
+    expect(harness.individualCalls).toEqual([[depthOne.url], [depthTwo.url], [depthThree.url]]);
     expect(snapshot.items.map((item) => item.nodeId)).toEqual(
       expect.arrayContaining([tracked.nodeId, depthOne.nodeId, depthTwo.nodeId, depthThree.nodeId]),
     );
@@ -4220,12 +4366,12 @@ describe("本番収集の接続", () => {
     const harness = createCollectionHarness({ repositories: [fixture], config });
 
     const result = await harness.runDry(FIRST_RUN_AT);
-    const requestedNodeIds = harness.individualCalls.flat();
+    const requestedUrls = harness.individualCalls.flat();
 
     expect(result.exitCode).toBe(0);
-    expect(harness.individualCalls).toEqual([[first.nodeId, second.nodeId], [shared.nodeId]]);
-    expect(requestedNodeIds).toHaveLength(3);
-    expect(new Set(requestedNodeIds).size).toBe(3);
+    expect(harness.individualCalls).toEqual([[first.url, second.url], [shared.url]]);
+    expect(requestedUrls).toHaveLength(3);
+    expect(new Set(requestedUrls).size).toBe(3);
   });
 
   it("参照系の連鎖を追跡根から1 hopで止めて2 hop目を取得しない", async () => {
@@ -4274,7 +4420,7 @@ describe("本番収集の接続", () => {
     const snapshot = requireDryRunSnapshot(harness.artifacts);
 
     expect(result.exitCode).toBe(0);
-    expect(harness.individualCalls).toEqual([[firstSource.nodeId]]);
+    expect(harness.individualCalls).toEqual([[firstSource.url]]);
     expect(snapshot.items.map((item) => item.nodeId)).toContain(firstSource.nodeId);
     expect(snapshot.items.map((item) => item.nodeId)).not.toContain(secondSource.nodeId);
   });
@@ -5972,7 +6118,7 @@ describe("本番収集の接続", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    expect(harness.individualCalls).toContainEqual([target.nodeId]);
+    expect(harness.individualCalls).toContainEqual([target.url]);
     expect(harness.volatileProbeCalls).toEqual([{ pullRequestNodeIds: [target.nodeId] }]);
     expect(harness.detailCalls).toEqual([
       { targets: [{ nodeId: root.nodeId }] },

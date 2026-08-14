@@ -446,6 +446,13 @@ type FreshRuntimeCollectionAggregate = Readonly<{
   diagnostics: readonly string[];
 }>;
 
+type RelationExpansionTarget = Readonly<{
+  nodeId: GitHubNodeId;
+  type: "issue" | "pull_request";
+  number: number;
+  url: PublicGitHubRelationItem["url"];
+}>;
+
 type RelationExpandedRuntimeCollection = FreshRuntimeCollectionAggregate &
   Readonly<{
     evaluatedAt: UtcIsoDateTime;
@@ -7236,19 +7243,31 @@ async function collectFreshRepositoryItems(
 
 function validateRelationExpansionEnumeration(
   repository: PublicRepository,
-  requestedNodeIds: readonly GitHubNodeId[],
+  requestedTargets: readonly RelationExpansionTarget[],
   enumeratedItems: readonly EnumeratedGitHubItem[],
 ): void {
-  const requestedNodeIdSet = new Set(requestedNodeIds);
-  if (
-    requestedNodeIdSet.size !== requestedNodeIds.length ||
-    enumeratedItems.length !== requestedNodeIds.length
-  ) {
-    throw new TypeError("関係先の個別列挙結果と要求node IDの件数が一致しません");
+  const requestedTargetsByNodeId = new Map<GitHubNodeId, RelationExpansionTarget>();
+  for (const target of requestedTargets) {
+    if (requestedTargetsByNodeId.has(target.nodeId)) {
+      throw new TypeError("関係先の個別取得対象node IDが重複しています");
+    }
+    requestedTargetsByNodeId.set(target.nodeId, target);
+  }
+  if (enumeratedItems.length !== requestedTargets.length) {
+    throw new TypeError("関係先の個別列挙結果と要求対象の件数が一致しません");
   }
   for (const item of enumeratedItems) {
-    if (item.repositoryId !== repository.id || !requestedNodeIdSet.has(item.nodeId)) {
-      throw new TypeError("関係先の個別列挙結果が要求したrepositoryとnode IDに一致しません");
+    const target = requestedTargetsByNodeId.get(item.nodeId);
+    if (
+      target == null ||
+      item.repositoryId !== repository.id ||
+      item.type !== target.type ||
+      item.number !== target.number ||
+      item.url !== target.url
+    ) {
+      throw new TypeError(
+        "関係先の個別列挙結果が要求したrepository、node ID、種別、番号、URLに一致しません",
+      );
     }
   }
 }
@@ -7260,36 +7279,38 @@ async function collectAdditionalRelationItems(
   state: RuntimeState,
   authentication: GitHubClient,
   repository: PublicRepository,
-  requestedNodeIds: readonly GitHubNodeId[],
+  requestedTargets: readonly RelationExpansionTarget[],
   current: FreshRepositoryRuntimeCollection,
 ): Promise<FreshRepositoryRuntimeCollection> {
   const currentItemsByNodeId = new Map(current.enumeratedItems.map((item) => [item.nodeId, item]));
   const currentProvisionalItemsByNodeId = new Map(
     current.provisionalEnumeratedItems.map((item) => [item.nodeId, item]),
   );
-  const missingNodeIds = requestedNodeIds.filter((nodeId) => !currentItemsByNodeId.has(nodeId));
+  const missingTargets = requestedTargets.filter(
+    (target) => !currentItemsByNodeId.has(target.nodeId),
+  );
   const individuallyEnumeratedItems =
-    missingNodeIds.length === 0
+    missingTargets.length === 0
       ? Object.freeze([])
       : await adapters.enumerateGitHubItemsByIdentifiers({
           allowlist: createPublicRepositoryAllowlist([repository]),
-          identifiers: missingNodeIds,
+          identifiers: missingTargets.map((target) => target.url),
           observedAt: invocation.startedAt,
           request: authentication.request,
           graphql: authentication.graphql,
         });
-  validateRelationExpansionEnumeration(repository, missingNodeIds, individuallyEnumeratedItems);
+  validateRelationExpansionEnumeration(repository, missingTargets, individuallyEnumeratedItems);
   const individuallyEnumeratedItemsByNodeId = new Map(
     individuallyEnumeratedItems.map((item) => [item.nodeId, item]),
   );
-  const detailTargets = requestedNodeIds.map((nodeId) => {
+  const detailTargets = requestedTargets.map((target) => {
     const item =
-      currentProvisionalItemsByNodeId.get(nodeId) ??
-      individuallyEnumeratedItemsByNodeId.get(nodeId);
-    assertNonNullable(item, `関係先追加取得対象の列挙値がありません。対象: ${nodeId}`);
+      currentProvisionalItemsByNodeId.get(target.nodeId) ??
+      individuallyEnumeratedItemsByNodeId.get(target.nodeId);
+    assertNonNullable(item, `関係先追加取得対象の列挙値がありません。対象: ${target.nodeId}`);
     return item;
   });
-  validateRelationExpansionEnumeration(repository, requestedNodeIds, detailTargets);
+  validateRelationExpansionEnumeration(repository, requestedTargets, detailTargets);
   const additions = await collectRepositoryItemObservationsWithVolatileMetadata(
     adapters,
     invocation,
@@ -7298,7 +7319,7 @@ async function collectAdditionalRelationItems(
     authentication,
     repository,
     detailTargets,
-    new Set(requestedNodeIds),
+    new Set(requestedTargets.map((target) => target.nodeId)),
   );
   const mergedEnumeratedItems = deduplicateByStableId(
     [...current.enumeratedItems, ...additions.enumeratedItems],
@@ -7424,11 +7445,48 @@ function exactAiRefreshNodeIds(
   return nodeIds;
 }
 
-function relationExpansionRepositoriesByNodeId(
+type RelationExpansionTargetSelection = Readonly<{
+  repository: PublicRepository;
+  target: RelationExpansionTarget;
+}>;
+
+function relationExpansionTargetFromCandidate(
+  node: Extract<RelationCandidateNode, { scope: "organization" }>,
+): RelationExpansionTarget {
+  return Object.freeze({
+    nodeId: node.nodeId,
+    type: node.kind,
+    number: node.number,
+    url: node.url,
+  });
+}
+
+function relationExpansionTargetFromItem(item: EnumeratedGitHubItem): RelationExpansionTarget {
+  return Object.freeze({
+    nodeId: item.nodeId,
+    type: item.type,
+    number: item.number,
+    url: item.url,
+  });
+}
+
+function sameRelationExpansionTarget(
+  left: RelationExpansionTarget,
+  right: RelationExpansionTarget,
+): boolean {
+  return (
+    left.nodeId === right.nodeId &&
+    left.type === right.type &&
+    left.number === right.number &&
+    left.url === right.url
+  );
+}
+
+function relationExpansionTargetsByNodeId(
   candidates: readonly RelationCandidate[],
   allowlist: PublicRepositoryAllowlist,
-): ReadonlyMap<GitHubNodeId, PublicRepository> {
-  const repositoriesByNodeId = new Map<GitHubNodeId, PublicRepository>();
+): ReadonlyMap<GitHubNodeId, RelationExpansionTargetSelection> {
+  const targetsByNodeId = new Map<GitHubNodeId, RelationExpansionTargetSelection>();
   for (const candidate of candidates) {
     for (const node of relationNodes(candidate.relation)) {
       if (node.scope !== "organization") {
@@ -7442,14 +7500,19 @@ function relationExpansionRepositoriesByNodeId(
       if (repository == null) {
         continue;
       }
-      const existing = repositoriesByNodeId.get(node.nodeId);
-      if (existing != null && existing.id !== repository.id) {
-        throw new TypeError("同じ関係先node IDに異なるallowlist repositoryが指定されています");
+      const target = relationExpansionTargetFromCandidate(node);
+      const existing = targetsByNodeId.get(node.nodeId);
+      if (
+        existing != null &&
+        (existing.repository.id !== repository.id ||
+          !sameRelationExpansionTarget(existing.target, target))
+      ) {
+        throw new TypeError("同じ関係先node IDに異なるrepositoryまたはURLが指定されています");
       }
-      repositoriesByNodeId.set(node.nodeId, repository);
+      targetsByNodeId.set(node.nodeId, Object.freeze({ repository, target }));
     }
   }
-  return repositoriesByNodeId;
+  return targetsByNodeId;
 }
 
 async function collectRelationExpansionBatch(
@@ -7459,7 +7522,7 @@ async function collectRelationExpansionBatch(
   state: RuntimeState,
   authentication: GitHubClient,
   allowlist: PublicRepositoryAllowlist,
-  targetNodeIdsByRepositoryId: ReadonlyMap<GitHubRepositoryId, readonly GitHubNodeId[]>,
+  targetsByRepositoryId: ReadonlyMap<GitHubRepositoryId, readonly RelationExpansionTarget[]>,
   freshCollectionsByRepositoryId: Map<GitHubRepositoryId, FreshRepositoryRuntimeCollection>,
   repositoryResultsById: Map<
     GitHubRepositoryId,
@@ -7467,7 +7530,7 @@ async function collectRelationExpansionBatch(
   >,
 ): Promise<void> {
   const targetRepositories = allowlist.repositories.filter((repository) =>
-    targetNodeIdsByRepositoryId.has(repository.id),
+    targetsByRepositoryId.has(repository.id),
   );
   const expandedCollectionsByRepositoryId = new Map<
     GitHubRepositoryId,
@@ -7478,8 +7541,8 @@ async function collectRelationExpansionBatch(
     observedAt: invocation.startedAt,
     previousValues: previousRepositoryValues(state),
     collect: async (repository) => {
-      const requestedNodeIds = targetNodeIdsByRepositoryId.get(repository.id);
-      assertNonNullable(requestedNodeIds, "関係先追加取得対象のnode IDがありません");
+      const requestedTargets = targetsByRepositoryId.get(repository.id);
+      assertNonNullable(requestedTargets, "関係先追加取得対象がありません");
       const current = freshCollectionsByRepositoryId.get(repository.id);
       assertNonNullable(current, "関係先追加取得対象の最新repository収集結果がありません");
       const expanded = await collectAdditionalRelationItems(
@@ -7489,7 +7552,7 @@ async function collectRelationExpansionBatch(
         state,
         authentication,
         repository,
-        requestedNodeIds,
+        requestedTargets,
         current,
       );
       expandedCollectionsByRepositoryId.set(repository.id, expanded);
@@ -7545,15 +7608,16 @@ async function collectRelationExpandedItems(
       completedRelationCandidates.candidates,
     );
     if (exactAiRefreshes.size > 0) {
-      const targetNodeIdsByRepositoryId = new Map<GitHubRepositoryId, GitHubNodeId[]>();
+      const targetsByRepositoryId = new Map<GitHubRepositoryId, RelationExpansionTarget[]>();
       for (const nodeId of exactAiRefreshes) {
         const item = aggregate.enumeratedItems.find((candidate) => candidate.nodeId === nodeId);
         assertNonNullable(item, `exact AI再判定対象の列挙値がありません。対象: ${nodeId}`);
-        const nodeIds = targetNodeIdsByRepositoryId.get(item.repositoryId);
-        if (nodeIds == null) {
-          targetNodeIdsByRepositoryId.set(item.repositoryId, [nodeId]);
+        const target = relationExpansionTargetFromItem(item);
+        const targets = targetsByRepositoryId.get(item.repositoryId);
+        if (targets == null) {
+          targetsByRepositoryId.set(item.repositoryId, [target]);
         } else {
-          nodeIds.push(nodeId);
+          targets.push(target);
         }
       }
       await collectRelationExpansionBatch(
@@ -7563,7 +7627,7 @@ async function collectRelationExpandedItems(
         state,
         authentication,
         repositoryInventory.allowlist,
-        targetNodeIdsByRepositoryId,
+        targetsByRepositoryId,
         freshCollectionsByRepositoryId,
         repositoryResultsById,
       );
@@ -7600,43 +7664,44 @@ async function collectRelationExpandedItems(
         tracking,
       });
     }
-    const repositoriesByNodeId = relationExpansionRepositoriesByNodeId(
+    const expansionTargetsByNodeId = relationExpansionTargetsByNodeId(
       discoveredRelationCandidates,
       repositoryInventory.allowlist,
     );
-    const targetNodeIdsByRepositoryId = new Map<GitHubRepositoryId, GitHubNodeId[]>();
+    const targetsByRepositoryId = new Map<GitHubRepositoryId, RelationExpansionTarget[]>();
     for (const request of nextRequests) {
       requestedNodeIds.add(request.nodeId);
-      const repository = repositoriesByNodeId.get(request.nodeId);
-      if (repository == null) {
+      const selection = expansionTargetsByNodeId.get(request.nodeId);
+      if (selection == null) {
         continue;
       }
+      const { repository, target } = selection;
       const repositoryResult = repositoryResultsById.get(repository.id);
       assertNonNullable(repositoryResult, "関係先追加取得対象のrepository収集結果がありません");
       if (repositoryResult.freshness === "stale") {
         continue;
       }
-      const currentNodeIds = targetNodeIdsByRepositoryId.get(repository.id);
-      if (currentNodeIds == null) {
-        targetNodeIdsByRepositoryId.set(repository.id, [request.nodeId]);
+      const currentTargets = targetsByRepositoryId.get(repository.id);
+      if (currentTargets == null) {
+        targetsByRepositoryId.set(repository.id, [target]);
       } else {
-        currentNodeIds.push(request.nodeId);
+        currentTargets.push(target);
       }
     }
-    const targetNodeIds = [...targetNodeIdsByRepositoryId.values()].flat();
+    const targets = [...targetsByRepositoryId.values()].flat();
     const maximumItemCount = configuration.config.tracking.relationExpansion.maxItemsPerRun;
-    if (expandedNodeIds.size + targetNodeIds.length > maximumItemCount) {
+    if (expandedNodeIds.size + targets.length > maximumItemCount) {
       throw new CliRelationExpansionLimitError(
         maximumItemCount,
         expandedNodeIds.size,
-        targetNodeIds.length,
+        targets.length,
         {},
       );
     }
-    for (const nodeId of targetNodeIds) {
-      expandedNodeIds.add(nodeId);
+    for (const target of targets) {
+      expandedNodeIds.add(target.nodeId);
     }
-    if (targetNodeIds.length === 0) {
+    if (targets.length === 0) {
       continue;
     }
     await collectRelationExpansionBatch(
@@ -7646,7 +7711,7 @@ async function collectRelationExpandedItems(
       state,
       authentication,
       repositoryInventory.allowlist,
-      targetNodeIdsByRepositoryId,
+      targetsByRepositoryId,
       freshCollectionsByRepositoryId,
       repositoryResultsById,
     );
