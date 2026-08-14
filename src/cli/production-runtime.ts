@@ -73,6 +73,7 @@ import {
   ISSUE_DETERMINISTIC_RULES_VERSION,
   parseSourceId,
   PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
+  resolvePullRequestCheckContextOccurredAt,
   resolvePullRequestCommitOccurredAt,
   resolveRepositoryMaintainers,
   resolveWaitingOnAccountIdentifiers,
@@ -154,7 +155,6 @@ import {
   type FreshObservedGitHubItem,
   type GitHubAppCredentials,
   type GitHubClient,
-  type GitHubCheckContext,
   type GitHubDetailActor,
   type GitHubItemDetail,
   type PublicRepository,
@@ -2149,16 +2149,6 @@ function addCodexSourceOccurredAt(
   sourceOccurredAtById.set(sourceId, occurredAt);
 }
 
-function checkContextOccurredAt(
-  headOccurredAt: UtcIsoDateTime,
-  context: GitHubCheckContext,
-): UtcIsoDateTime {
-  if (context.type === "commit_status") {
-    return context.createdAt;
-  }
-  return context.completedAt ?? headOccurredAt;
-}
-
 function createCodexSourceOccurredAtById(
   item: FreshObservedGitHubItem,
   detail: GitHubItemDetail,
@@ -2215,7 +2205,7 @@ function createCodexSourceOccurredAtById(
   }
   const headOccurredAt = resolvePullRequestCommitOccurredAt(detail.headCommit, item.createdAt);
   const checkOccurredAts = detail.mergeState.checks.contexts.map((context) => {
-    const occurredAt = checkContextOccurredAt(headOccurredAt, context);
+    const occurredAt = resolvePullRequestCheckContextOccurredAt(context, headOccurredAt);
     addCodexSourceOccurredAt(sourceOccurredAtById, context.sourceId, occurredAt);
     return occurredAt;
   });

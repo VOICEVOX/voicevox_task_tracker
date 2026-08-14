@@ -4,6 +4,7 @@ import {
   type FreshObservedGitHubPullRequest,
   type ObservedGitHubHeadCheckContext,
   type ObservedGitHubHeadChecks,
+  resolvePullRequestCheckContextOccurredAt,
   resolvePullRequestCommitOccurredAt,
 } from "./github-item-observation.js";
 import { type ResolvedLabelEffects } from "./label-resolution.js";
@@ -25,7 +26,7 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Pull Request判定へ適用した決定規則のversion。 */
-export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v11";
+export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v12";
 
 /** 依存グラフからPull Request判定へ渡すblocker。 */
 export type PullRequestBlocker = Readonly<{
@@ -1452,23 +1453,26 @@ function getFailingCheckOccurredAt(
     if (context.state !== "error" && context.state !== "failure") {
       return undefined;
     }
-    return context.createdAt < headOccurredAt ? headOccurredAt : context.createdAt;
+    return resolvePullRequestCheckContextOccurredAt(context, headOccurredAt);
   }
   if (!isFailingCheckRunConclusion(context.conclusion)) {
     return undefined;
   }
-  return context.completedAt == null || context.completedAt < headOccurredAt
-    ? headOccurredAt
-    : context.completedAt;
+  return resolvePullRequestCheckContextOccurredAt(context, headOccurredAt);
 }
 
 function getSuccessfulCheckOccurredAt(
   context: ObservedGitHubHeadCheckContext,
+  headOccurredAt: UtcIsoDateTime,
 ): UtcIsoDateTime | undefined {
   if (context.type === "commit_status") {
-    return context.state === "success" ? context.createdAt : undefined;
+    return context.state === "success"
+      ? resolvePullRequestCheckContextOccurredAt(context, headOccurredAt)
+      : undefined;
   }
-  return context.conclusion === "success" ? context.completedAt : undefined;
+  return context.conclusion === "success"
+    ? resolvePullRequestCheckContextOccurredAt(context, headOccurredAt)
+    : undefined;
 }
 
 function analyzeCheckFailure(
@@ -1657,7 +1661,7 @@ function createWaitingForMergeDecision(
   const successfulCheckOccurredAts =
     checks.status === "configured"
       ? checks.contexts.flatMap((checkContext) => {
-          const occurredAt = getSuccessfulCheckOccurredAt(checkContext);
+          const occurredAt = getSuccessfulCheckOccurredAt(checkContext, headBasis.occurredAt);
           return occurredAt == null ? [] : [occurredAt];
         })
       : [];

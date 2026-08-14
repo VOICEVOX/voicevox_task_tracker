@@ -43,6 +43,7 @@ import {
   GitHubRetryExhaustedError,
   type EnumeratedGitHubItem,
   type GitHubItemDetail,
+  type GitHubCheckContext,
   type GitHubItemMilestone,
   type GitHubInboundCrossReferenceCandidate,
   type GitHubItemAccount,
@@ -9125,6 +9126,104 @@ describe("本番収集の接続", () => {
       stallSince: checkCompletedAt,
     });
     expect(transitionTimes(second.item)).toEqual(transitionTimes(first.item));
+  });
+
+  it("Pull Request作成前のcheck contextをhead時刻へ正規化してcache検証を通す", async () => {
+    const observedAt = createUtcIsoDateTime("2026-08-12T12:00:00.000Z");
+    const prePullRequestCheckAt = createUtcIsoDateTime("2026-08-12T10:24:06.000Z");
+    const pullRequestCreatedAt = createUtcIsoDateTime("2026-08-12T10:38:14.000Z");
+    const repository = createRepository("R_check_context_range", "check-context-range", observedAt);
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const item = replaceCreatedAt(
+      createPullRequestItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "check-context-range",
+        updatedAt: observedAt,
+        observedAt,
+      }),
+      pullRequestCreatedAt,
+    );
+    const baseDetail = createFailedCheckPullRequestDetail(item, observedAt);
+    if (baseDetail.mergeState.checks.status !== "configured") {
+      throw new TypeError("check contextのfixtureがconfiguredではありません");
+    }
+    const checkRunContext: Extract<GitHubCheckContext, { type: "check_run" }> = Object.freeze({
+      type: "check_run",
+      sourceId: buildSourceId("github_check_run", `${item.nodeId}:before-pull-request`),
+      nodeId: createGitHubNodeId(`${item.nodeId}:before-pull-request`),
+      name: "pre-pull-request-check",
+      status: "completed",
+      conclusion: "failure",
+      completedAt: prePullRequestCheckAt,
+    });
+    const commitStatusContext: Extract<GitHubCheckContext, { type: "commit_status" }> =
+      Object.freeze({
+        type: "commit_status",
+        sourceId: buildSourceId("github_commit_status", `${item.nodeId}:before-pull-request`),
+        nodeId: createGitHubNodeId(`${item.nodeId}:before-pull-request-status`),
+        context: "pre-pull-request-status",
+        state: "failure",
+        createdAt: prePullRequestCheckAt,
+      });
+    const detail = Object.freeze({
+      ...baseDetail,
+      headCommit: Object.freeze({
+        ...baseDetail.headCommit,
+        committedAt: prePullRequestCheckAt,
+        pushedAt: Object.freeze({
+          status: "available",
+          value: prePullRequestCheckAt,
+        }),
+      }),
+      mergeState: Object.freeze({
+        ...baseDetail.mergeState,
+        checks: Object.freeze({
+          ...baseDetail.mergeState.checks,
+          contexts: Object.freeze([checkRunContext, commitStatusContext]),
+        }),
+      }),
+    });
+    fixture.openItems = [item];
+    fixture.details.set(item.nodeId, detail);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+    });
+
+    const result = await harness.runCollectAnalyze(observedAt);
+    expect(result.exitCode).toBe(0);
+    const input = harness.codexInputs[0];
+    assertNonNullable(input, "check contextのCodex入力がありません");
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const itemCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (candidate) => candidate.nodeId === item.nodeId,
+    );
+    if (itemCache == null) {
+      throw new TypeError("check contextのitem cacheがありません");
+    }
+    const sourceOccurredAt = (
+      sources: readonly Readonly<{ kind: string; createdAt: string }>[],
+      kind: string,
+    ): string => {
+      const source = sources.find((candidate) => candidate.kind === kind);
+      assertNonNullable(source, `check context sourceがありません。種別: ${kind}`);
+      return source.createdAt;
+    };
+
+    for (const kind of ["check_run", "commit_status", "required_check_rollup"]) {
+      expect(sourceOccurredAt(input.sources, kind)).toBe(pullRequestCreatedAt);
+      expect(sourceOccurredAt(itemCache.analysisFacts.codexValidationContext.sources, kind)).toBe(
+        pullRequestCreatedAt,
+      );
+    }
   });
 
   it("外部ghostをtemporal graphとblocker判定から除外する", async () => {

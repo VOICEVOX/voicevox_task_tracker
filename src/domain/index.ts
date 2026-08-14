@@ -14,6 +14,7 @@ export {
 export { DETERMINISTIC_RULES_VERSION } from "./deterministic-rules-version.js";
 export {
   resolvePullRequestCommitOccurredAt,
+  resolvePullRequestCheckContextOccurredAt,
   type FreshObservedGitHubItemBase,
   type FreshObservedGitHubIssue,
   type FreshObservedGitHubPullRequest,
