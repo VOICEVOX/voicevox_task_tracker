@@ -9,6 +9,7 @@ import {
   CLOSING_ISSUE_PAGE_QUERY,
   COMMENT_PAGE_QUERY,
   createItemDetailQuery,
+  createGitHubRelationReferenceQuery,
   createNativeDependencyPageQuery,
   createTimelinePageQuery,
   ITEM_DETAIL_CAPABILITIES_QUERY,
@@ -126,20 +127,28 @@ const dependencyQueryCases = dependencyDirections.map((direction) => ({
   name: `依存関係次ページ ${direction}`,
   query: createNativeDependencyPageQuery(direction),
 }));
+const relationReferenceItemTypes = ["issue", "pull_request", null] satisfies readonly (
+  "issue" | "pull_request" | null
+)[];
+const relationReferenceQueryCases = relationReferenceItemTypes.map((itemType) => ({
+  name: `relation参照 ${itemType ?? "型不明"}`,
+  query: createGitHubRelationReferenceQuery(itemType),
+}));
 const queryCases: readonly QueryCase[] = [
   ...fixedQueryCases,
   ...itemDetailQueryCases,
   ...timelineQueryCases,
   ...dependencyQueryCases,
+  ...relationReferenceQueryCases,
 ];
 
 describe("GitHub GraphQLクエリ", () => {
-  it("送信しうる23件を列挙する", () => {
+  it("送信しうる26件を列挙する", () => {
     expect(fixedQueryCases).toHaveLength(15);
     expect(itemDetailQueryCases).toHaveLength(4);
     expect(timelineQueryCases).toHaveLength(2);
     expect(dependencyQueryCases).toHaveLength(2);
-    expect(queryCases).toHaveLength(23);
+    expect(queryCases).toHaveLength(26);
   });
 
   it("IssueとPull Requestのtimeline queryに依存関係イベント4種を含める", () => {
@@ -152,6 +161,14 @@ describe("GitHub GraphQLクエリ", () => {
       expect(query).toContain("... on BlockedByRemovedEvent");
       expect(query).toContain("... on BlockingAddedEvent");
       expect(query).toContain("... on BlockingRemovedEvent");
+    }
+  });
+
+  it("relation参照queryは本文やコメントを取得しない", () => {
+    for (const { query } of relationReferenceQueryCases) {
+      expect(query).not.toContain("body");
+      expect(query).not.toContain("comments");
+      expect(query).not.toContain("userContentEdits");
     }
   });
 

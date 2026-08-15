@@ -171,7 +171,7 @@ const referencedRepositorySchema = z.object({
     login: z.string().min(1),
   }),
 });
-const referencedItemSchema = z.discriminatedUnion("__typename", [
+export const referencedItemSchema = z.discriminatedUnion("__typename", [
   z.object({
     __typename: z.literal("Issue"),
     id: opaqueIdSchema,
@@ -827,7 +827,8 @@ function normalizeAssignee(
   });
 }
 
-function normalizeReferencedItem(item: RawReferencedItem): GitHubReferencedItem {
+/** GitHub参照項目の応答を正規化する。 */
+export function normalizeReferencedItem(item: RawReferencedItem): GitHubReferencedItem {
   if (item.repository.visibility !== "PUBLIC") {
     throw new GitHubPublicBoundaryViolationError({
       scope: "generic",

@@ -49,6 +49,11 @@ export {
   type GitHubItemDetailTarget,
 } from "./item-detail-collection.js";
 export {
+  resolveGitHubRelationReference,
+  type GitHubRelationReferenceResult,
+  type ResolveGitHubRelationReferenceOptions,
+} from "./external-relation-reference.js";
+export {
   finalizeGitHubItemsWithVolatileMetadata,
   type FinalizedGitHubItem,
   type FinalizedGitHubItemCollection,
