@@ -9394,6 +9394,94 @@ describe("本番収集の接続", () => {
     ).toEqual(expectedCandidates);
   });
 
+  it("fresh repository cacheのitemをcache validatorのcanonical順で保存する", async () => {
+    const repository = createRepository(
+      "R_repository_cache_item_order",
+      "repository-cache-item-order",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const uppercaseZNodeId = createGitHubNodeId("I_kwDOZ");
+    const lowercaseANodeId = createGitHubNodeId("I_kwDOa");
+    const upperTemplate = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "repository-cache-item-order-upper",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const lowerTemplate = createIssueItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "repository-cache-item-order-lower",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const upperItem = Object.freeze({
+      ...upperTemplate,
+      nodeId: uppercaseZNodeId,
+      bodyLocator: Object.freeze({
+        ...upperTemplate.bodyLocator,
+        itemNodeId: uppercaseZNodeId,
+      }),
+    });
+    const lowerItem = Object.freeze({
+      ...lowerTemplate,
+      nodeId: lowercaseANodeId,
+      bodyLocator: Object.freeze({
+        ...lowerTemplate.bodyLocator,
+        itemNodeId: lowercaseANodeId,
+      }),
+    });
+    fixture.openItems = [lowerItem, upperItem];
+    fixture.details.set(
+      uppercaseZNodeId,
+      createIssueDetail({
+        item: upperItem,
+        body: "本文1",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    fixture.details.set(
+      lowercaseANodeId,
+      createIssueDetail({
+        item: lowerItem,
+        body: "本文2",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    expect(result.command).toBe("collect-analyze");
+    expect(result.exitCode).toBe(0);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const repositoryCache = artifact.cacheOnlyPayload.repositoryCaches.find(
+      (candidate) => candidate.repository.repositoryId === repository.id,
+    );
+    if (repositoryCache == null) {
+      throw new TypeError("repository cache順序fixtureのrepository cacheがありません");
+    }
+
+    expect(repositoryCache.items.map((item) => item.nodeId)).toEqual([
+      uppercaseZNodeId,
+      lowercaseANodeId,
+    ]);
+  });
+
   it("AI判定を使わない項目でも責務主体のコメントをstallSinceへ反映する", async () => {
     const repository = createRepository(
       "R_responsible_activity",

@@ -5785,7 +5785,7 @@ function createRepositoryCacheDocument(
     repository: cacheRepositoryIdentity(repository),
     successfulAt,
     items: [...items]
-      .sort((left, right) => left.nodeId.localeCompare(right.nodeId))
+      .sort((left, right) => compareStrings(left.nodeId, right.nodeId))
       .map(cacheItemIndexFromDocument),
   });
   if (document.kind !== "github_repository") {
