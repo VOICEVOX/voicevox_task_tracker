@@ -97,11 +97,11 @@ Pages、Discord、cache保存のどこかで失敗したrunは公開結果を更
 
 ```console
 pnpm build
-pnpm tracker:run dry-run --output artifacts/dry-run.json
+pnpm tracker:run dry-run --artifact artifacts/dry-run.json
 ```
 
-artifactには現在評価の要約、allowlist診断、cache hit/miss、AI検証結果、graphと通知候補を入れます。raw本文、raw diff、secret、private repositoryの値は入れません。
-run reportはActions artifactとjob summaryへ出す形式と同じschemaで生成し、cache branchへは書きません。
+実データを読みますが、Pages生成、Discord通知、stateとcacheの保存は行いません。artifactには現在評価の要約、allowlist診断、cache hit/miss、AI検証結果、graphと通知候補を入れます。raw本文、raw diff、secret、private repositoryの値は入れません。
+run reportはActions artifactとjob summaryへ出す形式と同じschemaで生成します。
 
 golden fixtureの固定AI出力、schema、semantic validation、reducer、graph、通知選別を確認するには`pnpm eval:golden`を使います。
 model、reasoning effort、promptを変更した場合は実モデルを使うdry-runでAI判定と通知候補の差分を確認します。

@@ -88,6 +88,7 @@ function parseRepositoryFilter(value: string): readonly string[] {
 export function createTrackerRunCliArguments(args: readonly string[]): readonly string[] {
   if (
     args[0] === "eval" ||
+    args[0] === "dry-run" ||
     args[0] === "collect-analyze" ||
     args[0] === "persist-cache" ||
     args[0] === "build-pages" ||
