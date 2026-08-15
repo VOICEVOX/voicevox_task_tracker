@@ -9320,6 +9320,80 @@ describe("本番収集の接続", () => {
     expect(publicItem).not.toHaveProperty("inputEvents");
   });
 
+  it("userとteamのmention候補をcache validatorのcanonical順で保存する", async () => {
+    const repository = createRepository(
+      "R_mention_candidate_order",
+      "mention-candidate-order",
+      FIRST_RUN_AT,
+    );
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const item = createIssueItem({
+      repository: requirePublicRepository(repository),
+      number: 1,
+      fingerprint: "mention-candidate-order",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const body = "@alpha と @voicevox/zeta に確認をお願いします";
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      createIssueDetail({
+        item,
+        body,
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("mention候補順序fixtureがcollect-analyze結果ではありません");
+    }
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const input = harness.codexInputs[0];
+    if (input == null) {
+      throw new TypeError("mention候補順序fixtureのCodex入力がありません");
+    }
+    const itemCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (candidate) => candidate.nodeId === item.nodeId,
+    );
+    if (itemCache == null) {
+      throw new TypeError("mention候補順序fixtureのitem cacheがありません");
+    }
+    const expectedCandidates = [
+      {
+        id: "voicevox/zeta",
+        kind: "team",
+      },
+      {
+        id: "alpha",
+        kind: "user",
+      },
+    ] satisfies readonly Readonly<{ id: string; kind: "user" | "team" }>[];
+
+    expect(result.exitCode).toBe(0);
+    expect(input.deterministicSignals["mentionedWaitingOnCandidates"]).toMatchObject(
+      expectedCandidates,
+    );
+    expect(
+      itemCache.analysisFacts.mentionedWaitingOnCandidates.map(({ id, kind }) => ({ id, kind })),
+    ).toEqual(expectedCandidates);
+  });
+
   it("AI判定を使わない項目でも責務主体のコメントをstallSinceへ反映する", async () => {
     const repository = createRepository(
       "R_responsible_activity",

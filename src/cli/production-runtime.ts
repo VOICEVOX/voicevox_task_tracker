@@ -2186,6 +2186,16 @@ function issueRequestCandidatesForSource(
   return createIssueRequestCandidates(source.item, source.detail);
 }
 
+function compareStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
+}
+
 function mentionedCandidatesInSource(
   sourceId: SourceId,
   content: string,
@@ -2245,9 +2255,9 @@ function createMentionedWaitingOnCandidates(
     }
   }
   return Object.freeze(
-    [...grouped.values()]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((candidate) => {
+    [...grouped.entries()]
+      .sort(([leftKey], [rightKey]) => compareStrings(leftKey, rightKey))
+      .map(([, candidate]) => {
         const sourceIds = [...candidate.sourceIds].sort();
         const firstSourceId = sourceIds[0];
         assertNonNullable(firstSourceId, `mention候補 ${candidate.id}のsource IDがありません`);
