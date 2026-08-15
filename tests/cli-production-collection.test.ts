@@ -10613,6 +10613,71 @@ describe("本番収集の接続", () => {
     }
   });
 
+  it("fresh itemのrelation mutation公開境界違反をAI実行前に停止する", async () => {
+    const repository = createRepository(
+      "R_fresh_relation_boundary",
+      "fresh-relation-boundary",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const source = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "fresh-relation-boundary-source",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const mutationTargetRepositoryName = "not-allowlisted-text";
+    fixture.openItems = [source];
+    fixture.details.set(
+      source.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item: source,
+          body: `https://github.com/VOICEVOX/${mutationTargetRepositoryName}/issues/2`,
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([]),
+        }),
+      }),
+    );
+    const baseConfig = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const config = configWithBudget(baseConfig, 50, baseConfig.ai.budget.maxEstimatedCostUsdPerRun);
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("fresh relation公開境界fixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.exitCode).toBe(1);
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "incremental_collection",
+      complete: false,
+    });
+    expect(result.result.report.diagnostics).toContainEqual(
+      expect.stringContaining(
+        `publicBoundaryViolationKind=cache_relation_mutation publicBoundaryViolationCount=1 sourceItemNodeId=${source.nodeId}`,
+      ),
+    );
+    expect(harness.codexExecutionCount()).toBe(0);
+    expect(harness.artifacts).toEqual([]);
+    expect(harness.publicData).toEqual([]);
+    expect(await harness.stateAdapter.resolveHead("tracker-state")).toEqual({ status: "missing" });
+  });
+
   it("外部ghostをtemporal graphとblocker判定から除外する", async () => {
     const repository = createRepository("R_blockers", "blockers", FIRST_RUN_AT);
     const publicRepository = requirePublicRepository(repository);

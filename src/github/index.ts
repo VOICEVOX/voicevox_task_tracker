@@ -196,6 +196,7 @@ export {
   type GitHubRetrySettings,
 } from "./retry.js";
 export {
+  assertCacheItemRelationPublicBoundary,
   assertPublicRepositoryBoundary,
   createPublicRepositoryAllowlist,
   isEligiblePublicRepository,

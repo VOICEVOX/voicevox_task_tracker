@@ -161,6 +161,7 @@ import {
   type PublicRepositoryAllowlist,
   type PreviousItemCollection,
   type RepositoryCollectionResult,
+  assertCacheItemRelationPublicBoundary,
   adaptGitHubItemDetailRelationMutations,
   adaptMixedTemporalBlocksGraph,
   replayGitHubItemHistory,
@@ -193,6 +194,7 @@ import {
   type RelationCandidateNode,
   type RelationCandidateId,
   type RelationExtractionItem,
+  type RelationMutationResult,
 } from "../graph/index.js";
 import {
   generatePublicData,
@@ -2071,6 +2073,43 @@ function candidatesForNode(
       relationNodes(candidate.relation).some((node) => node.nodeId === nodeId),
     ),
   );
+}
+
+type FreshItemRelationBoundaryInput = Readonly<{
+  sourceItemNodeId: GitHubNodeId;
+  relationCandidates: readonly RelationCandidate[];
+  relationMutations: readonly RelationMutationResult[];
+}>;
+
+function createFreshItemRelationBoundaryInput(
+  source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>,
+  relationCandidates: readonly RelationCandidate[],
+): FreshItemRelationBoundaryInput {
+  return Object.freeze({
+    sourceItemNodeId: source.item.nodeId,
+    relationCandidates: candidatesForNode(source.item.nodeId, relationCandidates),
+    relationMutations: Object.freeze(
+      adaptGitHubItemDetailRelationMutations(source.detail, source.item.createdAt).map(
+        (result) => result.result,
+      ),
+    ),
+  });
+}
+
+function assertFreshItemRelationPublicBoundary(
+  analysisSources: readonly RuntimeItemAnalysisSource[],
+  relationCandidates: readonly RelationCandidate[],
+  allowlist: PublicRepositoryAllowlist,
+): void {
+  for (const source of analysisSources) {
+    if (source.kind === "cached") {
+      continue;
+    }
+    assertCacheItemRelationPublicBoundary(
+      allowlist,
+      createFreshItemRelationBoundaryInput(source, relationCandidates),
+    );
+  }
 }
 
 function createNativeBlockers(
@@ -5815,12 +5854,12 @@ function createItemCacheDocuments(
     }
     const observation = source.item;
     const detail = source.detail;
+    const relationBoundaryInput = createFreshItemRelationBoundaryInput(
+      source,
+      collection.relationCandidates,
+    );
     const enumeratedItem = findEnumeratedItem(collection, observation.nodeId);
     const repository = findRepository(inventory, observation.repositoryId);
-    const relationMutations = adaptGitHubItemDetailRelationMutations(
-      detail,
-      observation.createdAt,
-    ).map((result) => result.result);
     const explicitRequestCandidates =
       observation.type === "issue" && detail.type === "issue"
         ? createIssueRequestCandidates(observation, detail)
@@ -5852,8 +5891,8 @@ function createItemCacheDocuments(
       deterministicRulesVersion: CURRENT_DETERMINISTIC_RULES_VERSIONS[observation.type],
       aiAnalysisStatus: aiAnalysis.status,
       lifecycle: cacheLifecycleForItem(enumeratedItem),
-      relationCandidates: candidatesForNode(observation.nodeId, collection.relationCandidates),
-      relationMutations,
+      relationCandidates: relationBoundaryInput.relationCandidates,
+      relationMutations: relationBoundaryInput.relationMutations,
       replay: source.replay,
       history: createCacheHistory(enumeratedItem, detail),
       analysisFacts: {
@@ -8063,6 +8102,11 @@ async function collectRelationExpandedItems(
         : 0,
     });
     if (nextRequests.length === 0) {
+      assertFreshItemRelationPublicBoundary(
+        aggregate.analysisSources,
+        completedRelationCandidates.candidates,
+        repositoryInventory.allowlist,
+      );
       synchronizeFreshRepositoryCollectionResults(
         freshCollectionsByRepositoryId,
         repositoryResultsById,

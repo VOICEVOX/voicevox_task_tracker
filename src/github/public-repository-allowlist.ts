@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   createGitHubRepositoryId,
+  type GitHubNodeId,
   type GitHubRepositoryId,
   type Repository,
   type UtcIsoDateTime,
@@ -124,6 +125,176 @@ export function assertPublicRepositoryBoundary(
     throw new GitHubPublicBoundaryViolationError({
       scope: "generic",
       violationKind: "repository_set_not_allowlisted",
+      violationCount,
+    });
+  }
+}
+
+type CacheItemRelationBoundaryNode = Readonly<{
+  scope: "organization" | "external_public";
+  repositoryOwner: string;
+  repositoryName: string;
+}>;
+
+type CacheItemRelationBoundaryRelation =
+  | Readonly<{
+      type: "blocks";
+      blocker: CacheItemRelationBoundaryNode;
+      blocked: CacheItemRelationBoundaryNode;
+    }>
+  | Readonly<{
+      type: "parent_of";
+      parent: CacheItemRelationBoundaryNode;
+      subtask: CacheItemRelationBoundaryNode;
+    }>
+  | Readonly<{
+      type: "implements";
+      implementation: CacheItemRelationBoundaryNode;
+      target: CacheItemRelationBoundaryNode;
+    }>
+  | Readonly<{
+      type: "unclassified";
+      referencing: CacheItemRelationBoundaryNode;
+      referenced: CacheItemRelationBoundaryNode;
+    }>;
+
+type CacheItemRelationBoundaryReference = Readonly<{
+  repositoryOwner: string;
+  repositoryName: string;
+}>;
+
+type CacheItemRelationBoundaryMutation =
+  | Readonly<{
+      status: "unknown";
+    }>
+  | Readonly<{
+      status: "available";
+      currentReferences: readonly CacheItemRelationBoundaryReference[];
+      replayedReferences: readonly CacheItemRelationBoundaryReference[];
+      mutations: readonly Readonly<{
+        relation: CacheItemRelationBoundaryReference;
+      }>[];
+      unmatchedRemovals: readonly Readonly<{
+        relation: CacheItemRelationBoundaryReference;
+      }>[];
+      temporalKnowledge:
+        | Readonly<{
+            status: "exact";
+            intervals: readonly Readonly<{
+              relation: CacheItemRelationBoundaryReference;
+            }>[];
+          }>
+        | Readonly<{
+            status: "unknown";
+          }>;
+    }>;
+
+type CacheItemRelationPublicBoundaryInput = Readonly<{
+  sourceItemNodeId: GitHubNodeId;
+  relationCandidates: readonly Readonly<{
+    relation: CacheItemRelationBoundaryRelation;
+  }>[];
+  relationMutations: readonly CacheItemRelationBoundaryMutation[];
+}>;
+
+function isAllowlistedRepository(
+  allowlist: PublicRepositoryAllowlist,
+  owner: string,
+  name: string,
+): boolean {
+  return allowlist.repositories.some(
+    (repository) =>
+      repository.owner.toLowerCase() === owner.toLowerCase() &&
+      repository.name.toLowerCase() === name.toLowerCase(),
+  );
+}
+
+function isAllowlistedOrganizationOwner(
+  allowlist: PublicRepositoryAllowlist,
+  owner: string,
+): boolean {
+  return allowlist.repositories.some(
+    (repository) => repository.owner.toLowerCase() === owner.toLowerCase(),
+  );
+}
+
+function relationCandidateNodes(
+  relation: CacheItemRelationBoundaryRelation,
+): readonly CacheItemRelationBoundaryNode[] {
+  switch (relation.type) {
+    case "blocks":
+      return [relation.blocker, relation.blocked];
+    case "parent_of":
+      return [relation.parent, relation.subtask];
+    case "implements":
+      return [relation.implementation, relation.target];
+    case "unclassified":
+      return [relation.referencing, relation.referenced];
+  }
+}
+
+function relationMutationReferences(
+  result: Extract<CacheItemRelationBoundaryMutation, { status: "available" }>,
+): readonly CacheItemRelationBoundaryReference[] {
+  const references: CacheItemRelationBoundaryReference[] = [
+    ...result.currentReferences,
+    ...result.replayedReferences,
+    ...result.mutations.map((mutation) => mutation.relation),
+    ...result.unmatchedRemovals.map((mutation) => mutation.relation),
+  ];
+  if (result.temporalKnowledge.status === "exact") {
+    references.push(...result.temporalKnowledge.intervals.map((interval) => interval.relation));
+  }
+  return references;
+}
+
+/** relation候補とmutationが公開allowlist内を参照することを検証する。 */
+export function assertCacheItemRelationPublicBoundary(
+  allowlist: PublicRepositoryAllowlist,
+  input: CacheItemRelationPublicBoundaryInput,
+): void {
+  let candidateViolationCount = 0;
+  for (const candidate of input.relationCandidates) {
+    for (const node of relationCandidateNodes(candidate.relation)) {
+      if (
+        node.scope === "organization" &&
+        !isAllowlistedRepository(allowlist, node.repositoryOwner, node.repositoryName)
+      ) {
+        candidateViolationCount += 1;
+      }
+    }
+  }
+  let mutationViolationCount = 0;
+  for (const result of input.relationMutations) {
+    if (result.status !== "available") {
+      continue;
+    }
+    for (const reference of relationMutationReferences(result)) {
+      if (
+        isAllowlistedOrganizationOwner(allowlist, reference.repositoryOwner) &&
+        !isAllowlistedRepository(allowlist, reference.repositoryOwner, reference.repositoryName)
+      ) {
+        mutationViolationCount += 1;
+      }
+    }
+  }
+  const violationCount = candidateViolationCount + mutationViolationCount;
+  if (violationCount > 0) {
+    let violationKind:
+      | "cache_relation_candidate"
+      | "cache_relation_mutation"
+      | "cache_relation_candidate_and_mutation";
+    if (candidateViolationCount > 0 && mutationViolationCount > 0) {
+      violationKind = "cache_relation_candidate_and_mutation";
+    } else if (candidateViolationCount > 0) {
+      violationKind = "cache_relation_candidate";
+    } else {
+      violationKind = "cache_relation_mutation";
+    }
+    throw new GitHubPublicBoundaryViolationError({
+      scope: "cache_item_relation",
+      sourceItemNodeId: input.sourceItemNodeId,
+      violationKind,
       violationCount,
     });
   }
