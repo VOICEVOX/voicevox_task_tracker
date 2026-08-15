@@ -92,7 +92,11 @@ export class PublicRepositoryAllowlist {
   public require(repositoryId: GitHubRepositoryId): PublicRepository {
     const repository = this.#repositoriesById.get(repositoryId);
     if (repository == null) {
-      throw new GitHubPublicBoundaryViolationError(1);
+      throw new GitHubPublicBoundaryViolationError({
+        scope: "generic",
+        violationKind: "repository_id_not_allowlisted",
+        violationCount: 1,
+      });
     }
     return repository;
   }
@@ -117,6 +121,10 @@ export function assertPublicRepositoryBoundary(
     }
   }
   if (violationCount > 0) {
-    throw new GitHubPublicBoundaryViolationError(violationCount);
+    throw new GitHubPublicBoundaryViolationError({
+      scope: "generic",
+      violationKind: "repository_set_not_allowlisted",
+      violationCount,
+    });
   }
 }

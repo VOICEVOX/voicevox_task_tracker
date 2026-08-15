@@ -268,13 +268,37 @@ export class GitHubRepositoryInventoryError extends GitHubClientError {
   }
 }
 
+type GitHubPublicBoundaryViolationDetails =
+  | Readonly<{
+      scope: "cache_item_relation";
+      sourceItemNodeId: GitHubNodeId;
+      violationKind:
+        | "cache_relation_candidate"
+        | "cache_relation_mutation"
+        | "cache_relation_candidate_and_mutation";
+      violationCount: number;
+    }>
+  | Readonly<{
+      scope: "generic";
+      violationKind:
+        | "repository_id_not_allowlisted"
+        | "repository_set_not_allowlisted"
+        | "item_url_repository_not_allowlisted"
+        | "referenced_item_not_public"
+        | "cache_repository_identity_mismatch";
+      violationCount: number;
+    }>;
+
 /** 公開allowlist外のリポジトリ参照を表す。 */
 export class GitHubPublicBoundaryViolationError extends GitHubClientError {
-  public readonly violationCount: number;
+  public readonly details: GitHubPublicBoundaryViolationDetails;
 
-  public constructor(violationCount: number) {
-    super(`公開allowlist外のリポジトリ参照を検出しました。件数: ${violationCount.toString()}`, {});
-    this.violationCount = violationCount;
+  public constructor(details: GitHubPublicBoundaryViolationDetails) {
+    super(
+      `公開allowlist外のリポジトリ参照を検出しました。件数: ${details.violationCount.toString()}`,
+      {},
+    );
+    this.details = Object.freeze(details);
   }
 }
 

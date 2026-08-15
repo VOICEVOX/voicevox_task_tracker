@@ -635,7 +635,11 @@ function parseGitHubItemUrl(
       candidate.name.toLowerCase() === repositoryName.toLowerCase(),
   );
   if (repository == null) {
-    throw new GitHubPublicBoundaryViolationError(1);
+    throw new GitHubPublicBoundaryViolationError({
+      scope: "generic",
+      violationKind: "item_url_repository_not_allowlisted",
+      violationCount: 1,
+    });
   }
   const number = Number(numberSource);
   if (!Number.isSafeInteger(number) || number <= 0) {

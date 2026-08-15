@@ -8,6 +8,7 @@ import {
   GitHubGraphQLResponseError,
   GitHubGraphQLRetryExhaustedError,
   GitHubItemDetailCollectionError,
+  GitHubPublicBoundaryViolationError,
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
   GitHubRetryExhaustedError,
@@ -284,6 +285,22 @@ function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): v
       key: "item",
       value: `${error.repositoryOwner}/${error.repositoryName}#${error.number.toString()}`,
     });
+  }
+  if (error instanceof GitHubPublicBoundaryViolationError) {
+    fields.push({
+      key: "publicBoundaryViolationKind",
+      value: error.details.violationKind,
+    });
+    fields.push({
+      key: "publicBoundaryViolationCount",
+      value: error.details.violationCount.toString(),
+    });
+    if (error.details.scope === "cache_item_relation") {
+      fields.push({
+        key: "sourceItemNodeId",
+        value: error.details.sourceItemNodeId,
+      });
+    }
   }
   if (error instanceof CliRelationExpansionLimitError) {
     fields.push({ key: "relationExpansionLimit", value: error.limit.toString() });

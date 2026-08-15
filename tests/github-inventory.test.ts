@@ -346,7 +346,12 @@ describe("公開境界guard", () => {
       if (!(error instanceof GitHubPublicBoundaryViolationError)) {
         throw error;
       }
-      expect(error.violationCount).toBe(1);
+      expect(error.details.violationCount).toBe(1);
+      expect(error.details).toEqual({
+        scope: "generic",
+        violationKind: "repository_set_not_allowlisted",
+        violationCount: 1,
+      });
       expect(error.message).not.toContain(privateSentinelId);
     }
   });

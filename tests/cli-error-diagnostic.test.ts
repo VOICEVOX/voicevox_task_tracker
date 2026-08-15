@@ -20,6 +20,7 @@ import {
 import {
   GitHubGraphQLResponseError,
   GitHubItemDetailCollectionError,
+  GitHubPublicBoundaryViolationError,
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
 } from "../src/github/index.js";
@@ -481,6 +482,60 @@ describe("safeErrorDiagnostic", () => {
     expect(diagnostic).not.toContain(url);
     expect(diagnostic).not.toContain(title);
     expect(diagnostic).not.toContain(body);
+  });
+
+  it("公開境界違反からcache item relationの構造化診断だけを出す", () => {
+    const sourceItemNodeId = createGitHubNodeId("I_public_boundary_source");
+    const ownerCanary = "owner-boundary-canary";
+    const repositoryCanary = "repository-boundary-canary";
+    const urlCanary =
+      "https://github.com/owner-boundary-canary/repository-boundary-canary/issues/1";
+    const bodyCanary = "body-boundary-canary";
+    const targetNodeIdCanary = "I_boundary_target_canary";
+    const cacheKeyCanary = "sha256:boundary-cache-key-canary";
+    const error = new GitHubPublicBoundaryViolationError({
+      scope: "cache_item_relation",
+      sourceItemNodeId,
+      violationKind: "cache_relation_candidate_and_mutation",
+      violationCount: 3,
+    });
+    delete error.stack;
+    Object.defineProperties(error, {
+      owner: { value: ownerCanary },
+      repository: { value: repositoryCanary },
+      url: { value: urlCanary },
+      body: { value: bodyCanary },
+      targetNodeId: { value: targetNodeIdCanary },
+      cacheKey: { value: cacheKeyCanary },
+    });
+
+    expect(safeErrorDiagnostic("completeness_validation", error)).toBe(
+      "stage=completeness_validation errorType=GitHubPublicBoundaryViolationError publicBoundaryViolationKind=cache_relation_candidate_and_mutation publicBoundaryViolationCount=3 sourceItemNodeId=I_public_boundary_source",
+    );
+    for (const canary of [
+      ownerCanary,
+      repositoryCanary,
+      urlCanary,
+      bodyCanary,
+      targetNodeIdCanary,
+      cacheKeyCanary,
+    ]) {
+      expect(safeErrorDiagnostic("completeness_validation", error)).not.toContain(canary);
+    }
+  });
+
+  it("generic公開境界違反からsource item node IDを出さない", () => {
+    const error = new GitHubPublicBoundaryViolationError({
+      scope: "generic",
+      violationKind: "repository_id_not_allowlisted",
+      violationCount: 1,
+    });
+    delete error.stack;
+
+    expect(safeErrorDiagnostic("incremental_collection", error)).toBe(
+      "stage=incremental_collection errorType=GitHubPublicBoundaryViolationError publicBoundaryViolationKind=repository_id_not_allowlisted publicBoundaryViolationCount=1",
+    );
+    expect(safeErrorDiagnostic("incremental_collection", error)).not.toContain("sourceItemNodeId=");
   });
 
   it("責務再生retry枯渇エラーからcause連鎖と安全な項目識別情報を診断へ出す", () => {

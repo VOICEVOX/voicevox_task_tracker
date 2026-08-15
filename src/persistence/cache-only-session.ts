@@ -263,7 +263,11 @@ function assertRepositoryAllowlisted(
 ): void {
   const publicRepository = allowlist.require(repositoryId);
   if (publicRepository.owner !== owner || publicRepository.name !== name) {
-    throw new GitHubPublicBoundaryViolationError(1);
+    throw new GitHubPublicBoundaryViolationError({
+      scope: "generic",
+      violationKind: "cache_repository_identity_mismatch",
+      violationCount: 1,
+    });
   }
 }
 
@@ -341,17 +345,18 @@ function assertRelationPublicBoundary(
   document: GitHubItemCacheDocument,
   allowlist: PublicRepositoryAllowlist,
 ): void {
-  let violationCount = 0;
+  let candidateViolationCount = 0;
   for (const candidate of document.relationCandidates) {
     for (const node of relationCandidateNodes(candidate.relation)) {
       if (
         node.scope === "organization" &&
         !isAllowlistedRepository(allowlist, node.repositoryOwner, node.repositoryName)
       ) {
-        violationCount += 1;
+        candidateViolationCount += 1;
       }
     }
   }
+  let mutationViolationCount = 0;
   for (const result of document.relationMutations) {
     if (result.status !== "available") {
       continue;
@@ -361,12 +366,29 @@ function assertRelationPublicBoundary(
         isAllowlistedOrganizationOwner(allowlist, reference.repositoryOwner) &&
         !isAllowlistedRepository(allowlist, reference.repositoryOwner, reference.repositoryName)
       ) {
-        violationCount += 1;
+        mutationViolationCount += 1;
       }
     }
   }
+  const violationCount = candidateViolationCount + mutationViolationCount;
   if (violationCount > 0) {
-    throw new GitHubPublicBoundaryViolationError(violationCount);
+    let violationKind:
+      | "cache_relation_candidate"
+      | "cache_relation_mutation"
+      | "cache_relation_candidate_and_mutation";
+    if (candidateViolationCount > 0 && mutationViolationCount > 0) {
+      violationKind = "cache_relation_candidate_and_mutation";
+    } else if (candidateViolationCount > 0) {
+      violationKind = "cache_relation_candidate";
+    } else {
+      violationKind = "cache_relation_mutation";
+    }
+    throw new GitHubPublicBoundaryViolationError({
+      scope: "cache_item_relation",
+      sourceItemNodeId: document.nodeId,
+      violationKind,
+      violationCount,
+    });
   }
 }
 

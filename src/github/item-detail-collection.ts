@@ -829,7 +829,11 @@ function normalizeAssignee(
 
 function normalizeReferencedItem(item: RawReferencedItem): GitHubReferencedItem {
   if (item.repository.visibility !== "PUBLIC") {
-    throw new GitHubPublicBoundaryViolationError(1);
+    throw new GitHubPublicBoundaryViolationError({
+      scope: "generic",
+      violationKind: "referenced_item_not_public",
+      violationCount: 1,
+    });
   }
   const nodeId = createGitHubNodeId(item.id);
   const repositoryId = createGitHubRepositoryId(item.repository.id);

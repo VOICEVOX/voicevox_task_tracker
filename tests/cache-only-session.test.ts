@@ -70,6 +70,20 @@ const publicRepository: Repository = Object.freeze({
 });
 const allowlist = createPublicRepositoryAllowlist([publicRepository]);
 
+async function capturePublicBoundaryViolation(
+  operation: Promise<unknown>,
+): Promise<GitHubPublicBoundaryViolationError> {
+  try {
+    await operation;
+  } catch (error: unknown) {
+    if (error instanceof GitHubPublicBoundaryViolationError) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error("公開境界違反が検出されませんでした");
+}
+
 function documentPath(directory: string, kind: string, identifier: string): string {
   return `${directory}/${hashCanonicalJson({ identifier, kind }).slice("sha256:".length)}.json`;
 }
@@ -928,12 +942,18 @@ describe("cache-only永続化session", () => {
     const adapter = new MemoryStateBranchAdapter();
     const session = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
 
-    await expect(
+    const error = await capturePublicBoundaryViolation(
       session.persist({
         ...createPersistenceInput(retainedAt),
         itemCaches: [invalidItem],
       }),
-    ).rejects.toBeInstanceOf(GitHubPublicBoundaryViolationError);
+    );
+    expect(error.details).toEqual({
+      scope: "cache_item_relation",
+      sourceItemNodeId: openItemNodeId,
+      violationKind: "cache_relation_candidate",
+      violationCount: 1,
+    });
   });
 
   it("allowlist organization ownerを指すrelation mutationのrepositoryを再検証する", async () => {
@@ -944,12 +964,60 @@ describe("cache-only永続化session", () => {
     const adapter = new MemoryStateBranchAdapter();
     const session = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
 
-    await expect(
+    const error = await capturePublicBoundaryViolation(
       session.persist({
         ...createPersistenceInput(retainedAt),
         itemCaches: [invalidItem],
       }),
-    ).rejects.toBeInstanceOf(GitHubPublicBoundaryViolationError);
+    );
+    expect(error.details).toEqual({
+      scope: "cache_item_relation",
+      sourceItemNodeId: openItemNodeId,
+      violationKind: "cache_relation_mutation",
+      violationCount: 1,
+    });
+  });
+
+  it("relation candidateとmutationの公開境界違反を区別して集計する", async () => {
+    const candidate = createOpenItemCache().relationCandidates[0];
+    if (candidate == null) {
+      throw new Error("organization relation candidateがありません");
+    }
+    if (candidate.relation.type !== "unclassified") {
+      throw new Error("organization relation candidateの種別が不正です");
+    }
+    const invalidItem = {
+      ...createOpenItemCache(),
+      relationCandidates: [
+        {
+          ...candidate,
+          relation: {
+            ...candidate.relation,
+            referenced: {
+              ...candidate.relation.referenced,
+              repositoryName: "candidate-not-allowlisted",
+              url: "https://github.com/VOICEVOX/candidate-not-allowlisted/issues/1",
+            },
+          },
+        },
+      ],
+      relationMutations: [createRelationMutationResult("VOICEVOX", "mutation-not-allowlisted")],
+    };
+    const adapter = new MemoryStateBranchAdapter();
+    const session = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
+
+    const error = await capturePublicBoundaryViolation(
+      session.persist({
+        ...createPersistenceInput(retainedAt),
+        itemCaches: [invalidItem],
+      }),
+    );
+    expect(error.details).toEqual({
+      scope: "cache_item_relation",
+      sourceItemNodeId: openItemNodeId,
+      violationKind: "cache_relation_candidate_and_mutation",
+      violationCount: 2,
+    });
   });
 
   it("allowlist organization外のexternal public relation mutationは公開判定せず保持する", async () => {
