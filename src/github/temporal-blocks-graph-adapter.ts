@@ -37,10 +37,6 @@ import {
   type GitHubReferencedItem,
   type GitHubTimelineEvent,
 } from "./item-detail-types.js";
-import {
-  adaptGitHubRelationMutationSource,
-  type GitHubRelationMutationSourceResult,
-} from "./relation-mutation-adapter.js";
 import { restoreGitHubItemCacheRelationMutationResult } from "./item-cache-adapter.js";
 
 type RelationReference = Readonly<{
@@ -55,12 +51,10 @@ type RelationEndpoint = RelationReference &
     nodeId: GraphNodeId;
   }>;
 
-type FreshRelationMutationResult = GitHubRelationMutationSourceResult;
-
 /** fresh detailからtemporal blocks graph replay入力を作る項目。 */
 export type FreshTemporalBlocksItem = Readonly<{
   detail: GitHubItemDetail;
-  itemCreatedAt: UtcIsoDateTime;
+  relationMutations: readonly RelationMutationResult[];
   replay: ReplayItemHistoryResult;
 }>;
 
@@ -88,7 +82,7 @@ export type MixedTemporalBlocksGraphItem =
   | Readonly<{
       kind: "fresh";
       detail: GitHubItemDetail;
-      itemCreatedAt: UtcIsoDateTime;
+      relationMutations: readonly RelationMutationResult[];
       replay: ReplayItemHistoryResult;
     }>
   | Readonly<{
@@ -777,68 +771,6 @@ function assertRelationMutationSourceKind(contentSourceId: SourceId): void {
 
 function createRelationMutationHistory(
   originItemNodeId: GraphNodeId,
-  results: readonly FreshRelationMutationResult[],
-  endpoints: readonly RelationEndpoint[],
-  canonicalEdges: readonly DependencyReplayEdge[],
-  historicalExactBlocksEdges: readonly DependencyReplayEdge[],
-  unknownRelationMutations: TemporalBlocksUnknownRelationMutation[],
-): RelationEventHistory {
-  const events: DependencyReplayInputEvent[] = [];
-  for (const sourceResult of results) {
-    if (sourceResult.result.status !== "available") {
-      unknownRelationMutations.push(
-        createUnknownRelationMutation(
-          originItemNodeId,
-          sourceResult.contentSourceId,
-          sourceResult.result.reason,
-          createUnknownRelationMutationMetadata(sourceResult.result),
-        ),
-      );
-      continue;
-    }
-    if (sourceResult.result.temporalKnowledge.status !== "exact") {
-      unknownRelationMutations.push(
-        createUnknownRelationMutation(
-          originItemNodeId,
-          sourceResult.contentSourceId,
-          sourceResult.result.temporalKnowledge.reason,
-          createUnknownRelationMutationMetadata({ status: "unavailable" }),
-        ),
-      );
-      continue;
-    }
-    for (const mutation of sourceResult.result.mutations) {
-      const resolved = relationMutationEvent(
-        originItemNodeId,
-        mutation,
-        endpoints,
-        canonicalEdges,
-        historicalExactBlocksEdges,
-      );
-      if (resolved.status === "unknown") {
-        unknownRelationMutations.push(
-          createUnknownRelationMutation(
-            originItemNodeId,
-            sourceResult.contentSourceId,
-            "relation_endpoint_unavailable",
-            createUnknownRelationMutationMetadata({
-              status: "available",
-              sourceId: mutation.sourceId,
-              editedAt: mutation.editedAt,
-              sequence: mutation.sequence,
-            }),
-          ),
-        );
-        continue;
-      }
-      events.push(resolved.event);
-    }
-  }
-  return Object.freeze({ status: "exact", events: Object.freeze(events) });
-}
-
-function createCachedRelationMutationHistory(
-  originItemNodeId: GraphNodeId,
   results: readonly RelationMutationResult[],
   endpoints: readonly RelationEndpoint[],
   canonicalEdges: readonly DependencyReplayEdge[],
@@ -1128,28 +1060,10 @@ function createGraphInput(
         status: "exact",
         events: adaptFreshDependencyEvents(source.detail.nodeId, source.detail.timeline),
       });
-      const mutationResults = [
-        adaptGitHubRelationMutationSource({
-          kind: "item_body",
-          contentSourceId: source.detail.bodySourceId,
-          contentCreatedAt: source.itemCreatedAt,
-          currentMarkdown: source.detail.body,
-          history: source.detail.bodyUserContentEdits,
-        }),
-        ...source.detail.comments.map((comment) =>
-          adaptGitHubRelationMutationSource({
-            kind: "issue_comment",
-            contentSourceId: comment.sourceId,
-            contentCreatedAt: comment.createdAt,
-            currentMarkdown: comment.body,
-            history: comment.userContentEdits,
-          }),
-        ),
-      ];
       relationHistories.push(
         createRelationMutationHistory(
           source.detail.nodeId,
-          mutationResults,
+          source.relationMutations,
           endpoints,
           current.canonicalBlocksEdges,
           historicalExactBlocksEdges,
@@ -1176,7 +1090,7 @@ function createGraphInput(
       adaptCacheDependencyEvents(source.document.nodeId, source.document.history),
     );
     relationHistories.push(
-      createCachedRelationMutationHistory(
+      createRelationMutationHistory(
         source.document.nodeId,
         source.document.relationMutations.map(restoreGitHubItemCacheRelationMutationResult),
         endpoints,
@@ -1207,7 +1121,7 @@ function createFreshSource(item: FreshTemporalBlocksItem): MixedTemporalBlocksGr
   return Object.freeze({
     kind: "fresh",
     detail: item.detail,
-    itemCreatedAt: item.itemCreatedAt,
+    relationMutations: item.relationMutations,
     replay: item.replay,
   });
 }

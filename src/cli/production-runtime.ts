@@ -168,6 +168,7 @@ import {
   createGitHubItemCacheDocument,
   createGitHubPullRequestVolatileMetadataFromDetail,
   restoreGitHubItemCacheForAnalysis,
+  sanitizeRelationMutationsForPublicBoundary,
   validateGitHubItemCacheAiEntry,
   type GitHubItemCacheAnalysisObservation,
   type GitHubItemCacheAnalysisSource,
@@ -196,6 +197,7 @@ import {
   type RelationExtractionItem,
   type RelationMutationResult,
 } from "../graph/index.js";
+import { type RelationTextReference } from "../graph/extract-relation-candidates.js";
 import {
   generatePublicData,
   PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
@@ -383,6 +385,7 @@ type RuntimeItemAnalysisSource =
       kind: "fresh";
       item: FreshObservedGitHubItem;
       detail: GitHubItemDetail;
+      relationMutations: readonly RelationMutationResult[];
       replay: ReplayItemHistoryResult;
     }>
   | Readonly<{
@@ -2081,6 +2084,48 @@ type FreshItemRelationBoundaryInput = Readonly<{
   relationMutations: readonly RelationMutationResult[];
 }>;
 
+function verifiedExternalReferencesByContentSource(
+  source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>,
+  relationCandidates: readonly RelationCandidate[],
+): ReadonlyMap<SourceId, readonly RelationTextReference[]> {
+  const referencesByContentSource = new Map<SourceId, RelationTextReference[]>();
+  for (const relationMutation of source.relationMutations) {
+    referencesByContentSource.set(relationMutation.contentSourceId, []);
+  }
+  for (const candidate of relationCandidates) {
+    if (
+      !relationNodes(candidate.relation).some(
+        (node) => node.scope === "organization" && node.nodeId === source.item.nodeId,
+      )
+    ) {
+      continue;
+    }
+    for (const sourceId of candidate.sourceIds) {
+      const references = referencesByContentSource.get(sourceId);
+      if (references == null) {
+        continue;
+      }
+      for (const node of relationNodes(candidate.relation)) {
+        if (node.scope !== "external_public") {
+          continue;
+        }
+        references.push({
+          repositoryOwner: node.repositoryOwner,
+          repositoryName: node.repositoryName,
+          itemType: node.githubItemType,
+          number: node.number,
+        });
+      }
+    }
+  }
+  return new Map(
+    [...referencesByContentSource.entries()].map(([contentSourceId, references]) => [
+      contentSourceId,
+      Object.freeze(references),
+    ]),
+  );
+}
+
 function createFreshItemRelationBoundaryInput(
   source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>,
   relationCandidates: readonly RelationCandidate[],
@@ -2088,11 +2133,35 @@ function createFreshItemRelationBoundaryInput(
   return Object.freeze({
     sourceItemNodeId: source.item.nodeId,
     relationCandidates: candidatesForNode(source.item.nodeId, relationCandidates),
-    relationMutations: Object.freeze(
-      adaptGitHubItemDetailRelationMutations(source.detail, source.item.createdAt).map(
-        (result) => result.result,
-      ),
+    relationMutations: source.relationMutations,
+  });
+}
+
+function sanitizeFreshAnalysisSourceForPublicBoundary(
+  source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>,
+  relationCandidates: readonly RelationCandidate[],
+  organization: string,
+  allowlist: PublicRepositoryAllowlist,
+): Readonly<{
+  source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>;
+  unknownContentSourceCount: number;
+}> {
+  const sanitized = sanitizeRelationMutationsForPublicBoundary({
+    sourceItemNodeId: source.item.nodeId,
+    organization,
+    allowlist,
+    verifiedExternalReferencesByContentSource: verifiedExternalReferencesByContentSource(
+      source,
+      relationCandidates,
     ),
+    relationMutations: source.relationMutations,
+  });
+  return Object.freeze({
+    source: Object.freeze({
+      ...source,
+      relationMutations: sanitized.relationMutations,
+    }),
+    unknownContentSourceCount: sanitized.unknownContentSourceCount,
   });
 }
 
@@ -4789,7 +4858,7 @@ function createTemporalGraphReplay(
       ? Object.freeze({
           kind: "fresh",
           detail: source.detail,
-          itemCreatedAt: source.item.createdAt,
+          relationMutations: source.relationMutations,
           replay: source.replay,
         })
       : Object.freeze({
@@ -7116,6 +7185,9 @@ function createFreshReplaySource(
     kind: "fresh",
     item: observation,
     detail,
+    relationMutations: Object.freeze(
+      adaptGitHubItemDetailRelationMutations(detail, item.createdAt).map((result) => result.result),
+    ),
     replay: replayGitHubItemHistory({
       item,
       detail,
@@ -7490,6 +7562,7 @@ function rebaseFreshRepositoryItemCollectionWithDetailVolatileMetadata(
       kind: "fresh",
       item: observation,
       detail: source.detail,
+      relationMutations: source.relationMutations,
       replay: replayGitHubItemHistory({
         item,
         detail: source.detail,
@@ -8102,8 +8175,31 @@ async function collectRelationExpandedItems(
         : 0,
     });
     if (nextRequests.length === 0) {
+      const diagnostics = [...aggregate.diagnostics];
+      const analysisSources = aggregate.analysisSources.map((source) => {
+        if (source.kind === "cached") {
+          return source;
+        }
+        const sanitized = sanitizeFreshAnalysisSourceForPublicBoundary(
+          source,
+          completedRelationCandidates.candidates,
+          configuration.config.organization,
+          repositoryInventory.allowlist,
+        );
+        if (sanitized.unknownContentSourceCount > 0) {
+          diagnostics.push(
+            `relationMutationUnknown sourceItemNodeId=${source.item.nodeId} reason=repository_public_boundary_unverified count=${sanitized.unknownContentSourceCount.toString()}`,
+          );
+        }
+        return sanitized.source;
+      });
+      const sanitizedAggregate = Object.freeze({
+        ...aggregate,
+        analysisSources: Object.freeze(analysisSources),
+        diagnostics: Object.freeze(diagnostics),
+      });
       assertFreshItemRelationPublicBoundary(
-        aggregate.analysisSources,
+        sanitizedAggregate.analysisSources,
         completedRelationCandidates.candidates,
         repositoryInventory.allowlist,
       );
@@ -8112,7 +8208,7 @@ async function collectRelationExpandedItems(
         repositoryResultsById,
       );
       return Object.freeze({
-        ...aggregate,
+        ...sanitizedAggregate,
         evaluatedAt,
         relationCandidates: completedRelationCandidates.candidates,
         droppedRelationCandidateCount: completedRelationCandidates.droppedCount,
@@ -8222,6 +8318,7 @@ function finalizeRuntimeItemAnalysisSource(
       kind: "fresh",
       item: finalizeFreshObservedItemObservation(source.item, evaluatedAt),
       detail: finalizeItemDetailObservation(source.detail, evaluatedAt),
+      relationMutations: source.relationMutations,
       replay: source.replay,
     });
   }

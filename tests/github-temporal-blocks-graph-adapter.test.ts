@@ -33,10 +33,11 @@ import {
   type GitHubItemCacheDocument,
 } from "../src/persistence/cache-documents.js";
 import {
+  adaptGitHubItemDetailRelationMutations,
   adaptGitHubRelationMutationSource,
   type GitHubRelationMutationSourceResult,
 } from "../src/github/relation-mutation-adapter.js";
-import { type RelationCandidate } from "../src/graph/relation-candidate-types.js";
+import { type RelationCandidate, type RelationMutationResult } from "../src/graph/index.js";
 import { replayDependencyEvents } from "../src/graph/replay-dependency-events.js";
 import {
   replayTemporalBlocksGraph,
@@ -456,6 +457,12 @@ function reverseCachedMutationSource(
   };
 }
 
+function createRelationMutations(detail: GitHubItemDetail): readonly RelationMutationResult[] {
+  return Object.freeze(
+    adaptGitHubItemDetailRelationMutations(detail, createdAt).map((source) => source.result),
+  );
+}
+
 describe("GitHub temporal blocks graph adapter", () => {
   it("fresh detailとrawを含まないcacheでnative dependency入力を同値にする", () => {
     const detail = createIssueDetail(blockedNodeId, {
@@ -480,7 +487,13 @@ describe("GitHub temporal blocks graph adapter", () => {
     const fresh = adaptFreshTemporalBlocksGraph({
       current,
       relationCandidates: [],
-      items: [{ detail, itemCreatedAt: createdAt, replay: createReplay(blockedNodeId, "issue") }],
+      items: [
+        {
+          detail,
+          relationMutations: createRelationMutations(detail),
+          replay: createReplay(blockedNodeId, "issue"),
+        },
+      ],
     });
     const cached = adaptCachedTemporalBlocksGraph({
       current,
@@ -513,7 +526,7 @@ describe("GitHub temporal blocks graph adapter", () => {
         {
           kind: "fresh",
           detail,
-          itemCreatedAt: createdAt,
+          relationMutations: createRelationMutations(detail),
           replay: createReplay(blockedNodeId, "issue"),
         },
       ],
@@ -583,7 +596,13 @@ describe("GitHub temporal blocks graph adapter", () => {
       adaptFreshTemporalBlocksGraph({
         current: createCurrentGraph([blockedNodeId], []),
         relationCandidates: [],
-        items: [{ detail, itemCreatedAt: createdAt, replay }],
+        items: [
+          {
+            detail,
+            relationMutations: createRelationMutations(detail),
+            replay,
+          },
+        ],
       }),
     ).toThrow("timeline sequence");
   });
@@ -607,7 +626,13 @@ describe("GitHub temporal blocks graph adapter", () => {
     const result = adaptFreshTemporalBlocksGraph({
       current: createCurrentGraph([blockerNodeId, blockedNodeId], []),
       relationCandidates: [],
-      items: [{ detail, itemCreatedAt: createdAt, replay: createReplay(blockedNodeId, "issue") }],
+      items: [
+        {
+          detail,
+          relationMutations: createRelationMutations(detail),
+          replay: createReplay(blockedNodeId, "issue"),
+        },
+      ],
     });
 
     expect(result.input.relationHistory.status).toBe("exact");
@@ -683,7 +708,13 @@ describe("GitHub temporal blocks graph adapter", () => {
     const fresh = adaptFreshTemporalBlocksGraph({
       current,
       relationCandidates: [candidate],
-      items: [{ detail, itemCreatedAt: createdAt, replay: createReplay(blockedNodeId, "issue") }],
+      items: [
+        {
+          detail,
+          relationMutations: createRelationMutations(detail),
+          replay: createReplay(blockedNodeId, "issue"),
+        },
+      ],
     });
     const cached = adaptCachedTemporalBlocksGraph({
       current,
@@ -747,7 +778,13 @@ describe("GitHub temporal blocks graph adapter", () => {
         [{ fromNodeId: blockerNodeId, toNodeId: blockedNodeId }],
       ),
       relationCandidates: [createUnclassifiedCandidate()],
-      items: [{ detail, itemCreatedAt: createdAt, replay: createReplay(blockedNodeId, "issue") }],
+      items: [
+        {
+          detail,
+          relationMutations: createRelationMutations(detail),
+          replay: createReplay(blockedNodeId, "issue"),
+        },
+      ],
     });
     if (adapted.input.relationHistory.status !== "exact") {
       throw new TypeError("unclassified本文候補のrelation historyがexactではありません");
@@ -796,6 +833,10 @@ describe("GitHub temporal blocks graph adapter", () => {
         ],
       },
     });
+    const blockerDetail = createIssueDetail(blockerNodeId, {
+      body: "",
+      bodyUserContentEdits: availableEmptyEdits,
+    });
     const adapted = adaptMixedTemporalBlocksGraph({
       current: createMixedCurrentGraph([blockerNodeId, blockedNodeId], []),
       notificationHistory: {
@@ -807,16 +848,13 @@ describe("GitHub temporal blocks graph adapter", () => {
         {
           kind: "fresh",
           detail,
-          itemCreatedAt: createdAt,
+          relationMutations: createRelationMutations(detail),
           replay: createReplay(blockedNodeId, "issue"),
         },
         {
           kind: "fresh",
-          detail: createIssueDetail(blockerNodeId, {
-            body: "",
-            bodyUserContentEdits: availableEmptyEdits,
-          }),
-          itemCreatedAt: createdAt,
+          detail: blockerDetail,
+          relationMutations: createRelationMutations(blockerDetail),
           replay: createReplay(blockerNodeId, "issue"),
         },
       ],
@@ -886,7 +924,13 @@ describe("GitHub temporal blocks graph adapter", () => {
     const fresh = adaptFreshTemporalBlocksGraph({
       current,
       relationCandidates: [firstCandidate, secondCandidate],
-      items: [{ detail, itemCreatedAt: createdAt, replay: createReplay(blockedNodeId, "issue") }],
+      items: [
+        {
+          detail,
+          relationMutations: createRelationMutations(detail),
+          replay: createReplay(blockedNodeId, "issue"),
+        },
+      ],
     });
     const mutationSources = [mutationSource];
     const firstMutationSource = mutationSources[0];
@@ -958,6 +1002,10 @@ describe("GitHub temporal blocks graph adapter", () => {
     });
     const cachedAddedSourceId = sourceId("github_timeline_event", "cached-exact-added");
     const cachedRemovedSourceId = sourceId("github_timeline_event", "cached-exact-removed");
+    const blockerDetail = createIssueDetail(blockerNodeId, {
+      body: "",
+      bodyUserContentEdits: availableEmptyEdits,
+    });
     const adapted = adaptMixedTemporalBlocksGraph({
       current: createMixedCurrentGraph(
         [blockerNodeId, blockedNodeId, cachedExactBlockerNodeId, cachedExactBlockedNodeId],
@@ -972,16 +1020,13 @@ describe("GitHub temporal blocks graph adapter", () => {
         {
           kind: "fresh",
           detail,
-          itemCreatedAt: createdAt,
+          relationMutations: createRelationMutations(detail),
           replay: createReplay(blockedNodeId, "issue"),
         },
         {
           kind: "fresh",
-          detail: createIssueDetail(blockerNodeId, {
-            body: "",
-            bodyUserContentEdits: availableEmptyEdits,
-          }),
-          itemCreatedAt: createdAt,
+          detail: blockerDetail,
+          relationMutations: createRelationMutations(blockerDetail),
           replay: createReplay(blockerNodeId, "issue"),
         },
         {
@@ -1133,7 +1178,7 @@ describe("GitHub temporal blocks graph adapter", () => {
       items: [
         {
           detail,
-          itemCreatedAt: createdAt,
+          relationMutations: createRelationMutations(detail),
           replay: createReplay(pullRequestNodeId, "pull_request"),
         },
       ],
@@ -1164,7 +1209,13 @@ describe("GitHub temporal blocks graph adapter", () => {
       adaptFreshTemporalBlocksGraph({
         current: createCurrentGraph([blockerNodeId, blockedNodeId], []),
         relationCandidates: [],
-        items: [{ detail, itemCreatedAt: createdAt, replay: createReplay(blockedNodeId, "issue") }],
+        items: [
+          {
+            detail,
+            relationMutations: createRelationMutations(detail),
+            replay: createReplay(blockedNodeId, "issue"),
+          },
+        ],
       }),
     ).toThrow("同じsource IDのイベントが重複");
   });
@@ -1194,7 +1245,7 @@ describe("GitHub temporal blocks graph adapter", () => {
         {
           kind: "fresh",
           detail,
-          itemCreatedAt: createdAt,
+          relationMutations: createRelationMutations(detail),
           replay: createReplay(blockedNodeId, "issue"),
         },
         {
@@ -1257,7 +1308,7 @@ describe("GitHub temporal blocks graph adapter", () => {
         {
           kind: "fresh",
           detail,
-          itemCreatedAt: createdAt,
+          relationMutations: createRelationMutations(detail),
           replay: createReplay(blockedNodeId, "issue"),
         },
         {
@@ -1292,6 +1343,14 @@ describe("GitHub temporal blocks graph adapter", () => {
       body: "",
       bodyUserContentEdits: { availability: "unavailable", reason: "connection_null" },
     });
+    const sanitizedRelationMutations: readonly RelationMutationResult[] = [
+      {
+        status: "unknown",
+        contentSourceId: detail.bodySourceId,
+        reason: "repository_public_boundary_unverified",
+        edit: { status: "unavailable" },
+      },
+    ];
     const result = adaptMixedTemporalBlocksGraph({
       current: createMixedCurrentGraph(
         [blockerNodeId, blockedNodeId],
@@ -1303,7 +1362,7 @@ describe("GitHub temporal blocks graph adapter", () => {
         {
           kind: "fresh",
           detail,
-          itemCreatedAt: createdAt,
+          relationMutations: sanitizedRelationMutations,
           replay: createReplay(blockedNodeId, "issue"),
         },
         {
@@ -1332,7 +1391,7 @@ describe("GitHub temporal blocks graph adapter", () => {
       {
         originItemNodeId: blockedNodeId,
         contentSourceId: detail.bodySourceId,
-        reason: "connection_unavailable",
+        reason: "repository_public_boundary_unverified",
         edit: { status: "unavailable" },
       },
     ]);
@@ -1352,7 +1411,7 @@ describe("GitHub temporal blocks graph adapter", () => {
           {
             kind: "fresh",
             detail,
-            itemCreatedAt: createdAt,
+            relationMutations: createRelationMutations(detail),
             replay: createReplay(blockedNodeId, "issue"),
           },
           {
@@ -1403,13 +1462,13 @@ describe("GitHub temporal blocks graph adapter", () => {
           {
             kind: "fresh",
             detail: firstDetail,
-            itemCreatedAt: createdAt,
+            relationMutations: createRelationMutations(firstDetail),
             replay: createReplay(blockedNodeId, "issue"),
           },
           {
             kind: "fresh",
             detail: duplicateDetail,
-            itemCreatedAt: createdAt,
+            relationMutations: createRelationMutations(duplicateDetail),
             replay: createReplay(blockerNodeId, "issue"),
           },
         ],
@@ -1448,7 +1507,7 @@ describe("GitHub temporal blocks graph adapter", () => {
     const fresh = {
       kind: "fresh",
       detail,
-      itemCreatedAt: createdAt,
+      relationMutations: createRelationMutations(detail),
       replay: createReplay(blockedNodeId, "issue"),
     } satisfies MixedTemporalBlocksGraphItem;
     const cached = {

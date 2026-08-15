@@ -5,6 +5,7 @@ import {
   type GitHubNodeId,
   type GitHubRepositoryId,
   type Repository,
+  type SourceId,
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
@@ -227,7 +228,10 @@ type RelationMutationPublicBoundarySanitizerInput = Readonly<{
   sourceItemNodeId: GitHubNodeId;
   organization: string;
   allowlist: PublicRepositoryAllowlist;
-  verifiedExternalReferences: readonly RelationTextReference[];
+  verifiedExternalReferencesByContentSource: ReadonlyMap<
+    SourceId,
+    readonly RelationTextReference[]
+  >;
   relationMutations: readonly RelationMutationResult[];
 }>;
 
@@ -279,14 +283,20 @@ export function sanitizeRelationMutationsForPublicBoundary(
   relationMutations: readonly RelationMutationResult[];
   unknownContentSourceCount: number;
 }> {
-  const verifiedExternalReferenceKeys = new Set(
-    input.verifiedExternalReferences.map(createRelationMutationReferenceKey),
-  );
   const currentViolationKeys = new Set<string>();
   for (const result of input.relationMutations) {
     if (result.status !== "available") {
       continue;
     }
+    const verifiedExternalReferences = input.verifiedExternalReferencesByContentSource.get(
+      result.contentSourceId,
+    );
+    if (verifiedExternalReferences == null) {
+      throw new TypeError("relation mutationの公開参照証明がありません");
+    }
+    const verifiedExternalReferenceKeys = new Set(
+      verifiedExternalReferences.map(createRelationMutationReferenceKey),
+    );
     for (const reference of result.currentReferences) {
       if (
         isRelationPublicBoundaryViolation(
@@ -311,8 +321,19 @@ export function sanitizeRelationMutationsForPublicBoundary(
 
   const unknownContentSourceIds = new Set<AvailableRelationMutationResult["contentSourceId"]>();
   const relationMutations = input.relationMutations.map((result) => {
+    if (result.status !== "available") {
+      return result;
+    }
+    const verifiedExternalReferences = input.verifiedExternalReferencesByContentSource.get(
+      result.contentSourceId,
+    );
+    if (verifiedExternalReferences == null) {
+      throw new TypeError("relation mutationの公開参照証明がありません");
+    }
+    const verifiedExternalReferenceKeys = new Set(
+      verifiedExternalReferences.map(createRelationMutationReferenceKey),
+    );
     if (
-      result.status === "available" &&
       relationMutationHistoryReferences(result).some((reference) =>
         isRelationPublicBoundaryViolation(
           input.allowlist,

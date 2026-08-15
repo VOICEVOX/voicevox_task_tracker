@@ -107,7 +107,9 @@ function sanitize(
     sourceItemNodeId,
     organization,
     allowlist,
-    verifiedExternalReferences,
+    verifiedExternalReferencesByContentSource: new Map([
+      [contentSourceId, verifiedExternalReferences],
+    ]),
     relationMutations,
   });
 }
@@ -311,6 +313,42 @@ describe("relation mutation公開境界sanitizer", () => {
 
     expect(result.unknownContentSourceCount).toBe(0);
     expect(result.relationMutations).toEqual([relationMutation]);
+  });
+
+  it("別content sourceのproofを流用しない", () => {
+    const externalReference = createReference("external-owner", "public-external", "issue", 4);
+    const otherContentSourceId = buildSourceId(
+      "github_issue_comment",
+      "relation-mutation-boundary-comment",
+    );
+    const relationMutation = {
+      ...createAvailableResult({
+        currentReferences: [externalReference],
+        replayedReferences: [],
+        mutations: [],
+        unmatchedRemovals: [],
+        intervals: [],
+      }),
+      contentSourceId: otherContentSourceId,
+    };
+
+    let thrown: unknown;
+    try {
+      sanitizeRelationMutationsForPublicBoundary({
+        sourceItemNodeId,
+        organization,
+        allowlist,
+        verifiedExternalReferencesByContentSource: new Map([
+          [contentSourceId, [externalReference]],
+          [otherContentSourceId, []],
+        ]),
+        relationMutations: [relationMutation],
+      });
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(GitHubPublicBoundaryViolationError);
   });
 
   it("allowlist内と既存unknownを変更しない", () => {
