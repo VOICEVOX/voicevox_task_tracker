@@ -81,7 +81,8 @@ type RelationMutationUnknownReason =
   | "diff_null"
   | "deleted_edit"
   | "unsupported_diff_format"
-  | "markdown_reference_definition";
+  | "markdown_reference_definition"
+  | "repository_public_boundary_unverified";
 
 type RelationMutationUnknownBase = Readonly<{
   status: "unknown";
@@ -239,10 +240,14 @@ function compareReferenceKeys(
   left: RelationTextReference,
   right: RelationTextReference,
 ): -1 | 0 | 1 {
-  return compareStrings(referenceKey(left), referenceKey(right));
+  return compareStrings(
+    createRelationMutationReferenceKey(left),
+    createRelationMutationReferenceKey(right),
+  );
 }
 
-function referenceKey(reference: RelationTextReference): string {
+/** relation mutation参照のcanonical keyを生成する。 */
+export function createRelationMutationReferenceKey(reference: RelationTextReference): string {
   return `${reference.repositoryOwner.toLowerCase()}/${reference.repositoryName.toLowerCase()}#${reference.number.toString()}`;
 }
 
@@ -353,7 +358,7 @@ function parseSnapshot(
     if (!validation.success) {
       throw new TypeError("relation本文参照が不正です", { cause: validation.error });
     }
-    referencesByKey.set(referenceKey(reference), reference);
+    referencesByKey.set(createRelationMutationReferenceKey(reference), reference);
   }
   return Object.freeze([...referencesByKey.values()].sort(compareReferenceKeys));
 }
@@ -372,7 +377,7 @@ function parseCurrentSnapshot(
     if (!validation.success) {
       throw new TypeError("relation本文参照が不正です", { cause: validation.error });
     }
-    referencesByKey.set(referenceKey(reference), reference);
+    referencesByKey.set(createRelationMutationReferenceKey(reference), reference);
   }
   return Object.freeze([...referencesByKey.values()].sort(compareReferenceKeys));
 }
@@ -406,15 +411,19 @@ function appendDifference(
   edit: RelationMutationEdit,
   contentSourceId: SourceId,
 ): void {
-  const previousByKey = new Map(previous.map((reference) => [referenceKey(reference), reference]));
-  const nextByKey = new Map(next.map((reference) => [referenceKey(reference), reference]));
+  const previousByKey = new Map(
+    previous.map((reference) => [createRelationMutationReferenceKey(reference), reference]),
+  );
+  const nextByKey = new Map(
+    next.map((reference) => [createRelationMutationReferenceKey(reference), reference]),
+  );
   for (const reference of next) {
-    if (!previousByKey.has(referenceKey(reference))) {
+    if (!previousByKey.has(createRelationMutationReferenceKey(reference))) {
       mutations.push(createMutation(reference, "added", edit, contentSourceId));
     }
   }
   for (const reference of previous) {
-    if (!nextByKey.has(referenceKey(reference))) {
+    if (!nextByKey.has(createRelationMutationReferenceKey(reference))) {
       mutations.push(createMutation(reference, "removed", edit, contentSourceId));
     }
   }
@@ -449,7 +458,7 @@ function applyMutation(
   relationsByKey: Map<string, MutableRelation>,
   unmatchedRemovals: RelationMutation[],
 ): void {
-  const key = referenceKey(mutation.relation);
+  const key = createRelationMutationReferenceKey(mutation.relation);
   const relation = relationsByKey.get(key);
   if (mutation.action === "added") {
     if (relation == null) {
@@ -495,7 +504,7 @@ function confirmSnapshot(
   relationsByKey: ReadonlyMap<string, MutableRelation>,
 ): void {
   for (const reference of snapshot) {
-    const relation = relationsByKey.get(referenceKey(reference));
+    const relation = relationsByKey.get(createRelationMutationReferenceKey(reference));
     assertNonNullable(relation, "relation mutationのsnapshotに対応するintervalがありません");
     const lastInterval = relation.intervals.at(-1);
     if (lastInterval?.status !== "active") {
@@ -537,7 +546,11 @@ function sameReferenceSets(
     return false;
   }
   return left.every((reference) =>
-    right.some((candidate) => referenceKey(reference) === referenceKey(candidate)),
+    right.some(
+      (candidate) =>
+        createRelationMutationReferenceKey(reference) ===
+        createRelationMutationReferenceKey(candidate),
+    ),
   );
 }
 
@@ -636,12 +649,15 @@ function replayReferenceSet(
   unmatchedRemovals: readonly RelationMutation[];
 }> {
   const referencesByKey = new Map(
-    initialReferences.map((reference) => [referenceKey(reference), reference]),
+    initialReferences.map((reference) => [
+      createRelationMutationReferenceKey(reference),
+      reference,
+    ]),
   );
   const unmatchedRemovals: RelationMutation[] = [];
   for (const transition of transitions) {
     for (const mutation of transition.mutations) {
-      const key = referenceKey(mutation.relation);
+      const key = createRelationMutationReferenceKey(mutation.relation);
       if (mutation.action === "added") {
         referencesByKey.set(key, mutation.relation);
       } else if (!referencesByKey.delete(key)) {
@@ -780,7 +796,7 @@ export function extractRelationMutations(input: RelationMutationInput): Relation
   const relationsByKey = new Map<string, MutableRelation>();
   if (preexistingAt != null) {
     for (const reference of firstSnapshot.references) {
-      relationsByKey.set(referenceKey(reference), {
+      relationsByKey.set(createRelationMutationReferenceKey(reference), {
         relation: reference,
         intervals: [createPreexistingInterval(reference, firstSnapshot.edit, preexistingAt)],
       });

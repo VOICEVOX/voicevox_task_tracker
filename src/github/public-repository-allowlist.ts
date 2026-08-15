@@ -7,6 +7,11 @@ import {
   type Repository,
   type UtcIsoDateTime,
 } from "../domain/index.js";
+import {
+  createRelationMutationReferenceKey,
+  type RelationMutationResult,
+} from "../graph/relation-mutation.js";
+import { type RelationTextReference } from "../graph/extract-relation-candidates.js";
 import { GitHubPublicBoundaryViolationError, GitHubRepositoryInventoryError } from "./errors.js";
 
 const publicRepositoryIdSchema = z
@@ -216,6 +221,117 @@ function isAllowlistedOrganizationOwner(
   return allowlist.repositories.some(
     (repository) => repository.owner.toLowerCase() === owner.toLowerCase(),
   );
+}
+
+type RelationMutationPublicBoundarySanitizerInput = Readonly<{
+  sourceItemNodeId: GitHubNodeId;
+  organization: string;
+  allowlist: PublicRepositoryAllowlist;
+  verifiedExternalReferences: readonly RelationTextReference[];
+  relationMutations: readonly RelationMutationResult[];
+}>;
+
+type AvailableRelationMutationResult = Extract<RelationMutationResult, { status: "available" }>;
+
+type RelationMutationReference = AvailableRelationMutationResult["currentReferences"][number];
+
+function isRelationPublicBoundaryViolation(
+  allowlist: PublicRepositoryAllowlist,
+  organization: string,
+  verifiedExternalReferenceKeys: ReadonlySet<string>,
+  reference: RelationMutationReference,
+): boolean {
+  if (reference.repositoryOwner.toLowerCase() === organization.toLowerCase()) {
+    return !isAllowlistedRepository(allowlist, reference.repositoryOwner, reference.repositoryName);
+  }
+  return !verifiedExternalReferenceKeys.has(createRelationMutationReferenceKey(reference));
+}
+
+function relationMutationHistoryReferences(
+  result: AvailableRelationMutationResult,
+): readonly RelationMutationReference[] {
+  const references: RelationMutationReference[] = [
+    ...result.replayedReferences,
+    ...result.mutations.map((mutation) => mutation.relation),
+    ...result.unmatchedRemovals.map((mutation) => mutation.relation),
+  ];
+  if (result.temporalKnowledge.status === "exact") {
+    references.push(...result.temporalKnowledge.intervals.map((interval) => interval.relation));
+  }
+  return references;
+}
+
+function unknownRelationMutationResult(
+  contentSourceId: AvailableRelationMutationResult["contentSourceId"],
+): RelationMutationResult {
+  return Object.freeze({
+    status: "unknown",
+    contentSourceId,
+    reason: "repository_public_boundary_unverified",
+    edit: Object.freeze({ status: "unavailable" }),
+  });
+}
+
+/** relation mutationの現在違反を拒否し、履歴だけの未証明参照をunknownへ変換する。 */
+export function sanitizeRelationMutationsForPublicBoundary(
+  input: RelationMutationPublicBoundarySanitizerInput,
+): Readonly<{
+  relationMutations: readonly RelationMutationResult[];
+  unknownContentSourceCount: number;
+}> {
+  const verifiedExternalReferenceKeys = new Set(
+    input.verifiedExternalReferences.map(createRelationMutationReferenceKey),
+  );
+  const currentViolationKeys = new Set<string>();
+  for (const result of input.relationMutations) {
+    if (result.status !== "available") {
+      continue;
+    }
+    for (const reference of result.currentReferences) {
+      if (
+        isRelationPublicBoundaryViolation(
+          input.allowlist,
+          input.organization,
+          verifiedExternalReferenceKeys,
+          reference,
+        )
+      ) {
+        currentViolationKeys.add(createRelationMutationReferenceKey(reference));
+      }
+    }
+  }
+  if (currentViolationKeys.size > 0) {
+    throw new GitHubPublicBoundaryViolationError({
+      scope: "cache_item_relation",
+      sourceItemNodeId: input.sourceItemNodeId,
+      violationKind: "cache_relation_mutation",
+      violationCount: currentViolationKeys.size,
+    });
+  }
+
+  const unknownContentSourceIds = new Set<AvailableRelationMutationResult["contentSourceId"]>();
+  const relationMutations = input.relationMutations.map((result) => {
+    if (
+      result.status === "available" &&
+      relationMutationHistoryReferences(result).some((reference) =>
+        isRelationPublicBoundaryViolation(
+          input.allowlist,
+          input.organization,
+          verifiedExternalReferenceKeys,
+          reference,
+        ),
+      )
+    ) {
+      unknownContentSourceIds.add(result.contentSourceId);
+      return unknownRelationMutationResult(result.contentSourceId);
+    }
+    return result;
+  });
+
+  return Object.freeze({
+    relationMutations: Object.freeze(relationMutations),
+    unknownContentSourceCount: unknownContentSourceIds.size,
+  });
 }
 
 function relationCandidateNodes(

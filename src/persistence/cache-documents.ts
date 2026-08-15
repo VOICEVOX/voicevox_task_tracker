@@ -663,6 +663,7 @@ const cacheRelationMutationUnknownBaseShape = {
     "deleted_edit",
     "unsupported_diff_format",
     "markdown_reference_definition",
+    "repository_public_boundary_unverified",
   ]),
 };
 

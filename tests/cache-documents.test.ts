@@ -904,6 +904,23 @@ describe("cache文書契約", () => {
     }
   });
 
+  it("公開境界を確認できないrelation mutation reasonをcacheへ保存して読み取る", () => {
+    const document = createCacheDocument({
+      ...createValidItem(),
+      relationMutations: [
+        {
+          status: "unknown",
+          contentSourceId: buildSourceId("github_item_body", "boundary-unknown"),
+          reason: "repository_public_boundary_unverified",
+        },
+      ],
+    });
+
+    const parsed = parseCacheDocument(serializeCacheDocument(document));
+
+    expect(parsed).toEqual(document);
+  });
+
   it("relationの削除後再追加をactive intervalとして受理する", () => {
     const relation = {
       repositoryOwner: REPOSITORY.owner,

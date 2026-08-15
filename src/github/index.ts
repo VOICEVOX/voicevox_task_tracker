@@ -201,6 +201,7 @@ export {
   createPublicRepositoryAllowlist,
   isEligiblePublicRepository,
   PublicRepositoryAllowlist,
+  sanitizeRelationMutationsForPublicBoundary,
   type PublicRepository,
   type PublicRepositoryId,
 } from "./public-repository-allowlist.js";
