@@ -1157,6 +1157,20 @@ describe("cache文書契約", () => {
     );
   });
 
+  it("非merged closed itemのterminalAtとclosedAtが一致しなければ拒否する", () => {
+    const value = {
+      ...createValidItem(),
+      currentObservation: {
+        ...createCurrentObservation(),
+        closedAt: UPDATED_AT,
+      },
+    };
+
+    expect(() => createCacheDocument(value)).toThrow(
+      "terminalAtがcurrent observationのclosedAtと一致しません",
+    );
+  });
+
   it("terminalAtがobservedAtより後なら拒否する", () => {
     const terminalAt = createUtcIsoDateTime("2026-02-03T00:00:00Z");
     const value = {

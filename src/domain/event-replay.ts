@@ -800,14 +800,16 @@ function currentStateEpochMatchesCurrentTerminalTimestamp(
   item: ReplayCurrentItem,
   epoch: ReplayStateEpoch,
 ): boolean {
+  if (item.type === "pull_request" && item.state === "merged") {
+    const mergedAt = item.mergedAt;
+    assertNonNullable(mergedAt, "merge済みPull RequestにはmergedAtが必要です");
+    return epoch.occurredAt === mergedAt;
+  }
   if (item.state === "open") {
     return true;
   }
   if (item.closedAt == null || epoch.occurredAt !== item.closedAt) {
     return false;
-  }
-  if (item.type === "pull_request" && item.state === "merged") {
-    return item.mergedAt != null && epoch.occurredAt === item.mergedAt;
   }
   return true;
 }

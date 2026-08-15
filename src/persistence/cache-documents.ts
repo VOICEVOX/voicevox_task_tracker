@@ -1763,6 +1763,7 @@ function assertCacheObservation(document: Extract<CacheDocument, { kind: "github
   }
   if (
     document.lifecycle.kind === "terminal" &&
+    document.state !== "merged" &&
     observation.closedAt !== document.lifecycle.terminalAt
   ) {
     throw new CacheDocumentSemanticError("terminalAtがcurrent observationのclosedAtと一致しません");
@@ -2160,10 +2161,17 @@ function assertCacheReplay(
     if (latestEpoch.state !== replay.currentState) {
       throw new CacheDocumentSemanticError("current state epochがcurrent stateと一致しません");
     }
-    if (document.lifecycle.kind === "terminal" && document.currentObservation.closedAt != null) {
-      if (
-        latestEpoch.occurredAt !== document.lifecycle.terminalAt ||
-        latestEpoch.occurredAt !== document.currentObservation.closedAt
+    if (document.lifecycle.kind === "terminal") {
+      if (document.state === "merged") {
+        if (latestEpoch.occurredAt !== document.lifecycle.terminalAt) {
+          throw new CacheDocumentSemanticError(
+            "terminal itemのcurrent state epochがterminalAtに一致しません",
+          );
+        }
+      } else if (
+        document.currentObservation.closedAt != null &&
+        (latestEpoch.occurredAt !== document.lifecycle.terminalAt ||
+          latestEpoch.occurredAt !== document.currentObservation.closedAt)
       ) {
         throw new CacheDocumentSemanticError(
           "terminal itemのcurrent state epochがterminalAtとclosedAtに一致しません",

@@ -277,6 +277,7 @@ function createMergedPullRequestItem(
     repository: PublicRepository;
     number: number;
     fingerprint: string;
+    closedAt: UtcIsoDateTime;
     mergedAt: UtcIsoDateTime;
     observedAt: UtcIsoDateTime;
   }>,
@@ -289,7 +290,7 @@ function createMergedPullRequestItem(
     observedAt: options.observedAt,
     state: Object.freeze({
       state: "closed",
-      closedAt: options.mergedAt,
+      closedAt: options.closedAt,
     }),
   });
   return Object.freeze({
@@ -4510,6 +4511,7 @@ describe("本番収集の接続", () => {
       repository: publicRepository,
       number: 2,
       fingerprint: "merged-inbound-source",
+      closedAt: observedAt,
       mergedAt: observedAt,
       observedAt,
     });
@@ -5489,7 +5491,7 @@ describe("本番収集の接続", () => {
     const publicRepository = requirePublicRepository(repository);
     const fixture = createRepositoryFixture(repository);
     const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
-    const closedAt = createUtcIsoDateTime("2026-07-31T12:00:00.000Z");
+    const closedAt = createUtcIsoDateTime("2026-07-31T20:00:00.000Z");
     const mergedAt = createUtcIsoDateTime("2026-07-31T16:00:00.000Z");
     const blocked = createIssueItem({
       repository: publicRepository,
@@ -5511,6 +5513,7 @@ describe("本番収集の接続", () => {
       repository: publicRepository,
       number: 3,
       fingerprint: "terminal-edge-merged-blocker",
+      closedAt,
       mergedAt,
       observedAt,
     });
@@ -5572,6 +5575,12 @@ describe("本番収集の接続", () => {
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
     const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const mergedBlockerCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (item) => item.nodeId === mergedBlocker.nodeId,
+    );
+    if (mergedBlockerCache == null) {
+      throw new TypeError("merged Pull Requestのitem cacheがありません");
+    }
     const blockedSnapshotItem = artifact.snapshot.items.find(
       (item) => item.nodeId === blocked.nodeId,
     );
@@ -5586,6 +5595,12 @@ describe("本番収集の接続", () => {
     );
 
     expect(result.exitCode).toBe(0);
+    expect(mergedBlockerCache.lifecycle).toEqual({
+      kind: "terminal",
+      terminalAt: mergedAt,
+      expiresAt: createUtcIsoDateTime("2027-01-27T16:00:00.000Z"),
+    });
+    expect(mergedBlockerCache.currentObservation.closedAt).toBe(closedAt);
     if (result.command !== "collect-analyze") {
       throw new TypeError("terminal edge fixtureのcommandが不正です");
     }
@@ -9529,6 +9544,7 @@ describe("本番収集の接続", () => {
         repository: publicRepository,
         number: 3,
         fingerprint: "deterministic-pr-blocker-merged",
+        closedAt: pullRequestMergedAt,
         mergedAt: pullRequestMergedAt,
         observedAt: resolutionObservedAt,
       });

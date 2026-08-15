@@ -60,6 +60,7 @@ const createdAt = createUtcIsoDateTime("2026-01-01T00:00:00Z");
 const updatedAt = createUtcIsoDateTime("2026-01-02T00:00:00Z");
 const observedAt = createUtcIsoDateTime("2026-01-05T00:00:00Z");
 const terminalAt = createUtcIsoDateTime("2026-01-04T00:00:00Z");
+const pullRequestClosedAt = createUtcIsoDateTime("2026-01-04T12:00:00Z");
 const itemUrl: GitHubItemUrl = "https://github.com/VOICEVOX/item-cache-adapter/issues/1";
 const targetUrl: GitHubItemUrl = "https://github.com/VOICEVOX/item-cache-adapter/issues/2";
 const pullRequestUrl: GitHubItemUrl = "https://github.com/VOICEVOX/item-cache-adapter/pull/3";
@@ -212,7 +213,7 @@ const pullRequestObservation = {
   displayReference: "VOICEVOX/item-cache-adapter#3",
   state: "closed",
   stateReason: "completed",
-  closedAt: terminalAt,
+  closedAt: pullRequestClosedAt,
   type: "pull_request",
   draft: false,
   headSha: "abcdef1234567890",
@@ -865,8 +866,8 @@ describe("GitHub item cache adapter", () => {
     ).toThrow("失敗時刻は観測時刻以後");
   });
 
-  it("Pull Requestのreview、merge、check観測値をraw本文なしで保存する", () => {
-    const document = createGitHubItemCacheDocument({
+  it("Pull Requestのmerge時刻とclosedAtが異なっても観測値を保存する", () => {
+    const input: CreateGitHubItemCacheDocumentInput = {
       repository,
       observation: pullRequestObservation,
       state: "merged",
@@ -890,16 +891,51 @@ describe("GitHub item cache adapter", () => {
       aiCacheReference: {
         status: "unavailable",
       },
-    });
+    };
+    const document = createGitHubItemCacheDocument(input);
 
     expect(document.currentObservation.type).toBe("pull_request");
     if (document.currentObservation.type !== "pull_request") {
       throw new Error("Pull Request観測値ではありません");
     }
+    expect(document.lifecycle).toEqual({
+      kind: "terminal",
+      terminalAt,
+      expiresAt: createUtcIsoDateTime("2026-07-03T00:00:00Z"),
+    });
+    expect(document.currentObservation.closedAt).toBe(pullRequestClosedAt);
     expect(document.currentObservation.mergeState.checks).toMatchObject({
       status: "configured",
       contexts: [{ type: "check_run" }, { type: "commit_status" }],
     });
+
+    if (
+      pullRequestReplay.stateEpochs.status !== "known" ||
+      pullRequestReplay.currentStateEpoch.status !== "known"
+    ) {
+      throw new Error("Pull Request replayのstate epochがknownではありません");
+    }
+    const incorrectEpoch = {
+      ...pullRequestReplay.currentStateEpoch.value,
+      occurredAt: pullRequestClosedAt,
+    };
+    const invalidReplay: ReplayItemHistoryResult = {
+      ...pullRequestReplay,
+      stateEpochs: {
+        status: "known",
+        value: [...pullRequestReplay.stateEpochs.value.slice(0, -1), incorrectEpoch],
+      },
+      currentStateEpoch: {
+        status: "known",
+        value: incorrectEpoch,
+      },
+    };
+    expect(() =>
+      createGitHubItemCacheDocument({
+        ...input,
+        replay: invalidReplay,
+      }),
+    ).toThrow("terminal itemのcurrent state epochがterminalAtに一致しません");
   });
 
   it("完全paginationされた101件のreview request、thread、comment IDを保存する", () => {

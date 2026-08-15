@@ -436,7 +436,7 @@ describe("イベント再生", () => {
       createdAt: fixtureCreatedAt,
       observedAt: fixtureObservedAt,
       state: "merged",
-      closedAt: mergedAt,
+      closedAt: laterClosedAt,
       mergedAt,
     });
 
