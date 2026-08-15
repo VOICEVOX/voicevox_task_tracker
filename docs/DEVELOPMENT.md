@@ -44,7 +44,7 @@ mockを使うテストの後、日次workflow全体を実行する前に、変�
 - 選んだ項目のpaginationは最後まで取得するが、関係のない項目やリポジトリへ展開しない。
 - Organization inventoryを変更した場合だけrepository metadataを確認し、IssueとPull Requestの詳細は取得しない。
 - Codexは3回まで、同時実行数は1件とし、選んだ項目以外を入力しない。
-- Pages、Discord、cache保存のadapterは呼び出さず、`tracker-state` branchを変更しない。
+- Pages、Discord、cache保存のadapterは呼び出さず、`tracker-state-v3` branchを変更しない。
 - 認証情報はローカル環境変数から渡し、fixture、引数、ログ、artifactへ書かない。
 - raw本文、comment、diffを保存せず、対象件数、API呼び出し数、Codex呼び出し数、schemaとsemantic検証結果だけを記録する。
 
@@ -81,7 +81,7 @@ Viteは`config.yml`の`web`設定を読み、`web/public/data/summary.json`と`d
 
 ## cacheとartifactのローカル確認
 
-`tracker-state` branchを使う場合も、設定する永続pathは次の4つだけです。
+`tracker-state-v3` branchを使う場合も、設定する永続pathは次の4つだけです。
 
 ```text
 state/github-repositories

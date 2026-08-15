@@ -1106,7 +1106,7 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
         authorEmail: "voicevox-task-tracker@example.com",
       });
       const first = await adapter.commit({
-        branch: "tracker-state",
+        branch: "tracker-state-v3",
         expectedHead: {
           status: "missing",
         },
@@ -1125,7 +1125,7 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
         committedAt: "2026-08-01T00:00:00.000Z",
       });
       const second = await adapter.commit({
-        branch: "tracker-state",
+        branch: "tracker-state-v3",
         expectedHead: {
           status: "present",
           revision: first.revision,
@@ -1156,7 +1156,7 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
     }
   });
 
-  it("mainを変えず、初回orphan tracker-stateと後続commitを作成する", async () => {
+  it("mainを変えず、初回orphan tracker-state-v3と後続commitを作成する", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "voicevox-state-git-test-"));
     try {
       await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", temporaryDirectory]);
@@ -1195,7 +1195,7 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
         },
       });
       const first = await adapter.commit({
-        branch: "tracker-state",
+        branch: "tracker-state-v3",
         expectedHead: { status: "missing" },
         updates: [
           {
@@ -1231,7 +1231,7 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
         },
       });
       const second = await adapter.commit({
-        branch: "tracker-state",
+        branch: "tracker-state-v3",
         expectedHead: { status: "present", revision: first.revision },
         updates: [
           {
@@ -1256,7 +1256,7 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
       );
       const trackerSnapshot = await readGitOutput(temporaryDirectory, [
         "show",
-        "tracker-state:state/snapshot.json",
+        "tracker-state-v3:state/snapshot.json",
       ]);
 
       expect(first.branchCreated).toBe(true);

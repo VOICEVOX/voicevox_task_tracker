@@ -217,6 +217,7 @@ import {
   type SnapshotTrackedItem,
   type StateBranchAdapter,
   type StateSnapshot,
+  CACHE_DOCUMENT_SCHEMA_VERSION,
   type GitHubRepositoryCacheDocument,
   type CacheItemIndex,
   createCacheDocument,
@@ -5888,7 +5889,7 @@ function createRepositoryCacheDocument(
   items: readonly GitHubItemCacheDocument[],
 ): GitHubRepositoryCacheDocument {
   const document = createCacheDocument({
-    schemaVersion: "2",
+    schemaVersion: CACHE_DOCUMENT_SCHEMA_VERSION,
     kind: "github_repository",
     repository: cacheRepositoryIdentity(repository),
     successfulAt,

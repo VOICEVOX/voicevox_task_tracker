@@ -112,8 +112,8 @@ describe("tracker:run実行入口", () => {
 
   it("verify-stateサブコマンドをstateディレクトリ指定とともに既存CLIへ渡す", () => {
     expect(
-      createTrackerRunCliArguments(["verify-state", "--state-directory", "tracker-state/state"]),
-    ).toEqual(["verify-state", "--state-directory", "tracker-state/state"]);
+      createTrackerRunCliArguments(["verify-state", "--state-directory", "tracker-state-v3/state"]),
+    ).toEqual(["verify-state", "--state-directory", "tracker-state-v3/state"]);
   });
 
   it("workflow stageサブコマンドを検証してそのまま渡す", () => {

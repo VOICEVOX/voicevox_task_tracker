@@ -18,7 +18,7 @@ const REPOSITORY_PATH = `state/github-repositories/${hashCanonicalJson({
 }).slice("sha256:".length)}.json`;
 
 const repositoryCache = {
-  schemaVersion: "2",
+  schemaVersion: "3",
   kind: "github_repository",
   repository: {
     repositoryId: REPOSITORY_ID,
@@ -59,7 +59,7 @@ describe("cache-only state検証", () => {
       await expect(verifyPersistentStateDirectory(stateDirectory)).resolves.toEqual({
         repositoryCaches: {
           verifiedCount: 1,
-          schemaVersions: ["2"],
+          schemaVersions: ["3"],
         },
         itemCaches: {
           verifiedCount: 0,
@@ -101,13 +101,31 @@ describe("cache-only state検証", () => {
 
       expect(outputs).toEqual([
         [
-          "github-repositories: 1件、schema version 2",
+          "github-repositories: 1件、schema version 3",
           "github-items: 0件、schema version なし",
           "ai-latest-importance: 0件、schema version なし",
           "ai-results: 0件、schema version なし",
           "",
         ].join("\n"),
       ]);
+    } finally {
+      await rm(stateDirectory, {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+
+  it("schema version 2のcacheを現行形式として読み込まない", async () => {
+    const stateDirectory = await createStateDirectory();
+    try {
+      await writeRepositoryCache(stateDirectory, {
+        ...repositoryCache,
+        schemaVersion: "2",
+      });
+      await expect(verifyPersistentStateDirectory(stateDirectory)).rejects.toThrow(
+        "永続stateを検証できません",
+      );
     } finally {
       await rm(stateDirectory, {
         recursive: true,

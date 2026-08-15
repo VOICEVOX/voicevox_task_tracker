@@ -8,7 +8,7 @@ import { assertNonNullable } from "../util/assert-non-nullable.js";
 const SUPPORTED_SCHEMA_MAJOR = 1;
 const TARGET_ORGANIZATION = "VOICEVOX";
 const SUPPORTED_AI_PROVIDER = "codex";
-const STATE_BRANCH = "tracker-state";
+const STATE_BRANCH = "tracker-state-v3";
 const DEFAULT_HIGH_CONFIDENCE = 0.85;
 const DEFAULT_MEDIUM_CONFIDENCE = 0.65;
 const SCHEMA_VERSION_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)*$/;

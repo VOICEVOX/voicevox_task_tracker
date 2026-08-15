@@ -14,6 +14,8 @@ import {
   StateConfigurationError,
 } from "./errors.js";
 
+const TRACKER_STATE_BRANCH = "tracker-state-v3";
+
 type MemoryCommit = Readonly<{
   revision: string;
   parent: StateBranchHead;
@@ -124,8 +126,10 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
   }
 
   public commit(request: StateBranchCommitRequest): Promise<StateBranchCommitResult> {
-    if (request.branch !== "tracker-state") {
-      return Promise.reject(new StateConfigurationError("tracker-state branchだけを更新できます"));
+    if (request.branch !== TRACKER_STATE_BRANCH) {
+      return Promise.reject(
+        new StateConfigurationError(`${TRACKER_STATE_BRANCH} branchだけを更新できます`),
+      );
     }
     if (request.updates.length === 0 && request.deletions.length === 0) {
       return Promise.reject(

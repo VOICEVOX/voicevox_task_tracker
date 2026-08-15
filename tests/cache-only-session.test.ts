@@ -36,7 +36,7 @@ import {
 } from "../src/persistence/cache-only-session.js";
 
 const configuration: CacheOnlyPersistenceConfiguration = Object.freeze({
-  branch: "tracker-state",
+  branch: "tracker-state-v3",
   repositoryCacheDirectory: "state/cache/repositories",
   itemCacheDirectory: "state/cache/items",
   latestImportanceDirectory: "state/cache/latest-importance",
@@ -331,7 +331,7 @@ function createItemCache(): GitHubItemCacheDocument {
     targets: [],
   };
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     kind: "github_item",
     repository: {
       repositoryId,
@@ -567,7 +567,7 @@ function createRelationMutationResult(
 
 function createRepositoryCache(): GitHubRepositoryCacheDocument {
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     kind: "github_repository",
     repository: {
       repositoryId,
@@ -592,7 +592,7 @@ function createLatestImportanceCache(): AiLatestImportanceCacheDocument {
     throw new TypeError("latest importance fixtureに利用可能なAI参照がありません");
   }
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     kind: "ai_latest_importance",
     repository: {
       repositoryId,
@@ -774,7 +774,7 @@ describe("cache-only永続化session", () => {
   it("完全置換commitで古いsnapshot、history、ledgerを残さない", async () => {
     const adapter = new MemoryStateBranchAdapter();
     await adapter.commit({
-      branch: "tracker-state",
+      branch: "tracker-state-v3",
       expectedHead: { status: "missing" },
       updates: [
         {
@@ -802,7 +802,7 @@ describe("cache-only永続化session", () => {
       "state/notification-ledger.json",
       "state/snapshot.json",
     ]);
-    expect([...(await adapter.readBranchFiles("tracker-state"))].map(([path]) => path)).toEqual(
+    expect([...(await adapter.readBranchFiles("tracker-state-v3"))].map(([path]) => path)).toEqual(
       [
         aiCachePath(createAiCacheFixture()),
         documentPath(configuration.itemCacheDirectory, "github_item", createItemCache().nodeId),
@@ -886,7 +886,7 @@ describe("cache-only永続化session", () => {
       items: [],
     };
     await adapter.commit({
-      branch: "tracker-state",
+      branch: "tracker-state-v3",
       expectedHead: { status: "missing" },
       updates: [
         {

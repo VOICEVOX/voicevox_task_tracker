@@ -9,7 +9,7 @@ VOICEVOX Organizationの公開IssueとPull Requestを、GitHubの現在値と全
 - GitHubの状態、draft、assignee、review request、dependency、コメント、レビュー、commitを全ページ取得し、発生時刻と安定したsource IDで再生します。取得できない actor や対象は推測せず、影響する事実だけを unknown として保持します。
 - GitHubの確定情報を先に評価し、Codexは本文やコメントの意味など自然言語の解釈が必要な候補だけを扱います。Codex出力はschema検証とsemantic検証を通した候補です。
 - 公開かつ非アーカイブで無効化されていないリポジトリだけをallowlistに入れます。収集後、cache保存前、Pages生成前、Discord送信前にallowlistを再検証し、違反が一件でもあればcache、Pages、Discordをすべて停止します。
-- `tracker-state` branchにはcacheだけを保存します。配置は`state/github-repositories`、`state/github-items`、`state/ai-latest-importance`、`state/ai-results`です。canonical JSONを使い、snapshot、日次履歴、notification ledger、run reportは保存しません。
+- `tracker-state-v3` branchにはcacheだけを保存します。配置は`state/github-repositories`、`state/github-items`、`state/ai-latest-importance`、`state/ai-results`です。canonical JSONを使い、snapshot、日次履歴、notification ledger、run reportは保存しません。
 - 終了項目のcacheは終了時刻から180日を上限に保持します。GitHubが503を返しcacheがある場合はstaleとして使いますが、影響する通常通知から除外します。cacheがない場合はrunを失敗させます。
 - AIは入力、model、reasoning effort、backend、prompt、schema、規則versionが一致するcacheだけを通常結果に使います。失敗時に許されるlatest fallbackは同じnodeの重要度だけで、現在の状態、責務、関係には使いません。現在の関係に必要なAI結果が欠けた場合はPagesと通常通知を停止します。
 - 通知はworkflowから渡す基準時刻`S`で決めます。一回限りの変化は`S - 24時間 < 発生時刻 <= S`で選び、urgentは3日、criticalは2日の固定周期で再通知します。各schedule runの`github.run_attempt == 1`だけ、一回限りの変化と停滞の繰り返しを含む通常digestを送り、`workflow_dispatch`とrerunでは送りません。

@@ -64,7 +64,7 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 - GitHub Issue、Pull Request、Issue/PR timeline、comments、reviews、review threads、review requests、commits、checks、native dependencies、sub-issues、closing references、cross-references
 - GitHub Pages上の公開static site
 - Discord public channelへのIncoming Webhook通知
-- `tracker-state` branchによる4種類のcacheの永続化。判定結果、日次差分、通知済み状態、run reportは保存しない
+- `tracker-state-v3` branchによる4種類のcacheの永続化。判定結果、日次差分、通知済み状態、run reportは保存しない
 
 ### 5.2 対象外
 
@@ -495,13 +495,13 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 | ID        | 規範 | 要求                                                                                                                                                                                       | 受入要約                                                                                                     |
 | --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | `DAT-001` | MUST | main branch責務 — main branchにはsource、config、schema、prompt、docs、testsを置き、日次cache commitを混在させてはならない。                                                               | `AT-DAT-001`: branch tree検査で4種類のcacheがmainに存在しない。                                              |
-| `DAT-002` | MUST | cache branch — `tracker-state` branchへ4種類のcacheだけをcanonical JSONで保存し、snapshot、日次履歴、notification ledger、run reportを置いてはならない。                                   | `AT-DAT-002`: branch treeが指定directoryだけを持ち、不要なpathを拒否する。                                   |
+| `DAT-002` | MUST | cache branch — `tracker-state-v3` branchへ4種類のcacheだけをcanonical JSONで保存し、snapshot、日次履歴、notification ledger、run reportを置いてはならない。                                | `AT-DAT-002`: branch treeが指定directoryだけを持ち、不要なpathを拒否する。                                   |
 | `DAT-003` | MUST | GitHub収集cache — `state/github-repositories`と`state/github-items`へ検証済みcurrent metadata、全event、pagination情報をcacheし、cache miss時にcold replayできなければならない。           | `AT-DAT-003`: cache削除後もcurrent graph、state、責務、terminal保持を再構築できる。                          |
 | `DAT-004` | MUST | AI cache — `state/ai-results`へ完全一致入力のCodex結果、`state/ai-latest-importance`へnodeごとの直近importanceだけを保存しなければならない。                                               | `AT-DAT-004`:入力変更でresult cache missになり、AI失敗時はimportanceだけがfallbackになる。                   |
 | `DAT-005` | MUST | 通知状態非永続化 — 通知候補は`S`とevent時刻、urgent・criticalの固定周期から計算し、notification ledgerを作成してはならない。                                                               | `AT-DAT-005`: runnerを破棄しても同一入力と`S`から同じ候補になり、送信済み状態のpathが存在しない。            |
 | `DAT-006` | MUST | cache保存順と公開安全性 — PagesとDiscordの完了後だけsorted/canonical cacheを保存し、secret、raw token、private repoのID、owner/name、repository URL、raw本文、raw diffを含めてはならない。 | `AT-DAT-006`: PagesまたはDiscord失敗時にcache hashが変わらず、secret scanとprivate sentinel testが成功する。 |
 
-`tracker-state` branchで許可するdirectoryは`state/github-repositories`、`state/github-items`、`state/ai-latest-importance`、`state/ai-results`だけである。各directoryはstate配下の正規化相対pathで、相互に同一・入れ子にしない。`canonicalJson`を必須とし、raw本文、raw diff、token、private repositoryの値をcacheへ入れない。
+`tracker-state-v3` branchで許可するdirectoryは`state/github-repositories`、`state/github-items`、`state/ai-latest-importance`、`state/ai-results`だけである。各directoryはstate配下の正規化相対pathで、相互に同一・入れ子にしない。`canonicalJson`を必須とし、raw本文、raw diff、token、private repositoryの値をcacheへ入れない。
 
 `config.yml`に設定したメンテナのGitHubユーザー名は公開情報としてcurrent waitingOnへ出力できる。
 teamのwaitingOnはteam識別子だけを保存し、team member一覧やteamとuserの対応は保存しない。

@@ -4,12 +4,12 @@ import { CliUsageError, parseCliArguments } from "../src/cli/index.js";
 
 describe("CLI引数解析", () => {
   it("verify-stateのstateディレクトリを解析する", () => {
-    expect(parseCliArguments(["verify-state", "--state-directory", "tracker-state/state"])).toEqual(
-      {
-        kind: "verify-state",
-        stateDirectory: "tracker-state/state",
-      },
-    );
+    expect(
+      parseCliArguments(["verify-state", "--state-directory", "tracker-state-v3/state"]),
+    ).toEqual({
+      kind: "verify-state",
+      stateDirectory: "tracker-state-v3/state",
+    });
   });
 
   it("dailyの既定値と明示した予定時刻を解析する", () => {

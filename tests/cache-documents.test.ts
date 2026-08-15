@@ -197,7 +197,7 @@ function createValidItem(): GitHubItemCacheDocument {
   const itemSourceId = buildSourceId("github_item", ITEM_NODE_ID);
   const bodySourceId = buildSourceId("github_item_body", ITEM_NODE_ID);
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     kind: "github_item",
     repository: REPOSITORY,
     ...createTerminalIndex(),
@@ -296,7 +296,7 @@ function createAvailableRelationMutation(): ExactRelationResult {
 
 function createValidRepository(): GitHubRepositoryCacheDocument {
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     kind: "github_repository",
     repository: REPOSITORY,
     successfulAt: OBSERVED_AT,
@@ -310,7 +310,7 @@ function createValidLatestImportance(): AiLatestImportanceCacheDocument {
     throw new TypeError("latest importance fixtureに利用可能なAI参照がありません");
   }
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     kind: "ai_latest_importance",
     repository: REPOSITORY,
     nodeId: ITEM_NODE_ID,
@@ -399,10 +399,10 @@ describe("cache文書契約", () => {
     expect(() => createCacheDocument(value)).toThrow(StateZodValidationError);
   });
 
-  it("旧cache schema versionを互換扱いせず拒否する", () => {
+  it.each(["1", "2"])("schema version %sを互換扱いせず拒否する", (schemaVersion) => {
     const legacyValue: Record<string, unknown> = {
       ...createValidItem(),
-      schemaVersion: "1",
+      schemaVersion,
     };
 
     expect(() => createCacheDocument(legacyValue)).toThrow(StateZodValidationError);

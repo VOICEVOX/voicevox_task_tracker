@@ -38,7 +38,7 @@ import {
 } from "./branch-adapter.js";
 import { StateConfigurationError, StateFormatError } from "./errors.js";
 
-const CACHE_ONLY_BRANCH = "tracker-state";
+const CACHE_ONLY_BRANCH = "tracker-state-v3";
 const STATE_ROOT_DIRECTORY = "state";
 const JSON_FILE_PATTERN = /^[A-Za-z0-9._-]+\.json$/u;
 const CACHE_FILE_KEY_PATTERN = /^[A-Za-z0-9._-]+$/u;
@@ -1107,7 +1107,7 @@ function createUpdates(
   return Object.freeze(updates);
 }
 
-/** tracker-stateをcache-onlyとして読み書きするsessionを生成する。 */
+/** tracker-state-v3をcache-onlyとして読み書きするsessionを生成する。 */
 export class CacheOnlyPersistenceSession {
   readonly #adapter: StateBranchAdapter;
   readonly #configuration: CacheOnlyPersistenceConfiguration;
@@ -1126,7 +1126,7 @@ export class CacheOnlyPersistenceSession {
     this.#head = head;
   }
 
-  /** tracker-stateのheadを固定してcache-only sessionを開始する。 */
+  /** tracker-state-v3のheadを固定してcache-only sessionを開始する。 */
   public static async open(
     adapter: StateBranchAdapter,
     configuration: CacheOnlyPersistenceConfiguration,

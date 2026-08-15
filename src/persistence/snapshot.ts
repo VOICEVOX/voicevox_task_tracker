@@ -178,7 +178,7 @@ type StateSnapshotVersion8 = Readonly<{
 
 type StateSnapshotVersionParser = (value: unknown) => StateSnapshot;
 
-/** tracker-stateへ保存するschema version 8のcurrent snapshot。 */
+/** schema version 8のcurrent snapshot型。 */
 export type StateSnapshot = StateSnapshotVersion8;
 
 const snapshotSchemaVersionSchema = z.object({
