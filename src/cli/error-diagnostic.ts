@@ -12,6 +12,7 @@ import {
   GitHubResponseSchemaValidationError,
   GitHubRetryExhaustedError,
 } from "../github/index.js";
+import { StalenessTimestampRangeError } from "../domain/index.js";
 import { RelationReferenceConflictError } from "../graph/index.js";
 import { StateZodValidationError } from "../persistence/index.js";
 import { type ZodErrorDiagnostics } from "../util/zod-error-diagnostic.js";
@@ -21,6 +22,7 @@ import {
   CliExecutableError,
   CliRelationExpansionLimitError,
   ResponsibilityReplayRetryExhaustedError,
+  StalenessReductionError,
 } from "./errors.js";
 import { type RunStage } from "./run-report.js";
 
@@ -297,6 +299,15 @@ function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): v
   if (error instanceof ResponsibilityReplayRetryExhaustedError) {
     fields.push({ key: "itemNodeId", value: error.itemNodeId });
     fields.push({ key: "attempts", value: error.attempts.toString() });
+  }
+  if (error instanceof StalenessReductionError) {
+    fields.push({ key: "itemNodeId", value: error.itemNodeId });
+  }
+  if (error instanceof StalenessTimestampRangeError) {
+    fields.push({ key: "basisKind", value: error.basisKind });
+    fields.push({ key: "createdAt", value: error.createdAt });
+    fields.push({ key: "occurredAt", value: error.occurredAt });
+    fields.push({ key: "evaluatedAt", value: error.evaluatedAt });
   }
   if (error instanceof RelationReferenceConflictError) {
     fields.push({ key: "relationReferenceConflictKind", value: error.conflictKind });

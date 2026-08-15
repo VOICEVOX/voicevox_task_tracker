@@ -37,6 +37,29 @@ export type StalenessTransitionBasis = Readonly<{
   precision: "event" | "inferred";
 }>;
 
+/** 停滞時間計算へ渡された遷移根拠の時刻範囲が不正なことを表す。 */
+export class StalenessTimestampRangeError extends RangeError {
+  public readonly basisKind: "status" | "responsibility";
+  public readonly createdAt: UtcIsoDateTime;
+  public readonly occurredAt: UtcIsoDateTime;
+  public readonly evaluatedAt: UtcIsoDateTime;
+
+  public constructor(
+    basisKind: "status" | "responsibility",
+    createdAt: UtcIsoDateTime,
+    occurredAt: UtcIsoDateTime,
+    evaluatedAt: UtcIsoDateTime,
+  ) {
+    const context = basisKind === "status" ? "status遷移根拠の時刻" : "責務遷移根拠の時刻";
+    super(`${context}は項目作成時刻以後かつ判定時刻以前にしてください`);
+    this.name = "StalenessTimestampRangeError";
+    this.basisKind = basisKind;
+    this.createdAt = createdAt;
+    this.occurredAt = occurredAt;
+    this.evaluatedAt = evaluatedAt;
+  }
+}
+
 /** 停滞時間の算出に必要な状態機械の判定結果。 */
 export type StateDecisionForStaleness = Readonly<{
   status: Status;
@@ -242,10 +265,13 @@ function validateTimestampRange(
   context: string,
   createdAt: number,
   evaluatedAt: number,
+  createdAtValue: UtcIsoDateTime,
+  evaluatedAtValue: UtcIsoDateTime,
+  basisKind: StalenessTimestampRangeError["basisKind"],
 ): void {
   const timestamp = parseTimestamp(value, context);
   if (timestamp < createdAt || timestamp > evaluatedAt) {
-    throw new RangeError(`${context}は項目作成時刻以後かつ判定時刻以前にしてください`);
+    throw new StalenessTimestampRangeError(basisKind, createdAtValue, value, evaluatedAtValue);
   }
 }
 
@@ -268,12 +294,18 @@ function validateInput(input: CalculateStalenessInput): void {
     "status遷移根拠の時刻",
     createdAt,
     evaluatedAt,
+    input.createdAt,
+    input.evaluatedAt,
+    "status",
   );
   validateTimestampRange(
     input.currentDecision.responsibilityBasis.occurredAt,
     "責務遷移根拠の時刻",
     createdAt,
     evaluatedAt,
+    input.createdAt,
+    input.evaluatedAt,
+    "responsibility",
   );
 
   validateBlockedParentContext(input);

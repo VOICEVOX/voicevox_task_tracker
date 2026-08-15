@@ -62,7 +62,6 @@ import {
   createGitHubBotPredicate,
   createLabelEffectsResolver,
   createTrackedItemLatestEventActor,
-  calculateStaleness,
   DETERMINISTIC_RULES_VERSION,
   determineIssueState,
   determineMeaningfulProgress,
@@ -250,6 +249,7 @@ import {
   ResponsibilityReplayRetryExhaustedError,
 } from "./errors.js";
 import { safeCodexFallbackDiagnostic } from "./error-diagnostic.js";
+import { calculateStalenessForItem } from "./staleness-reduction.js";
 import {
   OfflineRunRunner,
   type readGoldenFixtureFiles,
@@ -4496,7 +4496,7 @@ function reduceAnalysisPass(
     }
     const basis = transitionBasisForDecision(analysis, decision);
     const repository = findRepository(inventory, analysis.item.repositoryId);
-    const staleness = calculateStaleness({
+    const staleness = calculateStalenessForItem(analysis.item.nodeId, {
       createdAt: analysis.item.createdAt,
       evaluatedAt: collection.evaluatedAt,
       currentDecision: {
@@ -5445,7 +5445,7 @@ function createStaleSnapshotTrackedItem(
   const primaryWaitingOn = primaryWaitingOnForDecision(analysis.decision, decision);
   const basis = transitionBasisForDecision(analysis, decision);
   const repository = findRepository(inventory, analysis.item.repositoryId);
-  const staleness = calculateStaleness({
+  const staleness = calculateStalenessForItem(analysis.item.nodeId, {
     createdAt: analysis.item.createdAt,
     evaluatedAt,
     currentDecision: {

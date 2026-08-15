@@ -8,6 +8,7 @@ import {
   createUtcIsoDateTime,
   recalculateStalenessSeverity,
   resolveWaitingOnAccountIdentifiers,
+  StalenessTimestampRangeError,
   type CalculateStalenessInput,
   type DependencyResolutionProgress,
   type GitHubAccountActor,
@@ -271,6 +272,57 @@ function createCommentAssessment(
 }
 
 describe("停滞時間", () => {
+  const rangeErrorCases = [
+    { basisKind: "status", direction: "lower" },
+    { basisKind: "status", direction: "upper" },
+    { basisKind: "responsibility", direction: "lower" },
+    { basisKind: "responsibility", direction: "upper" },
+  ] satisfies readonly Readonly<{
+    basisKind: "status" | "responsibility";
+    direction: "lower" | "upper";
+  }>[];
+
+  it.each(rangeErrorCases)(
+    "$basisKindの$direction側時刻範囲違反を専用エラーで返す",
+    ({ basisKind, direction }) => {
+      const createdAt = CREATED_AT;
+      const evaluatedAt = addHours(CREATED_AT, 24);
+      const occurredAt =
+        direction === "lower" ? addHours(CREATED_AT, -1) : addHours(CREATED_AT, 25);
+      const input = createBaseInput();
+      const currentDecision = createDecision({
+        status: input.currentDecision.status,
+        waitingOn: input.currentDecision.waitingOn,
+        statusAt: basisKind === "status" ? occurredAt : createdAt,
+        ownerAt: basisKind === "responsibility" ? occurredAt : createdAt,
+        statusSourceId: input.currentDecision.statusBasis.sourceIds[0],
+        ownerSourceId: input.currentDecision.responsibilityBasis.sourceIds[0],
+        precision: "event",
+        confidence: input.currentDecision.confidence,
+      });
+
+      let captured: unknown;
+      try {
+        calculateStaleness({ ...input, createdAt, evaluatedAt, currentDecision });
+      } catch (error: unknown) {
+        captured = error;
+      }
+
+      expect(captured).toBeInstanceOf(StalenessTimestampRangeError);
+      if (!(captured instanceof StalenessTimestampRangeError)) {
+        throw new TypeError("時刻範囲違反の専用エラーを取得できませんでした");
+      }
+      expect(captured).toBeInstanceOf(RangeError);
+      expect(captured.message).toBe(
+        `${basisKind === "status" ? "status" : "責務"}遷移根拠の時刻は項目作成時刻以後かつ判定時刻以前にしてください`,
+      );
+      expect(captured.basisKind).toBe(basisKind);
+      expect(captured.createdAt).toBe(createdAt);
+      expect(captured.occurredAt).toBe(occurredAt);
+      expect(captured.evaluatedAt).toBe(evaluatedAt);
+    },
+  );
+
   it("責務主体本人のコメントでstallSinceを更新する", () => {
     const sourceId = buildSourceId("responsibility", "human-login");
     const waitingOn = createWaitingOn("user", human.login, "maintainer", sourceId);

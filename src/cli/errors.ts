@@ -104,3 +104,13 @@ export class ResponsibilityReplayRetryExhaustedError extends TaskTrackerError {
     this.attempts = attempts;
   }
 }
+
+/** 項目の停滞時間計算に失敗したことを表す。 */
+export class StalenessReductionError extends TaskTrackerError {
+  public readonly itemNodeId: GitHubNodeId;
+
+  public constructor(itemNodeId: GitHubNodeId, options: ErrorOptions) {
+    super(`項目の停滞時間計算に失敗しました。対象: ${itemNodeId}`, options);
+    this.itemNodeId = itemNodeId;
+  }
+}

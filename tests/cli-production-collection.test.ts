@@ -1733,6 +1733,103 @@ describe("本番収集の接続", () => {
     expect(result.exitCode).toBe(0);
   });
 
+  it("staleness時刻範囲違反をreducerからrun reportの固定診断へ渡す", async () => {
+    const repository = createRepository(
+      "R_staleness_diagnostic",
+      "staleness-diagnostic",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const itemCreatedAt = createUtcIsoDateTime("2026-07-31T00:00:00.000Z");
+    const requestedAt = createUtcIsoDateTime("2026-07-30T00:00:00.000Z");
+    const item = replaceCreatedAt(
+      createPullRequestItem({
+        repository: publicRepository,
+        number: 1,
+        fingerprint: "staleness-diagnostic",
+        updatedAt: observedAt,
+        observedAt,
+      }),
+      itemCreatedAt,
+    );
+    const detail = createFailedCheckPullRequestDetail(item, observedAt);
+    const reviewRequestNodeId = createGitHubNodeId("RR_staleness_diagnostic");
+    const reviewerNodeId = createGitHubNodeId("U_staleness_reviewer");
+    const reviewRequestSourceId = buildSourceId("github_review_request", reviewRequestNodeId);
+    const reviewRequestedEvent = Object.freeze({
+      sourceId: buildSourceId("github_timeline_event", `${reviewRequestNodeId}:added`),
+      nodeId: createGitHubNodeId(`${reviewRequestNodeId}:added`),
+      sequence: 0,
+      occurredAt: itemCreatedAt,
+      actor: Object.freeze({ status: "unavailable", reason: "github_did_not_return_actor" }),
+      kind: "review_requested",
+      target: Object.freeze({
+        type: "user",
+        sourceId: buildSourceId("github_user", reviewerNodeId),
+        nodeId: reviewerNodeId,
+        login: "staleness-reviewer",
+        apiType: "User",
+      }),
+    } satisfies GitHubTimelineEvent);
+    fixture.openItems = [item];
+    fixture.details.set(
+      item.nodeId,
+      Object.freeze({
+        ...detail,
+        timeline: Object.freeze([reviewRequestedEvent]),
+        reviewRequests: Object.freeze({
+          current: Object.freeze([
+            Object.freeze({
+              sourceId: reviewRequestSourceId,
+              nodeId: reviewRequestNodeId,
+              target: Object.freeze({
+                type: "user",
+                sourceId: buildSourceId("github_user", reviewerNodeId),
+                nodeId: reviewerNodeId,
+                login: "staleness-reviewer",
+                apiType: "User",
+              }),
+              requestedAt: Object.freeze({ status: "available", value: requestedAt }),
+            }),
+          ]),
+          history: Object.freeze([]),
+        }),
+        mergeState: Object.freeze({
+          ...detail.mergeState,
+          checks: Object.freeze({ status: "not_configured" }),
+        }),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({ repositories: [fixture], config });
+
+    const result = await harness.runDry(FIRST_RUN_AT);
+    if (result.command !== "dry-run") {
+      throw new TypeError("staleness診断fixtureがdry-run結果を返しませんでした");
+    }
+
+    expect(result.exitCode).toBe(1);
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "reducer",
+      complete: false,
+    });
+    expect(result.result.report.diagnostics).toContainEqual(
+      expect.stringContaining("errorType=StalenessReductionError<-StalenessTimestampRangeError"),
+    );
+    expect(result.result.report.diagnostics).toContainEqual(
+      expect.stringContaining(
+        `itemNodeId=${item.nodeId} basisKind=status createdAt=${itemCreatedAt} occurredAt=${requestedAt} evaluatedAt=${observedAt}`,
+      ),
+    );
+  });
+
   it("作成時刻が異なるPull Requestで共有するcommit sourceの最古時刻をedgeへ使う", async () => {
     const repository = createRepository(
       "R_shared_commit_occurred_at",

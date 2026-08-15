@@ -9,8 +9,14 @@ import {
   CliExecutableError,
   CliRelationExpansionLimitError,
   ResponsibilityReplayRetryExhaustedError,
+  StalenessReductionError,
 } from "../src/cli/errors.js";
-import { ResponsibilityReplayMismatchError, createGitHubNodeId } from "../src/domain/index.js";
+import {
+  ResponsibilityReplayMismatchError,
+  StalenessTimestampRangeError,
+  createGitHubNodeId,
+  createUtcIsoDateTime,
+} from "../src/domain/index.js";
 import {
   GitHubGraphQLResponseError,
   GitHubItemDetailCollectionError,
@@ -486,6 +492,23 @@ describe("safeErrorDiagnostic", () => {
 
     expect(safeErrorDiagnostic("incremental_collection", error)).toBe(
       "stage=incremental_collection errorType=ResponsibilityReplayRetryExhaustedError<-ResponsibilityReplayMismatchError itemNodeId=I_public_repository_42 attempts=4",
+    );
+  });
+
+  it("停滞時間計算の時刻範囲違反から固定項目だけを診断へ出す", () => {
+    const itemNodeId = createGitHubNodeId("I_staleness_item");
+    const cause = new StalenessTimestampRangeError(
+      "responsibility",
+      createUtcIsoDateTime("2026-07-30T08:00:00Z"),
+      createUtcIsoDateTime("2026-07-30T07:00:00Z"),
+      createUtcIsoDateTime("2026-07-31T09:00:00Z"),
+    );
+    const error = new StalenessReductionError(itemNodeId, { cause });
+    delete error.stack;
+    delete cause.stack;
+
+    expect(safeErrorDiagnostic("incremental_collection", error)).toBe(
+      "stage=incremental_collection errorType=StalenessReductionError<-StalenessTimestampRangeError itemNodeId=I_staleness_item basisKind=responsibility createdAt=2026-07-30T08:00:00.000Z occurredAt=2026-07-30T07:00:00.000Z evaluatedAt=2026-07-31T09:00:00.000Z",
     );
   });
 

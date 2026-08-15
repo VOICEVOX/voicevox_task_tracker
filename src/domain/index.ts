@@ -125,6 +125,7 @@ export {
   type StalenessSeverityContext,
   type StalenessSeverityReason,
   type StalenessState,
+  StalenessTimestampRangeError,
   type StalenessTransitionBasis,
   type StalenessWaitClass,
   type StateDecisionForStaleness,
