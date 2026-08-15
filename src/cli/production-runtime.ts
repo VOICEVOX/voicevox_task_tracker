@@ -180,6 +180,7 @@ import {
   reconcileGraph,
   replayDependencyEvents,
   replayTemporalBlocksGraph,
+  RelationReferenceConflictError,
   type AnalyzeGraphResult,
   type CandidateRelation,
   type PublicGitHubRelationItem,
@@ -192,6 +193,7 @@ import {
   type RelationAssessmentVerdict,
   type RelationCandidateNode,
   type RelationCandidateId,
+  type RelationExtractionItem,
 } from "../graph/index.js";
 import {
   generatePublicData,
@@ -1327,51 +1329,57 @@ function currentRelationCandidate(
   }
 }
 
-function extractAllRelationCandidates(
+function extractRelationCandidatesForDetail(
   config: Config,
-  allowlist: PublicRepositoryAllowlist,
-  items: readonly EnumeratedGitHubItem[],
+  itemByNodeId: ReadonlyMap<GitHubNodeId, PublicGitHubRelationItem>,
+  knownItems: readonly PublicGitHubRelationItem[],
+  detail: GitHubItemDetail,
+): readonly RelationCandidate[] {
+  const item = itemByNodeId.get(detail.nodeId);
+  assertNonNullable(item, `関係候補抽出対象がありません。対象: ${detail.nodeId}`);
+  const extractionItem: RelationExtractionItem = {
+    ...item,
+    body: {
+      sourceId: detail.bodySourceId,
+      markdown: detail.body,
+    },
+    comments: detail.comments.map((comment) => ({
+      sourceId: comment.sourceId,
+      markdown: comment.body,
+    })),
+    crossReferences: detail.inboundCrossReferences.map((reference) => ({
+      sourceId: reference.eventSourceId,
+      sourceItem: reference.sourceItem,
+      willCloseTarget: reference.willCloseTarget,
+    })),
+    nativeDependencies:
+      detail.type === "issue" && detail.nativeDependencies.availability === "available"
+        ? detail.nativeDependencies.relations
+        : [],
+    nativeHierarchy:
+      detail.type === "issue" && detail.nativeHierarchy.availability === "available"
+        ? detail.nativeHierarchy.relations
+        : [],
+    nativeClosingIssues: detail.type === "pull_request" ? detail.nativeClosingIssues : [],
+  };
+  return extractRelationCandidates({
+    organization: config.organization,
+    item: extractionItem,
+    knownItems,
+  });
+}
+
+function extractRelationCandidatesOnce(
+  config: Config,
+  knownItems: readonly PublicGitHubRelationItem[],
   details: readonly GitHubItemDetail[],
   analysisSources: readonly RuntimeItemAnalysisSource[],
 ): readonly RelationCandidate[] {
-  const knownItems = items.map((item) =>
-    createPublicRelationItem(item, allowlist.require(item.repositoryId)),
-  );
   const itemByNodeId = new Map(knownItems.map((item) => [item.nodeId, item]));
   const candidates: RelationCandidate[] = [];
   for (const detail of details) {
-    const item = itemByNodeId.get(detail.nodeId);
-    assertNonNullable(item, `関係候補抽出対象がありません。対象: ${detail.nodeId}`);
     candidates.push(
-      ...extractRelationCandidates({
-        organization: config.organization,
-        item: {
-          ...item,
-          body: {
-            sourceId: detail.bodySourceId,
-            markdown: detail.body,
-          },
-          comments: detail.comments.map((comment) => ({
-            sourceId: comment.sourceId,
-            markdown: comment.body,
-          })),
-          crossReferences: detail.inboundCrossReferences.map((reference) => ({
-            sourceId: reference.eventSourceId,
-            sourceItem: reference.sourceItem,
-            willCloseTarget: reference.willCloseTarget,
-          })),
-          nativeDependencies:
-            detail.type === "issue" && detail.nativeDependencies.availability === "available"
-              ? detail.nativeDependencies.relations
-              : [],
-          nativeHierarchy:
-            detail.type === "issue" && detail.nativeHierarchy.availability === "available"
-              ? detail.nativeHierarchy.relations
-              : [],
-          nativeClosingIssues: detail.type === "pull_request" ? detail.nativeClosingIssues : [],
-        },
-        knownItems,
-      }),
+      ...extractRelationCandidatesForDetail(config, itemByNodeId, knownItems, detail),
     );
   }
   for (const source of analysisSources) {
@@ -1384,6 +1392,297 @@ function extractAllRelationCandidates(
     }
   }
   return normalizeRelationCandidates(candidates);
+}
+
+function findRelationReferenceRepository(
+  allowlist: PublicRepositoryAllowlist,
+  reference: PublicGitHubRelationItem,
+): PublicRepository | undefined {
+  return allowlist.repositories.find(
+    (repository) =>
+      repository.owner.toLowerCase() === reference.repositoryOwner.toLowerCase() &&
+      repository.name.toLowerCase() === reference.repositoryName.toLowerCase(),
+  );
+}
+
+function validateRelationReferenceRefresh(
+  repository: PublicRepository,
+  expected: PublicGitHubRelationItem,
+  item: EnumeratedGitHubItem,
+  cause: RelationReferenceConflictError,
+): EnumeratedGitHubItem {
+  if (
+    expected.repositoryOwner.toLowerCase() !== repository.owner.toLowerCase() ||
+    expected.repositoryName.toLowerCase() !== repository.name.toLowerCase() ||
+    expected.repositoryArchived !== repository.archived ||
+    expected.repositoryDisabled !== repository.disabled ||
+    item.repositoryId !== repository.id ||
+    item.nodeId !== expected.nodeId ||
+    item.number !== expected.number ||
+    item.type !== expected.type ||
+    item.url !== expected.url
+  ) {
+    throw new TypeError(
+      `関係参照競合の再取得結果が要求項目と一致しません。対象: ${expected.nodeId}`,
+      { cause },
+    );
+  }
+  return item;
+}
+
+type RelationReferenceRefreshTarget = Readonly<{
+  repository: PublicRepository;
+  expected: PublicGitHubRelationItem;
+}>;
+
+type RelationReferenceRefreshCollection = Readonly<{
+  repository: PublicRepository;
+  items: readonly EnumeratedGitHubItem[];
+}>;
+
+interface RelationReferenceRetryBudget {
+  readonly maxRefreshes: number;
+  refreshes: number;
+}
+
+type ExtractedRelationCandidates = Readonly<{
+  candidates: readonly RelationCandidate[];
+  aggregate: FreshRuntimeCollectionAggregate;
+}>;
+
+function detailReferencesNode(detail: GitHubItemDetail, nodeId: GitHubNodeId): boolean {
+  if (detail.timeline.some((event) => timelineRelatedNodeIds(event).includes(nodeId))) {
+    return true;
+  }
+  if (detail.inboundCrossReferences.some((reference) => reference.sourceItem.nodeId === nodeId)) {
+    return true;
+  }
+  if (detail.type === "issue") {
+    if (
+      detail.nativeDependencies.availability === "available" &&
+      detail.nativeDependencies.relations.some((relation) => relation.relatedItem.nodeId === nodeId)
+    ) {
+      return true;
+    }
+    return (
+      detail.nativeHierarchy.availability === "available" &&
+      detail.nativeHierarchy.relations.some((relation) => relation.relatedItem.nodeId === nodeId)
+    );
+  }
+  return detail.nativeClosingIssues.some((relation) => relation.relatedItem.nodeId === nodeId);
+}
+
+function relationReferenceRefreshTargets(
+  aggregate: FreshRuntimeCollectionAggregate,
+  error: RelationReferenceConflictError,
+  allowlist: PublicRepositoryAllowlist,
+): readonly RelationReferenceRefreshTarget[] {
+  const nodeIds = new Set<GitHubNodeId>([error.existing.nodeId]);
+  for (const detail of aggregate.details) {
+    if (detailReferencesNode(detail, error.existing.nodeId)) {
+      nodeIds.add(detail.nodeId);
+    }
+  }
+  const enumeratedItemsByNodeId = new Map(
+    aggregate.enumeratedItems.map((item) => [item.nodeId, item]),
+  );
+  const targets: RelationReferenceRefreshTarget[] = [];
+  for (const nodeId of nodeIds) {
+    const enumeratedItem = enumeratedItemsByNodeId.get(nodeId);
+    if (enumeratedItem == null) {
+      if (nodeId !== error.existing.nodeId) {
+        throw new TypeError("関係参照競合の親詳細に対応する列挙項目がありません", { cause: error });
+      }
+      const repository = findRelationReferenceRepository(allowlist, error.existing);
+      if (repository == null) {
+        throw error;
+      }
+      targets.push(Object.freeze({ repository, expected: error.existing }));
+      continue;
+    }
+    const repository = allowlist.repositories.find(
+      (candidate) => candidate.id === enumeratedItem.repositoryId,
+    );
+    if (repository == null) {
+      throw new TypeError("関係参照競合の親詳細repositoryを公開allowlistへ解決できません", {
+        cause: error,
+      });
+    }
+    targets.push(
+      Object.freeze({
+        repository,
+        expected: createPublicRelationItem(enumeratedItem, repository),
+      }),
+    );
+  }
+  return Object.freeze(targets);
+}
+
+async function refreshRelationReferences(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  authentication: GitHubClient,
+  targets: readonly RelationReferenceRefreshTarget[],
+  error: RelationReferenceConflictError,
+): Promise<readonly RelationReferenceRefreshCollection[]> {
+  const targetsByRepositoryId = new Map<
+    PublicRepositoryId,
+    Readonly<{
+      repository: PublicRepository;
+      targets: RelationReferenceRefreshTarget[];
+    }>
+  >();
+  for (const target of targets) {
+    const current = targetsByRepositoryId.get(target.repository.id);
+    if (current == null) {
+      targetsByRepositoryId.set(target.repository.id, {
+        repository: target.repository,
+        targets: [target],
+      });
+    } else {
+      current.targets.push(target);
+    }
+  }
+  const refreshedCollections: RelationReferenceRefreshCollection[] = [];
+  for (const { repository, targets: repositoryTargets } of targetsByRepositoryId.values()) {
+    const items = await adapters.enumerateGitHubItemsByIdentifiers({
+      allowlist: createPublicRepositoryAllowlist([repository]),
+      identifiers: repositoryTargets.map((target) => target.expected.url),
+      observedAt: invocation.startedAt,
+      request: authentication.request,
+      graphql: authentication.graphql,
+    });
+    if (items.length !== repositoryTargets.length) {
+      throw new TypeError("関係参照競合の再取得結果件数が不正です", { cause: error });
+    }
+    const expectedByNodeId = new Map(
+      repositoryTargets.map((target) => [target.expected.nodeId, target.expected]),
+    );
+    const refreshedByNodeId = new Map<GitHubNodeId, EnumeratedGitHubItem>();
+    for (const item of items) {
+      if (!expectedByNodeId.has(item.nodeId) || refreshedByNodeId.has(item.nodeId)) {
+        throw new TypeError("関係参照競合の再取得結果が要求項目と一致しません", { cause: error });
+      }
+      refreshedByNodeId.set(item.nodeId, item);
+    }
+    const refreshedItems = repositoryTargets.map((target) => {
+      const item = refreshedByNodeId.get(target.expected.nodeId);
+      if (item == null) {
+        throw new TypeError("関係参照競合の再取得結果が不足しています", { cause: error });
+      }
+      return validateRelationReferenceRefresh(repository, target.expected, item, error);
+    });
+    refreshedCollections.push(
+      Object.freeze({
+        repository,
+        items: Object.freeze(refreshedItems),
+      }),
+    );
+  }
+  return Object.freeze(refreshedCollections);
+}
+
+async function refreshRelationReferenceRuntimeCollections(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  authentication: GitHubClient,
+  refreshedCollections: readonly RelationReferenceRefreshCollection[],
+  error: RelationReferenceConflictError,
+  freshCollectionsByRepositoryId: Map<GitHubRepositoryId, FreshRepositoryRuntimeCollection>,
+): Promise<void> {
+  for (const refreshed of refreshedCollections) {
+    const current = freshCollectionsByRepositoryId.get(refreshed.repository.id);
+    if (current == null) {
+      throw new TypeError("関係参照競合の再取得対象repository収集結果がありません", {
+        cause: error,
+      });
+    }
+    const additions = await collectRepositoryItemObservationsWithVolatileMetadata(
+      adapters,
+      invocation,
+      configuration,
+      state,
+      authentication,
+      refreshed.repository,
+      refreshed.items,
+      new Set(refreshed.items.map((item) => item.nodeId)),
+    );
+    freshCollectionsByRepositoryId.set(
+      refreshed.repository.id,
+      mergeFreshRepositoryRuntimeCollection(
+        refreshed.repository,
+        invocation,
+        current,
+        refreshed.items,
+        additions,
+      ),
+    );
+  }
+}
+
+async function extractAllRelationCandidates(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  authentication: GitHubClient,
+  freshCollectionsByRepositoryId: Map<GitHubRepositoryId, FreshRepositoryRuntimeCollection>,
+  config: Config,
+  allowlist: PublicRepositoryAllowlist,
+  retryBudget: RelationReferenceRetryBudget,
+): Promise<ExtractedRelationCandidates> {
+  for (;;) {
+    const aggregate = aggregateFreshRepositoryCollections(
+      allowlist,
+      freshCollectionsByRepositoryId,
+    );
+    const knownItems = aggregate.enumeratedItems.map((item) =>
+      createPublicRelationItem(item, allowlist.require(item.repositoryId)),
+    );
+    try {
+      return Object.freeze({
+        candidates: extractRelationCandidatesOnce(
+          config,
+          knownItems,
+          aggregate.details,
+          aggregate.analysisSources,
+        ),
+        aggregate,
+      });
+    } catch (error: unknown) {
+      if (!(error instanceof RelationReferenceConflictError) || !error.isStateOnlyConflict) {
+        throw error;
+      }
+      if (retryBudget.refreshes >= retryBudget.maxRefreshes) {
+        throw error;
+      }
+      const targets = relationReferenceRefreshTargets(aggregate, error, allowlist);
+      const retryNumber = retryBudget.refreshes + 1;
+      await adapters.sleep(
+        calculateRetryDelayMilliseconds(retryNumber, configuration.config.operations.retry),
+      );
+      retryBudget.refreshes = retryNumber;
+      const refreshed = await refreshRelationReferences(
+        adapters,
+        invocation,
+        authentication,
+        targets,
+        error,
+      );
+      await refreshRelationReferenceRuntimeCollections(
+        adapters,
+        invocation,
+        configuration,
+        state,
+        authentication,
+        refreshed,
+        error,
+        freshCollectionsByRepositoryId,
+      );
+    }
+  }
 }
 
 function relationNodes(
@@ -5253,7 +5552,7 @@ function cacheTemporalActor(actor: GitHubDetailActor): CacheTemporalEvent["actor
   });
 }
 
-function cacheTimelineRelatedNodeIds(event: GitHubItemDetail["timeline"][number]): GitHubNodeId[] {
+function timelineRelatedNodeIds(event: GitHubItemDetail["timeline"][number]): GitHubNodeId[] {
   const relatedNodeIds: GitHubNodeId[] = [];
   switch (event.kind) {
     case "assigned":
@@ -5334,7 +5633,7 @@ function createCacheHistory(item: EnumeratedGitHubItem, detail: GitHubItemDetail
         "actor" in event
           ? cacheTemporalActor(event.actor)
           : Object.freeze({ status: "unavailable" }),
-      relatedNodeIds: cacheTimelineRelatedNodeIds(event),
+      relatedNodeIds: timelineRelatedNodeIds(event),
     });
   });
   events.sort((left, right) => {
@@ -6744,12 +7043,12 @@ type FreshReplayResolution =
       reenumeratedItem: EnumeratedGitHubItem;
     }>;
 
-function calculateResponsibilityReplayRetryDelayMilliseconds(
+function calculateRetryDelayMilliseconds(
   retryNumber: number,
   settings: Config["operations"]["retry"],
 ): number {
   if (!Number.isSafeInteger(retryNumber) || retryNumber < 1) {
-    throw new TypeError("責務再生retry番号には1以上の安全な整数を指定してください");
+    throw new TypeError("retry番号には1以上の安全な整数を指定してください");
   }
   return Math.min(
     settings.maxDelaySeconds * 1000,
@@ -6884,10 +7183,7 @@ async function replayFreshItemWithResponsibilityRetry(
       retryNumber += 1
     ) {
       await adapters.sleep(
-        calculateResponsibilityReplayRetryDelayMilliseconds(
-          retryNumber,
-          configuration.config.operations.retry,
-        ),
+        calculateRetryDelayMilliseconds(retryNumber, configuration.config.operations.retry),
       );
       const refreshed = await collectResponsibilityReplayRetryItem(
         adapters,
@@ -7320,6 +7616,85 @@ function validateRelationExpansionEnumeration(
   }
 }
 
+function mergeFreshRepositoryRuntimeCollection(
+  repository: PublicRepository,
+  invocation: DailyRunInvocation,
+  current: FreshRepositoryRuntimeCollection,
+  provisionalItems: readonly EnumeratedGitHubItem[],
+  additions: FreshRepositoryItemCollection,
+): FreshRepositoryRuntimeCollection {
+  const mergedEnumeratedItems = deduplicateByStableId(
+    [...current.enumeratedItems, ...additions.enumeratedItems],
+    (item) => item.nodeId,
+  );
+  const mergedProvisionalEnumeratedItems = deduplicateByStableId(
+    [
+      ...current.provisionalEnumeratedItems,
+      ...provisionalItems,
+      ...additions.enumeratedItems,
+      ...additions.reenumeratedItems,
+    ],
+    (item) => item.nodeId,
+  );
+  const mergedDetails = deduplicateByStableId(
+    [...current.details, ...additions.details],
+    (detail) => detail.nodeId,
+  );
+  const mergedObservedItems = deduplicateByStableId(
+    [...current.observedItems, ...additions.observedItems],
+    (item) => item.nodeId,
+  );
+  const mergedAnalysisSources = deduplicateByStableId(
+    [...current.analysisSources, ...additions.analysisSources],
+    (source) => source.item.nodeId,
+  );
+  const changedNodeIds = new Set([...current.changedNodeIds, ...additions.changedNodeIds]);
+  return Object.freeze({
+    state: createSnapshotCollectionRepository(
+      repository,
+      invocation.startedAt,
+      mergedEnumeratedItems,
+    ),
+    provisionalEnumeratedItems: mergedProvisionalEnumeratedItems,
+    reenumeratedItems: deduplicateByStableId(
+      [...current.reenumeratedItems, ...additions.reenumeratedItems],
+      (item) => item.nodeId,
+    ),
+    enumeratedItems: mergedEnumeratedItems,
+    details: mergedDetails,
+    observedItems: mergedObservedItems,
+    analysisSources: mergedAnalysisSources,
+    changedNodeIds: Object.freeze([...changedNodeIds]),
+    diagnostics: Object.freeze([...current.diagnostics, ...additions.diagnostics]),
+  });
+}
+
+function synchronizeFreshRepositoryCollectionResults(
+  freshCollectionsByRepositoryId: ReadonlyMap<GitHubRepositoryId, FreshRepositoryRuntimeCollection>,
+  repositoryResultsById: Map<
+    GitHubRepositoryId,
+    RepositoryCollectionResult<SnapshotCollectionRepository>
+  >,
+): void {
+  for (const [repositoryId, collection] of freshCollectionsByRepositoryId) {
+    const result = repositoryResultsById.get(repositoryId);
+    assertNonNullable(
+      result,
+      `関係候補抽出後のrepository収集結果がありません。対象: ${repositoryId}`,
+    );
+    if (result.freshness === "stale") {
+      throw new TypeError(`関係候補抽出後のrepository収集結果がstaleです。対象: ${repositoryId}`);
+    }
+    repositoryResultsById.set(
+      repositoryId,
+      Object.freeze({
+        ...result,
+        value: collection.state,
+      }),
+    );
+  }
+}
+
 async function collectAdditionalRelationItems(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -7369,45 +7744,13 @@ async function collectAdditionalRelationItems(
     detailTargets,
     new Set(requestedTargets.map((target) => target.nodeId)),
   );
-  const mergedEnumeratedItems = deduplicateByStableId(
-    [...current.enumeratedItems, ...additions.enumeratedItems],
-    (item) => item.nodeId,
+  return mergeFreshRepositoryRuntimeCollection(
+    repository,
+    invocation,
+    current,
+    detailTargets,
+    additions,
   );
-  const mergedProvisionalEnumeratedItems = deduplicateByStableId(
-    [...current.provisionalEnumeratedItems, ...detailTargets, ...additions.reenumeratedItems],
-    (item) => item.nodeId,
-  );
-  const mergedDetails = deduplicateByStableId(
-    [...current.details, ...additions.details],
-    (detail) => detail.nodeId,
-  );
-  const mergedObservedItems = deduplicateByStableId(
-    [...current.observedItems, ...additions.observedItems],
-    (item) => item.nodeId,
-  );
-  const mergedAnalysisSources = deduplicateByStableId(
-    [...current.analysisSources, ...additions.analysisSources],
-    (source) => source.item.nodeId,
-  );
-  const changedNodeIds = new Set([...current.changedNodeIds, ...additions.changedNodeIds]);
-  return Object.freeze({
-    state: createSnapshotCollectionRepository(
-      repository,
-      invocation.startedAt,
-      mergedEnumeratedItems,
-    ),
-    provisionalEnumeratedItems: mergedProvisionalEnumeratedItems,
-    reenumeratedItems: deduplicateByStableId(
-      [...current.reenumeratedItems, ...additions.reenumeratedItems],
-      (item) => item.nodeId,
-    ),
-    enumeratedItems: mergedEnumeratedItems,
-    details: mergedDetails,
-    observedItems: mergedObservedItems,
-    analysisSources: mergedAnalysisSources,
-    changedNodeIds: Object.freeze([...changedNodeIds]),
-    diagnostics: Object.freeze([...current.diagnostics, ...additions.diagnostics]),
-  });
 }
 
 function aggregateFreshRepositoryCollections(
@@ -7634,18 +7977,24 @@ async function collectRelationExpandedItems(
 ): Promise<RelationExpandedRuntimeCollection> {
   const requestedNodeIds = new Set<GitHubNodeId>();
   const expandedNodeIds = new Set<GitHubNodeId>();
+  const relationReferenceRetryBudget: RelationReferenceRetryBudget = {
+    maxRefreshes: Math.min(2, configuration.config.operations.retry.maxAttempts - 1),
+    refreshes: 0,
+  };
   for (;;) {
-    const aggregate = aggregateFreshRepositoryCollections(
-      repositoryInventory.allowlist,
+    const extractedRelations = await extractAllRelationCandidates(
+      adapters,
+      invocation,
+      configuration,
+      state,
+      authentication,
       freshCollectionsByRepositoryId,
-    );
-    const discoveredRelationCandidates = extractAllRelationCandidates(
       configuration.config,
       repositoryInventory.allowlist,
-      aggregate.enumeratedItems,
-      aggregate.details,
-      aggregate.analysisSources,
+      relationReferenceRetryBudget,
     );
+    const discoveredRelationCandidates = extractedRelations.candidates;
+    const aggregate = extractedRelations.aggregate;
     const collectedCandidateNodeIds = collectedTrackingCandidateNodeIds(state, aggregate);
     const completedRelationCandidates = completeRelationCandidates(
       discoveredRelationCandidates,
@@ -7704,6 +8053,10 @@ async function collectRelationExpandedItems(
         : 0,
     });
     if (nextRequests.length === 0) {
+      synchronizeFreshRepositoryCollectionResults(
+        freshCollectionsByRepositoryId,
+        repositoryResultsById,
+      );
       return Object.freeze({
         ...aggregate,
         evaluatedAt,

@@ -894,6 +894,45 @@ describe("候補の識別と対象解決", () => {
 });
 
 describe("公開参照項目の衝突", () => {
+  it("同じnode IDのstateだけの食い違いをretry対象として識別する", () => {
+    const current = createItem({
+      nodeId: "I_current",
+      owner: "VOICEVOX",
+      repository: "tracker",
+      type: "issue",
+      number: 1,
+      state: "open",
+    });
+    const existing = createItem({
+      nodeId: "I_conflict_state",
+      owner: "VOICEVOX",
+      repository: "tracker",
+      type: "issue",
+      number: 2,
+      state: "open",
+    });
+    const incoming = { ...existing, state: "closed" } satisfies PublicGitHubRelationItem;
+    const item = createExtractionItem({
+      item: current,
+      body: createTextSource("github_item_body", "I_current", ""),
+      comments: [],
+      crossReferences: [],
+      nativeDependencies: [],
+      nativeHierarchy: [],
+    });
+
+    const error = captureThrownError(() => extract(item, [existing, incoming]));
+
+    expect(error).toBeInstanceOf(RelationReferenceConflictError);
+    if (!(error instanceof RelationReferenceConflictError)) {
+      throw new TypeError("関係参照の衝突エラーではありません");
+    }
+    expect(error.mismatches).toEqual([
+      { field: "state", existingValue: "open", incomingValue: "closed" },
+    ]);
+    expect(error.isStateOnlyConflict).toBe(true);
+  });
+
   it("同じnode IDの食い違いを安全な値だけとともに保持する", () => {
     const current = createItem({
       nodeId: "I_current",
@@ -941,6 +980,7 @@ describe("公開参照項目の衝突", () => {
       throw new TypeError("関係参照の衝突エラーではありません");
     }
     expect(error.conflictKind).toBe("node_id");
+    expect(error.isStateOnlyConflict).toBe(false);
     expect(error.mismatches).toEqual([
       { field: "repositoryOwner" },
       { field: "repositoryName" },
@@ -1006,6 +1046,7 @@ describe("公開参照項目の衝突", () => {
       throw new TypeError("関係参照の衝突エラーではありません");
     }
     expect(error.conflictKind).toBe("repository_number");
+    expect(error.isStateOnlyConflict).toBe(false);
     expect(error.mismatches).toEqual([{ field: "nodeId" }]);
   });
 });

@@ -219,6 +219,8 @@ function createReferenceIndex(input: ExtractRelationCandidatesInput): ReferenceI
     if (existingByNodeId != null && !samePublicItem(existingByNodeId, item)) {
       throw new RelationReferenceConflictError(
         "node_id",
+        existingByNodeId,
+        item,
         findRelationReferenceMismatches(existingByNodeId, item),
       );
     }
@@ -227,6 +229,8 @@ function createReferenceIndex(input: ExtractRelationCandidatesInput): ReferenceI
     if (existingByAlias != null && existingByAlias.nodeId !== item.nodeId) {
       throw new RelationReferenceConflictError(
         "repository_number",
+        existingByAlias,
+        item,
         findRelationReferenceMismatches(existingByAlias, item),
       );
     }

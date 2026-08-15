@@ -17,7 +17,10 @@ import {
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
 } from "../src/github/index.js";
-import { RelationReferenceConflictError } from "../src/graph/index.js";
+import {
+  RelationReferenceConflictError,
+  type PublicGitHubRelationItem,
+} from "../src/graph/index.js";
 import { StateFormatError } from "../src/persistence/index.js";
 
 function createGraphQLResponseError(options: ErrorOptions): GitHubGraphQLResponseError {
@@ -491,7 +494,26 @@ describe("safeErrorDiagnostic", () => {
     const url = "https://github.com/owner-canary/repository-canary/issues/42";
     const owner = "owner-canary";
     const repository = "repository-canary";
-    const error = new RelationReferenceConflictError("node_id", [
+    const existing = {
+      nodeId: createGitHubNodeId(nodeId),
+      repositoryOwner: owner,
+      repositoryName: repository,
+      repositoryArchived: false,
+      repositoryDisabled: true,
+      type: "issue",
+      number: 42,
+      url,
+      state: "open",
+    } satisfies PublicGitHubRelationItem;
+    const incoming = {
+      ...existing,
+      repositoryArchived: true,
+      repositoryDisabled: false,
+      type: "pull_request",
+      url: "https://github.com/owner-canary/repository-canary/pull/42",
+      state: "merged",
+    } satisfies PublicGitHubRelationItem;
+    const error = new RelationReferenceConflictError("node_id", existing, incoming, [
       { field: "nodeId" },
       { field: "repositoryOwner" },
       { field: "repositoryName" },

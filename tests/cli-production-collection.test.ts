@@ -38,8 +38,10 @@ import {
   createGitHubPullRequestVolatileMetadataFromDetail,
   createPublicRepositoryAllowlist,
   finalizeGitHubItemsWithVolatileMetadata,
+  GitHubApiBudgetExceededError,
   GitHubPullRequestVolatileRaceError,
   GitHubPullRequestVolatileRaceRetryExhaustedError,
+  GitHubResponseSchemaValidationError,
   GitHubRetryExhaustedError,
   type EnumeratedGitHubItem,
   type GitHubItemDetail,
@@ -50,6 +52,7 @@ import {
   type GitHubIssueComment,
   type GitHubNativeClosingIssue,
   type GitHubNativeDependency,
+  type GitHubNativeHierarchy,
   type GitHubReferencedItem,
   type GitHubTimelineEvent,
   type GitHubUserContentEdit,
@@ -669,6 +672,57 @@ function createIssueDetailWithInboundCrossReferences(
   });
 }
 
+function createRelationStateConflictIssueFixture(observedAt: UtcIsoDateTime): Readonly<{
+  fixture: RepositoryFixture;
+  tracked: EnumeratedGitHubItem;
+  sourceOpen: EnumeratedGitHubItem;
+  sourceClosed: EnumeratedGitHubItem;
+}> {
+  const repository = createRepository("R_relation_state_error", "relation-state-error", observedAt);
+  const publicRepository = requirePublicRepository(repository);
+  const fixture = createRepositoryFixture(repository);
+  const tracked = createIssueItem({
+    repository: publicRepository,
+    number: 1,
+    fingerprint: "tracked-state-error",
+    updatedAt: observedAt,
+    observedAt,
+    state: Object.freeze({ state: "open" }),
+  });
+  const sourceOpen = createIssueItem({
+    repository: publicRepository,
+    number: 2,
+    fingerprint: "source-state-error-open",
+    updatedAt: observedAt,
+    observedAt,
+    state: Object.freeze({ state: "open" }),
+  });
+  const sourceClosed = createIssueItem({
+    repository: publicRepository,
+    number: 2,
+    fingerprint: "source-state-error-closed",
+    updatedAt: observedAt,
+    observedAt,
+    state: Object.freeze({ state: "closed", closedAt: observedAt }),
+  });
+  fixture.openItems = [tracked, sourceOpen];
+  fixture.details.set(
+    tracked.nodeId,
+    createIssueDetailWithInboundCrossReferences(tracked, [sourceClosed], observedAt),
+  );
+  fixture.details.set(
+    sourceOpen.nodeId,
+    createIssueDetail({
+      item: sourceOpen,
+      body: "本文",
+      observedAt,
+      nativeDependencies: Object.freeze([]),
+      duplicateComments: false,
+    }),
+  );
+  return Object.freeze({ fixture, tracked, sourceOpen, sourceClosed });
+}
+
 function createInferredRelationFixture(observedAt: UtcIsoDateTime): Readonly<{
   repository: Repository;
   fixture: RepositoryFixture;
@@ -1094,6 +1148,7 @@ function createCollectionHarness(
     repositories: readonly RepositoryFixture[];
     config: Config;
     executeCodexAnalysis?: (input: CodexAnalysisInput) => Promise<unknown>;
+    enumerateGitHubItemsByIdentifiers?: ProductionRuntimeAdapters["enumerateGitHubItemsByIdentifiers"];
     probeGitHubPullRequestVolatileMetadataWithRetry?: ProductionRuntimeAdapters["probeGitHubPullRequestVolatileMetadataWithRetry"];
     collectGitHubItemDetails?: ProductionRuntimeAdapters["collectGitHubItemDetails"];
     sleep?: ProductionRuntimeAdapters["sleep"];
@@ -1159,6 +1214,9 @@ function createCollectionHarness(
     },
     enumerateGitHubItemsByIdentifiers: (input) => {
       individualCalls.push([...input.identifiers]);
+      if (options.enumerateGitHubItemsByIdentifiers != null) {
+        return options.enumerateGitHubItemsByIdentifiers(input);
+      }
       const items = input.identifiers.map((identifier) => {
         for (const fixture of options.repositories) {
           const item =
@@ -4437,6 +4495,7 @@ describe("本番収集の接続", () => {
       complete: false,
     });
     expect(harness.individualCalls).toEqual([]);
+    expect(harness.sleepDelays).toEqual([]);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
   });
@@ -4566,6 +4625,1060 @@ describe("本番収集の接続", () => {
     expect(snapshot.items.map((item) => item.nodeId)).toEqual(
       expect.arrayContaining([tracked.nodeId, source.nodeId]),
     );
+  });
+
+  it("stateだけの関係参照競合は最新状態の再取得後に関係候補を抽出する", async () => {
+    const repository = createRepository(
+      "R_relation_state_refresh",
+      "relation-state-refresh",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const tracked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "tracked-state-refresh",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const sourceOpen = createPullRequestItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "source-state-refresh-open",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    const sourceMerged = createMergedPullRequestItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "source-state-refresh-merged",
+      closedAt: observedAt,
+      mergedAt: observedAt,
+      observedAt,
+    });
+    fixture.openItems = [tracked, sourceOpen];
+    fixture.details.set(
+      tracked.nodeId,
+      createIssueDetailWithInboundCrossReferences(tracked, [sourceMerged], observedAt),
+    );
+    fixture.details.set(
+      sourceOpen.nodeId,
+      createFailedCheckPullRequestDetail(sourceOpen, observedAt),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const mergedSourceDetail = createFailedCheckPullRequestDetail(sourceMerged, observedAt);
+    const mergedSourceTimeline = Object.freeze([
+      Object.freeze({
+        sourceId: buildSourceId("github_timeline_event", `MERGED_${sourceMerged.nodeId}`),
+        nodeId: createGitHubNodeId(`MERGED_${sourceMerged.nodeId}`),
+        sequence: 0,
+        occurredAt: observedAt,
+        actor: Object.freeze({
+          status: "unavailable",
+          reason: "github_did_not_return_actor",
+        }),
+        kind: "merged",
+      } satisfies GitHubTimelineEvent),
+    ]);
+    let refreshCount = 0;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: (input) => {
+        refreshCount += input.identifiers.length;
+        fixture.details.set(
+          sourceOpen.nodeId,
+          Object.freeze({
+            ...mergedSourceDetail,
+            timeline: mergedSourceTimeline,
+            mergeState: Object.freeze({
+              ...mergedSourceDetail.mergeState,
+              checks: Object.freeze({
+                status: "not_configured",
+              }),
+            }),
+          }),
+        );
+        return Promise.resolve(
+          Object.freeze(
+            input.identifiers.map((identifier) => {
+              if (identifier === sourceOpen.url) {
+                return sourceMerged;
+              }
+              if (identifier === tracked.url) {
+                return tracked;
+              }
+              throw new TypeError("state競合fixtureの親詳細再取得対象が不正です");
+            }),
+          ),
+        );
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const snapshot = artifact.snapshot;
+    const sourceCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (document) => document.nodeId === sourceOpen.nodeId,
+    );
+    assertNonNullable(sourceCache, "state再取得fixtureのitem cacheがありません");
+    const trackedCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (document) => document.nodeId === tracked.nodeId,
+    );
+    assertNonNullable(trackedCache, "state再取得fixtureの親item cacheがありません");
+    const sourceCandidateNode = trackedCache.relationCandidates
+      .flatMap((candidate) => {
+        switch (candidate.relation.type) {
+          case "blocks":
+            return [candidate.relation.blocker, candidate.relation.blocked];
+          case "parent_of":
+            return [candidate.relation.parent, candidate.relation.subtask];
+          case "implements":
+            return [candidate.relation.implementation, candidate.relation.target];
+          case "unclassified":
+            return [candidate.relation.referencing, candidate.relation.referenced];
+        }
+      })
+      .find((node) => node.nodeId === sourceOpen.nodeId);
+    assertNonNullable(sourceCandidateNode, "state再取得fixtureのrelation candidateがありません");
+
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(refreshCount).toBe(2);
+    expect(harness.individualCalls).toEqual([[sourceOpen.url, tracked.url]]);
+    expect(harness.sleepDelays).toEqual([2000]);
+    expect(harness.detailCalls.at(-1)).toEqual({
+      targets: [{ nodeId: tracked.nodeId }, { nodeId: sourceOpen.nodeId }],
+    });
+    expect(requireCollectionItem(snapshot, sourceOpen.nodeId).state).toBe("closed");
+    expect(sourceCache.currentObservation.state).toBe("closed");
+    expect(sourceCache.replay.currentState).toBe("merged");
+    expect(sourceCandidateNode.state).toBe("merged");
+    const codexNodeIds = harness.codexInputs.map((input) => input.item.nodeId);
+    expect(codexNodeIds).toHaveLength(2);
+    expect(new Set(codexNodeIds)).toEqual(new Set([tracked.nodeId, sourceOpen.nodeId]));
+  });
+
+  it("allowlist外external publicのstate競合は再取得せず元エラーを伝播する", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const { fixture, tracked } = createRelationStateConflictIssueFixture(observedAt);
+    fixture.openItems = [tracked];
+    fixture.details.set(
+      tracked.nodeId,
+      createIssueDetail({
+        item: tracked,
+        body: "本文",
+        observedAt,
+        nativeDependencies: Object.freeze([
+          createExternalNativeBlocker(tracked, {
+            state: "open",
+            repositoryArchived: false,
+            repositoryDisabled: false,
+          }),
+          createExternalNativeBlocker(tracked, {
+            state: "closed",
+            repositoryArchived: false,
+            repositoryDisabled: false,
+          }),
+        ]),
+        duplicateComments: false,
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    let refreshCount = 0;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: () => {
+        refreshCount += 1;
+        throw new TypeError("external publicの再取得は呼ばれません");
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(1);
+    expect(refreshCount).toBe(0);
+    expect(harness.individualCalls).toEqual([]);
+    expect(harness.sleepDelays).toEqual([]);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("external public競合fixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.result.report.diagnostics.join(" ")).toContain(
+      "errorType=RelationReferenceConflictError",
+    );
+    expect(result.result.report.diagnostics.join(" ")).not.toContain("errorType=TypeError");
+  });
+
+  it("既知のmerged PRとopenの親detail参照を再取得後にmergedで一致させる", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const repository = createRepository(
+      "R_relation_merged_reference",
+      "relation-merged-reference",
+      observedAt,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const tracked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "tracked-merged-reference",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const sourceMerged = createMergedPullRequestItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "source-merged-reference",
+      closedAt: observedAt,
+      mergedAt: observedAt,
+      observedAt,
+    });
+    const sourceOpen = createPullRequestItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "source-open-reference",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    fixture.openItems = [tracked];
+    fixture.individualItems.set(sourceMerged.url, sourceMerged);
+    fixture.details.set(
+      tracked.nodeId,
+      createIssueDetailWithInboundCrossReferences(tracked, [sourceOpen], observedAt),
+    );
+    fixture.details.set(
+      sourceMerged.nodeId,
+      createFailedCheckPullRequestDetail(sourceMerged, observedAt),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [sourceMerged.url],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: (input) => {
+        if (input.identifiers.includes(tracked.url)) {
+          fixture.details.set(
+            tracked.nodeId,
+            createIssueDetailWithInboundCrossReferences(tracked, [sourceMerged], observedAt),
+          );
+        }
+        return Promise.resolve(
+          Object.freeze(
+            input.identifiers.map((identifier) => {
+              if (identifier === sourceMerged.url) {
+                return sourceMerged;
+              }
+              if (identifier === tracked.url) {
+                return tracked;
+              }
+              throw new TypeError("merged PR fixtureの再取得対象が不正です");
+            }),
+          ),
+        );
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const snapshot = artifact.snapshot;
+    const sourceCache = artifact.cacheOnlyPayload.itemCaches.find(
+      (document) => document.nodeId === sourceMerged.nodeId,
+    );
+    assertNonNullable(sourceCache, "merged PR fixtureのitem cacheがありません");
+
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(harness.individualCalls).toEqual([[sourceMerged.url], [sourceMerged.url, tracked.url]]);
+    expect(harness.sleepDelays).toEqual([2000]);
+    expect(requireCollectionItem(snapshot, sourceMerged.nodeId).state).toBe("closed");
+    expect(sourceCache.currentObservation.state).toBe("closed");
+    expect(sourceCache.replay.currentState).toBe("merged");
+  });
+
+  it("全relation経路の複数repositoryの親detailをrepository単位で再取得する", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const {
+      fixture: sourceFixture,
+      tracked,
+      sourceOpen,
+      sourceClosed,
+    } = createRelationStateConflictIssueFixture(observedAt);
+    const parentRepositoryRecord = createRepository(
+      "R_relation_refresh_parent",
+      "relation-refresh-parent",
+      observedAt,
+    );
+    const parentRepository = requirePublicRepository(parentRepositoryRecord);
+    const parentFixture = createRepositoryFixture(parentRepositoryRecord);
+    const dependencyParent = createIssueItem({
+      repository: parentRepository,
+      number: 3,
+      fingerprint: "relation-refresh-dependency-parent",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const hierarchyParent = createIssueItem({
+      repository: parentRepository,
+      number: 4,
+      fingerprint: "relation-refresh-hierarchy-parent",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const closingParent = createPullRequestItem({
+      repository: parentRepository,
+      number: 5,
+      fingerprint: "relation-refresh-closing-parent",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    const hierarchyRelation = Object.freeze({
+      sourceId: buildSourceId(
+        "github_native_hierarchy",
+        `${hierarchyParent.nodeId}:${sourceClosed.nodeId}`,
+      ),
+      authoritative: true,
+      provenance: "native",
+      relationship: "sub_issue",
+      relatedItem: createReferencedItem(sourceClosed),
+    } satisfies GitHubNativeHierarchy);
+    const dependencyDetail = createIssueDetail({
+      item: dependencyParent,
+      body: "本文",
+      observedAt,
+      nativeDependencies: Object.freeze([createNativeBlocker(dependencyParent, sourceClosed)]),
+      duplicateComments: false,
+    });
+    const hierarchyDetail = Object.freeze({
+      ...createIssueDetail({
+        item: hierarchyParent,
+        body: "本文",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+      nativeHierarchy: Object.freeze({
+        availability: "available",
+        relations: Object.freeze([hierarchyRelation]),
+      }),
+    });
+    const closingDetail = Object.freeze({
+      ...createFailedCheckPullRequestDetail(closingParent, observedAt),
+      nativeClosingIssues: Object.freeze([createNativeClosingIssue(closingParent, sourceClosed)]),
+    });
+    sourceFixture.openItems = [tracked, sourceOpen];
+    sourceFixture.details.set(
+      tracked.nodeId,
+      createIssueDetailWithInboundCrossReferences(tracked, [sourceClosed], observedAt),
+    );
+    sourceFixture.details.set(
+      sourceOpen.nodeId,
+      createIssueDetail({
+        item: sourceOpen,
+        body: "本文",
+        observedAt,
+        nativeDependencies: Object.freeze([]),
+        duplicateComments: false,
+      }),
+    );
+    parentFixture.openItems = [dependencyParent, hierarchyParent, closingParent];
+    parentFixture.details.set(dependencyParent.nodeId, dependencyDetail);
+    parentFixture.details.set(hierarchyParent.nodeId, hierarchyDetail);
+    parentFixture.details.set(closingParent.nodeId, closingDetail);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const refreshedParents = [tracked, dependencyParent, hierarchyParent, closingParent];
+    const harness = createCollectionHarness({
+      repositories: [sourceFixture, parentFixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: (input) => {
+        sourceFixture.details.set(
+          tracked.nodeId,
+          createIssueDetailWithInboundCrossReferences(tracked, [sourceOpen], observedAt),
+        );
+        parentFixture.details.set(
+          dependencyParent.nodeId,
+          createIssueDetail({
+            item: dependencyParent,
+            body: "本文",
+            observedAt,
+            nativeDependencies: Object.freeze([createNativeBlocker(dependencyParent, sourceOpen)]),
+            duplicateComments: false,
+          }),
+        );
+        parentFixture.details.set(
+          hierarchyParent.nodeId,
+          Object.freeze({
+            ...hierarchyDetail,
+            nativeHierarchy: Object.freeze({
+              availability: "available",
+              relations: Object.freeze([
+                Object.freeze({
+                  ...hierarchyRelation,
+                  relatedItem: createReferencedItem(sourceOpen),
+                }),
+              ]),
+            }),
+          }),
+        );
+        parentFixture.details.set(
+          closingParent.nodeId,
+          Object.freeze({
+            ...closingDetail,
+            nativeClosingIssues: Object.freeze([
+              createNativeClosingIssue(closingParent, sourceOpen),
+            ]),
+          }),
+        );
+        const refreshedByUrl = new Map<string, EnumeratedGitHubItem>([
+          [sourceOpen.url, sourceOpen],
+          ...refreshedParents.map((item): readonly [string, EnumeratedGitHubItem] => [
+            item.url,
+            item,
+          ]),
+        ]);
+        return Promise.resolve(
+          Object.freeze(
+            input.identifiers.map((identifier) => {
+              const item = refreshedByUrl.get(identifier);
+              assertNonNullable(item, "全relation経路fixtureの再取得項目がありません");
+              return item;
+            }),
+          ),
+        );
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+    const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const snapshot = artifact.snapshot;
+    const cacheCandidateStates = (nodeId: GitHubNodeId): readonly string[] => {
+      const document = artifact.cacheOnlyPayload.itemCaches.find(
+        (candidate) => candidate.nodeId === nodeId,
+      );
+      assertNonNullable(document, "全relation経路fixtureのitem cacheがありません");
+      return document.relationCandidates
+        .flatMap((candidate) => {
+          switch (candidate.relation.type) {
+            case "blocks":
+              return [candidate.relation.blocker, candidate.relation.blocked];
+            case "parent_of":
+              return [candidate.relation.parent, candidate.relation.subtask];
+            case "implements":
+              return [candidate.relation.implementation, candidate.relation.target];
+            case "unclassified":
+              return [candidate.relation.referencing, candidate.relation.referenced];
+          }
+        })
+        .filter((node) => node.nodeId === sourceOpen.nodeId)
+        .map((node) => node.state);
+    };
+
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(harness.individualCalls).toEqual([
+      [sourceOpen.url, tracked.url],
+      [dependencyParent.url, hierarchyParent.url, closingParent.url],
+    ]);
+    expect(harness.sleepDelays).toEqual([2000]);
+    expect(harness.detailCalls.slice(-2).flatMap((call) => call.targets)).toEqual(
+      expect.arrayContaining(
+        [sourceOpen, ...refreshedParents].map((item) => ({ nodeId: item.nodeId })),
+      ),
+    );
+    for (const item of [sourceOpen, ...refreshedParents]) {
+      expect(requireCollectionItem(snapshot, item.nodeId).state).toBe("open");
+      const document = artifact.cacheOnlyPayload.itemCaches.find(
+        (candidate) => candidate.nodeId === item.nodeId,
+      );
+      assertNonNullable(document, "全relation経路fixtureのcache文書がありません");
+      expect(document.currentObservation.state).toBe("open");
+      expect(document.replay.currentState).toBe("open");
+      expect(cacheCandidateStates(item.nodeId)).toContain("open");
+    }
+  });
+
+  it("relation expansion外側loopを跨ぐstate競合retryがrun全体上限で失敗する", async () => {
+    const repository = createRepository(
+      "R_relation_state_refresh_chain",
+      "relation-state-refresh-chain",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const tracked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "tracked-state-refresh-chain",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const sourceOpenItems = [
+      createIssueItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "source-state-refresh-chain-open-one",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      createIssueItem({
+        repository: publicRepository,
+        number: 3,
+        fingerprint: "source-state-refresh-chain-open-two",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+      createIssueItem({
+        repository: publicRepository,
+        number: 4,
+        fingerprint: "source-state-refresh-chain-open-three",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "open" }),
+      }),
+    ];
+    const sourceClosedItems = [
+      createIssueItem({
+        repository: publicRepository,
+        number: 2,
+        fingerprint: "source-state-refresh-chain-closed-one",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "closed", closedAt: observedAt }),
+      }),
+      createIssueItem({
+        repository: publicRepository,
+        number: 3,
+        fingerprint: "source-state-refresh-chain-closed-two",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "closed", closedAt: observedAt }),
+      }),
+      createIssueItem({
+        repository: publicRepository,
+        number: 4,
+        fingerprint: "source-state-refresh-chain-closed-three",
+        updatedAt: observedAt,
+        observedAt,
+        state: Object.freeze({ state: "closed", closedAt: observedAt }),
+      }),
+    ];
+    const sourceOpenOne = sourceOpenItems[0];
+    const sourceOpenTwo = sourceOpenItems[1];
+    const sourceOpenThree = sourceOpenItems[2];
+    const sourceClosedOne = sourceClosedItems[0];
+    assertNonNullable(sourceOpenOne, "relation expansion chainの1件目がありません");
+    assertNonNullable(sourceOpenTwo, "relation expansion chainの2件目がありません");
+    assertNonNullable(sourceOpenThree, "relation expansion chainの3件目がありません");
+    assertNonNullable(sourceClosedOne, "relation expansion chainのclosed 1件目がありません");
+    fixture.openItems = [tracked];
+    fixture.details.set(
+      tracked.nodeId,
+      createIssueDetailWithInboundCrossReferences(tracked, [sourceClosedOne], observedAt),
+    );
+    let relationExpansionCount = 0;
+    let refreshCount = 0;
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: (input) => {
+        if (input.identifiers.length === 1) {
+          const sourceIndex = sourceOpenItems.findIndex(
+            (item) => item.url === input.identifiers[0],
+          );
+          const source = sourceOpenItems[sourceIndex];
+          assertNonNullable(source, "relation expansion chainの対象がありません");
+          relationExpansionCount += 1;
+          fixture.details.set(
+            source.nodeId,
+            createIssueDetail({
+              item: source,
+              body: "本文",
+              observedAt,
+              nativeDependencies: Object.freeze([]),
+              duplicateComments: false,
+            }),
+          );
+          return Promise.resolve(Object.freeze([source]));
+        }
+        refreshCount += 1;
+        const source = sourceClosedItems[refreshCount - 1];
+        assertNonNullable(source, "relation expansion chainのrefresh対象がありません");
+        const nextClosed = sourceClosedItems[refreshCount];
+        assertNonNullable(nextClosed, "relation expansion chainの次のclosed対象がありません");
+        fixture.details.set(
+          tracked.nodeId,
+          createIssueDetailWithInboundCrossReferences(
+            tracked,
+            Object.freeze([source, nextClosed]),
+            observedAt,
+          ),
+        );
+        fixture.details.set(
+          source.nodeId,
+          createIssueDetail({
+            item: source,
+            body: "本文",
+            observedAt,
+            nativeDependencies: Object.freeze([]),
+            duplicateComments: false,
+          }),
+        );
+        return Promise.resolve(
+          Object.freeze(
+            input.identifiers.map((identifier) => {
+              if (identifier === source.url) {
+                return source;
+              }
+              if (identifier === tracked.url) {
+                return tracked;
+              }
+              throw new TypeError("relation expansion chainの再取得識別子が不正です");
+            }),
+          ),
+        );
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(1);
+    expect(relationExpansionCount).toBe(3);
+    expect(refreshCount).toBe(2);
+    expect(harness.individualCalls).toEqual([
+      [sourceOpenOne.url],
+      [sourceOpenOne.url, tracked.url],
+      [sourceOpenTwo.url],
+      [sourceOpenTwo.url, tracked.url],
+      [sourceOpenThree.url],
+    ]);
+    expect(harness.sleepDelays).toEqual([2000, 4000]);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("relation expansion chain fixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.result.report).toMatchObject({
+      status: "failure",
+      failedStage: "incremental_collection",
+      complete: false,
+    });
+    expect(result.result.report.diagnostics.join(" ")).toContain(
+      "errorType=RelationReferenceConflictError",
+    );
+  });
+
+  it("state競合の再取得でAPI予算エラーを再試行しない", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const { fixture, tracked, sourceOpen } = createRelationStateConflictIssueFixture(observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const budgetError = new GitHubApiBudgetExceededError({
+      source: "rest",
+      limit: 5000,
+      remaining: 1,
+      resetAt: observedAt,
+      observedAt,
+      resource: "core",
+    });
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: () => Promise.reject(budgetError),
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(1);
+    expect(harness.individualCalls).toEqual([[sourceOpen.url, tracked.url]]);
+    expect(harness.sleepDelays).toEqual([2000]);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("API予算エラーfixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.result.report.diagnostics.join(" ")).toContain("GitHubApiBudgetExceededError");
+  });
+
+  it("state競合の再取得でGitHub schemaエラーを再試行しない", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const { fixture, tracked, sourceOpen } = createRelationStateConflictIssueFixture(observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    const parseResult = z.object({ expected: z.string() }).safeParse({});
+    if (parseResult.success) {
+      throw new TypeError("schemaエラーfixtureを作成できません");
+    }
+    const schemaError = new GitHubResponseSchemaValidationError(
+      "関係参照state再取得fixture",
+      parseResult.error,
+    );
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: () => Promise.reject(schemaError),
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(1);
+    expect(harness.individualCalls).toEqual([[sourceOpen.url, tracked.url]]);
+    expect(harness.sleepDelays).toEqual([2000]);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("schemaエラーfixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.result.report.diagnostics.join(" ")).toContain(
+      "GitHubResponseSchemaValidationError",
+    );
+  });
+
+  it("state競合の再取得結果の件数とidentity不一致をcause付きで失敗させる", async () => {
+    type MismatchKind =
+      "count" | "duplicateNodeId" | "repositoryId" | "nodeId" | "number" | "type" | "url";
+    const mismatchKinds: readonly MismatchKind[] = [
+      "count",
+      "duplicateNodeId",
+      "repositoryId",
+      "nodeId",
+      "number",
+      "type",
+      "url",
+    ];
+    for (const mismatchKind of mismatchKinds) {
+      const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+      const { fixture, tracked, sourceOpen } = createRelationStateConflictIssueFixture(observedAt);
+      const config = await createTestConfig({
+        explicitIncludes: [],
+        retentionDays: 180,
+        aiEnabled: false,
+      });
+      const wrongRepository = requirePublicRepository(
+        createRepository("R_wrong_relation_identity", "wrong-relation-identity", observedAt),
+      );
+      const harness = createCollectionHarness({
+        repositories: [fixture],
+        config,
+        sleep: () => Promise.resolve(),
+        enumerateGitHubItemsByIdentifiers: (input) => {
+          if (mismatchKind === "count") {
+            return Promise.resolve(Object.freeze([]));
+          }
+          const refreshed = (() => {
+            switch (mismatchKind) {
+              case "duplicateNodeId":
+                return sourceOpen;
+              case "repositoryId":
+                return Object.freeze({
+                  ...sourceOpen,
+                  repositoryId: wrongRepository.id,
+                });
+              case "nodeId":
+                return Object.freeze({
+                  ...sourceOpen,
+                  nodeId: createGitHubNodeId("wrong-node"),
+                });
+              case "number":
+                return Object.freeze({ ...sourceOpen, number: sourceOpen.number + 1 });
+              case "type":
+                if (sourceOpen.type !== "issue") {
+                  throw new TypeError("identity fixtureのsourceがIssueではありません");
+                }
+                return Object.freeze({
+                  ...sourceOpen,
+                  type: "pull_request",
+                  draft: false,
+                  mergeStatus: "not_merged",
+                }) satisfies EnumeratedGitHubItem;
+              case "url":
+                return Object.freeze({
+                  ...sourceOpen,
+                  url: `${sourceOpen.url}/mismatch` satisfies GitHubItemUrl,
+                });
+            }
+          })();
+          return Promise.resolve(
+            Object.freeze(
+              input.identifiers.map((identifier) => {
+                if (mismatchKind === "duplicateNodeId") {
+                  return sourceOpen;
+                }
+                return identifier === sourceOpen.url ? refreshed : tracked;
+              }),
+            ),
+          );
+        },
+      });
+
+      const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+      expect(result.exitCode, mismatchKind).toBe(1);
+      expect(harness.individualCalls, mismatchKind).toEqual([[sourceOpen.url, tracked.url]]);
+      expect(harness.sleepDelays, mismatchKind).toEqual([2000]);
+      if (result.command !== "collect-analyze") {
+        throw new TypeError("identity不一致fixtureがcollect-analyze結果ではありません");
+      }
+      expect(result.result.report).toMatchObject({
+        status: "failure",
+        failedStage: "incremental_collection",
+        complete: false,
+      });
+      expect(result.result.report.diagnostics.join(" ")).toContain(
+        "errorType=TypeError<-RelationReferenceConflictError",
+      );
+    }
+  });
+
+  it("state競合の親detail再取得エラーを変換せず伝播する", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const { fixture, tracked, sourceOpen } = createRelationStateConflictIssueFixture(observedAt);
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    let detailCallCount = 0;
+    const detailError = new TypeError("関係参照親detail取得fixtureの失敗");
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+      collectGitHubItemDetails: (input) => {
+        detailCallCount += 1;
+        if (detailCallCount === 2) {
+          throw detailError;
+        }
+        return Promise.resolve(
+          Object.freeze({
+            capabilities: Object.freeze({
+              nativeDependencies: "available",
+              nativeHierarchy: "available",
+            }),
+            items: Object.freeze(
+              input.targets.map((target) => {
+                const detail = fixture.details.get(target.item.nodeId);
+                assertNonNullable(detail, "detailエラーfixtureの詳細がありません");
+                return detail;
+              }),
+            ),
+          }),
+        );
+      },
+      enumerateGitHubItemsByIdentifiers: (input) =>
+        Promise.resolve(
+          Object.freeze(
+            input.identifiers.map((identifier) => {
+              if (identifier === sourceOpen.url) {
+                return sourceOpen;
+              }
+              if (identifier === tracked.url) {
+                return tracked;
+              }
+              throw new TypeError("detailエラーfixtureの再取得対象が不正です");
+            }),
+          ),
+        ),
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(1);
+    expect(detailCallCount).toBe(2);
+    expect(harness.individualCalls).toEqual([[sourceOpen.url, tracked.url]]);
+    expect(harness.sleepDelays).toEqual([2000]);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("detailエラーfixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.result.report.diagnostics.join(" ")).toContain("errorType=TypeError");
+    expect(result.result.report.diagnostics.join(" ")).not.toContain("TypeError<-");
+  });
+
+  it("state競合のPull Request volatile probeエラーを変換せず伝播する", async () => {
+    const repository = createRepository(
+      "R_relation_probe_error",
+      "relation-probe-error",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const tracked = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "tracked-probe-error",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const sourceOpen = createPullRequestItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "source-probe-error-open",
+      updatedAt: observedAt,
+      observedAt,
+    });
+    const sourceMerged = createMergedPullRequestItem({
+      repository: publicRepository,
+      number: 2,
+      fingerprint: "source-probe-error-merged",
+      closedAt: observedAt,
+      mergedAt: observedAt,
+      observedAt,
+    });
+    fixture.openItems = [tracked, sourceOpen];
+    fixture.details.set(
+      tracked.nodeId,
+      createIssueDetailWithInboundCrossReferences(tracked, [sourceMerged], observedAt),
+    );
+    fixture.details.set(
+      sourceOpen.nodeId,
+      createFailedCheckPullRequestDetail(sourceOpen, observedAt),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    let probeCallCount = 0;
+    const probeError = new TypeError("関係参照volatile probe取得fixtureの失敗");
+    const mergedSourceDetail = createFailedCheckPullRequestDetail(sourceMerged, observedAt);
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: (input) => {
+        fixture.details.set(sourceOpen.nodeId, mergedSourceDetail);
+        return Promise.resolve(
+          Object.freeze(
+            input.identifiers.map((identifier) => {
+              if (identifier === sourceOpen.url) {
+                return sourceMerged;
+              }
+              if (identifier === tracked.url) {
+                return tracked;
+              }
+              throw new TypeError("probeエラーfixtureの再取得対象が不正です");
+            }),
+          ),
+        );
+      },
+      probeGitHubPullRequestVolatileMetadataWithRetry: async (input) => {
+        probeCallCount += 1;
+        if (probeCallCount === 2) {
+          throw probeError;
+        }
+        const metadata = input.pullRequestNodeIds.map((nodeId) => {
+          const detail = fixture.details.get(nodeId);
+          assertNonNullable(detail, "probeエラーfixtureの詳細がありません");
+          if (detail.type !== "pull_request") {
+            throw new TypeError("probeエラーfixtureのdetail種別が不正です");
+          }
+          return createGitHubPullRequestVolatileMetadataFromDetail(detail);
+        });
+        const collection = Object.freeze({ items: Object.freeze(metadata) });
+        await input.validateDetail?.(collection);
+        return collection;
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(1);
+    expect(probeCallCount).toBe(2);
+    expect(harness.individualCalls).toEqual([[sourceOpen.url, tracked.url]]);
+    expect(harness.sleepDelays).toEqual([2000]);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("probeエラーfixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.result.report.diagnostics.join(" ")).toContain("errorType=TypeError");
+    expect(result.result.report.diagnostics.join(" ")).not.toContain("TypeError<-");
+  });
+
+  it("state以外の関係参照競合は再取得せず失敗させる", async () => {
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const { fixture, tracked } = createRelationStateConflictIssueFixture(observedAt);
+    const trackedDetail = fixture.details.get(tracked.nodeId);
+    assertNonNullable(trackedDetail, "identity競合fixtureのtracked詳細がありません");
+    const reference = trackedDetail.inboundCrossReferences[0];
+    assertNonNullable(reference, "identity競合fixtureの参照がありません");
+    fixture.details.set(
+      tracked.nodeId,
+      Object.freeze({
+        ...trackedDetail,
+        inboundCrossReferences: Object.freeze([
+          Object.freeze({
+            ...reference,
+            sourceItem: Object.freeze({
+              ...reference.sourceItem,
+              repositoryArchived: true,
+            }),
+          }),
+        ]),
+      }),
+    );
+    const config = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: false,
+    });
+    let refreshCount = 0;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      sleep: () => Promise.resolve(),
+      enumerateGitHubItemsByIdentifiers: () => {
+        refreshCount += 1;
+        throw new TypeError("identity競合fixtureの再取得は呼ばれません");
+      },
+    });
+
+    const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
+
+    expect(result.exitCode).toBe(1);
+    expect(refreshCount).toBe(0);
+    expect(harness.individualCalls).toEqual([]);
+    expect(harness.sleepDelays).toEqual([]);
+    if (result.command !== "collect-analyze") {
+      throw new TypeError("identity競合fixtureがcollect-analyze結果ではありません");
+    }
+    expect(result.result.report.diagnostics.join(" ")).toContain("RelationReferenceConflictError");
   });
 
   it("後続detailで判明するnative chainを深度3まで取得して深度4を取得しない", async () => {
