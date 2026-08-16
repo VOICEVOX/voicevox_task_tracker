@@ -12407,7 +12407,7 @@ describe("本番収集の接続", () => {
     expect(serializedReport).not.toContain("/issues/2");
   });
 
-  it("current external public参照を許可しcached mutationを再検証する", async () => {
+  it("fresh external current参照を再取得してcontent boundaryを適用する", async () => {
     const repository = createRepository(
       "R_external_relation_allowed",
       "external-relation-allowed",
@@ -12438,8 +12438,8 @@ describe("本番収集の接続", () => {
           duplicateComments: false,
         }),
         bodyUserContentEdits: Object.freeze({
-          availability: "unavailable",
-          reason: "connection_null",
+          availability: "available",
+          edits: Object.freeze([]),
         }),
       }),
     );
@@ -12497,34 +12497,56 @@ describe("本番収集の接続", () => {
     expect(itemCache.relationMutations).toContainEqual(
       expect.objectContaining({
         contentSourceId: bodySourceId,
-        status: "unknown",
-        reason: "connection_unavailable",
+        status: "available",
       }),
     );
 
-    const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
+    const firstDetailCallCount = harness.detailCalls.length;
     const firstCodexExecutionCount = harness.codexExecutionCount();
     visibility = "PRIVATE";
     const secondResult = await harness.runCollectAnalyze(SECOND_RUN_AT);
     if (secondResult.command !== "collect-analyze") {
-      throw new TypeError("cached current external fixtureがcollect-analyze結果ではありません");
+      throw new TypeError("fresh current external fixtureがcollect-analyze結果ではありません");
     }
-    expect(secondResult.exitCode).toBe(1);
+    expect(secondResult.exitCode).toBe(0);
     expect(secondResult.result.report).toMatchObject({
-      status: "failure",
-      failedStage: "incremental_collection",
-      complete: false,
+      status: "success",
+      complete: true,
     });
     expect(secondResult.result.report.diagnostics).toContainEqual(
       expect.stringContaining(
-        `publicBoundaryViolationKind=cache_relation_mutation publicBoundaryViolationCount=1 sourceItemNodeId=${source.nodeId}`,
+        `relationMutationUnknown sourceItemNodeId=${source.nodeId} reason=repository_public_boundary_unverified count=1`,
       ),
     );
+    expect(harness.detailCalls.length).toBeGreaterThan(firstDetailCallCount);
     expect(harness.externalRelationGraphqlCalls).toHaveLength(2);
-    expect(harness.codexExecutionCount()).toBe(firstCodexExecutionCount);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(firstHead);
-    expect(JSON.stringify(secondResult.result.report)).not.toContain(externalUrl);
-    expect(JSON.stringify(secondResult.result.report)).not.toContain("external-owner");
+    expect(harness.codexExecutionCount()).toBeGreaterThan(firstCodexExecutionCount);
+    const secondArtifact = requireCollectAnalyzeArtifact(harness.artifacts);
+    const secondItemCache = secondArtifact.cacheOnlyPayload.itemCaches.find(
+      (candidate) => candidate.nodeId === source.nodeId,
+    );
+    if (secondItemCache == null) {
+      throw new TypeError("fresh current externalのitem cacheがありません");
+    }
+    expect(secondItemCache.relationPublicBoundaryValidation).toEqual({ status: "required" });
+    expect(secondItemCache.relationMutations).toContainEqual(
+      expect.objectContaining({
+        contentSourceId: bodySourceId,
+        status: "unknown",
+        reason: "repository_public_boundary_unverified",
+      }),
+    );
+    expect(
+      secondItemCache.relationCandidates.some((candidate) =>
+        candidate.sourceIds.includes(bodySourceId),
+      ),
+    ).toBe(false);
+    expect(
+      JSON.stringify({ report: secondResult.result.report, artifact: secondArtifact }),
+    ).not.toContain(externalUrl);
+    expect(
+      JSON.stringify({ report: secondResult.result.report, artifact: secondArtifact }),
+    ).not.toContain("external-owner");
   });
 
   it("stale cacheのunknown sourceにある複数external current参照を全て再検証する", async () => {

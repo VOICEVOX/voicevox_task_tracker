@@ -10419,7 +10419,10 @@ async function collectRelationExpandedItems(
       sanitizedRelationCandidates,
       collectedCandidateNodeIds,
     );
-    const exactAiRefreshes = exactAiRefreshNodeIds(aggregate, sanitizedRelationCandidates);
+    const exactAiRefreshes = exactAiRefreshNodeIds(
+      aggregate,
+      completedRelationCandidates.candidates,
+    );
     if (exactAiRefreshes.size > 0) {
       const inputsByRepositoryId = new Map<
         GitHubRepositoryId,
@@ -10464,7 +10467,7 @@ async function collectRelationExpandedItems(
       repositoryInventory,
       aggregate.enumeratedItems,
       aggregate.observedItems,
-      sanitizedRelationCandidates,
+      completedRelationCandidates.candidates,
     );
     const trackingState = relationExpansionTrackingState(tracking);
     const nextRequests = planRelationExpansion({
