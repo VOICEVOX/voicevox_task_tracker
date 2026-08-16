@@ -18,7 +18,7 @@ const REPOSITORY_PATH = `state/github-repositories/${hashCanonicalJson({
 }).slice("sha256:".length)}.json`;
 
 const repositoryCache = {
-  schemaVersion: "3",
+  schemaVersion: "4",
   kind: "github_repository",
   repository: {
     repositoryId: REPOSITORY_ID,
@@ -59,7 +59,7 @@ describe("cache-only state検証", () => {
       await expect(verifyPersistentStateDirectory(stateDirectory)).resolves.toEqual({
         repositoryCaches: {
           verifiedCount: 1,
-          schemaVersions: ["3"],
+          schemaVersions: ["4"],
         },
         itemCaches: {
           verifiedCount: 0,
@@ -101,7 +101,7 @@ describe("cache-only state検証", () => {
 
       expect(outputs).toEqual([
         [
-          "github-repositories: 1件、schema version 3",
+          "github-repositories: 1件、schema version 4",
           "github-items: 0件、schema version なし",
           "ai-latest-importance: 0件、schema version なし",
           "ai-results: 0件、schema version なし",

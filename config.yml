@@ -160,7 +160,7 @@ notifications:
       critical: 2
 
 state:
-  branch: tracker-state-v3
+  branch: tracker-state-v4
   repositoryCacheDirectory: state/github-repositories
   itemCacheDirectory: state/github-items
   latestImportanceDirectory: state/ai-latest-importance

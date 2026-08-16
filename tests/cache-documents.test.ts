@@ -199,10 +199,11 @@ function createValidItem(): GitHubItemCacheDocument {
   const itemSourceId = buildSourceId("github_item", ITEM_NODE_ID);
   const bodySourceId = buildSourceId("github_item_body", ITEM_NODE_ID);
   return {
-    schemaVersion: "3",
+    schemaVersion: "4",
     kind: "github_item",
     repository: REPOSITORY,
     ...createTerminalIndex(),
+    relationPublicBoundaryValidation: { status: "not_required" },
     currentObservation: createCurrentObservation(),
     analysisFacts: {
       explicitRequestCandidates: [],
@@ -340,7 +341,7 @@ function createAvailableRelationMutation(): ExactRelationResult {
 
 function createValidRepository(): GitHubRepositoryCacheDocument {
   return {
-    schemaVersion: "3",
+    schemaVersion: "4",
     kind: "github_repository",
     repository: REPOSITORY,
     successfulAt: OBSERVED_AT,
@@ -354,7 +355,7 @@ function createValidLatestImportance(): AiLatestImportanceCacheDocument {
     throw new TypeError("latest importance fixtureに利用可能なAI参照がありません");
   }
   return {
-    schemaVersion: "3",
+    schemaVersion: "4",
     kind: "ai_latest_importance",
     repository: REPOSITORY,
     nodeId: ITEM_NODE_ID,
@@ -443,7 +444,7 @@ describe("cache文書契約", () => {
     expect(() => createCacheDocument(value)).toThrow(StateZodValidationError);
   });
 
-  it.each(["1", "2"])("schema version %sを互換扱いせず拒否する", (schemaVersion) => {
+  it.each(["1", "2", "3"])("schema version %sを互換扱いせず拒否する", (schemaVersion) => {
     const legacyValue: Record<string, unknown> = {
       ...createValidItem(),
       schemaVersion,

@@ -56,12 +56,12 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-      - name: v3 state branchの存在を確認
+      - name: v4 state branchの存在を確認
         id: state_branch
         shell: bash
         run: |
           set +e
-          git ls-remote --exit-code --heads origin tracker-state-v3 >/dev/null
+          git ls-remote --exit-code --heads origin tracker-state-v4 >/dev/null
           state_branch_status=$?
           set -e
           if [[ "$state_branch_status" -eq 0 ]]; then
@@ -75,8 +75,8 @@ jobs:
         if: steps.state_branch.outputs.exists == 'true'
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: tracker-state-v3
-          path: tracker-state-v3
+          ref: tracker-state-v4
+          path: tracker-state-v4
           persist-credentials: false
       - name: Node.jsを準備
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -90,4 +90,4 @@ jobs:
         run: pnpm build
       - name: cache-only stateを検証
         if: steps.state_branch.outputs.exists == 'true'
-        run: pnpm tracker:run verify-state --state-directory tracker-state-v3/state
+        run: pnpm tracker:run verify-state --state-directory tracker-state-v4/state

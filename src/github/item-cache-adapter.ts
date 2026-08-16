@@ -43,6 +43,7 @@ import {
   type GitHubItemCacheDocument,
   type GitHubItemCacheObservation,
   type CacheMentionedWaitingOnCandidate,
+  type CacheRelationPublicBoundaryValidation,
   type GitHubItemCacheRelationCandidate,
   type GitHubItemCacheRelationMutationResult,
   type GitHubItemCacheReplay,
@@ -60,6 +61,7 @@ export type CreateGitHubItemCacheDocumentInput = Readonly<{
   deterministicRulesVersion: string;
   aiAnalysisStatus: CacheItemIndex["aiAnalysisStatus"];
   lifecycle: CacheLifecycle;
+  relationPublicBoundaryValidation: CacheRelationPublicBoundaryValidation;
   relationCandidates: readonly RelationCandidate[];
   relationMutations: readonly RelationMutationResult[];
   replay: ReplayItemHistoryResult;
@@ -1133,6 +1135,7 @@ export function createGitHubItemCacheDocument(
     updatedAt: input.observation.githubUpdatedAt,
     observedAt: input.observation.observedAt,
     lifecycle: input.lifecycle,
+    relationPublicBoundaryValidation: input.relationPublicBoundaryValidation,
     currentObservation: mapObservation(input.observation, input.analysisFacts),
     analysisFacts: {
       explicitRequestCandidates: input.analysisFacts.explicitRequestCandidates,
@@ -1262,6 +1265,10 @@ export type GitHubItemCacheAnalysisRestoration =
   | Readonly<{
       status: "cache_miss";
       reason: "current_fingerprint_mismatch";
+    }>
+  | Readonly<{
+      status: "detail_required";
+      reason: "relation_public_boundary_revalidation_required";
     }>;
 
 function createAnalysisSource(document: GitHubItemCacheDocument): GitHubItemCacheAnalysisSource {
@@ -1283,6 +1290,12 @@ export function restoreGitHubItemCacheForAnalysis(
   const restored = restoreGitHubItemCache(value, input);
   if (restored.status === "cache_miss") {
     return restored;
+  }
+  if (restored.document.relationPublicBoundaryValidation.status === "required") {
+    return {
+      status: "detail_required",
+      reason: "relation_public_boundary_revalidation_required",
+    };
   }
   if (restored.freshness === "fresh") {
     return {

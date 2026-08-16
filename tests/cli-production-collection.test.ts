@@ -2512,7 +2512,7 @@ describe("本番収集の接続", () => {
       discordAttempted: false,
       artifactWritten: false,
     });
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual({
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
   });
@@ -3284,11 +3284,11 @@ describe("本番収集の接続", () => {
       ...secondArtifact.cacheOnlyPayload,
       knownSecrets: [],
     });
-    const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
     if (head.status !== "present") {
       throw new TypeError("stale latest index fixtureのstate branchがありません");
     }
-    const files = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+    const files = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
     const latestPath = [...files.keys()].find((path) =>
       path.startsWith("state/ai-latest-importance/"),
     );
@@ -3296,7 +3296,7 @@ describe("本番収集の接続", () => {
       throw new TypeError("stale latest index fixtureのlatest文書がありません");
     }
     await harness.stateAdapter.commit({
-      branch: "tracker-state-v3",
+      branch: "tracker-state-v4",
       expectedHead: head,
       updates: [
         {
@@ -3380,11 +3380,11 @@ describe("本番収集の接続", () => {
 
     const firstResult = await harness.runDaily(FIRST_RUN_AT);
     expect(firstResult.exitCode, JSON.stringify(firstResult)).toBe(0);
-    const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
     if (head.status !== "present") {
       throw new TypeError("latest importance再構築fixtureのstate branchがありません");
     }
-    const files = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+    const files = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
     const latestPaths = [...files.keys()].filter((path) =>
       path.startsWith("state/ai-latest-importance/"),
     );
@@ -3392,7 +3392,7 @@ describe("本番収集の接続", () => {
       throw new TypeError("latest importance再構築fixtureのindexが1件ではありません");
     }
     await harness.stateAdapter.commit({
-      branch: "tracker-state-v3",
+      branch: "tracker-state-v4",
       expectedHead: head,
       updates: [],
       deletions: latestPaths,
@@ -6240,7 +6240,7 @@ describe("本番収集の接続", () => {
 
     const firstResult = await harness.runDaily(FIRST_RUN_AT);
     expect(firstResult.exitCode).toBe(0);
-    const stateBefore = new Map(await harness.stateAdapter.readBranchFiles("tracker-state-v3"));
+    const stateBefore = new Map(await harness.stateAdapter.readBranchFiles("tracker-state-v4"));
     const publicDataCountBefore = harness.publicData.length;
     const normalDiscordCallCountBefore = harness.normalDiscordCallCount();
     harness.individualCalls.length = 0;
@@ -6285,7 +6285,7 @@ describe("本番収集の接続", () => {
     );
 
     const secondResult = await harness.runDaily(SECOND_RUN_AT);
-    const stateAfter = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+    const stateAfter = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
     if (secondResult.command !== "daily") {
       throw new TypeError("関係先展開上限fixtureがdaily結果ではありません");
     }
@@ -6600,7 +6600,7 @@ describe("本番収集の接続", () => {
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
     expect(harness.normalDiscordCallCount()).toBe(0);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual({
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
   });
@@ -6667,7 +6667,7 @@ describe("本番収集の接続", () => {
       const harness = createCollectionHarness({ repositories: [fixture], config });
 
       expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
-      const headBefore = await harness.stateAdapter.resolveHead("tracker-state-v3");
+      const headBefore = await harness.stateAdapter.resolveHead("tracker-state-v4");
       const normalDiscordCallsBefore = harness.normalDiscordCallCount();
       const invalidRepository: Repository = Object.freeze({
         ...repository,
@@ -6686,7 +6686,7 @@ describe("本番収集の接続", () => {
       expect(harness.artifacts).toEqual([]);
       expect(harness.publicData).toEqual([]);
       expect(harness.normalDiscordCallCount()).toBe(normalDiscordCallsBefore);
-      expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(headBefore);
+      expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(headBefore);
     },
   );
 
@@ -6717,11 +6717,11 @@ describe("本番収集の接続", () => {
       });
       const harness = createCollectionHarness({ repositories: [fixture], config });
       expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
-      const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+      const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
       if (head.status !== "present") {
         throw new TypeError("stale不整合fixtureのstate branchがありません");
       }
-      const files = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+      const files = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
       const itemPath = [...files.keys()].find((path) => path.startsWith("state/github-items/"));
       const repositoryFile = [...files].find(([path]) =>
         path.startsWith("state/github-repositories/"),
@@ -6730,7 +6730,7 @@ describe("本番収集の接続", () => {
       assertNonNullable(repositoryFile, "stale不整合fixtureのrepository cacheがありません");
       if (failureKind === "item cache欠落") {
         await harness.stateAdapter.commit({
-          branch: "tracker-state-v3",
+          branch: "tracker-state-v4",
           expectedHead: head,
           updates: [],
           deletions: [itemPath],
@@ -6756,7 +6756,7 @@ describe("本番収集の接続", () => {
           ],
         });
         await harness.stateAdapter.commit({
-          branch: "tracker-state-v3",
+          branch: "tracker-state-v4",
           expectedHead: head,
           updates: [
             {
@@ -6769,7 +6769,7 @@ describe("本番収集の接続", () => {
           committedAt: FIRST_RUN_AT,
         });
       }
-      const corruptedHead = await harness.stateAdapter.resolveHead("tracker-state-v3");
+      const corruptedHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
       fixture.enumerationFailsWith503 = true;
       harness.artifacts.length = 0;
       harness.publicData.length = 0;
@@ -6779,7 +6779,7 @@ describe("本番収集の接続", () => {
       expect(result.exitCode).toBe(1);
       expect(harness.artifacts).toEqual([]);
       expect(harness.publicData).toEqual([]);
-      expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(corruptedHead);
+      expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(corruptedHead);
     },
   );
 
@@ -7000,7 +7000,7 @@ describe("本番収集の接続", () => {
       const firstArtifactCount = harness.artifacts.length;
       const firstPublicDataCount = harness.publicData.length;
       const firstCodexExecutionCount = harness.codexExecutionCount();
-      const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v3");
+      const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
       fixture.enumerationFailsWith503 = true;
       externalVisibility = visibility;
       externalArchived = archived;
@@ -7028,7 +7028,7 @@ describe("本番収集の接続", () => {
           expect(harness.artifacts).toHaveLength(firstArtifactCount);
           expect(harness.publicData).toHaveLength(firstPublicDataCount);
           expect(harness.codexExecutionCount()).toBe(firstCodexExecutionCount);
-          expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(firstHead);
+          expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(firstHead);
           expect(JSON.stringify(secondResult.result.report)).not.toContain("redirected-owner");
           expect(JSON.stringify(secondResult.result.report)).not.toContain("redirected-name");
           return;
@@ -7045,7 +7045,7 @@ describe("本番収集の接続", () => {
         expect(harness.artifacts).toHaveLength(firstArtifactCount);
         expect(harness.publicData).toHaveLength(firstPublicDataCount);
         expect(harness.codexExecutionCount()).toBe(firstCodexExecutionCount);
-        expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(firstHead);
+        expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(firstHead);
         expect(JSON.stringify(secondResult.result.report)).not.toContain("external-owner");
         return;
       }
@@ -7366,7 +7366,7 @@ describe("本番収集の接続", () => {
     const warmCodexExecutionCount = warmHarness.codexExecutionCount();
     expect(warmCodexExecutionCount).toBe(1);
     const persistedPaths = [
-      ...(await warmHarness.stateAdapter.readBranchFiles("tracker-state-v3")).keys(),
+      ...(await warmHarness.stateAdapter.readBranchFiles("tracker-state-v4")).keys(),
     ];
     expect(
       persistedPaths.every(
@@ -7864,7 +7864,7 @@ describe("本番収集の接続", () => {
     });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
-    const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
     if (result.command !== "collect-analyze") {
       throw new TypeError("責務再生retry number不一致fixtureがcollect-analyze結果ではありません");
     }
@@ -7918,7 +7918,7 @@ describe("本番収集の接続", () => {
     });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
-    const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
     if (result.command !== "collect-analyze") {
       throw new TypeError("volatile retry exhaustion fixtureがcollect-analyze結果ではありません");
     }
@@ -7999,7 +7999,7 @@ describe("本番収集の接続", () => {
     });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
-    const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
 
     if (result.command !== "collect-analyze") {
       throw new TypeError("責務再生retry上限fixtureがcollect-analyze結果ではありません");
@@ -8074,7 +8074,7 @@ describe("本番収集の接続", () => {
     });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
-    const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
     if (result.command !== "collect-analyze") {
       throw new TypeError("volatile identity mismatch fixtureがcollect-analyze結果ではありません");
     }
@@ -8697,11 +8697,11 @@ describe("本番収集の接続", () => {
 
     expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
     expect(harness.codexExecutionCount()).toBe(1);
-    const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
     if (head.status !== "present") {
       throw new TypeError("AI cache不整合fixtureのstate branchがありません");
     }
-    const files = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+    const files = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
     const aiCacheFiles = [...files].filter(([path]) => path.startsWith("state/ai-results/"));
     if (aiCacheFiles.length !== 1) {
       throw new TypeError(
@@ -8736,7 +8736,7 @@ describe("本番収集の接続", () => {
       output: invalidOutput,
     });
     await harness.stateAdapter.commit({
-      branch: "tracker-state-v3",
+      branch: "tracker-state-v4",
       expectedHead: head,
       updates: [
         {
@@ -11715,7 +11715,7 @@ describe("本番収集の接続", () => {
     expect(harness.codexExecutionCount()).toBe(0);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual({
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
     const serializedReport = JSON.stringify(result.result.report);
@@ -12136,11 +12136,11 @@ describe("本番収集の接続", () => {
 
     const firstResult = await harness.runDaily(FIRST_RUN_AT);
     expect(firstResult.exitCode).toBe(0);
-    const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
     if (head.status !== "present") {
       throw new TypeError("cached organization旧aliasの初回stateがありません");
     }
-    const files = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+    const files = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
     const itemPath = [...files.keys()].find((path) => path.startsWith("state/github-items/"));
     assertNonNullable(itemPath, "cached organization旧aliasのitem cache pathがありません");
     const itemBytes = files.get(itemPath);
@@ -12203,7 +12203,7 @@ describe("本番収集の接続", () => {
     };
     const rewritten = createCacheDocument(corruptedDocument);
     await harness.stateAdapter.commit({
-      branch: "tracker-state-v3",
+      branch: "tracker-state-v4",
       expectedHead: head,
       updates: [
         {
@@ -12405,7 +12405,7 @@ describe("本番収集の接続", () => {
     expect(harness.codexExecutionCount()).toBe(0);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual({
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
     const serializedReport = JSON.stringify(result.result.report);
@@ -12510,7 +12510,7 @@ describe("本番収集の接続", () => {
       }),
     );
 
-    const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
     const firstCodexExecutionCount = harness.codexExecutionCount();
     visibility = "PRIVATE";
     const secondResult = await harness.runCollectAnalyze(SECOND_RUN_AT);
@@ -12530,7 +12530,7 @@ describe("本番収集の接続", () => {
     );
     expect(harness.externalRelationGraphqlCalls).toHaveLength(2);
     expect(harness.codexExecutionCount()).toBe(firstCodexExecutionCount);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(firstHead);
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(firstHead);
     expect(JSON.stringify(secondResult.result.report)).not.toContain(externalUrl);
     expect(JSON.stringify(secondResult.result.report)).not.toContain("external-owner");
   });
@@ -12801,7 +12801,7 @@ describe("本番収集の接続", () => {
     expect(harness.individualCalls).toHaveLength(0);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual({
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
     const serializedFailure = JSON.stringify({
@@ -12870,7 +12870,7 @@ describe("本番収集の接続", () => {
 
     const firstResult = await harness.runDaily(FIRST_RUN_AT);
     expect(firstResult.exitCode).toBe(0);
-    const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v3");
+    const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
     const firstDetailCallCount = harness.detailCalls.length;
     const firstPublicDataCount = harness.publicData.length;
     const firstCodexExecutionCount = harness.codexExecutionCount();
@@ -12891,7 +12891,7 @@ describe("本番収集の接続", () => {
     expect(harness.detailCalls).toHaveLength(firstDetailCallCount);
     expect(harness.codexExecutionCount()).toBe(firstCodexExecutionCount);
     expect(harness.publicData).toHaveLength(firstPublicDataCount);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(firstHead);
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(firstHead);
     expect(JSON.stringify(secondResult.result.report)).not.toContain(externalUrl);
   });
 
@@ -12981,8 +12981,8 @@ describe("本番収集の接続", () => {
 
       const firstResult = await harness.runDaily(FIRST_RUN_AT);
       expect(firstResult.exitCode, JSON.stringify(firstResult)).toBe(0);
-      const head = await harness.stateAdapter.resolveHead("tracker-state-v3");
-      const files = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+      const head = await harness.stateAdapter.resolveHead("tracker-state-v4");
+      const files = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
       const itemPath = [...files.keys()].find((path) => path.startsWith("state/github-items/"));
       assertNonNullable(itemPath, "cache破損fixtureのitem cache pathがありません");
       const itemBytes = files.get(itemPath);
@@ -13002,7 +13002,7 @@ describe("本番収集の接続", () => {
         ),
       };
       await harness.stateAdapter.commit({
-        branch: "tracker-state-v3",
+        branch: "tracker-state-v4",
         expectedHead: head,
         updates: [
           {
@@ -13014,7 +13014,7 @@ describe("本番収集の接続", () => {
         message: "cached relation破損fixture",
         committedAt: FIRST_RUN_AT,
       });
-      const corruptedHead = await harness.stateAdapter.resolveHead("tracker-state-v3");
+      const corruptedHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
       harness.artifacts.length = 0;
       harness.publicData.length = 0;
 
@@ -13038,7 +13038,7 @@ describe("本番収集の接続", () => {
       expect(harness.externalRelationGraphqlCalls).toHaveLength(expectedQueryCount);
       expect(harness.artifacts).toEqual([]);
       expect(harness.publicData).toEqual([]);
-      expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(corruptedHead);
+      expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(corruptedHead);
       const serializedReport = JSON.stringify(result.result.report);
       expect(serializedReport).not.toContain(externalUrl);
       expect(serializedReport).not.toContain("external-owner");
@@ -13148,12 +13148,12 @@ describe("本番収集の接続", () => {
 
       const firstResult = await harness.runDaily(FIRST_RUN_AT);
       expect(firstResult.exitCode).toBe(0);
-      const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v3");
+      const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
       externalState = "CLOSED";
       const secondResult = await harness.runCollectAnalyze(SECOND_RUN_AT);
       expect(secondResult.exitCode, JSON.stringify(secondResult)).toBe(0);
       expect(harness.externalRelationGraphqlCalls).toHaveLength(2);
-      const secondHead = await harness.stateAdapter.resolveHead("tracker-state-v3");
+      const secondHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
       expect(secondHead.status).toBe("present");
       expect(firstHead.status).toBe("present");
       const secondArtifact = requireCollectAnalyzeArtifact(harness.artifacts);
@@ -13211,7 +13211,7 @@ describe("本番収集の接続", () => {
           `publicBoundaryViolationKind=cache_relation_candidate publicBoundaryViolationCount=1 sourceItemNodeId=${source.nodeId}`,
         ),
       );
-      expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(secondHead);
+      expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(secondHead);
       expect(JSON.stringify(thirdResult.result.report)).not.toContain("external-owner");
     },
   );
@@ -13362,7 +13362,7 @@ describe("本番収集の接続", () => {
     expect(harness.codexExecutionCount()).toBe(0);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual({
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
     const serializedFailure = JSON.stringify(result.result.report);
@@ -13669,8 +13669,8 @@ describe("本番収集の接続", () => {
     });
 
     expect((await harness.runDaily(FIRST_RUN_AT)).exitCode).toBe(0);
-    const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v3");
-    const firstFiles = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+    const firstHead = await harness.stateAdapter.resolveHead("tracker-state-v4");
+    const firstFiles = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
     const cacheSession = await CacheOnlyPersistenceSession.open(
       harness.stateAdapter,
       config.state,
@@ -13719,7 +13719,7 @@ describe("本番収集の接続", () => {
 
     const result = await harness.runCollectAnalyze(SECOND_RUN_AT);
     const artifact = requireCollectAnalyzeArtifact(harness.artifacts);
-    const secondFiles = await harness.stateAdapter.readBranchFiles("tracker-state-v3");
+    const secondFiles = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
 
     expect(result.exitCode).toBe(0);
     expect(harness.individualCalls).toEqual([[target.url]]);
@@ -13734,7 +13734,7 @@ describe("本番収集の接続", () => {
     expect([...secondFiles].map(([path, bytes]) => [path, [...bytes]])).toEqual(
       [...firstFiles].map(([path, bytes]) => [path, [...bytes]]),
     );
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual(firstHead);
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual(firstHead);
     expect(artifact.snapshot.items.map((item) => item.nodeId)).not.toContain(target.nodeId);
     expect(artifact.snapshot.relations).not.toContainEqual(
       expect.objectContaining({
@@ -13802,7 +13802,7 @@ describe("本番収集の接続", () => {
     expect(harness.externalRelationGraphqlCalls).toHaveLength(0);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual({
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
   });
@@ -13980,7 +13980,7 @@ describe("本番収集の接続", () => {
     expect(harness.externalRelationGraphqlCalls).toHaveLength(1);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
-    expect(await harness.stateAdapter.resolveHead("tracker-state-v3")).toEqual({
+    expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
   });

@@ -373,12 +373,12 @@ describe("日次workflow", () => {
     expect(collectCommands).toContain('"$GITHUB_EVENT_NAME" == "workflow_dispatch"');
     expect(collectCommands).toContain("pnpm build:workflow-cli");
     expect(collectCommands).toContain(
-      "git fetch --no-tags origin refs/heads/tracker-state-v3:refs/heads/tracker-state-v3",
+      "git fetch --no-tags origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4",
     );
     expect(collectCommands).toContain('[[ "$state_branch_status" -ne 2 ]]');
     expect(persistCommands).toContain("tracker-run.mjs persist-cache");
     expect(persistCommands).toContain(
-      "git push origin refs/heads/tracker-state-v3:refs/heads/tracker-state-v3",
+      "git push origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4",
     );
     expect(buildCommands).toContain("tracker-run.mjs build-pages");
     expect(buildCommands).not.toContain("git fetch");
@@ -392,14 +392,14 @@ describe("日次workflow", () => {
     expect(operationsCommands).toContain("incident_kind=discord");
     expect(JSON.stringify(workflow.jobs["notify-operations"])).toContain("PERSIST_CACHE_RESULT");
     expect(operationsCommands).not.toContain(
-      "git push origin refs/heads/tracker-state-v3:refs/heads/tracker-state-v3",
+      "git push origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4",
     );
     expect(operationsCommands).not.toContain("curl");
     for (const jobName of ["persist-cache", "build-pages", "notify-discord"]) {
       expect(JSON.stringify(workflow.jobs[jobName])).toContain("actions/download-artifact@");
       expect(JSON.stringify(workflow.jobs[jobName])).toContain("validated-public-run");
     }
-    expect(persistCommands).toContain("git fetch --no-tags origin refs/heads/tracker-state-v3");
+    expect(persistCommands).toContain("git fetch --no-tags origin refs/heads/tracker-state-v4");
     expect(persistCommands).toContain('[[ "$state_branch_status" -ne 2 ]]');
     expect(notifyCommands).not.toContain("git fetch");
     expect(
@@ -408,7 +408,7 @@ describe("日次workflow", () => {
     for (const [jobName, job] of Object.entries(workflow.jobs)) {
       if (jobName !== "collect-analyze" && jobName !== "persist-cache") {
         expect(JSON.stringify(job), jobName).not.toContain(
-          "git fetch --no-tags origin refs/heads/tracker-state-v3",
+          "git fetch --no-tags origin refs/heads/tracker-state-v4",
         );
       }
     }
@@ -811,10 +811,10 @@ describe("workflow security", () => {
     expect(verifyStateJob.permissions).toEqual({ contents: "read" });
     expect(verifyStateJob.if).toBe("github.event_name == 'workflow_dispatch'");
 
-    const stateBranchProbe = requiredStep(verifyStateJob, "v3 state branchの存在を確認");
+    const stateBranchProbe = requiredStep(verifyStateJob, "v4 state branchの存在を確認");
     expect(stateBranchProbe.id).toBe("state_branch");
     expect(stateBranchProbe.run).toContain(
-      "git ls-remote --exit-code --heads origin tracker-state-v3",
+      "git ls-remote --exit-code --heads origin tracker-state-v4",
     );
     expect(stateBranchProbe.run).toContain('[[ "$state_branch_status" -eq 2 ]]');
     expect(stateBranchProbe.run).toContain('exit "$state_branch_status"');
@@ -823,8 +823,8 @@ describe("workflow security", () => {
     expect(stateCheckout.if).toBe("steps.state_branch.outputs.exists == 'true'");
     expect(stateCheckout.uses).toBe("actions/checkout@11d5960a326750d5838078e36cf38b85af677262");
     expect(stateCheckout.with).toMatchObject({
-      ref: "tracker-state-v3",
-      path: "tracker-state-v3",
+      ref: "tracker-state-v4",
+      path: "tracker-state-v4",
       "persist-credentials": false,
     });
     expect(stateCheckout.with).not.toHaveProperty("repository");
@@ -832,7 +832,7 @@ describe("workflow security", () => {
     const verifyStateCommands = runCommands(verifyStateJob);
     expect(verifyStateCommands).toContain("pnpm build");
     expect(verifyStateCommands).toContain(
-      "pnpm tracker:run verify-state --state-directory tracker-state-v3/state",
+      "pnpm tracker:run verify-state --state-directory tracker-state-v4/state",
     );
     expect(verifyStateCommands).not.toContain("pnpm eval:golden");
     expect(verifyStateCommands).not.toContain("pnpm perf:profile");

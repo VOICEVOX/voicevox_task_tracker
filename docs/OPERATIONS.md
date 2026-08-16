@@ -5,7 +5,7 @@
 日次scheduleは08:00 JSTに対応する基準通知時刻`S`を渡してrunします。
 Actionsの遅延は`S`を変更しません。workflow concurrencyでschedule runを直列化します。
 
-成功後はActions artifactとjob summaryのrun reportを確認します。`tracker-state-v3` branchはcacheだけを持ち、Pagesの公開結果や送信済み状態の正本ではありません。
+成功後はActions artifactとjob summaryのrun reportを確認します。`tracker-state-v4` branchはcacheだけを持ち、Pagesの公開結果や送信済み状態の正本ではありません。
 
 run reportで確認する項目は次のとおりです。
 
@@ -90,7 +90,7 @@ urgentは3日、criticalは2日の固定周期で閾値到達後に再び候補�
 ### persist-cache
 
 PagesのdeployとDiscord送信が完了した後にだけcacheを書き込みます。
-`tracker-state-v3`のcache pathは次の4つです。
+`tracker-state-v4`のcache pathは次の4つです。
 
 ```text
 state/github-repositories

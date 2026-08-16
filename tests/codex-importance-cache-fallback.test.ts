@@ -263,7 +263,7 @@ function createLatestWithOptions(
   importance: VerifiedImportanceResult["importance"],
 ): AiLatestImportanceCacheDocument {
   return {
-    schemaVersion: "3",
+    schemaVersion: "4",
     kind: "ai_latest_importance",
     repository,
     nodeId,

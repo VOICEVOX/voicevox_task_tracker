@@ -22,7 +22,7 @@ import {
 import { StateFormatError, StatePersistenceError, StatePublicSafetyError } from "./errors.js";
 
 /** cache文書schemaのversion。 */
-export const CACHE_DOCUMENT_SCHEMA_VERSION = "3";
+export const CACHE_DOCUMENT_SCHEMA_VERSION = "4";
 /** terminal itemを保持する日数。 */
 export const CACHE_TERMINAL_RETENTION_DAYS = 180;
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -860,6 +860,15 @@ const cacheItemIndexSchema = z.strictObject({
   lifecycle: cacheLifecycleSchema,
 });
 
+const cacheRelationPublicBoundaryValidationSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_required"),
+  }),
+  z.strictObject({
+    status: z.literal("required"),
+  }),
+]);
+
 const githubRepositoryCacheSchema = z.strictObject({
   schemaVersion: z.literal(CACHE_DOCUMENT_SCHEMA_VERSION),
   kind: z.literal("github_repository"),
@@ -873,6 +882,7 @@ const githubItemCacheSchema = z.strictObject({
   kind: z.literal("github_item"),
   repository: cacheRepositoryIdentitySchema,
   ...cacheItemIndexSchema.shape,
+  relationPublicBoundaryValidation: cacheRelationPublicBoundaryValidationSchema,
   currentObservation: cacheCurrentObservationSchema,
   analysisFacts: cacheAnalysisFactsSchema,
   relationCandidates: z.array(cacheRelationCandidateSchema),
@@ -984,6 +994,11 @@ export type GitHubRepositoryCacheDocument = z.output<typeof githubRepositoryCach
 
 /** item cacheに保存する文書。 */
 export type GitHubItemCacheDocument = z.output<typeof githubItemCacheSchema>;
+
+/** item cacheのrelation公開境界再検証状態。 */
+export type CacheRelationPublicBoundaryValidation = z.output<
+  typeof cacheRelationPublicBoundaryValidationSchema
+>;
 
 /** raw本文を含まないGitHub項目の現行正規化観測値。 */
 export type GitHubItemCacheObservation = z.output<typeof cacheCurrentObservationSchema>;

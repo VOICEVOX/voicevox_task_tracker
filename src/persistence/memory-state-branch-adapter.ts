@@ -14,7 +14,7 @@ import {
   StateConfigurationError,
 } from "./errors.js";
 
-const TRACKER_STATE_BRANCH = "tracker-state-v3";
+const TRACKER_STATE_BRANCH = "tracker-state-v4";
 
 type MemoryCommit = Readonly<{
   revision: string;

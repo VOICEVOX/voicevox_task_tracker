@@ -80,7 +80,7 @@ describe("設定の読み込みと検証", () => {
       urgent: 3,
       critical: 2,
     });
-    expect(config.state.branch).toBe("tracker-state-v3");
+    expect(config.state.branch).toBe("tracker-state-v4");
     expect(config.state.repositoryCacheDirectory).toBe("state/github-repositories");
     expect(config.state.itemCacheDirectory).toBe("state/github-items");
     expect(config.state.latestImportanceDirectory).toBe("state/ai-latest-importance");
@@ -532,10 +532,10 @@ describe("設定の読み込みと検証", () => {
     expect(error.message).toContain(legacySettingKey);
   });
 
-  it("state保存先をtracker-state-v3 branchのstate配下へ制限する", () => {
+  it("state保存先をtracker-state-v4 branchのstate配下へ制限する", () => {
     const invalidBranch = replaceRequired(
       validConfigSource,
-      "branch: tracker-state-v3",
+      "branch: tracker-state-v4",
       "branch: main",
     );
     const invalidPath = replaceRequired(
@@ -546,7 +546,7 @@ describe("設定の読み込みと検証", () => {
     const error = captureConfigError(invalidPath);
 
     expect(error.message).toContain("state.branch");
-    expect(error.message).toContain("tracker-state-v3");
+    expect(error.message).toContain("tracker-state-v4");
     expect(error.message).toContain("state.repositoryCacheDirectory");
     expect(error.message).toContain("state配下");
   });

@@ -364,7 +364,7 @@ function createEmptyWorkflowArtifact(
     cacheOnlyPayload: {
       repositoryCaches: [
         {
-          schemaVersion: "3",
+          schemaVersion: "4",
           kind: "github_repository",
           repository: {
             repositoryId,
@@ -782,7 +782,7 @@ describe("CLI合成root", () => {
       expect([pagesResult.exitCode, notifyResult.exitCode]).toEqual([0, 0]);
       expect(pagesWriteCount).toBe(1);
       expect(discordHttpCallCount).toBe(0);
-      expect((await stateAdapter.resolveHead("tracker-state-v3")).status).toBe("missing");
+      expect((await stateAdapter.resolveHead("tracker-state-v4")).status).toBe("missing");
       expect(harness.externalAdapterCalls.count).toBe(0);
     },
   );
@@ -935,7 +935,7 @@ describe("CLI合成root", () => {
       ];
       const first = await application.run(command);
       const second = await application.run(command);
-      const head = await stateAdapter.resolveHead("tracker-state-v3");
+      const head = await stateAdapter.resolveHead("tracker-state-v4");
 
       expect([first.exitCode, second.exitCode]).toEqual([0, 0]);
       expect(head.status).toBe(stateStatus === "available" ? "present" : "missing");

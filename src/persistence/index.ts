@@ -33,6 +33,7 @@ export {
   type CacheItemIndex,
   type CacheLifecycle,
   type CacheMentionedWaitingOnCandidate,
+  type CacheRelationPublicBoundaryValidation,
   type CacheTemporalEvent,
   type CacheDocument,
   type CacheDocumentSafetyInput,

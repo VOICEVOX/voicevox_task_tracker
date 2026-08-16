@@ -71,11 +71,11 @@ jobs:
       - name: 既存stateを取得
         run: |
           set +e
-          git ls-remote --exit-code --heads origin tracker-state-v3 >/dev/null
+          git ls-remote --exit-code --heads origin tracker-state-v4 >/dev/null
           state_branch_status=$?
           set -e
           if [[ "$state_branch_status" -eq 0 ]]; then
-            git fetch --no-tags origin refs/heads/tracker-state-v3:refs/heads/tracker-state-v3
+            git fetch --no-tags origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4
           elif [[ "$state_branch_status" -ne 2 ]]; then
             exit "$state_branch_status"
           fi
@@ -205,11 +205,11 @@ jobs:
       - name: 既存stateを取得
         run: |
           set +e
-          git ls-remote --exit-code --heads origin tracker-state-v3 >/dev/null
+          git ls-remote --exit-code --heads origin tracker-state-v4 >/dev/null
           state_branch_status=$?
           set -e
           if [[ "$state_branch_status" -eq 0 ]]; then
-            git fetch --no-tags origin refs/heads/tracker-state-v3:refs/heads/tracker-state-v3
+            git fetch --no-tags origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4
           elif [[ "$state_branch_status" -ne 2 ]]; then
             exit "$state_branch_status"
           fi
@@ -222,10 +222,10 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-      - name: cacheをtracker-state-v3へ保存
+      - name: cacheをtracker-state-v4へ保存
         run: node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs persist-cache
-      - name: tracker-state-v3を更新
-        run: git push origin refs/heads/tracker-state-v3:refs/heads/tracker-state-v3
+      - name: tracker-state-v4を更新
+        run: git push origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4
 
   build-pages:
     needs: collect-analyze

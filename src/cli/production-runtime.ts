@@ -424,7 +424,7 @@ type CachedItemAnalysisRestoreResult =
     }>
   | Readonly<{
       status: "detail_required";
-      reason: "cache_miss" | "exact_ai_refresh";
+      reason: "cache_miss" | "exact_ai_refresh" | "relation_public_boundary_revalidation";
       diagnostics: readonly string[];
     }>;
 
@@ -7444,6 +7444,7 @@ function createItemCacheDocuments(
       deterministicRulesVersion: CURRENT_DETERMINISTIC_RULES_VERSIONS[observation.type],
       aiAnalysisStatus: aiAnalysis.status,
       lifecycle: cacheLifecycleForItem(enumeratedItem),
+      relationPublicBoundaryValidation: Object.freeze({ status: "not_required" }),
       relationCandidates: relationBoundaryInput.relationCandidates,
       relationMutations: relationBoundaryInput.relationMutations,
       replay: source.replay,
@@ -8548,6 +8549,13 @@ function restoreCachedItemAnalysisSource(
     return Object.freeze({
       status: "detail_required",
       reason: "cache_miss",
+      diagnostics: Object.freeze([]),
+    });
+  }
+  if (restored.status === "detail_required") {
+    return Object.freeze({
+      status: "detail_required",
+      reason: "relation_public_boundary_revalidation",
       diagnostics: Object.freeze([]),
     });
   }

@@ -410,6 +410,7 @@ function createDocument(
       terminalAt,
       expiresAt: createUtcIsoDateTime("2026-07-03T00:00:00Z"),
     },
+    relationPublicBoundaryValidation: { status: "not_required" },
     relationCandidates: [
       {
         id: "rel:fixture",
@@ -679,6 +680,7 @@ describe("GitHub item cache adapter", () => {
     expect(restored.source.relationMutations).toEqual(coldDocument.relationMutations);
     expect(restored.source.replay).toEqual(coldDocument.replay);
     expect(restored.source.analysisFacts).toEqual(coldDocument.analysisFacts);
+    expect(coldDocument.relationPublicBoundaryValidation).toEqual({ status: "not_required" });
     expect(restored.source.history).toEqual({
       status: "unavailable",
       reason: "redacted",
@@ -690,6 +692,62 @@ describe("GitHub item cache adapter", () => {
     expect(JSON.stringify(coldDocument.analysisFacts.codexValidationContext)).not.toContain(
       "inputHash",
     );
+  });
+
+  it("relation公開境界の再検証がrequiredならfingerprint一致でもdetail_requiredにする", () => {
+    const requiredDocument = {
+      ...createDefaultDocument(),
+      relationPublicBoundaryValidation: { status: "required" },
+    };
+    const restored = restoreGitHubItemCacheForAnalysis(requiredDocument, {
+      mode: "fresh",
+      bodyFingerprint,
+      itemFingerprint,
+      analysisRulesFingerprint,
+    });
+
+    expect(restored).toEqual({
+      status: "detail_required",
+      reason: "relation_public_boundary_revalidation_required",
+    });
+  });
+
+  it("relation公開境界のmarker欠落、旧schema、不正literalを拒否する", () => {
+    const document = createDefaultDocument();
+    const withoutMarker = Object.fromEntries(
+      Object.entries(document).filter(([key]) => key !== "relationPublicBoundaryValidation"),
+    );
+
+    expect(() =>
+      restoreGitHubItemCacheForAnalysis(withoutMarker, {
+        mode: "fresh",
+        bodyFingerprint,
+        itemFingerprint,
+        analysisRulesFingerprint,
+      }),
+    ).toThrow();
+    expect(() =>
+      restoreGitHubItemCacheForAnalysis(
+        { ...document, schemaVersion: "3" },
+        {
+          mode: "fresh",
+          bodyFingerprint,
+          itemFingerprint,
+          analysisRulesFingerprint,
+        },
+      ),
+    ).toThrow();
+    expect(() =>
+      restoreGitHubItemCacheForAnalysis(
+        { ...document, relationPublicBoundaryValidation: { status: "unknown" } },
+        {
+          mode: "fresh",
+          bodyFingerprint,
+          itemFingerprint,
+          analysisRulesFingerprint,
+        },
+      ),
+    ).toThrow();
   });
 
   it("Codex入力からraw値を除いたstrict contextを生成する", () => {
@@ -880,6 +938,7 @@ describe("GitHub item cache adapter", () => {
         terminalAt,
         expiresAt: createUtcIsoDateTime("2026-07-03T00:00:00Z"),
       },
+      relationPublicBoundaryValidation: { status: "not_required" },
       relationCandidates: [],
       relationMutations: [],
       replay: pullRequestReplay,
@@ -961,6 +1020,7 @@ describe("GitHub item cache adapter", () => {
         terminalAt,
         expiresAt: createUtcIsoDateTime("2026-07-03T00:00:00Z"),
       },
+      relationPublicBoundaryValidation: { status: "not_required" },
       relationCandidates: [],
       relationMutations: [],
       replay: {

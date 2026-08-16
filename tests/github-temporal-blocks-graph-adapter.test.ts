@@ -399,6 +399,7 @@ function createCacheDocument(
     deterministicRulesVersion: "issue-v1",
     aiAnalysisStatus: "not_required",
     lifecycle: { kind: "open" },
+    relationPublicBoundaryValidation: { status: "not_required" },
     relationCandidates,
     relationMutations: relationMutations.map((result) => result.result),
     replay,

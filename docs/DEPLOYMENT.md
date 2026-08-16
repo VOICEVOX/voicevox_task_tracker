@@ -1,7 +1,7 @@
 # デプロイ手順
 
 この文書は、GitHubの現在値と全timeline・編集履歴を再生する日次runをGitHub Actions、Pages、Discordで運用するための設定を定めます。
-日次runの正しさは前回runの判定結果に依存しません。`tracker-state-v3` branchは4種類のcacheだけを保持します。
+日次runの正しさは前回runの判定結果に依存しません。`tracker-state-v4` branchは4種類のcacheだけを保持します。
 
 ## GitHub App
 
@@ -39,7 +39,7 @@ state設定は`branch`、`repositoryCacheDirectory`、`itemCacheDirectory`、`la
 
 ```yaml
 state:
-  branch: tracker-state-v3
+  branch: tracker-state-v4
   repositoryCacheDirectory: state/github-repositories
   itemCacheDirectory: state/github-items
   latestImportanceDirectory: state/ai-latest-importance
@@ -111,7 +111,7 @@ model、reasoning effort、promptを変更した場合は実モデルを使うdr
 初回の実行では次を確認します。
 
 - repository metadataが全ページ取得され、allowlist外の詳細を読んでいない。
-- `tracker-state-v3` branchに4種類のcacheだけがcanonical JSONで保存されている。
+- `tracker-state-v4` branchに4種類のcacheだけがcanonical JSONで保存されている。
 - 終了項目のcache期限が`terminalAt`から180日である。
 - 503でcacheを使ったrepositoryがstale表示され、通常通知から除外されている。
 - Pages DTOとDiscord payloadが同じ`S`、allowlist、current graphから生成されている。

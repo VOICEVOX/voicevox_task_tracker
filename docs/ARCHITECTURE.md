@@ -59,7 +59,7 @@ workflowはrun開始時に基準通知時刻`S`を固定します。日次schedu
 9. 最終graphからimportance、attention、severityを計算し、`S`と発生時刻から通知候補を選びます。
 10. 公開guardを通ったPages DTOと通知候補をworkflow artifactへ出します。
 11. Pagesをdeployし、各schedule runの`github.run_attempt == 1`だけ、一回限りの変化と停滞の繰り返しを含む通常digestをDiscordへ送ります。`workflow_dispatch`とrerunでは通常digestを送りません。
-12. PagesとDiscordの完了後に、新しいGitHub収集cacheとAI cacheだけをcanonical JSONで`tracker-state-v3`へ保存します。run reportはActions artifactとjob summaryへ保存します。
+12. PagesとDiscordの完了後に、新しいGitHub収集cacheとAI cacheだけをcanonical JSONで`tracker-state-v4`へ保存します。run reportはActions artifactとjob summaryへ保存します。
 
 Pages、Discord、cache保存のいずれかで完全性または公開安全性を満たさない場合は、失敗として処理します。
 cache保存を先に行わないため、公開に失敗した評価結果を次回の入力へ混ぜません。
@@ -129,7 +129,7 @@ terminal項目と`waiting_for_unblock`はattentionを0とします。severity、
 
 ## cache branchとartifact
 
-`tracker-state-v3` branchの配置は次の4種類だけです。
+`tracker-state-v4` branchの配置は次の4種類だけです。
 
 | パス                         | 内容                                                               |
 | ---------------------------- | ------------------------------------------------------------------ |

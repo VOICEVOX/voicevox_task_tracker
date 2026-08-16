@@ -5,10 +5,10 @@ import { CliUsageError, parseCliArguments } from "../src/cli/index.js";
 describe("CLI引数解析", () => {
   it("verify-stateのstateディレクトリを解析する", () => {
     expect(
-      parseCliArguments(["verify-state", "--state-directory", "tracker-state-v3/state"]),
+      parseCliArguments(["verify-state", "--state-directory", "tracker-state-v4/state"]),
     ).toEqual({
       kind: "verify-state",
-      stateDirectory: "tracker-state-v3/state",
+      stateDirectory: "tracker-state-v4/state",
     });
   });
 

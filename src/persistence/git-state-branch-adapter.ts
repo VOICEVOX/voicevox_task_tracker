@@ -19,7 +19,7 @@ import {
   StateConfigurationError,
 } from "./errors.js";
 
-const TRACKER_STATE_BRANCH = "tracker-state-v3";
+const TRACKER_STATE_BRANCH = "tracker-state-v4";
 const ZERO_OBJECT_ID = "0000000000000000000000000000000000000000";
 const OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 

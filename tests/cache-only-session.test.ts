@@ -38,7 +38,7 @@ import {
 } from "../src/persistence/cache-only-session.js";
 
 const configuration: CacheOnlyPersistenceConfiguration = Object.freeze({
-  branch: "tracker-state-v3",
+  branch: "tracker-state-v4",
   repositoryCacheDirectory: "state/cache/repositories",
   itemCacheDirectory: "state/cache/items",
   latestImportanceDirectory: "state/cache/latest-importance",
@@ -333,7 +333,7 @@ function createItemCache(): GitHubItemCacheDocument {
     targets: [],
   };
   return {
-    schemaVersion: "3",
+    schemaVersion: "4",
     kind: "github_item",
     repository: {
       repositoryId,
@@ -341,6 +341,7 @@ function createItemCache(): GitHubItemCacheDocument {
       name: "cache-only-fixture",
     },
     ...createItemIndex(),
+    relationPublicBoundaryValidation: { status: "not_required" },
     currentObservation: {
       freshness: "fresh",
       sourceId: itemSourceId,
@@ -569,7 +570,7 @@ function createRelationMutationResult(
 
 function createRepositoryCache(): GitHubRepositoryCacheDocument {
   return {
-    schemaVersion: "3",
+    schemaVersion: "4",
     kind: "github_repository",
     repository: {
       repositoryId,
@@ -594,7 +595,7 @@ function createLatestImportanceCache(): AiLatestImportanceCacheDocument {
     throw new TypeError("latest importance fixtureに利用可能なAI参照がありません");
   }
   return {
-    schemaVersion: "3",
+    schemaVersion: "4",
     kind: "ai_latest_importance",
     repository: {
       repositoryId,
@@ -776,7 +777,7 @@ describe("cache-only永続化session", () => {
   it("完全置換commitで古いsnapshot、history、ledgerを残さない", async () => {
     const adapter = new MemoryStateBranchAdapter();
     await adapter.commit({
-      branch: "tracker-state-v3",
+      branch: "tracker-state-v4",
       expectedHead: { status: "missing" },
       updates: [
         {
@@ -804,7 +805,7 @@ describe("cache-only永続化session", () => {
       "state/notification-ledger.json",
       "state/snapshot.json",
     ]);
-    expect([...(await adapter.readBranchFiles("tracker-state-v3"))].map(([path]) => path)).toEqual(
+    expect([...(await adapter.readBranchFiles("tracker-state-v4"))].map(([path]) => path)).toEqual(
       [
         aiCachePath(createAiCacheFixture()),
         documentPath(configuration.itemCacheDirectory, "github_item", createItemCache().nodeId),
@@ -888,7 +889,7 @@ describe("cache-only永続化session", () => {
       items: [],
     };
     await adapter.commit({
-      branch: "tracker-state-v3",
+      branch: "tracker-state-v4",
       expectedHead: { status: "missing" },
       updates: [
         {
