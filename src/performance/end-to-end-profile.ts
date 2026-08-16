@@ -586,6 +586,8 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
         }),
       );
     },
+    resolveGitHubRelationReference: () =>
+      Promise.reject(new TypeError("性能profileでは外部relation参照を解決しません")),
     executeCodexAnalysis: (input) => Promise.resolve(createCodexOutput(input)),
     readReplayFixture: () => Promise.reject(new TypeError("性能profileではreplayしません")),
     readReplayState: () => Promise.reject(new TypeError("性能profileではstate replayしません")),

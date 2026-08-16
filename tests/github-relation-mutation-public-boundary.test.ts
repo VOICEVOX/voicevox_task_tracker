@@ -5,6 +5,7 @@ import {
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
+  type SourceId,
 } from "../src/domain/index.js";
 import {
   GitHubPublicBoundaryViolationError,
@@ -103,13 +104,46 @@ function sanitize(
   relationMutations: readonly RelationMutationResult[];
   unknownContentSourceCount: number;
 }> {
+  const currentReferencesByContentSource = new Map<
+    SourceId,
+    | Readonly<{
+        status: "available";
+        references: readonly RelationReference[];
+      }>
+    | Readonly<{
+        status: "unknown";
+      }>
+  >();
+  const verifiedExternalReferencesByContentSource = new Map<
+    SourceId,
+    readonly RelationReference[]
+  >();
+  for (const currentContentSourceId of new Set(
+    relationMutations.map((result) => result.contentSourceId),
+  )) {
+    const result = relationMutations.find(
+      (candidate) => candidate.contentSourceId === currentContentSourceId,
+    );
+    if (result == null) {
+      throw new TypeError("relation mutation test fixtureのsourceがありません");
+    }
+    currentReferencesByContentSource.set(
+      currentContentSourceId,
+      result.status === "available"
+        ? { status: "available", references: result.currentReferences }
+        : { status: "unknown" },
+    );
+    verifiedExternalReferencesByContentSource.set(
+      currentContentSourceId,
+      currentContentSourceId === contentSourceId ? verifiedExternalReferences : [],
+    );
+  }
   return sanitizeRelationMutationsForPublicBoundary({
     sourceItemNodeId,
     organization,
     allowlist,
-    verifiedExternalReferencesByContentSource: new Map([
-      [contentSourceId, verifiedExternalReferences],
-    ]),
+    currentReferencesByContentSource,
+    verifiedExternalReferencesByContentSource,
     relationMutations,
   });
 }
@@ -338,6 +372,12 @@ describe("relation mutation公開境界sanitizer", () => {
         sourceItemNodeId,
         organization,
         allowlist,
+        currentReferencesByContentSource: new Map([
+          [
+            otherContentSourceId,
+            { status: "available", references: relationMutation.currentReferences },
+          ],
+        ]),
         verifiedExternalReferencesByContentSource: new Map([
           [contentSourceId, [externalReference]],
           [otherContentSourceId, []],
@@ -362,7 +402,7 @@ describe("relation mutation公開境界sanitizer", () => {
     });
     const existingUnknown: RelationMutationResult = {
       status: "unknown",
-      contentSourceId,
+      contentSourceId: buildSourceId("github_item_body", "relation-boundary-other-body"),
       reason: "diff_null",
       edit: { status: "unavailable" },
     };
@@ -371,5 +411,77 @@ describe("relation mutation公開境界sanitizer", () => {
 
     expect(result.unknownContentSourceCount).toBe(0);
     expect(result.relationMutations).toEqual([allowlistedResult, existingUnknown]);
+  });
+
+  it("同じcontent sourceのmutation結果重複を拒否する", () => {
+    const relation = createReference(organization, "allowed", "issue", 1);
+    const result = createAvailableResult({
+      currentReferences: [relation],
+      replayedReferences: [relation],
+      mutations: [],
+      unmatchedRemovals: [],
+      intervals: [],
+    });
+
+    expect(() => sanitize([result, result], [])).toThrow(
+      "relation mutationの現在参照sourceが一致しません",
+    );
+  });
+
+  it("top-level unknownでも独立したcurrent参照の未証明を拒否する", () => {
+    const externalReference = createReference("external-owner", "public-external", "issue", 4);
+    const result: RelationMutationResult = {
+      status: "unknown",
+      contentSourceId,
+      reason: "connection_unavailable",
+      edit: { status: "unavailable" },
+    };
+
+    let thrown: unknown;
+    try {
+      sanitizeRelationMutationsForPublicBoundary({
+        sourceItemNodeId,
+        organization,
+        allowlist,
+        currentReferencesByContentSource: new Map([
+          [contentSourceId, { status: "available", references: [externalReference] }],
+        ]),
+        verifiedExternalReferencesByContentSource: new Map([[contentSourceId, []]]),
+        relationMutations: [result],
+      });
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(GitHubPublicBoundaryViolationError);
+    if (!(thrown instanceof GitHubPublicBoundaryViolationError)) {
+      throw thrown;
+    }
+    expect(thrown.details).toEqual({
+      scope: "cache_item_relation",
+      sourceItemNodeId,
+      violationKind: "cache_relation_mutation",
+      violationCount: 1,
+    });
+  });
+
+  it("current参照のunknownを空配列の証明として扱わない", () => {
+    const relationMutation: RelationMutationResult = {
+      status: "unknown",
+      contentSourceId,
+      reason: "connection_unavailable",
+      edit: { status: "unavailable" },
+    };
+
+    expect(() =>
+      sanitizeRelationMutationsForPublicBoundary({
+        sourceItemNodeId,
+        organization,
+        allowlist,
+        currentReferencesByContentSource: new Map([[contentSourceId, { status: "unknown" }]]),
+        verifiedExternalReferencesByContentSource: new Map([[contentSourceId, []]]),
+        relationMutations: [relationMutation],
+      }),
+    ).not.toThrow();
   });
 });

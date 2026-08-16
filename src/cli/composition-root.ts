@@ -10,6 +10,7 @@ import {
   enumerateGitHubItemsByIdentifiers,
   enumerateOpenGitHubItems,
   probeGitHubPullRequestVolatileMetadataWithRetry,
+  resolveGitHubRelationReference,
 } from "../github/index.js";
 import { writePublicDataFiles } from "../pages/index.js";
 import { CacheOnlyPersistenceSession, GitStateBranchAdapter } from "../persistence/index.js";
@@ -36,6 +37,7 @@ type ConcreteOperationName =
   | "enumerateGitHubItemsByIdentifiers"
   | "enumerateOpenGitHubItems"
   | "probeGitHubPullRequestVolatileMetadataWithRetry"
+  | "resolveGitHubRelationReference"
   | "executeCodexAnalysis"
   | "loadConfig"
   | "openCacheSession"
@@ -68,6 +70,7 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
     enumerateGitHubItemsByIdentifiers,
     enumerateOpenGitHubItems,
     probeGitHubPullRequestVolatileMetadataWithRetry,
+    resolveGitHubRelationReference,
     collectGitHubItemDetails,
     executeCodexAnalysis,
     readReplayFixture: readReplayFixtureFile,

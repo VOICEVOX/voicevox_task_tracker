@@ -70,6 +70,7 @@ import {
   determineTrackedItemWork,
   isTerminalStatus,
   ISSUE_DETERMINISTIC_RULES_VERSION,
+  createExternalReferenceNodeId,
   parseSourceId,
   PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
   resolvePullRequestCheckContextOccurredAt,
@@ -167,11 +168,15 @@ import {
   replayGitHubItemHistory,
   createGitHubItemCacheDocument,
   createGitHubPullRequestVolatileMetadataFromDetail,
+  GitHubPublicBoundaryViolationError,
   restoreGitHubItemCacheForAnalysis,
+  replaceGitHubItemCacheRelationData,
   sanitizeRelationMutationsForPublicBoundary,
   validateGitHubItemCacheAiEntry,
   type GitHubItemCacheAnalysisObservation,
   type GitHubItemCacheAnalysisSource,
+  type GitHubRelationReferenceResult,
+  type ResolveGitHubRelationReferenceOptions,
 } from "../github/index.js";
 import {
   analyzeGraph,
@@ -197,7 +202,12 @@ import {
   type RelationExtractionItem,
   type RelationMutationResult,
 } from "../graph/index.js";
-import { type RelationTextReference } from "../graph/extract-relation-candidates.js";
+import {
+  parseRelationTextReferences,
+  type RelationTextReference,
+} from "../graph/extract-relation-candidates.js";
+import { type ExternalRelationCandidateNode } from "../graph/relation-candidate-types.js";
+import { createRelationMutationReferenceKey } from "../graph/relation-mutation.js";
 import {
   generatePublicData,
   PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
@@ -631,6 +641,9 @@ export type ProductionRuntimeAdapters = Readonly<{
   enumerateOpenGitHubItems: typeof enumerateOpenGitHubItems;
   probeGitHubPullRequestVolatileMetadataWithRetry: typeof probeGitHubPullRequestVolatileMetadataWithRetry;
   collectGitHubItemDetails: typeof collectGitHubItemDetails;
+  resolveGitHubRelationReference: (
+    options: ResolveGitHubRelationReferenceOptions,
+  ) => Promise<GitHubRelationReferenceResult>;
   executeCodexAnalysis: (
     input: CodexAnalysisInput,
     configuration: CodexAdapterConfiguration,
@@ -1251,7 +1264,20 @@ function currentRelationCandidateNode(
   itemsByNodeId: ReadonlyMap<GitHubNodeId, PublicGitHubRelationItem>,
 ): RelationCandidateNode {
   if (node.scope === "external_public") {
-    return node;
+    const item = itemsByNodeId.get(node.githubNodeId);
+    if (item == null) {
+      return node;
+    }
+    assertExternalRelationCandidateMetadata(node, item, false);
+    return Object.freeze({
+      ...node,
+      repositoryOwner: item.repositoryOwner,
+      repositoryName: item.repositoryName,
+      githubItemType: item.type,
+      number: item.number,
+      url: item.url,
+      state: item.state,
+    });
   }
   const item = itemsByNodeId.get(node.nodeId);
   if (item == null) {
@@ -1335,6 +1361,34 @@ function currentRelationCandidate(
   }
 }
 
+function currentExternalRelationCandidate(
+  candidate: RelationCandidate,
+  itemsByNodeId: ReadonlyMap<GitHubNodeId, PublicGitHubRelationItem>,
+): RelationCandidate {
+  return relationNodes(candidate.relation).some((node) => node.scope === "external_public")
+    ? currentRelationCandidate(candidate, itemsByNodeId)
+    : candidate;
+}
+
+function assertExternalRelationCandidateMetadata(
+  node: ExternalRelationCandidateNode,
+  item: PublicGitHubRelationItem,
+  compareState: boolean,
+): void {
+  if (
+    node.nodeId !== createExternalReferenceNodeId(`external:github:${item.nodeId}`) ||
+    item.nodeId !== node.githubNodeId ||
+    item.repositoryOwner.toLowerCase() !== node.repositoryOwner.toLowerCase() ||
+    item.repositoryName.toLowerCase() !== node.repositoryName.toLowerCase() ||
+    item.type !== node.githubItemType ||
+    item.number !== node.number ||
+    item.url !== node.url ||
+    (compareState && item.state !== node.state)
+  ) {
+    throw new TypeError("外部relation候補と公開metadataが一致しません");
+  }
+}
+
 function extractRelationCandidatesForDetail(
   config: Config,
   itemByNodeId: ReadonlyMap<GitHubNodeId, PublicGitHubRelationItem>,
@@ -1397,7 +1451,9 @@ function extractRelationCandidatesOnce(
       );
     }
   }
-  return normalizeRelationCandidates(candidates);
+  return normalizeRelationCandidates(
+    candidates.map((candidate) => currentExternalRelationCandidate(candidate, itemByNodeId)),
+  );
 }
 
 function findRelationReferenceRepository(
@@ -1454,7 +1510,463 @@ interface RelationReferenceRetryBudget {
 type ExtractedRelationCandidates = Readonly<{
   candidates: readonly RelationCandidate[];
   aggregate: FreshRuntimeCollectionAggregate;
+  externalRelationResolution: ExternalRelationResolution;
 }>;
+
+type RelationReferenceOccurrence =
+  | Readonly<{
+      kind: "content";
+      sourceItemNodeId: GitHubNodeId;
+      contentSourceId: SourceId;
+      reference: RelationTextReference;
+    }>
+  | Readonly<{
+      kind: "candidate";
+      sourceItemNodeId: GitHubNodeId;
+      candidate: ExternalRelationCandidateNode;
+      reference: RelationTextReference;
+    }>;
+
+type ExternalRelationResolutionCacheEntry = Readonly<{
+  itemType: RelationTextReference["itemType"];
+  result: GitHubRelationReferenceResult;
+}>;
+
+type ExternalRelationResolutionCache = Map<string, ExternalRelationResolutionCacheEntry>;
+
+type CurrentRelationReferences =
+  | Readonly<{
+      status: "available";
+      references: readonly RelationTextReference[];
+    }>
+  | Readonly<{
+      status: "unknown";
+    }>
+  | Readonly<{
+      status: "candidate_derived";
+      references: readonly RelationTextReference[];
+    }>;
+
+type PublicCurrentRelationReferences = Exclude<
+  CurrentRelationReferences,
+  { status: "candidate_derived" }
+>;
+
+type ExternalRelationResolution = Readonly<{
+  knownItems: readonly PublicGitHubRelationItem[];
+  currentReferencesBySourceItemNodeId: ReadonlyMap<
+    GitHubNodeId,
+    ReadonlyMap<SourceId, PublicCurrentRelationReferences>
+  >;
+  verifiedExternalReferencesBySourceItemNodeId: ReadonlyMap<
+    GitHubNodeId,
+    ReadonlyMap<SourceId, readonly RelationTextReference[]>
+  >;
+  resultsByReferenceKey: ReadonlyMap<string, GitHubRelationReferenceResult>;
+}>;
+
+interface ExternalRelationReferenceGroup {
+  itemType: RelationTextReference["itemType"];
+  occurrences: RelationReferenceOccurrence[];
+}
+
+function relationMutationResultsForSource(
+  source: RuntimeItemAnalysisSource,
+): readonly RelationMutationResult[] {
+  return source.kind === "fresh" ? source.relationMutations : source.analysis.relationMutations;
+}
+
+function createRelationTextReference(node: ExternalRelationCandidateNode): RelationTextReference {
+  return Object.freeze({
+    repositoryOwner: node.repositoryOwner,
+    repositoryName: node.repositoryName,
+    itemType: node.githubItemType,
+    number: node.number,
+  });
+}
+
+function addReferenceToContentSourceMap(
+  referencesByContentSource: Map<SourceId, CurrentRelationReferences>,
+  contentSourceId: SourceId,
+  reference: RelationTextReference,
+): void {
+  const current = referencesByContentSource.get(contentSourceId);
+  if (current == null) {
+    throw new TypeError("relation mutationのcontent sourceがありません");
+  }
+  if (current.status === "unknown") {
+    referencesByContentSource.set(
+      contentSourceId,
+      Object.freeze({ status: "candidate_derived", references: Object.freeze([reference]) }),
+    );
+    return;
+  }
+  const key = createRelationMutationReferenceKey(reference);
+  if (current.status === "candidate_derived") {
+    if (
+      current.references.some((candidate) => createRelationMutationReferenceKey(candidate) === key)
+    ) {
+      return;
+    }
+    referencesByContentSource.set(
+      contentSourceId,
+      Object.freeze({
+        status: "candidate_derived",
+        references: Object.freeze([...current.references, reference]),
+      }),
+    );
+    return;
+  }
+  if (
+    !current.references.some((candidate) => createRelationMutationReferenceKey(candidate) === key)
+  ) {
+    throw new TypeError("relation mutationのcurrent参照とcandidateが一致しません");
+  }
+}
+
+function normalizeCurrentRelationReferences(
+  references: CurrentRelationReferences,
+): PublicCurrentRelationReferences {
+  if (references.status !== "candidate_derived") {
+    return references;
+  }
+  return Object.freeze({
+    status: "available",
+    references: references.references,
+  });
+}
+
+function createCurrentReferenceMap(
+  source: RuntimeItemAnalysisSource,
+): Map<SourceId, CurrentRelationReferences> {
+  const referencesByContentSource = new Map<SourceId, CurrentRelationReferences>();
+  if (source.kind === "fresh") {
+    const textSources = [
+      Object.freeze({ contentSourceId: source.detail.bodySourceId, markdown: source.detail.body }),
+      ...source.detail.comments.map((comment) =>
+        Object.freeze({ contentSourceId: comment.sourceId, markdown: comment.body }),
+      ),
+    ];
+    for (const textSource of textSources) {
+      const parsed = parseRelationTextReferences(textSource.markdown);
+      if (parsed.status === "unknown") {
+        referencesByContentSource.set(
+          textSource.contentSourceId,
+          Object.freeze({ status: "unknown" }),
+        );
+        continue;
+      }
+      referencesByContentSource.set(
+        textSource.contentSourceId,
+        Object.freeze({ status: "available", references: parsed.references }),
+      );
+    }
+    for (const result of source.relationMutations) {
+      if (!referencesByContentSource.has(result.contentSourceId)) {
+        throw new TypeError("relation mutationのcontent sourceがありません");
+      }
+    }
+    return referencesByContentSource;
+  }
+  for (const result of source.analysis.relationMutations) {
+    if (result.status === "available") {
+      referencesByContentSource.set(
+        result.contentSourceId,
+        Object.freeze({ status: "available", references: result.currentReferences }),
+      );
+    } else {
+      referencesByContentSource.set(result.contentSourceId, Object.freeze({ status: "unknown" }));
+    }
+  }
+  return referencesByContentSource;
+}
+
+function createCurrentTextReferenceOccurrences(
+  source: RuntimeItemAnalysisSource,
+  referencesByContentSource: ReadonlyMap<SourceId, CurrentRelationReferences>,
+): readonly RelationReferenceOccurrence[] {
+  const occurrences: RelationReferenceOccurrence[] = [];
+  for (const [contentSourceId, current] of referencesByContentSource.entries()) {
+    if (current.status !== "available") {
+      continue;
+    }
+    for (const reference of current.references) {
+      occurrences.push(
+        Object.freeze({
+          kind: "content",
+          sourceItemNodeId: source.item.nodeId,
+          contentSourceId,
+          reference,
+        }),
+      );
+    }
+  }
+  return Object.freeze(occurrences);
+}
+
+function collectCachedExternalRelationCandidateOccurrences(
+  source: RuntimeItemAnalysisSource,
+): readonly RelationReferenceOccurrence[] {
+  if (source.kind !== "cached") {
+    return Object.freeze([]);
+  }
+  const contentSourceIds = new Set(
+    source.analysis.relationMutations.map((result) => result.contentSourceId),
+  );
+  const occurrences: RelationReferenceOccurrence[] = [];
+  for (const candidate of source.analysis.relationCandidates) {
+    for (const node of relationNodes(candidate.relation)) {
+      if (node.scope !== "external_public") {
+        continue;
+      }
+      const reference = createRelationTextReference(node);
+      occurrences.push(
+        Object.freeze({
+          kind: "candidate",
+          sourceItemNodeId: source.item.nodeId,
+          candidate: node,
+          reference,
+        }),
+      );
+      for (const sourceId of candidate.sourceIds) {
+        if (contentSourceIds.has(sourceId)) {
+          occurrences.push(
+            Object.freeze({
+              kind: "content",
+              sourceItemNodeId: source.item.nodeId,
+              contentSourceId: sourceId,
+              reference,
+            }),
+          );
+        }
+      }
+    }
+  }
+  return Object.freeze(occurrences);
+}
+
+function collectExternalRelationCandidateOccurrences(
+  analysisSources: readonly RuntimeItemAnalysisSource[],
+  relationCandidates: readonly RelationCandidate[],
+): readonly RelationReferenceOccurrence[] {
+  const occurrences: RelationReferenceOccurrence[] = [];
+  for (const source of analysisSources) {
+    for (const candidate of candidatesForNode(source.item.nodeId, relationCandidates)) {
+      for (const node of relationNodes(candidate.relation)) {
+        if (node.scope !== "external_public") {
+          continue;
+        }
+        occurrences.push(
+          Object.freeze({
+            kind: "candidate",
+            sourceItemNodeId: source.item.nodeId,
+            candidate: node,
+            reference: createRelationTextReference(node),
+          }),
+        );
+      }
+    }
+  }
+  return Object.freeze(occurrences);
+}
+
+function createPublicExternalRelationItem(
+  item: Extract<GitHubRelationReferenceResult, { status: "public" }>["item"],
+): PublicGitHubRelationItem {
+  return Object.freeze({
+    nodeId: item.nodeId,
+    repositoryOwner: item.repositoryOwner,
+    repositoryName: item.repositoryName,
+    repositoryArchived: item.repositoryArchived,
+    repositoryDisabled: item.repositoryDisabled,
+    type: item.type,
+    number: item.number,
+    url: item.url,
+    state: item.state,
+  });
+}
+
+function samePublicRelationItem(
+  left: PublicGitHubRelationItem,
+  right: PublicGitHubRelationItem,
+): boolean {
+  return (
+    left.nodeId === right.nodeId &&
+    left.repositoryOwner.toLowerCase() === right.repositoryOwner.toLowerCase() &&
+    left.repositoryName.toLowerCase() === right.repositoryName.toLowerCase() &&
+    left.repositoryArchived === right.repositoryArchived &&
+    left.repositoryDisabled === right.repositoryDisabled &&
+    left.type === right.type &&
+    left.number === right.number &&
+    left.url === right.url &&
+    left.state === right.state
+  );
+}
+
+function canReuseExternalRelationResolution(
+  entry: ExternalRelationResolutionCacheEntry,
+  itemType: RelationTextReference["itemType"],
+): boolean {
+  if (entry.itemType === itemType) {
+    return true;
+  }
+  return (
+    entry.result.status === "public" && (itemType == null || entry.result.item.type === itemType)
+  );
+}
+
+async function resolveExternalRelationReferences(
+  resolveRelationReference: ProductionRuntimeAdapters["resolveGitHubRelationReference"],
+  authentication: GitHubClient,
+  organization: string,
+  analysisSources: readonly RuntimeItemAnalysisSource[],
+  resolutionCache: ExternalRelationResolutionCache,
+  additionalCandidateOccurrences: readonly RelationReferenceOccurrence[],
+): Promise<ExternalRelationResolution> {
+  const groups = new Map<string, ExternalRelationReferenceGroup>();
+  const currentBySourceItemNodeId = new Map<
+    GitHubNodeId,
+    Map<SourceId, CurrentRelationReferences>
+  >();
+  const verifiedBySourceItemNodeId = new Map<
+    GitHubNodeId,
+    Map<SourceId, RelationTextReference[]>
+  >();
+  const addOccurrence = (occurrence: RelationReferenceOccurrence): void => {
+    if (occurrence.reference.repositoryOwner.toLowerCase() === organization.toLowerCase()) {
+      return;
+    }
+    const key = createRelationMutationReferenceKey(occurrence.reference);
+    const existing = groups.get(key);
+    if (existing == null) {
+      groups.set(key, {
+        itemType: occurrence.reference.itemType,
+        occurrences: [occurrence],
+      });
+      return;
+    }
+    if (
+      existing.itemType != null &&
+      occurrence.reference.itemType != null &&
+      existing.itemType !== occurrence.reference.itemType
+    ) {
+      throw new TypeError("同じ外部relation参照に異なる項目種別が指定されています");
+    }
+    if (existing.itemType == null && occurrence.reference.itemType != null) {
+      existing.itemType = occurrence.reference.itemType;
+    }
+    existing.occurrences.push(occurrence);
+  };
+  for (const source of analysisSources) {
+    const referencesByContentSource = createCurrentReferenceMap(source);
+    currentBySourceItemNodeId.set(source.item.nodeId, referencesByContentSource);
+    verifiedBySourceItemNodeId.set(
+      source.item.nodeId,
+      new Map(
+        [...referencesByContentSource.keys()].map((contentSourceId) => [contentSourceId, []]),
+      ),
+    );
+    for (const occurrence of createCurrentTextReferenceOccurrences(
+      source,
+      referencesByContentSource,
+    )) {
+      addOccurrence(occurrence);
+    }
+    for (const occurrence of collectCachedExternalRelationCandidateOccurrences(source)) {
+      if (occurrence.kind === "content") {
+        addReferenceToContentSourceMap(
+          referencesByContentSource,
+          occurrence.contentSourceId,
+          occurrence.reference,
+        );
+      }
+      addOccurrence(occurrence);
+    }
+  }
+  for (const occurrence of additionalCandidateOccurrences) {
+    addOccurrence(occurrence);
+  }
+
+  const publicItemsByNodeId = new Map<GitHubNodeId, PublicGitHubRelationItem>();
+  const resultsByReferenceKey = new Map<string, GitHubRelationReferenceResult>();
+  const sortedGroups = [...groups.entries()].sort(([left], [right]) => compareStrings(left, right));
+  for (const [key, group] of sortedGroups) {
+    const firstOccurrence = group.occurrences[0];
+    assertNonNullable(firstOccurrence, "外部relation参照のoccurrenceがありません");
+    const reference = Object.freeze({
+      ...firstOccurrence.reference,
+      itemType: group.itemType,
+    });
+    const cached = resolutionCache.get(key);
+    const result =
+      cached != null && canReuseExternalRelationResolution(cached, group.itemType)
+        ? cached.result
+        : await resolveRelationReference({
+            reference,
+            graphql: authentication.graphql,
+          });
+    resolutionCache.set(
+      key,
+      Object.freeze({
+        itemType: group.itemType,
+        result,
+      }),
+    );
+    resultsByReferenceKey.set(key, result);
+    if (result.status !== "public") {
+      continue;
+    }
+    const publicItem = createPublicExternalRelationItem(result.item);
+    const existingPublicItem = publicItemsByNodeId.get(publicItem.nodeId);
+    if (existingPublicItem != null) {
+      if (!samePublicRelationItem(existingPublicItem, publicItem)) {
+        throw new TypeError("外部relation公開metadataのnode IDが衝突しています");
+      }
+    } else {
+      publicItemsByNodeId.set(publicItem.nodeId, publicItem);
+    }
+    for (const occurrence of group.occurrences) {
+      if (occurrence.kind !== "content") {
+        continue;
+      }
+      const referencesByContentSource = verifiedBySourceItemNodeId.get(occurrence.sourceItemNodeId);
+      assertNonNullable(referencesByContentSource, "外部relation参照のsourceがありません");
+      const references = referencesByContentSource.get(occurrence.contentSourceId);
+      assertNonNullable(references, "外部relation参照のcontent sourceがありません");
+      references.push(occurrence.reference);
+    }
+  }
+
+  return Object.freeze({
+    knownItems: Object.freeze([...publicItemsByNodeId.values()]),
+    currentReferencesBySourceItemNodeId: new Map<
+      GitHubNodeId,
+      ReadonlyMap<SourceId, PublicCurrentRelationReferences>
+    >(
+      [...currentBySourceItemNodeId.entries()].map(([sourceItemNodeId, byContentSource]) => [
+        sourceItemNodeId,
+        new Map<SourceId, PublicCurrentRelationReferences>(
+          [...byContentSource.entries()].map(([contentSourceId, references]) => [
+            contentSourceId,
+            normalizeCurrentRelationReferences(references),
+          ]),
+        ),
+      ]),
+    ),
+    verifiedExternalReferencesBySourceItemNodeId: new Map(
+      [...verifiedBySourceItemNodeId.entries()].map(([sourceItemNodeId, byContentSource]) => [
+        sourceItemNodeId,
+        new Map(
+          [...byContentSource.entries()].map(([contentSourceId, references]) => [
+            contentSourceId,
+            Object.freeze(references),
+          ]),
+        ),
+      ]),
+    ),
+    resultsByReferenceKey,
+  });
+}
 
 function detailReferencesNode(detail: GitHubItemDetail, nodeId: GitHubNodeId): boolean {
   if (detail.timeline.some((event) => timelineRelatedNodeIds(event).includes(nodeId))) {
@@ -1638,6 +2150,7 @@ async function extractAllRelationCandidates(
   config: Config,
   allowlist: PublicRepositoryAllowlist,
   retryBudget: RelationReferenceRetryBudget,
+  resolutionCache: ExternalRelationResolutionCache,
 ): Promise<ExtractedRelationCandidates> {
   for (;;) {
     const aggregate = aggregateFreshRepositoryCollections(
@@ -1647,15 +2160,43 @@ async function extractAllRelationCandidates(
     const knownItems = aggregate.enumeratedItems.map((item) =>
       createPublicRelationItem(item, allowlist.require(item.repositoryId)),
     );
+    const externalRelationResolution = await resolveExternalRelationReferences(
+      adapters.resolveGitHubRelationReference,
+      authentication,
+      config.organization,
+      aggregate.analysisSources,
+      resolutionCache,
+      Object.freeze([]),
+    );
     try {
+      const candidates = extractRelationCandidatesOnce(
+        config,
+        [...knownItems, ...externalRelationResolution.knownItems],
+        aggregate.details,
+        aggregate.analysisSources,
+      );
+      const completedExternalRelationResolution = await resolveExternalRelationReferences(
+        adapters.resolveGitHubRelationReference,
+        authentication,
+        config.organization,
+        aggregate.analysisSources,
+        resolutionCache,
+        collectExternalRelationCandidateOccurrences(aggregate.analysisSources, candidates),
+      );
+      const resolvedItemsByNodeId = new Map<GitHubNodeId, PublicGitHubRelationItem>(
+        [...knownItems, ...completedExternalRelationResolution.knownItems].map((item) => [
+          item.nodeId,
+          item,
+        ]),
+      );
       return Object.freeze({
-        candidates: extractRelationCandidatesOnce(
-          config,
-          knownItems,
-          aggregate.details,
-          aggregate.analysisSources,
+        candidates: normalizeRelationCandidates(
+          candidates.map((candidate) =>
+            currentExternalRelationCandidate(candidate, resolvedItemsByNodeId),
+          ),
         ),
         aggregate,
+        externalRelationResolution: completedExternalRelationResolution,
       });
     } catch (error: unknown) {
       if (!(error instanceof RelationReferenceConflictError) || !error.isStateOnlyConflict) {
@@ -2085,99 +2626,128 @@ type FreshItemRelationBoundaryInput = Readonly<{
   relationMutations: readonly RelationMutationResult[];
 }>;
 
-function verifiedExternalReferencesByContentSource(
-  source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>,
-  relationCandidates: readonly RelationCandidate[],
-): ReadonlyMap<SourceId, readonly RelationTextReference[]> {
-  const referencesByContentSource = new Map<SourceId, RelationTextReference[]>();
-  for (const relationMutation of source.relationMutations) {
-    referencesByContentSource.set(relationMutation.contentSourceId, []);
-  }
-  for (const candidate of relationCandidates) {
-    if (
-      !relationNodes(candidate.relation).some(
-        (node) => node.scope === "organization" && node.nodeId === source.item.nodeId,
-      )
-    ) {
-      continue;
-    }
-    for (const sourceId of candidate.sourceIds) {
-      const references = referencesByContentSource.get(sourceId);
-      if (references == null) {
-        continue;
-      }
-      for (const node of relationNodes(candidate.relation)) {
-        if (node.scope !== "external_public") {
-          continue;
-        }
-        references.push({
-          repositoryOwner: node.repositoryOwner,
-          repositoryName: node.repositoryName,
-          itemType: node.githubItemType,
-          number: node.number,
-        });
-      }
-    }
-  }
-  return new Map(
-    [...referencesByContentSource.entries()].map(([contentSourceId, references]) => [
-      contentSourceId,
-      Object.freeze(references),
-    ]),
-  );
-}
-
-function createFreshItemRelationBoundaryInput(
-  source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>,
+function createItemRelationBoundaryInput(
+  source: RuntimeItemAnalysisSource,
   relationCandidates: readonly RelationCandidate[],
 ): FreshItemRelationBoundaryInput {
   return Object.freeze({
     sourceItemNodeId: source.item.nodeId,
     relationCandidates: candidatesForNode(source.item.nodeId, relationCandidates),
-    relationMutations: source.relationMutations,
+    relationMutations: relationMutationResultsForSource(source),
   });
 }
 
-function sanitizeFreshAnalysisSourceForPublicBoundary(
-  source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>,
+function sanitizeAnalysisSourceForPublicBoundary(
+  source: RuntimeItemAnalysisSource,
   relationCandidates: readonly RelationCandidate[],
   organization: string,
   allowlist: PublicRepositoryAllowlist,
+  currentReferencesBySourceItemNodeId: ReadonlyMap<
+    GitHubNodeId,
+    ReadonlyMap<SourceId, PublicCurrentRelationReferences>
+  >,
+  verifiedExternalReferencesBySourceItemNodeId: ReadonlyMap<
+    GitHubNodeId,
+    ReadonlyMap<SourceId, readonly RelationTextReference[]>
+  >,
 ): Readonly<{
-  source: Extract<RuntimeItemAnalysisSource, { kind: "fresh" }>;
+  source: RuntimeItemAnalysisSource;
   unknownContentSourceCount: number;
 }> {
+  const verifiedExternalReferencesByContentSource =
+    verifiedExternalReferencesBySourceItemNodeId.get(source.item.nodeId);
+  assertNonNullable(
+    verifiedExternalReferencesByContentSource,
+    "relation mutationのsource別公開参照証明がありません",
+  );
+  const currentReferencesByContentSource = currentReferencesBySourceItemNodeId.get(
+    source.item.nodeId,
+  );
+  assertNonNullable(
+    currentReferencesByContentSource,
+    "relation mutationのsource別現在参照がありません",
+  );
   const sanitized = sanitizeRelationMutationsForPublicBoundary({
     sourceItemNodeId: source.item.nodeId,
     organization,
     allowlist,
-    verifiedExternalReferencesByContentSource: verifiedExternalReferencesByContentSource(
-      source,
-      relationCandidates,
-    ),
-    relationMutations: source.relationMutations,
+    currentReferencesByContentSource,
+    verifiedExternalReferencesByContentSource,
+    relationMutations: relationMutationResultsForSource(source),
   });
+  if (source.kind === "fresh") {
+    return Object.freeze({
+      source: Object.freeze({
+        ...source,
+        relationMutations: sanitized.relationMutations,
+      }),
+      unknownContentSourceCount: sanitized.unknownContentSourceCount,
+    });
+  }
+  const document = replaceGitHubItemCacheRelationData(
+    source.document,
+    candidatesForNode(source.item.nodeId, relationCandidates),
+    sanitized.relationMutations,
+  );
   return Object.freeze({
     source: Object.freeze({
       ...source,
-      relationMutations: sanitized.relationMutations,
+      document,
+      analysis: Object.freeze({
+        ...source.analysis,
+        relationCandidates: candidatesForNode(source.item.nodeId, relationCandidates),
+        relationMutations: sanitized.relationMutations,
+      }),
     }),
     unknownContentSourceCount: sanitized.unknownContentSourceCount,
   });
 }
 
-function assertFreshItemRelationPublicBoundary(
+function assertExternalRelationCandidatesPublicBoundary(
+  source: RuntimeItemAnalysisSource,
+  relationCandidates: readonly RelationCandidate[],
+  resultsByReferenceKey: ReadonlyMap<string, GitHubRelationReferenceResult>,
+): void {
+  let violationCount = 0;
+  for (const candidate of candidatesForNode(source.item.nodeId, relationCandidates)) {
+    for (const node of relationNodes(candidate.relation)) {
+      if (node.scope !== "external_public") {
+        continue;
+      }
+      const reference = createRelationTextReference(node);
+      const result = resultsByReferenceKey.get(createRelationMutationReferenceKey(reference));
+      if (result?.status !== "public") {
+        violationCount += 1;
+        continue;
+      }
+      assertExternalRelationCandidateMetadata(node, result.item, true);
+    }
+  }
+  if (violationCount > 0) {
+    throw new GitHubPublicBoundaryViolationError({
+      scope: "cache_item_relation",
+      sourceItemNodeId: source.item.nodeId,
+      violationKind: "cache_relation_candidate",
+      violationCount,
+    });
+  }
+}
+
+function assertItemRelationPublicBoundary(
   analysisSources: readonly RuntimeItemAnalysisSource[],
   relationCandidates: readonly RelationCandidate[],
   allowlist: PublicRepositoryAllowlist,
+  resultsByReferenceKey: ReadonlyMap<string, GitHubRelationReferenceResult>,
 ): void {
   for (const source of analysisSources) {
-    if (source.kind === "cached") {
-      continue;
-    }
+    assertExternalRelationCandidatesPublicBoundary(
+      source,
+      relationCandidates,
+      resultsByReferenceKey,
+    );
     assertCacheItemRelationPublicBoundary(
       allowlist,
-      createFreshItemRelationBoundaryInput(source, relationCandidates),
+      createItemRelationBoundaryInput(source, relationCandidates),
     );
   }
 }
@@ -5924,7 +6494,7 @@ function createItemCacheDocuments(
     }
     const observation = source.item;
     const detail = source.detail;
-    const relationBoundaryInput = createFreshItemRelationBoundaryInput(
+    const relationBoundaryInput = createItemRelationBoundaryInput(
       source,
       collection.relationCandidates,
     );
@@ -6006,6 +6576,12 @@ function createRuntimeCachePayload(
   if (freshItemCachesByNodeId.size !== freshItemCaches.length) {
     throw new TypeError("fresh item cacheのnode IDが重複しています");
   }
+  const revalidatedCachedItemCachesByNodeId = new Map<GitHubNodeId, GitHubItemCacheDocument>();
+  for (const source of collection.analysisSources) {
+    if (source.kind === "cached") {
+      revalidatedCachedItemCachesByNodeId.set(source.item.nodeId, source.document);
+    }
+  }
   const loadedRepositoryCaches = loadedRepositoryCacheDocuments(state);
   const loadedRepositoryCachesById = new Map(
     loadedRepositoryCaches.map((document) => [document.repository.repositoryId, document]),
@@ -6053,7 +6629,9 @@ function createRuntimeCachePayload(
 
     const repositoryItemCaches = result.value.items.map((item) => {
       const itemCache =
-        freshItemCachesByNodeId.get(item.nodeId) ?? loadedItemCachesByNodeId.get(item.nodeId);
+        freshItemCachesByNodeId.get(item.nodeId) ??
+        revalidatedCachedItemCachesByNodeId.get(item.nodeId) ??
+        loadedItemCachesByNodeId.get(item.nodeId);
       assertNonNullable(
         itemCache,
         `fresh repositoryのitem cache文書がありません。対象: ${item.nodeId}`,
@@ -6828,6 +7406,86 @@ function restoreStaleDisplayItemSources(
   return Object.freeze(
     sources.sort((left, right) => left.item.nodeId.localeCompare(right.item.nodeId)),
   );
+}
+
+async function validateStaleDisplayExternalRelationCandidates(
+  resolveRelationReference: ProductionRuntimeAdapters["resolveGitHubRelationReference"],
+  authentication: GitHubClient,
+  organization: string,
+  allowlist: PublicRepositoryAllowlist,
+  staleDisplaySources: readonly StaleDisplayItemAnalysisSource[],
+  resolutionCache: ExternalRelationResolutionCache,
+): Promise<void> {
+  const sources = staleDisplaySources.map(staleDisplayRuntimeAnalysisSource);
+  if (sources.length === 0) {
+    return;
+  }
+  const resolution = await resolveExternalRelationReferences(
+    resolveRelationReference,
+    authentication,
+    organization,
+    sources,
+    resolutionCache,
+    Object.freeze([]),
+  );
+  for (const source of sources) {
+    const currentReferencesByContentSource = resolution.currentReferencesBySourceItemNodeId.get(
+      source.item.nodeId,
+    );
+    assertNonNullable(
+      currentReferencesByContentSource,
+      "stale relation mutationのsource別現在参照がありません",
+    );
+    const verifiedExternalReferencesByContentSource =
+      resolution.verifiedExternalReferencesBySourceItemNodeId.get(source.item.nodeId);
+    assertNonNullable(
+      verifiedExternalReferencesByContentSource,
+      "stale relation mutationのsource別公開参照証明がありません",
+    );
+    const sanitized = sanitizeRelationMutationsForPublicBoundary({
+      sourceItemNodeId: source.item.nodeId,
+      organization,
+      allowlist,
+      currentReferencesByContentSource,
+      verifiedExternalReferencesByContentSource,
+      relationMutations: source.analysis.relationMutations,
+    });
+    if (
+      serializeCanonicalJson(sanitized.relationMutations) !==
+      serializeCanonicalJson(source.analysis.relationMutations)
+    ) {
+      throw new TypeError("stale item cacheのrelation mutationを再保存できません");
+    }
+    let violationCount = 0;
+    for (const candidate of source.analysis.relationCandidates) {
+      for (const node of relationNodes(candidate.relation)) {
+        if (node.scope !== "external_public") {
+          continue;
+        }
+        const reference = createRelationTextReference(node);
+        const result = resolution.resultsByReferenceKey.get(
+          createRelationMutationReferenceKey(reference),
+        );
+        if (result?.status !== "public") {
+          violationCount += 1;
+          continue;
+        }
+        assertExternalRelationCandidateMetadata(
+          node,
+          createPublicExternalRelationItem(result.item),
+          false,
+        );
+      }
+    }
+    if (violationCount > 0) {
+      throw new GitHubPublicBoundaryViolationError({
+        scope: "cache_item_relation",
+        sourceItemNodeId: source.item.nodeId,
+        violationKind: "cache_relation_candidate",
+        violationCount,
+      });
+    }
+  }
 }
 
 function cachedObservedItem(
@@ -7826,14 +8484,22 @@ async function collectAdditionalRelationItems(
   authentication: GitHubClient,
   repository: PublicRepository,
   requestedTargets: readonly RelationExpansionTarget[],
+  preEnumeratedItems: readonly EnumeratedGitHubItem[],
   current: FreshRepositoryRuntimeCollection,
 ): Promise<FreshRepositoryRuntimeCollection> {
   const currentItemsByNodeId = new Map(current.enumeratedItems.map((item) => [item.nodeId, item]));
   const currentProvisionalItemsByNodeId = new Map(
     current.provisionalEnumeratedItems.map((item) => [item.nodeId, item]),
   );
-  const missingTargets = requestedTargets.filter(
+  const preEnumeratedItemsByNodeId = new Map(preEnumeratedItems.map((item) => [item.nodeId, item]));
+  if (preEnumeratedItemsByNodeId.size !== preEnumeratedItems.length) {
+    throw new TypeError("関係先のpre-enumerated item node IDが重複しています");
+  }
+  const targetsMissingFromCurrent = requestedTargets.filter(
     (target) => !currentItemsByNodeId.has(target.nodeId),
+  );
+  const missingTargets = targetsMissingFromCurrent.filter(
+    (target) => !preEnumeratedItemsByNodeId.has(target.nodeId),
   );
   const individuallyEnumeratedItems =
     missingTargets.length === 0
@@ -7849,10 +8515,20 @@ async function collectAdditionalRelationItems(
   const individuallyEnumeratedItemsByNodeId = new Map(
     individuallyEnumeratedItems.map((item) => [item.nodeId, item]),
   );
+  const preEnumeratedAndIndividuallyEnumeratedItemsByNodeId = new Map([
+    ...preEnumeratedItemsByNodeId,
+    ...individuallyEnumeratedItemsByNodeId,
+  ]);
+  const missingItems = targetsMissingFromCurrent.map((target) => {
+    const item = preEnumeratedAndIndividuallyEnumeratedItemsByNodeId.get(target.nodeId);
+    assertNonNullable(item, `関係先追加取得対象の列挙値がありません。対象: ${target.nodeId}`);
+    return item;
+  });
+  validateRelationExpansionEnumeration(repository, targetsMissingFromCurrent, missingItems);
   const detailTargets = requestedTargets.map((target) => {
     const item =
       currentProvisionalItemsByNodeId.get(target.nodeId) ??
-      individuallyEnumeratedItemsByNodeId.get(target.nodeId);
+      preEnumeratedAndIndividuallyEnumeratedItemsByNodeId.get(target.nodeId);
     assertNonNullable(item, `関係先追加取得対象の列挙値がありません。対象: ${target.nodeId}`);
     return item;
   });
@@ -7964,6 +8640,11 @@ type RelationExpansionTargetSelection = Readonly<{
   target: RelationExpansionTarget;
 }>;
 
+type RelationExpansionBatchRepositoryInput = Readonly<{
+  targets: readonly RelationExpansionTarget[];
+  preEnumeratedItems: readonly EnumeratedGitHubItem[];
+}>;
+
 function relationExpansionTargetFromCandidate(
   node: Extract<RelationCandidateNode, { scope: "organization" }>,
 ): RelationExpansionTarget {
@@ -8029,6 +8710,265 @@ function relationExpansionTargetsByNodeId(
   return targetsByNodeId;
 }
 
+type AllowlistedCurrentRelationReferenceGroup = Readonly<{
+  key: string;
+  repository: PublicRepository;
+  references: readonly RelationTextReference[];
+}>;
+
+function relationReferenceKeyForEnumeratedItem(
+  item: EnumeratedGitHubItem,
+  repository: PublicRepository,
+): string {
+  return createRelationMutationReferenceKey({
+    repositoryOwner: repository.owner,
+    repositoryName: repository.name,
+    itemType: item.type,
+    number: item.number,
+  });
+}
+
+function collectAllowlistedCurrentRelationReferenceGroups(
+  currentReferencesBySourceItemNodeId: ReadonlyMap<
+    GitHubNodeId,
+    ReadonlyMap<SourceId, CurrentRelationReferences>
+  >,
+  aggregate: FreshRuntimeCollectionAggregate,
+  organization: string,
+  allowlist: PublicRepositoryAllowlist,
+  repositoryResultsById: ReadonlyMap<
+    GitHubRepositoryId,
+    RepositoryCollectionResult<SnapshotCollectionRepository>
+  >,
+  requestedKeys: ReadonlySet<string>,
+): readonly AllowlistedCurrentRelationReferenceGroup[] {
+  const knownReferenceTargets = new Map<
+    string,
+    Readonly<{
+      repository: PublicRepository;
+      item: EnumeratedGitHubItem;
+    }>
+  >();
+  for (const item of aggregate.enumeratedItems) {
+    const repository = allowlist.require(item.repositoryId);
+    const key = relationReferenceKeyForEnumeratedItem(item, repository);
+    const existing = knownReferenceTargets.get(key);
+    if (existing != null && existing.item.nodeId !== item.nodeId) {
+      throw new TypeError("既知の関係参照keyに異なる項目が対応しています");
+    }
+    knownReferenceTargets.set(key, Object.freeze({ repository, item }));
+  }
+
+  const groups = new Map<
+    string,
+    {
+      repository: PublicRepository;
+      references: RelationTextReference[];
+    }
+  >();
+  for (const referencesByContentSource of currentReferencesBySourceItemNodeId.values()) {
+    for (const current of referencesByContentSource.values()) {
+      if (current.status !== "available") {
+        continue;
+      }
+      for (const reference of current.references) {
+        if (reference.repositoryOwner.toLowerCase() !== organization.toLowerCase()) {
+          continue;
+        }
+        const repository = allowlist.repositories.find(
+          (candidate) =>
+            candidate.owner.toLowerCase() === reference.repositoryOwner.toLowerCase() &&
+            candidate.name.toLowerCase() === reference.repositoryName.toLowerCase(),
+        );
+        if (repository == null) {
+          continue;
+        }
+        const repositoryResult = repositoryResultsById.get(repository.id);
+        assertNonNullable(repositoryResult, "current関係参照のrepository収集結果がありません");
+        if (repositoryResult.freshness === "stale") {
+          continue;
+        }
+        const key = createRelationMutationReferenceKey(reference);
+        const knownReferenceTarget = knownReferenceTargets.get(key);
+        if (knownReferenceTarget != null) {
+          assertAllowlistedCurrentRelationItem(
+            knownReferenceTarget.repository,
+            reference,
+            knownReferenceTarget.item,
+          );
+          continue;
+        }
+        if (requestedKeys.has(key)) {
+          throw new TypeError(`関係参照の個別取得後も列挙結果がありません。対象: ${key}`);
+        }
+        const existing = groups.get(key);
+        if (existing == null) {
+          groups.set(key, {
+            repository,
+            references: [reference],
+          });
+          continue;
+        }
+        if (existing.repository.id !== repository.id) {
+          throw new TypeError(`関係参照keyに異なるrepositoryが対応しています。対象: ${key}`);
+        }
+        if (
+          existing.references.some(
+            (candidate) =>
+              candidate.itemType != null &&
+              reference.itemType != null &&
+              candidate.itemType !== reference.itemType,
+          )
+        ) {
+          throw new TypeError(`同じ関係参照に異なる項目種別が指定されています。対象: ${key}`);
+        }
+        if (
+          !existing.references.some(
+            (candidate) => createRelationMutationReferenceKey(candidate) === key,
+          )
+        ) {
+          existing.references.push(reference);
+        } else if (existing.references[0]?.itemType == null && reference.itemType != null) {
+          existing.references[0] = reference;
+        }
+      }
+    }
+  }
+  return Object.freeze(
+    [...groups.entries()]
+      .sort(([left], [right]) => compareStrings(left, right))
+      .map(([key, group]) =>
+        Object.freeze({
+          key,
+          repository: group.repository,
+          references: Object.freeze(group.references),
+        }),
+      ),
+  );
+}
+
+function assertAllowlistedCurrentRelationItem(
+  repository: PublicRepository,
+  reference: RelationTextReference,
+  item: EnumeratedGitHubItem,
+): void {
+  if (
+    item.repositoryId !== repository.id ||
+    item.number !== reference.number ||
+    (reference.itemType != null && item.type !== reference.itemType)
+  ) {
+    throw new TypeError("関係参照の個別列挙結果が要求したrepository、番号、種別に一致しません");
+  }
+  const expectedUrl = `https://github.com/${repository.owner}/${repository.name}/${
+    item.type === "issue" ? "issues" : "pull"
+  }/${reference.number.toString()}`;
+  if (item.url.toLowerCase() !== expectedUrl.toLowerCase()) {
+    throw new TypeError("関係参照の個別列挙結果のowner、repository名、URLが一致しません");
+  }
+}
+
+async function enumerateAllowlistedCurrentRelationReferences(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  authentication: GitHubClient,
+  groups: readonly AllowlistedCurrentRelationReferenceGroup[],
+): Promise<ReadonlyMap<GitHubRepositoryId, RelationExpansionBatchRepositoryInput>> {
+  const groupsByRepositoryId = new Map<
+    GitHubRepositoryId,
+    AllowlistedCurrentRelationReferenceGroup[]
+  >();
+  for (const group of groups) {
+    const repositoryGroups = groupsByRepositoryId.get(group.repository.id);
+    if (repositoryGroups == null) {
+      groupsByRepositoryId.set(group.repository.id, [group]);
+    } else {
+      repositoryGroups.push(group);
+    }
+  }
+
+  const inputsByRepositoryId = new Map<
+    GitHubRepositoryId,
+    {
+      targets: RelationExpansionTarget[];
+      preEnumeratedItems: EnumeratedGitHubItem[];
+    }
+  >();
+  const enumeratedNodeIds = new Set<GitHubNodeId>();
+  for (const repositoryGroups of groupsByRepositoryId.values()) {
+    const repository = repositoryGroups[0]?.repository;
+    assertNonNullable(repository, "allowlist内current関係参照のrepositoryがありません");
+    const identifiers = repositoryGroups.map((group) => {
+      const reference = group.references[0];
+      assertNonNullable(reference, "allowlist内current関係参照のreferenceがありません");
+      return `https://github.com/${repository.owner}/${repository.name}/issues/${reference.number.toString()}`;
+    });
+    const items = await adapters.enumerateGitHubItemsByIdentifiers({
+      allowlist: createPublicRepositoryAllowlist([repository]),
+      identifiers,
+      observedAt: invocation.startedAt,
+      request: authentication.request,
+      graphql: authentication.graphql,
+    });
+    if (items.length !== repositoryGroups.length) {
+      throw new TypeError("allowlist内current関係参照の個別列挙結果件数が一致しません");
+    }
+    const groupsByNumber = new Map<number, AllowlistedCurrentRelationReferenceGroup>();
+    for (const group of repositoryGroups) {
+      const reference = group.references[0];
+      assertNonNullable(reference, "allowlist内current関係参照のreferenceがありません");
+      if (groupsByNumber.has(reference.number)) {
+        throw new TypeError("allowlist内current関係参照の番号が重複しています");
+      }
+      groupsByNumber.set(reference.number, group);
+    }
+    const itemsByGroupKey = new Map<string, EnumeratedGitHubItem>();
+    for (const item of items) {
+      const group = groupsByNumber.get(item.number);
+      assertNonNullable(group, "allowlist内current関係参照の列挙結果番号が不正です");
+      const reference = group.references[0];
+      assertNonNullable(reference, "allowlist内current関係参照のreferenceがありません");
+      assertAllowlistedCurrentRelationItem(repository, reference, item);
+      if (itemsByGroupKey.has(group.key)) {
+        throw new TypeError("allowlist内current関係参照の列挙結果が重複しています");
+      }
+      itemsByGroupKey.set(group.key, item);
+    }
+    if (itemsByGroupKey.size !== repositoryGroups.length) {
+      throw new TypeError("allowlist内current関係参照の列挙結果が不足しています");
+    }
+    const input: {
+      targets: RelationExpansionTarget[];
+      preEnumeratedItems: EnumeratedGitHubItem[];
+    } = {
+      targets: [],
+      preEnumeratedItems: [],
+    };
+    for (const group of repositoryGroups) {
+      const item = itemsByGroupKey.get(group.key);
+      assertNonNullable(
+        item,
+        `allowlist内current関係参照の列挙結果がありません。対象: ${group.key}`,
+      );
+      if (enumeratedNodeIds.has(item.nodeId)) {
+        throw new TypeError("allowlist内current関係参照の列挙結果node IDが重複しています");
+      }
+      enumeratedNodeIds.add(item.nodeId);
+      input.preEnumeratedItems.push(item);
+      input.targets.push(relationExpansionTargetFromItem(item));
+    }
+    inputsByRepositoryId.set(repository.id, input);
+  }
+  return new Map(
+    [...inputsByRepositoryId.entries()].map(([repositoryId, input]) => [
+      repositoryId,
+      Object.freeze({
+        targets: Object.freeze(input.targets),
+        preEnumeratedItems: Object.freeze(input.preEnumeratedItems),
+      }),
+    ]),
+  );
+}
+
 async function collectRelationExpansionBatch(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -8036,7 +8976,7 @@ async function collectRelationExpansionBatch(
   state: RuntimeState,
   authentication: GitHubClient,
   allowlist: PublicRepositoryAllowlist,
-  targetsByRepositoryId: ReadonlyMap<GitHubRepositoryId, readonly RelationExpansionTarget[]>,
+  inputsByRepositoryId: ReadonlyMap<GitHubRepositoryId, RelationExpansionBatchRepositoryInput>,
   freshCollectionsByRepositoryId: Map<GitHubRepositoryId, FreshRepositoryRuntimeCollection>,
   repositoryResultsById: Map<
     GitHubRepositoryId,
@@ -8044,7 +8984,7 @@ async function collectRelationExpansionBatch(
   >,
 ): Promise<void> {
   const targetRepositories = allowlist.repositories.filter((repository) =>
-    targetsByRepositoryId.has(repository.id),
+    inputsByRepositoryId.has(repository.id),
   );
   const expandedCollectionsByRepositoryId = new Map<
     GitHubRepositoryId,
@@ -8055,8 +8995,8 @@ async function collectRelationExpansionBatch(
     observedAt: invocation.startedAt,
     previousValues: previousRepositoryValues(state),
     collect: async (repository) => {
-      const requestedTargets = targetsByRepositoryId.get(repository.id);
-      assertNonNullable(requestedTargets, "関係先追加取得対象がありません");
+      const input = inputsByRepositoryId.get(repository.id);
+      assertNonNullable(input, "関係先追加取得対象がありません");
       const current = freshCollectionsByRepositoryId.get(repository.id);
       assertNonNullable(current, "関係先追加取得対象の最新repository収集結果がありません");
       const expanded = await collectAdditionalRelationItems(
@@ -8066,7 +9006,8 @@ async function collectRelationExpansionBatch(
         state,
         authentication,
         repository,
-        requestedTargets,
+        input.targets,
+        input.preEnumeratedItems,
         current,
       );
       expandedCollectionsByRepositoryId.set(repository.id, expanded);
@@ -8085,6 +9026,93 @@ async function collectRelationExpansionBatch(
   }
 }
 
+async function collectAllowlistedCurrentRelationExpansionBatch(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  authentication: GitHubClient,
+  allowlist: PublicRepositoryAllowlist,
+  groupsByRepositoryId: ReadonlyMap<
+    GitHubRepositoryId,
+    readonly AllowlistedCurrentRelationReferenceGroup[]
+  >,
+  expandedNodeIds: Set<GitHubNodeId>,
+  maximumItemCount: number,
+  freshCollectionsByRepositoryId: Map<GitHubRepositoryId, FreshRepositoryRuntimeCollection>,
+  repositoryResultsById: Map<
+    GitHubRepositoryId,
+    RepositoryCollectionResult<SnapshotCollectionRepository>
+  >,
+): Promise<void> {
+  const targetRepositories = allowlist.repositories.filter((repository) => {
+    if (!groupsByRepositoryId.has(repository.id)) {
+      return false;
+    }
+    const result = repositoryResultsById.get(repository.id);
+    assertNonNullable(result, "allowlist内current関係参照のrepository収集結果がありません");
+    return result.freshness === "fresh";
+  });
+  const expandedCollectionsByRepositoryId = new Map<
+    GitHubRepositoryId,
+    FreshRepositoryRuntimeCollection
+  >();
+  const results = await collectRepositoriesWithStaleFallback({
+    allowlist: createPublicRepositoryAllowlist(targetRepositories),
+    observedAt: invocation.startedAt,
+    previousValues: previousRepositoryValues(state),
+    collect: async (repository) => {
+      const groups = groupsByRepositoryId.get(repository.id);
+      assertNonNullable(groups, "allowlist内current関係参照の対象がありません");
+      const enumeratedInputs = await enumerateAllowlistedCurrentRelationReferences(
+        adapters,
+        invocation,
+        authentication,
+        groups,
+      );
+      const input = enumeratedInputs.get(repository.id);
+      assertNonNullable(input, "allowlist内current関係参照の個別列挙結果がありません");
+      const targets = input.targets.filter((target) => !expandedNodeIds.has(target.nodeId));
+      if (expandedNodeIds.size + targets.length > maximumItemCount) {
+        throw new CliRelationExpansionLimitError(
+          maximumItemCount,
+          expandedNodeIds.size,
+          targets.length,
+          {},
+        );
+      }
+      for (const target of targets) {
+        expandedNodeIds.add(target.nodeId);
+      }
+      const current = freshCollectionsByRepositoryId.get(repository.id);
+      assertNonNullable(current, "allowlist内current関係参照の最新repository収集結果がありません");
+      const expanded = await collectAdditionalRelationItems(
+        adapters,
+        invocation,
+        configuration,
+        state,
+        authentication,
+        repository,
+        input.targets,
+        input.preEnumeratedItems,
+        current,
+      );
+      expandedCollectionsByRepositoryId.set(repository.id, expanded);
+      return expanded.state;
+    },
+  });
+  for (const result of results) {
+    repositoryResultsById.set(result.repository.id, result);
+    if (result.freshness === "stale") {
+      freshCollectionsByRepositoryId.delete(result.repository.id);
+      continue;
+    }
+    const expanded = expandedCollectionsByRepositoryId.get(result.repository.id);
+    assertNonNullable(expanded, "allowlist内current関係参照後の収集結果がありません");
+    freshCollectionsByRepositoryId.set(result.repository.id, expanded);
+  }
+}
+
 async function collectRelationExpandedItems(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -8097,9 +9125,11 @@ async function collectRelationExpandedItems(
     GitHubRepositoryId,
     RepositoryCollectionResult<SnapshotCollectionRepository>
   >,
+  externalRelationResolutionCache: ExternalRelationResolutionCache,
 ): Promise<RelationExpandedRuntimeCollection> {
   const requestedNodeIds = new Set<GitHubNodeId>();
   const expandedNodeIds = new Set<GitHubNodeId>();
+  const requestedInternalRelationReferenceKeys = new Set<string>();
   const relationReferenceRetryBudget: RelationReferenceRetryBudget = {
     maxRefreshes: Math.min(2, configuration.config.operations.retry.maxAttempts - 1),
     refreshes: 0,
@@ -8115,9 +9145,53 @@ async function collectRelationExpandedItems(
       configuration.config,
       repositoryInventory.allowlist,
       relationReferenceRetryBudget,
+      externalRelationResolutionCache,
     );
     const discoveredRelationCandidates = extractedRelations.candidates;
     const aggregate = extractedRelations.aggregate;
+    const allowlistedCurrentRelationGroups = collectAllowlistedCurrentRelationReferenceGroups(
+      extractedRelations.externalRelationResolution.currentReferencesBySourceItemNodeId,
+      aggregate,
+      configuration.config.organization,
+      repositoryInventory.allowlist,
+      repositoryResultsById,
+      requestedInternalRelationReferenceKeys,
+    );
+    if (allowlistedCurrentRelationGroups.length > 0) {
+      const groupsByRepositoryId = new Map<
+        GitHubRepositoryId,
+        AllowlistedCurrentRelationReferenceGroup[]
+      >();
+      for (const group of allowlistedCurrentRelationGroups) {
+        const groups = groupsByRepositoryId.get(group.repository.id);
+        if (groups == null) {
+          groupsByRepositoryId.set(group.repository.id, [group]);
+        } else {
+          groups.push(group);
+        }
+      }
+      await collectAllowlistedCurrentRelationExpansionBatch(
+        adapters,
+        invocation,
+        configuration,
+        state,
+        authentication,
+        repositoryInventory.allowlist,
+        groupsByRepositoryId,
+        expandedNodeIds,
+        configuration.config.tracking.relationExpansion.maxItemsPerRun,
+        freshCollectionsByRepositoryId,
+        repositoryResultsById,
+      );
+      for (const group of allowlistedCurrentRelationGroups) {
+        const result = repositoryResultsById.get(group.repository.id);
+        assertNonNullable(result, "allowlist内current関係参照のrepository収集結果がありません");
+        if (result.freshness === "fresh") {
+          requestedInternalRelationReferenceKeys.add(group.key);
+        }
+      }
+      continue;
+    }
     const collectedCandidateNodeIds = collectedTrackingCandidateNodeIds(state, aggregate);
     const completedRelationCandidates = completeRelationCandidates(
       discoveredRelationCandidates,
@@ -8128,16 +9202,25 @@ async function collectRelationExpandedItems(
       completedRelationCandidates.candidates,
     );
     if (exactAiRefreshes.size > 0) {
-      const targetsByRepositoryId = new Map<GitHubRepositoryId, RelationExpansionTarget[]>();
+      const inputsByRepositoryId = new Map<
+        GitHubRepositoryId,
+        RelationExpansionBatchRepositoryInput
+      >();
       for (const nodeId of exactAiRefreshes) {
         const item = aggregate.enumeratedItems.find((candidate) => candidate.nodeId === nodeId);
         assertNonNullable(item, `exact AI再判定対象の列挙値がありません。対象: ${nodeId}`);
         const target = relationExpansionTargetFromItem(item);
-        const targets = targetsByRepositoryId.get(item.repositoryId);
-        if (targets == null) {
-          targetsByRepositoryId.set(item.repositoryId, [target]);
+        const input = inputsByRepositoryId.get(item.repositoryId);
+        if (input == null) {
+          inputsByRepositoryId.set(item.repositoryId, {
+            targets: Object.freeze([target]),
+            preEnumeratedItems: Object.freeze([]),
+          });
         } else {
-          targets.push(target);
+          inputsByRepositoryId.set(item.repositoryId, {
+            targets: Object.freeze([...input.targets, target]),
+            preEnumeratedItems: input.preEnumeratedItems,
+          });
         }
       }
       await collectRelationExpansionBatch(
@@ -8147,7 +9230,7 @@ async function collectRelationExpandedItems(
         state,
         authentication,
         repositoryInventory.allowlist,
-        targetsByRepositoryId,
+        inputsByRepositoryId,
         freshCollectionsByRepositoryId,
         repositoryResultsById,
       );
@@ -8178,14 +9261,14 @@ async function collectRelationExpandedItems(
     if (nextRequests.length === 0) {
       const diagnostics = [...aggregate.diagnostics];
       const analysisSources = aggregate.analysisSources.map((source) => {
-        if (source.kind === "cached") {
-          return source;
-        }
-        const sanitized = sanitizeFreshAnalysisSourceForPublicBoundary(
+        const sanitized = sanitizeAnalysisSourceForPublicBoundary(
           source,
           completedRelationCandidates.candidates,
           configuration.config.organization,
           repositoryInventory.allowlist,
+          extractedRelations.externalRelationResolution.currentReferencesBySourceItemNodeId,
+          extractedRelations.externalRelationResolution
+            .verifiedExternalReferencesBySourceItemNodeId,
         );
         if (sanitized.unknownContentSourceCount > 0) {
           diagnostics.push(
@@ -8199,10 +9282,11 @@ async function collectRelationExpandedItems(
         analysisSources: Object.freeze(analysisSources),
         diagnostics: Object.freeze(diagnostics),
       });
-      assertFreshItemRelationPublicBoundary(
+      assertItemRelationPublicBoundary(
         sanitizedAggregate.analysisSources,
         completedRelationCandidates.candidates,
         repositoryInventory.allowlist,
+        extractedRelations.externalRelationResolution.resultsByReferenceKey,
       );
       synchronizeFreshRepositoryCollectionResults(
         freshCollectionsByRepositoryId,
@@ -8220,7 +9304,10 @@ async function collectRelationExpandedItems(
       discoveredRelationCandidates,
       repositoryInventory.allowlist,
     );
-    const targetsByRepositoryId = new Map<GitHubRepositoryId, RelationExpansionTarget[]>();
+    const inputsByRepositoryId = new Map<
+      GitHubRepositoryId,
+      RelationExpansionBatchRepositoryInput
+    >();
     for (const request of nextRequests) {
       requestedNodeIds.add(request.nodeId);
       const selection = expansionTargetsByNodeId.get(request.nodeId);
@@ -8233,14 +9320,20 @@ async function collectRelationExpandedItems(
       if (repositoryResult.freshness === "stale") {
         continue;
       }
-      const currentTargets = targetsByRepositoryId.get(repository.id);
-      if (currentTargets == null) {
-        targetsByRepositoryId.set(repository.id, [target]);
+      const input = inputsByRepositoryId.get(repository.id);
+      if (input == null) {
+        inputsByRepositoryId.set(repository.id, {
+          targets: Object.freeze([target]),
+          preEnumeratedItems: Object.freeze([]),
+        });
       } else {
-        currentTargets.push(target);
+        inputsByRepositoryId.set(repository.id, {
+          targets: Object.freeze([...input.targets, target]),
+          preEnumeratedItems: input.preEnumeratedItems,
+        });
       }
     }
-    const targets = [...targetsByRepositoryId.values()].flat();
+    const targets = [...inputsByRepositoryId.values()].flatMap((input) => input.targets);
     const maximumItemCount = configuration.config.tracking.relationExpansion.maxItemsPerRun;
     if (expandedNodeIds.size + targets.length > maximumItemCount) {
       throw new CliRelationExpansionLimitError(
@@ -8263,7 +9356,7 @@ async function collectRelationExpandedItems(
       state,
       authentication,
       repositoryInventory.allowlist,
-      targetsByRepositoryId,
+      inputsByRepositoryId,
       freshCollectionsByRepositoryId,
       repositoryResultsById,
     );
@@ -8414,6 +9507,7 @@ async function collectProductionItems(
   const repositoryResultsById = new Map(
     initialRepositoryResults.map((result) => [result.repository.id, result]),
   );
+  const externalRelationResolutionCache: ExternalRelationResolutionCache = new Map();
   const expanded = await collectRelationExpandedItems(
     adapters,
     invocation,
@@ -8423,6 +9517,7 @@ async function collectProductionItems(
     repositoryInventory,
     freshCollectionsByRepositoryId,
     repositoryResultsById,
+    externalRelationResolutionCache,
   );
   const repositoryResults = Object.freeze(
     repositoryInventory.allowlist.repositories.map((repository) => {
@@ -8445,6 +9540,14 @@ async function collectProductionItems(
     diagnostics.push(result.diagnostic.message);
   }
   const staleDisplaySources = restoreStaleDisplayItemSources(state, repositoryResults);
+  await validateStaleDisplayExternalRelationCandidates(
+    adapters.resolveGitHubRelationReference,
+    authentication,
+    configuration.config.organization,
+    repositoryInventory.allowlist,
+    staleDisplaySources,
+    externalRelationResolutionCache,
+  );
   if (expanded.droppedRelationCandidateCount > 0) {
     diagnostics.push(
       `端点を取得できなかった関係候補を${expanded.droppedRelationCandidateCount.toString()}件除外しました`,

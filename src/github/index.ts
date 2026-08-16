@@ -158,6 +158,7 @@ export {
 } from "./relation-mutation-adapter.js";
 export {
   createGitHubItemCacheDocument,
+  replaceGitHubItemCacheRelationData,
   restoreGitHubItemCache,
   restoreGitHubItemCacheForAnalysis,
   validateGitHubItemCacheAiEntry,

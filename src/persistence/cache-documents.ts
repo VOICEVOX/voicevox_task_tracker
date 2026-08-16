@@ -3,6 +3,7 @@ import { z } from "zod";
 import { cacheValidationContextSchema } from "../codex/semantic-validation.js";
 import {
   buildSourceId,
+  createExternalReferenceNodeId,
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
@@ -1503,6 +1504,16 @@ function assertCacheRelationCandidates(candidates: readonly ParsedCacheRelationC
       throw new CacheDocumentSemanticError("relation candidateのauthorityとprovenanceが不整合です");
     }
     const [firstNode, secondNode] = relationCandidateNodes(candidate.relation);
+    for (const node of [firstNode, secondNode]) {
+      if (
+        node.scope === "external_public" &&
+        node.nodeId !== createExternalReferenceNodeId(`external:github:${node.githubNodeId}`)
+      ) {
+        throw new CacheDocumentSemanticError(
+          "external relation candidateのnode IDがcanonicalではありません",
+        );
+      }
+    }
     if (firstNode.nodeId === secondNode.nodeId) {
       throw new CacheDocumentSemanticError("relation candidateが同じnodeを接続しています");
     }

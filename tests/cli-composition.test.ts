@@ -219,6 +219,8 @@ function createUnavailableProductionRuntimeAdapters(
     probeGitHubPullRequestVolatileMetadataWithRetry: () =>
       Promise.reject(new TypeError("Pull Request volatile metadataは収集しません")),
     collectGitHubItemDetails: () => Promise.reject(new TypeError("詳細は収集しません")),
+    resolveGitHubRelationReference: () =>
+      Promise.reject(new TypeError("外部relation参照は解決しません")),
     executeCodexAnalysis: () => Promise.reject(new TypeError("Codexは実行しません")),
     readReplayFixture: () => Promise.reject(new TypeError("replay fixtureは読みません")),
     readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),
@@ -659,6 +661,8 @@ describe("CLI合成root", () => {
             getRateLimitSnapshot: () => undefined,
           }),
         ),
+      resolveGitHubRelationReference: () =>
+        Promise.reject(new TypeError("外部relation参照は解決しません")),
       createStateBranchAdapter: () =>
         createMissingStateAdapter(() => {
           stateCommitCount += 1;
@@ -886,6 +890,8 @@ describe("CLI合成root", () => {
         probeGitHubPullRequestVolatileMetadataWithRetry: () =>
           Promise.reject(new TypeError("Pull Request volatile metadataは収集しません")),
         collectGitHubItemDetails: () => Promise.reject(new TypeError("詳細は収集しません")),
+        resolveGitHubRelationReference: () =>
+          Promise.reject(new TypeError("外部relation参照は解決しません")),
         executeCodexAnalysis: () => Promise.reject(new TypeError("Codexは実行しません")),
         readReplayFixture: () => Promise.reject(new TypeError("replay fixtureは読みません")),
         readReplayState: () => Promise.reject(new TypeError("replay stateは読みません")),

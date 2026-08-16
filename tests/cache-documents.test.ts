@@ -3,6 +3,7 @@ import { ZodError } from "zod";
 
 import {
   buildSourceId,
+  createExternalReferenceNodeId,
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
@@ -22,6 +23,7 @@ import {
   type AiLatestImportanceCacheDocument,
   type CacheRepositoryIdentity,
   type GitHubItemCacheDocument,
+  type GitHubItemCacheRelationCandidate,
   type GitHubRepositoryCacheDocument,
 } from "../src/persistence/index.js";
 
@@ -244,6 +246,48 @@ function createValidItem(): GitHubItemCacheDocument {
   };
 }
 
+type CacheRelationNode = Extract<
+  GitHubItemCacheRelationCandidate["relation"],
+  { type: "unclassified" }
+>["referencing"];
+
+function createExternalRelationCandidate(nodeId: string): GitHubItemCacheRelationCandidate {
+  const externalGithubNodeId = createGitHubNodeId("I_external_cache_documents");
+  const externalNode: CacheRelationNode = {
+    scope: "external_public",
+    kind: "external_reference",
+    nodeId,
+    repositoryOwner: "external-owner",
+    repositoryName: "external-repository",
+    number: 2,
+    url: "https://github.com/external-owner/external-repository/issues/2",
+    state: "open",
+    githubNodeId: externalGithubNodeId,
+    githubItemType: "issue",
+  };
+  const organizationNode: CacheRelationNode = {
+    scope: "organization",
+    kind: "issue",
+    nodeId: ITEM_NODE_ID,
+    repositoryOwner: REPOSITORY.owner,
+    repositoryName: REPOSITORY.name,
+    number: 1,
+    url: "https://github.com/VOICEVOX/example/issues/1",
+    state: "open",
+  };
+  return {
+    id: "rel:external-cache-documents",
+    sourceIds: [buildSourceId("github_item_body", ITEM_NODE_ID)],
+    authority: "inferred",
+    provenance: "cross_reference",
+    relation: {
+      type: "unclassified",
+      referencing: organizationNode,
+      referenced: externalNode,
+    },
+  };
+}
+
 type RelationResult = GitHubItemCacheDocument["relationMutations"][number];
 type AvailableRelationResult = Extract<RelationResult, { status: "available" }>;
 type ExactRelationResult = Omit<AvailableRelationResult, "temporalKnowledge"> & {
@@ -438,6 +482,31 @@ describe("cache文書契約", () => {
     expect(() => {
       assertCacheDocumentSemantic(document);
     }).not.toThrow();
+  });
+
+  it("external relation candidateのnode ID別名をcacheの意味検証で拒否する", () => {
+    const externalGithubNodeId = createGitHubNodeId("I_external_cache_documents");
+    const canonicalNodeId = createExternalReferenceNodeId(
+      `external:github:${externalGithubNodeId}`,
+    );
+    const validValue = {
+      ...createValidItem(),
+      relationCandidates: [createExternalRelationCandidate(canonicalNodeId)],
+    };
+    expect(() => createCacheDocument(validValue)).not.toThrow();
+
+    const invalidValue = {
+      ...validValue,
+      relationCandidates: [
+        createExternalRelationCandidate(
+          createExternalReferenceNodeId("external:github:cache-alias"),
+        ),
+      ],
+    };
+    expect(() => createCacheDocument(invalidValue)).toThrow(CacheDocumentSemanticError);
+    expect(() => createCacheDocument(invalidValue)).toThrow(
+      "external relation candidateのnode IDがcanonicalではありません",
+    );
   });
 
   it("body、diff、raw系fieldを再帰検査して拒否する", () => {

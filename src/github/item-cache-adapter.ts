@@ -172,6 +172,16 @@ type ReplayResponsibilityEpoch = Extract<
 type CacheIssueObservation = Extract<GitHubItemCacheObservation, { type: "issue" }>;
 type CachePullRequestObservation = Extract<GitHubItemCacheObservation, { type: "pull_request" }>;
 
+function compareStrings(left: string, right: string): -1 | 0 | 1 {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
+}
+
 /** rawを含まずdomain判定へ渡せるitem cache観測値。 */
 export type GitHubItemCacheAnalysisObservation =
   | (Omit<CacheIssueObservation, "events" | "state" | "stateReason" | "closedAt"> &
@@ -1132,22 +1142,37 @@ export function createGitHubItemCacheDocument(
     },
     relationCandidates: input.relationCandidates
       .map(mapRelationCandidate)
-      .sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0)),
+      .sort((left, right) => compareStrings(left.id, right.id)),
     relationMutations: input.relationMutations
       .map(mapRelationMutationResult)
-      .sort((left, right) =>
-        left.contentSourceId < right.contentSourceId
-          ? -1
-          : left.contentSourceId > right.contentSourceId
-            ? 1
-            : 0,
-      ),
+      .sort((left, right) => compareStrings(left.contentSourceId, right.contentSourceId)),
     replay: mapReplay(input.replay),
     history: input.history,
     aiCacheReference: input.aiCacheReference,
   });
   if (parsed.kind !== "github_item") {
     throw new TypeError("item cache文書を生成できません");
+  }
+  return parsed;
+}
+
+/** 既存item cache文書のrelationデータを再検証済みの値へ置換する。 */
+export function replaceGitHubItemCacheRelationData(
+  document: GitHubItemCacheDocument,
+  relationCandidates: readonly RelationCandidate[],
+  relationMutations: readonly RelationMutationResult[],
+): GitHubItemCacheDocument {
+  const parsed = createCacheDocument({
+    ...document,
+    relationCandidates: relationCandidates
+      .map(mapRelationCandidate)
+      .sort((left, right) => compareStrings(left.id, right.id)),
+    relationMutations: relationMutations
+      .map(mapRelationMutationResult)
+      .sort((left, right) => compareStrings(left.contentSourceId, right.contentSourceId)),
+  });
+  if (parsed.kind !== "github_item") {
+    throw new TypeError("item cache文書を置換できません");
   }
   return parsed;
 }

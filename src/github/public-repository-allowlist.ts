@@ -228,6 +228,16 @@ type RelationMutationPublicBoundarySanitizerInput = Readonly<{
   sourceItemNodeId: GitHubNodeId;
   organization: string;
   allowlist: PublicRepositoryAllowlist;
+  currentReferencesByContentSource: ReadonlyMap<
+    SourceId,
+    | Readonly<{
+        status: "available";
+        references: readonly RelationTextReference[];
+      }>
+    | Readonly<{
+        status: "unknown";
+      }>
+  >;
   verifiedExternalReferencesByContentSource: ReadonlyMap<
     SourceId,
     readonly RelationTextReference[]
@@ -283,9 +293,28 @@ export function sanitizeRelationMutationsForPublicBoundary(
   relationMutations: readonly RelationMutationResult[];
   unknownContentSourceCount: number;
 }> {
+  const mutationContentSourceIds = new Set(
+    input.relationMutations.map((result) => result.contentSourceId),
+  );
+  if (
+    mutationContentSourceIds.size !== input.relationMutations.length ||
+    mutationContentSourceIds.size !== input.currentReferencesByContentSource.size ||
+    [...input.currentReferencesByContentSource.keys()].some(
+      (contentSourceId) => !mutationContentSourceIds.has(contentSourceId),
+    )
+  ) {
+    throw new TypeError("relation mutationの現在参照sourceが一致しません");
+  }
   const currentViolationKeys = new Set<string>();
   for (const result of input.relationMutations) {
-    if (result.status !== "available") {
+    const currentReferences = input.currentReferencesByContentSource.get(result.contentSourceId);
+    if (currentReferences == null) {
+      throw new TypeError("relation mutationの現在参照がありません");
+    }
+    if (currentReferences.status === "unknown") {
+      if (result.status === "available") {
+        throw new TypeError("relation mutationの現在参照を検証できません");
+      }
       continue;
     }
     const verifiedExternalReferences = input.verifiedExternalReferencesByContentSource.get(
@@ -297,7 +326,16 @@ export function sanitizeRelationMutationsForPublicBoundary(
     const verifiedExternalReferenceKeys = new Set(
       verifiedExternalReferences.map(createRelationMutationReferenceKey),
     );
-    for (const reference of result.currentReferences) {
+    const references = new Map<string, RelationMutationReference>();
+    for (const reference of currentReferences.references) {
+      references.set(createRelationMutationReferenceKey(reference), reference);
+    }
+    if (result.status === "available") {
+      for (const reference of result.currentReferences) {
+        references.set(createRelationMutationReferenceKey(reference), reference);
+      }
+    }
+    for (const reference of references.values()) {
       if (
         isRelationPublicBoundaryViolation(
           input.allowlist,
