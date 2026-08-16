@@ -731,16 +731,9 @@ function createExternalRelationGraphqlResponse(
       owner: Object.freeze({ login: owner }),
     }),
   });
-  if (options.itemType === "issue") {
-    return Object.freeze({
-      repository: Object.freeze({
-        issue: item,
-      }),
-    });
-  }
   return Object.freeze({
     repository: Object.freeze({
-      pullRequest: item,
+      issueOrPullRequest: item,
     }),
   });
 }
@@ -1333,8 +1326,12 @@ function createCollectionHarness(
   let inventory = options.repositories.map((fixture) => fixture.repository);
   let config = options.config;
   let resolveRelationReference: ProductionRuntimeAdapters["resolveGitHubRelationReference"];
+  let requestedRelationItemType: ExternalRelationGraphqlRequest["itemType"] = null;
   if (options.resolveGitHubRelationReference == null) {
-    resolveRelationReference = resolveGitHubRelationReference;
+    resolveRelationReference = (input) => {
+      requestedRelationItemType = input.reference.itemType;
+      return resolveGitHubRelationReference(input);
+    };
   } else {
     resolveRelationReference = options.resolveGitHubRelationReference;
   }
@@ -1485,21 +1482,16 @@ function createCollectionHarness(
                 number: z.number().int(),
               })
               .parse(variables);
-            const hasIssueField = query.includes("issue(number: $number)");
-            const hasPullRequestField = query.includes("pullRequest(number: $number)");
-            let itemType: ExternalRelationGraphqlRequest["itemType"];
-            if (hasIssueField && hasPullRequestField) {
-              itemType = null;
-            } else if (hasIssueField) {
-              itemType = "issue";
-            } else if (hasPullRequestField) {
-              itemType = "pull_request";
-            } else {
-              throw new TypeError("relation reference queryの項目種別がありません");
+            if (
+              !query.includes("issueOrPullRequest(number: $number)") ||
+              query.includes("issue(number: $number)") ||
+              query.includes("pullRequest(number: $number)")
+            ) {
+              throw new TypeError("relation reference queryがunion形式ではありません");
             }
             const request = Object.freeze({
               ...parsedVariables,
-              itemType,
+              itemType: requestedRelationItemType,
             });
             externalRelationGraphqlCalls.push(request);
             const responseFactory = options.externalRelationResponse;
@@ -12728,10 +12720,10 @@ describe("本番収集の接続", () => {
     ).toBe(true);
   });
 
-  it("external current参照がunverifiedならAI実行前に停止する", async () => {
+  it("fresh content sourceのunverified external current参照をunknown化して継続する", async () => {
     const repository = createRepository(
-      "R_external_relation_other_item",
-      "external-relation-other-item",
+      "R_external_relation_content_unknown",
+      "external-relation-content-unknown",
       FIRST_RUN_AT,
     );
     const publicRepository = requirePublicRepository(repository);
@@ -12740,19 +12732,27 @@ describe("本番収集の接続", () => {
     const source = createIssueItem({
       repository: publicRepository,
       number: 1,
-      fingerprint: "external-relation-other-item-source",
+      fingerprint: "external-relation-content-unknown-source",
       updatedAt: observedAt,
       observedAt,
       state: Object.freeze({ state: "open" }),
     });
-    const externalUrl = "https://github.com/external-owner/external-relation-proof/issues/2";
+    const invalidRepositoryName = "external-relation-unverified";
+    const invalidUrl = `https://github.com/external-owner/${invalidRepositoryName}/pull/99`;
+    const bodyValidUrl =
+      "https://github.com/external-owner/external-relation-content-body/issues/2";
+    const commentValidUrl =
+      "https://github.com/external-owner/external-relation-content-comment/issues/3";
+    const bodySourceId = buildSourceId("github_item_body", source.nodeId);
+    const comment = createDuplicateComments(source, observedAt)[0];
+    assertNonNullable(comment, "external relation content comment fixtureがありません");
     fixture.openItems = [source];
     fixture.details.set(
       source.nodeId,
       Object.freeze({
         ...createIssueDetail({
           item: source,
-          body: `- [ ] ${externalUrl}`,
+          body: `- [ ] ${invalidUrl}\n- [ ] ${bodyValidUrl}`,
           observedAt,
           nativeDependencies: Object.freeze([]),
           duplicateComments: false,
@@ -12761,6 +12761,182 @@ describe("本番収集の接続", () => {
           availability: "available",
           edits: Object.freeze([]),
         }),
+        comments: Object.freeze([
+          Object.freeze({
+            ...comment,
+            body: commentValidUrl,
+            userContentEdits: Object.freeze({
+              availability: "available",
+              edits: Object.freeze([]),
+            }),
+          }),
+        ]),
+      }),
+    );
+    const baseConfig = await createTestConfig({
+      explicitIncludes: [],
+      retentionDays: 180,
+      aiEnabled: true,
+    });
+    const config = configWithBudget(baseConfig, 50, baseConfig.ai.budget.maxEstimatedCostUsdPerRun);
+    let invalidReferenceIsPublic = false;
+    const harness = createCollectionHarness({
+      repositories: [fixture],
+      config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
+      externalRelationResponse: (request) =>
+        request.name === invalidRepositoryName && !invalidReferenceIsPublic
+          ? Object.freeze({
+              repository: Object.freeze({
+                issueOrPullRequest: null,
+              }),
+            })
+          : createExternalRelationGraphqlResponse(request, {
+              itemType: request.name === invalidRepositoryName ? "pull_request" : "issue",
+              visibility: "PUBLIC",
+              archived: false,
+              disabled: false,
+            }),
+    });
+    const readItemCache = async () => {
+      const files = await harness.stateAdapter.readBranchFiles("tracker-state-v4");
+      for (const [path, bytes] of files) {
+        if (!path.startsWith("state/github-items/")) {
+          continue;
+        }
+        const document = createCacheDocument(JSON.parse(new TextDecoder().decode(bytes)));
+        if (document.kind === "github_item" && document.nodeId === source.nodeId) {
+          return document;
+        }
+      }
+      throw new TypeError("fresh content boundaryのitem cacheがありません");
+    };
+
+    const result = await harness.runDaily(FIRST_RUN_AT);
+
+    if (result.command !== "daily") {
+      throw new TypeError("fresh content boundary fixtureがdaily結果ではありません");
+    }
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(harness.externalRelationGraphqlCalls).toHaveLength(3);
+    expect(harness.codexExecutionCount()).toBeGreaterThan(0);
+    const firstItemCache = await readItemCache();
+    expect(firstItemCache.relationPublicBoundaryValidation).toEqual({ status: "required" });
+    expect(firstItemCache.relationMutations).toContainEqual({
+      status: "unknown",
+      contentSourceId: bodySourceId,
+      reason: "repository_public_boundary_unverified",
+    });
+    expect(
+      firstItemCache.relationMutations.some(
+        (mutation) =>
+          mutation.status === "available" && mutation.contentSourceId === comment.sourceId,
+      ),
+    ).toBe(true);
+    expect(
+      firstItemCache.relationCandidates.some((candidate) =>
+        candidate.sourceIds.includes(bodySourceId),
+      ),
+    ).toBe(false);
+    expect(
+      firstItemCache.relationCandidates.some((candidate) =>
+        candidate.sourceIds.includes(comment.sourceId),
+      ),
+    ).toBe(true);
+    const firstCodexInput = harness.codexInputs.find(
+      (input) => input.item.nodeId === source.nodeId,
+    );
+    assertNonNullable(firstCodexInput, "fresh content boundaryのCodex入力がありません");
+    expect(
+      JSON.stringify({
+        candidates: firstCodexInput.candidates,
+        deterministicSignals: firstCodexInput.deterministicSignals,
+        cacheValidationContext: firstItemCache.analysisFacts.codexValidationContext,
+      }),
+    ).not.toContain(invalidUrl);
+    const firstSerializedOutput = JSON.stringify({
+      cache: firstItemCache,
+      publicData: harness.publicData,
+      reports: [...harness.reportSources.values()],
+    });
+    expect(firstSerializedOutput).not.toContain(invalidUrl);
+    expect(firstSerializedOutput).not.toContain(invalidRepositoryName);
+    expect(result.result.effects.cacheCommitted).toBe(true);
+    expect(result.result.effects.pagesBuilt).toBe(true);
+    expect(result.result.effects.discordAttempted).toBe(true);
+    expect(harness.normalDiscordCallCount()).toBe(1);
+
+    const firstDetailCallCount = harness.detailCalls.length;
+    const firstExternalRelationCallCount = harness.externalRelationGraphqlCalls.length;
+    const secondResult = await harness.runDaily(SECOND_RUN_AT);
+    expect(secondResult.exitCode, JSON.stringify(secondResult)).toBe(0);
+    expect(harness.detailCalls.length).toBeGreaterThan(firstDetailCallCount);
+    expect(harness.externalRelationGraphqlCalls.length).toBeGreaterThan(
+      firstExternalRelationCallCount,
+    );
+    const secondItemCache = await readItemCache();
+    expect(secondItemCache.relationPublicBoundaryValidation).toEqual({ status: "required" });
+
+    invalidReferenceIsPublic = true;
+    const thirdResult = await harness.runDaily(THIRD_RUN_AT);
+    expect(thirdResult.exitCode, JSON.stringify(thirdResult)).toBe(0);
+    const thirdItemCache = await readItemCache();
+    expect(thirdItemCache.relationPublicBoundaryValidation).toEqual({ status: "not_required" });
+    expect(
+      thirdItemCache.relationCandidates.some((candidate) =>
+        candidate.sourceIds.includes(bodySourceId),
+      ),
+    ).toBe(true);
+  });
+
+  it("current content candidateのunknown source混在をAI前に停止する", async () => {
+    const repository = createRepository(
+      "R_external_relation_mixed_source",
+      "external-relation-mixed-source",
+      FIRST_RUN_AT,
+    );
+    const publicRepository = requirePublicRepository(repository);
+    const fixture = createRepositoryFixture(repository);
+    const observedAt = createUtcIsoDateTime(FIRST_RUN_AT);
+    const source = createIssueItem({
+      repository: publicRepository,
+      number: 1,
+      fingerprint: "external-relation-mixed-source-item",
+      updatedAt: observedAt,
+      observedAt,
+      state: Object.freeze({ state: "open" }),
+    });
+    const invalidRepositoryName = "external-relation-mixed-invalid";
+    const invalidUrl = `https://github.com/external-owner/${invalidRepositoryName}/pull/99`;
+    const sharedUrl = "https://github.com/external-owner/external-relation-mixed-shared/issues/2";
+    const bodySourceId = buildSourceId("github_item_body", source.nodeId);
+    const comment = createDuplicateComments(source, observedAt)[0];
+    assertNonNullable(comment, "mixed relation comment fixtureがありません");
+    fixture.openItems = [source];
+    fixture.details.set(
+      source.nodeId,
+      Object.freeze({
+        ...createIssueDetail({
+          item: source,
+          body: `${invalidUrl}\n${sharedUrl}`,
+          observedAt,
+          nativeDependencies: Object.freeze([]),
+          duplicateComments: false,
+        }),
+        bodyUserContentEdits: Object.freeze({
+          availability: "available",
+          edits: Object.freeze([]),
+        }),
+        comments: Object.freeze([
+          Object.freeze({
+            ...comment,
+            body: sharedUrl,
+            userContentEdits: Object.freeze({
+              availability: "available",
+              edits: Object.freeze([]),
+            }),
+          }),
+        ]),
       }),
     );
     const baseConfig = await createTestConfig({
@@ -12772,19 +12948,27 @@ describe("本番収集の接続", () => {
     const harness = createCollectionHarness({
       repositories: [fixture],
       config,
+      executeCodexAnalysis: executeSuccessfulCodexAnalysis,
       externalRelationResponse: (request) =>
-        createExternalRelationGraphqlResponse(request, {
-          itemType: "issue",
-          visibility: "PRIVATE",
-          archived: false,
-          disabled: false,
-        }),
+        request.name === invalidRepositoryName
+          ? Object.freeze({
+              repository: Object.freeze({
+                issueOrPullRequest: null,
+              }),
+            })
+          : createExternalRelationGraphqlResponse(request, {
+              itemType: "issue",
+              visibility: "PUBLIC",
+              archived: false,
+              disabled: false,
+              nodeId: "I_external_mixed_shared",
+            }),
     });
 
     const result = await harness.runCollectAnalyze(FIRST_RUN_AT);
 
     if (result.command !== "collect-analyze") {
-      throw new TypeError("別item external relation fixtureがcollect-analyze結果ではありません");
+      throw new TypeError("mixed relation fixtureがcollect-analyze結果ではありません");
     }
     expect(result.exitCode).toBe(1);
     expect(result.result.report).toMatchObject({
@@ -12794,13 +12978,14 @@ describe("本番収集の接続", () => {
     });
     expect(result.result.report.diagnostics).toContainEqual(
       expect.stringContaining(
-        `publicBoundaryViolationKind=cache_relation_mutation publicBoundaryViolationCount=1 sourceItemNodeId=${source.nodeId}`,
+        `publicBoundaryViolationKind=cache_relation_candidate publicBoundaryViolationCount=1 sourceItemNodeId=${source.nodeId}`,
       ),
     );
+    expect(harness.externalRelationGraphqlCalls).toHaveLength(2);
     expect(harness.codexExecutionCount()).toBe(0);
-    expect(harness.individualCalls).toHaveLength(0);
     expect(harness.artifacts).toEqual([]);
     expect(harness.publicData).toEqual([]);
+    expect(harness.normalDiscordCallCount()).toBe(0);
     expect(await harness.stateAdapter.resolveHead("tracker-state-v4")).toEqual({
       status: "missing",
     });
@@ -12809,8 +12994,12 @@ describe("本番収集の接続", () => {
       artifacts: harness.artifacts,
       publicData: harness.publicData,
     });
-    expect(serializedFailure).not.toContain(externalUrl);
+    expect(serializedFailure).not.toContain(invalidUrl);
+    expect(serializedFailure).not.toContain(invalidRepositoryName);
     expect(serializedFailure).not.toContain("external-owner");
+    expect(serializedFailure).not.toContain("99");
+    expect(serializedFailure).not.toContain("cache key");
+    expect(serializedFailure).not.toContain(bodySourceId);
   });
 
   it("cached current external参照を毎run再検証してAI前に停止する", async () => {
@@ -13455,6 +13644,7 @@ describe("本番収集の接続", () => {
     if (itemCache == null) {
       throw new TypeError("external historyのitem cacheがありません");
     }
+    expect(itemCache.relationPublicBoundaryValidation).toEqual({ status: "not_required" });
     expect(itemCache.relationMutations).toContainEqual({
       status: "unknown",
       contentSourceId: buildSourceId("github_item_body", source.nodeId),
@@ -13906,7 +14096,7 @@ describe("本番収集の接続", () => {
     },
   );
 
-  it("fresh itemのrelation mutation公開境界違反をAI実行前に停止する", async () => {
+  it("fresh native relationの公開境界違反をAI実行前に停止する", async () => {
     const repository = createRepository(
       "R_fresh_relation_boundary",
       "fresh-relation-boundary",
@@ -13923,16 +14113,20 @@ describe("本番収集の接続", () => {
       observedAt,
       state: Object.freeze({ state: "open" }),
     });
-    const mutationTargetRepositoryName = "not-allowlisted-text";
+    const externalNativeDependency = createExternalNativeBlocker(source, {
+      state: "open",
+      repositoryArchived: false,
+      repositoryDisabled: false,
+    });
     fixture.openItems = [source];
     fixture.details.set(
       source.nodeId,
       Object.freeze({
         ...createIssueDetail({
           item: source,
-          body: `https://github.com/VOICEVOX/${mutationTargetRepositoryName}/issues/2`,
+          body: "本文",
           observedAt,
-          nativeDependencies: Object.freeze([]),
+          nativeDependencies: Object.freeze([externalNativeDependency]),
           duplicateComments: false,
         }),
         bodyUserContentEdits: Object.freeze({
@@ -13953,7 +14147,7 @@ describe("本番収集の接続", () => {
       externalRelationResponse: (request) =>
         createExternalRelationGraphqlResponse(request, {
           itemType: "issue",
-          visibility: "PUBLIC",
+          visibility: "PRIVATE",
           archived: false,
           disabled: false,
         }),
@@ -13972,7 +14166,7 @@ describe("本番収集の接続", () => {
     });
     expect(result.result.report.diagnostics).toContainEqual(
       expect.stringContaining(
-        `publicBoundaryViolationKind=cache_relation_mutation publicBoundaryViolationCount=1 sourceItemNodeId=${source.nodeId}`,
+        `publicBoundaryViolationKind=cache_relation_candidate publicBoundaryViolationCount=1 sourceItemNodeId=${source.nodeId}`,
       ),
     );
     expect(harness.codexExecutionCount()).toBe(0);
@@ -14084,6 +14278,7 @@ describe("本番収集の接続", () => {
     if (itemCache == null) {
       throw new TypeError("relation historyのitem cacheがありません");
     }
+    expect(itemCache.relationPublicBoundaryValidation).toEqual({ status: "not_required" });
     const bodyMutation = itemCache.relationMutations.find(
       (candidate) => candidate.contentSourceId === buildSourceId("github_item_body", source.nodeId),
     );

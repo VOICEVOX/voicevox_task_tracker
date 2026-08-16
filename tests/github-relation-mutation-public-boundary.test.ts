@@ -170,6 +170,7 @@ function sanitize(
     organization,
     allowlist,
     currentReferencesByContentSource,
+    currentBoundaryUnknownContentSourceIds: new Set(),
     verifiedExternalReferencesByContentSource,
     canonicalReferencesByReferenceKey: canonicalReferencesByReferenceKey(relationMutations),
     relationMutations,
@@ -395,6 +396,7 @@ describe("relation mutation公開境界sanitizer", () => {
         currentReferencesByContentSource: new Map([
           [contentSourceId, { status: "available", references: [externalReference] }],
         ]),
+        currentBoundaryUnknownContentSourceIds: new Set(),
         verifiedExternalReferencesByContentSource: new Map([
           [contentSourceId, [externalReference]],
         ]),
@@ -433,6 +435,7 @@ describe("relation mutation公開境界sanitizer", () => {
             { status: "available", references: relationMutation.currentReferences },
           ],
         ]),
+        currentBoundaryUnknownContentSourceIds: new Set(),
         verifiedExternalReferencesByContentSource: new Map([
           [contentSourceId, [externalReference]],
           [otherContentSourceId, []],
@@ -502,6 +505,7 @@ describe("relation mutation公開境界sanitizer", () => {
         currentReferencesByContentSource: new Map([
           [contentSourceId, { status: "available", references: [externalReference] }],
         ]),
+        currentBoundaryUnknownContentSourceIds: new Set(),
         verifiedExternalReferencesByContentSource: new Map([[contentSourceId, []]]),
         canonicalReferencesByReferenceKey: new Map(),
         relationMutations: [result],
@@ -522,6 +526,42 @@ describe("relation mutation公開境界sanitizer", () => {
     });
   });
 
+  it("current content boundary unknown sourceをraw-free unknownへ変換する", () => {
+    const externalReference = createReference("external-owner", "private-repository", "issue", 4);
+    const relationMutation = createAvailableResult({
+      currentReferences: [externalReference],
+      replayedReferences: [],
+      mutations: [],
+      unmatchedRemovals: [],
+      intervals: [],
+    });
+
+    const result = sanitizeRelationMutationsForPublicBoundary({
+      sourceItemNodeId,
+      organization,
+      allowlist,
+      currentReferencesByContentSource: new Map([
+        [contentSourceId, { status: "available", references: [externalReference] }],
+      ]),
+      currentBoundaryUnknownContentSourceIds: new Set([contentSourceId]),
+      verifiedExternalReferencesByContentSource: new Map([[contentSourceId, []]]),
+      canonicalReferencesByReferenceKey: new Map(),
+      relationMutations: [relationMutation],
+    });
+
+    expect(result).toEqual({
+      relationMutations: [
+        {
+          status: "unknown",
+          contentSourceId,
+          reason: "repository_public_boundary_unverified",
+          edit: { status: "unavailable" },
+        },
+      ],
+      unknownContentSourceCount: 1,
+    });
+  });
+
   it("current参照のunknownを空配列の証明として扱わない", () => {
     const relationMutation: RelationMutationResult = {
       status: "unknown",
@@ -536,6 +576,7 @@ describe("relation mutation公開境界sanitizer", () => {
         organization,
         allowlist,
         currentReferencesByContentSource: new Map([[contentSourceId, { status: "unknown" }]]),
+        currentBoundaryUnknownContentSourceIds: new Set(),
         verifiedExternalReferencesByContentSource: new Map([[contentSourceId, []]]),
         canonicalReferencesByReferenceKey: new Map(),
         relationMutations: [relationMutation],

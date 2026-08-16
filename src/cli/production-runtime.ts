@@ -447,6 +447,7 @@ type CollectedItems = Readonly<{
   trackingNotificationClassByNodeId: ReadonlyMap<GitHubNodeId, TrackingNotificationClass>;
   analysisNodeIds: ReadonlySet<GitHubNodeId>;
   changedNodeIds: ReadonlySet<GitHubNodeId>;
+  relationPublicBoundaryRevalidationNodeIds: ReadonlySet<GitHubNodeId>;
   externalReferences: readonly ExternalGhostNode[];
   relationCandidates: readonly RelationCandidate[];
   exactAiRelationNotificationHistory: ExactAiRelationNotificationHistory;
@@ -491,6 +492,7 @@ type RelationExpandedRuntimeCollection = FreshRuntimeCollectionAggregate &
     evaluatedAt: UtcIsoDateTime;
     relationCandidates: readonly RelationCandidate[];
     droppedRelationCandidateCount: number;
+    relationPublicBoundaryRevalidationNodeIds: ReadonlySet<GitHubNodeId>;
     tracking: RuntimeTrackingSelection;
   }>;
 
@@ -3288,9 +3290,11 @@ function sanitizeAnalysisSourceForPublicBoundary(
     ReadonlyMap<SourceId, readonly RelationTextReference[]>
   >,
   canonicalReferencesByReferenceKey: ReadonlyMap<string, RelationTextReference>,
+  currentBoundaryUnknownContentSourceIds: ReadonlySet<SourceId>,
 ): Readonly<{
   source: RuntimeItemAnalysisSource;
   unknownContentSourceCount: number;
+  requiresRelationPublicBoundaryRevalidation: boolean;
 }> {
   const verifiedExternalReferencesByContentSource =
     verifiedExternalReferencesBySourceItemNodeId.get(source.item.nodeId);
@@ -3310,6 +3314,7 @@ function sanitizeAnalysisSourceForPublicBoundary(
     organization,
     allowlist,
     currentReferencesByContentSource,
+    currentBoundaryUnknownContentSourceIds,
     verifiedExternalReferencesByContentSource,
     canonicalReferencesByReferenceKey,
     relationMutations: relationMutationResultsForSource(source),
@@ -3321,6 +3326,7 @@ function sanitizeAnalysisSourceForPublicBoundary(
         relationMutations: sanitized.relationMutations,
       }),
       unknownContentSourceCount: sanitized.unknownContentSourceCount,
+      requiresRelationPublicBoundaryRevalidation: currentBoundaryUnknownContentSourceIds.size > 0,
     });
   }
   const document = replaceGitHubItemCacheRelationData(
@@ -3339,6 +3345,7 @@ function sanitizeAnalysisSourceForPublicBoundary(
       }),
     }),
     unknownContentSourceCount: sanitized.unknownContentSourceCount,
+    requiresRelationPublicBoundaryRevalidation: false,
   });
 }
 
@@ -3392,6 +3399,168 @@ function isExactAllowlistedInternalOriginProof(
     node.repositoryOwner.toLowerCase() === proof.reference.repositoryOwner.toLowerCase() &&
     node.repositoryName.toLowerCase() === proof.reference.repositoryName.toLowerCase()
   );
+}
+
+const CONTENT_RELATION_PROVENANCES = new Set<RelationCandidate["provenance"]>([
+  "explicit_text",
+  "closing_keyword",
+  "checklist",
+]);
+
+type CurrentContentBoundaryUnknownSources = ReadonlyMap<GitHubNodeId, ReadonlySet<SourceId>>;
+
+function freshContentSourceIds(source: RuntimeItemAnalysisSource): ReadonlySet<SourceId> {
+  if (source.kind !== "fresh") {
+    return new Set();
+  }
+  return new Set([
+    source.detail.bodySourceId,
+    ...source.detail.comments.map((comment) => comment.sourceId),
+  ]);
+}
+
+function createBoundaryViolation(
+  sourceItemNodeId: GitHubNodeId,
+  violationKind: "cache_relation_candidate" | "cache_relation_mutation",
+): GitHubPublicBoundaryViolationError {
+  return new GitHubPublicBoundaryViolationError({
+    scope: "cache_item_relation",
+    sourceItemNodeId,
+    violationKind,
+    violationCount: 1,
+  });
+}
+
+function collectCurrentContentBoundaryUnknownSources(
+  analysisSources: readonly RuntimeItemAnalysisSource[],
+  relationCandidates: readonly RelationCandidate[],
+  resolution: ExternalRelationResolution,
+  organization: string,
+  allowlist: PublicRepositoryAllowlist,
+): CurrentContentBoundaryUnknownSources {
+  const unknownSourcesByNodeId = new Map<GitHubNodeId, Set<SourceId>>();
+  const unverifiedReferenceKeys = new Set<string>();
+  for (const source of analysisSources) {
+    const currentReferencesByContentSource = resolution.currentReferencesBySourceItemNodeId.get(
+      source.item.nodeId,
+    );
+    assertNonNullable(
+      currentReferencesByContentSource,
+      "relation mutationのsource別現在参照がありません",
+    );
+    const contentSourceIds = freshContentSourceIds(source);
+    for (const [contentSourceId, current] of currentReferencesByContentSource) {
+      if (current.status !== "available") {
+        continue;
+      }
+      const unknownReferenceKeys = new Set<string>();
+      for (const reference of current.references) {
+        if (isExactAllowlistedRelationReference(reference, organization, allowlist)) {
+          continue;
+        }
+        const key = createRelationMutationReferenceKey(reference);
+        const result = resolution.resultsByReferenceKey.get(key);
+        if (result == null) {
+          throw new TypeError("現在の外部relation参照の公開検証結果がありません");
+        }
+        if (result.status !== "public") {
+          unknownReferenceKeys.add(key);
+          unverifiedReferenceKeys.add(key);
+        }
+      }
+      if (unknownReferenceKeys.size === 0) {
+        continue;
+      }
+      if (source.kind !== "fresh" || !contentSourceIds.has(contentSourceId)) {
+        throw createBoundaryViolation(source.item.nodeId, "cache_relation_mutation");
+      }
+      unknownSourcesByNodeId.set(
+        source.item.nodeId,
+        new Set([...(unknownSourcesByNodeId.get(source.item.nodeId) ?? []), contentSourceId]),
+      );
+    }
+  }
+
+  for (const source of analysisSources) {
+    const unknownSources = unknownSourcesByNodeId.get(source.item.nodeId);
+    for (const candidate of candidatesForNode(source.item.nodeId, relationCandidates)) {
+      for (const node of relationNodes(candidate.relation)) {
+        const key = createRelationMutationReferenceKey(createRelationTextReference(node));
+        if (!unverifiedReferenceKeys.has(key)) {
+          continue;
+        }
+        if (
+          source.kind !== "fresh" ||
+          !CONTENT_RELATION_PROVENANCES.has(candidate.provenance) ||
+          unknownSources == null ||
+          candidate.sourceIds.some((sourceId) => !freshContentSourceIds(source).has(sourceId))
+        ) {
+          throw createBoundaryViolation(source.item.nodeId, "cache_relation_candidate");
+        }
+      }
+    }
+  }
+  return new Map(
+    [...unknownSourcesByNodeId.entries()].map(([nodeId, sourceIds]) => [nodeId, sourceIds]),
+  );
+}
+
+function maskCurrentContentBoundaryUnknownSources(
+  currentReferencesBySourceItemNodeId: ReadonlyMap<
+    GitHubNodeId,
+    ReadonlyMap<SourceId, CurrentRelationReferences>
+  >,
+  unknownSourcesByNodeId: CurrentContentBoundaryUnknownSources,
+): ReadonlyMap<GitHubNodeId, ReadonlyMap<SourceId, CurrentRelationReferences>> {
+  return new Map(
+    [...currentReferencesBySourceItemNodeId.entries()].map(
+      ([sourceItemNodeId, referencesByContentSource]) => {
+        const unknownSourceIds = unknownSourcesByNodeId.get(sourceItemNodeId);
+        return [
+          sourceItemNodeId,
+          new Map(
+            [...referencesByContentSource.entries()].map(([contentSourceId, references]) => [
+              contentSourceId,
+              unknownSourceIds?.has(contentSourceId)
+                ? Object.freeze({ status: "unknown" } satisfies CurrentRelationReferences)
+                : references,
+            ]),
+          ),
+        ];
+      },
+    ),
+  );
+}
+
+function sanitizeRelationCandidatesForCurrentContentBoundary(
+  relationCandidates: readonly RelationCandidate[],
+  unknownSourcesByNodeId: CurrentContentBoundaryUnknownSources,
+): readonly RelationCandidate[] {
+  const unknownSourceIds = new Set<SourceId>();
+  for (const sourceIds of unknownSourcesByNodeId.values()) {
+    for (const sourceId of sourceIds) {
+      unknownSourceIds.add(sourceId);
+    }
+  }
+  const sanitizedCandidates: RelationCandidate[] = [];
+  for (const candidate of relationCandidates) {
+    const unknownSourceCount = candidate.sourceIds.filter((sourceId) =>
+      unknownSourceIds.has(sourceId),
+    ).length;
+    if (unknownSourceCount === 0) {
+      sanitizedCandidates.push(candidate);
+      continue;
+    }
+    if (unknownSourceCount === candidate.sourceIds.length) {
+      continue;
+    }
+    const sourceItemNodeIdEntry = [...unknownSourcesByNodeId.entries()].find(([, sourceIds]) =>
+      candidate.sourceIds.some((sourceId) => sourceIds.has(sourceId)),
+    );
+    assertNonNullable(sourceItemNodeIdEntry, "関係候補のunknown source itemがありません");
+    throw createBoundaryViolation(sourceItemNodeIdEntry[0], "cache_relation_candidate");
+  }
+  return Object.freeze(sanitizedCandidates);
 }
 
 function assertRelationCandidateNodeMetadata(
@@ -7444,7 +7613,11 @@ function createItemCacheDocuments(
       deterministicRulesVersion: CURRENT_DETERMINISTIC_RULES_VERSIONS[observation.type],
       aiAnalysisStatus: aiAnalysis.status,
       lifecycle: cacheLifecycleForItem(enumeratedItem),
-      relationPublicBoundaryValidation: Object.freeze({ status: "not_required" }),
+      relationPublicBoundaryValidation: collection.relationPublicBoundaryRevalidationNodeIds.has(
+        observation.nodeId,
+      )
+        ? Object.freeze({ status: "required" })
+        : Object.freeze({ status: "not_required" }),
       relationCandidates: relationBoundaryInput.relationCandidates,
       relationMutations: relationBoundaryInput.relationMutations,
       replay: source.replay,
@@ -8449,6 +8622,7 @@ async function validateStaleDisplayExternalRelationCandidates(
       organization,
       allowlist,
       currentReferencesByContentSource,
+      currentBoundaryUnknownContentSourceIds: new Set<SourceId>(),
       verifiedExternalReferencesByContentSource,
       canonicalReferencesByReferenceKey: resolution.canonicalReferencesByReferenceKey,
       relationMutations: source.analysis.relationMutations,
@@ -8723,6 +8897,7 @@ function createExactAiRelationNotificationHistory(
     if (
       !trackedNodeIds.has(document.nodeId) ||
       staleRepositoryIds.has(document.repositoryId) ||
+      document.relationPublicBoundaryValidation.status === "required" ||
       document.aiCacheReference.status !== "available"
     ) {
       continue;
@@ -10173,8 +10348,23 @@ async function collectRelationExpandedItems(
     );
     const discoveredRelationCandidates = extractedRelations.candidates;
     const aggregate = extractedRelations.aggregate;
-    const allowlistedCurrentRelationGroups = collectAllowlistedCurrentRelationReferenceGroups(
+    const currentContentBoundaryUnknownSources = collectCurrentContentBoundaryUnknownSources(
+      aggregate.analysisSources,
+      discoveredRelationCandidates,
+      extractedRelations.externalRelationResolution,
+      configuration.config.organization,
+      repositoryInventory.allowlist,
+    );
+    const sanitizedRelationCandidates = sanitizeRelationCandidatesForCurrentContentBoundary(
+      discoveredRelationCandidates,
+      currentContentBoundaryUnknownSources,
+    );
+    const currentReferencesForExpansion = maskCurrentContentBoundaryUnknownSources(
       extractedRelations.externalRelationResolution.currentReferencesBySourceItemNodeId,
+      currentContentBoundaryUnknownSources,
+    );
+    const allowlistedCurrentRelationGroups = collectAllowlistedCurrentRelationReferenceGroups(
+      currentReferencesForExpansion,
       extractedRelations.externalRelationResolution.canonicalReferencesByReferenceKey,
       aggregate,
       configuration.config.organization,
@@ -10226,13 +10416,10 @@ async function collectRelationExpandedItems(
       repositoryInventory.allowlist,
     );
     const completedRelationCandidates = completeRelationCandidates(
-      discoveredRelationCandidates,
+      sanitizedRelationCandidates,
       collectedCandidateNodeIds,
     );
-    const exactAiRefreshes = exactAiRefreshNodeIds(
-      aggregate,
-      completedRelationCandidates.candidates,
-    );
+    const exactAiRefreshes = exactAiRefreshNodeIds(aggregate, sanitizedRelationCandidates);
     if (exactAiRefreshes.size > 0) {
       const inputsByRepositoryId = new Map<
         GitHubRepositoryId,
@@ -10277,13 +10464,13 @@ async function collectRelationExpandedItems(
       repositoryInventory,
       aggregate.enumeratedItems,
       aggregate.observedItems,
-      completedRelationCandidates.candidates,
+      sanitizedRelationCandidates,
     );
     const trackingState = relationExpansionTrackingState(tracking);
     const nextRequests = planRelationExpansion({
       collectedCandidateNodeIds,
       trackingRootNodeIds: trackingState.trackingRootNodeIds,
-      relationCandidates: discoveredRelationCandidates,
+      relationCandidates: sanitizedRelationCandidates,
       nativeDepthByNodeId: trackingState.nativeDepthByNodeId,
       requestedNodeIds,
       maximumNativeDepth: configuration.config.tracking.autoInclude.nativeRelations
@@ -10292,7 +10479,10 @@ async function collectRelationExpandedItems(
     });
     if (nextRequests.length === 0) {
       const diagnostics = [...aggregate.diagnostics];
+      const relationPublicBoundaryRevalidationNodeIds = new Set<GitHubNodeId>();
       const analysisSources = aggregate.analysisSources.map((source) => {
+        const currentBoundaryUnknownContentSourceIds =
+          currentContentBoundaryUnknownSources.get(source.item.nodeId) ?? new Set<SourceId>();
         const sanitized = sanitizeAnalysisSourceForPublicBoundary(
           source,
           completedRelationCandidates.candidates,
@@ -10302,7 +10492,11 @@ async function collectRelationExpandedItems(
           extractedRelations.externalRelationResolution
             .verifiedExternalReferencesBySourceItemNodeId,
           extractedRelations.externalRelationResolution.canonicalReferencesByReferenceKey,
+          currentBoundaryUnknownContentSourceIds,
         );
+        if (sanitized.requiresRelationPublicBoundaryRevalidation) {
+          relationPublicBoundaryRevalidationNodeIds.add(source.item.nodeId);
+        }
         if (sanitized.unknownContentSourceCount > 0) {
           diagnostics.push(
             `relationMutationUnknown sourceItemNodeId=${source.item.nodeId} reason=repository_public_boundary_unverified count=${sanitized.unknownContentSourceCount.toString()}`,
@@ -10333,11 +10527,12 @@ async function collectRelationExpandedItems(
         evaluatedAt,
         relationCandidates: completedRelationCandidates.candidates,
         droppedRelationCandidateCount: completedRelationCandidates.droppedCount,
+        relationPublicBoundaryRevalidationNodeIds,
         tracking,
       });
     }
     const expansionTargetsByNodeId = relationExpansionTargetsByNodeId(
-      discoveredRelationCandidates,
+      sanitizedRelationCandidates,
       repositoryInventory.allowlist,
     );
     const inputsByRepositoryId = new Map<
@@ -10659,6 +10854,7 @@ async function collectProductionItems(
       trackingNotificationClassByNodeId,
       analysisNodeIds,
       changedNodeIds,
+      relationPublicBoundaryRevalidationNodeIds: expanded.relationPublicBoundaryRevalidationNodeIds,
       externalReferences: tracking.result.ghostNodes,
       relationCandidates,
       exactAiRelationNotificationHistory,

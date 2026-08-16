@@ -238,6 +238,7 @@ type RelationMutationPublicBoundarySanitizerInput = Readonly<{
         status: "unknown";
       }>
   >;
+  currentBoundaryUnknownContentSourceIds: ReadonlySet<SourceId>;
   verifiedExternalReferencesByContentSource: ReadonlyMap<
     SourceId,
     readonly RelationTextReference[]
@@ -424,7 +425,13 @@ function validateRelationMutationsForPublicBoundary(
   ) {
     throw new TypeError("relation mutationの現在参照sourceが一致しません");
   }
+  for (const contentSourceId of input.currentBoundaryUnknownContentSourceIds) {
+    if (!mutationContentSourceIds.has(contentSourceId)) {
+      throw new TypeError("relation mutationの現在境界unknown sourceが一致しません");
+    }
+  }
   const currentViolationKeys = new Set<string>();
+  const unknownContentSourceIds = new Set<AvailableRelationMutationResult["contentSourceId"]>();
   for (const result of input.relationMutations) {
     const currentReferences = input.currentReferencesByContentSource.get(result.contentSourceId);
     if (currentReferences == null) {
@@ -463,7 +470,11 @@ function validateRelationMutationsForPublicBoundary(
           reference,
         )
       ) {
-        currentViolationKeys.add(createRelationMutationReferenceKey(reference));
+        if (input.currentBoundaryUnknownContentSourceIds.has(result.contentSourceId)) {
+          unknownContentSourceIds.add(result.contentSourceId);
+        } else {
+          currentViolationKeys.add(createRelationMutationReferenceKey(reference));
+        }
       }
     }
   }
@@ -476,7 +487,6 @@ function validateRelationMutationsForPublicBoundary(
     });
   }
 
-  const unknownContentSourceIds = new Set<AvailableRelationMutationResult["contentSourceId"]>();
   for (const result of input.relationMutations) {
     if (result.status !== "available") {
       continue;
@@ -518,6 +528,9 @@ export function sanitizeRelationMutationsForPublicBoundary(
   const relationMutations = input.relationMutations.map((result) => {
     if (result.status !== "available") {
       return result;
+    }
+    if (input.currentBoundaryUnknownContentSourceIds.has(result.contentSourceId)) {
+      return unknownRelationMutationResult(result.contentSourceId);
     }
     const verifiedExternalReferences = input.verifiedExternalReferencesByContentSource.get(
       result.contentSourceId,
