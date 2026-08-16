@@ -166,6 +166,7 @@ describe("GitHub GraphQLクエリ", () => {
 
   it("relation参照queryは本文やコメントを取得しない", () => {
     for (const { query } of relationReferenceQueryCases) {
+      expect(query).toContain("repository(owner: $owner, name: $name, followRenames: true)");
       expect(query).not.toContain("body");
       expect(query).not.toContain("comments");
       expect(query).not.toContain("userContentEdits");

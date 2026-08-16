@@ -212,6 +212,109 @@ describe("GitHub external relation reference adapter", () => {
 
   it.each([
     {
+      name: "Issueのowner変更",
+      itemType: "issue",
+      reference: issueReference,
+      repositoryState: {
+        ...publicRepository,
+        owner: "canonical-owner",
+      },
+    },
+    {
+      name: "Issueのrepository name変更",
+      itemType: "issue",
+      reference: issueReference,
+      repositoryState: {
+        ...publicRepository,
+        name: "canonical-repository",
+      },
+    },
+    {
+      name: "Issueのownerとrepository name変更",
+      itemType: "issue",
+      reference: issueReference,
+      repositoryState: {
+        ...publicRepository,
+        owner: "canonical-owner",
+        name: "canonical-repository",
+      },
+    },
+    {
+      name: "Pull Requestのowner変更",
+      itemType: "pull_request",
+      reference: pullRequestReference,
+      repositoryState: {
+        ...publicRepository,
+        owner: "canonical-owner",
+      },
+    },
+    {
+      name: "Pull Requestのrepository name変更",
+      itemType: "pull_request",
+      reference: pullRequestReference,
+      repositoryState: {
+        ...publicRepository,
+        name: "canonical-repository",
+      },
+    },
+    {
+      name: "Pull Requestのownerとrepository name変更",
+      itemType: "pull_request",
+      reference: pullRequestReference,
+      repositoryState: {
+        ...publicRepository,
+        owner: "canonical-owner",
+        name: "canonical-repository",
+      },
+    },
+  ] satisfies readonly Readonly<{
+    name: string;
+    itemType: ItemType;
+    reference: RelationTextReference;
+    repositoryState: RepositoryState;
+  }>[])(
+    "$nameはcanonical metadataで公開として返す",
+    async ({ itemType, reference, repositoryState }) => {
+      const item = createItem(itemType, reference.number, repositoryState);
+      const mock = createGraphqlMock(
+        itemType === "issue" ? createResponse(item, null) : createResponse(null, item),
+      );
+
+      const result = await resolveGitHubRelationReference({
+        reference,
+        graphql: mock.graphql,
+      });
+
+      expect(result).toMatchObject({
+        status: "public",
+        item: {
+          repositoryId: "R_voicevox_core",
+          repositoryOwner: repositoryState.owner,
+          repositoryName: repositoryState.name,
+          type: itemType,
+          number: reference.number,
+          url:
+            "https://github.com/" +
+            repositoryState.owner +
+            "/" +
+            repositoryState.name +
+            "/" +
+            (itemType === "issue" ? "issues" : "pull") +
+            "/" +
+            reference.number.toString(),
+        },
+      });
+      expect(mock.calls).toHaveLength(1);
+      expect(mock.calls[0]?.variables).toEqual({
+        owner: reference.repositoryOwner,
+        name: reference.repositoryName,
+        number: reference.number,
+      });
+    },
+  );
+
+  it.each([
+    {
       name: "repositoryがnull",
       response: { repository: null },
       reference: issueReference,
@@ -265,6 +368,45 @@ describe("GitHub external relation reference adapter", () => {
       ),
       reference: issueReference,
     },
+    {
+      name: "canonical owner/nameのprivate repository",
+      response: createResponse(
+        createItem("issue", issueReference.number, {
+          ...publicRepository,
+          visibility: "PRIVATE",
+          owner: "canonical-owner",
+          name: "canonical-repository",
+        }),
+        null,
+      ),
+      reference: issueReference,
+    },
+    {
+      name: "canonical owner/nameのarchived repository",
+      response: createResponse(
+        createItem("issue", issueReference.number, {
+          ...publicRepository,
+          isArchived: true,
+          owner: "canonical-owner",
+          name: "canonical-repository",
+        }),
+        null,
+      ),
+      reference: issueReference,
+    },
+    {
+      name: "canonical owner/nameのdisabled repository",
+      response: createResponse(
+        createItem("issue", issueReference.number, {
+          ...publicRepository,
+          isDisabled: true,
+          owner: "canonical-owner",
+          name: "canonical-repository",
+        }),
+        null,
+      ),
+      reference: issueReference,
+    },
   ] satisfies readonly Readonly<{
     name: string;
     response: Readonly<Record<string, unknown>>;
@@ -291,17 +433,46 @@ describe("GitHub external relation reference adapter", () => {
     expect(result).toEqual({ status: "unverified" });
   });
 
-  it("指定型と応答型が一致しない参照は未検証として返す", async () => {
-    const mock = createGraphqlMock(
-      createResponse(null, createItem("pull_request", issueReference.number, publicRepository)),
+  it.each([
+    {
+      name: "Issue要求にPull Requestだけが返る",
+      reference: issueReference,
+      response: createResponse(
+        null,
+        createItem("pull_request", issueReference.number, publicRepository),
+      ),
+    },
+    {
+      name: "Pull Request要求にIssueだけが返る",
+      reference: pullRequestReference,
+      response: createResponse(
+        createItem("issue", pullRequestReference.number, publicRepository),
+        null,
+      ),
+    },
+  ] satisfies readonly Readonly<{
+    name: string;
+    reference: RelationTextReference;
+    response: Readonly<Record<string, unknown>>;
+  }>[])("$nameの場合はcause付きで失敗する", async ({ reference, response }) => {
+    const mock = createGraphqlMock(response);
+
+    const error = await captureError(
+      resolveGitHubRelationReference({
+        reference,
+        graphql: mock.graphql,
+      }),
     );
 
-    const result = await resolveGitHubRelationReference({
-      reference: issueReference,
-      graphql: mock.graphql,
-    });
-
-    expect(result).toEqual({ status: "unverified" });
+    expect(error).toBeInstanceOf(GitHubResponseValidationError);
+    if (!(error instanceof GitHubResponseValidationError)) {
+      throw new Error("GitHub response validation errorではありません");
+    }
+    expect(error.cause).toBeInstanceOf(TypeError);
+    if (!(error.cause instanceof TypeError)) {
+      throw new Error("GitHub response validation errorのcauseがTypeErrorではありません");
+    }
+    expect(error.cause.message).toBe("要求した項目種別と応答項目種別が一致しません");
   });
 
   it("要求したGraphQL fieldが欠落した応答はcause付きで失敗する", async () => {
@@ -368,39 +539,10 @@ describe("GitHub external relation reference adapter", () => {
     expect(error.cause).toBeInstanceOf(TypeError);
   });
 
-  it.each([
-    {
-      name: "owner不一致",
-      response: createResponse(
-        createItem("issue", issueReference.number, {
-          ...publicRepository,
-          owner: "other-owner",
-        }),
-        null,
-      ),
-    },
-    {
-      name: "repository name不一致",
-      response: createResponse(
-        createItem("issue", issueReference.number, {
-          ...publicRepository,
-          name: "other-repository",
-        }),
-        null,
-      ),
-    },
-    {
-      name: "number不一致",
-      response: createResponse(
-        createItem("issue", issueReference.number + 1, publicRepository),
-        null,
-      ),
-    },
-  ] satisfies readonly Readonly<{
-    name: string;
-    response: Readonly<Record<string, unknown>>;
-  }>[])("$nameはcause付きで失敗する", async ({ response }) => {
-    const mock = createGraphqlMock(response);
+  it("number不一致はfield名を示すcause付きで失敗する", async () => {
+    const mock = createGraphqlMock(
+      createResponse(createItem("issue", issueReference.number + 1, publicRepository), null),
+    );
 
     const error = await captureError(
       resolveGitHubRelationReference({
@@ -414,6 +556,10 @@ describe("GitHub external relation reference adapter", () => {
       throw new Error("GitHub response validation errorではありません");
     }
     expect(error.cause).toBeInstanceOf(TypeError);
+    if (!(error.cause instanceof TypeError)) {
+      throw new Error("GitHub response validation errorのcauseがTypeErrorではありません");
+    }
+    expect(error.cause.message).toBe("応答項目の番号が要求値と一致しません");
     expect(error.message).toContain("GitHubの関係参照");
     expect(error.message).not.toContain("GitHub relation reference");
     expect(error.message).not.toContain("VOICEVOX");

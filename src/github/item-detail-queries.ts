@@ -728,7 +728,7 @@ export function createGitHubRelationReferenceQuery(
   }
   return appendRequiredFragments(`
   query GitHubRelationReference($owner: String!, $name: String!, $number: Int!) {
-    repository(owner: $owner, name: $name) {${itemFields}
+    repository(owner: $owner, name: $name, followRenames: true) {${itemFields}
     }
   }
 `);

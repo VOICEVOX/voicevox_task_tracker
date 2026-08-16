@@ -86,24 +86,26 @@ function selectResponseItem(
   assertResponseFieldType(issue, "Issue");
   assertResponseFieldType(pullRequest, "PullRequest");
   if (issue != null) {
-    return itemType === "pull_request" ? null : issue;
+    if (itemType === "pull_request") {
+      throw createResponseValidationError("要求した項目種別と応答項目種別が一致しません");
+    }
+    return issue;
   }
   if (pullRequest != null) {
-    return itemType === "issue" ? null : pullRequest;
+    if (itemType === "issue") {
+      throw createResponseValidationError("要求した項目種別と応答項目種別が一致しません");
+    }
+    return pullRequest;
   }
   return null;
 }
 
-function assertReferenceMatchesItem(
+function assertReferenceNumberMatchesItem(
   reference: RelationTextReference,
   item: RawReferencedItem,
 ): void {
-  if (
-    item.repository.owner.login.toLowerCase() !== reference.repositoryOwner.toLowerCase() ||
-    item.repository.name.toLowerCase() !== reference.repositoryName.toLowerCase() ||
-    item.number !== reference.number
-  ) {
-    throw createResponseValidationError("要求した参照と応答metadataが一致しません");
+  if (item.number !== reference.number) {
+    throw createResponseValidationError("応答項目の番号が要求値と一致しません");
   }
 }
 
@@ -115,7 +117,7 @@ function normalizePublicResponse(
   reference: RelationTextReference,
   item: RawReferencedItem,
 ): GitHubRelationReferenceResult {
-  assertReferenceMatchesItem(reference, item);
+  assertReferenceNumberMatchesItem(reference, item);
   if (
     item.repository.visibility !== "PUBLIC" ||
     item.repository.isArchived ||
