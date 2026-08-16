@@ -15,6 +15,7 @@ const relationReferenceResponseSchema = z.object({
     .object({
       issue: referencedItemSchema.nullable().optional(),
       pullRequest: referencedItemSchema.nullable().optional(),
+      issueOrPullRequest: referencedItemSchema.nullable().optional(),
     })
     .nullable(),
 });
@@ -52,8 +53,9 @@ function assertResponseFields(
   }
   const hasIssue = Object.hasOwn(repository, "issue");
   const hasPullRequest = Object.hasOwn(repository, "pullRequest");
+  const hasIssueOrPullRequest = Object.hasOwn(repository, "issueOrPullRequest");
   if (
-    (itemType == null && (!hasIssue || !hasPullRequest)) ||
+    (itemType == null && !hasIssueOrPullRequest) ||
     (itemType === "issue" && !hasIssue) ||
     (itemType === "pull_request" && !hasPullRequest)
   ) {
@@ -77,6 +79,9 @@ function selectResponseItem(
   const repository = response.repository;
   if (repository == null) {
     return null;
+  }
+  if (itemType == null) {
+    return repository.issueOrPullRequest ?? null;
   }
   const issue = repository.issue;
   const pullRequest = repository.pullRequest;

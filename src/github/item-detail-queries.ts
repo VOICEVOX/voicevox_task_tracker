@@ -718,10 +718,7 @@ export function createGitHubRelationReferenceQuery(
       break;
     case null:
       itemFields = `
-    issue(number: $number) {
-      ...DetailReferencedItemFields
-    }
-    pullRequest(number: $number) {
+    issueOrPullRequest(number: $number) {
       ...DetailReferencedItemFields
     }`;
       break;

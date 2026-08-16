@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  GitHubGraphQLResponseError,
   GitHubResponseSchemaValidationError,
   GitHubResponseValidationError,
   resolveGitHubRelationReference,
@@ -94,6 +95,16 @@ function createResponse(
   };
 }
 
+function createUnionResponse(
+  item: Readonly<Record<string, unknown>> | null,
+): Readonly<Record<string, unknown>> {
+  return {
+    repository: {
+      issueOrPullRequest: item,
+    },
+  };
+}
+
 function createGraphqlMock(response: Readonly<Record<string, unknown>>): Readonly<{
   graphql: Graphql;
   calls: GraphqlCall[];
@@ -179,9 +190,9 @@ describe("GitHub external relation reference adapter", () => {
     expect(mock.calls[0]?.query).not.toContain("issue(number: $number)");
   });
 
-  it("型不明の参照はIssueとPull Requestを照合して解決する", async () => {
+  it("型不明の参照をunionのIssueとして解決する", async () => {
     const mock = createGraphqlMock(
-      createResponse(createItem("issue", unknownReference.number, publicRepository), null),
+      createUnionResponse(createItem("issue", unknownReference.number, publicRepository)),
     );
 
     const result = await resolveGitHubRelationReference({
@@ -190,13 +201,14 @@ describe("GitHub external relation reference adapter", () => {
     });
 
     expect(result).toMatchObject({ status: "public", item: { type: "issue", number: 1190 } });
-    expect(mock.calls[0]?.query).toContain("issue(number: $number)");
-    expect(mock.calls[0]?.query).toContain("pullRequest(number: $number)");
+    expect(mock.calls[0]?.query).toContain("issueOrPullRequest(number: $number)");
+    expect(mock.calls[0]?.query).not.toContain("issue(number: $number)");
+    expect(mock.calls[0]?.query).not.toContain("pullRequest(number: $number)");
   });
 
-  it("型不明の参照から公開Pull Requestを解決する", async () => {
+  it("型不明の参照をunionのPull Requestとして解決する", async () => {
     const mock = createGraphqlMock(
-      createResponse(null, createItem("pull_request", unknownReference.number, publicRepository)),
+      createUnionResponse(createItem("pull_request", unknownReference.number, publicRepository)),
     );
 
     const result = await resolveGitHubRelationReference({
@@ -407,6 +419,36 @@ describe("GitHub external relation reference adapter", () => {
       ),
       reference: issueReference,
     },
+    {
+      name: "型不明のprivate repository",
+      response: createUnionResponse(
+        createItem("issue", unknownReference.number, {
+          ...publicRepository,
+          visibility: "PRIVATE",
+        }),
+      ),
+      reference: unknownReference,
+    },
+    {
+      name: "型不明のarchived repository",
+      response: createUnionResponse(
+        createItem("issue", unknownReference.number, {
+          ...publicRepository,
+          isArchived: true,
+        }),
+      ),
+      reference: unknownReference,
+    },
+    {
+      name: "型不明のdisabled repository",
+      response: createUnionResponse(
+        createItem("issue", unknownReference.number, {
+          ...publicRepository,
+          isDisabled: true,
+        }),
+      ),
+      reference: unknownReference,
+    },
   ] satisfies readonly Readonly<{
     name: string;
     response: Readonly<Record<string, unknown>>;
@@ -422,8 +464,8 @@ describe("GitHub external relation reference adapter", () => {
     expect(result).toEqual({ status: "unverified" });
   });
 
-  it("型不明の参照でIssueとPull Requestがともにnullなら未検証として返す", async () => {
-    const mock = createGraphqlMock(createResponse(null, null));
+  it("型不明unionの項目がnullなら未検証として返す", async () => {
+    const mock = createGraphqlMock(createUnionResponse(null));
 
     const result = await resolveGitHubRelationReference({
       reference: unknownReference,
@@ -492,13 +534,8 @@ describe("GitHub external relation reference adapter", () => {
     expect(error.cause).toBeInstanceOf(TypeError);
   });
 
-  it("型不明の応答でIssueとPull Requestが同時に返る場合はcause付きで失敗する", async () => {
-    const mock = createGraphqlMock(
-      createResponse(
-        createItem("issue", unknownReference.number, publicRepository),
-        createItem("pull_request", unknownReference.number, publicRepository),
-      ),
-    );
+  it("型不明queryのunion fieldが欠落した応答はcause付きで失敗する", async () => {
+    const mock = createGraphqlMock({ repository: {} });
 
     const error = await captureError(
       resolveGitHubRelationReference({
@@ -590,6 +627,35 @@ describe("GitHub external relation reference adapter", () => {
       throw new Error("GitHub response validation errorではありません");
     }
     expect(error.cause).toBeInstanceOf(TypeError);
+  });
+
+  it("GraphQLのNOT_FOUNDを未検証へ変換せずそのまま伝播する", async () => {
+    const upstreamError = new GitHubGraphQLResponseError(
+      {
+        operationName: "GitHubRelationReference",
+        queryHash: "0123456789abcdef",
+        errorCount: 1,
+        errors: [
+          {
+            path: ["repository", "pullRequest"],
+            type: "NOT_FOUND",
+          },
+        ],
+      },
+      {
+        cause: new Error("GraphQL NOT_FOUND"),
+      },
+    );
+    const graphql: Graphql = () => Promise.reject(upstreamError);
+
+    const error = await captureError(
+      resolveGitHubRelationReference({
+        reference: unknownReference,
+        graphql,
+      }),
+    );
+
+    expect(error).toBe(upstreamError);
   });
 
   it("GraphQLの取得失敗は未検証へ変換せずそのまま伝播する", async () => {

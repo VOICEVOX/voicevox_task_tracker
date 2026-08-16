@@ -173,6 +173,14 @@ describe("GitHub GraphQLクエリ", () => {
     }
   });
 
+  it("型不明のrelation参照queryはunion fieldだけを取得する", () => {
+    const query = createGitHubRelationReferenceQuery(null);
+
+    expect(query).toContain("issueOrPullRequest(number: $number)");
+    expect(query).not.toContain("issue(number: $number)");
+    expect(query).not.toContain("pullRequest(number: $number)");
+  });
+
   it("review threadの初期取得件数を制限し、次ページqueryで続きを取得する", () => {
     for (const { query } of itemDetailQueryCases) {
       expect(query).toContain("reviewThreads(first: 19)");
