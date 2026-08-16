@@ -23,6 +23,7 @@ import {
 import {
   CacheDocumentSemanticError,
   createCacheTerminalExpiry,
+  createCacheDocument,
   type AiLatestImportanceCacheDocument,
   type GitHubItemCacheDocument,
   type GitHubRepositoryCacheDocument,
@@ -31,6 +32,7 @@ import { StatePublicSafetyError, StateZodValidationError } from "../src/persiste
 import { MemoryStateBranchAdapter } from "../src/persistence/memory-state-branch-adapter.js";
 import {
   CacheOnlyPersistenceSession,
+  validateCacheOnlyPersistenceInput,
   type CacheOnlyPersistenceConfiguration,
   type CacheOnlyPersistenceInput,
 } from "../src/persistence/cache-only-session.js";
@@ -1018,6 +1020,86 @@ describe("cache-only永続化session", () => {
       violationKind: "cache_relation_candidate_and_mutation",
       violationCount: 2,
     });
+  });
+
+  it("production pendingのcache loadだけはresolver前のrelation aliasを保持する", async () => {
+    const cleanItem = createOpenItemCache();
+    const candidate = cleanItem.relationCandidates[0];
+    if (candidate == null) {
+      throw new Error("organization relation candidateがありません");
+    }
+    if (candidate.relation.type !== "unclassified") {
+      throw new Error("organization relation candidateの種別が不正です");
+    }
+    const legacyRepositoryName = "cache-only-fixture-renamed";
+    const pendingItem = {
+      ...cleanItem,
+      relationCandidates: [
+        {
+          ...candidate,
+          relation: {
+            ...candidate.relation,
+            referenced: {
+              ...candidate.relation.referenced,
+              repositoryName: legacyRepositoryName,
+              url: `https://github.com/VOICEVOX/${legacyRepositoryName}/issues/1`,
+            },
+          },
+        },
+      ],
+      relationMutations: [createRelationMutationResult("VOICEVOX", legacyRepositoryName)],
+    };
+    const input = {
+      ...createPersistenceInput(retainedAt),
+      repositoryCaches: [createRepositoryCacheWithOpenItem()],
+      itemCaches: [createItemCache(), cleanItem],
+    };
+    const adapter = new MemoryStateBranchAdapter();
+    const session = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
+    await session.persist(input);
+    const head = await adapter.resolveHead(configuration.branch);
+    if (head.status !== "present") {
+      throw new Error("cache-only branchを作成できません");
+    }
+    await adapter.commit({
+      branch: configuration.branch,
+      expectedHead: head,
+      updates: [
+        {
+          path: documentPath(configuration.itemCacheDirectory, "github_item", openItemNodeId),
+          bytes: new TextEncoder().encode(serializeCanonicalJson(createCacheDocument(pendingItem))),
+        },
+      ],
+      deletions: [],
+      message: "production pending relation alias fixture",
+      committedAt: retainedAt,
+    });
+
+    const loadedSession = await CacheOnlyPersistenceSession.open(adapter, configuration, allowlist);
+    const loaded = await loadedSession.load({
+      evaluatedAt: retainedAt,
+      knownSecrets: [],
+    });
+    if (loaded.status !== "available") {
+      throw new Error("production pending cacheを読み取れません");
+    }
+    expect(loaded.itemCaches).toContainEqual(pendingItem);
+    await expect(
+      loadedSession.persist({
+        ...input,
+        itemCaches: [createItemCache(), pendingItem],
+      }),
+    ).rejects.toThrow(GitHubPublicBoundaryViolationError);
+    await expect(loadedSession.persist(input)).resolves.toBeDefined();
+    expect(() =>
+      validateCacheOnlyPersistenceInput(
+        {
+          ...input,
+          itemCaches: [createItemCache(), pendingItem],
+        },
+        allowlist,
+      ),
+    ).toThrow(GitHubPublicBoundaryViolationError);
   });
 
   it("allowlist organization外のexternal public relation mutationは公開判定せず保持する", async () => {

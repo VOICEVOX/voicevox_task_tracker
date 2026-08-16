@@ -242,8 +242,14 @@ type RelationMutationPublicBoundarySanitizerInput = Readonly<{
     SourceId,
     readonly RelationTextReference[]
   >;
+  canonicalReferencesByReferenceKey: ReadonlyMap<string, RelationTextReference>;
   relationMutations: readonly RelationMutationResult[];
 }>;
+
+type RelationMutationPublicBoundaryValidationInput = Omit<
+  RelationMutationPublicBoundarySanitizerInput,
+  "canonicalReferencesByReferenceKey"
+>;
 
 type AvailableRelationMutationResult = Extract<RelationMutationResult, { status: "available" }>;
 
@@ -256,9 +262,126 @@ function isRelationPublicBoundaryViolation(
   reference: RelationMutationReference,
 ): boolean {
   if (reference.repositoryOwner.toLowerCase() === organization.toLowerCase()) {
-    return !isAllowlistedRepository(allowlist, reference.repositoryOwner, reference.repositoryName);
+    if (isAllowlistedRepository(allowlist, reference.repositoryOwner, reference.repositoryName)) {
+      return false;
+    }
   }
   return !verifiedExternalReferenceKeys.has(createRelationMutationReferenceKey(reference));
+}
+
+function canonicalRelationMutationReference(
+  reference: RelationMutationReference,
+  organization: string,
+  allowlist: PublicRepositoryAllowlist,
+  canonicalReferencesByReferenceKey: ReadonlyMap<string, RelationTextReference>,
+): RelationMutationReference {
+  const canonicalReference = canonicalReferencesByReferenceKey.get(
+    createRelationMutationReferenceKey(reference),
+  );
+  if (canonicalReference != null) {
+    return canonicalReference;
+  }
+  if (
+    reference.repositoryOwner.toLowerCase() === organization.toLowerCase() &&
+    isAllowlistedRepository(allowlist, reference.repositoryOwner, reference.repositoryName)
+  ) {
+    return reference;
+  }
+  throw new TypeError("relation mutationのcanonical参照証明がありません");
+}
+
+function canonicalizeRelationMutationResult(
+  result: AvailableRelationMutationResult,
+  organization: string,
+  allowlist: PublicRepositoryAllowlist,
+  canonicalReferencesByReferenceKey: ReadonlyMap<string, RelationTextReference>,
+): AvailableRelationMutationResult {
+  const currentReferences = Object.freeze(
+    result.currentReferences.map((reference) =>
+      canonicalRelationMutationReference(
+        reference,
+        organization,
+        allowlist,
+        canonicalReferencesByReferenceKey,
+      ),
+    ),
+  );
+  const replayedReferences = Object.freeze(
+    result.replayedReferences.map((reference) =>
+      canonicalRelationMutationReference(
+        reference,
+        organization,
+        allowlist,
+        canonicalReferencesByReferenceKey,
+      ),
+    ),
+  );
+  const mutations = Object.freeze(
+    result.mutations.map((mutation) =>
+      Object.freeze({
+        ...mutation,
+        relation: canonicalRelationMutationReference(
+          mutation.relation,
+          organization,
+          allowlist,
+          canonicalReferencesByReferenceKey,
+        ),
+      }),
+    ),
+  );
+  const unmatchedRemovals = Object.freeze(
+    result.unmatchedRemovals.map((mutation) =>
+      Object.freeze({
+        ...mutation,
+        relation: canonicalRelationMutationReference(
+          mutation.relation,
+          organization,
+          allowlist,
+          canonicalReferencesByReferenceKey,
+        ),
+      }),
+    ),
+  );
+  if (result.temporalKnowledge.status === "exact") {
+    return Object.freeze({
+      status: "available",
+      contentSourceId: result.contentSourceId,
+      currentReferences,
+      replayedReferences,
+      consistency: "consistent",
+      temporalKnowledge: Object.freeze({
+        status: "exact",
+        intervals: Object.freeze(
+          result.temporalKnowledge.intervals.map((interval) =>
+            Object.freeze({
+              ...interval,
+              relation: canonicalRelationMutationReference(
+                interval.relation,
+                organization,
+                allowlist,
+                canonicalReferencesByReferenceKey,
+              ),
+            }),
+          ),
+        ),
+      }),
+      mutations,
+      unmatchedRemovals,
+    });
+  }
+  return Object.freeze({
+    status: "available",
+    contentSourceId: result.contentSourceId,
+    currentReferences,
+    replayedReferences,
+    consistency: result.consistency,
+    temporalKnowledge: Object.freeze({
+      status: "unknown",
+      reason: result.temporalKnowledge.reason,
+    }),
+    mutations,
+    unmatchedRemovals,
+  });
 }
 
 function relationMutationHistoryReferences(
@@ -286,13 +409,9 @@ function unknownRelationMutationResult(
   });
 }
 
-/** relation mutationの現在違反を拒否し、履歴だけの未証明参照をunknownへ変換する。 */
-export function sanitizeRelationMutationsForPublicBoundary(
-  input: RelationMutationPublicBoundarySanitizerInput,
-): Readonly<{
-  relationMutations: readonly RelationMutationResult[];
-  unknownContentSourceCount: number;
-}> {
+function validateRelationMutationsForPublicBoundary(
+  input: RelationMutationPublicBoundaryValidationInput,
+): Readonly<{ unknownContentSourceCount: number }> {
   const mutationContentSourceIds = new Set(
     input.relationMutations.map((result) => result.contentSourceId),
   );
@@ -358,6 +477,44 @@ export function sanitizeRelationMutationsForPublicBoundary(
   }
 
   const unknownContentSourceIds = new Set<AvailableRelationMutationResult["contentSourceId"]>();
+  for (const result of input.relationMutations) {
+    if (result.status !== "available") {
+      continue;
+    }
+    const verifiedExternalReferences = input.verifiedExternalReferencesByContentSource.get(
+      result.contentSourceId,
+    );
+    if (verifiedExternalReferences == null) {
+      throw new TypeError("relation mutationの公開参照証明がありません");
+    }
+    const verifiedExternalReferenceKeys = new Set(
+      verifiedExternalReferences.map(createRelationMutationReferenceKey),
+    );
+    if (
+      relationMutationHistoryReferences(result).some((reference) =>
+        isRelationPublicBoundaryViolation(
+          input.allowlist,
+          input.organization,
+          verifiedExternalReferenceKeys,
+          reference,
+        ),
+      )
+    ) {
+      unknownContentSourceIds.add(result.contentSourceId);
+    }
+  }
+
+  return Object.freeze({ unknownContentSourceCount: unknownContentSourceIds.size });
+}
+
+/** relation mutationの現在違反を拒否し、履歴だけの未証明参照をunknownへ変換する。 */
+export function sanitizeRelationMutationsForPublicBoundary(
+  input: RelationMutationPublicBoundarySanitizerInput,
+): Readonly<{
+  relationMutations: readonly RelationMutationResult[];
+  unknownContentSourceCount: number;
+}> {
+  const validation = validateRelationMutationsForPublicBoundary(input);
   const relationMutations = input.relationMutations.map((result) => {
     if (result.status !== "available") {
       return result;
@@ -381,15 +538,19 @@ export function sanitizeRelationMutationsForPublicBoundary(
         ),
       )
     ) {
-      unknownContentSourceIds.add(result.contentSourceId);
       return unknownRelationMutationResult(result.contentSourceId);
     }
-    return result;
+    return canonicalizeRelationMutationResult(
+      result,
+      input.organization,
+      input.allowlist,
+      input.canonicalReferencesByReferenceKey,
+    );
   });
 
   return Object.freeze({
     relationMutations: Object.freeze(relationMutations),
-    unknownContentSourceCount: unknownContentSourceIds.size,
+    unknownContentSourceCount: validation.unknownContentSourceCount,
   });
 }
 
@@ -424,15 +585,17 @@ function relationMutationReferences(
 }
 
 /** relation候補とmutationが公開allowlist内を参照することを検証する。 */
-export function assertCacheItemRelationPublicBoundary(
+function assertCacheItemRelationPublicBoundaryInternal(
   allowlist: PublicRepositoryAllowlist,
   input: CacheItemRelationPublicBoundaryInput,
+  mode: "strict" | "production_pending",
 ): void {
   let candidateViolationCount = 0;
   for (const candidate of input.relationCandidates) {
     for (const node of relationCandidateNodes(candidate.relation)) {
       if (
         node.scope === "organization" &&
+        mode === "strict" &&
         !isAllowlistedRepository(allowlist, node.repositoryOwner, node.repositoryName)
       ) {
         candidateViolationCount += 1;
@@ -446,6 +609,7 @@ export function assertCacheItemRelationPublicBoundary(
     }
     for (const reference of relationMutationReferences(result)) {
       if (
+        mode === "strict" &&
         isAllowlistedOrganizationOwner(allowlist, reference.repositoryOwner) &&
         !isAllowlistedRepository(allowlist, reference.repositoryOwner, reference.repositoryName)
       ) {
@@ -473,4 +637,20 @@ export function assertCacheItemRelationPublicBoundary(
       violationCount,
     });
   }
+}
+
+/** relation候補とmutationの未検証aliasをresolver前提で検証する。 */
+export function assertCacheItemRelationPublicBoundary(
+  allowlist: PublicRepositoryAllowlist,
+  input: CacheItemRelationPublicBoundaryInput,
+): void {
+  assertCacheItemRelationPublicBoundaryInternal(allowlist, input, "strict");
+}
+
+/** cache読み込み時のresolver前提relation aliasを検証する。 */
+export function assertCacheItemRelationPublicBoundaryForCacheLoad(
+  allowlist: PublicRepositoryAllowlist,
+  input: CacheItemRelationPublicBoundaryInput,
+): void {
+  assertCacheItemRelationPublicBoundaryInternal(allowlist, input, "production_pending");
 }

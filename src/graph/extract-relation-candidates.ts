@@ -215,27 +215,63 @@ function createReferenceIndex(input: ExtractRelationCandidatesInput): ReferenceI
 
   for (const item of items) {
     validatePublicItem(item);
-    const existingByNodeId = byNodeId.get(item.nodeId);
-    if (existingByNodeId != null && !samePublicItem(existingByNodeId, item)) {
+    const key = aliasKey(item.repositoryOwner, item.repositoryName, item.number);
+    let indexedItem = item;
+    const aliasedItem = input.relationReferenceAliases.get(key);
+    if (aliasedItem != null) {
+      validatePublicItem(aliasedItem);
+      if (aliasedItem.type !== item.type || aliasedItem.number !== item.number) {
+        throw new TypeError("relation reference aliasの項目種別または番号が一致しません");
+      }
+      indexedItem = aliasedItem;
+    }
+    const existingByNodeId = byNodeId.get(indexedItem.nodeId);
+    if (existingByNodeId != null && !samePublicItem(existingByNodeId, indexedItem)) {
       throw new RelationReferenceConflictError(
         "node_id",
         existingByNodeId,
-        item,
-        findRelationReferenceMismatches(existingByNodeId, item),
+        indexedItem,
+        findRelationReferenceMismatches(existingByNodeId, indexedItem),
       );
     }
-    const key = aliasKey(item.repositoryOwner, item.repositoryName, item.number);
     const existingByAlias = byAlias.get(key);
-    if (existingByAlias != null && existingByAlias.nodeId !== item.nodeId) {
+    if (existingByAlias != null && existingByAlias.nodeId !== indexedItem.nodeId) {
       throw new RelationReferenceConflictError(
         "repository_number",
         existingByAlias,
-        item,
-        findRelationReferenceMismatches(existingByAlias, item),
+        indexedItem,
+        findRelationReferenceMismatches(existingByAlias, indexedItem),
       );
     }
-    byNodeId.set(item.nodeId, item);
-    byAlias.set(key, item);
+    byNodeId.set(indexedItem.nodeId, indexedItem);
+    byAlias.set(key, indexedItem);
+    const indexedKey = aliasKey(
+      indexedItem.repositoryOwner,
+      indexedItem.repositoryName,
+      indexedItem.number,
+    );
+    const existingByIndexedAlias = byAlias.get(indexedKey);
+    if (existingByIndexedAlias != null && existingByIndexedAlias.nodeId !== indexedItem.nodeId) {
+      throw new RelationReferenceConflictError(
+        "repository_number",
+        existingByIndexedAlias,
+        indexedItem,
+        findRelationReferenceMismatches(existingByIndexedAlias, indexedItem),
+      );
+    }
+    byAlias.set(indexedKey, indexedItem);
+  }
+
+  for (const [key, item] of input.relationReferenceAliases) {
+    const knownItem = input.knownItems.find((candidate) => candidate.nodeId === item.nodeId);
+    if (knownItem == null || !samePublicItem(knownItem, item)) {
+      throw new TypeError("relation reference aliasの対象項目がknownItemsにありません");
+    }
+    const existingByAlias = byAlias.get(key);
+    if (existingByAlias != null && existingByAlias.nodeId !== item.nodeId) {
+      throw new TypeError("relation reference aliasが衝突しています");
+    }
+    byAlias.set(key, knownItem);
   }
 
   return Object.freeze({

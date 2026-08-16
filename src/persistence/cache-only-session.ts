@@ -6,8 +6,10 @@ import {
   type Repository,
   type UtcIsoDateTime,
 } from "../domain/index.js";
+import { UnreachableError } from "../util/index.js";
 import {
   assertCacheItemRelationPublicBoundary,
+  assertCacheItemRelationPublicBoundaryForCacheLoad,
   PublicRepositoryAllowlist,
 } from "../github/public-repository-allowlist.js";
 import { GitHubPublicBoundaryViolationError } from "../github/errors.js";
@@ -49,6 +51,8 @@ const CACHE_ONLY_VERIFICATION_DIRECTORIES = Object.freeze({
   latestImportanceCaches: "state/ai-latest-importance",
   aiCacheEntries: "state/ai-results",
 });
+
+type CacheItemReadMode = "strict" | "production_pending";
 
 /** cache-only永続化が利用する保存先。 */
 export type CacheOnlyPersistenceConfiguration = Readonly<{
@@ -304,6 +308,7 @@ function parseItemCache(
   value: unknown,
   allowlist: PublicRepositoryAllowlist,
   knownSecrets: readonly string[],
+  mode: CacheItemReadMode,
 ): GitHubItemCacheDocument {
   const document = createCacheDocument(value);
   if (document.kind !== "github_item") {
@@ -315,11 +320,21 @@ function parseItemCache(
     document.repository.owner,
     document.repository.name,
   );
-  assertCacheItemRelationPublicBoundary(allowlist, {
+  const relationBoundaryInput = {
     sourceItemNodeId: document.nodeId,
     relationCandidates: document.relationCandidates,
     relationMutations: document.relationMutations,
-  });
+  };
+  switch (mode) {
+    case "strict":
+      assertCacheItemRelationPublicBoundary(allowlist, relationBoundaryInput);
+      break;
+    case "production_pending":
+      assertCacheItemRelationPublicBoundaryForCacheLoad(allowlist, relationBoundaryInput);
+      break;
+    default:
+      throw new UnreachableError(mode);
+  }
   assertDocumentSafety(document, knownSecrets);
   return document;
 }
@@ -877,7 +892,7 @@ function parseItemCaches(
   allowlist: PublicRepositoryAllowlist,
   knownSecrets: readonly string[],
 ): readonly GitHubItemCacheDocument[] {
-  const documents = values.map((value) => parseItemCache(value, allowlist, knownSecrets));
+  const documents = values.map((value) => parseItemCache(value, allowlist, knownSecrets, "strict"));
   assertUniqueKeys(
     documents.map((document) => document.nodeId),
     "item cache",
@@ -1138,6 +1153,7 @@ export class CacheOnlyPersistenceSession {
   }
 
   async #readStoredState(
+    mode: CacheItemReadMode,
     knownSecrets: readonly string[],
     evaluatedAt: UtcIsoDateTime,
   ): Promise<StoredCacheOnlyState> {
@@ -1181,7 +1197,12 @@ export class CacheOnlyPersistenceSession {
         continue;
       }
       if (kind === "item") {
-        const document = parseItemCache(parseCacheDocument(source), this.#allowlist, knownSecrets);
+        const document = parseItemCache(
+          parseCacheDocument(source),
+          this.#allowlist,
+          knownSecrets,
+          mode,
+        );
         assertCacheFileIdentity(
           path,
           this.#configuration.itemCacheDirectory,
@@ -1247,7 +1268,11 @@ export class CacheOnlyPersistenceSession {
   /** session開始時点のcache-only branchを評価時刻で読み取る。 */
   public async load(input: CacheOnlyLoadInput): Promise<CacheOnlyLoadedState> {
     const evaluatedAt = parseEvaluatedAt(input.evaluatedAt);
-    const stored = await this.#readStoredState(input.knownSecrets, evaluatedAt);
+    const stored = await this.#readStoredState(
+      "production_pending",
+      input.knownSecrets,
+      evaluatedAt,
+    );
     if (this.#head.status === "missing") {
       return Object.freeze({
         status: "missing_branch",
@@ -1264,7 +1289,11 @@ export class CacheOnlyPersistenceSession {
   /** 検証済みcache-only集合でbranchを完全置換するcommitを作成する。 */
   public async persist(input: CacheOnlyPersistenceInput): Promise<CacheOnlyPersistenceResult> {
     const evaluatedAt = parseEvaluatedAt(input.evaluatedAt);
-    const stored = await this.#readStoredState(input.knownSecrets, evaluatedAt);
+    const stored = await this.#readStoredState(
+      "production_pending",
+      input.knownSecrets,
+      evaluatedAt,
+    );
     const validated = validateCacheOnlyPersistenceInput(input, this.#allowlist);
     const documents = pruneExpired(validated, evaluatedAt);
     const updates = createUpdates(documents, this.#configuration);

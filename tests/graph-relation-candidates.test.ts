@@ -79,6 +79,7 @@ function extract(
     organization: "VOICEVOX",
     item,
     knownItems,
+    relationReferenceAliases: new Map(),
   } satisfies ExtractRelationCandidatesInput;
   return extractRelationCandidates(input);
 }
@@ -337,6 +338,38 @@ describe("authoritativeな関係候補", () => {
 });
 
 describe("推定関係候補", () => {
+  it("relation aliasはknownItems内の項目だけを参照する", () => {
+    const current = createItem({
+      nodeId: "I_alias_source",
+      owner: "VOICEVOX",
+      repository: "alias-source",
+      type: "issue",
+      number: 1,
+      state: "open",
+    });
+    const input = {
+      organization: "VOICEVOX",
+      item: createExtractionItem({
+        item: current,
+        body: createTextSource(
+          "github_item_body",
+          "I_alias_source",
+          "https://github.com/old-owner/old-name/issues/2",
+        ),
+        comments: [],
+        crossReferences: [],
+        nativeDependencies: [],
+        nativeHierarchy: [],
+      }),
+      knownItems: [],
+      relationReferenceAliases: new Map([["old-owner/old-name#2", current]]),
+    } satisfies ExtractRelationCandidatesInput;
+
+    expect(() => extractRelationCandidates(input)).toThrow(
+      "relation reference aliasの対象項目がknownItemsにありません",
+    );
+  });
+
   it("PRのclosing keywordをimplementsにしblocksにしない", () => {
     const pullRequest = createItem({
       nodeId: "PR_implementation",

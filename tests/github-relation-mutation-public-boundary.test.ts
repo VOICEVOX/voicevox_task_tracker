@@ -12,7 +12,10 @@ import {
   createPublicRepositoryAllowlist,
   sanitizeRelationMutationsForPublicBoundary,
 } from "../src/github/index.js";
-import { type RelationMutationResult } from "../src/graph/relation-mutation.js";
+import {
+  createRelationMutationReferenceKey,
+  type RelationMutationResult,
+} from "../src/graph/relation-mutation.js";
 
 const organization = "VOICEVOX";
 const sourceItemNodeId = createGitHubNodeId("I_relation_mutation_boundary_target");
@@ -97,6 +100,30 @@ function createAvailableResult(
   };
 }
 
+function canonicalReferencesByReferenceKey(
+  relationMutations: readonly RelationMutationResult[],
+): ReadonlyMap<string, RelationReference> {
+  const referencesByKey = new Map<string, RelationReference>();
+  for (const result of relationMutations) {
+    if (result.status !== "available") {
+      continue;
+    }
+    const references = [
+      ...result.currentReferences,
+      ...result.replayedReferences,
+      ...result.mutations.map((mutation) => mutation.relation),
+      ...result.unmatchedRemovals.map((mutation) => mutation.relation),
+      ...(result.temporalKnowledge.status === "exact"
+        ? result.temporalKnowledge.intervals.map((interval) => interval.relation)
+        : []),
+    ];
+    for (const reference of references) {
+      referencesByKey.set(createRelationMutationReferenceKey(reference), reference);
+    }
+  }
+  return referencesByKey;
+}
+
 function sanitize(
   relationMutations: readonly RelationMutationResult[],
   verifiedExternalReferences: readonly RelationReference[],
@@ -144,6 +171,7 @@ function sanitize(
     allowlist,
     currentReferencesByContentSource,
     verifiedExternalReferencesByContentSource,
+    canonicalReferencesByReferenceKey: canonicalReferencesByReferenceKey(relationMutations),
     relationMutations,
   });
 }
@@ -349,6 +377,33 @@ describe("relation mutation公開境界sanitizer", () => {
     expect(result.relationMutations).toEqual([relationMutation]);
   });
 
+  it("availableなexternal referenceのcanonical証明が欠けていれば失敗する", () => {
+    const externalReference = createReference("external-owner", "public-external", "issue", 4);
+    const relationMutation = createAvailableResult({
+      currentReferences: [externalReference],
+      replayedReferences: [],
+      mutations: [],
+      unmatchedRemovals: [],
+      intervals: [],
+    });
+
+    expect(() =>
+      sanitizeRelationMutationsForPublicBoundary({
+        sourceItemNodeId,
+        organization,
+        allowlist,
+        currentReferencesByContentSource: new Map([
+          [contentSourceId, { status: "available", references: [externalReference] }],
+        ]),
+        verifiedExternalReferencesByContentSource: new Map([
+          [contentSourceId, [externalReference]],
+        ]),
+        canonicalReferencesByReferenceKey: new Map(),
+        relationMutations: [relationMutation],
+      }),
+    ).toThrow("relation mutationのcanonical参照証明がありません");
+  });
+
   it("別content sourceのproofを流用しない", () => {
     const externalReference = createReference("external-owner", "public-external", "issue", 4);
     const otherContentSourceId = buildSourceId(
@@ -382,6 +437,7 @@ describe("relation mutation公開境界sanitizer", () => {
           [contentSourceId, [externalReference]],
           [otherContentSourceId, []],
         ]),
+        canonicalReferencesByReferenceKey: new Map(),
         relationMutations: [relationMutation],
       });
     } catch (error: unknown) {
@@ -447,6 +503,7 @@ describe("relation mutation公開境界sanitizer", () => {
           [contentSourceId, { status: "available", references: [externalReference] }],
         ]),
         verifiedExternalReferencesByContentSource: new Map([[contentSourceId, []]]),
+        canonicalReferencesByReferenceKey: new Map(),
         relationMutations: [result],
       });
     } catch (error: unknown) {
@@ -480,6 +537,7 @@ describe("relation mutation公開境界sanitizer", () => {
         allowlist,
         currentReferencesByContentSource: new Map([[contentSourceId, { status: "unknown" }]]),
         verifiedExternalReferencesByContentSource: new Map([[contentSourceId, []]]),
+        canonicalReferencesByReferenceKey: new Map(),
         relationMutations: [relationMutation],
       }),
     ).not.toThrow();

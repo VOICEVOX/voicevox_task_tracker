@@ -203,6 +203,7 @@ export {
 } from "./retry.js";
 export {
   assertCacheItemRelationPublicBoundary,
+  assertCacheItemRelationPublicBoundaryForCacheLoad,
   assertPublicRepositoryBoundary,
   createPublicRepositoryAllowlist,
   isEligiblePublicRepository,
