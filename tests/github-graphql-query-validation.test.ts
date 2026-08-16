@@ -127,13 +127,12 @@ const dependencyQueryCases = dependencyDirections.map((direction) => ({
   name: `依存関係次ページ ${direction}`,
   query: createNativeDependencyPageQuery(direction),
 }));
-const relationReferenceItemTypes = ["issue", "pull_request", null] satisfies readonly (
-  "issue" | "pull_request" | null
-)[];
-const relationReferenceQueryCases = relationReferenceItemTypes.map((itemType) => ({
-  name: `relation参照 ${itemType ?? "型不明"}`,
-  query: createGitHubRelationReferenceQuery(itemType),
-}));
+const relationReferenceQueryCases = [
+  {
+    name: "relation参照 union",
+    query: createGitHubRelationReferenceQuery(),
+  },
+] satisfies readonly QueryCase[];
 const queryCases: readonly QueryCase[] = [
   ...fixedQueryCases,
   ...itemDetailQueryCases,
@@ -148,7 +147,7 @@ describe("GitHub GraphQLクエリ", () => {
     expect(itemDetailQueryCases).toHaveLength(4);
     expect(timelineQueryCases).toHaveLength(2);
     expect(dependencyQueryCases).toHaveLength(2);
-    expect(queryCases).toHaveLength(26);
+    expect(queryCases).toHaveLength(24);
   });
 
   it("IssueとPull Requestのtimeline queryに依存関係イベント4種を含める", () => {
@@ -173,8 +172,8 @@ describe("GitHub GraphQLクエリ", () => {
     }
   });
 
-  it("型不明のrelation参照queryはunion fieldだけを取得する", () => {
-    const query = createGitHubRelationReferenceQuery(null);
+  it("relation参照queryはunion fieldだけを取得する", () => {
+    const query = createGitHubRelationReferenceQuery();
 
     expect(query).toContain("issueOrPullRequest(number: $number)");
     expect(query).not.toContain("issue(number: $number)");

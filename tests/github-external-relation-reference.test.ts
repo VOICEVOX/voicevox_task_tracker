@@ -84,18 +84,6 @@ function createItem(
 }
 
 function createResponse(
-  issue: Readonly<Record<string, unknown>> | null,
-  pullRequest: Readonly<Record<string, unknown>> | null,
-): Readonly<Record<string, unknown>> {
-  return {
-    repository: {
-      issue,
-      pullRequest,
-    },
-  };
-}
-
-function createUnionResponse(
   item: Readonly<Record<string, unknown>> | null,
 ): Readonly<Record<string, unknown>> {
   return {
@@ -137,7 +125,7 @@ const publicRepository = {
 describe("GitHub external relation reference adapter", () => {
   it("公開Issueのmetadataを正規化して返す", async () => {
     const mock = createGraphqlMock(
-      createResponse(createItem("issue", issueReference.number, publicRepository), null),
+      createResponse(createItem("issue", issueReference.number, publicRepository)),
     );
 
     const result = await resolveGitHubRelationReference({
@@ -156,7 +144,8 @@ describe("GitHub external relation reference adapter", () => {
       },
     });
     expect(mock.calls).toHaveLength(1);
-    expect(mock.calls[0]?.query).toContain("issue(number: $number)");
+    expect(mock.calls[0]?.query).toContain("issueOrPullRequest(number: $number)");
+    expect(mock.calls[0]?.query).not.toContain("issue(number: $number)");
     expect(mock.calls[0]?.query).not.toContain("pullRequest(number: $number)");
     expect(mock.calls[0]?.variables).toEqual({
       owner: "VOICEVOX",
@@ -167,10 +156,7 @@ describe("GitHub external relation reference adapter", () => {
 
   it("公開Pull Requestのmetadataを正規化して返す", async () => {
     const mock = createGraphqlMock(
-      createResponse(
-        null,
-        createItem("pull_request", pullRequestReference.number, publicRepository),
-      ),
+      createResponse(createItem("pull_request", pullRequestReference.number, publicRepository)),
     );
 
     const result = await resolveGitHubRelationReference({
@@ -186,13 +172,13 @@ describe("GitHub external relation reference adapter", () => {
         state: "open",
       },
     });
-    expect(mock.calls[0]?.query).toContain("pullRequest(number: $number)");
+    expect(mock.calls[0]?.query).toContain("issueOrPullRequest(number: $number)");
     expect(mock.calls[0]?.query).not.toContain("issue(number: $number)");
   });
 
   it("型不明の参照をunionのIssueとして解決する", async () => {
     const mock = createGraphqlMock(
-      createUnionResponse(createItem("issue", unknownReference.number, publicRepository)),
+      createResponse(createItem("issue", unknownReference.number, publicRepository)),
     );
 
     const result = await resolveGitHubRelationReference({
@@ -208,7 +194,7 @@ describe("GitHub external relation reference adapter", () => {
 
   it("型不明の参照をunionのPull Requestとして解決する", async () => {
     const mock = createGraphqlMock(
-      createUnionResponse(createItem("pull_request", unknownReference.number, publicRepository)),
+      createResponse(createItem("pull_request", unknownReference.number, publicRepository)),
     );
 
     const result = await resolveGitHubRelationReference({
@@ -288,9 +274,7 @@ describe("GitHub external relation reference adapter", () => {
     "$nameはcanonical metadataで公開として返す",
     async ({ itemType, reference, repositoryState }) => {
       const item = createItem(itemType, reference.number, repositoryState);
-      const mock = createGraphqlMock(
-        itemType === "issue" ? createResponse(item, null) : createResponse(null, item),
-      );
+      const mock = createGraphqlMock(createResponse(item));
 
       const result = await resolveGitHubRelationReference({
         reference,
@@ -333,7 +317,7 @@ describe("GitHub external relation reference adapter", () => {
     },
     {
       name: "itemがnull",
-      response: createResponse(null, null),
+      response: createResponse(null),
       reference: issueReference,
     },
     {
@@ -343,7 +327,6 @@ describe("GitHub external relation reference adapter", () => {
           ...publicRepository,
           visibility: "PRIVATE",
         }),
-        null,
       ),
       reference: issueReference,
     },
@@ -354,7 +337,6 @@ describe("GitHub external relation reference adapter", () => {
           ...publicRepository,
           visibility: "INTERNAL",
         }),
-        null,
       ),
       reference: issueReference,
     },
@@ -365,7 +347,6 @@ describe("GitHub external relation reference adapter", () => {
           ...publicRepository,
           isArchived: true,
         }),
-        null,
       ),
       reference: issueReference,
     },
@@ -376,7 +357,6 @@ describe("GitHub external relation reference adapter", () => {
           ...publicRepository,
           isDisabled: true,
         }),
-        null,
       ),
       reference: issueReference,
     },
@@ -389,7 +369,6 @@ describe("GitHub external relation reference adapter", () => {
           owner: "canonical-owner",
           name: "canonical-repository",
         }),
-        null,
       ),
       reference: issueReference,
     },
@@ -402,7 +381,6 @@ describe("GitHub external relation reference adapter", () => {
           owner: "canonical-owner",
           name: "canonical-repository",
         }),
-        null,
       ),
       reference: issueReference,
     },
@@ -415,13 +393,12 @@ describe("GitHub external relation reference adapter", () => {
           owner: "canonical-owner",
           name: "canonical-repository",
         }),
-        null,
       ),
       reference: issueReference,
     },
     {
       name: "型不明のprivate repository",
-      response: createUnionResponse(
+      response: createResponse(
         createItem("issue", unknownReference.number, {
           ...publicRepository,
           visibility: "PRIVATE",
@@ -431,7 +408,7 @@ describe("GitHub external relation reference adapter", () => {
     },
     {
       name: "型不明のarchived repository",
-      response: createUnionResponse(
+      response: createResponse(
         createItem("issue", unknownReference.number, {
           ...publicRepository,
           isArchived: true,
@@ -441,7 +418,7 @@ describe("GitHub external relation reference adapter", () => {
     },
     {
       name: "型不明のdisabled repository",
-      response: createUnionResponse(
+      response: createResponse(
         createItem("issue", unknownReference.number, {
           ...publicRepository,
           isDisabled: true,
@@ -465,7 +442,7 @@ describe("GitHub external relation reference adapter", () => {
   });
 
   it("型不明unionの項目がnullなら未検証として返す", async () => {
-    const mock = createGraphqlMock(createUnionResponse(null));
+    const mock = createGraphqlMock(createResponse(null));
 
     const result = await resolveGitHubRelationReference({
       reference: unknownReference,
@@ -479,42 +456,26 @@ describe("GitHub external relation reference adapter", () => {
     {
       name: "Issue要求にPull Requestだけが返る",
       reference: issueReference,
-      response: createResponse(
-        null,
-        createItem("pull_request", issueReference.number, publicRepository),
-      ),
+      response: createResponse(createItem("pull_request", issueReference.number, publicRepository)),
     },
     {
       name: "Pull Request要求にIssueだけが返る",
       reference: pullRequestReference,
-      response: createResponse(
-        createItem("issue", pullRequestReference.number, publicRepository),
-        null,
-      ),
+      response: createResponse(createItem("issue", pullRequestReference.number, publicRepository)),
     },
   ] satisfies readonly Readonly<{
     name: string;
     reference: RelationTextReference;
     response: Readonly<Record<string, unknown>>;
-  }>[])("$nameの場合はcause付きで失敗する", async ({ reference, response }) => {
+  }>[])("$nameの場合は未検証として返す", async ({ reference, response }) => {
     const mock = createGraphqlMock(response);
 
-    const error = await captureError(
-      resolveGitHubRelationReference({
-        reference,
-        graphql: mock.graphql,
-      }),
-    );
+    const result = await resolveGitHubRelationReference({
+      reference,
+      graphql: mock.graphql,
+    });
 
-    expect(error).toBeInstanceOf(GitHubResponseValidationError);
-    if (!(error instanceof GitHubResponseValidationError)) {
-      throw new Error("GitHub response validation errorではありません");
-    }
-    expect(error.cause).toBeInstanceOf(TypeError);
-    if (!(error.cause instanceof TypeError)) {
-      throw new Error("GitHub response validation errorのcauseがTypeErrorではありません");
-    }
-    expect(error.cause.message).toBe("要求した項目種別と応答項目種別が一致しません");
+    expect(result).toEqual({ status: "unverified" });
   });
 
   it("要求したGraphQL fieldが欠落した応答はcause付きで失敗する", async () => {
@@ -553,13 +514,10 @@ describe("GitHub external relation reference adapter", () => {
 
   it("Zod schemaに適合しない応答はcause付きで失敗する", async () => {
     const mock = createGraphqlMock(
-      createResponse(
-        {
-          ...createItem("issue", issueReference.number, publicRepository),
-          number: "1190",
-        },
-        null,
-      ),
+      createResponse({
+        ...createItem("issue", issueReference.number, publicRepository),
+        number: "1190",
+      }),
     );
 
     const error = await captureError(
@@ -578,7 +536,7 @@ describe("GitHub external relation reference adapter", () => {
 
   it("number不一致はfield名を示すcause付きで失敗する", async () => {
     const mock = createGraphqlMock(
-      createResponse(createItem("issue", issueReference.number + 1, publicRepository), null),
+      createResponse(createItem("issue", issueReference.number + 1, publicRepository)),
     );
 
     const error = await captureError(
@@ -606,13 +564,10 @@ describe("GitHub external relation reference adapter", () => {
 
   it("URLとmetadataの不一致はnormalizeReferencedItemのcause付き検証エラーとして伝播する", async () => {
     const mock = createGraphqlMock(
-      createResponse(
-        {
-          ...createItem("issue", issueReference.number, publicRepository),
-          url: "https://github.com/VOICEVOX/voicevox_core/pull/1190",
-        },
-        null,
-      ),
+      createResponse({
+        ...createItem("issue", issueReference.number, publicRepository),
+        url: "https://github.com/VOICEVOX/voicevox_core/pull/1190",
+      }),
     );
 
     const error = await captureError(

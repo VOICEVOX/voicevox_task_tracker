@@ -10,12 +10,10 @@ import { type GitHubReferencedItem } from "./item-detail-types.js";
 type Graphql = GitHubClient["graphql"];
 type RawReferencedItem = z.output<typeof referencedItemSchema>;
 
-const relationReferenceResponseSchema = z.object({
+const relationReferenceResponseSchema = z.strictObject({
   repository: z
-    .object({
-      issue: referencedItemSchema.nullable().optional(),
-      pullRequest: referencedItemSchema.nullable().optional(),
-      issueOrPullRequest: referencedItemSchema.nullable().optional(),
+    .strictObject({
+      issueOrPullRequest: referencedItemSchema.nullable(),
     })
     .nullable(),
 });
@@ -43,66 +41,12 @@ function createResponseValidationError(message: string): GitHubResponseValidatio
   });
 }
 
-function assertResponseFields(
-  response: RawRelationReferenceResponse,
-  itemType: RelationTextReference["itemType"],
-): void {
-  const repository = response.repository;
-  if (repository == null) {
-    return;
-  }
-  const hasIssue = Object.hasOwn(repository, "issue");
-  const hasPullRequest = Object.hasOwn(repository, "pullRequest");
-  const hasIssueOrPullRequest = Object.hasOwn(repository, "issueOrPullRequest");
-  if (
-    (itemType == null && !hasIssueOrPullRequest) ||
-    (itemType === "issue" && !hasIssue) ||
-    (itemType === "pull_request" && !hasPullRequest)
-  ) {
-    throw createResponseValidationError("要求したGraphQL fieldが応答にありません");
-  }
-}
-
-function assertResponseFieldType(
-  item: RawReferencedItem | null | undefined,
-  expectedType: "Issue" | "PullRequest",
-): void {
-  if (item != null && item.__typename !== expectedType) {
-    throw createResponseValidationError("GraphQL fieldの項目種別が一致しません");
-  }
-}
-
-function selectResponseItem(
-  response: RawRelationReferenceResponse,
-  itemType: RelationTextReference["itemType"],
-): RawReferencedItem | null {
+function selectResponseItem(response: RawRelationReferenceResponse): RawReferencedItem | null {
   const repository = response.repository;
   if (repository == null) {
     return null;
   }
-  if (itemType == null) {
-    return repository.issueOrPullRequest ?? null;
-  }
-  const issue = repository.issue;
-  const pullRequest = repository.pullRequest;
-  if (issue != null && pullRequest != null) {
-    throw createResponseValidationError("IssueとPull Requestが同時に返されました");
-  }
-  assertResponseFieldType(issue, "Issue");
-  assertResponseFieldType(pullRequest, "PullRequest");
-  if (issue != null) {
-    if (itemType === "pull_request") {
-      throw createResponseValidationError("要求した項目種別と応答項目種別が一致しません");
-    }
-    return issue;
-  }
-  if (pullRequest != null) {
-    if (itemType === "issue") {
-      throw createResponseValidationError("要求した項目種別と応答項目種別が一致しません");
-    }
-    return pullRequest;
-  }
-  return null;
+  return repository.issueOrPullRequest;
 }
 
 function assertReferenceNumberMatchesItem(
@@ -130,9 +74,17 @@ function normalizePublicResponse(
   ) {
     return createUnverifiedResult();
   }
+  const normalizedItem = normalizeReferencedItem(item);
+  if (
+    reference.itemType != null &&
+    ((reference.itemType === "issue" && item.__typename !== "Issue") ||
+      (reference.itemType === "pull_request" && item.__typename !== "PullRequest"))
+  ) {
+    return createUnverifiedResult();
+  }
   return Object.freeze({
     status: "public",
-    item: normalizeReferencedItem(item),
+    item: normalizedItem,
   });
 }
 
@@ -141,7 +93,7 @@ export async function resolveGitHubRelationReference(
   options: ResolveGitHubRelationReferenceOptions,
 ): Promise<GitHubRelationReferenceResult> {
   const { reference } = options;
-  const response = await options.graphql(createGitHubRelationReferenceQuery(reference.itemType), {
+  const response = await options.graphql(createGitHubRelationReferenceQuery(), {
     owner: reference.repositoryOwner,
     name: reference.repositoryName,
     number: reference.number,
@@ -150,7 +102,6 @@ export async function resolveGitHubRelationReference(
   if (!parsedResponse.success) {
     throw new GitHubResponseSchemaValidationError("GitHubの関係参照", parsedResponse.error);
   }
-  assertResponseFields(parsedResponse.data, reference.itemType);
-  const item = selectResponseItem(parsedResponse.data, reference.itemType);
+  const item = selectResponseItem(parsedResponse.data);
   return item == null ? createUnverifiedResult() : normalizePublicResponse(reference, item);
 }

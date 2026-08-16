@@ -699,30 +699,11 @@ function appendRequiredFragments(querySource: string): string {
 }
 
 /** relation参照先の公開metadataを取得するGraphQL queryを生成する。 */
-export function createGitHubRelationReferenceQuery(
-  itemType: "issue" | "pull_request" | null,
-): string {
-  let itemFields: string;
-  switch (itemType) {
-    case "issue":
-      itemFields = `
-    issue(number: $number) {
-      ...DetailReferencedItemFields
-    }`;
-      break;
-    case "pull_request":
-      itemFields = `
-    pullRequest(number: $number) {
-      ...DetailReferencedItemFields
-    }`;
-      break;
-    case null:
-      itemFields = `
+export function createGitHubRelationReferenceQuery(): string {
+  const itemFields = `
     issueOrPullRequest(number: $number) {
       ...DetailReferencedItemFields
     }`;
-      break;
-  }
   return appendRequiredFragments(`
   query GitHubRelationReference($owner: String!, $name: String!, $number: Int!) {
     repository(owner: $owner, name: $name, followRenames: true) {${itemFields}
