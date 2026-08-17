@@ -11,11 +11,38 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 /** terminal項目をactive datasetへ保持する既定日数。 */
 export const DEFAULT_TERMINAL_RETENTION_DAYS = 180;
 
-/** 設定から解決した追跡開始時刻。 */
-export type TrackingStartAtState = Readonly<{
-  status: "fixed";
-  value: UtcIsoDateTime;
-  source: "configuration";
+/** tracking.startAtの確定状態。 */
+export type TrackingStartAtState =
+  | Readonly<{
+      status: "not_fixed";
+    }>
+  | Readonly<{
+      status: "fixed";
+      value: UtcIsoDateTime;
+      source: "configuration" | "first_complete_run";
+    }>;
+
+/** 設定ファイルにおけるtracking.startAtの指定状態。 */
+export type ConfiguredTrackingStartAt =
+  | Readonly<{
+      status: "not_configured";
+    }>
+  | Readonly<{
+      status: "configured";
+      value: UtcIsoDateTime;
+    }>;
+
+/** startAt確定を試みるrunの完了状態。 */
+export type TrackingRunCompletion = Readonly<{
+  outcome: "complete_success" | "incomplete";
+  finishedAt: UtcIsoDateTime;
+}>;
+
+/** tracking.startAtを確定する入力。 */
+export type ResolveTrackingStartAtInput = Readonly<{
+  configuredStartAt: ConfiguredTrackingStartAt;
+  previousState: TrackingStartAtState;
+  run: TrackingRunCompletion;
 }>;
 
 /** terminal保持期間を判定する項目状態。 */
@@ -189,6 +216,37 @@ export function classifyTrackingNotification(
     (automationNoiseTitle || input.notificationsSuppressedByLabel)
     ? "automation_noise"
     : "standard";
+}
+
+/** 設定値、永続値、完全成功runの順でtracking.startAtを一度だけ確定する。 */
+export function resolveTrackingStartAt(input: ResolveTrackingStartAtInput): TrackingStartAtState {
+  parseTimestamp(input.run.finishedAt, "run完了時刻");
+  if (input.configuredStartAt.status === "configured") {
+    parseTimestamp(input.configuredStartAt.value, "設定されたtracking.startAt");
+    return Object.freeze({
+      status: "fixed",
+      value: input.configuredStartAt.value,
+      source: "configuration",
+    });
+  }
+  if (input.previousState.status === "fixed") {
+    parseTimestamp(input.previousState.value, "永続化されたtracking.startAt");
+    return Object.freeze({
+      status: "fixed",
+      value: input.previousState.value,
+      source: input.previousState.source,
+    });
+  }
+  if (input.run.outcome === "incomplete") {
+    return Object.freeze({
+      status: "not_fixed",
+    });
+  }
+  return Object.freeze({
+    status: "fixed",
+    value: input.run.finishedAt,
+    source: "first_complete_run",
+  });
 }
 
 /** closedまたはmerged項目を保持期間内だけactive datasetへ残す。 */

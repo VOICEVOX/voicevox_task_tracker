@@ -9,7 +9,6 @@ import {
   CLOSING_ISSUE_PAGE_QUERY,
   COMMENT_PAGE_QUERY,
   createItemDetailQuery,
-  createGitHubRelationReferenceQuery,
   createNativeDependencyPageQuery,
   createTimelinePageQuery,
   ITEM_DETAIL_CAPABILITIES_QUERY,
@@ -19,14 +18,8 @@ import {
   REVIEW_THREAD_COMMENT_PAGE_QUERY,
   REVIEW_THREAD_PAGE_QUERY,
   SUB_ISSUE_PAGE_QUERY,
-  USER_CONTENT_EDIT_PAGE_QUERY,
 } from "../src/github/item-detail-queries.js";
 import { type GitHubItemDetailCapabilities } from "../src/github/item-detail-types.js";
-import {
-  CHECK_CONTEXT_PAGE_QUERY as VOLATILE_CHECK_CONTEXT_PAGE_QUERY,
-  PULL_REQUEST_VOLATILE_PROBE_QUERY,
-  REVIEW_REQUEST_PAGE_QUERY as VOLATILE_REVIEW_REQUEST_PAGE_QUERY,
-} from "../src/github/item-volatile-probe.js";
 
 type QueryCase = Readonly<{
   name: string;
@@ -93,22 +86,6 @@ const fixedQueryCases = [
     name: "チェックコンテキスト次ページ",
     query: CHECK_CONTEXT_PAGE_QUERY,
   },
-  {
-    name: "UserContentEdit次ページ",
-    query: USER_CONTENT_EDIT_PAGE_QUERY,
-  },
-  {
-    name: "Pull Request volatile probe",
-    query: PULL_REQUEST_VOLATILE_PROBE_QUERY,
-  },
-  {
-    name: "Pull Request volatile review request次ページ",
-    query: VOLATILE_REVIEW_REQUEST_PAGE_QUERY,
-  },
-  {
-    name: "Pull Request volatile check context次ページ",
-    query: VOLATILE_CHECK_CONTEXT_PAGE_QUERY,
-  },
 ] satisfies readonly QueryCase[];
 const itemDetailQueryCases = capabilityAvailabilities.flatMap((nativeDependencies) =>
   capabilityAvailabilities.map((nativeHierarchy) => ({
@@ -127,76 +104,20 @@ const dependencyQueryCases = dependencyDirections.map((direction) => ({
   name: `依存関係次ページ ${direction}`,
   query: createNativeDependencyPageQuery(direction),
 }));
-const relationReferenceQueryCases = [
-  {
-    name: "relation参照 union",
-    query: createGitHubRelationReferenceQuery(),
-  },
-] satisfies readonly QueryCase[];
 const queryCases: readonly QueryCase[] = [
   ...fixedQueryCases,
   ...itemDetailQueryCases,
   ...timelineQueryCases,
   ...dependencyQueryCases,
-  ...relationReferenceQueryCases,
 ];
 
 describe("GitHub GraphQLクエリ", () => {
-  it("送信しうる26件を列挙する", () => {
-    expect(fixedQueryCases).toHaveLength(15);
+  it("送信しうる19件を列挙する", () => {
+    expect(fixedQueryCases).toHaveLength(11);
     expect(itemDetailQueryCases).toHaveLength(4);
     expect(timelineQueryCases).toHaveLength(2);
     expect(dependencyQueryCases).toHaveLength(2);
-    expect(queryCases).toHaveLength(24);
-  });
-
-  it("IssueとPull Requestのtimeline queryに依存関係イベント4種を含める", () => {
-    const queries = [
-      ...itemDetailQueryCases.map(({ query }) => query),
-      ...timelineQueryCases.map(({ query }) => query),
-    ];
-    for (const query of queries) {
-      expect(query).toContain("... on BlockedByAddedEvent");
-      expect(query).toContain("... on BlockedByRemovedEvent");
-      expect(query).toContain("... on BlockingAddedEvent");
-      expect(query).toContain("... on BlockingRemovedEvent");
-    }
-  });
-
-  it("relation参照queryは本文やコメントを取得しない", () => {
-    for (const { query } of relationReferenceQueryCases) {
-      expect(query).toContain("repository(owner: $owner, name: $name, followRenames: true)");
-      expect(query).not.toContain("body");
-      expect(query).not.toContain("comments");
-      expect(query).not.toContain("userContentEdits");
-    }
-  });
-
-  it("relation参照queryはunion fieldだけを取得する", () => {
-    const query = createGitHubRelationReferenceQuery();
-
-    expect(query).toContain("issueOrPullRequest(number: $number)");
-    expect(query).not.toContain("issue(number: $number)");
-    expect(query).not.toContain("pullRequest(number: $number)");
-  });
-
-  it("review threadの初期取得件数を制限し、次ページqueryで続きを取得する", () => {
-    for (const { query } of itemDetailQueryCases) {
-      expect(query).toContain("reviewThreads(first: 19)");
-      expect(query).not.toContain("reviewThreads(first: 20)");
-      expect(query).not.toContain("reviewThreads(first: 50)");
-      expect(query).not.toContain("reviewThreads(first: 100)");
-      const fragmentStart = query.indexOf("fragment DetailReviewThreadFields");
-      if (fragmentStart < 0) {
-        throw new Error("review thread fragmentがありません");
-      }
-      const fragmentEnd = query.indexOf("\n  fragment ", fragmentStart + 1);
-      const fragment = query.slice(fragmentStart, fragmentEnd < 0 ? query.length : fragmentEnd);
-      expect(fragment).toContain("comments(first: 1)");
-      expect(fragment).not.toContain("comments(first: 100)");
-    }
-    expect(REVIEW_THREAD_PAGE_QUERY).toContain("reviewThreads(first: 100, after: $after)");
-    expect(REVIEW_THREAD_COMMENT_PAGE_QUERY).toContain("comments(first: 100, after: $after)");
+    expect(queryCases).toHaveLength(19);
   });
 
   it.each(queryCases)("$nameを公式schemaで検証できる", ({ query }) => {

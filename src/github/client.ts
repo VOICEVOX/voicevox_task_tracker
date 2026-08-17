@@ -317,17 +317,11 @@ export async function createGitHubClient(
     variables: Readonly<Record<string, unknown>>,
   ): Promise<Readonly<Record<string, unknown>>> => {
     assertNoTransportOverrides(variables);
-    const response = await executeWithGitHubRetry(
-      () =>
-        executeReadOnlyGraphQL(
-          query,
-          variables,
-          (instrumentedQuery, instrumentedVariables) =>
-            octokit.graphql<unknown>(instrumentedQuery, instrumentedVariables),
-          redactor,
-        ),
-      options.operations.retry,
-      runtime,
+    const response = await executeReadOnlyGraphQL(
+      query,
+      variables,
+      (instrumentedQuery, instrumentedVariables) =>
+        octokit.graphql<unknown>(instrumentedQuery, instrumentedVariables),
       redactor,
     );
     const extracted = extractGraphQLRateLimit(response);

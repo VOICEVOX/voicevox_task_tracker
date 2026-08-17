@@ -181,6 +181,30 @@ const latestEventActorSchema = z.discriminatedUnion("status", [
     actor: latestEventActorValueSchema,
   }),
 ]);
+const responsibilitySchema = z.strictObject({
+  status: statusSchema,
+  waitingOn: z.array(
+    waitingOnSchema.omit({
+      reasonSummary: true,
+      confidence: true,
+    }),
+  ),
+});
+const responsibilityHistoryValueSchema = z.discriminatedUnion("state", [
+  z.strictObject({
+    state: z.literal("absent"),
+  }),
+  z.strictObject({
+    state: z.literal("present"),
+    value: responsibilitySchema,
+  }),
+]);
+const publicItemHistoryEventSchema = z.strictObject({
+  kind: z.literal("responsibility_changed"),
+  recordedAt: dateTimeSchema,
+  before: responsibilityHistoryValueSchema,
+  after: responsibilityHistoryValueSchema,
+});
 const publicItemDetailsSchema = z.strictObject({
   summary: publicItemSummarySchema,
   importanceFactors: z.array(importanceFactorSchema),
@@ -206,6 +230,7 @@ const publicItemDetailsSchema = z.strictObject({
   ]),
   evidence: z.array(publicEvidenceSchema),
   uncertainties: z.array(shortStringSchema),
+  history: z.array(publicItemHistoryEventSchema),
 });
 const publicTrackedGraphNodeFieldsSchema = z.strictObject({
   nodeId: identifierSchema,
@@ -342,6 +367,9 @@ export type PublicGraphNodeDto = z.output<typeof publicGraphNodeSchema>;
 
 /** 公開DTO内のグラフedge。 */
 export type PublicGraphEdgeDto = z.output<typeof publicGraphEdgeSchema>;
+
+/** 公開DTO内の項目履歴差分。 */
+export type PublicItemHistoryEventDto = z.output<typeof publicItemHistoryEventSchema>;
 
 /** 未検証の値を共有公開summary DTOへ変換する。 */
 export function createPublicSummaryDto(value: unknown): PublicSummaryDto {

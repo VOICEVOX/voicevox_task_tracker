@@ -90,20 +90,6 @@ const DETAIL_REFERENCED_ITEM_FIELDS_FRAGMENT = `
   }
 `;
 
-const DETAIL_USER_CONTENT_EDIT_FIELDS_FRAGMENT = `
-  fragment DetailUserContentEditFields on UserContentEdit {
-    id
-    createdAt
-    deletedAt
-    diff
-    editedAt
-    editor {
-      ...DetailActorFields
-    }
-    updatedAt
-  }
-`;
-
 const DETAIL_ISSUE_COMMENT_FIELDS_FRAGMENT = `
   fragment DetailIssueCommentFields on IssueComment {
     id
@@ -112,17 +98,7 @@ const DETAIL_ISSUE_COMMENT_FIELDS_FRAGMENT = `
     }
     body
     createdAt
-    lastEditedAt
     updatedAt
-    userContentEdits(first: 1) {
-      nodes {
-        ...DetailUserContentEditFields
-      }
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-    }
     url
   }
 `;
@@ -152,17 +128,7 @@ const DETAIL_REVIEW_COMMENT_FIELDS_FRAGMENT = `
     }
     body
     createdAt
-    lastEditedAt
     updatedAt
-    userContentEdits(first: 1) {
-      nodes {
-        ...DetailUserContentEditFields
-      }
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-    }
     url
   }
 `;
@@ -176,7 +142,7 @@ const DETAIL_REVIEW_THREAD_FIELDS_FRAGMENT = `
     resolvedBy {
       ...DetailActorFields
     }
-    comments(first: 1) {
+    comments(first: 100) {
       nodes {
         ...DetailReviewCommentFields
       }
@@ -264,46 +230,6 @@ const DETAIL_ISSUE_TIMELINE_FIELDS_FRAGMENT = `
       }
       assignee {
         ...DetailAssigneeFields
-      }
-    }
-    ... on BlockedByAddedEvent {
-      id
-      createdAt
-      actor {
-        ...DetailActorFields
-      }
-      blockingIssue {
-        ...DetailReferencedItemFields
-      }
-    }
-    ... on BlockedByRemovedEvent {
-      id
-      createdAt
-      actor {
-        ...DetailActorFields
-      }
-      blockingIssue {
-        ...DetailReferencedItemFields
-      }
-    }
-    ... on BlockingAddedEvent {
-      id
-      createdAt
-      actor {
-        ...DetailActorFields
-      }
-      blockedIssue {
-        ...DetailReferencedItemFields
-      }
-    }
-    ... on BlockingRemovedEvent {
-      id
-      createdAt
-      actor {
-        ...DetailActorFields
-      }
-      blockedIssue {
-        ...DetailReferencedItemFields
       }
     }
     ... on LabeledEvent {
@@ -444,46 +370,6 @@ const DETAIL_PULL_REQUEST_TIMELINE_FIELDS_FRAGMENT = `
       }
       assignee {
         ...DetailAssigneeFields
-      }
-    }
-    ... on BlockedByAddedEvent {
-      id
-      createdAt
-      actor {
-        ...DetailActorFields
-      }
-      blockingIssue {
-        ...DetailReferencedItemFields
-      }
-    }
-    ... on BlockedByRemovedEvent {
-      id
-      createdAt
-      actor {
-        ...DetailActorFields
-      }
-      blockingIssue {
-        ...DetailReferencedItemFields
-      }
-    }
-    ... on BlockingAddedEvent {
-      id
-      createdAt
-      actor {
-        ...DetailActorFields
-      }
-      blockedIssue {
-        ...DetailReferencedItemFields
-      }
-    }
-    ... on BlockingRemovedEvent {
-      id
-      createdAt
-      actor {
-        ...DetailActorFields
-      }
-      blockedIssue {
-        ...DetailReferencedItemFields
       }
     }
     ... on LabeledEvent {
@@ -631,7 +517,6 @@ const GRAPHQL_FRAGMENT_SOURCES: ReadonlyMap<string, string> = new Map([
   ["DetailReviewRequestTargetFields", DETAIL_REVIEW_REQUEST_TARGET_FIELDS_FRAGMENT],
   ["DetailAssigneeFields", DETAIL_ASSIGNEE_FIELDS_FRAGMENT],
   ["DetailReferencedItemFields", DETAIL_REFERENCED_ITEM_FIELDS_FRAGMENT],
-  ["DetailUserContentEditFields", DETAIL_USER_CONTENT_EDIT_FIELDS_FRAGMENT],
   ["DetailIssueCommentFields", DETAIL_ISSUE_COMMENT_FIELDS_FRAGMENT],
   ["DetailReviewFields", DETAIL_REVIEW_FIELDS_FRAGMENT],
   ["DetailReviewCommentFields", DETAIL_REVIEW_COMMENT_FIELDS_FRAGMENT],
@@ -654,10 +539,8 @@ function collectFragmentSpreadNames(source: string): readonly string[] {
 
 const GRAPHQL_FRAGMENT_DEPENDENCIES: ReadonlyMap<string, readonly string[]> = new Map(
   [...GRAPHQL_FRAGMENT_SOURCES].map(
-    ([fragmentName, fragmentSource]): readonly [string, readonly string[]] => [
-      fragmentName,
-      collectFragmentSpreadNames(fragmentSource),
-    ],
+    ([fragmentName, fragmentSource]) =>
+      [fragmentName, collectFragmentSpreadNames(fragmentSource)] as const,
   ),
 );
 const GRAPHQL_QUERY_CACHE = new Map<string, string>();
@@ -698,20 +581,6 @@ function appendRequiredFragments(querySource: string): string {
   return query;
 }
 
-/** relation参照先の公開metadataを取得するGraphQL queryを生成する。 */
-export function createGitHubRelationReferenceQuery(): string {
-  const itemFields = `
-    issueOrPullRequest(number: $number) {
-      ...DetailReferencedItemFields
-    }`;
-  return appendRequiredFragments(`
-  query GitHubRelationReference($owner: String!, $name: String!, $number: Int!) {
-    repository(owner: $owner, name: $name, followRenames: true) {${itemFields}
-    }
-  }
-`);
-}
-
 export const ITEM_DETAIL_CAPABILITIES_QUERY = appendRequiredFragments(`
   query GitHubItemDetailCapabilities {
     issueType: __type(name: "Issue") {
@@ -728,10 +597,6 @@ const ISSUE_TIMELINE_ITEM_TYPES = `
     REOPENED_EVENT
     ASSIGNED_EVENT
     UNASSIGNED_EVENT
-    BLOCKED_BY_ADDED_EVENT
-    BLOCKED_BY_REMOVED_EVENT
-    BLOCKING_ADDED_EVENT
-    BLOCKING_REMOVED_EVENT
     LABELED_EVENT
     UNLABELED_EVENT
     CROSS_REFERENCED_EVENT
@@ -751,10 +616,6 @@ const PULL_REQUEST_TIMELINE_ITEM_TYPES = `
     MERGED_EVENT
     ASSIGNED_EVENT
     UNASSIGNED_EVENT
-    BLOCKED_BY_ADDED_EVENT
-    BLOCKED_BY_REMOVED_EVENT
-    BLOCKING_ADDED_EVENT
-    BLOCKING_REMOVED_EVENT
     LABELED_EVENT
     UNLABELED_EVENT
     REVIEW_REQUESTED_EVENT
@@ -823,16 +684,6 @@ export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities
         ... on Issue {
           id
           body
-          lastEditedAt
-          userContentEdits(first: 100) {
-            nodes {
-              ...DetailUserContentEditFields
-            }
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-          }
           comments(first: 100) {
             nodes {
               ...DetailIssueCommentFields
@@ -857,16 +708,6 @@ export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities
         ... on PullRequest {
           id
           body
-          lastEditedAt
-          userContentEdits(first: 100) {
-            nodes {
-              ...DetailUserContentEditFields
-            }
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-          }
           closingIssuesReferences(first: 100) {
             nodes {
               ...DetailReferencedItemFields
@@ -877,7 +718,6 @@ export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities
             }
           }
           headRefOid
-          reviewDecision
           headRef {
             target {
               ... on Commit {
@@ -918,7 +758,7 @@ export function createItemDetailQuery(capabilities: GitHubItemDetailCapabilities
               endCursor
             }
           }
-          reviewThreads(first: 19) {
+          reviewThreads(first: 100) {
             nodes {
               ...DetailReviewThreadFields
             }
@@ -1116,62 +956,6 @@ export const REVIEW_THREAD_COMMENT_PAGE_QUERY = appendRequiredFragments(`
         comments(first: 100, after: $after) {
           nodes {
             ...DetailReviewCommentFields
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }
-    }
-  }
-`);
-
-export const USER_CONTENT_EDIT_PAGE_QUERY = appendRequiredFragments(`
-  query GitHubUserContentEditPage($contentId: ID!, $after: String!) {
-    content: node(id: $contentId) {
-      __typename
-      ... on Issue {
-        id
-        userContentEdits(first: 100, after: $after) {
-          nodes {
-            ...DetailUserContentEditFields
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }
-      ... on PullRequest {
-        id
-        userContentEdits(first: 100, after: $after) {
-          nodes {
-            ...DetailUserContentEditFields
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }
-      ... on IssueComment {
-        id
-        userContentEdits(first: 100, after: $after) {
-          nodes {
-            ...DetailUserContentEditFields
-          }
-          pageInfo {
-            hasNextPage
-            endCursor
-          }
-        }
-      }
-      ... on PullRequestReviewComment {
-        id
-        userContentEdits(first: 100, after: $after) {
-          nodes {
-            ...DetailUserContentEditFields
           }
           pageInfo {
             hasNextPage

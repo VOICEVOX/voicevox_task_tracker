@@ -18,7 +18,7 @@ export {
   type HelpCliCommand,
   type NotifyDiscordCliCommand,
   type NotifyOperationsCliCommand,
-  type PersistCacheCliCommand,
+  type PersistStateCliCommand,
   type ReportWorkflowCliCommand,
   type ReplayCliCommand,
   type ReplaySource,
@@ -100,7 +100,6 @@ export {
   readWorkflowArtifactFile,
   workflowArtifactRepositoryInventory,
   type WorkflowArtifact,
-  type WorkflowArtifactCacheOnlyPayload,
   type WorkflowArtifactRepositoryAllowlistEntry,
   type WorkflowRunMetadata,
 } from "./workflow-artifact.js";

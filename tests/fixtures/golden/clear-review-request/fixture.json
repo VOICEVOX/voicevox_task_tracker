@@ -4,7 +4,6 @@
   "input": {
     "kind": "standard",
     "evaluatedAt": "2026-08-01T00:00:00.000Z",
-    "notificationReferenceAt": "2026-07-31T23:00:00.000Z",
     "repositories": [
       {
         "id": "fixture-repository-review",

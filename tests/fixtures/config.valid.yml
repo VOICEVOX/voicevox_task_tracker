@@ -2,7 +2,7 @@ schemaVersion: 1
 organization: VOICEVOX
 
 tracking:
-  startAt: "2026-01-01T00:00:00+09:00"
+  startAt: null
   autoInclude:
     createdAfterStart: true
     changedAfterStart: true
@@ -120,16 +120,17 @@ notifications:
       users:
         Hiroshiba: "123456789012345678"
     maxItemsPerDigest: 10
-    repeatDays:
+    cooldownDays:
       urgent: 3
       critical: 2
 
 state:
-  branch: tracker-state-v4
-  repositoryCacheDirectory: state/github-repositories
-  itemCacheDirectory: state/github-items
-  latestImportanceDirectory: state/ai-latest-importance
-  aiCacheDirectory: state/ai-results
+  branch: tracker-state
+  snapshotPath: state/snapshot.json
+  historyDirectory: state/history
+  aiCacheDirectory: state/ai-cache
+  notificationLedgerPath: state/notification-ledger.json
+  runReportsDirectory: state/run-reports
   canonicalJson: true
 
 web:

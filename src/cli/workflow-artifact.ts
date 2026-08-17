@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
-import { type AiCacheEntry } from "../codex/index.js";
+import { createAiCacheEntry, type AiCacheEntry } from "../codex/index.js";
 import {
   createGitHubNodeId,
   createGitHubRepositoryId,
@@ -14,23 +14,16 @@ import {
   type DiscordNotificationSelection,
 } from "../discord/index.js";
 import { createPublicRepositoryAllowlist } from "../github/index.js";
-import { PublicRepositoryAllowlist } from "../github/public-repository-allowlist.js";
-import {
-  assertPublicSummarySize,
-  createPublicDetailsDto,
-  createPublicSummaryDto,
-  type GeneratedPublicData,
-} from "../pages/index.js";
 import {
   assertStatePublicSafety,
+  createStateHistoryInputEvents,
+  createStateNotificationLedger,
   createStateSnapshot,
   StatePublicSafetyError,
-  type AiLatestImportanceCacheDocument,
-  type GitHubItemCacheDocument,
-  type GitHubRepositoryCacheDocument,
+  type StateNotificationLedger,
+  type StateHistoryInputEvent,
   type StateSnapshot,
 } from "../persistence/index.js";
-import { validateCacheOnlyPersistenceInput } from "../persistence/cache-only-session.js";
 import { assertNonNullable } from "../util/index.js";
 import { CliWorkflowArtifactError } from "./errors.js";
 
@@ -73,6 +66,8 @@ const notificationReasonCodeSchema = z.enum([
 ]);
 const selectedReasonSchema = z.strictObject({
   reasonCode: notificationReasonCodeSchema,
+  notificationKey: z.string().min(1).max(1000),
+  cooldownUntil: dateTimeSchema,
 });
 const notificationCandidateSchema = z.strictObject({
   itemNodeId: nodeIdSchema,
@@ -86,15 +81,27 @@ const notificationCandidateSchema = z.strictObject({
   }),
   priorityWeight: z.number(),
 });
+const ledgerReservationSchema = z.strictObject({
+  notificationKey: z.string().min(1).max(1000),
+  itemNodeId: nodeIdSchema,
+  reasonCode: notificationReasonCodeSchema,
+  severity: severitySchema,
+  reservedAt: dateTimeSchema,
+  expiresAt: dateTimeSchema,
+  cooldownUntil: dateTimeSchema,
+  status: z.literal("reserved"),
+});
 const notificationSelectionSchema = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("skip_digest"),
-    reason: z.enum(["no_candidates", "manual", "rerun"]),
+    reason: z.literal("no_candidates"),
     candidates: z.tuple([]),
+    ledgerReservations: z.tuple([]),
   }),
   z.strictObject({
     action: z.literal("create_digest"),
     candidates: z.array(notificationCandidateSchema).min(1),
+    ledgerReservations: z.array(ledgerReservationSchema).min(1),
   }),
 ]);
 const discordSettingsSchema = z.strictObject({
@@ -154,19 +161,15 @@ const runMetadataSchema = z
     }
   });
 const workflowArtifactSchema = z.strictObject({
-  schemaVersion: z.literal("2"),
+  schemaVersion: z.literal("1"),
   kind: z.literal("validated_public_run"),
   repositoryAllowlist: z.array(repositoryAllowlistEntrySchema),
   snapshot: z.unknown(),
+  historyInputEvents: z.array(z.unknown()),
+  notificationLedger: z.unknown(),
   notificationSelection: z.unknown(),
   runMetadata: runMetadataSchema,
-  pages: z.unknown(),
-  cacheOnlyPayload: z.strictObject({
-    repositoryCaches: z.array(z.unknown()),
-    itemCaches: z.array(z.unknown()),
-    latestImportanceCaches: z.array(z.unknown()),
-    aiCacheEntries: z.array(z.unknown()),
-  }),
+  aiCacheEntries: z.array(z.unknown()),
   pagesUrl: z.url(),
   discordSettings: discordSettingsSchema,
 });
@@ -187,24 +190,17 @@ export type WorkflowRunMetadata = Readonly<{
 
 /** collect-analyzeが後続jobへ渡す公開可能な検証済み成果物。 */
 export type WorkflowArtifact = Readonly<{
-  schemaVersion: "2";
+  schemaVersion: "1";
   kind: "validated_public_run";
   repositoryAllowlist: readonly WorkflowArtifactRepositoryAllowlistEntry[];
   snapshot: StateSnapshot;
+  historyInputEvents: readonly StateHistoryInputEvent[];
+  notificationLedger: StateNotificationLedger;
   notificationSelection: DiscordNotificationSelection;
   runMetadata: WorkflowRunMetadata;
-  pages: GeneratedPublicData;
-  cacheOnlyPayload: WorkflowArtifactCacheOnlyPayload;
+  aiCacheEntries: readonly AiCacheEntry[];
   pagesUrl: string;
   discordSettings: DiscordDeliverySettings;
-}>;
-
-/** workflow artifactへ渡すcache-only payload。 */
-export type WorkflowArtifactCacheOnlyPayload = Readonly<{
-  repositoryCaches: readonly GitHubRepositoryCacheDocument[];
-  itemCaches: readonly GitHubItemCacheDocument[];
-  latestImportanceCaches: readonly AiLatestImportanceCacheDocument[];
-  aiCacheEntries: readonly AiCacheEntry[];
 }>;
 
 function nonEmptyValues<Value>(
@@ -230,8 +226,9 @@ function createNotificationSelection(value: unknown): DiscordNotificationSelecti
   if (result.data.action === "skip_digest") {
     return Object.freeze({
       action: "skip_digest",
-      reason: result.data.reason,
+      reason: "no_candidates",
       candidates: emptyValues(),
+      ledgerReservations: emptyValues(),
     });
   }
   const candidates = result.data.candidates.map((candidate) =>
@@ -246,54 +243,28 @@ function createNotificationSelection(value: unknown): DiscordNotificationSelecti
   return Object.freeze({
     action: "create_digest",
     candidates: nonEmptyValues(candidates, "通知候補"),
+    ledgerReservations: nonEmptyValues(result.data.ledgerReservations, "通知予約"),
   });
 }
 
-function createArtifactPublicRepositoryAllowlist(
-  repositories: readonly WorkflowArtifactRepositoryAllowlistEntry[],
-  observedAt: StateSnapshot["generatedAt"],
-): PublicRepositoryAllowlist {
-  const inventory: readonly Repository[] = repositories.map((repository) => ({
-    id: repository.id,
-    owner: repository.owner,
-    name: repository.name,
-    visibility: "public",
-    archived: false,
-    disabled: false,
-    observedAt,
-  }));
-  return PublicRepositoryAllowlist.create(inventory);
+function compareStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
 }
 
-function createCacheOnlyPayload(
-  value: unknown,
-  allowlist: PublicRepositoryAllowlist,
-  evaluatedAt: StateSnapshot["generatedAt"],
-  knownSecrets: readonly string[],
-): WorkflowArtifactCacheOnlyPayload {
-  const result = z
-    .strictObject({
-      repositoryCaches: z.array(z.unknown()),
-      itemCaches: z.array(z.unknown()),
-      latestImportanceCaches: z.array(z.unknown()),
-      aiCacheEntries: z.array(z.unknown()),
-    })
-    .safeParse(value);
-  if (!result.success) {
-    throw new TypeError("workflow artifactのcache-only payloadがschemaに適合しません", {
-      cause: result.error,
-    });
+function createAiCacheEntries(values: readonly unknown[]): readonly AiCacheEntry[] {
+  const entries = values.map((value) => createAiCacheEntry(value));
+  const cacheKeys = entries.map((entry) => entry.cacheKey);
+  if (new Set(cacheKeys).size !== cacheKeys.length) {
+    throw new TypeError("workflow artifactのAI cache keyが重複しています");
   }
-  return validateCacheOnlyPersistenceInput(
-    {
-      evaluatedAt,
-      repositoryCaches: result.data.repositoryCaches,
-      itemCaches: result.data.itemCaches,
-      latestImportanceCaches: result.data.latestImportanceCaches,
-      aiCacheEntries: result.data.aiCacheEntries,
-      knownSecrets,
-    },
-    allowlist,
+  return Object.freeze(
+    [...entries].sort((left, right) => compareStrings(left.cacheKey, right.cacheKey)),
   );
 }
 
@@ -362,35 +333,18 @@ function assertRunConsistency(snapshot: StateSnapshot, metadata: WorkflowRunMeta
   }
 }
 
-function assertPagesConsistency(snapshot: StateSnapshot, pages: GeneratedPublicData): void {
-  if (pages.summary.runId !== snapshot.run.id || pages.details.runId !== snapshot.run.id) {
-    throw new TypeError("workflow artifactのPages DTOとsnapshotのrun IDが一致しません");
-  }
-  if (
-    pages.summary.repositories.length !== snapshot.repositories.length ||
-    pages.summary.items.length !== snapshot.items.length ||
-    pages.details.items.length !== snapshot.items.length
-  ) {
-    throw new TypeError("workflow artifactのPages DTOとsnapshotの件数が一致しません");
-  }
-  const snapshotItemIds = new Set(snapshot.items.map((item) => item.nodeId));
-  const summaryItemIds = new Set(pages.summary.items.map((item) => item.nodeId));
-  const detailsItemIds = new Set(pages.details.items.map((item) => item.summary.nodeId));
-  if (
-    summaryItemIds.size !== pages.summary.items.length ||
-    detailsItemIds.size !== pages.details.items.length ||
-    [...snapshotItemIds].some((nodeId) => !summaryItemIds.has(nodeId)) ||
-    [...snapshotItemIds].some((nodeId) => !detailsItemIds.has(nodeId))
-  ) {
-    throw new TypeError("workflow artifactのPages DTOとsnapshotの項目が一致しません");
-  }
-}
-
 function assertNotificationSelectionConsistency(
   snapshot: StateSnapshot,
+  ledger: StateNotificationLedger,
   selection: DiscordNotificationSelection,
 ): void {
   const itemIds = new Set(snapshot.items.map((item) => item.nodeId));
+  const reservations = new Map(
+    selection.ledgerReservations.map((entry) => [entry.notificationKey, entry]),
+  );
+  const ledgerEntries = new Map(ledger.entries.map((entry) => [entry.notificationKey, entry]));
+  const reasonKeys: string[] = [];
+
   for (const candidate of selection.candidates) {
     if (!itemIds.has(candidate.itemNodeId)) {
       throw new TypeError("workflow artifactの通知候補がsnapshot外の項目を参照しています");
@@ -401,9 +355,41 @@ function assertNotificationSelectionConsistency(
     ) {
       throw new TypeError("workflow artifactの通知候補内で項目または主理由が一致しません");
     }
+    for (const reason of candidate.reasons) {
+      reasonKeys.push(reason.notificationKey);
+      const reservation = reservations.get(reason.notificationKey);
+      if (reservation == null) {
+        throw new TypeError("workflow artifactの通知候補に対応する予約がありません");
+      }
+      if (
+        reservation.itemNodeId !== candidate.itemNodeId ||
+        reservation.reasonCode !== reason.reasonCode ||
+        reservation.severity !== candidate.severity ||
+        reservation.cooldownUntil !== reason.cooldownUntil
+      ) {
+        throw new TypeError("workflow artifactの通知候補と予約が一致しません");
+      }
+      const ledgerEntry = ledgerEntries.get(reason.notificationKey);
+      if (ledgerEntry == null) {
+        throw new TypeError("workflow artifactの通知予約がledgerにありません");
+      }
+      if (ledgerEntry.status !== "reserved") {
+        throw new TypeError("workflow artifactの通知予約がledgerへ反映されていません");
+      }
+      if (
+        ledgerEntry.itemNodeId !== reservation.itemNodeId ||
+        ledgerEntry.reasonCode !== reservation.reasonCode ||
+        ledgerEntry.severity !== reservation.severity ||
+        ledgerEntry.reservedAt !== reservation.reservedAt ||
+        ledgerEntry.expiresAt !== reservation.expiresAt ||
+        ledgerEntry.cooldownUntil !== reservation.cooldownUntil
+      ) {
+        throw new TypeError("workflow artifactの通知予約がledgerへ反映されていません");
+      }
+    }
   }
-  if (selection.action === "create_digest" && selection.candidates.length === 0) {
-    throw new TypeError("workflow artifactの通知候補がありません");
+  if (new Set(reasonKeys).size !== reasonKeys.length || reasonKeys.length !== reservations.size) {
+    throw new TypeError("workflow artifactの通知候補と予約の対応が一意ではありません");
   }
 }
 
@@ -421,47 +407,6 @@ function normalizePagesUrl(value: string): string {
   return url.href;
 }
 
-function createPages(value: unknown): GeneratedPublicData {
-  const result = z
-    .strictObject({
-      summary: z.unknown(),
-      details: z.unknown(),
-      summarySize: z.strictObject({
-        uncompressedBytes: nonNegativeIntegerSchema,
-        gzipBytes: nonNegativeIntegerSchema,
-        maximumBytes: nonNegativeIntegerSchema,
-      }),
-    })
-    .safeParse(value);
-  if (!result.success) {
-    throw new TypeError("workflow artifactのPages DTOがschemaに適合しません", {
-      cause: result.error,
-    });
-  }
-  const summary = createPublicSummaryDto(result.data.summary);
-  const details = createPublicDetailsDto(result.data.details);
-  const summarySize = assertPublicSummarySize(summary, result.data.summarySize.maximumBytes);
-  if (
-    summarySize.uncompressedBytes !== result.data.summarySize.uncompressedBytes ||
-    summarySize.gzipBytes !== result.data.summarySize.gzipBytes
-  ) {
-    throw new TypeError("workflow artifactのPages summary実測値が一致しません");
-  }
-  if (summary.runId !== details.runId || summary.generatedAt !== details.generatedAt) {
-    throw new TypeError("workflow artifactのPages DTOのrun情報が一致しません");
-  }
-  if (summary.items.length !== details.items.length) {
-    throw new TypeError("workflow artifactのPages DTOの項目件数が一致しません");
-  }
-  return Object.freeze({
-    summary,
-    details,
-    summarySize: Object.freeze({
-      ...summarySize,
-    }),
-  });
-}
-
 /** workflow artifactを独立した公開境界で再検証する。 */
 export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const result = workflowArtifactSchema.safeParse(value);
@@ -471,29 +416,21 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     });
   }
   const snapshot = createStateSnapshot(result.data.snapshot);
+  const historyInputEvents = createStateHistoryInputEvents(result.data.historyInputEvents);
+  const notificationLedger = createStateNotificationLedger(result.data.notificationLedger);
   const notificationSelection = createNotificationSelection(result.data.notificationSelection);
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
-  const pages = createPages(result.data.pages);
-  const repositoryAllowlist = createRepositoryAllowlist(result.data.repositoryAllowlist);
-  const publicRepositoryAllowlist = createArtifactPublicRepositoryAllowlist(
-    repositoryAllowlist,
-    snapshot.generatedAt,
-  );
-  const cacheOnlyPayload = createCacheOnlyPayload(
-    result.data.cacheOnlyPayload,
-    publicRepositoryAllowlist,
-    snapshot.generatedAt,
-    [],
-  );
+  const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
   const artifact = Object.freeze({
-    schemaVersion: "2",
+    schemaVersion: "1",
     kind: "validated_public_run",
-    repositoryAllowlist,
+    repositoryAllowlist: createRepositoryAllowlist(result.data.repositoryAllowlist),
     snapshot,
+    historyInputEvents,
+    notificationLedger,
     notificationSelection,
     runMetadata,
-    pages,
-    cacheOnlyPayload,
+    aiCacheEntries,
     pagesUrl: normalizePagesUrl(result.data.pagesUrl),
     discordSettings: Object.freeze({
       ...result.data.discordSettings,
@@ -509,8 +446,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     }),
   } satisfies WorkflowArtifact);
   assertRunConsistency(snapshot, runMetadata);
-  assertPagesConsistency(snapshot, pages);
-  assertNotificationSelectionConsistency(snapshot, notificationSelection);
+  assertNotificationSelectionConsistency(snapshot, notificationLedger, notificationSelection);
   assertWorkflowArtifactPublicSafety(artifact, repositoryInventory(snapshot), []);
   return artifact;
 }
@@ -545,30 +481,16 @@ export function assertWorkflowArtifactPublicSafety(
   knownSecrets: readonly string[],
 ): void {
   assertRepositoryAllowlistConsistency(artifact, inventory);
-  const publicRepositoryAllowlist = createArtifactPublicRepositoryAllowlist(
-    artifact.repositoryAllowlist,
-    artifact.snapshot.generatedAt,
-  );
-  validateCacheOnlyPersistenceInput(
-    {
-      evaluatedAt: artifact.snapshot.generatedAt,
-      repositoryCaches: artifact.cacheOnlyPayload.repositoryCaches,
-      itemCaches: artifact.cacheOnlyPayload.itemCaches,
-      latestImportanceCaches: artifact.cacheOnlyPayload.latestImportanceCaches,
-      aiCacheEntries: artifact.cacheOnlyPayload.aiCacheEntries,
-      knownSecrets,
-    },
-    publicRepositoryAllowlist,
-  );
   assertStatePublicSafety({
     snapshot: artifact.snapshot,
     repositoryInventory: inventory,
     additionalValues: [
       artifact.repositoryAllowlist,
+      artifact.historyInputEvents,
+      artifact.notificationLedger,
       artifact.notificationSelection,
       artifact.runMetadata,
-      artifact.pages,
-      artifact.cacheOnlyPayload,
+      ...artifact.aiCacheEntries,
       artifact.pagesUrl,
       artifact.discordSettings,
     ],

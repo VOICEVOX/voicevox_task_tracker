@@ -6,6 +6,7 @@ import {
   type MeaningfulProgress,
   type NaturalLanguageProgressAssessment,
   type NaturalLanguageProgressCandidate,
+  type PreviousActivityState,
 } from "./meaningful-progress.js";
 import {
   compareSeverity,
@@ -37,29 +38,6 @@ export type StalenessTransitionBasis = Readonly<{
   precision: "event" | "inferred";
 }>;
 
-/** 停滞時間計算へ渡された遷移根拠の時刻範囲が不正なことを表す。 */
-export class StalenessTimestampRangeError extends RangeError {
-  public readonly basisKind: "status" | "responsibility";
-  public readonly createdAt: UtcIsoDateTime;
-  public readonly occurredAt: UtcIsoDateTime;
-  public readonly evaluatedAt: UtcIsoDateTime;
-
-  public constructor(
-    basisKind: "status" | "responsibility",
-    createdAt: UtcIsoDateTime,
-    occurredAt: UtcIsoDateTime,
-    evaluatedAt: UtcIsoDateTime,
-  ) {
-    const context = basisKind === "status" ? "status遷移根拠の時刻" : "責務遷移根拠の時刻";
-    super(`${context}は項目作成時刻以後かつ判定時刻以前にしてください`);
-    this.name = "StalenessTimestampRangeError";
-    this.basisKind = basisKind;
-    this.createdAt = createdAt;
-    this.occurredAt = occurredAt;
-    this.evaluatedAt = evaluatedAt;
-  }
-}
-
 /** 停滞時間の算出に必要な状態機械の判定結果。 */
 export type StateDecisionForStaleness = Readonly<{
   status: Status;
@@ -69,7 +47,7 @@ export type StateDecisionForStaleness = Readonly<{
   responsibilityBasis: StalenessTransitionBasis;
 }>;
 
-/** 復元した状態、責務、停滞の時刻を含む状態。 */
+/** 次回判定との比較に保存する停滞時刻の状態。 */
 export type StalenessState = Readonly<{
   status: Status;
   waitingOn: readonly WaitingOn[];
@@ -79,6 +57,16 @@ export type StalenessState = Readonly<{
   lastProgressAt: UtcIsoDateTime;
   lastHumanActivityAt: UtcIsoDateTime;
 }>;
+
+/** 初回判定または前回の停滞時刻状態。 */
+export type PreviousStalenessState =
+  | Readonly<{
+      availability: "not_available";
+    }>
+  | Readonly<{
+      availability: "available";
+      value: StalenessState;
+    }>;
 
 /** blocked親の代わりに通知順位へ使うblocker情報。 */
 export type BlockerRanking = Readonly<{
@@ -136,6 +124,7 @@ export type CalculateStalenessInput = Readonly<{
   evaluatedAt: UtcIsoDateTime;
   currentDecision: StateDecisionForStaleness;
   decisionBasis: StalenessSeverityContext["decisionBasis"];
+  previousState: PreviousStalenessState;
   events: readonly NormalizedEvent[];
   responsibleAccountIdentifiers: ReadonlySet<string>;
   dependencyResolutions: readonly DependencyResolutionProgress[];
@@ -265,13 +254,10 @@ function validateTimestampRange(
   context: string,
   createdAt: number,
   evaluatedAt: number,
-  createdAtValue: UtcIsoDateTime,
-  evaluatedAtValue: UtcIsoDateTime,
-  basisKind: StalenessTimestampRangeError["basisKind"],
 ): void {
   const timestamp = parseTimestamp(value, context);
   if (timestamp < createdAt || timestamp > evaluatedAt) {
-    throw new StalenessTimestampRangeError(basisKind, createdAtValue, value, evaluatedAtValue);
+    throw new RangeError(`${context}は項目作成時刻以後かつ判定時刻以前にしてください`);
   }
 }
 
@@ -294,21 +280,67 @@ function validateInput(input: CalculateStalenessInput): void {
     "status遷移根拠の時刻",
     createdAt,
     evaluatedAt,
-    input.createdAt,
-    input.evaluatedAt,
-    "status",
   );
   validateTimestampRange(
     input.currentDecision.responsibilityBasis.occurredAt,
     "責務遷移根拠の時刻",
     createdAt,
     evaluatedAt,
-    input.createdAt,
-    input.evaluatedAt,
-    "responsibility",
   );
 
+  if (input.previousState.availability === "available") {
+    validateStatusAndWaitingOn(
+      input.previousState.value.status,
+      input.previousState.value.waitingOn,
+      "前回状態",
+    );
+    validateTimestampRange(
+      input.previousState.value.statusSince,
+      "前回statusSince",
+      createdAt,
+      evaluatedAt,
+    );
+    validateTimestampRange(
+      input.previousState.value.ownerSince,
+      "前回ownerSince",
+      createdAt,
+      evaluatedAt,
+    );
+    validateTimestampRange(
+      input.previousState.value.stallSince,
+      "前回stallSince",
+      createdAt,
+      evaluatedAt,
+    );
+    validateTimestampRange(
+      input.previousState.value.lastProgressAt,
+      "前回lastProgressAt",
+      createdAt,
+      evaluatedAt,
+    );
+    validateTimestampRange(
+      input.previousState.value.lastHumanActivityAt,
+      "前回lastHumanActivityAt",
+      createdAt,
+      evaluatedAt,
+    );
+  }
   validateBlockedParentContext(input);
+}
+
+function sameWaitingOnEntities(left: readonly WaitingOn[], right: readonly WaitingOn[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((waitingOn, index) => {
+    const other = right[index];
+    assertNonNullable(other, "比較対象のwaitingOnがありません");
+    return (
+      waitingOn.kind === other.kind &&
+      waitingOn.candidateId === other.candidateId &&
+      waitingOn.role === other.role
+    );
+  });
 }
 
 function latestTimestamp(values: readonly UtcIsoDateTime[]): UtcIsoDateTime {
@@ -349,17 +381,51 @@ function determineTransitionTimes(
   ownerSince: UtcIsoDateTime;
   stallSince: UtcIsoDateTime;
 }> {
-  const ownerSince = latestTimestamp([
-    input.currentDecision.statusBasis.occurredAt,
-    input.currentDecision.responsibilityBasis.occurredAt,
-  ]);
+  if (input.previousState.availability === "not_available") {
+    const ownerSince = latestTimestamp([
+      input.currentDecision.statusBasis.occurredAt,
+      input.currentDecision.responsibilityBasis.occurredAt,
+    ]);
+    return Object.freeze({
+      statusSince: input.currentDecision.statusBasis.occurredAt,
+      ownerSince,
+      stallSince: latestTimestamp([
+        ownerSince,
+        lastProgressAt,
+        ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
+      ]),
+    });
+  }
+
+  const previous = input.previousState.value;
+  const statusChanged = previous.status !== input.currentDecision.status;
+  const responsibilityChanged = !sameWaitingOnEntities(
+    previous.waitingOn,
+    input.currentDecision.waitingOn,
+  );
+  const statusSince = statusChanged
+    ? input.currentDecision.statusBasis.occurredAt
+    : previous.statusSince;
+  let ownerSince = previous.ownerSince;
+  if (statusChanged && responsibilityChanged) {
+    ownerSince = latestTimestamp([
+      input.currentDecision.statusBasis.occurredAt,
+      input.currentDecision.responsibilityBasis.occurredAt,
+    ]);
+  } else if (statusChanged) {
+    ownerSince = input.currentDecision.statusBasis.occurredAt;
+  } else if (responsibilityChanged) {
+    ownerSince = input.currentDecision.responsibilityBasis.occurredAt;
+  }
+
   return Object.freeze({
-    statusSince: input.currentDecision.statusBasis.occurredAt,
+    statusSince,
     ownerSince,
     stallSince: latestTimestamp([
       ownerSince,
       lastProgressAt,
       ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
+      ...(statusChanged || responsibilityChanged ? [] : [previous.stallSince]),
     ]),
   });
 }
@@ -552,7 +618,20 @@ export function recalculateStalenessSeverity(
   });
 }
 
-/** 状態機械の遷移根拠と進捗イベントから停滞時間とseverityを算出する。 */
+function createPreviousActivityState(previousState: PreviousStalenessState): PreviousActivityState {
+  if (previousState.availability === "not_available") {
+    return Object.freeze({
+      status: "not_available",
+    });
+  }
+  return Object.freeze({
+    status: "available",
+    lastProgressAt: previousState.value.lastProgressAt,
+    lastHumanActivityAt: previousState.value.lastHumanActivityAt,
+  });
+}
+
+/** 前回状態、状態機械の遷移根拠、進捗イベントから停滞時間とseverityを算出する。 */
 export function calculateStaleness(input: CalculateStalenessInput): StalenessResult {
   validateInput(input);
   const progress = determineMeaningfulProgress({
@@ -562,6 +641,7 @@ export function calculateStaleness(input: CalculateStalenessInput): StalenessRes
     dependencyResolutions: input.dependencyResolutions,
     naturalLanguageAssessments: input.naturalLanguageAssessments,
     minimumAiConfidence: input.minimumAiConfidence,
+    previousActivity: createPreviousActivityState(input.previousState),
     repositoryFullName: input.repositoryFullName,
     resolveLabelEffects: input.resolveLabelEffects,
   });

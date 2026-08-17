@@ -2,41 +2,37 @@ import { type Dirent } from "node:fs";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 
-import { createUtcIsoDateTime } from "../domain/index.js";
+import { z } from "zod";
+
 import {
-  validateCacheOnlyStateFiles,
-  type CacheOnlyStateFile,
-  type CacheOnlyStateFiles,
-  type CacheOnlyValidatedDocuments,
-} from "../persistence/cache-only-session.js";
+  StateFormatError,
+  parseStateHistoryRecords,
+  parseStateNotificationLedger,
+  parseStateSnapshot,
+} from "../persistence/index.js";
 import { type VerifyStateCliCommand } from "./command.js";
 import { CliStateVerificationError } from "./errors.js";
 
-const CACHE_DIRECTORY_NAMES: readonly [
-  "github-repositories",
-  "github-items",
-  "ai-latest-importance",
-  "ai-results",
-] = Object.freeze(["github-repositories", "github-items", "ai-latest-importance", "ai-results"]);
-const JSON_FILE_PATTERN = /^[A-Za-z0-9._-]+\.json$/u;
+const HISTORY_FILE_PATTERN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/u;
+const schemaVersionSchema = z.object({
+  schemaVersion: z.string().min(1),
+});
 
-type CacheDirectoryName = (typeof CACHE_DIRECTORY_NAMES)[number];
-
-/** 一種類のcache文書を検証した件数とschema version。 */
+/** 一種類の永続state文書を検証した件数とschema version。 */
 export type StateDocumentVerification = Readonly<{
   verifiedCount: number;
-  schemaVersions: readonly string[];
+  sourceSchemaVersions: readonly string[];
+  migratedSchemaVersions: readonly string[];
 }>;
 
-/** cache-only stateの4種類を検証した結果。 */
+/** snapshot、通知ledger、履歴を検証した結果。 */
 export type StateVerificationResult = Readonly<{
-  repositoryCaches: StateDocumentVerification;
-  itemCaches: StateDocumentVerification;
-  latestImportanceCaches: StateDocumentVerification;
-  aiCacheEntries: StateDocumentVerification;
+  snapshot: StateDocumentVerification;
+  notificationLedger: StateDocumentVerification;
+  history: StateDocumentVerification;
 }>;
 
-/** cache-only state検証が利用する読み込みと標準出力境界。 */
+/** 永続state検証が利用する読み込みと標準出力境界。 */
 export type StateVerificationDependencies = Readonly<{
   verifyStateDirectory: (stateDirectory: string) => Promise<StateVerificationResult>;
   writeStandardOutput: (source: string) => Promise<void>;
@@ -58,12 +54,49 @@ function uniqueVersions(versions: readonly string[]): readonly string[] {
 
 function createVerification(
   verifiedCount: number,
-  schemaVersions: readonly string[],
+  sourceSchemaVersions: readonly string[],
+  migratedSchemaVersions: readonly string[],
 ): StateDocumentVerification {
   return Object.freeze({
     verifiedCount,
-    schemaVersions: uniqueVersions(schemaVersions),
+    sourceSchemaVersions: uniqueVersions(sourceSchemaVersions),
+    migratedSchemaVersions: uniqueVersions(migratedSchemaVersions),
   });
+}
+
+function parseJson(source: string, kind: string): unknown {
+  try {
+    const parse: (value: string) => unknown = JSON.parse;
+    return parse(source);
+  } catch (error: unknown) {
+    throw new StateFormatError(kind, {
+      cause: new SyntaxError("JSON構文が不正です", {
+        cause: error,
+      }),
+    });
+  }
+}
+
+function schemaVersion(value: unknown, kind: string): string {
+  const result = schemaVersionSchema.safeParse(value);
+  if (!result.success) {
+    throw StateFormatError.fromZodError(kind, result.error);
+  }
+  return result.data.schemaVersion;
+}
+
+function jsonDocumentSchemaVersion(source: string, kind: string): string {
+  return schemaVersion(parseJson(source, kind), kind);
+}
+
+function jsonLinesSchemaVersions(source: string): readonly string[] {
+  const lines = source.split("\n");
+  if (lines.at(-1) === "") {
+    lines.pop();
+  }
+  return Object.freeze(
+    lines.map((line) => schemaVersion(parseJson(line, "state history"), "state history")),
+  );
 }
 
 function verificationError(path: string, error: unknown): CliStateVerificationError {
@@ -73,10 +106,6 @@ function verificationError(path: string, error: unknown): CliStateVerificationEr
   return new CliStateVerificationError(path, {
     cause: error,
   });
-}
-
-function isMissingPathError(error: unknown): boolean {
-  return typeof error === "object" && error != null && "code" in error && error.code === "ENOENT";
 }
 
 async function readUtf8(path: string): Promise<string> {
@@ -93,132 +122,101 @@ async function readUtf8(path: string): Promise<string> {
   } catch (error: unknown) {
     throw verificationError(
       path,
-      new TypeError("cache-only stateファイルがUTF-8ではありません", {
+      new TypeError("永続stateファイルがUTF-8ではありません", {
         cause: error,
       }),
     );
   }
 }
 
-function parseJson(source: string, path: string): unknown {
+async function verifySnapshot(stateDirectory: string): Promise<StateDocumentVerification> {
+  const path = join(stateDirectory, "snapshot.json");
+  const source = await readUtf8(path);
   try {
-    const parse: (value: string) => unknown = JSON.parse;
-    return parse(source);
-  } catch (error: unknown) {
-    throw verificationError(
-      path,
-      new SyntaxError("cache-only stateのJSON構文が不正です", {
-        cause: error,
-      }),
+    const snapshot = parseStateSnapshot(source);
+    return createVerification(
+      1,
+      [jsonDocumentSchemaVersion(source, "snapshot")],
+      [snapshot.schemaVersion],
     );
+  } catch (error: unknown) {
+    throw verificationError(path, error);
   }
 }
 
-function cacheRelativePath(directory: CacheDirectoryName, fileName: string): string {
-  return `state/${directory}/${fileName}`;
-}
-
-async function readCacheFiles(
+async function verifyNotificationLedger(
   stateDirectory: string,
-  directory: CacheDirectoryName,
-): Promise<readonly CacheOnlyStateFile[]> {
-  const directoryPath = join(stateDirectory, directory);
-  let entries: Dirent[];
+): Promise<StateDocumentVerification> {
+  const path = join(stateDirectory, "notification-ledger.json");
+  const source = await readUtf8(path);
   try {
-    entries = await readdir(directoryPath, {
+    const ledger = parseStateNotificationLedger(source);
+    return createVerification(
+      1,
+      [jsonDocumentSchemaVersion(source, "notification ledger")],
+      [ledger.schemaVersion],
+    );
+  } catch (error: unknown) {
+    throw verificationError(path, error);
+  }
+}
+
+async function readHistoryEntries(historyDirectory: string): Promise<Dirent[]> {
+  try {
+    return await readdir(historyDirectory, {
       withFileTypes: true,
     });
   } catch (error: unknown) {
-    if (isMissingPathError(error)) {
-      return Object.freeze([]);
-    }
-    throw verificationError(directoryPath, error);
+    throw verificationError(historyDirectory, error);
   }
-  const files: CacheOnlyStateFile[] = [];
+}
+
+async function verifyHistory(stateDirectory: string): Promise<StateDocumentVerification> {
+  const historyDirectory = join(stateDirectory, "history");
+  const entries = await readHistoryEntries(historyDirectory);
+  const sourceSchemaVersions: string[] = [];
+  const migratedSchemaVersions: string[] = [];
+  let verifiedCount = 0;
   for (const entry of entries.sort((left, right) => compareStrings(left.name, right.name))) {
-    const path = join(directoryPath, entry.name);
-    if (!entry.isFile() || !JSON_FILE_PATTERN.test(entry.name)) {
-      throw verificationError(
-        path,
-        new TypeError("cache-only stateのdirectory内に不正なpathがあります"),
-      );
+    const path = join(historyDirectory, entry.name);
+    const match = HISTORY_FILE_PATTERN.exec(entry.name);
+    if (!entry.isFile() || match == null) {
+      throw verificationError(path, new TypeError("日次履歴のファイル名または種別が不正です"));
     }
-    files.push({
-      path: cacheRelativePath(directory, entry.name),
-      value: parseJson(await readUtf8(path), path),
-    });
-  }
-  return Object.freeze(files);
-}
-
-async function readCacheStateFiles(stateDirectory: string): Promise<CacheOnlyStateFiles> {
-  let entries: Dirent[];
-  try {
-    entries = await readdir(stateDirectory, {
-      withFileTypes: true,
-    });
-  } catch (error: unknown) {
-    throw verificationError(stateDirectory, error);
-  }
-  const knownDirectories = new Set<string>(CACHE_DIRECTORY_NAMES);
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !knownDirectories.has(entry.name)) {
-      throw verificationError(
-        join(stateDirectory, entry.name),
-        new TypeError("cache-only stateには指定された4種類のdirectoryだけを置けます"),
-      );
+    const date = match[1];
+    if (date == null) {
+      throw verificationError(path, new TypeError("日次履歴のファイル名から日付を取得できません"));
+    }
+    const source = await readUtf8(path);
+    try {
+      const records = parseStateHistoryRecords(source);
+      if (records.some((record) => record.date !== date)) {
+        throw new TypeError("日次履歴のファイル名とrecordの日付が一致しません");
+      }
+      verifiedCount += records.length;
+      sourceSchemaVersions.push(...jsonLinesSchemaVersions(source));
+      migratedSchemaVersions.push(...records.map((record) => record.schemaVersion));
+    } catch (error: unknown) {
+      throw verificationError(path, error);
     }
   }
-  const [repositoryCaches, itemCaches, latestImportanceCaches, aiCacheEntries] = await Promise.all([
-    readCacheFiles(stateDirectory, "github-repositories"),
-    readCacheFiles(stateDirectory, "github-items"),
-    readCacheFiles(stateDirectory, "ai-latest-importance"),
-    readCacheFiles(stateDirectory, "ai-results"),
-  ]);
-  return Object.freeze({
-    repositoryCaches,
-    itemCaches,
-    latestImportanceCaches,
-    aiCacheEntries,
-  });
+  return createVerification(verifiedCount, sourceSchemaVersions, migratedSchemaVersions);
 }
 
-function documentVerification(documents: CacheOnlyValidatedDocuments): StateVerificationResult {
-  return Object.freeze({
-    repositoryCaches: createVerification(
-      documents.repositoryCaches.length,
-      documents.repositoryCaches.map((document) => document.schemaVersion),
-    ),
-    itemCaches: createVerification(
-      documents.itemCaches.length,
-      documents.itemCaches.map((document) => document.schemaVersion),
-    ),
-    latestImportanceCaches: createVerification(
-      documents.latestImportanceCaches.length,
-      documents.latestImportanceCaches.map((document) => document.schemaVersion),
-    ),
-    aiCacheEntries: createVerification(
-      documents.aiCacheEntries.length,
-      documents.aiCacheEntries.map((entry) => entry.metadata.schemaVersion),
-    ),
-  });
-}
-
-/** 指定したdirectoryのcache-only stateを検証する。 */
+/** 指定したディレクトリのsnapshot、通知ledger、履歴を検証する。 */
 export async function verifyPersistentStateDirectory(
   stateDirectory: string,
 ): Promise<StateVerificationResult> {
-  const files = await readCacheStateFiles(stateDirectory);
-  try {
-    const documents = validateCacheOnlyStateFiles({
-      evaluatedAt: createUtcIsoDateTime(new Date().toISOString()),
-      files,
-      knownSecrets: [],
-    });
-    return documentVerification(documents);
-  } catch (error: unknown) {
-    throw verificationError(stateDirectory, error);
-  }
+  const [snapshot, notificationLedger, history] = await Promise.all([
+    verifySnapshot(stateDirectory),
+    verifyNotificationLedger(stateDirectory),
+    verifyHistory(stateDirectory),
+  ]);
+  return Object.freeze({
+    snapshot,
+    notificationLedger,
+    history,
+  });
 }
 
 function formatVersions(versions: readonly string[]): string {
@@ -226,16 +224,15 @@ function formatVersions(versions: readonly string[]): string {
 }
 
 function formatDocumentResult(name: string, result: StateDocumentVerification): string {
-  return `${name}: ${result.verifiedCount.toString()}件、schema version ${formatVersions(result.schemaVersions)}`;
+  return `${name}: ${result.verifiedCount.toString()}件、schema version ${formatVersions(result.sourceSchemaVersions)} -> ${formatVersions(result.migratedSchemaVersions)}`;
 }
 
-/** cache-only stateの検証結果を標準出力向けに整形する。 */
+/** 永続stateの検証結果を標準出力向けに整形する。 */
 export function formatStateVerificationResult(result: StateVerificationResult): string {
   return [
-    formatDocumentResult("github-repositories", result.repositoryCaches),
-    formatDocumentResult("github-items", result.itemCaches),
-    formatDocumentResult("ai-latest-importance", result.latestImportanceCaches),
-    formatDocumentResult("ai-results", result.aiCacheEntries),
+    formatDocumentResult("snapshot", result.snapshot),
+    formatDocumentResult("notification ledger", result.notificationLedger),
+    formatDocumentResult("history", result.history),
   ].join("\n");
 }
 
@@ -247,7 +244,7 @@ export class StateVerificationRunner {
     this.#dependencies = dependencies;
   }
 
-  /** 指定したcache-only stateを検証し、件数とschema versionを出力する。 */
+  /** 指定した永続stateを検証し、件数とschema versionを出力する。 */
   public async run(command: VerifyStateCliCommand): Promise<void> {
     const result = await this.#dependencies.verifyStateDirectory(command.stateDirectory);
     await this.#dependencies.writeStandardOutput(`${formatStateVerificationResult(result)}\n`);

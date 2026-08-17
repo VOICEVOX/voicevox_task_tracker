@@ -7,6 +7,7 @@ import {
 } from "./notification-selection.js";
 import {
   type GitHubNodeId,
+  type NotificationLedgerEntry,
   type OperationsAlertKind,
   type TrackedItem,
   type UtcIsoDateTime,
@@ -88,6 +89,7 @@ export type DiscordMentionSettings = Readonly<{
 
 export type BuildDiscordDigestPlanInput = Readonly<{
   candidates: readonly DiscordNotificationCandidate[];
+  ledgerReservations: readonly NotificationLedgerEntry[];
   items: readonly TrackedItem[];
   pagesUrl: string;
   generatedAt: UtcIsoDateTime;
@@ -97,6 +99,7 @@ export type BuildDiscordDigestPlanInput = Readonly<{
 export type PreparedDiscordDigestMessage = Readonly<{
   payload: DiscordWebhookPayload;
   itemNodeIds: readonly GitHubNodeId[];
+  notificationKeys: readonly string[];
 }>;
 
 export type DiscordDigestPlan = Readonly<{
@@ -125,6 +128,7 @@ type DigestFieldDraft = Readonly<{
   category: DiscordDigestCategory;
   field: DiscordEmbedField;
   itemNodeId: GitHubNodeId;
+  notificationKeys: readonly string[];
   mentionedUserIds: readonly string[];
 }>;
 
@@ -136,6 +140,7 @@ interface MutableEmbedDraft {
 interface MutableMessageDraft {
   embeds: MutableEmbedDraft[];
   itemNodeIds: GitHubNodeId[];
+  notificationKeys: string[];
   mentionedUserIds: string[];
 }
 
@@ -497,6 +502,7 @@ function createFieldDraft(
       inline: false,
     }),
     itemNodeId: item.nodeId,
+    notificationKeys: Object.freeze(candidate.reasons.map((reason) => reason.notificationKey)),
     mentionedUserIds: waitingOn.mentionedUserIds,
   });
 }
@@ -514,10 +520,37 @@ function validateDigestInputs(
   if (new Set(candidateNodeIds).size !== candidateNodeIds.length) {
     throw new DiscordPayloadError("通知候補のnode IDが重複しています");
   }
+
+  const reservationsByKey = new Map(
+    input.ledgerReservations.map((reservation) => [reservation.notificationKey, reservation]),
+  );
+  if (reservationsByKey.size !== input.ledgerReservations.length) {
+    throw new DiscordPayloadError("ledger予約のnotification keyが重複しています");
+  }
+  const candidateKeys: string[] = [];
   for (const candidate of input.candidates) {
     if (!itemsByNodeId.has(candidate.itemNodeId)) {
       throw new DiscordPayloadError(`通知候補 ${candidate.itemNodeId}の追跡項目がありません`);
     }
+    for (const reason of candidate.reasons) {
+      const reservation = reservationsByKey.get(reason.notificationKey);
+      if (
+        reservation?.status !== "reserved" ||
+        reservation.itemNodeId !== candidate.itemNodeId ||
+        reservation.reasonCode !== reason.reasonCode ||
+        reservation.severity !== candidate.severity ||
+        reservation.cooldownUntil !== reason.cooldownUntil
+      ) {
+        throw new DiscordPayloadError("通知候補とledger予約が一致しません");
+      }
+      candidateKeys.push(reason.notificationKey);
+    }
+  }
+  if (
+    new Set(candidateKeys).size !== candidateKeys.length ||
+    candidateKeys.length !== input.ledgerReservations.length
+  ) {
+    throw new DiscordPayloadError("通知候補とledger予約が1対1に対応していません");
   }
   return itemsByNodeId;
 }
@@ -526,6 +559,7 @@ function emptyMessageDraft(): MutableMessageDraft {
   return {
     embeds: [],
     itemNodeIds: [],
+    notificationKeys: [],
     mentionedUserIds: [],
   };
 }
@@ -550,6 +584,7 @@ function appendField(
   return {
     embeds,
     itemNodeIds: [...message.itemNodeIds, fieldDraft.itemNodeId],
+    notificationKeys: [...message.notificationKeys, ...fieldDraft.notificationKeys],
     mentionedUserIds: [
       ...new Set([...message.mentionedUserIds, ...fieldDraft.mentionedUserIds]),
     ].sort(),
@@ -606,13 +641,11 @@ function createDigestContent(
 }
 
 function createDigestId(candidates: readonly DiscordNotificationCandidate[]): string {
-  const candidateIdentity = candidates
-    .flatMap((candidate) =>
-      candidate.reasons.map((reason) => [candidate.itemNodeId, reason.reasonCode]),
-    )
+  const notificationKeys = candidates
+    .flatMap((candidate) => candidate.reasons.map((reason) => reason.notificationKey))
     .sort();
   const digestHash = createHash("sha256")
-    .update(JSON.stringify(candidateIdentity))
+    .update(JSON.stringify(notificationKeys))
     .digest("hex")
     .slice(0, 24);
   return `discord-digest:v1:${digestHash}`;
@@ -774,6 +807,9 @@ export function assertDiscordWebhookPayloadWithinLimits(payload: DiscordWebhookP
 /** 選別済み候補から制限内へ分割した決定論的なDiscord digest計画を生成する。 */
 export function buildDiscordDigestPlan(input: BuildDiscordDigestPlanInput): DiscordDigestPlan {
   if (input.candidates.length === 0) {
+    if (input.ledgerReservations.length !== 0) {
+      throw new DiscordPayloadError("通知候補が0件のときledger予約は空にしてください");
+    }
     return Object.freeze({
       digestId: createDigestId([]),
       messages: Object.freeze([]),
@@ -814,6 +850,7 @@ export function buildDiscordDigestPlan(input: BuildDiscordDigestPlanInput): Disc
     return Object.freeze({
       payload,
       itemNodeIds: Object.freeze([...message.itemNodeIds]),
+      notificationKeys: Object.freeze([...message.notificationKeys]),
     });
   });
   return Object.freeze({

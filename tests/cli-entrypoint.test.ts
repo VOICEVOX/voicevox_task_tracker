@@ -10,7 +10,6 @@ import {
   parseCliArguments,
   runTrackerCommand,
   type BackfillCliCommand,
-  type DryRunCliCommand,
 } from "../src/cli/index.js";
 
 describe("tracker:run実行入口", () => {
@@ -89,31 +88,10 @@ describe("tracker:run実行入口", () => {
     ).toEqual(["eval", "--fixtures", "tests/fixtures/golden", "--artifact", "artifacts/eval.json"]);
   });
 
-  it("dry-runサブコマンドをartifact指定とともに既存CLIへ渡す", async () => {
-    const runCli = vi.fn((args: readonly string[]): Promise<DryRunCliCommand> => {
-      const command = parseCliArguments(args);
-      if (command.kind !== "dry-run") {
-        throw new TypeError("dry-run commandではありません");
-      }
-      return Promise.resolve(command);
-    });
-
-    const result = await runTrackerCommand(
-      ["dry-run", "--artifact", "artifacts/dry-run.json"],
-      runCli,
-    );
-
-    expect(runCli).toHaveBeenCalledWith(["dry-run", "--artifact", "artifacts/dry-run.json"]);
-    expect(result).toMatchObject({
-      kind: "dry-run",
-      artifactPath: "artifacts/dry-run.json",
-    });
-  });
-
   it("verify-stateサブコマンドをstateディレクトリ指定とともに既存CLIへ渡す", () => {
     expect(
-      createTrackerRunCliArguments(["verify-state", "--state-directory", "tracker-state-v4/state"]),
-    ).toEqual(["verify-state", "--state-directory", "tracker-state-v4/state"]);
+      createTrackerRunCliArguments(["verify-state", "--state-directory", "tracker-state/state"]),
+    ).toEqual(["verify-state", "--state-directory", "tracker-state/state"]);
   });
 
   it("workflow stageサブコマンドを検証してそのまま渡す", () => {

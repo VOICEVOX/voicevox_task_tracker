@@ -7,7 +7,7 @@ import {
   createProductionCliApplication,
   type ProductionRuntimeAdapters,
 } from "../cli/production-runtime.js";
-import { type CliExecutionResult, type RunMetrics } from "../cli/index.js";
+import { type CliExecutionResult } from "../cli/index.js";
 import { type CodexAnalysisInput } from "../codex/index.js";
 import { loadConfig, type Config } from "../config/index.js";
 import { type DiscordDigestDelivery } from "../discord/index.js";
@@ -24,34 +24,30 @@ import {
 import {
   createGitHubBodyFingerprint,
   createPublicRepositoryAllowlist,
-  probeGitHubPullRequestVolatileMetadataWithRetry,
   type EnumeratedGitHubItem,
-  type GitHubDetailActor,
   type GitHubIssueComment,
   type GitHubItemDetail,
   type GitHubNativeDependency,
-  type GitHubTimelineEvent,
   type GitHubRateLimitSnapshot,
   type PublicRepository,
 } from "../github/index.js";
 import { PUBLIC_SUMMARY_GZIP_LIMIT_BYTES, type GeneratedPublicData } from "../pages/index.js";
 import {
-  CacheOnlyPersistenceSession,
   MemoryStateBranchAdapter,
   serializeCanonicalJson,
+  StatePersistenceSession,
 } from "../persistence/index.js";
 import { assertNonNullable } from "../util/index.js";
 
 const PROFILE_ITEM_COUNT = 5_000;
 const PROFILE_EDGE_COUNT = 10_000;
-const PROFILE_COLD_ITEM_COUNT = PROFILE_ITEM_COUNT;
-const PROFILE_ROOT_ITEM_COUNT = 300;
+const PROFILE_CHANGED_ITEM_COUNT = 300;
 const PROFILE_REPOSITORY_NAME = "performance-profile";
 const PROFILE_REPOSITORY_ID = createGitHubRepositoryId("R_performance_profile");
 const PROFILE_MAINTAINER_LOGIN = "performance-maintainer";
-const PROFILE_ITEM_BODY = "自然言語判定を必要とする性能profile本文";
 const PROFILE_START_AT = createUtcIsoDateTime("2026-01-01T00:00:00.000Z");
-const PROFILE_RUN_AT = createUtcIsoDateTime("2026-08-01T23:00:00.000Z");
+const BASELINE_RUN_AT = createUtcIsoDateTime("2026-08-01T00:00:00.000Z");
+const PROFILE_RUN_AT = createUtcIsoDateTime("2026-08-02T00:00:00.000Z");
 const GITHUB_API_LIMIT = 15_000;
 const GITHUB_CONNECTION_PAGE_SIZE = 100;
 const GITHUB_API_BUDGET_RATIO = 0.7;
@@ -82,9 +78,6 @@ const performanceMeasurementSchema = z
     codex: z.strictObject({
       calls: nonNegativeIntegerSchema,
       configuredMaxCalls: nonNegativeIntegerSchema,
-    }),
-    notifications: z.strictObject({
-      candidates: nonNegativeIntegerSchema,
     }),
     webInitialSummary: z.strictObject({
       gzipBytes: nonNegativeIntegerSchema,
@@ -118,7 +111,7 @@ const performanceProfileSchema = z.strictObject({
   fixture: z.strictObject({
     itemCount: z.literal(PROFILE_ITEM_COUNT),
     activeEdgeCount: z.literal(PROFILE_EDGE_COUNT),
-    changedItemCount: z.literal(PROFILE_COLD_ITEM_COUNT),
+    changedItemCount: z.literal(PROFILE_CHANGED_ITEM_COUNT),
   }),
   thresholds: z.strictObject({
     durationMilliseconds: z.literal(THIRTY_MINUTES_MILLISECONDS),
@@ -150,13 +143,13 @@ type ApiBudgetMeter = Readonly<{
 }>;
 
 type PerformanceHarness = Readonly<{
+  runBaseline: () => Promise<void>;
   runProfile: () => Promise<
     Readonly<{
       execution: CliExecutionResult;
       durationMilliseconds: number;
       githubApiUsed: number;
       githubApiRemaining: number;
-      notificationCandidateCount: number;
       generatedPublicData: GeneratedPublicData;
       config: Config;
     }>
@@ -220,11 +213,17 @@ function profileNodeId(index: number): GitHubNodeId {
 function createProfileItems(
   repository: PublicRepository,
   observedAt: UtcIsoDateTime,
+  changedVersion: 1 | 2,
 ): readonly EnumeratedGitHubItem[] {
   return Object.freeze(
     Array.from({ length: PROFILE_ITEM_COUNT }, (_, index) => {
       const number = index + 1;
       const nodeId = profileNodeId(index);
+      const changedItemVersion = index < PROFILE_CHANGED_ITEM_COUNT ? changedVersion : 1;
+      const updatedAt =
+        index < PROFILE_CHANGED_ITEM_COUNT && changedVersion === 2
+          ? PROFILE_RUN_AT
+          : BASELINE_RUN_AT;
       return Object.freeze({
         nodeId,
         repositoryId: repository.id,
@@ -234,7 +233,9 @@ function createProfileItems(
         number,
         url: `https://github.com/VOICEVOX/${PROFILE_REPOSITORY_NAME}/issues/${number.toString()}`,
         title: `性能profile項目 ${number.toString().padStart(4, "0")}`,
-        bodyFingerprint: createGitHubBodyFingerprint(PROFILE_ITEM_BODY),
+        bodyFingerprint: createGitHubBodyFingerprint(
+          `performance-body-${index.toString()}-v${changedItemVersion.toString()}`,
+        ),
         bodyLocator: Object.freeze({
           kind: "github_item_body",
           repositoryId: repository.id,
@@ -250,17 +251,13 @@ function createProfileItems(
           }),
         }),
         createdAt: createUtcIsoDateTime("2026-07-01T00:00:00.000Z"),
-        updatedAt: observedAt,
-        assignees: Object.freeze([
-          Object.freeze({
-            nodeId: createGitHubNodeId(`U_performance_assignee_${number.toString()}`),
-            login: `performance-assignee-${number.toString()}`,
-            apiType: "User",
-          }),
-        ]),
+        updatedAt,
+        assignees: Object.freeze([]),
         labels: Object.freeze([]),
         milestone: null,
-        itemFingerprint: createGitHubBodyFingerprint(`performance-item-${index.toString()}-v1`),
+        itemFingerprint: createGitHubBodyFingerprint(
+          `performance-item-${index.toString()}-v${changedItemVersion.toString()}`,
+        ),
         observedAt,
         state: "open",
         stateReason: null,
@@ -273,16 +270,16 @@ function createProfileItems(
 }
 
 function blockerIndexes(blockedIndex: number): readonly number[] {
-  if (blockedIndex <= PROFILE_ROOT_ITEM_COUNT) {
+  if (blockedIndex <= PROFILE_CHANGED_ITEM_COUNT) {
     return Object.freeze([]);
   }
   const indexes = [blockedIndex - 1];
-  if (blockedIndex >= PROFILE_ROOT_ITEM_COUNT + 2) {
+  if (blockedIndex >= PROFILE_CHANGED_ITEM_COUNT + 2) {
     indexes.push(blockedIndex - 2);
   }
   if (
-    blockedIndex >= PROFILE_ROOT_ITEM_COUNT + 3 &&
-    blockedIndex <= PROFILE_ROOT_ITEM_COUNT + 605
+    blockedIndex >= PROFILE_CHANGED_ITEM_COUNT + 3 &&
+    blockedIndex <= PROFILE_CHANGED_ITEM_COUNT + 605
   ) {
     indexes.push(blockedIndex - 3);
   }
@@ -320,7 +317,7 @@ function createNativeDependency(
 
 function createProfileComment(
   item: EnumeratedGitHubItem,
-  observedAt: UtcIsoDateTime,
+  changedVersion: 1 | 2,
 ): GitHubIssueComment {
   const commentNodeId = createGitHubNodeId(`IC_${item.nodeId}`);
   return Object.freeze({
@@ -336,45 +333,10 @@ function createProfileComment(
         apiType: "User",
       }),
     }),
-    body: "次の担当を自然言語から判定します",
-    createdAt: createUtcIsoDateTime("2026-07-02T00:00:00.000Z"),
-    lastEditedAt: null,
-    updatedAt: observedAt,
+    body: `次の担当を自然言語から判定します v${changedVersion.toString()}`,
+    createdAt: BASELINE_RUN_AT,
+    updatedAt: changedVersion === 1 ? BASELINE_RUN_AT : PROFILE_RUN_AT,
     url: `${item.url}#issuecomment-${item.number.toString()}`,
-    userContentEdits: Object.freeze({
-      availability: "unavailable",
-      reason: "connection_null",
-    }),
-  });
-}
-
-function createProfileTimelineEvent(item: EnumeratedGitHubItem): GitHubTimelineEvent {
-  const actorAccount = Object.freeze({
-    sourceId: buildSourceId("github_actor", `performance-actor-${item.number.toString()}`),
-    nodeId: createGitHubNodeId(`U_performance_actor_${item.number.toString()}`),
-    login: `performance-actor-${item.number.toString()}`,
-    apiType: "User",
-  });
-  const actor: GitHubDetailActor = Object.freeze({
-    status: "identified",
-    account: actorAccount,
-  });
-  return Object.freeze({
-    sourceId: buildSourceId("github_timeline_event", `performance-assigned-${item.nodeId}`),
-    nodeId: createGitHubNodeId(`A_performance_${item.number.toString()}`),
-    sequence: 0,
-    occurredAt: createUtcIsoDateTime("2026-07-02T00:00:00.000Z"),
-    actor,
-    kind: "assigned",
-    assignee: Object.freeze({
-      type: "account",
-      account: Object.freeze({
-        sourceId: buildSourceId("github_account", `performance-assignee-${item.number.toString()}`),
-        nodeId: createGitHubNodeId(`U_performance_assignee_${item.number.toString()}`),
-        login: `performance-assignee-${item.number.toString()}`,
-        apiType: "User",
-      }),
-    }),
   });
 }
 
@@ -382,6 +344,7 @@ function createProfileDetail(
   item: EnumeratedGitHubItem,
   itemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
   observedAt: UtcIsoDateTime,
+  changedVersion: 1 | 2,
 ): GitHubItemDetail {
   const index = item.number - 1;
   const dependencies = blockerIndexes(index).map((blockerIndex) => {
@@ -399,14 +362,15 @@ function createProfileDetail(
     number: item.number,
     type: "issue",
     bodySourceId: buildSourceId("github_item_body", item.nodeId),
-    body: PROFILE_ITEM_BODY,
-    lastEditedAt: null,
-    bodyUserContentEdits: Object.freeze({
-      availability: "unavailable",
-      reason: "connection_null",
-    }),
-    comments: Object.freeze([createProfileComment(item, observedAt)]),
-    timeline: Object.freeze([createProfileTimelineEvent(item)]),
+    body:
+      index < PROFILE_CHANGED_ITEM_COUNT
+        ? `自然言語判定を必要とする性能profile本文 v${changedVersion.toString()}`
+        : "native dependencyだけを持つ性能profile本文",
+    comments:
+      index < PROFILE_CHANGED_ITEM_COUNT
+        ? Object.freeze([createProfileComment(item, changedVersion)])
+        : Object.freeze([]),
+    timeline: Object.freeze([]),
     inboundCrossReferences: Object.freeze([]),
     nativeDependencies: Object.freeze({
       availability: "available",
@@ -504,15 +468,14 @@ async function createPerformanceConfig(repositoryPath: string): Promise<Config> 
       enabled: true,
       budget: Object.freeze({
         ...base.ai.budget,
-        maxCallsPerRun: PROFILE_COLD_ITEM_COUNT,
-        maxTotalInputCharactersPerRun: 30_000_000,
+        maxCallsPerRun: PROFILE_CHANGED_ITEM_COUNT,
       }),
     }),
     notifications: Object.freeze({
       ...base.notifications,
       discord: Object.freeze({
         ...base.notifications.discord,
-        enabled: true,
+        enabled: false,
       }),
     }),
   });
@@ -529,13 +492,14 @@ function requireSingleRepository(repositories: readonly PublicRepository[]): Pub
 function createPerformanceHarness(repositoryPath: string, config: Config): PerformanceHarness {
   const stateAdapter = new MemoryStateBranchAdapter();
   const apiBudget = createApiBudgetMeter(GITHUB_API_LIMIT);
-  let currentRunAt = PROFILE_RUN_AT;
+  let currentRunAt = BASELINE_RUN_AT;
   let currentRunStartedAt = performance.now();
-  const currentItems = createProfileItems(
-    requirePublicRepository(createRepository(PROFILE_RUN_AT)),
-    PROFILE_RUN_AT,
+  let changedVersion: 1 | 2 = 1;
+  let currentItems = createProfileItems(
+    requirePublicRepository(createRepository(BASELINE_RUN_AT)),
+    BASELINE_RUN_AT,
+    changedVersion,
   );
-  let notificationCandidateCount = 0;
   let generatedPublicData: GeneratedPublicData | undefined;
 
   const now = (): Date =>
@@ -545,10 +509,6 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
       GH_APP_ID: "123",
       GH_APP_PRIVATE_KEY: PRIVATE_KEY,
       GH_APP_INSTALLATION_ID: "456",
-      DISCORD_OPERATIONS_WEBHOOK_URL: "performance-profile-operations-webhook",
-      DISCORD_WEBHOOK_URL: "performance-profile-webhook",
-      GITHUB_EVENT_NAME: "schedule",
-      GITHUB_RUN_ATTEMPT: "1",
       HOME: "/tmp",
       OPENAI_API_KEY: "performance-profile-openai-key",
       PATH: "/usr/bin",
@@ -556,8 +516,8 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
     repositoryPath,
     pagesOutputDirectory: "unused-performance-pages",
     loadConfig: () => Promise.resolve(config),
-    openCacheSession: (adapter, stateConfiguration, allowlist) =>
-      CacheOnlyPersistenceSession.open(adapter, stateConfiguration, allowlist),
+    openStateSession: (adapter, stateConfiguration) =>
+      StatePersistenceSession.open(adapter, stateConfiguration),
     discoverRepositoryInventory: () => {
       apiBudget.consume(1);
       return Promise.resolve(Object.freeze([createRepository(currentRunAt)]));
@@ -569,12 +529,11 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
     },
     enumerateGitHubItemsByIdentifiers: () =>
       Promise.reject(new TypeError("性能profileでは項目の個別取得を行いません")),
-    probeGitHubPullRequestVolatileMetadataWithRetry,
     collectGitHubItemDetails: (input) => {
       apiBudget.consume(input.targets.length + 1);
       const itemsByNodeId = new Map(currentItems.map((item) => [item.nodeId, item]));
       const details = input.targets.map((target) =>
-        createProfileDetail(target.item, itemsByNodeId, currentRunAt),
+        createProfileDetail(target.item, itemsByNodeId, currentRunAt, changedVersion),
       );
       return Promise.resolve(
         Object.freeze({
@@ -586,8 +545,6 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
         }),
       );
     },
-    resolveGitHubRelationReference: () =>
-      Promise.reject(new TypeError("性能profileでは外部relation参照を解決しません")),
     executeCodexAnalysis: (input) => Promise.resolve(createCodexOutput(input)),
     readReplayFixture: () => Promise.reject(new TypeError("性能profileではreplayしません")),
     readReplayState: () => Promise.reject(new TypeError("性能profileではstate replayしません")),
@@ -638,16 +595,12 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
         detailsBytes: Buffer.byteLength(detailsSource, "utf8"),
       });
     },
-    sendDiscord: (input) => {
-      notificationCandidateCount = input.candidates.length;
-      return Promise.resolve(
+    sendDiscord: () =>
+      Promise.resolve(
         Object.freeze({
-          status: "sent",
-          digestId: "performance-profile-digest",
-          discordMessageIds: Object.freeze(["performance-profile-message"]),
+          status: "disabled",
         } satisfies DiscordDigestDelivery),
-      );
-    },
+      ),
   });
   const application = createProductionCliApplication(runtimeAdapters);
 
@@ -660,32 +613,41 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
       "unused-performance-config.yml",
       "--report",
       "unused-performance-report.json",
-      "--scheduled-for",
-      runAt,
     ]);
   };
 
   return Object.freeze({
+    runBaseline: async () => {
+      const result = await runDaily(BASELINE_RUN_AT);
+      if (result.exitCode !== 0) {
+        throw new TypeError("性能profileの基準state作成に失敗しました");
+      }
+    },
     runProfile: async () => {
+      changedVersion = 2;
+      currentItems = createProfileItems(
+        requirePublicRepository(createRepository(PROFILE_RUN_AT)),
+        PROFILE_RUN_AT,
+        changedVersion,
+      );
       generatedPublicData = undefined;
       const startedAt = performance.now();
       const execution = await runDaily(PROFILE_RUN_AT);
       const durationMilliseconds = performance.now() - startedAt;
-      const publicData = requireGeneratedPublicData(generatedPublicData, execution);
+      assertNonNullable(generatedPublicData, "性能profileでPages公開データが生成されませんでした");
       return Object.freeze({
         execution,
         durationMilliseconds,
         githubApiUsed: apiBudget.used(),
         githubApiRemaining: apiBudget.remaining(),
-        notificationCandidateCount,
-        generatedPublicData: publicData,
+        generatedPublicData,
         config,
       });
     },
   });
 }
 
-function requireDailyMetrics(execution: CliExecutionResult): RunMetrics {
+function requireDailyMetrics(execution: CliExecutionResult) {
   if (execution.command !== "daily") {
     throw new TypeError("性能profileがdailyコマンドを通っていません");
   }
@@ -693,23 +655,6 @@ function requireDailyMetrics(execution: CliExecutionResult): RunMetrics {
     throw new TypeError("性能profileの日次runが失敗しました");
   }
   return execution.result.report.metrics;
-}
-
-function requireGeneratedPublicData(
-  generatedPublicData: GeneratedPublicData | undefined,
-  execution: CliExecutionResult,
-): GeneratedPublicData {
-  if (generatedPublicData != null) {
-    return generatedPublicData;
-  }
-  if (execution.command !== "daily") {
-    throw new TypeError("性能profileがdailyコマンドを通っていません");
-  }
-  const report = execution.result.report;
-  const failedStage = report.status === "failure" ? report.failedStage : report.status;
-  throw new TypeError(
-    `性能profileでPages公開データが生成されませんでした。stage=${failedStage} diagnostics=${report.diagnostics.join(" / ")}`,
-  );
 }
 
 /** OPS-004の測定値を全閾値へ照合する。 */
@@ -735,7 +680,7 @@ export function evaluateEndToEndPerformanceMeasurement(
     fixture: {
       itemCount: PROFILE_ITEM_COUNT,
       activeEdgeCount: PROFILE_EDGE_COUNT,
-      changedItemCount: PROFILE_COLD_ITEM_COUNT,
+      changedItemCount: PROFILE_CHANGED_ITEM_COUNT,
     },
     thresholds: {
       durationMilliseconds: THIRTY_MINUTES_MILLISECONDS,
@@ -766,27 +711,25 @@ export async function runEndToEndPerformanceProfile(
 ): Promise<EndToEndPerformanceProfile> {
   const config = await createPerformanceConfig(repositoryPath);
   const harness = createPerformanceHarness(repositoryPath, config);
+  await harness.runBaseline();
   const result = await harness.runProfile();
   const metrics = requireDailyMetrics(result.execution);
   if (
     metrics.itemCount !== PROFILE_ITEM_COUNT ||
     metrics.activeEdgeCount !== PROFILE_EDGE_COUNT ||
-    metrics.changedItemCount !== PROFILE_COLD_ITEM_COUNT
+    metrics.changedItemCount !== PROFILE_CHANGED_ITEM_COUNT
   ) {
     throw new TypeError(
       `性能fixtureの件数が一致しません。items=${metrics.itemCount.toString()} edges=${metrics.activeEdgeCount.toString()} changed=${metrics.changedItemCount.toString()}`,
     );
   }
-  if (metrics.aiCallCount !== PROFILE_COLD_ITEM_COUNT) {
+  if (metrics.aiCallCount !== PROFILE_CHANGED_ITEM_COUNT) {
     throw new TypeError(
       `性能fixtureのCodex呼び出し件数が一致しません。calls=${metrics.aiCallCount.toString()}`,
     );
   }
   if (metrics.githubApiRemaining !== result.githubApiRemaining) {
     throw new TypeError("run reportとGitHub APIモックの残量が一致しません");
-  }
-  if (metrics.notificationCount !== result.notificationCandidateCount) {
-    throw new TypeError("run reportと通知候補数が一致しません");
   }
   const githubApiUsedRatio = result.githubApiUsed / GITHUB_API_LIMIT;
   return evaluateEndToEndPerformanceMeasurement(
@@ -801,9 +744,6 @@ export async function runEndToEndPerformanceProfile(
       codex: Object.freeze({
         calls: metrics.aiCallCount,
         configuredMaxCalls: result.config.ai.budget.maxCallsPerRun,
-      }),
-      notifications: Object.freeze({
-        candidates: result.notificationCandidateCount,
       }),
       webInitialSummary: Object.freeze({
         gzipBytes: result.generatedPublicData.summarySize.gzipBytes,

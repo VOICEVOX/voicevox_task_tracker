@@ -2,8 +2,16 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import snapshotSchema from "../schemas/snapshot.schema.json" with { type: "json" };
+import {
+  STATE_HISTORY_SCHEMA_VERSION_2,
+  STATE_HISTORY_STATUS_VALUES,
+} from "../src/persistence/history.js";
 import { SNAPSHOT_SCHEMA_VERSION_8 } from "../src/persistence/snapshot.js";
-import { SNAPSHOT_SCHEMA_ENUM_LOCK } from "./state-schema-enum-lock.js";
+import {
+  NOTIFICATION_LEDGER_REASON_CODE_VALUES,
+  NOTIFICATION_LEDGER_SCHEMA_VERSION_2,
+} from "../src/persistence/state-documents.js";
+import { STATE_SCHEMA_ENUM_LOCK } from "./state-schema-enum-lock.js";
 
 const LOCK_UPDATE_INSTRUCTIONS = [
   "永続stateの列挙値またはschema versionがロック定義と一致しません。",
@@ -45,7 +53,7 @@ function parseSnapshotPersistentEnums(): z.output<typeof snapshotPersistentEnums
   return result.data;
 }
 
-describe("snapshotの列挙値ロック", () => {
+describe("永続stateの列挙値ロック", () => {
   it("現行schema versionと永続化する列挙値をロック定義に一致させる", () => {
     const snapshotDefinition = parseSnapshotPersistentEnums();
     expect(snapshotDefinition.properties.schemaVersion.const, LOCK_UPDATE_INSTRUCTIONS).toBe(
@@ -53,11 +61,22 @@ describe("snapshotの列挙値ロック", () => {
     );
 
     const actual = {
-      schemaVersion: SNAPSHOT_SCHEMA_VERSION_8,
-      Status: snapshotDefinition.$defs.item.properties.status.enum,
-      WaitClass: snapshotDefinition.$defs.item.properties.severityContext.properties.waitClass.enum,
+      snapshot: {
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION_8,
+        Status: snapshotDefinition.$defs.item.properties.status.enum,
+        WaitClass:
+          snapshotDefinition.$defs.item.properties.severityContext.properties.waitClass.enum,
+      },
+      history: {
+        schemaVersion: STATE_HISTORY_SCHEMA_VERSION_2,
+        Status: STATE_HISTORY_STATUS_VALUES,
+      },
+      notificationLedger: {
+        schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_2,
+        reasonCode: NOTIFICATION_LEDGER_REASON_CODE_VALUES,
+      },
     };
 
-    expect(actual, LOCK_UPDATE_INSTRUCTIONS).toEqual(SNAPSHOT_SCHEMA_ENUM_LOCK);
+    expect(actual, LOCK_UPDATE_INSTRUCTIONS).toEqual(STATE_SCHEMA_ENUM_LOCK);
   });
 });

@@ -14,7 +14,6 @@ export {
 export { DETERMINISTIC_RULES_VERSION } from "./deterministic-rules-version.js";
 export {
   resolvePullRequestCommitOccurredAt,
-  resolvePullRequestCheckContextOccurredAt,
   type FreshObservedGitHubItemBase,
   type FreshObservedGitHubIssue,
   type FreshObservedGitHubPullRequest,
@@ -64,16 +63,8 @@ export {
   type MeaningfulProgressResult,
   type NaturalLanguageProgressAssessment,
   type NaturalLanguageProgressCandidate,
+  type PreviousActivityState,
 } from "./meaningful-progress.js";
-export {
-  replayItemHistory,
-  ResponsibilityReplayMismatchError,
-  type ReplayCurrentItem,
-  type ReplayEvent,
-  type ReplayHistory,
-  type ReplayItemHistoryInput,
-  type ReplayItemHistoryResult,
-} from "./event-replay.js";
 export {
   determineIssueState,
   ISSUE_DETERMINISTIC_RULES_VERSION,
@@ -118,6 +109,7 @@ export {
   type BlockedParentSeverityReason,
   type BlockerRanking,
   type CalculateStalenessInput,
+  type PreviousStalenessState,
   type RecalculatedStalenessSeverity,
   type RecalculateStalenessSeverityInput,
   type StalenessElapsedHours,
@@ -125,7 +117,6 @@ export {
   type StalenessSeverityContext,
   type StalenessSeverityReason,
   type StalenessState,
-  StalenessTimestampRangeError,
   type StalenessTransitionBasis,
   type StalenessWaitClass,
   type StateDecisionForStaleness,
@@ -139,16 +130,20 @@ export {
   determineTerminalRetention,
   determineTrackedItemWork,
   isRetryableTrackedItemAiAnalysisStatus,
+  resolveTrackingStartAt,
   type CodexAnalysisWorkDecision,
   type ClassifyTrackingNotificationInput,
+  type ConfiguredTrackingStartAt,
   type DefaultDigestDecision,
   type DetermineTerminalRetentionInput,
   type DetermineTrackedItemWorkInput,
   type PreviousTrackedItemObservation,
+  type ResolveTrackingStartAtInput,
   type RetentionItemState,
   type StallNotificationWorkDecision,
   type TerminalRetentionDecision,
   type TrackedItemWorkDecision,
+  type TrackingRunCompletion,
   type TrackingStartAtState,
 } from "./tracking-lifecycle.js";
 export {
@@ -205,8 +200,10 @@ export {
   type GraphNodeKind,
   type NonTerminalStatus,
   type NormalizedEvent,
+  type NotificationLedgerEntry,
   type NotificationReasonCode,
   type OperationsAlertKind,
+  type OperationsAlertLedgerEntry,
   type PrimaryWaitingOn,
   type Relation,
   type RelationContradictionSummary,

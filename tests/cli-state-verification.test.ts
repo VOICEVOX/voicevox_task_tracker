@@ -6,72 +6,108 @@ import { describe, expect, it } from "vitest";
 
 import { StateVerificationRunner, verifyPersistentStateDirectory } from "../src/cli/index.js";
 import {
-  hashCanonicalJson,
+  createEmptyStateNotificationLedger,
+  createStateHistoryRecord,
+  createStateSnapshot,
   serializeCanonicalJsonLine,
-} from "../src/persistence/canonical-json.js";
+  type StateSnapshot,
+} from "../src/persistence/index.js";
 
-const GENERATED_AT = "2020-08-01T00:00:00.000Z";
-const REPOSITORY_ID = "R_VERIFY_STATE";
-const REPOSITORY_PATH = `state/github-repositories/${hashCanonicalJson({
-  identifier: REPOSITORY_ID,
-  kind: "github_repository",
-}).slice("sha256:".length)}.json`;
+const GENERATED_AT = "2026-08-01T00:00:00.000Z";
 
-const repositoryCache = {
-  schemaVersion: "4",
-  kind: "github_repository",
-  repository: {
-    repositoryId: REPOSITORY_ID,
-    owner: "VOICEVOX",
-    name: "verify-state",
-  },
-  successfulAt: GENERATED_AT,
-  items: [],
-};
+function createEmptySnapshot(): StateSnapshot {
+  return createStateSnapshot({
+    schemaVersion: "8",
+    generatedAt: GENERATED_AT,
+    trackingStartAt: {
+      status: "fixed",
+      value: GENERATED_AT,
+      source: "first_complete_run",
+    },
+    ai: {
+      enabled: false,
+      available: false,
+      degraded: false,
+    },
+    collection: {
+      repositories: [],
+    },
+    repositories: [],
+    items: [],
+    externalReferences: [],
+    relations: [],
+    run: {
+      id: "verify-state-fixture",
+      status: "success",
+      complete: true,
+    },
+  });
+}
 
-const cacheDirectories: readonly [
-  "github-repositories",
-  "github-items",
-  "ai-latest-importance",
-  "ai-results",
-] = ["github-repositories", "github-items", "ai-latest-importance", "ai-results"];
-
-async function createStateDirectory(): Promise<string> {
+async function createMigratableStateDirectory(): Promise<string> {
   const stateDirectory = await mkdtemp(join(tmpdir(), "voicevox-verify-state-test-"));
-  await Promise.all(cacheDirectories.map((directory) => mkdir(join(stateDirectory, directory))));
+  const historyDirectory = join(stateDirectory, "history");
+  await mkdir(historyDirectory);
+
+  const snapshot = createEmptySnapshot();
+  const ledger = createEmptyStateNotificationLedger();
+  const historyRecord = createStateHistoryRecord(
+    undefined,
+    snapshot,
+    GENERATED_AT.slice(0, 10),
+    [],
+    [],
+  );
+  await Promise.all([
+    writeFile(
+      join(stateDirectory, "snapshot.json"),
+      serializeCanonicalJsonLine({
+        ...snapshot,
+        schemaVersion: "6",
+      }),
+      "utf8",
+    ),
+    writeFile(
+      join(stateDirectory, "notification-ledger.json"),
+      serializeCanonicalJsonLine({
+        ...ledger,
+        schemaVersion: "1",
+      }),
+      "utf8",
+    ),
+    writeFile(
+      join(historyDirectory, `${GENERATED_AT.slice(0, 10)}.jsonl`),
+      serializeCanonicalJsonLine({
+        ...historyRecord,
+        schemaVersion: "1",
+      }),
+      "utf8",
+    ),
+  ]);
   return stateDirectory;
 }
 
-async function writeRepositoryCache(stateDirectory: string, value: unknown): Promise<void> {
-  await writeFile(
-    join(stateDirectory, REPOSITORY_PATH.replace("state/", "")),
-    serializeCanonicalJsonLine(value),
-    "utf8",
-  );
-}
-
-describe("cache-only state検証", () => {
-  it("4種類のcacheをschemaと文書間整合性まで検証して件数を返す", async () => {
-    const stateDirectory = await createStateDirectory();
+describe("永続state検証", () => {
+  it("snapshot、通知ledger、履歴を現行versionへ移行して件数を返す", async () => {
+    const stateDirectory = await createMigratableStateDirectory();
     try {
-      await writeRepositoryCache(stateDirectory, repositoryCache);
+      const result = await verifyPersistentStateDirectory(stateDirectory);
 
-      await expect(verifyPersistentStateDirectory(stateDirectory)).resolves.toEqual({
-        repositoryCaches: {
+      expect(result).toEqual({
+        snapshot: {
           verifiedCount: 1,
-          schemaVersions: ["4"],
+          sourceSchemaVersions: ["6"],
+          migratedSchemaVersions: ["8"],
         },
-        itemCaches: {
-          verifiedCount: 0,
-          schemaVersions: [],
+        notificationLedger: {
+          verifiedCount: 1,
+          sourceSchemaVersions: ["1"],
+          migratedSchemaVersions: ["2"],
         },
-        latestImportanceCaches: {
-          verifiedCount: 0,
-          schemaVersions: [],
-        },
-        aiCacheEntries: {
-          verifiedCount: 0,
-          schemaVersions: [],
+        history: {
+          verifiedCount: 1,
+          sourceSchemaVersions: ["1"],
+          migratedSchemaVersions: ["2"],
         },
       });
     } finally {
@@ -82,8 +118,8 @@ describe("cache-only state検証", () => {
     }
   });
 
-  it("cacheごとの件数とschema versionを標準出力へ書く", async () => {
-    const stateDirectory = await createStateDirectory();
+  it("文書ごとの件数と移行前後のschema versionを標準出力へ書く", async () => {
+    const stateDirectory = await createMigratableStateDirectory();
     const outputs: string[] = [];
     const runner = new StateVerificationRunner({
       verifyStateDirectory: verifyPersistentStateDirectory,
@@ -93,7 +129,6 @@ describe("cache-only state検証", () => {
       },
     });
     try {
-      await writeRepositoryCache(stateDirectory, repositoryCache);
       await runner.run({
         kind: "verify-state",
         stateDirectory,
@@ -101,10 +136,9 @@ describe("cache-only state検証", () => {
 
       expect(outputs).toEqual([
         [
-          "github-repositories: 1件、schema version 4",
-          "github-items: 0件、schema version なし",
-          "ai-latest-importance: 0件、schema version なし",
-          "ai-results: 0件、schema version なし",
+          "snapshot: 1件、schema version 6 -> 8",
+          "notification ledger: 1件、schema version 1 -> 2",
+          "history: 1件、schema version 1 -> 2",
           "",
         ].join("\n"),
       ]);
@@ -116,82 +150,17 @@ describe("cache-only state検証", () => {
     }
   });
 
-  it("schema version 2のcacheを現行形式として読み込まない", async () => {
-    const stateDirectory = await createStateDirectory();
-    try {
-      await writeRepositoryCache(stateDirectory, {
-        ...repositoryCache,
-        schemaVersion: "2",
-      });
-      await expect(verifyPersistentStateDirectory(stateDirectory)).rejects.toThrow(
-        "永続stateを検証できません",
-      );
-    } finally {
-      await rm(stateDirectory, {
-        recursive: true,
-        force: true,
-      });
-    }
-  });
-
-  it("4種類のdirectoryが空でもcache-only stateとして許可する", async () => {
-    const stateDirectory = await createStateDirectory();
-    try {
-      await expect(verifyPersistentStateDirectory(stateDirectory)).resolves.toMatchObject({
-        repositoryCaches: { verifiedCount: 0 },
-        itemCaches: { verifiedCount: 0 },
-        latestImportanceCaches: { verifiedCount: 0 },
-        aiCacheEntries: { verifiedCount: 0 },
-      });
-    } finally {
-      await rm(stateDirectory, {
-        recursive: true,
-        force: true,
-      });
-    }
-  });
-
-  it("snapshot、history、ledger、run reportや未知pathを拒否する", async () => {
-    const stateDirectory = await createStateDirectory();
-    try {
-      await writeFile(join(stateDirectory, "snapshot.json"), "{}", "utf8");
-      await expect(verifyPersistentStateDirectory(stateDirectory)).rejects.toThrow(
-        "永続stateを検証できません",
-      );
-    } finally {
-      await rm(stateDirectory, {
-        recursive: true,
-        force: true,
-      });
-    }
-  });
-
-  it("cache文書のstrict schemaと公開安全性違反を拒否する", async () => {
-    const stateDirectory = await createStateDirectory();
-    try {
-      await writeRepositoryCache(stateDirectory, {
-        ...repositoryCache,
-        body: "本文を保存してはいけません",
-      });
-      await expect(verifyPersistentStateDirectory(stateDirectory)).rejects.toThrow(
-        "永続stateを検証できません",
-      );
-    } finally {
-      await rm(stateDirectory, {
-        recursive: true,
-        force: true,
-      });
-    }
-  });
-
-  it("state directoryがなければ失敗する", async () => {
+  it("必要な永続state文書がなければ失敗する", async () => {
     const stateDirectory = await mkdtemp(join(tmpdir(), "voicevox-verify-state-missing-test-"));
-    await rm(stateDirectory, {
-      recursive: true,
-      force: true,
-    });
-    await expect(verifyPersistentStateDirectory(stateDirectory)).rejects.toThrow(
-      "永続stateを検証できません",
-    );
+    try {
+      await expect(verifyPersistentStateDirectory(stateDirectory)).rejects.toThrow(
+        "永続stateを検証できません",
+      );
+    } finally {
+      await rm(stateDirectory, {
+        recursive: true,
+        force: true,
+      });
+    }
   });
 });

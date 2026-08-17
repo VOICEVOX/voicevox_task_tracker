@@ -15,11 +15,8 @@ export {
   GitHubGraphQLDocumentError,
   GitHubGraphQLReadOnlyViolationError,
   GitHubGraphQLResponseError,
-  GitHubGraphQLRetryExhaustedError,
   GitHubItemDetailCollectionError,
   GitHubPublicBoundaryViolationError,
-  GitHubPullRequestVolatileRaceError,
-  GitHubPullRequestVolatileRaceRetryExhaustedError,
   GitHubReadOnlyViolationError,
   GitHubRepositoryInventoryError,
   GitHubRepositoryStaleFallbackUnavailableError,
@@ -28,7 +25,6 @@ export {
   GitHubResponseValidationError,
   GitHubRetryExhaustedError,
   type GitHubRateLimitSnapshot,
-  type GitHubPullRequestVolatileRaceKind,
 } from "./errors.js";
 export {
   createGitHubBodyFingerprint,
@@ -48,41 +44,6 @@ export {
   type CollectGitHubItemDetailsOptions,
   type GitHubItemDetailTarget,
 } from "./item-detail-collection.js";
-export {
-  resolveGitHubRelationReference,
-  type GitHubRelationReferenceResult,
-  type ResolveGitHubRelationReferenceOptions,
-} from "./external-relation-reference.js";
-export {
-  finalizeGitHubItemsWithVolatileMetadata,
-  type FinalizedGitHubItem,
-  type FinalizedGitHubItemCollection,
-  type FinalizedGitHubPullRequest,
-  type FinalizeGitHubItemsWithVolatileMetadataOptions,
-  type ProvisionalGitHubItem,
-} from "./item-enumeration-finalization.js";
-export {
-  createGitHubPullRequestVolatileMetadata,
-  createGitHubPullRequestVolatileMetadataFingerprint,
-  createGitHubPullRequestVolatileMetadataFromDetail,
-  type GitHubPullRequestReviewDecision,
-  type GitHubPullRequestVolatileMergeState,
-  type GitHubPullRequestVolatileMetadata,
-  type GitHubPullRequestVolatileMetadataInput,
-  type GitHubVolatileActor,
-  type GitHubVolatileAutoMerge,
-  type GitHubVolatileMergeQueue,
-  type GitHubVolatileReviewRequest,
-  type GitHubVolatileReviewRequestTarget,
-} from "./item-volatile-metadata.js";
-export {
-  probeGitHubPullRequestVolatileMetadata,
-  probeGitHubPullRequestVolatileMetadataWithRetry,
-  type GitHubPullRequestVolatileProbeCollection,
-  type GitHubPullRequestVolatileProbeRuntime,
-  type ProbeGitHubPullRequestVolatileMetadataOptions,
-  type ProbeGitHubPullRequestVolatileMetadataWithRetryOptions,
-} from "./item-volatile-probe.js";
 export {
   type GitHubAutoMerge,
   type GitHubCheckContext,
@@ -114,8 +75,6 @@ export {
   type GitHubReviewRequestTimestamp,
   type GitHubTimelineEvent,
   type GitHubTimelineAssignee,
-  type GitHubUserContentEdit,
-  type GitHubUserContentEditCollection,
 } from "./item-detail-types.js";
 export {
   markObservedGitHubItemsStale,
@@ -149,45 +108,6 @@ export {
   type PreviousItemCollection,
 } from "./incremental-item-collection.js";
 export { assertReadOnlyGraphQL, extractGraphQLRateLimit } from "./graphql.js";
-export { adaptGitHubDependencyEvents } from "./dependency-replay-adapter.js";
-export {
-  adaptGitHubItemDetailRelationMutations,
-  adaptGitHubRelationMutationSource,
-  type GitHubRelationMutationSource,
-  type GitHubRelationMutationSourceResult,
-} from "./relation-mutation-adapter.js";
-export {
-  createGitHubItemCacheDocument,
-  replaceGitHubItemCacheRelationData,
-  restoreGitHubItemCache,
-  restoreGitHubItemCacheForAnalysis,
-  validateGitHubItemCacheAiEntry,
-  type CreateGitHubItemCacheDocumentInput,
-  type GitHubItemCacheAiEntryInput,
-  type GitHubItemCacheAiValidation,
-  type GitHubItemCacheAnalysisRestoration,
-  type GitHubItemCacheAnalysisObservation,
-  type GitHubItemCacheAnalysisSource,
-  type GitHubItemCacheRestoration,
-  type RestoreGitHubItemCacheInput,
-} from "./item-cache-adapter.js";
-export {
-  replayGitHubItemHistory,
-  type ReplayGitHubItemHistoryOptions,
-} from "./item-history-replay-adapter.js";
-export {
-  adaptCachedTemporalBlocksGraph,
-  adaptFreshTemporalBlocksGraph,
-  adaptMixedTemporalBlocksGraph,
-  type CachedTemporalBlocksGraphInput,
-  type FreshTemporalBlocksGraphInput,
-  type FreshTemporalBlocksItem,
-  type MixedTemporalBlocksGraphCurrent,
-  type MixedTemporalBlocksGraphInput,
-  type MixedTemporalBlocksGraphItem,
-  type TemporalBlocksGraphReplayAdapterResult,
-  type TemporalBlocksUnknownRelationMutation,
-} from "./temporal-blocks-graph-adapter.js";
 export {
   GitHubRateLimitController,
   graphQLRateLimitSchema,
@@ -202,13 +122,10 @@ export {
   type GitHubRetrySettings,
 } from "./retry.js";
 export {
-  assertCacheItemRelationPublicBoundary,
-  assertCacheItemRelationPublicBoundaryForCacheLoad,
   assertPublicRepositoryBoundary,
   createPublicRepositoryAllowlist,
   isEligiblePublicRepository,
   PublicRepositoryAllowlist,
-  sanitizeRelationMutationsForPublicBoundary,
   type PublicRepository,
   type PublicRepositoryId,
 } from "./public-repository-allowlist.js";

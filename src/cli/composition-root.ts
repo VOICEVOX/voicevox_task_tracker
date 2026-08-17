@@ -9,11 +9,9 @@ import {
   discoverRepositoryInventory,
   enumerateGitHubItemsByIdentifiers,
   enumerateOpenGitHubItems,
-  probeGitHubPullRequestVolatileMetadataWithRetry,
-  resolveGitHubRelationReference,
 } from "../github/index.js";
 import { writePublicDataFiles } from "../pages/index.js";
-import { CacheOnlyPersistenceSession, GitStateBranchAdapter } from "../persistence/index.js";
+import { GitStateBranchAdapter, StatePersistenceSession } from "../persistence/index.js";
 import { type CliApplication } from "./application.js";
 import { writeCliJsonArtifact, writeCliTextFile } from "./file-output.js";
 import {
@@ -36,11 +34,9 @@ type ConcreteOperationName =
   | "discoverRepositoryInventory"
   | "enumerateGitHubItemsByIdentifiers"
   | "enumerateOpenGitHubItems"
-  | "probeGitHubPullRequestVolatileMetadataWithRetry"
-  | "resolveGitHubRelationReference"
   | "executeCodexAnalysis"
   | "loadConfig"
-  | "openCacheSession"
+  | "openStateSession"
   | "readGoldenFixtures"
   | "readReplayFixture"
   | "readReplayState"
@@ -54,23 +50,11 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
   return Object.freeze({
     ...adapters,
     loadConfig,
-    openCacheSession: (adapter, configuration, allowlist) =>
-      CacheOnlyPersistenceSession.open(
-        adapter,
-        {
-          branch: configuration.branch,
-          repositoryCacheDirectory: configuration.repositoryCacheDirectory,
-          itemCacheDirectory: configuration.itemCacheDirectory,
-          latestImportanceDirectory: configuration.latestImportanceDirectory,
-          aiCacheDirectory: configuration.aiCacheDirectory,
-        },
-        allowlist,
-      ),
+    openStateSession: (adapter, configuration) =>
+      StatePersistenceSession.open(adapter, configuration),
     discoverRepositoryInventory,
     enumerateGitHubItemsByIdentifiers,
     enumerateOpenGitHubItems,
-    probeGitHubPullRequestVolatileMetadataWithRetry,
-    resolveGitHubRelationReference,
     collectGitHubItemDetails,
     executeCodexAnalysis,
     readReplayFixture: readReplayFixtureFile,

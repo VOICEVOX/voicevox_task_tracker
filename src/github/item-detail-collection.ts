@@ -1,7 +1,6 @@
 import { z } from "zod";
 
 import {
-  buildSourceId,
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
@@ -34,7 +33,6 @@ import {
   REVIEW_THREAD_COMMENT_PAGE_QUERY,
   REVIEW_THREAD_PAGE_QUERY,
   SUB_ISSUE_PAGE_QUERY,
-  USER_CONTENT_EDIT_PAGE_QUERY,
 } from "./item-detail-queries.js";
 import { buildProductionSourceId } from "./production-source-id.js";
 import {
@@ -58,7 +56,6 @@ import {
   type GitHubNativeHierarchyCollection,
   type GitHubPullRequestCommit,
   type GitHubPullRequestMergeState,
-  type GitHubPullRequestReviewDecision,
   type GitHubPullRequestReview,
   type GitHubPullRequestReviewComment,
   type GitHubPullRequestReviewRequests,
@@ -69,8 +66,6 @@ import {
   type GitHubReviewRequestTimestamp,
   type GitHubTimelineEvent,
   type GitHubTimelineAssignee,
-  type GitHubUserContentEdit,
-  type GitHubUserContentEditCollection,
 } from "./item-detail-types.js";
 import {
   type PublicRepository,
@@ -171,7 +166,7 @@ const referencedRepositorySchema = z.object({
     login: z.string().min(1),
   }),
 });
-export const referencedItemSchema = z.discriminatedUnion("__typename", [
+const referencedItemSchema = z.discriminatedUnion("__typename", [
   z.object({
     __typename: z.literal("Issue"),
     id: opaqueIdSchema,
@@ -191,27 +186,12 @@ export const referencedItemSchema = z.discriminatedUnion("__typename", [
     repository: referencedRepositorySchema,
   }),
 ]);
-const userContentEditSchema = z.object({
-  id: opaqueIdSchema,
-  createdAt: utcIsoDateTimeSchema,
-  deletedAt: utcIsoDateTimeSchema.nullable(),
-  diff: z.string().nullable(),
-  editedAt: utcIsoDateTimeSchema,
-  editor: actorSchema,
-  updatedAt: utcIsoDateTimeSchema,
-});
-const userContentEditConnectionSchema = z.object({
-  nodes: z.array(userContentEditSchema).max(CONNECTION_PAGE_SIZE),
-  pageInfo: pageInfoSchema,
-});
 const commentSchema = z.object({
   id: opaqueIdSchema,
   author: actorSchema,
   body: z.string(),
   createdAt: utcIsoDateTimeSchema,
-  lastEditedAt: utcIsoDateTimeSchema.nullable(),
   updatedAt: utcIsoDateTimeSchema,
-  userContentEdits: userContentEditConnectionSchema.nullable(),
   url: githubItemUrlSchema,
 });
 const commentConnectionSchema = z.object({
@@ -241,9 +221,7 @@ const reviewCommentSchema = z.object({
   author: actorSchema,
   body: z.string(),
   createdAt: utcIsoDateTimeSchema,
-  lastEditedAt: utcIsoDateTimeSchema.nullable(),
   updatedAt: utcIsoDateTimeSchema,
-  userContentEdits: userContentEditConnectionSchema.nullable(),
   url: githubItemUrlSchema,
 });
 const reviewCommentConnectionSchema = z.object({
@@ -353,22 +331,6 @@ const assignedEventSchema = timelineEventBaseSchema.extend({
 const unassignedEventSchema = timelineEventBaseSchema.extend({
   __typename: z.literal("UnassignedEvent"),
   assignee: assigneeSchema.nullable(),
-});
-const blockedByAddedEventSchema = timelineEventBaseSchema.extend({
-  __typename: z.literal("BlockedByAddedEvent"),
-  blockingIssue: referencedItemSchema.nullable(),
-});
-const blockedByRemovedEventSchema = timelineEventBaseSchema.extend({
-  __typename: z.literal("BlockedByRemovedEvent"),
-  blockingIssue: referencedItemSchema.nullable(),
-});
-const blockingAddedEventSchema = timelineEventBaseSchema.extend({
-  __typename: z.literal("BlockingAddedEvent"),
-  blockedIssue: referencedItemSchema.nullable(),
-});
-const blockingRemovedEventSchema = timelineEventBaseSchema.extend({
-  __typename: z.literal("BlockingRemovedEvent"),
-  blockedIssue: referencedItemSchema.nullable(),
 });
 const labelSchema = z.object({
   id: opaqueIdSchema,
@@ -482,8 +444,6 @@ const baseIssueSchema = z
     __typename: z.literal("Issue"),
     id: opaqueIdSchema,
     body: z.string(),
-    lastEditedAt: utcIsoDateTimeSchema.nullable(),
-    userContentEdits: userContentEditConnectionSchema.nullable(),
     comments: commentConnectionSchema,
     timelineItems: timelineConnectionSchema,
     blockedBy: referencedItemConnectionSchema.optional(),
@@ -496,11 +456,8 @@ const basePullRequestSchema = z.object({
   __typename: z.literal("PullRequest"),
   id: opaqueIdSchema,
   body: z.string(),
-  lastEditedAt: utcIsoDateTimeSchema.nullable(),
-  userContentEdits: userContentEditConnectionSchema.nullable(),
   closingIssuesReferences: referencedItemConnectionSchema,
   headRefOid: shaSchema,
-  reviewDecision: z.enum(["APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED"]).nullable(),
   headRef: headRefSchema,
   mergeable: z.enum(["CONFLICTING", "MERGEABLE", "UNKNOWN"]),
   mergeStateStatus: z.enum([
@@ -524,31 +481,6 @@ const basePullRequestSchema = z.object({
 });
 const baseItemDetailResponseSchema = z.object({
   item: z.union([baseIssueSchema, basePullRequestSchema]).nullable(),
-});
-const userContentEditPageOwnerSchema = z.discriminatedUnion("__typename", [
-  z.object({
-    __typename: z.literal("Issue"),
-    id: opaqueIdSchema,
-    userContentEdits: userContentEditConnectionSchema.nullable(),
-  }),
-  z.object({
-    __typename: z.literal("PullRequest"),
-    id: opaqueIdSchema,
-    userContentEdits: userContentEditConnectionSchema.nullable(),
-  }),
-  z.object({
-    __typename: z.literal("IssueComment"),
-    id: opaqueIdSchema,
-    userContentEdits: userContentEditConnectionSchema.nullable(),
-  }),
-  z.object({
-    __typename: z.literal("PullRequestReviewComment"),
-    id: opaqueIdSchema,
-    userContentEdits: userContentEditConnectionSchema.nullable(),
-  }),
-]);
-const userContentEditPageResponseSchema = z.object({
-  content: userContentEditPageOwnerSchema.nullable(),
 });
 const pullRequestHeadCommitResponseSchema = z.object({
   pullRequest: z
@@ -680,8 +612,6 @@ const checkContextPageResponseSchema = z.object({
 
 type Graphql = GitHubClient["graphql"];
 type RawPageInfo = z.output<typeof pageInfoSchema>;
-type RawUserContentEdit = z.output<typeof userContentEditSchema>;
-type RawUserContentEditConnection = z.output<typeof userContentEditConnectionSchema>;
 type RawComment = z.output<typeof commentSchema>;
 type RawReview = z.output<typeof reviewSchema>;
 type RawReviewComment = z.output<typeof reviewCommentSchema>;
@@ -827,14 +757,9 @@ function normalizeAssignee(
   });
 }
 
-/** GitHub参照項目の応答を正規化する。 */
-export function normalizeReferencedItem(item: RawReferencedItem): GitHubReferencedItem {
+function normalizeReferencedItem(item: RawReferencedItem): GitHubReferencedItem {
   if (item.repository.visibility !== "PUBLIC") {
-    throw new GitHubPublicBoundaryViolationError({
-      scope: "generic",
-      violationKind: "referenced_item_not_public",
-      violationCount: 1,
-    });
+    throw new GitHubPublicBoundaryViolationError(1);
   }
   const nodeId = createGitHubNodeId(item.id);
   const repositoryId = createGitHubRepositoryId(item.repository.id);
@@ -962,102 +887,6 @@ function assertItemResponseType(
   }
 }
 
-function normalizeUserContentEdits(
-  nodes: readonly RawUserContentEdit[],
-): readonly GitHubUserContentEdit[] {
-  const edits = nodes.map((edit, sequence) => {
-    const normalized = Object.freeze({
-      sourceId: buildSourceId("github_user_content_edit", edit.id),
-      sequence,
-      createdAt: edit.createdAt,
-      deletedAt: edit.deletedAt,
-      diff: edit.diff,
-      editedAt: edit.editedAt,
-      editor: normalizeActor(edit.editor),
-      updatedAt: edit.updatedAt,
-    } satisfies GitHubUserContentEdit);
-    return normalized;
-  });
-  edits.sort((left, right) => {
-    if (left.editedAt < right.editedAt) {
-      return -1;
-    }
-    if (left.editedAt > right.editedAt) {
-      return 1;
-    }
-    if (left.sequence !== right.sequence) {
-      return left.sequence - right.sequence;
-    }
-    if (left.sourceId < right.sourceId) {
-      return -1;
-    }
-    if (left.sourceId > right.sourceId) {
-      return 1;
-    }
-    return 0;
-  });
-  return Object.freeze(edits);
-}
-
-async function collectUserContentEdits(
-  contentNodeId: GitHubNodeId,
-  initialConnection: RawUserContentEditConnection | null,
-  graphql: Graphql,
-  context: string,
-): Promise<GitHubUserContentEditCollection> {
-  if (initialConnection == null) {
-    return Object.freeze({
-      availability: "unavailable",
-      reason: "connection_null",
-    });
-  }
-  const nodes = [...initialConnection.nodes];
-  let pageInfo = initialConnection.pageInfo;
-  for (;;) {
-    const cursor = requireConnectionCursor(pageInfo, `${context}編集履歴`);
-    if (cursor == null) {
-      break;
-    }
-    const response = await graphql(USER_CONTENT_EDIT_PAGE_QUERY, {
-      contentId: contentNodeId,
-      after: cursor,
-    });
-    const parsed = parseGraphqlResponse(
-      userContentEditPageResponseSchema,
-      response,
-      `${context}編集履歴ページ`,
-    );
-    const responseContent = requireGraphqlNode(
-      parsed.content,
-      contentNodeId,
-      (node) => node.id,
-      `${context}編集履歴ページ`,
-    );
-    const responseConnection = responseContent.userContentEdits;
-    if (responseConnection == null) {
-      return Object.freeze({
-        availability: "unavailable",
-        reason: "connection_null",
-      });
-    }
-    if (responseConnection.nodes.length === 0) {
-      throw new GitHubResponseValidationError(`${context}編集履歴ページ`, {
-        cause: new TypeError("次ページとして空のuserContentEdits connectionを受け取りました"),
-      });
-    }
-    nodes.push(...responseConnection.nodes);
-    pageInfo = responseConnection.pageInfo;
-  }
-  assertNoDuplicateNodeIds(
-    nodes.map((node) => node.id),
-    `${context}編集履歴`,
-  );
-  return Object.freeze({
-    availability: "available",
-    edits: normalizeUserContentEdits(nodes),
-  });
-}
-
 async function collectCommentNodes(
   item: EnumeratedGitHubItem,
   initialConnection: z.output<typeof commentConnectionSchema>,
@@ -1101,34 +930,22 @@ async function collectCommentNodes(
   return Object.freeze(nodes);
 }
 
-async function normalizeComments(
-  nodes: readonly RawComment[],
-  graphql: Graphql,
-): Promise<readonly GitHubIssueComment[]> {
-  const comments: GitHubIssueComment[] = [];
-  for (const [sequence, comment] of nodes.entries()) {
-    const nodeId = createGitHubNodeId(comment.id);
-    comments.push(
-      Object.freeze({
+function normalizeComments(nodes: readonly RawComment[]): readonly GitHubIssueComment[] {
+  return Object.freeze(
+    nodes.map((comment, sequence) => {
+      const nodeId = createGitHubNodeId(comment.id);
+      return Object.freeze({
         sourceId: buildProductionSourceId("github_issue_comment", nodeId),
         nodeId,
         sequence,
         author: normalizeActor(comment.author),
         body: comment.body,
         createdAt: comment.createdAt,
-        lastEditedAt: comment.lastEditedAt,
         updatedAt: comment.updatedAt,
         url: comment.url,
-        userContentEdits: await collectUserContentEdits(
-          nodeId,
-          comment.userContentEdits,
-          graphql,
-          "Issue comment",
-        ),
-      } satisfies GitHubIssueComment),
-    );
-  }
-  return Object.freeze(comments);
+      } satisfies GitHubIssueComment);
+    }),
+  );
 }
 
 async function collectTimelineNodes(
@@ -1276,42 +1093,6 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
         ...normalizeTimelineBase(event, sequence),
         kind: "unassigned",
         assignee: normalizeAssignee(event.assignee),
-      });
-    }
-    case "BlockedByAddedEvent": {
-      const event = parseGraphqlResponse(blockedByAddedEventSchema, node, "BlockedByAddedEvent");
-      return Object.freeze({
-        ...normalizeTimelineBase(event, sequence),
-        kind: "blocked_by_added",
-        blockingIssue: normalizeTimelineReferencedItem(event.blockingIssue),
-      });
-    }
-    case "BlockedByRemovedEvent": {
-      const event = parseGraphqlResponse(
-        blockedByRemovedEventSchema,
-        node,
-        "BlockedByRemovedEvent",
-      );
-      return Object.freeze({
-        ...normalizeTimelineBase(event, sequence),
-        kind: "blocked_by_removed",
-        blockingIssue: normalizeTimelineReferencedItem(event.blockingIssue),
-      });
-    }
-    case "BlockingAddedEvent": {
-      const event = parseGraphqlResponse(blockingAddedEventSchema, node, "BlockingAddedEvent");
-      return Object.freeze({
-        ...normalizeTimelineBase(event, sequence),
-        kind: "blocking_added",
-        blockedIssue: normalizeTimelineReferencedItem(event.blockedIssue),
-      });
-    }
-    case "BlockingRemovedEvent": {
-      const event = parseGraphqlResponse(blockingRemovedEventSchema, node, "BlockingRemovedEvent");
-      return Object.freeze({
-        ...normalizeTimelineBase(event, sequence),
-        kind: "blocking_removed",
-        blockedIssue: normalizeTimelineReferencedItem(event.blockedIssue),
       });
     }
     case "LabeledEvent": {
@@ -1703,34 +1484,24 @@ async function collectReviewCommentNodes(
   return Object.freeze(nodes);
 }
 
-async function normalizeReviewComments(
+function normalizeReviewComments(
   nodes: readonly RawReviewComment[],
-  graphql: Graphql,
-): Promise<readonly GitHubPullRequestReviewComment[]> {
-  const comments: GitHubPullRequestReviewComment[] = [];
-  for (const [sequence, comment] of nodes.entries()) {
-    const nodeId = createGitHubNodeId(comment.id);
-    comments.push(
-      Object.freeze({
+): readonly GitHubPullRequestReviewComment[] {
+  return Object.freeze(
+    nodes.map((comment, sequence) => {
+      const nodeId = createGitHubNodeId(comment.id);
+      return Object.freeze({
         sourceId: buildProductionSourceId("github_pull_request_review_comment", nodeId),
         nodeId,
         sequence,
         author: normalizeActor(comment.author),
         body: comment.body,
         createdAt: comment.createdAt,
-        lastEditedAt: comment.lastEditedAt,
         updatedAt: comment.updatedAt,
         url: comment.url,
-        userContentEdits: await collectUserContentEdits(
-          nodeId,
-          comment.userContentEdits,
-          graphql,
-          "Pull Request review comment",
-        ),
-      } satisfies GitHubPullRequestReviewComment),
-    );
-  }
-  return Object.freeze(comments);
+      } satisfies GitHubPullRequestReviewComment);
+    }),
+  );
 }
 
 async function normalizeReviewThreads(
@@ -1750,7 +1521,7 @@ async function normalizeReviewThreads(
         isOutdated: thread.isOutdated,
         path: thread.path,
         resolvedBy: normalizeActor(thread.resolvedBy),
-        comments: await normalizeReviewComments(comments, graphql),
+        comments: normalizeReviewComments(comments),
       }),
     );
   }
@@ -2432,23 +2203,6 @@ function normalizeMergeQueue(
   });
 }
 
-function normalizeReviewDecision(
-  reviewDecision: z.output<typeof basePullRequestSchema>["reviewDecision"],
-): GitHubPullRequestReviewDecision {
-  switch (reviewDecision) {
-    case "APPROVED":
-      return "approved";
-    case "CHANGES_REQUESTED":
-      return "changes_requested";
-    case "REVIEW_REQUIRED":
-      return "review_required";
-    case null:
-      return null;
-    default:
-      throw new UnreachableError(reviewDecision);
-  }
-}
-
 async function normalizePullRequestMergeState(
   pullRequest: z.output<typeof basePullRequestSchema>,
   headCommit: z.output<typeof headCommitSchema>,
@@ -2534,12 +2288,6 @@ async function collectIssueDetail(
   const commentNodes = await collectCommentNodes(item, issue.comments, options.graphql);
   const timelineNodes = await collectTimelineNodes(item, issue.timelineItems, options.graphql);
   const timeline = normalizeTimeline(timelineNodes);
-  const bodyUserContentEdits = await collectUserContentEdits(
-    item.nodeId,
-    issue.userContentEdits,
-    options.graphql,
-    "Issue本文",
-  );
   return Object.freeze({
     sourceId: buildProductionSourceId("github_item_detail", item.nodeId),
     nodeId: item.nodeId,
@@ -2548,9 +2296,7 @@ async function collectIssueDetail(
     type: "issue",
     bodySourceId: buildProductionSourceId("github_item_body", item.nodeId),
     body: issue.body,
-    lastEditedAt: issue.lastEditedAt,
-    bodyUserContentEdits,
-    comments: await normalizeComments(commentNodes, options.graphql),
+    comments: normalizeComments(commentNodes),
     timeline,
     inboundCrossReferences: collectInboundCrossReferences(item.nodeId, timeline),
     nativeDependencies: await normalizeNativeDependencies(
@@ -2593,24 +2339,15 @@ async function collectPullRequestDetail(
     options.graphql,
   );
   const timeline = normalizeTimeline(timelineNodes);
-  const bodyUserContentEdits = await collectUserContentEdits(
-    item.nodeId,
-    pullRequest.userContentEdits,
-    options.graphql,
-    "Pull Request本文",
-  );
   return Object.freeze({
     sourceId: buildProductionSourceId("github_item_detail", item.nodeId),
     nodeId: item.nodeId,
     repositoryId: item.repositoryId,
     number: item.number,
     type: "pull_request",
-    reviewDecision: normalizeReviewDecision(pullRequest.reviewDecision),
     bodySourceId: buildProductionSourceId("github_item_body", item.nodeId),
     body: pullRequest.body,
-    lastEditedAt: pullRequest.lastEditedAt,
-    bodyUserContentEdits,
-    comments: await normalizeComments(commentNodes, options.graphql),
+    comments: normalizeComments(commentNodes),
     timeline,
     inboundCrossReferences: collectInboundCrossReferences(item.nodeId, timeline),
     reviews: normalizeReviews(reviewNodes),

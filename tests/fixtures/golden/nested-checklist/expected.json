@@ -13,7 +13,7 @@
         }
       ],
       "severity": "critical",
-      "stallSince": "2026-06-02T00:00:00.000Z"
+      "stallSince": "2026-07-01T00:00:00.000Z"
     },
     {
       "nodeId": "nested-engine-issue",
@@ -26,7 +26,7 @@
         }
       ],
       "severity": "critical",
-      "stallSince": "2026-06-03T00:00:00.000Z"
+      "stallSince": "2026-07-01T00:00:00.000Z"
     },
     {
       "nodeId": "nested-release-issue",
@@ -38,8 +38,8 @@
           "role": "maintainer"
         }
       ],
-      "severity": "none",
-      "stallSince": "2026-08-01T00:00:00.000Z"
+      "severity": "critical",
+      "stallSince": "2026-07-01T00:00:00.000Z"
     }
   ],
   "relations": [
@@ -61,6 +61,14 @@
   "notifications": [
     {
       "itemNodeId": "nested-core-issue",
+      "reasonCodes": ["assessment_overdue"]
+    },
+    {
+      "itemNodeId": "nested-engine-issue",
+      "reasonCodes": ["assessment_overdue"]
+    },
+    {
+      "itemNodeId": "nested-release-issue",
       "reasonCodes": ["assessment_overdue"]
     }
   ],

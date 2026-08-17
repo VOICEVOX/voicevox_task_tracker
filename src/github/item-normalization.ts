@@ -467,11 +467,6 @@ function normalizeTimelineEvent(
           direction: "from_item",
         }),
       ]);
-    case "blocked_by_added":
-    case "blocked_by_removed":
-    case "blocking_added":
-    case "blocking_removed":
-      return Object.freeze([]);
     case "sub_issue_added":
     case "sub_issue_removed":
     case "parent_issue_added":

@@ -71,12 +71,18 @@ export class StateZodValidationError extends StateFormatError implements ZodErro
     super(kind, {
       cause: new TypeError(
         `${kind}のschema検証に失敗しました。問題件数: ${diagnostics.issueCount.toString()}`,
-        { cause: error },
       ),
     });
     this.issueCount = diagnostics.issueCount;
     this.issues = diagnostics.issues;
     this.omittedIssueCount = diagnostics.omittedIssueCount;
+  }
+}
+
+/** state履歴を一意に生成または再生できないことを表す。 */
+export class StateHistoryError extends StatePersistenceError {
+  public constructor(message: string) {
+    super(`state履歴を処理できません。${message}`, {});
   }
 }
 

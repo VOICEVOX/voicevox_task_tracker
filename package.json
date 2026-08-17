@@ -17,9 +17,9 @@
     "tracker:run": "node dist/cli/tracker-run.js",
     "typecheck": "tsc --project tsconfig.json && tsc --project web/tsconfig.json",
     "test": "vitest run",
-    "lint": "eslint --cache .",
-    "format": "prettier --cache --write .",
-    "format:check": "prettier --cache --check ."
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",

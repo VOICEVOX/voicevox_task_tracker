@@ -1,156 +1,359 @@
 # 運用手順
 
+正常運用時のVOICEVOX Task Trackerは毎日23:00 UTCに起動し、日本時間の08:00以降にPagesとDiscordを更新します。
+GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は保証しません。
+
 ## 日々の確認
 
-日次scheduleは08:00 JSTに対応する基準通知時刻`S`を渡してrunします。
-Actionsの遅延は`S`を変更しません。workflow concurrencyでschedule runを直列化します。
+`.github/workflows/daily.yml`の最新runで、実行対象のjobが依存順に成功したことを確認します。
 
-成功後はActions artifactとjob summaryのrun reportを確認します。`tracker-state-v4` branchはcacheだけを持ち、Pagesの公開結果や送信済み状態の正本ではありません。
+1. `test-eval`
+2. `collect-analyze`
+3. `persist-state`
+4. `build-pages`
+5. `deploy-pages`
+6. `notify-discord`
+7. `notify-operations` 失敗時のみ
+8. `report-workflow`
 
-run reportで確認する項目は次のとおりです。
+通常の公開経路は`notify-discord`までの6 jobです。
+`notify-operations`は収集、Pages関連、Discord通知のいずれかのjobが失敗したときだけ実行されます。
+`report-workflow`は先行jobの成否にかかわらず実行され、全job結果と収集metricをActions artifactへ保存します。
 
-| 項目                   | 確認内容                                                                      |
-| ---------------------- | ----------------------------------------------------------------------------- |
-| repository/item/edge数 | allowlist内の収集数と現在graphの規模                                          |
-| pagination             | repository、item、timeline、comment、review、edit historyの未取得ページがない |
-| cache hit/miss         | GitHub収集cache、Codex result、latest importanceの利用数                      |
-| stale                  | 503 cacheを使ったrepositoryと影響する項目                                     |
-| AI                     | call数、validation失敗、deferred、importance fallback、relation不足           |
-| replay                 | unknown件数、current値との不一致、同一source IDの重複                         |
-| notification           | `S`、一回通知窓、urgent 3日、critical 2日の候補数と送信結果                   |
-| stage                  | Pages、Discord、cache保存の成否と所要時間                                     |
+Pagesではトップの項目一覧にすべての追跡項目が表示され、既定が要対応度の降順であることを確認します。
+表が表示される幅では列見出しから並び替えられ、カードが表示される幅では並び順の選択UIが現れることも確認します。
+共通ヘッダーには「最新更新」と相対時刻、共通フッターにはrun IDだけが表示されます。
+`tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
+ローカル実行のreportは`artifacts/run-reports/`へ出力されます。
+Actionsでは収集reportとworkflow全体のreportを、run IDと試行番号を含む別々のartifactへ保存します。
 
-raw API response、本文、comment、編集差分、secretはartifactとjob summaryへ出しません。
-人がcache JSONを直接編集して判定を修正する運用はしません。GitHubの正本、`config.yml`、またはfixtureを修正して再実行します。
+run reportの主な確認項目は次のとおりです。
 
-## 公開allowlist
+| field                               | 意味                                                                          |
+| ----------------------------------- | ----------------------------------------------------------------------------- |
+| `status`                            | `success`は完全成功、`fallback`はCodex縮退を含む完全run、`failure`は不完全run |
+| `complete`                          | stateと公開処理へ進める完全性を満たしたか                                     |
+| `failedStage`                       | failureが起きた処理段階                                                       |
+| `diagnostics`                       | secretや信頼できない本文を含まない診断                                        |
+| `metrics.repositoryCount`           | 公開allowlistに入ったrepository数                                             |
+| `metrics.itemCount`                 | 追跡項目数                                                                    |
+| `metrics.changedItemCount`          | 前回から更新された追跡項目数                                                  |
+| `metrics.activeEdgeCount`           | 有効な関係edge数                                                              |
+| `metrics.aiCallCount`               | Codexを実行した件数                                                           |
+| `metrics.aiCacheHitCount`           | AI cacheを再利用した件数                                                      |
+| `metrics.aiRetainedResultCount`     | AI分析対象へ入れず前回のAI結果を保持した件数                                  |
+| `metrics.estimatedInputTokens`      | Codex入力tokenの見積り                                                        |
+| `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                  |
+| `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                  |
+| `metrics.notificationCount`         | 送信結果をledgerへ記録した通知数                                              |
+| `metrics.scheduleDelayMilliseconds` | 予定起動時刻からCLI開始までの遅延                                             |
+| `metrics.durationMilliseconds`      | CLI開始からrun完了までの所要時間                                              |
 
-収集開始時にOrganizationのrepository metadataを全ページ取得します。
-public、non-archived、non-disabledだけをallowlistへ入れ、allowlist外の詳細を取得しません。
+Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`へ違反件数が`validationIssueCount`として残ります。
+違反した検証ルールは先頭5件まで`validationIssue0Path`と`validationIssue0Code`の形式で残り、添字は0から始まります。
+違反の`message`は入力値を含みうるため残しません。
 
-cache保存前、Pages DTO生成前、Discord payload生成前にallowlistを再検証します。
-private、internal、archived、disabled、allowlist外のrepository ID、owner/name、URL、項目が一件でもあれば、cache、Pages、通常Discordをすべて停止します。
-過去にpublicだった値をcacheから再公開しません。
+`tracker-state`は自動更新専用です。
+人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴とcooldownの整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
 
-設定したmaintainerのユーザー名とteam識別子は公開できますが、team member一覧と所属対応は取得しません。
+## GitHub GraphQL schemaの更新
 
-## 503とstale cache
+`schemas/github-graphql.schema.graphql`はGitHubが公開しているGraphQL schemaの写しです。
+送信しうる全クエリをこのschemaで検証し、存在しないフィールドの要求や応答名の衝突を実行前に検出します。
+テストはこのファイルだけを読み、ネットワークへ出ません。
 
-repositoryの収集が503で失敗した場合は、同一repositoryのcacheがschemaとallowlistを満たすときだけstaleとして評価します。
-staleであることをPagesへ明示し、影響する通常通知を除外します。
-cacheがない503、503以外の通信失敗、paginationが欠けた結果はrun失敗です。
+GitHub側のschema変更へ追従するときは、次の手順で更新します。
 
-失敗runではPagesと通常Discordを更新せず、運用障害通知だけを試みます。stale cacheを新しいcacheとして上書きしません。
+```console
+curl -L --fail-with-body https://docs.github.com/public/fpt/schema.docs.graphql --output schemas/github-graphql.schema.graphql
+pnpm test
+```
+
+更新後にクエリ検証が失敗した場合は、失敗したクエリをschemaへ合わせて修正します。
+schemaの写しを古いまま据え置くと検証が形骸化するため、退避や巻き戻しはしません。
 
 ## 性能profile
 
-cold runはcacheを使わず、現在値と全timeline・編集履歴を再生します。
-受入条件は5,000 items、10,000 edgesを30分以内で処理することです。変更件数だけを測るprofileでは不十分です。
+OPS-004は通常のCIから分離したend-to-end性能profileで確認します。
+外部サービスへ接続せず、本番の`daily`トランザクションへ5,000項目、10,000 edge、変更300件を流します。
+GitHub APIは15,000 unitのモックrate limitから、一覧のpaginationと項目ごとの詳細取得で消費したunitを差し引きます。
+Codexは設定上限300件までモック出力を返し、予算選別、schema検証、reducerを実際に通します。
+state永続化はメモリ上で行い、Pages初期summaryは実際に生成してgzipサイズを測ります。
 
 ```console
 pnpm perf:profile
 ```
 
-外部GitHub、Codex、Discordへ接続せず、全pagination、event sorting、state・relation replay、Pages DTO、通知候補計算をmock入力で測ります。
-API unit、Codex call、cache hit/miss、gzip summary sizeもrun reportへ記録します。
-
-30分を超えた場合は、queryのまとめ方、pagination、並列度、不要なraw値の保持を調べます。
-判定の正しさを保つために、前回runの判定結果を必須入力へ戻しません。
+30分、GitHub API 70%、Codex設定上限、summary gzip 1 MiBのいずれかを超えると終了codeが1になります。
+測定結果は`artifacts/performance-profile.json`へ保存されます。
+CI上では`性能profile` workflowを手動実行し、同じJSONをActions artifactとして保存します。
 
 ## stageごとの実行
 
-### collect-analyze
+日次workflowはjobの権限と副作用を一致させるため、次のstageを別processで実行します。
+各stageは`artifacts/workflow/validated-run.json`をschema検証、semantic検証、公開安全性検証へ通してから利用します。
+前stageのartifactが存在しない場合や検証に失敗した場合は明示的なエラーで停止します。
 
-1. 設定を検証し、runの`S`を固定する。
-2. repository metadataからallowlistを作る。
-3. open itemと必要なrelation端点を列挙する。
-4. GitHub収集cacheのhitを検証し、missは全current detail、timeline、comment、review、edit historyを全ページ取得する。
-5. source ID、発生時刻、pagination sequenceを正規化し、state、draft、responsibility、relationをreplayする。
-6. current detailとreplay結果を照合する。
-7. current inputに一致するCodex cacheを読み、missだけAIへ渡す。
-8. graph、importance、attention、severity、通知候補を計算する。
+収集と判定はGitHub Appの認証情報を使います。
+現行の`config.yml`は`ai.authentication: auth-json`を指定します。
+Actionsの`collect-analyze` jobは配置stepだけへ`CODEX_AUTH_JSON`を渡し、一時的な`auth.json`を配置して収集stepへ`CODEX_HOME`を渡します。
+`CODEX_AUTH_SYNC_TOKEN`は書き戻しstepだけへ`GH_TOKEN`として渡します。
+jobは一時ファイルを削除する前に、更新された`auth.json`を`CODEX_AUTH_JSON`へ同期します。
+`ai.enabled: true`のローカル実行ではlockfileで固定した`codex`に加え、`auth-json`なら`CODEX_HOME`直下の`auth.json`、`api-key`なら`OPENAI_API_KEY`が必要です。
+検証後のsnapshot、通知候補、notification ledger、run report生成用の収集指標、AI cacheを公開可能なartifactへ保存します。
 
-actorやrelation targetが取得不能でも、確定できるstateやdraftをunknownにしません。
-責務targetの不明なepochだけをunknownとし、current relationに必要なAIが不足する場合は推測せずrunを停止します。
-
-### build-pagesとdeploy-pages
-
-収集時allowlistをDTO生成直前に再検証します。private、internal、archived、disabled、allowlist外の値、secret、危険なURL、raw本文、raw diffを拒否します。
-検証済みDTOだけをPagesへdeployします。deployment失敗時は通常Discordとcache保存を行いません。
-
-### notify-discord
-
-通知判定は送信済み状態を参照せず、`S`とGitHub eventの時刻から行います。
-一回限りの変化は`S - 24時間 < T <= S`の候補だけにします。
-urgentは3日、criticalは2日の固定周期で閾値到達後に再び候補にします。
-
-各schedule runの`github.run_attempt == 1`だけ、一回限りの変化とurgent・criticalの停滞繰り返しを含む通常digestを送ります。`workflow_dispatch`とrerunでは通常digestを送りません。
-`github.run_attempt`が1以外なら通常digestを抑えます。Webhookの通信断で送信済みか確認できない極めて稀な重複は許容します。
-
-### persist-cache
-
-PagesのdeployとDiscord送信が完了した後にだけcacheを書き込みます。
-`tracker-state-v4`のcache pathは次の4つです。
-
-```text
-state/github-repositories
-state/github-items
-state/ai-latest-importance
-state/ai-results
+```console
+pnpm build
+pnpm tracker:run collect-analyze --mode none
 ```
 
-canonical JSONを使い、directoryの同一・入れ子を設定時に拒否します。
-終了項目cacheは`terminalAt`から180日まで保持し、期限後に削除します。snapshot、日次履歴、notification ledger、state branchのrun reportは作りません。
+backfillでは`--mode linked`か`--mode all-open`を指定し、対象を絞る場合は`--repository VOICEVOX/voicevox`を繰り返します。
 
-### report
+state永続化は収集artifactを受け取り、`tracker-state`へ一つのcommitとして保存します。
+GitHub App、Codex、Discordのsecretは読みません。
 
-run reportはActions artifactとjob summaryへ保存します。
-成功、stale継続、AI fallback、公開停止、Pages失敗、Discord失敗、cache保存失敗を区別し、診断code、stage、件数、所要時間だけを記録します。
-cache branchの入力にはしません。
+```console
+pnpm tracker:run persist-state
+```
+
+Pages buildは同じ収集artifactから公開DTOを生成します。
+外部secretは読みません。
+
+```console
+pnpm tracker:run build-pages --output web/public/data
+pnpm build:web
+```
+
+GitHub Pagesへのdeployが成功した後だけ、deploy結果のURLを渡してDiscord stageを実行します。
+このstageが読む外部secretは、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`の2つだけです。
+
+```console
+pnpm tracker:run notify-discord --pages-url https://voicevox.github.io/voicevox_task_tracker/
+```
+
+ローカルで全stageを1processで確認する場合は従来の`daily`を利用できます。
+この実行はstate、Pages用データ、Discordへ順に副作用を発生させるため、設定と認証情報を確認してから実行します。
+
+```console
+pnpm tracker:run --backfill none
+```
 
 ## 誤判定の直し方
 
-### 状態、責務、時刻
+tracker専用のcommand comment、override UI、専用labelはありません。
+次回runで機械的に解釈できるように、GitHub上の事実を明確にします。
 
-GitHub current detailと全timelineのsource IDを調べます。
-同じsource IDの異なる内容、current detailとの矛盾、欠落した必須ページは例外として扱い、現在時刻へ補正しません。
-actor不明でもstate、draft、mergeの事実は再生し、assigneeやreview request target不明の責務epochだけをunknownにします。
+抽象的なmaintainer、reviewer、merge_deciderの責務は、`config.yml`でrepositoryごとに設定したメンテナ全員へ展開されます。
+担当者を変える場合は`maintainers.defaults`か`maintainers.repositories`のGitHubユーザー名一覧を更新します。
+GitHubのteam review requestと本文やコメントの`@organization/team`はteamへの待ちとして残ります。
+trackerはteam memberを取得しないため、team memberの活動ではteam宛て項目の停滞起点を更新しません。
+個人の活動を停滞計算へ反映させる場合はuserを名指しします。
 
-同時刻イベントはitem内sequenceとsource IDで順序を固定します。順序が変わるfixtureはsource IDによる安定化が働いているか確認します。
+### コメント
 
-### relationとdependency
+最新コメントで、次に誰が何をするかを一文で明示します。
+方針判断待ちへ直す場合は、maintainer roleへ必要な判断を明記します。
+返答待ちへ直す場合は、回答を求めるuserかteamを名指しします。
+質問の内容と未回答であることも明記します。
+依存関係なら対象IssueかPRのURLと、現在の項目を止めているか、単なる関連情報かを明記します。
 
-native dependencyの4イベント、本文・commentのrelation mutation、close・reopenを確認します。
-現在graphはcurrent relationから作り、blocks edgeは両端がopenのときだけactiveです。
-履歴の一部がunknownなら現在graphを推測で変えず、newly unblockedやcycleなど影響する一回限り通知だけを抑えます。
+古いmention、謝辞、単なるリンクだけでは責務移動やblockerを確定しません。
+依頼が解決した場合は、回答か決定を新しいコメントとして残すと未回答扱いを解消しやすくなります。
 
-### importanceとAI
+### assignee
 
-同一normalized inputのCodex resultだけを通常結果として使います。
-AI失敗時のlatest fallbackは同じnode IDのimportanceだけです。status、waitingOn、relation、progress、通知理由には使いません。
-current graphに必要なAI relationが不足した場合はPagesと通常Discordを止めます。
+Issueを作業待ちへ直す場合は、実際に作業するuserをassigneeへ設定します。
+担当が決まっていない間はassigneeを設定しません。
 
-### 設定と規則
+### ラベル
 
-label、severity、importance、attentionの閾値を変えた場合はgolden fixtureと通知候補の差分を確認します。
-判定結果が変わるdomain、graph、prompt、schemaの変更では対応する規則versionとhash testを更新します。
+`config.yml`の`labels.rules`へ登録した既存labelだけがtrackerの意味を持ちます。
+repository globとlabel名の正規表現を一致させ、必要な効果を設定します。
+
+| effect                       | 用途                                                 |
+| ---------------------------- | ---------------------------------------------------- |
+| `priorityWeight`             | 重要度を通じて要対応度を上げ、通知候補の順位も上げる |
+| `severityLift`               | 通知判断に使うseverityを最大1段階引き上げる          |
+| `requiresMaintainerDecision` | 方針判断待ちとし、maintainer roleへ責務を置く        |
+| `suppressNotifications`      | graphには残したまま通常通知を抑える                  |
+| `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う              |
+
+trackerはlabelを追加も変更もしません。
+label規則を変えた場合は`pnpm test`とdry-runで通知候補の差分を確認します。
+
+### review request
+
+PRをレビュー待ちへ直す場合は、Current reviewersへレビューを依頼するuserかteamを追加します。
+不要になったreview requestはGitHub上で解除します。
+現在のreview requestは自然言語より強い決定論的根拠です。
+
+人間の`CHANGES_REQUESTED`が最新head以後にある場合は修正待ちを優先し、authorの修正を待ちます。
+authorが修正をpushした後はレビュー待ちとしてreviewer側を再評価します。
+必要ならreview requestも現在の担当へ合わせます。
+未解決のreview threadも修正待ちの根拠になります。
+authorが最後に返信したthreadは修正待ちの根拠から外し、reviewerの再確認を待つレビュー待ちとして扱います。
+botのreviewとcommentだけではbotへ責務を移しません。
+
+これらで待ち先が決まった後も、その相手本人がさらに発言していれば発言の内容から判定し直します。
+変更要求を受けたauthorが修正せずに質問すれば返答待ちとなり、reviewerの返答を待ちます。
+authorが了解を返しただけなら修正待ちを維持し、authorの修正を待ちます。
+待ち先を確実に伝えたい場合は、質問や依頼を明示した文にするか、review requestで示してください。
+
+### native dependency
+
+本当に作業を止めるIssue同士はGitHubのblocked byとblockingで接続します。
+親子関係はsub-issueを使います。
+native relationはauthoritativeであり、本文のplain linkやCodex推定より優先されます。
+Pull RequestがIssueを閉じる関係は、GitHubがclosing referenceとして認識する形で書きます。
+GitHubが認識したclosing referenceはauthoritativeな`implements`関係になります。
+GitHubが認識しない書き方は本文のclosing keywordとしてしか読めず、Codexの推定に頼る関係になります。
+
+blockerが完了したら対象Issueをcloseし、誤ったnative relationはGitHub上で解除します。
+単なる関連項目はnative dependencyにせず、本文かコメントで関連だけであることを明記します。
+
+### 重要度
+
+重要度は項目そのものの重要さを表し、停滞の深刻さを表すseverityとは別に確認します。
+個別の項目の重要度がずれている場合は、まず詳細ページの内訳でどの要因が効いているかを確かめます。
+決定論的な要因は、優先度ラベル、native dependency、milestoneと期限をGitHub上の事実へ合わせると変わります。
+Codex由来の要因は、重要な機能である根拠、具体的な期限、放置した場合の将来問題が本文かコメントから読み取れるかで決まります。
+本文へ重要だと書くだけでは根拠になりません。
+全体の加点やlevelを調整する場合は`config.yml`の`importance`を変更し、dry-runでscore、level、内訳を確認します。
+
+### 要対応度
+
+要対応度は重要度を主、停滞の短さを従として計算します。
+個別の項目の要対応度がずれている場合は、重要度score、`stallSince`、現在のwait class、そのwait classの`watch`閾値を順に確認します。
+terminal項目とブロック解消待ちの項目が0点になるのは意図した動作です。
+
+停滞による下がり方を全体で調整する場合は`config.yml`の`attention.recencyFloor`を変更します。
+要対応度と重要度と停滞時間は、項目一覧と担当者ごとのページで選べる三つの並び替えキーです。
+既定は要対応度の降順です。
+severityはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
+
+設定変更後は`pnpm test`とdry-runを実行し、要対応度のscore、level、表示対象、並び順、依存グラフのnode選定を確認します。
+
+修正を反映したい場合は日次runを待つか、日次workflowを`backfill: none`で手動実行します。
+
+## backfill
+
+backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定します。
+
+| `backfill` | 対象                                                     |
+| ---------- | -------------------------------------------------------- |
+| `none`     | 通常の日次追跡だけを行う                                 |
+| `linked`   | 追跡済み項目とrelationで接続する未追跡open項目を追加する |
+| `all-open` | 対象repositoryの全open IssueとPull Requestを追加する     |
+
+`repository_filter`は`VOICEVOX/voicevox,VOICEVOX/voicevox_engine`のようなfull nameのカンマ区切りです。
+空ならVOICEVOX全体が対象です。
+`backfill: none`ではrepository filterを指定できません。
+
+1 runで追加する件数は`tracking.backfill.maxItemsPerRun`までです。
+上限を超える場合は同じmodeとfilterで手動runを繰り返します。
+`linked`は追跡済み項目の直接の隣接項目を追加し、繰り返すと新しく追加した項目の隣接へ範囲を広げます。
+
+特定の古いIssueかPRだけを追加する場合は、URLかnode IDを`tracking.include`へ追加します。
+一度追跡対象へ入った項目は作成日時に関係なく同じ状態、停滞、通知規則で扱います。
+大規模な`all-open`はCodex予算と通知候補を急増させるため、Discordを無効にしてrepository単位で確認してから範囲を広げます。
 
 ## 通知量の調整
 
-severityはDiscord通知だけに使います。通常候補は新しいseverity、責務移動、newly unblocked、new cycle、長期停滞を優先し、bot-only activity、preview更新、recent draft、低信頼AIだけの理由は除外します。
-blocked parent自身を毎日催促せず、blockerのseverityとdownstream impactで順位を決めます。
+severityはDiscord通知の判断にだけ使います。
+通知選別はseverityの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。
+直近に意味のある進捗がある項目、botだけの活動、recent draft、低信頼のAI判定、labelで抑制した項目は通常通知から外します。
+botが作成した項目のtitleが`notifications.automationNoiseTitles`のいずれかと大文字小文字を区別せず一致した場合、graphへ残したまま通常通知から外します。
+Renovateの`dependencyDashboardTitle`を変更した場合は同じtitleをこの一覧へ追加します。
 
-通知が多すぎる場合は、不要な候補の原因となった状態分類、label規則、staleness閾値、AI confidence、予算を順に確認します。
-送信成功時刻を保存してcooldownを調整することはできません。固定周期と`S`から候補を再計算します。
+特定の状態だけ通知時刻を調整する場合は、対応する`staleness.thresholdsHours`のキーを変更します。
+各キーの`watch`は要対応度の半減期にも使うため、変更するとWebの要対応度と並び順も変わります。
+`urgent`と`critical`は通知判断だけに使います。
+
+| 状態                                             | キー         |
+| ------------------------------------------------ | ------------ |
+| 内容確認待ち                                     | `assessment` |
+| 担当決め待ち、待ち先不明                         | `owner`      |
+| 方針判断待ち                                     | `decision`   |
+| レビュー待ち                                     | `review`     |
+| `CHANGES_REQUESTED`後の修正待ち                  | `revision`   |
+| 作業待ち、作業中、CI失敗やconflictによる修正待ち | `work`       |
+| 返答待ち                                         | `reply`      |
+| マージ待ち                                       | `merge`      |
+| 自動処理待ち                                     | `automation` |
+
+ブロック解消待ちには直接の閾値がありません。
+blockerのseverityとdownstream impactが通知順位を決めます。
+
+通知が多すぎる場合は次の順で調整します。
+
+1. 誤ったstatus、waitingOn、依存をGitHub上で明確にします。
+2. automation dashboardのtitleを`notifications.automationNoiseTitles`へ追加するか、対象labelへ`labels.rules.effects.suppressNotifications`を割り当てます。
+3. 通知を減らす状態に対応する`staleness.thresholdsHours`を増やします。
+4. 全状態で直近の進捗を長く猶予する場合は`recentProgressGraceHours`を増やします。
+5. `cooldownDays`を増やし、`maxItemsPerDigest`を減らします。
+6. AI推定が原因なら`ai.confidence.medium`を上げ、実モデルを呼び出すdry-runでAI判定と通知候補の差分を確認します。
+
+通知が少なすぎる場合は逆方向に調整します。
+
+1. maintainer設定、userかteamの指定、review request、native dependency、label規則がstatusとwaitingOnの実態に合うか確認します。
+2. 通知を増やす状態に対応する`staleness.thresholdsHours`を減らします。
+3. 全状態で直近の進捗を短く猶予する場合は`recentProgressGraceHours`を減らします。
+4. `maxItemsPerDigest`を増やし、`cooldownDays`を減らします。
+5. 重要labelへ`priorityWeight`か`severityLift: 1`を設定します。
+6. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目、通知候補を確認します。
+
+閾値、confidence、label規則、AI予算を変更する場合は、`pnpm test`とdry-runを実行して通知候補の差分を確認します。
+schema、semantic validation、reducer、状態、graph、通知判定を変更する場合は`pnpm eval:golden`も実行します。
+golden evalはfixture内の固定AI出力を検証して期待結果と比較し、標準fixtureで`fixedAi.networkCallCount: 0`を要求します。
+実モデル、reasoning effort、promptの応答品質は評価しないため、これらを変更する場合は`metrics.aiCallCount`が1以上のdry-runでAI判定と通知候補の差分を確認します。
+`ai.execution.maxConcurrentCalls`を上げるとrun時間は縮みますが、Codexのrate limitに当たる頻度が増えて再試行が発生しやすくなります。
+上げた後は`codex_analysis` stageの失敗数と再試行数を確認します。
+mentionは通知量の調整に使わず、運用上必要なuserだけをallowlistへ追加します。
 
 ## 障害時の確認
 
-1. job summaryのstage、diagnostic code、allowlist、stale、cache hit/missを確認する。
-2. Pages、Discord、cache保存のどこで停止したかを確認する。
-3. public allowlist違反ならcache、Pages、Discordがすべて停止したことを確認する。
-4. relation AI不足なら古い入力へfallbackせず、最後に公開されたPagesを確認する。
-5. 503なら検証済みcacheの有無とstale除外を確認する。
-6. current値不整合や同一source IDの内容不一致ならfixtureとGraphQL paginationを調べ、例外を隠さない。
+失敗したActions jobをworkflow全体のreportにある`jobs`と照合し、収集失敗ではCLI reportの`failedStage`も確認します。
 
-PagesまたはDiscordが失敗したrunはcacheを保存しません。次回runはGitHub current detailと全イベントから再計算します。
-運用障害通知にも送信済みledgerはなく、同じ障害が続く場合の複数通知は許容します。
+| stageまたはjob                  | 確認内容                                                                                                                                                                                      |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test-eval`                     | `pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm format:check`、`pnpm eval:golden`をローカルで再現する                                                                                       |
+| `configuration`                 | maintainerのGitHubユーザー名一覧、repository名、未知field、日時、正規表現、secret名を確認する                                                                                                 |
+| `authentication`                | `GH_APP_ID`、PEM形式、Organizationへのinstallation、必要なread権限だけがあることを確認する                                                                                                    |
+| `repository_inventory`          | Appのrepository access、public、archive、disabledの状態を確認する                                                                                                                             |
+| `incremental_collection`        | GitHub API残量、429と503、対象repositoryの一時障害を確認する                                                                                                                                  |
+| `codex_analysis`                | `codex` executable、model ID、reasoning effort、予算、timeout、同時実行数、`ai.authentication`を確認し、`auth-json`では`CODEX_HOME`直下の`auth.json`、`api-key`では`OPENAI_API_KEY`を確認する |
+| `state_persistence`             | Actionsの`contents: write`、`tracker-state`のruleset、同時runがないことを確認する                                                                                                             |
+| `build-pages`                   | Pages DTO、`web.basePath`、Web build、公開guardの診断を確認する                                                                                                                               |
+| `deploy-pages`                  | Pages Source、`github-pages` environment、`pages: write`と`id-token: write`を確認する                                                                                                         |
+| `discord`または`notify-discord` | enabled設定、Webhook secret、channel、Webhook失効、429と503を確認する                                                                                                                         |
+
+`incremental_collection`が`errorType=CliRelationExpansionLimitError`で失敗した場合は、同じ診断行の`relationExpansionLimit`、`relationExpansionFetchedCount`、`relationExpansionUnfetchedCount`を確認します。
+件数が想定より多いときは、GitHub上の誤ったnative relationや参照を直します。
+妥当な件数なら、GitHub API残量と`operations.githubApiBudgetRatio`を確認したうえで`tracking.relationExpansion.maxItemsPerRun`を引き上げ、`backfill: none`で再実行します。
+この失敗ではstate、Pages、通常のDiscord通知を更新しません。
+
+収集の診断に「端点を取得できなかった関係候補を除外しました」が出る場合は、archive済みrepositoryやOrganization外の参照先など、公開境界の外にある関係先が残っています。
+run自体は成功し、除外した関係候補は依存グラフへ載りません。
+
+Actions上でCodexの認証エラーが起きた場合は、まず過去の`collect-analyze`でCodex認証の書き戻しstepが失敗していないか確認します。
+書き戻しが失敗していたときは、`CODEX_AUTH_SYNC_TOKEN`の登録、tokenの有効期限、Organizationの承認、対象repositoryと`Secrets`の`Read and write`権限を確認して直し、`backfill: none`で再実行します。
+保存済みのCodex認証をrefreshできず、再実行でも回復しない場合だけローカルのCodexへログインし直します。
+[デプロイ手順](DEPLOYMENT.md)のコマンドで、新しい`auth.json`を`CODEX_AUTH_JSON`の初期値として登録します。
+
+`fallback`はAI分析に失敗または延期した項目を決定論的判定と利用可能な前回結果へ縮退した完全runです。
+項目一覧を`AI推定が最新でない`で絞り込み、各行の警告アイコンと項目詳細の注記で対象を特定します。
+原因はrun reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から追います。
+`metrics.aiCacheHitCount`が0でも`metrics.aiRetainedResultCount`が1以上なら、未変更項目のAI結果はAI分析対象へ入れず保持されています。
+対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。
+`failure`が`state_persistence`より前ならstateは更新されません。
+`pages`か`discord`で失敗した場合はstate commit後の可能性があるため、snapshotのrun IDとPagesの生成時刻を比較し、両者が同じrunか確認します。
+Pages deployに失敗した場合は最後に成功したPagesを基準にし、Discordを送信しません。
+state commit後のPages失敗は想定内であり、stateを巻き戻しません。
+次回runはcommit済みsnapshotを前回値として新しいsnapshotを作り、state commit後にPagesを更新するため、同じrun IDと生成時刻へ再び揃います。
+
+公開guardが失敗した場合は安全設定を無効化しません。
+どの入力にallowlist外repository、private sentinel、secretらしい値、長すぎる全文、安全でないURLが入ったかを、secretをlogへ出さずに調べます。
+原因を除いた後に`backfill: none`で手動再実行します。
+
+同じrunを再実行してもworkflow concurrencyと通知ledgerが競合と通常通知の重複を抑えます。
+GitHub、Codex、Discordの429と503は設定した回数だけretryし、それでも失敗する場合は外部サービスの回復後に再実行します。

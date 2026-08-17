@@ -2,13 +2,13 @@ import {
   type BuildPagesCliCommand,
   type NotifyDiscordCliCommand,
   type NotifyOperationsCliCommand,
-  type PersistCacheCliCommand,
+  type PersistStateCliCommand,
   type ReportWorkflowCliCommand,
 } from "./command.js";
 
 /** 日次workflowの後続stageで受け付けるCLI入力。 */
 export type WorkflowStageCliCommand =
-  | PersistCacheCliCommand
+  | PersistStateCliCommand
   | BuildPagesCliCommand
   | NotifyDiscordCliCommand
   | NotifyOperationsCliCommand
@@ -16,7 +16,7 @@ export type WorkflowStageCliCommand =
 
 /** workflow stageの外部副作用を注入する境界。 */
 export type WorkflowStageDependencies = Readonly<{
-  persistCache: (command: PersistCacheCliCommand) => Promise<void>;
+  persistState: (command: PersistStateCliCommand) => Promise<void>;
   buildPages: (command: BuildPagesCliCommand) => Promise<void>;
   notifyDiscord: (command: NotifyDiscordCliCommand) => Promise<void>;
   notifyOperations: (command: NotifyOperationsCliCommand) => Promise<void>;
@@ -34,8 +34,8 @@ export class WorkflowStageRunner {
   /** 指定された一つのworkflow stageを実行する。 */
   public async run(command: WorkflowStageCliCommand): Promise<void> {
     switch (command.kind) {
-      case "persist-cache":
-        await this.#dependencies.persistCache(command);
+      case "persist-state":
+        await this.#dependencies.persistState(command);
         return;
       case "build-pages":
         await this.#dependencies.buildPages(command);

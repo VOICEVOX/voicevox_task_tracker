@@ -3,21 +3,14 @@ import { type TrackedItemMilestone, type UtcIsoDateTime } from "./types.js";
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** 重要度の加点要因として扱う種別。 */
-export const IMPORTANCE_FACTOR_KINDS: readonly [
+export const IMPORTANCE_FACTOR_KINDS = [
   "priorityLabel",
   "downstreamImpact",
   "milestoneDeadline",
   "significantFeature",
   "explicitDeadline",
   "futureRisk",
-] = [
-  "priorityLabel",
-  "downstreamImpact",
-  "milestoneDeadline",
-  "significantFeature",
-  "explicitDeadline",
-  "futureRisk",
-];
+] as const;
 
 /** 追跡項目の重要度。 */
 export type ImportanceLevel = "low" | "medium" | "high";

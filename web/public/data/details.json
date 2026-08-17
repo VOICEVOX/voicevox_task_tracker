@@ -114,7 +114,8 @@
           "sourceUrl": "https://github.com/VOICEVOX/sample-editor/pull/101"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": []
     },
     {
       "summary": {
@@ -215,7 +216,8 @@
           "sourceUrl": "https://github.com/VOICEVOX/sample-engine/pull/202"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": []
     },
     {
       "summary": {
@@ -312,7 +314,8 @@
           "sourceUrl": "https://github.com/VOICEVOX/sample-editor/issues/103"
         }
       ],
-      "uncertainties": ["最終的な判断者はGitHub上で明示されていません"]
+      "uncertainties": ["最終的な判断者はGitHub上で明示されていません"],
+      "history": []
     },
     {
       "summary": {
@@ -415,7 +418,44 @@
           "sourceUrl": "https://github.com/VOICEVOX/sample-engine/issues/204"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": [
+        {
+          "kind": "responsibility_changed",
+          "recordedAt": "2026-07-31T00:05:00.000Z",
+          "before": {
+            "state": "present",
+            "value": {
+              "status": "in_progress",
+              "waitingOn": [
+                {
+                  "kind": "role",
+                  "candidateId": "assignee",
+                  "role": "assignee"
+                }
+              ]
+            }
+          },
+          "after": {
+            "state": "present",
+            "value": {
+              "status": "waiting_for_unblock",
+              "waitingOn": [
+                {
+                  "kind": "item",
+                  "candidateId": "sample-item-editor-103",
+                  "role": "dependency"
+                },
+                {
+                  "kind": "item",
+                  "candidateId": "external:github:sample-distribution-42",
+                  "role": "dependency"
+                }
+              ]
+            }
+          }
+        }
+      ]
     },
     {
       "summary": {
@@ -516,7 +556,8 @@
           "sourceUrl": "https://github.com/VOICEVOX/sample-core/pull/305"
         }
       ],
-      "uncertainties": ["リポジトリの観測に失敗したため前回値です"]
+      "uncertainties": ["リポジトリの観測に失敗したため前回値です"],
+      "history": []
     },
     {
       "summary": {
@@ -596,7 +637,8 @@
           "sourceUrl": "https://github.com/example/sample-workflow/pull/401"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": []
     },
     {
       "summary": {
@@ -676,7 +718,8 @@
           "sourceUrl": "https://github.com/example/sample-workflow/pull/402"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": []
     },
     {
       "summary": {
@@ -760,7 +803,8 @@
           "sourceUrl": "https://github.com/example/sample-workflow/pull/403"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": []
     },
     {
       "summary": {
@@ -846,7 +890,8 @@
           "sourceUrl": "https://github.com/example/sample-workflow/pull/404"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": []
     },
     {
       "summary": {
@@ -932,7 +977,8 @@
           "sourceUrl": "https://github.com/example/sample-workflow/pull/405"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": []
     },
     {
       "summary": {
@@ -1016,7 +1062,8 @@
           "sourceUrl": "https://github.com/example/sample-workflow/pull/406"
         }
       ],
-      "uncertainties": []
+      "uncertainties": [],
+      "history": []
     },
     {
       "summary": {
@@ -1096,7 +1143,8 @@
           "sourceUrl": "https://github.com/example/sample-workflow/pull/407"
         }
       ],
-      "uncertainties": ["次に対応する相手を特定できていません"]
+      "uncertainties": ["次に対応する相手を特定できていません"],
+      "history": []
     }
   ],
   "graph": {

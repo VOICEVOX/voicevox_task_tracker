@@ -74,21 +74,6 @@ export function resolvePullRequestCommitOccurredAt(
   return occurredAt < itemCreatedAt ? itemCreatedAt : occurredAt;
 }
 
-/** Pull Requestのhead check context発生時刻がhead commit発生時刻より前にならないように解決する。 */
-export function resolvePullRequestCheckContextOccurredAt(
-  context: ObservedGitHubHeadCheckContext,
-  headOccurredAt: UtcIsoDateTime,
-): UtcIsoDateTime {
-  if (context.type === "commit_status") {
-    return context.createdAt < headOccurredAt ? headOccurredAt : context.createdAt;
-  }
-  if (context.status !== "completed") {
-    return headOccurredAt;
-  }
-  const occurredAt = context.completedAt;
-  return occurredAt < headOccurredAt ? headOccurredAt : occurredAt;
-}
-
 /** Pull Request判定に使うreview thread観測値。 */
 export type ObservedGitHubReviewThread = Readonly<{
   sourceId: SourceId;

@@ -14,7 +14,6 @@ import {
   type AiAnalysisRunIdentity,
   type CodexAnalysisInput,
   type PreviousAiAnalysisFingerprint,
-  type SchemaValidCodexAnalysisOutput,
 } from "../src/codex/index.js";
 import { assertNonNullable } from "../src/util/index.js";
 
@@ -134,7 +133,7 @@ function createMinimalInput(sourceId: string, relationId: string | undefined): C
   });
 }
 
-function createOutput(input: CodexAnalysisInput): SchemaValidCodexAnalysisOutput {
+function createOutput(input: CodexAnalysisInput) {
   const firstSource = input.sources.at(0);
   assertNonNullable(firstSource, "Codex transport testのsourceがありません");
   const secondSource = input.sources.at(1) ?? firstSource;
@@ -196,12 +195,7 @@ function createCandidate(
   previousFingerprint: PreviousAiAnalysisFingerprint,
 ): AiAnalysisCandidate {
   return {
-    id: input.item.nodeId,
-    repository: {
-      repositoryId: "R_transport_alias",
-      owner: "VOICEVOX",
-      name: "transport-alias",
-    },
+    id: "I_cache",
     deterministicResolution: "ambiguous",
     input,
     graphNeighborhood: {

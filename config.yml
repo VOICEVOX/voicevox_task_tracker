@@ -129,15 +129,15 @@ ai:
     high: 0.85
     medium: 0.65
   budget:
-    maxCallsPerRun: 10
-    maxInputCharactersPerItem: 200000
-    maxTotalInputCharactersPerRun: 15000000
+    maxCallsPerRun: 300
+    maxInputCharactersPerItem: 60000
+    maxTotalInputCharactersPerRun: 6000000
     maxEstimatedCostUsdPerRun: 10
     estimatedInputCostUsdPerMillionTokens: 0.20
   execution:
     timeoutSeconds: 120
     maxAttempts: 2
-    maxConcurrentCalls: 8
+    maxConcurrentCalls: 4
     sandbox: read-only
     approvalPolicy: never
     reasoningEffort: medium
@@ -155,16 +155,17 @@ notifications:
       users: {}
       # Hiroshiba: "123456789012345678"
     maxItemsPerDigest: 10
-    repeatDays:
+    cooldownDays:
       urgent: 3
       critical: 2
 
 state:
-  branch: tracker-state-v4
-  repositoryCacheDirectory: state/github-repositories
-  itemCacheDirectory: state/github-items
-  latestImportanceDirectory: state/ai-latest-importance
-  aiCacheDirectory: state/ai-results
+  branch: tracker-state
+  snapshotPath: state/snapshot.json
+  historyDirectory: state/history
+  aiCacheDirectory: state/ai-cache
+  notificationLedgerPath: state/notification-ledger.json
+  runReportsDirectory: state/run-reports
   canonicalJson: true
 
 web:

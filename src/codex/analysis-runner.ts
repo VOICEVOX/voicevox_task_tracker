@@ -5,18 +5,11 @@ import {
   type AiAnalysisSkipReason,
   type PreparedAiAnalysisCandidate,
 } from "./analysis-selection.js";
-import {
-  createAiBudgetReservationController,
-  planAiAnalysisBudget,
-  type AiAnalysisDeferReason,
-  type AiBudgetUsage,
-  type AiRunBudget,
-} from "./budget.js";
+import { planAiAnalysisBudget, type AiAnalysisDeferReason, type AiRunBudget } from "./budget.js";
 import {
   createAiCacheEntry,
   createAiCacheKey,
   determineAiCacheReuse,
-  type AiCacheEntry,
   type AiCacheIdentity,
   type AiCacheKey,
   type AiCacheStore,
@@ -30,11 +23,7 @@ import {
 import { type CodexAnalysisInput } from "./input.js";
 import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
-import {
-  executeValidatedCodexAnalysis,
-  type CodexAnalysisAttempt,
-  type CodexUnavailableReason,
-} from "./reducer.js";
+import { executeValidatedCodexAnalysis, type CodexUnavailableReason } from "./reducer.js";
 import { createUtcIsoDateTime, type AnalysisMetadata } from "../domain/index.js";
 import { assertNonNullable } from "../util/index.js";
 
@@ -105,44 +94,6 @@ type CandidateExecutionOutcome =
       failure: AiAnalysisRunFailure;
     }>;
 
-type AiBudgetReservationController = Readonly<{
-  tryReserve: (candidate: PreparedAiAnalysisCandidate) => boolean;
-  usage: () => AiBudgetUsage;
-}>;
-
-async function executeValidatedCodexAnalysisWithSemanticRetry(
-  input: CodexAnalysisInput,
-  execute: (input: CodexAnalysisInput) => Promise<unknown>,
-  candidate: PreparedAiAnalysisCandidate,
-  budget: AiBudgetReservationController,
-): Promise<CodexAnalysisAttempt> {
-  const firstAttempt = await executeValidatedCodexAnalysis(input, execute);
-  if (
-    firstAttempt.status !== "unavailable" ||
-    firstAttempt.reason !== "semantic_validation_failed"
-  ) {
-    return firstAttempt;
-  }
-  if (!budget.tryReserve(candidate)) {
-    return firstAttempt;
-  }
-  return executeValidatedCodexAnalysis(input, execute);
-}
-
-function assertAiCacheEntryOwnership(
-  entry: AiCacheEntry,
-  candidate: PreparedAiAnalysisCandidate,
-): void {
-  if (
-    entry.nodeId !== candidate.id ||
-    entry.repository.repositoryId !== candidate.repository.repositoryId ||
-    entry.repository.owner !== candidate.repository.owner ||
-    entry.repository.name !== candidate.repository.name
-  ) {
-    throw new TypeError("AI cache entryの項目またはrepositoryが分析候補と一致しません");
-  }
-}
-
 function createCacheIdentity(
   candidate: PreparedAiAnalysisCandidate,
   identity: AiAnalysisRunIdentity,
@@ -187,7 +138,6 @@ async function resolveCacheEntries(
     const cacheKey = createAiCacheKey(identity);
     const cached = await cache.read(cacheKey);
     if (cached.status === "hit") {
-      assertAiCacheEntryOwnership(cached.entry, candidate);
       const reuse = determineAiCacheReuse(cached.entry, identity, candidate.fingerprint.sourceHash);
       if (reuse.status === "reusable") {
         try {
@@ -241,13 +191,11 @@ async function executeSelectedCandidates(
   selected: readonly PreparedAiAnalysisCandidate[],
   cacheMisses: readonly CacheMissCandidate[],
   maxConcurrentCalls: number,
-  budget: AiBudgetReservationController,
   dependencies: AiAnalysisRunDependencies,
 ): Promise<
   Readonly<{
     results: readonly AiAnalysisRunItemResult[];
     failures: readonly AiAnalysisRunFailure[];
-    usage: AiBudgetUsage;
   }>
 > {
   if (!Number.isSafeInteger(maxConcurrentCalls) || maxConcurrentCalls <= 0) {
@@ -270,12 +218,7 @@ async function executeSelectedCandidates(
 
       try {
         const cacheMiss = findCacheMiss(cacheMisses, candidate);
-        const attempt = await executeValidatedCodexAnalysisWithSemanticRetry(
-          candidate.input,
-          dependencies.execute,
-          candidate,
-          budget,
-        );
+        const attempt = await executeValidatedCodexAnalysis(candidate.input, dependencies.execute);
         if (attempt.status === "unavailable") {
           outcomes.set(
             candidateIndex,
@@ -303,9 +246,6 @@ async function executeSelectedCandidates(
         const entry = createAiCacheEntry({
           cacheKey: createAiCacheKey(cacheMiss.identity),
           sourceHash: candidate.fingerprint.sourceHash,
-          graphNeighborhoodHash: candidate.fingerprint.graphNeighborhoodHash,
-          repository: candidate.repository,
-          nodeId: candidate.id,
           metadata,
           output,
         });
@@ -345,7 +285,6 @@ async function executeSelectedCandidates(
   return Object.freeze({
     results: Object.freeze(results),
     failures: Object.freeze(failures),
-    usage: budget.usage(),
   });
 }
 
@@ -382,12 +321,10 @@ export async function runAiAnalyses(
     selectedCacheMisses.map((value) => value.candidate),
     configuration.budget,
   );
-  const budget = createAiBudgetReservationController(configuration.budget, budgetPlan.selected);
   const executed = await executeSelectedCandidates(
     budgetPlan.selected,
     selectedCacheMisses,
     configuration.maxConcurrentCalls,
-    budget,
     dependencies,
   );
 
@@ -410,6 +347,6 @@ export async function runAiAnalyses(
         }),
       ),
     ),
-    usage: executed.usage,
+    usage: budgetPlan.usage,
   });
 }

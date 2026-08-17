@@ -49,7 +49,7 @@ const TEMPORARY_PROCESS_ERROR_CODES = new Set([
 ]);
 
 /** Codex adapterが利用できる認証方式の一覧。 */
-export const CODEX_AUTHENTICATIONS: readonly ["api-key", "auth-json"] = ["api-key", "auth-json"];
+export const CODEX_AUTHENTICATIONS = ["api-key", "auth-json"] as const;
 
 const codexAuthenticationSchema = z.enum(CODEX_AUTHENTICATIONS);
 

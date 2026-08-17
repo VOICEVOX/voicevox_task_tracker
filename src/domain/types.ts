@@ -514,7 +514,7 @@ export type Relation =
       }>);
 
 /** Codex実行で指定できるreasoning effortの許容値一覧。 */
-export const REASONING_EFFORTS: readonly [
+export const REASONING_EFFORTS = [
   "none",
   "minimal",
   "low",
@@ -522,7 +522,7 @@ export const REASONING_EFFORTS: readonly [
   "high",
   "xhigh",
   "max",
-] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+] as const;
 
 /** Codex実行で指定するreasoning effort。 */
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
@@ -540,5 +540,38 @@ export type AnalysisMetadata = Readonly<{
   executedAt: UtcIsoDateTime;
 }>;
 
+type NotificationLedgerEntryBase = Readonly<{
+  notificationKey: string;
+  itemNodeId: GitHubNodeId;
+  reasonCode: NotificationReasonCode;
+  severity: Severity;
+  reservedAt: UtcIsoDateTime;
+  cooldownUntil: UtcIsoDateTime;
+}>;
+
+/** Discord通知の予約または送信結果を記録するledger entry。 */
+export type NotificationLedgerEntry =
+  | (NotificationLedgerEntryBase &
+      Readonly<{
+        status: "reserved";
+        expiresAt: UtcIsoDateTime;
+      }>)
+  | (NotificationLedgerEntryBase &
+      Readonly<{
+        status: "sent";
+        sentAt: UtcIsoDateTime;
+        discordMessageId: string;
+      }>);
+
 /** 運用障害として通知する処理の分類。 */
 export type OperationsAlertKind = "collection" | "pages" | "discord";
+
+/** 送信済みの運用障害通知を重複抑制するledger entry。 */
+export type OperationsAlertLedgerEntry = Readonly<{
+  alertKey: string;
+  incidentId: string;
+  kind: OperationsAlertKind;
+  occurredAt: UtcIsoDateTime;
+  sentAt: UtcIsoDateTime;
+  discordMessageId: string;
+}>;

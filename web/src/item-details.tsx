@@ -1,9 +1,10 @@
 import { type ComponentChildren } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 
 import {
   type PublicGraphNodeDto,
   type PublicItemDetailsDto,
+  type PublicItemHistoryEventDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
@@ -15,13 +16,15 @@ import {
   aiAnalysisNotice,
   confidencePresentation,
   formatDateTime,
+  formatRelativeTime,
   formatStallDuration,
   statusLabel,
+  waitingOnHistoryLabel,
   waitingOnLabelParts,
   type ConfidencePresentation,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
-import { Pill } from "./ui.js";
+import { ActionButton, Pill } from "./ui.js";
 import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
 
 type ItemDetailsLinkProps = Readonly<{
@@ -45,6 +48,11 @@ type ItemDetailsProps = PersonNavigation &
     showHeadingFocusRing: boolean;
     summary: PublicSummaryDto;
   }>;
+
+type ResponsibilityHistoryValue = Extract<
+  PublicItemHistoryEventDto,
+  Readonly<{ kind: "responsibility_changed" }>
+>["before"];
 
 type WaitingOnCandidate = PublicItemDetailsDto["summary"]["waitingOn"][number];
 type ImportanceFactor = PublicItemDetailsDto["importanceFactors"][number];
@@ -83,6 +91,7 @@ const IMPORTANCE_FACTOR_LABELS = {
   futureRisk: "将来リスク",
 } satisfies Readonly<Record<ImportanceFactor["kind"], string>>;
 
+const HISTORY_PREVIEW_LIMIT = 5;
 const WAITING_ON_LIST_CLASS_NAME = "waiting-on-list m-0 grid list-none gap-3 p-0";
 const CONFIDENCE_LEVEL_CLASS_NAMES = {
   confirmed: "border-state-success-border bg-state-success-background text-state-success-text",
@@ -177,6 +186,115 @@ function ConfidenceDisplay({
     >
       <strong>判定: {presentation.label}</strong>
       <span>{confidenceDescription(presentation)}</span>
+    </div>
+  );
+}
+
+function formatResponsibilityHistoryValue(
+  value: ResponsibilityHistoryValue,
+  item: PublicItemDetailsDto["summary"],
+  summary: PublicSummaryDto,
+): string {
+  if (value.state === "absent") {
+    return "記録なし";
+  }
+  const waitingOn =
+    value.value.waitingOn.length === 0
+      ? "対応完了"
+      : value.value.waitingOn
+          .map((candidate) => waitingOnHistoryLabel(candidate, item, summary))
+          .join("、");
+  return `${statusLabel(value.value.status)}・${waitingOn}`;
+}
+
+function HistoryEvent({
+  event,
+  item,
+  locale,
+  now,
+  summary,
+}: Readonly<{
+  event: PublicItemHistoryEventDto;
+  item: PublicItemDetailsDto["summary"];
+  locale: string;
+  now: Date;
+  summary: PublicSummaryDto;
+}>) {
+  const before = formatResponsibilityHistoryValue(event.before, item, summary);
+  const after = formatResponsibilityHistoryValue(event.after, item, summary);
+  return (
+    <article class="history-event grid gap-2 py-3" data-history-kind={event.kind}>
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h5 class="m-0 font-display font-bold">状態と待ち相手の変更</h5>
+        <time
+          class="font-mono text-xs text-text-muted tabular-nums"
+          dateTime={event.recordedAt}
+          title={formatDateTime(event.recordedAt, summary.timezone, locale)}
+        >
+          {formatRelativeTime(event.recordedAt, now, locale)}
+        </time>
+      </div>
+      <p class="m-0 flex flex-wrap gap-2">
+        <span>{before}</span>
+        <span aria-hidden="true">→</span>
+        <span class="visually-hidden sr-only">から</span>
+        <strong>{after}</strong>
+      </p>
+    </article>
+  );
+}
+
+function ItemHistory({
+  history,
+  item,
+  locale,
+  now,
+  summary,
+}: Readonly<{
+  history: readonly PublicItemHistoryEventDto[];
+  item: PublicItemDetailsDto["summary"];
+  locale: string;
+  now: Date;
+  summary: PublicSummaryDto;
+}>) {
+  const [showAll, setShowAll] = useState(false);
+  const newestFirstHistory = [...history].reverse();
+  const visibleHistory = showAll
+    ? newestFirstHistory
+    : newestFirstHistory.slice(0, HISTORY_PREVIEW_LIMIT);
+  return (
+    <div class="item-history-content">
+      {history.length === 0 ? (
+        <p class="m-0">状態と待ち相手の変更履歴はありません。</p>
+      ) : (
+        <>
+          <ol class="history-list m-0 grid list-none divide-y divide-border-subtle p-0">
+            {visibleHistory.map((event, index) => (
+              <li key={`${event.kind}:${event.recordedAt}:${index.toString()}`}>
+                <HistoryEvent
+                  event={event}
+                  item={item}
+                  locale={locale}
+                  now={now}
+                  summary={summary}
+                />
+              </li>
+            ))}
+          </ol>
+          {history.length > HISTORY_PREVIEW_LIMIT && (
+            <ActionButton
+              aria-expanded={showAll}
+              className="history-expand-button mt-3"
+              type="button"
+              onClick={() => {
+                setShowAll((current) => !current);
+              }}
+            >
+              {showAll ? "最新5件のみ表示" : "すべての履歴を表示"}
+            </ActionButton>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -416,7 +534,7 @@ function hasItemDependencies(view: ItemGraphView): boolean {
   return view.sourceEdges.length > 0 || view.omittedSourceNodeCount > 0;
 }
 
-/** 選択した項目の判定根拠を表示する。 */
+/** 選択した項目の判定根拠と変更履歴を表示する。 */
 export function ItemDetailsContent({
   clearSelectionHref,
   createItemHref,
@@ -765,6 +883,27 @@ export function ItemDetailsContent({
               </ol>
             )}
           </section>
+        </div>
+      </details>
+
+      <details class="detail-disclosure history-details group border-t border-border-subtle">
+        <summary class={DISCLOSURE_SUMMARY_CLASS_NAME}>
+          <h4 class={DISCLOSURE_HEADING_CLASS_NAME}>
+            <span>履歴</span>
+            <span class="font-mono text-xs font-semibold text-text-muted tabular-nums">
+              {details.history.length.toString()}件
+            </span>
+          </h4>
+        </summary>
+        <div class="detail-disclosure-content pb-4">
+          <ItemHistory
+            key={item.nodeId}
+            history={details.history}
+            item={item}
+            locale={locale}
+            now={now}
+            summary={summary}
+          />
         </div>
       </details>
     </article>

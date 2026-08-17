@@ -1,28 +1,10 @@
 export { analyzeGraph } from "./analyze-graph.js";
-export { replayDependencyEvents } from "./replay-dependency-events.js";
-export {
-  replayTemporalBlocksGraph,
-  type TemporalBlocksCurrentNode,
-  type TemporalBlocksGraphReplayInput,
-  type TemporalBlocksNodeStateHistory,
-  type TemporalBlocksGraphReplayResult,
-  type TemporalBlocksStateEpoch,
-} from "./temporal-blocks-graph-replay.js";
 export { RelationReferenceConflictError } from "./errors.js";
 export { extractRelationCandidates } from "./extract-relation-candidates.js";
-export {
-  extractRelationMutations,
-  type RelationMutationInput,
-  type RelationMutationResult,
-} from "./relation-mutation.js";
 export { normalizeRelationCandidates } from "./normalize-relation-candidates.js";
 export { deriveBlockedBy, reconcileGraph } from "./reconcile-graph.js";
 export { buildRelationCandidateId } from "./relation-candidate-id.js";
 export { planRelationExpansion } from "./relation-expansion.js";
-export {
-  type DependencyReplayInputEvent,
-  type DependencyReplayResult,
-} from "./dependency-replay-types.js";
 export {
   type AnalyzeGraphInput,
   type AnalyzeGraphResult,

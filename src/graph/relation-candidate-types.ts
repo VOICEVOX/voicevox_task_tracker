@@ -68,7 +68,6 @@ export type ExtractRelationCandidatesInput = Readonly<{
   organization: string;
   item: RelationExtractionItem;
   knownItems: readonly PublicGitHubRelationItem[];
-  relationReferenceAliases: ReadonlyMap<string, PublicGitHubRelationItem>;
 }>;
 
 type RelationCandidateNodeFields = Readonly<{

@@ -13,11 +13,6 @@ import {
   type WorkflowRunMetadata,
   type WorkflowStageCliCommand,
 } from "../src/cli/index.js";
-import {
-  measurePublicSummarySize,
-  type PublicDetailsDto,
-  type PublicSummaryDto,
-} from "../src/pages/index.js";
 import { StatePublicSafetyError } from "../src/persistence/index.js";
 
 const NOW = "2026-07-31T00:00:00.000Z";
@@ -41,50 +36,18 @@ function emptyRunMetadataMetrics(): WorkflowRunMetadata["metrics"] {
 
 function createEmptyWorkflowArtifact(): WorkflowArtifact {
   const runId = "tracker-run:workflow-artifact-fixture";
-  const summary: PublicSummaryDto = {
-    schemaVersion: "5",
-    runId,
-    generatedAt: NOW,
-    observedAt: NOW,
-    timezone: "Asia/Tokyo",
-    ai: {
-      enabled: false,
-      available: false,
-      degraded: false,
-    },
-    confidenceThresholds: {
-      high: 0.8,
-      medium: 0.5,
-    },
-    repositories: [],
-    items: [],
-    graph: {
-      nodes: [],
-      maxNodes: 1,
-    },
-  };
-  const details: PublicDetailsDto = {
-    schemaVersion: "5",
-    runId,
-    generatedAt: NOW,
-    items: [],
-    graph: {
-      nodes: [],
-      edges: [],
-      frontierNodeIds: [],
-    },
-  };
   return createWorkflowArtifact({
-    schemaVersion: "2",
+    schemaVersion: "1",
     kind: "validated_public_run",
     repositoryAllowlist: [],
+    historyInputEvents: [],
     snapshot: {
       schemaVersion: "8",
       generatedAt: NOW,
       trackingStartAt: {
         status: "fixed",
         value: NOW,
-        source: "configuration",
+        source: "first_complete_run",
       },
       ai: {
         enabled: false,
@@ -104,10 +67,16 @@ function createEmptyWorkflowArtifact(): WorkflowArtifact {
         complete: true,
       },
     },
+    notificationLedger: {
+      schemaVersion: "2",
+      entries: [],
+      operationsAlerts: [],
+    },
     notificationSelection: {
       action: "skip_digest",
       reason: "no_candidates",
       candidates: [],
+      ledgerReservations: [],
     },
     runMetadata: {
       scheduledFor: NOW,
@@ -115,17 +84,7 @@ function createEmptyWorkflowArtifact(): WorkflowArtifact {
       metrics: emptyRunMetadataMetrics(),
       diagnostics: [],
     },
-    pages: {
-      summary,
-      details,
-      summarySize: measurePublicSummarySize(summary, 1_000_000),
-    },
-    cacheOnlyPayload: {
-      repositoryCaches: [],
-      itemCaches: [],
-      latestImportanceCaches: [],
-      aiCacheEntries: [],
-    },
+    aiCacheEntries: [],
     pagesUrl: PAGES_URL,
     discordSettings: {
       enabled: false,
@@ -147,7 +106,7 @@ function createEmptyWorkflowArtifact(): WorkflowArtifact {
 function parseWorkflowStageCommand(args: readonly string[]): WorkflowStageCliCommand {
   const command = parseCliArguments(args);
   if (
-    command.kind !== "persist-cache" &&
+    command.kind !== "persist-state" &&
     command.kind !== "build-pages" &&
     command.kind !== "notify-discord" &&
     command.kind !== "notify-operations" &&
@@ -163,7 +122,7 @@ describe("workflow artifact", () => {
     const artifact = createEmptyWorkflowArtifact();
 
     expect(artifact).toMatchObject({
-      schemaVersion: "2",
+      schemaVersion: "1",
       kind: "validated_public_run",
       pagesUrl: PAGES_URL,
       notificationSelection: {
@@ -188,128 +147,6 @@ describe("workflow artifact", () => {
     }).toThrow(StatePublicSafetyError);
   });
 
-  it("通知ledgerを含む旧artifactをstrict schemaで拒否する", () => {
-    const source = createEmptyWorkflowArtifact();
-    expect(() =>
-      createWorkflowArtifact({
-        ...source,
-        notificationLedger: {
-          schemaVersion: "2",
-          entries: [],
-          operationsAlerts: [],
-        },
-      }),
-    ).toThrow();
-  });
-
-  it("historyInputEventsを含む旧artifactをschema v2で拒否する", () => {
-    const source = createEmptyWorkflowArtifact();
-    expect(() =>
-      createWorkflowArtifact({
-        ...source,
-        schemaVersion: "1",
-        historyInputEvents: [],
-      }),
-    ).toThrow();
-    expect(() =>
-      createWorkflowArtifact({
-        ...source,
-        historyInputEvents: [],
-      }),
-    ).toThrow();
-  });
-
-  it("Pages DTOのrun ID、件数、実測値を再検証する", () => {
-    const source = createEmptyWorkflowArtifact();
-    expect(() =>
-      createWorkflowArtifact({
-        ...source,
-        pages: {
-          ...source.pages,
-          summary: {
-            ...source.pages.summary,
-            runId: "tracker-run:other",
-          },
-        },
-      }),
-    ).toThrow();
-    expect(() =>
-      createWorkflowArtifact({
-        ...source,
-        pages: {
-          ...source.pages,
-          summarySize: {
-            ...source.pages.summarySize,
-            gzipBytes: source.pages.summarySize.gzipBytes + 1,
-          },
-        },
-      }),
-    ).toThrow();
-  });
-
-  it("cache-only payloadのstrict schemaとraw本文を拒否する", () => {
-    const source = createEmptyWorkflowArtifact();
-    expect(() =>
-      createWorkflowArtifact({
-        ...source,
-        cacheOnlyPayload: {
-          ...source.cacheOnlyPayload,
-          repositoryCaches: [{ kind: "github_repository" }],
-        },
-      }),
-    ).toThrow();
-    const forbiddenFields: readonly ("body" | "comment" | "diff")[] = ["body", "comment", "diff"];
-    for (const forbiddenField of forbiddenFields) {
-      expect(() =>
-        createWorkflowArtifact({
-          ...source,
-          cacheOnlyPayload: {
-            ...source.cacheOnlyPayload,
-            itemCaches: [{ [forbiddenField]: "GitHub由来のraw値" }],
-          },
-        }),
-      ).toThrow();
-    }
-  });
-
-  it("通知候補とrepository allowlistの整合性を拒否する", () => {
-    const source = createEmptyWorkflowArtifact();
-    expect(() =>
-      createWorkflowArtifact({
-        ...source,
-        notificationSelection: {
-          action: "create_digest",
-          candidates: [
-            {
-              itemNodeId: "I_missing",
-              reasonCode: "owner_unknown",
-              reasons: [{ reasonCode: "owner_unknown" }],
-              severity: "watch",
-              downstreamImpact: {
-                nodeId: "I_missing",
-                openNodeCount: 0,
-                repositoryCount: 0,
-              },
-              priorityWeight: 1,
-            },
-          ],
-        },
-      }),
-    ).toThrow();
-    expect(() =>
-      createWorkflowArtifact({
-        ...source,
-        repositoryAllowlist: [
-          {
-            id: "R_not_in_snapshot",
-            owner: "VOICEVOX",
-            name: "not-in-snapshot",
-          },
-        ],
-      }),
-    ).toThrow(StatePublicSafetyError);
-  });
-
   it("前stageのartifactが無ければ明示的に失敗する", async () => {
     const missingPath = join(import.meta.dirname, "fixtures", "missing-workflow-artifact.json");
 
@@ -324,20 +161,20 @@ describe("workflow artifact", () => {
 
 describe("workflow stage", () => {
   it("各stageを単独で対応する副作用境界へ渡す", async () => {
-    const persistCache = vi.fn(() => Promise.resolve());
+    const persistState = vi.fn(() => Promise.resolve());
     const buildPages = vi.fn(() => Promise.resolve());
     const notifyDiscord = vi.fn(() => Promise.resolve());
     const notifyOperations = vi.fn(() => Promise.resolve());
     const reportWorkflow = vi.fn(() => Promise.resolve());
     const runner = new WorkflowStageRunner({
-      persistCache,
+      persistState,
       buildPages,
       notifyDiscord,
       notifyOperations,
       reportWorkflow,
     });
     const commands = [
-      parseWorkflowStageCommand(["persist-cache"]),
+      parseWorkflowStageCommand(["persist-state"]),
       parseWorkflowStageCommand(["build-pages"]),
       parseWorkflowStageCommand(["notify-discord", "--pages-url", PAGES_URL]),
       parseWorkflowStageCommand([
@@ -359,7 +196,7 @@ describe("workflow stage", () => {
         "success",
         "--collect-analyze-result",
         "success",
-        "--persist-cache-result",
+        "--persist-state-result",
         "success",
         "--build-pages-result",
         "success",
@@ -376,7 +213,7 @@ describe("workflow stage", () => {
       await runner.run(command);
     }
 
-    expect(persistCache).toHaveBeenCalledOnce();
+    expect(persistState).toHaveBeenCalledOnce();
     expect(buildPages).toHaveBeenCalledOnce();
     expect(notifyDiscord).toHaveBeenCalledOnce();
     expect(notifyOperations).toHaveBeenCalledOnce();
@@ -389,14 +226,14 @@ describe("workflow stage", () => {
       await readWorkflowArtifactFile(missingPath);
     };
     const runner = new WorkflowStageRunner({
-      persistCache: readMissingArtifact,
+      persistState: readMissingArtifact,
       buildPages: readMissingArtifact,
       notifyDiscord: readMissingArtifact,
       notifyOperations: readMissingArtifact,
       reportWorkflow: readMissingArtifact,
     });
     const commands = [
-      parseWorkflowStageCommand(["persist-cache"]),
+      parseWorkflowStageCommand(["persist-state"]),
       parseWorkflowStageCommand(["build-pages"]),
       parseWorkflowStageCommand(["notify-discord", "--pages-url", PAGES_URL]),
       parseWorkflowStageCommand([

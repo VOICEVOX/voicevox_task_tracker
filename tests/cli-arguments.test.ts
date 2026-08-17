@@ -4,12 +4,12 @@ import { CliUsageError, parseCliArguments } from "../src/cli/index.js";
 
 describe("CLI引数解析", () => {
   it("verify-stateのstateディレクトリを解析する", () => {
-    expect(
-      parseCliArguments(["verify-state", "--state-directory", "tracker-state-v4/state"]),
-    ).toEqual({
-      kind: "verify-state",
-      stateDirectory: "tracker-state-v4/state",
-    });
+    expect(parseCliArguments(["verify-state", "--state-directory", "tracker-state/state"])).toEqual(
+      {
+        kind: "verify-state",
+        stateDirectory: "tracker-state/state",
+      },
+    );
   });
 
   it("dailyの既定値と明示した予定時刻を解析する", () => {
@@ -84,8 +84,8 @@ describe("CLI引数解析", () => {
       repositoryFilter: ["VOICEVOX/voicevox"],
       artifactPath: "artifacts/workflow/validated-run.json",
     });
-    expect(parseCliArguments(["persist-cache"])).toEqual({
-      kind: "persist-cache",
+    expect(parseCliArguments(["persist-state"])).toEqual({
+      kind: "persist-state",
       configPath: "config.yml",
       artifactPath: "artifacts/workflow/validated-run.json",
     });
@@ -154,7 +154,7 @@ describe("CLI引数解析", () => {
         "success",
         "--collect-analyze-result",
         "failure",
-        "--persist-cache-result",
+        "--persist-state-result",
         "skipped",
         "--build-pages-result",
         "skipped",
@@ -174,7 +174,7 @@ describe("CLI引数解析", () => {
       jobResults: {
         "test-eval": "success",
         "collect-analyze": "failure",
-        "persist-cache": "skipped",
+        "persist-state": "skipped",
         "build-pages": "skipped",
         "deploy-pages": "skipped",
         "notify-discord": "skipped",
@@ -228,28 +228,6 @@ describe("CLI引数解析", () => {
       ["notify-discord"],
       ["notify-discord", "--pages-url", "http://example.com/"],
       ["report-workflow", "--run-id", "123", "--run-attempt", "0"],
-      ["persist-state"],
-      [
-        "report-workflow",
-        "--run-id",
-        "123",
-        "--run-attempt",
-        "1",
-        "--test-eval-result",
-        "success",
-        "--collect-analyze-result",
-        "success",
-        "--persist-state-result",
-        "success",
-        "--build-pages-result",
-        "success",
-        "--deploy-pages-result",
-        "success",
-        "--notify-discord-result",
-        "success",
-        "--notify-operations-result",
-        "skipped",
-      ],
     ];
     for (const args of invalidArguments) {
       expect(() => parseCliArguments(args)).toThrow(CliUsageError);

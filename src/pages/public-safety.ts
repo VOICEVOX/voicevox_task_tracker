@@ -1,5 +1,5 @@
 import { type Repository } from "../domain/index.js";
-import { type StateSnapshot } from "../persistence/index.js";
+import { type StateHistoryRecord, type StateSnapshot } from "../persistence/index.js";
 import { PagesPublicSafetyError } from "./errors.js";
 
 const MAX_PUBLIC_SOURCE_STRING_LENGTH = 4096;
@@ -57,9 +57,10 @@ export type PagesRepositoryAllowlistEntry = Readonly<{
   name: Repository["name"];
 }>;
 
-/** Pages公開allowlist検証へ渡す検証済みsnapshotとrun内情報。 */
+/** Pages公開allowlist検証へ渡す永続化済み入力とrun内情報。 */
 export type PagesPublicSafetyInput = Readonly<{
   snapshot: StateSnapshot;
+  historyRecords: readonly StateHistoryRecord[];
   repositoryAllowlist: readonly PagesRepositoryAllowlistEntry[];
   repositoryInventory: readonly Repository[];
   knownSecrets: readonly string[];
@@ -203,7 +204,7 @@ export function assertPagesPublicSafety(input: PagesPublicSafetyInput): void {
 
   violationCodes.push(
     ...scanValues(
-      [input.snapshot],
+      [input.snapshot, ...input.historyRecords],
       privateRepositorySentinels(input.repositoryInventory),
       input.knownSecrets,
     ),

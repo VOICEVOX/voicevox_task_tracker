@@ -12,6 +12,7 @@ import {
   determineMeaningfulProgress,
   determineTerminalRetention,
   determineTrackedItemWork,
+  resolveTrackingStartAt,
   selectTrackingItems,
   type ExternalPublicTrackingCandidate,
   type DetermineTrackedItemWorkInput,
@@ -25,6 +26,7 @@ import {
   type TrackingAutoIncludeSettings,
   type TrackingCandidate,
   type TrackingConnection,
+  type TrackingStartAtState,
   type UtcIsoDateTime,
 } from "../src/domain/index.js";
 
@@ -156,6 +158,77 @@ function addDays(value: UtcIsoDateTime, days: number): UtcIsoDateTime {
   );
 }
 
+describe("tracking.startAt", () => {
+  it("初回失敗では確定せず、最初の完全成功で一度だけ確定する", () => {
+    const notFixed = Object.freeze({
+      status: "not_fixed",
+    } satisfies TrackingStartAtState);
+    const failed = resolveTrackingStartAt({
+      configuredStartAt: {
+        status: "not_configured",
+      },
+      previousState: notFixed,
+      run: {
+        outcome: "incomplete",
+        finishedAt: createUtcIsoDateTime("2026-07-01T00:00:00Z"),
+      },
+    });
+    const firstSuccess = resolveTrackingStartAt({
+      configuredStartAt: {
+        status: "not_configured",
+      },
+      previousState: failed,
+      run: {
+        outcome: "complete_success",
+        finishedAt: createUtcIsoDateTime("2026-07-02T00:00:00Z"),
+      },
+    });
+    const secondSuccess = resolveTrackingStartAt({
+      configuredStartAt: {
+        status: "not_configured",
+      },
+      previousState: firstSuccess,
+      run: {
+        outcome: "complete_success",
+        finishedAt: createUtcIsoDateTime("2026-07-03T00:00:00Z"),
+      },
+    });
+
+    expect(failed).toEqual({
+      status: "not_fixed",
+    });
+    expect(firstSuccess).toEqual({
+      status: "fixed",
+      value: "2026-07-02T00:00:00.000Z",
+      source: "first_complete_run",
+    });
+    expect(secondSuccess).toEqual(firstSuccess);
+  });
+
+  it("設定されたstartAtをrun時刻より優先する", () => {
+    const configuredAt = createUtcIsoDateTime("2026-06-01T00:00:00+09:00");
+    const result = resolveTrackingStartAt({
+      configuredStartAt: {
+        status: "configured",
+        value: configuredAt,
+      },
+      previousState: {
+        status: "not_fixed",
+      },
+      run: {
+        outcome: "incomplete",
+        finishedAt: createUtcIsoDateTime("2026-07-01T00:00:00Z"),
+      },
+    });
+
+    expect(result).toEqual({
+      status: "fixed",
+      value: "2026-05-31T15:00:00.000Z",
+      source: "configuration",
+    });
+  });
+});
+
 describe("追跡対象への追加", () => {
   it("startAtの1秒前を除外し、1秒後に作成されたopen項目だけを自動追加する", () => {
     const before = createOpenCandidate(
@@ -209,6 +282,9 @@ describe("追跡対象への追加", () => {
       dependencyResolutions: [],
       naturalLanguageAssessments: [],
       minimumAiConfidence: 0.65,
+      previousActivity: {
+        status: "not_available",
+      },
       repositoryFullName: "VOICEVOX/example",
       resolveLabelEffects: createLabelEffectsResolver([]),
     });
@@ -758,7 +834,7 @@ describe("追跡後のライフサイクル", () => {
         action: "suppress",
         reason: "terminal_unchanged",
       },
-    } satisfies ReturnType<typeof determineTrackedItemWork>;
+    } as const;
 
     expect(changed).toEqual(expected);
     expect(unavailable).toEqual(expected);

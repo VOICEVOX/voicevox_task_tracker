@@ -504,11 +504,7 @@ describe("Codex verdictのcanonical変換", () => {
         type: "none",
         direction: "none",
       },
-    ] satisfies readonly {
-      verdict: RelationAssessmentVerdict;
-      type: "blocks" | "implements" | "parent_of" | "duplicates" | "related_to" | "none";
-      direction: "target_to_current" | "current_to_target" | "none";
-    }[];
+    ] as const;
     const candidates = verdictFixtures.map((fixture, index) => {
       const target = createNode({
         nodeId: `I_target_${index.toString()}`,

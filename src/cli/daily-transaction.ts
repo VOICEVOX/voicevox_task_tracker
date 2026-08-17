@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { createUtcIsoDateTime, type UtcIsoDateTime } from "../domain/index.js";
-import { GitHubGraphQLRetryExhaustedError, GitHubRetryExhaustedError } from "../github/index.js";
+import { GitHubRetryExhaustedError } from "../github/index.js";
 import { serializeCanonicalJson } from "../persistence/index.js";
 import {
   type BackfillCliCommand,
@@ -10,7 +10,6 @@ import {
   type DryRunCliCommand,
 } from "./command.js";
 import { safeErrorDiagnostic } from "./error-diagnostic.js";
-import { ResponsibilityReplayRetryExhaustedError } from "./errors.js";
 import { RunCoordinator, type CoordinatedRunResult } from "./run-coordinator.js";
 import {
   createEmptyRunMetrics,
@@ -27,7 +26,7 @@ export type OnlineCliCommand =
 /** 各段階を型安全につなぐために利用する値の対応表。 */
 export type DailyTransactionTypeMap = Readonly<{
   configuration: unknown;
-  cache: unknown;
+  state: unknown;
   authentication: unknown;
   repositoryInventory: unknown;
   collection: unknown;
@@ -36,6 +35,7 @@ export type DailyTransactionTypeMap = Readonly<{
   reduction: unknown;
   graph: unknown;
   validated: unknown;
+  persisted: unknown;
   pages: unknown;
   discord: unknown;
 }>;
@@ -109,13 +109,12 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       configPath: string;
     }>,
   ) => Promise<Types["configuration"]>;
-  loadCaches: (
+  loadState: (
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
-      repositoryInventory: Types["repositoryInventory"];
     }>,
-  ) => Promise<Types["cache"]>;
+  ) => Promise<Types["state"]>;
   authenticateGitHub: (
     input: Readonly<{
       invocation: DailyRunInvocation;
@@ -126,6 +125,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
+      state: Types["state"];
       authentication: Types["authentication"];
     }>,
   ) => Promise<RepositoryInventoryStageResult<Types["repositoryInventory"]>>;
@@ -133,7 +133,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
-      cache: Types["cache"];
+      state: Types["state"];
       authentication: Types["authentication"];
       repositoryInventory: Types["repositoryInventory"];
     }>,
@@ -142,7 +142,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
-      cache: Types["cache"];
+      state: Types["state"];
       repositoryInventory: Types["repositoryInventory"];
       collection: Types["collection"];
     }>,
@@ -151,7 +151,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
-      cache: Types["cache"];
+      state: Types["state"];
       collection: Types["collection"];
       deterministicAnalysis: Types["deterministicAnalysis"];
     }>,
@@ -169,7 +169,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
-      cache: Types["cache"];
+      state: Types["state"];
       collection: Types["collection"];
       reduction: Types["reduction"];
     }>,
@@ -178,20 +178,50 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
-      cache: Types["cache"];
+      state: Types["state"];
       repositoryInventory: Types["repositoryInventory"];
       collection: Types["collection"];
-      deterministicAnalysis: Types["deterministicAnalysis"];
       codexAnalysis: Types["codexAnalysis"];
       reduction: Types["reduction"];
       graph: Types["graph"];
     }>,
   ) => Promise<CompletenessValidationResult<Types["validated"]>>;
-  persistCache: (
+  persistState: (
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
-      cache: Types["cache"];
+      state: Types["state"];
+      repositoryInventory: Types["repositoryInventory"];
+      validated: Types["validated"];
+      metrics: RunMetrics;
+      status: "success" | "fallback";
+      diagnostics: readonly string[];
+    }>,
+  ) => Promise<Types["persisted"]>;
+  buildPages: (
+    input: Readonly<{
+      invocation: DailyRunInvocation;
+      configuration: Types["configuration"];
+      repositoryInventory: Types["repositoryInventory"];
+      validated: Types["validated"];
+      persisted: Types["persisted"];
+    }>,
+  ) => Promise<Types["pages"]>;
+  sendDiscord: (
+    input: Readonly<{
+      invocation: DailyRunInvocation;
+      configuration: Types["configuration"];
+      state: Types["state"];
+      validated: Types["validated"];
+      persisted: Types["persisted"];
+      pages: Types["pages"];
+    }>,
+  ) => Promise<DiscordStageResult<Types["discord"]>>;
+  completeRun: (
+    input: Readonly<{
+      invocation: DailyRunInvocation;
+      configuration: Types["configuration"];
+      state: Types["state"];
       repositoryInventory: Types["repositoryInventory"];
       validated: Types["validated"];
       discord: Types["discord"];
@@ -200,27 +230,11 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       diagnostics: readonly string[];
     }>,
   ) => Promise<void>;
-  buildPages: (
-    input: Readonly<{
-      invocation: DailyRunInvocation;
-      configuration: Types["configuration"];
-      repositoryInventory: Types["repositoryInventory"];
-      validated: Types["validated"];
-    }>,
-  ) => Promise<Types["pages"]>;
-  sendDiscord: (
-    input: Readonly<{
-      invocation: DailyRunInvocation;
-      configuration: Types["configuration"];
-      cache: Types["cache"];
-      validated: Types["validated"];
-      pages: Types["pages"];
-    }>,
-  ) => Promise<DiscordStageResult<Types["discord"]>>;
   sendOperationsAlert: (
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
+      state: Types["state"];
       kind: "collection" | "pages";
       retryAttempts: number;
     }>,
@@ -234,7 +248,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
     input: Readonly<{
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
-      cache: Types["cache"];
+      state: Types["state"];
       repositoryInventory: Types["repositoryInventory"];
       validated: Types["validated"];
       metrics: RunMetrics;
@@ -247,7 +261,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
 
 /** 日次transaction実行後に生じた副作用を表す。 */
 export type DailyRunEffects = Readonly<{
-  cacheCommitted: boolean;
+  stateCommitted: boolean;
   pagesBuilt: boolean;
   discordAttempted: boolean;
   artifactWritten: boolean;
@@ -287,7 +301,7 @@ export type DailyRunRuntime = Readonly<{
 }>;
 
 interface MutableEffects {
-  cacheCommitted: boolean;
+  stateCommitted: boolean;
   pagesBuilt: boolean;
   discordAttempted: boolean;
   artifactWritten: boolean;
@@ -436,7 +450,7 @@ function failureReport(
 
 function initialEffects(): MutableEffects {
   return {
-    cacheCommitted: false,
+    stateCommitted: false,
     pagesBuilt: false,
     discordAttempted: false,
     artifactWritten: false,
@@ -444,11 +458,7 @@ function initialEffects(): MutableEffects {
 }
 
 function operationsAlertKind(stage: RunStage): "collection" | "pages" | undefined {
-  if (
-    stage === "repository_inventory" ||
-    stage === "cache_loading" ||
-    stage === "incremental_collection"
-  ) {
+  if (stage === "repository_inventory" || stage === "incremental_collection") {
     return "collection";
   }
   if (stage === "pages") {
@@ -458,26 +468,7 @@ function operationsAlertKind(stage: RunStage): "collection" | "pages" | undefine
 }
 
 function operationsAlertRetryAttempts(error: unknown): number {
-  const retryErrorCauseDepthLimit = 5;
-  const visited = new Set<Error>();
-  let current: unknown = error;
-  let depth = 0;
-  while (current instanceof Error && depth < retryErrorCauseDepthLimit) {
-    if (visited.has(current)) {
-      return 1;
-    }
-    visited.add(current);
-    if (
-      current instanceof GitHubRetryExhaustedError ||
-      current instanceof GitHubGraphQLRetryExhaustedError ||
-      current instanceof ResponsibilityReplayRetryExhaustedError
-    ) {
-      return current.attempts;
-    }
-    current = current.cause;
-    depth += 1;
-  }
-  return 1;
+  return error instanceof GitHubRetryExhaustedError ? error.attempts : 1;
 }
 
 /** Daily transactionを順序保証付きで実行する。 */
@@ -526,12 +517,16 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
     const effects = initialEffects();
     let discordSentAt: UtcIsoDateTime | null = null;
     let configuration: Types["configuration"] | undefined;
-    let cache: Types["cache"] | undefined;
+    let state: Types["state"] | undefined;
 
     try {
       configuration = await this.#dependencies.validateConfiguration({
         invocation,
         configPath: invocation.command.configPath,
+      });
+      state = await this.#dependencies.loadState({
+        invocation,
+        configuration,
       });
 
       stage = "authentication";
@@ -544,6 +539,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       const repositoryInventory = await this.#dependencies.collectRepositoryInventory({
         invocation,
         configuration,
+        state,
         authentication,
       });
       metrics = updateMetrics(metrics, {
@@ -551,18 +547,11 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         githubApiRemaining: repositoryInventory.githubApiRemaining,
       });
 
-      stage = "cache_loading";
-      cache = await this.#dependencies.loadCaches({
-        invocation,
-        configuration,
-        repositoryInventory: repositoryInventory.value,
-      });
-
       stage = "incremental_collection";
       const collection = await this.#dependencies.collectIncrementalItems({
         invocation,
         configuration,
-        cache,
+        state,
         authentication,
         repositoryInventory: repositoryInventory.value,
       });
@@ -578,7 +567,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       const deterministicAnalysis = await this.#dependencies.applyDeterministicRules({
         invocation,
         configuration,
-        cache,
+        state,
         repositoryInventory: repositoryInventory.value,
         collection: collection.value,
       });
@@ -587,7 +576,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       const codexAnalysis = await this.#dependencies.analyzeWithCodex({
         invocation,
         configuration,
-        cache,
+        state,
         collection: collection.value,
         deterministicAnalysis,
       });
@@ -613,7 +602,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       const graph = await this.#dependencies.reconcileGraph({
         invocation,
         configuration,
-        cache,
+        state,
         collection: collection.value,
         reduction,
       });
@@ -625,10 +614,9 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       const validation = await this.#dependencies.validateCompleteness({
         invocation,
         configuration,
-        cache,
+        state,
         repositoryInventory: repositoryInventory.value,
         collection: collection.value,
-        deterministicAnalysis,
         codexAnalysis: codexAnalysis.value,
         reduction,
         graph: graph.value,
@@ -668,7 +656,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         await this.#dependencies.writeCollectAnalyzeArtifact(invocation.command.artifactPath, {
           invocation,
           configuration,
-          cache,
+          state,
           repositoryInventory: repositoryInventory.value,
           validated: validation.value,
           metrics,
@@ -679,12 +667,26 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       }
 
       if (invocation.command.kind !== "dry-run" && invocation.command.kind !== "collect-analyze") {
+        stage = "state_persistence";
+        const persisted = await this.#dependencies.persistState({
+          invocation,
+          configuration,
+          state,
+          repositoryInventory: repositoryInventory.value,
+          validated: validation.value,
+          metrics,
+          status: runStatus,
+          diagnostics,
+        });
+        effects.stateCommitted = true;
+
         stage = "pages";
         const pages = await this.#dependencies.buildPages({
           invocation,
           configuration,
           repositoryInventory: repositoryInventory.value,
           validated: validation.value,
+          persisted,
         });
         effects.pagesBuilt = true;
 
@@ -693,8 +695,9 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         const discord = await this.#dependencies.sendDiscord({
           invocation,
           configuration,
-          cache,
+          state,
           validated: validation.value,
+          persisted,
           pages,
         });
         discordSentAt = discord.discordSentAt;
@@ -702,11 +705,11 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
           notificationCount: discord.notificationCount,
         });
 
-        stage = "cache_persistence";
-        await this.#dependencies.persistCache({
+        stage = "state_persistence";
+        await this.#dependencies.completeRun({
           invocation,
           configuration,
-          cache,
+          state,
           repositoryInventory: repositoryInventory.value,
           validated: validation.value,
           discord: discord.value,
@@ -714,7 +717,6 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
           status: runStatus,
           diagnostics,
         });
-        effects.cacheCommitted = true;
       }
 
       const report = completedReport(
@@ -735,6 +737,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       if (
         alertKind != null &&
         configuration != null &&
+        state != null &&
         (invocation.command.kind === "daily" || invocation.command.kind === "backfill")
       ) {
         effects.discordAttempted = true;
@@ -742,6 +745,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
           const alert = await this.#dependencies.sendOperationsAlert({
             invocation,
             configuration,
+            state,
             kind: alertKind,
             retryAttempts: operationsAlertRetryAttempts(error),
           });

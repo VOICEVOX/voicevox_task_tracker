@@ -22,7 +22,12 @@
     }
   ],
   "relations": [],
-  "notifications": [],
+  "notifications": [
+    {
+      "itemNodeId": "clear-review-pr",
+      "reasonCodes": ["review_overdue"]
+    }
+  ],
   "publication": {
     "status": "published"
   },

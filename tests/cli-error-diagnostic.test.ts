@@ -8,26 +8,14 @@ import {
   CliCredentialsError,
   CliExecutableError,
   CliRelationExpansionLimitError,
-  ResponsibilityReplayRetryExhaustedError,
-  StalenessReductionError,
 } from "../src/cli/errors.js";
-import {
-  ResponsibilityReplayMismatchError,
-  StalenessTimestampRangeError,
-  createGitHubNodeId,
-  createUtcIsoDateTime,
-} from "../src/domain/index.js";
 import {
   GitHubGraphQLResponseError,
   GitHubItemDetailCollectionError,
-  GitHubPublicBoundaryViolationError,
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
 } from "../src/github/index.js";
-import {
-  RelationReferenceConflictError,
-  type PublicGitHubRelationItem,
-} from "../src/graph/index.js";
+import { RelationReferenceConflictError } from "../src/graph/index.js";
 import { StateFormatError } from "../src/persistence/index.js";
 
 function createGraphQLResponseError(options: ErrorOptions): GitHubGraphQLResponseError {
@@ -484,114 +472,12 @@ describe("safeErrorDiagnostic", () => {
     expect(diagnostic).not.toContain(body);
   });
 
-  it("公開境界違反からcache item relationの構造化診断だけを出す", () => {
-    const sourceItemNodeId = createGitHubNodeId("I_public_boundary_source");
-    const ownerCanary = "owner-boundary-canary";
-    const repositoryCanary = "repository-boundary-canary";
-    const urlCanary =
-      "https://github.com/owner-boundary-canary/repository-boundary-canary/issues/1";
-    const bodyCanary = "body-boundary-canary";
-    const targetNodeIdCanary = "I_boundary_target_canary";
-    const cacheKeyCanary = "sha256:boundary-cache-key-canary";
-    const error = new GitHubPublicBoundaryViolationError({
-      scope: "cache_item_relation",
-      sourceItemNodeId,
-      violationKind: "cache_relation_candidate_and_mutation",
-      violationCount: 3,
-    });
-    delete error.stack;
-    Object.defineProperties(error, {
-      owner: { value: ownerCanary },
-      repository: { value: repositoryCanary },
-      url: { value: urlCanary },
-      body: { value: bodyCanary },
-      targetNodeId: { value: targetNodeIdCanary },
-      cacheKey: { value: cacheKeyCanary },
-    });
-
-    expect(safeErrorDiagnostic("completeness_validation", error)).toBe(
-      "stage=completeness_validation errorType=GitHubPublicBoundaryViolationError publicBoundaryViolationKind=cache_relation_candidate_and_mutation publicBoundaryViolationCount=3 sourceItemNodeId=I_public_boundary_source",
-    );
-    for (const canary of [
-      ownerCanary,
-      repositoryCanary,
-      urlCanary,
-      bodyCanary,
-      targetNodeIdCanary,
-      cacheKeyCanary,
-    ]) {
-      expect(safeErrorDiagnostic("completeness_validation", error)).not.toContain(canary);
-    }
-  });
-
-  it("generic公開境界違反からsource item node IDを出さない", () => {
-    const error = new GitHubPublicBoundaryViolationError({
-      scope: "generic",
-      violationKind: "repository_id_not_allowlisted",
-      violationCount: 1,
-    });
-    delete error.stack;
-
-    expect(safeErrorDiagnostic("incremental_collection", error)).toBe(
-      "stage=incremental_collection errorType=GitHubPublicBoundaryViolationError publicBoundaryViolationKind=repository_id_not_allowlisted publicBoundaryViolationCount=1",
-    );
-    expect(safeErrorDiagnostic("incremental_collection", error)).not.toContain("sourceItemNodeId=");
-  });
-
-  it("責務再生retry枯渇エラーからcause連鎖と安全な項目識別情報を診断へ出す", () => {
-    const itemNodeId = createGitHubNodeId("I_public_repository_42");
-    const cause = new ResponsibilityReplayMismatchError(itemNodeId);
-    const error = new ResponsibilityReplayRetryExhaustedError(itemNodeId, 4, { cause });
-    delete error.stack;
-    delete cause.stack;
-
-    expect(safeErrorDiagnostic("incremental_collection", error)).toBe(
-      "stage=incremental_collection errorType=ResponsibilityReplayRetryExhaustedError<-ResponsibilityReplayMismatchError itemNodeId=I_public_repository_42 attempts=4",
-    );
-  });
-
-  it("停滞時間計算の時刻範囲違反から固定項目だけを診断へ出す", () => {
-    const itemNodeId = createGitHubNodeId("I_staleness_item");
-    const cause = new StalenessTimestampRangeError(
-      "responsibility",
-      createUtcIsoDateTime("2026-07-30T08:00:00Z"),
-      createUtcIsoDateTime("2026-07-30T07:00:00Z"),
-      createUtcIsoDateTime("2026-07-31T09:00:00Z"),
-    );
-    const error = new StalenessReductionError(itemNodeId, { cause });
-    delete error.stack;
-    delete cause.stack;
-
-    expect(safeErrorDiagnostic("incremental_collection", error)).toBe(
-      "stage=incremental_collection errorType=StalenessReductionError<-StalenessTimestampRangeError itemNodeId=I_staleness_item basisKind=responsibility createdAt=2026-07-30T08:00:00.000Z occurredAt=2026-07-30T07:00:00.000Z evaluatedAt=2026-07-31T09:00:00.000Z",
-    );
-  });
-
   it("関係参照の複数の食い違いから固定語彙だけを診断へ出す", () => {
     const nodeId = "I_node-id-canary";
     const url = "https://github.com/owner-canary/repository-canary/issues/42";
     const owner = "owner-canary";
     const repository = "repository-canary";
-    const existing = {
-      nodeId: createGitHubNodeId(nodeId),
-      repositoryOwner: owner,
-      repositoryName: repository,
-      repositoryArchived: false,
-      repositoryDisabled: true,
-      type: "issue",
-      number: 42,
-      url,
-      state: "open",
-    } satisfies PublicGitHubRelationItem;
-    const incoming = {
-      ...existing,
-      repositoryArchived: true,
-      repositoryDisabled: false,
-      type: "pull_request",
-      url: "https://github.com/owner-canary/repository-canary/pull/42",
-      state: "merged",
-    } satisfies PublicGitHubRelationItem;
-    const error = new RelationReferenceConflictError("node_id", existing, incoming, [
+    const error = new RelationReferenceConflictError("node_id", [
       { field: "nodeId" },
       { field: "repositoryOwner" },
       { field: "repositoryName" },

@@ -6,8 +6,17 @@ import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
-import { hashCanonicalJson } from "../src/codex/index.js";
 import {
+  createAiCacheEntry,
+  createAiCacheKey,
+  hashCanonicalJson,
+  type AiCacheEntry,
+} from "../src/codex/index.js";
+import {
+  buildSourceId,
+  createGitHubRepositoryId,
+  createUtcIsoDateTime,
+  type Repository,
   type StalenessWaitClass,
   type Status,
   type WaitingOnKind,
@@ -15,14 +24,31 @@ import {
 } from "../src/domain/index.js";
 import {
   GitStateBranchAdapter,
+  MemoryStateBranchAdapter,
+  StateBranchCommitError,
   StateFormatError,
+  StatePersistenceSession,
+  StatePublicSafetyError,
   StateSnapshotSchemaError,
   StateZodValidationError,
+  createEmptyStateNotificationLedger,
+  createStateHistoryInputEvents,
+  createStateHistoryRecord,
+  createStateNotificationLedger,
+  createStateRunReport,
   createStateSnapshot,
+  parseStateNotificationLedger,
+  parseStateHistoryRecords,
   parseStateSnapshot,
   serializeCanonicalJson,
+  serializeStateHistoryRecords,
+  serializeStateNotificationLedger,
   serializeStateSnapshot,
+  type StateNotificationLedger,
+  type StatePersistenceConfiguration,
+  type StateRunReport,
   type StateSnapshot,
+  type StateHistoryInputEvent,
 } from "../src/persistence/index.js";
 import { assertNonNullable } from "../src/util/index.js";
 
@@ -31,7 +57,17 @@ const gitTestTimeoutMilliseconds = 15_000;
 const fixedTrackingStartAt = "2026-07-30T23:00:00.000Z";
 const fixedItemAt = "2026-07-30T23:30:00.000Z";
 const publicRepositoryId = "R_PUBLIC";
+const privateRepositoryId = "R_PRIVATE_SENTINEL";
 const itemNodeId = "I_TRACKED";
+const stateConfiguration = Object.freeze({
+  branch: "tracker-state",
+  snapshotPath: "state/snapshot.json",
+  historyDirectory: "state/history",
+  aiCacheDirectory: "state/ai-cache",
+  notificationLedgerPath: "state/notification-ledger.json",
+  runReportsDirectory: "state/run-reports",
+  canonicalJson: true,
+}) satisfies StatePersistenceConfiguration;
 
 type ResponsibilityFixture = Readonly<{
   status: Status;
@@ -92,6 +128,26 @@ function severityWaitClass(status: Status): StalenessWaitClass {
   }
 }
 
+function createRepository(id: string, visibility: "public" | "private" | "internal"): Repository {
+  return Object.freeze({
+    id: createGitHubRepositoryId(id),
+    owner: "VOICEVOX",
+    name: id.toLowerCase(),
+    visibility,
+    archived: false,
+    disabled: false,
+    observedAt: createUtcIsoDateTime(fixedItemAt),
+  });
+}
+
+function createRepositoryInventory(includePrivate: boolean): readonly Repository[] {
+  const repositories = [createRepository(publicRepositoryId, "public")];
+  if (includePrivate) {
+    repositories.push(createRepository(privateRepositoryId, "private"));
+  }
+  return Object.freeze(repositories);
+}
+
 function createRelations(edge: EdgeFixture): readonly unknown[] {
   if (edge.status === "absent") {
     return [];
@@ -138,7 +194,7 @@ function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
     trackingStartAt: {
       status: "fixed",
       value: fixedTrackingStartAt,
-      source: "configuration",
+      source: "first_complete_run",
     },
     ai: {
       enabled: false,
@@ -269,6 +325,166 @@ function createSnapshot(options: SnapshotFixtureOptions): StateSnapshot {
   });
 }
 
+function createHistoryInputEvent(itemNodeId: string, sourceId: string): StateHistoryInputEvent {
+  return Object.freeze({
+    sourceId,
+    itemNodeId,
+    kind: "push",
+    actor: Object.freeze({
+      type: "system",
+      name: "GitHub",
+    }),
+    occurredAt: fixedItemAt,
+  });
+}
+
+function createHistoryInputSnapshot(
+  runId: string,
+  generatedAt: string,
+  itemNodeIds: readonly string[],
+  sourceId: string,
+): StateSnapshot {
+  const snapshot = createSnapshot({
+    runId,
+    generatedAt,
+    repositoryIds: [publicRepositoryId],
+    responsibility: {
+      status: "waiting_for_assessment",
+      kind: "role",
+      candidateId: "role:maintainer",
+      role: "maintainer",
+    },
+    severity: "watch",
+    edge: {
+      status: "absent",
+    },
+  });
+  const template = snapshot.items[0];
+  assertNonNullable(template, "履歴入力イベント用の項目fixtureがありません");
+  return createStateSnapshot({
+    ...snapshot,
+    items: itemNodeIds.map((nodeId, index) => {
+      const number = index + 1;
+      const url = `https://github.com/VOICEVOX/example/issues/${number.toString()}`;
+      return {
+        ...template,
+        nodeId,
+        displayReference: `VOICEVOX/example#${number.toString()}`,
+        number,
+        url,
+        inputEvents: [
+          {
+            sourceId,
+            url,
+          },
+        ],
+      };
+    }),
+  });
+}
+
+function subtractMinutes(value: string, minutes: number): string {
+  return new Date(Date.parse(value) - minutes * 60_000).toISOString();
+}
+
+function createRunReport(
+  snapshot: StateSnapshot,
+  date: string,
+  diagnostics: readonly string[],
+): StateRunReport {
+  return createStateRunReport({
+    schemaVersion: "1",
+    runId: snapshot.run.id,
+    date,
+    status: snapshot.run.status,
+    complete: true,
+    scheduledFor: subtractMinutes(snapshot.generatedAt, 10),
+    startedAt: snapshot.generatedAt,
+    finishedAt: subtractMinutes(snapshot.generatedAt, -5),
+    metrics: {
+      repositoryCount: snapshot.repositories.length,
+      itemCount: snapshot.items.length,
+      changedItemCount: 1,
+      activeEdgeCount: snapshot.relations.filter((relation) => relation.active).length,
+      aiCallCount: 0,
+      aiCacheHitCount: 0,
+      aiRetainedResultCount: 0,
+      estimatedInputTokens: 0,
+      githubApiRemaining: 5000,
+      staleRepositoryCount: 0,
+      notificationCount: 0,
+      scheduleDelayMilliseconds: 600_000,
+      durationMilliseconds: 300_000,
+    },
+    diagnostics,
+  });
+}
+
+function createSentLedger(cooldownUntil: string): StateNotificationLedger {
+  return createStateNotificationLedger({
+    schemaVersion: "2",
+    entries: [
+      {
+        notificationKey: "notification:tracked:overdue",
+        itemNodeId,
+        reasonCode: "assessment_overdue",
+        severity: "urgent",
+        reservedAt: fixedItemAt,
+        cooldownUntil,
+        status: "sent",
+        sentAt: fixedItemAt,
+        discordMessageId: "discord-message-1",
+      },
+    ],
+    operationsAlerts: [
+      {
+        alertKey: "discord-operations-alert:v1:pages",
+        incidentId: "pages-run-1",
+        kind: "pages",
+        occurredAt: fixedItemAt,
+        sentAt: fixedItemAt,
+        discordMessageId: "discord-operations-message-1",
+      },
+    ],
+  });
+}
+
+function createCacheEntry(): AiCacheEntry {
+  const inputHash = hashCanonicalJson({
+    input: "fixture",
+  });
+  const cacheKey = createAiCacheKey({
+    deterministicRulesVersion: "rules-v1",
+    model: "codex-model",
+    reasoningEffort: "medium",
+    backendVersion: "codex-cli-1",
+    promptVersion: "prompt-v1",
+    schemaVersion: "schema-v1",
+    inputHash,
+  });
+  const output = {
+    result: "cached",
+  };
+  return createAiCacheEntry({
+    cacheKey,
+    sourceHash: hashCanonicalJson({
+      source: "fixture",
+    }),
+    metadata: {
+      deterministicRulesVersion: "rules-v1",
+      model: "codex-model",
+      reasoningEffort: "medium",
+      backendVersion: "codex-cli-1",
+      promptVersion: "prompt-v1",
+      schemaVersion: "schema-v1",
+      inputHash,
+      outputHash: hashCanonicalJson(output),
+      executedAt: fixedItemAt,
+    },
+    output,
+  });
+}
+
 function snapshotWithoutVolatileFields(snapshot: StateSnapshot): unknown {
   return {
     schemaVersion: snapshot.schemaVersion,
@@ -278,6 +494,18 @@ function snapshotWithoutVolatileFields(snapshot: StateSnapshot): unknown {
     items: snapshot.items,
     relations: snapshot.relations,
   };
+}
+
+async function captureError(promise: Promise<unknown>): Promise<Error> {
+  try {
+    await promise;
+  } catch (error: unknown) {
+    if (error instanceof Error) {
+      return error;
+    }
+    throw error;
+  }
+  throw new Error("期待したエラーが発生しませんでした");
 }
 
 function captureSynchronousError(operation: () => unknown): Error {
@@ -887,6 +1115,204 @@ describe("state schema version", () => {
     ).toThrow(StateSnapshotSchemaError);
   });
 
+  it("version 1のnotification ledgerにある旧reasonCodeをversion 2へmigrationする", () => {
+    const fixtures = [
+      {
+        legacyReasonCode: "author_overdue",
+        reasonCode: "revision_overdue",
+      },
+      {
+        legacyReasonCode: "ready_to_merge_overdue",
+        reasonCode: "merge_overdue",
+      },
+      {
+        legacyReasonCode: "triage_overdue",
+        reasonCode: "assessment_overdue",
+      },
+    ] as const;
+    const entries = fixtures.map((fixture, index) => ({
+      notificationKey: `discord-notification:v1:${fixture.legacyReasonCode}:0000000000000000000000000000000000000000000000000000000000000000`,
+      itemNodeId: `I_LEGACY_NOTIFICATION_${index.toString()}`,
+      reasonCode: fixture.legacyReasonCode,
+      severity: "critical",
+      reservedAt: "2026-08-01T00:00:00.000Z",
+      cooldownUntil: "2026-08-02T00:00:00.000Z",
+      status: "sent",
+      sentAt: "2026-08-01T00:01:00.000Z",
+      discordMessageId: `discord-message-${index.toString()}`,
+    }));
+    const operationsAlerts = [
+      {
+        alertKey: "discord-operations-alert:v1:collection",
+        incidentId: "collection-incident",
+        kind: "collection",
+        occurredAt: "2026-08-01T00:00:00.000Z",
+        sentAt: "2026-08-01T00:01:00.000Z",
+        discordMessageId: "discord-operations-message",
+      },
+    ];
+
+    const migrated = parseStateNotificationLedger(
+      serializeCanonicalJson({
+        schemaVersion: "1",
+        entries,
+        operationsAlerts,
+      }),
+    );
+
+    expect(migrated).toEqual({
+      schemaVersion: "2",
+      entries: entries.map((entry, index) => {
+        const fixture = fixtures[index];
+        assertNonNullable(fixture, "notification ledgerのmigration fixtureがありません");
+        return {
+          ...entry,
+          reasonCode: fixture.reasonCode,
+        };
+      }),
+      operationsAlerts,
+    });
+  });
+
+  it("version 1のnotification ledgerにある未知の旧reasonCodeを拒否する", () => {
+    expect(() =>
+      parseStateNotificationLedger(
+        serializeCanonicalJson({
+          schemaVersion: "1",
+          entries: [
+            {
+              reasonCode: "unexpected_reason",
+            },
+          ],
+          operationsAlerts: [],
+        }),
+      ),
+    ).toThrow(StateFormatError);
+  });
+
+  it("version 1のhistoryにある旧Statusをversion 2へmigrationする", () => {
+    const fixtures = [
+      {
+        legacyStatus: "new_untriaged",
+        status: "waiting_for_assessment",
+      },
+      {
+        legacyStatus: "needs_maintainer_decision",
+        status: "waiting_for_decision",
+      },
+      {
+        legacyStatus: "waiting_for_author",
+        status: "waiting_for_revision",
+      },
+      {
+        legacyStatus: "waiting_for_assignee",
+        status: "waiting_for_work",
+      },
+      {
+        legacyStatus: "blocked",
+        status: "waiting_for_unblock",
+      },
+      {
+        legacyStatus: "ready_to_merge",
+        status: "waiting_for_merge",
+      },
+    ] satisfies readonly Readonly<{
+      legacyStatus: string;
+      status: Status;
+    }>[];
+    const source = `${serializeCanonicalJson({
+      schemaVersion: "1",
+      date: "2026-08-01",
+      runId: "run-history-schema-version-1",
+      recordedAt: "2026-08-01T09:00:00+09:00",
+      inputEvents: [],
+      events: fixtures.map((fixture, index) => ({
+        kind: "responsibility_set",
+        nodeId: `I_LEGACY_${index.toString()}`,
+        value: {
+          status: fixture.legacyStatus,
+          waitingOn: [
+            {
+              kind: "role",
+              candidateId: "maintainer",
+              role: "maintainer",
+              reasonSummary: "旧履歴の責務です",
+              sourceIds: [`fixture:legacy:${index.toString()}`],
+              confidence: 1,
+            },
+          ],
+        },
+      })),
+    })}\n`;
+
+    const records = parseStateHistoryRecords(source);
+    const record = records[0];
+    assertNonNullable(record, "version 1のhistory recordを取得できませんでした");
+
+    expect(record.schemaVersion).toBe("2");
+    expect(record.recordedAt).toBe("2026-08-01T00:00:00.000Z");
+    expect(
+      record.events.map((event) => {
+        if (event.kind !== "responsibility_set") {
+          throw new TypeError("旧Statusの履歴fixtureに責務設定以外のeventがあります");
+        }
+        return event.value.status;
+      }),
+    ).toEqual(fixtures.map((fixture) => fixture.status));
+    expect(Object.isFrozen(record)).toBe(true);
+  });
+
+  it("version 1とversion 2が混在するhistoryをrecordごとに読み取る", () => {
+    const records = parseStateHistoryRecords(
+      [
+        serializeCanonicalJson({
+          schemaVersion: "1",
+          date: "2026-08-01",
+          runId: "run-history-mixed-version-1",
+          recordedAt: "2026-08-01T00:00:00.000Z",
+          inputEvents: [],
+          events: [],
+        }),
+        serializeCanonicalJson({
+          schemaVersion: "2",
+          date: "2026-08-01",
+          runId: "run-history-mixed-version-2",
+          recordedAt: "2026-08-01T01:00:00.000Z",
+          inputEvents: [],
+          events: [],
+        }),
+      ].join("\n") + "\n",
+    );
+
+    expect(records.map((record) => record.schemaVersion)).toEqual(["2", "2"]);
+    expect(records.map((record) => record.runId)).toEqual([
+      "run-history-mixed-version-1",
+      "run-history-mixed-version-2",
+    ]);
+  });
+
+  it("version 1のhistoryにある未知の旧Statusを拒否する", () => {
+    const source = `${serializeCanonicalJson({
+      schemaVersion: "1",
+      date: "2026-08-01",
+      runId: "run-history-unknown-legacy-status",
+      recordedAt: "2026-08-01T00:00:00.000Z",
+      inputEvents: [],
+      events: [
+        {
+          kind: "responsibility_set",
+          nodeId: "I_UNKNOWN_LEGACY_STATUS",
+          value: {
+            status: "unexpected_status",
+            waitingOn: [],
+          },
+        },
+      ],
+    })}\n`;
+
+    expect(() => parseStateHistoryRecords(source)).toThrow(StateFormatError);
+  });
+
   it("未知のsnapshot schema versionを拒否する", () => {
     const snapshot = createSnapshot({
       runId: "run-unknown-schema-version",
@@ -917,6 +1343,168 @@ describe("state schema version", () => {
     expect(error.cause).toMatchObject({
       message: "snapshotのschemaVersionは未対応です",
     });
+  });
+
+  it("未知のhistory schema versionを拒否する", () => {
+    const source = `${serializeCanonicalJson({
+      schemaVersion: "999",
+      date: "2026-08-01",
+      runId: "run-history-unknown-schema-version",
+      recordedAt: "2026-08-01T00:00:00.000Z",
+      inputEvents: [],
+      events: [],
+    })}\n`;
+    const error = captureSynchronousError(() => parseStateHistoryRecords(source));
+
+    expect(error).toBeInstanceOf(StateFormatError);
+    expect(error.cause).toMatchObject({
+      message: "state historyのschemaVersionは未対応です",
+    });
+  });
+
+  it("未知のnotification ledger schema versionを拒否する", () => {
+    const error = captureSynchronousError(() =>
+      parseStateNotificationLedger(
+        serializeCanonicalJson({
+          schemaVersion: "999",
+          entries: [],
+          operationsAlerts: [],
+        }),
+      ),
+    );
+
+    expect(error).toBeInstanceOf(StateFormatError);
+    expect(error).not.toBeInstanceOf(StateZodValidationError);
+    expect(error.cause).toMatchObject({
+      message: "notification ledgerのschemaVersionは未対応です",
+    });
+  });
+});
+
+describe("state履歴の入力イベント", () => {
+  it("Zod検証失敗から安全化済みissueだけを保持する", () => {
+    const actualValueCanary = "STATE_HISTORY_ACTUAL_VALUE_CANARY";
+    const error = captureSynchronousError(() => createStateHistoryInputEvents([actualValueCanary]));
+
+    expect(error).toBeInstanceOf(StateFormatError);
+    if (!(error instanceof StateZodValidationError)) {
+      throw error;
+    }
+    expect(error.issueCount).toBe(1);
+    expect(error.omittedIssueCount).toBe(0);
+    expect(error.issues).toEqual([
+      {
+        path: [0],
+        code: "invalid_type",
+        expected: "object",
+      },
+    ]);
+    expect(Object.isFrozen(error.issues)).toBe(true);
+    expect(Object.isFrozen(error.issues[0]?.path)).toBe(true);
+    expect(error.cause).toMatchObject({
+      name: "TypeError",
+      message: "state履歴の入力イベントのschema検証に失敗しました。問題件数: 1",
+    });
+    expect(
+      JSON.stringify({
+        cause: error.cause instanceof Error ? error.cause.message : error.cause,
+        issues: error.issues,
+      }),
+    ).not.toContain(actualValueCanary);
+  });
+
+  it("別項目で共有するsource IDを受理し入力順に依存せず整列する", () => {
+    const sourceId = buildSourceId("github_commit", "C_SHARED");
+    const first = createHistoryInputEvent("I_FIRST", sourceId);
+    const second = createHistoryInputEvent("I_SECOND", sourceId);
+
+    const forward = createStateHistoryInputEvents([first, second]);
+    const reverse = createStateHistoryInputEvents([second, first]);
+
+    expect(forward).toEqual([first, second]);
+    expect(reverse).toEqual(forward);
+  });
+
+  it("Pull Request固有イベントの6種を受理する", () => {
+    const kinds = Object.freeze([
+      "ready_for_review",
+      "converted_to_draft",
+      "added_to_merge_queue",
+      "removed_from_merge_queue",
+      "auto_merge_enabled",
+      "auto_merge_disabled",
+    ] satisfies readonly StateHistoryInputEvent["kind"][]);
+    const events = kinds.map((kind) =>
+      Object.freeze({
+        ...createHistoryInputEvent("I_PULL_REQUEST", `github_timeline_event:${kind}`),
+        kind,
+      } satisfies StateHistoryInputEvent),
+    );
+
+    const normalized = createStateHistoryInputEvents(events);
+
+    expect(normalized).toHaveLength(6);
+    expect(new Set(normalized.map((event) => event.kind))).toEqual(new Set(kinds));
+  });
+
+  it("同じ項目のsource ID重複を拒否する", () => {
+    const event = createHistoryInputEvent(
+      "I_DUPLICATE",
+      buildSourceId("github_commit", "C_DUPLICATE"),
+    );
+
+    expect(() => createStateHistoryInputEvents([event, event])).toThrow(StateFormatError);
+  });
+
+  it("前回snapshotとの新規判定に項目とsource IDの組を使う", () => {
+    const sourceId = buildSourceId("github_commit", "C_HISTORY_SHARED");
+    const first = createHistoryInputEvent("I_HISTORY_FIRST", sourceId);
+    const second = createHistoryInputEvent("I_HISTORY_SECOND", sourceId);
+    const previous = createHistoryInputSnapshot(
+      "run-history-input-previous",
+      "2026-07-31T00:00:00.000Z",
+      [first.itemNodeId],
+      sourceId,
+    );
+    const current = createHistoryInputSnapshot(
+      "run-history-input-current",
+      "2026-08-01T00:00:00.000Z",
+      [first.itemNodeId, second.itemNodeId],
+      sourceId,
+    );
+
+    const initialRecord = createStateHistoryRecord(
+      undefined,
+      current,
+      "2026-08-01",
+      current.repositories,
+      [second, first],
+    );
+    const nextRecord = createStateHistoryRecord(
+      previous,
+      current,
+      "2026-08-01",
+      current.repositories,
+      [second, first],
+    );
+    const movedCurrent = createHistoryInputSnapshot(
+      "run-history-input-moved",
+      "2026-08-01T00:00:00.000Z",
+      [second.itemNodeId],
+      sourceId,
+    );
+    const movedRecord = createStateHistoryRecord(
+      previous,
+      movedCurrent,
+      "2026-08-01",
+      movedCurrent.repositories,
+      [second],
+    );
+    const parsedRecord = parseStateHistoryRecords(serializeStateHistoryRecords([initialRecord]))[0];
+
+    expect(parsedRecord?.inputEvents).toEqual([first, second]);
+    expect(nextRecord.inputEvents).toEqual([second]);
+    expect(movedRecord.inputEvents).toEqual([second]);
   });
 });
 
@@ -1094,69 +1682,656 @@ describe("state canonical JSON", () => {
   });
 });
 
-describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, () => {
-  it("明示的なdeletionsで既存stateファイルをGit indexから削除する", async () => {
-    const temporaryDirectory = await mkdtemp(join(tmpdir(), "voicevox-state-git-delete-test-"));
-    try {
-      await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", temporaryDirectory]);
-      const adapter = new GitStateBranchAdapter({
-        repositoryPath: temporaryDirectory,
-        gitExecutable: "git",
-        authorName: "VOICEVOX Task Tracker",
-        authorEmail: "voicevox-task-tracker@example.com",
-      });
-      const first = await adapter.commit({
-        branch: "tracker-state-v4",
-        expectedHead: {
-          status: "missing",
-        },
-        updates: [
-          {
-            path: "state/remove.json",
-            bytes: new TextEncoder().encode("remove\n"),
-          },
-          {
-            path: "state/keep.json",
-            bytes: new TextEncoder().encode("keep\n"),
-          },
-        ],
-        deletions: [],
-        message: "create deletion fixture",
-        committedAt: "2026-08-01T00:00:00.000Z",
-      });
-      const second = await adapter.commit({
-        branch: "tracker-state-v4",
-        expectedHead: {
-          status: "present",
-          revision: first.revision,
-        },
-        updates: [
-          {
-            path: "state/keep.json",
-            bytes: new TextEncoder().encode("keep-next\n"),
-          },
-        ],
-        deletions: ["state/remove.json"],
-        message: "delete state fixture",
-        committedAt: "2026-08-02T00:00:00.000Z",
-      });
+describe("メモリstate branch transaction", () => {
+  it("初回はorphan branchを作成し、以後は同じbranchへcommitする", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const firstSnapshot = createSnapshot({
+      runId: "run-bootstrap",
+      generatedAt: "2026-07-31T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const firstSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    const first = await firstSession.persist({
+      snapshot: firstSnapshot,
+      historyInputEvents: [],
+      notificationLedger: createEmptyStateNotificationLedger(),
+      repositoryInventory: createRepositoryInventory(false),
+      knownSecrets: [],
+    });
 
-      const removed = await adapter.readFile(second.revision, "state/remove.json");
-      const kept = await adapter.readFile(second.revision, "state/keep.json");
-      const paths = await adapter.listFiles(second.revision, "state");
+    expect(first.branchCreated).toBe(true);
+    expect(adapter.readParent(first.revision)).toEqual({
+      status: "missing",
+    });
 
-      expect(removed).toEqual({ status: "missing" });
-      expect(kept.status).toBe("present");
-      expect(paths).toEqual(["state/keep.json"]);
-    } finally {
-      await rm(temporaryDirectory, {
-        recursive: true,
-        force: true,
-      });
-    }
+    const secondSnapshot = createSnapshot({
+      runId: "run-next-day",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_review",
+        kind: "team",
+        candidateId: "team:reviewers",
+        role: "reviewer",
+      },
+      severity: "urgent",
+      edge: {
+        status: "active",
+      },
+    });
+    const secondSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    const second = await secondSession.persist({
+      snapshot: secondSnapshot,
+      historyInputEvents: [],
+      notificationLedger: createEmptyStateNotificationLedger(),
+      repositoryInventory: createRepositoryInventory(false),
+      knownSecrets: [],
+    });
+
+    expect(second.branchCreated).toBe(false);
+    expect(adapter.readParent(second.revision)).toEqual({
+      status: "present",
+      revision: first.revision,
+    });
+    expect(second.updatedPaths).toEqual(
+      expect.arrayContaining([
+        "state/snapshot.json",
+        "state/history/2026-08-01.jsonl",
+        "state/notification-ledger.json",
+      ]),
+    );
   });
 
-  it("mainを変えず、初回orphan tracker-state-v4と後続commitを作成する", async () => {
+  it("run完了時に実測時刻と通知件数を含むreportを保存する", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const snapshot = createSnapshot({
+      runId: "run-completion-report",
+      generatedAt: "2026-07-31T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const session = await StatePersistenceSession.open(adapter, stateConfiguration);
+    await session.persist({
+      snapshot,
+      historyInputEvents: [],
+      notificationLedger: createEmptyStateNotificationLedger(),
+      repositoryInventory: createRepositoryInventory(false),
+      knownSecrets: [],
+    });
+    expect(
+      (await adapter.readBranchFiles("tracker-state")).has("state/run-reports/2026-07-31.json"),
+    ).toBe(false);
+
+    const baseReport = createRunReport(snapshot, "2026-07-31", []);
+    const report = createStateRunReport({
+      ...baseReport,
+      metrics: {
+        ...baseReport.metrics,
+        notificationCount: 2,
+      },
+    });
+    const result = await session.persistRunCompletion({
+      snapshot,
+      notificationLedger: createEmptyStateNotificationLedger(),
+      runReport: report,
+      repositoryInventory: createRepositoryInventory(false),
+      knownSecrets: [],
+    });
+    const source = (await adapter.readBranchFiles("tracker-state")).get(
+      "state/run-reports/2026-07-31.json",
+    );
+    assertNonNullable(source, "run完了reportがありません");
+    const persisted: unknown = JSON.parse(new TextDecoder().decode(source));
+
+    expect(result.updatedPaths).toContain("state/run-reports/2026-07-31.json");
+    expect(createStateRunReport(persisted)).toMatchObject({
+      startedAt: "2026-07-31T00:00:00.000Z",
+      finishedAt: "2026-07-31T00:05:00.000Z",
+      metrics: {
+        notificationCount: 2,
+        scheduleDelayMilliseconds: 600_000,
+        durationMilliseconds: 300_000,
+      },
+    });
+  });
+
+  it("snapshotを欠く既存stateを初回運用障害stateと誤認しない", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const notificationLedger = createStateNotificationLedger({
+      schemaVersion: "2",
+      entries: [],
+      operationsAlerts: [
+        {
+          alertKey: "discord-operations-alert:v1:initial-collection",
+          incidentId: "workflow-run-initial:collection",
+          kind: "collection",
+          occurredAt: fixedItemAt,
+          sentAt: fixedItemAt,
+          discordMessageId: "discord-operations-message-initial",
+        },
+      ],
+    });
+    await adapter.commit({
+      branch: "tracker-state",
+      expectedHead: {
+        status: "missing",
+      },
+      updates: [
+        {
+          path: stateConfiguration.notificationLedgerPath,
+          bytes: new TextEncoder().encode(serializeStateNotificationLedger(notificationLedger)),
+        },
+        {
+          path: "state/run-reports/2026-07-31.json",
+          bytes: new TextEncoder().encode("不完全なstate fixture\n"),
+        },
+      ],
+      message: "incomplete state fixture",
+      committedAt: fixedItemAt,
+    });
+    const session = await StatePersistenceSession.open(adapter, stateConfiguration);
+    const error = await captureError(session.loadSnapshot());
+
+    expect(error).toBeInstanceOf(StateFormatError);
+    expect(error.cause).toMatchObject({
+      message: "既存state branchにsnapshotがありません",
+    });
+  });
+
+  it("ref更新前の失敗でlast good commitとsnapshotを変えない", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const firstSnapshot = createSnapshot({
+      runId: "run-last-good",
+      generatedAt: "2026-07-31T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const firstSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    await firstSession.persist({
+      snapshot: firstSnapshot,
+      historyInputEvents: [],
+      notificationLedger: createEmptyStateNotificationLedger(),
+      repositoryInventory: createRepositoryInventory(false),
+      knownSecrets: [],
+    });
+    const headBefore = await adapter.resolveHead("tracker-state");
+    const filesBefore = await adapter.readBranchFiles("tracker-state");
+    const snapshotBefore = filesBefore.get(stateConfiguration.snapshotPath);
+    assertNonNullable(snapshotBefore, "last good snapshotがありません");
+
+    const failedSnapshot = createSnapshot({
+      runId: "run-failed",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_review",
+        kind: "team",
+        candidateId: "team:reviewers",
+        role: "reviewer",
+      },
+      severity: "urgent",
+      edge: {
+        status: "active",
+      },
+    });
+    const failedSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    adapter.failNextCommit(new Error("fixture failure"));
+    await expect(
+      failedSession.persist({
+        snapshot: failedSnapshot,
+        historyInputEvents: [],
+        notificationLedger: createEmptyStateNotificationLedger(),
+        repositoryInventory: createRepositoryInventory(false),
+        knownSecrets: [],
+      }),
+    ).rejects.toThrow(StateBranchCommitError);
+
+    const headAfter = await adapter.resolveHead("tracker-state");
+    const filesAfter = await adapter.readBranchFiles("tracker-state");
+    const snapshotAfter = filesAfter.get(stateConfiguration.snapshotPath);
+    assertNonNullable(snapshotAfter, "失敗後のlast good snapshotがありません");
+    expect(headAfter).toEqual(headBefore);
+    expect(snapshotAfter).toEqual(snapshotBefore);
+  });
+
+  it("private sentinelを独立allowlist検証で拒否してlast goodを維持する", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const goodSnapshot = createSnapshot({
+      runId: "run-public",
+      generatedAt: "2026-07-31T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const goodSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    await goodSession.persist({
+      snapshot: goodSnapshot,
+      historyInputEvents: [],
+      notificationLedger: createEmptyStateNotificationLedger(),
+      repositoryInventory: createRepositoryInventory(true),
+      knownSecrets: [],
+    });
+    const lastGoodHead = await adapter.resolveHead("tracker-state");
+
+    const privateSnapshot = createSnapshot({
+      runId: "run-private",
+      generatedAt: "2026-08-01T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId, privateRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "urgent",
+      edge: {
+        status: "absent",
+      },
+    });
+    const privateSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    await expect(
+      privateSession.persist({
+        snapshot: privateSnapshot,
+        historyInputEvents: [],
+        notificationLedger: createEmptyStateNotificationLedger(),
+        repositoryInventory: createRepositoryInventory(true),
+        knownSecrets: [],
+      }),
+    ).rejects.toThrow(StatePublicSafetyError);
+
+    expect(await adapter.resolveHead("tracker-state")).toEqual(lastGoodHead);
+  });
+
+  it.each([
+    {
+      kind: "owner/name",
+      value: "VOICEVOX/r_private_sentinel",
+    },
+    {
+      kind: "repository URL",
+      value: "https://github.com/VOICEVOX/r_private_sentinel",
+    },
+  ])("private repositoryの$kindだけが付随データへ混入しても拒否する", async ({ value }) => {
+    const adapter = new MemoryStateBranchAdapter();
+    const snapshot = createSnapshot({
+      runId: "run-private-metadata",
+      generatedAt: "2026-07-31T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const session = await StatePersistenceSession.open(adapter, stateConfiguration);
+    await session.persist({
+      snapshot,
+      historyInputEvents: [],
+      notificationLedger: createEmptyStateNotificationLedger(),
+      repositoryInventory: createRepositoryInventory(true),
+      knownSecrets: [],
+    });
+    const headBefore = await adapter.resolveHead("tracker-state");
+
+    await expect(
+      session.persistRunCompletion({
+        snapshot,
+        notificationLedger: createEmptyStateNotificationLedger(),
+        runReport: createRunReport(snapshot, "2026-07-31", [value]),
+        repositoryInventory: createRepositoryInventory(true),
+        knownSecrets: [],
+      }),
+    ).rejects.toThrow(StatePublicSafetyError);
+    expect(await adapter.resolveHead("tracker-state")).toEqual(headBefore);
+  });
+
+  it("secret patternを拒否し、エラーにもsecret値を含めない", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const snapshot = createSnapshot({
+      runId: "run-secret",
+      generatedAt: "2026-07-31T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const token = "github_pat_abcdefghijklmnopqrstuvwxyz0123456789";
+    const session = await StatePersistenceSession.open(adapter, stateConfiguration);
+    await session.persist({
+      snapshot,
+      historyInputEvents: [],
+      notificationLedger: createEmptyStateNotificationLedger(),
+      repositoryInventory: createRepositoryInventory(false),
+      knownSecrets: [token],
+    });
+    const headBefore = await adapter.resolveHead("tracker-state");
+    const error = await captureError(
+      session.persistRunCompletion({
+        snapshot,
+        notificationLedger: createEmptyStateNotificationLedger(),
+        runReport: createRunReport(snapshot, "2026-07-31", [`token=${token}`]),
+        repositoryInventory: createRepositoryInventory(false),
+        knownSecrets: [token],
+      }),
+    );
+
+    expect(error).toBeInstanceOf(StatePublicSafetyError);
+    expect(error.message).not.toContain(token);
+    expect(await adapter.resolveHead("tracker-state")).toEqual(headBefore);
+  });
+
+  it("AI cache内の不要な本文全文フィールドを拒否する", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const snapshot = createSnapshot({
+      runId: "run-full-content",
+      generatedAt: "2026-07-31T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "watch",
+      edge: {
+        status: "absent",
+      },
+    });
+    const session = await StatePersistenceSession.open(adapter, stateConfiguration);
+    const inputHash = hashCanonicalJson({
+      input: "full-content",
+    });
+    const cacheKey = createAiCacheKey({
+      deterministicRulesVersion: "rules-v1",
+      model: "codex-model",
+      reasoningEffort: "medium",
+      backendVersion: "codex-cli-1",
+      promptVersion: "prompt-v1",
+      schemaVersion: "schema-v1",
+      inputHash,
+    });
+    const output = {
+      body: "保存してはいけない本文です",
+    };
+    await session.aiCache.write(
+      createAiCacheEntry({
+        cacheKey,
+        sourceHash: hashCanonicalJson({
+          source: "fixture",
+        }),
+        metadata: {
+          deterministicRulesVersion: "rules-v1",
+          model: "codex-model",
+          reasoningEffort: "medium",
+          backendVersion: "codex-cli-1",
+          promptVersion: "prompt-v1",
+          schemaVersion: "schema-v1",
+          inputHash,
+          outputHash: hashCanonicalJson(output),
+          executedAt: fixedItemAt,
+        },
+        output,
+      }),
+    );
+
+    await expect(
+      session.persist({
+        snapshot,
+        historyInputEvents: [],
+        notificationLedger: createEmptyStateNotificationLedger(),
+        repositoryInventory: createRepositoryInventory(false),
+        knownSecrets: [],
+      }),
+    ).rejects.toThrow(StatePublicSafetyError);
+    expect(await adapter.resolveHead("tracker-state")).toEqual({
+      status: "missing",
+    });
+  });
+
+  it("runnerを破棄してもAI cache hitと通知cooldownを読み戻す", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const snapshot = createSnapshot({
+      runId: "run-cache-ledger",
+      generatedAt: "2026-07-31T00:00:00.000Z",
+      repositoryIds: [publicRepositoryId],
+      responsibility: {
+        status: "waiting_for_assessment",
+        kind: "role",
+        candidateId: "role:maintainer",
+        role: "maintainer",
+      },
+      severity: "urgent",
+      edge: {
+        status: "absent",
+      },
+    });
+    const cacheEntry = createCacheEntry();
+    const cooldownUntil = "2026-08-03T00:00:00.000Z";
+    const firstSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    await firstSession.aiCache.write(cacheEntry);
+    await firstSession.persist({
+      snapshot,
+      historyInputEvents: [],
+      notificationLedger: createSentLedger(cooldownUntil),
+      repositoryInventory: createRepositoryInventory(false),
+      knownSecrets: [],
+    });
+
+    const restartedSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    const cacheResult = await restartedSession.aiCache.read(cacheEntry.cacheKey);
+    const ledger = await restartedSession.loadNotificationLedger();
+
+    expect(cacheResult).toMatchObject({
+      status: "hit",
+      entry: {
+        cacheKey: cacheEntry.cacheKey,
+      },
+    });
+    expect(ledger.entries[0]?.cooldownUntil).toBe(cooldownUntil);
+    expect(ledger.operationsAlerts).toEqual([
+      {
+        alertKey: "discord-operations-alert:v1:pages",
+        incidentId: "pages-run-1",
+        kind: "pages",
+        occurredAt: fixedItemAt,
+        sentAt: fixedItemAt,
+        discordMessageId: "discord-operations-message-1",
+      },
+    ]);
+  });
+
+  it("任意の二日間について責務・edge・severity差分を再生する", async () => {
+    const adapter = new MemoryStateBranchAdapter();
+    const snapshots = [
+      {
+        date: "2026-07-31",
+        snapshot: createSnapshot({
+          runId: "run-history-1",
+          generatedAt: "2026-07-31T00:00:00.000Z",
+          repositoryIds: [publicRepositoryId],
+          responsibility: {
+            status: "waiting_for_assessment",
+            kind: "role",
+            candidateId: "role:maintainer",
+            role: "maintainer",
+          },
+          severity: "watch",
+          edge: {
+            status: "absent",
+          },
+        }),
+      },
+      {
+        date: "2026-08-01",
+        snapshot: createSnapshot({
+          runId: "run-history-2",
+          generatedAt: "2026-08-01T00:00:00.000Z",
+          repositoryIds: [publicRepositoryId],
+          responsibility: {
+            status: "waiting_for_review",
+            kind: "team",
+            candidateId: "team:reviewers",
+            role: "reviewer",
+          },
+          severity: "urgent",
+          edge: {
+            status: "active",
+          },
+        }),
+      },
+      {
+        date: "2026-08-02",
+        snapshot: createSnapshot({
+          runId: "run-history-3",
+          generatedAt: "2026-08-02T00:00:00.000Z",
+          repositoryIds: [publicRepositoryId],
+          responsibility: {
+            status: "waiting_for_revision",
+            kind: "role",
+            candidateId: "role:author",
+            role: "author",
+          },
+          severity: "critical",
+          edge: {
+            status: "inactive",
+          },
+        }),
+      },
+    ] as const;
+    for (const fixture of snapshots) {
+      const session = await StatePersistenceSession.open(adapter, stateConfiguration);
+      await session.persist({
+        snapshot: fixture.snapshot,
+        historyInputEvents: [],
+        notificationLedger: createEmptyStateNotificationLedger(),
+        repositoryInventory: createRepositoryInventory(false),
+        knownSecrets: [],
+      });
+    }
+
+    const replaySession = await StatePersistenceSession.open(adapter, stateConfiguration);
+    const diff = await replaySession.diffHistory("2026-07-31", "2026-08-02");
+
+    expect(diff.responsibilities).toHaveLength(1);
+    expect(diff.responsibilities[0]).toMatchObject({
+      id: itemNodeId,
+      before: {
+        status: "present",
+        value: {
+          waitingOn: [
+            {
+              candidateId: "role:maintainer",
+            },
+          ],
+        },
+      },
+      after: {
+        status: "present",
+        value: {
+          waitingOn: [
+            {
+              candidateId: "role:author",
+            },
+          ],
+        },
+      },
+    });
+    expect(diff.edges).toEqual([
+      {
+        id: "relation:blocker",
+        before: {
+          status: "absent",
+        },
+        after: {
+          status: "present",
+          value: {
+            fromNodeId: "I_BLOCKER",
+            toNodeId: itemNodeId,
+            type: "blocks",
+            provenance: "native",
+            confidence: 1,
+            evidence: [
+              {
+                sourceId: "fixture:relation",
+                supports: "relation",
+                summary: "native dependency",
+              },
+            ],
+            contradictions: [],
+            firstSeenAt: "2026-07-30T23:30:00.000Z",
+            lastConfirmedAt: "2026-07-30T23:30:00.000Z",
+            active: false,
+            removedAt: "2026-07-30T23:30:00.000Z",
+          },
+        },
+      },
+    ]);
+    expect(diff.severities).toEqual([
+      {
+        id: itemNodeId,
+        before: {
+          status: "present",
+          value: "watch",
+        },
+        after: {
+          status: "present",
+          value: "critical",
+        },
+      },
+    ]);
+  });
+});
+
+describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, () => {
+  it("mainを変えず、初回orphan tracker-stateと後続commitを作成する", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "voicevox-state-git-test-"));
     try {
       await execFileAsync("git", ["init", "--quiet", "--initial-branch=main", temporaryDirectory]);
@@ -1194,18 +2369,13 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
           status: "absent",
         },
       });
-      const first = await adapter.commit({
-        branch: "tracker-state-v4",
-        expectedHead: { status: "missing" },
-        updates: [
-          {
-            path: "state/snapshot.json",
-            bytes: new TextEncoder().encode(serializeStateSnapshot(firstSnapshot)),
-          },
-        ],
-        deletions: [],
-        message: "create tracker state",
-        committedAt: firstSnapshot.generatedAt,
+      const firstSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+      const first = await firstSession.persist({
+        snapshot: firstSnapshot,
+        historyInputEvents: [],
+        notificationLedger: createEmptyStateNotificationLedger(),
+        repositoryInventory: createRepositoryInventory(false),
+        knownSecrets: [],
       });
       const firstParents = await readGitOutput(temporaryDirectory, [
         "rev-list",
@@ -1230,18 +2400,13 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
           status: "active",
         },
       });
-      const second = await adapter.commit({
-        branch: "tracker-state-v4",
-        expectedHead: { status: "present", revision: first.revision },
-        updates: [
-          {
-            path: "state/snapshot.json",
-            bytes: new TextEncoder().encode(serializeStateSnapshot(secondSnapshot)),
-          },
-        ],
-        deletions: [],
-        message: "update tracker state",
-        committedAt: secondSnapshot.generatedAt,
+      const secondSession = await StatePersistenceSession.open(adapter, stateConfiguration);
+      const second = await secondSession.persist({
+        snapshot: secondSnapshot,
+        historyInputEvents: [],
+        notificationLedger: createEmptyStateNotificationLedger(),
+        repositoryInventory: createRepositoryInventory(false),
+        knownSecrets: [],
       });
       const mainAfter = await readGitOutput(temporaryDirectory, ["rev-parse", "refs/heads/main"]);
       const mainSnapshotExists = await execFileAsync(
@@ -1256,7 +2421,7 @@ describe("Git state branch adapter", { timeout: gitTestTimeoutMilliseconds }, ()
       );
       const trackerSnapshot = await readGitOutput(temporaryDirectory, [
         "show",
-        "tracker-state-v4:state/snapshot.json",
+        "tracker-state:state/snapshot.json",
       ]);
 
       expect(first.branchCreated).toBe(true);

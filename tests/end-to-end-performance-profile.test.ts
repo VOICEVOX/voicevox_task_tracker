@@ -3,10 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   assertEndToEndPerformanceProfilePassed,
   evaluateEndToEndPerformanceMeasurement,
-  type EndToEndPerformanceMeasurement,
 } from "../src/performance/end-to-end-profile.js";
 
-function createPassingMeasurement(): EndToEndPerformanceMeasurement {
+function createPassingMeasurement() {
   return Object.freeze({
     durationMilliseconds: 1_000,
     githubApi: Object.freeze({
@@ -16,11 +15,8 @@ function createPassingMeasurement(): EndToEndPerformanceMeasurement {
       usedRatio: 1 / 3,
     }),
     codex: Object.freeze({
-      calls: 5_000,
-      configuredMaxCalls: 5_000,
-    }),
-    notifications: Object.freeze({
-      candidates: 5_000,
+      calls: 300,
+      configuredMaxCalls: 300,
     }),
     webInitialSummary: Object.freeze({
       gzipBytes: 100_000,
@@ -34,11 +30,6 @@ describe("end-to-end性能profileの閾値", () => {
     const profile = evaluateEndToEndPerformanceMeasurement(createPassingMeasurement());
 
     expect(profile.status).toBe("passed");
-    expect(profile.fixture).toStrictEqual({
-      itemCount: 5_000,
-      activeEdgeCount: 10_000,
-      changedItemCount: 5_000,
-    });
     expect(() => {
       assertEndToEndPerformanceProfilePassed(profile);
     }).not.toThrow();
@@ -61,8 +52,8 @@ describe("end-to-end性能profileの閾値", () => {
       "Codex呼び出し上限",
       {
         codex: Object.freeze({
-          calls: 5_001,
-          configuredMaxCalls: 5_000,
+          calls: 301,
+          configuredMaxCalls: 300,
         }),
       },
     ],

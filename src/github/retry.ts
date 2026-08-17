@@ -1,12 +1,6 @@
 import { z } from "zod";
 
-import {
-  GitHubClientError,
-  GitHubGraphQLResponseError,
-  GitHubGraphQLRetryExhaustedError,
-  GitHubRequestError,
-  GitHubRetryExhaustedError,
-} from "./errors.js";
+import { GitHubClientError, GitHubRequestError, GitHubRetryExhaustedError } from "./errors.js";
 import { SecretRedactor } from "./redaction.js";
 
 export type GitHubRetrySettings = Readonly<{
@@ -23,25 +17,13 @@ export type GitHubRetryRuntime = Readonly<{
 
 type RetryDecision =
   | Readonly<{
-      kind: "http";
       retry: false;
       status: number | undefined;
     }>
   | Readonly<{
-      kind: "http";
       retry: true;
       status: 403 | 429 | 502 | 503 | 504;
       retryAfterMilliseconds: number | undefined;
-    }>
-  | Readonly<{
-      kind: "graphql";
-      retry: false;
-      error: GitHubGraphQLResponseError;
-    }>
-  | Readonly<{
-      kind: "graphql";
-      retry: true;
-      error: GitHubGraphQLResponseError;
     }>;
 
 const githubRequestFailureSchema = z
@@ -103,16 +85,9 @@ function isSecondaryRateLimit(data: unknown): boolean {
 }
 
 function decideRetry(error: unknown, now: Date): RetryDecision {
-  if (error instanceof GitHubGraphQLResponseError) {
-    return error.errorCount > 0 && error.errors.length === 0
-      ? { kind: "graphql", retry: true, error }
-      : { kind: "graphql", retry: false, error };
-  }
-
   const result = githubRequestFailureSchema.safeParse(error);
   if (!result.success) {
     return {
-      kind: "http",
       retry: false,
       status: undefined,
     };
@@ -122,7 +97,6 @@ function decideRetry(error: unknown, now: Date): RetryDecision {
   const retryAfter = parseRetryAfter(getHeader(result.data.response?.headers, "retry-after"), now);
   if (status === 429 || status === 502 || status === 503 || status === 504) {
     return {
-      kind: "http",
       retry: true,
       status,
       retryAfterMilliseconds: retryAfter,
@@ -130,14 +104,12 @@ function decideRetry(error: unknown, now: Date): RetryDecision {
   }
   if (status === 403 && (retryAfter != null || isSecondaryRateLimit(result.data.response?.data))) {
     return {
-      kind: "http",
       retry: true,
       status,
       retryAfterMilliseconds: retryAfter,
     };
   }
   return {
-    kind: "http",
     retry: false,
     status,
   };
@@ -191,28 +163,20 @@ export async function executeWithGitHubRetry<T>(
     try {
       return await operation();
     } catch (error: unknown) {
+      if (error instanceof GitHubClientError) {
+        throw error;
+      }
+
       const decision = decideRetry(error, runtime.now());
-      if (decision.kind === "graphql") {
-        if (!decision.retry) {
-          throw error;
-        }
-        if (attempt === settings.maxAttempts) {
-          throw new GitHubGraphQLRetryExhaustedError(attempt, { cause: decision.error });
-        }
-      } else {
-        if (error instanceof GitHubClientError) {
-          throw error;
-        }
-        if (!decision.retry) {
-          throw new GitHubRequestError(decision.status, attempt, {
-            cause: redactor.createSafeCause(error),
-          });
-        }
-        if (attempt === settings.maxAttempts) {
-          throw new GitHubRetryExhaustedError(decision.status, attempt, {
-            cause: redactor.createSafeCause(error),
-          });
-        }
+      if (!decision.retry) {
+        throw new GitHubRequestError(decision.status, attempt, {
+          cause: redactor.createSafeCause(error),
+        });
+      }
+      if (attempt === settings.maxAttempts) {
+        throw new GitHubRetryExhaustedError(decision.status, attempt, {
+          cause: redactor.createSafeCause(error),
+        });
       }
 
       const retryNumber = attempt;
@@ -221,12 +185,10 @@ export async function executeWithGitHubRetry<T>(
         settings,
         runtime.random,
       );
-      const retryAfterMilliseconds =
-        decision.kind === "http" ? decision.retryAfterMilliseconds : undefined;
       const delayMilliseconds =
-        retryAfterMilliseconds == null
+        decision.retryAfterMilliseconds == null
           ? backoffMilliseconds
-          : Math.max(backoffMilliseconds, retryAfterMilliseconds);
+          : Math.max(backoffMilliseconds, decision.retryAfterMilliseconds);
       await runtime.sleep(delayMilliseconds);
     }
   }

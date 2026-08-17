@@ -25,6 +25,7 @@ import {
   selectWaitingSubjectItemNodeIds,
   selectWaitingSubjectPrimaryCandidate,
   statusLabel,
+  waitingOnHistoryLabel,
   waitingOnLabel,
   waitingOnLabelParts,
   waitingSubjectKey,
@@ -386,6 +387,71 @@ describe("waitingOn表示", () => {
     expect(formatWaitingOn(item, sampleSummary)).toBe(
       "推定: レビュワー @hiho、レビュワー チーム VOICEVOX/Maintainers、候補: VOICEVOX/sample-editor#103",
     );
+  });
+
+  it("履歴の役割と対象を過去時点に適したラベルへ統一する", () => {
+    const cases: readonly Readonly<{
+      candidate: WaitingOnCandidate;
+      item: PublicItemSummaryDto;
+      expected: string;
+    }>[] = [
+      {
+        candidate: createWaitingOnCandidate("role", "author", "author"),
+        item: identifiedItem,
+        expected: "作成者 @hiho",
+      },
+      {
+        candidate: createWaitingOnCandidate("role", "author", "author"),
+        item: unavailableAuthorItem,
+        expected: "作成者 アカウント削除済み",
+      },
+      {
+        candidate: createWaitingOnCandidate("role", "assignee", "assignee"),
+        item: identifiedItem,
+        expected: "当時の担当者",
+      },
+      {
+        candidate: createWaitingOnCandidate("role", "maintainer", "maintainer"),
+        item: identifiedItem,
+        expected: "メンテナーの誰か",
+      },
+      {
+        candidate: createWaitingOnCandidate("role", "reviewer", "reviewer"),
+        item: identifiedItem,
+        expected: "レビュワーの誰か",
+      },
+      {
+        candidate: createWaitingOnCandidate("role", "merge_decider", "maintainer"),
+        item: identifiedItem,
+        expected: "マージ判断者の誰か",
+      },
+      {
+        candidate: createWaitingOnCandidate("role", "ci", "ci"),
+        item: identifiedItem,
+        expected: "CI",
+      },
+      {
+        candidate: createWaitingOnCandidate("role", "dependency", "dependency"),
+        item: identifiedItem,
+        expected: "依存項目",
+      },
+      {
+        candidate: createWaitingOnCandidate("role", "unknown", "unknown"),
+        item: identifiedItem,
+        expected: "不明",
+      },
+      {
+        candidate: createWaitingOnCandidate("item", "dependency", "sample-item-editor-103"),
+        item: identifiedItem,
+        expected: "VOICEVOX/sample-editor#103",
+      },
+    ];
+
+    for (const testCase of cases) {
+      expect(waitingOnHistoryLabel(testCase.candidate, testCase.item, sampleSummary)).toBe(
+        testCase.expected,
+      );
+    }
   });
 
   it("項目参照を解決できない場合は例外を投げる", () => {

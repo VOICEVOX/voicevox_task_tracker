@@ -6,14 +6,11 @@ import {
 } from "../codex/index.js";
 import {
   GitHubGraphQLResponseError,
-  GitHubGraphQLRetryExhaustedError,
   GitHubItemDetailCollectionError,
-  GitHubPublicBoundaryViolationError,
   GitHubRequestError,
   GitHubResponseSchemaValidationError,
   GitHubRetryExhaustedError,
 } from "../github/index.js";
-import { StalenessTimestampRangeError } from "../domain/index.js";
 import { RelationReferenceConflictError } from "../graph/index.js";
 import { StateZodValidationError } from "../persistence/index.js";
 import { type ZodErrorDiagnostics } from "../util/zod-error-diagnostic.js";
@@ -22,8 +19,6 @@ import {
   CliCredentialsError,
   CliExecutableError,
   CliRelationExpansionLimitError,
-  ResponsibilityReplayRetryExhaustedError,
-  StalenessReductionError,
 } from "./errors.js";
 import { type RunStage } from "./run-report.js";
 
@@ -286,22 +281,6 @@ function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): v
       value: `${error.repositoryOwner}/${error.repositoryName}#${error.number.toString()}`,
     });
   }
-  if (error instanceof GitHubPublicBoundaryViolationError) {
-    fields.push({
-      key: "publicBoundaryViolationKind",
-      value: error.details.violationKind,
-    });
-    fields.push({
-      key: "publicBoundaryViolationCount",
-      value: error.details.violationCount.toString(),
-    });
-    if (error.details.scope === "cache_item_relation") {
-      fields.push({
-        key: "sourceItemNodeId",
-        value: error.details.sourceItemNodeId,
-      });
-    }
-  }
   if (error instanceof CliRelationExpansionLimitError) {
     fields.push({ key: "relationExpansionLimit", value: error.limit.toString() });
     fields.push({
@@ -312,19 +291,6 @@ function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): v
       key: "relationExpansionUnfetchedCount",
       value: error.unfetchedCount.toString(),
     });
-  }
-  if (error instanceof ResponsibilityReplayRetryExhaustedError) {
-    fields.push({ key: "itemNodeId", value: error.itemNodeId });
-    fields.push({ key: "attempts", value: error.attempts.toString() });
-  }
-  if (error instanceof StalenessReductionError) {
-    fields.push({ key: "itemNodeId", value: error.itemNodeId });
-  }
-  if (error instanceof StalenessTimestampRangeError) {
-    fields.push({ key: "basisKind", value: error.basisKind });
-    fields.push({ key: "createdAt", value: error.createdAt });
-    fields.push({ key: "occurredAt", value: error.occurredAt });
-    fields.push({ key: "evaluatedAt", value: error.evaluatedAt });
   }
   if (error instanceof RelationReferenceConflictError) {
     fields.push({ key: "relationReferenceConflictKind", value: error.conflictKind });
@@ -355,11 +321,7 @@ function appendKnownErrorDiagnostics(fields: DiagnosticField[], error: Error): v
   ) {
     appendZodDiagnostics(fields, error);
   }
-  if (
-    error instanceof GitHubRequestError ||
-    error instanceof GitHubRetryExhaustedError ||
-    error instanceof GitHubGraphQLRetryExhaustedError
-  ) {
+  if (error instanceof GitHubRequestError || error instanceof GitHubRetryExhaustedError) {
     fields.push({ key: "attempts", value: error.attempts.toString() });
   }
 }

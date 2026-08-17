@@ -1,5 +1,4 @@
 import { TaskTrackerError } from "../util/index.js";
-import type { PublicGitHubRelationItem } from "./relation-candidate-types.js";
 
 export type RelationReferenceConflictKind = "node_id" | "repository_number";
 
@@ -33,15 +32,10 @@ export type RelationReferenceMismatch =
 /** 関係参照indexで公開参照項目が衝突したことを表す。 */
 export class RelationReferenceConflictError extends TaskTrackerError {
   public readonly conflictKind: RelationReferenceConflictKind;
-  public readonly existing: PublicGitHubRelationItem;
-  public readonly incoming: PublicGitHubRelationItem;
   public readonly mismatches: readonly RelationReferenceMismatch[];
-  public readonly isStateOnlyConflict: boolean;
 
   public constructor(
     conflictKind: RelationReferenceConflictKind,
-    existing: PublicGitHubRelationItem,
-    incoming: PublicGitHubRelationItem,
     mismatches: readonly RelationReferenceMismatch[],
   ) {
     super(
@@ -49,10 +43,6 @@ export class RelationReferenceConflictError extends TaskTrackerError {
       {},
     );
     this.conflictKind = conflictKind;
-    this.existing = Object.freeze({ ...existing });
-    this.incoming = Object.freeze({ ...incoming });
     this.mismatches = Object.freeze(mismatches.map((mismatch) => Object.freeze({ ...mismatch })));
-    this.isStateOnlyConflict =
-      conflictKind === "node_id" && mismatches.length === 1 && mismatches[0]?.field === "state";
   }
 }

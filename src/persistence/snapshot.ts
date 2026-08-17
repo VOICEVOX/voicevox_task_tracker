@@ -178,7 +178,7 @@ type StateSnapshotVersion8 = Readonly<{
 
 type StateSnapshotVersionParser = (value: unknown) => StateSnapshot;
 
-/** schema version 8のcurrent snapshot型。 */
+/** tracker-stateへ保存するschema version 8のcurrent snapshot。 */
 export type StateSnapshot = StateSnapshotVersion8;
 
 const snapshotSchemaVersionSchema = z.object({
@@ -368,7 +368,9 @@ function normalizeAccountActor(actor: GitHubAccountActor): GitHubAccountActor {
 
 function assertSnapshotSemantics(snapshot: StateSnapshot): void {
   assertUtcDateTime(snapshot.generatedAt, "generatedAt");
-  assertUtcDateTime(snapshot.trackingStartAt.value, "trackingStartAt");
+  if (snapshot.trackingStartAt.status === "fixed") {
+    assertUtcDateTime(snapshot.trackingStartAt.value, "trackingStartAt");
+  }
   assertUnique(
     snapshot.repositories.map((repository) => repository.id),
     "repository ID",

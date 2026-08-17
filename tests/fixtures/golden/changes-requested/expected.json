@@ -17,7 +17,12 @@
     }
   ],
   "relations": [],
-  "notifications": [],
+  "notifications": [
+    {
+      "itemNodeId": "changes-requested-pr",
+      "reasonCodes": ["revision_overdue"]
+    }
+  ],
   "publication": {
     "status": "published"
   },

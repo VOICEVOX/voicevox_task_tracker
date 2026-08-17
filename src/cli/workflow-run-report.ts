@@ -14,7 +14,7 @@ const workflowJobResultSchema = z.enum(["success", "failure", "cancelled", "skip
 const workflowJobResultsSchema = z.strictObject({
   "test-eval": workflowJobResultSchema,
   "collect-analyze": workflowJobResultSchema,
-  "persist-cache": workflowJobResultSchema,
+  "persist-state": workflowJobResultSchema,
   "build-pages": workflowJobResultSchema,
   "deploy-pages": workflowJobResultSchema,
   "notify-discord": workflowJobResultSchema,
@@ -55,7 +55,7 @@ function requiredJobFailed(jobs: WorkflowJobResults): boolean {
   return (
     jobs["test-eval"] !== "success" ||
     jobs["collect-analyze"] !== "success" ||
-    jobs["persist-cache"] !== "success" ||
+    jobs["persist-state"] !== "success" ||
     jobs["build-pages"] !== "success" ||
     jobs["deploy-pages"] !== "success" ||
     jobs["notify-discord"] !== "success"

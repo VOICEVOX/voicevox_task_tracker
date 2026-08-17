@@ -12,6 +12,7 @@ type Status = PublicItemSummaryDto["status"];
 type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
 type AiAnalysisStatus = PublicItemSummaryDto["aiAnalysis"]["status"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
+type WaitingOnReference = Pick<WaitingOnCandidate, "candidateId" | "kind" | "role">;
 type WaitingOnRole = WaitingOnCandidate["role"];
 type PublicActor = Extract<
   PublicItemDetailsDto["latestEventActor"],
@@ -459,7 +460,7 @@ function waitingOnPartsText(parts: readonly WaitingOnDisplayPart[]): string {
 }
 
 function waitingOnKindParts(
-  waitingOn: WaitingOnCandidate,
+  waitingOn: WaitingOnReference,
   summary: PublicSummaryDto,
   roleParts: (role: WaitingOnRole) => readonly WaitingOnDisplayPart[],
 ): readonly WaitingOnDisplayPart[] {
@@ -552,6 +553,16 @@ export function waitingSubjectLabel(subject: WaitingSubject): string {
   }
 }
 
+function historyWaitingOnRoleParts(
+  role: WaitingOnRole,
+  item: PublicItemSummaryDto,
+): readonly WaitingOnDisplayPart[] {
+  if (role === "assignee") {
+    return [textWaitingOnPart(`当時の${waitingOnRoleName(role)}`)];
+  }
+  return currentWaitingOnRoleParts(role, item);
+}
+
 /** 現在のwaitingOn候補を役割と対象がわかる表示断片へ変換する。 */
 export function waitingOnLabelParts(
   waitingOn: WaitingOnCandidate,
@@ -568,6 +579,17 @@ export function waitingOnLabel(
   summary: PublicSummaryDto,
 ): string {
   return waitingOnPartsText(waitingOnLabelParts(waitingOn, item, summary));
+}
+
+/** 過去のwaitingOn候補を対象がわかる表示文字列へ変換する。 */
+export function waitingOnHistoryLabel(
+  waitingOn: WaitingOnReference,
+  item: PublicItemSummaryDto,
+  summary: PublicSummaryDto,
+): string {
+  return waitingOnPartsText(
+    waitingOnKindParts(waitingOn, summary, (role) => historyWaitingOnRoleParts(role, item)),
+  );
 }
 
 /** waitingOn候補から特定できる待ち相手を返す。 */

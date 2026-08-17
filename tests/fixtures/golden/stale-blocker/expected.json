@@ -32,7 +32,12 @@
       "provenance": "native"
     }
   ],
-  "notifications": [],
+  "notifications": [
+    {
+      "itemNodeId": "stale-blocker-pr",
+      "reasonCodes": ["newly_unblocked", "review_overdue"]
+    }
+  ],
   "publication": {
     "status": "published"
   },

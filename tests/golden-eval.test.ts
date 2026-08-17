@@ -9,13 +9,11 @@ import {
   readGoldenFixtureFiles,
   type GoldenFixture,
   type OfflineAnalysisMetrics,
-  type OfflineAnalysisResult,
   type OfflineRunDependencies,
 } from "../src/cli/index.js";
 import {
   analyzeGoldenFixture,
   evaluateGoldenRegression,
-  goldenEvalInputSchema,
   goldenEvalOutputSchema,
   type GoldenFixtureAnalysisResult,
 } from "../src/eval/index.js";
@@ -117,127 +115,6 @@ describe("golden fixture suite", () => {
     for (const evaluated of evaluatedFixtures) {
       expect(evaluated.analysis.output, evaluated.fixture.name).toEqual(evaluated.fixture.expected);
     }
-  });
-
-  it("standard fixtureは08:00 JSTの通知基準時刻をevaluatedAt以前に明示する", () => {
-    for (const evaluated of evaluatedFixtures) {
-      const input = goldenEvalInputSchema.parse(evaluated.fixture.input);
-      if (input.kind !== "standard") {
-        continue;
-      }
-      const referenceTimestamp = Date.parse(input.notificationReferenceAt);
-      const evaluatedTimestamp = Date.parse(input.evaluatedAt);
-      const jstReference = new Date(referenceTimestamp + 9 * 60 * 60 * 1000);
-
-      expect(jstReference.getUTCHours(), evaluated.fixture.name).toBe(8);
-      expect(jstReference.getUTCMinutes(), evaluated.fixture.name).toBe(0);
-      expect(jstReference.getUTCSeconds(), evaluated.fixture.name).toBe(0);
-      expect(jstReference.getUTCMilliseconds(), evaluated.fixture.name).toBe(0);
-      expect(referenceTimestamp, evaluated.fixture.name).toBeLessThanOrEqual(evaluatedTimestamp);
-    }
-  });
-
-  it("standard入力は通知基準時刻を必須とし代用時刻を受け付けない", () => {
-    const input = goldenEvalInputSchema.parse(
-      requireEvaluatedFixture("stale-blocker").fixture.input,
-    );
-    if (input.kind !== "standard") {
-      throw new TypeError("標準golden fixtureではありません");
-    }
-
-    const withoutReferenceAt = Object.fromEntries(
-      Object.entries(input).filter(([key]) => key !== "notificationReferenceAt"),
-    );
-    expect(() => goldenEvalInputSchema.parse(withoutReferenceAt)).toThrow();
-    expect(() =>
-      analyzeGoldenFixture({
-        ...input,
-        notificationReferenceAt: "2026-08-01T23:00:00.000Z",
-      }),
-    ).toThrow("evaluatedAt以前");
-    expect(() =>
-      analyzeGoldenFixture({
-        ...input,
-        notificationReferenceAt: "2026-07-31T22:00:00.000Z",
-      }),
-    ).toThrow("08:00 JST");
-  });
-
-  it("一回通知は正確なreview requestイベントだけから責務変更を作る", () => {
-    const input = goldenEvalInputSchema.parse(
-      requireEvaluatedFixture("stale-blocker").fixture.input,
-    );
-    if (input.kind !== "standard") {
-      throw new TypeError("標準golden fixtureではありません");
-    }
-
-    const output = goldenEvalOutputSchema.parse(
-      analyzeGoldenFixture({
-        ...input,
-        notificationReferenceAt: "2026-07-27T23:00:00.000Z",
-      }).output,
-    );
-    if (output.kind !== "standard") {
-      throw new TypeError("標準golden fixtureではありません");
-    }
-
-    expect(output.notifications).toEqual([
-      {
-        itemNodeId: "stale-blocker-pr",
-        reasonCodes: ["responsibility_changed"],
-      },
-    ]);
-  });
-
-  it("blocked parentのassignee eventはwaitingOnを変えないため責務変更通知にしない", () => {
-    const input = goldenEvalInputSchema.parse(
-      requireEvaluatedFixture("cross-repo-umbrella").fixture.input,
-    );
-    if (input.kind !== "standard") {
-      throw new TypeError("標準golden fixtureではありません");
-    }
-    const blockedParent = input.items.find((item) => item.nodeId === "umbrella-core-issue");
-    if (blockedParent?.type !== "issue") {
-      throw new TypeError("blocked parent fixtureがありません");
-    }
-    const assignee = {
-      type: "human",
-      nodeId: "fixture-blocked-parent-worker",
-      login: "blocked-parent-worker",
-    } satisfies (typeof blockedParent.assignees)[number];
-    const assigneeEvent = {
-      kind: "assignee",
-      id: "blocked-parent-assigned",
-      occurredAt: "2026-07-31T12:00:00.000Z",
-      actor: {
-        type: "human",
-        nodeId: "fixture-maintainer-five",
-        login: "maintainer-five",
-      },
-      assignee,
-      action: "added",
-    } satisfies (typeof blockedParent.events)[number];
-    const modifiedInput = {
-      ...input,
-      items: input.items.map((item) =>
-        item.nodeId === blockedParent.nodeId
-          ? {
-              ...item,
-              assignees: [assignee],
-              events: [...item.events, assigneeEvent],
-            }
-          : item,
-      ),
-    };
-    const output = goldenEvalOutputSchema.parse(analyzeGoldenFixture(modifiedInput).output);
-    if (output.kind !== "standard") {
-      throw new TypeError("標準golden fixtureではありません");
-    }
-
-    expect(output.notifications).not.toContainEqual({
-      itemNodeId: "umbrella-core-issue",
-      reasonCodes: ["responsibility_changed"],
-    });
   });
 
   it("実在ケースのURLとloginをfixtureへ持ち込まない", async () => {
@@ -354,11 +231,11 @@ describe("回帰基準と性能", () => {
             throw new TypeError("評価済みfixtureがありません");
           }
           return Promise.resolve({
-            status: "success",
+            status: "success" as const,
             output: createRegressedOutput(evaluated.fixture.name, evaluated.analysis.output),
             metrics: emptyMetrics(),
             diagnostics: Object.freeze([]),
-          } satisfies OfflineAnalysisResult);
+          });
         },
         replayState: () => Promise.reject(new TypeError("state replayは実行しません")),
       },

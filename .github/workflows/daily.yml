@@ -61,7 +61,6 @@ jobs:
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     permissions:
-      actions: read
       contents: read
     steps:
       - name: ソースコードを取得
@@ -71,11 +70,11 @@ jobs:
       - name: 既存stateを取得
         run: |
           set +e
-          git ls-remote --exit-code --heads origin tracker-state-v4 >/dev/null
+          git ls-remote --exit-code --heads origin tracker-state >/dev/null
           state_branch_status=$?
           set -e
           if [[ "$state_branch_status" -eq 0 ]]; then
-            git fetch --no-tags origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4
+            git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state
           elif [[ "$state_branch_status" -ne 2 ]]; then
             exit "$state_branch_status"
           fi
@@ -115,32 +114,15 @@ jobs:
           CODEX_HOME: ${{ runner.temp }}/codex-home
           GH_APP_ID: ${{ vars.GH_APP_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
-          GH_TOKEN: ${{ github.token }}
           REPOSITORY_FILTER: ${{ inputs.repository_filter || '' }}
         run: |
-          set -euo pipefail
+          current_time="$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            run_created_at="$(gh api \
-              --method GET \
-              -H "Accept: application/vnd.github+json" \
-              "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-              --jq '.created_at')"
-            if [[ -z "$run_created_at" ]]; then
-              echo "Actions APIからworkflow runのcreated_atを取得できません" >&2
-              exit 1
+            scheduled_for="$(date -u --date='today 23:00' +'%Y-%m-%dT%H:%M:%S.000Z')"
+            if [[ "$scheduled_for" > "$current_time" ]]; then
+              scheduled_for="$(date -u --date='yesterday 23:00' +'%Y-%m-%dT%H:%M:%S.000Z')"
             fi
-            if ! run_created_epoch="$(date -u --date="$run_created_at" +%s)"; then
-              echo "Actions APIのcreated_atが日時として不正です" >&2
-              exit 1
-            fi
-            run_created_date="$(date -u --date="@${run_created_epoch}" +'%Y-%m-%d')"
-            scheduled_for_epoch="$(date -u --date="${run_created_date} 23:00:00 UTC" +%s)"
-            if (( scheduled_for_epoch > run_created_epoch )); then
-              scheduled_for_epoch=$((scheduled_for_epoch - 86400))
-            fi
-            scheduled_for="$(date -u --date="@${scheduled_for_epoch}" +'%Y-%m-%dT%H:%M:%S.000Z')"
           elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            current_time="$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
             scheduled_for="$current_time"
           else
             echo "未対応のworkflow eventです。対象: $GITHUB_EVENT_NAME" >&2
@@ -192,8 +174,8 @@ jobs:
           rm -rf "${{ runner.temp }}/codex-home"
           rm -f "${{ runner.temp }}/codex-auth-fingerprint"
 
-  persist-cache:
-    needs: notify-discord
+  persist-state:
+    needs: collect-analyze
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -205,11 +187,11 @@ jobs:
       - name: 既存stateを取得
         run: |
           set +e
-          git ls-remote --exit-code --heads origin tracker-state-v4 >/dev/null
+          git ls-remote --exit-code --heads origin tracker-state >/dev/null
           state_branch_status=$?
           set -e
           if [[ "$state_branch_status" -eq 0 ]]; then
-            git fetch --no-tags origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4
+            git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state
           elif [[ "$state_branch_status" -ne 2 ]]; then
             exit "$state_branch_status"
           fi
@@ -222,13 +204,13 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-      - name: cacheをtracker-state-v4へ保存
-        run: node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs persist-cache
-      - name: tracker-state-v4を更新
-        run: git push origin refs/heads/tracker-state-v4:refs/heads/tracker-state-v4
+      - name: stateをtracker-stateへ保存
+        run: node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs persist-state
+      - name: tracker-stateを更新
+        run: git push origin refs/heads/tracker-state:refs/heads/tracker-state
 
   build-pages:
-    needs: collect-analyze
+    needs: persist-state
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -237,6 +219,17 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      - name: 保存済みstateを取得
+        run: |
+          set +e
+          git ls-remote --exit-code --heads origin tracker-state >/dev/null
+          state_branch_status=$?
+          set -e
+          if [[ "$state_branch_status" -eq 0 ]]; then
+            git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state
+          elif [[ "$state_branch_status" -ne 2 ]]; then
+            exit "$state_branch_status"
+          fi
       - name: Node.jsを準備
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -290,12 +283,14 @@ jobs:
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: ソースコードを取得
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          persist-credentials: false
+          fetch-depth: 0
+      - name: 既存stateを取得
+        run: git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state
       - name: Node.jsを準備
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -313,33 +308,42 @@ jobs:
         run: >-
           node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs notify-discord
           --pages-url "$PAGES_URL"
+      - name: run完了stateを更新
+        run: git push origin refs/heads/tracker-state:refs/heads/tracker-state
 
   notify-operations:
     needs:
-      - test-eval
       - collect-analyze
       - build-pages
       - deploy-pages
       - notify-discord
-      - persist-cache
     if: >-
       always() &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
-      (needs.test-eval.result == 'failure' ||
-      needs.collect-analyze.result == 'failure' ||
+      (needs.collect-analyze.result == 'failure' ||
       needs.build-pages.result == 'failure' ||
       needs.deploy-pages.result == 'failure' ||
-      needs.notify-discord.result == 'failure' ||
-      needs.persist-cache.result == 'failure')
+      needs.notify-discord.result == 'failure')
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: ソースコードを取得
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+      - name: 既存stateを取得
+        run: |
+          set +e
+          git ls-remote --exit-code --heads origin tracker-state >/dev/null
+          state_branch_status=$?
+          set -e
+          if [[ "$state_branch_status" -eq 0 ]]; then
+            git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state
+          elif [[ "$state_branch_status" -ne 2 ]]; then
+            exit "$state_branch_status"
+          fi
       - name: Node.jsを準備
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -354,21 +358,17 @@ jobs:
         env:
           DISCORD_OPERATIONS_WEBHOOK_URL: ${{ secrets.DISCORD_OPERATIONS_WEBHOOK_URL }}
           INCIDENT_ID: ${{ github.run_id }}
-          TEST_EVAL_RESULT: ${{ needs.test-eval.result }}
           BUILD_PAGES_RESULT: ${{ needs.build-pages.result }}
           COLLECT_ANALYZE_RESULT: ${{ needs.collect-analyze.result }}
           DEPLOY_PAGES_RESULT: ${{ needs.deploy-pages.result }}
           NOTIFY_DISCORD_RESULT: ${{ needs.notify-discord.result }}
-          PERSIST_CACHE_RESULT: ${{ needs.persist-cache.result }}
         run: |
-          if [[ "$TEST_EVAL_RESULT" == "failure" || "$COLLECT_ANALYZE_RESULT" == "failure" ]]; then
+          if [[ "$COLLECT_ANALYZE_RESULT" == "failure" ]]; then
             incident_kind=collection
           elif [[ "$BUILD_PAGES_RESULT" == "failure" || "$DEPLOY_PAGES_RESULT" == "failure" ]]; then
             incident_kind=pages
           elif [[ "$NOTIFY_DISCORD_RESULT" == "failure" ]]; then
             incident_kind=discord
-          elif [[ "$PERSIST_CACHE_RESULT" == "failure" ]]; then
-            incident_kind=collection
           else
             echo "監視対象jobに失敗がありません" >&2
             exit 1
@@ -378,11 +378,14 @@ jobs:
             --kind "$incident_kind" \
             --incident-id "$INCIDENT_ID:$incident_kind" \
             --occurred-at "$occurred_at"
+      - name: 通知ledgerを更新
+        run: git push origin refs/heads/tracker-state:refs/heads/tracker-state
+
   report-workflow:
     needs:
       - test-eval
       - collect-analyze
-      - persist-cache
+      - persist-state
       - build-pages
       - deploy-pages
       - notify-discord
@@ -423,7 +426,7 @@ jobs:
           DEPLOY_PAGES_RESULT: ${{ needs.deploy-pages.result }}
           NOTIFY_DISCORD_RESULT: ${{ needs.notify-discord.result }}
           NOTIFY_OPERATIONS_RESULT: ${{ needs.notify-operations.result }}
-          PERSIST_CACHE_RESULT: ${{ needs.persist-cache.result }}
+          PERSIST_STATE_RESULT: ${{ needs.persist-state.result }}
           TEST_EVAL_RESULT: ${{ needs.test-eval.result }}
           WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
@@ -433,32 +436,11 @@ jobs:
           --run-attempt "$WORKFLOW_RUN_ATTEMPT"
           --test-eval-result "$TEST_EVAL_RESULT"
           --collect-analyze-result "$COLLECT_ANALYZE_RESULT"
-          --persist-cache-result "$PERSIST_CACHE_RESULT"
+          --persist-state-result "$PERSIST_STATE_RESULT"
           --build-pages-result "$BUILD_PAGES_RESULT"
           --deploy-pages-result "$DEPLOY_PAGES_RESULT"
           --notify-discord-result "$NOTIFY_DISCORD_RESULT"
           --notify-operations-result "$NOTIFY_OPERATIONS_RESULT"
-      - name: workflow結果をjob summaryへ追加
-        if: always()
-        env:
-          BUILD_PAGES_RESULT: ${{ needs.build-pages.result }}
-          COLLECT_ANALYZE_RESULT: ${{ needs.collect-analyze.result }}
-          DEPLOY_PAGES_RESULT: ${{ needs.deploy-pages.result }}
-          NOTIFY_DISCORD_RESULT: ${{ needs.notify-discord.result }}
-          NOTIFY_OPERATIONS_RESULT: ${{ needs.notify-operations.result }}
-          PERSIST_CACHE_RESULT: ${{ needs.persist-cache.result }}
-          TEST_EVAL_RESULT: ${{ needs.test-eval.result }}
-        run: |
-          {
-            echo "## 日次workflow結果"
-            echo "- test-eval: $TEST_EVAL_RESULT"
-            echo "- collect-analyze: $COLLECT_ANALYZE_RESULT"
-            echo "- build-pages: $BUILD_PAGES_RESULT"
-            echo "- deploy-pages: $DEPLOY_PAGES_RESULT"
-            echo "- notify-discord: $NOTIFY_DISCORD_RESULT"
-            echo "- persist-cache: $PERSIST_CACHE_RESULT"
-            echo "- notify-operations: $NOTIFY_OPERATIONS_RESULT"
-          } >> "$GITHUB_STEP_SUMMARY"
       - name: workflow run reportを保存
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

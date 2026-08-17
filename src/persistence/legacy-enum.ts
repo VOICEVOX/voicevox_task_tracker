@@ -1,4 +1,8 @@
-import { type StalenessWaitClass, type Status } from "../domain/index.js";
+import {
+  type NotificationReasonCode,
+  type StalenessWaitClass,
+  type Status,
+} from "../domain/index.js";
 import { UnreachableError } from "../util/index.js";
 
 export type LegacyStatus =
@@ -28,6 +32,19 @@ export type LegacyWaitClass =
   | "automation"
   | "blockedParent"
   | "notApplicable";
+
+export type LegacyNotificationReasonCode =
+  | "none"
+  | "triage_overdue"
+  | "review_overdue"
+  | "author_overdue"
+  | "owner_unknown"
+  | "blocker_overdue"
+  | "newly_unblocked"
+  | "dependency_cycle"
+  | "responsibility_changed"
+  | "ready_to_merge_overdue"
+  | "automation_stuck";
 
 /** 旧Statusを現行値へ変換する。 */
 export function migrateLegacyStatus(value: LegacyStatus): Status {
@@ -77,6 +94,31 @@ export function migrateLegacyWaitClass(value: LegacyWaitClass): StalenessWaitCla
     case "automation":
     case "blockedParent":
     case "notApplicable":
+      return value;
+    default:
+      throw new UnreachableError(value);
+  }
+}
+
+/** 旧NotificationReasonCodeを現行値へ変換する。 */
+export function migrateLegacyNotificationReasonCode(
+  value: LegacyNotificationReasonCode,
+): NotificationReasonCode {
+  switch (value) {
+    case "triage_overdue":
+      return "assessment_overdue";
+    case "author_overdue":
+      return "revision_overdue";
+    case "ready_to_merge_overdue":
+      return "merge_overdue";
+    case "none":
+    case "review_overdue":
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "newly_unblocked":
+    case "dependency_cycle":
+    case "responsibility_changed":
+    case "automation_stuck":
       return value;
     default:
       throw new UnreachableError(value);
