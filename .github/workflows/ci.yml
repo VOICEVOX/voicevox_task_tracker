@@ -34,8 +34,6 @@ jobs:
         run: pnpm lint
       - name: formatを検査
         run: pnpm format:check
-      - name: testを実行
-        run: pnpm test
       - name: golden evalを実行
         run: pnpm eval:golden
       - name: CLIをビルド

@@ -451,7 +451,7 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
 }
 
 async function createPerformanceConfig(repositoryPath: string): Promise<Config> {
-  const base = await loadConfig(join(repositoryPath, "tests/fixtures/config.valid.yml"));
+  const base = await loadConfig(join(repositoryPath, "fixtures/performance/config.valid.yml"));
   return Object.freeze({
     ...base,
     tracking: Object.freeze({
