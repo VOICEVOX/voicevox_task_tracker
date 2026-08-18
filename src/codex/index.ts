@@ -43,16 +43,12 @@ export {
 export {
   createAiCacheEntry,
   createAiCacheKey,
-  createFileAiCacheStore,
   determineAiCacheReuse,
-  FileAiCacheStore,
-  MemoryAiCacheStore,
   type AiCacheEntry,
   type AiCacheIdentity,
   type AiCacheKey,
   type AiCacheReadResult,
   type AiCacheReuseDecision,
-  type AiCacheStateConfiguration,
   type AiCacheStore,
 } from "./cache.js";
 export {
@@ -62,10 +58,6 @@ export {
   type Sha256Hash,
 } from "./canonical-json.js";
 export {
-  AiCacheError,
-  AiCacheFormatError,
-  AiCacheReadError,
-  AiCacheWriteError,
   CodexAdapterError,
   CodexAttemptError,
   CodexInvalidJsonError,

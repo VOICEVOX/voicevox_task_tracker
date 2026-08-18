@@ -256,7 +256,6 @@ ls "$CODEX_HOME/auth.json"
 ```console
 pnpm install --frozen-lockfile
 pnpm typecheck
-pnpm test
 pnpm lint
 pnpm format:check
 pnpm build

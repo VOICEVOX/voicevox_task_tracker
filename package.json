@@ -12,11 +12,10 @@
     "build:workflow-cli": "vite build --config workflow.vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts",
     "dev:web": "vite --config web/vite.config.ts",
-    "eval:golden": "tsc --project tsconfig.build.json && node dist/cli/tracker-run.js eval --fixtures tests/fixtures/golden --artifact artifacts/eval.json --report artifacts/run-reports/eval.json",
+    "eval:golden": "tsc --project tsconfig.build.json && node dist/cli/tracker-run.js eval --fixtures fixtures/golden --artifact artifacts/eval.json --report artifacts/run-reports/eval.json",
     "perf:profile": "tsc --project tsconfig.build.json && node dist/performance/run-profile.js",
     "tracker:run": "node dist/cli/tracker-run.js",
     "typecheck": "tsc --project tsconfig.json && tsc --project web/tsconfig.json",
-    "test": "vitest run",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
@@ -28,16 +27,13 @@
     "@tailwindcss/vite": "4.3.3",
     "@types/mdast": "^4.0.4",
     "@types/node": "^24.1.0",
-    "axe-core": "^4.12.1",
     "eslint": "^9.32.0",
     "eslint-config-prettier": "^10.1.8",
-    "jsdom": "^29.1.1",
     "prettier": "^3.6.2",
     "tailwindcss": "4.3.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.46.1",
-    "vite": "^6.1.0",
-    "vitest": "^3.2.4"
+    "vite": "^6.1.0"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.0.0",

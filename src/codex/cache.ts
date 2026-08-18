@@ -1,15 +1,6 @@
-import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import { z } from "zod";
 
-import {
-  hashCanonicalJson,
-  parseSha256Hash,
-  serializeCanonicalJson,
-  type Sha256Hash,
-} from "./canonical-json.js";
-import { AiCacheFormatError, AiCacheReadError, AiCacheWriteError } from "./errors.js";
+import { hashCanonicalJson, parseSha256Hash, type Sha256Hash } from "./canonical-json.js";
 import {
   createUtcIsoDateTime,
   REASONING_EFFORTS,
@@ -17,9 +8,7 @@ import {
   type AnalysisMetadata,
   type ReasoningEffort,
 } from "../domain/index.js";
-import { assertNonNullable } from "../util/index.js";
 
-const CACHE_KEY_PREFIX = "sha256:";
 const nonEmptyStringSchema = z.string().min(1, "空文字は指定できません");
 const sha256HashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u, "SHA-256 hashが不正です");
 const analysisMetadataSchema = z.strictObject({
@@ -79,11 +68,6 @@ export type AiCacheReadResult =
 export type AiCacheStore = Readonly<{
   read: (cacheKey: AiCacheKey) => Promise<AiCacheReadResult>;
   write: (entry: AiCacheEntry) => Promise<void>;
-}>;
-
-/** state.aiCacheDirectoryを保持する設定。 */
-export type AiCacheStateConfiguration = Readonly<{
-  aiCacheDirectory: string;
 }>;
 
 /** 読み出したcache entryの安全な再利用判定。 */
@@ -148,7 +132,7 @@ export function createAiCacheEntry(value: unknown): AiCacheEntry {
     }),
     output: parsed.output,
   });
-  assertCacheIntegrity(entry, entry.cacheKey);
+  assertCacheIntegrity(entry);
   return entry;
 }
 
@@ -219,27 +203,7 @@ export function determineAiCacheReuse(
   });
 }
 
-function cacheFileName(cacheKey: AiCacheKey): string {
-  parseSha256Hash(cacheKey);
-  return `${cacheKey.slice(CACHE_KEY_PREFIX.length)}.json`;
-}
-
-function hasErrorCode(error: unknown, code: string): boolean {
-  if (typeof error !== "object" || error == null || !("code" in error)) {
-    return false;
-  }
-  return error.code === code;
-}
-
-function parseJson(source: string): unknown {
-  const parser: (value: string) => unknown = JSON.parse;
-  return parser(source);
-}
-
-function assertCacheIntegrity(entry: AiCacheEntry, expectedCacheKey: AiCacheKey): void {
-  if (entry.cacheKey !== expectedCacheKey) {
-    throw new TypeError("AI cache entryのcache keyがファイル名と一致しません");
-  }
+function assertCacheIntegrity(entry: AiCacheEntry): void {
   const metadataCacheKey = createAiCacheKey({
     deterministicRulesVersion: entry.metadata.deterministicRulesVersion,
     model: entry.metadata.model,
@@ -255,99 +219,4 @@ function assertCacheIntegrity(entry: AiCacheEntry, expectedCacheKey: AiCacheKey)
   if (hashCanonicalJson(entry.output) !== entry.metadata.outputHash) {
     throw new TypeError("AI cache entryの出力hashが一致しません");
   }
-}
-
-/** state.aiCacheDirectoryを使ってAI cacheをファイルへ保存するadapter。 */
-export class FileAiCacheStore implements AiCacheStore {
-  readonly #directory: string;
-
-  public constructor(directory: string) {
-    if (directory.length === 0) {
-      throw new TypeError("AI cache directoryは空にできません");
-    }
-    this.#directory = directory;
-  }
-
-  public async read(cacheKey: AiCacheKey): Promise<AiCacheReadResult> {
-    const path = join(this.#directory, cacheFileName(cacheKey));
-    let source: string;
-    try {
-      source = await readFile(path, "utf8");
-    } catch (error: unknown) {
-      if (hasErrorCode(error, "ENOENT")) {
-        return Object.freeze({
-          status: "miss",
-        });
-      }
-      throw new AiCacheReadError(cacheKey, { cause: error });
-    }
-
-    try {
-      const entry = createAiCacheEntry(parseJson(source));
-      assertCacheIntegrity(entry, cacheKey);
-      return Object.freeze({
-        status: "hit",
-        entry,
-      });
-    } catch (error: unknown) {
-      throw new AiCacheFormatError(cacheKey, { cause: error });
-    }
-  }
-
-  public async write(entry: AiCacheEntry): Promise<void> {
-    let source: string;
-    try {
-      const validated = createAiCacheEntry(entry);
-      assertCacheIntegrity(validated, validated.cacheKey);
-      source = `${serializeCanonicalJson(validated)}\n`;
-    } catch (error: unknown) {
-      throw new AiCacheFormatError(entry.cacheKey, { cause: error });
-    }
-
-    try {
-      await mkdir(this.#directory, {
-        recursive: true,
-      });
-      await writeFile(join(this.#directory, cacheFileName(entry.cacheKey)), source, "utf8");
-    } catch (error: unknown) {
-      throw new AiCacheWriteError(entry.cacheKey, { cause: error });
-    }
-  }
-}
-
-/** テストでAI cacheをメモリ上に保持するadapter。 */
-export class MemoryAiCacheStore implements AiCacheStore {
-  readonly #entries = new Map<AiCacheKey, AiCacheEntry>();
-
-  public read(cacheKey: AiCacheKey): Promise<AiCacheReadResult> {
-    if (!this.#entries.has(cacheKey)) {
-      return Promise.resolve(
-        Object.freeze({
-          status: "miss",
-        }),
-      );
-    }
-    const entry = this.#entries.get(cacheKey);
-    assertNonNullable(entry, "存在するAI cache entryを取得できませんでした");
-    return Promise.resolve(
-      Object.freeze({
-        status: "hit",
-        entry,
-      }),
-    );
-  }
-
-  public write(entry: AiCacheEntry): Promise<void> {
-    const validated = createAiCacheEntry(entry);
-    assertCacheIntegrity(validated, validated.cacheKey);
-    this.#entries.set(validated.cacheKey, validated);
-    return Promise.resolve();
-  }
-}
-
-/** state.aiCacheDirectoryを保存先とするファイルAI cacheを生成する。 */
-export function createFileAiCacheStore(
-  stateConfiguration: AiCacheStateConfiguration,
-): FileAiCacheStore {
-  return new FileAiCacheStore(stateConfiguration.aiCacheDirectory);
 }

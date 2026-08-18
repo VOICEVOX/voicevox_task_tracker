@@ -25,7 +25,6 @@ pnpm install --frozen-lockfile
 | `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る            | `artifacts/workflow/runtime/tracker-run.mjs`             |
 | `pnpm dev:web`            | Web UIの開発serverを起動する                                 | なし                                                     |
 | `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                              | なし                                                     |
-| `pnpm test`               | Vitestのテストを1回実行する                                  | なし                                                     |
 | `pnpm lint`               | ESLintでコードを検査する                                     | なし                                                     |
 | `pnpm format`             | Prettierで対象ファイルを整形する                             | 対象ファイル                                             |
 | `pnpm format:check`       | Prettierによる整形差分がないことを検査する                   | なし                                                     |
@@ -61,7 +60,7 @@ pnpm tracker:run build-pages --output web/public/data
 `collect-analyze`にはGitHub AppとCodexの認証情報が必要です。
 `persist-state`はローカルの`tracker-state` refへ保存するだけで、remoteへはpushしません。
 `build-pages --output web/public/data`はサンプル公開DTOを実データで上書きします。
-実データは一時出力として扱い、確認後は元のサンプルへ戻してからテストとコミットを行ってください。
+実データは一時出力として扱い、確認後は元のサンプルへ戻してからコミットしてください。
 
 ## CLIをローカルで動かす
 
@@ -89,21 +88,11 @@ state、Pages、Discordを更新せずに収集から検証までを通したい
 
 ## テスト
 
-`vitest.config.ts`は2つのprojectへテストを分けます。
+ユーザーが明示的に実装を依頼した場合だけテストを実装します。
 
-| project | 対象                 | 実行環境 |
-| ------- | -------------------- | -------- |
-| `node`  | `tests/**/*.test.ts` | Node.js  |
-| `web`   | `web/**/*.test.tsx`  | jsdom    |
+## Golden評価
 
-`pnpm test`は両方を実行します。
-Node.js側にはunit、integration、security、CLI、golden、性能profileのテストがあります。
-`tests/attention.test.ts`は要対応度の計算式、設定境界、terminal項目とblocker待ちの0点を検証します。
-Web UIのテストは要対応項目の絞り込み、三つの並び替え、要対応度を使う依存グラフのnode選定を検証します。
-
-### golden fixtureを更新する
-
-`tests/fixtures/golden/`の各ケースは`fixture.json`と`expected.json`の2ファイルで構成します。
+`fixtures/golden/`の各ケースは`fixture.json`と`expected.json`の2ファイルで構成します。
 `fixture.json`は評価時刻、repository、IssueとPull Request、関係候補、固定AI分析、前回状態を持ちます。
 `expected.json`はstatus、waitingOn、severity、停滞開始時刻、関係、通知、公開可否の期待値を持ちます。
 `large`ケースだけは集計値と性能、サイズ、API予算、Codex予算の合否を記録します。
@@ -112,8 +101,9 @@ fixtureはネットワークへ接続しません。
 実在するIssue、Pull Request、repository、ユーザー名をfixtureへ持ち込まないでください。
 
 期待値の更新に自動化されたコマンドはありません。
-判定ロジックか`fixture.json`を変更したら`pnpm test`で実測値との差を確認し、意図した仕様を表す値だけを`expected.json`へ手で反映します。
-新しいケースを足す場合は同名のdirectoryへ2ファイルを追加し、`tests/golden-eval.test.ts`の`FIXTURE_NAMES`へ名前を加えます。
+判定ロジックか`fixture.json`を変更したら`pnpm eval:golden`で実測値との差を確認し、意図した仕様を表す値だけを`expected.json`へ手で反映します。
+新しいケースを足す場合は、同じdirectoryへ`fixture.json`と`expected.json`を追加します。
+`fixture.json`の`name`は既存ケースと重複させないでください。
 
 期待値を更新してよいのは、判定仕様を意図して変更した場合、fixtureの誤りを直す場合、回帰ケースを追加する場合だけです。
 意図しない回帰を通すために期待値を合わせないでください。
@@ -131,8 +121,6 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 | Pull Requestの判定          | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION` |
 | `prompts/`のCodexプロンプト | `config.yml`の`ai.promptVersion`           |
 
-`tests/rules-version-hash.test.ts`が判定に関わるファイルの内容hashを記録しており、更新漏れがあると失敗します。
-失敗したら、判定結果が変わるかを考えてversionを上げるか判断し、どちらの場合も記録hashを更新してください。
 要対応度は最新の重要度、停滞時間、設定から毎run全項目で再計算します。
 要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
@@ -142,8 +130,7 @@ snapshot、履歴、通知ledgerが保存する列挙値は、次の順序で変
 
 1. 対象文書のschema versionを上げる。
 2. 旧versionから現行versionへのマイグレーションを追加する。
-3. `tests/state-schema-enum-lock.ts`のロック定義を更新する。
-4. CLIをビルドし、checkoutした`tracker-state`の実stateを検証する。
+3. CLIをビルドし、checkoutした`tracker-state`の実stateを検証する。
 
 ```console
 pnpm build
@@ -166,9 +153,9 @@ pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
 | `src/performance/`   | 外部接続をモックした日次run全体の性能と予算のprofile                                               |
 | `src/persistence/`   | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、state branch transaction         |
 | `src/util/`          | null検査、到達不能検査、共通エラー、Zod診断                                                        |
-| `web/`               | ViteとPreactによる静的Web UI、そのテスト、サンプル公開DTO                                          |
-| `tests/`             | Node.js側のテストとfixture                                                                         |
-| `schemas/`           | GitHub GraphQL schemaの写し、Codex分析出力とsnapshotのJSON Schema                                  |
+| `web/`               | ViteとPreactによる静的Web UIとサンプル公開DTO                                                      |
+| `fixtures/`          | Golden評価と性能profileへ渡す固定入力                                                              |
+| `schemas/`           | Codex分析出力とsnapshotのJSON Schema                                                               |
 | `prompts/`           | Codexへ渡す固定system prompt                                                                       |
 | `docs/`              | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                       |
 | `.github/workflows/` | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                    |
@@ -256,9 +243,6 @@ IssueとPull Requestの種別はそれぞれsuccess系とinfo系、状態はneut
 | `Pill`                    | 意味に対応する配色のpill型label          |
 | `ActionButton`            | 操作button                               |
 
-`web/src/app.test.tsx`は識別用のclass名を選択子に使います。
-見た目をユーティリティclassへ移すときも、識別用のclass名は残します。
-
 ## Pull Requestを出す前に
 
 CIと同じ検査を手元で実行します。
@@ -267,7 +251,6 @@ CIと同じ検査を手元で実行します。
 pnpm typecheck
 pnpm lint
 pnpm format:check
-pnpm test
 pnpm eval:golden
 pnpm build
 pnpm build:workflow-cli

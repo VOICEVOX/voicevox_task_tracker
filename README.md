@@ -25,13 +25,13 @@ pnpm dev:web
 ```
 
 `pnpm dev:web`はサンプルの公開データでWeb UIを起動します。
-開発コマンドの一覧、CLIの動かし方、テストの構成は[開発手順](docs/DEVELOPMENT.md)にあります。
+開発コマンドの一覧とCLIの動かし方は[開発手順](docs/DEVELOPMENT.md)にあります。
 
 ## 文書
 
 | 文書                                   | 内容                                              |
 | -------------------------------------- | ------------------------------------------------- |
-| [開発手順](docs/DEVELOPMENT.md)        | 手元での開発、テスト、Pull Request前の確認        |
+| [開発手順](docs/DEVELOPMENT.md)        | 手元での開発、評価、Pull Request前の確認          |
 | [アーキテクチャ](docs/ARCHITECTURE.md) | モジュール境界、日次処理、公開guard、state branch |
 | [デプロイ手順](docs/DEPLOYMENT.md)     | GitHub App、Actions、Pages、secretの設定          |
 | [運用手順](docs/OPERATIONS.md)         | 日々の監視、stage実行、誤判定の修正、障害対応     |

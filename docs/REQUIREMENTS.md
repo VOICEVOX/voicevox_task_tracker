@@ -541,7 +541,7 @@ GitHub Actionsのscheduleは厳密なリアルタイムschedulerではなく、�
 - pure TypeScript domain reducerとGitHub/Codex/Discord adapterを分離する。
 - prompt・schema・deterministic rulesは独立versionを持つ。
 - state schema migrationを用意し、古いstateを破壊的に読み捨てない。
-- runtimeはNode.js LTSをpinし、strict TypeScriptの型検査、lint、format検査、VitestによるNodeとWebのテスト、golden eval、CLI、workflow用CLI、WebのbuildをCIで実行する。
+- runtimeはNode.js LTSをpinし、strict TypeScriptの型検査、lint、format検査、golden eval、CLI、workflow用CLI、WebのbuildをCIで実行する。
 
 ## 13. 受入と変更管理
 

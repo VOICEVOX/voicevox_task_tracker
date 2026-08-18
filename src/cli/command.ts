@@ -491,7 +491,7 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
       "--persist-state-result",
       "--run-attempt",
       "--run-id",
-      "--test-eval-result",
+      "--quality-eval-result",
     ]),
   );
   const collectAnalyzeReportPath = singleOption(
@@ -510,7 +510,7 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
     workflowRunId: parseWorkflowRunId(options),
     workflowRunAttempt: parseWorkflowRunAttempt(options),
     jobResults: Object.freeze({
-      "test-eval": parseWorkflowJobResult(options, "--test-eval-result"),
+      "quality-eval": parseWorkflowJobResult(options, "--quality-eval-result"),
       "collect-analyze": parseWorkflowJobResult(options, "--collect-analyze-result"),
       "persist-state": parseWorkflowJobResult(options, "--persist-state-result"),
       "build-pages": parseWorkflowJobResult(options, "--build-pages-result"),
@@ -651,7 +651,7 @@ export function formatCliUsage(): string {
     "  voicevox-task-tracker build-pages [--config PATH] [--artifact PATH] [--output PATH]",
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",
     "  voicevox-task-tracker notify-operations --kind collection|pages|discord --incident-id ID --occurred-at ISO",
-    "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --test-eval-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --notify-operations-result RESULT",
+    "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --quality-eval-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --notify-operations-result RESULT",
     "  voicevox-task-tracker verify-state --state-directory PATH",
     "  voicevox-task-tracker replay (--fixture PATH | --state PATH) [--artifact PATH]",
     "  voicevox-task-tracker eval --fixtures PATH [--artifact PATH]",
