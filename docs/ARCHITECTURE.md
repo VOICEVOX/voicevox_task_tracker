@@ -86,7 +86,7 @@ repository単位の収集は、再試行後も503で失敗し、同じrepository
 GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。
 本文のclosing keywordだけから得た`implements`候補は推定のままです。
 
-`.github/workflows/daily.yml`は通常経路の`test-eval`、`collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた8 jobで構成されています。
+`.github/workflows/daily.yml`は通常経路の`quality-eval`、`collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた8 jobで構成されています。
 `collect-analyze`は`CODEX_AUTH_JSON`をrunnerの一時directoryへ配置し、配置直後の`auth.json`のsha256を指紋として保存します。
 配置直後とsecretへ書き戻す直前に、`auth.json`内のすべての文字列値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
 値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
@@ -158,8 +158,7 @@ AI分析の失敗と延期はGitHub側を動かさないため、この扱いが
 terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行します。
 
 決定論的規則versionとprompt versionは手で更新する定数です。
-`tests/rules-version-hash.test.ts`が判定に関わるファイルの内容hashを記録しており、
-判定ロジックやプロンプトを変えるとテストが失敗してversionの更新要否を判断させます。
+判定ロジックやプロンプトを変えた場合は、判定結果が変わるかを確認してversionを上げます。
 現行の決定論的規則versionはIssueが`issue-v10`、Pull Requestが`pull-request-v9`です。
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
@@ -314,7 +313,7 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 
 ## state branch
 
-`main`にはsource、設定、schema、prompt、Web UI、テスト、文書を置きます。
+`main`にはsource、設定、schema、prompt、Web UI、fixture、文書を置きます。
 日次stateはorphan branchの`tracker-state`へcanonical JSONとして保存し、外部databaseは使いません。
 
 | 既定パス                            | 内容                                                                                         |

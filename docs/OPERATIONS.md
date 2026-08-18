@@ -7,7 +7,7 @@ GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は�
 
 `.github/workflows/daily.yml`の最新runで、実行対象のjobが依存順に成功したことを確認します。
 
-1. `test-eval`
+1. `quality-eval`
 2. `collect-analyze`
 3. `persist-state`
 4. `build-pages`
@@ -55,22 +55,6 @@ Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`
 
 `tracker-state`は自動更新専用です。
 人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴とcooldownの整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
-
-## GitHub GraphQL schemaの更新
-
-`schemas/github-graphql.schema.graphql`はGitHubが公開しているGraphQL schemaの写しです。
-送信しうる全クエリをこのschemaで検証し、存在しないフィールドの要求や応答名の衝突を実行前に検出します。
-テストはこのファイルだけを読み、ネットワークへ出ません。
-
-GitHub側のschema変更へ追従するときは、次の手順で更新します。
-
-```console
-curl -L --fail-with-body https://docs.github.com/public/fpt/schema.docs.graphql --output schemas/github-graphql.schema.graphql
-pnpm test
-```
-
-更新後にクエリ検証が失敗した場合は、失敗したクエリをschemaへ合わせて修正します。
-schemaの写しを古いまま据え置くと検証が形骸化するため、退避や巻き戻しはしません。
 
 ## 性能profile
 
@@ -179,7 +163,7 @@ repository globとlabel名の正規表現を一致させ、必要な効果を設
 | `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う              |
 
 trackerはlabelを追加も変更もしません。
-label規則を変えた場合は`pnpm test`とdry-runで通知候補の差分を確認します。
+label規則を変えた場合はdry-runで通知候補の差分を確認します。
 
 ### review request
 
@@ -231,7 +215,7 @@ terminal項目とブロック解消待ちの項目が0点になるのは意図�
 既定は要対応度の降順です。
 severityはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
 
-設定変更後は`pnpm test`とdry-runを実行し、要対応度のscore、level、表示対象、並び順、依存グラフのnode選定を確認します。
+設定変更後はdry-runを実行し、要対応度のscore、level、表示対象、並び順、依存グラフのnode選定を確認します。
 
 修正を反映したい場合は日次runを待つか、日次workflowを`backfill: none`で手動実行します。
 
@@ -302,7 +286,7 @@ blockerのseverityとdownstream impactが通知順位を決めます。
 5. 重要labelへ`priorityWeight`か`severityLift: 1`を設定します。
 6. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目、通知候補を確認します。
 
-閾値、confidence、label規則、AI予算を変更する場合は、`pnpm test`とdry-runを実行して通知候補の差分を確認します。
+閾値、confidence、label規則、AI予算を変更する場合は、dry-runを実行して通知候補の差分を確認します。
 schema、semantic validation、reducer、状態、graph、通知判定を変更する場合は`pnpm eval:golden`も実行します。
 golden evalはfixture内の固定AI出力を検証して期待結果と比較し、標準fixtureで`fixedAi.networkCallCount: 0`を要求します。
 実モデル、reasoning effort、promptの応答品質は評価しないため、これらを変更する場合は`metrics.aiCallCount`が1以上のdry-runでAI判定と通知候補の差分を確認します。
@@ -316,7 +300,7 @@ mentionは通知量の調整に使わず、運用上必要なuserだけをallowl
 
 | stageまたはjob                  | 確認内容                                                                                                                                                                                      |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test-eval`                     | `pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm format:check`、`pnpm eval:golden`をローカルで再現する                                                                                       |
+| `quality-eval`                  | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm eval:golden`をローカルで再現する                                                                                                    |
 | `configuration`                 | maintainerのGitHubユーザー名一覧、repository名、未知field、日時、正規表現、secret名を確認する                                                                                                 |
 | `authentication`                | `GH_APP_ID`、PEM形式、Organizationへのinstallation、必要なread権限だけがあることを確認する                                                                                                    |
 | `repository_inventory`          | Appのrepository access、public、archive、disabledの状態を確認する                                                                                                                             |

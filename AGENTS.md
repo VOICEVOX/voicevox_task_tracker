@@ -13,12 +13,13 @@
 - 判定結果が変わる変更をしたら判定規則versionを上げる。上げないと既存項目が再判定されず古い判定が残る
   - Issueの判定は`ISSUE_DETERMINISTIC_RULES_VERSION`、Pull Requestの判定は`PULL_REQUEST_DETERMINISTIC_RULES_VERSION`
   - Codexプロンプトは`config.yml`の`ai.promptVersion`
-  - `tests/rules-version-hash.test.ts`が更新漏れを検知する
 
 # 作業手順
 
 - 依頼されたタスクだけを行う。ついでの改善やリファクタリングを勝手に加えない
-- 変更後は`pnpm typecheck`と`pnpm lint`と`pnpm test`を必ず通す
+- ユーザーが明示的に実装を依頼した場合を除き、テストを実装しない
+- ドキュメントMarkdownファイルを更新するときは、編集する直前に`natural-japanese`スキルを実行する
+- 変更後は`pnpm typecheck`と`pnpm lint`を必ず通す
 - コミット直前に`pnpm format`を実行する
 - スクリーンショットなどの一時ファイルをリポジトリへ残さない
 - 変更前のコードとの互換性を残さない。今もっとも良い形に書き換える
