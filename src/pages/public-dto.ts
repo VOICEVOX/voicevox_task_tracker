@@ -44,6 +44,7 @@ const statusSchema = z.enum([
 ]);
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
 const importanceLevelSchema = z.enum(["low", "medium", "high"]);
+const deadlineLevelSchema = z.enum(["none", "low", "medium", "high"]);
 const publicImportanceSchema = z.strictObject({
   score: z.number().int().min(0).max(100),
   level: importanceLevelSchema,
@@ -118,13 +119,25 @@ const itemAuthorSchema = z.discriminatedUnion("status", [
     reason: z.literal("deleted_account"),
   }),
 ]);
-const publicItemMilestoneSchema = z.strictObject({
-  nodeId: identifierSchema,
-  number: z.number().int().positive(),
-  title: z.string().max(500),
-  state: z.enum(["open", "closed"]),
-  dueOn: dateTimeSchema.nullable(),
-});
+const publicDeadlineSummarySchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_available"),
+  }),
+  z.strictObject({
+    status: z.literal("available"),
+    level: deadlineLevelSchema,
+  }),
+]);
+const publicDeadlineDetailsSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_available"),
+  }),
+  z.strictObject({
+    status: z.literal("available"),
+    level: deadlineLevelSchema,
+    rationale: z.string().min(1).max(120),
+  }),
+]);
 const publicItemAiAnalysisSchema = z.strictObject({
   status: z.enum(["used", "failed", "deferred", "not_required", "disabled", "not_recorded"]),
 });
@@ -136,7 +149,7 @@ const publicItemSummarySchema = z.strictObject({
   number: z.number().int().positive(),
   url: githubUrlSchema,
   title: z.string().max(500),
-  milestone: publicItemMilestoneSchema.nullable(),
+  deadline: publicDeadlineSummarySchema,
   state: z.enum(["open", "closed", "merged"]),
   author: itemAuthorSchema,
   assignees: z.array(accountActorSchema),
@@ -207,6 +220,7 @@ const publicItemHistoryEventSchema = z.strictObject({
 });
 const publicItemDetailsSchema = z.strictObject({
   summary: publicItemSummarySchema,
+  deadline: publicDeadlineDetailsSchema,
   importanceFactors: z.array(importanceFactorSchema),
   timestamps: itemTimestampsSchema,
   latestEventActor: latestEventActorSchema,
@@ -331,7 +345,7 @@ const publicAiStateSchema = z.union([
   }),
 ]);
 const publicSummaryDtoSchema = z.strictObject({
-  schemaVersion: z.literal("5"),
+  schemaVersion: z.literal("6"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
@@ -343,17 +357,17 @@ const publicSummaryDtoSchema = z.strictObject({
   graph: publicInitialGraphSchema,
 });
 const publicDetailsDtoSchema = z.strictObject({
-  schemaVersion: z.literal("5"),
+  schemaVersion: z.literal("6"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   items: z.array(publicItemDetailsSchema),
   graph: publicGraphSchema,
 });
 
-/** Web初期表示で共有するschema version 5の公開summary DTO。 */
+/** Web初期表示で共有するschema version 6の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 5の公開details DTO。 */
+/** Web詳細表示で共有するschema version 6の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */

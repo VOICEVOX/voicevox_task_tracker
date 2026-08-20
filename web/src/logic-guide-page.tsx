@@ -18,16 +18,39 @@ export function LogicGuidePage() {
             要対応度
           </h3>
           <p class="m-0">
-            一覧で先に目を向ける順序を表します。項目そのものの重要度に、現在の待ち状態の鮮度係数を掛けてから四捨五入します。
+            一覧で先に目を向ける順序を表します。期限の切迫度加点の上限に合わせて重要度側の容量を調整し、現在の待ち状態の鮮度係数を掛けてから期限の切迫度に応じた加点を足します。
           </p>
           <p class="m-0 rounded-xl bg-surface-sunken px-3 py-2 text-sm wrap-anywhere">
-            <code>要対応度 = Math.round(重要度 × 鮮度係数)</code>
+            <code>importanceCapacity = 100 - deadlinePoints.high</code>
+            <br />
+            <code>recencyScore = round(重要度 × 鮮度係数 × importanceCapacity / 100)</code>
+            <br />
+            <code>要対応度 = recencyScore + 現在の期限加点</code>
           </p>
           <ul class="m-0 grid gap-2 pl-5">
             <li>
               鮮度係数は待ちの種類ごとの基準時間に応じて下がり、設定された下限を下回りません。
             </li>
             <li>終了項目と、ブロック解除待ちの親項目の要対応度は 0 です。</li>
+          </ul>
+        </section>
+
+        <section aria-labelledby="deadline-guide-heading" class={GUIDE_SECTION_CLASS}>
+          <h3
+            id="deadline-guide-heading"
+            class="m-0 font-display text-base leading-snug font-semibold"
+          >
+            期限の切迫度
+          </h3>
+          <p class="m-0">
+            本文やコメントに明示された期限や時期を Codex
+            が読み取り、期限までの近さを表します。期限がない場合は「なし」、根拠を得られない場合は「予測なし」です。
+          </p>
+          <ul class="m-0 grid gap-2 pl-5">
+            <li>
+              高は期限超過または14日以内、中は15日から90日、低は91日より先または弱い時間的拘束です。
+            </li>
+            <li>緊急さ、重要度、影響範囲、状態、待ち先、優先度labelだけから期限を推測しません。</li>
           </ul>
         </section>
 
@@ -39,7 +62,7 @@ export function LogicGuidePage() {
             重要度
           </h3>
           <p class="m-0">
-            項目そのものの影響や期限の大きさを表します。要対応度の基礎になる値ですが、待ち状態の鮮度は含めません。
+            項目そのものの影響を表します。要対応度の基礎になる値ですが、期限の切迫度と待ち状態の鮮度は含めません。
           </p>
           <p class="m-0 rounded-xl bg-surface-sunken px-3 py-2 text-sm wrap-anywhere">
             <code>重要度 = min(100, max(0, 固定ルールによる加点の合計))</code>
@@ -47,7 +70,6 @@ export function LogicGuidePage() {
           <ul class="m-0 grid gap-2 pl-5">
             <li>優先度ラベルによる加点を使います。</li>
             <li>止めている項目やリポジトリへの影響を加点します。</li>
-            <li>期限付きマイルストーンの期限を加点要因にします。</li>
             <li>
               必要に応じて Codex が読み取った重要性を候補として取り込み、固定ルールで加点します。
             </li>
@@ -135,7 +157,7 @@ export function LogicGuidePage() {
           </h3>
           <ul class="m-0 grid gap-2 pl-5">
             <li>
-              要対応度と重要度は別の指標です。待ち状態が長く続くほど鮮度係数が下がり、要対応度も下がることがあります。
+              要対応度と重要度は別の指標です。期限の切迫度加点の上限に応じて重要度側の容量を調整し、待ち状態が長く続くほど鮮度係数が下がります。
             </li>
             <li>severity は停滞が通知基準を超えたかを見る Discord 通知用の別指標です。</li>
           </ul>

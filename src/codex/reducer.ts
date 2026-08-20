@@ -1,5 +1,6 @@
 import {
   isTerminalStatus,
+  type NaturalLanguageDeadlineAssessmentState,
   type Evidence,
   type NotificationReasonCode,
   type NaturalLanguageImportanceAssessmentState,
@@ -104,6 +105,7 @@ export type CodexAnalysisReduction = Readonly<{
   decision: ReducedCodexDecision;
   displayMode: CodexConfidenceClassification["displayMode"];
   importanceAssessment: NaturalLanguageImportanceAssessmentState;
+  deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
   ai:
     | Readonly<{
         status: "available";
@@ -365,6 +367,12 @@ function createUnavailableImportanceAssessment(): NaturalLanguageImportanceAsses
   });
 }
 
+function createUnavailableDeadlineAssessment(): NaturalLanguageDeadlineAssessmentState {
+  return Object.freeze({
+    status: "not_available",
+  });
+}
+
 function createImportanceAssessment(
   output: ValidatedCodexAnalysisOutput,
   classification: CodexConfidenceClassification,
@@ -376,9 +384,24 @@ function createImportanceAssessment(
     status: "available",
     value: Object.freeze({
       significantFeature: output.importance.significantFeature,
-      explicitDeadline: output.importance.explicitDeadline,
       futureRisk: output.importance.futureRisk,
       rationale: output.importance.rationale,
+    }),
+  });
+}
+
+function createDeadlineAssessment(
+  output: ValidatedCodexAnalysisOutput,
+  classification: CodexConfidenceClassification,
+): NaturalLanguageDeadlineAssessmentState {
+  if (classification.level === "low") {
+    return createUnavailableDeadlineAssessment();
+  }
+  return Object.freeze({
+    status: "available",
+    value: Object.freeze({
+      level: output.deadline.level,
+      rationale: output.deadline.rationale,
     }),
   });
 }
@@ -438,6 +461,7 @@ function reduceUnavailableCodexAnalysis(
     decision: createDecision("deterministic", deterministicDecision, uncertainty),
     displayMode: "fallback",
     importanceAssessment: createUnavailableImportanceAssessment(),
+    deadlineAssessment: createUnavailableDeadlineAssessment(),
     ai: Object.freeze({
       status: "unavailable",
       reason,
@@ -485,6 +509,7 @@ export function reduceCodexAnalysis(
   const stateConfidence = effectiveStateConfidence(attempt.output);
   const classification = classifyCodexConfidence(stateConfidence, confidenceThresholds);
   const importanceAssessment = createImportanceAssessment(attempt.output, classification);
+  const deadlineAssessment = createDeadlineAssessment(attempt.output, classification);
   const relationAssessments = createRelationAssessments(attempt.output);
   const completeCoverage = Object.freeze({
     status: "complete",
@@ -495,6 +520,7 @@ export function reduceCodexAnalysis(
       decision: createDecision("deterministic", deterministicDecision, undefined),
       displayMode: "confirmed",
       importanceAssessment,
+      deadlineAssessment,
       ai: Object.freeze({
         status: "available",
         confidenceLevel: classification.level,
@@ -516,6 +542,7 @@ export function reduceCodexAnalysis(
       decision: createDecision("deterministic", deterministicDecision, undefined),
       displayMode: "confirmed",
       importanceAssessment,
+      deadlineAssessment,
       ai: Object.freeze({
         status: "available",
         confidenceLevel: classification.level,
@@ -535,6 +562,7 @@ export function reduceCodexAnalysis(
       decision: createDecision("deterministic", deterministicDecision, uncertainty),
       displayMode: classification.displayMode,
       importanceAssessment,
+      deadlineAssessment,
       ai: Object.freeze({
         status: "available",
         confidenceLevel: classification.level,
@@ -563,6 +591,7 @@ export function reduceCodexAnalysis(
     ),
     displayMode: classification.displayMode,
     importanceAssessment,
+    deadlineAssessment,
     ai: Object.freeze({
       status: "available",
       confidenceLevel: classification.level,

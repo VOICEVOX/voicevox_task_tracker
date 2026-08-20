@@ -11,6 +11,11 @@ export {
   type AttentionLevelThresholds,
   type CalculateAttentionInput,
 } from "./attention.js";
+export {
+  type DeadlineLevel,
+  type NaturalLanguageDeadlineAssessment,
+  type NaturalLanguageDeadlineAssessmentState,
+} from "./deadline.js";
 export { DETERMINISTIC_RULES_VERSION } from "./deterministic-rules-version.js";
 export {
   resolvePullRequestCommitOccurredAt,
@@ -223,7 +228,6 @@ export {
   type TrackedItemAiAnalysis,
   type TrackedItemInputEvent,
   type TrackedItemLatestEventActor,
-  type TrackedItemMilestone,
   type TrackedItemState,
   type TrackedItemType,
   type UtcIsoDateTime,

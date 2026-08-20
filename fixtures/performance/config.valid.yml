@@ -68,18 +68,19 @@ importance:
     blockedItem: 3
     blockedRepository: 5
     downstreamImpactMax: 30
-    milestoneWithDueDate: 10
-    milestoneDueSoon: 15
     significantFeature: 20
-    explicitDeadline: 15
     futureRisk: 15
-  dueSoonDays: 14
   levels:
     high: 40
     medium: 20
 
 attention:
   recencyFloor: 0.4
+  deadlinePoints:
+    none: 0
+    low: 10
+    medium: 20
+    high: 30
   levels:
     high: 40
     medium: 20
@@ -89,7 +90,7 @@ ai:
   enabled: true
   authentication: api-key
   model: codex-model
-  promptVersion: v1
+  promptVersion: v13
   confidence:
     high: 0.85
     medium: 0.65

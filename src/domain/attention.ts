@@ -1,3 +1,4 @@
+import { type DeadlineLevel } from "./deadline.js";
 import { type ImportanceLevel } from "./importance.js";
 import { type SeverityThresholds } from "./severity.js";
 import { type StalenessWaitClass } from "./staleness.js";
@@ -17,9 +18,11 @@ export type AttentionLevelThresholds = Readonly<{
   medium: number;
 }>;
 
-/** 重要度と停滞の鮮度から要対応度を計算する入力。 */
+/** 重要度、期限の切迫度と停滞の鮮度から要対応度を計算する入力。 */
 export type CalculateAttentionInput = Readonly<{
   importanceScore: number;
+  deadlineLevel: DeadlineLevel;
+  deadlinePoints: Readonly<Record<DeadlineLevel, number>>;
   elapsedHours: number;
   waitClass: StalenessWaitClass;
   thresholdsHours: SeverityThresholds;
@@ -33,12 +36,40 @@ function validateNonNegativeNumber(value: number, description: string): void {
   }
 }
 
+function validateNonNegativeSafeInteger(value: number, description: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${description}は0以上の安全な整数にしてください`);
+  }
+}
+
 function validateInput(input: CalculateAttentionInput): void {
   if (!Number.isSafeInteger(input.importanceScore) || input.importanceScore < 0) {
     throw new RangeError("重要度スコアは0以上の安全な整数にしてください");
   }
   if (input.importanceScore > 100) {
     throw new RangeError("重要度スコアは100以下にしてください");
+  }
+  if (!(input.deadlineLevel in input.deadlinePoints)) {
+    throw new RangeError("期限の切迫度levelが不正です");
+  }
+  for (const level of ["none", "low", "medium", "high"] as const) {
+    validateNonNegativeSafeInteger(
+      input.deadlinePoints[level],
+      `attention.deadlinePoints.${level}`,
+    );
+  }
+  if (input.deadlinePoints.high > 100) {
+    throw new RangeError("attention.deadlinePoints.highは100以下にしてください");
+  }
+  if (
+    input.deadlinePoints.none !== 0 ||
+    !(input.deadlinePoints.none < input.deadlinePoints.low) ||
+    !(input.deadlinePoints.low < input.deadlinePoints.medium) ||
+    !(input.deadlinePoints.medium < input.deadlinePoints.high)
+  ) {
+    throw new RangeError(
+      "attention.deadlinePointsは0 = none < low < medium < highを満たしてください",
+    );
   }
   validateNonNegativeNumber(input.elapsedHours, "要対応度計算の停滞時間");
   if (!Number.isFinite(input.recencyFloor) || input.recencyFloor < 0 || input.recencyFloor > 1) {
@@ -61,7 +92,7 @@ function determineLevel(score: number, levels: AttentionLevelThresholds): Attent
   return "low";
 }
 
-/** 重要度へwait class基準の鮮度係数を掛けて要対応度を計算する。 */
+/** 重要度の容量を期限加点の上限に合わせて鮮度調整し、期限加点を加えて要対応度を計算する。 */
 export function calculateAttention(input: CalculateAttentionInput): Attention {
   validateInput(input);
   if (input.waitClass === "notApplicable" || input.waitClass === "blockedParent") {
@@ -78,7 +109,11 @@ export function calculateAttention(input: CalculateAttentionInput): Attention {
   const recencyCoefficient =
     input.recencyFloor +
     (1 - input.recencyFloor) * 0.5 ** (input.elapsedHours / watchThresholdHours);
-  const score = Math.round(input.importanceScore * recencyCoefficient);
+  const importanceCapacity = 100 - input.deadlinePoints.high;
+  const recencyScore = Math.round(
+    (input.importanceScore * recencyCoefficient * importanceCapacity) / 100,
+  );
+  const score = recencyScore + input.deadlinePoints[input.deadlineLevel];
   return Object.freeze({
     score,
     level: determineLevel(score, input.levels),

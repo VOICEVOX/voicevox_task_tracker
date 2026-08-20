@@ -10,6 +10,7 @@ type ConfidenceThresholds = PublicSummaryDto["confidenceThresholds"];
 type ItemType = PublicItemSummaryDto["type"];
 type Status = PublicItemSummaryDto["status"];
 type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
+type DeadlineLevel = Extract<PublicItemSummaryDto["deadline"], { status: "available" }>["level"];
 type AiAnalysisStatus = PublicItemSummaryDto["aiAnalysis"]["status"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 type WaitingOnReference = Pick<WaitingOnCandidate, "candidateId" | "kind" | "role">;
@@ -140,6 +141,13 @@ const IMPORTANCE_LEVEL_LABELS = {
   high: "高",
 } satisfies Readonly<Record<ImportanceLevel, string>>;
 
+const DEADLINE_LEVEL_LABELS = {
+  none: "なし",
+  low: "低",
+  medium: "中",
+  high: "高",
+} satisfies Readonly<Record<DeadlineLevel, string>>;
+
 type StallFilterDefinition = Readonly<{
   label: string;
   thresholdMilliseconds: number;
@@ -229,13 +237,13 @@ export function aiAnalysisNotice(status: AiAnalysisStatus): AiAnalysisNotice {
       return {
         kind: "outdated",
         description:
-          "AI推定に失敗したため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
+          "AI推定に失敗したため、状態、待ち相手、重要度、期限の切迫度、停滞に最新のAI推定を反映できていません。",
       };
     case "deferred":
       return {
         kind: "outdated",
         description:
-          "AI推定を今回実行しなかったため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
+          "AI推定を今回実行しなかったため、状態、待ち相手、重要度、期限の切迫度、停滞に最新のAI推定を反映できていません。",
       };
     default:
       throw new UnreachableError(status);
@@ -254,6 +262,11 @@ export function statusLabel(status: Status): string {
 /** 重要度levelの日本語表示名を返す。 */
 export function importanceLevelLabel(level: ImportanceLevel): string {
   return IMPORTANCE_LEVEL_LABELS[level];
+}
+
+/** 期限の切迫度levelの日本語表示名を返す。 */
+export function deadlineLevelLabel(level: DeadlineLevel): string {
+  return DEADLINE_LEVEL_LABELS[level];
 }
 
 function createPresentTableFilterOptions(

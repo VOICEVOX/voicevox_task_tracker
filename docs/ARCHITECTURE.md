@@ -106,37 +106,38 @@ jobの最後は成否を問わず`codex-home`と指紋ファイルを削除し�
 停滞の深刻さを表すseverityとは独立した値です。
 `src/cli`は最終graphの解析後に必要な入力を集めて`src/domain`へ渡し、Codexやgraphがscoreとlevelを直接決めることはありません。
 
-| 入力                      | 依存する情報                                                               |
-| ------------------------- | -------------------------------------------------------------------------- |
-| 優先度ラベルの重み        | 現在のラベルと`labels.rules`                                               |
-| downstream impact         | 最終graphが算出した停止中のopen項目数とリポジトリ数                        |
-| 期限付きのopen milestone  | GitHubから正規化したmilestone、run開始時刻、`importance.dueSoonDays`       |
-| Codex由来の3要因          | schema検証とsemantic検証を通った重要な機能、明示された期限、将来問題の判定 |
-| 各要因の重みとlevelの閾値 | `config.yml`の`importance.weights`と`importance.levels`                    |
+| 入力                      | 依存する情報                                               |
+| ------------------------- | ---------------------------------------------------------- |
+| 優先度ラベルの重み        | 現在のラベルと`labels.rules`                               |
+| downstream impact         | 最終graphが算出した停止中のopen項目数とリポジトリ数        |
+| Codex由来の2要因          | schema検証とsemantic検証を通った重要な機能、将来問題の判定 |
+| 各要因の重みとlevelの閾値 | `config.yml`の`importance.weights`と`importance.levels`    |
 
-Codex由来の3要因はconfidenceがmedium以上の場合だけ加点します。
+Codex由来の2要因はconfidenceがmedium以上の場合だけ加点します。
 そのrunで利用できる判定がない項目は前回snapshotの判定を再利用し、前回判定もなければ決定論的な要因だけを使います。
-優先度ラベル、downstream impact、milestoneの決定論的な要因は現在の入力から毎run計算します。
+優先度ラベルとdownstream impactの決定論的な要因は現在の入力から毎run計算します。
 `src/domain`は要因の加点を0から100の整数へ収め、設定した閾値からlow、medium、highを決めます。
 
 ## 要対応度の計算
 
-要対応度は`src/domain`のpureな判定で、重要度を主、停滞の短さを従として計算します。
+要対応度は`src/domain`のpureな判定で、重要度、期限の切迫度、停滞の鮮度から計算します。
 停滞が長い項目は対応が不要だった場合が多いという前提に立ち、重要度が低いまま最近動いただけの項目を上位へ置きません。
 
 ```text
 鮮度係数 = recencyFloor + (1 - recencyFloor) × 0.5 ^ (停滞時間 ÷ watch閾値)
-要対応度スコア = round(重要度スコア × 鮮度係数)
+importanceCapacity = 100 - deadlinePoints.high
+recencyScore = round(重要度スコア × 鮮度係数 × importanceCapacity ÷ 100)
+要対応度スコア = recencyScore + 期限の切迫度加点
 ```
 
 停滞時間は`stallSince`からrun開始時刻までの経過時間です。
 watch閾値は項目のwait classに対応する`staleness.thresholdsHours`の`watch`で、鮮度係数の半減期として使います。
-`attention.recencyFloor`の既定値は0.4で、停滞が伸びても要対応度は重要度の0.4倍までしか下がりません。
+`attention.recencyFloor`の既定値は0.4で、停滞が伸びても鮮度係数は0.4を下回りません。
 scoreは0から100の整数で、`attention.levels`の閾値からlow、medium、highを決めます。
 既定の下限はhighが40、mediumが20です。
 terminal項目と`waiting_for_unblock`の項目は、自身が動けないためscoreを0にします。
 
-要対応度はGitHub側の変更有無にかかわらず、最新の重要度、停滞時間、設定から毎run全項目で再計算します。
+要対応度はGitHub側の変更有無にかかわらず、最新の重要度、期限の切迫度、停滞時間、設定から毎run全項目で再計算します。
 Codexとgraphは要対応度のscoreとlevelを直接決めません。
 
 ## 判定規則の変更と再判定
@@ -159,7 +160,7 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 
 決定論的規則versionとprompt versionは手で更新する定数です。
 判定ロジックやプロンプトを変えた場合は、判定結果が変わるかを確認してversionを上げます。
-現行の決定論的規則versionはIssueが`issue-v10`、Pull Requestが`pull-request-v9`です。
+現行の決定論的規則versionはIssueが`issue-v11`、Pull Requestが`pull-request-v10`です。
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
@@ -209,7 +210,7 @@ AI判定を行わなかった項目では`lastProgressAt`が作成時刻のま�
 
 ## 公開DTOとWeb UI
 
-`src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度に加えて要対応度のscoreとlevelを`attention`へ格納します。
+`src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度、期限の切迫度、要対応度を公開します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
 
 共通ヘッダーは16px相当のサイト名、グローバルナビゲーション、「最新更新」と相対時刻を表示します。
@@ -308,7 +309,7 @@ Discordはtransport例外とHTTP 429、503だけを同じ設定で再試行し�
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
-`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v12`です。
+`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v13`です。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch
@@ -316,13 +317,13 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 `main`にはsource、設定、schema、prompt、Web UI、fixture、文書を置きます。
 日次stateはorphan branchの`tracker-state`へcanonical JSONとして保存し、外部databaseは使いません。
 
-| 既定パス                            | 内容                                                                                         |
-| ----------------------------------- | -------------------------------------------------------------------------------------------- |
-| `state/snapshot.json`               | 要対応度、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 8の最新snapshot |
-| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                           |
-| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                               |
-| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                                 |
-| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                        |
+| 既定パス                            | 内容                                                                                                       |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `state/snapshot.json`               | 要対応度、期限の切迫度、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 9の最新snapshot |
+| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                                         |
+| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                             |
+| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                                               |
+| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                      |
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
 

@@ -199,16 +199,17 @@ blockerが完了したら対象Issueをcloseし、誤ったnative relationはGit
 
 重要度は項目そのものの重要さを表し、停滞の深刻さを表すseverityとは別に確認します。
 個別の項目の重要度がずれている場合は、まず詳細ページの内訳でどの要因が効いているかを確かめます。
-決定論的な要因は、優先度ラベル、native dependency、milestoneと期限をGitHub上の事実へ合わせると変わります。
-Codex由来の要因は、重要な機能である根拠、具体的な期限、放置した場合の将来問題が本文かコメントから読み取れるかで決まります。
+決定論的な要因は、優先度ラベル、native dependency、downstream impactをGitHub上の事実へ合わせると変わります。
+Codex由来の重要度要因は、重要な機能である根拠と放置した場合の将来問題が本文かコメントから読み取れるかで決まります。期限の切迫度は重要度へ影響しません。
 本文へ重要だと書くだけでは根拠になりません。
 全体の加点やlevelを調整する場合は`config.yml`の`importance`を変更し、dry-runでscore、level、内訳を確認します。
 
 ### 要対応度
 
-要対応度は重要度を主、停滞の短さを従として計算します。
-個別の項目の要対応度がずれている場合は、重要度score、`stallSince`、現在のwait class、そのwait classの`watch`閾値を順に確認します。
+要対応度は重要度、期限の切迫度、停滞の鮮度から計算します。
+個別の項目の要対応度がずれている場合は、重要度score、期限の切迫度、`stallSince`、現在のwait class、そのwait classの`watch`閾値を順に確認します。
 terminal項目とブロック解消待ちの項目が0点になるのは意図した動作です。
+`importanceCapacity = 100 - deadlinePoints.high`として、`recencyScore = round(importanceScore × recencyCoefficient × importanceCapacity / 100)`、`score = recencyScore + deadlinePoints[currentLevel]`で計算します。
 
 停滞による下がり方を全体で調整する場合は`config.yml`の`attention.recencyFloor`を変更します。
 要対応度と重要度と停滞時間は、項目一覧と担当者ごとのページで選べる三つの並び替えキーです。

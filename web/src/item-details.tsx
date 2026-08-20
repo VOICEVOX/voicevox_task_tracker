@@ -15,6 +15,7 @@ import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import {
   aiAnalysisNotice,
   confidencePresentation,
+  deadlineLevelLabel,
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
@@ -85,9 +86,7 @@ const CHECK_STATE_LABELS = {
 const IMPORTANCE_FACTOR_LABELS = {
   priorityLabel: "優先度ラベル",
   downstreamImpact: "依存先への影響",
-  milestoneDeadline: "マイルストーン期限",
   significantFeature: "重要な機能",
-  explicitDeadline: "明示された期限",
   futureRisk: "将来リスク",
 } satisfies Readonly<Record<ImportanceFactor["kind"], string>>;
 
@@ -154,14 +153,12 @@ function importanceFactorSource(kind: ImportanceFactor["kind"]): ImportanceFacto
   switch (kind) {
     case "priorityLabel":
     case "downstreamImpact":
-    case "milestoneDeadline":
       return {
         kind: "deterministic",
         label: "決定論",
         tone: "success",
       };
     case "significantFeature":
-    case "explicitDeadline":
     case "futureRisk":
       return {
         kind: "codex",
@@ -171,6 +168,25 @@ function importanceFactorSource(kind: ImportanceFactor["kind"]): ImportanceFacto
     default:
       throw new UnreachableError(kind);
   }
+}
+
+function deadlineLevelTone(
+  deadline: PublicItemDetailsDto["deadline"],
+): "neutral" | "low" | "medium" | "high" {
+  if (deadline.status === "not_available") {
+    return "neutral";
+  }
+  if (deadline.level === "none") {
+    return "neutral";
+  }
+  return deadline.level;
+}
+
+function deadlineLabel(deadline: PublicItemDetailsDto["deadline"]): string {
+  if (deadline.status === "not_available") {
+    return "予測なし";
+  }
+  return deadlineLevelLabel(deadline.level);
 }
 
 function ConfidenceDisplay({
@@ -660,7 +676,7 @@ export function ItemDetailsContent({
             <dt class="text-xs font-bold text-text-muted">要対応度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
               <AttentionBadge attention={item.attention} presentation="level_and_score" />
-              <span class="text-xs text-text-muted">重要度と直近の動きから決まる値</span>
+              <span class="text-xs text-text-muted">重要度・期限の切迫度・鮮度から決まる値</span>
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
@@ -668,6 +684,17 @@ export function ItemDetailsContent({
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
               <ImportanceBadge importance={item.importance} presentation="level_and_score" />
               <span class="text-xs text-text-muted">項目自体の重要さ</span>
+            </dd>
+          </div>
+          <div class="min-w-0 border-l-2 border-border-default pl-3">
+            <dt class="text-xs font-bold text-text-muted">期限の切迫度</dt>
+            <dd class="mt-1 mb-0 grid justify-items-start gap-1">
+              <Pill className="deadline-badge" tone={deadlineLevelTone(details.deadline)}>
+                {deadlineLabel(details.deadline)}
+              </Pill>
+              {details.deadline.status === "available" && (
+                <span class="text-xs text-text-muted">{details.deadline.rationale}</span>
+              )}
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
@@ -811,7 +838,7 @@ export function ItemDetailsContent({
           <h4 class={DISCLOSURE_HEADING_CLASS_NAME}>
             <span>判定の根拠</span>
             <span class="text-xs font-semibold text-text-muted">
-              確度、重要度の加点、状態と行動の根拠
+              確度、重要度の加点、期限の切迫度、状態と行動の根拠
             </span>
           </h4>
         </summary>

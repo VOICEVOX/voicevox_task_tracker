@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "8"
+      "const": "9"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -747,37 +747,6 @@
         }
       ]
     },
-    "milestone": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["nodeId", "number", "title", "state", "dueOn"],
-      "properties": {
-        "nodeId": {
-          "$ref": "#/$defs/identifier"
-        },
-        "number": {
-          "type": "integer",
-          "minimum": 1
-        },
-        "title": {
-          "type": "string",
-          "maxLength": 500
-        },
-        "state": {
-          "enum": ["open", "closed"]
-        },
-        "dueOn": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/dateTime"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      }
-    },
     "importanceFactor": {
       "type": "object",
       "additionalProperties": false,
@@ -787,9 +756,7 @@
           "enum": [
             "priorityLabel",
             "downstreamImpact",
-            "milestoneDeadline",
             "significantFeature",
-            "explicitDeadline",
             "futureRisk"
           ]
         },
@@ -865,7 +832,6 @@
               "additionalProperties": false,
               "required": [
                 "significantFeature",
-                "explicitDeadline",
                 "futureRisk",
                 "rationale"
               ],
@@ -873,11 +839,47 @@
                 "significantFeature": {
                   "type": "boolean"
                 },
-                "explicitDeadline": {
-                  "type": "boolean"
-                },
                 "futureRisk": {
                   "type": "boolean"
+                },
+                "rationale": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "deadlineAssessment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_available"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "value"],
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "value": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["level", "rationale"],
+              "properties": {
+                "level": {
+                  "enum": ["none", "low", "medium", "high"]
                 },
                 "rationale": {
                   "type": "string",
@@ -901,10 +903,10 @@
         "number",
         "url",
         "title",
-        "milestone",
         "importance",
         "attention",
         "importanceAssessment",
+        "deadlineAssessment",
         "author",
         "latestEventActor",
         "state",
@@ -963,16 +965,6 @@
           "type": "string",
           "maxLength": 500
         },
-        "milestone": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/milestone"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "importance": {
           "$ref": "#/$defs/importance"
         },
@@ -981,6 +973,9 @@
         },
         "importanceAssessment": {
           "$ref": "#/$defs/importanceAssessment"
+        },
+        "deadlineAssessment": {
+          "$ref": "#/$defs/deadlineAssessment"
         },
         "author": {
           "$ref": "#/$defs/itemAuthor"

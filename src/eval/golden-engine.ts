@@ -952,7 +952,6 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
     number: item.number,
     url: itemUrl(repositoryName, item),
     title: item.title,
-    milestone: null,
     importance: Object.freeze({
       score: 0,
       level: "low",
@@ -1044,7 +1043,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "8",
+    schemaVersion: "9",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1081,6 +1080,9 @@ function createSnapshot(
       return {
         ...createTrackedItem(repository.name, analysis),
         importanceAssessment: {
+          status: "not_available",
+        },
+        deadlineAssessment: {
           status: "not_available",
         },
         attention: {
@@ -1419,7 +1421,6 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         number: index + 1,
         url: `https://github.com/${ORGANIZATION}/${repositoryName}/${index % 2 === 0 ? "issues" : "pull"}/${(index + 1).toString()}`,
         title: `匿名性能項目 ${index.toString().padStart(4, "0")}`,
-        milestone: null,
         importance: Object.freeze({
           score: 0,
           level: "low",
@@ -1556,7 +1557,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "8",
+    schemaVersion: "9",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1578,6 +1579,9 @@ function analyzeLargeFixture(
     items: items.map((item) => ({
       ...item,
       importanceAssessment: {
+        status: "not_available",
+      },
+      deadlineAssessment: {
         status: "not_available",
       },
       attention: {

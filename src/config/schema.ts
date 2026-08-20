@@ -22,6 +22,11 @@ const requiredStringSchema = z.string().min(1, "空文字は指定できませ�
 const positiveIntegerSchema = z.number().int().positive();
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const nonNegativeNumberSchema = z.number().nonnegative();
+const positiveSafeIntegerSchema = z
+  .number()
+  .int()
+  .positive()
+  .refine(Number.isSafeInteger, "安全な整数を指定してください");
 const positiveNumberSchema = z.number().positive();
 const probabilitySchema = z.number().min(0).max(1);
 const statePathSchema = requiredStringSchema.superRefine((value, context) => {
@@ -381,17 +386,46 @@ const configSchema = z.strictObject({
       blockedItem: nonNegativeNumberSchema,
       blockedRepository: nonNegativeNumberSchema,
       downstreamImpactMax: nonNegativeNumberSchema,
-      milestoneWithDueDate: nonNegativeNumberSchema,
-      milestoneDueSoon: nonNegativeNumberSchema,
       significantFeature: nonNegativeNumberSchema,
-      explicitDeadline: nonNegativeNumberSchema,
       futureRisk: nonNegativeNumberSchema,
     }),
-    dueSoonDays: nonNegativeNumberSchema,
     levels: importanceLevelsSchema,
   }),
   attention: z.strictObject({
     recencyFloor: probabilitySchema,
+    deadlinePoints: z
+      .strictObject({
+        none: z.literal(0),
+        low: positiveSafeIntegerSchema,
+        medium: positiveSafeIntegerSchema,
+        high: positiveSafeIntegerSchema.refine(
+          (value) => value <= 100,
+          "highは100以下の整数を指定してください",
+        ),
+      })
+      .superRefine((points, context) => {
+        if (!(points.none < points.low)) {
+          context.addIssue({
+            code: "custom",
+            path: ["low"],
+            message: "0 = none < low < medium < highを満たしてください",
+          });
+        }
+        if (!(points.low < points.medium)) {
+          context.addIssue({
+            code: "custom",
+            path: ["medium"],
+            message: "0 = none < low < medium < highを満たしてください",
+          });
+        }
+        if (!(points.medium < points.high)) {
+          context.addIssue({
+            code: "custom",
+            path: ["high"],
+            message: "0 = none < low < medium < highを満たしてください",
+          });
+        }
+      }),
     levels: importanceLevelsSchema,
   }),
   ai: z
