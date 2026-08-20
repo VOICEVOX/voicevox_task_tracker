@@ -36,7 +36,6 @@ export {
   type GitHubItemAccount,
   type GitHubItemAuthor,
   type GitHubItemBodyLocator,
-  type GitHubItemMilestone,
   type Sha256Fingerprint,
 } from "./item-enumeration.js";
 export {

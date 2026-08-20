@@ -77,24 +77,25 @@ VOICEVOXではEditor、Engine、Core、モデル・ランタイム・追加ラ�
 
 ## 6. 用語
 
-| 用語                | 定義                                                                            |
-| ------------------- | ------------------------------------------------------------------------------- |
-| tracked item        | 追跡対象に入ったIssueまたはPR                                                   |
-| status              | 待たれている行動。誰を待つかは含まない                                          |
-| waitingOn           | 次に状態を進める行動が期待される主体                                            |
-| ball / ボール       | waitingOnと同義の運用上の表現                                                   |
-| statusSince         | 現在statusへ遷移した時刻                                                        |
-| ownerSince          | 現在waitingOnへ遷移した時刻                                                     |
-| stallSince          | 現在の待ち状態で意味のある進捗か責務主体本人の活動が最後に起きた時刻            |
-| severity            | Discord通知に使う停滞の深刻さ。none、watch、urgent、criticalの4段階             |
-| importance          | 項目そのものの重要度。0から100のscoreとlow、medium、highの3段階                 |
-| attention           | 重要度と停滞の短さから求める要対応度。0から100のscoreとlow、medium、highの3段階 |
-| meaningful progress | push、回答、review、決定、依存解消など、次工程を進める変化                      |
-| authoritative edge  | GitHub native dependency/sub-issue等、AIより優先するrelation                    |
-| inferred edge       | 本文・コメント・link候補をCodexが関係ありと判定したrelation                     |
-| actionable frontier | openなincoming `blocks` edgeを持たず、今着手可能な非terminal node               |
-| downstream impact   | そのnodeが止めているopen node/repoの直接・推移的規模                            |
-| stale repo          | 今回取得に失敗し、前回値しかないrepo                                            |
+| 用語                | 定義                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| tracked item        | 追跡対象に入ったIssueまたはPR                                                                 |
+| status              | 待たれている行動。誰を待つかは含まない                                                        |
+| waitingOn           | 次に状態を進める行動が期待される主体                                                          |
+| ball / ボール       | waitingOnと同義の運用上の表現                                                                 |
+| statusSince         | 現在statusへ遷移した時刻                                                                      |
+| ownerSince          | 現在waitingOnへ遷移した時刻                                                                   |
+| stallSince          | 現在の待ち状態で意味のある進捗か責務主体本人の活動が最後に起きた時刻                          |
+| severity            | Discord通知に使う停滞の深刻さ。none、watch、urgent、criticalの4段階                           |
+| importance          | 項目そのものの重要度。0から100のscoreとlow、medium、highの3段階                               |
+| deadline            | 本文とコメントからAIが予測する期限の切迫度。none、low、medium、highの4段階                    |
+| attention           | 重要度、期限の切迫度、停滞の鮮度から求める要対応度。0から100のscoreとlow、medium、highの3段階 |
+| meaningful progress | push、回答、review、決定、依存解消など、次工程を進める変化                                    |
+| authoritative edge  | GitHub native dependency/sub-issue等、AIより優先するrelation                                  |
+| inferred edge       | 本文・コメント・link候補をCodexが関係ありと判定したrelation                                   |
+| actionable frontier | openなincoming `blocks` edgeを持たず、今着手可能な非terminal node                             |
+| downstream impact   | そのnodeが止めているopen node/repoの直接・推移的規模                                          |
+| stale repo          | 今回取得に失敗し、前回値しかないrepo                                                          |
 
 ## 7. 推奨状態モデル
 
@@ -190,27 +191,29 @@ blocked parentは「親自身を毎日催促」せず、blockerのseverityとdow
 severityはDiscord通知の判断だけに使い、Web UIの表示、絞り込み、並び替え、依存グラフには使わない。
 
 重要度は項目そのものの重要さを表し、停滞の深刻さを表すseverityとは独立して計算する。
-決定論的な要因は、優先度ラベルの重み、他のopen項目とリポジトリを止めている影響規模、期限付きのopen milestoneとする。
-期限が設定日数以内のmilestoneは追加で加点する。
-Codexは重要な機能か、期限が明示されているか、将来問題になるかを判定し、confidenceがlowならこれらを加点しない。
+決定論的な要因は、優先度ラベルの重みと、他のopen項目とリポジトリを止めている影響規模とする。
+Codexは重要な機能か、将来問題になるか、期限の切迫度を判定し、confidenceがlowならこれらの自然言語判定を利用しない。
 そのrunでCodex判定を得られない項目は前回の重要度判定を再利用する。
 scoreは各要因の加点を0から100の整数へ収め、設定した閾値でlow、medium、highへ分ける。
 
-要対応度は重要度を主、停滞の短さを従として次の式で計算する。
+要対応度は重要度、期限の切迫度、停滞の鮮度から次の式で計算する。
 停滞が長い項目は対応が不要だった場合が多いという前提に立ち、重要度が低いまま最近動いただけの項目を上位へ置かない。
 
 ```text
 鮮度係数 = recencyFloor + (1 - recencyFloor) × 0.5 ^ (停滞時間 ÷ watch閾値)
-要対応度スコア = round(重要度スコア × 鮮度係数)
+importanceCapacity = 100 - deadlinePoints.high
+recencyScore = round(重要度スコア × 鮮度係数 × importanceCapacity ÷ 100)
+要対応度スコア = recencyScore + 期限の切迫度加点
 ```
 
 停滞時間は`stallSince`からrun開始時刻までの経過時間とする。
 watch閾値は項目のwait classに対応する`staleness.thresholdsHours`の`watch`とし、鮮度係数の半減期として使う。
-`attention.recencyFloor`の既定値は0.4とし、停滞が伸びても要対応度は重要度の0.4倍までしか下げない。
+`attention.recencyFloor`の既定値は0.4とし、鮮度係数は0.4を下回らないようにする。
+期限の切迫度加点は`attention.deadlinePoints`で設定し、0 = none < low < medium < highを満たす100以下の安全な整数にする。
 要対応度scoreは0から100の整数とし、`attention.levels`の閾値でlow、medium、highへ分ける。
 既定の下限はhighを40、mediumを20とする。
 terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする。
-要対応度はGitHub側の変更有無にかかわらず、最新の重要度、停滞時間、設定から毎run全項目で再計算する。
+要対応度はGitHub側の変更有無にかかわらず、最新の重要度、期限の切迫度、停滞時間、設定から毎run全項目で再計算する。
 
 ## 9. Discord選別既定
 
@@ -281,20 +284,20 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 
 ### 11.3 設定
 
-| ID        | 規範 | 要求                                                                                                                                                          | 受入要約                                                                                                         |
-| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `CFG-001` | MUST | 設定schema version — 設定ファイルにschemaVersionを持ち、未知のmajor versionを拒否しなければならない。                                                         | `AT-CFG-001`: 未対応majorの設定で明示的エラーとなり処理を開始しない。                                            |
-| `CFG-002` | MUST | 既定メンテナ — `maintainers.defaults`へすべてのrepositoryに適用するメンテナのGitHubユーザー名一覧を設定できなければならない。                                 | `AT-CFG-002`: 既定値のみのrepoで抽象的なメンテナ責務が設定したユーザー名へ解決される。                           |
-| `CFG-003` | MUST | 複数メンテナ — `maintainers.defaults`と`maintainers.repositories`の各値へ1人以上のGitHubユーザー名を指定でき、1repositoryを複数人で担当できなければならない。 | `AT-CFG-003`: 2人を指定したrepoで2件の`kind=user`候補へ展開される。                                              |
-| `CFG-004` | MUST | リポジトリ別上書き — `maintainers.repositories`へ`owner/repo`ごとのメンテナ一覧を設定し、該当repositoryでは既定値を置き換えなければならない。                 | `AT-CFG-004`: 2 repo fixtureで一方は既定、一方はrepository別一覧が適用される。                                   |
-| `CFG-005` | MUST | メンテナ設定の検証 — 空の一覧、不正なGitHubユーザー名、大文字小文字だけが異なる重複、不正なrepository名を設定エラーとして扱わなければならない。               | `AT-CFG-005`: 各不正値で公開・通知が行われず、設定箇所を含む診断が出る。                                         |
-| `CFG-006` | MUST | 既存ラベル意味付け — 既存ラベルを優先度・要議論・通知抑制等へ読み替えるルールをrepo glob付きで設定できなければならない。                                      | `AT-CFG-006`: 同名ラベルをrepo別に異なる意味へ割り当てられる。                                                   |
-| `CFG-007` | MUST | bot識別設定 — botのユーザー名、末尾パターン、明示allow/denyを設定できなければならない。                                                                       | `AT-CFG-007`: 既知bot・未知human・例外bot fixtureが期待通り分類される。                                          |
-| `CFG-008` | MUST | 追跡開始日時 — tracking.startAtをISO 8601で設定・永続化できなければならない。                                                                                 | `AT-CFG-008`: timezone付き日時がUTC正規化され、再実行で変化しない。                                              |
-| `CFG-009` | MUST | 手動includeと追跡追加上限 — 古い項目の明示include、repo filter、backfill上限、`tracking.relationExpansion.maxItemsPerRun`を設定できなければならない。         | `AT-CFG-009`: 開始日前の指定URLだけをincludeでき、関係先展開上限がAPI呼び出し前に適用される。                    |
-| `CFG-010` | MUST | Discordメンション設定 — GitHubユーザー名とDiscord user IDの対応、mentions.enabled、許可対象を設定でき、既定は無効でなければならない。                         | `AT-CFG-010`: 既定payloadのallowed_mentionsが空で、enabled時も許可ID以外をmentionしない。                        |
-| `CFG-011` | MUST | 重要度設定 — 重要度の各要因の重み、期限間近とみなす日数、levelの閾値を設定できなければならない。                                                              | `AT-CFG-011`: 重み、日数、閾値の変更が重要度へ反映され、highがmedium未満なら設定を拒否する。                     |
-| `CFG-012` | MUST | 要対応度設定 — 鮮度係数の下限とlevelの閾値を設定できなければならない。                                                                                        | `AT-CFG-012`: `recencyFloor`と閾値の変更が要対応度へ反映され、0から1の範囲外とhighがmedium未満の設定を拒否する。 |
+| ID        | 規範 | 要求                                                                                                                                                          | 受入要約                                                                                                             |
+| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `CFG-001` | MUST | 設定schema version — 設定ファイルにschemaVersionを持ち、未知のmajor versionを拒否しなければならない。                                                         | `AT-CFG-001`: 未対応majorの設定で明示的エラーとなり処理を開始しない。                                                |
+| `CFG-002` | MUST | 既定メンテナ — `maintainers.defaults`へすべてのrepositoryに適用するメンテナのGitHubユーザー名一覧を設定できなければならない。                                 | `AT-CFG-002`: 既定値のみのrepoで抽象的なメンテナ責務が設定したユーザー名へ解決される。                               |
+| `CFG-003` | MUST | 複数メンテナ — `maintainers.defaults`と`maintainers.repositories`の各値へ1人以上のGitHubユーザー名を指定でき、1repositoryを複数人で担当できなければならない。 | `AT-CFG-003`: 2人を指定したrepoで2件の`kind=user`候補へ展開される。                                                  |
+| `CFG-004` | MUST | リポジトリ別上書き — `maintainers.repositories`へ`owner/repo`ごとのメンテナ一覧を設定し、該当repositoryでは既定値を置き換えなければならない。                 | `AT-CFG-004`: 2 repo fixtureで一方は既定、一方はrepository別一覧が適用される。                                       |
+| `CFG-005` | MUST | メンテナ設定の検証 — 空の一覧、不正なGitHubユーザー名、大文字小文字だけが異なる重複、不正なrepository名を設定エラーとして扱わなければならない。               | `AT-CFG-005`: 各不正値で公開・通知が行われず、設定箇所を含む診断が出る。                                             |
+| `CFG-006` | MUST | 既存ラベル意味付け — 既存ラベルを優先度・要議論・通知抑制等へ読み替えるルールをrepo glob付きで設定できなければならない。                                      | `AT-CFG-006`: 同名ラベルをrepo別に異なる意味へ割り当てられる。                                                       |
+| `CFG-007` | MUST | bot識別設定 — botのユーザー名、末尾パターン、明示allow/denyを設定できなければならない。                                                                       | `AT-CFG-007`: 既知bot・未知human・例外bot fixtureが期待通り分類される。                                              |
+| `CFG-008` | MUST | 追跡開始日時 — tracking.startAtをISO 8601で設定・永続化できなければならない。                                                                                 | `AT-CFG-008`: timezone付き日時がUTC正規化され、再実行で変化しない。                                                  |
+| `CFG-009` | MUST | 手動includeと追跡追加上限 — 古い項目の明示include、repo filter、backfill上限、`tracking.relationExpansion.maxItemsPerRun`を設定できなければならない。         | `AT-CFG-009`: 開始日前の指定URLだけをincludeでき、関係先展開上限がAPI呼び出し前に適用される。                        |
+| `CFG-010` | MUST | Discordメンション設定 — GitHubユーザー名とDiscord user IDの対応、mentions.enabled、許可対象を設定でき、既定は無効でなければならない。                         | `AT-CFG-010`: 既定payloadのallowed_mentionsが空で、enabled時も許可ID以外をmentionしない。                            |
+| `CFG-011` | MUST | 重要度設定 — 重要度の各要因の重みとlevelの閾値を設定できなければならない。                                                                                    | `AT-CFG-011`: 重みと閾値の変更が重要度へ反映され、highがmedium未満なら設定を拒否する。                               |
+| `CFG-012` | MUST | 要対応度設定 — 鮮度係数の下限、期限の切迫度加点、levelの閾値を設定できなければならない。                                                                      | `AT-CFG-012`: `recencyFloor`、`deadlinePoints`、閾値の変更が要対応度へ反映され、加点の順序と範囲外の設定を拒否する。 |
 
 ### 11.4 GitHub収集
 
@@ -306,7 +309,7 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 | `COL-004` | MUST | 公開境界での即時フィルタ — repoメタデータ取得直後にpublic・non-archived・non-disabledを検証し、それ以前にIssue本文等を取得してはならない。             | `AT-COL-004`: private repo fixtureではrepo metadata以外のAPIが呼ばれない。                                |
 | `COL-005` | MUST | 項目一覧ページネーション — 各repoのopen Issue/PRを全ページ取得しなければならない。                                                                     | `AT-COL-005`: 100件超のopen item fixtureで件数が一致する。                                                |
 | `COL-006` | MUST | 安定識別子 — GitHub global node IDを主識別子として保持し、owner/repo#numberとURLを表示用別名として保持しなければならない。                             | `AT-COL-006`: repo rename fixtureで履歴が別ノードに分裂しない。                                           |
-| `COL-007` | MUST | 基本メタデータ — title、body fingerprint、author、created/updated/closed、state reason、draft、assignees、labels、milestoneを取得しなければならない。  | `AT-COL-007`: schema必須フィールドがfixtureから欠落なく正規化される。                                     |
+| `COL-007` | MUST | 基本メタデータ — title、body fingerprint、author、created/updated/closed、state reason、draft、assignees、labelsを取得しなければならない。             | `AT-COL-007`: schema必須フィールドがfixtureから欠落なく正規化される。                                     |
 | `COL-008` | MUST | Issueコメント — 追跡Issueの全human-relevant issue commentsをページネーションして取得しなければならない。                                               | `AT-COL-008`: 100件超コメントfixtureで順序・IDが保持される。                                              |
 | `COL-009` | MUST | PRレビュー — PR review submissionのstate、actor、commit、timeを取得しなければならない。                                                                | `AT-COL-009`: APPROVED/CHANGES_REQUESTED/DISMISSED fixtureを区別する。                                    |
 | `COL-010` | MUST | レビューthread — inline review threadとresolved状態を取得しなければならない。                                                                          | `AT-COL-010`: resolved/unresolved threadが別信号になる。                                                  |
@@ -429,17 +432,17 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 
 ### 11.9 重要度と要対応度
 
-| ID        | 規範 | 要求                                                                                                                                                              | 受入要約                                                                                                     |
-| --------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `IMP-001` | MUST | 停滞の深刻さとの分離 — 各追跡項目の重要度を、停滞の深刻さを表すseverityとは別に保持しなければならない。                                                           | `AT-IMP-001`: 同じseverityでも重要度要因が異なる2項目でscoreとlevelが別々に決まる。                          |
-| `IMP-002` | MUST | 決定論的要因 — 優先度ラベルの重み、downstream impact、期限付きのopen milestoneから重要度を決定論的に加点しなければならない。期限間近のmilestoneは追加で加点する。 | `AT-IMP-002`: 各要因を単独で持つfixtureがCodexなしで設定どおり加点される。                                   |
-| `IMP-003` | MUST | 自然言語要因 — Codexは、重要な機能か、期限が明示されているか、将来問題になるかの3要因を根拠付きで判定しなければならない。                                         | `AT-IMP-003`: 3要因を個別に満たすfixtureで対応する要因だけが加点され、根拠が保持される。                     |
-| `IMP-004` | MUST | 低信頼判定の非加点 — Codex判定のconfidenceがlowの場合、Codex由来の重要度要因を加点してはならない。                                                                | `AT-IMP-004`: 同じCodex出力でもmedium境界未満では3要因が加点されず、境界以上では加点される。                 |
-| `IMP-005` | MUST | 前回判定の再利用 — そのrunでCodexの重要度判定を得られない項目は前回の判定を再利用しなければならない。前回の判定もなければ決定論的要因だけで計算する。             | `AT-IMP-005`: Codex判定が延期されたfixtureで前回の3要因が維持され、初回項目は決定論的要因だけで計算される。  |
-| `IMP-006` | MUST | scoreとlevel — 重要度scoreを要因の加点から0以上100以下の整数として求め、設定した閾値によりlevelをlow、medium、highのいずれかへ分類しなければならない。            | `AT-IMP-006`: 0点、閾値境界、100点を超える要因合計のfixtureでscoreとlevelが期待値に一致する。                |
-| `ATT-001` | MUST | 要対応度計算 — wait classのwatch閾値を半減期とする鮮度係数を重要度scoreへ掛け、四捨五入した0以上100以下の要対応度scoreとlevelを求めなければならない。             | `AT-ATT-001`: 停滞0時間、半減期、長期停滞、level境界のfixtureで式と設定どおりのscoreとlevelになる。          |
-| `ATT-002` | MUST | 計時対象外 — terminal項目とblocker待ちで自身が動けない項目は要対応度scoreを0にしなければならない。                                                                | `AT-ATT-002`: terminalと`waiting_for_unblock`のfixtureが重要度にかかわらず0点となる。                        |
-| `ATT-003` | MUST | 毎run再計算 — 要対応度は前回値を引き継がず、最新の重要度、停滞時間、wait class、設定から毎run全項目で再計算しなければならない。                                   | `AT-ATT-003`: GitHub側が未変更の項目もrun開始時刻と設定に応じて再計算され、決定論的規則versionに依存しない。 |
+| ID        | 規範 | 要求                                                                                                                                                                                    | 受入要約                                                                                                        |
+| --------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `IMP-001` | MUST | 停滞の深刻さとの分離 — 各追跡項目の重要度を、停滞の深刻さを表すseverityとは別に保持しなければならない。                                                                                 | `AT-IMP-001`: 同じseverityでも重要度要因が異なる2項目でscoreとlevelが別々に決まる。                             |
+| `IMP-002` | MUST | 決定論的要因 — 優先度ラベルの重みとdownstream impactから重要度を決定論的に加点しなければならない。期限の切迫度は重要度へ影響させてはならない。                                          | `AT-IMP-002`: 各要因を単独で持つfixtureがCodexなしで設定どおり加点され、期限の有無で重要度が変わらない。        |
+| `IMP-003` | MUST | 自然言語要因 — Codexは、重要な機能か、将来問題になるかの2要因を根拠付きで判定しなければならない。                                                                                       | `AT-IMP-003`: 2要因を個別に満たすfixtureで対応する要因だけが加点され、根拠が保持される。                        |
+| `IMP-004` | MUST | 低信頼判定の非加点 — Codex判定のconfidenceがlowの場合、Codex由来の重要度要因を加点してはならない。                                                                                      | `AT-IMP-004`: 同じCodex出力でもmedium境界未満では2要因が加点されず、境界以上では加点される。                    |
+| `IMP-005` | MUST | 前回判定の再利用 — そのrunでCodexの重要度または期限の切迫度判定を得られない項目は前回の判定を再利用しなければならない。前回の判定もなければ自然言語判定なしで計算する。                 | `AT-IMP-005`: Codex判定が延期されたfixtureで前回の判定が維持され、初回項目は自然言語判定なしで計算される。      |
+| `IMP-006` | MUST | scoreとlevel — 重要度scoreを要因の加点から0以上100以下の整数として求め、設定した閾値によりlevelをlow、medium、highのいずれかへ分類しなければならない。                                  | `AT-IMP-006`: 0点、閾値境界、100点を超える要因合計のfixtureでscoreとlevelが期待値に一致する。                   |
+| `ATT-001` | MUST | 要対応度計算 — wait classのwatch閾値を半減期とする鮮度係数と重要度scoreへ期限の切迫度加点の上限に応じた容量を掛け、期限の切迫度加点を足して要対応度scoreとlevelを求めなければならない。 | `AT-ATT-001`: 期限レベルの単調性、上限、停滞0時間、半減期、長期停滞、level境界のfixtureで式と設定どおりになる。 |
+| `ATT-002` | MUST | 計時対象外 — terminal項目とblocker待ちで自身が動けない項目は要対応度scoreを0にしなければならない。                                                                                      | `AT-ATT-002`: terminalと`waiting_for_unblock`のfixtureが重要度にかかわらず0点となる。                           |
+| `ATT-003` | MUST | 毎run再計算 — 要対応度は前回値を引き継がず、最新の重要度、期限の切迫度、停滞時間、wait class、設定から毎run全項目で再計算しなければならない。                                           | `AT-ATT-003`: GitHub側が未変更の項目もrun開始時刻と設定に応じて再計算され、決定論的規則versionに依存しない。    |
 
 ### 11.10 Webページ
 
@@ -485,14 +488,14 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 
 ### 11.12 永続化
 
-| ID        | 規範 | 要求                                                                                                                                                                                                   | 受入要約                                                                                                                                         |
-| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `DAT-001` | MUST | main branch責務 — main branchにはsource、config、schema、prompt、docs、testsを置き、日次state commitを混在させてはならない。                                                                           | `AT-DAT-001`: branch tree検査で日次snapshotがmainに存在しない。                                                                                  |
-| `DAT-002` | MUST | state branch — 永続状態を専用orphan branch tracker-stateへGit管理しなければならない。                                                                                                                  | `AT-DAT-002`: 初回bootstrapでbranchが作成され、以後同branchへbot commitされる。                                                                  |
-| `DAT-003` | MUST | current snapshot — tracker-stateにschema version 8のcurrent snapshotをcanonical JSONで保存し、各追跡項目に`attention`と`aiAnalysis.status`を持たせなければならない。                                   | `AT-DAT-003`: 同一入力2回でvolatile fieldを除くbyte列が一致し、snapshot schemaが`attention`のscoreとlevel、および6種類のAI利用statusを検証する。 |
-| `DAT-004` | MUST | 日次履歴 — 日次差分またはevent historyを日付単位で保持し、previous→currentを再構成できなければならない。                                                                                               | `AT-DAT-004`: 任意2日間のowner/edge/severity差分を再生できる。                                                                                   |
-| `DAT-005` | MUST | AI cacheと通知ledger — AI cache、analysis metadata、予約期限と送信結果を持つnotification ledgerをstate branchで保持しなければならない。                                                                | `AT-DAT-005`: runnerを破棄して再実行してもcache hit、予約期限、cooldownが維持される。                                                            |
-| `DAT-006` | MUST | atomic/canonical/public-safe commit — validation完了後だけsorted/canonical stateをatomic commitし、secret、raw token、private repoのID、owner/name、repository URL、不要な全文本文を含めてはならない。 | `AT-DAT-006`: 失敗途中でlast good commitが変わらず、secret scan/private sentinel testが成功する。                                                |
+| ID        | 規範 | 要求                                                                                                                                                                                                   | 受入要約                                                                                                                                               |
+| --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DAT-001` | MUST | main branch責務 — main branchにはsource、config、schema、prompt、docs、testsを置き、日次state commitを混在させてはならない。                                                                           | `AT-DAT-001`: branch tree検査で日次snapshotがmainに存在しない。                                                                                        |
+| `DAT-002` | MUST | state branch — 永続状態を専用orphan branch tracker-stateへGit管理しなければならない。                                                                                                                  | `AT-DAT-002`: 初回bootstrapでbranchが作成され、以後同branchへbot commitされる。                                                                        |
+| `DAT-003` | MUST | current snapshot — tracker-stateにschema version 9のcurrent snapshotをcanonical JSONで保存し、各追跡項目に`attention`、`deadlineAssessment`、`aiAnalysis.status`を持たせなければならない。             | `AT-DAT-003`: 同一入力2回でvolatile fieldを除くbyte列が一致し、snapshot schemaが期限、`attention`のscoreとlevel、および6種類のAI利用statusを検証する。 |
+| `DAT-004` | MUST | 日次履歴 — 日次差分またはevent historyを日付単位で保持し、previous→currentを再構成できなければならない。                                                                                               | `AT-DAT-004`: 任意2日間のowner/edge/severity差分を再生できる。                                                                                         |
+| `DAT-005` | MUST | AI cacheと通知ledger — AI cache、analysis metadata、予約期限と送信結果を持つnotification ledgerをstate branchで保持しなければならない。                                                                | `AT-DAT-005`: runnerを破棄して再実行してもcache hit、予約期限、cooldownが維持される。                                                                  |
+| `DAT-006` | MUST | atomic/canonical/public-safe commit — validation完了後だけsorted/canonical stateをatomic commitし、secret、raw token、private repoのID、owner/name、repository URL、不要な全文本文を含めてはならない。 | `AT-DAT-006`: 失敗途中でlast good commitが変わらず、secret scan/private sentinel testが成功する。                                                      |
 
 `config.yml`に設定したメンテナのGitHubユーザー名は公開情報としてwaitingOnと履歴へ保存できる。
 teamのwaitingOnはteam識別子だけを保存し、team member一覧やteamとuserの対応は保存しない。

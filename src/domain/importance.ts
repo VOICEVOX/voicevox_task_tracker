@@ -1,14 +1,8 @@
-import { type TrackedItemMilestone, type UtcIsoDateTime } from "./types.js";
-
-const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
-
 /** 重要度の加点要因として扱う種別。 */
 export const IMPORTANCE_FACTOR_KINDS = [
   "priorityLabel",
   "downstreamImpact",
-  "milestoneDeadline",
   "significantFeature",
-  "explicitDeadline",
   "futureRisk",
 ] as const;
 
@@ -38,17 +32,13 @@ export type ImportanceWeights = Readonly<{
   blockedItem: number;
   blockedRepository: number;
   downstreamImpactMax: number;
-  milestoneWithDueDate: number;
-  milestoneDueSoon: number;
   significantFeature: number;
-  explicitDeadline: number;
   futureRisk: number;
 }>;
 
 /** 自然言語から判定した重要度の加点要因。 */
 export type NaturalLanguageImportanceAssessment = Readonly<{
   significantFeature: boolean;
-  explicitDeadline: boolean;
   futureRisk: boolean;
   rationale: string;
 }>;
@@ -79,10 +69,7 @@ export type ImportanceDownstreamImpact = Readonly<{
 export type CalculateImportanceInput = Readonly<{
   priorityWeight: number;
   downstreamImpact: ImportanceDownstreamImpact;
-  milestone: TrackedItemMilestone | null;
-  evaluatedAt: UtcIsoDateTime;
   weights: ImportanceWeights;
-  dueSoonDays: number;
   levels: ImportanceLevelThresholds;
 }>;
 
@@ -113,20 +100,11 @@ function validateInput(input: CalculateImportanceInput): void {
   for (const [name, value] of Object.entries(input.weights)) {
     validateNonNegativeNumber(value, `importance.weights.${name}`);
   }
-  validateNonNegativeNumber(input.dueSoonDays, "importance.dueSoonDays");
   validateNonNegativeNumber(input.levels.high, "importance.levels.high");
   validateNonNegativeNumber(input.levels.medium, "importance.levels.medium");
   if (input.levels.high < input.levels.medium) {
     throw new RangeError("importance.levels.highはmedium以上にしてください");
   }
-}
-
-function parseTimestamp(value: UtcIsoDateTime, description: string): number {
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    throw new TypeError(`${description}が不正です`);
-  }
-  return timestamp;
 }
 
 function createPriorityLabelFactor(input: CalculateImportanceInput): ImportanceFactor | undefined {
@@ -161,42 +139,6 @@ function createDownstreamImpactFactor(
       points === uncappedPoints
         ? impactDetail
         : `${impactDetail}。上限${input.weights.downstreamImpactMax.toString()}点を適用します`,
-  });
-}
-
-function isMilestoneDueSoon(
-  milestone: TrackedItemMilestone,
-  evaluatedAt: UtcIsoDateTime,
-  dueSoonDays: number,
-): boolean {
-  if (milestone.dueOn == null) {
-    throw new TypeError("期限判定対象のmilestoneに期限がありません");
-  }
-  const remainingMilliseconds =
-    parseTimestamp(milestone.dueOn, "milestone期限") - parseTimestamp(evaluatedAt, "評価基準時刻");
-  return remainingMilliseconds <= dueSoonDays * MILLISECONDS_PER_DAY;
-}
-
-function createMilestoneDeadlineFactor(
-  input: CalculateImportanceInput,
-): ImportanceFactor | undefined {
-  if (input.milestone?.state !== "open" || input.milestone.dueOn == null) {
-    return undefined;
-  }
-  const dueSoon = isMilestoneDueSoon(input.milestone, input.evaluatedAt, input.dueSoonDays);
-  const points =
-    input.weights.milestoneWithDueDate + (dueSoon ? input.weights.milestoneDueSoon : 0);
-  validateNonNegativeNumber(points, "milestoneDeadlineの加点");
-  if (points === 0) {
-    return undefined;
-  }
-  const dueDateDetail = `期限付きのopen milestoneで${input.weights.milestoneWithDueDate.toString()}点です`;
-  return Object.freeze({
-    kind: "milestoneDeadline",
-    points,
-    detail: dueSoon
-      ? `${dueDateDetail}。期限が${input.dueSoonDays.toString()}日以内のため${input.weights.milestoneDueSoon.toString()}点を加算します`
-      : dueDateDetail,
   });
 }
 
@@ -245,11 +187,6 @@ function createNaturalLanguageFactors(
       points: weights.significantFeature,
     },
     {
-      kind: "explicitDeadline",
-      enabled: assessment.explicitDeadline,
-      points: weights.explicitDeadline,
-    },
-    {
       kind: "futureRisk",
       enabled: assessment.futureRisk,
       points: weights.futureRisk,
@@ -276,14 +213,12 @@ function createNaturalLanguageFactors(
   );
 }
 
-/** 優先度ラベル、依存先への影響、milestone期限から重要度を計算する。 */
+/** 優先度ラベルと依存先への影響から重要度を計算する。 */
 export function calculateImportance(input: CalculateImportanceInput): Importance {
   validateInput(input);
-  const factors = [
-    createPriorityLabelFactor(input),
-    createDownstreamImpactFactor(input),
-    createMilestoneDeadlineFactor(input),
-  ].filter((factor) => factor != null);
+  const factors = [createPriorityLabelFactor(input), createDownstreamImpactFactor(input)].filter(
+    (factor) => factor != null,
+  );
   return createImportance(factors, input.levels);
 }
 

@@ -121,7 +121,7 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 | Pull Requestの判定          | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION` |
 | `prompts/`のCodexプロンプト | `config.yml`の`ai.promptVersion`           |
 
-要対応度は最新の重要度、停滞時間、設定から毎run全項目で再計算します。
+要対応度は最新の重要度、期限の切迫度、停滞時間、設定から毎run全項目で再計算します。
 要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
 ### 永続stateの列挙値を変更する

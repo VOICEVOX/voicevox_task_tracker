@@ -13,6 +13,7 @@
     "relations",
     "progress",
     "importance",
+    "deadline",
     "evidence",
     "confidence",
     "uncertainties",
@@ -21,7 +22,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "2"
+      "const": "3"
     },
     "item": {
       "type": "object",
@@ -218,7 +219,6 @@
       "additionalProperties": false,
       "required": [
         "significantFeature",
-        "explicitDeadline",
         "futureRisk",
         "rationale"
       ],
@@ -226,11 +226,23 @@
         "significantFeature": {
           "type": "boolean"
         },
-        "explicitDeadline": {
-          "type": "boolean"
-        },
         "futureRisk": {
           "type": "boolean"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      }
+    },
+    "deadline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "rationale"],
+      "properties": {
+        "level": {
+          "enum": ["none", "low", "medium", "high"]
         },
         "rationale": {
           "type": "string",

@@ -377,6 +377,10 @@ function collectTextFields(output: SchemaValidCodexAnalysisOutput): readonly Tex
       value: output.importance.rationale,
     }),
     Object.freeze({
+      path: "/deadline/rationale",
+      value: output.deadline.rationale,
+    }),
+    Object.freeze({
       path: "/notification/reasonSummary",
       value: output.notification.reasonSummary,
     }),
@@ -614,9 +618,12 @@ function createValidatedOutput(
     }),
     importance: Object.freeze({
       significantFeature: output.importance.significantFeature,
-      explicitDeadline: output.importance.explicitDeadline,
       futureRisk: output.importance.futureRisk,
       rationale: output.importance.rationale,
+    }),
+    deadline: Object.freeze({
+      level: output.deadline.level,
+      rationale: output.deadline.rationale,
     }),
     evidence: Object.freeze(
       output.evidence.map((evidence) =>

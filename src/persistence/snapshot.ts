@@ -21,6 +21,7 @@ import {
   type ExternalGhostNode,
   type GitHubAccountActor,
   type GitHubNodeId,
+  type NaturalLanguageDeadlineAssessmentState,
   type NaturalLanguageImportanceAssessmentState,
   type Relation,
   type Repository,
@@ -56,6 +57,7 @@ export type SnapshotTrackedItem = TrackedItem &
   Readonly<{
     attention: Attention;
     importanceAssessment: NaturalLanguageImportanceAssessmentState;
+    deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
     severity: Severity;
     severityContext: StalenessSeverityContext;
   }>;
@@ -161,10 +163,11 @@ const SNAPSHOT_SCHEMA_VERSION_4 = "4";
 const SNAPSHOT_SCHEMA_VERSION_5 = "5";
 const SNAPSHOT_SCHEMA_VERSION_6 = "6";
 const SNAPSHOT_SCHEMA_VERSION_7 = "7";
-export const SNAPSHOT_SCHEMA_VERSION_8 = "8";
+const SNAPSHOT_SCHEMA_VERSION_8 = "8";
+export const SNAPSHOT_SCHEMA_VERSION_9 = "9";
 
-type StateSnapshotVersion8 = Readonly<{
-  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_8;
+type StateSnapshotVersion9 = Readonly<{
+  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_9;
   generatedAt: UtcIsoDateTime;
   trackingStartAt: TrackingStartAtState;
   ai: SnapshotAiState;
@@ -178,8 +181,8 @@ type StateSnapshotVersion8 = Readonly<{
 
 type StateSnapshotVersionParser = (value: unknown) => StateSnapshot;
 
-/** tracker-stateへ保存するschema version 8のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion8;
+/** tracker-stateへ保存するschema version 9のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion9;
 
 const snapshotSchemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
@@ -304,6 +307,40 @@ const snapshotVersion7MigrationSchema = z.looseObject({
 });
 
 type StateSnapshotVersion7 = z.output<typeof snapshotVersion7MigrationSchema>;
+const snapshotVersion8ImportanceFactorSchema = z.looseObject({
+  kind: z.string(),
+  points: z.number(),
+  detail: z.string(),
+});
+const snapshotVersion8ImportanceAssessmentSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_available"),
+  }),
+  z.strictObject({
+    status: z.literal("available"),
+    value: z.looseObject({
+      significantFeature: z.boolean(),
+      explicitDeadline: z.boolean(),
+      futureRisk: z.boolean(),
+      rationale: z.string(),
+    }),
+  }),
+]);
+const snapshotVersion8MigrationSchema = z.looseObject({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_8),
+  items: z.array(
+    z.looseObject({
+      importance: z.looseObject({
+        score: z.number(),
+        level: z.enum(["low", "medium", "high"]),
+        factors: z.array(snapshotVersion8ImportanceFactorSchema),
+      }),
+      importanceAssessment: snapshotVersion8ImportanceAssessmentSchema,
+    }),
+  ),
+});
+
+type StateSnapshotVersion8 = z.output<typeof snapshotVersion8MigrationSchema>;
 const ajv = new Ajv2020({
   allErrors: true,
   coerceTypes: false,
@@ -320,7 +357,7 @@ ajv.addFormat("date-time", {
     return !Number.isNaN(Date.parse(value));
   },
 });
-const validateSnapshotVersion8Schema = ajv.compile<StateSnapshotVersion8>(snapshotSchema);
+const validateSnapshotVersion9Schema = ajv.compile<StateSnapshotVersion9>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -514,9 +551,6 @@ function assertSnapshotSemantics(snapshot: StateSnapshot): void {
     ]) {
       assertUtcDateTime(dateTime, "itemの日時");
     }
-    if (item.milestone?.dueOn != null) {
-      assertUtcDateTime(item.milestone.dueOn, "itemのmilestone期限");
-    }
     assertUnique(
       item.importance.factors.map((factor) => factor.kind),
       "itemのimportance factor kind",
@@ -613,12 +647,6 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
         .map((item) =>
           Object.freeze({
             ...item,
-            milestone:
-              item.milestone == null
-                ? null
-                : Object.freeze({
-                    ...item.milestone,
-                  }),
             importance: Object.freeze({
               ...item.importance,
               factors: Object.freeze(
@@ -641,6 +669,17 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
                     status: "available",
                     value: Object.freeze({
                       ...item.importanceAssessment.value,
+                    }),
+                  }),
+            deadlineAssessment:
+              item.deadlineAssessment.status === "not_available"
+                ? Object.freeze({
+                    status: "not_available",
+                  })
+                : Object.freeze({
+                    status: "available",
+                    value: Object.freeze({
+                      ...item.deadlineAssessment.value,
                     }),
                   }),
             author:
@@ -768,7 +807,6 @@ function migrateStateSnapshotVersion3(snapshot: StateSnapshotVersion3): StateSna
       schemaVersion: SNAPSHOT_SCHEMA_VERSION_4,
       items: snapshot.items.map((item) => ({
         ...item,
-        milestone: null,
       })),
     }),
   );
@@ -881,15 +919,62 @@ function migrateStateSnapshotVersion7(snapshot: StateSnapshotVersion7): StateSna
 }
 
 function parseStateSnapshotVersion8(value: unknown): StateSnapshotVersion8 {
-  if (!validateSnapshotVersion8Schema(value)) {
-    const issueCount = validateSnapshotVersion8Schema.errors?.length ?? 1;
+  const result = snapshotVersion8MigrationSchema.safeParse(value);
+  if (!result.success) {
+    throw new StateSnapshotSchemaError(result.error.issues.length);
+  }
+  return result.data;
+}
+
+function migrateStateSnapshotVersion8(snapshot: StateSnapshotVersion8): StateSnapshot {
+  return migrateStateSnapshotVersion9(
+    parseStateSnapshotVersion9({
+      ...snapshot,
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION_9,
+      items: snapshot.items.map((item) => {
+        const { milestone, ...itemWithoutMilestone } = item;
+        void milestone;
+        return {
+          ...itemWithoutMilestone,
+          importance: {
+            score: 0,
+            level: "low",
+            factors: [],
+          },
+          attention: {
+            score: 0,
+            level: "low",
+          },
+          importanceAssessment:
+            item.importanceAssessment.status === "not_available"
+              ? { status: "not_available" }
+              : {
+                  status: "available",
+                  value: {
+                    significantFeature: item.importanceAssessment.value.significantFeature,
+                    futureRisk: item.importanceAssessment.value.futureRisk,
+                    rationale: item.importanceAssessment.value.rationale,
+                  },
+                },
+          deadlineAssessment: {
+            status: "not_available",
+          },
+        };
+      }),
+    }),
+  );
+}
+
+function parseStateSnapshotVersion9(value: unknown): StateSnapshot {
+  if (!validateSnapshotVersion9Schema(value)) {
+    const issueCount = validateSnapshotVersion9Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
   assertSnapshotSemantics(value);
   return value;
 }
 
-function migrateStateSnapshotVersion8(snapshot: StateSnapshotVersion8): StateSnapshot {
+function migrateStateSnapshotVersion9(snapshot: StateSnapshot): StateSnapshot {
   return normalizeSnapshot(snapshot);
 }
 
@@ -933,6 +1018,10 @@ const stateSnapshotVersionParsers: ReadonlyMap<string, StateSnapshotVersionParse
     SNAPSHOT_SCHEMA_VERSION_8,
     createStateSnapshotVersionParser(parseStateSnapshotVersion8, migrateStateSnapshotVersion8),
   ],
+  [
+    SNAPSHOT_SCHEMA_VERSION_9,
+    createStateSnapshotVersionParser(parseStateSnapshotVersion9, migrateStateSnapshotVersion9),
+  ],
 ]);
 
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
@@ -951,7 +1040,7 @@ function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return migrateStateSnapshotVersion8(parseStateSnapshotVersion8(value));
+  return migrateStateSnapshotVersion9(parseStateSnapshotVersion9(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */

@@ -167,15 +167,16 @@ Zodのstrict schemaで未知のfieldも拒否するため、設定名を追加�
 
 デプロイ前に必ず確認する項目は次のとおりです。
 
-| 設定                                                                                           | 確認内容                                                           |
-| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `tracking.startAt`                                                                             | 追跡を開始する日時                                                 |
-| `maintainers.defaults`と`maintainers.repositories`                                             | 既定値とrepository別上書きへ指定するメンテナのGitHubユーザー名一覧 |
-| `attention.recencyFloor`と`attention.levels`                                                   | 要対応度の鮮度係数の下限とlevelの閾値                              |
-| `ai.authentication`と`ai.model`                                                                | Actionsへ登録した認証方式と利用可能なmodel ID                      |
-| `notifications.discord.enabled`                                                                | 初回の日次workflowからDiscord通知を実行する設定になっているか      |
-| `notifications.discord.webhookSecretName`と`notifications.discord.operationsWebhookSecretName` | Actionsへ登録した2つのsecret名と一致するか                         |
-| `web.basePath`                                                                                 | GitHub Pagesのrepository pathと一致するか                          |
+| 設定                                                                                           | 確認内容                                                            |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| `tracking.startAt`                                                                             | 追跡を開始する日時                                                  |
+| `maintainers.defaults`と`maintainers.repositories`                                             | 既定値とrepository別上書きへ指定するメンテナのGitHubユーザー名一覧  |
+| `attention.recencyFloor`と`attention.levels`                                                   | 要対応度の鮮度係数の下限とlevelの閾値                               |
+| `attention.deadlinePoints`                                                                     | 期限の切迫度加点が0 = none < low < medium < highかつhighが100以下か |
+| `ai.authentication`と`ai.model`                                                                | Actionsへ登録した認証方式と利用可能なmodel ID                       |
+| `notifications.discord.enabled`                                                                | 初回の日次workflowからDiscord通知を実行する設定になっているか       |
+| `notifications.discord.webhookSecretName`と`notifications.discord.operationsWebhookSecretName` | Actionsへ登録した2つのsecret名と一致するか                          |
+| `web.basePath`                                                                                 | GitHub Pagesのrepository pathと一致するか                           |
 
 secretの値は`config.yml`へ書きません。
 現行設定ではCodexとDiscord通知が有効で、mentionは無効です。
@@ -202,27 +203,26 @@ maintainers:
 | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
 | `importance.weights.priorityLabelMultiplier`                                 | `labels.rules`で解決した`priorityWeight`へ掛ける倍率                        |
 | `importance.weights.blockedItem`、`blockedRepository`、`downstreamImpactMax` | 止めているopen項目数とリポジトリ数の重み、downstream impactによる加点の上限 |
-| `importance.weights.milestoneWithDueDate`、`milestoneDueSoon`                | 期限付きのopen milestoneと期限間近の場合の追加点                            |
-| `importance.weights.significantFeature`、`explicitDeadline`、`futureRisk`    | Codexが判定する重要な機能、明示された期限、将来問題の重み                   |
-| `importance.dueSoonDays`                                                     | milestoneを期限間近として追加加点する残り日数                               |
+| `importance.weights.significantFeature`、`futureRisk`                        | Codexが判定する重要な機能と将来問題の重み                                   |
 | `importance.levels.medium`、`high`                                           | mediumとhighのscore下限。medium未満はlowとし、highはmedium以上にする        |
 
-各重みと日数は0以上にします。
+各重みは0以上にします。
 scoreは各要因の加点を0から100の整数へ収めた値です。
 
 ### attention
 
-`attention`は重要度を主、停滞の短さを従とする要対応度を決める設定です。
+`attention`は重要度、期限の切迫度、停滞の鮮度から要対応度を決める設定です。
 項目のwait classに対応する`staleness.thresholdsHours`の`watch`を鮮度係数の半減期として使います。
 
-| 設定                      | 意味                                              |
-| ------------------------- | ------------------------------------------------- |
-| `attention.recencyFloor`  | 鮮度係数の下限。0以上1以下とし、既定値は0.4       |
-| `attention.levels.medium` | mediumのscore下限。既定値は20                     |
-| `attention.levels.high`   | highのscore下限。既定値は40とし、medium以上にする |
+| 設定                       | 意味                                                                                                     |
+| -------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `attention.recencyFloor`   | 鮮度係数の下限。0以上1以下とし、既定値は0.4                                                              |
+| `attention.levels.medium`  | mediumのscore下限。既定値は20                                                                            |
+| `attention.levels.high`    | highのscore下限。既定値は40とし、medium以上にする                                                        |
+| `attention.deadlinePoints` | 期限の切迫度ごとの加点。noneは0に固定し、0 = none < low < medium < highを満たす100以下の安全な整数にする |
 
 鮮度係数は`recencyFloor + (1 - recencyFloor) × 0.5 ^ (停滞時間 ÷ watch閾値)`で求めます。
-重要度scoreへ鮮度係数を掛けて四捨五入し、要対応度scoreを0から100の整数にします。
+`importanceCapacity = 100 - deadlinePoints.high`として、`recencyScore = round(importanceScore × recencyCoefficient × importanceCapacity / 100)`を求め、期限の切迫度加点を足して要対応度scoreを0から100の整数にします。
 terminal項目とブロック解消待ちの項目は要対応度scoreが0になります。
 
 ## デプロイ確認

@@ -149,7 +149,11 @@
             "authorCandidateId": "release-planner"
           },
           "candidates": {
-            "waitingOn": [{ "id": "fixture-maintainer" }],
+            "waitingOn": [
+              {
+                "id": "fixture-maintainer"
+              }
+            ],
             "relations": [
               {
                 "id": "rel:checklist-release-core",
@@ -170,7 +174,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "item": {
             "nodeId": "nested-release-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/501"
@@ -203,7 +207,6 @@
           },
           "importance": {
             "significantFeature": false,
-            "explicitDeadline": false,
             "futureRisk": false,
             "rationale": "重要度の自然言語要因はありません"
           },
@@ -220,6 +223,10 @@
             "recommended": false,
             "reasonCode": "none",
             "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+          },
+          "deadline": {
+            "level": "none",
+            "rationale": "期限や時期の根拠はありません"
           }
         },
         "rejectedOutputs": []
@@ -237,7 +244,11 @@
             "authorCandidateId": "release-worker-one"
           },
           "candidates": {
-            "waitingOn": [{ "id": "fixture-maintainer" }],
+            "waitingOn": [
+              {
+                "id": "fixture-maintainer"
+              }
+            ],
             "relations": [
               {
                 "id": "rel:checklist-core-engine",
@@ -258,7 +269,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "item": {
             "nodeId": "nested-core-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/502"
@@ -291,7 +302,6 @@
           },
           "importance": {
             "significantFeature": false,
-            "explicitDeadline": false,
             "futureRisk": false,
             "rationale": "重要度の自然言語要因はありません"
           },
@@ -308,6 +318,10 @@
             "recommended": false,
             "reasonCode": "none",
             "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+          },
+          "deadline": {
+            "level": "none",
+            "rationale": "期限や時期の根拠はありません"
           }
         },
         "rejectedOutputs": []

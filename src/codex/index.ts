@@ -87,11 +87,13 @@ export {
 } from "./input.js";
 export {
   type SchemaValidCodexAnalysisOutput,
+  type SchemaValidCodexDeadline,
   type SchemaValidCodexEvidence,
   type SchemaValidCodexImportance,
   type SchemaValidCodexRelation,
   type SchemaValidCodexWaitingOn,
   type ValidatedCodexAnalysisOutput,
+  type ValidatedCodexDeadline,
   type ValidatedCodexImportance,
   type ValidatedCodexRelation,
 } from "./output-types.js";

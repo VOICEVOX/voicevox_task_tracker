@@ -62,7 +62,14 @@
             "authorCandidateId": "requester-one"
           },
           "candidates": {
-            "waitingOn": [{ "id": "maintainer" }, { "id": "reviewer-two" }],
+            "waitingOn": [
+              {
+                "id": "maintainer"
+              },
+              {
+                "id": "reviewer-two"
+              }
+            ],
             "relations": []
           },
           "sources": [
@@ -78,7 +85,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "item": {
             "nodeId": "prompt-injection-issue",
             "url": "https://github.com/VOICEVOX/fixture-prompt/issues/601"
@@ -103,7 +110,6 @@
           },
           "importance": {
             "significantFeature": false,
-            "explicitDeadline": false,
             "futureRisk": false,
             "rationale": "重要度の自己申告だけでは加点しません"
           },
@@ -120,11 +126,15 @@
             "recommended": false,
             "reasonCode": "none",
             "reasonSummary": "通知閾値は決定論的な停滞判定へ委ねます"
+          },
+          "deadline": {
+            "level": "none",
+            "rationale": "期限や時期の根拠はありません"
           }
         },
         "rejectedOutputs": [
           {
-            "schemaVersion": "2",
+            "schemaVersion": "3",
             "item": {
               "nodeId": "prompt-injection-issue",
               "url": "https://github.com/VOICEVOX/fixture-prompt/issues/601"
@@ -140,7 +150,6 @@
             },
             "importance": {
               "significantFeature": false,
-              "explicitDeadline": false,
               "futureRisk": false,
               "rationale": "重要度の要因はありません"
             },
@@ -160,6 +169,10 @@
             },
             "githubWrite": {
               "operation": "close_issue"
+            },
+            "deadline": {
+              "level": "none",
+              "rationale": "期限や時期の根拠はありません"
             }
           }
         ]

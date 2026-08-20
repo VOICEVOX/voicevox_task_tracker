@@ -453,11 +453,14 @@ function createItemSummary(
     number: item.number,
     url: item.url,
     title: item.title,
-    milestone:
-      item.milestone == null
-        ? null
+    deadline:
+      item.deadlineAssessment.status === "not_available"
+        ? {
+            status: "not_available",
+          }
         : {
-            ...item.milestone,
+            status: "available",
+            level: item.deadlineAssessment.value.level,
           },
     state: item.state,
     author:
@@ -643,7 +646,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     },
   }));
   const summary = createPublicSummaryDto({
-    schemaVersion: "5",
+    schemaVersion: "6",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
@@ -659,7 +662,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     graph: createInitialGraph(graph, itemSummaries, input.options.maxInitialGraphNodes),
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "5",
+    schemaVersion: "6",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     items: snapshot.items.map((item, index) => {
@@ -667,6 +670,16 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       assertNonNullable(summaryItem, `item ${item.nodeId}のsummaryがありません`);
       return {
         summary: summaryItem,
+        deadline:
+          item.deadlineAssessment.status === "not_available"
+            ? {
+                status: "not_available",
+              }
+            : {
+                status: "available",
+                level: item.deadlineAssessment.value.level,
+                rationale: item.deadlineAssessment.value.rationale,
+              },
         importanceFactors: item.importance.factors.map((factor) => ({
           ...factor,
         })),

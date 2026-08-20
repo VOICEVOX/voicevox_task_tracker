@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "5",
+  "schemaVersion": "6",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "observedAt": "2026-07-31T00:00:00.000Z",
@@ -56,13 +56,6 @@
       "number": 101,
       "url": "https://github.com/VOICEVOX/sample-editor/pull/101",
       "title": "サンプル辞書更新をマージする",
-      "milestone": {
-        "nodeId": "sample-milestone-editor-1",
-        "number": 1,
-        "title": "サンプルリリース",
-        "state": "open",
-        "dueOn": "2026-08-31T00:00:00.000Z"
-      },
       "state": "open",
       "author": {
         "status": "identified",
@@ -96,11 +89,11 @@
       "nextAction": "メンテナーが内容を確認してマージする",
       "severity": "critical",
       "importance": {
-        "score": 63,
+        "score": 53,
         "level": "high"
       },
       "attention": {
-        "score": 25,
+        "score": 35,
         "level": "medium"
       },
       "priorityWeight": 25,
@@ -117,6 +110,10 @@
         "nodeId": "sample-item-editor-101",
         "openNodeCount": 1,
         "repositoryCount": 1
+      },
+      "deadline": {
+        "status": "available",
+        "level": "medium"
       }
     },
     {
@@ -127,7 +124,6 @@
       "number": 202,
       "url": "https://github.com/VOICEVOX/sample-engine/pull/202",
       "title": "サンプルAPIのレビューを完了する",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -182,6 +178,9 @@
         "nodeId": "sample-item-engine-202",
         "openNodeCount": 4,
         "repositoryCount": 3
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -192,7 +191,6 @@
       "number": 103,
       "url": "https://github.com/VOICEVOX/sample-editor/issues/103",
       "title": "サンプル配布方針を決める",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -247,6 +245,9 @@
         "nodeId": "sample-item-editor-103",
         "openNodeCount": 2,
         "repositoryCount": 2
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -257,7 +258,6 @@
       "number": 204,
       "url": "https://github.com/VOICEVOX/sample-engine/issues/204",
       "title": "サンプル配布処理を実装する",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "unavailable",
@@ -315,6 +315,9 @@
         "nodeId": "sample-item-engine-204",
         "openNodeCount": 0,
         "repositoryCount": 0
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -325,7 +328,6 @@
       "number": 305,
       "url": "https://github.com/VOICEVOX/sample-core/pull/305",
       "title": "サンプル修正へ回答する",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -380,6 +382,9 @@
         "nodeId": "sample-item-core-305",
         "openNodeCount": 3,
         "repositoryCount": 2
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -390,7 +395,6 @@
       "number": 401,
       "url": "https://github.com/example/sample-workflow/pull/401",
       "title": "サンプル要件の内容を確認する",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -439,6 +443,9 @@
         "nodeId": "sample-item-workflow-401",
         "openNodeCount": 0,
         "repositoryCount": 0
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -449,7 +456,6 @@
       "number": 402,
       "url": "https://github.com/example/sample-workflow/pull/402",
       "title": "サンプル移行の担当を決める",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -498,6 +504,9 @@
         "nodeId": "sample-item-workflow-402",
         "openNodeCount": 0,
         "repositoryCount": 0
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -508,7 +517,6 @@
       "number": 403,
       "url": "https://github.com/example/sample-workflow/pull/403",
       "title": "サンプル質問への返答を確認する",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -557,6 +565,9 @@
         "nodeId": "sample-item-workflow-403",
         "openNodeCount": 0,
         "repositoryCount": 0
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -567,7 +578,6 @@
       "number": 404,
       "url": "https://github.com/example/sample-workflow/pull/404",
       "title": "サンプル画面の実装を開始する",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -622,6 +632,9 @@
         "nodeId": "sample-item-workflow-404",
         "openNodeCount": 0,
         "repositoryCount": 0
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -632,7 +645,6 @@
       "number": 405,
       "url": "https://github.com/example/sample-workflow/pull/405",
       "title": "サンプル機能を実装する",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -687,6 +699,9 @@
         "nodeId": "sample-item-workflow-405",
         "openNodeCount": 0,
         "repositoryCount": 0
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -697,7 +712,6 @@
       "number": 406,
       "url": "https://github.com/example/sample-workflow/pull/406",
       "title": "サンプル配布の自動処理を待つ",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -746,6 +760,9 @@
         "nodeId": "sample-item-workflow-406",
         "openNodeCount": 0,
         "repositoryCount": 0
+      },
+      "deadline": {
+        "status": "not_available"
       }
     },
     {
@@ -756,7 +773,6 @@
       "number": 407,
       "url": "https://github.com/example/sample-workflow/pull/407",
       "title": "サンプル待ち先を調査する",
-      "milestone": null,
       "state": "open",
       "author": {
         "status": "identified",
@@ -805,6 +821,9 @@
         "nodeId": "sample-item-workflow-407",
         "openNodeCount": 0,
         "repositoryCount": 0
+      },
+      "deadline": {
+        "status": "not_available"
       }
     }
   ],

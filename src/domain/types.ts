@@ -394,15 +394,6 @@ export type TrackedItemInputEvent = Readonly<{
   url: GitHubItemUrl;
 }>;
 
-/** 追跡項目に設定されたmilestone。 */
-export type TrackedItemMilestone = Readonly<{
-  nodeId: GitHubNodeId;
-  number: number;
-  title: string;
-  state: "open" | "closed";
-  dueOn: UtcIsoDateTime | null;
-}>;
-
 export type TrackedItemLatestEventActor =
   | Readonly<{
       status: "absent";
@@ -448,7 +439,6 @@ type TrackedItemFields = Readonly<{
   number: number;
   url: GitHubItemUrl;
   title: string;
-  milestone: TrackedItemMilestone | null;
   importance: Importance;
   author: ObservedGitHubItemAuthor;
   latestEventActor: TrackedItemLatestEventActor;

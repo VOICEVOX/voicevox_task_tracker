@@ -1,4 +1,5 @@
 import {
+  type DeadlineLevel,
   type Evidence,
   type EvidenceSupport,
   type GitHubItemUrl,
@@ -41,14 +42,19 @@ export type SchemaValidCodexEvidence = Readonly<{
 /** JSON Schema検証を通ったCodexの重要度判定。 */
 export type SchemaValidCodexImportance = Readonly<{
   significantFeature: boolean;
-  explicitDeadline: boolean;
   futureRisk: boolean;
+  rationale: string;
+}>;
+
+/** JSON Schema検証を通ったCodexの期限の切迫度判定。 */
+export type SchemaValidCodexDeadline = Readonly<{
+  level: DeadlineLevel;
   rationale: string;
 }>;
 
 /** repositoryのJSON Schemaに適合したCodex出力。 */
 export type SchemaValidCodexAnalysisOutput = Readonly<{
-  schemaVersion: "2";
+  schemaVersion: "3";
   item: Readonly<{
     nodeId: string;
     url: string;
@@ -63,6 +69,7 @@ export type SchemaValidCodexAnalysisOutput = Readonly<{
     confidence: number;
   }>;
   importance: SchemaValidCodexImportance;
+  deadline: SchemaValidCodexDeadline;
   evidence: readonly SchemaValidCodexEvidence[];
   confidence: number;
   uncertainties: readonly string[];
@@ -76,8 +83,13 @@ export type SchemaValidCodexAnalysisOutput = Readonly<{
 /** semantic検証を通ったCodexの重要度判定。 */
 export type ValidatedCodexImportance = Readonly<{
   significantFeature: boolean;
-  explicitDeadline: boolean;
   futureRisk: boolean;
+  rationale: string;
+}>;
+
+/** semantic検証を通ったCodexの期限の切迫度判定。 */
+export type ValidatedCodexDeadline = Readonly<{
+  level: DeadlineLevel;
   rationale: string;
 }>;
 
@@ -92,7 +104,7 @@ export type ValidatedCodexRelation = Readonly<{
 
 /** reducerへ渡せる二段階検証済みのCodex出力。 */
 export type ValidatedCodexAnalysisOutput = Readonly<{
-  schemaVersion: "2";
+  schemaVersion: "3";
   item: Readonly<{
     nodeId: GitHubNodeId;
     url: GitHubItemUrl;
@@ -107,6 +119,7 @@ export type ValidatedCodexAnalysisOutput = Readonly<{
     confidence: number;
   }>;
   importance: ValidatedCodexImportance;
+  deadline: ValidatedCodexDeadline;
   evidence: readonly Evidence[];
   confidence: number;
   uncertainties: readonly string[];
