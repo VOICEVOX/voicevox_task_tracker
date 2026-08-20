@@ -22,7 +22,7 @@ type RetryDecision =
     }>
   | Readonly<{
       retry: true;
-      status: 403 | 429 | 502 | 503 | 504;
+      status: 403 | 429 | 500 | 502 | 503 | 504;
       retryAfterMilliseconds: number | undefined;
     }>;
 
@@ -95,7 +95,7 @@ function decideRetry(error: unknown, now: Date): RetryDecision {
 
   const status = result.data.status;
   const retryAfter = parseRetryAfter(getHeader(result.data.response?.headers, "retry-after"), now);
-  if (status === 429 || status === 502 || status === 503 || status === 504) {
+  if (status === 429 || status === 500 || status === 502 || status === 503 || status === 504) {
     return {
       retry: true,
       status,
