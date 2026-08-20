@@ -104,6 +104,9 @@ export type WebRoute =
       page: "items";
     }>
   | Readonly<{
+      page: "guide";
+    }>
+  | Readonly<{
       page: "item-details";
       target: ItemRouteTarget;
     }>
@@ -371,6 +374,21 @@ function parseRelativeRoute(relativePath: string, targets: ValidWebRouteTargets)
   switch (segments[0]) {
     case "items":
       return parseItemRoute(segments, targets.items);
+    case "guide":
+      if (segments.length === 1) {
+        return {
+          route: {
+            page: "guide",
+          },
+          status: "valid",
+        };
+      }
+      return {
+        route: {
+          page: "items",
+        },
+        status: "sanitized",
+      };
     case "people":
       if (segments.length === 1) {
         return {
@@ -617,6 +635,8 @@ function createRoutePath(basePath: string, route: WebRoute): string {
   switch (route.page) {
     case "items":
       return parsedBasePath;
+    case "guide":
+      return `${pathPrefix}/guide`;
     case "item-details":
       return `${pathPrefix}/items/${encodeURIComponent(route.target.repositoryName)}/${route.target.number.toString()}`;
     case "people":

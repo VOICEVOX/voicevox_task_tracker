@@ -7,6 +7,7 @@ import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { createSharedDetailsLoader, type PublicDetailsLoader } from "./details-loader.js";
 import { ItemDetailsPage } from "./item-details-page.js";
 import { ItemsPage } from "./items-page.js";
+import { LogicGuidePage } from "./logic-guide-page.js";
 import {
   collectWaitingTeamIds,
   createTableFilterOptions,
@@ -300,6 +301,15 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     );
   }
 
+  function selectGuide(): void {
+    navigate(
+      createWebViewState({
+        page: "guide",
+      }),
+      "push",
+    );
+  }
+
   function filterValidViewerTeamIds(teamIds: readonly string[]): readonly string[] {
     return teamIds.filter((teamId) =>
       validTeamKeys.has(waitingSubjectKey({ kind: "team", teamId })),
@@ -381,6 +391,12 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             createPersonHref={createPersonHref}
             filterOptions={tableFilterOptions}
             filters={viewState.tableFilters}
+            guideHref={createWebViewHref(
+              basePath,
+              createWebViewState({
+                page: "guide",
+              }),
+            )}
             loadDetails={sharedLoadDetails}
             now={now}
             searchQuery={viewState.searchQuery}
@@ -389,6 +405,7 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             onFilterChange={replaceTableFilter}
             onSearchQueryChange={replaceSearchQuery}
             onSelectItem={selectItem}
+            onSelectGuide={selectGuide}
             onSelectPerson={selectPerson}
             onSortChange={replaceTableSort}
           />
@@ -434,6 +451,8 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             onSelectPerson={selectPerson}
           />
         );
+      case "guide":
+        return <LogicGuidePage />;
       case "person":
         return (
           <PersonPage
