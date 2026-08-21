@@ -572,6 +572,39 @@ function graphNodeImpact(
   return impact;
 }
 
+function requiredInitialGraphNodes(
+  graph: PublicGraph,
+  items: readonly PublicItemSummaryDto[],
+): readonly PublicGraphNodeDto[] {
+  const summaryItemNodeIds = new Set(items.map((item) => item.nodeId));
+  const graphNodesByNodeId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+  const waitingOnItemCandidateIds = new Set<string>();
+  for (const item of items) {
+    for (const waitingOn of item.waitingOn) {
+      if (waitingOn.kind === "item") {
+        waitingOnItemCandidateIds.add(waitingOn.candidateId);
+      }
+    }
+  }
+  const requiredNodes: PublicGraphNodeDto[] = [];
+  for (const candidateId of waitingOnItemCandidateIds) {
+    if (summaryItemNodeIds.has(candidateId)) {
+      continue;
+    }
+    const graphNode = graphNodesByNodeId.get(candidateId);
+    if (graphNode == null) {
+      throw new PublicDtoSemanticError(`waitingOn項目 ${candidateId}の公開graph nodeがありません`);
+    }
+    if (graphNode.kind !== "external_reference") {
+      throw new PublicDtoSemanticError(
+        `waitingOn項目 ${candidateId}はexternal_referenceではありません`,
+      );
+    }
+    requiredNodes.push(graphNode);
+  }
+  return Object.freeze(requiredNodes);
+}
+
 function createInitialGraph(
   graph: PublicGraph,
   items: readonly PublicItemSummaryDto[],
@@ -581,38 +614,48 @@ function createInitialGraph(
   const impactByNodeId = new Map<string, AnalyzeGraphResult["downstreamImpacts"][number]>(
     graph.analysis.downstreamImpacts.map((impact) => [impact.nodeId, impact]),
   );
-  const selectedNodes = [...graph.nodes]
-    .sort((left, right) => {
-      const attentionOrder =
-        graphNodeAttentionScore(right, summaryByNodeId) -
-        graphNodeAttentionScore(left, summaryByNodeId);
-      if (attentionOrder !== 0) {
-        return attentionOrder;
+  const requiredNodes = requiredInitialGraphNodes(graph, items);
+  if (requiredNodes.length > maxInitialGraphNodes) {
+    throw new PublicDtoSemanticError(
+      `waitingOnの必須external_reference node数 ${requiredNodes.length.toString()} がinitial graph上限 ${maxInitialGraphNodes.toString()}を超えています`,
+    );
+  }
+  const rankedNodes = [...graph.nodes].sort((left, right) => {
+    const attentionOrder =
+      graphNodeAttentionScore(right, summaryByNodeId) -
+      graphNodeAttentionScore(left, summaryByNodeId);
+    if (attentionOrder !== 0) {
+      return attentionOrder;
+    }
+    const leftImpact = graphNodeImpact(left, impactByNodeId);
+    const rightImpact = graphNodeImpact(right, impactByNodeId);
+    const impactOrder = rightImpact.openNodeCount - leftImpact.openNodeCount;
+    if (impactOrder !== 0) {
+      return impactOrder;
+    }
+    const leftSummary = summaryByNodeId.get(left.nodeId);
+    const rightSummary = summaryByNodeId.get(right.nodeId);
+    if (left.kind === "external_reference" || right.kind === "external_reference") {
+      if (left.kind === right.kind) {
+        return compareStrings(left.nodeId, right.nodeId);
       }
-      const leftImpact = graphNodeImpact(left, impactByNodeId);
-      const rightImpact = graphNodeImpact(right, impactByNodeId);
-      const impactOrder = rightImpact.openNodeCount - leftImpact.openNodeCount;
-      if (impactOrder !== 0) {
-        return impactOrder;
-      }
-      const leftSummary = summaryByNodeId.get(left.nodeId);
-      const rightSummary = summaryByNodeId.get(right.nodeId);
-      if (left.kind === "external_reference" || right.kind === "external_reference") {
-        if (left.kind === right.kind) {
-          return compareStrings(left.nodeId, right.nodeId);
-        }
-        return left.kind === "external_reference" ? 1 : -1;
-      }
-      assertNonNullable(leftSummary, `node ${left.nodeId}のsummaryがありません`);
-      assertNonNullable(rightSummary, `node ${right.nodeId}のsummaryがありません`);
-      const stallOrder = compareStrings(leftSummary.stallSince, rightSummary.stallSince);
-      if (stallOrder !== 0) {
-        return stallOrder;
-      }
-      return compareStrings(left.nodeId, right.nodeId);
-    })
-    .slice(0, maxInitialGraphNodes)
-    .sort((left, right) => compareStrings(left.nodeId, right.nodeId));
+      return left.kind === "external_reference" ? 1 : -1;
+    }
+    assertNonNullable(leftSummary, `node ${left.nodeId}のsummaryがありません`);
+    assertNonNullable(rightSummary, `node ${right.nodeId}のsummaryがありません`);
+    const stallOrder = compareStrings(leftSummary.stallSince, rightSummary.stallSince);
+    if (stallOrder !== 0) {
+      return stallOrder;
+    }
+    return compareStrings(left.nodeId, right.nodeId);
+  });
+  const requiredNodeIds = new Set(requiredNodes.map((node) => node.nodeId));
+  const selectedNodes = [
+    ...requiredNodes,
+    ...rankedNodes
+      .filter((node) => !requiredNodeIds.has(node.nodeId))
+      .slice(0, maxInitialGraphNodes - requiredNodes.length),
+  ].sort((left, right) => compareStrings(left.nodeId, right.nodeId));
   return {
     nodes: selectedNodes.map((node) =>
       node.kind === "external_reference"
