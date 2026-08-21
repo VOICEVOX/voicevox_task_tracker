@@ -7,7 +7,6 @@ type PageSectionProps = Readonly<{
   children: ComponentChildren;
   className?: string;
   heading: ComponentChildren;
-  headingAccessory?: ComponentChildren;
   headingClassName?: string;
   headingId: string;
 }>;
@@ -32,7 +31,6 @@ export function PageSection({
   children,
   className,
   heading,
-  headingAccessory,
   headingClassName,
   headingId,
 }: PageSectionProps) {
@@ -48,7 +46,6 @@ export function PageSection({
         >
           {heading}
         </h2>
-        {headingAccessory}
       </div>
       {children}
     </section>
