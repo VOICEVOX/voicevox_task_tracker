@@ -16,6 +16,10 @@ export const ITEM_SORT_OPTIONS = [
     key: "stall",
     label: "停滞時間",
   },
+  {
+    key: "deadline",
+    label: "期限の切迫度",
+  },
 ] satisfies readonly Readonly<{
   key: ItemSortKey;
   label: string;

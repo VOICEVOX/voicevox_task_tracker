@@ -69,7 +69,7 @@ const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
 ];
 const PERSON_QUERY_PARAMETER_NAMES: readonly string[] = ["teams", "sort", "direction"];
 
-const itemSortKeySchema = z.enum(["attention", "importance", "stall"]);
+const itemSortKeySchema = z.enum(["attention", "importance", "stall", "deadline"]);
 const sortDirectionSchema = z.enum(["ascending", "descending"]);
 const filterValueSchema = z
   .string()
