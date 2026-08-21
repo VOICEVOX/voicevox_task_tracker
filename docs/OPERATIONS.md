@@ -1,6 +1,7 @@
 # 運用手順
 
-正常運用時のVOICEVOX Task Trackerは毎日23:00 UTCに起動し、日本時間の08:00以降にPagesとDiscordを更新します。
+正常運用時のVOICEVOX Task Trackerは毎日03:00、07:00、11:00、15:00、19:00、23:00 UTCに起動します。
+日本時間では00:00、04:00、08:00、12:00、16:00、20:00にPagesとDiscordを更新します。
 GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は保証しません。
 
 ## 日々の確認

@@ -2,6 +2,11 @@ name: 日次タスク追跡
 
 on:
   schedule:
+    - cron: "0 3 * * *" # JSTでは12:00
+    - cron: "0 7 * * *" # JSTでは16:00
+    - cron: "0 11 * * *" # JSTでは20:00
+    - cron: "0 15 * * *" # JSTでは翌日00:00
+    - cron: "0 19 * * *" # JSTでは翌日04:00
     - cron: "0 23 * * *" # JSTでは翌日08:00
   workflow_dispatch:
     inputs:
@@ -113,12 +118,25 @@ jobs:
           GH_APP_ID: ${{ vars.GH_APP_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           REPOSITORY_FILTER: ${{ inputs.repository_filter || '' }}
+          SCHEDULE: ${{ github.event.schedule }}
         run: |
           current_time="$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
           if [[ "$GITHUB_EVENT_NAME" == "schedule" ]]; then
-            scheduled_for="$(date -u --date='today 23:00' +'%Y-%m-%dT%H:%M:%S.000Z')"
+            case "$SCHEDULE" in
+              "0 3 * * *") scheduled_time="03:00" ;;
+              "0 7 * * *") scheduled_time="07:00" ;;
+              "0 11 * * *") scheduled_time="11:00" ;;
+              "0 15 * * *") scheduled_time="15:00" ;;
+              "0 19 * * *") scheduled_time="19:00" ;;
+              "0 23 * * *") scheduled_time="23:00" ;;
+              *)
+                echo "未知のschedule式です。対象: $SCHEDULE" >&2
+                exit 1
+                ;;
+            esac
+            scheduled_for="$(date -u --date="today $scheduled_time" +'%Y-%m-%dT%H:%M:%S.000Z')"
             if [[ "$scheduled_for" > "$current_time" ]]; then
-              scheduled_for="$(date -u --date='yesterday 23:00' +'%Y-%m-%dT%H:%M:%S.000Z')"
+              scheduled_for="$(date -u --date="yesterday $scheduled_time" +'%Y-%m-%dT%H:%M:%S.000Z')"
             fi
           elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             scheduled_for="$current_time"

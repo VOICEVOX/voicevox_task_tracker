@@ -327,7 +327,7 @@ workflowはdefault branchからのscheduleまたは手動実行だけを許可�
 
 `tracking.startAt: null`なら、最初の完全成功runの時刻がsnapshotへ固定されます。
 収集、Pages、Discordのいずれかで運用対象の失敗が起きたrunでは、`notify-operations`が障害通知を1件送ります。
-GitHub Actionsのscheduleは遅延し得るため、08:00 JSTは起動予定時刻として扱います。
+GitHub Actionsのscheduleは遅延し得るため、00:00、04:00、08:00、12:00、16:00、20:00 JSTは起動予定時刻として扱います。
 
 mentionが必要になった場合だけ、GitHubユーザー名と17桁から20桁のDiscord user IDを`mentions.users`へ登録します。
 登録されていないuserと`@everyone`はmentionされません。
