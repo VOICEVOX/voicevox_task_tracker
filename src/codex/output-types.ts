@@ -1,5 +1,4 @@
 import {
-  type DeadlineLevel,
   type Evidence,
   type EvidenceSupport,
   type GitHubItemUrl,
@@ -46,15 +45,15 @@ export type SchemaValidCodexImportance = Readonly<{
   rationale: string;
 }>;
 
-/** JSON Schema検証を通ったCodexの期限の切迫度判定。 */
+/** JSON Schema検証を通ったCodexの期限日と根拠。切迫度は決定論的に算出する。 */
 export type SchemaValidCodexDeadline = Readonly<{
-  level: DeadlineLevel;
+  date: string | null;
   rationale: string;
 }>;
 
 /** repositoryのJSON Schemaに適合したCodex出力。 */
 export type SchemaValidCodexAnalysisOutput = Readonly<{
-  schemaVersion: "3";
+  schemaVersion: "4";
   item: Readonly<{
     nodeId: string;
     url: string;
@@ -87,9 +86,9 @@ export type ValidatedCodexImportance = Readonly<{
   rationale: string;
 }>;
 
-/** semantic検証を通ったCodexの期限の切迫度判定。 */
+/** semantic検証を通ったCodexの期限日と根拠。切迫度は決定論的に算出する。 */
 export type ValidatedCodexDeadline = Readonly<{
-  level: DeadlineLevel;
+  date: string | null;
   rationale: string;
 }>;
 
@@ -104,7 +103,7 @@ export type ValidatedCodexRelation = Readonly<{
 
 /** reducerへ渡せる二段階検証済みのCodex出力。 */
 export type ValidatedCodexAnalysisOutput = Readonly<{
-  schemaVersion: "3";
+  schemaVersion: "4";
   item: Readonly<{
     nodeId: GitHubNodeId;
     url: GitHubItemUrl;

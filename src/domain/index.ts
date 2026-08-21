@@ -12,7 +12,11 @@ export {
   type CalculateAttentionInput,
 } from "./attention.js";
 export {
+  DEADLINE_LEVELS,
+  determineDeadlineLevel,
+  validateDeadlineDate,
   type DeadlineLevel,
+  type DetermineDeadlineLevelInput,
   type NaturalLanguageDeadlineAssessment,
   type NaturalLanguageDeadlineAssessmentState,
 } from "./deadline.js";

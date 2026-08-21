@@ -396,33 +396,63 @@ const configSchema = z.strictObject({
     deadlinePoints: z
       .strictObject({
         none: z.literal(0),
-        low: positiveSafeIntegerSchema,
-        medium: positiveSafeIntegerSchema,
-        high: positiveSafeIntegerSchema.refine(
-          (value) => value <= 100,
-          "highは100以下の整数を指定してください",
+        over_30_days: positiveSafeIntegerSchema,
+        within_30_days: positiveSafeIntegerSchema,
+        within_7_days: positiveSafeIntegerSchema,
+        within_3_days: positiveSafeIntegerSchema,
+        within_1_day: positiveSafeIntegerSchema,
+        overdue: positiveSafeIntegerSchema.refine(
+          (value) => value <= 30,
+          "overdueは30以下の整数を指定してください",
         ),
       })
       .superRefine((points, context) => {
-        if (!(points.none < points.low)) {
+        if (!(points.none < points.over_30_days)) {
           context.addIssue({
             code: "custom",
-            path: ["low"],
-            message: "0 = none < low < medium < highを満たしてください",
+            path: ["over_30_days"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
           });
         }
-        if (!(points.low < points.medium)) {
+        if (!(points.over_30_days < points.within_30_days)) {
           context.addIssue({
             code: "custom",
-            path: ["medium"],
-            message: "0 = none < low < medium < highを満たしてください",
+            path: ["within_30_days"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
           });
         }
-        if (!(points.medium < points.high)) {
+        if (!(points.within_30_days < points.within_7_days)) {
           context.addIssue({
             code: "custom",
-            path: ["high"],
-            message: "0 = none < low < medium < highを満たしてください",
+            path: ["within_7_days"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+        if (!(points.within_7_days < points.within_3_days)) {
+          context.addIssue({
+            code: "custom",
+            path: ["within_3_days"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+        if (!(points.within_3_days < points.within_1_day)) {
+          context.addIssue({
+            code: "custom",
+            path: ["within_1_day"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+        if (!(points.within_1_day < points.overdue)) {
+          context.addIssue({
+            code: "custom",
+            path: ["overdue"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
           });
         }
       }),

@@ -1,9 +1,12 @@
 import {
   createLabelEffectsResolver,
+  determineDeadlineLevel,
   type Evidence,
   type LabelRule,
   type Relation,
   type TrackedItem,
+  type NaturalLanguageDeadlineAssessmentState,
+  type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
   analyzeGraph,
@@ -444,6 +447,8 @@ function createItemSummary(
   blockerNodeIds: readonly string[],
   downstreamImpact: AnalyzeGraphResult["downstreamImpacts"][number],
   priorityWeight: number,
+  evaluatedAt: UtcIsoDateTime,
+  timezone: string,
 ): PublicItemSummaryDto {
   return {
     nodeId: item.nodeId,
@@ -453,15 +458,7 @@ function createItemSummary(
     number: item.number,
     url: item.url,
     title: item.title,
-    deadline:
-      item.deadlineAssessment.status === "not_available"
-        ? {
-            status: "not_available",
-          }
-        : {
-            status: "available",
-            level: item.deadlineAssessment.value.level,
-          },
+    deadline: createPublicDeadlineSummary(item.deadlineAssessment, evaluatedAt, timezone),
     state: item.state,
     author:
       item.author.status === "unavailable"
@@ -505,6 +502,49 @@ function createItemSummary(
     downstreamImpact: {
       ...downstreamImpact,
     },
+  };
+}
+
+function createPublicDeadlineSummary(
+  assessment: NaturalLanguageDeadlineAssessmentState,
+  evaluatedAt: UtcIsoDateTime,
+  timezone: string,
+): PublicItemSummaryDto["deadline"] {
+  if (assessment.status === "not_available") {
+    return {
+      status: "not_available",
+    };
+  }
+  return {
+    status: "available",
+    date: assessment.value.date,
+    level: determineDeadlineLevel({
+      deadlineDate: assessment.value.date,
+      evaluatedAt,
+      timezone,
+    }),
+  };
+}
+
+function createPublicDeadlineDetails(
+  assessment: NaturalLanguageDeadlineAssessmentState,
+  evaluatedAt: UtcIsoDateTime,
+  timezone: string,
+): PublicDetailsDto["items"][number]["deadline"] {
+  if (assessment.status === "not_available") {
+    return {
+      status: "not_available",
+    };
+  }
+  return {
+    status: "available",
+    date: assessment.value.date,
+    level: determineDeadlineLevel({
+      deadlineDate: assessment.value.date,
+      evaluatedAt,
+      timezone,
+    }),
+    rationale: assessment.value.rationale,
   };
 }
 
@@ -635,6 +675,8 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       blockersByNodeId.get(item.nodeId) ?? Object.freeze([]),
       impact,
       resolveLabelEffects(`${repository.owner}/${repository.name}`, item.labels).priorityWeight,
+      snapshot.generatedAt,
+      input.options.timezone,
     );
   });
   const repositories = snapshot.repositories.map((repository) => ({
@@ -646,7 +688,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     },
   }));
   const summary = createPublicSummaryDto({
-    schemaVersion: "6",
+    schemaVersion: "7",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
@@ -662,7 +704,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     graph: createInitialGraph(graph, itemSummaries, input.options.maxInitialGraphNodes),
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "6",
+    schemaVersion: "7",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     items: snapshot.items.map((item, index) => {
@@ -670,16 +712,11 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       assertNonNullable(summaryItem, `item ${item.nodeId}のsummaryがありません`);
       return {
         summary: summaryItem,
-        deadline:
-          item.deadlineAssessment.status === "not_available"
-            ? {
-                status: "not_available",
-              }
-            : {
-                status: "available",
-                level: item.deadlineAssessment.value.level,
-                rationale: item.deadlineAssessment.value.rationale,
-              },
+        deadline: createPublicDeadlineDetails(
+          item.deadlineAssessment,
+          snapshot.generatedAt,
+          input.options.timezone,
+        ),
         importanceFactors: item.importance.factors.map((factor) => ({
           ...factor,
         })),
