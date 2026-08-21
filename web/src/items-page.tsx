@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { UnreachableError } from "../../src/util/index.js";
-import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { createItemCardFields, createItemTableColumns } from "./item-list-fields.js";
 import { ItemListHeading } from "./item-list-heading.js";
@@ -35,14 +34,12 @@ type ItemsPageProps = PersonNavigation &
   Readonly<{
     createItemHref: (nodeId: string) => string;
     filterOptions: TableFilterOptions;
-    guideHref: string;
     filters: TableFilters;
     loadDetails: PublicDetailsLoader;
     now: Date;
     onFilterChange: (key: TableFilterKey, value: string) => void;
     onSearchQueryChange: (query: string) => void;
     onSelectItem: (nodeId: string) => void;
-    onSelectGuide: () => void;
     onSortChange: (key: ItemSortKey) => void;
     searchQuery: string;
     sort: ItemSort;
@@ -53,7 +50,6 @@ type ItemTableProps = PersonNavigation &
   Readonly<{
     createItemHref: (nodeId: string) => string;
     filterOptions: TableFilterOptions;
-    guideHref: string;
     filters: TableFilters;
     now: Date;
     onClearSearch: () => void;
@@ -61,7 +57,6 @@ type ItemTableProps = PersonNavigation &
     onRetryDetails: () => void;
     onSearchQueryChange: (query: string) => void;
     onSelectItem: (nodeId: string) => void;
-    onSelectGuide: () => void;
     onSortChange: (key: ItemSortKey) => void;
     searchQuery: string;
     searchState: ItemSearchState;
@@ -248,14 +243,12 @@ function ItemTable({
   createPersonHref,
   filterOptions,
   filters,
-  guideHref,
   now,
   onClearSearch,
   onFilterChange,
   onRetryDetails,
   onSearchQueryChange,
   onSelectItem,
-  onSelectGuide,
   onSelectPerson,
   onSortChange,
   searchQuery,
@@ -323,21 +316,6 @@ function ItemTable({
     <PageSection
       className="item-workspace scroll-mt-4"
       heading="項目一覧"
-      headingAccessory={
-        <a
-          class="inline-flex min-h-11 items-center"
-          href={guideHref}
-          onClick={(event) => {
-            if (!shouldHandleClientNavigation(event)) {
-              return;
-            }
-            event.preventDefault();
-            onSelectGuide();
-          }}
-        >
-          指標の見方
-        </a>
-      }
       headingId="items-heading"
     >
       {!summary.ai.enabled && (
@@ -475,13 +453,11 @@ export function ItemsPage({
   createPersonHref,
   filterOptions,
   filters,
-  guideHref,
   loadDetails,
   now,
   onFilterChange,
   onSearchQueryChange,
   onSelectItem,
-  onSelectGuide,
   onSelectPerson,
   onSortChange,
   searchQuery,
@@ -547,7 +523,6 @@ export function ItemsPage({
       createPersonHref={createPersonHref}
       filterOptions={filterOptions}
       filters={filters}
-      guideHref={guideHref}
       now={now}
       searchQuery={searchQuery}
       searchState={searchState}
@@ -564,7 +539,6 @@ export function ItemsPage({
       }}
       onSearchQueryChange={onSearchQueryChange}
       onSelectItem={onSelectItem}
-      onSelectGuide={onSelectGuide}
       onSelectPerson={onSelectPerson}
       onSortChange={onSortChange}
     />

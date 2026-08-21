@@ -21,6 +21,7 @@ import {
 } from "./model.js";
 import { PeoplePage } from "./people-page.js";
 import { PersonPage } from "./person-page.js";
+import { NotificationConditionsPage } from "./notification-conditions-page.js";
 import {
   createItemRouteTargets,
   createWebViewHref,
@@ -46,7 +47,7 @@ type AppProps = Readonly<{
   title: string;
 }>;
 
-type NavigationPage = "items" | "people";
+type NavigationPage = "items" | "people" | "guide" | "notifications";
 
 type RelativeTimeDisplayProps = Readonly<{
   locale: string;
@@ -69,6 +70,14 @@ const NAVIGATION_PAGES: readonly Readonly<{
   {
     label: "担当者",
     page: "people",
+  },
+  {
+    label: "指標の見方",
+    page: "guide",
+  },
+  {
+    label: "通知条件",
+    page: "notifications",
   },
 ];
 
@@ -93,6 +102,14 @@ function routeForNavigationPage(page: NavigationPage): WebRoute {
     case "people":
       return {
         page: "people",
+      };
+    case "guide":
+      return {
+        page: "guide",
+      };
+    case "notifications":
+      return {
+        page: "notifications",
       };
   }
 }
@@ -301,15 +318,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     );
   }
 
-  function selectGuide(): void {
-    navigate(
-      createWebViewState({
-        page: "guide",
-      }),
-      "push",
-    );
-  }
-
   function filterValidViewerTeamIds(teamIds: readonly string[]): readonly string[] {
     return teamIds.filter((teamId) =>
       validTeamKeys.has(waitingSubjectKey({ kind: "team", teamId })),
@@ -391,12 +399,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             createPersonHref={createPersonHref}
             filterOptions={tableFilterOptions}
             filters={viewState.tableFilters}
-            guideHref={createWebViewHref(
-              basePath,
-              createWebViewState({
-                page: "guide",
-              }),
-            )}
             loadDetails={sharedLoadDetails}
             now={now}
             searchQuery={viewState.searchQuery}
@@ -405,7 +407,6 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             onFilterChange={replaceTableFilter}
             onSearchQueryChange={replaceSearchQuery}
             onSelectItem={selectItem}
-            onSelectGuide={selectGuide}
             onSelectPerson={selectPerson}
             onSortChange={replaceTableSort}
           />
@@ -453,6 +454,8 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
         );
       case "guide":
         return <LogicGuidePage />;
+      case "notifications":
+        return <NotificationConditionsPage />;
       case "person":
         return (
           <PersonPage
