@@ -33,6 +33,7 @@ import {
   type GitHubNodeId,
   type IssueBlocker,
   type IssueStateDecision,
+  type NaturalLanguageDeadlineAssessmentState,
   type NormalizedEvent,
   type ObservedGitHubItemState,
   type PullRequestStateDecision,
@@ -120,6 +121,7 @@ type ItemAnalysis = Readonly<{
   input: GoldenItemInput;
   deterministicDecision: IssueStateDecision | PullRequestStateDecision;
   decision: ReducedCodexDecision;
+  deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
   notificationRecommendation: DiscordNotificationItem["notificationRecommendation"];
   staleness: StalenessResult;
 }>;
@@ -688,6 +690,7 @@ function applyFixedAiAnalyses(
   deterministicDecisions: ReadonlyMap<string, IssueStateDecision | PullRequestStateDecision>,
 ): Readonly<{
   decisions: ReadonlyMap<string, ReducedCodexDecision>;
+  deadlineAssessments: ReadonlyMap<string, NaturalLanguageDeadlineAssessmentState>;
   notificationRecommendations: ReadonlyMap<
     string,
     DiscordNotificationItem["notificationRecommendation"]
@@ -697,12 +700,14 @@ function applyFixedAiAnalyses(
   rejectedOutputCount: number;
 }> {
   const decisions = new Map<string, ReducedCodexDecision>();
+  const deadlineAssessments = new Map<string, NaturalLanguageDeadlineAssessmentState>();
   const notificationRecommendations = new Map<
     string,
     DiscordNotificationItem["notificationRecommendation"]
   >();
   for (const [nodeId, decision] of deterministicDecisions) {
     decisions.set(nodeId, deterministicReducedDecision(decision));
+    deadlineAssessments.set(nodeId, Object.freeze({ status: "not_available" }));
     notificationRecommendations.set(
       nodeId,
       Object.freeze({
@@ -742,6 +747,7 @@ function applyFixedAiAnalyses(
       CONFIDENCE_THRESHOLDS,
     );
     decisions.set(analysis.itemNodeId, reduction.decision);
+    deadlineAssessments.set(analysis.itemNodeId, reduction.deadlineAssessment);
     notificationRecommendations.set(
       analysis.itemNodeId,
       Object.freeze({
@@ -753,6 +759,7 @@ function applyFixedAiAnalyses(
   }
   return Object.freeze({
     decisions,
+    deadlineAssessments,
     notificationRecommendations,
     relationAssessments: Object.freeze(relationAssessments),
     acceptedOutputCount: input.fixedAiAnalyses.length,
@@ -1043,7 +1050,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "9",
+    schemaVersion: "10",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1082,9 +1089,7 @@ function createSnapshot(
         importanceAssessment: {
           status: "not_available",
         },
-        deadlineAssessment: {
-          status: "not_available",
-        },
+        deadlineAssessment: analysis.deadlineAssessment,
         attention: {
           score: 0,
           level: "low",
@@ -1315,9 +1320,11 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
     input.items.map((item) => {
       const deterministicDecision = deterministicDecisions.get(item.nodeId);
       const decision = fixedAi.decisions.get(item.nodeId);
+      const deadlineAssessment = fixedAi.deadlineAssessments.get(item.nodeId);
       const notificationRecommendation = fixedAi.notificationRecommendations.get(item.nodeId);
       assertNonNullable(deterministicDecision, `項目 ${item.nodeId}の決定論的判定がありません`);
       assertNonNullable(decision, `項目 ${item.nodeId}の最終判定がありません`);
+      assertNonNullable(deadlineAssessment, `項目 ${item.nodeId}の期限判定がありません`);
       assertNonNullable(
         notificationRecommendation,
         `項目 ${item.nodeId}のCodex通知提案がありません`,
@@ -1326,6 +1333,7 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
         input: item,
         deterministicDecision,
         decision,
+        deadlineAssessment,
         notificationRecommendation,
         staleness: createStaleness(input, item, deterministicDecision, decision),
       });
@@ -1557,7 +1565,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "9",
+    schemaVersion: "10",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

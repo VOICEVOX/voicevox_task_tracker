@@ -20,7 +20,7 @@ import { assertNonNullable } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Issue判定へ適用した決定規則のversion。 */
-export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v11";
+export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v12";
 
 /** 依存グラフからIssue判定へ渡すblocker。 */
 export type IssueBlocker = Readonly<{

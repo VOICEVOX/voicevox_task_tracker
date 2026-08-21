@@ -400,7 +400,7 @@ function createDeadlineAssessment(
   return Object.freeze({
     status: "available",
     value: Object.freeze({
-      level: output.deadline.level,
+      date: output.deadline.date,
       rationale: output.deadline.rationale,
     }),
   });

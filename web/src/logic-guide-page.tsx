@@ -21,7 +21,7 @@ export function LogicGuidePage() {
             一覧で先に目を向ける順序を表します。期限の切迫度加点の上限に合わせて重要度側の容量を調整し、現在の待ち状態の鮮度係数を掛けてから期限の切迫度に応じた加点を足します。
           </p>
           <p class="m-0 rounded-xl bg-surface-sunken px-3 py-2 text-sm wrap-anywhere">
-            <code>importanceCapacity = 100 - deadlinePoints.high</code>
+            <code>importanceCapacity = 100 - deadlinePoints.overdue</code>
             <br />
             <code>recencyScore = round(重要度 × 鮮度係数 × importanceCapacity / 100)</code>
             <br />
@@ -43,14 +43,14 @@ export function LogicGuidePage() {
             期限の切迫度
           </h3>
           <p class="m-0">
-            本文やコメントに明示された期限や時期を Codex
-            が読み取り、期限までの近さを表します。期限がない場合は「なし」、根拠を得られない場合は「予測なし」です。
+            本文やコメントに明示された期限や時期をAIが読み取り、期限日を抽出します。期限の切迫度は期限日と現在日付から決定論的に算出します。期限日がない場合は「期限なし」、期限日を抽出できない場合は「期限不明」です。
           </p>
           <ul class="m-0 grid gap-2 pl-5">
+            <li>期限超過、1日以内、3日以内、7日以内、30日以内の境界で切迫度が切り替わります。</li>
+            <li>加点は期限超過から順に30点、25点、20点、15点、10点、5点、期限なしは0点です。</li>
             <li>
-              高は期限超過または14日以内、中は15日から90日、低は91日より先または弱い時間的拘束です。
+              緊急さ、重要度、影響範囲、状態、待ち先、優先度labelだけから期限日を推測しません。
             </li>
-            <li>緊急さ、重要度、影響範囲、状態、待ち先、優先度labelだけから期限を推測しません。</li>
           </ul>
         </section>
 

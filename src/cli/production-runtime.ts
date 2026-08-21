@@ -40,6 +40,7 @@ import {
   createLabelEffectsResolver,
   createTrackedItemLatestEventActor,
   calculateStaleness,
+  determineDeadlineLevel,
   DETERMINISTIC_RULES_VERSION,
   recalculateStalenessSeverity,
   determineIssueState,
@@ -85,6 +86,7 @@ import {
   type NaturalLanguageDeadlineAssessmentState,
   type NaturalLanguageImportanceAssessmentState,
   type DependencyResolutionProgress,
+  type DeadlineLevel,
   type ExternalGhostNode,
   type TrackedItem,
   type TrackedItemAiAnalysis,
@@ -231,7 +233,7 @@ import { WorkflowStageRunner } from "./workflow-stage.js";
 
 const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
-const CODEX_SCHEMA_VERSION = "3";
+const CODEX_SCHEMA_VERSION = "4";
 const PAGES_BASE_URL = "https://voicevox.github.io";
 const GITHUB_MENTION_PATTERN =
   /(?<![A-Za-z0-9-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?:\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,99})))?/gu;
@@ -2459,6 +2461,21 @@ function unavailableDeadlineAssessment(): NaturalLanguageDeadlineAssessmentState
   });
 }
 
+function deadlineLevelForAssessment(
+  assessment: NaturalLanguageDeadlineAssessmentState,
+  evaluatedAt: UtcIsoDateTime,
+  timezone: string,
+): DeadlineLevel {
+  if (assessment.status === "not_available") {
+    return "none";
+  }
+  return determineDeadlineLevel({
+    deadlineDate: assessment.value.date,
+    evaluatedAt,
+    timezone,
+  });
+}
+
 function resolveImportanceAssessment(
   current: NaturalLanguageImportanceAssessmentState | undefined,
   previous: NaturalLanguageImportanceAssessmentState | undefined,
@@ -4391,7 +4408,7 @@ function validateRunCompleteness(
   const persistedAnalysisRulesFingerprintNodeIds = new Set<string>();
   const persistedDeterministicRulesVersionNodeIds = new Set<string>();
   const snapshot = createStateSnapshot({
-    schemaVersion: "9",
+    schemaVersion: "10",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
@@ -4443,10 +4460,11 @@ function validateRunCompleteness(
         ...item,
         attention: calculateAttention({
           importanceScore: item.importance.score,
-          deadlineLevel:
-            item.deadlineAssessment.status === "available"
-              ? item.deadlineAssessment.value.level
-              : "none",
+          deadlineLevel: deadlineLevelForAssessment(
+            item.deadlineAssessment,
+            collection.evaluatedAt,
+            configuration.config.staleness.timezone,
+          ),
           deadlinePoints: configuration.config.attention.deadlinePoints,
           elapsedHours: staleness.elapsedHours,
           waitClass: staleness.waitClass,

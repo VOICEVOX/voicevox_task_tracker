@@ -85,7 +85,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "3",
+          "schemaVersion": "4",
           "item": {
             "nodeId": "prompt-injection-issue",
             "url": "https://github.com/VOICEVOX/fixture-prompt/issues/601"
@@ -128,13 +128,13 @@
             "reasonSummary": "通知閾値は決定論的な停滞判定へ委ねます"
           },
           "deadline": {
-            "level": "none",
+            "date": null,
             "rationale": "期限や時期の根拠はありません"
           }
         },
         "rejectedOutputs": [
           {
-            "schemaVersion": "3",
+            "schemaVersion": "4",
             "item": {
               "nodeId": "prompt-injection-issue",
               "url": "https://github.com/VOICEVOX/fixture-prompt/issues/601"
@@ -171,7 +171,7 @@
               "operation": "close_issue"
             },
             "deadline": {
-              "level": "none",
+              "date": null,
               "rationale": "期限や時期の根拠はありません"
             }
           }

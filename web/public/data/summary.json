@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "6",
+  "schemaVersion": "7",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "observedAt": "2026-07-31T00:00:00.000Z",
@@ -113,7 +113,8 @@
       },
       "deadline": {
         "status": "available",
-        "level": "medium"
+        "date": "2026-08-31",
+        "level": "over_30_days"
       }
     },
     {

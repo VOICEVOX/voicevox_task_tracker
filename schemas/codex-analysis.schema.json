@@ -22,7 +22,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "3"
+      "const": "4"
     },
     "item": {
       "type": "object",
@@ -239,10 +239,11 @@
     "deadline": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["level", "rationale"],
+      "required": ["date", "rationale"],
       "properties": {
-        "level": {
-          "enum": ["none", "low", "medium", "high"]
+        "date": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
         },
         "rationale": {
           "type": "string",

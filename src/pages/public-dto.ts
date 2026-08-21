@@ -44,7 +44,29 @@ const statusSchema = z.enum([
 ]);
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
 const importanceLevelSchema = z.enum(["low", "medium", "high"]);
-const deadlineLevelSchema = z.enum(["none", "low", "medium", "high"]);
+const deadlineLevelSchema = z.enum([
+  "none",
+  "over_30_days",
+  "within_30_days",
+  "within_7_days",
+  "within_3_days",
+  "within_1_day",
+  "overdue",
+]);
+function isCalendarDate(value: string): boolean {
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
+}
+
+const deadlineDateSchema = z.union([
+  z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/u)
+    .refine(isCalendarDate, {
+      message: "実在する日付を指定してください",
+    }),
+  z.null(),
+]);
 const publicImportanceSchema = z.strictObject({
   score: z.number().int().min(0).max(100),
   level: importanceLevelSchema,
@@ -123,20 +145,56 @@ const publicDeadlineSummarySchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("not_available"),
   }),
-  z.strictObject({
-    status: z.literal("available"),
-    level: deadlineLevelSchema,
-  }),
+  z
+    .strictObject({
+      status: z.literal("available"),
+      date: deadlineDateSchema,
+      level: deadlineLevelSchema,
+    })
+    .superRefine((deadline, context) => {
+      if (deadline.date == null && deadline.level !== "none") {
+        context.addIssue({
+          code: "custom",
+          path: ["level"],
+          message: "期限日がnullの場合は切迫度をnoneにしてください",
+        });
+      }
+      if (deadline.date != null && deadline.level === "none") {
+        context.addIssue({
+          code: "custom",
+          path: ["level"],
+          message: "期限日がある場合は切迫度をnone以外にしてください",
+        });
+      }
+    }),
 ]);
 const publicDeadlineDetailsSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("not_available"),
   }),
-  z.strictObject({
-    status: z.literal("available"),
-    level: deadlineLevelSchema,
-    rationale: z.string().min(1).max(120),
-  }),
+  z
+    .strictObject({
+      status: z.literal("available"),
+      date: deadlineDateSchema,
+      level: deadlineLevelSchema,
+      rationale: z.string().min(1).max(120),
+    })
+    .superRefine((deadline, context) => {
+      if (deadline.date == null && deadline.level !== "none") {
+        context.addIssue({
+          code: "custom",
+          path: ["level"],
+          message: "期限日がnullの場合は切迫度をnoneにしてください",
+        });
+      }
+      if (deadline.date != null && deadline.level === "none") {
+        context.addIssue({
+          code: "custom",
+          path: ["level"],
+          message: "期限日がある場合は切迫度をnone以外にしてください",
+        });
+      }
+    }),
 ]);
 const publicItemAiAnalysisSchema = z.strictObject({
   status: z.enum(["used", "failed", "deferred", "not_required", "disabled", "not_recorded"]),
@@ -345,7 +403,7 @@ const publicAiStateSchema = z.union([
   }),
 ]);
 const publicSummaryDtoSchema = z.strictObject({
-  schemaVersion: z.literal("6"),
+  schemaVersion: z.literal("7"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
@@ -357,17 +415,17 @@ const publicSummaryDtoSchema = z.strictObject({
   graph: publicInitialGraphSchema,
 });
 const publicDetailsDtoSchema = z.strictObject({
-  schemaVersion: z.literal("6"),
+  schemaVersion: z.literal("7"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   items: z.array(publicItemDetailsSchema),
   graph: publicGraphSchema,
 });
 
-/** Web初期表示で共有するschema version 6の公開summary DTO。 */
+/** Web初期表示で共有するschema version 7の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 6の公開details DTO。 */
+/** Web詳細表示で共有するschema version 7の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */

@@ -1,4 +1,4 @@
-import { type DeadlineLevel } from "./deadline.js";
+import { DEADLINE_LEVELS, type DeadlineLevel } from "./deadline.js";
 import { type ImportanceLevel } from "./importance.js";
 import { type SeverityThresholds } from "./severity.js";
 import { type StalenessWaitClass } from "./staleness.js";
@@ -52,23 +52,35 @@ function validateInput(input: CalculateAttentionInput): void {
   if (!(input.deadlineLevel in input.deadlinePoints)) {
     throw new RangeError("期限の切迫度levelが不正です");
   }
-  for (const level of ["none", "low", "medium", "high"] as const) {
+  const pointKeys = Object.keys(input.deadlinePoints);
+  if (
+    pointKeys.length !== DEADLINE_LEVELS.length ||
+    DEADLINE_LEVELS.some((level) => !pointKeys.includes(level))
+  ) {
+    throw new RangeError("attention.deadlinePointsのキーが不正です");
+  }
+  for (const level of DEADLINE_LEVELS) {
     validateNonNegativeSafeInteger(
       input.deadlinePoints[level],
       `attention.deadlinePoints.${level}`,
     );
   }
-  if (input.deadlinePoints.high > 100) {
-    throw new RangeError("attention.deadlinePoints.highは100以下にしてください");
+  if (input.deadlinePoints.overdue > 30) {
+    throw new RangeError("attention.deadlinePoints.overdueは30以下にしてください");
   }
   if (
     input.deadlinePoints.none !== 0 ||
-    !(input.deadlinePoints.none < input.deadlinePoints.low) ||
-    !(input.deadlinePoints.low < input.deadlinePoints.medium) ||
-    !(input.deadlinePoints.medium < input.deadlinePoints.high)
+    !(
+      input.deadlinePoints.none < input.deadlinePoints.over_30_days &&
+      input.deadlinePoints.over_30_days < input.deadlinePoints.within_30_days &&
+      input.deadlinePoints.within_30_days < input.deadlinePoints.within_7_days &&
+      input.deadlinePoints.within_7_days < input.deadlinePoints.within_3_days &&
+      input.deadlinePoints.within_3_days < input.deadlinePoints.within_1_day &&
+      input.deadlinePoints.within_1_day < input.deadlinePoints.overdue
+    )
   ) {
     throw new RangeError(
-      "attention.deadlinePointsは0 = none < low < medium < highを満たしてください",
+      "attention.deadlinePointsは0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
     );
   }
   validateNonNegativeNumber(input.elapsedHours, "要対応度計算の停滞時間");
@@ -109,7 +121,7 @@ export function calculateAttention(input: CalculateAttentionInput): Attention {
   const recencyCoefficient =
     input.recencyFloor +
     (1 - input.recencyFloor) * 0.5 ** (input.elapsedHours / watchThresholdHours);
-  const importanceCapacity = 100 - input.deadlinePoints.high;
+  const importanceCapacity = 100 - input.deadlinePoints.overdue;
   const recencyScore = Math.round(
     (input.importanceScore * recencyCoefficient * importanceCapacity) / 100,
   );

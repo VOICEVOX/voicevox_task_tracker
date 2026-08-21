@@ -1,5 +1,6 @@
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
+import { DeadlineDisplay } from "./deadline-display.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import {
   formatStallDuration,
@@ -151,7 +152,7 @@ export function createItemTableColumns({
           showFreshnessBadge={true}
         />
       ),
-      widthClassName: "w-[39%]",
+      widthClassName: "w-[32%]",
     },
     {
       ariaSort: undefined,
@@ -169,7 +170,7 @@ export function createItemTableColumns({
           summary={summary}
         />
       ),
-      widthClassName: "w-[31%]",
+      widthClassName: "w-[24%]",
     },
     {
       ariaSort: sort.key === "attention" ? sort.direction : "none",
@@ -198,6 +199,19 @@ export function createItemTableColumns({
         <ImportanceBadge importance={row.item.importance} presentation="score" />
       ),
       widthClassName: "w-[9%]",
+    },
+    {
+      ariaSort: sort.key === "deadline" ? sort.direction : "none",
+      cellClassName: "min-w-0 wrap-anywhere",
+      cellKind: "data",
+      headerClassName: "whitespace-nowrap",
+      key: "deadline",
+      label: "期限",
+      onSort: () => {
+        onSortChange("deadline");
+      },
+      renderCell: (row) => <DeadlineDisplay dateClassName="text-xs" deadline={row.item.deadline} />,
+      widthClassName: "w-[14%]",
     },
     {
       ariaSort: sort.key === "stall" ? sort.direction : "none",
@@ -258,6 +272,15 @@ export function createItemCardFields({
         <ImportanceBadge importance={row.item.importance} presentation="score" />
       ),
       valueClassName: "font-mono text-text-primary tabular-nums",
+    },
+    {
+      className: "",
+      key: "deadline",
+      label: "期限",
+      renderValue: (row) => (
+        <DeadlineDisplay dateClassName="text-xs" deadline={row.item.deadline} />
+      ),
+      valueClassName: "text-text-primary",
     },
     {
       className: "",

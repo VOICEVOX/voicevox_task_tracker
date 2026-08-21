@@ -9,13 +9,13 @@ import {
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
+import { DeadlineDisplay } from "./deadline-display.js";
 import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
 import { type ItemGraphView } from "./graph-model.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import {
   aiAnalysisNotice,
   confidencePresentation,
-  deadlineLevelLabel,
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
@@ -168,25 +168,6 @@ function importanceFactorSource(kind: ImportanceFactor["kind"]): ImportanceFacto
     default:
       throw new UnreachableError(kind);
   }
-}
-
-function deadlineLevelTone(
-  deadline: PublicItemDetailsDto["deadline"],
-): "neutral" | "low" | "medium" | "high" {
-  if (deadline.status === "not_available") {
-    return "neutral";
-  }
-  if (deadline.level === "none") {
-    return "neutral";
-  }
-  return deadline.level;
-}
-
-function deadlineLabel(deadline: PublicItemDetailsDto["deadline"]): string {
-  if (deadline.status === "not_available") {
-    return "予測なし";
-  }
-  return deadlineLevelLabel(deadline.level);
 }
 
 function ConfidenceDisplay({
@@ -689,9 +670,7 @@ export function ItemDetailsContent({
           <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">期限の切迫度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <Pill className="deadline-badge" tone={deadlineLevelTone(details.deadline)}>
-                {deadlineLabel(details.deadline)}
-              </Pill>
+              <DeadlineDisplay dateClassName="text-sm" deadline={details.deadline} />
               {details.deadline.status === "available" && (
                 <span class="text-xs text-text-muted">{details.deadline.rationale}</span>
               )}

@@ -155,7 +155,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "3",
+          "schemaVersion": "4",
           "item": {
             "nodeId": "author-question-after-changes-requested-pr",
             "url": "https://github.com/VOICEVOX/fixture-change/pull/203"
@@ -198,7 +198,7 @@
             "reasonSummary": "通知閾値は決定論的な停滞判定へ委ねます"
           },
           "deadline": {
-            "level": "none",
+            "date": null,
             "rationale": "期限や時期の根拠はありません"
           }
         },

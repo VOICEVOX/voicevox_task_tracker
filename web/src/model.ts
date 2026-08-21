@@ -28,7 +28,7 @@ export type TableFilterKey =
 export type TableSelectFilterKey = Exclude<TableFilterKey, "waitingOn">;
 
 /** 項目一覧で並び替えの対象にするキー。 */
-export type ItemSortKey = "attention" | "importance" | "stall";
+export type ItemSortKey = "attention" | "importance" | "stall" | "deadline";
 
 /** 項目一覧の並び順。 */
 export type ItemSort = Readonly<{
@@ -41,6 +41,7 @@ export const ITEM_NATURAL_SORT_DIRECTIONS: Readonly<Record<ItemSortKey, ItemSort
   attention: "descending",
   importance: "descending",
   stall: "descending",
+  deadline: "descending",
 };
 
 /** 一覧表の列別絞り込み値。 */
@@ -142,11 +143,24 @@ const IMPORTANCE_LEVEL_LABELS = {
 } satisfies Readonly<Record<ImportanceLevel, string>>;
 
 const DEADLINE_LEVEL_LABELS = {
-  none: "なし",
-  low: "低",
-  medium: "中",
-  high: "高",
+  none: "期限なし",
+  over_30_days: "30日超",
+  within_30_days: "30日以内",
+  within_7_days: "7日以内",
+  within_3_days: "3日以内",
+  within_1_day: "1日以内",
+  overdue: "期限超過",
 } satisfies Readonly<Record<DeadlineLevel, string>>;
+
+const DEADLINE_LEVEL_SORT_SCORES = {
+  none: 1,
+  over_30_days: 2,
+  within_30_days: 3,
+  within_7_days: 4,
+  within_3_days: 5,
+  within_1_day: 6,
+  overdue: 7,
+} satisfies Readonly<Record<DeadlineLevel, number>>;
 
 type StallFilterDefinition = Readonly<{
   label: string;
@@ -231,19 +245,20 @@ export function aiAnalysisNotice(status: AiAnalysisStatus): AiAnalysisNotice {
     case "not_required":
       return {
         kind: "skipped",
-        description: "確定ルールだけで判定できたため、AI推定を省いています。",
+        description:
+          "確定ルールだけで判定できたため、AI推定を省いています。期限日の抽出はAIが行い、切迫度は期限日から決定論的に算出します。",
       };
     case "failed":
       return {
         kind: "outdated",
         description:
-          "AI推定に失敗したため、状態、待ち相手、重要度、期限の切迫度、停滞に最新のAI推定を反映できていません。",
+          "AI推定に失敗したため、状態、待ち相手、重要度、期限日の抽出、停滞に最新のAI推定を反映できていません。期限の切迫度は期限日から決定論的に算出します。",
       };
     case "deferred":
       return {
         kind: "outdated",
         description:
-          "AI推定を今回実行しなかったため、状態、待ち相手、重要度、期限の切迫度、停滞に最新のAI推定を反映できていません。",
+          "AI推定を今回実行しなかったため、状態、待ち相手、重要度、期限日の抽出、停滞に最新のAI推定を反映できていません。期限の切迫度は期限日から決定論的に算出します。",
       };
     default:
       throw new UnreachableError(status);
@@ -267,6 +282,21 @@ export function importanceLevelLabel(level: ImportanceLevel): string {
 /** 期限の切迫度levelの日本語表示名を返す。 */
 export function deadlineLevelLabel(level: DeadlineLevel): string {
   return DEADLINE_LEVEL_LABELS[level];
+}
+
+/** 期限日を日本語の年月日へ整形する。 */
+export function formatDeadlineDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  if (match == null) {
+    throw new TypeError(`期限日を解釈できません: ${value}`);
+  }
+  const year = match[1];
+  const month = match[2];
+  const day = match[3];
+  assertNonNullable(year, "期限日から年を取得できませんでした");
+  assertNonNullable(month, "期限日から月を取得できませんでした");
+  assertNonNullable(day, "期限日から日を取得できませんでした");
+  return `${year}年${Number(month).toString()}月${Number(day).toString()}日`;
 }
 
 function createPresentTableFilterOptions(
@@ -1031,7 +1061,39 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: st
   }
 }
 
-function compareTableRows(left: ItemTableRow, right: ItemTableRow, key: ItemSortKey): number {
+function compareDeadlineRows(
+  left: ItemTableRow,
+  right: ItemTableRow,
+  direction: ItemSort["direction"],
+): number {
+  const leftDeadline = left.item.deadline;
+  const rightDeadline = right.item.deadline;
+  if (leftDeadline.status !== rightDeadline.status) {
+    return leftDeadline.status === "not_available" ? 1 : -1;
+  }
+  if (leftDeadline.status === "not_available" || rightDeadline.status === "not_available") {
+    return 0;
+  }
+  const directionMultiplier = direction === "ascending" ? 1 : -1;
+  const levelOrder =
+    (DEADLINE_LEVEL_SORT_SCORES[leftDeadline.level] -
+      DEADLINE_LEVEL_SORT_SCORES[rightDeadline.level]) *
+    directionMultiplier;
+  if (levelOrder !== 0) {
+    return levelOrder;
+  }
+  if (leftDeadline.date == null || rightDeadline.date == null) {
+    return 0;
+  }
+  return compareStrings(leftDeadline.date, rightDeadline.date) * -directionMultiplier;
+}
+
+function compareTableRows(
+  left: ItemTableRow,
+  right: ItemTableRow,
+  key: ItemSortKey,
+  direction: ItemSort["direction"],
+): number {
   switch (key) {
     case "attention":
       return left.item.attention.score - right.item.attention.score;
@@ -1039,6 +1101,8 @@ function compareTableRows(left: ItemTableRow, right: ItemTableRow, key: ItemSort
       return left.item.importance.score - right.item.importance.score;
     case "stall":
       return left.stallDurationMilliseconds - right.stallDurationMilliseconds;
+    case "deadline":
+      return compareDeadlineRows(left, right, direction);
     default:
       throw new UnreachableError(key);
   }
@@ -1065,6 +1129,8 @@ function compareTableRowTieBreakers(
       break;
     }
     case "stall":
+      break;
+    case "deadline":
       break;
     default:
       throw new UnreachableError(key);
@@ -1099,9 +1165,9 @@ export function filterAndSortTableRows(
   );
   const direction = sort.direction === "ascending" ? 1 : -1;
   return filteredRows.sort((left, right) => {
-    const order = compareTableRows(left, right, sort.key);
+    const order = compareTableRows(left, right, sort.key, sort.direction);
     if (order !== 0) {
-      return order * direction;
+      return sort.key === "deadline" ? order : order * direction;
     }
     return compareTableRowTieBreakers(left, right, sort.key);
   });

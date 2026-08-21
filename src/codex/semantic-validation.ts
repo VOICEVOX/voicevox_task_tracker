@@ -3,6 +3,7 @@ import {
   createGitHubNodeId,
   isTerminalStatus,
   parseSourceId,
+  validateDeadlineDate,
   type GitHubItemUrl,
   type SourceId,
 } from "../domain/index.js";
@@ -503,6 +504,26 @@ function validateStatusAndWaitingOn(
   }
 }
 
+function validateDeadline(
+  output: SchemaValidCodexAnalysisOutput,
+  issues: CodexOutputValidationIssue[],
+): void {
+  try {
+    validateDeadlineDate(output.deadline.date, "期限日");
+  } catch (error: unknown) {
+    if (!(error instanceof RangeError)) {
+      throw error;
+    }
+    issues.push(
+      createIssue(
+        "/deadline/date",
+        "invalid_deadline_date",
+        "期限日は実在するYYYY-MM-DD形式の日付またはnullを指定してください",
+      ),
+    );
+  }
+}
+
 function signalCandidateIds(input: CodexAnalysisInput, key: string): readonly string[] {
   const value = input.deterministicSignals[key];
   if (value == null) {
@@ -622,7 +643,7 @@ function createValidatedOutput(
       rationale: output.importance.rationale,
     }),
     deadline: Object.freeze({
-      level: output.deadline.level,
+      date: output.deadline.date,
       rationale: output.deadline.rationale,
     }),
     evidence: Object.freeze(
@@ -655,6 +676,7 @@ export function validateCodexAnalysisSemantics(
 
   validateItemIdentity(output, validatedInput, issues);
   validateStatusAndWaitingOn(output, issues);
+  validateDeadline(output, issues);
   validateWaitingOnCandidates(output, validatedInput, issues);
   validateRelationCandidates(output, validatedInput, issues);
   validateSourceIdUniqueness(output, issues);
