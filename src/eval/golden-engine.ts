@@ -13,6 +13,7 @@ import {
 import {
   buildSourceId,
   calculateStaleness,
+  createExternalReferenceNodeId,
   createGitHubNodeId,
   createGitHubRepositoryId,
   createLabelEffectsResolver,
@@ -62,7 +63,9 @@ import {
   DEFAULT_INITIAL_GRAPH_NODE_LIMIT,
   generatePublicData,
   PagesPublicSafetyError,
+  PublicDtoSemanticError,
   PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
+  createPublicSummaryDto,
 } from "../pages/index.js";
 import {
   assertStatePublicSafety,
@@ -1521,6 +1524,119 @@ function createLargeEdges(
   );
 }
 
+function assertExternalWaitingOnInitialGraph(
+  snapshot: StateSnapshot,
+  repositories: readonly Repository[],
+): void {
+  const item = snapshot.items[0];
+  assertNonNullable(item, "外部参照initial graph回帰検証のitemがありません");
+  const repository = repositories.find((candidate) => candidate.id === item.repositoryId);
+  assertNonNullable(
+    repository,
+    `外部参照initial graph回帰検証のrepositoryがありません。対象: ${item.repositoryId}`,
+  );
+  const snapshotRepository = snapshot.repositories.find(
+    (candidate) => candidate.id === item.repositoryId,
+  );
+  assertNonNullable(
+    snapshotRepository,
+    `外部参照initial graph回帰検証のsnapshot repositoryがありません。対象: ${item.repositoryId}`,
+  );
+  const waitingOn = item.waitingOn[0];
+  assertNonNullable(
+    waitingOn,
+    `外部参照initial graph回帰検証のwaitingOnがありません。対象: ${item.nodeId}`,
+  );
+
+  const externalNodeId = createExternalReferenceNodeId("external:github:golden-required");
+  const externalReference = Object.freeze({
+    kind: "external_reference",
+    nodeId: externalNodeId,
+    repositoryFullName: "fixture-external/repository",
+    number: 99,
+    url: "https://github.com/fixture-external/repository/issues/99",
+    title: "匿名の外部依存項目",
+    state: "open",
+    recursiveTracking: "not_allowed",
+    directNotification: "not_eligible",
+  });
+  const regressionItem = Object.freeze({
+    ...item,
+    waitingOn: Object.freeze([
+      Object.freeze({
+        ...waitingOn,
+        kind: "item",
+        candidateId: externalNodeId,
+        role: "dependency",
+      }),
+    ]),
+  });
+  const regressionSnapshot = createStateSnapshot({
+    ...snapshot,
+    repositories: [snapshotRepository],
+    items: [regressionItem],
+    externalReferences: [externalReference],
+    relations: [],
+  });
+  const generated = generatePublicData({
+    snapshot: regressionSnapshot,
+    historyRecords: Object.freeze([]),
+    repositoryAllowlist: createPublicRepositoryAllowlist([repository]).repositories,
+    repositoryInventory: [repository],
+    knownSecrets: Object.freeze([]),
+    options: Object.freeze({
+      confidenceThresholds: CONFIDENCE_THRESHOLDS,
+      labelRules: Object.freeze([]),
+      maxInitialGraphNodes: 1,
+      maxSummaryGzipBytes: PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
+      timezone: PUBLIC_TIMEZONE,
+    }),
+  });
+  const summaryItem = generated.summary.items[0];
+  assertNonNullable(summaryItem, "外部参照initial graph回帰検証のsummary itemがありません");
+  const summaryWaitingOn = summaryItem.waitingOn[0];
+  assertNonNullable(
+    summaryWaitingOn,
+    `外部参照initial graph回帰検証のsummary waitingOnがありません。対象: ${summaryItem.nodeId}`,
+  );
+  if (summaryWaitingOn.kind !== "item" || summaryWaitingOn.candidateId !== externalNodeId) {
+    throw new TypeError("外部参照initial graph回帰検証のwaitingOn候補が不正です");
+  }
+  if (generated.summary.graph.nodes.length > generated.summary.graph.maxNodes) {
+    throw new TypeError("外部参照initial graph回帰検証のinitial graph node数が上限を超えています");
+  }
+  const summaryExternalNode = generated.summary.graph.nodes.find(
+    (node) => node.nodeId === externalNodeId,
+  );
+  assertNonNullable(
+    summaryExternalNode,
+    "外部参照initial graph回帰検証のexternal nodeがありません",
+  );
+  if (summaryExternalNode.kind !== "external_reference") {
+    throw new TypeError("外部参照initial graph回帰検証のnode種別が不正です");
+  }
+  if (summaryExternalNode.displayReference !== "fixture-external/repository#99") {
+    throw new TypeError("外部参照initial graph回帰検証のdisplay referenceが不正です");
+  }
+
+  const summaryWithoutExternalNode = {
+    ...generated.summary,
+    graph: {
+      ...generated.summary.graph,
+      nodes: generated.summary.graph.nodes.filter((node) => node.nodeId !== externalNodeId),
+    },
+  };
+  try {
+    createPublicSummaryDto(summaryWithoutExternalNode);
+  } catch (error: unknown) {
+    if (error instanceof PublicDtoSemanticError) {
+      return;
+    }
+    throw error;
+  }
+  throw new TypeError("外部参照initial graph回帰検証の欠落nodeをDTO意味検証が検出しませんでした");
+}
+
 function analyzeLargeFixture(
   input: Extract<ReturnType<typeof goldenEvalInputSchema.parse>, { kind: "large" }>,
 ): GoldenFixtureAnalysisResult {
@@ -1645,6 +1761,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureに想定外の通知要因があります");
   }
   const durationMilliseconds = performance.now() - startedAt;
+  assertExternalWaitingOnInitialGraph(snapshot, repositories);
   const output = goldenEvalOutputSchema.parse({
     schemaVersion: "1",
     kind: "large",

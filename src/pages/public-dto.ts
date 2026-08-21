@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { PublicDtoValidationError } from "./errors.js";
+import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
 
 const identifierSchema = z.string().min(1).max(512).regex(/^\S+$/u);
@@ -443,6 +443,31 @@ export type PublicGraphEdgeDto = z.output<typeof publicGraphEdgeSchema>;
 /** 公開DTO内の項目履歴差分。 */
 export type PublicItemHistoryEventDto = z.output<typeof publicItemHistoryEventSchema>;
 
+function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void {
+  const summaryItemNodeIds = new Set(summary.items.map((item) => item.nodeId));
+  const externalGraphNodeIds = new Set(
+    summary.graph.nodes
+      .filter((node) => node.kind === "external_reference")
+      .map((node) => node.nodeId),
+  );
+  const candidateIds = new Set<string>();
+  for (const item of summary.items) {
+    for (const waitingOn of item.waitingOn) {
+      if (waitingOn.kind === "item") {
+        candidateIds.add(waitingOn.candidateId);
+      }
+    }
+  }
+  for (const candidateId of candidateIds) {
+    if (summaryItemNodeIds.has(candidateId) || externalGraphNodeIds.has(candidateId)) {
+      continue;
+    }
+    throw new PublicDtoSemanticError(
+      `waitingOn項目 ${candidateId}をsummary itemsまたはinitial graphから解決できません`,
+    );
+  }
+}
+
 /** 未検証の値を共有公開summary DTOへ変換する。 */
 export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
   const result = publicSummaryDtoSchema.safeParse(value);
@@ -451,6 +476,7 @@ export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
       cause: result.error,
     });
   }
+  assertPublicSummaryWaitingOnReferences(result.data);
   return result.data;
 }
 
