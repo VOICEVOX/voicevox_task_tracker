@@ -133,7 +133,7 @@ ai:
     high: 0.85
     medium: 0.65
   budget:
-    maxCallsPerRun: 300
+    maxCallsPerRun: 50
     maxInputCharactersPerItem: 60000
     maxTotalInputCharactersPerRun: 6000000
     maxEstimatedCostUsdPerRun: 10
