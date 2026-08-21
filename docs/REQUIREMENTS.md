@@ -476,7 +476,7 @@ terminal項目と`waiting_for_unblock`の項目は要対応度scoreを0とする
 
 | ID        | 規範 | 要求                                                                                                                                                                                                    | 受入要約                                                                                    |
 | --------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `NTF-001` | MUST | 08:00 JST日次起動 — scheduleを毎日23:00 UTC（08:00 JST）に設定し、workflow_dispatchも提供しなければならない。                                                                                           | `AT-NTF-001`: workflow YAMLのcronと手動triggerを静的検査する。                              |
+| `NTF-001` | MUST | 4時間間隔の定期起動 — scheduleを毎日03:00、07:00、11:00、15:00、19:00、23:00 UTCに設定し、workflow_dispatchも提供しなければならない。                                                                   | `AT-NTF-001`: workflow YAMLのcronと手動triggerを静的検査する。                              |
 | `NTF-002` | MUST | Pages後通知 — 通常digestは最新Pagesのdeployment成功後にだけ送信しなければならない。                                                                                                                     | `AT-NTF-002`: Pages失敗fixtureで通常digestが送られない。                                    |
 | `NTF-003` | MUST | Discord Incoming Webhook — v1通知はDiscord Incoming Webhookを使用し、URLをActions secretから取得しなければならない。                                                                                    | `AT-NTF-003`: secretなしで明示エラー、secret値はlogに出ない。                               |
 | `NTF-004` | MUST | mention既定無効 — 既定payloadはallowed_mentionsで全mentionを無効化しなければならない。                                                                                                                  | `AT-NTF-004`: @everyone/@user文字列fixtureでも実mentionが許可されない。                     |
@@ -530,7 +530,7 @@ teamのwaitingOnはteam識別子だけを保存し、team member一覧やteamと
 
 ### 12.1 可用性・正確性
 
-GitHub Actionsのscheduleは厳密なリアルタイムschedulerではなく、混雑時に遅延し得る。そのため「08:00 JSTにtriggerする」ことを要件とし、実投稿時刻と遅延をmetric化する。完全性を満たさないrunはlast-goodを上書きしない。
+GitHub Actionsのscheduleは厳密なリアルタイムschedulerではなく、混雑時に遅延し得る。そのため4時間間隔の6つの予定時刻にtriggerすることを要件とし、実投稿時刻と遅延をmetric化する。完全性を満たさないrunはlast-goodを上書きしない。
 
 ### 12.2 セキュリティ
 

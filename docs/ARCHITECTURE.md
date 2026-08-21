@@ -345,7 +345,7 @@ Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しま�
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、追加cache、通知候補選別後のledgerを通常stateの最初のGit commitへまとめます。
 通知予約はrun開始時刻から24時間だけ有効です。
-予約期限は日次workflow内の排他用leaseであり通知方針ではないため、設定項目にせず日次周期と同じ24時間へ固定します。
+予約期限はworkflow内の排他用leaseであり通知方針ではないため、設定項目にせず、4時間周期をまたぐ重複送信を抑える24時間へ固定します。
 期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。
 cooldownと同日抑制は送信済みentryだけへ適用します。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
