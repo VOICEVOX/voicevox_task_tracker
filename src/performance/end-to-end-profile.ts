@@ -397,7 +397,7 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
     `性能profileのCodex入力に作者候補IDがありません。対象: ${input.item.nodeId}`,
   );
   return {
-    schemaVersion: "3",
+    schemaVersion: "4",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,
@@ -432,8 +432,8 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
       rationale: "性能profileでは重要度の自然言語要因を設定しません",
     },
     deadline: {
-      level: "none",
-      rationale: "性能profileでは期限の切迫度を設定しません",
+      date: null,
+      rationale: "性能profileでは期限日を設定しません",
     },
     evidence: [
       {

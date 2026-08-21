@@ -174,7 +174,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "3",
+          "schemaVersion": "4",
           "item": {
             "nodeId": "nested-release-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/501"
@@ -225,7 +225,7 @@
             "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
           },
           "deadline": {
-            "level": "none",
+            "date": null,
             "rationale": "期限や時期の根拠はありません"
           }
         },
@@ -269,7 +269,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "3",
+          "schemaVersion": "4",
           "item": {
             "nodeId": "nested-core-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/502"
@@ -320,7 +320,7 @@
             "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
           },
           "deadline": {
-            "level": "none",
+            "date": null,
             "rationale": "期限や時期の根拠はありません"
           }
         },

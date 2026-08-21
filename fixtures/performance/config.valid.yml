@@ -78,9 +78,12 @@ attention:
   recencyFloor: 0.4
   deadlinePoints:
     none: 0
-    low: 10
-    medium: 20
-    high: 30
+    over_30_days: 5
+    within_30_days: 10
+    within_7_days: 15
+    within_3_days: 20
+    within_1_day: 25
+    overdue: 30
   levels:
     high: 40
     medium: 20
