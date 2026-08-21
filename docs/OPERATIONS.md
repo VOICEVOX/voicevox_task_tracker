@@ -207,12 +207,12 @@ Codex由来の重要度要因は、重要な機能である根拠と放置した
 ### 要対応度
 
 要対応度は重要度、期限の切迫度、停滞の鮮度から計算します。
-個別の項目の要対応度がずれている場合は、重要度score、期限の切迫度、`stallSince`、現在のwait class、そのwait classの`watch`閾値を順に確認します。
+個別の項目の要対応度がずれている場合は、重要度score、期限日、期限の切迫度、`stallSince`、現在のwait class、そのwait classの`watch`閾値を順に確認します。
 terminal項目とブロック解消待ちの項目が0点になるのは意図した動作です。
-`importanceCapacity = 100 - deadlinePoints.high`として、`recencyScore = round(importanceScore × recencyCoefficient × importanceCapacity / 100)`、`score = recencyScore + deadlinePoints[currentLevel]`で計算します。
+`importanceCapacity = 100 - deadlinePoints.overdue`として、`recencyScore = round(importanceScore × recencyCoefficient × importanceCapacity / 100)`、`score = recencyScore + deadlinePoints[currentLevel]`で計算します。
 
 停滞による下がり方を全体で調整する場合は`config.yml`の`attention.recencyFloor`を変更します。
-要対応度と重要度と停滞時間は、項目一覧と担当者ごとのページで選べる三つの並び替えキーです。
+要対応度、重要度、期限の切迫度、停滞時間は、項目一覧と担当者ごとのページで選べる四つの並び替えキーです。
 既定は要対応度の降順です。
 severityはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
 

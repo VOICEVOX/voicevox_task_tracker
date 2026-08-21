@@ -118,6 +118,10 @@ Codex由来の2要因はconfidenceがmedium以上の場合だけ加点します�
 優先度ラベルとdownstream impactの決定論的な要因は現在の入力から毎run計算します。
 `src/domain`は要因の加点を0から100の整数へ収め、設定した閾値からlow、medium、highを決めます。
 
+Codexは本文とコメントから時刻を含まない期限日を抽出し、snapshotは日付と根拠を保存します。
+`src/domain`は設定タイムゾーンの現在日と期限日を比較し、期限なし、30日超、30日以内、7日以内、3日以内、1日以内、期限超過の順に切迫度を決めます。
+期限日を再抽出しなくても、切迫度は毎run更新されます。
+
 ## 要対応度の計算
 
 要対応度は`src/domain`のpureな判定で、重要度、期限の切迫度、停滞の鮮度から計算します。
@@ -125,7 +129,7 @@ Codex由来の2要因はconfidenceがmedium以上の場合だけ加点します�
 
 ```text
 鮮度係数 = recencyFloor + (1 - recencyFloor) × 0.5 ^ (停滞時間 ÷ watch閾値)
-importanceCapacity = 100 - deadlinePoints.high
+importanceCapacity = 100 - deadlinePoints.overdue
 recencyScore = round(重要度スコア × 鮮度係数 × importanceCapacity ÷ 100)
 要対応度スコア = recencyScore + 期限の切迫度加点
 ```
@@ -210,16 +214,16 @@ AI判定を行わなかった項目では`lastProgressAt`が作成時刻のま�
 
 ## 公開DTOとWeb UI
 
-`src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度、期限の切迫度、要対応度を公開します。
+`src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度を公開します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
 
 共通ヘッダーは16px相当のサイト名、グローバルナビゲーション、「最新更新」と相対時刻を表示します。
 各ページの見出しは見出しレベルを保ったまま18px相当へ統一し、操作を説明する補助文は置きません。
 共通フッターは公開DTOのrun IDだけを表示します。
 
-項目一覧と担当者ごとのページは要対応度、重要度、停滞時間の三つだけを並び替えキーとし、既定は要対応度の降順です。
+項目一覧と担当者ごとのページは要対応度、重要度、期限の切迫度、停滞時間の四つを並び替えキーとし、既定は要対応度の降順です。
 repository、種別、状態、重要度、次の担当、停滞時間、AI利用状況による絞り込みは項目一覧で独立して適用します。
-両ページの表とカードは、項目、待ち相手と状態、要対応度、重要度、停滞時間の順で同じ列定義を使います。
+両ページの表とカードは、項目、待ち相手と状態、要対応度、重要度、期限、停滞時間の順で同じ列定義を使います。
 一覧の件数と選択中の並び替えキー名は表示しません。
 表を表示する幅では列見出しを並び替え操作に使い、カードを表示する幅でだけ専用の並び順選択UIを表示します。
 専用UIの表示切り替えには表とカードと同じbreakpointを使います。
@@ -309,7 +313,7 @@ Discordはtransport例外とHTTP 429、503だけを同じ設定で再試行し�
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
-`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v13`です。
+`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v14`です。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch
@@ -317,13 +321,13 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 `main`にはsource、設定、schema、prompt、Web UI、fixture、文書を置きます。
 日次stateはorphan branchの`tracker-state`へcanonical JSONとして保存し、外部databaseは使いません。
 
-| 既定パス                            | 内容                                                                                                       |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `state/snapshot.json`               | 要対応度、期限の切迫度、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 9の最新snapshot |
-| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                                         |
-| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                             |
-| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                                               |
-| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                      |
+| 既定パス                            | 内容                                                                                                  |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 10の最新snapshot |
+| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                                    |
+| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                        |
+| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                                          |
+| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                 |
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
 
