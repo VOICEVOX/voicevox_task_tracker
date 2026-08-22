@@ -25,6 +25,8 @@ Pagesではトップの項目一覧に未完了の追跡項目が表示され、
 状態で「すべて」を選ぶと、完了済みの追跡項目も表示されます。
 表が表示される幅では列見出しから並び替えられ、カードが表示される幅では並び順の選択UIが現れることも確認します。
 共通ヘッダーには「最新更新」と相対時刻、共通フッターにはrun IDだけが表示されます。
+通知履歴ではDiscordへ送信済みの項目通知が新しい順に表示され、履歴がなければ空状態になることを確認します。
+送信した通知は次回runのPages更新後に表示されます。
 `tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
 ローカル実行のreportは`artifacts/run-reports/`へ出力されます。
 Actionsでは収集reportとworkflow全体のreportを、run IDと試行番号を含む別々のartifactへ保存します。
@@ -102,7 +104,7 @@ GitHub App、Codex、Discordのsecretは読みません。
 pnpm tracker:run persist-state
 ```
 
-Pages buildは同じ収集artifactから公開DTOを生成します。
+Pages buildは保存済みstateと同じ収集artifactから公開DTOを生成します。
 外部secretは読みません。
 
 ```console

@@ -32,7 +32,7 @@ pnpm install --frozen-lockfile
 | `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の上限を検証する | `artifacts/performance-profile.json`                     |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                                       |
 
-`build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`を生成します。
+`build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
 GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdeep linkをこの複製で受けます。
 
 `tracker:run`はビルドを兼ねません。
@@ -45,8 +45,9 @@ pnpm dev:web
 ```
 
 Viteは起動時に`config.yml`の`web`設定を読み、base path、画面名、localeを反映します。
-表示に使うサンプル公開DTOは`web/public/data/summary.json`と`web/public/data/details.json`です。
-Web UIは`summary.json`を最初に取得し、項目詳細を開いたときと項目を検索したときだけ`details.json`を取得します。
+表示に使うサンプル公開DTOは`web/public/data/summary.json`、`web/public/data/details.json`、`web/public/data/notification-history.json`です。
+Web UIは`summary.json`を最初に取得します。
+項目詳細を開いたときと項目を検索したときだけ`details.json`を取得し、通知履歴を開いたときだけ`notification-history.json`を取得します。
 
 実データで表示を確かめる場合は、収集結果を保存してからPages用DTOを書き出します。
 

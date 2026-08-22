@@ -319,7 +319,7 @@ workflowはdefault branchからのscheduleまたは手動実行だけを許可�
 - `collect-analyze`の「更新されたCodex認証ファイルをsecretへ書き戻す」stepが成功していること
 - `tracker-state`がdefault branchと別の履歴を持つこと
 - `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知ledgerがまとまっていること
-- 後続の通知jobが実測時刻と実送信数を含むrun reportと通知ledgerのcommitを追加していること
+- 後続の通知jobが実測時刻と実送信数を含むrun report、通知ledger、当日の日次履歴のcommitを追加していること
 - Pagesの生成時刻がrun reportの`startedAt`と一致し、repository数、item数、stale表示も一致すること
 - private repositoryのID、名前、URL、secret、不要な本文がstateとPagesにないこと
 - 通常digestがPages deploy後にだけ送信され、候補0件なら送信されないこと
