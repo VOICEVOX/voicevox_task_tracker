@@ -99,6 +99,7 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
+  createDismissedNotificationLedgerEntries,
   selectDiscordNotifications,
   type sendDiscordDigest,
   type DiscordDigestDelivery,
@@ -434,6 +435,7 @@ type ValidatedRun = Readonly<{
 type PersistedRun = Readonly<{
   result: PersistStateTransactionResult;
   historyRecords: readonly StateHistoryRecord[];
+  notificationLedger: StateNotificationLedger;
 }>;
 
 type PagesResult = Readonly<{
@@ -598,18 +600,38 @@ function readRuntimeCredentials(
   }
   const codex = readCodexCredentials(environment, config);
   const knownSecrets = [github.privateKey, ...codexKnownSecrets(codex)];
-  if (
-    command.kind !== "dry-run" &&
-    command.kind !== "collect-analyze" &&
-    config.notifications.discord.enabled
-  ) {
-    knownSecrets.push(
-      requireEnvironmentValue(environment, config.notifications.discord.webhookSecretName),
-      requireEnvironmentValue(
-        environment,
-        config.notifications.discord.operationsWebhookSecretName,
-      ),
-    );
+  if (config.notifications.discord.enabled) {
+    switch (command.kind) {
+      case "daily":
+      case "backfill":
+        switch (command.notificationAction) {
+          case "send":
+            knownSecrets.push(
+              requireEnvironmentValue(environment, config.notifications.discord.webhookSecretName),
+              requireEnvironmentValue(
+                environment,
+                config.notifications.discord.operationsWebhookSecretName,
+              ),
+            );
+            break;
+          case "dismiss-current":
+            knownSecrets.push(
+              requireEnvironmentValue(
+                environment,
+                config.notifications.discord.operationsWebhookSecretName,
+              ),
+            );
+            break;
+          default:
+            throw new UnreachableError(command.notificationAction);
+        }
+        break;
+      case "dry-run":
+      case "collect-analyze":
+        break;
+      default:
+        throw new UnreachableError(command);
+    }
   }
   return Object.freeze({
     github,
@@ -4236,16 +4258,16 @@ function notificationItems(
 
 function mergeNotificationLedger(
   state: RuntimeState,
-  selection: DiscordNotificationSelection,
+  entriesToMerge: readonly NotificationLedgerEntry[],
 ): StateNotificationLedger {
   const entries = new Map(
     state.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
   );
-  for (const reservation of selection.ledgerReservations) {
-    entries.set(reservation.notificationKey, reservation);
+  for (const entry of entriesToMerge) {
+    entries.set(entry.notificationKey, entry);
   }
   return createStateNotificationLedger({
-    schemaVersion: "2",
+    schemaVersion: "3",
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
   });
@@ -4509,7 +4531,7 @@ function validateRunCompleteness(
       throw new TypeError(`決定規則versionの保存対象項目がありません。対象: ${nodeId}`);
     }
   }
-  const notificationSelection = selectDiscordNotifications({
+  const notificationInput = {
     evaluatedAt: collection.evaluatedAt,
     items: notificationItems(configuration, state, inventory, collection, reduction, graph),
     ledger: notificationLedgerEntries(state, reduction.items),
@@ -4519,11 +4541,28 @@ function validateRunCompleteness(
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
       minimumAiConfidence: configuration.config.ai.confidence.medium,
     },
-  });
+  };
+  const notificationAction =
+    invocation.command.kind === "dry-run" ? "send" : invocation.command.notificationAction;
+  const emptyCandidates: readonly [] = Object.freeze([]);
+  const emptyLedgerReservations: readonly [] = Object.freeze([]);
+  const notificationSelection: DiscordNotificationSelection =
+    notificationAction === "dismiss-current"
+      ? Object.freeze({
+          action: "skip_digest",
+          reason: "no_candidates",
+          candidates: emptyCandidates,
+          ledgerReservations: emptyLedgerReservations,
+        })
+      : selectDiscordNotifications(notificationInput);
+  const notificationLedgerEntriesToMerge =
+    notificationAction === "dismiss-current"
+      ? createDismissedNotificationLedgerEntries(notificationInput)
+      : notificationSelection.ledgerReservations;
   return Object.freeze({
     snapshot,
     historyInputEvents: stateHistoryInputEvents(reduction),
-    notificationLedger: mergeNotificationLedger(state, notificationSelection),
+    notificationLedger: mergeNotificationLedger(state, notificationLedgerEntriesToMerge),
     notificationSelection,
   });
 }
@@ -4606,9 +4645,13 @@ function createCollectAnalyzeArtifact(
   metrics: RunMetrics,
   diagnostics: readonly string[],
 ): WorkflowArtifact {
+  if (invocation.command.kind !== "collect-analyze") {
+    throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
+  }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "validated_public_run",
+    notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
       id: repository.id,
       owner: repository.owner,
@@ -4648,6 +4691,7 @@ async function persistValidatedRun(
   return Object.freeze({
     result,
     historyRecords,
+    notificationLedger: validated.notificationLedger,
   });
 }
 
@@ -4928,7 +4972,7 @@ async function deliverDiscord(
     }),
     notificationEvents,
     notificationLedger: createStateNotificationLedger({
-      schemaVersion: "2",
+      schemaVersion: "3",
       entries: [...notificationEntriesByKey.values()],
       operationsAlerts: [...operationsAlertsByKey.values()],
     }),
@@ -5053,7 +5097,7 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: "2",
+    schemaVersion: "3",
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
   });
@@ -5921,7 +5965,24 @@ function createDailyDependencies(
         adapters.pagesOutputDirectory,
         configuration.credentials.knownSecrets,
       ),
-    sendDiscord: async ({ configuration, validated, pages }) => {
+    sendDiscord: async ({ invocation, configuration, validated, pages }) => {
+      if (
+        invocation.command.kind !== "dry-run" &&
+        invocation.command.notificationAction === "dismiss-current"
+      ) {
+        return Object.freeze({
+          value: Object.freeze({
+            delivery: Object.freeze({
+              status: "skipped",
+              reason: "no_candidates",
+            }),
+            notificationEvents: Object.freeze([]),
+            notificationLedger: validated.notificationLedger,
+          }),
+          notificationCount: 0,
+          discordSentAt: null,
+        });
+      }
       const result = await deliverDiscord(
         adapters,
         discordDeliverySettings(configuration.config),
@@ -5961,12 +6022,17 @@ function createDailyDependencies(
         },
         configuration.credentials.knownSecrets,
       ),
-    sendOperationsAlert: ({ invocation, configuration, state, kind, retryAttempts }) =>
+    sendOperationsAlert: ({ invocation, configuration, state, persisted, kind, retryAttempts }) =>
       deliverOperationsAlert(
         adapters,
         configuration.config,
         configuration.credentials.knownSecrets,
-        state,
+        persisted == null
+          ? state
+          : Object.freeze({
+              ...state,
+              notificationLedger: persisted.notificationLedger,
+            }),
         {
           incidentId: `${invocation.runId}:${kind}`,
           kind,
@@ -6089,6 +6155,23 @@ async function notifyWorkflowDiscord(
     snapshot: persistedSnapshot,
     notificationLedger: await session.loadNotificationLedger(),
   });
+  if (artifact.notificationAction === "dismiss-current") {
+    await persistSuccessfulRunCompletion(
+      adapters,
+      config,
+      state,
+      workflowArtifactRepositoryInventory(artifact),
+      validatedRunFromArtifact(artifact),
+      artifact.runMetadata,
+      {
+        notificationLedger: state.notificationLedger,
+        notificationCount: 0,
+        notificationEvents: Object.freeze([]),
+      },
+      [],
+    );
+    return;
+  }
   const result = await deliverDiscord(
     adapters,
     artifact.discordSettings,

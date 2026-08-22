@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { createUtcIsoDateTime, type UtcIsoDateTime } from "../domain/index.js";
 import { GitHubRetryExhaustedError } from "../github/index.js";
 import { serializeCanonicalJson } from "../persistence/index.js";
+import { UnreachableError } from "../util/index.js";
 import {
   type BackfillCliCommand,
   type CollectAnalyzeCliCommand,
@@ -235,6 +236,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
       state: Types["state"];
+      persisted: Types["persisted"] | undefined;
       kind: "collection" | "pages";
       retryAttempts: number;
     }>,
@@ -324,20 +326,37 @@ function resolveScheduledFor(command: OnlineCliCommand, startedAt: UtcIsoDateTim
 }
 
 function createRunId(command: OnlineCliCommand, scheduledFor: UtcIsoDateTime): string {
-  const commandIdentity =
-    command.kind === "backfill" || command.kind === "collect-analyze"
-      ? {
-          kind: command.kind,
-          configPath: command.configPath,
-          mode: command.mode,
-          repositoryFilter: command.repositoryFilter,
-          scheduledFor,
-        }
-      : {
-          kind: command.kind,
-          configPath: command.configPath,
-          scheduledFor,
-        };
+  let commandIdentity: unknown;
+  switch (command.kind) {
+    case "daily":
+      commandIdentity = {
+        kind: command.kind,
+        configPath: command.configPath,
+        notificationAction: command.notificationAction,
+        scheduledFor,
+      };
+      break;
+    case "backfill":
+    case "collect-analyze":
+      commandIdentity = {
+        kind: command.kind,
+        configPath: command.configPath,
+        mode: command.mode,
+        notificationAction: command.notificationAction,
+        repositoryFilter: command.repositoryFilter,
+        scheduledFor,
+      };
+      break;
+    case "dry-run":
+      commandIdentity = {
+        kind: command.kind,
+        configPath: command.configPath,
+        scheduledFor,
+      };
+      break;
+    default:
+      throw new UnreachableError(command);
+  }
   const digest = createHash("sha256")
     .update(serializeCanonicalJson(commandIdentity), "utf8")
     .digest("hex");
@@ -518,6 +537,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
     let discordSentAt: UtcIsoDateTime | null = null;
     let configuration: Types["configuration"] | undefined;
     let state: Types["state"] | undefined;
+    let persisted: Types["persisted"] | undefined;
 
     try {
       configuration = await this.#dependencies.validateConfiguration({
@@ -668,7 +688,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
 
       if (invocation.command.kind !== "dry-run" && invocation.command.kind !== "collect-analyze") {
         stage = "state_persistence";
-        const persisted = await this.#dependencies.persistState({
+        persisted = await this.#dependencies.persistState({
           invocation,
           configuration,
           state,
@@ -746,6 +766,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
             invocation,
             configuration,
             state,
+            persisted,
             kind: alertKind,
             retryAttempts: operationsAlertRetryAttempts(error),
           });

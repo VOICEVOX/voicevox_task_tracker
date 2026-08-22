@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { UnreachableError } from "../util/index.js";
 import { type CliExecutionResult } from "./application.js";
-import { parseCliArguments, type CliCommand } from "./command.js";
+import { notificationActionSchema, parseCliArguments, type CliCommand } from "./command.js";
 import { createDefaultCliApplication } from "./composition-root.js";
 import { safeErrorDiagnostic } from "./error-diagnostic.js";
 import {
@@ -19,11 +19,17 @@ import { type RunStage } from "./run-report.js";
 const REPOSITORY_FILTER_SEPARATOR = ",";
 
 type TrackerRunOptionName =
-  "--backfill" | "--config" | "--repository-filter" | "--report" | "--scheduled-for";
+  | "--backfill"
+  | "--config"
+  | "--notification-action"
+  | "--repository-filter"
+  | "--report"
+  | "--scheduled-for";
 
 const trackerRunOptionsSchema = z.strictObject({
   "--backfill": z.enum(["none", "linked", "all-open"]),
   "--config": z.string().min(1).optional(),
+  "--notification-action": notificationActionSchema.optional(),
   "--repository-filter": z.string().min(1).optional(),
   "--report": z.string().min(1).optional(),
   "--scheduled-for": z.string().min(1).optional(),
@@ -39,6 +45,7 @@ function parseTrackerRunOptions(args: readonly string[]): TrackerRunOptions {
     if (
       name !== "--backfill" &&
       name !== "--config" &&
+      name !== "--notification-action" &&
       name !== "--repository-filter" &&
       name !== "--report" &&
       name !== "--scheduled-for"
@@ -112,6 +119,7 @@ export function createTrackerRunCliArguments(args: readonly string[]): readonly 
   const backfillMode = options["--backfill"];
   const cliArguments = backfillMode === "none" ? ["daily"] : ["backfill", "--mode", backfillMode];
   appendOption(cliArguments, options, "--config", "--config");
+  appendOption(cliArguments, options, "--notification-action", "--notification-action");
   appendOption(cliArguments, options, "--report", "--report");
   appendOption(cliArguments, options, "--scheduled-for", "--scheduled-for");
 
