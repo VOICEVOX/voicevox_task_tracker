@@ -4007,13 +4007,21 @@ function notificationLedgerEntries(
           expiresAt: createUtcIsoDateTime(entry.expiresAt),
         }),
       );
-    } else {
+    } else if (entry.status === "sent") {
       entries.push(
         Object.freeze({
           ...fields,
           status: "sent",
           sentAt: createUtcIsoDateTime(entry.sentAt),
           discordMessageId: entry.discordMessageId,
+        }),
+      );
+    } else {
+      entries.push(
+        Object.freeze({
+          ...fields,
+          status: "dismissed",
+          dismissedAt: createUtcIsoDateTime(entry.dismissedAt),
         }),
       );
     }

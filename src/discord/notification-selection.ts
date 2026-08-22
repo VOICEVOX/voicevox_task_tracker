@@ -155,6 +155,7 @@ export type DiscordNotificationCandidate = Readonly<{
 }>;
 
 type NotificationLedgerReservation = Extract<NotificationLedgerEntry, { status: "reserved" }>;
+type NotificationLedgerDismissal = Extract<NotificationLedgerEntry, { status: "dismissed" }>;
 
 /** 空digest抑制を明示する通知選別結果。 */
 export type DiscordNotificationSelection =
@@ -354,10 +355,15 @@ function validateLedger(
       if (expiresTimestamp < reservedTimestamp) {
         throw new RangeError("ledgerの予約期限は予約時刻以後にしてください");
       }
-    } else {
+    } else if (entry.status === "sent") {
       const sentTimestamp = parseTimestamp(entry.sentAt, "ledgerの送信時刻");
       if (sentTimestamp < reservedTimestamp || sentTimestamp > evaluatedTimestamp) {
         throw new RangeError("ledgerの送信時刻は予約時刻以後かつ判定時刻以前にしてください");
+      }
+    } else {
+      const dismissedTimestamp = parseTimestamp(entry.dismissedAt, "ledgerの抑制時刻");
+      if (dismissedTimestamp < reservedTimestamp || dismissedTimestamp > evaluatedTimestamp) {
+        throw new RangeError("ledgerの抑制時刻は予約時刻以後かつ判定時刻以前にしてください");
       }
     }
   }
@@ -807,6 +813,9 @@ function isEligibleAgainstLedger(
   if (existing.status === "reserved") {
     return evaluatedTimestamp >= parseTimestamp(existing.expiresAt, "ledgerの予約期限");
   }
+  if (existing.status === "dismissed") {
+    return false;
+  }
   if (isSameUtcDate(existing.sentAt, evaluatedAt)) {
     return false;
   }
@@ -901,12 +910,12 @@ function toNonEmptyReasons(
 function createCandidateDrafts(
   input: SelectDiscordNotificationsInput,
   evaluatedTimestamp: number,
+  ledgerByKey: ReadonlyMap<string, NotificationLedgerEntry>,
 ): readonly CandidateDraft[] {
   const unsuppressedItems = input.items.filter(
     (item) => !isItemSuppressed(item, evaluatedTimestamp, input.settings),
   );
   const assignedCycles = assignNewCycles(unsuppressedItems, evaluatedTimestamp);
-  const ledgerByKey = new Map(input.ledger.map((entry) => [entry.notificationKey, entry]));
   const drafts: CandidateDraft[] = [];
 
   for (const item of unsuppressedItems) {
@@ -1064,7 +1073,8 @@ export function selectDiscordNotifications(
   input: SelectDiscordNotificationsInput,
 ): DiscordNotificationSelection {
   const evaluatedTimestamp = validateInput(input);
-  const candidates = [...createCandidateDrafts(input, evaluatedTimestamp)]
+  const ledgerByKey = new Map(input.ledger.map((entry) => [entry.notificationKey, entry]));
+  const candidates = [...createCandidateDrafts(input, evaluatedTimestamp, ledgerByKey)]
     .sort((left, right) => compareCandidateDrafts(left, right, evaluatedTimestamp))
     .slice(0, input.settings.maxItemsPerDigest)
     .map(createCandidate);
@@ -1090,4 +1100,39 @@ export function selectDiscordNotifications(
     candidates: selectedCandidates,
     ledgerReservations: nonEmptyLedgerEntries(ledgerReservations),
   });
+}
+
+function createDismissedLedgerEntry(
+  candidate: DiscordNotificationCandidate,
+  reason: SelectedDiscordNotificationReason,
+  evaluatedAt: UtcIsoDateTime,
+): NotificationLedgerDismissal {
+  return Object.freeze({
+    notificationKey: reason.notificationKey,
+    itemNodeId: candidate.itemNodeId,
+    reasonCode: reason.reasonCode,
+    severity: candidate.severity,
+    reservedAt: evaluatedAt,
+    cooldownUntil: reason.cooldownUntil,
+    status: "dismissed",
+    dismissedAt: evaluatedAt,
+  } satisfies NotificationLedgerEntry);
+}
+
+/** 現在の全通知候補に対応する手動抑制済みledger entryを上限なしで生成する。 */
+export function createDismissedNotificationLedgerEntries(
+  input: SelectDiscordNotificationsInput,
+): readonly NotificationLedgerDismissal[] {
+  const evaluatedTimestamp = validateInput(input);
+  const candidates = [
+    ...createCandidateDrafts(input, evaluatedTimestamp, new Map<string, NotificationLedgerEntry>()),
+  ]
+    .sort((left, right) => compareCandidateDrafts(left, right, evaluatedTimestamp))
+    .map(createCandidate);
+  const dismissedEntries = candidates.flatMap((candidate) =>
+    candidate.reasons.map((reason) =>
+      createDismissedLedgerEntry(candidate, reason, input.evaluatedAt),
+    ),
+  );
+  return Object.freeze(dismissedEntries);
 }
