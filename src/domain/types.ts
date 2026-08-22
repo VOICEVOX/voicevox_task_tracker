@@ -539,7 +539,7 @@ type NotificationLedgerEntryBase = Readonly<{
   cooldownUntil: UtcIsoDateTime;
 }>;
 
-/** Discord通知の予約または送信結果を記録するledger entry。 */
+/** Discord通知の予約、送信結果、手動抑制済みledger entryを記録する型。 */
 export type NotificationLedgerEntry =
   | (NotificationLedgerEntryBase &
       Readonly<{
@@ -551,6 +551,11 @@ export type NotificationLedgerEntry =
         status: "sent";
         sentAt: UtcIsoDateTime;
         discordMessageId: string;
+      }>)
+  | (NotificationLedgerEntryBase &
+      Readonly<{
+        status: "dismissed";
+        dismissedAt: UtcIsoDateTime;
       }>);
 
 /** 運用障害として通知する処理の分類。 */

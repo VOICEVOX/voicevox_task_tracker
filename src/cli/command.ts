@@ -3,6 +3,7 @@ import {
   type OperationsAlertKind,
   type UtcIsoDateTime,
 } from "../domain/index.js";
+import { z } from "zod";
 import { assertNonNullable } from "../util/index.js";
 import { CliUsageError } from "./errors.js";
 import { type WorkflowJobResult, type WorkflowJobResults } from "./workflow-run-report.js";
@@ -15,6 +16,8 @@ const DEFAULT_PAGES_OUTPUT_DIRECTORY = "artifacts/workflow/pages";
 const DEFAULT_COLLECT_ANALYZE_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/collect-analyze.json`;
 const DEFAULT_WORKFLOW_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/workflow.json`;
 const REPOSITORY_FILTER_PATTERN = /^VOICEVOX\/[A-Za-z0-9._-]+$/u;
+export const notificationActionSchema = z.enum(["send", "dismiss-current"]);
+export type NotificationAction = z.output<typeof notificationActionSchema>;
 
 /** runの予定時刻を現在時刻または明示値から決める指定。 */
 export type CliSchedule =
@@ -32,8 +35,13 @@ type OnlineCommandFields = Readonly<{
   schedule: CliSchedule;
 }>;
 
+type NotificationActionCommandFields = Readonly<{
+  notificationAction: NotificationAction;
+}>;
+
 /** 通常の日次実行を表すCLI入力。 */
 export type DailyCliCommand = OnlineCommandFields &
+  NotificationActionCommandFields &
   Readonly<{
     kind: "daily";
   }>;
@@ -47,6 +55,7 @@ export type DryRunCliCommand = OnlineCommandFields &
 
 /** 追跡対象を追加する日次実行を表すCLI入力。 */
 export type BackfillCliCommand = OnlineCommandFields &
+  NotificationActionCommandFields &
   Readonly<{
     kind: "backfill";
     mode: "none" | "linked" | "all-open";
@@ -55,6 +64,7 @@ export type BackfillCliCommand = OnlineCommandFields &
 
 /** workflowの収集と判定だけを行うCLI入力。 */
 export type CollectAnalyzeCliCommand = OnlineCommandFields &
+  NotificationActionCommandFields &
   Readonly<{
     kind: "collect-analyze";
     mode: "none" | "linked" | "all-open";
@@ -242,6 +252,19 @@ function parseSchedule(options: ParsedOptions): CliSchedule {
   }
 }
 
+function parseNotificationAction(options: ParsedOptions): NotificationAction {
+  const result = notificationActionSchema.safeParse(
+    singleOption(options, "--notification-action", "send"),
+  );
+  if (!result.success) {
+    throw usageError(
+      "--notification-actionにはsendまたはdismiss-currentを指定してください",
+      result.error,
+    );
+  }
+  return result.data;
+}
+
 function assertDifferentOutputPaths(reportPath: string, artifactPath: string): void {
   if (reportPath === artifactPath) {
     throw usageError("--reportと--artifactには異なるパスを指定してください");
@@ -264,10 +287,14 @@ function parseOnlineFields(
 }
 
 function parseDaily(args: readonly string[]): DailyCliCommand {
-  const options = parseOptions(args, new Set(["--config", "--report", "--scheduled-for"]));
+  const options = parseOptions(
+    args,
+    new Set(["--config", "--notification-action", "--report", "--scheduled-for"]),
+  );
   return Object.freeze({
     kind: "daily",
     ...parseOnlineFields("daily", options),
+    notificationAction: parseNotificationAction(options),
   });
 }
 
@@ -317,7 +344,14 @@ function parseRepositoryFilter(options: ParsedOptions): readonly string[] {
 function parseBackfill(args: readonly string[]): BackfillCliCommand {
   const options = parseOptions(
     args,
-    new Set(["--config", "--mode", "--report", "--repository", "--scheduled-for"]),
+    new Set([
+      "--config",
+      "--mode",
+      "--notification-action",
+      "--report",
+      "--repository",
+      "--scheduled-for",
+    ]),
   );
   const mode = parseBackfillMode(singleOption(options, "--mode", "none"));
   const repositoryFilter = parseRepositoryFilter(options);
@@ -327,6 +361,7 @@ function parseBackfill(args: readonly string[]): BackfillCliCommand {
   return Object.freeze({
     kind: "backfill",
     ...parseOnlineFields("backfill", options),
+    notificationAction: parseNotificationAction(options),
     mode,
     repositoryFilter,
   });
@@ -335,7 +370,15 @@ function parseBackfill(args: readonly string[]): BackfillCliCommand {
 function parseCollectAnalyze(args: readonly string[]): CollectAnalyzeCliCommand {
   const options = parseOptions(
     args,
-    new Set(["--artifact", "--config", "--mode", "--report", "--repository", "--scheduled-for"]),
+    new Set([
+      "--artifact",
+      "--config",
+      "--mode",
+      "--notification-action",
+      "--report",
+      "--repository",
+      "--scheduled-for",
+    ]),
   );
   const mode = parseBackfillMode(singleOption(options, "--mode", "none"));
   const repositoryFilter = parseRepositoryFilter(options);
@@ -348,6 +391,7 @@ function parseCollectAnalyze(args: readonly string[]): CollectAnalyzeCliCommand 
   return Object.freeze({
     kind: "collect-analyze",
     ...fields,
+    notificationAction: parseNotificationAction(options),
     mode,
     repositoryFilter,
     artifactPath,
@@ -643,10 +687,10 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
 export function formatCliUsage(): string {
   return [
     "使用方法:",
-    "  voicevox-task-tracker daily [--config PATH] [--scheduled-for ISO] [--report PATH]",
+    "  voicevox-task-tracker daily [--config PATH] [--notification-action send|dismiss-current] [--scheduled-for ISO] [--report PATH]",
     "  voicevox-task-tracker dry-run [--config PATH] [--artifact PATH] [--report PATH]",
-    "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--repository VOICEVOX/REPO]",
-    "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--scheduled-for ISO] [--artifact PATH]",
+    "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--notification-action send|dismiss-current] [--repository VOICEVOX/REPO]",
+    "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--notification-action send|dismiss-current] [--scheduled-for ISO] [--artifact PATH]",
     "  voicevox-task-tracker persist-state [--config PATH] [--artifact PATH]",
     "  voicevox-task-tracker build-pages [--config PATH] [--artifact PATH] [--output PATH]",
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",

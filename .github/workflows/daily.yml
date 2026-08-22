@@ -23,6 +23,14 @@ on:
         description: backfill対象を限定するVOICEVOXリポジトリ名のカンマ区切り
         required: false
         type: string
+      notification_action:
+        description: 通知処理
+        required: true
+        default: send
+        type: choice
+        options:
+          - send
+          - dismiss-current
 
 permissions: {}
 
@@ -117,6 +125,7 @@ jobs:
           CODEX_HOME: ${{ runner.temp }}/codex-home
           GH_APP_ID: ${{ vars.GH_APP_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          NOTIFICATION_ACTION: ${{ inputs.notification_action || 'send' }}
           REPOSITORY_FILTER: ${{ inputs.repository_filter || '' }}
           SCHEDULE: ${{ github.event.schedule }}
         run: |
@@ -144,7 +153,7 @@ jobs:
             echo "未対応のworkflow eventです。対象: $GITHUB_EVENT_NAME" >&2
             exit 1
           fi
-          arguments=(collect-analyze --mode "$BACKFILL_MODE" --scheduled-for "$scheduled_for")
+          arguments=(collect-analyze --mode "$BACKFILL_MODE" --notification-action "$NOTIFICATION_ACTION" --scheduled-for "$scheduled_for")
           if [[ -n "$REPOSITORY_FILTER" ]]; then
             IFS=',' read -r -a repositories <<< "$REPOSITORY_FILTER"
             for repository in "${repositories[@]}"; do
@@ -317,9 +326,17 @@ jobs:
           name: validated-public-run
           path: artifacts/workflow
       - name: Discordへ通知
+        if: github.event_name != 'workflow_dispatch' || inputs.notification_action == 'send'
         env:
           DISCORD_OPERATIONS_WEBHOOK_URL: ${{ secrets.DISCORD_OPERATIONS_WEBHOOK_URL }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PAGES_URL: ${{ needs.deploy-pages.outputs.page_url }}
+        run: >-
+          node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs notify-discord
+          --pages-url "$PAGES_URL"
+      - name: 通知候補を抑制
+        if: github.event_name == 'workflow_dispatch' && inputs.notification_action == 'dismiss-current'
+        env:
           PAGES_URL: ${{ needs.deploy-pages.outputs.page_url }}
         run: >-
           node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs notify-discord

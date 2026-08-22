@@ -70,7 +70,7 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
 9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
-11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出してDiscord送信を実行します。完了時に実測時刻と送信結果を反映したrun reportとledger、送信済み通知を追加commitし、`tracking.startAt`が未確定なら同じcommitで確定します。
+11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数と再通知cooldownに従ってDiscord送信を行い、`dismiss-current`は現在の通知条件を満たす候補をreasonごとに上限なしで手動抑制済みとしてledgerへ保存します。完了時に実測時刻と処理結果を反映したrun reportとledgerを追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
 12. 成功、Codex縮退、失敗のいずれでもCLIのreport pathへrun reportを書き出します。
 
 `dry-run`は手順10まで実行し、state、Pages、Discordを変更せずに検証済みartifactとrun reportだけを書き出します。
@@ -87,6 +87,7 @@ GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativ
 本文のclosing keywordだけから得た`implements`候補は推定のままです。
 
 `.github/workflows/daily.yml`は通常経路の`quality-eval`、`collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた8 jobで構成されています。
+workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと手動抑制済みledgerを同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合してから、`send`なら通知を送り、`dismiss-current`なら通常通知を送らずにrunを完了します。不一致の場合は通知もrun完了処理も行いません。運用障害通知はこの通知処理と別系統です。
 `collect-analyze`は`CODEX_AUTH_JSON`をrunnerの一時directoryへ配置し、配置直後の`auth.json`のsha256を指紋として保存します。
 配置直後とsecretへ書き戻す直前に、`auth.json`内のすべての文字列値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
 値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
@@ -216,7 +217,7 @@ AI判定を行わなかった項目では`lastProgressAt`が作成時刻のま�
 
 `src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度を公開します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
-日次履歴の送信済み通知は`notification-history.json`へ変換し、通知履歴ページを開いたときだけ取得します。
+日次履歴の送信済み通知は`notification-history.json`へ変換し、通知履歴ページを開いたときだけ取得します。`dismiss-current`の手動抑制はnotification ledgerへだけ保存し、`notification_sent`履歴やWeb UIの表示へ変換しません。
 通知はPages公開後に確定するため、送信後の次回runで公開されます。
 
 共通ヘッダーは16px相当のサイト名、グローバルナビゲーション、「最新更新」と相対時刻を表示します。
@@ -328,9 +329,9 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 | 既定パス                            | 内容                                                                                                  |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 10の最新snapshot |
-| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分と送信済み通知を持つ日次履歴                                                      |
+| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分と送信済み通知を持つ日次履歴。手動抑制は記録しない                                |
 | `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                        |
-| `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                                          |
+| `state/notification-ledger.json`    | 予約期限、送信結果、cooldown、期限のない手動抑制を持つ通知ledger                                      |
 | `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                 |
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
@@ -351,7 +352,7 @@ Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しま�
 通知予約はrun開始時刻から24時間だけ有効です。
 予約期限はworkflow内の排他用leaseであり通知方針ではないため、設定項目にせず、4時間周期をまたぐ重複送信を抑える24時間へ固定します。
 期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。
-cooldownと同日抑制は送信済みentryだけへ適用します。
+cooldownと同日抑制は送信済みentryだけへ適用します。`dismiss-current`で保存したentryは同じnotification keyを期限なく抑制します。notification keyはstatus、severity、waitingOn、各種開始時刻などの状態から作られるため、これらが変わって別keyになった候補は通常の選別対象へ戻ります。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
 PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。

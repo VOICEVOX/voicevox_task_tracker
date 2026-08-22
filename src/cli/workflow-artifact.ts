@@ -25,6 +25,7 @@ import {
   type StateSnapshot,
 } from "../persistence/index.js";
 import { assertNonNullable } from "../util/index.js";
+import { notificationActionSchema, type NotificationAction } from "./command.js";
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
@@ -161,8 +162,9 @@ const runMetadataSchema = z
     }
   });
 const workflowArtifactSchema = z.strictObject({
-  schemaVersion: z.literal("1"),
+  schemaVersion: z.literal("2"),
   kind: z.literal("validated_public_run"),
+  notificationAction: notificationActionSchema,
   repositoryAllowlist: z.array(repositoryAllowlistEntrySchema),
   snapshot: z.unknown(),
   historyInputEvents: z.array(z.unknown()),
@@ -190,8 +192,9 @@ export type WorkflowRunMetadata = Readonly<{
 
 /** collect-analyzeが後続jobへ渡す公開可能な検証済み成果物。 */
 export type WorkflowArtifact = Readonly<{
-  schemaVersion: "1";
+  schemaVersion: "2";
   kind: "validated_public_run";
+  notificationAction: NotificationAction;
   repositoryAllowlist: readonly WorkflowArtifactRepositoryAllowlistEntry[];
   snapshot: StateSnapshot;
   historyInputEvents: readonly StateHistoryInputEvent[];
@@ -393,6 +396,15 @@ function assertNotificationSelectionConsistency(
   }
 }
 
+function assertNotificationActionConsistency(
+  notificationAction: NotificationAction,
+  selection: DiscordNotificationSelection,
+): void {
+  if (notificationAction === "dismiss-current" && selection.action !== "skip_digest") {
+    throw new TypeError("dismiss-currentのworkflow artifactには空のDiscord通知selectionが必要です");
+  }
+}
+
 function normalizePagesUrl(value: string): string {
   const url = new URL(value);
   if (
@@ -422,8 +434,9 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
   const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
   const artifact = Object.freeze({
-    schemaVersion: "1",
+    schemaVersion: "2",
     kind: "validated_public_run",
+    notificationAction: result.data.notificationAction,
     repositoryAllowlist: createRepositoryAllowlist(result.data.repositoryAllowlist),
     snapshot,
     historyInputEvents,
@@ -446,6 +459,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     }),
   } satisfies WorkflowArtifact);
   assertRunConsistency(snapshot, runMetadata);
+  assertNotificationActionConsistency(artifact.notificationAction, notificationSelection);
   assertNotificationSelectionConsistency(snapshot, notificationLedger, notificationSelection);
   assertWorkflowArtifactPublicSafety(artifact, repositoryInventory(snapshot), []);
   return artifact;

@@ -1,4 +1,5 @@
 export {
+  createDismissedNotificationLedgerEntries,
   selectDiscordNotifications,
   type DiscordNotificationCandidate,
   type DiscordNotificationCurrentState,
