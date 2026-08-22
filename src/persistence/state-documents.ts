@@ -351,6 +351,7 @@ function migrateStateNotificationLedgerVersion1(
         ...entry,
         reasonCode: migrateLegacyNotificationReasonCode(entry.reasonCode),
       })),
+      operationsAlerts: [],
     }),
   );
 }
