@@ -21,7 +21,8 @@ GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は�
 `notify-operations`は収集、Pages関連、Discord通知のいずれかのjobが失敗したときだけ実行されます。
 `report-workflow`は先行jobの成否にかかわらず実行され、全job結果と収集metricをActions artifactへ保存します。
 
-Pagesではトップの項目一覧にすべての追跡項目が表示され、既定が要対応度の降順であることを確認します。
+Pagesではトップの項目一覧に未完了の追跡項目が表示され、既定が要対応度の降順であることを確認します。
+状態で「すべて」を選ぶと、完了済みの追跡項目も表示されます。
 表が表示される幅では列見出しから並び替えられ、カードが表示される幅では並び順の選択UIが現れることも確認します。
 共通ヘッダーには「最新更新」と相対時刻、共通フッターにはrun IDだけが表示されます。
 `tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
