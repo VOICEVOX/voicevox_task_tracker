@@ -16,13 +16,17 @@ export {
 } from "./generate-public-data.js";
 export {
   createPublicDetailsDto,
+  createPublicNotificationHistoryDto,
   createPublicSummaryDto,
+  comparePublicNotificationHistoryEntries,
   type PublicDetailsDto,
   type PublicGraphEdgeDto,
   type PublicGraphNodeDto,
   type PublicItemDetailsDto,
   type PublicItemHistoryEventDto,
   type PublicItemSummaryDto,
+  type PublicNotificationHistoryDto,
+  type PublicNotificationHistoryEntryDto,
   type PublicSummaryDto,
 } from "./public-dto.js";
 export {
@@ -37,6 +41,7 @@ export {
   type PublicSummarySizeMeasurement,
 } from "./summary-size.js";
 export {
+  PUBLIC_NOTIFICATION_HISTORY_FILE_NAME,
   PUBLIC_DETAILS_FILE_NAME,
   PUBLIC_SUMMARY_FILE_NAME,
   writePublicDataFiles,

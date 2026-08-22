@@ -23,7 +23,7 @@ export class PublicDtoSemanticError extends PagesError {
 
 /** Pages公開DTOが共有schemaへ適合しないことを表す。 */
 export class PublicDtoValidationError extends PagesError {
-  public constructor(kind: "summary" | "details", options: ErrorOptions) {
+  public constructor(kind: "summary" | "details" | "notification-history", options: ErrorOptions) {
     super(`公開${kind} DTOがschemaへ適合しません`, options);
   }
 }

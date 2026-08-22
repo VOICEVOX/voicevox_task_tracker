@@ -20,12 +20,14 @@ import {
 } from "./branch-adapter.js";
 import { StateFormatError, StateHistoryError, StateSnapshotSemanticError } from "./errors.js";
 import {
+  appendStateHistoryNotificationEvents,
   appendStateHistoryRecord,
   createStateHistoryRecord,
   diffStateHistory,
   parseStateHistoryRecords,
   type StateHistoryDiff,
   type StateHistoryInputEvent,
+  type StateHistoryNotificationEvent,
   type StateHistoryRecord,
 } from "./history.js";
 import { assertStatePublicSafety, assertStateValuesPublicSafety } from "./public-safety.js";
@@ -89,6 +91,7 @@ export type PersistNotificationLedgerInput = Readonly<{
 /** 完全成功したrunの追跡開始時刻、通知ledger、run reportを保存する入力。 */
 export type PersistRunCompletionInput = Readonly<{
   snapshot: StateSnapshot;
+  notificationEvents: readonly StateHistoryNotificationEvent[];
   notificationLedger: StateNotificationLedger;
   runReport: StateRunReport;
   repositoryInventory: readonly Repository[];
@@ -449,6 +452,10 @@ export class StatePersistenceSession {
       });
     }
     const snapshot = createStateSnapshot(input.snapshot);
+    const notificationEvents = input.notificationEvents.map((event) => ({
+      ...event,
+      reasonCodes: [...event.reasonCodes],
+    }));
     const runReport = createStateRunReport(input.runReport);
     assertRunConsistency(snapshot, runReport);
     const currentResult = await this.loadSnapshot();
@@ -486,10 +493,66 @@ export class StatePersistenceSession {
       );
     }
     const notificationLedger = createStateNotificationLedger(input.notificationLedger);
+    const historyPath = joinStatePath(
+      this.#configuration.historyDirectory,
+      `${runReport.date}.jsonl`,
+    );
+    const existingHistorySource = await this.#readHistorySource(historyPath);
+    if (existingHistorySource == null) {
+      throw new StateHistoryError("run完了の対象history fileを読み取れません");
+    }
+    const existingHistoryRecords = parseStateHistoryRecords(existingHistorySource);
+    if (existingHistoryRecords.some((record) => record.date !== runReport.date)) {
+      throw new StateHistoryError("日次履歴のファイル名とrecordの日付が一致しません");
+    }
+    const targetHistoryRecords = existingHistoryRecords.filter(
+      (record) => record.runId === runReport.runId,
+    );
+    if (targetHistoryRecords.length !== 1) {
+      throw new StateHistoryError("run完了の対象history recordが一意に定まりません");
+    }
+    const historySource = appendStateHistoryNotificationEvents(
+      existingHistorySource,
+      runReport.runId,
+      notificationEvents,
+    );
+    const historyRecords = parseStateHistoryRecords(historySource);
+    const updatedTargetHistoryRecords = historyRecords.filter(
+      (record) => record.runId === runReport.runId,
+    );
+    if (updatedTargetHistoryRecords.length !== 1) {
+      throw new StateHistoryError("run完了の対象history recordが一意に定まりません");
+    }
+    const targetHistoryRecord = updatedTargetHistoryRecords[0];
+    if (targetHistoryRecord == null) {
+      throw new StateHistoryError("run完了の対象history recordを取得できません");
+    }
+    if (targetHistoryRecord.date !== runReport.date) {
+      throw new StateHistoryError("run reportとhistory recordの日付が一致しません");
+    }
+    for (const event of notificationEvents) {
+      if (event.sentAt < targetHistoryRecord.recordedAt || event.sentAt > runReport.finishedAt) {
+        throw new StateHistoryError("通知送信時刻がrunの記録時刻範囲外です");
+      }
+      const item = snapshot.items.find((candidate) => candidate.nodeId === event.itemNodeId);
+      if (item == null) {
+        throw new StateHistoryError("通知送信eventの対象itemがsnapshotにありません");
+      }
+      if (
+        item.repositoryId !== event.repositoryId ||
+        item.type !== event.type ||
+        item.displayReference !== event.displayReference ||
+        item.number !== event.number ||
+        item.title !== event.title ||
+        item.url !== event.url
+      ) {
+        throw new StateHistoryError("通知送信eventとsnapshotのitem表示情報が一致しません");
+      }
+    }
     assertStatePublicSafety({
       snapshot,
       repositoryInventory: input.repositoryInventory,
-      additionalValues: [notificationLedger, runReport],
+      additionalValues: [...historyRecords, notificationLedger, runReport],
       knownSecrets: input.knownSecrets,
     });
     const updates: StateFileUpdate[] = [
@@ -501,6 +564,10 @@ export class StatePersistenceSession {
       {
         path: joinStatePath(this.#configuration.runReportsDirectory, `${runReport.date}.json`),
         bytes: encodeStateFile(serializeStateRunReport(runReport)),
+      },
+      {
+        path: historyPath,
+        bytes: encodeStateFile(historySource),
       },
     ];
     updates.sort((left, right) => compareStrings(left.path, right.path));

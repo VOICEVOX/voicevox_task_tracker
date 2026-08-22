@@ -33,11 +33,14 @@ import {
 import { PublicDtoSemanticError } from "./errors.js";
 import {
   createPublicDetailsDto,
+  createPublicNotificationHistoryDto,
+  comparePublicNotificationHistoryEntries,
   createPublicSummaryDto,
   type PublicDetailsDto,
   type PublicGraphEdgeDto,
   type PublicGraphNodeDto,
   type PublicItemHistoryEventDto,
+  type PublicNotificationHistoryDto,
   type PublicItemSummaryDto,
   type PublicSummaryDto,
 } from "./public-dto.js";
@@ -66,6 +69,7 @@ export type GeneratePublicDataInput = PagesPublicSafetyInput &
 export type GeneratedPublicData = Readonly<{
   summary: PublicSummaryDto;
   details: PublicDetailsDto;
+  notificationHistory: PublicNotificationHistoryDto;
   summarySize: PublicSummarySizeMeasurement;
 }>;
 
@@ -243,6 +247,9 @@ function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHist
         case "repository_excluded": {
           break;
         }
+        case "notification_sent": {
+          break;
+        }
       }
     }
   }
@@ -254,6 +261,88 @@ function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHist
         Object.freeze([...events]),
       ]),
     ),
+  });
+}
+
+function createPublicNotificationHistory(
+  records: readonly StateHistoryRecord[],
+  repositoryAllowlist: PagesPublicSafetyInput["repositoryAllowlist"],
+  repositoryInventory: readonly PagesPublicSafetyInput["repositoryInventory"][number][],
+  runId: string,
+  generatedAt: UtcIsoDateTime,
+): PublicNotificationHistoryDto {
+  const allowlistById = new Map<string, PagesPublicSafetyInput["repositoryAllowlist"][number]>(
+    repositoryAllowlist.map((repository) => [repository.id, repository]),
+  );
+  if (allowlistById.size !== repositoryAllowlist.length) {
+    throw new PublicDtoSemanticError("通知履歴の公開allowlistにrepository IDの重複があります");
+  }
+  const inventoryById = new Map<string, PagesPublicSafetyInput["repositoryInventory"][number]>(
+    repositoryInventory.map((repository) => [repository.id, repository]),
+  );
+  if (inventoryById.size !== repositoryInventory.length) {
+    throw new PublicDtoSemanticError("通知履歴のrepository inventoryにIDの重複があります");
+  }
+  const notifications: PublicNotificationHistoryDto["notifications"] = [];
+  for (const record of records) {
+    for (const event of record.events) {
+      if (event.kind !== "notification_sent") {
+        continue;
+      }
+      const repository = inventoryById.get(event.repositoryId);
+      if (repository == null) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のrepository ${event.repositoryId}をinventoryから解決できません`,
+        );
+      }
+      if (repository.visibility !== "public" || repository.archived || repository.disabled) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のrepository ${event.repositoryId}は公開対象ではありません`,
+        );
+      }
+      const allowlistedRepository = allowlistById.get(event.repositoryId);
+      if (allowlistedRepository == null) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のrepository ${event.repositoryId}が公開allowlistにありません`,
+        );
+      }
+      if (
+        allowlistedRepository.owner !== repository.owner ||
+        allowlistedRepository.name !== repository.name
+      ) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のrepository ${event.repositoryId}のidentityが一致しません`,
+        );
+      }
+      const repositoryFullName = `${repository.owner}/${repository.name}`;
+      const expectedDisplayReference = `${repositoryFullName}#${event.number.toString()}`;
+      const expectedUrl = `https://github.com/${repositoryFullName}/${event.type === "issue" ? "issues" : "pull"}/${event.number.toString()}`;
+      if (event.displayReference !== expectedDisplayReference || event.url !== expectedUrl) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のitem表示情報がrepository identityと一致しません。対象: ${event.itemNodeId}`,
+        );
+      }
+      notifications.push({
+        item: {
+          nodeId: event.itemNodeId,
+          type: event.type,
+          repositoryId: event.repositoryId,
+          displayReference: event.displayReference,
+          number: event.number,
+          title: event.title,
+          url: event.url,
+        },
+        reasonCodes: [...event.reasonCodes],
+        sentAt: event.sentAt,
+      });
+    }
+  }
+  notifications.sort(comparePublicNotificationHistoryEntries);
+  return createPublicNotificationHistoryDto({
+    schemaVersion: "1",
+    runId,
+    generatedAt,
+    notifications,
   });
 }
 
@@ -689,6 +778,13 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   const snapshot = createStateSnapshot(input.snapshot);
   const historyRecords = validateHistoryRecords(input.historyRecords, snapshot.generatedAt);
   const history = createPublicHistory(historyRecords);
+  const notificationHistory = createPublicNotificationHistory(
+    historyRecords,
+    input.repositoryAllowlist,
+    input.repositoryInventory,
+    snapshot.run.id,
+    snapshot.generatedAt,
+  );
   const sourceOwnersById = createEvidenceSourceUrlMap(
     snapshot.items.flatMap((item) =>
       item.inputEvents.map((event) => ({
@@ -788,6 +884,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   return Object.freeze({
     summary,
     details,
+    notificationHistory,
     summarySize,
   });
 }

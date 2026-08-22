@@ -590,11 +590,14 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
       generatedPublicData = data;
       const summarySource = serializeCanonicalJson(data.summary);
       const detailsSource = serializeCanonicalJson(data.details);
+      const notificationHistorySource = serializeCanonicalJson(data.notificationHistory);
       return Promise.resolve({
         summaryPath: "unused-performance-pages/summary.json",
         detailsPath: "unused-performance-pages/details.json",
+        notificationHistoryPath: "unused-performance-pages/notification-history.json",
         summaryBytes: Buffer.byteLength(summarySource, "utf8"),
         detailsBytes: Buffer.byteLength(detailsSource, "utf8"),
+        notificationHistoryBytes: Buffer.byteLength(notificationHistorySource, "utf8"),
       });
     },
     sendDiscord: () =>

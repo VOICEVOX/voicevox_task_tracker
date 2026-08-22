@@ -43,6 +43,21 @@ const statusSchema = z.enum([
   "terminal_not_planned",
 ]);
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
+const notificationReasonCodeSchema = z.enum([
+  "assessment_overdue",
+  "owner_overdue",
+  "decision_overdue",
+  "review_overdue",
+  "revision_overdue",
+  "reply_overdue",
+  "owner_unknown",
+  "blocker_overdue",
+  "newly_unblocked",
+  "dependency_cycle",
+  "responsibility_changed",
+  "merge_overdue",
+  "automation_stuck",
+]);
 const importanceLevelSchema = z.enum(["low", "medium", "high"]);
 const deadlineLevelSchema = z.enum([
   "none",
@@ -421,6 +436,56 @@ const publicDetailsDtoSchema = z.strictObject({
   items: z.array(publicItemDetailsSchema),
   graph: publicGraphSchema,
 });
+const publicNotificationHistoryItemSchema = z.strictObject({
+  nodeId: identifierSchema,
+  type: z.enum(["issue", "pull_request"]),
+  repositoryId: identifierSchema,
+  displayReference: z.string().min(4).max(600),
+  number: z.number().int().positive(),
+  title: z.string().max(500),
+  url: githubUrlSchema,
+});
+const publicNotificationHistoryEntrySchema = z
+  .strictObject({
+    item: publicNotificationHistoryItemSchema,
+    reasonCodes: z.array(notificationReasonCodeSchema).min(1),
+    sentAt: dateTimeSchema,
+  })
+  .superRefine((entry, context) => {
+    if (new Set(entry.reasonCodes).size !== entry.reasonCodes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["reasonCodes"],
+        message: "通知理由コードが重複しています",
+      });
+    }
+  });
+const publicNotificationHistoryDtoSchema = z
+  .strictObject({
+    schemaVersion: z.literal("1"),
+    runId: identifierSchema,
+    generatedAt: dateTimeSchema,
+    notifications: z.array(publicNotificationHistoryEntrySchema),
+  })
+  .superRefine((history, context) => {
+    for (const [index, notification] of history.notifications.entries()) {
+      if (notification.sentAt > history.generatedAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["notifications", index, "sentAt"],
+          message: "通知送信時刻は公開データ生成時刻以前にしてください",
+        });
+      }
+      const previous = history.notifications[index - 1];
+      if (previous != null && comparePublicNotificationHistoryEntries(previous, notification) > 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["notifications", index],
+          message: "通知履歴が決定論的な降順になっていません",
+        });
+      }
+    }
+  });
 
 /** Web初期表示で共有するschema version 7の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
@@ -442,6 +507,60 @@ export type PublicGraphEdgeDto = z.output<typeof publicGraphEdgeSchema>;
 
 /** 公開DTO内の項目履歴差分。 */
 export type PublicItemHistoryEventDto = z.output<typeof publicItemHistoryEventSchema>;
+
+/** 通知履歴の公開DTO。 */
+export type PublicNotificationHistoryDto = z.output<typeof publicNotificationHistoryDtoSchema>;
+
+/** 通知履歴の公開entry。 */
+export type PublicNotificationHistoryEntryDto = z.output<
+  typeof publicNotificationHistoryEntrySchema
+>;
+
+/** 通知履歴entryを送信時刻降順と表示情報で比較する。 */
+export function comparePublicNotificationHistoryEntries(
+  left: PublicNotificationHistoryEntryDto,
+  right: PublicNotificationHistoryEntryDto,
+): number {
+  if (left.sentAt > right.sentAt) {
+    return -1;
+  }
+  if (left.sentAt < right.sentAt) {
+    return 1;
+  }
+  if (left.item.displayReference < right.item.displayReference) {
+    return -1;
+  }
+  if (left.item.displayReference > right.item.displayReference) {
+    return 1;
+  }
+  if (left.item.url < right.item.url) {
+    return -1;
+  }
+  if (left.item.url > right.item.url) {
+    return 1;
+  }
+  const reasonCount = Math.min(left.reasonCodes.length, right.reasonCodes.length);
+  for (let index = 0; index < reasonCount; index += 1) {
+    const leftReasonCode = left.reasonCodes[index];
+    const rightReasonCode = right.reasonCodes[index];
+    if (leftReasonCode == null || rightReasonCode == null) {
+      throw new TypeError("通知履歴の理由コードを取得できません");
+    }
+    if (leftReasonCode < rightReasonCode) {
+      return -1;
+    }
+    if (leftReasonCode > rightReasonCode) {
+      return 1;
+    }
+  }
+  if (left.reasonCodes.length < right.reasonCodes.length) {
+    return -1;
+  }
+  if (left.reasonCodes.length > right.reasonCodes.length) {
+    return 1;
+  }
+  return 0;
+}
 
 function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void {
   const summaryItemNodeIds = new Set(summary.items.map((item) => item.nodeId));
@@ -485,6 +604,17 @@ export function createPublicDetailsDto(value: unknown): PublicDetailsDto {
   const result = publicDetailsDtoSchema.safeParse(value);
   if (!result.success) {
     throw new PublicDtoValidationError("details", {
+      cause: result.error,
+    });
+  }
+  return result.data;
+}
+
+/** 未検証の値を共有公開notification history DTOへ変換する。 */
+export function createPublicNotificationHistoryDto(value: unknown): PublicNotificationHistoryDto {
+  const result = publicNotificationHistoryDtoSchema.safeParse(value);
+  if (!result.success) {
+    throw new PublicDtoValidationError("notification-history", {
       cause: result.error,
     });
   }
