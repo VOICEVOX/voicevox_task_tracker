@@ -181,7 +181,7 @@ function NotificationHistoryTable({
       cardFields={cardFields}
       cardListClassName="notification-history-card-list"
       columns={columns}
-      getRowPresentation={(row) => notificationRowPresentation(row, rows.indexOf(row))}
+      getRowPresentation={notificationRowPresentation}
       rows={rows}
       tableCaption="Discord通知の履歴"
       tableClassName="notification-history-table"
