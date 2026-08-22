@@ -69,6 +69,18 @@ pnpm tracker:run build-pages --output web/public/data
 外部サービスへ接続しないサブコマンドは`eval`、`report-workflow`、`persist-state`、`build-pages`です。
 `persist-state`と`build-pages`は検証済みartifactとローカルのGit stateを必要とします。
 
+`daily`、`backfill`、`collect-analyze`には`--notification-action send|dismiss-current`を指定できます。省略時は`send`です。`dry-run`にはこの指定はありません。
+
+```console
+pnpm tracker:run --backfill none --notification-action dismiss-current
+pnpm tracker:run --backfill linked --notification-action dismiss-current
+pnpm tracker:run collect-analyze --mode none --notification-action dismiss-current
+```
+
+`tracker:run`は`--backfill none`を`daily`へ変換し、`linked`または`all-open`を`backfill`へ変換します。
+
+`dismiss-current`は現在の通知条件を満たす候補を上限なしで手動抑制済みとしてledgerへ保存し、通常のDiscord送信と`notification_sent`履歴を作りません。通知判定規則、Web UI、README、`config.yml`は変わりません。
+
 オンラインで収集する場合は、実行するshellへ次の環境変数を設定します。
 
 | 環境変数                         | 必要になる場面                                   |

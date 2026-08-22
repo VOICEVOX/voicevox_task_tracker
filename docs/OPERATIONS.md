@@ -49,7 +49,7 @@ run reportの主な確認項目は次のとおりです。
 | `metrics.estimatedInputTokens`      | Codex入力tokenの見積り                                                        |
 | `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                  |
 | `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                  |
-| `metrics.notificationCount`         | 送信結果をledgerへ記録した通知数                                              |
+| `metrics.notificationCount`         | Discord送信結果をledgerへ記録した通知数。`dismiss-current`では0               |
 | `metrics.scheduleDelayMilliseconds` | 予定起動時刻からCLI開始までの遅延                                             |
 | `metrics.durationMilliseconds`      | CLI開始からrun完了までの所要時間                                              |
 
@@ -247,6 +247,22 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 大規模な`all-open`はCodex予算と通知候補を急増させるため、Discordを無効にしてrepository単位で確認してから範囲を広げます。
 
 ## 通知量の調整
+
+### 現在の通知候補を一括で抑制する
+
+通知条件を調整した直後など、現在の候補を古い通知として一掃したい場合は、日次workflowの手動実行で通知処理を`dismiss-current`にします。
+
+1. default branchのActionsから「日次タスク追跡」のworkflowを開きます。
+2. `backfill`を`none`、`repository_filter`を空、`notification_action`を`dismiss-current`にして実行します。
+3. `collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`、`report-workflow`が成功することを確認します。
+
+`dismiss-current`は現在の通知条件を満たす候補を、reasonごとに最大件数の制限なく、手動抑制済みとしてnotification ledgerへ保存します。通常のDiscord digestは送信せず、`notification_sent`履歴も作りません。snapshotとPagesの生成は通常runと同じで、ledgerの更新は同じatomic transactionへ含まれます。運用障害が発生した場合の`notify-operations`は別系統で動作します。
+
+成功確認では、`tracker-state`のnotification ledgerに対象候補の`status: dismissed`が保存され、通知履歴に送信済み項目が追加されていないことを確認します。state branchやledgerを直接編集して抑制を解除してはいけません。
+
+同じnotification keyの抑制には期限がありません。status、severity、waitingOn、各種開始時刻などが変わって別keyになった候補は、次回の`send`で通常どおり通知対象になります。
+
+通常の`send`は、`maxItemsPerDigest`と再通知cooldownを含む既存の通知選別を行います。
 
 severityはDiscord通知の判断にだけ使います。
 通知選別はseverityの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。

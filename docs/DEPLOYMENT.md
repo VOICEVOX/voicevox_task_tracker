@@ -312,7 +312,12 @@ Actionsの`collect-analyze` jobはlockfileから同じCodex CLIをインスト�
 PagesのSourceを`GitHub Actions`にし、`notifications.discord.enabled: true`であることを確認してから、repositoryのdefault branchから日次workflowを手動実行します。
 workflowはdefault branchからのscheduleまたは手動実行だけを許可します。
 入力は`backfill: none`とし、repository filterは空にします。
+手動実行の`notification_action`は`send`が既定値で、通常の通知を送ります。現在の通知候補を一掃したい場合だけ`dismiss-current`を選びます。
 手動実行でも`persist-state`、Pages buildとdeploy、`notify-discord`の順に進みます。
+
+`dismiss-current`では、現在の通知条件を満たす候補をreasonごとに最大件数の制限なくnotification ledgerへ手動抑制済みとして保存します。通常のDiscord digestと`notification_sent`履歴は作られません。snapshotとPagesは通常runと同じように生成し、ledger更新は同じatomic transactionで保存します。手動入力は現在の候補を一括で抑制する操作なので、対象範囲を確認してから実行してください。運用障害が起きた場合の`notify-operations`は別系統で通知します。
+
+workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと手動抑制済みledgerを同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合し、不一致なら通常通知もrun完了処理も行いません。state branchやnotification ledgerを直接編集してはいけません。
 
 成功後に次を確認します。
 
@@ -324,6 +329,8 @@ workflowはdefault branchからのscheduleまたは手動実行だけを許可�
 - private repositoryのID、名前、URL、secret、不要な本文がstateとPagesにないこと
 - 通常digestがPages deploy後にだけ送信され、候補0件なら送信されないこと
 - 同じ候補を含む再実行でcooldownが効くこと
+- `notification_action: dismiss-current`では通常のDiscord送信と`notification_sent`履歴がなく、対象候補のledger entryが`status: dismissed`になっていること
+- `dismiss-current`の抑制は同じnotification keyへ期限なく適用され、status、severity、waitingOn、各種開始時刻などが変わった候補は次回の`send`で通知対象になること
 
 `tracking.startAt: null`なら、最初の完全成功runの時刻がsnapshotへ固定されます。
 収集、Pages、Discordのいずれかで運用対象の失敗が起きたrunでは、`notify-operations`が障害通知を1件送ります。
