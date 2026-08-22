@@ -5,20 +5,20 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 
 ## モジュール境界
 
-| モジュール        | 責務                                                                                     | 主な依存先                                               |
-| ----------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `src/config`      | YAMLの読み込み、Zod schemaとsemantic validation                                          | `src/codex`、`src/domain`、`src/util`                    |
-| `src/github`      | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理     | `src/config`、`src/domain`                               |
-| `src/domain`      | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、severity、重要度、要対応度          | `src/util`                                               |
-| `src/graph`       | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                         | `src/domain`                                             |
-| `src/codex`       | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                | `src/domain`、`src/graph`、`src/persistence`             |
-| `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、Git branch transaction | `src/codex`、`src/domain`、`src/github`                  |
-| `src/pages`       | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                   | `src/domain`、`src/graph`、`src/persistence`、`src/util` |
-| `src/discord`     | 通知候補選別、cooldown、payload分割、mention制限、Webhook送信                            | `src/domain`、`src/graph`                                |
-| `src/eval`        | golden fixtureの解析と期待値比較                                                         | 判定、graph、公開DTO、通知の各pure処理                   |
-| `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                        | `src/cli`と全実処理モジュール                            |
-| `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                       | 上記の全モジュール                                       |
-| `web`             | 公開DTOの検証、要対応度と重要度を含む一覧と詳細、項目ごとの依存グラフ、検索、deep link   | `src/pages`のDTO契約                                     |
+| モジュール        | 責務                                                                                             | 主な依存先                                               |
+| ----------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| `src/config`      | YAMLの読み込み、Zod schemaとsemantic validation                                                  | `src/codex`、`src/domain`、`src/util`                    |
+| `src/github`      | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理             | `src/config`、`src/domain`                               |
+| `src/domain`      | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、severity、重要度、要対応度                  | `src/util`                                               |
+| `src/graph`       | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                                 | `src/domain`                                             |
+| `src/codex`       | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                        | `src/domain`、`src/graph`、`src/persistence`             |
+| `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、Git branch transaction         | `src/codex`、`src/domain`、`src/github`                  |
+| `src/pages`       | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                           | `src/domain`、`src/graph`、`src/persistence`、`src/util` |
+| `src/discord`     | 通知候補選別、cooldown、payload分割、mention制限、Webhook送信                                    | `src/domain`、`src/graph`                                |
+| `src/eval`        | golden fixtureの解析と期待値比較                                                                 | 判定、graph、公開DTO、通知の各pure処理                   |
+| `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                                | `src/cli`と全実処理モジュール                            |
+| `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                               | 上記の全モジュール                                       |
+| `web`             | 公開DTOの検証、要対応度と重要度を含む一覧と詳細、通知履歴、項目ごとの依存グラフ、検索、deep link | `src/pages`のDTO契約                                     |
 
 `src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
@@ -70,7 +70,7 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
 9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
-11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出してDiscord送信を実行します。完了時に実測時刻と送信結果を反映したrun reportとledgerを追加commitし、`tracking.startAt`が未確定なら同じcommitで確定します。
+11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出してDiscord送信を実行します。完了時に実測時刻と送信結果を反映したrun reportとledger、送信済み通知を追加commitし、`tracking.startAt`が未確定なら同じcommitで確定します。
 12. 成功、Codex縮退、失敗のいずれでもCLIのreport pathへrun reportを書き出します。
 
 `dry-run`は手順10まで実行し、state、Pages、Discordを変更せずに検証済みartifactとrun reportだけを書き出します。
@@ -216,6 +216,8 @@ AI判定を行わなかった項目では`lastProgressAt`が作成時刻のま�
 
 `src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度を公開します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
+日次履歴の送信済み通知は`notification-history.json`へ変換し、通知履歴ページを開いたときだけ取得します。
+通知はPages公開後に確定するため、送信後の次回runで公開されます。
 
 共通ヘッダーは16px相当のサイト名、グローバルナビゲーション、「最新更新」と相対時刻を表示します。
 各ページの見出しは見出しレベルを保ったまま18px相当へ統一し、操作を説明する補助文は置きません。
@@ -326,7 +328,7 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 | 既定パス                            | 内容                                                                                                  |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 10の最新snapshot |
-| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分を持つ日次履歴                                                                    |
+| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分と送信済み通知を持つ日次履歴                                                      |
 | `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                        |
 | `state/notification-ledger.json`    | 予約期限、送信結果、cooldownを持つ通知ledger                                                          |
 | `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                 |
@@ -353,7 +355,7 @@ cooldownと同日抑制は送信済みentryだけへ適用します。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
 PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。
-この確定値、送信結果を反映したledger、run reportは2回目のGit commitで一緒に保存します。
-`tracking.startAt`が確定済みのrunでも、送信結果を反映したledgerとrun reportを2回目のGit commitで保存します。
+この確定値、送信結果を反映したledger、run report、送信済み通知を追記した日次履歴は2回目のGit commitで一緒に保存します。
+`tracking.startAt`が確定済みのrunでも、送信結果を反映したledger、run report、日次履歴を2回目のGit commitで保存します。
 各commitの前にheadが変わった場合は競合として失敗し、不完全なcommitへ切り替えません。
 GitHub Pagesはbranchを公開元にせず、ActionsのPages artifactからdeployします。
