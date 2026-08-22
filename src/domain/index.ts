@@ -20,6 +20,7 @@ export {
   type NaturalLanguageDeadlineAssessment,
   type NaturalLanguageDeadlineAssessmentState,
 } from "./deadline.js";
+export { notificationReasonText } from "./notification-reason.js";
 export { DETERMINISTIC_RULES_VERSION } from "./deterministic-rules-version.js";
 export {
   resolvePullRequestCommitOccurredAt,
