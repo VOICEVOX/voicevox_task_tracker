@@ -359,7 +359,7 @@ function ItemTable({
                       updateFilter(filter.key, event.currentTarget.value);
                     }}
                   >
-                    <option value="">すべて</option>
+                    <option value="">{filter.key === "status" ? "未完了" : "すべて"}</option>
                     {filterOptions[filter.key].map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
@@ -403,7 +403,7 @@ function ItemTable({
             columns={tableColumns}
             getRowPresentation={itemRowPresentation}
             rows={visibleRows}
-            tableCaption="追跡中の全項目の一覧"
+            tableCaption="追跡項目の一覧"
             tableClassName="items-table"
             renderCardHeading={(row) => (
               <ItemListHeading

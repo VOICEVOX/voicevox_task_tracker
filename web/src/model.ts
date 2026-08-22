@@ -4,6 +4,7 @@ import {
   type PublicItemSummaryDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
+import { isTerminalStatus } from "../../src/domain/status.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 
 type ConfidenceThresholds = PublicSummaryDto["confidenceThresholds"];
@@ -217,8 +218,8 @@ const ROLE_LABELS = {
   unknown: "不明",
 } satisfies Readonly<Record<WaitingOnRole, string>>;
 
-/** 一覧表の空の絞り込み条件を作る。 */
-export function createEmptyTableFilters(): TableFilters {
+/** 一覧表の既定の絞り込み条件を作る。 */
+export function createDefaultTableFilters(): TableFilters {
   return {
     repository: "",
     type: "",
@@ -332,7 +333,10 @@ export function createTableFilterOptions(summary: PublicSummaryDto): TableFilter
       .sort(compareStrings)
       .map((value) => ({ label: value, value })),
     type: createPresentTableFilterOptions(ITEM_TYPE_LABELS, typeValues),
-    status: createPresentTableFilterOptions(STATUS_LABELS, statusValues),
+    status: [
+      { label: "すべて", value: "all" },
+      ...createPresentTableFilterOptions(STATUS_LABELS, statusValues),
+    ],
     importance: createPresentTableFilterOptions(IMPORTANCE_LEVEL_LABELS, importanceValues),
     stall: STALL_FILTER_DEFINITIONS.map(({ label, value }) => ({ label, value })),
     aiAnalysis: AI_ANALYSIS_FILTER_OPTIONS,
@@ -1041,6 +1045,9 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: st
     case "type":
       return row.item.type === value;
     case "status":
+      if (value === "all") {
+        return true;
+      }
       return row.item.status === value;
     case "importance":
       return row.item.importance.level === value;
@@ -1147,6 +1154,9 @@ export function filterAndSortTableRows(
   const filteredRows = rows.filter((row) =>
     Object.entries(filters).every(([key, value]) => {
       if (value.length === 0) {
+        if (key === "status") {
+          return !isTerminalStatus(row.item.status);
+        }
         return true;
       }
       if (
