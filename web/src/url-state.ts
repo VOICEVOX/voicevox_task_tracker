@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import {
-  createEmptyTableFilters,
+  createDefaultTableFilters,
   waitingSubjectKey,
   type TableFilterKey,
   type TableFilterOption,
@@ -181,7 +181,7 @@ export function createWebViewState(route: WebRoute): WebViewState {
   return {
     route,
     searchQuery: "",
-    tableFilters: createEmptyTableFilters(),
+    tableFilters: createDefaultTableFilters(),
     tableSort: {
       key: "attention",
       direction: "descending",
