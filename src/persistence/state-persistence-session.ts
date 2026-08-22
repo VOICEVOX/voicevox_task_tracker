@@ -493,16 +493,14 @@ export class StatePersistenceSession {
       );
     }
     const notificationLedger = createStateNotificationLedger(input.notificationLedger);
-    const historyPath = joinStatePath(
-      this.#configuration.historyDirectory,
-      `${runReport.date}.jsonl`,
-    );
+    const historyDate = snapshot.generatedAt.slice(0, 10);
+    const historyPath = joinStatePath(this.#configuration.historyDirectory, `${historyDate}.jsonl`);
     const existingHistorySource = await this.#readHistorySource(historyPath);
     if (existingHistorySource == null) {
       throw new StateHistoryError("run完了の対象history fileを読み取れません");
     }
     const existingHistoryRecords = parseStateHistoryRecords(existingHistorySource);
-    if (existingHistoryRecords.some((record) => record.date !== runReport.date)) {
+    if (existingHistoryRecords.some((record) => record.date !== historyDate)) {
       throw new StateHistoryError("日次履歴のファイル名とrecordの日付が一致しません");
     }
     const targetHistoryRecords = existingHistoryRecords.filter(
@@ -526,9 +524,6 @@ export class StatePersistenceSession {
     const targetHistoryRecord = updatedTargetHistoryRecords[0];
     if (targetHistoryRecord == null) {
       throw new StateHistoryError("run完了の対象history recordを取得できません");
-    }
-    if (targetHistoryRecord.date !== runReport.date) {
-      throw new StateHistoryError("run reportとhistory recordの日付が一致しません");
     }
     for (const event of notificationEvents) {
       if (event.sentAt < targetHistoryRecord.recordedAt || event.sentAt > runReport.finishedAt) {

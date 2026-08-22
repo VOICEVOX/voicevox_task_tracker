@@ -1,7 +1,8 @@
 import { z } from "zod";
 
-import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
+import { assertNonNullable } from "../util/index.js";
+import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 
 const identifierSchema = z.string().min(1).max(512).regex(/^\S+$/u);
 const shortStringSchema = z.string().max(1000);
@@ -562,6 +563,105 @@ export function comparePublicNotificationHistoryEntries(
   return 0;
 }
 
+type PublicNotificationHistoryDisplayIdentity = Readonly<{
+  number: number;
+  owner: string;
+  repository: string;
+}>;
+
+type PublicNotificationHistoryUrlIdentity = Readonly<{
+  number: number;
+  owner: string;
+  repository: string;
+  type: "issue" | "pull_request";
+}>;
+
+function parsePublicNotificationHistoryDisplayReference(
+  displayReference: string,
+): PublicNotificationHistoryDisplayIdentity {
+  const match = /^([^/\s#?%]+)\/([^/\s#?%]+)#([1-9]\d*)$/u.exec(displayReference);
+  if (match == null) {
+    throw new PublicDtoSemanticError(
+      "通知履歴の表示参照がowner/repository#number形式ではありません",
+    );
+  }
+  const owner = match[1];
+  const repository = match[2];
+  const numberText = match[3];
+  assertNonNullable(owner, "通知履歴の表示参照ownerを取得できません");
+  assertNonNullable(repository, "通知履歴の表示参照repositoryを取得できません");
+  assertNonNullable(numberText, "通知履歴の表示参照numberを取得できません");
+  const number = Number.parseInt(numberText, 10);
+  if (!Number.isSafeInteger(number)) {
+    throw new PublicDtoSemanticError("通知履歴の表示参照numberが安全な整数ではありません");
+  }
+  return {
+    owner,
+    repository,
+    number,
+  };
+}
+
+function parsePublicNotificationHistoryUrl(urlValue: string): PublicNotificationHistoryUrlIdentity {
+  if (urlValue.includes("?") || urlValue.includes("#") || urlValue.includes("\\")) {
+    throw new PublicDtoSemanticError(
+      "通知履歴のURLにquery、hash、または不正な区切り文字があります",
+    );
+  }
+  const url = new URL(urlValue);
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "github.com" ||
+    url.port !== "" ||
+    url.username !== "" ||
+    url.password !== ""
+  ) {
+    throw new PublicDtoSemanticError("通知履歴のURLがGitHubのHTTPS URLではありません");
+  }
+  const match = /^\/([^/\s?#%]+)\/([^/\s?#%]+)\/(issues|pull)\/([1-9]\d*)$/u.exec(url.pathname);
+  if (match == null) {
+    throw new PublicDtoSemanticError(
+      "通知履歴のURL pathがIssueまたはPull Requestの形式ではありません",
+    );
+  }
+  const owner = match[1];
+  const repository = match[2];
+  const kind = match[3];
+  const numberText = match[4];
+  assertNonNullable(owner, "通知履歴のURL ownerを取得できません");
+  assertNonNullable(repository, "通知履歴のURL repositoryを取得できません");
+  assertNonNullable(kind, "通知履歴のURL種別を取得できません");
+  assertNonNullable(numberText, "通知履歴のURL numberを取得できません");
+  const number = Number.parseInt(numberText, 10);
+  if (!Number.isSafeInteger(number)) {
+    throw new PublicDtoSemanticError("通知履歴のURL numberが安全な整数ではありません");
+  }
+  return {
+    owner,
+    repository,
+    number,
+    type: kind === "issues" ? "issue" : "pull_request",
+  };
+}
+
+function assertPublicNotificationHistoryEntryItem(entry: PublicNotificationHistoryEntryDto): void {
+  const displayIdentity = parsePublicNotificationHistoryDisplayReference(
+    entry.item.displayReference,
+  );
+  const urlIdentity = parsePublicNotificationHistoryUrl(entry.item.url);
+  if (
+    displayIdentity.owner !== urlIdentity.owner ||
+    displayIdentity.repository !== urlIdentity.repository ||
+    displayIdentity.number !== urlIdentity.number ||
+    entry.item.number !== displayIdentity.number ||
+    entry.item.type !== urlIdentity.type
+  ) {
+    throw new PublicDtoSemanticError(
+      `通知履歴の表示参照とURLのitem identityが一致しません。対象: ${entry.item.nodeId}`,
+    );
+  }
+}
+
 function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void {
   const summaryItemNodeIds = new Set(summary.items.map((item) => item.nodeId));
   const externalGraphNodeIds = new Set(
@@ -617,6 +717,9 @@ export function createPublicNotificationHistoryDto(value: unknown): PublicNotifi
     throw new PublicDtoValidationError("notification-history", {
       cause: result.error,
     });
+  }
+  for (const notification of result.data.notifications) {
+    assertPublicNotificationHistoryEntryItem(notification);
   }
   return result.data;
 }

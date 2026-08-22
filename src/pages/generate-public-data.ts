@@ -314,14 +314,6 @@ function createPublicNotificationHistory(
           `通知履歴のrepository ${event.repositoryId}のidentityが一致しません`,
         );
       }
-      const repositoryFullName = `${repository.owner}/${repository.name}`;
-      const expectedDisplayReference = `${repositoryFullName}#${event.number.toString()}`;
-      const expectedUrl = `https://github.com/${repositoryFullName}/${event.type === "issue" ? "issues" : "pull"}/${event.number.toString()}`;
-      if (event.displayReference !== expectedDisplayReference || event.url !== expectedUrl) {
-        throw new PublicDtoSemanticError(
-          `通知履歴のitem表示情報がrepository identityと一致しません。対象: ${event.itemNodeId}`,
-        );
-      }
       notifications.push({
         item: {
           nodeId: event.itemNodeId,
