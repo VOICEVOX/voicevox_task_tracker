@@ -335,7 +335,7 @@ function ItemTable({
             <span>検索と絞り込み</span>
             <Pill className="filter-summary-count font-mono tabular-nums" tone="neutral">
               {activeConditionCount === 0
-                ? "条件なし"
+                ? "完了済みを非表示"
                 : `${activeConditionCount.toString()}件適用中`}
             </Pill>
           </span>
