@@ -6,7 +6,7 @@ import {
 } from "../../src/pages/public-dto.js";
 import { notificationReasonText } from "../../src/domain/notification-reason.js";
 import { UnreachableError } from "../../src/util/index.js";
-import { GitHubIconButton } from "./github-icon-button.js";
+import { ItemHeading, type ItemHeadingLink } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
 import { formatDateTime } from "./model.js";
 import {
@@ -15,13 +15,15 @@ import {
   type ResponsiveListRowPresentation,
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
-import { SafeGitHubLink } from "./safe-link.js";
-import { ActionButton, Pill } from "./ui.js";
+import { ActionButton } from "./ui.js";
 import { type PublicNotificationHistoryLoader } from "./notification-history-loader.js";
 
 type NotificationHistoryPageProps = Readonly<{
+  createItemHref: (nodeId: string) => string;
+  currentItemNodeIds: ReadonlySet<string>;
   loadNotificationHistory: PublicNotificationHistoryLoader;
   locale: string;
+  onSelectItem: (nodeId: string) => void;
   summary: PublicSummaryDto;
 }>;
 
@@ -42,40 +44,27 @@ type NotificationHistoryState =
       status: "failed";
     }>;
 
-function notificationTypeLabel(type: NotificationHistoryRow["item"]["type"]): string {
-  switch (type) {
-    case "issue":
-      return "Issue";
-    case "pull_request":
-      return "Pull Request";
-    default:
-      throw new UnreachableError(type);
-  }
-}
-
-function NotificationItem({ item }: Readonly<{ item: NotificationHistoryRow["item"] }>) {
-  return (
-    <div class="grid min-w-0 gap-1">
-      <h3 class="m-0 flex min-w-0 items-start gap-1 text-base leading-6 font-semibold">
-        <span class="min-w-0 flex-1 wrap-anywhere">
-          <SafeGitHubLink href={item.url} variant="inline">
-            {item.title}
-          </SafeGitHubLink>
-        </span>
-        <GitHubIconButton href={item.url} />
-      </h3>
-      <p class="m-0 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-5 text-text-muted wrap-anywhere">
-        <span>{item.displayReference}</span>
-        <span aria-hidden="true">・</span>
-        <Pill
-          className={`notification-item-type notification-item-type-${item.type}`}
-          tone={item.type === "issue" ? "success" : "info"}
-        >
-          {notificationTypeLabel(item.type)}
-        </Pill>
-      </p>
-    </div>
-  );
+function NotificationItem({
+  createItemHref,
+  currentItemNodeIds,
+  item,
+  onSelectItem,
+}: Readonly<{
+  createItemHref: (nodeId: string) => string;
+  currentItemNodeIds: ReadonlySet<string>;
+  item: NotificationHistoryRow["item"];
+  onSelectItem: (nodeId: string) => void;
+}>) {
+  const link: ItemHeadingLink = currentItemNodeIds.has(item.nodeId)
+    ? {
+        createItemHref,
+        kind: "internal",
+        onSelectItem,
+      }
+    : {
+        kind: "github",
+      };
+  return <ItemHeading item={item} link={link} metaAccessory={null} titleAccessory={null} />;
 }
 
 function NotificationReasons({
@@ -105,11 +94,17 @@ function notificationRowPresentation(
 }
 
 function NotificationHistoryTable({
+  createItemHref,
+  currentItemNodeIds,
   locale,
+  onSelectItem,
   rows,
   summary,
 }: Readonly<{
+  createItemHref: (nodeId: string) => string;
+  currentItemNodeIds: ReadonlySet<string>;
   locale: string;
+  onSelectItem: (nodeId: string) => void;
   rows: readonly NotificationHistoryRow[];
   summary: PublicSummaryDto;
 }>) {
@@ -135,7 +130,14 @@ function NotificationHistoryTable({
       headerClassName: "",
       key: "item",
       label: "項目",
-      renderCell: (row: NotificationHistoryRow) => <NotificationItem item={row.item} />,
+      renderCell: (row: NotificationHistoryRow) => (
+        <NotificationItem
+          createItemHref={createItemHref}
+          currentItemNodeIds={currentItemNodeIds}
+          item={row.item}
+          onSelectItem={onSelectItem}
+        />
+      ),
       widthClassName: "w-[43%]",
     },
     {
@@ -185,7 +187,14 @@ function NotificationHistoryTable({
       rows={rows}
       tableCaption="Discord通知の履歴"
       tableClassName="notification-history-table"
-      renderCardHeading={(row) => <NotificationItem item={row.item} />}
+      renderCardHeading={(row) => (
+        <NotificationItem
+          createItemHref={createItemHref}
+          currentItemNodeIds={currentItemNodeIds}
+          item={row.item}
+          onSelectItem={onSelectItem}
+        />
+      )}
       renderCardFooter={() => null}
     />
   );
@@ -193,8 +202,11 @@ function NotificationHistoryTable({
 
 /** Discord通知の送信履歴を遅延取得して表示する。 */
 export function NotificationHistoryPage({
+  createItemHref,
+  currentItemNodeIds,
   loadNotificationHistory,
   locale,
+  onSelectItem,
   summary,
 }: NotificationHistoryPageProps) {
   const [historyState, setHistoryState] = useState<NotificationHistoryState>({
@@ -265,7 +277,10 @@ export function NotificationHistoryPage({
           />
         ) : (
           <NotificationHistoryTable
+            createItemHref={createItemHref}
+            currentItemNodeIds={currentItemNodeIds}
             locale={locale}
+            onSelectItem={onSelectItem}
             rows={historyState.history.notifications}
             summary={summary}
           />

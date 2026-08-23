@@ -63,7 +63,6 @@ export type TableFilterOptions = Readonly<
 export type ItemTableRow = Readonly<{
   item: PublicItemSummaryDto;
   repositoryText: string;
-  typeText: string;
   waitingOnText: string;
   stallDurationMilliseconds: number;
 }>;
@@ -264,10 +263,6 @@ export function aiAnalysisNotice(status: AiAnalysisStatus): AiAnalysisNotice {
     default:
       throw new UnreachableError(status);
   }
-}
-
-function itemTypeLabel(type: ItemType): string {
-  return ITEM_TYPE_LABELS[type];
 }
 
 /** statusの日本語表示名を返す。 */
@@ -946,7 +941,6 @@ export function createItemTableRows(summary: PublicSummaryDto, now: Date): reado
     return {
       item,
       repositoryText: repository.fullName,
-      typeText: itemTypeLabel(item.type),
       waitingOnText: formatWaitingOn(item, summary),
       stallDurationMilliseconds,
     };
