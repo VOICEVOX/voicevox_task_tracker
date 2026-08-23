@@ -183,6 +183,10 @@ export function App({
     () => new Map(itemTargets.map((target) => [target.nodeId, target])),
     [itemTargets],
   );
+  const currentItemNodeIds = useMemo(
+    () => new Set(summary.items.map((item) => item.nodeId)),
+    [summary.items],
+  );
   const validTeamIds = useMemo(() => collectWaitingTeamIds(summary), [summary]);
   const validTeamKeys = useMemo(
     () => new Set(validTeamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId }))),
@@ -481,8 +485,11 @@ export function App({
       case "notification-history":
         return (
           <NotificationHistoryPage
+            createItemHref={createItemHref}
+            currentItemNodeIds={currentItemNodeIds}
             loadNotificationHistory={sharedLoadNotificationHistory}
             locale={locale}
+            onSelectItem={selectItem}
             summary={summary}
           />
         );
