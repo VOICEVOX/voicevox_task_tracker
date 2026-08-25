@@ -183,6 +183,7 @@ import {
   type StateSnapshot,
   type StateSnapshotReadResult,
 } from "../persistence/index.js";
+import { resolveStateHistoryNotificationItemDisplayReference } from "../persistence/history.js";
 import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { CliApplication } from "./application.js";
 import { createTrackingBackfillRequest } from "./backfill.js";
@@ -4749,6 +4750,70 @@ function operationsAlertLedgerEntry(
   });
 }
 
+function createNotificationWaitingOn(
+  item: StateSnapshot["items"][number],
+  snapshot: StateSnapshot,
+): StateHistoryNotificationEvent["waitingOn"] {
+  if (item.waitingOn.length === 0) {
+    throw new TypeError("通知送信eventの対象itemにwaitingOnがありません");
+  }
+  type NotificationWaitingOnReference = Extract<
+    StateHistoryNotificationEvent["waitingOn"],
+    Readonly<{ status: "recorded" }>
+  >["values"][number];
+  const values = item.waitingOn.map((waitingOn): NotificationWaitingOnReference => {
+    switch (waitingOn.kind) {
+      case "user":
+        return {
+          kind: "user",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "team":
+        return {
+          kind: "team",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "role":
+        return {
+          kind: "role",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "item": {
+        return {
+          kind: "item",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+          displayReference: resolveStateHistoryNotificationItemDisplayReference(
+            snapshot,
+            waitingOn.candidateId,
+          ),
+        };
+      }
+      case "automation":
+        return {
+          kind: "automation",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "unknown":
+        return {
+          kind: "unknown",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      default:
+        throw new UnreachableError(waitingOn.kind);
+    }
+  });
+  return {
+    status: "recorded",
+    values,
+  };
+}
+
 function createNotificationHistoryEvents(
   snapshot: StateSnapshot,
   selection: DiscordNotificationSelection,
@@ -4877,6 +4942,7 @@ function createNotificationHistoryEvents(
         number: item.number,
         title: item.title,
         url: item.url,
+        waitingOn: createNotificationWaitingOn(item, snapshot),
         reasonCodes,
         severity: candidate.severity,
         sentAt,

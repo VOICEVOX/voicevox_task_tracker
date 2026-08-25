@@ -446,9 +446,43 @@ const publicNotificationHistoryItemSchema = z.strictObject({
   title: z.string().max(500),
   url: githubUrlSchema,
 });
+const publicNotificationHistoryWaitingOnSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("user"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("team"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("role"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("item"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+    displayReference: z.string().min(4).max(600),
+  }),
+  z.strictObject({
+    kind: z.literal("automation"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("unknown"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+]);
 const publicNotificationHistoryEntrySchema = z
   .strictObject({
     item: publicNotificationHistoryItemSchema,
+    waitingOn: z.array(publicNotificationHistoryWaitingOnSchema).min(1),
     reasonCodes: z.array(notificationReasonCodeSchema).min(1),
     sentAt: dateTimeSchema,
   })
@@ -463,7 +497,7 @@ const publicNotificationHistoryEntrySchema = z
   });
 const publicNotificationHistoryDtoSchema = z
   .strictObject({
-    schemaVersion: z.literal("1"),
+    schemaVersion: z.literal("2"),
     runId: identifierSchema,
     generatedAt: dateTimeSchema,
     notifications: z.array(publicNotificationHistoryEntrySchema),
@@ -659,6 +693,11 @@ function assertPublicNotificationHistoryEntryItem(entry: PublicNotificationHisto
     throw new PublicDtoSemanticError(
       `通知履歴の表示参照とURLのitem identityが一致しません。対象: ${entry.item.nodeId}`,
     );
+  }
+  for (const waitingOn of entry.waitingOn) {
+    if (waitingOn.kind === "item") {
+      parsePublicNotificationHistoryDisplayReference(waitingOn.displayReference);
+    }
   }
 }
 
