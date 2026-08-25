@@ -289,6 +289,9 @@ function createPublicNotificationHistory(
       if (event.kind !== "notification_sent") {
         continue;
       }
+      if (event.waitingOn.status === "not_recorded") {
+        continue;
+      }
       const repository = inventoryById.get(event.repositoryId);
       if (repository == null) {
         throw new PublicDtoSemanticError(
@@ -324,6 +327,7 @@ function createPublicNotificationHistory(
           title: event.title,
           url: event.url,
         },
+        waitingOn: event.waitingOn.values.map((waitingOn) => ({ ...waitingOn })),
         reasonCodes: [...event.reasonCodes],
         sentAt: event.sentAt,
       });
@@ -331,7 +335,7 @@ function createPublicNotificationHistory(
   }
   notifications.sort(comparePublicNotificationHistoryEntries);
   return createPublicNotificationHistoryDto({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId,
     generatedAt,
     notifications,
