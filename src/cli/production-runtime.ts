@@ -34,6 +34,7 @@ import {
   calculateImportance,
   combineImportance,
   classifyTrackingNotification,
+  createNotificationReason,
   createUtcIsoDateTime,
   createGitHubNodeId,
   createGitHubBotPredicate,
@@ -4541,6 +4542,7 @@ function validateRunCompleteness(
       cooldownDays: configuration.config.notifications.discord.cooldownDays,
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
       minimumAiConfidence: configuration.config.ai.confidence.medium,
+      thresholdsHours: configuration.config.staleness.thresholdsHours,
     },
   };
   const notificationAction =
@@ -4650,7 +4652,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "2",
+    schemaVersion: "3",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -4889,12 +4891,7 @@ function createNotificationHistoryEvents(
       if (candidateReasonsByKey.size !== candidate.reasons.length) {
         throw new TypeError("通知候補のnotification keyが重複しています");
       }
-      const firstReason = candidate.reasons[0];
-      assertNonNullable(firstReason, "通知候補の先頭理由がありません");
-      if (candidate.reasonCode !== firstReason.reasonCode) {
-        throw new TypeError("通知候補の代表理由が先頭理由と一致しません");
-      }
-      const reasonCodesByKey = new Map<string, SentNotificationLedgerEntry["reasonCode"]>();
+      const reasonsByKey = new Map<string, (typeof candidate.reasons)[number]>();
       let sentAt: UtcIsoDateTime | undefined;
       for (const entry of entries) {
         if (entry.itemNodeId !== candidate.itemNodeId || entry.severity !== candidate.severity) {
@@ -4904,25 +4901,26 @@ function createNotificationHistoryEvents(
         if (entry.reasonCode === "none" || candidateReason?.reasonCode !== entry.reasonCode) {
           throw new TypeError("Discord送信結果の通知理由が候補と一致しません");
         }
-        if (reasonCodesByKey.has(entry.notificationKey)) {
+        if (reasonsByKey.has(entry.notificationKey)) {
           throw new TypeError("Discord送信結果の通知理由が重複しています");
         }
-        reasonCodesByKey.set(entry.notificationKey, entry.reasonCode);
+        assertNonNullable(candidateReason, "Discord送信結果の通知理由を取得できません");
+        reasonsByKey.set(entry.notificationKey, candidateReason);
         if (sentAt == null) {
           sentAt = entry.sentAt;
         } else if (sentAt !== entry.sentAt) {
           throw new TypeError("同じDiscord messageの通知送信時刻が一致しません");
         }
       }
-      if (reasonCodesByKey.size !== candidateReasonsByKey.size) {
+      if (reasonsByKey.size !== candidateReasonsByKey.size) {
         throw new TypeError("Discord送信結果の通知理由数が候補と一致しません");
       }
-      const reasonCodes = candidate.reasons.map((reason) => {
-        const reasonCode = reasonCodesByKey.get(reason.notificationKey);
-        if (reasonCode == null || reasonCode === "none") {
+      const reasons = candidate.reasons.map((reason) => {
+        const selectedReason = reasonsByKey.get(reason.notificationKey);
+        if (selectedReason == null) {
           throw new TypeError("Discord送信結果の通知理由順序を候補から解決できません");
         }
-        return reasonCode;
+        return createNotificationReason(selectedReason.reasonCode, selectedReason.threshold);
       });
       const item = itemByNodeId.get(itemNodeId);
       assertNonNullable(item, "通知送信eventの対象itemがsnapshotにありません");
@@ -4943,7 +4941,7 @@ function createNotificationHistoryEvents(
         title: item.title,
         url: item.url,
         waitingOn: createNotificationWaitingOn(item, snapshot),
-        reasonCodes,
+        reasons,
         severity: candidate.severity,
         sentAt,
       });

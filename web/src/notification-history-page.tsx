@@ -71,12 +71,12 @@ function NotificationItem({
 }
 
 function NotificationReasons({
-  reasonCodes,
-}: Readonly<{ reasonCodes: NotificationHistoryRow["reasonCodes"] }>) {
+  reasons,
+}: Readonly<{ reasons: NotificationHistoryRow["reasons"] }>) {
   return (
     <ul class="m-0 grid list-disc gap-1 pl-5">
-      {reasonCodes.map((reasonCode) => (
-        <li key={reasonCode}>{notificationReasonText(reasonCode)}</li>
+      {reasons.map((reason) => (
+        <li key={reason.reasonCode}>{notificationReasonText(reason)}</li>
       ))}
     </ul>
   );
@@ -189,11 +189,9 @@ function NotificationHistoryTable({
       cellClassName: "min-w-0",
       cellKind: "data",
       headerClassName: "",
-      key: "reasonCodes",
+      key: "reasons",
       label: "通知理由",
-      renderCell: (row: NotificationHistoryRow) => (
-        <NotificationReasons reasonCodes={row.reasonCodes} />
-      ),
+      renderCell: (row: NotificationHistoryRow) => <NotificationReasons reasons={row.reasons} />,
       widthClassName: "w-[23%]",
     },
   ] satisfies readonly ResponsiveTableColumn<NotificationHistoryRow>[];
@@ -224,11 +222,9 @@ function NotificationHistoryTable({
     },
     {
       className: "col-span-2",
-      key: "reasonCodes",
+      key: "reasons",
       label: "通知理由",
-      renderValue: (row: NotificationHistoryRow) => (
-        <NotificationReasons reasonCodes={row.reasonCodes} />
-      ),
+      renderValue: (row: NotificationHistoryRow) => <NotificationReasons reasons={row.reasons} />,
       valueClassName: "text-text-primary",
     },
   ] satisfies readonly ResponsiveCardField<NotificationHistoryRow>[];

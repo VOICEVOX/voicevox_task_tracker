@@ -453,7 +453,9 @@ function createFieldDraft(
   const stallTimestamp = parseTimestamp(item.stallSince, `${item.displayReference}のstallSince`);
   const waitingOn = formatWaitingOn(item.waitingOn, itemReferences, mentionLookup, mentionsEnabled);
   const title = truncateText(normalizeInlineText(item.title, "タイトル"), TITLE_MAX_CHARACTERS);
-  const reasons = candidate.reasons.map((reason) => notificationReasonText(reason.reasonCode));
+  const reasons = candidate.reasons.map((reason) => notificationReasonText(reason));
+  const firstReason = candidate.reasons[0];
+  assertNonNullable(firstReason, `${candidate.itemNodeId}の通知理由を取得できませんでした`);
   const value = [
     `タイトル: ${title}`,
     `waitingOn: ${waitingOn.text}`,
@@ -465,7 +467,7 @@ function createFieldDraft(
     throw new DiscordPayloadError(`${item.displayReference}のfield値が安全上限を超えています`);
   }
   return Object.freeze({
-    category: categoryForReason(candidate.reasonCode),
+    category: categoryForReason(firstReason.reasonCode),
     field: Object.freeze({
       name: createFieldName(item),
       value,
