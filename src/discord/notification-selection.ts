@@ -2,16 +2,22 @@ import { createHash } from "node:crypto";
 
 import {
   compareSeverity,
+  createNotificationReason,
   createUtcIsoDateTime,
   isTerminalStatus,
   type GitHubNodeId,
+  type NotificationNonTimeReasonCode,
+  type NotificationReason,
+  type NotificationTimeReasonCode,
   type NotificationLedgerEntry,
   type NotificationReasonCode,
   type Severity,
+  type SeverityThresholds,
   type StalenessWaitClass,
   type Status,
   type TrackingNotificationClass,
   type UtcIsoDateTime,
+  type WaitClass,
   type WaitingOn,
 } from "../domain/index.js";
 import { type DependencyCycleId, type DownstreamImpact } from "../graph/index.js";
@@ -21,6 +27,17 @@ const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
 const RESPONSIBILITY_CHANGE_STALL_HOURS = 48;
 const RESERVATION_DURATION_MILLISECONDS = MILLISECONDS_PER_DAY;
+const STALENESS_WAIT_CLASSES: readonly WaitClass[] = Object.freeze([
+  "assessment",
+  "owner",
+  "decision",
+  "review",
+  "revision",
+  "reply",
+  "work",
+  "merge",
+  "automation",
+]);
 
 /** 通知理由として利用できるnone以外のreason code。 */
 export type DiscordNotificationReasonCode = Exclude<NotificationReasonCode, "none">;
@@ -127,6 +144,7 @@ export type DiscordNotificationSelectionSettings = Readonly<{
   }>;
   recentProgressGraceHours: number;
   minimumAiConfidence: number;
+  thresholdsHours: SeverityThresholds;
 }>;
 
 /** 通知候補選別へ渡す現在時刻、項目、ledger、設定。 */
@@ -138,16 +156,15 @@ export type SelectDiscordNotificationsInput = Readonly<{
 }>;
 
 /** 選別された1理由とledger予約情報。 */
-export type SelectedDiscordNotificationReason = Readonly<{
-  reasonCode: DiscordNotificationReasonCode;
-  notificationKey: string;
-  cooldownUntil: UtcIsoDateTime;
-}>;
+export type SelectedDiscordNotificationReason = NotificationReason &
+  Readonly<{
+    notificationKey: string;
+    cooldownUntil: UtcIsoDateTime;
+  }>;
 
 /** digestへ1件として渡す通知候補。 */
 export type DiscordNotificationCandidate = Readonly<{
   itemNodeId: GitHubNodeId;
-  reasonCode: DiscordNotificationReasonCode;
   reasons: readonly [SelectedDiscordNotificationReason, ...SelectedDiscordNotificationReason[]];
   severity: Severity;
   downstreamImpact: DownstreamImpact;
@@ -175,7 +192,7 @@ export type DiscordNotificationSelection =
     }>;
 
 type ReasonSignal = Readonly<{
-  reasonCode: DiscordNotificationReasonCode;
+  reason: NotificationReason;
   stateDiscriminator: string;
   repeatable: boolean;
   highPriorityEligible: boolean;
@@ -209,6 +226,20 @@ function validateProbability(value: number, context: string): void {
 function validateNonNegativeInteger(value: number, context: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new RangeError(`${context}は0以上の整数にしてください`);
+  }
+}
+
+function validateThresholdsHours(thresholdsHours: SeverityThresholds): void {
+  for (const waitClass of STALENESS_WAIT_CLASSES) {
+    const threshold = thresholdsHours[waitClass];
+    for (const [severity, value] of Object.entries(threshold)) {
+      if (!Number.isFinite(value) || value < 0) {
+        throw new RangeError(`${waitClass}.${severity}のseverity閾値は0以上の有限値にしてください`);
+      }
+    }
+    if (threshold.watch > threshold.urgent || threshold.urgent > threshold.critical) {
+      throw new RangeError(`${waitClass}のseverity閾値はwatch、urgent、criticalの順にしてください`);
+    }
   }
 }
 
@@ -379,6 +410,7 @@ function validateInput(input: SelectDiscordNotificationsInput): number {
   }
   validateNonNegativeInteger(input.settings.cooldownDays.urgent, "urgent cooldown日数");
   validateNonNegativeInteger(input.settings.cooldownDays.critical, "critical cooldown日数");
+  validateThresholdsHours(input.settings.thresholdsHours);
   if (
     !Number.isFinite(input.settings.recentProgressGraceHours) ||
     input.settings.recentProgressGraceHours < 0
@@ -473,6 +505,87 @@ function overdueReasonCode(
   }
 }
 
+function waitClassForTimeReasonCode(reasonCode: NotificationTimeReasonCode): WaitClass {
+  switch (reasonCode) {
+    case "assessment_overdue":
+      return "assessment";
+    case "owner_overdue":
+      return "owner";
+    case "decision_overdue":
+      return "decision";
+    case "review_overdue":
+      return "review";
+    case "revision_overdue":
+      return "revision";
+    case "reply_overdue":
+      return "reply";
+    case "merge_overdue":
+      return "merge";
+    case "automation_stuck":
+      return "automation";
+  }
+}
+
+function isTimeNotificationReasonCode(
+  reasonCode: DiscordNotificationReasonCode,
+): reasonCode is NotificationTimeReasonCode {
+  switch (reasonCode) {
+    case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
+    case "review_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
+    case "merge_overdue":
+    case "automation_stuck":
+      return true;
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "newly_unblocked":
+    case "dependency_cycle":
+    case "responsibility_changed":
+      return false;
+  }
+}
+
+type NotificationReasonSelectionInput =
+  | Readonly<{
+      reasonCode: NotificationTimeReasonCode;
+      thresholdsHours: SeverityThresholds;
+    }>
+  | Readonly<{
+      reasonCode: NotificationNonTimeReasonCode;
+    }>;
+
+function notificationReasonForSelection(
+  input: NotificationReasonSelectionInput,
+): NotificationReason {
+  switch (input.reasonCode) {
+    case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
+    case "review_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
+    case "merge_overdue":
+    case "automation_stuck": {
+      const waitClass = waitClassForTimeReasonCode(input.reasonCode);
+      return createNotificationReason(input.reasonCode, {
+        status: "recorded",
+        hours: input.thresholdsHours[waitClass].watch,
+      });
+    }
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "newly_unblocked":
+    case "dependency_cycle":
+    case "responsibility_changed":
+      return createNotificationReason(input.reasonCode, {
+        status: "not_applicable",
+      });
+  }
+}
+
 function isStateReasonAllowed(
   item: DiscordNotificationItem,
   reasonCode: DiscordNotificationReasonCode,
@@ -522,8 +635,16 @@ function createOverdueSignals(
   const signals: ReasonSignal[] = [];
   const reasonCode = overdueReasonCode(item.current.status, item.current.waitClass);
   if (reasonCode != null && isStateReasonAllowed(item, reasonCode, settings.minimumAiConfidence)) {
+    const reason = isTimeNotificationReasonCode(reasonCode)
+      ? notificationReasonForSelection({
+          reasonCode,
+          thresholdsHours: settings.thresholdsHours,
+        })
+      : notificationReasonForSelection({
+          reasonCode,
+        });
     signals.push({
-      reasonCode,
+      reason,
       stateDiscriminator: item.current.waitClass,
       repeatable: true,
       highPriorityEligible: true,
@@ -540,7 +661,9 @@ function createOverdueSignals(
     isStateReasonAllowed(item, "blocker_overdue", settings.minimumAiConfidence)
   ) {
     signals.push({
-      reasonCode: "blocker_overdue",
+      reason: notificationReasonForSelection({
+        reasonCode: "blocker_overdue",
+      }),
       stateDiscriminator: JSON.stringify([impact.openNodeCount, impact.repositoryCount]),
       repeatable: true,
       highPriorityEligible: true,
@@ -565,7 +688,9 @@ function createNewlyUnblockedSignal(item: DiscordNotificationItem): ReasonSignal
     return undefined;
   }
   return {
-    reasonCode: "newly_unblocked",
+    reason: notificationReasonForSelection({
+      reasonCode: "newly_unblocked",
+    }),
     stateDiscriminator: item.current.statusSince,
     repeatable: false,
     highPriorityEligible: true,
@@ -595,7 +720,9 @@ function createResponsibilityChangedSignal(
     return undefined;
   }
   return {
-    reasonCode: "responsibility_changed",
+    reason: notificationReasonForSelection({
+      reasonCode: "responsibility_changed",
+    }),
     stateDiscriminator: item.current.ownerSince,
     repeatable: false,
     highPriorityEligible: true,
@@ -622,7 +749,10 @@ function recommendationIsRepeatable(reasonCode: DiscordNotificationReasonCode): 
   }
 }
 
-function createRecommendationSignal(item: DiscordNotificationItem): ReasonSignal | undefined {
+function createRecommendationSignal(
+  item: DiscordNotificationItem,
+  thresholdsHours: SeverityThresholds,
+): ReasonSignal | undefined {
   if (item.notificationRecommendation.availability === "not_available") {
     return undefined;
   }
@@ -633,8 +763,16 @@ function createRecommendationSignal(item: DiscordNotificationItem): ReasonSignal
   if (recommendation.reasonCode === "none") {
     throw new TypeError(`${item.nodeId}のCodex通知提案にreason codeがありません`);
   }
+  const reason = isTimeNotificationReasonCode(recommendation.reasonCode)
+    ? notificationReasonForSelection({
+        reasonCode: recommendation.reasonCode,
+        thresholdsHours,
+      })
+    : notificationReasonForSelection({
+        reasonCode: recommendation.reasonCode,
+      });
   return {
-    reasonCode: recommendation.reasonCode,
+    reason,
     stateDiscriminator: JSON.stringify([item.nodeId, "codex_recommendation"]),
     repeatable: recommendationIsRepeatable(recommendation.reasonCode),
     highPriorityEligible: recommendation.highPriorityEligible,
@@ -756,16 +894,18 @@ function createSignals(
   }
   for (const cycleId of assignedCycleIds) {
     signals.push({
-      reasonCode: "dependency_cycle",
+      reason: notificationReasonForSelection({
+        reasonCode: "dependency_cycle",
+      }),
       stateDiscriminator: cycleId,
       repeatable: false,
       highPriorityEligible: true,
     });
   }
-  const recommendation = createRecommendationSignal(item);
+  const recommendation = createRecommendationSignal(item, settings.thresholdsHours);
   if (
     recommendation != null &&
-    !signals.some((signal) => signal.reasonCode === recommendation.reasonCode)
+    !signals.some((signal) => signal.reason.reasonCode === recommendation.reason.reasonCode)
   ) {
     signals.push(recommendation);
   }
@@ -773,12 +913,12 @@ function createSignals(
 }
 
 function notificationState(item: DiscordNotificationItem, signal: ReasonSignal): string {
-  if (signal.reasonCode === "dependency_cycle") {
-    return JSON.stringify([signal.reasonCode, signal.stateDiscriminator]);
+  if (signal.reason.reasonCode === "dependency_cycle") {
+    return JSON.stringify([signal.reason.reasonCode, signal.stateDiscriminator]);
   }
   return JSON.stringify([
     item.nodeId,
-    signal.reasonCode,
+    signal.reason.reasonCode,
     item.current.status,
     item.current.severity,
     waitingOnSignature(item.current.waitingOn),
@@ -791,7 +931,7 @@ function notificationState(item: DiscordNotificationItem, signal: ReasonSignal):
 
 function createNotificationKey(item: DiscordNotificationItem, signal: ReasonSignal): string {
   const stateHash = createHash("sha256").update(notificationState(item, signal)).digest("hex");
-  return `discord-notification:v1:${signal.reasonCode}:${stateHash}`;
+  return `discord-notification:v1:${signal.reason.reasonCode}:${stateHash}`;
 }
 
 function isSameUtcDate(left: UtcIsoDateTime, right: UtcIsoDateTime): boolean {
@@ -891,7 +1031,7 @@ function reasonPriority(reasonCode: DiscordNotificationReasonCode): number {
 
 function compareEligibleReasons(left: EligibleReason, right: EligibleReason): -1 | 0 | 1 {
   const priorityDifference =
-    reasonPriority(right.signal.reasonCode) - reasonPriority(left.signal.reasonCode);
+    reasonPriority(right.signal.reason.reasonCode) - reasonPriority(left.signal.reason.reasonCode);
   if (priorityDifference !== 0) {
     return priorityDifference < 0 ? -1 : 1;
   }
@@ -963,16 +1103,18 @@ function candidateTier(draft: CandidateDraft): number {
   if (draft.item.current.severity === "critical") {
     return 7;
   }
-  if (draft.reasons.some((reason) => reason.signal.reasonCode === "dependency_cycle")) {
+  if (draft.reasons.some((reason) => reason.signal.reason.reasonCode === "dependency_cycle")) {
     return 6;
   }
   if (draft.item.current.severity === "urgent") {
     return 5;
   }
-  if (draft.reasons.some((reason) => reason.signal.reasonCode === "newly_unblocked")) {
+  if (draft.reasons.some((reason) => reason.signal.reason.reasonCode === "newly_unblocked")) {
     return 4;
   }
-  if (draft.reasons.some((reason) => reason.signal.reasonCode === "responsibility_changed")) {
+  if (
+    draft.reasons.some((reason) => reason.signal.reason.reasonCode === "responsibility_changed")
+  ) {
     return 3;
   }
   if (draft.item.current.severity === "watch") {
@@ -1000,10 +1142,36 @@ function compareCandidateDrafts(
 }
 
 function selectedReason(reason: EligibleReason): SelectedDiscordNotificationReason {
-  return Object.freeze({
-    reasonCode: reason.signal.reasonCode,
+  const signalReason = reason.signal.reason;
+  const selectionFields = {
     notificationKey: reason.notificationKey,
     cooldownUntil: reason.cooldownUntil,
+  };
+  if (isTimeNotificationReasonCode(signalReason.reasonCode)) {
+    if (signalReason.threshold.status === "recorded") {
+      return Object.freeze({
+        reasonCode: signalReason.reasonCode,
+        threshold: Object.freeze({
+          status: "recorded",
+          hours: signalReason.threshold.hours,
+        }),
+        ...selectionFields,
+      });
+    }
+    return Object.freeze({
+      reasonCode: signalReason.reasonCode,
+      threshold: Object.freeze({
+        status: "not_recorded",
+      }),
+      ...selectionFields,
+    });
+  }
+  return Object.freeze({
+    reasonCode: signalReason.reasonCode,
+    threshold: Object.freeze({
+      status: "not_applicable",
+    }),
+    ...selectionFields,
   });
 }
 
@@ -1022,10 +1190,8 @@ function createCandidate(draft: CandidateDraft): DiscordNotificationCandidate {
     reasons,
     `${draft.item.nodeId}の通知理由がありません`,
   );
-  const first = nonEmptyReasons[0];
   return Object.freeze({
     itemNodeId: draft.item.nodeId,
-    reasonCode: first.reasonCode,
     reasons: nonEmptyReasons,
     severity: draft.item.current.severity,
     downstreamImpact: Object.freeze({

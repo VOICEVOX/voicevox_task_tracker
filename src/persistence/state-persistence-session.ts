@@ -496,7 +496,7 @@ export class StatePersistenceSession {
     const snapshot = createStateSnapshot(input.snapshot);
     const notificationEvents = input.notificationEvents.map((event) => ({
       ...event,
-      reasonCodes: [...event.reasonCodes],
+      reasons: [...event.reasons],
     }));
     const runReport = createStateRunReport(input.runReport);
     assertRunConsistency(snapshot, runReport);

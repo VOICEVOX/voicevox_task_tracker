@@ -114,6 +114,7 @@ const NOTIFICATION_SETTINGS = Object.freeze({
   }),
   recentProgressGraceHours: 24,
   minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,
+  thresholdsHours: SEVERITY_THRESHOLDS,
 });
 const MAINTAINERS = Object.freeze(["fixture-maintainer"]);
 

@@ -7,6 +7,7 @@ import {
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
+  notificationReasonSchema,
   type Repository,
 } from "../domain/index.js";
 import {
@@ -65,14 +66,36 @@ const notificationReasonCodeSchema = z.enum([
   "merge_overdue",
   "automation_stuck",
 ]);
-const selectedReasonSchema = z.strictObject({
-  reasonCode: notificationReasonCodeSchema,
-  notificationKey: z.string().min(1).max(1000),
-  cooldownUntil: dateTimeSchema,
-});
+const selectedReasonSchema = z
+  .strictObject({
+    notificationKey: z.string().min(1).max(1000),
+    cooldownUntil: dateTimeSchema,
+    reasonCode: notificationReasonCodeSchema,
+    threshold: z.unknown(),
+  })
+  .transform((selectedReason, context) => {
+    const reasonResult = notificationReasonSchema.safeParse({
+      reasonCode: selectedReason.reasonCode,
+      threshold: selectedReason.threshold,
+    });
+    if (!reasonResult.success) {
+      for (const issue of reasonResult.error.issues) {
+        context.addIssue({
+          code: "custom",
+          path: issue.path,
+          message: issue.message,
+        });
+      }
+      return z.NEVER;
+    }
+    return {
+      ...reasonResult.data,
+      notificationKey: selectedReason.notificationKey,
+      cooldownUntil: selectedReason.cooldownUntil,
+    };
+  });
 const notificationCandidateSchema = z.strictObject({
   itemNodeId: nodeIdSchema,
-  reasonCode: notificationReasonCodeSchema,
   reasons: z.array(selectedReasonSchema).min(1),
   severity: severitySchema,
   downstreamImpact: z.strictObject({
@@ -162,7 +185,7 @@ const runMetadataSchema = z
     }
   });
 const workflowArtifactSchema = z.strictObject({
-  schemaVersion: z.literal("2"),
+  schemaVersion: z.literal("3"),
   kind: z.literal("validated_public_run"),
   notificationAction: notificationActionSchema,
   repositoryAllowlist: z.array(repositoryAllowlistEntrySchema),
@@ -192,7 +215,7 @@ export type WorkflowRunMetadata = Readonly<{
 
 /** collect-analyzeが後続jobへ渡す公開可能な検証済み成果物。 */
 export type WorkflowArtifact = Readonly<{
-  schemaVersion: "2";
+  schemaVersion: "3";
   kind: "validated_public_run";
   notificationAction: NotificationAction;
   repositoryAllowlist: readonly WorkflowArtifactRepositoryAllowlistEntry[];
@@ -352,11 +375,8 @@ function assertNotificationSelectionConsistency(
     if (!itemIds.has(candidate.itemNodeId)) {
       throw new TypeError("workflow artifactの通知候補がsnapshot外の項目を参照しています");
     }
-    if (
-      candidate.downstreamImpact.nodeId !== candidate.itemNodeId ||
-      !candidate.reasons.some((reason) => reason.reasonCode === candidate.reasonCode)
-    ) {
-      throw new TypeError("workflow artifactの通知候補内で項目または主理由が一致しません");
+    if (candidate.downstreamImpact.nodeId !== candidate.itemNodeId) {
+      throw new TypeError("workflow artifactの通知候補内で項目が一致しません");
     }
     for (const reason of candidate.reasons) {
       reasonKeys.push(reason.notificationKey);
@@ -434,7 +454,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
   const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
   const artifact = Object.freeze({
-    schemaVersion: "2",
+    schemaVersion: "3",
     kind: "validated_public_run",
     notificationAction: result.data.notificationAction,
     repositoryAllowlist: createRepositoryAllowlist(result.data.repositoryAllowlist),
