@@ -155,11 +155,23 @@ export type SelectDiscordNotificationsInput = Readonly<{
   settings: DiscordNotificationSelectionSettings;
 }>;
 
+/** 通知理由が初回通知か再通知かを表す。 */
+export type DiscordNotificationRepeatContext =
+  | Readonly<{
+      kind: "initial";
+    }>
+  | Readonly<{
+      kind: "renotification";
+      previousSentAt: UtcIsoDateTime;
+      renotificationAvailableAt: UtcIsoDateTime;
+    }>;
+
 /** 選別された1理由とledger予約情報。 */
 export type SelectedDiscordNotificationReason = NotificationReason &
   Readonly<{
     notificationKey: string;
     cooldownUntil: UtcIsoDateTime;
+    repeatContext: DiscordNotificationRepeatContext;
   }>;
 
 /** digestへ1件として渡す通知候補。 */
@@ -202,7 +214,17 @@ type EligibleReason = Readonly<{
   signal: ReasonSignal;
   notificationKey: string;
   cooldownUntil: UtcIsoDateTime;
+  repeatContext: DiscordNotificationRepeatContext;
 }>;
+
+type LedgerEligibility =
+  | Readonly<{
+      eligible: false;
+    }>
+  | Readonly<{
+      eligible: true;
+      repeatContext: DiscordNotificationRepeatContext;
+    }>;
 
 type CandidateDraft = Readonly<{
   item: DiscordNotificationItem;
@@ -938,6 +960,19 @@ function isSameUtcDate(left: UtcIsoDateTime, right: UtcIsoDateTime): boolean {
   return left.slice(0, 10) === right.slice(0, 10);
 }
 
+function renotificationAvailableAt(
+  previousSentAt: UtcIsoDateTime,
+  cooldownUntil: UtcIsoDateTime,
+): UtcIsoDateTime {
+  const previousSentTimestamp = parseTimestamp(previousSentAt, "ledgerの送信時刻");
+  const cooldownTimestamp = parseTimestamp(cooldownUntil, "ledgerのcooldown終了時刻");
+  const availableTimestamp = Math.max(cooldownTimestamp, startOfNextUtcDate(previousSentTimestamp));
+  if (!Number.isFinite(availableTimestamp)) {
+    throw new RangeError("再通知可能時刻を計算できません");
+  }
+  return createUtcIsoDateTime(new Date(availableTimestamp).toISOString());
+}
+
 function isEligibleAgainstLedger(
   item: DiscordNotificationItem,
   signal: ReasonSignal,
@@ -945,27 +980,60 @@ function isEligibleAgainstLedger(
   ledgerByKey: ReadonlyMap<string, NotificationLedgerEntry>,
   evaluatedAt: UtcIsoDateTime,
   evaluatedTimestamp: number,
-): boolean {
+): LedgerEligibility {
   const existing = ledgerByKey.get(notificationKey);
   if (existing == null) {
-    return true;
+    return Object.freeze({
+      eligible: true,
+      repeatContext: Object.freeze({
+        kind: "initial",
+      }),
+    });
   }
   if (existing.status === "reserved") {
-    return evaluatedTimestamp >= parseTimestamp(existing.expiresAt, "ledgerの予約期限");
+    if (evaluatedTimestamp >= parseTimestamp(existing.expiresAt, "ledgerの予約期限")) {
+      return Object.freeze({
+        eligible: true,
+        repeatContext: Object.freeze({
+          kind: "initial",
+        }),
+      });
+    }
+    return Object.freeze({
+      eligible: false,
+    });
   }
   if (existing.status === "dismissed") {
-    return false;
+    return Object.freeze({
+      eligible: false,
+    });
   }
   if (isSameUtcDate(existing.sentAt, evaluatedAt)) {
-    return false;
+    return Object.freeze({
+      eligible: false,
+    });
   }
   if (
     !signal.repeatable ||
     (item.current.severity !== "urgent" && item.current.severity !== "critical")
   ) {
-    return false;
+    return Object.freeze({
+      eligible: false,
+    });
   }
-  return evaluatedTimestamp >= parseTimestamp(existing.cooldownUntil, "ledgerのcooldown終了時刻");
+  if (evaluatedTimestamp < parseTimestamp(existing.cooldownUntil, "ledgerのcooldown終了時刻")) {
+    return Object.freeze({
+      eligible: false,
+    });
+  }
+  return Object.freeze({
+    eligible: true,
+    repeatContext: Object.freeze({
+      kind: "renotification",
+      previousSentAt: existing.sentAt,
+      renotificationAvailableAt: renotificationAvailableAt(existing.sentAt, existing.cooldownUntil),
+    }),
+  });
 }
 
 function startOfNextUtcDate(timestamp: number): number {
@@ -1066,24 +1134,31 @@ function createCandidateDrafts(
       input.settings,
     );
     const eligibleReasons = signals
-      .map((signal) => {
+      .flatMap((signal) => {
         const notificationKey = createNotificationKey(item, signal);
-        return {
+        const reason = {
           signal,
           notificationKey,
           cooldownUntil: cooldownUntil(item.current.severity, evaluatedTimestamp, input.settings),
-        } satisfies EligibleReason;
-      })
-      .filter((reason) =>
-        isEligibleAgainstLedger(
+        };
+        const eligibility = isEligibleAgainstLedger(
           item,
           reason.signal,
           reason.notificationKey,
           ledgerByKey,
           input.evaluatedAt,
           evaluatedTimestamp,
-        ),
-      )
+        );
+        if (!eligibility.eligible) {
+          return [];
+        }
+        return [
+          {
+            ...reason,
+            repeatContext: eligibility.repeatContext,
+          } satisfies EligibleReason,
+        ];
+      })
       .sort(compareEligibleReasons);
     if (eligibleReasons.length === 0) {
       continue;
@@ -1146,6 +1221,7 @@ function selectedReason(reason: EligibleReason): SelectedDiscordNotificationReas
   const selectionFields = {
     notificationKey: reason.notificationKey,
     cooldownUntil: reason.cooldownUntil,
+    repeatContext: reason.repeatContext,
   };
   if (isTimeNotificationReasonCode(signalReason.reasonCode)) {
     if (signalReason.threshold.status === "recorded") {

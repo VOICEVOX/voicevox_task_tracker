@@ -11,6 +11,7 @@ export {
   type DiscordNotificationPreviousState,
   type DiscordNotificationRecommendation,
   type DiscordNotificationReasonCode,
+  type DiscordNotificationRepeatContext,
   type DiscordNotificationSelection,
   type DiscordNotificationSelectionSettings,
   type SelectDiscordNotificationsInput,

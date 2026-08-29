@@ -435,6 +435,43 @@ function createFieldName(item: TrackedItem): string {
   return reference;
 }
 
+function createReasonLines(
+  candidate: DiscordNotificationCandidate,
+  item: TrackedItem,
+  generatedTimestamp: number,
+): readonly string[] {
+  return Object.freeze(
+    candidate.reasons.flatMap((reason) => {
+      const reasonLine = `理由: ${notificationReasonText(reason)}`;
+      if (reason.repeatContext.kind === "initial") {
+        return [reasonLine];
+      }
+      const previousSentTimestamp = parseTimestamp(
+        reason.repeatContext.previousSentAt,
+        `${item.displayReference}の前回通知時刻`,
+      );
+      const renotificationAvailableTimestamp = parseTimestamp(
+        reason.repeatContext.renotificationAvailableAt,
+        `${item.displayReference}の再通知可能時刻`,
+      );
+      if (previousSentTimestamp > renotificationAvailableTimestamp) {
+        throw new DiscordPayloadError(
+          `${item.displayReference}の前回通知時刻は再通知可能時刻以前にしてください`,
+        );
+      }
+      if (renotificationAvailableTimestamp > generatedTimestamp) {
+        throw new DiscordPayloadError(
+          `${item.displayReference}の再通知可能時刻はdigest集計時刻以前にしてください`,
+        );
+      }
+      return [
+        reasonLine,
+        `再通知: 前回は${formatJst(previousSentTimestamp)}に通知しました。再通知可能時刻の${formatJst(renotificationAvailableTimestamp)}を過ぎたため再通知しています`,
+      ];
+    }),
+  );
+}
+
 function createFieldDraft(
   candidate: DiscordNotificationCandidate,
   item: TrackedItem,
@@ -453,14 +490,14 @@ function createFieldDraft(
   const stallTimestamp = parseTimestamp(item.stallSince, `${item.displayReference}のstallSince`);
   const waitingOn = formatWaitingOn(item.waitingOn, itemReferences, mentionLookup, mentionsEnabled);
   const title = truncateText(normalizeInlineText(item.title, "タイトル"), TITLE_MAX_CHARACTERS);
-  const reasons = candidate.reasons.map((reason) => notificationReasonText(reason));
+  const reasonLines = createReasonLines(candidate, item, generatedTimestamp);
   const firstReason = candidate.reasons[0];
   assertNonNullable(firstReason, `${candidate.itemNodeId}の通知理由を取得できませんでした`);
   const value = [
     `タイトル: ${title}`,
     `waitingOn: ${waitingOn.text}`,
     `経過時間: ${formatElapsedTime(stallTimestamp, generatedTimestamp)}、${formatJst(stallTimestamp)}から`,
-    `理由: ${reasons.join("、")}`,
+    ...reasonLines,
     `GitHub: ${item.url}`,
   ].join("\n");
   if (characterCount(value) > DISCORD_SAFE_LIMITS.fieldValueCharacters) {

@@ -66,12 +66,23 @@ const notificationReasonCodeSchema = z.enum([
   "merge_overdue",
   "automation_stuck",
 ]);
+const notificationRepeatContextSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("initial"),
+  }),
+  z.strictObject({
+    kind: z.literal("renotification"),
+    previousSentAt: dateTimeSchema,
+    renotificationAvailableAt: dateTimeSchema,
+  }),
+]);
 const selectedReasonSchema = z
   .strictObject({
     notificationKey: z.string().min(1).max(1000),
     cooldownUntil: dateTimeSchema,
     reasonCode: notificationReasonCodeSchema,
     threshold: z.unknown(),
+    repeatContext: notificationRepeatContextSchema,
   })
   .transform((selectedReason, context) => {
     const reasonResult = notificationReasonSchema.safeParse({
@@ -92,6 +103,7 @@ const selectedReasonSchema = z
       ...reasonResult.data,
       notificationKey: selectedReason.notificationKey,
       cooldownUntil: selectedReason.cooldownUntil,
+      repeatContext: selectedReason.repeatContext,
     };
   });
 const notificationCandidateSchema = z.strictObject({
@@ -185,7 +197,7 @@ const runMetadataSchema = z
     }
   });
 const workflowArtifactSchema = z.strictObject({
-  schemaVersion: z.literal("3"),
+  schemaVersion: z.literal("4"),
   kind: z.literal("validated_public_run"),
   notificationAction: notificationActionSchema,
   repositoryAllowlist: z.array(repositoryAllowlistEntrySchema),
@@ -215,7 +227,7 @@ export type WorkflowRunMetadata = Readonly<{
 
 /** collect-analyzeが後続jobへ渡す公開可能な検証済み成果物。 */
 export type WorkflowArtifact = Readonly<{
-  schemaVersion: "3";
+  schemaVersion: "4";
   kind: "validated_public_run";
   notificationAction: NotificationAction;
   repositoryAllowlist: readonly WorkflowArtifactRepositoryAllowlistEntry[];
@@ -454,7 +466,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
   const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
   const artifact = Object.freeze({
-    schemaVersion: "3",
+    schemaVersion: "4",
     kind: "validated_public_run",
     notificationAction: result.data.notificationAction,
     repositoryAllowlist: createRepositoryAllowlist(result.data.repositoryAllowlist),
