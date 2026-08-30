@@ -185,6 +185,7 @@ import {
   type StateSnapshotReadResult,
 } from "../persistence/index.js";
 import { resolveStateHistoryNotificationItemDisplayReference } from "../persistence/history.js";
+import { NOTIFICATION_LEDGER_SCHEMA_VERSION_4 } from "../persistence/state-documents.js";
 import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { CliApplication } from "./application.js";
 import { createTrackingBackfillRequest } from "./backfill.js";
@@ -4268,7 +4269,7 @@ function mergeNotificationLedger(
     entries.set(entry.notificationKey, entry);
   }
   return createStateNotificationLedger({
-    schemaVersion: "3",
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
   });
@@ -5034,7 +5035,7 @@ async function deliverDiscord(
     }),
     notificationEvents,
     notificationLedger: createStateNotificationLedger({
-      schemaVersion: "3",
+      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
       entries: [...notificationEntriesByKey.values()],
       operationsAlerts: [...operationsAlertsByKey.values()],
     }),
@@ -5159,7 +5160,7 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: "3",
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
   });
