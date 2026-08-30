@@ -4021,7 +4021,6 @@ function notificationLedgerEntries(
       reasonCode: entry.reasonCode,
       severity: entry.severity,
       reservedAt: createUtcIsoDateTime(entry.reservedAt),
-      cooldownUntil: createUtcIsoDateTime(entry.cooldownUntil),
     };
     if (entry.status === "reserved") {
       entries.push(
@@ -4539,7 +4538,6 @@ function validateRunCompleteness(
     ledger: notificationLedgerEntries(state, reduction.items),
     settings: {
       maxItemsPerDigest: configuration.config.notifications.discord.maxItemsPerDigest,
-      cooldownDays: configuration.config.notifications.discord.cooldownDays,
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
       minimumAiConfidence: configuration.config.ai.confidence.medium,
       thresholdsHours: configuration.config.staleness.thresholdsHours,
@@ -4652,7 +4650,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "4",
+    schemaVersion: "5",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({

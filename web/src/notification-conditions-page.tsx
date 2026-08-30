@@ -93,9 +93,8 @@ export function NotificationConditionsPage() {
           </h3>
           <p class="m-0">
             現在の待ち状態で意味のある進捗がない時間が、次の目安を超えると severity
-            の候補になります。時間による通知は、severity が前回より上がった場合と、urgent または
-            critical のまま再通知期間を迎えた場合が候補です。watch、urgent、critical
-            の順に深刻度が上がります。
+            の候補になります。時間による通知は、severity が前回より上がった場合が候補です。
+            watch、urgent、critical の順に深刻度が上がります。
           </p>
           <div class="overflow-x-auto rounded-xl border border-border-default bg-surface-card">
             <table class="w-full min-w-[40rem] table-fixed border-collapse">
@@ -207,14 +206,19 @@ export function NotificationConditionsPage() {
           </ul>
         </section>
 
-        <section aria-labelledby="redelivery-heading" class={NOTIFICATION_SECTION_CLASS}>
-          <h3 id="redelivery-heading" class="m-0 font-display text-base leading-snug font-semibold">
-            再通知と上限
+        <section aria-labelledby="deduplication-heading" class={NOTIFICATION_SECTION_CLASS}>
+          <h3
+            id="deduplication-heading"
+            class="m-0 font-display text-base leading-snug font-semibold"
+          >
+            重複抑制と上限
           </h3>
           <ul class="m-0 grid gap-2 pl-5">
             <li>1回の送信は最大10件です。</li>
-            <li>変化のない urgent は3日後、critical は2日後に再通知します。</li>
-            <li>同じ UTC 日には、同じ理由と状態を再通知しません。</li>
+            <li>通知理由と状態が同じ通知は一度だけ送信します。</li>
+            <li>
+              深刻度、待ち状態、責務の対象、停滞の起点などが変わると、新しい通知として送信します。
+            </li>
           </ul>
         </section>
       </div>

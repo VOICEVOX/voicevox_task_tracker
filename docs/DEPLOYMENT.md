@@ -328,7 +328,7 @@ workflow artifactは`notificationAction`を保持します。`persist-state`はs
 - Pagesの生成時刻がrun reportの`startedAt`と一致し、repository数、item数、stale表示も一致すること
 - private repositoryのID、名前、URL、secret、不要な本文がstateとPagesにないこと
 - 通常digestがPages deploy後にだけ送信され、候補0件なら送信されないこと
-- 同じ候補を含む再実行でcooldownが効くこと
+- 同じ候補を含む再実行では送信されず、送信済みのledger entryが維持されること
 - `notification_action: dismiss-current`では通常のDiscord送信と`notification_sent`履歴がなく、対象候補のledger entryが`status: dismissed`になっていること
 - `dismiss-current`の抑制は同じnotification keyへ期限なく適用され、status、severity、waitingOn、各種開始時刻などが変わった候補は次回の`send`で通知対象になること
 

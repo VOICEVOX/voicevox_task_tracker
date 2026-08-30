@@ -58,7 +58,7 @@ Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`
 違反の`message`は入力値を含みうるため残しません。
 
 `tracker-state`は自動更新専用です。
-人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴とcooldownの整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
+人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴と通知抑制の整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
 
 ## 性能profile
 
@@ -260,9 +260,9 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 
 成功確認では、`tracker-state`のnotification ledgerに対象候補の`status: dismissed`が保存され、通知履歴に送信済み項目が追加されていないことを確認します。state branchやledgerを直接編集して抑制を解除してはいけません。
 
-同じnotification keyの抑制には期限がありません。status、severity、waitingOn、各種開始時刻などが変わって別keyになった候補は、次回の`send`で通常どおり通知対象になります。
+送信済みと手動抑制済みのnotification keyは期限なく抑制します。status、severity、waitingOn、各種開始時刻などが変わって別keyになった候補は、次回の`send`で通常どおり通知対象になります。
 
-通常の`send`は、`maxItemsPerDigest`と再通知cooldownを含む既存の通知選別を行います。
+通常の`send`は、`maxItemsPerDigest`を含む既存の通知選別を行います。
 
 severityはDiscord通知の判断にだけ使います。
 通知選別はseverityの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。
@@ -295,7 +295,7 @@ blockerのseverityとdownstream impactが通知順位を決めます。
 2. automation dashboardのtitleを`notifications.automationNoiseTitles`へ追加するか、対象labelへ`labels.rules.effects.suppressNotifications`を割り当てます。
 3. 通知を減らす状態に対応する`staleness.thresholdsHours`を増やします。
 4. 全状態で直近の進捗を長く猶予する場合は`recentProgressGraceHours`を増やします。
-5. `cooldownDays`を増やし、`maxItemsPerDigest`を減らします。
+5. `maxItemsPerDigest`を減らします。
 6. AI推定が原因なら`ai.confidence.medium`を上げ、実モデルを呼び出すdry-runでAI判定と通知候補の差分を確認します。
 
 通知が少なすぎる場合は逆方向に調整します。
@@ -303,7 +303,7 @@ blockerのseverityとdownstream impactが通知順位を決めます。
 1. maintainer設定、userかteamの指定、review request、native dependency、label規則がstatusとwaitingOnの実態に合うか確認します。
 2. 通知を増やす状態に対応する`staleness.thresholdsHours`を減らします。
 3. 全状態で直近の進捗を短く猶予する場合は`recentProgressGraceHours`を減らします。
-4. `maxItemsPerDigest`を増やし、`cooldownDays`を減らします。
+4. `maxItemsPerDigest`を増やします。
 5. 重要labelへ`priorityWeight`か`severityLift: 1`を設定します。
 6. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目、通知候補を確認します。
 
