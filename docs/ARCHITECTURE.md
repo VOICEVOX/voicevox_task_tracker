@@ -14,7 +14,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | `src/codex`       | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                        | `src/domain`、`src/graph`、`src/persistence`             |
 | `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、Git branch transaction         | `src/codex`、`src/domain`、`src/github`                  |
 | `src/pages`       | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                           | `src/domain`、`src/graph`、`src/persistence`、`src/util` |
-| `src/discord`     | 通知候補選別、cooldown、payload分割、mention制限、Webhook送信                                    | `src/domain`、`src/graph`                                |
+| `src/discord`     | 通知候補選別、ledgerによる重複抑制、payload分割、mention制限、Webhook送信                        | `src/domain`、`src/graph`                                |
 | `src/eval`        | golden fixtureの解析と期待値比較                                                                 | 判定、graph、公開DTO、通知の各pure処理                   |
 | `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                                | `src/cli`と全実処理モジュール                            |
 | `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                               | 上記の全モジュール                                       |
@@ -70,7 +70,7 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
 9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
-11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数と再通知cooldownに従ってDiscord送信を行い、`dismiss-current`は現在の通知条件を満たす候補をreasonごとに上限なしで手動抑制済みとしてledgerへ保存します。完了時に実測時刻と処理結果を反映したrun reportとledgerを追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
+11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数とledgerの重複抑制に従ってDiscord送信を行い、`dismiss-current`は現在の通知条件を満たす候補をreasonごとに上限なしで手動抑制済みとしてledgerへ保存します。完了時に実測時刻と処理結果を反映したrun reportとledgerを追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
 12. 成功、Codex縮退、失敗のいずれでもCLIのreport pathへrun reportを書き出します。
 
 `dry-run`は手順10まで実行し、state、Pages、Discordを変更せずに検証済みartifactとrun reportだけを書き出します。
@@ -331,7 +331,7 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 | `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 10の最新snapshot |
 | `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分と送信済み通知を持つ日次履歴。手動抑制は記録しない                                |
 | `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                        |
-| `state/notification-ledger.json`    | 予約期限、送信結果、cooldown、期限のない手動抑制を持つ通知ledger                                      |
+| `state/notification-ledger.json`    | 予約期限、送信結果、期限のない送信済みと手動抑制済みの記録を持つ通知ledger                            |
 | `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                 |
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
@@ -352,7 +352,7 @@ Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しま�
 通知予約はrun開始時刻から24時間だけ有効です。
 予約期限はworkflow内の排他用leaseであり通知方針ではないため、設定項目にせず、4時間周期をまたぐ重複送信を抑える24時間へ固定します。
 期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。
-cooldownと同日抑制は送信済みentryだけへ適用します。`dismiss-current`で保存したentryは同じnotification keyを期限なく抑制します。notification keyはstatus、severity、waitingOn、各種開始時刻などの状態から作られるため、これらが変わって別keyになった候補は通常の選別対象へ戻ります。
+`sent`と`dismissed`のentryは同じnotification keyを期限なく抑制します。notification keyはstatus、severity、waitingOn、各種開始時刻などの状態から作られるため、これらが変わって別keyになった候補は通常の選別対象へ戻ります。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
 PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。

@@ -159,9 +159,6 @@ notifications:
       users: {}
       # Hiroshiba: "123456789012345678"
     maxItemsPerDigest: 10
-    cooldownDays:
-      urgent: 3
-      critical: 2
 
 state:
   branch: tracker-state

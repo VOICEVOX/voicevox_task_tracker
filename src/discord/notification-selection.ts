@@ -135,13 +135,9 @@ export type DiscordNotificationItem = Readonly<{
   graph: DiscordNotificationGraphContext;
 }>;
 
-/** 設定から渡す通知上限、cooldown、noise閾値。 */
+/** 設定から渡す通知上限、noise閾値。 */
 export type DiscordNotificationSelectionSettings = Readonly<{
   maxItemsPerDigest: number;
-  cooldownDays: Readonly<{
-    urgent: number;
-    critical: number;
-  }>;
   recentProgressGraceHours: number;
   minimumAiConfidence: number;
   thresholdsHours: SeverityThresholds;
@@ -155,23 +151,10 @@ export type SelectDiscordNotificationsInput = Readonly<{
   settings: DiscordNotificationSelectionSettings;
 }>;
 
-/** 通知理由が初回通知か再通知かを表す。 */
-export type DiscordNotificationRepeatContext =
-  | Readonly<{
-      kind: "initial";
-    }>
-  | Readonly<{
-      kind: "renotification";
-      previousSentAt: UtcIsoDateTime;
-      renotificationAvailableAt: UtcIsoDateTime;
-    }>;
-
 /** 選別された1理由とledger予約情報。 */
 export type SelectedDiscordNotificationReason = NotificationReason &
   Readonly<{
     notificationKey: string;
-    cooldownUntil: UtcIsoDateTime;
-    repeatContext: DiscordNotificationRepeatContext;
   }>;
 
 /** digestへ1件として渡す通知候補。 */
@@ -206,25 +189,13 @@ export type DiscordNotificationSelection =
 type ReasonSignal = Readonly<{
   reason: NotificationReason;
   stateDiscriminator: string;
-  repeatable: boolean;
   highPriorityEligible: boolean;
 }>;
 
 type EligibleReason = Readonly<{
   signal: ReasonSignal;
   notificationKey: string;
-  cooldownUntil: UtcIsoDateTime;
-  repeatContext: DiscordNotificationRepeatContext;
 }>;
-
-type LedgerEligibility =
-  | Readonly<{
-      eligible: false;
-    }>
-  | Readonly<{
-      eligible: true;
-      repeatContext: DiscordNotificationRepeatContext;
-    }>;
 
 type CandidateDraft = Readonly<{
   item: DiscordNotificationItem;
@@ -399,9 +370,8 @@ function validateLedger(
   }
   for (const entry of ledger) {
     const reservedTimestamp = parseTimestamp(entry.reservedAt, "ledgerの予約時刻");
-    const cooldownTimestamp = parseTimestamp(entry.cooldownUntil, "ledgerのcooldown終了時刻");
-    if (reservedTimestamp > evaluatedTimestamp || cooldownTimestamp < reservedTimestamp) {
-      throw new RangeError("ledgerの時刻は予約時刻、cooldown終了時刻の順にしてください");
+    if (reservedTimestamp > evaluatedTimestamp) {
+      throw new RangeError("ledgerの予約時刻は判定時刻以前にしてください");
     }
     if (entry.status === "reserved") {
       const expiresTimestamp = parseTimestamp(entry.expiresAt, "ledgerの予約期限");
@@ -430,8 +400,6 @@ function validateInput(input: SelectDiscordNotificationsInput): number {
   ) {
     throw new RangeError("maxItemsPerDigestは1以上の整数にしてください");
   }
-  validateNonNegativeInteger(input.settings.cooldownDays.urgent, "urgent cooldown日数");
-  validateNonNegativeInteger(input.settings.cooldownDays.critical, "critical cooldown日数");
   validateThresholdsHours(input.settings.thresholdsHours);
   if (
     !Number.isFinite(input.settings.recentProgressGraceHours) ||
@@ -668,7 +636,6 @@ function createOverdueSignals(
     signals.push({
       reason,
       stateDiscriminator: item.current.waitClass,
-      repeatable: true,
       highPriorityEligible: true,
     });
   }
@@ -687,7 +654,6 @@ function createOverdueSignals(
         reasonCode: "blocker_overdue",
       }),
       stateDiscriminator: JSON.stringify([impact.openNodeCount, impact.repositoryCount]),
-      repeatable: true,
       highPriorityEligible: true,
     });
   }
@@ -714,7 +680,6 @@ function createNewlyUnblockedSignal(item: DiscordNotificationItem): ReasonSignal
       reasonCode: "newly_unblocked",
     }),
     stateDiscriminator: item.current.statusSince,
-    repeatable: false,
     highPriorityEligible: true,
   };
 }
@@ -746,29 +711,8 @@ function createResponsibilityChangedSignal(
       reasonCode: "responsibility_changed",
     }),
     stateDiscriminator: item.current.ownerSince,
-    repeatable: false,
     highPriorityEligible: true,
   };
-}
-
-function recommendationIsRepeatable(reasonCode: DiscordNotificationReasonCode): boolean {
-  switch (reasonCode) {
-    case "assessment_overdue":
-    case "owner_overdue":
-    case "decision_overdue":
-    case "review_overdue":
-    case "revision_overdue":
-    case "reply_overdue":
-    case "owner_unknown":
-    case "blocker_overdue":
-    case "merge_overdue":
-    case "automation_stuck":
-      return true;
-    case "newly_unblocked":
-    case "dependency_cycle":
-    case "responsibility_changed":
-      return false;
-  }
 }
 
 function createRecommendationSignal(
@@ -796,7 +740,6 @@ function createRecommendationSignal(
   return {
     reason,
     stateDiscriminator: JSON.stringify([item.nodeId, "codex_recommendation"]),
-    repeatable: recommendationIsRepeatable(recommendation.reasonCode),
     highPriorityEligible: recommendation.highPriorityEligible,
   };
 }
@@ -920,7 +863,6 @@ function createSignals(
         reasonCode: "dependency_cycle",
       }),
       stateDiscriminator: cycleId,
-      repeatable: false,
       highPriorityEligible: true,
     });
   }
@@ -956,108 +898,19 @@ function createNotificationKey(item: DiscordNotificationItem, signal: ReasonSign
   return `discord-notification:v1:${signal.reason.reasonCode}:${stateHash}`;
 }
 
-function isSameUtcDate(left: UtcIsoDateTime, right: UtcIsoDateTime): boolean {
-  return left.slice(0, 10) === right.slice(0, 10);
-}
-
-function renotificationAvailableAt(
-  previousSentAt: UtcIsoDateTime,
-  cooldownUntil: UtcIsoDateTime,
-): UtcIsoDateTime {
-  const previousSentTimestamp = parseTimestamp(previousSentAt, "ledgerの送信時刻");
-  const cooldownTimestamp = parseTimestamp(cooldownUntil, "ledgerのcooldown終了時刻");
-  const availableTimestamp = Math.max(cooldownTimestamp, startOfNextUtcDate(previousSentTimestamp));
-  if (!Number.isFinite(availableTimestamp)) {
-    throw new RangeError("再通知可能時刻を計算できません");
-  }
-  return createUtcIsoDateTime(new Date(availableTimestamp).toISOString());
-}
-
 function isEligibleAgainstLedger(
-  item: DiscordNotificationItem,
-  signal: ReasonSignal,
   notificationKey: string,
   ledgerByKey: ReadonlyMap<string, NotificationLedgerEntry>,
-  evaluatedAt: UtcIsoDateTime,
   evaluatedTimestamp: number,
-): LedgerEligibility {
+): boolean {
   const existing = ledgerByKey.get(notificationKey);
   if (existing == null) {
-    return Object.freeze({
-      eligible: true,
-      repeatContext: Object.freeze({
-        kind: "initial",
-      }),
-    });
+    return true;
   }
   if (existing.status === "reserved") {
-    if (evaluatedTimestamp >= parseTimestamp(existing.expiresAt, "ledgerの予約期限")) {
-      return Object.freeze({
-        eligible: true,
-        repeatContext: Object.freeze({
-          kind: "initial",
-        }),
-      });
-    }
-    return Object.freeze({
-      eligible: false,
-    });
+    return evaluatedTimestamp >= parseTimestamp(existing.expiresAt, "ledgerの予約期限");
   }
-  if (existing.status === "dismissed") {
-    return Object.freeze({
-      eligible: false,
-    });
-  }
-  if (isSameUtcDate(existing.sentAt, evaluatedAt)) {
-    return Object.freeze({
-      eligible: false,
-    });
-  }
-  if (
-    !signal.repeatable ||
-    (item.current.severity !== "urgent" && item.current.severity !== "critical")
-  ) {
-    return Object.freeze({
-      eligible: false,
-    });
-  }
-  if (evaluatedTimestamp < parseTimestamp(existing.cooldownUntil, "ledgerのcooldown終了時刻")) {
-    return Object.freeze({
-      eligible: false,
-    });
-  }
-  return Object.freeze({
-    eligible: true,
-    repeatContext: Object.freeze({
-      kind: "renotification",
-      previousSentAt: existing.sentAt,
-      renotificationAvailableAt: renotificationAvailableAt(existing.sentAt, existing.cooldownUntil),
-    }),
-  });
-}
-
-function startOfNextUtcDate(timestamp: number): number {
-  const date = new Date(timestamp);
-  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1);
-}
-
-function cooldownUntil(
-  severity: Severity,
-  evaluatedTimestamp: number,
-  settings: DiscordNotificationSelectionSettings,
-): UtcIsoDateTime {
-  const cooldownDays =
-    severity === "urgent"
-      ? settings.cooldownDays.urgent
-      : severity === "critical"
-        ? settings.cooldownDays.critical
-        : 0;
-  const configuredTimestamp = evaluatedTimestamp + cooldownDays * MILLISECONDS_PER_DAY;
-  const cooldownTimestamp = Math.max(configuredTimestamp, startOfNextUtcDate(evaluatedTimestamp));
-  if (!Number.isFinite(cooldownTimestamp)) {
-    throw new RangeError("cooldown終了時刻を計算できません");
-  }
-  return createUtcIsoDateTime(new Date(cooldownTimestamp).toISOString());
+  return false;
 }
 
 function reservationExpiresAt(reservedAt: UtcIsoDateTime): UtcIsoDateTime {
@@ -1134,31 +987,16 @@ function createCandidateDrafts(
       input.settings,
     );
     const eligibleReasons = signals
-      .flatMap((signal) => {
+      .map((signal) => {
         const notificationKey = createNotificationKey(item, signal);
-        const reason = {
+        return {
           signal,
           notificationKey,
-          cooldownUntil: cooldownUntil(item.current.severity, evaluatedTimestamp, input.settings),
-        };
-        const eligibility = isEligibleAgainstLedger(
-          item,
-          reason.signal,
-          reason.notificationKey,
-          ledgerByKey,
-          input.evaluatedAt,
-          evaluatedTimestamp,
-        );
-        if (!eligibility.eligible) {
-          return [];
-        }
-        return [
-          {
-            ...reason,
-            repeatContext: eligibility.repeatContext,
-          } satisfies EligibleReason,
-        ];
+        } satisfies EligibleReason;
       })
+      .filter((reason) =>
+        isEligibleAgainstLedger(reason.notificationKey, ledgerByKey, evaluatedTimestamp),
+      )
       .sort(compareEligibleReasons);
     if (eligibleReasons.length === 0) {
       continue;
@@ -1218,11 +1056,7 @@ function compareCandidateDrafts(
 
 function selectedReason(reason: EligibleReason): SelectedDiscordNotificationReason {
   const signalReason = reason.signal.reason;
-  const selectionFields = {
-    notificationKey: reason.notificationKey,
-    cooldownUntil: reason.cooldownUntil,
-    repeatContext: reason.repeatContext,
-  };
+  const selectionFields = { notificationKey: reason.notificationKey };
   if (isTimeNotificationReasonCode(signalReason.reasonCode)) {
     if (signalReason.threshold.status === "recorded") {
       return Object.freeze({
@@ -1289,7 +1123,6 @@ function createLedgerReservation(
     severity: candidate.severity,
     reservedAt: evaluatedAt,
     expiresAt: reservationExpiresAt(evaluatedAt),
-    cooldownUntil: reason.cooldownUntil,
     status: "reserved",
   } satisfies NotificationLedgerEntry);
 }
@@ -1310,7 +1143,7 @@ function nonEmptyLedgerEntries(
   return Object.freeze([first, ...rest]);
 }
 
-/** noise、ledger、cooldown、順位、件数上限を適用してDiscord通知候補を選ぶ。 */
+/** noise、ledger、順位、件数上限を適用してDiscord通知候補を選ぶ。 */
 export function selectDiscordNotifications(
   input: SelectDiscordNotificationsInput,
 ): DiscordNotificationSelection {
@@ -1355,7 +1188,6 @@ function createDismissedLedgerEntry(
     reasonCode: reason.reasonCode,
     severity: candidate.severity,
     reservedAt: evaluatedAt,
-    cooldownUntil: reason.cooldownUntil,
     status: "dismissed",
     dismissedAt: evaluatedAt,
   } satisfies NotificationLedgerEntry);

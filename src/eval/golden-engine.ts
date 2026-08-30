@@ -108,10 +108,6 @@ const SEVERITY_THRESHOLDS = Object.freeze({
 }) satisfies SeverityThresholds;
 const NOTIFICATION_SETTINGS = Object.freeze({
   maxItemsPerDigest: 100,
-  cooldownDays: Object.freeze({
-    urgent: 3,
-    critical: 2,
-  }),
   recentProgressGraceHours: 24,
   minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,
   thresholdsHours: SEVERITY_THRESHOLDS,

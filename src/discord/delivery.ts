@@ -154,7 +154,6 @@ function createSentNotificationEntries(
       reasonCode: reservation.reasonCode,
       severity: reservation.severity,
       reservedAt: reservation.reservedAt,
-      cooldownUntil: reservation.cooldownUntil,
       status: "sent",
       sentAt,
       discordMessageId,
