@@ -49,7 +49,7 @@ run reportの主な確認項目は次のとおりです。
 | `metrics.estimatedInputTokens`      | Codex入力tokenの見積り                                                        |
 | `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                  |
 | `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                  |
-| `metrics.notificationCount`         | Discord送信結果をledgerへ記録した通知数。`dismiss-current`では0               |
+| `metrics.notificationCount`         | Discord送信結果を通知管理記録へ記録した通知数。`dismiss-current`では0         |
 | `metrics.scheduleDelayMilliseconds` | 予定起動時刻からCLI開始までの遅延                                             |
 | `metrics.durationMilliseconds`      | CLI開始からrun完了までの所要時間                                              |
 
@@ -58,7 +58,7 @@ Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`
 違反の`message`は入力値を含みうるため残しません。
 
 `tracker-state`は自動更新専用です。
-人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴と通知抑制の整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
+人間がsnapshot、履歴、AI cache、通知管理記録を直接編集すると履歴と通知抑制の整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
 
 ## 性能profile
 
@@ -88,7 +88,7 @@ Actionsの`collect-analyze` jobは配置stepだけへ`CODEX_AUTH_JSON`を渡し�
 `CODEX_AUTH_SYNC_TOKEN`は書き戻しstepだけへ`GH_TOKEN`として渡します。
 jobは一時ファイルを削除する前に、更新された`auth.json`を`CODEX_AUTH_JSON`へ同期します。
 `ai.enabled: true`のローカル実行ではlockfileで固定した`codex`に加え、`auth-json`なら`CODEX_HOME`直下の`auth.json`、`api-key`なら`OPENAI_API_KEY`が必要です。
-検証後のsnapshot、通知候補、notification ledger、run report生成用の収集指標、AI cacheを公開可能なartifactへ保存します。
+検証後のsnapshot、通知候補、通知管理記録、run report生成用の収集指標、AI cacheを公開可能なartifactへ保存します。
 
 ```console
 pnpm build
@@ -161,7 +161,7 @@ repository globとlabel名の正規表現を一致させ、必要な効果を設
 | effect                       | 用途                                                 |
 | ---------------------------- | ---------------------------------------------------- |
 | `priorityWeight`             | 重要度を通じて要対応度を上げ、通知候補の順位も上げる |
-| `severityLift`               | 通知判断に使うseverityを最大1段階引き上げる          |
+| `severityLift`               | 通知判断に使う停滞レベルを最大1段階引き上げる        |
 | `requiresMaintainerDecision` | 方針判断待ちとし、maintainer roleへ責務を置く        |
 | `suppressNotifications`      | graphには残したまま通常通知を抑える                  |
 | `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う              |
@@ -201,7 +201,7 @@ blockerが完了したら対象Issueをcloseし、誤ったnative relationはGit
 
 ### 重要度
 
-重要度は項目そのものの重要さを表し、停滞の深刻さを表すseverityとは別に確認します。
+重要度は項目そのものの重要さを表し、停滞レベルとは別に確認します。
 個別の項目の重要度がずれている場合は、まず詳細ページの内訳でどの要因が効いているかを確かめます。
 決定論的な要因は、優先度ラベル、native dependency、downstream impactをGitHub上の事実へ合わせると変わります。
 Codex由来の重要度要因は、重要な機能である根拠と放置した場合の将来問題が本文かコメントから読み取れるかで決まります。期限の切迫度は重要度へ影響しません。
@@ -218,7 +218,7 @@ terminal項目とブロック解消待ちの項目が0点になるのは意図�
 停滞による下がり方を全体で調整する場合は`config.yml`の`attention.recencyFloor`を変更します。
 要対応度、重要度、期限の切迫度、停滞時間は、項目一覧と担当者ごとのページで選べる四つの並び替えキーです。
 既定は要対応度の降順です。
-severityはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
+停滞レベルはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
 
 設定変更後はdry-runを実行し、要対応度のscore、level、表示対象、並び順、依存グラフのnode選定を確認します。
 
@@ -256,16 +256,16 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 2. `backfill`を`none`、`repository_filter`を空、`notification_action`を`dismiss-current`にして実行します。
 3. `collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`、`report-workflow`が成功することを確認します。
 
-`dismiss-current`は現在の通知条件を満たす候補を、reasonごとに最大件数の制限なく、手動抑制済みとしてnotification ledgerへ保存します。通常のDiscord digestは送信せず、`notification_sent`履歴も作りません。snapshotとPagesの生成は通常runと同じで、ledgerの更新は同じatomic transactionへ含まれます。運用障害が発生した場合の`notify-operations`は別系統で動作します。
+`dismiss-current`は現在の通知条件を満たす候補を、reasonごとに最大件数の制限なく、手動抑制済みとして通知管理記録へ保存します。通常のDiscord digestは送信せず、`notification_sent`履歴も作りません。snapshotとPagesの生成は通常runと同じで、通知管理記録の更新は同じatomic transactionへ含まれます。運用障害が発生した場合の`notify-operations`は別系統で動作します。
 
-成功確認では、`tracker-state`のnotification ledgerに対象候補の`status: dismissed`が保存され、通知履歴に送信済み項目が追加されていないことを確認します。state branchやledgerを直接編集して抑制を解除してはいけません。
+成功確認では、`tracker-state`の通知管理記録に対象候補の`status: dismissed`が保存され、通知履歴に送信済み項目が追加されていないことを確認します。state branchや通知管理記録を直接編集して抑制を解除してはいけません。
 
-送信済みと手動抑制済みのnotification keyは期限なく抑制します。status、severity、waitingOn、各種開始時刻などが変わって別keyになった候補は、次回の`send`で通常どおり通知対象になります。
+送信済みと手動抑制済みのnotification keyは期限なく抑制します。`status`、停滞レベルを表す`severity`、待ち相手を表す`waitingOn`、各種開始時刻などが変わって別keyになった候補は、次回の`send`で通常どおり通知対象になります。
 
 通常の`send`は、`maxItemsPerDigest`を含む既存の通知選別を行います。
 
-severityはDiscord通知の判断にだけ使います。
-通知選別はseverityの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。
+停滞レベルはDiscord通知の判断にだけ使います。
+通知選別は停滞レベルの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。
 直近に意味のある進捗がある項目、botだけの活動、recent draft、低信頼のAI判定、labelで抑制した項目は通常通知から外します。
 botが作成した項目のtitleが`notifications.automationNoiseTitles`のいずれかと大文字小文字を区別せず一致した場合、graphへ残したまま通常通知から外します。
 Renovateの`dependencyDashboardTitle`を変更した場合は同じtitleをこの一覧へ追加します。
@@ -287,11 +287,11 @@ Renovateの`dependencyDashboardTitle`を変更した場合は同じtitleをこ�
 | 自動処理待ち                                     | `automation` |
 
 ブロック解消待ちには直接の閾値がありません。
-blockerのseverityとdownstream impactが通知順位を決めます。
+blockerの停滞レベルとdownstream impactが通知順位を決めます。
 
 通知が多すぎる場合は次の順で調整します。
 
-1. 誤ったstatus、waitingOn、依存をGitHub上で明確にします。
+1. 誤った`status`、待ち相手を表す`waitingOn`、依存をGitHub上で明確にします。
 2. automation dashboardのtitleを`notifications.automationNoiseTitles`へ追加するか、対象labelへ`labels.rules.effects.suppressNotifications`を割り当てます。
 3. 通知を減らす状態に対応する`staleness.thresholdsHours`を増やします。
 4. 全状態で直近の進捗を長く猶予する場合は`recentProgressGraceHours`を増やします。
@@ -300,7 +300,7 @@ blockerのseverityとdownstream impactが通知順位を決めます。
 
 通知が少なすぎる場合は逆方向に調整します。
 
-1. maintainer設定、userかteamの指定、review request、native dependency、label規則がstatusとwaitingOnの実態に合うか確認します。
+1. maintainer設定、userかteamの指定、review request、native dependency、label規則が`status`と待ち相手を表す`waitingOn`の実態に合うか確認します。
 2. 通知を増やす状態に対応する`staleness.thresholdsHours`を減らします。
 3. 全状態で直近の進捗を短く猶予する場合は`recentProgressGraceHours`を減らします。
 4. `maxItemsPerDigest`を増やします。
@@ -360,5 +360,5 @@ state commit後のPages失敗は想定内であり、stateを巻き戻しませ�
 どの入力にallowlist外repository、private sentinel、secretらしい値、長すぎる全文、安全でないURLが入ったかを、secretをlogへ出さずに調べます。
 原因を除いた後に`backfill: none`で手動再実行します。
 
-同じrunを再実行してもworkflow concurrencyと通知ledgerが競合と通常通知の重複を抑えます。
+同じrunを再実行してもworkflow concurrencyと通知管理記録が競合と通常通知の重複を抑えます。
 GitHub、Codex、Discordの429と503は設定した回数だけretryし、それでも失敗する場合は外部サービスの回復後に再実行します。

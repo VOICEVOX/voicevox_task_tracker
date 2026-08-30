@@ -977,11 +977,11 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
       decision.waitingOn.length === 0
         ? Object.freeze({
             index: "not_applicable",
-            selectionReason: "waitingOnがないためprimaryはありません",
+            selectionReason: "待ち相手がないためprimaryはありません",
           })
         : Object.freeze({
             index: 0,
-            selectionReason: "waitingOnの先頭候補をprimaryとして選びました",
+            selectionReason: "待ち相手の先頭候補をprimaryとして選びました",
           }),
     nextAction: decision.nextAction,
     createdAt: createUtcIsoDateTime(item.createdAt),
@@ -1447,7 +1447,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         waitingOn: Object.freeze([largeWaitingOn(nodeId)]),
         primaryWaitingOn: Object.freeze({
           index: 0,
-          selectionReason: "waitingOnの先頭候補をprimaryとして選びました",
+          selectionReason: "待ち相手の先頭候補をprimaryとして選びました",
         }),
         nextAction: "担当者が作業を進める",
         createdAt,

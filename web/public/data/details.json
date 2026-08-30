@@ -40,7 +40,7 @@
         ],
         "primaryWaitingOn": {
           "index": 0,
-          "selectionReason": "waitingOnの先頭候補をprimaryとして選びました"
+          "selectionReason": "待ち相手の先頭候補をprimaryとして選びました"
         },
         "nextAction": "メンテナーが内容を確認してマージする",
         "severity": "critical",
@@ -153,7 +153,7 @@
         ],
         "primaryWaitingOn": {
           "index": 0,
-          "selectionReason": "waitingOnの先頭候補をprimaryとして選びました"
+          "selectionReason": "待ち相手の先頭候補をprimaryとして選びました"
         },
         "nextAction": "レビューチームが変更内容を確認する",
         "severity": "none",
@@ -260,7 +260,7 @@
         ],
         "primaryWaitingOn": {
           "index": 0,
-          "selectionReason": "waitingOnの先頭候補をprimaryとして選びました"
+          "selectionReason": "待ち相手の先頭候補をprimaryとして選びました"
         },
         "nextAction": "メンテナーが配布方針を決める",
         "severity": "urgent",
@@ -508,7 +508,7 @@
         ],
         "primaryWaitingOn": {
           "index": 0,
-          "selectionReason": "waitingOnの先頭候補をprimaryとして選びました"
+          "selectionReason": "待ち相手の先頭候補をprimaryとして選びました"
         },
         "nextAction": "作成者がレビュー指摘へ対応する",
         "severity": "urgent",
