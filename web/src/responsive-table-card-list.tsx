@@ -103,7 +103,7 @@ export function ResponsiveTableCardList<Row>({
   return (
     <>
       <div
-        class={`items-table-region hidden min-w-0 overflow-hidden rounded-2xl border border-border-default bg-surface-card shadow-[0_8px_24px_rgba(34,52,45,0.04)] ${breakpointClassNames.tableRegion}`}
+        class={`items-table-region hidden min-w-0 overflow-hidden rounded-2xl border border-border-default bg-surface-card shadow-card ${breakpointClassNames.tableRegion}`}
       >
         <table class={`w-full table-fixed border-collapse ${tableClassName}`}>
           <caption class="visually-hidden sr-only">{tableCaption}</caption>
@@ -157,7 +157,7 @@ export function ResponsiveTableCardList<Row>({
         </table>
       </div>
       <ol
-        class={`items-card-list m-0 grid list-none overflow-hidden rounded-2xl border border-border-default bg-surface-card p-0 shadow-[0_8px_24px_rgba(34,52,45,0.04)] ${breakpointClassNames.cardList} ${cardListClassName}`}
+        class={`items-card-list m-0 grid list-none overflow-hidden rounded-2xl border border-border-default bg-surface-card p-0 shadow-card ${breakpointClassNames.cardList} ${cardListClassName}`}
         aria-label={cardAriaLabel}
       >
         {rows.map((row, index) => {
