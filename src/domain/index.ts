@@ -122,6 +122,7 @@ export {
 export { buildSourceId, parseSourceId, type SourceId, type SourceIdParts } from "./source-id.js";
 export {
   calculateStaleness,
+  createStalenessNotificationSeverityReason,
   recalculateStalenessSeverity,
   type BlockedParentContext,
   type BlockedParentSeverityReason,
@@ -131,6 +132,7 @@ export {
   type RecalculatedStalenessSeverity,
   type RecalculateStalenessSeverityInput,
   type StalenessElapsedHours,
+  type StalenessNotificationSeverityReason,
   type StalenessResult,
   type StalenessSeverityContext,
   type StalenessSeverityReason,

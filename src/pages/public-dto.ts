@@ -493,7 +493,7 @@ const publicNotificationHistoryEntrySchema = z
   });
 const publicNotificationHistoryDtoSchema = z
   .strictObject({
-    schemaVersion: z.literal("3"),
+    schemaVersion: z.literal("4"),
     runId: identifierSchema,
     generatedAt: dateTimeSchema,
     notifications: z.array(publicNotificationHistoryEntrySchema),

@@ -26,6 +26,10 @@ export type NotificationReasonThreshold =
       hours: number;
     }>
   | Readonly<{
+      status: "not_reached";
+      elapsedHours: number;
+    }>
+  | Readonly<{
       status: "not_recorded";
     }>
   | Readonly<{
@@ -36,7 +40,10 @@ export type NotificationReasonThreshold =
 export type NotificationReason =
   | Readonly<{
       reasonCode: NotificationTimeReasonCode;
-      threshold: Extract<NotificationReasonThreshold, { status: "recorded" | "not_recorded" }>;
+      threshold: Extract<
+        NotificationReasonThreshold,
+        { status: "recorded" | "not_reached" | "not_recorded" }
+      >;
     }>
   | Readonly<{
       reasonCode: NotificationNonTimeReasonCode;
@@ -47,6 +54,10 @@ const notificationTimeReasonThresholdSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("recorded"),
     hours: z.number().nonnegative(),
+  }),
+  z.strictObject({
+    status: z.literal("not_reached"),
+    elapsedHours: z.number().nonnegative(),
   }),
   z.strictObject({
     status: z.literal("not_recorded"),
@@ -152,6 +163,18 @@ export function createNotificationReason(
         }),
       });
     }
+    if (threshold.status === "not_reached") {
+      if (!Number.isFinite(threshold.elapsedHours) || threshold.elapsedHours < 0) {
+        throw new RangeError("通知理由の経過時間は0以上の有限値にしてください");
+      }
+      return Object.freeze({
+        reasonCode,
+        threshold: Object.freeze({
+          status: "not_reached",
+          elapsedHours: threshold.elapsedHours,
+        }),
+      });
+    }
     if (threshold.status === "not_recorded") {
       return Object.freeze({
         reasonCode,
@@ -160,7 +183,9 @@ export function createNotificationReason(
         }),
       });
     }
-    throw new TypeError("時間系通知理由には基準時間を記録するか未記録を指定してください");
+    throw new TypeError(
+      "時間系通知理由には到達済み、未到達、または未記録の基準時間を指定してください",
+    );
   }
   if (threshold.status !== "not_applicable") {
     throw new TypeError("非時間系通知理由には基準時間を適用できません");
@@ -174,10 +199,24 @@ export function createNotificationReason(
 }
 
 function overdueReasonText(label: string, reason: NotificationReason): string {
-  if (reason.threshold.status === "recorded") {
-    return `${label}が基準となる${reason.threshold.hours.toString()}時間を超えました`;
+  switch (reason.threshold.status) {
+    case "recorded":
+      return `${label}が基準となる${reason.threshold.hours.toString()}時間に達しました`;
+    case "not_reached": {
+      const elapsedMinutes = Math.floor(reason.threshold.elapsedHours * 60);
+      if (elapsedMinutes < 1) {
+        return `${label}が1分未満続いています`;
+      }
+      if (elapsedMinutes < 60) {
+        return `${label}が${elapsedMinutes.toString()}分続いています`;
+      }
+      return `${label}が${Math.floor(reason.threshold.elapsedHours).toString()}時間続いています`;
+    }
+    case "not_recorded":
+      return `${label}が基準時間を超えました`;
+    case "not_applicable":
+      throw new TypeError("時間系通知理由に適用不能な基準時間があります");
   }
-  return `${label}が基準時間を超えました`;
 }
 
 /** 通知理由の日本語表示名を返す。 */

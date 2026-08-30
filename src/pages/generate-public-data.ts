@@ -338,7 +338,7 @@ function createPublicNotificationHistory(
   }
   notifications.sort(comparePublicNotificationHistoryEntries);
   return createPublicNotificationHistoryDto({
-    schemaVersion: "3",
+    schemaVersion: "4",
     runId,
     generatedAt,
     notifications,

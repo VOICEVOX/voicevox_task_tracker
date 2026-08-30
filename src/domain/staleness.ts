@@ -11,6 +11,7 @@ import {
 import {
   compareSeverity,
   determineDirectSeverity,
+  type CrossedSeverityThreshold,
   type DirectSeverityReason,
   type SeverityThresholds,
 } from "./severity.js";
@@ -111,6 +112,19 @@ export type TerminalSeverityReason = Readonly<{
 export type StalenessSeverityReason =
   DirectSeverityReason | BlockedParentSeverityReason | TerminalSeverityReason;
 
+/** 通知選別へ渡すseverity判定の時間根拠。 */
+export type StalenessNotificationSeverityReason =
+  | Readonly<{
+      kind: "elapsed_threshold";
+      waitClass: WaitClass;
+      elapsedHours: number;
+      crossedThreshold: CrossedSeverityThreshold;
+    }>
+  | Readonly<{
+      kind: "not_applicable";
+      waitClass: "blockedParent" | "notApplicable";
+    }>;
+
 /** status、責務、停滞の連続経過時間。 */
 export type StalenessElapsedHours = Readonly<{
   status: number;
@@ -155,6 +169,7 @@ export type RecalculatedStalenessSeverity = Readonly<{
   elapsedHours: number;
   waitClass: StalenessWaitClass;
   severity: Severity;
+  severityReason: StalenessNotificationSeverityReason;
   severityContext: StalenessSeverityContext;
 }>;
 
@@ -573,6 +588,31 @@ function determineSeverity(
   });
 }
 
+/** stalenessのseverity根拠から通知選別に必要な情報だけを取り出す。 */
+export function createStalenessNotificationSeverityReason(
+  reason: StalenessSeverityReason,
+): StalenessNotificationSeverityReason {
+  switch (reason.kind) {
+    case "elapsed_threshold":
+      return Object.freeze({
+        kind: "elapsed_threshold",
+        waitClass: reason.waitClass,
+        elapsedHours: reason.elapsedHours,
+        crossedThreshold: reason.crossedThreshold,
+      });
+    case "blocked_parent":
+      return Object.freeze({
+        kind: "not_applicable",
+        waitClass: "blockedParent",
+      });
+    case "terminal":
+      return Object.freeze({
+        kind: "not_applicable",
+        waitClass: "notApplicable",
+      });
+  }
+}
+
 function createSeverityContext(
   input: CalculateStalenessInput,
   waitClass: StalenessWaitClass,
@@ -596,6 +636,10 @@ export function recalculateStalenessSeverity(
       elapsedHours: elapsed,
       waitClass,
       severity: "none",
+      severityReason: Object.freeze({
+        kind: "not_applicable",
+        waitClass,
+      }),
       severityContext: input.severityContext,
     });
   }
@@ -614,6 +658,7 @@ export function recalculateStalenessSeverity(
     elapsedHours: elapsed,
     waitClass,
     severity: decision.severity,
+    severityReason: createStalenessNotificationSeverityReason(decision.reason),
     severityContext: input.severityContext,
   });
 }
