@@ -164,7 +164,7 @@ AI分析の失敗と延期はGitHub側を動かさないため、この扱いが
 terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行します。
 
 決定論的規則versionとprompt versionは手で更新する定数です。
-判定ロジックやプロンプトを変えた場合は、判定結果が変わるかを確認してversionを上げます。
+`ai.promptVersion`はプロンプトファイルの改訂番号を表さず、意味上のAI判定規則を識別するversionです。変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は据え置きます。全件再推論をこの判断手段にしません。95％以上と見込めない場合、または影響を判断できない場合はversionを上げます。具体的な判断基準は[開発手順](DEVELOPMENT.md)の「Codexプロンプトのversionを判断する」を参照してください。
 現行の決定論的規則versionはIssueが`issue-v11`、Pull Requestが`pull-request-v10`です。
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
@@ -280,6 +280,8 @@ GitHubの確定情報で高信頼に解決した項目に加え、入力hash、�
 未変更候補はcontent-addressed cacheの検証済み結果をreducerへ渡し、変更候補も同じ判定入力が保存済みならcacheから再利用します。
 どちらの場合もcache hitではCodex processを実行しません。
 判定規則version、model、reasoning effort、backend version、prompt version、schema version、入力hashからcache keyを作り、同一入力だけを再利用します。
+prompt versionを上げたrunでは実行identityと判定規則fingerprintが変わるため、全項目を再取得し、Codex候補のうち曖昧な項目を新しいプロンプトで再推論します。高信頼に決定できる項目はCodex推論を行いません。
+prompt versionを据え置いたrunでは、入力と実行identityが変わらない項目に検証済みcacheを再利用します。プロンプトの表記だけを変更してversionを据え置いた場合、cacheやsnapshotの既存出力は書き換えず、別要因で再分析した項目だけが新しい表記になります。
 このcache再利用と重要度の前回判定利用は別の規則です。
 そのrunで利用できる重要度判定がない場合は、前回の判定を現在の決定論的な要因と組み合わせます。
 Codex入力の判定時刻は未来のsource参照を拒否するsemantic検証にだけ使い、時間依存の状態と停滞時間は決定論的処理で算出します。

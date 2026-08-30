@@ -128,11 +128,29 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 判定規則を変えたら、対応するversionを上げてください。
 上げないと、GitHub側が動いていない項目は再判定されず、古い判定が残り続けます。
 
-| 変更した対象                | 上げるversion                              |
-| --------------------------- | ------------------------------------------ |
-| Issueの判定                 | `ISSUE_DETERMINISTIC_RULES_VERSION`        |
-| Pull Requestの判定          | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION` |
-| `prompts/`のCodexプロンプト | `config.yml`の`ai.promptVersion`           |
+| 変更した対象            | 上げるversion                              |
+| ----------------------- | ------------------------------------------ |
+| Issueの判定             | `ISSUE_DETERMINISTIC_RULES_VERSION`        |
+| Pull Requestの判定      | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION` |
+| Codexの意味上の判定規則 | `config.yml`の`ai.promptVersion`           |
+
+#### Codexプロンプトのversionを判断する
+
+AI推論のやり直しは重いため、プロンプトの差分だけを理由に全項目を再推論しません。`ai.promptVersion`はプロンプトファイルの改訂番号を表さず、意味上のAI判定規則を識別するversionとして扱います。
+
+変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は、`ai.promptVersion`を据え置きます。実際の全件再推論を判断手段にしません。比較する対象は、構造化された出力と下流処理に関わる判定の一致率です。文章の一致率は基準にしません。95％以上と見込めない場合、または影響を判断できない場合はversionを上げます。
+
+次の変更は、95％以上の判定が維持される条件を満たす限り、原則としてversionを据え置きます。
+
+- 用語、表記、説明文だけを変える
+- 行動主体、行動、対象を変えない自由文の言い換えを行う
+
+次の変更は、構造化された選択や下流処理の意味が変わり得るためversionを上げます。
+
+- `status`、`waitingOn`の候補や順序、`importance`、`deadline`、`notification`、`relations`の意味を変える
+- `meaningful progress`、`confidence`、根拠`source`、`nextAction`の意味を変える
+
+versionを据え置いた表記変更は、既存cacheやsnapshotへ即時反映されません。新規分析や別要因による再分析だけが新しい表記になり、新旧の文言が一時的に混在します。この挙動は推論負荷を避けるために受け入れます。既存項目の表記を即時に統一する必要がある場合は、全AI再推論を伴わない表示時の決定論的な変換などを検討します。
 
 要対応度は最新の重要度、期限の切迫度、停滞時間、設定から毎run全項目で再計算します。
 要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
