@@ -411,7 +411,7 @@ jobs:
             --kind "$incident_kind" \
             --incident-id "$INCIDENT_ID:$incident_kind" \
             --occurred-at "$occurred_at"
-      - name: 通知ledgerを更新
+      - name: 通知管理記録を更新
         run: git push origin refs/heads/tracker-state:refs/heads/tracker-state
 
   report-workflow:

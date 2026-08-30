@@ -3146,12 +3146,12 @@ function primaryWaitingOnForDecision(
   if (decision.waitingOn.length === 0) {
     return Object.freeze({
       index: "not_applicable",
-      selectionReason: "Codex判定にwaitingOnがないためprimaryはありません",
+      selectionReason: "Codex判定に待ち相手がないためprimaryはありません",
     });
   }
   return Object.freeze({
     index: 0,
-    selectionReason: "Codexが返したwaitingOnの優先順でprimaryを選定しました",
+    selectionReason: "Codexが返した待ち相手の優先順でprimaryを選定しました",
   });
 }
 

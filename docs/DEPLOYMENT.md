@@ -112,7 +112,7 @@ CLIはremote repositoryへpushしません。
 workflowはCLIの実行前にremoteの`tracker-state`をlocal refへfetchし、CLIの実行後に明示的な`git push`でremoteへ反映します。
 `tracker-state`へrulesetを設定する場合はGitHub Actionsによるstate更新を許可し、人間の通常作業branchとして使わないでください。
 
-`collect-analyze`は`artifacts/workflow/validated-run.json`へ検証済みsnapshot、通知候補、notification ledger、run report生成用の収集指標、AI cache、Pages URL、Discord送信設定だけを書きます。
+`collect-analyze`は`artifacts/workflow/validated-run.json`へ検証済みsnapshot、通知候補、通知管理記録、run report生成用の収集指標、AI cache、Pages URL、Discord送信設定だけを書きます。
 GitHub App key、installation token、Codex認証情報、`CODEX_AUTH_SYNC_TOKEN`、Discord webhookはartifactへ含めません。
 artifactを利用する後続jobは同じartifactを再検証してから利用します。
 依存関係を再インストールせず`notify-discord`でCLIを動かすため、公開sourceから作った自己完結bundleも同じActions artifactへ保存します。
@@ -280,7 +280,7 @@ process.exitCode = result.exitCode;
 ```
 
 `artifacts/run-reports/dry-run.json`の`status`、`complete`、`diagnostics`、各metricを確認します。
-`artifacts/dry-run.json`には検証済みsnapshotと通知候補が入るため、repository範囲、waitingOn、関係、通知量を確認します。
+`artifacts/dry-run.json`には検証済みsnapshotと通知候補が入るため、repository範囲、待ち相手を表す`waitingOn`、関係、通知量を確認します。
 
 ### 2. Codexのdry-run
 
@@ -315,22 +315,22 @@ workflowはdefault branchからのscheduleまたは手動実行だけを許可�
 手動実行の`notification_action`は`send`が既定値で、通常の通知を送ります。現在の通知候補を一掃したい場合だけ`dismiss-current`を選びます。
 手動実行でも`persist-state`、Pages buildとdeploy、`notify-discord`の順に進みます。
 
-`dismiss-current`では、現在の通知条件を満たす候補をreasonごとに最大件数の制限なくnotification ledgerへ手動抑制済みとして保存します。通常のDiscord digestと`notification_sent`履歴は作られません。snapshotとPagesは通常runと同じように生成し、ledger更新は同じatomic transactionで保存します。手動入力は現在の候補を一括で抑制する操作なので、対象範囲を確認してから実行してください。運用障害が起きた場合の`notify-operations`は別系統で通知します。
+`dismiss-current`では、現在の通知条件を満たす候補をreasonごとに最大件数の制限なく通知管理記録へ手動抑制済みとして保存します。通常のDiscord digestと`notification_sent`履歴は作られません。snapshotとPagesは通常runと同じように生成し、通知管理記録の更新は同じatomic transactionで保存します。手動入力は現在の候補を一括で抑制する操作なので、対象範囲を確認してから実行してください。運用障害が起きた場合の`notify-operations`は別系統で通知します。
 
-workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと手動抑制済みledgerを同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合し、不一致なら通常通知もrun完了処理も行いません。state branchやnotification ledgerを直接編集してはいけません。
+workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと手動抑制済みの通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合し、不一致なら通常通知もrun完了処理も行いません。state branchや通知管理記録を直接編集してはいけません。
 
 成功後に次を確認します。
 
 - `collect-analyze`の「更新されたCodex認証ファイルをsecretへ書き戻す」stepが成功していること
 - `tracker-state`がdefault branchと別の履歴を持つこと
-- `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知ledgerがまとまっていること
-- 後続の通知jobが実測時刻と実送信数を含むrun report、通知ledger、当日の日次履歴のcommitを追加していること
+- `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知管理記録がまとまっていること
+- 後続の通知jobが実測時刻と実送信数を含むrun report、通知管理記録、当日の日次履歴のcommitを追加していること
 - Pagesの生成時刻がrun reportの`startedAt`と一致し、repository数、item数、stale表示も一致すること
 - private repositoryのID、名前、URL、secret、不要な本文がstateとPagesにないこと
 - 通常digestがPages deploy後にだけ送信され、候補0件なら送信されないこと
-- 同じ候補を含む再実行では送信されず、送信済みのledger entryが維持されること
-- `notification_action: dismiss-current`では通常のDiscord送信と`notification_sent`履歴がなく、対象候補のledger entryが`status: dismissed`になっていること
-- `dismiss-current`の抑制は同じnotification keyへ期限なく適用され、status、severity、waitingOn、各種開始時刻などが変わった候補は次回の`send`で通知対象になること
+- 同じ候補を含む再実行では送信されず、送信済みの通知管理記録項目が維持されること
+- `notification_action: dismiss-current`では通常のDiscord送信と`notification_sent`履歴がなく、対象候補の通知管理記録項目が`status: dismissed`になっていること
+- `dismiss-current`の抑制は同じnotification keyへ期限なく適用され、`status`、停滞レベルを表す`severity`、待ち相手を表す`waitingOn`、各種開始時刻などが変わった候補は次回の`send`で通知対象になること
 
 `tracking.startAt: null`なら、最初の完全成功runの時刻がsnapshotへ固定されます。
 収集、Pages、Discordのいずれかで運用対象の失敗が起きたrunでは、`notify-operations`が障害通知を1件送ります。

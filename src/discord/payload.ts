@@ -464,7 +464,7 @@ function createFieldDraft(
   assertNonNullable(firstReason, `${candidate.itemNodeId}の通知理由を取得できませんでした`);
   const value = [
     `タイトル: ${title}`,
-    `waitingOn: ${waitingOn.text}`,
+    `待ち相手: ${waitingOn.text}`,
     `経過時間: ${formatElapsedTime(stallTimestamp, generatedTimestamp)}、${formatJst(stallTimestamp)}から`,
     ...reasonLines,
     `GitHub: ${item.url}`,

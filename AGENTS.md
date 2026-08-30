@@ -1,9 +1,11 @@
 # 実装方針
 
+- ユーザー向け文章では`waitingOn`を「待ち相手」、`severity`を「停滞レベル」、`notification ledger`を「通知管理記録」と表現し、これらの内部名はユーザーとの会話に出さない。内部キー、コード、パスを正確に参照する場合は元の表記を残す
+
 - GitHubの確定情報と決定論的な規則を優先し、Codexは自然言語の解釈が必要な曖昧部分だけに用いる
 - 追跡対象リポジトリへの書き込み操作を実装しない。Issue、Pull Request、コメント、ラベル、アサイン、レビュー依頼を変更しない
 - 公開かつ非アーカイブで、無効化されていないリポジトリだけを収集対象に選ぶ。選定を抜けた非公開データがstateや公開DTOから見つかった場合は保存、Pages生成、Discord通知をすべて停止する
-- `config.yml`の`maintainers`に書いたGitHubユーザー名を公開設定として扱い、リポジトリごとの抽象的な責務を各ユーザー名のwaitingOnへ展開する。GitHubのteam member一覧は取得せず、閲覧者の所属teamは公開summaryに現れるteam識別子から閲覧者自身がWeb UIで選ぶ
+- `config.yml`の`maintainers`に書いたGitHubユーザー名を公開設定として扱い、リポジトリごとの抽象的な責務を各ユーザー名の待ち相手を表す`waitingOn`へ展開する。GitHubのteam member一覧は取得せず、閲覧者の所属teamは公開summaryに現れるteam識別子から閲覧者自身がWeb UIで選ぶ
 - `src/domain`と`src/graph`はネットワークやファイルシステムへ依存しないpure TypeScriptとし、同じ入力から同じ結果を返す
 - GitHub、Codex、永続化、Pages、Discordへの副作用は各アダプターに閉じ込め、ドメイン判定から分離する
 - 同じ種類のUIが複数ページにある場合、表示の差はページの目的から説明できるものだけにする

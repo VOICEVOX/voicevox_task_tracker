@@ -52,6 +52,7 @@
 - `rel:` で始まる ID は relation candidate IDであり、source IDとして使ってはいけません。
 - 該当する source が無い場合は source IDを補わず、`latestMeaningfulSourceId` では `null` を使用してください。根拠が不十分な判定では推測せず、`unknown` を使用し、`confidence` を下げ、`uncertainties` に不確実な点を列挙してください。
 - `nextAction`、すべての `reasonSummary`、`importance.rationale`、`deadline.rationale`、`evidence[].summary`、`uncertainties[]` に URL を書く場合は、VOICEVOX Organization 内の URL、入力の `item.url`、`candidates.relations` にある `targetUrl` のいずれかだけを使用してください。
+- 自然言語として出力する値では、内部フィールド名 `waitingOn` を「待ち相手」と表現してください。schemaキーを説明する場合だけ `waitingOn` をそのまま使用してください。
 - 内容確認待ちが基準時間を超えた通知を推奨する場合は、`notification.reasonCode` を `assessment_overdue` にしてください。
 - 担当決め待ちが基準時間を超えた通知を推奨する場合は、`notification.reasonCode` を `owner_overdue` にしてください。
 - 方針判断待ちが基準時間を超えた通知を推奨する場合は、`notification.reasonCode` を `decision_overdue` にしてください。

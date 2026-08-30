@@ -92,13 +92,13 @@ export function NotificationConditionsPage() {
             待機状態別の目安
           </h3>
           <p class="m-0">
-            現在の待ち状態で意味のある進捗がない時間が、次の目安を超えると severity
-            の候補になります。時間による通知は、severity が前回より上がった場合が候補です。
+            現在の待ち状態で意味のある進捗がない時間が、次の目安を超えると停滞レベル
+            の候補になります。時間による通知は、停滞レベルが前回より上がった場合が候補です。
             watch、urgent、critical の順に深刻度が上がります。
           </p>
           <div class="overflow-x-auto rounded-xl border border-border-default bg-surface-card">
             <table class="w-full min-w-[40rem] table-fixed border-collapse">
-              <caption class="visually-hidden sr-only">待機状態別の通知 severity の目安</caption>
+              <caption class="visually-hidden sr-only">待機状態別の停滞レベルの目安</caption>
               <colgroup>
                 <col class="w-[52%]" />
                 <col class="w-[16%]" />
@@ -169,7 +169,7 @@ export function NotificationConditionsPage() {
           <ul class="m-0 grid gap-2 pl-5">
             <li>urgent 以上の停止要因</li>
             <li>
-              すべての依存が解消され、優先度ラベル、下流への影響、urgent 以上の severity
+              すべての依存が解消され、優先度ラベル、下流への影響、urgent 以上の停滞レベル
               のいずれかがある項目だけが候補です。
             </li>
             <li>新しい blocks 関係の循環</li>
@@ -177,7 +177,7 @@ export function NotificationConditionsPage() {
             <li>検証済みの AI 提案</li>
           </ul>
           <p class="m-0">
-            優先度：高は severity
+            優先度：高は停滞レベル
             を1段階上げ、通知の順位にも影響します。優先度：中は通知の順位だけに影響します。
           </p>
         </section>
@@ -200,7 +200,7 @@ export function NotificationConditionsPage() {
               だけによる最新変更
             </li>
             <li>作成から24時間未満の draft PR</li>
-            <li>severity が下がった項目</li>
+            <li>停滞レベルが下がった項目</li>
             <li>変化のない watch</li>
             <li>公開安全性の確認や Pages 公開の失敗</li>
           </ul>

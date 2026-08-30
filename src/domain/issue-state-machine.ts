@@ -505,7 +505,7 @@ function createTerminalDecision(
     return finalizeDecision(input, context, {
       status: "terminal_not_planned",
       waitingOn: [],
-      primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+      primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
       nextAction: "対応は不要です",
       confidence: 1,
       evidence: createEvidence(
@@ -521,7 +521,7 @@ function createTerminalDecision(
     return finalizeDecision(input, context, {
       status: "terminal_completed",
       waitingOn: [],
-      primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+      primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
       nextAction: "対応は不要です",
       confidence: 1,
       evidence: createEvidence([closedSourceId], "status", "Issueは完了としてcloseされています"),
@@ -539,7 +539,7 @@ function createTerminalDecision(
   return finalizeDecision(input, context, {
     status: "terminal_completed",
     waitingOn: [],
-    primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+    primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
     nextAction: "対応は不要です",
     confidence: input.confidenceThresholds.medium,
     evidence: createEvidence(
