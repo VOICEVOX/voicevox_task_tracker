@@ -12,7 +12,7 @@ import {
   type NotificationLedgerEntry,
   type NotificationReasonCode,
   type Severity,
-  type SeverityThresholds,
+  type StalenessNotificationSeverityReason,
   type StalenessWaitClass,
   type Status,
   type TrackingNotificationClass,
@@ -27,17 +27,6 @@ const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
 const RESPONSIBILITY_CHANGE_STALL_HOURS = 48;
 const RESERVATION_DURATION_MILLISECONDS = MILLISECONDS_PER_DAY;
-const STALENESS_WAIT_CLASSES: readonly WaitClass[] = Object.freeze([
-  "assessment",
-  "owner",
-  "decision",
-  "review",
-  "revision",
-  "reply",
-  "work",
-  "merge",
-  "automation",
-]);
 
 /** 通知理由として利用できるnone以外のreason code。 */
 export type DiscordNotificationReasonCode = Exclude<NotificationReasonCode, "none">;
@@ -77,6 +66,7 @@ export type DiscordNotificationCurrentState = Readonly<{
   status: Status;
   waitingOn: readonly WaitingOn[];
   severity: Severity;
+  severityReason: StalenessNotificationSeverityReason;
   waitClass: StalenessWaitClass;
   statusSince: UtcIsoDateTime;
   ownerSince: UtcIsoDateTime;
@@ -140,7 +130,6 @@ export type DiscordNotificationSelectionSettings = Readonly<{
   maxItemsPerDigest: number;
   recentProgressGraceHours: number;
   minimumAiConfidence: number;
-  thresholdsHours: SeverityThresholds;
 }>;
 
 /** 通知候補選別へ渡す現在時刻、項目、ledger、設定。 */
@@ -222,20 +211,6 @@ function validateNonNegativeInteger(value: number, context: string): void {
   }
 }
 
-function validateThresholdsHours(thresholdsHours: SeverityThresholds): void {
-  for (const waitClass of STALENESS_WAIT_CLASSES) {
-    const threshold = thresholdsHours[waitClass];
-    for (const [severity, value] of Object.entries(threshold)) {
-      if (!Number.isFinite(value) || value < 0) {
-        throw new RangeError(`${waitClass}.${severity}のseverity閾値は0以上の有限値にしてください`);
-      }
-    }
-    if (threshold.watch > threshold.urgent || threshold.urgent > threshold.critical) {
-      throw new RangeError(`${waitClass}のseverity閾値はwatch、urgent、criticalの順にしてください`);
-    }
-  }
-}
-
 function waitingOnSignature(waitingOnValues: readonly WaitingOn[]): string {
   return JSON.stringify(
     waitingOnValues.map((waitingOn) => [waitingOn.kind, waitingOn.candidateId, waitingOn.role]),
@@ -264,6 +239,53 @@ function validateResponsibility(
   }
 }
 
+function validateSeverityReason(item: DiscordNotificationItem, evaluatedTimestamp: number): void {
+  const reason = item.current.severityReason;
+  switch (reason.kind) {
+    case "elapsed_threshold": {
+      if (
+        item.current.waitClass === "blockedParent" ||
+        item.current.waitClass === "notApplicable" ||
+        item.current.waitClass !== reason.waitClass
+      ) {
+        throw new TypeError(`${item.nodeId}のseverity時間判定とwait classが一致しません`);
+      }
+      if (!Number.isFinite(reason.elapsedHours) || reason.elapsedHours < 0) {
+        throw new RangeError(`${item.nodeId}のseverity経過時間は0以上の有限値にしてください`);
+      }
+      if (reason.elapsedHours !== hoursBetween(item.current.stallSince, evaluatedTimestamp)) {
+        throw new TypeError(`${item.nodeId}のseverity経過時間がstallSinceから再現できません`);
+      }
+      if (reason.crossedThreshold.status === "reached") {
+        if (
+          !Number.isFinite(reason.crossedThreshold.thresholdHours) ||
+          reason.crossedThreshold.thresholdHours < 0
+        ) {
+          throw new RangeError(`${item.nodeId}のseverity閾値は0以上の有限値にしてください`);
+        }
+        if (reason.elapsedHours < reason.crossedThreshold.thresholdHours) {
+          throw new TypeError(`${item.nodeId}のseverity経過時間が到達閾値を下回っています`);
+        }
+      } else if (
+        !Number.isFinite(reason.crossedThreshold.nextThresholdHours) ||
+        reason.crossedThreshold.nextThresholdHours < 0
+      ) {
+        throw new RangeError(`${item.nodeId}の次のseverity閾値は0以上の有限値にしてください`);
+      } else {
+        if (reason.elapsedHours >= reason.crossedThreshold.nextThresholdHours) {
+          throw new TypeError(`${item.nodeId}のseverity経過時間が次の閾値以上です`);
+        }
+      }
+      return;
+    }
+    case "not_applicable":
+      if (item.current.waitClass !== reason.waitClass) {
+        throw new TypeError(`${item.nodeId}の時間判定対象外根拠とwait classが一致しません`);
+      }
+      return;
+  }
+}
+
 function validateCurrentState(item: DiscordNotificationItem, evaluatedTimestamp: number): void {
   validateResponsibility(item.current.status, item.current.waitingOn, `${item.nodeId}の現在状態`);
   const terminal = isTerminalStatus(item.current.status);
@@ -283,6 +305,7 @@ function validateCurrentState(item: DiscordNotificationItem, evaluatedTimestamp:
       `${item.nodeId}のwaiting_for_unblock以外の状態をblockedParentにはできません`,
     );
   }
+  validateSeverityReason(item, evaluatedTimestamp);
 
   const createdTimestamp = parseTimestamp(item.createdAt, `${item.nodeId}の作成時刻`);
   const currentTimes: readonly (readonly [string, UtcIsoDateTime])[] = [
@@ -400,7 +423,6 @@ function validateInput(input: SelectDiscordNotificationsInput): number {
   ) {
     throw new RangeError("maxItemsPerDigestは1以上の整数にしてください");
   }
-  validateThresholdsHours(input.settings.thresholdsHours);
   if (
     !Number.isFinite(input.settings.recentProgressGraceHours) ||
     input.settings.recentProgressGraceHours < 0
@@ -467,89 +489,76 @@ function isItemSuppressed(
   }
 }
 
+const TIME_REASON_WAIT_CLASS = {
+  assessment_overdue: "assessment",
+  owner_overdue: "owner",
+  decision_overdue: "decision",
+  review_overdue: "review",
+  revision_overdue: "revision",
+  reply_overdue: "reply",
+  merge_overdue: "merge",
+  automation_stuck: "automation",
+} satisfies Readonly<Record<NotificationTimeReasonCode, WaitClass>>;
+
+function isNotificationTimeReasonCodeKey(value: string): value is NotificationTimeReasonCode {
+  return Object.hasOwn(TIME_REASON_WAIT_CLASS, value);
+}
+
+function timeReasonCodeForWaitClass(
+  waitClass: StalenessWaitClass,
+): NotificationTimeReasonCode | undefined {
+  for (const [reasonCode, candidateWaitClass] of Object.entries(TIME_REASON_WAIT_CLASS)) {
+    if (candidateWaitClass === waitClass) {
+      if (!isNotificationTimeReasonCodeKey(reasonCode)) {
+        throw new TypeError(`時間系通知理由 ${reasonCode}の型が不正です`);
+      }
+      return reasonCode;
+    }
+  }
+  return undefined;
+}
+
 function overdueReasonCode(
   status: Status,
   waitClass: StalenessWaitClass,
 ): DiscordNotificationReasonCode | undefined {
-  switch (waitClass) {
-    case "assessment":
-      return "assessment_overdue";
-    case "owner":
-      return status === "unknown" ? "owner_unknown" : "owner_overdue";
-    case "decision":
-      return "decision_overdue";
-    case "review":
-      return "review_overdue";
-    case "revision":
-      return "revision_overdue";
-    case "reply":
-      return "reply_overdue";
-    case "merge":
-      return "merge_overdue";
-    case "automation":
-      return "automation_stuck";
-    case "work":
-    case "blockedParent":
-    case "notApplicable":
-      return undefined;
+  if (waitClass === "owner" && status === "unknown") {
+    return "owner_unknown";
   }
+  return timeReasonCodeForWaitClass(waitClass);
 }
 
 function waitClassForTimeReasonCode(reasonCode: NotificationTimeReasonCode): WaitClass {
-  switch (reasonCode) {
-    case "assessment_overdue":
-      return "assessment";
-    case "owner_overdue":
-      return "owner";
-    case "decision_overdue":
-      return "decision";
-    case "review_overdue":
-      return "review";
-    case "revision_overdue":
-      return "revision";
-    case "reply_overdue":
-      return "reply";
-    case "merge_overdue":
-      return "merge";
-    case "automation_stuck":
-      return "automation";
-  }
+  return TIME_REASON_WAIT_CLASS[reasonCode];
 }
 
 function isTimeNotificationReasonCode(
   reasonCode: DiscordNotificationReasonCode,
 ): reasonCode is NotificationTimeReasonCode {
-  switch (reasonCode) {
-    case "assessment_overdue":
-    case "owner_overdue":
-    case "decision_overdue":
-    case "review_overdue":
-    case "revision_overdue":
-    case "reply_overdue":
-    case "merge_overdue":
-    case "automation_stuck":
-      return true;
-    case "owner_unknown":
-    case "blocker_overdue":
-    case "newly_unblocked":
-    case "dependency_cycle":
-    case "responsibility_changed":
-      return false;
-  }
+  return isNotificationTimeReasonCodeKey(reasonCode);
 }
 
 type NotificationReasonSelectionInput =
   | Readonly<{
+      item: DiscordNotificationItem;
       reasonCode: NotificationTimeReasonCode;
-      thresholdsHours: SeverityThresholds;
+      source: "deterministic" | "codex";
     }>
   | Readonly<{
       reasonCode: NotificationNonTimeReasonCode;
     }>;
 
+function notificationReasonForNonTimeSelection(
+  reasonCode: NotificationNonTimeReasonCode,
+): NotificationReason {
+  const reason = notificationReasonForSelection({ reasonCode });
+  assertNonNullable(reason, `非時間系通知理由 ${reasonCode}を生成できません`);
+  return reason;
+}
+
 function notificationReasonForSelection(
   input: NotificationReasonSelectionInput,
-): NotificationReason {
+): NotificationReason | undefined {
   switch (input.reasonCode) {
     case "assessment_overdue":
     case "owner_overdue":
@@ -560,10 +569,40 @@ function notificationReasonForSelection(
     case "merge_overdue":
     case "automation_stuck": {
       const waitClass = waitClassForTimeReasonCode(input.reasonCode);
-      return createNotificationReason(input.reasonCode, {
-        status: "recorded",
-        hours: input.thresholdsHours[waitClass].watch,
-      });
+      const current = input.item.current;
+      if (current.waitClass !== waitClass) {
+        if (input.source === "deterministic") {
+          throw new TypeError(
+            `${input.item.nodeId}の決定論的通知理由 ${input.reasonCode}とwait classが一致しません`,
+          );
+        }
+        return undefined;
+      }
+      if (current.severityReason.kind !== "elapsed_threshold") {
+        if (input.source === "deterministic") {
+          throw new TypeError(
+            `${input.item.nodeId}の時間系通知理由にseverityの時間判定根拠がありません`,
+          );
+        }
+        return undefined;
+      }
+      if (current.severityReason.waitClass !== waitClass) {
+        if (input.source === "deterministic") {
+          throw new TypeError(
+            `${input.item.nodeId}の時間系通知理由とseverityのwait classが一致しません`,
+          );
+        }
+        return undefined;
+      }
+      return current.severityReason.crossedThreshold.status === "reached"
+        ? createNotificationReason(input.reasonCode, {
+            status: "recorded",
+            hours: current.severityReason.crossedThreshold.thresholdHours,
+          })
+        : createNotificationReason(input.reasonCode, {
+            status: "not_reached",
+            elapsedHours: current.severityReason.elapsedHours,
+          });
     }
     case "owner_unknown":
     case "blocker_overdue":
@@ -627,17 +666,18 @@ function createOverdueSignals(
   if (reasonCode != null && isStateReasonAllowed(item, reasonCode, settings.minimumAiConfidence)) {
     const reason = isTimeNotificationReasonCode(reasonCode)
       ? notificationReasonForSelection({
+          item,
           reasonCode,
-          thresholdsHours: settings.thresholdsHours,
+          source: "deterministic",
         })
-      : notificationReasonForSelection({
-          reasonCode,
-        });
-    signals.push({
-      reason,
-      stateDiscriminator: item.current.waitClass,
-      highPriorityEligible: true,
-    });
+      : notificationReasonForNonTimeSelection(reasonCode);
+    if (reason != null) {
+      signals.push({
+        reason,
+        stateDiscriminator: item.current.waitClass,
+        highPriorityEligible: true,
+      });
+    }
   }
 
   const impact = item.graph.downstreamImpact;
@@ -650,9 +690,7 @@ function createOverdueSignals(
     isStateReasonAllowed(item, "blocker_overdue", settings.minimumAiConfidence)
   ) {
     signals.push({
-      reason: notificationReasonForSelection({
-        reasonCode: "blocker_overdue",
-      }),
+      reason: notificationReasonForNonTimeSelection("blocker_overdue"),
       stateDiscriminator: JSON.stringify([impact.openNodeCount, impact.repositoryCount]),
       highPriorityEligible: true,
     });
@@ -676,9 +714,7 @@ function createNewlyUnblockedSignal(item: DiscordNotificationItem): ReasonSignal
     return undefined;
   }
   return {
-    reason: notificationReasonForSelection({
-      reasonCode: "newly_unblocked",
-    }),
+    reason: notificationReasonForNonTimeSelection("newly_unblocked"),
     stateDiscriminator: item.current.statusSince,
     highPriorityEligible: true,
   };
@@ -707,18 +743,13 @@ function createResponsibilityChangedSignal(
     return undefined;
   }
   return {
-    reason: notificationReasonForSelection({
-      reasonCode: "responsibility_changed",
-    }),
+    reason: notificationReasonForNonTimeSelection("responsibility_changed"),
     stateDiscriminator: item.current.ownerSince,
     highPriorityEligible: true,
   };
 }
 
-function createRecommendationSignal(
-  item: DiscordNotificationItem,
-  thresholdsHours: SeverityThresholds,
-): ReasonSignal | undefined {
+function createRecommendationSignal(item: DiscordNotificationItem): ReasonSignal | undefined {
   if (item.notificationRecommendation.availability === "not_available") {
     return undefined;
   }
@@ -729,14 +760,22 @@ function createRecommendationSignal(
   if (recommendation.reasonCode === "none") {
     throw new TypeError(`${item.nodeId}のCodex通知提案にreason codeがありません`);
   }
+  if (isTimeNotificationReasonCode(recommendation.reasonCode)) {
+    const deterministicReasonCode = overdueReasonCode(item.current.status, item.current.waitClass);
+    if (deterministicReasonCode !== recommendation.reasonCode) {
+      return undefined;
+    }
+  }
   const reason = isTimeNotificationReasonCode(recommendation.reasonCode)
     ? notificationReasonForSelection({
+        item,
         reasonCode: recommendation.reasonCode,
-        thresholdsHours,
+        source: "codex",
       })
-    : notificationReasonForSelection({
-        reasonCode: recommendation.reasonCode,
-      });
+    : notificationReasonForNonTimeSelection(recommendation.reasonCode);
+  if (reason == null) {
+    return undefined;
+  }
   return {
     reason,
     stateDiscriminator: JSON.stringify([item.nodeId, "codex_recommendation"]),
@@ -859,14 +898,12 @@ function createSignals(
   }
   for (const cycleId of assignedCycleIds) {
     signals.push({
-      reason: notificationReasonForSelection({
-        reasonCode: "dependency_cycle",
-      }),
+      reason: notificationReasonForNonTimeSelection("dependency_cycle"),
       stateDiscriminator: cycleId,
       highPriorityEligible: true,
     });
   }
-  const recommendation = createRecommendationSignal(item, settings.thresholdsHours);
+  const recommendation = createRecommendationSignal(item);
   if (
     recommendation != null &&
     !signals.some((signal) => signal.reason.reasonCode === recommendation.reason.reasonCode)
@@ -1068,13 +1105,17 @@ function selectedReason(reason: EligibleReason): SelectedDiscordNotificationReas
         ...selectionFields,
       });
     }
-    return Object.freeze({
-      reasonCode: signalReason.reasonCode,
-      threshold: Object.freeze({
-        status: "not_recorded",
-      }),
-      ...selectionFields,
-    });
+    if (signalReason.threshold.status === "not_reached") {
+      return Object.freeze({
+        reasonCode: signalReason.reasonCode,
+        threshold: Object.freeze({
+          status: "not_reached",
+          elapsedHours: signalReason.threshold.elapsedHours,
+        }),
+        ...selectionFields,
+      });
+    }
+    throw new TypeError(`時間系通知理由 ${signalReason.reasonCode}の基準時間が未記録です`);
   }
   return Object.freeze({
     reasonCode: signalReason.reasonCode,

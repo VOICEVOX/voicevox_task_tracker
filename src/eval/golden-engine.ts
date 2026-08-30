@@ -13,6 +13,7 @@ import {
 import {
   buildSourceId,
   calculateStaleness,
+  createStalenessNotificationSeverityReason,
   createExternalReferenceNodeId,
   createGitHubNodeId,
   createGitHubRepositoryId,
@@ -110,7 +111,6 @@ const NOTIFICATION_SETTINGS = Object.freeze({
   maxItemsPerDigest: 100,
   recentProgressGraceHours: 24,
   minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,
-  thresholdsHours: SEVERITY_THRESHOLDS,
 });
 const MAINTAINERS = Object.freeze(["fixture-maintainer"]);
 
@@ -1227,6 +1227,9 @@ function selectNotifications(
         status: analysis.decision.status,
         waitingOn: analysis.decision.waitingOn,
         severity: analysis.staleness.severity,
+        severityReason: createStalenessNotificationSeverityReason(
+          analysis.staleness.severityReason,
+        ),
         waitClass: analysis.staleness.waitClass,
         statusSince: analysis.staleness.statusSince,
         ownerSince: analysis.staleness.ownerSince,

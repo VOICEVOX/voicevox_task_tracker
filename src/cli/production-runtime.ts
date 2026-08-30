@@ -40,6 +40,7 @@ import {
   createGitHubBotPredicate,
   createLabelEffectsResolver,
   createTrackedItemLatestEventActor,
+  createStalenessNotificationSeverityReason,
   calculateStaleness,
   determineDeadlineLevel,
   DETERMINISTIC_RULES_VERSION,
@@ -81,6 +82,7 @@ import {
   type SourceId,
   type Severity,
   type StalenessSeverityContext,
+  type StalenessNotificationSeverityReason,
   type StalenessWaitClass,
   type StalenessResult,
   type NaturalLanguageProgressAssessment,
@@ -394,6 +396,7 @@ type ReducedItemAnalysis = Readonly<{
 type TrackedItemStaleness = Readonly<{
   elapsedHours: number;
   severity: Severity;
+  severityReason: StalenessNotificationSeverityReason;
   waitClass: StalenessWaitClass;
   severityContext: StalenessSeverityContext;
 }>;
@@ -3457,6 +3460,7 @@ function trackedItemStaleness(staleness: StalenessResult): TrackedItemStaleness 
   return Object.freeze({
     elapsedHours: staleness.elapsedHours.stall,
     severity: staleness.severity,
+    severityReason: createStalenessNotificationSeverityReason(staleness.severityReason),
     waitClass: staleness.waitClass,
     severityContext: staleness.severityContext,
   });
@@ -3484,6 +3488,7 @@ function recalculateTrackedItemStaleness(
   return Object.freeze({
     elapsedHours: recalculated.elapsedHours,
     severity: recalculated.severity,
+    severityReason: recalculated.severityReason,
     waitClass: recalculated.waitClass,
     severityContext: recalculated.severityContext,
   });
@@ -4178,6 +4183,7 @@ function notificationItem(
       status: item.status,
       waitingOn: item.waitingOn,
       severity: staleness.severity,
+      severityReason: staleness.severityReason,
       waitClass: staleness.waitClass,
       statusSince: item.statusSince,
       ownerSince: item.ownerSince,
@@ -4541,7 +4547,6 @@ function validateRunCompleteness(
       maxItemsPerDigest: configuration.config.notifications.discord.maxItemsPerDigest,
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
       minimumAiConfidence: configuration.config.ai.confidence.medium,
-      thresholdsHours: configuration.config.staleness.thresholdsHours,
     },
   };
   const notificationAction =
@@ -4651,7 +4656,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "5",
+    schemaVersion: "6",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({

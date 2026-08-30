@@ -30,6 +30,7 @@ import { notificationActionSchema, type NotificationAction } from "./command.js"
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
+const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "6";
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const dateTimeSchema = z.iso
   .datetime({
@@ -182,7 +183,7 @@ const runMetadataSchema = z
     }
   });
 const workflowArtifactSchema = z.strictObject({
-  schemaVersion: z.literal("5"),
+  schemaVersion: z.literal(WORKFLOW_ARTIFACT_SCHEMA_VERSION),
   kind: z.literal("validated_public_run"),
   notificationAction: notificationActionSchema,
   repositoryAllowlist: z.array(repositoryAllowlistEntrySchema),
@@ -212,7 +213,7 @@ export type WorkflowRunMetadata = Readonly<{
 
 /** collect-analyzeが後続jobへ渡す公開可能な検証済み成果物。 */
 export type WorkflowArtifact = Readonly<{
-  schemaVersion: "5";
+  schemaVersion: typeof WORKFLOW_ARTIFACT_SCHEMA_VERSION;
   kind: "validated_public_run";
   notificationAction: NotificationAction;
   repositoryAllowlist: readonly WorkflowArtifactRepositoryAllowlistEntry[];
@@ -449,7 +450,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
   const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
   const artifact = Object.freeze({
-    schemaVersion: "5",
+    schemaVersion: WORKFLOW_ARTIFACT_SCHEMA_VERSION,
     kind: "validated_public_run",
     notificationAction: result.data.notificationAction,
     repositoryAllowlist: createRepositoryAllowlist(result.data.repositoryAllowlist),
