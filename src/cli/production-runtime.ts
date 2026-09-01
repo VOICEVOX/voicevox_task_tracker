@@ -378,7 +378,7 @@ type EffectiveAssigneeCandidateContext = Readonly<{
 }>;
 
 type EffectiveAssigneeCollectionContext = Readonly<
-  Pick<CollectedItems, "observedItems" | "details">
+  Pick<CollectedItems, "observedItems" | "details" | "trackedNodeIds">
 >;
 
 type DeterministicItemAnalysis = Readonly<{
@@ -1673,6 +1673,21 @@ type EffectiveAssigneeCandidateAccumulator = Readonly<{
 
 type EffectiveAssigneeStateEvent = Extract<NormalizedEvent, { kind: "state" }>;
 
+function latestEffectiveAssigneeUnassignmentAt(
+  detail: Extract<GitHubItemDetail, { type: "issue" }>,
+): UtcIsoDateTime | undefined {
+  let latestUnassignedAt: UtcIsoDateTime | undefined;
+  for (const event of detail.timeline) {
+    if (event.kind !== "unassigned") {
+      continue;
+    }
+    if (latestUnassignedAt == null || latestUnassignedAt < event.occurredAt) {
+      latestUnassignedAt = event.occurredAt;
+    }
+  }
+  return latestUnassignedAt;
+}
+
 function resolveEffectiveAssigneePullRequestState(
   pullRequest: Extract<FreshObservedGitHubItem, { type: "pull_request" }>,
 ): "open" | "merged" | "closed_unmerged" {
@@ -1745,6 +1760,7 @@ function createEffectiveAssigneeCandidateContexts(
     collection.details.map((itemDetail) => [itemDetail.nodeId, itemDetail]),
   );
   const candidatesById = new Map<string, EffectiveAssigneeCandidateAccumulator>();
+  const lastUnassignedAt = latestEffectiveAssigneeUnassignmentAt(detail);
 
   const addCandidateEvidence = (
     candidateId: string,
@@ -1754,6 +1770,9 @@ function createEffectiveAssigneeCandidateContexts(
   ): void => {
     if (candidateId.length === 0) {
       throw new TypeError("実質担当候補のGitHub loginは空にできません");
+    }
+    if (lastUnassignedAt != null && occurredAt <= lastUnassignedAt) {
+      return;
     }
     const key = candidateId.toLowerCase();
     const existing = candidatesById.get(key);
@@ -1772,9 +1791,16 @@ function createEffectiveAssigneeCandidateContexts(
     existing.sourceIds.add(sourceId);
     const existingOccurredAt = existing.occurredAtBySourceId.get(sourceId);
     if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
-      throw new TypeError(`実質担当候補sourceの発生時刻が一致しません。対象: ${sourceId}`);
+      if (parseSourceId(sourceId).kind !== "github_commit") {
+        throw new TypeError(`実質担当候補sourceの発生時刻が一致しません。対象: ${sourceId}`);
+      }
+      existing.occurredAtBySourceId.set(
+        sourceId,
+        existingOccurredAt < occurredAt ? existingOccurredAt : occurredAt,
+      );
+    } else {
+      existing.occurredAtBySourceId.set(sourceId, occurredAt);
     }
-    existing.occurredAtBySourceId.set(sourceId, occurredAt);
     existing.sourceContexts.set(sourceContext.item.nodeId, sourceContext);
   };
 
@@ -1808,7 +1834,10 @@ function createEffectiveAssigneeCandidateContexts(
   }
 
   for (const relationCandidate of relationCandidates) {
-    if (relationCandidate.relation.type !== "implements") {
+    if (
+      relationCandidate.authority !== "authoritative" ||
+      relationCandidate.relation.type !== "implements"
+    ) {
       continue;
     }
     const implementation = relationCandidate.relation.implementation;
@@ -1819,6 +1848,9 @@ function createEffectiveAssigneeCandidateContexts(
       target.scope !== "organization" ||
       target.nodeId !== item.nodeId
     ) {
+      continue;
+    }
+    if (!collection.trackedNodeIds.has(implementation.nodeId)) {
       continue;
     }
     const relatedItem = observedItemsByNodeId.get(implementation.nodeId);
@@ -1866,6 +1898,12 @@ function createEffectiveAssigneeCandidateContexts(
         relatedItem.createdAt,
         relatedSourceContext,
       );
+    }
+    for (const event of relatedItem.events) {
+      if (event.kind !== "push") {
+        continue;
+      }
+      addCandidateEvidence(authorLogin, event.sourceId, event.occurredAt, relatedSourceContext);
     }
   }
 
@@ -2201,7 +2239,14 @@ function addCodexSourceOccurredAt(
 ): void {
   const existingOccurredAt = sourceOccurredAtById.get(sourceId);
   if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
-    throw new TypeError(`同じCodex source IDに異なる発生時刻があります。対象: ${sourceId}`);
+    if (parseSourceId(sourceId).kind !== "github_commit") {
+      throw new TypeError(`同じCodex source IDに異なる発生時刻があります。対象: ${sourceId}`);
+    }
+    sourceOccurredAtById.set(
+      sourceId,
+      existingOccurredAt < occurredAt ? existingOccurredAt : occurredAt,
+    );
+    return;
   }
   sourceOccurredAtById.set(sourceId, occurredAt);
 }
@@ -2292,7 +2337,7 @@ function addCodexSourceRecordsForContext(
         id: event.sourceId,
         kind: event.kind,
         actorType: event.actor.type,
-        createdAt: event.occurredAt,
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
       }),
     );
   }
@@ -2524,7 +2569,7 @@ function createCodexInput(
         id: event.sourceId,
         kind: event.kind,
         actorType: event.actor.type,
-        createdAt: event.occurredAt,
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
       }),
     );
   }
@@ -6204,6 +6249,202 @@ function relationExpansionRepositoriesByNodeId(
   return repositoriesByNodeId;
 }
 
+function changedTrackedImplementationTargetNodeIds(
+  aggregate: FreshRuntimeCollectionAggregate,
+  tracking: RuntimeTrackingSelection,
+  candidates: readonly RelationCandidate[],
+  requestedNodeIds: ReadonlySet<GitHubNodeId>,
+): readonly GitHubNodeId[] {
+  const enumeratedItemsByNodeId = new Map(
+    aggregate.enumeratedItems.map((item) => [item.nodeId, item]),
+  );
+  const detailNodeIds = new Set(aggregate.details.map((detail) => detail.nodeId));
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const candidate of candidates) {
+    if (candidate.authority !== "authoritative" || candidate.relation.type !== "implements") {
+      continue;
+    }
+    const implementation = candidate.relation.implementation;
+    const target = candidate.relation.target;
+    if (
+      implementation.scope !== "organization" ||
+      implementation.kind !== "pull_request" ||
+      target.scope !== "organization" ||
+      target.kind !== "issue" ||
+      !aggregate.changedNodeIds.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(target.nodeId) ||
+      detailNodeIds.has(target.nodeId) ||
+      requestedNodeIds.has(target.nodeId)
+    ) {
+      continue;
+    }
+    const targetItem = enumeratedItemsByNodeId.get(target.nodeId);
+    assertNonNullable(targetItem, `実装関係先の列挙値がありません。対象: ${target.nodeId}`);
+    if (targetItem.type !== "issue" || targetItem.state !== "open") {
+      continue;
+    }
+    targetNodeIds.add(target.nodeId);
+  }
+  return Object.freeze([...targetNodeIds].sort());
+}
+
+type EffectiveAssigneeImplementationRelation = Readonly<{
+  implementationNodeId: GitHubNodeId;
+  targetNodeId: GitHubNodeId;
+}>;
+
+function effectiveAssigneeImplementationRelationKey(
+  relation: EffectiveAssigneeImplementationRelation,
+): string {
+  return `${relation.implementationNodeId}\u0000${relation.targetNodeId}`;
+}
+
+function previousAuthoritativeImplementationRelations(
+  state: RuntimeState,
+): readonly EffectiveAssigneeImplementationRelation[] {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null) {
+    return Object.freeze([]);
+  }
+  const itemsByNodeId = new Map<GraphNodeId, SnapshotTrackedItem>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  return Object.freeze(
+    snapshot.relations.flatMap((relation) => {
+      if (!relation.active || relation.provenance !== "native" || relation.type !== "implements") {
+        return [];
+      }
+      const implementation = itemsByNodeId.get(relation.fromNodeId);
+      const target = itemsByNodeId.get(relation.toNodeId);
+      if (implementation?.type !== "pull_request" || target?.type !== "issue") {
+        return [];
+      }
+      return [
+        Object.freeze({
+          implementationNodeId: implementation.nodeId,
+          targetNodeId: target.nodeId,
+        }),
+      ];
+    }),
+  );
+}
+
+function trackedAuthoritativeImplementationRelationKeys(
+  relationCandidates: readonly RelationCandidate[],
+  tracking: RuntimeTrackingSelection,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const candidate of relationCandidates) {
+    if (candidate.authority !== "authoritative" || candidate.relation.type !== "implements") {
+      continue;
+    }
+    const implementation = candidate.relation.implementation;
+    const target = candidate.relation.target;
+    if (
+      implementation.scope !== "organization" ||
+      implementation.kind !== "pull_request" ||
+      target.scope !== "organization" ||
+      target.kind !== "issue" ||
+      !tracking.workByNodeId.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(target.nodeId)
+    ) {
+      continue;
+    }
+    keys.add(
+      effectiveAssigneeImplementationRelationKey({
+        implementationNodeId: implementation.nodeId,
+        targetNodeId: target.nodeId,
+      }),
+    );
+  }
+  return keys;
+}
+
+function effectiveAssigneeRelationChangeTargetNodeIds(
+  state: RuntimeState,
+  observedItems: readonly FreshObservedGitHubItem[],
+  relationCandidates: readonly RelationCandidate[],
+  tracking: RuntimeTrackingSelection,
+): ReadonlySet<GitHubNodeId> {
+  const observedPullRequestNodeIds = new Set(
+    observedItems
+      .filter(
+        (item): item is Extract<FreshObservedGitHubItem, { type: "pull_request" }> =>
+          item.type === "pull_request",
+      )
+      .map((item) => item.nodeId),
+  );
+  const currentRelationKeys = trackedAuthoritativeImplementationRelationKeys(
+    relationCandidates,
+    tracking,
+  );
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const relation of previousAuthoritativeImplementationRelations(state)) {
+    if (!observedPullRequestNodeIds.has(relation.implementationNodeId)) {
+      continue;
+    }
+    if (!currentRelationKeys.has(effectiveAssigneeImplementationRelationKey(relation))) {
+      targetNodeIds.add(relation.targetNodeId);
+    }
+  }
+  return targetNodeIds;
+}
+
+function staleEffectiveAssigneeTargetsToRetain(
+  state: RuntimeState,
+  observedItems: readonly FreshObservedGitHubItem[],
+  staleRepositoryIds: ReadonlySet<GitHubRepositoryId>,
+): ReadonlySet<GitHubNodeId> {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null || staleRepositoryIds.size === 0) {
+    return new Set<GitHubNodeId>();
+  }
+  const previousItemsByNodeId = new Map<GraphNodeId, SnapshotTrackedItem>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  const previousEffectiveAssigneeIssueNodeIds = new Set(
+    snapshot.items
+      .filter(
+        (item) =>
+          item.type === "issue" &&
+          item.state === "open" &&
+          item.assignees.length === 0 &&
+          item.status === "waiting_for_work" &&
+          item.waitingOn.some(
+            (waitingOn) => waitingOn.kind === "user" && waitingOn.role === "assignee",
+          ),
+      )
+      .map((item) => item.nodeId),
+  );
+  const observedItemsByNodeId = new Map(observedItems.map((item) => [item.nodeId, item]));
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const relation of previousAuthoritativeImplementationRelations(state)) {
+    const implementation = previousItemsByNodeId.get(relation.implementationNodeId);
+    const target = previousItemsByNodeId.get(relation.targetNodeId);
+    assertNonNullable(
+      implementation,
+      `前回実質担当relationのPRがありません。対象: ${relation.implementationNodeId}`,
+    );
+    assertNonNullable(
+      target,
+      `前回実質担当relationのIssueがありません。対象: ${relation.targetNodeId}`,
+    );
+    if (
+      !staleRepositoryIds.has(implementation.repositoryId) ||
+      !previousEffectiveAssigneeIssueNodeIds.has(target.nodeId)
+    ) {
+      continue;
+    }
+    const current = observedItemsByNodeId.get(target.nodeId);
+    if (current?.type !== "issue" || current.state !== "open" || current.assignees.length !== 0) {
+      continue;
+    }
+    targetNodeIds.add(target.nodeId);
+  }
+  return targetNodeIds;
+}
+
 async function collectRelationExpansionBatch(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -6303,7 +6544,7 @@ async function collectRelationExpandedItems(
       completedRelationCandidates.candidates,
     );
     const trackingState = relationExpansionTrackingState(tracking);
-    const nextRequests = planRelationExpansion({
+    const plannedRequests = planRelationExpansion({
       collectedCandidateNodeIds,
       trackingRootNodeIds: trackingState.trackingRootNodeIds,
       relationCandidates: discoveredRelationCandidates,
@@ -6313,6 +6554,26 @@ async function collectRelationExpandedItems(
         ? configuration.config.tracking.autoInclude.relationDepth
         : 0,
     });
+    const effectiveAssigneeTargetNodeIds = changedTrackedImplementationTargetNodeIds(
+      aggregate,
+      tracking,
+      discoveredRelationCandidates,
+      requestedNodeIds,
+    );
+    const requestsByNodeId = new Map(plannedRequests.map((request) => [request.nodeId, request]));
+    for (const nodeId of effectiveAssigneeTargetNodeIds) {
+      if (requestsByNodeId.has(nodeId)) {
+        continue;
+      }
+      requestsByNodeId.set(
+        nodeId,
+        Object.freeze({
+          nodeId,
+          nativeDepth: 0,
+        }),
+      );
+    }
+    const nextRequests = [...requestsByNodeId.values()];
     if (nextRequests.length === 0) {
       return Object.freeze({
         ...aggregate,
@@ -6575,7 +6836,24 @@ async function collectProductionItems(
       work.codexAnalysis.action === "analyze" && observedNodeIds.has(nodeId) ? [nodeId] : [],
     ),
   );
+  const effectiveAssigneeRelationChangeTargets = effectiveAssigneeRelationChangeTargetNodeIds(
+    state,
+    uniqueObservedItems,
+    relationCandidates,
+    tracking,
+  );
+  const staleEffectiveAssigneeTargets = staleEffectiveAssigneeTargetsToRetain(
+    state,
+    uniqueObservedItems,
+    staleRepositoryIds,
+  );
+  for (const nodeId of staleEffectiveAssigneeTargets) {
+    analysisNodeIds.delete(nodeId);
+  }
   for (const [nodeId, work] of tracking.workByNodeId) {
+    if (staleEffectiveAssigneeTargets.has(nodeId)) {
+      continue;
+    }
     if (work.codexAnalysis.action === "analyze") {
       continue;
     }
@@ -6588,12 +6866,16 @@ async function collectProductionItems(
       if (candidate.relation.type !== "implements") {
         return false;
       }
+      if (candidate.authority !== "authoritative") {
+        return false;
+      }
       const implementation = candidate.relation.implementation;
       const target = candidate.relation.target;
       if (
         implementation.scope !== "organization" ||
         implementation.kind !== "pull_request" ||
         target.scope !== "organization" ||
+        target.kind !== "issue" ||
         target.nodeId !== item.nodeId
       ) {
         return false;
@@ -6601,7 +6883,10 @@ async function collectProductionItems(
       const implementationWork = tracking.workByNodeId.get(implementation.nodeId);
       return implementationWork?.codexAnalysis.action === "analyze";
     });
-    if (!hasAnalyzedImplementation) {
+    const hasChangedImplementationRelation = effectiveAssigneeRelationChangeTargets.has(
+      item.nodeId,
+    );
+    if (!hasAnalyzedImplementation && !hasChangedImplementationRelation) {
       continue;
     }
     const detail = uniqueDetails.find((candidate) => candidate.nodeId === item.nodeId);
@@ -6609,18 +6894,7 @@ async function collectProductionItems(
     if (detail.type !== "issue") {
       throw new TypeError(`Issueの詳細種別が一致しません。対象: ${item.nodeId}`);
     }
-    const candidates = createEffectiveAssigneeCandidateContexts(
-      {
-        observedItems: uniqueObservedItems,
-        details: uniqueDetails,
-      },
-      item,
-      detail,
-      issueRelationCandidates,
-    );
-    if (candidates.length > 0) {
-      analysisNodeIds.add(item.nodeId);
-    }
+    analysisNodeIds.add(item.nodeId);
   }
   return Object.freeze({
     value: Object.freeze({

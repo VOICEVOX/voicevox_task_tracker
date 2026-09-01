@@ -407,6 +407,7 @@ function validateEffectiveAssigneeAssessment(
   const candidatesById = new Map(
     candidates.map((candidate) => [candidate.candidateId.toLowerCase(), candidate]),
   );
+  const lastUnassignedEvent = replayAssigneeEvents(input.issue.events).lastUnassignedEvent;
   const targetIds = new Set<string>();
   for (const target of assessment.targets) {
     validateEffectiveAssigneeTargetKind(target.kind);
@@ -424,6 +425,11 @@ function validateEffectiveAssigneeAssessment(
     const candidate = candidatesById.get(normalizedCandidateId);
     if (candidate?.candidateId !== target.candidateId) {
       throw new TypeError(`実質担当者が現在の候補に含まれていません。対象: ${target.candidateId}`);
+    }
+    if (lastUnassignedEvent != null && candidate.occurredAt <= lastUnassignedEvent.occurredAt) {
+      throw new RangeError(
+        `正式assignee解除前の実質担当候補は選択できません。対象: ${target.candidateId}`,
+      );
     }
     if (!sourceIdsMatch(candidate.sourceIds, target.sourceIds)) {
       throw new TypeError(
