@@ -30,7 +30,6 @@ pnpm install --frozen-lockfile
 | `pnpm format:check`       | Prettierによる整形差分がないことを検査する                   | なし                                                     |
 | `pnpm eval:golden`        | CLIをビルドし、golden fixtureを外部接続なしで評価する        | `artifacts/eval.json`、`artifacts/run-reports/eval.json` |
 | `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の上限を検証する | `artifacts/performance-profile.json`                     |
-| `pnpm test:diagnostics`   | 詳細診断、Codex process、暗号化workflow連携を検証する        | `dist/`、`artifacts/workflow/runtime/`                   |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                                       |
 
 `build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
@@ -102,7 +101,7 @@ state、Pages、Discordを更新せずに収集から検証までを通したい
 
 ## テスト
 
-ユーザーが明示的に実装を依頼した場合だけテストを実装します。
+ユーザーの指示の有無にかかわらず、テストを一切実装しません。
 
 ## Golden評価
 
@@ -285,7 +284,6 @@ CIと同じ検査を手元で実行します。
 ```console
 pnpm typecheck
 pnpm lint
-pnpm test:diagnostics
 pnpm format:check
 pnpm eval:golden
 pnpm build
