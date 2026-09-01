@@ -67,11 +67,12 @@
 
 - この判定は、`deterministicSignals` が対象をopenかつ未アサインIssueとして示し、既存の明示依頼、返信、レビュー責務の判定が優先された後にだけ行ってください。
 - `deterministicSignals` に示された実質担当候補の候補IDだけを `candidates.waitingOn` から選び、source IDは同信号に指定されたものだけを使ってください。候補者を追加したり、候補IDを推測したりしてはいけません。
-- 明確な着手宣言、対象Issueへ直接関連するPull Request、継続している成果物を照合してください。候補者がIssue全体を一人または複数人で進めていると入力設定のhigh以上の信頼度で判断できる場合だけ、`status` を `waiting_for_work`、`waitingOn[].kind` を `user`、`waitingOn[].role` を `assignee` にしてください。
+- 明確な着手宣言、追跡中のPull RequestとのGitHub上で確定したauthoritativeな直接`implements`関係、継続している成果物を照合してください。推論だけのrelationはPull Requestの根拠にしないでください。候補者がIssue全体を一人または複数人で進めていると入力設定のhigh以上の信頼度で判断できる場合だけ、`status` を `waiting_for_work`、`waitingOn[].kind` を `user`、`waitingOn[].role` を `assignee` にしてください。
 - 複数候補を返すのは、Issue全体を共同で進めていると読める場合だけです。複数の部分対応を合算してIssue全体の担当とは判断しないでください。
 - Issueの一部だけの作業、親Issueや横断Issueの作業、助言、triage、検証、benchmark、review、条件付きの意向、撤回、延期は実質担当の根拠にしないでください。Issue author、Pull Request author、最新commenterであることだけも根拠にしないでください。
+- 正式assigneeが解除された場合は、解除前のsourceを実質担当の根拠に再利用しないでください。解除後の新しい根拠が入力されるまでは未アサイン時の判定を維持してください。
 - 実質担当を返すときは、各候補について `deterministicSignals` に指定されたsource IDの配列を完全一致で `waitingOn[].sourceIds` に複写してください。source IDを追加、削除、生成してはいけません。
-- 根拠が不足する場合は実質担当へ変更せず、`deterministicSignals` が示す未アサイン時の `status` と maintainer の `waitingOn` を維持してください。単なる対応予定、進捗、了解はこの判定を成立させません。
+- 根拠が不足する場合は実質担当へ変更せず、`deterministicSignals` が示す未アサイン時の `status` と maintainer の `waitingOn` を維持してください。単なる対応予定、進捗、了解はこの判定を成立させません。一般的な活動状態を推察したり、部分担当や部分実装をモデル化したりしないでください。
 
 ## 重要度
 

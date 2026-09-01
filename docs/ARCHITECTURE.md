@@ -66,8 +66,8 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 4. Organizationのrepository metadataを全ページ取得し、run中に不変な公開allowlistを作ります。
 5. allowlist内repositoryのopen IssueとPull Requestを列挙して詳細を収集します。前回の`aiAnalysis.status`が`failed`か`deferred`の項目は、GitHub側の変化にかかわらず詳細を収集します。収集した詳細から関係先を抽出し、まだ取得していないOrganization内の関係先を識別子指定で個別列挙して収集結果へ統合します。追加した詳細から関係先を再び抽出し、対象がなくなるまで同じrun内で繰り返します。native relationは設定した深度まで、参照は追跡根から1 hopだけ辿ります。
 6. GitHubイベントをsource ID付きに正規化し、追跡対象と関係候補を選びます。Pull Request作成前のcommitは作成時刻を下限としてpushイベント化し、項目作成前のイベントを作りません。
-7. `config.yml`の`maintainers`からrepositoryごとのGitHubユーザー名一覧を解決し、IssueとPull Requestの状態と責務を決定論的に判定します。抽象的なmaintainer、reviewer、merge_deciderの責務は、メンテナ1人につき1件の`kind: "user"`候補へ展開します。openかつ未アサインIssueでは、明確な着手宣言、直接関連PR、継続成果物を持つ人間を実質担当候補として`candidates.waitingOn`へ加え、候補IDとsource IDを`deterministicSignals`へ渡します。
-8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。未アサインIssueの候補はIssue全体を進めているとhigh以上で判断できる場合だけ既存の`waiting_for_work`へ反映し、部分実装、親・横断Issue、助言、検証、review、条件付き意向、撤回、延期、単なるauthorやcommenterは反映しません。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
+7. `config.yml`の`maintainers`からrepositoryごとのGitHubユーザー名一覧を解決し、IssueとPull Requestの状態と責務を決定論的に判定します。抽象的なmaintainer、reviewer、merge_deciderの責務は、メンテナ1人につき1件の`kind: "user"`候補へ展開します。openかつ未アサインIssueでは、明確な着手宣言、追跡中のPRとのGitHub上で確定したauthoritativeな直接`implements`関係、継続成果物を持つ人間を実質担当候補として`candidates.waitingOn`へ加え、候補IDとsource IDを`deterministicSignals`へ渡します。正式assigneeを解除した場合は解除前のsourceを候補から除きます。
+8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。未アサインIssueの候補はIssue全体を進めているとhigh以上で判断できる場合だけ既存の`waiting_for_work`へ反映し、推論だけのrelation、部分実装、親・横断Issue、助言、検証、review、条件付き意向、撤回、延期、単なるauthorやcommenterは反映しません。一般的な活動状態の推察と、部分担当や部分実装のモデル化は行いません。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
 9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
 11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数と通知管理記録の重複抑制に従ってDiscord送信を行い、`dismiss-current`は現在の通知条件を満たす候補をreasonごとに上限なしで手動抑制済みとして通知管理記録へ保存します。完了時に実測時刻と処理結果を反映したrun reportと通知管理記録を追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
@@ -83,8 +83,8 @@ repository単位の収集は、再試行後も503で失敗し、同じrepository
 この縮退はdiagnosticとstale件数を記録して後続処理を続け、run statusを変更しません。
 前回値がない503、503以外の例外、不完全な結果は`failure`となり、通常の後続stageを実行しません。
 反復を終えても端点を取得できなかった関係候補は追跡選定へ渡さず、除外した件数をdiagnosticへ記録します。
-GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。
-本文のclosing keywordだけから得た`implements`候補は推定のままです。
+GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。実質担当のPR根拠には、追跡中のPRに対するこの関係だけを使います。
+本文のclosing keywordだけから得た`implements`候補は推定のままとし、実質担当の根拠には使いません。
 関係先のPRや子Issueで確認した作業者を、親Issueや横断Issueの実質担当者へ拡張しません。
 
 `.github/workflows/daily.yml`は通常経路の`quality-eval`、`collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた8 jobで構成されています。
@@ -183,7 +183,7 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 状態機械は、現在の状態が始まった時点をtimelineイベントの再生で求めます。
 担当区間はassignとunassign、および未アサインIssueの実質担当が成立した根拠source、draft区間はdraft変換とready for review、
 merge queue区間は追加と削除、ラベル区間は付与と削除をそれぞれ時系列で再生します。
-実質担当はIssue全体への根拠が最新の状態で有効な場合だけ成立し、撤回、延期、引継ぎ、正式assigneeの設定などの最新情報で再判定します。単なる活動時刻は実質担当を成立させません。
+実質担当はIssue全体への根拠が最新の状態で有効な場合だけ成立し、撤回、延期、引継ぎ、正式assigneeの設定などの最新情報で再判定します。正式assigneeを解除した場合は、解除前の根拠を再利用しません。単なる活動時刻は実質担当を成立させません。
 
 GitHubが時刻を持たない場面では、決定論的に決まる下限を使います。
 
