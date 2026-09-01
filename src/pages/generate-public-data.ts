@@ -27,7 +27,7 @@ import {
 import { assertNonNullable } from "../util/index.js";
 import {
   createEvidenceSourceUrlMap,
-  resolveEvidenceSourceUrl,
+  resolveEvidenceSourceUrlForItem,
   type EvidenceSourceUrlMap,
 } from "./evidence-source-url.js";
 import { PublicDtoSemanticError } from "./errors.js";
@@ -382,21 +382,30 @@ function createAnalysisEdge(relation: Relation, index: number): ReconciledGraphE
 
 function createPublicEvidenceEntry(
   entry: Evidence,
-  sourceItems: readonly EvidenceSourceItem[],
+  currentSourceItem: EvidenceSourceItem,
+  allSourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
 ): PublicDetailsDto["items"][number]["evidence"][number] {
   return {
     summary: entry.summary,
-    sourceUrl: resolveEvidenceSourceUrl(entry.sourceId, sourceItems, sourceOwnersById),
+    sourceUrl: resolveEvidenceSourceUrlForItem(
+      entry.sourceId,
+      currentSourceItem,
+      allSourceItems,
+      sourceOwnersById,
+    ),
   };
 }
 
 function createPublicEvidence(
   evidence: readonly Evidence[],
-  sourceItem: EvidenceSourceItem,
+  currentSourceItem: EvidenceSourceItem,
+  allSourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
 ): PublicDetailsDto["items"][number]["evidence"] {
-  return evidence.map((entry) => createPublicEvidenceEntry(entry, [sourceItem], sourceOwnersById));
+  return evidence.map((entry) =>
+    createPublicEvidenceEntry(entry, currentSourceItem, allSourceItems, sourceOwnersById),
+  );
 }
 
 function createPublicGraphEdge(relation: Relation): PublicGraphEdgeDto {
@@ -867,7 +876,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
         labels: [...item.labels],
         reviewState: item.reviewState,
         checkState: item.checkState,
-        evidence: createPublicEvidence(item.evidence, item, sourceOwnersById),
+        evidence: createPublicEvidence(item.evidence, item, snapshot.items, sourceOwnersById),
         uncertainties: [...item.uncertainties],
         history: [...(history.itemEventsByNodeId.get(item.nodeId) ?? [])],
       };
