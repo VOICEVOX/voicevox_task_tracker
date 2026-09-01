@@ -130,6 +130,7 @@ pnpm tracker:run --backfill none
 
 tracker専用のcommand comment、override UI、専用labelはありません。
 次回runで機械的に解釈できるように、GitHub上の事実を明確にします。
+GitHubのassigneeは確定情報として保持します。未アサインIssueの実質担当は表示上の推定であり、trackerはGitHubへassignを書き戻しません。
 
 抽象的なmaintainer、reviewer、merge_deciderの責務は、`config.yml`でrepositoryごとに設定したメンテナ全員へ展開されます。
 担当者を変える場合は`maintainers.defaults`か`maintainers.repositories`のGitHubユーザー名一覧を更新します。
@@ -140,18 +141,23 @@ trackerはteam memberを取得しないため、team memberの活動ではteam�
 ### コメント
 
 最新コメントで、次に誰が何をするかを一文で明示します。
+Issue全体を担当する場合は、その旨を明記し、直接関連PRや継続成果物と結び付けます。部分対応、助言、検証、review、条件付きの意向、撤回、延期の記載は実質担当の根拠になりません。
+複数人を候補にする場合も、Issue全体を共同で進めていることを明記します。部分PRの組み合わせだけから共同担当を推定しません。
 方針判断待ちへ直す場合は、maintainer roleへ必要な判断を明記します。
 返答待ちへ直す場合は、回答を求めるuserかteamを名指しします。
 質問の内容と未回答であることも明記します。
 依存関係なら対象IssueかPRのURLと、現在の項目を止めているか、単なる関連情報かを明記します。
 
 古いmention、謝辞、単なるリンクだけでは責務移動やblockerを確定しません。
+Issue author、Pull Request author、最新commenterであることだけでも担当は確定しません。親Issueや横断Issueの作業者を現在のIssueの担当へ移しません。
 依頼が解決した場合は、回答か決定を新しいコメントとして残すと未回答扱いを解消しやすくなります。
 
 ### assignee
 
-Issueを作業待ちへ直す場合は、実際に作業するuserをassigneeへ設定します。
-担当が決まっていない間はassigneeを設定しません。
+Issueを正式な作業待ちへ直す場合は、実際に作業するuserをassigneeへ設定します。
+assigneeが空でもtrackerがIssue全体の実質担当を表示する場合があります。その表示は推定であり、正式なGitHub assigneeの代わりにはなりません。
+担当が決まっていない場合や、実質担当の根拠が不足する場合はassigneeを設定しません。
+誤って推定された場合は、部分対応、reviewのみ、撤回、延期、引継ぎであることを最新コメントへ明記します。正式assigneeの設定や新しい全体担当の根拠は次回runで再判定されます。
 
 ### ラベル
 
@@ -181,6 +187,7 @@ authorが修正をpushした後はレビュー待ちとしてreviewer側を再�
 未解決のreview threadも修正待ちの根拠になります。
 authorが最後に返信したthreadは修正待ちの根拠から外し、reviewerの再確認を待つレビュー待ちとして扱います。
 botのreviewとcommentだけではbotへ責務を移しません。
+review、助言、検証だけを行った人をIssue全体の実質担当者へ移しません。
 
 これらで待ち先が決まった後も、その相手本人がさらに発言していれば発言の内容から判定し直します。
 変更要求を受けたauthorが修正せずに質問すれば返答待ちとなり、reviewerの返答を待ちます。
@@ -192,6 +199,7 @@ authorが了解を返しただけなら修正待ちを維持し、authorの修�
 本当に作業を止めるIssue同士はGitHubのblocked byとblockingで接続します。
 親子関係はsub-issueを使います。
 native relationはauthoritativeであり、本文のplain linkやCodex推定より優先されます。
+子Issueや直接関連PRの作業者を、親Issueや横断Issueの実質担当者へ拡張しません。
 Pull RequestがIssueを閉じる関係は、GitHubがclosing referenceとして認識する形で書きます。
 GitHubが認識したclosing referenceはauthoritativeな`implements`関係になります。
 GitHubが認識しない書き方は本文のclosing keywordとしてしか読めず、Codexの推定に頼る関係になります。
@@ -292,6 +300,7 @@ blockerの停滞レベルとdownstream impactが通知順位を決めます。
 通知が多すぎる場合は次の順で調整します。
 
 1. 誤った`status`、待ち相手を表す`waitingOn`、依存をGitHub上で明確にします。
+   実質担当の誤判定は、Issue全体を担当する宣言、直接関連PR、継続成果物を明記するか、部分対応、reviewのみ、撤回、延期、引継ぎであることを最新コメントへ明記して直します。
 2. automation dashboardのtitleを`notifications.automationNoiseTitles`へ追加するか、対象labelへ`labels.rules.effects.suppressNotifications`を割り当てます。
 3. 通知を減らす状態に対応する`staleness.thresholdsHours`を増やします。
 4. 全状態で直近の進捗を長く猶予する場合は`recentProgressGraceHours`を増やします。
