@@ -322,7 +322,10 @@ blockerの停滞レベルとdownstream impactが通知順位を決めます。
 schema、semantic validation、reducer、状態、graph、通知判定を変更する場合は`pnpm eval:golden`も実行します。
 golden evalはfixture内の固定AI出力を検証して期待結果と比較し、標準fixtureで`fixedAi.networkCallCount: 0`を要求します。
 実モデル、reasoning effort、promptの応答品質は評価しないため、これらを変更する場合は`metrics.aiCallCount`が1以上のdry-runでAI判定と通知候補の差分を確認します。
-`ai.execution.maxConcurrentCalls`を上げるとrun時間は縮みますが、Codexのrate limitに当たる頻度が増えて再試行が発生しやすくなります。
+`config.yml`では`ai.execution.maxConcurrentCalls`を4に設定し、`api-key`認証の並列実行上限としています。
+`api-key`認証では設定値まで並列化されます。
+`auth-json`認証では、同じ更新可能な`auth.json`を共有するCodex process間のtoken rotation競合を防ぐため、設定値を上げても実効同時実行数は1のままで、run時間は短縮されません。
+`api-key`で設定値を上げるとrun時間は縮みますが、Codexのrate limitに当たる頻度が増えて再試行が発生しやすくなります。
 上げた後は`codex_analysis` stageの失敗数と再試行数を確認します。
 mentionは通知量の調整に使わず、運用上必要なuserだけをallowlistへ追加します。
 
