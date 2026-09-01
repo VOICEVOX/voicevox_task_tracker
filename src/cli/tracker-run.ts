@@ -2,7 +2,8 @@ import { pathToFileURL } from "node:url";
 
 import { z } from "zod";
 
-import { createDiagnosticsRecorder } from "../diagnostics/index.js";
+import { DiagnosticsError } from "../diagnostics/errors.js";
+import { createDiagnosticsRecorder } from "../diagnostics/recorder.js";
 import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { UnreachableError } from "../util/index.js";
 import { type CliExecutionResult } from "./application.js";
@@ -209,6 +210,14 @@ function isMainModule(moduleUrl: string, executablePath: string | undefined): bo
   return executablePath != null && pathToFileURL(executablePath).href === moduleUrl;
 }
 
+function writeDiagnosticsTopLevelError(error: unknown): void {
+  if (error instanceof DiagnosticsError) {
+    process.stderr.write(`${error.message}\n`);
+    return;
+  }
+  process.stderr.write("diagnostics CLIの実行に失敗しました\n");
+}
+
 async function recordTopLevelError(
   recorder: DiagnosticsJsonlRecorder | undefined,
   stage: RunStage | "unknown",
@@ -240,7 +249,12 @@ async function recordTopLevelError(
   return error;
 }
 
-async function runTrackerCliMain(args: readonly string[]): Promise<number> {
+/** tracker-run共通entryからCLIを実行する。 */
+export async function runTrackerCliMain(args: readonly string[]): Promise<number> {
+  if (args[0] === "diagnostics") {
+    const { runDiagnosticsCli } = await import("../diagnostics/cli.js");
+    return runDiagnosticsCli(args.slice(1), process.env);
+  }
   let stage: RunStage | "unknown" = "unknown";
   let command = args[0] ?? "unknown";
   let recorder: DiagnosticsJsonlRecorder | undefined;
@@ -287,5 +301,14 @@ async function runTrackerCliMain(args: readonly string[]): Promise<number> {
 }
 
 if (isMainModule(import.meta.url, process.argv[1])) {
-  process.exitCode = await runTrackerCliMain(process.argv.slice(2));
+  const args = process.argv.slice(2);
+  try {
+    process.exitCode = await runTrackerCliMain(args);
+  } catch (error: unknown) {
+    if (args[0] !== "diagnostics") {
+      throw error;
+    }
+    writeDiagnosticsTopLevelError(error);
+    process.exitCode = 1;
+  }
 }
