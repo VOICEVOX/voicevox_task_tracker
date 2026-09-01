@@ -30,6 +30,7 @@ pnpm install --frozen-lockfile
 | `pnpm format:check`       | Prettierによる整形差分がないことを検査する                   | なし                                                     |
 | `pnpm eval:golden`        | CLIをビルドし、golden fixtureを外部接続なしで評価する        | `artifacts/eval.json`、`artifacts/run-reports/eval.json` |
 | `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の上限を検証する | `artifacts/performance-profile.json`                     |
+| `pnpm test:diagnostics`   | 詳細診断、Codex process、暗号化workflow連携を検証する        | `dist/`、`artifacts/workflow/runtime/`                   |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                                       |
 
 `build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
@@ -176,6 +177,7 @@ pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
 | `src/cli/`           | 引数解析、日次トランザクション、workflow stage、実アダプターの合成、run report                       |
 | `src/codex/`         | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                            |
 | `src/config/`        | `config.yml`の読み込みとZod schema検証                                                               |
+| `src/diagnostics/`   | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                       |
 | `src/discord/`       | 通知候補選別、通知管理記録による重複抑制、payload生成、Webhook送信                                   |
 | `src/domain/`        | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度のpure TypeScript |
 | `src/eval/`          | golden fixtureの解析、期待値との比較、回帰指標                                                       |
@@ -283,6 +285,7 @@ CIと同じ検査を手元で実行します。
 ```console
 pnpm typecheck
 pnpm lint
+pnpm test:diagnostics
 pnpm format:check
 pnpm eval:golden
 pnpm build

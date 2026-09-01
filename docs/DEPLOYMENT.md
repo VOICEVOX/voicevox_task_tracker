@@ -56,6 +56,21 @@ repositoryのSettingsからActions variableとActions secretを登録します�
 
 PEM private keyは改行を保持したままsecretへ登録します。
 
+詳細診断の暗号化鍵は`VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64`というOrganization secretへ登録します。
+利用できるrepositoryは`voicevox_task_tracker`だけに限定します。
+鍵は32 byteの乱数をBase64へ変換した値です。
+Git管理外の安全なdirectoryで鍵ファイルを作り、権限を600にしてください。
+
+```console
+umask 077
+openssl rand 32 | openssl base64 -A > path/to/diagnostics-key.b64
+chmod 600 path/to/diagnostics-key.b64
+gh secret set VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 --org VOICEVOX --repos voicevox_task_tracker < path/to/diagnostics-key.b64
+```
+
+鍵ファイルは暗号化済み診断artifactの復号に必要です。
+紛失すると既存artifactを復号できないため、GitHubとは別の安全な場所へ保管します。
+
 `CODEX_AUTH_JSON`はローカルでCodexへログインすると生成される`auth.json`をそのまま登録します。
 
 ```console
@@ -119,6 +134,10 @@ artifactを利用する後続jobは同じartifactを再検証してから利用�
 収集時のCLI reportは収集jobの成否にかかわらず、run IDと試行番号を含む別のActions artifactへ保存します。
 最後の`report-workflow`は全jobの結果と必須metricを`artifacts/run-reports/workflow.json`へまとめ、別のActions artifactへ保存します。
 これらのreport artifactはstateとPagesの入力にしません。
+詳細診断はrunnerの一時directoryでjobごとのJSONLへ記録し、AES-256-GCMで暗号化してから専用artifactへ保存します。
+平文のJSONLは暗号化処理の成否にかかわらず削除します。
+暗号化鍵を渡すのは暗号化stepだけです。
+詳細診断artifactの保持期間は7日で、公開可能なrun artifact、state、Pagesの入力には使いません。
 
 ## マージゲートの設定
 

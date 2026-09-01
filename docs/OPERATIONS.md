@@ -330,6 +330,28 @@ mentionは通知量の調整に使わず、運用上必要なuserだけをallowl
 
 失敗したActions jobをworkflow全体のreportにある`jobs`と照合し、収集失敗ではCLI reportの`failedStage`も確認します。
 
+### 詳細なエラーを確認する
+
+run reportの`diagnostics`は公開可能な要約です。
+スタックトレースやCodex processの出力が必要な場合は、失敗したjobに対応する`daily-diagnostics-<run ID>-<試行番号>-<job名>`artifactを取得します。
+artifactには暗号化済みの`.bundle`ファイルだけが入り、保持期間は7日です。
+
+依存関係を導入してCLIをビルドした後、登録時と同じ鍵ファイルで復号します。
+出力先に既存ファイルがある場合は上書きしません。
+
+```console
+pnpm install --frozen-lockfile
+pnpm build
+node dist/cli/tracker-run.js diagnostics decrypt \
+  --key-file path/to/diagnostics-key.b64 \
+  --input path/to/voicevox-task-tracker-diagnostics-collect-analyze.bundle \
+  --output path/to/diagnostics.jsonl
+```
+
+復号したJSONLには、例外のstack、cause、AggregateErrorの各error、Codexの試行番号、終了状態、標準出力、標準エラー出力、最終応答が記録されます。
+内容は公開用に無害化していないため、調査はローカルで行い、そのまま公開IssueやPull Requestへ貼り付けないでください。
+CLIが起動する前に失敗した場合や暗号化処理自体が失敗した場合は、対応するartifactが作られないことがあります。
+
 | stageまたはjob                  | 確認内容                                                                                                                                                                                      |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `quality-eval`                  | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm eval:golden`をローカルで再現する                                                                                                    |

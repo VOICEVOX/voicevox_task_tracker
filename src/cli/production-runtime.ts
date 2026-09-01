@@ -8,6 +8,7 @@ import {
   getCodexEnvironmentVariableAllowlist,
   hashCanonicalJson,
   prepareAiAnalysisCandidate,
+  recordCodexDiagnostic,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
   runAiAnalyses,
@@ -26,6 +27,8 @@ import {
   type ReducedCodexDecision,
   type ValidatedCodexAnalysisOutput,
 } from "../codex/index.js";
+import { type CodexDiagnosticsContext } from "../codex/index.js";
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { type Config, type loadConfig } from "../config/index.js";
 import {
   aggregatePullRequestCheckState,
@@ -499,6 +502,7 @@ export type ProductionTypes = DailyTransactionTypeMap &
 /** 日次実行配線へ注入する外部接続、時刻、永続化の境界。 */
 export type ProductionRuntimeAdapters = Readonly<{
   environment: Readonly<NodeJS.ProcessEnv>;
+  diagnosticsRecorder?: DiagnosticsJsonlRecorder;
   repositoryPath: string;
   pagesOutputDirectory: string;
   loadConfig: typeof loadConfig;
@@ -2790,10 +2794,18 @@ function createAiCandidates(
 ): Readonly<{
   candidates: readonly PreparedAiAnalysisCandidate[];
   failures: readonly AiAnalysisRunFailure[];
+  inputValidationFailures: readonly Readonly<{
+    candidateId: string;
+    error: unknown;
+  }>[];
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
 }> {
   const inputByNodeId = new Map<GitHubNodeId, CodexAnalysisInput>();
   const failures: AiAnalysisRunFailure[] = [];
+  const inputValidationFailures: {
+    candidateId: string;
+    error: unknown;
+  }[] = [];
   const previousGraph = previousGraphSnapshot(state);
   const previousGraphAnalysis =
     previousGraph == null
@@ -2822,6 +2834,12 @@ function createAiCandidates(
     try {
       input = createCodexInput(configuration, collection.evaluatedAt, analysis);
     } catch (error: unknown) {
+      inputValidationFailures.push(
+        Object.freeze({
+          candidateId: analysis.item.nodeId,
+          error,
+        }),
+      );
       failures.push(
         Object.freeze({
           candidateId: analysis.item.nodeId,
@@ -2921,6 +2939,7 @@ function createAiCandidates(
   return Object.freeze({
     candidates: Object.freeze(candidates),
     failures: Object.freeze(failures),
+    inputValidationFailures: Object.freeze(inputValidationFailures),
     inputByNodeId,
   });
 }
@@ -2946,6 +2965,7 @@ function countRetainedAiResults(state: RuntimeState, collection: CollectedItems)
 
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   collection: CollectedItems,
@@ -2969,6 +2989,30 @@ async function analyzeCodex(
     deterministicAnalysis,
     identity,
   );
+  const diagnostics: CodexDiagnosticsContext | undefined =
+    adapters.diagnosticsRecorder == null
+      ? undefined
+      : Object.freeze({
+          recorder: adapters.diagnosticsRecorder,
+          runId: invocation.runId,
+          invocationId: `${invocation.runId}:codex`,
+        });
+  for (const failure of prepared.inputValidationFailures) {
+    await recordCodexDiagnostic(
+      diagnostics == null
+        ? undefined
+        : Object.freeze({
+            ...diagnostics,
+            candidateId: failure.candidateId,
+          }),
+      "codex.input.validation_failed",
+      {
+        phase: "input_validation",
+        errorType: failure.error instanceof Error ? failure.error.name : typeof failure.error,
+      },
+      failure.error,
+    );
+  }
   if (!configuration.config.ai.enabled) {
     const fallback = prepared.failures.length > 0;
     return Object.freeze({
@@ -2997,7 +3041,8 @@ async function analyzeCodex(
     },
     {
       cache: state.session.aiCache,
-      execute: (input) =>
+      ...(diagnostics == null ? {} : { diagnostics }),
+      execute: (input, context) =>
         adapters.executeCodexAnalysis(
           input,
           {
@@ -3022,6 +3067,15 @@ async function analyzeCodex(
               sleep: adapters.sleep,
               random: adapters.random,
             },
+            ...(diagnostics == null
+              ? {}
+              : {
+                  diagnostics: Object.freeze({
+                    ...diagnostics,
+                    invocationId: `${invocation.runId}:${context.candidateId}`,
+                    candidateId: context.candidateId,
+                  }),
+                }),
           },
         ),
       executedAt: () => collection.evaluatedAt,
@@ -6922,6 +6976,9 @@ function createDailyDependencies(
   adapters: ProductionRuntimeAdapters,
 ): DailyTransactionDependencies<ProductionTypes> {
   return Object.freeze({
+    ...(adapters.diagnosticsRecorder == null
+      ? {}
+      : { diagnosticsRecorder: adapters.diagnosticsRecorder }),
     validateConfiguration: async ({ invocation, configPath }) => {
       requireEnvironmentVariables(adapters.environment, ["GH_APP_ID", "GH_APP_PRIVATE_KEY"]);
       const config = await adapters.loadConfig(resolve(adapters.repositoryPath, configPath));
@@ -7000,9 +7057,16 @@ function createDailyDependencies(
       Promise.resolve(
         applyDeterministicAnalysis(configuration, state, repositoryInventory, collection),
       ),
-    analyzeWithCodex: async ({ configuration, state, collection, deterministicAnalysis }) => {
+    analyzeWithCodex: async ({
+      invocation,
+      configuration,
+      state,
+      collection,
+      deterministicAnalysis,
+    }) => {
       const analysis = await analyzeCodex(
         adapters,
+        invocation,
         configuration,
         state,
         collection,
@@ -7381,6 +7445,9 @@ function emptyOfflineMetrics(): OfflineAnalysisMetrics {
 function createOfflineRunner(adapters: ProductionRuntimeAdapters): OfflineRunRunner {
   return new OfflineRunRunner(
     {
+      ...(adapters.diagnosticsRecorder == null
+        ? {}
+        : { diagnosticsRecorder: adapters.diagnosticsRecorder }),
       engine: {
         replayFixture: (fixture: ReplayFixture): Promise<OfflineAnalysisResult> => {
           const goldenInput = goldenEvalInputSchema.safeParse(fixture.input);

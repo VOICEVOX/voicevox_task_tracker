@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { executeCodexAnalysis, runCodexProcess } from "../codex/index.js";
 import { loadConfig } from "../config/index.js";
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { createFetchDiscordWebhookHttpClient, sendDiscordDigest } from "../discord/index.js";
 import {
   collectGitHubItemDetails,
@@ -73,9 +74,12 @@ export function createCliApplication(
 }
 
 /** Node.js process向けの具体アダプターを生成する。 */
-export function createDefaultCliCompositionAdapters(): CliCompositionAdapters {
+export function createDefaultCliCompositionAdapters(
+  diagnosticsRecorder?: DiagnosticsJsonlRecorder,
+): CliCompositionAdapters {
   return Object.freeze({
     environment: process.env,
+    ...(diagnosticsRecorder == null ? {} : { diagnosticsRecorder }),
     repositoryPath: resolve(process.cwd()),
     pagesOutputDirectory: resolve(process.cwd(), DEFAULT_PAGES_OUTPUT_DIRECTORY),
     createGitHubClient,
@@ -106,8 +110,10 @@ export function createDefaultCliCompositionAdapters(): CliCompositionAdapters {
 }
 
 /** Node.js process向けの実アダプターでCLI applicationを組み立てる。 */
-export function createDefaultCliApplication(): CliApplication<ProductionTypes> {
-  return createCliApplication(createDefaultCliCompositionAdapters());
+export function createDefaultCliApplication(
+  diagnosticsRecorder?: DiagnosticsJsonlRecorder,
+): CliApplication<ProductionTypes> {
+  return createCliApplication(createDefaultCliCompositionAdapters(diagnosticsRecorder));
 }
 
 export { type ProductionTypes } from "./production-runtime.js";

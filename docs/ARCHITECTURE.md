@@ -8,6 +8,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | モジュール        | 責務                                                                                             | 主な依存先                                               |
 | ----------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
 | `src/config`      | YAMLの読み込み、Zod schemaとsemantic validation                                                  | `src/codex`、`src/domain`、`src/util`                    |
+| `src/diagnostics` | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                   | Node.js標準module                                        |
 | `src/github`      | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理             | `src/config`、`src/domain`                               |
 | `src/domain`      | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度                | `src/util`                                               |
 | `src/graph`       | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                                 | `src/domain`                                             |
@@ -101,6 +102,21 @@ jobの最後は成否を問わず`codex-home`と指紋ファイルを削除し�
 各jobは`contents`、`pages`、`id-token`を必要な範囲だけ要求し、secretを使うjobはdefault branchのscheduleと手動実行に限定しています。
 `report-workflow`は収集時のCLI reportと各jobの結果をActions artifactへ保存するだけで、stateとPagesを変更しません。
 現在のActions統合上の制約は[デプロイ手順](DEPLOYMENT.md)に記載しています。
+
+## 詳細診断は公開データから分離する
+
+run reportの`diagnostics`は、secretや信頼できない本文を含めない公開可能な要約です。
+調査用の詳細診断は別のJSONLへ記録し、state、公開可能なworkflow artifact、Pages、Discordへ渡しません。
+
+CLIの未処理エラーは既存の最上位境界まで伝播させ、境界でstack、cause、AggregateErrorの各errorを記録します。
+Codex実行では試行ごとに終了状態、標準出力、標準エラー出力、最終応答、検証エラーを記録します。
+通常のActions logには従来どおり公開可能なエラーだけを出します。
+
+日次workflowはtracker CLIを実行するjobごとにrunnerの一時directoryへJSONLを作ります。
+各jobの最後に32 byteの共通鍵とAES-256-GCMで暗号化し、暗号化済みファイルだけを保持期間7日のActions artifactへ保存します。
+暗号化鍵はOrganization secretから暗号化stepだけへ渡します。
+平文JSONLは暗号化処理の成否にかかわらずjobの終了前に削除します。
+暗号化済みartifactはdefault branchのscheduleと手動実行でだけ作成します。
 
 ## 重要度の計算
 
