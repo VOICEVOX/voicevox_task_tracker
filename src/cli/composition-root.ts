@@ -1,6 +1,10 @@
 import { resolve } from "node:path";
 
-import { executeCodexAnalysis, runCodexProcess } from "../codex/index.js";
+import {
+  executeCodexAnalysis,
+  executeCodexAuthenticationPreflight,
+  runCodexProcess,
+} from "../codex/index.js";
 import { loadConfig } from "../config/index.js";
 import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { createFetchDiscordWebhookHttpClient, sendDiscordDigest } from "../discord/index.js";
@@ -35,6 +39,7 @@ type ConcreteOperationName =
   | "discoverRepositoryInventory"
   | "enumerateGitHubItemsByIdentifiers"
   | "enumerateOpenGitHubItems"
+  | "executeCodexAuthenticationPreflight"
   | "executeCodexAnalysis"
   | "loadConfig"
   | "openStateSession"
@@ -56,6 +61,7 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
     discoverRepositoryInventory,
     enumerateGitHubItemsByIdentifiers,
     enumerateOpenGitHubItems,
+    executeCodexAuthenticationPreflight,
     collectGitHubItemDetails,
     executeCodexAnalysis,
     readReplayFixture: readReplayFixtureFile,

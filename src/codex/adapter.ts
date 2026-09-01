@@ -32,12 +32,11 @@ import {
 } from "./process-runner.js";
 import { REASONING_EFFORTS } from "../domain/index.js";
 import { UnreachableError } from "../util/index.js";
+import { CODEX_AUTHENTICATION_PREFLIGHT_PROMPT } from "./preflight.js";
 import { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 
 const CODEX_COMMAND = "codex";
 const CODEX_TEMPORARY_DIRECTORY_PREFIX = "voicevox-task-tracker-codex-";
-const CODEX_AUTHENTICATION_PREFLIGHT_PROMPT =
-  "Codexの認証済み接続を確認してください。短い応答で完了してください。";
 const SYSTEM_PROMPT_URL = new URL("../../prompts/codex-system.md", import.meta.url);
 const OUTPUT_SCHEMA_URL = new URL("../../schemas/codex-analysis.schema.json", import.meta.url);
 const OUTPUT_LAST_MESSAGE_FILE_NAME = "last-message.json";

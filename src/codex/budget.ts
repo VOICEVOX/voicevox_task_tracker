@@ -31,6 +31,12 @@ export type AiAnalysisDeferReason =
   | "total_input_character_limit"
   | "estimated_cost_limit";
 
+/** Codex認証preflightのrun予算見積。 */
+export type AiPreflightBudget = Readonly<{
+  inputCharacters: number;
+  estimatedCostUsd: number;
+}>;
+
 /** Codex呼び出しの予算配分結果。 */
 export type AiBudgetPlan = Readonly<{
   selected: readonly PreparedAiAnalysisCandidate[];
@@ -228,30 +234,78 @@ function determineBudgetDecision(
   });
 }
 
-/** 規定の優先順位でcache missへrun予算を配分する。 */
-export function planAiAnalysisBudget(
+function validateInitialUsage(usage: AiBudgetUsage, budget: AiRunBudget): number {
+  validateNonNegativeSafeInteger(usage.calls, "run予算の使用呼び出し回数");
+  validateNonNegativeSafeInteger(usage.inputCharacters, "run予算の使用入力文字数");
+  const usedEstimatedCostMicroUsd = convertEstimatedCostToMicroUsd(
+    usage.estimatedCostUsd,
+    "estimate_up",
+    "run予算の使用見積費用",
+  );
+  if (usage.calls > budget.maxCallsPerRun) {
+    throw new RangeError("run予算の使用呼び出し回数が上限を超えています");
+  }
+  if (usage.inputCharacters > budget.maxTotalInputCharactersPerRun) {
+    throw new RangeError("run予算の使用入力文字数が上限を超えています");
+  }
+  const maximumEstimatedCostMicroUsd = convertEstimatedCostToMicroUsd(
+    budget.maxEstimatedCostUsdPerRun,
+    "budget_down",
+    "runあたりの最大見積費用",
+  );
+  if (usedEstimatedCostMicroUsd > maximumEstimatedCostMicroUsd) {
+    throw new RangeError("run予算の使用見積費用が上限を超えています");
+  }
+  return usedEstimatedCostMicroUsd;
+}
+
+function validatePreflightBudget(preflight: AiPreflightBudget): number {
+  validateNonNegativeSafeInteger(preflight.inputCharacters, "Codex認証preflightの入力文字数");
+  return convertEstimatedCostToMicroUsd(
+    preflight.estimatedCostUsd,
+    "estimate_up",
+    "Codex認証preflightの見積費用",
+  );
+}
+
+function sortAndValidateCandidates(
   candidates: readonly PreparedAiAnalysisCandidate[],
   budget: AiRunBudget,
-): AiBudgetPlan {
+): readonly PreparedAiAnalysisCandidate[] {
   validateBudget(budget);
   for (const candidate of candidates) {
     validateCandidate(candidate);
   }
-  const sortedCandidates = [...candidates].sort((left, right) => {
+  return [...candidates].sort((left, right) => {
     const priority = comparePriority(left.priority, right.priority);
     return priority === 0 ? compareStrings(left.id, right.id) : priority;
   });
+}
+
+function emptyBudgetUsage(): AiBudgetUsage {
+  return Object.freeze({
+    calls: 0,
+    inputCharacters: 0,
+    estimatedCostUsd: 0,
+  });
+}
+
+function planAiAnalysisBudgetFromSortedCandidates(
+  sortedCandidates: readonly PreparedAiAnalysisCandidate[],
+  budget: AiRunBudget,
+  initialUsage: AiBudgetUsage,
+): AiBudgetPlan {
+  let usedEstimatedCostMicroUsd = validateInitialUsage(initialUsage, budget);
   const selected: PreparedAiAnalysisCandidate[] = [];
   const deferred: {
     candidate: PreparedAiAnalysisCandidate;
     reason: AiAnalysisDeferReason;
   }[] = [];
   let usage: AiBudgetUsage = Object.freeze({
-    calls: 0,
-    inputCharacters: 0,
-    estimatedCostUsd: 0,
+    calls: initialUsage.calls,
+    inputCharacters: initialUsage.inputCharacters,
+    estimatedCostUsd: usedEstimatedCostMicroUsd / MICRO_USD_PER_USD,
   });
-  let usedEstimatedCostMicroUsd = 0;
 
   for (const candidate of sortedCandidates) {
     const decision = determineBudgetDecision(candidate, budget, usage, usedEstimatedCostMicroUsd);
@@ -280,4 +334,77 @@ export function planAiAnalysisBudget(
     deferred: Object.freeze(deferred.map((value) => Object.freeze(value))),
     usage,
   });
+}
+
+/** 規定の優先順位でcache missへrun予算を配分する。 */
+export function planAiAnalysisBudget(
+  candidates: readonly PreparedAiAnalysisCandidate[],
+  budget: AiRunBudget,
+): AiBudgetPlan {
+  const sortedCandidates = sortAndValidateCandidates(candidates, budget);
+  return planAiAnalysisBudgetFromSortedCandidates(sortedCandidates, budget, emptyBudgetUsage());
+}
+
+function preflightBudgetLimitReason(
+  preflight: AiPreflightBudget,
+  budget: AiRunBudget,
+  preflightEstimatedCostMicroUsd: number,
+): AiAnalysisDeferReason | undefined {
+  if (budget.maxCallsPerRun < 1) {
+    return "call_limit";
+  }
+  if (preflight.inputCharacters > budget.maxTotalInputCharactersPerRun) {
+    return "total_input_character_limit";
+  }
+  const maximumEstimatedCostMicroUsd = convertEstimatedCostToMicroUsd(
+    budget.maxEstimatedCostUsdPerRun,
+    "budget_down",
+    "runあたりの最大見積費用",
+  );
+  if (preflightEstimatedCostMicroUsd > maximumEstimatedCostMicroUsd) {
+    return "estimated_cost_limit";
+  }
+  return undefined;
+}
+
+/** Codex認証preflightを予約したうえでrun予算を配分する。 */
+export function planAiAnalysisBudgetWithPreflight(
+  candidates: readonly PreparedAiAnalysisCandidate[],
+  budget: AiRunBudget,
+  preflight: AiPreflightBudget,
+): AiBudgetPlan {
+  const sortedCandidates = sortAndValidateCandidates(candidates, budget);
+  const preflightEstimatedCostMicroUsd = validatePreflightBudget(preflight);
+  const limitReason = preflightBudgetLimitReason(preflight, budget, preflightEstimatedCostMicroUsd);
+  if (limitReason != null) {
+    return Object.freeze({
+      selected: Object.freeze([]),
+      deferred: Object.freeze(
+        sortedCandidates.map((candidate) =>
+          Object.freeze({
+            candidate,
+            reason: limitReason,
+          }),
+        ),
+      ),
+      usage: emptyBudgetUsage(),
+    });
+  }
+
+  const plan = planAiAnalysisBudgetFromSortedCandidates(
+    sortedCandidates,
+    budget,
+    Object.freeze({
+      calls: 1,
+      inputCharacters: preflight.inputCharacters,
+      estimatedCostUsd: preflight.estimatedCostUsd,
+    }),
+  );
+  if (plan.selected.length === 0) {
+    return Object.freeze({
+      ...plan,
+      usage: emptyBudgetUsage(),
+    });
+  }
+  return plan;
 }

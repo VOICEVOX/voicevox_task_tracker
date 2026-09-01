@@ -5,7 +5,13 @@ import {
   type AiAnalysisSkipReason,
   type PreparedAiAnalysisCandidate,
 } from "./analysis-selection.js";
-import { planAiAnalysisBudget, type AiAnalysisDeferReason, type AiRunBudget } from "./budget.js";
+import {
+  planAiAnalysisBudget,
+  planAiAnalysisBudgetWithPreflight,
+  type AiAnalysisDeferReason,
+  type AiPreflightBudget,
+  type AiRunBudget,
+} from "./budget.js";
 import {
   createAiCacheEntry,
   createAiCacheKey,
@@ -41,11 +47,19 @@ export type AiAnalysisRunConfiguration = Readonly<{
   maxConcurrentCalls: number;
 }>;
 
+/** AI分析前に実行するCodex認証preflight。 */
+export type AiAnalysisPreflight = Readonly<
+  AiPreflightBudget & {
+    execute: () => Promise<void>;
+  }
+>;
+
 /** AI分析runへ注入する副作用境界。 */
 export type AiAnalysisRunDependencies = Readonly<{
   cache: AiCacheStore;
   execute: (input: CodexAnalysisInput, context: AiAnalysisExecutionContext) => Promise<unknown>;
   executedAt: () => string;
+  preflight?: AiAnalysisPreflight;
   diagnostics?: CodexDiagnosticsContext;
 }>;
 
@@ -398,10 +412,18 @@ export async function runAiAnalyses(
   const selectedCacheMisses = cached.misses.filter((value) =>
     selectedCandidateIds.has(value.candidate.id),
   );
-  const budgetPlan = planAiAnalysisBudget(
-    selectedCacheMisses.map((value) => value.candidate),
-    configuration.budget,
-  );
+  const selectedCandidates = selectedCacheMisses.map((value) => value.candidate);
+  const budgetPlan =
+    dependencies.preflight == null
+      ? planAiAnalysisBudget(selectedCandidates, configuration.budget)
+      : planAiAnalysisBudgetWithPreflight(
+          selectedCandidates,
+          configuration.budget,
+          dependencies.preflight,
+        );
+  if (dependencies.preflight != null && budgetPlan.selected.length > 0) {
+    await dependencies.preflight.execute();
+  }
   const executed = await executeSelectedCandidates(
     budgetPlan.selected,
     selectedCacheMisses,
