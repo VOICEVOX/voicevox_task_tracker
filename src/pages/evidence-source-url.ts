@@ -116,6 +116,13 @@ function resolveProductionEvidenceSourceUrl(
   sourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
 ): GitHubItemUrl {
+  if (kind === "github_item" || kind === "github_item_body" || kind === "github_item_detail") {
+    const itemNodeId = parseSourceId(sourceId).originalId;
+    const item = sourceItems.find((sourceItem) => sourceItem.nodeId === itemNodeId);
+    if (item != null) {
+      return item.url;
+    }
+  }
   switch (kind) {
     case "github_issue_comment":
       return directSourceUrl(sourceId, sourceOwnersById, "#issuecomment-");

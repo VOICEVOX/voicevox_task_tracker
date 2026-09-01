@@ -393,10 +393,10 @@ function createPublicEvidenceEntry(
 
 function createPublicEvidence(
   evidence: readonly Evidence[],
-  sourceItem: EvidenceSourceItem,
+  sourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
 ): PublicDetailsDto["items"][number]["evidence"] {
-  return evidence.map((entry) => createPublicEvidenceEntry(entry, [sourceItem], sourceOwnersById));
+  return evidence.map((entry) => createPublicEvidenceEntry(entry, sourceItems, sourceOwnersById));
 }
 
 function createPublicGraphEdge(relation: Relation): PublicGraphEdgeDto {
@@ -867,7 +867,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
         labels: [...item.labels],
         reviewState: item.reviewState,
         checkState: item.checkState,
-        evidence: createPublicEvidence(item.evidence, item, sourceOwnersById),
+        evidence: createPublicEvidence(item.evidence, snapshot.items, sourceOwnersById),
         uncertainties: [...item.uncertainties],
         history: [...(history.itemEventsByNodeId.get(item.nodeId) ?? [])],
       };
