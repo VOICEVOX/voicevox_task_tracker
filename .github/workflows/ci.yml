@@ -40,6 +40,8 @@ jobs:
         run: pnpm build
       - name: workflow用CLIをビルド
         run: pnpm build:workflow-cli
+      - name: diagnostics回帰テストを実行
+        run: pnpm test:diagnostics
       - name: Web UIをビルド
         run: pnpm build:web
 
