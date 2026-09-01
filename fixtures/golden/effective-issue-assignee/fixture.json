@@ -1,0 +1,1122 @@
+{
+  "schemaVersion": "1",
+  "name": "effective-issue-assignee",
+  "input": {
+    "kind": "standard",
+    "evaluatedAt": "2026-09-01T00:00:00.000Z",
+    "repositories": [
+      {
+        "id": "fixture-repository-effective",
+        "name": "fixture-effective",
+        "visibility": "public"
+      }
+    ],
+    "items": [
+      {
+        "type": "issue",
+        "nodeId": "effective-single-issue",
+        "repositoryId": "fixture-repository-effective",
+        "number": 701,
+        "title": "Issue全体を単独で進める例",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-08-31T00:00:00.000Z",
+        "githubUpdatedAt": "2026-08-31T12:00:00.000Z",
+        "observedAt": "2026-09-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "effective-reporter-single",
+          "login": "reporter-single"
+        },
+        "assignees": [],
+        "labels": [],
+        "events": [],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        }
+      },
+      {
+        "type": "issue",
+        "nodeId": "effective-joint-issue",
+        "repositoryId": "fixture-repository-effective",
+        "number": 702,
+        "title": "Issue全体を共同で進める例",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-08-31T00:00:00.000Z",
+        "githubUpdatedAt": "2026-08-31T12:00:00.000Z",
+        "observedAt": "2026-09-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "effective-reporter-joint",
+          "login": "reporter-joint"
+        },
+        "assignees": [],
+        "labels": [],
+        "events": [],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        }
+      },
+      {
+        "type": "issue",
+        "nodeId": "effective-partial-issue",
+        "repositoryId": "fixture-repository-effective",
+        "number": 703,
+        "title": "部分実装だけの例",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-08-31T00:00:00.000Z",
+        "githubUpdatedAt": "2026-08-31T12:00:00.000Z",
+        "observedAt": "2026-09-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "effective-reporter-partial",
+          "login": "reporter-partial"
+        },
+        "assignees": [],
+        "labels": ["triage"],
+        "events": [],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        }
+      },
+      {
+        "type": "issue",
+        "nodeId": "effective-conditional-issue",
+        "repositoryId": "fixture-repository-effective",
+        "number": 704,
+        "title": "条件付き意向の例",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-08-31T00:00:00.000Z",
+        "githubUpdatedAt": "2026-08-31T12:00:00.000Z",
+        "observedAt": "2026-09-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "effective-reporter-conditional",
+          "login": "reporter-conditional"
+        },
+        "assignees": [],
+        "labels": ["triage"],
+        "events": [],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        }
+      },
+      {
+        "type": "issue",
+        "nodeId": "effective-withdrawn-issue",
+        "repositoryId": "fixture-repository-effective",
+        "number": 705,
+        "title": "撤回済みPRの例",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-08-31T00:00:00.000Z",
+        "githubUpdatedAt": "2026-08-31T12:00:00.000Z",
+        "observedAt": "2026-09-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "effective-reporter-withdrawn",
+          "login": "reporter-withdrawn"
+        },
+        "assignees": [],
+        "labels": ["triage"],
+        "events": [],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        }
+      },
+      {
+        "type": "issue",
+        "nodeId": "effective-source-mismatch-issue",
+        "repositoryId": "fixture-repository-effective",
+        "number": 706,
+        "title": "候補source集合不一致の例",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-08-31T00:00:00.000Z",
+        "githubUpdatedAt": "2026-08-31T12:00:00.000Z",
+        "observedAt": "2026-09-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "effective-reporter-source-mismatch",
+          "login": "reporter-source-mismatch"
+        },
+        "assignees": [],
+        "labels": ["triage"],
+        "events": [],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        }
+      }
+    ],
+    "relations": [],
+    "fixedAiAnalyses": [
+      {
+        "itemNodeId": "effective-single-issue",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-09-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "effective-single-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/701",
+            "type": "issue",
+            "title": "Issue全体を単独で進める例",
+            "authorCandidateId": "reporter-single"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "maintainer",
+                "kind": "role",
+                "sourceIds": ["golden_item:effective-single-issue"]
+              },
+              {
+                "id": "worker-single",
+                "kind": "user",
+                "sourceIds": [
+                  "golden_event:pr-single-push",
+                  "body:pr-single",
+                  "golden_item:pr-single"
+                ],
+                "effectiveAssigneeCandidate": true,
+                "effectiveAssigneeSourceIds": [
+                  "golden_event:pr-single-push",
+                  "body:pr-single",
+                  "golden_item:pr-single"
+                ]
+              }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_item:effective-single-issue",
+              "kind": "item",
+              "actorType": "human",
+              "createdAt": "2026-08-31T00:00:00.000Z"
+            },
+            {
+              "id": "golden_item:pr-single",
+              "kind": "pull_request",
+              "actorType": "human",
+              "createdAt": "2026-08-31T12:00:00.000Z",
+              "content": "Issue全体を担当し、直接PRで実装を進めます。"
+            },
+            {
+              "id": "body:pr-single",
+              "kind": "pull_request_body",
+              "actorType": "human",
+              "createdAt": "2026-08-31T12:00:00.000Z",
+              "content": "このPRはIssue全体を実装します。"
+            },
+            {
+              "id": "golden_event:pr-single-push",
+              "kind": "push",
+              "actorType": "human",
+              "createdAt": "2026-08-31T18:00:00.000Z",
+              "content": "直接関連PRの最新pushです。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_assessment",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "sourceIds": ["golden_item:effective-single-issue"],
+                "confidence": 1
+              }
+            ],
+            "effectiveAssigneeEligible": true,
+            "effectiveAssigneeCandidates": [
+              {
+                "candidateId": "worker-single",
+                "sourceIds": [
+                  "golden_event:pr-single-push",
+                  "body:pr-single",
+                  "golden_item:pr-single"
+                ],
+                "occurredAt": "2026-08-31T18:00:00.000Z"
+              }
+            ],
+            "effectiveAssigneeImplementations": [
+              {
+                "candidateId": "worker-single",
+                "pullRequestNodeId": "pr-single",
+                "pullRequestUrl": "https://github.com/VOICEVOX/fixture-effective/pull/801",
+                "pullRequestState": "open",
+                "relationCandidateIds": ["rel:single-implements"]
+              }
+            ],
+            "effectiveAssigneeConfidenceThreshold": 0.85
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "4",
+          "item": {
+            "nodeId": "effective-single-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
+          },
+          "status": "waiting_for_work",
+          "waitingOn": [
+            {
+              "kind": "user",
+              "candidateId": "worker-single",
+              "role": "assignee",
+              "reasonSummary": "Issue全体を直接実装しています",
+              "sourceIds": [
+                "golden_event:pr-single-push",
+                "body:pr-single",
+                "golden_item:pr-single"
+              ],
+              "confidence": 0.95
+            }
+          ],
+          "nextAction": "worker-singleがIssue全体を進める",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_event:pr-single-push",
+            "reasonSummary": "直接実装のPRがあります",
+            "confidence": 0.95
+          },
+          "importance": {
+            "significantFeature": false,
+            "futureRisk": false,
+            "rationale": "重要度の根拠はありません"
+          },
+          "deadline": {
+            "date": null,
+            "rationale": "期限の根拠はありません"
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_event:pr-single-push",
+              "supports": "waiting_on",
+              "summary": "Issue全体を直接実装するPRの最新pushです"
+            },
+            {
+              "sourceId": "body:pr-single",
+              "supports": "waiting_on",
+              "summary": "Issue全体を直接実装するPR本文です"
+            },
+            {
+              "sourceId": "golden_item:pr-single",
+              "supports": "waiting_on",
+              "summary": "Issue全体を直接実装するPRです"
+            }
+          ],
+          "confidence": 0.95,
+          "uncertainties": [],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+          }
+        },
+        "rejectedOutputs": [
+          {
+            "schemaVersion": "4",
+            "item": {
+              "nodeId": "effective-single-issue",
+              "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
+            },
+            "status": "waiting_for_work",
+            "waitingOn": [
+              {
+                "kind": "user",
+                "candidateId": "worker-outside",
+                "role": "assignee",
+                "reasonSummary": "入力にない候補です",
+                "sourceIds": ["golden_item:pr-single"],
+                "confidence": 0.95
+              }
+            ],
+            "nextAction": "worker-outsideが進める",
+            "relations": [],
+            "progress": {
+              "latestMeaningfulSourceId": "golden_item:pr-single",
+              "reasonSummary": "候補外userを選びました",
+              "confidence": 0.95
+            },
+            "importance": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の根拠はありません"
+            },
+            "deadline": {
+              "date": null,
+              "rationale": "期限の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-single",
+                "supports": "waiting_on",
+                "summary": "候補外userを根拠にしました"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": [],
+            "notification": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "候補外userは拒否します"
+            }
+          },
+          {
+            "schemaVersion": "4",
+            "item": {
+              "nodeId": "effective-single-issue",
+              "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
+            },
+            "status": "waiting_for_work",
+            "waitingOn": [
+              {
+                "kind": "user",
+                "candidateId": "worker-single",
+                "role": "assignee",
+                "reasonSummary": "source集合外を参照しました",
+                "sourceIds": ["golden_missing:source"],
+                "confidence": 0.95
+              }
+            ],
+            "nextAction": "worker-singleが進める",
+            "relations": [],
+            "progress": {
+              "latestMeaningfulSourceId": "golden_item:pr-single",
+              "reasonSummary": "未登録sourceを参照しました",
+              "confidence": 0.95
+            },
+            "importance": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の根拠はありません"
+            },
+            "deadline": {
+              "date": null,
+              "rationale": "期限の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-single",
+                "supports": "waiting_on",
+                "summary": "source集合外の参照を含みます"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": [],
+            "notification": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "source集合外の参照は拒否します"
+            }
+          }
+        ]
+      },
+      {
+        "itemNodeId": "effective-joint-issue",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-09-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "effective-joint-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/702",
+            "type": "issue",
+            "title": "Issue全体を共同で進める例",
+            "authorCandidateId": "reporter-joint"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "maintainer",
+                "kind": "role",
+                "sourceIds": ["golden_item:effective-joint-issue"]
+              },
+              {
+                "id": "worker-joint-a",
+                "kind": "user",
+                "sourceIds": ["golden_item:pr-joint-a"],
+                "effectiveAssigneeCandidate": true,
+                "effectiveAssigneeSourceIds": ["golden_item:pr-joint-a"]
+              },
+              {
+                "id": "worker-joint-b",
+                "kind": "user",
+                "sourceIds": ["golden_item:pr-joint-b"],
+                "effectiveAssigneeCandidate": true,
+                "effectiveAssigneeSourceIds": ["golden_item:pr-joint-b"]
+              }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_item:effective-joint-issue",
+              "kind": "item",
+              "actorType": "human",
+              "createdAt": "2026-08-31T00:00:00.000Z"
+            },
+            {
+              "id": "golden_item:pr-joint-a",
+              "kind": "pull_request",
+              "actorType": "human",
+              "createdAt": "2026-08-31T12:00:00.000Z",
+              "content": "Issue全体を共同で実装します。"
+            },
+            {
+              "id": "golden_item:pr-joint-b",
+              "kind": "pull_request",
+              "actorType": "human",
+              "createdAt": "2026-08-31T13:00:00.000Z",
+              "content": "Issue全体を共同で実装します。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_assessment",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "sourceIds": ["golden_item:effective-joint-issue"],
+                "confidence": 1
+              }
+            ],
+            "effectiveAssigneeEligible": true,
+            "effectiveAssigneeCandidates": [
+              {
+                "candidateId": "worker-joint-a",
+                "sourceIds": ["golden_item:pr-joint-a"],
+                "occurredAt": "2026-08-31T12:00:00.000Z"
+              },
+              {
+                "candidateId": "worker-joint-b",
+                "sourceIds": ["golden_item:pr-joint-b"],
+                "occurredAt": "2026-08-31T13:00:00.000Z"
+              }
+            ],
+            "effectiveAssigneeImplementations": [
+              {
+                "candidateId": "worker-joint-a",
+                "pullRequestNodeId": "pr-joint-a",
+                "pullRequestUrl": "https://github.com/VOICEVOX/fixture-effective/pull/802",
+                "pullRequestState": "open",
+                "relationCandidateIds": ["rel:joint-a-implements"]
+              },
+              {
+                "candidateId": "worker-joint-b",
+                "pullRequestNodeId": "pr-joint-b",
+                "pullRequestUrl": "https://github.com/VOICEVOX/fixture-effective/pull/803",
+                "pullRequestState": "open",
+                "relationCandidateIds": ["rel:joint-b-implements"]
+              }
+            ],
+            "effectiveAssigneeConfidenceThreshold": 0.85
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "4",
+          "item": {
+            "nodeId": "effective-joint-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/702"
+          },
+          "status": "waiting_for_work",
+          "waitingOn": [
+            {
+              "kind": "user",
+              "candidateId": "worker-joint-a",
+              "role": "assignee",
+              "reasonSummary": "Issue全体を共同で実装しています",
+              "sourceIds": ["golden_item:pr-joint-a"],
+              "confidence": 0.93
+            },
+            {
+              "kind": "user",
+              "candidateId": "worker-joint-b",
+              "role": "assignee",
+              "reasonSummary": "Issue全体を共同で実装しています",
+              "sourceIds": ["golden_item:pr-joint-b"],
+              "confidence": 0.92
+            }
+          ],
+          "nextAction": "worker-joint-aとworker-joint-bがIssue全体を共同で進める",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_item:pr-joint-b",
+            "reasonSummary": "共同で直接実装するPRがあります",
+            "confidence": 0.93
+          },
+          "importance": {
+            "significantFeature": false,
+            "futureRisk": false,
+            "rationale": "重要度の根拠はありません"
+          },
+          "deadline": {
+            "date": null,
+            "rationale": "期限の根拠はありません"
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_item:pr-joint-a",
+              "supports": "waiting_on",
+              "summary": "共同担当の直接実装PRです"
+            },
+            {
+              "sourceId": "golden_item:pr-joint-b",
+              "supports": "waiting_on",
+              "summary": "共同担当の直接実装PRです"
+            }
+          ],
+          "confidence": 0.93,
+          "uncertainties": [],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+          }
+        },
+        "rejectedOutputs": []
+      },
+      {
+        "itemNodeId": "effective-partial-issue",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-09-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "effective-partial-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/703",
+            "type": "issue",
+            "title": "部分実装だけの例",
+            "authorCandidateId": "reporter-partial"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "maintainer",
+                "kind": "role",
+                "sourceIds": ["golden_item:effective-partial-issue"]
+              },
+              {
+                "id": "worker-partial",
+                "kind": "user",
+                "sourceIds": ["golden_item:pr-partial"],
+                "effectiveAssigneeCandidate": true,
+                "effectiveAssigneeSourceIds": ["golden_item:pr-partial"]
+              }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_item:effective-partial-issue",
+              "kind": "item",
+              "actorType": "human",
+              "createdAt": "2026-08-31T00:00:00.000Z"
+            },
+            {
+              "id": "golden_item:pr-partial",
+              "kind": "pull_request",
+              "actorType": "human",
+              "createdAt": "2026-08-31T12:00:00.000Z",
+              "content": "このPRではサブコンポーネントの一部だけ対応します。Issue全体は担当しません。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_owner",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "sourceIds": ["golden_item:effective-partial-issue"],
+                "confidence": 1
+              }
+            ],
+            "effectiveAssigneeEligible": true,
+            "effectiveAssigneeCandidates": [
+              {
+                "candidateId": "worker-partial",
+                "sourceIds": ["golden_item:pr-partial"],
+                "occurredAt": "2026-08-31T12:00:00.000Z"
+              }
+            ],
+            "effectiveAssigneeImplementations": [
+              {
+                "candidateId": "worker-partial",
+                "pullRequestNodeId": "pr-partial",
+                "pullRequestUrl": "https://github.com/VOICEVOX/fixture-effective/pull/804",
+                "pullRequestState": "open",
+                "relationCandidateIds": ["rel:partial-implements"]
+              }
+            ],
+            "effectiveAssigneeConfidenceThreshold": 0.85
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "4",
+          "item": {
+            "nodeId": "effective-partial-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/703"
+          },
+          "status": "waiting_for_owner",
+          "waitingOn": [
+            {
+              "kind": "role",
+              "candidateId": "maintainer",
+              "role": "maintainer",
+              "reasonSummary": "部分対応だけではIssue全体の担当を決められません",
+              "sourceIds": ["golden_item:effective-partial-issue"],
+              "confidence": 0.95
+            }
+          ],
+          "nextAction": "maintainerがIssue全体の担当を決める",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_item:pr-partial",
+            "reasonSummary": "部分実装のPRだけがあります",
+            "confidence": 0.95
+          },
+          "importance": {
+            "significantFeature": false,
+            "futureRisk": false,
+            "rationale": "重要度の根拠はありません"
+          },
+          "deadline": {
+            "date": null,
+            "rationale": "期限の根拠はありません"
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_item:pr-partial",
+              "supports": "uncertainty",
+              "summary": "部分実装はIssue全体の担当根拠になりません"
+            }
+          ],
+          "confidence": 0.95,
+          "uncertainties": [],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+          }
+        },
+        "rejectedOutputs": []
+      },
+      {
+        "itemNodeId": "effective-conditional-issue",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-09-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "effective-conditional-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/704",
+            "type": "issue",
+            "title": "条件付き意向の例",
+            "authorCandidateId": "reporter-conditional"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "maintainer",
+                "kind": "role",
+                "sourceIds": ["golden_item:effective-conditional-issue"]
+              },
+              {
+                "id": "worker-conditional",
+                "kind": "user",
+                "sourceIds": ["golden_item:pr-conditional"],
+                "effectiveAssigneeCandidate": true,
+                "effectiveAssigneeSourceIds": ["golden_item:pr-conditional"]
+              }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_item:effective-conditional-issue",
+              "kind": "item",
+              "actorType": "human",
+              "createdAt": "2026-08-31T00:00:00.000Z"
+            },
+            {
+              "id": "golden_item:pr-conditional",
+              "kind": "pull_request",
+              "actorType": "human",
+              "createdAt": "2026-08-31T12:00:00.000Z",
+              "content": "時間が取れればこのIssue全体を対応します。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_owner",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "sourceIds": ["golden_item:effective-conditional-issue"],
+                "confidence": 1
+              }
+            ],
+            "effectiveAssigneeEligible": true,
+            "effectiveAssigneeCandidates": [
+              {
+                "candidateId": "worker-conditional",
+                "sourceIds": ["golden_item:pr-conditional"],
+                "occurredAt": "2026-08-31T12:00:00.000Z"
+              }
+            ],
+            "effectiveAssigneeImplementations": [
+              {
+                "candidateId": "worker-conditional",
+                "pullRequestNodeId": "pr-conditional",
+                "pullRequestUrl": "https://github.com/VOICEVOX/fixture-effective/pull/805",
+                "pullRequestState": "open",
+                "relationCandidateIds": ["rel:conditional-implements"]
+              }
+            ],
+            "effectiveAssigneeConfidenceThreshold": 0.85
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "4",
+          "item": {
+            "nodeId": "effective-conditional-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/704"
+          },
+          "status": "waiting_for_work",
+          "waitingOn": [
+            {
+              "kind": "user",
+              "candidateId": "worker-conditional",
+              "role": "assignee",
+              "reasonSummary": "条件付きで対応する意向があります",
+              "sourceIds": ["golden_item:pr-conditional"],
+              "confidence": 0.84
+            }
+          ],
+          "nextAction": "worker-conditionalの対応意向を確認する",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_item:pr-conditional",
+            "reasonSummary": "条件付きの意向が記録されています",
+            "confidence": 0.84
+          },
+          "importance": {
+            "significantFeature": false,
+            "futureRisk": false,
+            "rationale": "重要度の根拠はありません"
+          },
+          "deadline": {
+            "date": null,
+            "rationale": "期限の根拠はありません"
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_item:pr-conditional",
+              "supports": "uncertainty",
+              "summary": "条件付き意向はhigh未満です"
+            }
+          ],
+          "confidence": 0.84,
+          "uncertainties": ["対応条件が満たされるか不明です"],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "high未満のため通知しません"
+          }
+        },
+        "rejectedOutputs": []
+      },
+      {
+        "itemNodeId": "effective-withdrawn-issue",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-09-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "effective-withdrawn-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/705",
+            "type": "issue",
+            "title": "撤回済みPRの例",
+            "authorCandidateId": "reporter-withdrawn"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "maintainer",
+                "kind": "role",
+                "sourceIds": ["golden_item:effective-withdrawn-issue"]
+              },
+              {
+                "id": "worker-withdrawn",
+                "kind": "user",
+                "sourceIds": ["golden_item:pr-withdrawn"],
+                "effectiveAssigneeCandidate": true,
+                "effectiveAssigneeSourceIds": ["golden_item:pr-withdrawn"]
+              }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_item:effective-withdrawn-issue",
+              "kind": "item",
+              "actorType": "human",
+              "createdAt": "2026-08-31T00:00:00.000Z"
+            },
+            {
+              "id": "golden_item:pr-withdrawn",
+              "kind": "pull_request",
+              "actorType": "human",
+              "createdAt": "2026-08-31T12:00:00.000Z",
+              "content": "対応を取り下げ、延期します。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_owner",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "sourceIds": ["golden_item:effective-withdrawn-issue"],
+                "confidence": 1
+              }
+            ],
+            "effectiveAssigneeEligible": true,
+            "effectiveAssigneeCandidates": [
+              {
+                "candidateId": "worker-withdrawn",
+                "sourceIds": ["golden_item:pr-withdrawn"],
+                "occurredAt": "2026-08-31T12:00:00.000Z"
+              }
+            ],
+            "effectiveAssigneeImplementations": [
+              {
+                "candidateId": "worker-withdrawn",
+                "pullRequestNodeId": "pr-withdrawn",
+                "pullRequestUrl": "https://github.com/VOICEVOX/fixture-effective/pull/806",
+                "pullRequestState": "closed_unmerged",
+                "relationCandidateIds": ["rel:withdrawn-implements"]
+              }
+            ],
+            "effectiveAssigneeConfidenceThreshold": 0.85
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "4",
+          "item": {
+            "nodeId": "effective-withdrawn-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/705"
+          },
+          "status": "waiting_for_owner",
+          "waitingOn": [
+            {
+              "kind": "role",
+              "candidateId": "maintainer",
+              "role": "maintainer",
+              "reasonSummary": "撤回済みPRだけでは担当を決められません",
+              "sourceIds": ["golden_item:effective-withdrawn-issue"],
+              "confidence": 0.95
+            }
+          ],
+          "nextAction": "maintainerがIssue全体の担当を決める",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_item:pr-withdrawn",
+            "reasonSummary": "PRは撤回されました",
+            "confidence": 0.95
+          },
+          "importance": {
+            "significantFeature": false,
+            "futureRisk": false,
+            "rationale": "重要度の根拠はありません"
+          },
+          "deadline": {
+            "date": null,
+            "rationale": "期限の根拠はありません"
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_item:pr-withdrawn",
+              "supports": "uncertainty",
+              "summary": "撤回済みPRは実質担当の根拠になりません"
+            }
+          ],
+          "confidence": 0.95,
+          "uncertainties": [],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+          }
+        },
+        "rejectedOutputs": []
+      },
+      {
+        "itemNodeId": "effective-source-mismatch-issue",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-09-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "effective-source-mismatch-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/706",
+            "type": "issue",
+            "title": "候補source集合不一致の例",
+            "authorCandidateId": "reporter-source-mismatch"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "maintainer",
+                "kind": "role",
+                "sourceIds": ["golden_item:effective-source-mismatch-issue"]
+              },
+              {
+                "id": "worker-source-mismatch",
+                "kind": "user",
+                "sourceIds": ["golden_item:pr-source-mismatch"],
+                "effectiveAssigneeCandidate": true,
+                "effectiveAssigneeSourceIds": ["golden_item:pr-source-mismatch"]
+              }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_item:effective-source-mismatch-issue",
+              "kind": "item",
+              "actorType": "human",
+              "createdAt": "2026-08-31T00:00:00.000Z"
+            },
+            {
+              "id": "golden_item:pr-source-mismatch",
+              "kind": "pull_request",
+              "actorType": "human",
+              "createdAt": "2026-08-31T12:00:00.000Z",
+              "content": "Issue全体を担当し、直接実装します。"
+            },
+            {
+              "id": "golden_item:pr-source-mismatch-comment",
+              "kind": "pull_request_comment",
+              "actorType": "human",
+              "createdAt": "2026-08-31T13:00:00.000Z",
+              "content": "別sourceのコメントです。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_owner",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "sourceIds": ["golden_item:effective-source-mismatch-issue"],
+                "confidence": 1
+              }
+            ],
+            "effectiveAssigneeEligible": true,
+            "effectiveAssigneeCandidates": [
+              {
+                "candidateId": "worker-source-mismatch",
+                "sourceIds": ["golden_item:pr-source-mismatch"],
+                "occurredAt": "2026-08-31T12:00:00.000Z"
+              }
+            ],
+            "effectiveAssigneeImplementations": [
+              {
+                "candidateId": "worker-source-mismatch",
+                "pullRequestNodeId": "pr-source-mismatch",
+                "pullRequestUrl": "https://github.com/VOICEVOX/fixture-effective/pull/807",
+                "pullRequestState": "open",
+                "relationCandidateIds": ["rel:source-mismatch-implements"]
+              }
+            ],
+            "effectiveAssigneeConfidenceThreshold": 0.85
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "4",
+          "item": {
+            "nodeId": "effective-source-mismatch-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/706"
+          },
+          "status": "waiting_for_work",
+          "waitingOn": [
+            {
+              "kind": "user",
+              "candidateId": "worker-source-mismatch",
+              "role": "assignee",
+              "reasonSummary": "候補source集合と異なるsourceを参照しています",
+              "sourceIds": ["golden_item:pr-source-mismatch-comment"],
+              "confidence": 0.95
+            }
+          ],
+          "nextAction": "worker-source-mismatchがIssueを進める",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_item:pr-source-mismatch",
+            "reasonSummary": "source集合不一致の出力です",
+            "confidence": 0.95
+          },
+          "importance": {
+            "significantFeature": false,
+            "futureRisk": false,
+            "rationale": "重要度の根拠はありません"
+          },
+          "deadline": {
+            "date": null,
+            "rationale": "期限の根拠はありません"
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_item:pr-source-mismatch-comment",
+              "supports": "waiting_on",
+              "summary": "候補に含まれないsourceを参照しています"
+            }
+          ],
+          "confidence": 0.95,
+          "uncertainties": [],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "source集合不一致はstrict gateで拒否します"
+          }
+        },
+        "rejectedOutputs": []
+      }
+    ],
+    "previousNodeStates": {}
+  }
+}
