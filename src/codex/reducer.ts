@@ -136,7 +136,10 @@ export type RunCodexAnalysisWithFallbackInput = Readonly<{
 /** 1件のCodex実行へ注入する副作用境界。 */
 export type RunCodexAnalysisWithFallbackDependencies = Readonly<{
   execute: (input: CodexAnalysisInput) => Promise<unknown>;
+  recordFailure?: (error: unknown) => Promise<void>;
 }>;
+
+type CodexAnalysisFailureRecorder = (error: unknown) => Promise<void>;
 
 function httpStatusFromError(error: unknown): number | undefined {
   if (typeof error !== "object" || error == null) {
@@ -179,7 +182,8 @@ export function classifyCodexUnavailableReason(error: unknown): CodexUnavailable
     return "semantic_validation_failed";
   }
   if (error instanceof CodexNonZeroExitError) {
-    return error.exitCode != null && error.exitCode !== 0 && error.signal == null
+    return (error.exitCode != null && error.exitCode !== 0 && error.signal == null) ||
+      (error.apiError != null && error.exitCode === 0 && error.signal == null)
       ? "execution_failed"
       : "service_unavailable";
   }
@@ -221,6 +225,7 @@ function outputValidationDiagnostic(error: unknown): CodexOutputValidationDiagno
 export async function executeValidatedCodexAnalysis(
   input: CodexAnalysisInput,
   execute: (input: CodexAnalysisInput) => Promise<unknown>,
+  recordFailure?: CodexAnalysisFailureRecorder,
 ): Promise<CodexAnalysisAttempt> {
   try {
     const output = await execute(input);
@@ -231,6 +236,9 @@ export async function executeValidatedCodexAnalysis(
   } catch (error: unknown) {
     if (error instanceof CodexTransportAliasError) {
       throw error;
+    }
+    if (recordFailure != null) {
+      await recordFailure(error);
     }
     const diagnostic = nonZeroExitDiagnostic(error);
     const validationDiagnostic = outputValidationDiagnostic(error);
@@ -608,7 +616,11 @@ export async function runCodexAnalysisWithFallback(
   input: RunCodexAnalysisWithFallbackInput,
   dependencies: RunCodexAnalysisWithFallbackDependencies,
 ): Promise<CodexAnalysisReduction> {
-  const attempt = await executeValidatedCodexAnalysis(input.analysisInput, dependencies.execute);
+  const attempt = await executeValidatedCodexAnalysis(
+    input.analysisInput,
+    dependencies.execute,
+    dependencies.recordFailure,
+  );
   return reduceCodexAnalysis(
     input.analysisInput,
     input.deterministicDecision,

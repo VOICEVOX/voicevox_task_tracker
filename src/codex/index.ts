@@ -8,11 +8,13 @@ export {
   type CodexAuthentication,
 } from "./adapter.js";
 export { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
+export { recordCodexDiagnostic, type CodexDiagnosticsContext } from "./diagnostics.js";
 export {
   runAiAnalyses,
   type AiAnalysisRunConfiguration,
   type AiAnalysisRunDependencies,
   type AiAnalysisRunFailure,
+  type AiAnalysisExecutionContext,
   type AiAnalysisRunItemResult,
   type AiAnalysisRunResult,
 } from "./analysis-runner.js";
