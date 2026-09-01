@@ -2963,6 +2963,22 @@ function countRetainedAiResults(state: RuntimeState, collection: CollectedItems)
   ).length;
 }
 
+type CodexConcurrencyConfiguration = Readonly<{
+  authentication: Config["ai"]["authentication"];
+  execution: Readonly<Pick<Config["ai"]["execution"], "maxConcurrentCalls">>;
+}>;
+
+export function effectiveCodexMaxConcurrentCalls(ai: CodexConcurrencyConfiguration): number {
+  switch (ai.authentication) {
+    case "auth-json":
+      return 1;
+    case "api-key":
+      return ai.execution.maxConcurrentCalls;
+    default:
+      throw new UnreachableError(ai.authentication);
+  }
+}
+
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -3037,7 +3053,7 @@ async function analyzeCodex(
     {
       identity,
       budget: configuration.config.ai.budget,
-      maxConcurrentCalls: configuration.config.ai.execution.maxConcurrentCalls,
+      maxConcurrentCalls: effectiveCodexMaxConcurrentCalls(configuration.config.ai),
     },
     {
       cache: state.session.aiCache,
