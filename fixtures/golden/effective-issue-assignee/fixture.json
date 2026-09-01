@@ -173,6 +173,66 @@
         "previousState": {
           "availability": "not_available"
         }
+      },
+      {
+        "type": "issue",
+        "nodeId": "effective-formal-assignee-released-issue",
+        "repositoryId": "fixture-repository-effective",
+        "number": 707,
+        "title": "正式担当解除後の古い候補の例",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-08-31T00:00:00.000Z",
+        "githubUpdatedAt": "2026-08-31T17:00:00.000Z",
+        "observedAt": "2026-09-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "effective-reporter-formal-released",
+          "login": "reporter-formal-released"
+        },
+        "assignees": [],
+        "labels": ["triage"],
+        "events": [
+          {
+            "id": "formal-assignee-added",
+            "occurredAt": "2026-08-31T10:00:00.000Z",
+            "actor": {
+              "type": "human",
+              "nodeId": "effective-maintainer-event",
+              "login": "fixture-maintainer"
+            },
+            "kind": "assignee",
+            "assignee": {
+              "type": "human",
+              "nodeId": "formal-worker-node",
+              "login": "formal-worker"
+            },
+            "action": "added"
+          },
+          {
+            "id": "formal-assignee-removed",
+            "occurredAt": "2026-08-31T17:00:00.000Z",
+            "actor": {
+              "type": "human",
+              "nodeId": "effective-maintainer-event",
+              "login": "fixture-maintainer"
+            },
+            "kind": "assignee",
+            "assignee": {
+              "type": "human",
+              "nodeId": "formal-worker-node",
+              "login": "formal-worker"
+            },
+            "action": "removed"
+          }
+        ],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "not_available"
+        }
       }
     ],
     "relations": [],
@@ -1112,6 +1172,132 @@
             "recommended": false,
             "reasonCode": "none",
             "reasonSummary": "source集合不一致はstrict gateで拒否します"
+          }
+        },
+        "rejectedOutputs": []
+      },
+      {
+        "itemNodeId": "effective-formal-assignee-released-issue",
+        "input": {
+          "schemaVersion": "1",
+          "now": "2026-09-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "effective-formal-assignee-released-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/707",
+            "type": "issue",
+            "title": "正式担当解除後の古い候補の例",
+            "authorCandidateId": "reporter-formal-released"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "maintainer",
+                "kind": "role",
+                "sourceIds": ["golden_item:effective-formal-assignee-released-issue"]
+              },
+              {
+                "id": "worker-formal-old",
+                "kind": "user",
+                "sourceIds": ["golden_item:pr-formal-old"],
+                "effectiveAssigneeCandidate": true,
+                "effectiveAssigneeSourceIds": ["golden_item:pr-formal-old"]
+              }
+            ],
+            "relations": []
+          },
+          "sources": [
+            {
+              "id": "golden_item:effective-formal-assignee-released-issue",
+              "kind": "item",
+              "actorType": "human",
+              "createdAt": "2026-08-31T00:00:00.000Z"
+            },
+            {
+              "id": "golden_item:pr-formal-old",
+              "kind": "pull_request",
+              "actorType": "human",
+              "createdAt": "2026-08-31T12:00:00.000Z",
+              "content": "Issue全体を担当し、直接関連PRで実装を進めています。"
+            }
+          ],
+          "deterministicSignals": {
+            "status": "waiting_for_owner",
+            "waitingOn": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "sourceIds": ["golden_item:effective-formal-assignee-released-issue"],
+                "confidence": 1
+              }
+            ],
+            "effectiveAssigneeEligible": true,
+            "effectiveAssigneeCandidates": [
+              {
+                "candidateId": "worker-formal-old",
+                "sourceIds": ["golden_item:pr-formal-old"],
+                "occurredAt": "2026-08-31T12:00:00.000Z"
+              }
+            ],
+            "effectiveAssigneeImplementations": [
+              {
+                "candidateId": "worker-formal-old",
+                "pullRequestNodeId": "pr-formal-old",
+                "pullRequestUrl": "https://github.com/VOICEVOX/fixture-effective/pull/808",
+                "pullRequestState": "open",
+                "relationCandidateIds": ["rel:formal-old-implements"]
+              }
+            ],
+            "effectiveAssigneeConfidenceThreshold": 0.85
+          },
+          "priorAnalysis": null
+        },
+        "acceptedOutput": {
+          "schemaVersion": "4",
+          "item": {
+            "nodeId": "effective-formal-assignee-released-issue",
+            "url": "https://github.com/VOICEVOX/fixture-effective/issues/707"
+          },
+          "status": "waiting_for_work",
+          "waitingOn": [
+            {
+              "kind": "user",
+              "candidateId": "worker-formal-old",
+              "role": "assignee",
+              "reasonSummary": "正式担当解除前にIssue全体を直接実装していました",
+              "sourceIds": ["golden_item:pr-formal-old"],
+              "confidence": 0.95
+            }
+          ],
+          "nextAction": "worker-formal-oldがIssueを進める",
+          "relations": [],
+          "progress": {
+            "latestMeaningfulSourceId": "golden_item:pr-formal-old",
+            "reasonSummary": "正式担当解除前の直接実装PRがあります",
+            "confidence": 0.95
+          },
+          "importance": {
+            "significantFeature": false,
+            "futureRisk": false,
+            "rationale": "重要度の根拠はありません"
+          },
+          "deadline": {
+            "date": null,
+            "rationale": "期限の根拠はありません"
+          },
+          "evidence": [
+            {
+              "sourceId": "golden_item:pr-formal-old",
+              "supports": "waiting_on",
+              "summary": "正式担当解除前の直接実装PRです"
+            }
+          ],
+          "confidence": 0.95,
+          "uncertainties": [],
+          "notification": {
+            "recommended": false,
+            "reasonCode": "none",
+            "reasonSummary": "正式担当解除後のため担当推定は適用しません"
           }
         },
         "rejectedOutputs": []

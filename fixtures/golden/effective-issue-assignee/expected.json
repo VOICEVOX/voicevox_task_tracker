@@ -16,6 +16,19 @@
       "stallSince": "2026-08-31T00:00:00.000Z"
     },
     {
+      "nodeId": "effective-formal-assignee-released-issue",
+      "status": "waiting_for_owner",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "fixture-maintainer",
+          "role": "maintainer"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-31T17:00:00.000Z"
+    },
+    {
       "nodeId": "effective-joint-issue",
       "status": "waiting_for_work",
       "waitingOn": [
@@ -92,7 +105,7 @@
     "status": "published"
   },
   "fixedAi": {
-    "acceptedOutputCount": 6,
+    "acceptedOutputCount": 7,
     "rejectedOutputCount": 2,
     "networkCallCount": 0
   }

@@ -122,6 +122,7 @@ const MAINTAINERS = Object.freeze(["fixture-maintainer"]);
 
 type GoldenItemInput = StandardGoldenInput["items"][number];
 type GoldenRelationInput = StandardGoldenInput["relations"][number];
+type GoldenAssigneeEvent = Extract<GoldenItemInput["events"][number], { kind: "assignee" }>;
 
 const effectiveAssigneeCandidateSignalSchema = z.strictObject({
   candidateId: z.string().min(1).regex(/^\S+$/u),
@@ -723,6 +724,32 @@ function sourceIdSetsMatch(left: readonly SourceId[], right: readonly SourceId[]
   return left.length === right.length && left.every((sourceId) => rightSourceIds.has(sourceId));
 }
 
+function latestEffectiveAssigneeUnassignmentAt(
+  item: Extract<GoldenItemInput, { type: "issue" }>,
+): UtcIsoDateTime | undefined {
+  const activeAssigneeNodeIds = new Set<string>();
+  let latestUnassignedAt: UtcIsoDateTime | undefined;
+  const assigneeEvents = item.events
+    .filter((event): event is GoldenAssigneeEvent => event.kind === "assignee")
+    .sort((left, right) => {
+      if (left.occurredAt !== right.occurredAt) {
+        return compareStrings(left.occurredAt, right.occurredAt);
+      }
+      return compareStrings(left.id, right.id);
+    });
+  for (const event of assigneeEvents) {
+    if (event.action === "added") {
+      activeAssigneeNodeIds.add(event.assignee.nodeId);
+      continue;
+    }
+    const removed = activeAssigneeNodeIds.delete(event.assignee.nodeId);
+    if (removed && activeAssigneeNodeIds.size === 0) {
+      latestUnassignedAt = createUtcIsoDateTime(event.occurredAt);
+    }
+  }
+  return latestUnassignedAt;
+}
+
 function createEffectiveAssigneeAssessment(
   item: GoldenItemInput,
   evaluatedAt: UtcIsoDateTime,
@@ -795,6 +822,15 @@ function createEffectiveAssigneeAssessment(
   });
   const firstCandidate = selectedCandidates[0];
   assertNonNullable(firstCandidate, "実質担当判定の候補がありません");
+  const latestUnassignedAt = latestEffectiveAssigneeUnassignmentAt(item);
+  if (
+    latestUnassignedAt != null &&
+    selectedCandidates.some((candidate) => candidate.occurredAt <= latestUnassignedAt)
+  ) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
   const occurredAt = selectedCandidates
     .slice(1)
     .reduce(
