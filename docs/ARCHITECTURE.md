@@ -309,8 +309,7 @@ call数、入力文字数、推定費用の上限を超えた候補を優先順�
 本番経路は実入力から推定費用を算出し、blocker変化と前回graphのdownstream impactを予算不足時の優先順位へ反映します。
 これらの条件が同じ候補では、前回延期された項目をnode ID順より先にします。
 
-予算計画で選ばれた候補は、`api-key`認証では`ai.execution.maxConcurrentCalls`を上限に並列実行し、`auth-json`認証では設定値にかかわらず1件ずつ実行します。
-`auth-json`認証では同じ更新可能な`auth.json`を複数のCodex processで共有するとtoken rotationが競合するため、実効同時実行数を1にします。
+予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`件まで同時に実行します。
 判定結果と失敗の並びは完了順ではなく予算計画順へ再構成するため、並列度を変えてもrun reportとstateのbyte列は変わりません。
 実行中に予期しない例外が出た場合は新しい候補の実行を始めず、実行中の候補の完了を待ってから例外を伝播します。
 
