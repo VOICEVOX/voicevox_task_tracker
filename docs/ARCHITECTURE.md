@@ -114,7 +114,7 @@ Codex実行では試行ごとに終了状態、標準出力、標準エラー出
 
 日次workflowはtracker CLIを実行するjobごとにrunnerの一時directoryへJSONLを作ります。
 各jobの最後に32 byteの共通鍵とAES-256-GCMで暗号化し、暗号化済みファイルだけを保持期間7日のActions artifactへ保存します。
-暗号化鍵はOrganization secretから暗号化stepだけへ渡します。
+暗号化鍵はrepository secretから暗号化stepだけへ渡します。
 平文JSONLは暗号化処理の成否にかかわらずjobの終了前に削除します。
 暗号化済みartifactはdefault branchのscheduleと手動実行でだけ作成します。
 

@@ -45,19 +45,18 @@ workflowでは`GH_APP_INSTALLATION_ID`を設定しません。
 
 repositoryのSettingsからActions variableとActions secretを登録します。
 
-| 名前                             | 種別     | 値                                                  |
-| -------------------------------- | -------- | --------------------------------------------------- |
-| `GH_APP_ID`                      | Variable | GitHub Appの数値ID                                  |
-| `GH_APP_PRIVATE_KEY`             | Secret   | GitHub Appから発行したPEM private key               |
-| `CODEX_AUTH_JSON`                | Secret   | Codexの`auth.json`の中身                            |
-| `CODEX_AUTH_SYNC_TOKEN`          | Secret   | Codex認証同期用のfine-grained personal access token |
-| `DISCORD_WEBHOOK_URL`            | Secret   | 通常digest用のIncoming Webhook URL                  |
-| `DISCORD_OPERATIONS_WEBHOOK_URL` | Secret   | 運用障害通知用のIncoming Webhook URL                |
+| 名前                                                  | 種別     | 値                                                  |
+| ----------------------------------------------------- | -------- | --------------------------------------------------- |
+| `GH_APP_ID`                                           | Variable | GitHub Appの数値ID                                  |
+| `GH_APP_PRIVATE_KEY`                                  | Secret   | GitHub Appから発行したPEM private key               |
+| `CODEX_AUTH_JSON`                                     | Secret   | Codexの`auth.json`の中身                            |
+| `CODEX_AUTH_SYNC_TOKEN`                               | Secret   | Codex認証同期用のfine-grained personal access token |
+| `DISCORD_WEBHOOK_URL`                                 | Secret   | 通常digest用のIncoming Webhook URL                  |
+| `DISCORD_OPERATIONS_WEBHOOK_URL`                      | Secret   | 運用障害通知用のIncoming Webhook URL                |
+| `VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64` | Secret   | 詳細診断artifactの暗号化鍵                          |
 
 PEM private keyは改行を保持したままsecretへ登録します。
 
-詳細診断の暗号化鍵は`VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64`というOrganization secretへ登録します。
-利用できるrepositoryは`voicevox_task_tracker`だけに限定します。
 鍵は32 byteの乱数をBase64へ変換した値です。
 Git管理外の安全なdirectoryで鍵ファイルを作り、権限を600にしてください。
 
@@ -65,7 +64,7 @@ Git管理外の安全なdirectoryで鍵ファイルを作り、権限を600に�
 umask 077
 openssl rand 32 | openssl base64 -A > path/to/diagnostics-key.b64
 chmod 600 path/to/diagnostics-key.b64
-gh secret set VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 --org VOICEVOX --repos voicevox_task_tracker < path/to/diagnostics-key.b64
+gh secret set VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 --repo VOICEVOX/voicevox_task_tracker < path/to/diagnostics-key.b64
 ```
 
 鍵ファイルは暗号化済み診断artifactの復号に必要です。
