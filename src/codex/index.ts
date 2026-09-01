@@ -1,6 +1,7 @@
 export {
   CODEX_AUTHENTICATIONS,
   createCodexEnvironment,
+  executeCodexAuthenticationPreflight,
   executeCodexAnalysis,
   getCodexEnvironmentVariableAllowlist,
   type CodexAdapterConfiguration,

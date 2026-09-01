@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { readFile, rm, writeFile } from "node:fs/promises";
+import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,12 +10,14 @@ import { z } from "zod";
 import { createDiagnosticsRecorder } from "../diagnostics/index.js";
 import {
   createCodexAnalysisInput,
+  executeCodexAuthenticationPreflight,
   executeCodexAnalysis,
   executeValidatedCodexAnalysis,
   type CodexAdapterConfiguration,
 } from "./index.js";
 import { recordCodexDiagnostic } from "./diagnostics.js";
-import { CodexProcessStartError } from "./errors.js";
+import { CodexNonZeroExitError, CodexProcessStartError } from "./errors.js";
+import type { CodexProcessRequest } from "./process-runner.js";
 
 const diagnosticsRecordSchema = z.strictObject({
   sequence: z.number(),
@@ -355,4 +357,312 @@ void test("診断未設定でもCodex adapterの既存実行結果を返す", as
   });
 
   assert.equal(result.item.nodeId, "item-1");
+});
+
+void test("Codex認証preflightは固定promptと空の作業directoryで実行する", async () => {
+  let capturedRequest: CodexProcessRequest | undefined;
+  let workingDirectory: string | undefined;
+  await executeCodexAuthenticationPreflight(
+    {
+      ...configuration,
+      authentication: "auth-json",
+    },
+    {
+      environment: {
+        CODEX_HOME: "/tmp/codex-home",
+        HOME: "/tmp",
+        PATH: process.env["PATH"] ?? "/usr/bin",
+      },
+      processRunner: async (request) => {
+        capturedRequest = request;
+        workingDirectory = request.workingDirectory;
+        assert.deepEqual(await readdir(request.workingDirectory), []);
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "候補やsystem promptを含まない応答",
+          stderr: "",
+        };
+      },
+      runtime: {
+        sleep: () => Promise.resolve(),
+        random: () => 0,
+      },
+    },
+  );
+
+  assert.ok(capturedRequest);
+  assert.equal(capturedRequest.command, "codex");
+  assert.equal(capturedRequest.standardInput, "");
+  assert.equal(capturedRequest.arguments[0], "exec");
+  assert.equal(capturedRequest.arguments.includes("--strict-config"), true);
+  assert.equal(capturedRequest.arguments.includes("--ignore-user-config"), true);
+  assert.equal(capturedRequest.arguments.includes("--ignore-rules"), true);
+  assert.equal(capturedRequest.arguments.includes("--ephemeral"), true);
+  assert.equal(capturedRequest.arguments.includes("--skip-git-repo-check"), true);
+  assert.equal(capturedRequest.arguments.includes("--output-schema"), false);
+  assert.equal(capturedRequest.arguments.includes("--output-last-message"), false);
+  assert.equal(capturedRequest.arguments.includes("test issue"), false);
+  assert.equal(capturedRequest.arguments.includes("GitHub"), false);
+  assert.deepEqual(capturedRequest.environment, {
+    CODEX_HOME: "/tmp/codex-home",
+    HOME: "/tmp",
+    PATH: process.env["PATH"] ?? "/usr/bin",
+  });
+  assert.ok(workingDirectory);
+  await assert.rejects(readdir(workingDirectory));
+});
+
+void test("Codex認証preflightのprocess失敗はcauseとstackを保って伝播しcleanupする", async () => {
+  let workingDirectory: string | undefined;
+  const processError = new Error("processを起動できません");
+  const singleAttemptConfiguration = {
+    ...configuration,
+    execution: {
+      ...configuration.execution,
+      maxAttempts: 1,
+    },
+  } satisfies CodexAdapterConfiguration;
+
+  await assert.rejects(
+    executeCodexAuthenticationPreflight(singleAttemptConfiguration, {
+      environment: {
+        HOME: "/tmp",
+        OPENAI_API_KEY: "test-key",
+        PATH: process.env["PATH"] ?? "/usr/bin",
+      },
+      processRunner: (request) => {
+        workingDirectory = request.workingDirectory;
+        throw processError;
+      },
+      runtime: {
+        sleep: () => Promise.resolve(),
+        random: () => 0,
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof CodexProcessStartError);
+      assert.equal(error.cause, processError);
+      assert.match(error.stack ?? "", /CodexProcessStartError/u);
+      return true;
+    },
+  );
+
+  assert.ok(workingDirectory);
+  await assert.rejects(readdir(workingDirectory));
+});
+
+void test("Codex認証preflightはtimeoutを逐次retryし各directoryをcleanupする", async () => {
+  const directories: string[] = [];
+  const waits: number[] = [];
+  let processCount = 0;
+  let activeProcesses = 0;
+  let maximumActiveProcesses = 0;
+  await executeCodexAuthenticationPreflight(configuration, {
+    environment: {
+      HOME: "/tmp",
+      OPENAI_API_KEY: "test-key",
+      PATH: process.env["PATH"] ?? "/usr/bin",
+    },
+    processRunner: async (request) => {
+      processCount += 1;
+      directories.push(request.workingDirectory);
+      activeProcesses += 1;
+      maximumActiveProcesses = Math.max(maximumActiveProcesses, activeProcesses);
+      await Promise.resolve();
+      activeProcesses -= 1;
+      if (processCount === 1) {
+        return {
+          exitCode: null,
+          signal: "SIGTERM",
+          timedOut: true,
+          stdout: "first stdout",
+          stderr: "first stderr",
+        };
+      }
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "second stdout",
+        stderr: "second stderr",
+      };
+    },
+    runtime: {
+      sleep: (delayMilliseconds) => {
+        waits.push(delayMilliseconds);
+        return Promise.resolve();
+      },
+      random: () => 0,
+    },
+  });
+
+  assert.equal(processCount, 2);
+  assert.equal(maximumActiveProcesses, 1);
+  assert.deepEqual(waits, [0]);
+  assert.equal(new Set(directories).size, 2);
+  for (const directory of directories) {
+    await assert.rejects(readdir(directory));
+  }
+});
+
+void test("Codex認証preflightの非zero終了を診断へ保存する", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const diagnosticsPath = join(directory, "diagnostics.jsonl");
+    const recorder = await createDiagnosticsRecorder({ path: diagnosticsPath });
+    const singleAttemptConfiguration = {
+      ...configuration,
+      execution: {
+        ...configuration.execution,
+        maxAttempts: 1,
+      },
+    } satisfies CodexAdapterConfiguration;
+    await assert.rejects(
+      executeCodexAuthenticationPreflight(singleAttemptConfiguration, {
+        environment: {
+          HOME: "/tmp",
+          OPENAI_API_KEY: "test-key",
+          PATH: process.env["PATH"] ?? "/usr/bin",
+        },
+        processRunner: () =>
+          Promise.resolve({
+            exitCode: 1,
+            signal: null,
+            timedOut: false,
+            apiError: {
+              type: "authentication_error",
+              code: "invalid_api_key",
+              status: "401",
+            },
+            stdout: "preflight stdout",
+            stderr: "preflight stderr",
+          }),
+        runtime: {
+          sleep: () => Promise.resolve(),
+          random: () => 0,
+        },
+        diagnostics: {
+          recorder,
+          runId: "run-1",
+          invocationId: "invocation-1",
+        },
+      }),
+      (error: unknown) => error instanceof CodexNonZeroExitError,
+    );
+    await recorder.close();
+
+    const records = (await readFile(diagnosticsPath, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((line) => {
+        const value: unknown = JSON.parse(line);
+        return diagnosticsRecordSchema.parse(value);
+      });
+    const completed = records.find(
+      (record) => record.event === "codex.authentication_preflight.attempt.completed",
+    );
+    assert.ok(completed);
+    assert.ok(completed.details);
+    assert.equal(completed.details["stdout"], "preflight stdout");
+    assert.equal(completed.details["stderr"], "preflight stderr");
+    assert.deepEqual(completed.details["apiError"], {
+      type: "authentication_error",
+      code: "invalid_api_key",
+      status: "401",
+    });
+    assert.equal(completed.details["outcome"], "failure");
+  });
+});
+
+void test("Codex認証preflightはstdoutのAPI errorイベントとJSONL解析失敗を診断する", async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const diagnosticsPath = join(directory, "diagnostics.jsonl");
+    const recorder = await createDiagnosticsRecorder({ path: diagnosticsPath });
+    const singleAttemptConfiguration = {
+      ...configuration,
+      execution: {
+        ...configuration.execution,
+        maxAttempts: 1,
+      },
+    } satisfies CodexAdapterConfiguration;
+    await assert.rejects(
+      executeCodexAuthenticationPreflight(singleAttemptConfiguration, {
+        environment: {
+          HOME: "/tmp",
+          OPENAI_API_KEY: "test-key",
+          PATH: process.env["PATH"] ?? "/usr/bin",
+        },
+        processRunner: () =>
+          Promise.resolve({
+            exitCode: 0,
+            signal: null,
+            timedOut: false,
+            stdout: [
+              "not-json",
+              JSON.stringify({
+                type: "turn.failed",
+                error: {
+                  code: "server_error",
+                  status: 503,
+                },
+              }),
+              JSON.stringify({
+                event: "error",
+                error: {
+                  type: "transport_error",
+                },
+              }),
+            ].join("\n"),
+            stderr: "preflight stderr",
+          }),
+        runtime: {
+          sleep: () => Promise.resolve(),
+          random: () => 0,
+        },
+        diagnostics: {
+          recorder,
+          runId: "run-1",
+          invocationId: "invocation-1",
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof CodexNonZeroExitError);
+        assert.equal(error.exitCode, 0);
+        assert.deepEqual(error.apiError, {
+          type: "turn.failed",
+          code: "server_error",
+          status: "503",
+        });
+        return true;
+      },
+    );
+    await recorder.close();
+
+    const records = (await readFile(diagnosticsPath, "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((line) => {
+        const value: unknown = JSON.parse(line);
+        return diagnosticsRecordSchema.parse(value);
+      });
+    const parseFailure = records.find(
+      (record) => record.event === "codex.stdout.json_parse_failed",
+    );
+    assert.ok(parseFailure);
+    const apiEvents = records.filter(
+      (record) =>
+        record.event === "codex.stdout.turn_failed" || record.event === "codex.stdout.error",
+    );
+    assert.equal(apiEvents.length, 2);
+    for (const event of apiEvents) {
+      assert.ok(event.details);
+      assert.deepEqual(event.details["apiError"], {
+        type: "turn.failed",
+        code: "server_error",
+        status: "503",
+      });
+      assert.ok(event.error);
+    }
+  });
 });
