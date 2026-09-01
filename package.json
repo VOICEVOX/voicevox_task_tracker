@@ -16,7 +16,7 @@
     "perf:profile": "tsc --project tsconfig.build.json && node dist/performance/run-profile.js",
     "tracker:run": "node dist/cli/tracker-run.js",
     "diagnostics": "node dist/diagnostics/cli.js",
-    "test:diagnostics": "tsc --project tsconfig.build.json --incremental false && pnpm build:workflow-cli && node --test \"dist/diagnostics/*.test.js\" \"dist/codex/*.test.js\" \"dist/cli/tracker-run.test.js\"",
+    "test:diagnostics": "tsc --project tsconfig.build.json --incremental false && pnpm build:workflow-cli && node --test \"dist/diagnostics/*.test.js\" \"dist/codex/*.test.js\" \"dist/cli/production-runtime.test.js\" \"dist/cli/tracker-run.test.js\"",
     "typecheck": "tsc --project tsconfig.json && tsc --project web/tsconfig.json",
     "lint": "eslint .",
     "format": "prettier --write .",
