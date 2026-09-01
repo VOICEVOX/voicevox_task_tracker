@@ -99,6 +99,9 @@ gh secret set CODEX_AUTH_SYNC_TOKEN --repo VOICEVOX/voicevox_task_tracker
 Codexへ渡す認証用の環境変数は`CODEX_HOME`だけです。
 Codex CLIはaccess tokenの残り有効期間が5分未満になるとrefresh tokenでtokenを更新し、`auth.json`を書き換えます。
 このときrefresh token自体も新しい値へ入れ替わるため、更新後の`auth.json`を保存しないといずれ認証エラーになります。
+`auth-json`で実行候補が1件以上あるrunでは、候補processより先に固定した短文による認証preflightを空の一時directoryで1論理call実行します。候補データと通常のsystem promptは渡さず、preflightの完了後に設定済みの並列度で候補を処理します。候補なし、cache hitだけ、全候補が予算延期のrunでは実行しません。
+`api-key`ではpreflightを実行しません。このpreflightは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば、認証競合は残ります。
+preflightに失敗したrunは候補を1件も開始せず、`codex_analysis`を失敗させます。
 認証ファイルの配置に成功していれば、書き戻しstepは先行stepの成否を問わず実行します。
 `CODEX_AUTH_SYNC_TOKEN`はこのstepだけへ`GH_TOKEN`として渡し、空なら明示的に失敗します。
 書き戻しstepは配置時のsha256と現在の`auth.json`を比較します。
@@ -134,6 +137,7 @@ artifactを利用する後続jobは同じartifactを再検証してから利用�
 最後の`report-workflow`は全jobの結果と必須metricを`artifacts/run-reports/workflow.json`へまとめ、別のActions artifactへ保存します。
 これらのreport artifactはstateとPagesの入力にしません。
 詳細診断はrunnerの一時directoryでjobごとのJSONLへ記録し、AES-256-GCMで暗号化してから専用artifactへ保存します。
+認証preflightの開始と終了は`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`で確認でき、標準出力、標準エラー出力、stackも暗号化診断に記録します。raw出力は公開run reportへ載せません。
 平文のJSONLは暗号化処理の成否にかかわらず削除します。
 暗号化鍵を渡すのは暗号化stepだけです。
 詳細診断artifactの保持期間は7日で、公開可能なrun artifact、state、Pagesの入力には使いません。
@@ -312,6 +316,7 @@ pnpm exec codex --version
 `CODEX_HOME`直下の`auth.json`を使って同じ`dry-run`を実行し、`ai.model`に設定されたmodel IDでCodex呼び出しが成功することを確認します。
 ローカルで`api-key`を使う場合は、`ai.authentication`を`api-key`にして`OPENAI_API_KEY`を渡します。
 どちらの方式でも、選択しなかった方式の環境変数はCodexへ渡りません。
+`auth-json`で候補を実行するrunでは、preflightを含む`metrics.aiCallCount`と`metrics.estimatedInputTokens`を確認します。preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の50 call設定では最大49候補になり、retryで複数attemptになっても予算上は1論理callです。
 
 `metrics.aiCallCount`が1以上で`status`が`success`となり、`diagnostics`にmodelの利用不可を示す内容がなければ、設定済みmodel IDを利用できています。
 `metrics.aiCallCount`が0ならmodelを呼び出していないため、利用可否を確認できていません。

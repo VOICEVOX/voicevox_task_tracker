@@ -43,10 +43,10 @@ run reportの主な確認項目は次のとおりです。
 | `metrics.itemCount`                 | 追跡項目数                                                                    |
 | `metrics.changedItemCount`          | 前回から更新された追跡項目数                                                  |
 | `metrics.activeEdgeCount`           | 有効な関係edge数                                                              |
-| `metrics.aiCallCount`               | Codexを実行した件数                                                           |
+| `metrics.aiCallCount`               | preflightを含むCodexの論理call数。retryのattempt数は含めない                  |
 | `metrics.aiCacheHitCount`           | AI cacheを再利用した件数                                                      |
 | `metrics.aiRetainedResultCount`     | AI分析対象へ入れず前回のAI結果を保持した件数                                  |
-| `metrics.estimatedInputTokens`      | Codex入力tokenの見積り                                                        |
+| `metrics.estimatedInputTokens`      | preflightを含むCodex入力tokenの見積り                                         |
 | `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                  |
 | `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                  |
 | `metrics.notificationCount`         | Discord送信結果を通知管理記録へ記録した通知数。`dismiss-current`では0         |
@@ -56,6 +56,13 @@ run reportの主な確認項目は次のとおりです。
 Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`へ違反件数が`validationIssueCount`として残ります。
 違反した検証ルールは先頭5件まで`validationIssue0Path`と`validationIssue0Code`の形式で残り、添字は0から始まります。
 違反の`message`は入力値を含みうるため残しません。
+
+## Codex認証preflight
+
+`auth-json`で実行候補が1件以上あるrunだけ、候補processより先に固定した短文を空の一時directoryで実行します。候補データと通常のsystem promptは渡さず、preflightの完了後に候補workerを`ai.execution.maxConcurrentCalls`の設定値まで並列実行します。
+`api-key`、候補なし、cache hitだけのrun、全候補が予算延期されたrunでは実行しません。preflightに失敗した場合は候補を1件も開始せず、`codex_analysis`を失敗させます。
+preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の50 call設定では最大49候補になり、retryで複数attemptになっても予算上は1論理callです。成功runの`aiCallCount`と`estimatedInputTokens`にも含まれます。
+これは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば認証競合は残ります。
 
 `tracker-state`は自動更新専用です。
 人間がsnapshot、履歴、AI cache、通知管理記録を直接編集すると履歴と通知抑制の整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
@@ -349,6 +356,7 @@ node dist/cli/tracker-run.js diagnostics decrypt \
 ```
 
 復号したJSONLには、例外のstack、cause、AggregateErrorの各error、Codexの試行番号、終了状態、標準出力、標準エラー出力、最終応答が記録されます。
+認証preflightは`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`で開始と終了を確認できます。標準出力、標準エラー出力、stackも暗号化診断にだけ記録し、公開run reportへraw出力を載せません。preflight失敗runでは通常metricsは完成しません。
 内容は公開用に無害化していないため、調査はローカルで行い、そのまま公開IssueやPull Requestへ貼り付けないでください。
 CLIが起動する前に失敗した場合や暗号化処理自体が失敗した場合は、対応するartifactが作られないことがあります。
 
