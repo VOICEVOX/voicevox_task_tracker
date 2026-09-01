@@ -2,6 +2,8 @@ import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
+  CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+  CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
   createCodexEnvironment,
   createCodexAnalysisInput,
   estimateAiInputCost,
@@ -519,6 +521,10 @@ export type ProductionRuntimeAdapters = Readonly<{
     configuration: CodexAdapterConfiguration,
     dependencies: CodexAdapterDependencies,
   ) => Promise<unknown>;
+  executeCodexAuthenticationPreflight: (
+    configuration: CodexAdapterConfiguration,
+    dependencies: CodexAdapterDependencies,
+  ) => Promise<void>;
   readReplayFixture: typeof readReplayFixtureFile;
   readReplayState: typeof readReplayStateFile;
   readGoldenFixtures: typeof readGoldenFixtureFiles;
@@ -2963,6 +2969,54 @@ function countRetainedAiResults(state: RuntimeState, collection: CollectedItems)
   ).length;
 }
 
+function createCodexAdapterConfiguration(config: Config): CodexAdapterConfiguration {
+  return Object.freeze({
+    authentication: config.ai.authentication,
+    model: config.ai.model,
+    execution: {
+      timeoutSeconds: config.ai.execution.timeoutSeconds,
+      maxAttempts: config.ai.execution.maxAttempts,
+      sandbox: config.ai.execution.sandbox,
+      approvalPolicy: config.ai.execution.approvalPolicy,
+      reasoningEffort: config.ai.execution.reasoningEffort,
+    },
+    retry: {
+      initialDelaySeconds: config.operations.retry.initialDelaySeconds,
+      maxDelaySeconds: config.operations.retry.maxDelaySeconds,
+    },
+  }) satisfies CodexAdapterConfiguration;
+}
+
+function createCodexAdapterDependencies(
+  adapters: ProductionRuntimeAdapters,
+  credentials: EnabledCodexCredentials,
+  diagnostics: CodexDiagnosticsContext | undefined,
+): CodexAdapterDependencies {
+  return Object.freeze({
+    environment: credentials.environment,
+    processRunner: adapters.codexProcessRunner,
+    runtime: {
+      sleep: adapters.sleep,
+      random: adapters.random,
+    },
+    ...(diagnostics == null ? {} : { diagnostics }),
+  });
+}
+
+function createCodexPreflightDiagnostics(
+  diagnostics: CodexDiagnosticsContext | undefined,
+  invocation: DailyRunInvocation,
+): CodexDiagnosticsContext | undefined {
+  if (diagnostics == null) {
+    return undefined;
+  }
+  return Object.freeze({
+    recorder: diagnostics.recorder,
+    ...(diagnostics.runId == null ? {} : { runId: diagnostics.runId }),
+    invocationId: `${invocation.runId}:codex:authentication-preflight`,
+  });
+}
+
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -3032,6 +3086,35 @@ async function analyzeCodex(
   if (!codexCredentials.enabled) {
     throw new TypeError("AIが有効ですがCodex認証情報がありません");
   }
+  const codexConfiguration = createCodexAdapterConfiguration(configuration.config);
+  const codexDependencies = createCodexAdapterDependencies(adapters, codexCredentials, diagnostics);
+  const preflightInputCost =
+    codexCredentials.authentication === "auth-json"
+      ? estimateAiInputCost(
+          CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+          configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
+        )
+      : undefined;
+  const preflightDiagnostics = createCodexPreflightDiagnostics(diagnostics, invocation);
+  const preflight =
+    preflightInputCost == null
+      ? undefined
+      : Object.freeze({
+          inputCharacters: CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+          estimatedCostUsd: preflightInputCost.estimatedCostUsd,
+          execute: () =>
+            adapters.executeCodexAuthenticationPreflight(
+              codexConfiguration,
+              Object.freeze({
+                ...codexDependencies,
+                ...(preflightDiagnostics == null
+                  ? {}
+                  : {
+                      diagnostics: preflightDiagnostics,
+                    }),
+              }),
+            ),
+        });
   const executedRun = await runAiAnalyses(
     prepared.candidates,
     {
@@ -3041,32 +3124,14 @@ async function analyzeCodex(
     },
     {
       cache: state.session.aiCache,
+      ...(preflight == null ? {} : { preflight }),
       ...(diagnostics == null ? {} : { diagnostics }),
       execute: (input, context) =>
         adapters.executeCodexAnalysis(
           input,
-          {
-            authentication: configuration.config.ai.authentication,
-            model: configuration.config.ai.model,
-            execution: {
-              timeoutSeconds: configuration.config.ai.execution.timeoutSeconds,
-              maxAttempts: configuration.config.ai.execution.maxAttempts,
-              sandbox: configuration.config.ai.execution.sandbox,
-              approvalPolicy: configuration.config.ai.execution.approvalPolicy,
-              reasoningEffort: configuration.config.ai.execution.reasoningEffort,
-            },
-            retry: {
-              initialDelaySeconds: configuration.config.operations.retry.initialDelaySeconds,
-              maxDelaySeconds: configuration.config.operations.retry.maxDelaySeconds,
-            },
-          },
-          {
-            environment: codexCredentials.environment,
-            processRunner: adapters.codexProcessRunner,
-            runtime: {
-              sleep: adapters.sleep,
-              random: adapters.random,
-            },
+          codexConfiguration,
+          Object.freeze({
+            ...codexDependencies,
             ...(diagnostics == null
               ? {}
               : {
@@ -3076,7 +3141,7 @@ async function analyzeCodex(
                     candidateId: context.candidateId,
                   }),
                 }),
-          },
+          }),
         ),
       executedAt: () => collection.evaluatedAt,
     },

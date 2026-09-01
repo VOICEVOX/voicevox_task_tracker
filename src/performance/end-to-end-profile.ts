@@ -548,6 +548,8 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
       );
     },
     executeCodexAnalysis: (input) => Promise.resolve(createCodexOutput(input)),
+    executeCodexAuthenticationPreflight: () =>
+      Promise.reject(new TypeError("性能profileではCodex認証preflightを実行しません")),
     readReplayFixture: () => Promise.reject(new TypeError("性能profileではreplayしません")),
     readReplayState: () => Promise.reject(new TypeError("性能profileではstate replayしません")),
     readGoldenFixtures: () => Promise.reject(new TypeError("性能profileではgolden evalしません")),

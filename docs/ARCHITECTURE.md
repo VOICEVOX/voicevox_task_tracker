@@ -110,6 +110,7 @@ run reportの`diagnostics`は、secretや信頼できない本文を含めない
 
 CLIの未処理エラーは既存の最上位境界まで伝播させ、境界でstack、cause、AggregateErrorの各errorを記録します。
 Codex実行では試行ごとに終了状態、標準出力、標準エラー出力、最終応答、検証エラーを記録します。
+認証preflightでは`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`を暗号化診断へ記録し、開始、終了、標準出力、標準エラー出力、stackを確認できます。raw出力は公開run reportへ載せません。
 通常のActions logには従来どおり公開可能なエラーだけを出します。
 
 日次workflowはtracker CLIを実行するjobごとにrunnerの一時directoryへJSONLを作ります。
@@ -309,6 +310,10 @@ call数、入力文字数、推定費用の上限を超えた候補を優先順�
 本番経路は実入力から推定費用を算出し、blocker変化と前回graphのdownstream impactを予算不足時の優先順位へ反映します。
 これらの条件が同じ候補では、前回延期された項目をnode ID順より先にします。
 
+`auth-json`で実行候補が1件以上あるrunだけ、候補workerより先にCodex認証preflightを1論理call実行します。preflightは固定した短文を、候補データと通常のsystem promptを含めず、空の一時directoryで実行します。preflightの完了を待ってから、予算計画で選ばれた候補を`ai.execution.maxConcurrentCalls`の設定値まで並列実行します。
+`api-key`、候補なし、cache hitだけのrun、全候補が予算延期されたrunではpreflightを実行しません。preflightに失敗したrunは候補を1件も開始せず、`codex_analysis`を失敗させます。
+preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の50 call設定では、preflightを含めて最大49候補を実行できます。retryで複数attemptになっても、予算上は1論理callです。
+
 予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`件まで同時に実行します。
 判定結果と失敗の並びは完了順ではなく予算計画順へ再構成するため、並列度を変えてもrun reportとstateのbyte列は変わりません。
 実行中に予期しない例外が出た場合は新しい候補の実行を始めず、実行中の候補の完了を待ってから例外を伝播します。
@@ -336,6 +341,8 @@ Issue本文、コメント、ラベル、ユーザー名はID付きの信頼で�
 Codexのtimeout、rate limit、不正JSON、一時的なprocess起動失敗、signal終了は`ai.execution.maxAttempts`まで再試行します。
 待機時間は`operations.retry`の初期待機時間と最大待機時間を使い、指数backoffとjitterを適用します。
 非ゼロ終了、固定資材や設定の不備、恒久的なprocess起動失敗は再試行しません。
+成功runの`aiCallCount`と`estimatedInputTokens`には、実行したpreflightを含めます。preflight失敗runでは通常のmetricsを完成させず、attemptの詳細を暗号化診断で確認します。
+preflightは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば、認証競合は残ります。
 Discordはtransport例外とHTTP 429、503だけを同じ設定で再試行し、他のHTTP status、secret不備、成功応答のschema不正は直ちに失敗します。
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。

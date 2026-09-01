@@ -32,6 +32,7 @@ import {
 } from "./process-runner.js";
 import { REASONING_EFFORTS } from "../domain/index.js";
 import { UnreachableError } from "../util/index.js";
+import { CODEX_AUTHENTICATION_PREFLIGHT_PROMPT } from "./preflight.js";
 import { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 
 const CODEX_COMMAND = "codex";
@@ -95,6 +96,17 @@ const codexAdapterConfigurationSchema = z.strictObject({
 
 /** Codex adapterのモデルと隔離実行設定。 */
 export type CodexAdapterConfiguration = z.output<typeof codexAdapterConfigurationSchema>;
+
+function parseCodexAdapterConfiguration(
+  configurationValue: CodexAdapterConfiguration,
+): CodexAdapterConfiguration {
+  return codexAdapterConfigurationSchema.parse({
+    authentication: configurationValue.authentication,
+    model: configurationValue.model,
+    execution: configurationValue.execution,
+    retry: configurationValue.retry,
+  });
+}
 
 /** Codex adapterへ注入する副作用境界。 */
 export type CodexAdapterDependencies = Readonly<{
@@ -196,6 +208,42 @@ function createProcessRequest(
     workingDirectory,
     environment: createCodexEnvironment(configuration.authentication, dependencies.environment),
     standardInput: inputJson,
+    timeoutMilliseconds: configuration.execution.timeoutSeconds * 1000,
+  };
+}
+
+function createAuthenticationPreflightProcessRequest(
+  configuration: CodexAdapterConfiguration,
+  dependencies: CodexAdapterDependencies,
+  workingDirectory: string,
+): CodexProcessRequest {
+  return {
+    command: CODEX_COMMAND,
+    arguments: [
+      "exec",
+      "--json",
+      "--strict-config",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--ephemeral",
+      "--skip-git-repo-check",
+      "--model",
+      configuration.model,
+      "-s",
+      configuration.execution.sandbox,
+      "-c",
+      `approval_policy="${configuration.execution.approvalPolicy}"`,
+      "-c",
+      `model_reasoning_effort="${configuration.execution.reasoningEffort}"`,
+      "-C",
+      workingDirectory,
+      "--color",
+      "never",
+      CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+    ],
+    workingDirectory,
+    environment: createCodexEnvironment(configuration.authentication, dependencies.environment),
+    standardInput: "",
     timeoutMilliseconds: configuration.execution.timeoutSeconds * 1000,
   };
 }
@@ -648,6 +696,193 @@ async function executeAttempt(
   return outcome.value;
 }
 
+function preflightAttemptDetails(
+  configuration: CodexAdapterConfiguration,
+  attempts: number,
+  request: CodexProcessRequest | undefined,
+  processResult: CodexProcessResult | undefined,
+  stdout: string,
+  stderr: string,
+  apiError: CodexApiErrorDiagnostic | undefined,
+  outcome: "success" | "failure",
+): Readonly<Record<string, DiagnosticsJsonValue>> {
+  const details: Record<string, DiagnosticsJsonValue> = {
+    attempt: attempts,
+    command: CODEX_COMMAND,
+    model: configuration.model,
+    timeoutMilliseconds:
+      request?.timeoutMilliseconds ?? configuration.execution.timeoutSeconds * 1000,
+    timedOut: processResult?.timedOut ?? false,
+    exitCode: processResult?.exitCode ?? null,
+    signal: processResult?.signal ?? null,
+    timeout: processResult?.timedOut ?? false,
+    stdout,
+    stderr,
+    standardInputCharacters: 0,
+    outcome,
+  };
+  const safeApiError = safeApiErrorDetails(apiError);
+  if (safeApiError != null) {
+    details["apiError"] = safeApiError;
+  }
+  if (request != null) {
+    details["arguments"] = Object.freeze(
+      request.arguments.map((argument, index) =>
+        index === request.arguments.length - 1 ? "<authentication-preflight-prompt>" : argument,
+      ),
+    );
+    details["workingDirectory"] = request.workingDirectory;
+  }
+  return details;
+}
+
+async function executeAuthenticationPreflightAttempt(
+  configuration: CodexAdapterConfiguration,
+  dependencies: CodexAdapterDependencies,
+  attempts: number,
+): Promise<void> {
+  const diagnostics = dependencies.diagnostics;
+  await recordCodexDiagnostic(diagnostics, "codex.authentication_preflight.attempt.started", {
+    attempt: attempts,
+    command: CODEX_COMMAND,
+    model: configuration.model,
+    timeoutMilliseconds: configuration.execution.timeoutSeconds * 1000,
+    standardInputCharacters: 0,
+  });
+
+  let workingDirectory: string | undefined;
+  let request: CodexProcessRequest | undefined;
+  let processResult: CodexProcessResult | undefined;
+  let stdout = "";
+  let stderr = "";
+  let stdoutInspection: CodexStdoutInspection = Object.freeze({
+    apiError: undefined,
+    apiEvents: Object.freeze([]),
+    parseErrors: Object.freeze([]),
+  });
+  let outcome: AttemptOutcome = {
+    success: false,
+    error: new Error("Codex認証preflightが実行されませんでした"),
+  };
+  try {
+    workingDirectory = await createTemporaryWorkspace();
+    request = createAuthenticationPreflightProcessRequest(
+      configuration,
+      dependencies,
+      workingDirectory,
+    );
+    processResult = await runProcess(request, dependencies.processRunner, attempts);
+    stdout = normalizedProcessOutput(processResult.stdout, "stdout");
+    stderr = normalizedProcessOutput(processResult.stderr, "stderr");
+    stdoutInspection = inspectCodexStdout(stdout);
+    assertSuccessfulProcess(processResult, request, attempts, stdoutInspection.apiError);
+    outcome = {
+      success: true,
+      value: undefined,
+    };
+  } catch (error: unknown) {
+    outcome = {
+      success: false,
+      error,
+    };
+  }
+
+  if (workingDirectory != null) {
+    try {
+      await rm(workingDirectory, {
+        recursive: true,
+        force: true,
+      });
+    } catch (cleanupError: unknown) {
+      const causes = outcome.success ? [cleanupError] : [outcome.error, cleanupError];
+      const message = outcome.success
+        ? "Codex認証preflight用の一時作業ディレクトリを削除できませんでした"
+        : "Codex認証preflight実行後に一時作業ディレクトリを削除できませんでした";
+      outcome = {
+        success: false,
+        error: new CodexTemporaryWorkspaceError("cleanup", {
+          cause: new AggregateError(causes, message),
+        }),
+      };
+    }
+  }
+
+  for (const parseError of stdoutInspection.parseErrors) {
+    await recordCodexDiagnostic(
+      diagnostics,
+      "codex.stdout.json_parse_failed",
+      {
+        attempt: attempts,
+      },
+      parseError,
+    );
+  }
+  for (const apiEvent of stdoutInspection.apiEvents) {
+    const apiEventDetails: Record<string, DiagnosticsJsonValue> = {
+      attempt: attempts,
+      apiEvent,
+    };
+    const safeApiError = safeApiErrorDetails(stdoutInspection.apiError ?? processResult?.apiError);
+    if (safeApiError != null) {
+      apiEventDetails["apiError"] = safeApiError;
+    }
+    if (outcome.success) {
+      await recordCodexDiagnostic(
+        diagnostics,
+        `codex.stdout.${apiEvent.replaceAll(".", "_")}`,
+        apiEventDetails,
+      );
+    } else {
+      await recordCodexDiagnostic(
+        diagnostics,
+        `codex.stdout.${apiEvent.replaceAll(".", "_")}`,
+        apiEventDetails,
+        outcome.error,
+      );
+    }
+  }
+  if (!outcome.success) {
+    const details = preflightAttemptDetails(
+      configuration,
+      attempts,
+      request,
+      processResult,
+      stdout,
+      stderr,
+      stdoutInspection.apiError ?? processResult?.apiError,
+      "failure",
+    );
+    await recordCodexDiagnostic(
+      diagnostics,
+      attemptFailureEvent(outcome.error),
+      details,
+      outcome.error,
+    );
+    await recordCodexDiagnostic(
+      diagnostics,
+      "codex.authentication_preflight.attempt.completed",
+      details,
+      outcome.error,
+    );
+    throw outcome.error;
+  }
+
+  await recordCodexDiagnostic(
+    diagnostics,
+    "codex.authentication_preflight.attempt.completed",
+    preflightAttemptDetails(
+      configuration,
+      attempts,
+      request,
+      processResult,
+      stdout,
+      stderr,
+      stdoutInspection.apiError ?? processResult?.apiError,
+      "success",
+    ),
+  );
+}
+
 function processErrorCode(error: unknown): string | undefined {
   if (
     typeof error === "object" &&
@@ -720,12 +955,7 @@ async function executeRawCodexAnalysis(
   configurationValue: CodexAdapterConfiguration,
   dependencies: CodexAdapterDependencies,
 ): Promise<unknown> {
-  const configuration = codexAdapterConfigurationSchema.parse({
-    authentication: configurationValue.authentication,
-    model: configurationValue.model,
-    execution: configurationValue.execution,
-    retry: configurationValue.retry,
-  });
+  const configuration = parseCodexAdapterConfiguration(configurationValue);
   const validatedInput = createCodexAnalysisInput(input);
   const inputJson = serializeCodexAnalysisInput(validatedInput);
   const systemPrompt = await readFixedSystemPrompt();
@@ -734,6 +964,29 @@ async function executeRawCodexAnalysis(
   for (let attempts = 1; ; attempts += 1) {
     try {
       return await executeAttempt(configuration, dependencies, systemPrompt, inputJson, attempts);
+    } catch (error: unknown) {
+      if (!(error instanceof CodexAttemptError)) {
+        throw error;
+      }
+      if (!isTemporaryAttemptError(error) || attempts === configuration.execution.maxAttempts) {
+        throw error;
+      }
+      await waitBeforeRetry(attempts, configuration, dependencies);
+    }
+  }
+}
+
+/** Codex認証を空の一時directoryでpreflightし、実行失敗を呼び出し側へ伝播する。 */
+export async function executeCodexAuthenticationPreflight(
+  configurationValue: CodexAdapterConfiguration,
+  dependencies: CodexAdapterDependencies,
+): Promise<void> {
+  const configuration = parseCodexAdapterConfiguration(configurationValue);
+
+  for (let attempts = 1; ; attempts += 1) {
+    try {
+      await executeAuthenticationPreflightAttempt(configuration, dependencies, attempts);
+      return;
     } catch (error: unknown) {
       if (!(error instanceof CodexAttemptError)) {
         throw error;
