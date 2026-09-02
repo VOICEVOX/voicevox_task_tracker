@@ -21,17 +21,17 @@ export function LogicGuidePage() {
             一覧で先に目を向ける順序を表します。期限の切迫度加点の上限に合わせて重要度側の容量を調整し、現在の待ち状態の鮮度係数を掛けてから期限の切迫度に応じた加点を足します。
           </p>
           <p class="m-0 rounded-xl bg-surface-sunken px-3 py-2 text-sm wrap-anywhere">
-            <code>importanceCapacity = 100 - deadlinePoints.overdue</code>
+            <code>重要度の上限 = 100 - 期限超過時の加点</code>
             <br />
-            <code>recencyScore = round(重要度 × 鮮度係数 × importanceCapacity / 100)</code>
+            <code>鮮度を反映した重要度 = round(重要度 × 鮮度係数 × 重要度の上限 / 100)</code>
             <br />
-            <code>要対応度 = recencyScore + 現在の期限加点</code>
+            <code>要対応度 = 鮮度を反映した重要度 + 現在の期限加点</code>
           </p>
           <ul class="m-0 grid gap-2 pl-5">
             <li>
               鮮度係数は待ちの種類ごとの基準時間に応じて下がり、設定された下限を下回りません。
             </li>
-            <li>終了項目と、ブロック解除待ちの親項目の要対応度は 0 です。</li>
+            <li>終了項目と、依存解消待ちの親項目の要対応度は 0 です。</li>
           </ul>
         </section>
 
@@ -94,7 +94,7 @@ export function LogicGuidePage() {
             <code>停滞時間 = 現在時刻 − 現在の待ち状態における活動の起点</code>
           </p>
           <ul class="m-0 grid gap-2 pl-5">
-            <li>GitHub の updated_at をそのまま停滞時間には使いません。</li>
+            <li>GitHubの更新日時をそのまま停滞時間には使いません。</li>
             <li>状態または待ち相手が変われば、その時点から数え直します。</li>
           </ul>
         </section>
@@ -159,7 +159,7 @@ export function LogicGuidePage() {
             <li>
               要対応度と重要度は別の指標です。期限の切迫度加点の上限に応じて重要度側の容量を調整し、待ち状態が長く続くほど鮮度係数が下がります。
             </li>
-            <li>停滞レベルは停滞が通知基準を超えたかを見る Discord 通知用の別指標です。</li>
+            <li>停滞レベルは、停滞が通知基準に達したかを表すDiscord通知用の別指標です。</li>
           </ul>
         </aside>
       </div>
