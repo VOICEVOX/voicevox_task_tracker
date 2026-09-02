@@ -2,6 +2,9 @@ import { pathToFileURL } from "node:url";
 
 import { z } from "zod";
 
+import { DiagnosticsError } from "../diagnostics/errors.js";
+import { createDiagnosticsRecorder } from "../diagnostics/recorder.js";
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { UnreachableError } from "../util/index.js";
 import { type CliExecutionResult } from "./application.js";
 import { notificationActionSchema, parseCliArguments, type CliCommand } from "./command.js";
@@ -15,6 +18,11 @@ import {
   CliWorkflowArtifactError,
 } from "./errors.js";
 import { type RunStage } from "./run-report.js";
+
+const DIAGNOSTICS_PATH_ENVIRONMENT_VARIABLE = "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH";
+
+Error.stackTraceLimit = 100;
+process.setSourceMapsEnabled(true);
 
 const REPOSITORY_FILTER_SEPARATOR = ",";
 
@@ -202,18 +210,105 @@ function isMainModule(moduleUrl: string, executablePath: string | undefined): bo
   return executablePath != null && pathToFileURL(executablePath).href === moduleUrl;
 }
 
-if (isMainModule(import.meta.url, process.argv[1])) {
-  let stage: RunStage | "unknown" = "unknown";
+function writeDiagnosticsTopLevelError(error: unknown): void {
+  if (error instanceof DiagnosticsError) {
+    process.stderr.write(`${error.message}\n`);
+    return;
+  }
+  process.stderr.write("diagnostics CLIの実行に失敗しました\n");
+}
+
+async function recordTopLevelError(
+  recorder: DiagnosticsJsonlRecorder | undefined,
+  stage: RunStage | "unknown",
+  command: string,
+  error: unknown,
+): Promise<unknown> {
+  if (recorder == null) {
+    return error;
+  }
   try {
-    const result = await runTrackerCommand(process.argv.slice(2), (args) => {
-      stage = topLevelDiagnosticStage(parseCliArguments(args));
-      return createDefaultCliApplication().run(args);
+    await recorder.append({
+      event: "cli.unhandled_error",
+      details: {
+        command,
+        stage,
+        invocationId: `tracker-cli:${process.pid.toString()}`,
+      },
+      error,
     });
-    writeFailureDiagnostics(result);
-    process.exitCode = result.exitCode;
+  } catch (diagnosticsError: unknown) {
+    return new AggregateError(
+      [error, diagnosticsError],
+      "CLI未処理エラーと診断記録に失敗しました",
+      {
+        cause: error,
+      },
+    );
+  }
+  return error;
+}
+
+/** tracker-run共通entryからCLIを実行する。 */
+export async function runTrackerCliMain(args: readonly string[]): Promise<number> {
+  if (args[0] === "diagnostics") {
+    const { runDiagnosticsCli } = await import("../diagnostics/cli.js");
+    return runDiagnosticsCli(args.slice(1), process.env);
+  }
+  let stage: RunStage | "unknown" = "unknown";
+  let command = args[0] ?? "unknown";
+  let recorder: DiagnosticsJsonlRecorder | undefined;
+  let result: CliExecutionResult | undefined;
+  let failure: unknown;
+  try {
+    const diagnosticsPath = process.env[DIAGNOSTICS_PATH_ENVIRONMENT_VARIABLE];
+    if (diagnosticsPath != null) {
+      recorder = await createDiagnosticsRecorder({ path: diagnosticsPath });
+    }
+    const executionResult = await runTrackerCommand(args, (commandArgs) => {
+      const parsedCommand = parseCliArguments(commandArgs);
+      command = parsedCommand.kind;
+      stage = topLevelDiagnosticStage(parsedCommand);
+      return createDefaultCliApplication(recorder).run(commandArgs);
+    });
+    result = executionResult;
+    writeFailureDiagnostics(executionResult);
   } catch (error: unknown) {
-    process.stderr.write(`${safeTopLevelMessage(error)}\n`);
-    process.stderr.write(`${safeErrorDiagnostic(stage, error)}\n`);
+    failure = await recordTopLevelError(recorder, stage, command, error);
+  } finally {
+    if (recorder != null) {
+      try {
+        await recorder.close();
+      } catch (error: unknown) {
+        failure =
+          failure == null
+            ? error
+            : new AggregateError([failure, error], "CLI実行と診断recorderのcloseに失敗しました", {
+                cause: failure,
+              });
+      }
+    }
+  }
+  if (failure != null) {
+    process.stderr.write(`${safeTopLevelMessage(failure)}\n`);
+    process.stderr.write(`${safeErrorDiagnostic(stage, failure)}\n`);
+    return 1;
+  }
+  if (result == null) {
+    throw new Error("CLI実行結果がありません");
+  }
+  return result.exitCode;
+}
+
+if (isMainModule(import.meta.url, process.argv[1])) {
+  const args = process.argv.slice(2);
+  try {
+    process.exitCode = await runTrackerCliMain(args);
+  } catch (error: unknown) {
+    if (args[0] !== "diagnostics") {
+      throw error;
+    }
+    writeDiagnosticsTopLevelError(error);
     process.exitCode = 1;
   }
 }

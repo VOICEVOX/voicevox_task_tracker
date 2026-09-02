@@ -536,7 +536,6 @@ type NotificationLedgerEntryBase = Readonly<{
   reasonCode: NotificationReasonCode;
   severity: Severity;
   reservedAt: UtcIsoDateTime;
-  cooldownUntil: UtcIsoDateTime;
 }>;
 
 /** Discord通知の予約、送信結果、手動抑制済みledger entryを記録する型。 */

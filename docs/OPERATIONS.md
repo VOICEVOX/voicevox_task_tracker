@@ -43,13 +43,13 @@ run reportの主な確認項目は次のとおりです。
 | `metrics.itemCount`                 | 追跡項目数                                                                    |
 | `metrics.changedItemCount`          | 前回から更新された追跡項目数                                                  |
 | `metrics.activeEdgeCount`           | 有効な関係edge数                                                              |
-| `metrics.aiCallCount`               | Codexを実行した件数                                                           |
+| `metrics.aiCallCount`               | preflightを含むCodexの論理call数。retryのattempt数は含めない                  |
 | `metrics.aiCacheHitCount`           | AI cacheを再利用した件数                                                      |
 | `metrics.aiRetainedResultCount`     | AI分析対象へ入れず前回のAI結果を保持した件数                                  |
-| `metrics.estimatedInputTokens`      | Codex入力tokenの見積り                                                        |
+| `metrics.estimatedInputTokens`      | preflightを含むCodex入力tokenの見積り                                         |
 | `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                  |
 | `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                  |
-| `metrics.notificationCount`         | Discord送信結果をledgerへ記録した通知数。`dismiss-current`では0               |
+| `metrics.notificationCount`         | Discord送信結果を通知管理記録へ記録した通知数。`dismiss-current`では0         |
 | `metrics.scheduleDelayMilliseconds` | 予定起動時刻からCLI開始までの遅延                                             |
 | `metrics.durationMilliseconds`      | CLI開始からrun完了までの所要時間                                              |
 
@@ -57,8 +57,15 @@ Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`
 違反した検証ルールは先頭5件まで`validationIssue0Path`と`validationIssue0Code`の形式で残り、添字は0から始まります。
 違反の`message`は入力値を含みうるため残しません。
 
+## Codex認証preflight
+
+`auth-json`で実行候補が1件以上あるrunだけ、候補processより先に固定した短文を空の一時directoryで実行します。候補データと通常のsystem promptは渡さず、preflightの完了後に候補workerを`ai.execution.maxConcurrentCalls`の設定値まで並列実行します。
+`api-key`、候補なし、cache hitだけのrun、全候補が予算延期されたrunでは実行しません。preflightに失敗した場合は候補を1件も開始せず、`codex_analysis`を失敗させます。
+preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の50 call設定では最大49候補になり、retryで複数attemptになっても予算上は1論理callです。成功runの`aiCallCount`と`estimatedInputTokens`にも含まれます。
+これは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば認証競合は残ります。
+
 `tracker-state`は自動更新専用です。
-人間がsnapshot、履歴、AI cache、通知ledgerを直接編集すると履歴とcooldownの整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
+人間がsnapshot、履歴、AI cache、通知管理記録を直接編集すると履歴と通知抑制の整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
 
 ## 性能profile
 
@@ -88,7 +95,7 @@ Actionsの`collect-analyze` jobは配置stepだけへ`CODEX_AUTH_JSON`を渡し�
 `CODEX_AUTH_SYNC_TOKEN`は書き戻しstepだけへ`GH_TOKEN`として渡します。
 jobは一時ファイルを削除する前に、更新された`auth.json`を`CODEX_AUTH_JSON`へ同期します。
 `ai.enabled: true`のローカル実行ではlockfileで固定した`codex`に加え、`auth-json`なら`CODEX_HOME`直下の`auth.json`、`api-key`なら`OPENAI_API_KEY`が必要です。
-検証後のsnapshot、通知候補、notification ledger、run report生成用の収集指標、AI cacheを公開可能なartifactへ保存します。
+検証後のsnapshot、通知候補、通知管理記録、run report生成用の収集指標、AI cacheを公開可能なartifactへ保存します。
 
 ```console
 pnpm build
@@ -130,6 +137,7 @@ pnpm tracker:run --backfill none
 
 tracker専用のcommand comment、override UI、専用labelはありません。
 次回runで機械的に解釈できるように、GitHub上の事実を明確にします。
+GitHubのassigneeは確定情報として保持します。未アサインIssueの実質担当は表示上の推定であり、trackerはGitHubへassignを書き戻しません。
 
 抽象的なmaintainer、reviewer、merge_deciderの責務は、`config.yml`でrepositoryごとに設定したメンテナ全員へ展開されます。
 担当者を変える場合は`maintainers.defaults`か`maintainers.repositories`のGitHubユーザー名一覧を更新します。
@@ -140,18 +148,25 @@ trackerはteam memberを取得しないため、team memberの活動ではteam�
 ### コメント
 
 最新コメントで、次に誰が何をするかを一文で明示します。
+Issue全体を担当する場合は、その旨を明記し、追跡中でGitHubがclosing referenceとして認識した直接関連PRや継続成果物と結び付けます。本文に書いただけの推定relation、部分対応、助言、検証、review、条件付きの意向、撤回、延期の記載は実質担当の根拠になりません。
+複数人を候補にする場合も、Issue全体を共同で進めていることを明記します。部分PRの組み合わせだけから共同担当を推定しません。
+trackerは一般的な活動状態を実質担当へ読み替えず、部分担当や部分実装を別の担当としてモデル化しません。
 方針判断待ちへ直す場合は、maintainer roleへ必要な判断を明記します。
 返答待ちへ直す場合は、回答を求めるuserかteamを名指しします。
 質問の内容と未回答であることも明記します。
 依存関係なら対象IssueかPRのURLと、現在の項目を止めているか、単なる関連情報かを明記します。
 
 古いmention、謝辞、単なるリンクだけでは責務移動やblockerを確定しません。
+Issue author、Pull Request author、最新commenterであることだけでも担当は確定しません。親Issueや横断Issueの作業者を現在のIssueの担当へ移しません。
 依頼が解決した場合は、回答か決定を新しいコメントとして残すと未回答扱いを解消しやすくなります。
 
 ### assignee
 
-Issueを作業待ちへ直す場合は、実際に作業するuserをassigneeへ設定します。
-担当が決まっていない間はassigneeを設定しません。
+Issueを正式な作業待ちへ直す場合は、実際に作業するuserをassigneeへ設定します。
+assigneeが空でもtrackerがIssue全体の実質担当を表示する場合があります。その表示は推定であり、正式なGitHub assigneeの代わりにはなりません。
+担当が決まっていない場合や、実質担当の根拠が不足する場合はassigneeを設定しません。
+誤って推定された場合は、部分対応、reviewのみ、撤回、延期、引継ぎであることを最新コメントへ明記します。正式assigneeの設定や新しい全体担当の根拠は次回runで再判定されます。
+正式assigneeを解除すると、解除前の根拠は実質担当の推定に再利用されません。同じ人や別の人を実質担当にする場合は、解除後にIssue全体を進める新しい根拠を残します。
 
 ### ラベル
 
@@ -161,7 +176,7 @@ repository globとlabel名の正規表現を一致させ、必要な効果を設
 | effect                       | 用途                                                 |
 | ---------------------------- | ---------------------------------------------------- |
 | `priorityWeight`             | 重要度を通じて要対応度を上げ、通知候補の順位も上げる |
-| `severityLift`               | 通知判断に使うseverityを最大1段階引き上げる          |
+| `severityLift`               | 通知判断に使う停滞レベルを最大1段階引き上げる        |
 | `requiresMaintainerDecision` | 方針判断待ちとし、maintainer roleへ責務を置く        |
 | `suppressNotifications`      | graphには残したまま通常通知を抑える                  |
 | `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う              |
@@ -181,6 +196,7 @@ authorが修正をpushした後はレビュー待ちとしてreviewer側を再�
 未解決のreview threadも修正待ちの根拠になります。
 authorが最後に返信したthreadは修正待ちの根拠から外し、reviewerの再確認を待つレビュー待ちとして扱います。
 botのreviewとcommentだけではbotへ責務を移しません。
+review、助言、検証だけを行った人をIssue全体の実質担当者へ移しません。
 
 これらで待ち先が決まった後も、その相手本人がさらに発言していれば発言の内容から判定し直します。
 変更要求を受けたauthorが修正せずに質問すれば返答待ちとなり、reviewerの返答を待ちます。
@@ -192,6 +208,7 @@ authorが了解を返しただけなら修正待ちを維持し、authorの修�
 本当に作業を止めるIssue同士はGitHubのblocked byとblockingで接続します。
 親子関係はsub-issueを使います。
 native relationはauthoritativeであり、本文のplain linkやCodex推定より優先されます。
+子Issueや直接関連PRの作業者を、親Issueや横断Issueの実質担当者へ拡張しません。
 Pull RequestがIssueを閉じる関係は、GitHubがclosing referenceとして認識する形で書きます。
 GitHubが認識したclosing referenceはauthoritativeな`implements`関係になります。
 GitHubが認識しない書き方は本文のclosing keywordとしてしか読めず、Codexの推定に頼る関係になります。
@@ -201,7 +218,7 @@ blockerが完了したら対象Issueをcloseし、誤ったnative relationはGit
 
 ### 重要度
 
-重要度は項目そのものの重要さを表し、停滞の深刻さを表すseverityとは別に確認します。
+重要度は項目そのものの重要さを表し、停滞レベルとは別に確認します。
 個別の項目の重要度がずれている場合は、まず詳細ページの内訳でどの要因が効いているかを確かめます。
 決定論的な要因は、優先度ラベル、native dependency、downstream impactをGitHub上の事実へ合わせると変わります。
 Codex由来の重要度要因は、重要な機能である根拠と放置した場合の将来問題が本文かコメントから読み取れるかで決まります。期限の切迫度は重要度へ影響しません。
@@ -218,7 +235,7 @@ terminal項目とブロック解消待ちの項目が0点になるのは意図�
 停滞による下がり方を全体で調整する場合は`config.yml`の`attention.recencyFloor`を変更します。
 要対応度、重要度、期限の切迫度、停滞時間は、項目一覧と担当者ごとのページで選べる四つの並び替えキーです。
 既定は要対応度の降順です。
-severityはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
+停滞レベルはWeb UIで参照しないため、Webの表示順を直す目的で`severityLift`を変更しません。
 
 設定変更後はdry-runを実行し、要対応度のscore、level、表示対象、並び順、依存グラフのnode選定を確認します。
 
@@ -256,16 +273,16 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 2. `backfill`を`none`、`repository_filter`を空、`notification_action`を`dismiss-current`にして実行します。
 3. `collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`、`report-workflow`が成功することを確認します。
 
-`dismiss-current`は現在の通知条件を満たす候補を、reasonごとに最大件数の制限なく、手動抑制済みとしてnotification ledgerへ保存します。通常のDiscord digestは送信せず、`notification_sent`履歴も作りません。snapshotとPagesの生成は通常runと同じで、ledgerの更新は同じatomic transactionへ含まれます。運用障害が発生した場合の`notify-operations`は別系統で動作します。
+`dismiss-current`は現在の通知条件を満たす候補を、reasonごとに最大件数の制限なく、手動抑制済みとして通知管理記録へ保存します。通常のDiscord digestは送信せず、`notification_sent`履歴も作りません。snapshotとPagesの生成は通常runと同じで、通知管理記録の更新は同じatomic transactionへ含まれます。運用障害が発生した場合の`notify-operations`は別系統で動作します。
 
-成功確認では、`tracker-state`のnotification ledgerに対象候補の`status: dismissed`が保存され、通知履歴に送信済み項目が追加されていないことを確認します。state branchやledgerを直接編集して抑制を解除してはいけません。
+成功確認では、`tracker-state`の通知管理記録に対象候補の`status: dismissed`が保存され、通知履歴に送信済み項目が追加されていないことを確認します。state branchや通知管理記録を直接編集して抑制を解除してはいけません。
 
-同じnotification keyの抑制には期限がありません。status、severity、waitingOn、各種開始時刻などが変わって別keyになった候補は、次回の`send`で通常どおり通知対象になります。
+送信済みと手動抑制済みのnotification keyは期限なく抑制します。`status`、停滞レベルを表す`severity`、待ち相手を表す`waitingOn`、各種開始時刻などが変わって別keyになった候補は、次回の`send`で通常どおり通知対象になります。
 
-通常の`send`は、`maxItemsPerDigest`と再通知cooldownを含む既存の通知選別を行います。
+通常の`send`は、`maxItemsPerDigest`を含む既存の通知選別を行います。
 
-severityはDiscord通知の判断にだけ使います。
-通知選別はseverityの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。
+停滞レベルはDiscord通知の判断にだけ使います。
+通知選別は停滞レベルの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。
 直近に意味のある進捗がある項目、botだけの活動、recent draft、低信頼のAI判定、labelで抑制した項目は通常通知から外します。
 botが作成した項目のtitleが`notifications.automationNoiseTitles`のいずれかと大文字小文字を区別せず一致した場合、graphへ残したまま通常通知から外します。
 Renovateの`dependencyDashboardTitle`を変更した場合は同じtitleをこの一覧へ追加します。
@@ -287,23 +304,24 @@ Renovateの`dependencyDashboardTitle`を変更した場合は同じtitleをこ�
 | 自動処理待ち                                     | `automation` |
 
 ブロック解消待ちには直接の閾値がありません。
-blockerのseverityとdownstream impactが通知順位を決めます。
+blockerの停滞レベルとdownstream impactが通知順位を決めます。
 
 通知が多すぎる場合は次の順で調整します。
 
-1. 誤ったstatus、waitingOn、依存をGitHub上で明確にします。
+1. 誤った`status`、待ち相手を表す`waitingOn`、依存をGitHub上で明確にします。
+   実質担当の誤判定は、Issue全体を担当する宣言、追跡中でGitHubが認識したclosing reference、継続成果物を明記するか、部分対応、reviewのみ、撤回、延期、引継ぎであることを最新コメントへ明記して直します。
 2. automation dashboardのtitleを`notifications.automationNoiseTitles`へ追加するか、対象labelへ`labels.rules.effects.suppressNotifications`を割り当てます。
 3. 通知を減らす状態に対応する`staleness.thresholdsHours`を増やします。
 4. 全状態で直近の進捗を長く猶予する場合は`recentProgressGraceHours`を増やします。
-5. `cooldownDays`を増やし、`maxItemsPerDigest`を減らします。
+5. `maxItemsPerDigest`を減らします。
 6. AI推定が原因なら`ai.confidence.medium`を上げ、実モデルを呼び出すdry-runでAI判定と通知候補の差分を確認します。
 
 通知が少なすぎる場合は逆方向に調整します。
 
-1. maintainer設定、userかteamの指定、review request、native dependency、label規則がstatusとwaitingOnの実態に合うか確認します。
+1. maintainer設定、userかteamの指定、review request、native dependency、label規則が`status`と待ち相手を表す`waitingOn`の実態に合うか確認します。
 2. 通知を増やす状態に対応する`staleness.thresholdsHours`を減らします。
 3. 全状態で直近の進捗を短く猶予する場合は`recentProgressGraceHours`を減らします。
-4. `maxItemsPerDigest`を増やし、`cooldownDays`を減らします。
+4. `maxItemsPerDigest`を増やします。
 5. 重要labelへ`priorityWeight`か`severityLift: 1`を設定します。
 6. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目、通知候補を確認します。
 
@@ -318,6 +336,29 @@ mentionは通知量の調整に使わず、運用上必要なuserだけをallowl
 ## 障害時の確認
 
 失敗したActions jobをworkflow全体のreportにある`jobs`と照合し、収集失敗ではCLI reportの`failedStage`も確認します。
+
+### 詳細なエラーを確認する
+
+run reportの`diagnostics`は公開可能な要約です。
+スタックトレースやCodex processの出力が必要な場合は、失敗したjobに対応する`daily-diagnostics-<run ID>-<試行番号>-<job名>`artifactを取得します。
+artifactには暗号化済みの`.bundle`ファイルだけが入り、保持期間は7日です。
+
+依存関係を導入してCLIをビルドした後、登録時と同じ鍵ファイルで復号します。
+出力先に既存ファイルがある場合は上書きしません。
+
+```console
+pnpm install --frozen-lockfile
+pnpm build
+node dist/cli/tracker-run.js diagnostics decrypt \
+  --key-file path/to/diagnostics-key.b64 \
+  --input path/to/voicevox-task-tracker-diagnostics-collect-analyze.bundle \
+  --output path/to/diagnostics.jsonl
+```
+
+復号したJSONLには、例外のstack、cause、AggregateErrorの各error、Codexの試行番号、終了状態、標準出力、標準エラー出力、最終応答が記録されます。
+認証preflightは`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`で開始と終了を確認できます。標準出力、標準エラー出力、stackも暗号化診断にだけ記録し、公開run reportへraw出力を載せません。preflight失敗runでは通常metricsは完成しません。
+内容は公開用に無害化していないため、調査はローカルで行い、そのまま公開IssueやPull Requestへ貼り付けないでください。
+CLIが起動する前に失敗した場合や暗号化処理自体が失敗した場合は、対応するartifactが作られないことがあります。
 
 | stageまたはjob                  | 確認内容                                                                                                                                                                                      |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -360,5 +401,5 @@ state commit後のPages失敗は想定内であり、stateを巻き戻しませ�
 どの入力にallowlist外repository、private sentinel、secretらしい値、長すぎる全文、安全でないURLが入ったかを、secretをlogへ出さずに調べます。
 原因を除いた後に`backfill: none`で手動再実行します。
 
-同じrunを再実行してもworkflow concurrencyと通知ledgerが競合と通常通知の重複を抑えます。
+同じrunを再実行してもworkflow concurrencyと通知管理記録が競合と通常通知の重複を抑えます。
 GitHub、Codex、Discordの429と503は設定した回数だけretryし、それでも失敗する場合は外部サービスの回復後に再実行します。

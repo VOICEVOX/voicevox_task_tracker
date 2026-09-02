@@ -45,16 +45,30 @@ workflowでは`GH_APP_INSTALLATION_ID`を設定しません。
 
 repositoryのSettingsからActions variableとActions secretを登録します。
 
-| 名前                             | 種別     | 値                                                  |
-| -------------------------------- | -------- | --------------------------------------------------- |
-| `GH_APP_ID`                      | Variable | GitHub Appの数値ID                                  |
-| `GH_APP_PRIVATE_KEY`             | Secret   | GitHub Appから発行したPEM private key               |
-| `CODEX_AUTH_JSON`                | Secret   | Codexの`auth.json`の中身                            |
-| `CODEX_AUTH_SYNC_TOKEN`          | Secret   | Codex認証同期用のfine-grained personal access token |
-| `DISCORD_WEBHOOK_URL`            | Secret   | 通常digest用のIncoming Webhook URL                  |
-| `DISCORD_OPERATIONS_WEBHOOK_URL` | Secret   | 運用障害通知用のIncoming Webhook URL                |
+| 名前                                                  | 種別     | 値                                                  |
+| ----------------------------------------------------- | -------- | --------------------------------------------------- |
+| `GH_APP_ID`                                           | Variable | GitHub Appの数値ID                                  |
+| `GH_APP_PRIVATE_KEY`                                  | Secret   | GitHub Appから発行したPEM private key               |
+| `CODEX_AUTH_JSON`                                     | Secret   | Codexの`auth.json`の中身                            |
+| `CODEX_AUTH_SYNC_TOKEN`                               | Secret   | Codex認証同期用のfine-grained personal access token |
+| `DISCORD_WEBHOOK_URL`                                 | Secret   | 通常digest用のIncoming Webhook URL                  |
+| `DISCORD_OPERATIONS_WEBHOOK_URL`                      | Secret   | 運用障害通知用のIncoming Webhook URL                |
+| `VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64` | Secret   | 詳細診断artifactの暗号化鍵                          |
 
 PEM private keyは改行を保持したままsecretへ登録します。
+
+鍵は32 byteの乱数をBase64へ変換した値です。
+Git管理外の安全なdirectoryで鍵ファイルを作り、権限を600にしてください。
+
+```console
+umask 077
+openssl rand 32 | openssl base64 -A > path/to/diagnostics-key.b64
+chmod 600 path/to/diagnostics-key.b64
+gh secret set VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 --repo VOICEVOX/voicevox_task_tracker < path/to/diagnostics-key.b64
+```
+
+鍵ファイルは暗号化済み診断artifactの復号に必要です。
+紛失すると既存artifactを復号できないため、GitHubとは別の安全な場所へ保管します。
 
 `CODEX_AUTH_JSON`はローカルでCodexへログインすると生成される`auth.json`をそのまま登録します。
 
@@ -85,6 +99,9 @@ gh secret set CODEX_AUTH_SYNC_TOKEN --repo VOICEVOX/voicevox_task_tracker
 Codexへ渡す認証用の環境変数は`CODEX_HOME`だけです。
 Codex CLIはaccess tokenの残り有効期間が5分未満になるとrefresh tokenでtokenを更新し、`auth.json`を書き換えます。
 このときrefresh token自体も新しい値へ入れ替わるため、更新後の`auth.json`を保存しないといずれ認証エラーになります。
+`auth-json`で実行候補が1件以上あるrunでは、候補processより先に固定した短文による認証preflightを空の一時directoryで1論理call実行します。候補データと通常のsystem promptは渡さず、preflightの完了後に設定済みの並列度で候補を処理します。候補なし、cache hitだけ、全候補が予算延期のrunでは実行しません。
+`api-key`ではpreflightを実行しません。このpreflightは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば、認証競合は残ります。
+preflightに失敗したrunは候補を1件も開始せず、`codex_analysis`を失敗させます。
 認証ファイルの配置に成功していれば、書き戻しstepは先行stepの成否を問わず実行します。
 `CODEX_AUTH_SYNC_TOKEN`はこのstepだけへ`GH_TOKEN`として渡し、空なら明示的に失敗します。
 書き戻しstepは配置時のsha256と現在の`auth.json`を比較します。
@@ -112,13 +129,18 @@ CLIはremote repositoryへpushしません。
 workflowはCLIの実行前にremoteの`tracker-state`をlocal refへfetchし、CLIの実行後に明示的な`git push`でremoteへ反映します。
 `tracker-state`へrulesetを設定する場合はGitHub Actionsによるstate更新を許可し、人間の通常作業branchとして使わないでください。
 
-`collect-analyze`は`artifacts/workflow/validated-run.json`へ検証済みsnapshot、通知候補、notification ledger、run report生成用の収集指標、AI cache、Pages URL、Discord送信設定だけを書きます。
+`collect-analyze`は`artifacts/workflow/validated-run.json`へ検証済みsnapshot、通知候補、通知管理記録、run report生成用の収集指標、AI cache、Pages URL、Discord送信設定だけを書きます。
 GitHub App key、installation token、Codex認証情報、`CODEX_AUTH_SYNC_TOKEN`、Discord webhookはartifactへ含めません。
 artifactを利用する後続jobは同じartifactを再検証してから利用します。
 依存関係を再インストールせず`notify-discord`でCLIを動かすため、公開sourceから作った自己完結bundleも同じActions artifactへ保存します。
 収集時のCLI reportは収集jobの成否にかかわらず、run IDと試行番号を含む別のActions artifactへ保存します。
 最後の`report-workflow`は全jobの結果と必須metricを`artifacts/run-reports/workflow.json`へまとめ、別のActions artifactへ保存します。
 これらのreport artifactはstateとPagesの入力にしません。
+詳細診断はrunnerの一時directoryでjobごとのJSONLへ記録し、AES-256-GCMで暗号化してから専用artifactへ保存します。
+認証preflightの開始と終了は`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`で確認でき、標準出力、標準エラー出力、stackも暗号化診断に記録します。raw出力は公開run reportへ載せません。
+平文のJSONLは暗号化処理の成否にかかわらず削除します。
+暗号化鍵を渡すのは暗号化stepだけです。
+詳細診断artifactの保持期間は7日で、公開可能なrun artifact、state、Pagesの入力には使いません。
 
 ## マージゲートの設定
 
@@ -280,7 +302,7 @@ process.exitCode = result.exitCode;
 ```
 
 `artifacts/run-reports/dry-run.json`の`status`、`complete`、`diagnostics`、各metricを確認します。
-`artifacts/dry-run.json`には検証済みsnapshotと通知候補が入るため、repository範囲、waitingOn、関係、通知量を確認します。
+`artifacts/dry-run.json`には検証済みsnapshotと通知候補が入るため、repository範囲、待ち相手を表す`waitingOn`、関係、通知量を確認します。
 
 ### 2. Codexのdry-run
 
@@ -294,6 +316,7 @@ pnpm exec codex --version
 `CODEX_HOME`直下の`auth.json`を使って同じ`dry-run`を実行し、`ai.model`に設定されたmodel IDでCodex呼び出しが成功することを確認します。
 ローカルで`api-key`を使う場合は、`ai.authentication`を`api-key`にして`OPENAI_API_KEY`を渡します。
 どちらの方式でも、選択しなかった方式の環境変数はCodexへ渡りません。
+`auth-json`で候補を実行するrunでは、preflightを含む`metrics.aiCallCount`と`metrics.estimatedInputTokens`を確認します。preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の50 call設定では最大49候補になり、retryで複数attemptになっても予算上は1論理callです。
 
 `metrics.aiCallCount`が1以上で`status`が`success`となり、`diagnostics`にmodelの利用不可を示す内容がなければ、設定済みmodel IDを利用できています。
 `metrics.aiCallCount`が0ならmodelを呼び出していないため、利用可否を確認できていません。
@@ -315,22 +338,22 @@ workflowはdefault branchからのscheduleまたは手動実行だけを許可�
 手動実行の`notification_action`は`send`が既定値で、通常の通知を送ります。現在の通知候補を一掃したい場合だけ`dismiss-current`を選びます。
 手動実行でも`persist-state`、Pages buildとdeploy、`notify-discord`の順に進みます。
 
-`dismiss-current`では、現在の通知条件を満たす候補をreasonごとに最大件数の制限なくnotification ledgerへ手動抑制済みとして保存します。通常のDiscord digestと`notification_sent`履歴は作られません。snapshotとPagesは通常runと同じように生成し、ledger更新は同じatomic transactionで保存します。手動入力は現在の候補を一括で抑制する操作なので、対象範囲を確認してから実行してください。運用障害が起きた場合の`notify-operations`は別系統で通知します。
+`dismiss-current`では、現在の通知条件を満たす候補をreasonごとに最大件数の制限なく通知管理記録へ手動抑制済みとして保存します。通常のDiscord digestと`notification_sent`履歴は作られません。snapshotとPagesは通常runと同じように生成し、通知管理記録の更新は同じatomic transactionで保存します。手動入力は現在の候補を一括で抑制する操作なので、対象範囲を確認してから実行してください。運用障害が起きた場合の`notify-operations`は別系統で通知します。
 
-workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと手動抑制済みledgerを同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合し、不一致なら通常通知もrun完了処理も行いません。state branchやnotification ledgerを直接編集してはいけません。
+workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと手動抑制済みの通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合し、不一致なら通常通知もrun完了処理も行いません。state branchや通知管理記録を直接編集してはいけません。
 
 成功後に次を確認します。
 
 - `collect-analyze`の「更新されたCodex認証ファイルをsecretへ書き戻す」stepが成功していること
 - `tracker-state`がdefault branchと別の履歴を持つこと
-- `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知ledgerがまとまっていること
-- 後続の通知jobが実測時刻と実送信数を含むrun report、通知ledger、当日の日次履歴のcommitを追加していること
+- `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知管理記録がまとまっていること
+- 後続の通知jobが実測時刻と実送信数を含むrun report、通知管理記録、当日の日次履歴のcommitを追加していること
 - Pagesの生成時刻がrun reportの`startedAt`と一致し、repository数、item数、stale表示も一致すること
 - private repositoryのID、名前、URL、secret、不要な本文がstateとPagesにないこと
 - 通常digestがPages deploy後にだけ送信され、候補0件なら送信されないこと
-- 同じ候補を含む再実行でcooldownが効くこと
-- `notification_action: dismiss-current`では通常のDiscord送信と`notification_sent`履歴がなく、対象候補のledger entryが`status: dismissed`になっていること
-- `dismiss-current`の抑制は同じnotification keyへ期限なく適用され、status、severity、waitingOn、各種開始時刻などが変わった候補は次回の`send`で通知対象になること
+- 同じ候補を含む再実行では送信されず、送信済みの通知管理記録項目が維持されること
+- `notification_action: dismiss-current`では通常のDiscord送信と`notification_sent`履歴がなく、対象候補の通知管理記録項目が`status: dismissed`になっていること
+- `dismiss-current`の抑制は同じnotification keyへ期限なく適用され、`status`、停滞レベルを表す`severity`、待ち相手を表す`waitingOn`、各種開始時刻などが変わった候補は次回の`send`で通知対象になること
 
 `tracking.startAt: null`なら、最初の完全成功runの時刻がsnapshotへ固定されます。
 収集、Pages、Discordのいずれかで運用対象の失敗が起きたrunでは、`notify-operations`が障害通知を1件送ります。

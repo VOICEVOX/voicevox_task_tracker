@@ -2,6 +2,7 @@ import {
   type PublicDetailsDto,
   type PublicItemDetailsDto,
   type PublicItemSummaryDto,
+  type PublicNotificationHistoryEntryDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { isTerminalStatus } from "../../src/domain/status.js";
@@ -15,6 +16,7 @@ type DeadlineLevel = Extract<PublicItemSummaryDto["deadline"], { status: "availa
 type AiAnalysisStatus = PublicItemSummaryDto["aiAnalysis"]["status"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 type WaitingOnReference = Pick<WaitingOnCandidate, "candidateId" | "kind" | "role">;
+type NotificationWaitingOnReference = PublicNotificationHistoryEntryDto["waitingOn"][number];
 type WaitingOnRole = WaitingOnCandidate["role"];
 type PublicActor = Extract<
   PublicItemDetailsDto["latestEventActor"],
@@ -632,6 +634,42 @@ export function waitingOnHistoryLabel(
   return waitingOnPartsText(
     waitingOnKindParts(waitingOn, summary, (role) => historyWaitingOnRoleParts(role, item)),
   );
+}
+
+function notificationWaitingOnCandidateLabelParts(
+  waitingOn: NotificationWaitingOnReference,
+): readonly WaitingOnDisplayPart[] {
+  switch (waitingOn.kind) {
+    case "user":
+      return [
+        textWaitingOnPart(`${waitingOnRoleName(waitingOn.role)} `),
+        loginWaitingOnPart(waitingOn.candidateId),
+      ];
+    case "team":
+      return [
+        textWaitingOnPart(`${waitingOnRoleName(waitingOn.role)} チーム ${waitingOn.candidateId}`),
+      ];
+    case "role":
+      return [textWaitingOnPart(waitingOnRoleName(waitingOn.role))];
+    case "item":
+      return [textWaitingOnPart(waitingOn.displayReference)];
+    case "automation":
+      return [textWaitingOnPart(`自動処理 ${waitingOn.candidateId}`)];
+    case "unknown":
+      return [textWaitingOnPart("不明")];
+    default:
+      throw new UnreachableError(waitingOn);
+  }
+}
+
+/** 通知履歴の保存済みwaitingOnを表示用の断片へ変換する。 */
+export function notificationWaitingOnLabelParts(
+  waitingOn: readonly NotificationWaitingOnReference[],
+): readonly WaitingOnDisplayPart[] {
+  if (waitingOn.length === 0) {
+    throw new TypeError("通知履歴のwaitingOnが空です");
+  }
+  return joinWaitingOnParts(waitingOn.map(notificationWaitingOnCandidateLabelParts), "、");
 }
 
 /** waitingOn候補から特定できる待ち相手を返す。 */

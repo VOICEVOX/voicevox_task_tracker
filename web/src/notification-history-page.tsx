@@ -8,7 +8,7 @@ import { notificationReasonText } from "../../src/domain/notification-reason.js"
 import { UnreachableError } from "../../src/util/index.js";
 import { ItemHeading, type ItemHeadingLink } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
-import { formatDateTime } from "./model.js";
+import { formatDateTime, notificationWaitingOnLabelParts } from "./model.js";
 import {
   ResponsiveTableCardList,
   type ResponsiveCardField,
@@ -17,13 +17,16 @@ import {
 } from "./responsive-table-card-list.js";
 import { ActionButton } from "./ui.js";
 import { type PublicNotificationHistoryLoader } from "./notification-history-loader.js";
+import { WaitingOnDisplay } from "./waiting-on-display.js";
 
 type NotificationHistoryPageProps = Readonly<{
   createItemHref: (nodeId: string) => string;
+  createPersonHref: (login: string) => string;
   currentItemNodeIds: ReadonlySet<string>;
   loadNotificationHistory: PublicNotificationHistoryLoader;
   locale: string;
   onSelectItem: (nodeId: string) => void;
+  onSelectPerson: (login: string) => void;
   summary: PublicSummaryDto;
 }>;
 
@@ -68,14 +71,35 @@ function NotificationItem({
 }
 
 function NotificationReasons({
-  reasonCodes,
-}: Readonly<{ reasonCodes: NotificationHistoryRow["reasonCodes"] }>) {
+  reasons,
+}: Readonly<{ reasons: NotificationHistoryRow["reasons"] }>) {
   return (
     <ul class="m-0 grid list-disc gap-1 pl-5">
-      {reasonCodes.map((reasonCode) => (
-        <li key={reasonCode}>{notificationReasonText(reasonCode)}</li>
+      {reasons.map((reason) => (
+        <li key={reason.reasonCode}>{notificationReasonText(reason)}</li>
       ))}
     </ul>
+  );
+}
+
+function NotificationWaitingOn({
+  createPersonHref,
+  onSelectPerson,
+  waitingOn,
+}: Readonly<{
+  createPersonHref: (login: string) => string;
+  onSelectPerson: (login: string) => void;
+  waitingOn: NotificationHistoryRow["waitingOn"];
+}>) {
+  return (
+    <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      <WaitingOnDisplay
+        createPersonHref={createPersonHref}
+        onSelectPerson={onSelectPerson}
+        parts={notificationWaitingOnLabelParts(waitingOn)}
+        showAvatar={false}
+      />
+    </span>
   );
 }
 
@@ -95,23 +119,27 @@ function notificationRowPresentation(
 
 function NotificationHistoryTable({
   createItemHref,
+  createPersonHref,
   currentItemNodeIds,
   locale,
   onSelectItem,
+  onSelectPerson,
   rows,
   summary,
 }: Readonly<{
   createItemHref: (nodeId: string) => string;
+  createPersonHref: (login: string) => string;
   currentItemNodeIds: ReadonlySet<string>;
   locale: string;
   onSelectItem: (nodeId: string) => void;
+  onSelectPerson: (login: string) => void;
   rows: readonly NotificationHistoryRow[];
   summary: PublicSummaryDto;
 }>) {
   const columns = [
     {
       ariaSort: undefined,
-      cellClassName: "font-mono whitespace-nowrap tabular-nums",
+      cellClassName: "font-mono whitespace-normal break-words tabular-nums",
       cellKind: "row_header",
       headerClassName: "whitespace-nowrap",
       key: "sentAt",
@@ -138,19 +166,33 @@ function NotificationHistoryTable({
           onSelectItem={onSelectItem}
         />
       ),
-      widthClassName: "w-[43%]",
+      widthClassName: "w-[35%]",
     },
     {
       ariaSort: undefined,
       cellClassName: "min-w-0",
       cellKind: "data",
       headerClassName: "",
-      key: "reasonCodes",
-      label: "通知理由",
+      key: "waitingOn",
+      label: "待ち相手",
       renderCell: (row: NotificationHistoryRow) => (
-        <NotificationReasons reasonCodes={row.reasonCodes} />
+        <NotificationWaitingOn
+          createPersonHref={createPersonHref}
+          onSelectPerson={onSelectPerson}
+          waitingOn={row.waitingOn}
+        />
       ),
-      widthClassName: "w-[35%]",
+      widthClassName: "w-[20%]",
+    },
+    {
+      ariaSort: undefined,
+      cellClassName: "min-w-0",
+      cellKind: "data",
+      headerClassName: "",
+      key: "reasons",
+      label: "通知理由",
+      renderCell: (row: NotificationHistoryRow) => <NotificationReasons reasons={row.reasons} />,
+      widthClassName: "w-[23%]",
     },
   ] satisfies readonly ResponsiveTableColumn<NotificationHistoryRow>[];
   const cardFields = [
@@ -167,11 +209,22 @@ function NotificationHistoryTable({
     },
     {
       className: "col-span-2",
-      key: "reasonCodes",
-      label: "通知理由",
+      key: "waitingOn",
+      label: "待ち相手",
       renderValue: (row: NotificationHistoryRow) => (
-        <NotificationReasons reasonCodes={row.reasonCodes} />
+        <NotificationWaitingOn
+          createPersonHref={createPersonHref}
+          onSelectPerson={onSelectPerson}
+          waitingOn={row.waitingOn}
+        />
       ),
+      valueClassName: "text-text-primary",
+    },
+    {
+      className: "col-span-2",
+      key: "reasons",
+      label: "通知理由",
+      renderValue: (row: NotificationHistoryRow) => <NotificationReasons reasons={row.reasons} />,
       valueClassName: "text-text-primary",
     },
   ] satisfies readonly ResponsiveCardField<NotificationHistoryRow>[];
@@ -203,10 +256,12 @@ function NotificationHistoryTable({
 /** Discord通知の送信履歴を遅延取得して表示する。 */
 export function NotificationHistoryPage({
   createItemHref,
+  createPersonHref,
   currentItemNodeIds,
   loadNotificationHistory,
   locale,
   onSelectItem,
+  onSelectPerson,
   summary,
 }: NotificationHistoryPageProps) {
   const [historyState, setHistoryState] = useState<NotificationHistoryState>({
@@ -278,9 +333,11 @@ export function NotificationHistoryPage({
         ) : (
           <NotificationHistoryTable
             createItemHref={createItemHref}
+            createPersonHref={createPersonHref}
             currentItemNodeIds={currentItemNodeIds}
             locale={locale}
             onSelectItem={onSelectItem}
+            onSelectPerson={onSelectPerson}
             rows={historyState.history.notifications}
             summary={summary}
           />

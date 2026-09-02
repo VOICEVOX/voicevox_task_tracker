@@ -20,7 +20,15 @@ export {
   type NaturalLanguageDeadlineAssessment,
   type NaturalLanguageDeadlineAssessmentState,
 } from "./deadline.js";
-export { notificationReasonText } from "./notification-reason.js";
+export {
+  createNotificationReason,
+  notificationReasonSchema,
+  notificationReasonText,
+  type NotificationNonTimeReasonCode,
+  type NotificationReason,
+  type NotificationReasonThreshold,
+  type NotificationTimeReasonCode,
+} from "./notification-reason.js";
 export { DETERMINISTIC_RULES_VERSION } from "./deterministic-rules-version.js";
 export {
   resolvePullRequestCommitOccurredAt,
@@ -79,6 +87,9 @@ export {
   determineIssueState,
   ISSUE_DETERMINISTIC_RULES_VERSION,
   type IssueBlocker,
+  type IssueEffectiveAssigneeAssessment,
+  type IssueEffectiveAssigneeCandidate,
+  type IssueEffectiveAssigneeTarget,
   type IssueExplicitRequestAssessment,
   type IssueExplicitRequestCandidate,
   type IssueExplicitRequestTarget,
@@ -114,6 +125,7 @@ export {
 export { buildSourceId, parseSourceId, type SourceId, type SourceIdParts } from "./source-id.js";
 export {
   calculateStaleness,
+  createStalenessNotificationSeverityReason,
   recalculateStalenessSeverity,
   type BlockedParentContext,
   type BlockedParentSeverityReason,
@@ -123,6 +135,7 @@ export {
   type RecalculatedStalenessSeverity,
   type RecalculateStalenessSeverityInput,
   type StalenessElapsedHours,
+  type StalenessNotificationSeverityReason,
   type StalenessResult,
   type StalenessSeverityContext,
   type StalenessSeverityReason,

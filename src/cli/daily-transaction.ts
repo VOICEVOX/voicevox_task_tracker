@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { createUtcIsoDateTime, type UtcIsoDateTime } from "../domain/index.js";
 import { GitHubRetryExhaustedError } from "../github/index.js";
 import { serializeCanonicalJson } from "../persistence/index.js";
@@ -104,6 +105,7 @@ export type DiscordStageResult<Value> = Readonly<{
 
 /** 日次transactionの外部接続と各モジュールの結合境界。 */
 export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> = Readonly<{
+  diagnosticsRecorder?: DiagnosticsJsonlRecorder;
   validateConfiguration: (
     input: Readonly<{
       invocation: DailyRunInvocation;
@@ -526,6 +528,33 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
     });
   }
 
+  async #recordError(
+    invocation: DailyRunInvocation,
+    stage: RunStage,
+    event: string,
+    error: unknown,
+  ): Promise<void> {
+    const recorder = this.#dependencies.diagnosticsRecorder;
+    if (recorder == null) {
+      return;
+    }
+    try {
+      await recorder.append({
+        event,
+        details: {
+          runId: invocation.runId,
+          command: invocation.command.kind,
+          stage,
+        },
+        error,
+      });
+    } catch (recordingError: unknown) {
+      throw new AggregateError([error, recordingError], "CLI段階エラーの診断記録に失敗しました", {
+        cause: error,
+      });
+    }
+  }
+
   async #execute(invocation: DailyRunInvocation): Promise<DailyRunExecutionResult> {
     let stage: RunStage = "configuration";
     let metrics = updateMetrics(createEmptyRunMetrics(), {
@@ -753,6 +782,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         effects: freezeEffects(effects),
       });
     } catch (error: unknown) {
+      await this.#recordError(invocation, stage, "cli.stage.failed", error);
       const alertKind = operationsAlertKind(stage);
       if (
         alertKind != null &&
@@ -775,6 +805,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
             notificationCount: alert.notificationCount,
           });
         } catch (alertError: unknown) {
+          await this.#recordError(invocation, "discord", "cli.operations_alert.failed", alertError);
           diagnostics.push(safeErrorDiagnostic("discord", alertError));
         }
       }

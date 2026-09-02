@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
+import { notificationReasonSchema } from "../domain/notification-reason.js";
 import { assertNonNullable } from "../util/index.js";
 import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 
@@ -44,21 +45,6 @@ const statusSchema = z.enum([
   "terminal_not_planned",
 ]);
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
-const notificationReasonCodeSchema = z.enum([
-  "assessment_overdue",
-  "owner_overdue",
-  "decision_overdue",
-  "review_overdue",
-  "revision_overdue",
-  "reply_overdue",
-  "owner_unknown",
-  "blocker_overdue",
-  "newly_unblocked",
-  "dependency_cycle",
-  "responsibility_changed",
-  "merge_overdue",
-  "automation_stuck",
-]);
 const importanceLevelSchema = z.enum(["low", "medium", "high"]);
 const deadlineLevelSchema = z.enum([
   "none",
@@ -446,24 +432,68 @@ const publicNotificationHistoryItemSchema = z.strictObject({
   title: z.string().max(500),
   url: githubUrlSchema,
 });
+const publicNotificationHistoryWaitingOnSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("user"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("team"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("role"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("item"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+    displayReference: z.string().min(4).max(600),
+  }),
+  z.strictObject({
+    kind: z.literal("automation"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("unknown"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+]);
 const publicNotificationHistoryEntrySchema = z
   .strictObject({
     item: publicNotificationHistoryItemSchema,
-    reasonCodes: z.array(notificationReasonCodeSchema).min(1),
+    waitingOn: z.array(publicNotificationHistoryWaitingOnSchema).min(1),
+    reasons: z.array(notificationReasonSchema).min(1),
     sentAt: dateTimeSchema,
   })
   .superRefine((entry, context) => {
-    if (new Set(entry.reasonCodes).size !== entry.reasonCodes.length) {
+    const reasonCodes = entry.reasons.map((reason) => reason.reasonCode);
+    if (new Set(reasonCodes).size !== reasonCodes.length) {
       context.addIssue({
         code: "custom",
-        path: ["reasonCodes"],
+        path: ["reasons"],
         message: "通知理由コードが重複しています",
       });
+    }
+    for (const [index, reason] of entry.reasons.entries()) {
+      if (reason.threshold.status === "not_recorded") {
+        context.addIssue({
+          code: "custom",
+          path: ["reasons", index, "threshold"],
+          message: "公開通知履歴に基準時間未記録の理由を含めることはできません",
+        });
+      }
     }
   });
 const publicNotificationHistoryDtoSchema = z
   .strictObject({
-    schemaVersion: z.literal("1"),
+    schemaVersion: z.literal("4"),
     runId: identifierSchema,
     generatedAt: dateTimeSchema,
     notifications: z.array(publicNotificationHistoryEntrySchema),
@@ -540,24 +570,32 @@ export function comparePublicNotificationHistoryEntries(
   if (left.item.url > right.item.url) {
     return 1;
   }
-  const reasonCount = Math.min(left.reasonCodes.length, right.reasonCodes.length);
+  const reasonCount = Math.min(left.reasons.length, right.reasons.length);
   for (let index = 0; index < reasonCount; index += 1) {
-    const leftReasonCode = left.reasonCodes[index];
-    const rightReasonCode = right.reasonCodes[index];
-    if (leftReasonCode == null || rightReasonCode == null) {
-      throw new TypeError("通知履歴の理由コードを取得できません");
+    const leftReason = left.reasons[index];
+    const rightReason = right.reasons[index];
+    if (leftReason == null || rightReason == null) {
+      throw new TypeError("通知履歴の理由を取得できません");
     }
-    if (leftReasonCode < rightReasonCode) {
+    if (leftReason.reasonCode < rightReason.reasonCode) {
       return -1;
     }
-    if (leftReasonCode > rightReasonCode) {
+    if (leftReason.reasonCode > rightReason.reasonCode) {
+      return 1;
+    }
+    const leftThreshold = JSON.stringify(leftReason.threshold);
+    const rightThreshold = JSON.stringify(rightReason.threshold);
+    if (leftThreshold < rightThreshold) {
+      return -1;
+    }
+    if (leftThreshold > rightThreshold) {
       return 1;
     }
   }
-  if (left.reasonCodes.length < right.reasonCodes.length) {
+  if (left.reasons.length < right.reasons.length) {
     return -1;
   }
-  if (left.reasonCodes.length > right.reasonCodes.length) {
+  if (left.reasons.length > right.reasons.length) {
     return 1;
   }
   return 0;
@@ -659,6 +697,11 @@ function assertPublicNotificationHistoryEntryItem(entry: PublicNotificationHisto
     throw new PublicDtoSemanticError(
       `通知履歴の表示参照とURLのitem identityが一致しません。対象: ${entry.item.nodeId}`,
     );
+  }
+  for (const waitingOn of entry.waitingOn) {
+    if (waitingOn.kind === "item") {
+      parsePublicNotificationHistoryDisplayReference(waitingOn.displayReference);
+    }
   }
 }
 

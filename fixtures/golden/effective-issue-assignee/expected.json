@@ -1,0 +1,112 @@
+{
+  "schemaVersion": "1",
+  "kind": "standard",
+  "items": [
+    {
+      "nodeId": "effective-conditional-issue",
+      "status": "waiting_for_owner",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "fixture-maintainer",
+          "role": "maintainer"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-31T00:00:00.000Z"
+    },
+    {
+      "nodeId": "effective-formal-assignee-released-issue",
+      "status": "waiting_for_owner",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "fixture-maintainer",
+          "role": "maintainer"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-31T17:00:00.000Z"
+    },
+    {
+      "nodeId": "effective-joint-issue",
+      "status": "waiting_for_work",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "worker-joint-a",
+          "role": "assignee"
+        },
+        {
+          "kind": "user",
+          "candidateId": "worker-joint-b",
+          "role": "assignee"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-31T13:00:00.000Z"
+    },
+    {
+      "nodeId": "effective-partial-issue",
+      "status": "waiting_for_owner",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "fixture-maintainer",
+          "role": "maintainer"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-31T00:00:00.000Z"
+    },
+    {
+      "nodeId": "effective-single-issue",
+      "status": "waiting_for_work",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "worker-single",
+          "role": "assignee"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-31T18:00:00.000Z"
+    },
+    {
+      "nodeId": "effective-source-mismatch-issue",
+      "status": "waiting_for_owner",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "fixture-maintainer",
+          "role": "maintainer"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-31T00:00:00.000Z"
+    },
+    {
+      "nodeId": "effective-withdrawn-issue",
+      "status": "waiting_for_owner",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "fixture-maintainer",
+          "role": "maintainer"
+        }
+      ],
+      "severity": "none",
+      "stallSince": "2026-08-31T00:00:00.000Z"
+    }
+  ],
+  "relations": [],
+  "notifications": [],
+  "publication": {
+    "status": "published"
+  },
+  "fixedAi": {
+    "acceptedOutputCount": 7,
+    "rejectedOutputCount": 2,
+    "networkCallCount": 0
+  }
+}

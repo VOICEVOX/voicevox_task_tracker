@@ -435,6 +435,12 @@ function createFieldName(item: TrackedItem): string {
   return reference;
 }
 
+function createReasonLines(candidate: DiscordNotificationCandidate): readonly string[] {
+  return Object.freeze(
+    candidate.reasons.map((reason) => `理由: ${notificationReasonText(reason)}`),
+  );
+}
+
 function createFieldDraft(
   candidate: DiscordNotificationCandidate,
   item: TrackedItem,
@@ -453,19 +459,21 @@ function createFieldDraft(
   const stallTimestamp = parseTimestamp(item.stallSince, `${item.displayReference}のstallSince`);
   const waitingOn = formatWaitingOn(item.waitingOn, itemReferences, mentionLookup, mentionsEnabled);
   const title = truncateText(normalizeInlineText(item.title, "タイトル"), TITLE_MAX_CHARACTERS);
-  const reasons = candidate.reasons.map((reason) => notificationReasonText(reason.reasonCode));
+  const reasonLines = createReasonLines(candidate);
+  const firstReason = candidate.reasons[0];
+  assertNonNullable(firstReason, `${candidate.itemNodeId}の通知理由を取得できませんでした`);
   const value = [
     `タイトル: ${title}`,
-    `waitingOn: ${waitingOn.text}`,
+    `待ち相手: ${waitingOn.text}`,
     `経過時間: ${formatElapsedTime(stallTimestamp, generatedTimestamp)}、${formatJst(stallTimestamp)}から`,
-    `理由: ${reasons.join("、")}`,
+    ...reasonLines,
     `GitHub: ${item.url}`,
   ].join("\n");
   if (characterCount(value) > DISCORD_SAFE_LIMITS.fieldValueCharacters) {
     throw new DiscordPayloadError(`${item.displayReference}のfield値が安全上限を超えています`);
   }
   return Object.freeze({
-    category: categoryForReason(candidate.reasonCode),
+    category: categoryForReason(firstReason.reasonCode),
     field: Object.freeze({
       name: createFieldName(item),
       value,
@@ -508,8 +516,7 @@ function validateDigestInputs(
         reservation?.status !== "reserved" ||
         reservation.itemNodeId !== candidate.itemNodeId ||
         reservation.reasonCode !== reason.reasonCode ||
-        reservation.severity !== candidate.severity ||
-        reservation.cooldownUntil !== reason.cooldownUntil
+        reservation.severity !== candidate.severity
       ) {
         throw new DiscordPayloadError("通知候補とledger予約が一致しません");
       }

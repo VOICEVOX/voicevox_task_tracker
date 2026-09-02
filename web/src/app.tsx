@@ -486,10 +486,12 @@ export function App({
         return (
           <NotificationHistoryPage
             createItemHref={createItemHref}
+            createPersonHref={createPersonHref}
             currentItemNodeIds={currentItemNodeIds}
             loadNotificationHistory={sharedLoadNotificationHistory}
             locale={locale}
             onSelectItem={selectItem}
+            onSelectPerson={selectPerson}
             summary={summary}
           />
         );

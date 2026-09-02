@@ -25,6 +25,7 @@ import {
   createStateHistoryRecord,
   diffStateHistory,
   parseStateHistoryRecords,
+  resolveStateHistoryNotificationItemDisplayReference,
   type StateHistoryDiff,
   type StateHistoryInputEvent,
   type StateHistoryNotificationEvent,
@@ -166,6 +167,47 @@ function assertRunConsistency(snapshot: StateSnapshot, report: StateRunReport): 
       snapshot.repositories.filter((repository) => repository.freshness === "stale").length
   ) {
     throw new StateSnapshotSemanticError("snapshotとrun reportの件数が一致しません");
+  }
+}
+
+function assertNotificationWaitingOnMatchesSnapshot(
+  event: StateHistoryNotificationEvent,
+  snapshot: StateSnapshot,
+  item: StateSnapshot["items"][number],
+): void {
+  if (event.waitingOn.status !== "recorded") {
+    throw new StateHistoryError("新規通知送信eventのwaitingOnが記録済みではありません");
+  }
+  if (item.waitingOn.length === 0) {
+    throw new StateHistoryError("通知送信eventの対象itemにwaitingOnがありません");
+  }
+  if (event.waitingOn.values.length !== item.waitingOn.length) {
+    throw new StateHistoryError("通知送信eventとsnapshotのwaitingOn件数が一致しません");
+  }
+  for (const [index, expected] of item.waitingOn.entries()) {
+    const actual = event.waitingOn.values[index];
+    if (actual == null) {
+      throw new StateHistoryError("通知送信eventとsnapshotのwaitingOnが順序込みで一致しません");
+    }
+    if (
+      actual.kind !== expected.kind ||
+      actual.candidateId !== expected.candidateId ||
+      actual.role !== expected.role
+    ) {
+      throw new StateHistoryError("通知送信eventとsnapshotのwaitingOnが順序込みで一致しません");
+    }
+    if (expected.kind !== "item") {
+      continue;
+    }
+    if (actual.kind !== "item") {
+      throw new StateHistoryError("通知送信eventのitem waitingOn種別が一致しません");
+    }
+    if (
+      actual.displayReference !==
+      resolveStateHistoryNotificationItemDisplayReference(snapshot, expected.candidateId)
+    ) {
+      throw new StateHistoryError("通知送信eventのitem waitingOn表示参照とsnapshotが一致しません");
+    }
   }
 }
 
@@ -454,7 +496,7 @@ export class StatePersistenceSession {
     const snapshot = createStateSnapshot(input.snapshot);
     const notificationEvents = input.notificationEvents.map((event) => ({
       ...event,
-      reasonCodes: [...event.reasonCodes],
+      reasons: [...event.reasons],
     }));
     const runReport = createStateRunReport(input.runReport);
     assertRunConsistency(snapshot, runReport);
@@ -543,6 +585,7 @@ export class StatePersistenceSession {
       ) {
         throw new StateHistoryError("通知送信eventとsnapshotのitem表示情報が一致しません");
       }
+      assertNotificationWaitingOnMatchesSnapshot(event, snapshot, item);
     }
     assertStatePublicSafety({
       snapshot,

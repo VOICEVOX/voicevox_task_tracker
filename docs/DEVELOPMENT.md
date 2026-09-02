@@ -79,7 +79,7 @@ pnpm tracker:run collect-analyze --mode none --notification-action dismiss-curre
 
 `tracker:run`は`--backfill none`を`daily`へ変換し、`linked`または`all-open`を`backfill`へ変換します。
 
-`dismiss-current`は現在の通知条件を満たす候補を上限なしで手動抑制済みとしてledgerへ保存し、通常のDiscord送信と`notification_sent`履歴を作りません。通知判定規則、Web UI、README、`config.yml`は変わりません。
+`dismiss-current`は現在の通知条件を満たす候補を上限なしで手動抑制済みとして通知管理記録へ保存し、通常のDiscord送信と`notification_sent`履歴を作りません。通知判定規則、Web UI、README、`config.yml`は変わりません。
 
 オンラインで収集する場合は、実行するshellへ次の環境変数を設定します。
 
@@ -101,13 +101,13 @@ state、Pages、Discordを更新せずに収集から検証までを通したい
 
 ## テスト
 
-ユーザーが明示的に実装を依頼した場合だけテストを実装します。
+ユーザーの指示の有無にかかわらず、テストを一切実装しません。
 
 ## Golden評価
 
 `fixtures/golden/`の各ケースは`fixture.json`と`expected.json`の2ファイルで構成します。
 `fixture.json`は評価時刻、repository、IssueとPull Request、関係候補、固定AI分析、前回状態を持ちます。
-`expected.json`はstatus、waitingOn、severity、停滞開始時刻、関係、通知、公開可否の期待値を持ちます。
+`expected.json`は`status`、待ち相手を表す`waitingOn`、停滞レベルを表す`severity`、停滞開始時刻、関係、通知、公開可否の期待値を持ちます。
 `large`ケースだけは集計値と性能、サイズ、API予算、Codex予算の合否を記録します。
 
 fixtureはネットワークへ接続しません。
@@ -128,11 +128,29 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 判定規則を変えたら、対応するversionを上げてください。
 上げないと、GitHub側が動いていない項目は再判定されず、古い判定が残り続けます。
 
-| 変更した対象                | 上げるversion                              |
-| --------------------------- | ------------------------------------------ |
-| Issueの判定                 | `ISSUE_DETERMINISTIC_RULES_VERSION`        |
-| Pull Requestの判定          | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION` |
-| `prompts/`のCodexプロンプト | `config.yml`の`ai.promptVersion`           |
+| 変更した対象            | 上げるversion                              |
+| ----------------------- | ------------------------------------------ |
+| Issueの判定             | `ISSUE_DETERMINISTIC_RULES_VERSION`        |
+| Pull Requestの判定      | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION` |
+| Codexの意味上の判定規則 | `config.yml`の`ai.promptVersion`           |
+
+#### Codexプロンプトのversionを判断する
+
+AI推論のやり直しは重いため、プロンプトの差分だけを理由に全項目を再推論しません。`ai.promptVersion`はプロンプトファイルの改訂番号を表さず、意味上のAI判定規則を識別するversionとして扱います。
+
+変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は、`ai.promptVersion`を据え置きます。実際の全件再推論を判断手段にしません。比較する対象は、構造化された出力と下流処理に関わる判定の一致率です。文章の一致率は基準にしません。95％以上と見込めない場合、または影響を判断できない場合はversionを上げます。
+
+次の変更は、95％以上の判定が維持される条件を満たす限り、原則としてversionを据え置きます。
+
+- 用語、表記、説明文だけを変える
+- 行動主体、行動、対象を変えない自由文の言い換えを行う
+
+次の変更は、構造化された選択や下流処理の意味が変わり得るためversionを上げます。
+
+- `status`、`waitingOn`の候補や順序、`importance`、`deadline`、`notification`、`relations`の意味を変える
+- `meaningful progress`、`confidence`、根拠`source`、`nextAction`の意味を変える
+
+versionを据え置いた表記変更は、既存cacheやsnapshotへ即時反映されません。新規分析や別要因による再分析だけが新しい表記になり、新旧の文言が一時的に混在します。この挙動は推論負荷を避けるために受け入れます。既存項目の表記を即時に統一する必要がある場合は、全AI再推論を伴わない表示時の決定論的な変換などを検討します。
 
 要対応度は最新の重要度、期限の切迫度、停滞時間、設定から毎run全項目で再計算します。
 要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
@@ -140,7 +158,7 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 
 ### 永続stateの列挙値を変更する
 
-snapshot、履歴、通知ledgerが保存する列挙値は、次の順序で変更します。
+snapshot、履歴、通知管理記録が保存する列挙値は、次の順序で変更します。
 
 1. 対象文書のschema versionを上げる。
 2. 旧versionから現行versionへのマイグレーションを追加する。
@@ -153,26 +171,27 @@ pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
 
 ## ディレクトリ構成
 
-| パス                 | 責務                                                                                               |
-| -------------------- | -------------------------------------------------------------------------------------------------- |
-| `src/cli/`           | 引数解析、日次トランザクション、workflow stage、実アダプターの合成、run report                     |
-| `src/codex/`         | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                          |
-| `src/config/`        | `config.yml`の読み込みとZod schema検証                                                             |
-| `src/discord/`       | 通知候補選別、cooldown、payload生成、Webhook送信                                                   |
-| `src/domain/`        | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、severity、重要度、要対応度のpure TypeScript |
-| `src/eval/`          | golden fixtureの解析、期待値との比較、回帰指標                                                     |
-| `src/github/`        | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                       |
-| `src/graph/`         | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                      |
-| `src/pages/`         | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                             |
-| `src/performance/`   | 外部接続をモックした日次run全体の性能と予算のprofile                                               |
-| `src/persistence/`   | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、state branch transaction         |
-| `src/util/`          | null検査、到達不能検査、共通エラー、Zod診断                                                        |
-| `web/`               | ViteとPreactによる静的Web UIとサンプル公開DTO                                                      |
-| `fixtures/`          | Golden評価と性能profileへ渡す固定入力                                                              |
-| `schemas/`           | Codex分析出力とsnapshotのJSON Schema                                                               |
-| `prompts/`           | Codexへ渡す固定system prompt                                                                       |
-| `docs/`              | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                       |
-| `.github/workflows/` | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                    |
+| パス                 | 責務                                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/cli/`           | 引数解析、日次トランザクション、workflow stage、実アダプターの合成、run report                       |
+| `src/codex/`         | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                            |
+| `src/config/`        | `config.yml`の読み込みとZod schema検証                                                               |
+| `src/diagnostics/`   | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                       |
+| `src/discord/`       | 通知候補選別、通知管理記録による重複抑制、payload生成、Webhook送信                                   |
+| `src/domain/`        | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度のpure TypeScript |
+| `src/eval/`          | golden fixtureの解析、期待値との比較、回帰指標                                                       |
+| `src/github/`        | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                         |
+| `src/graph/`         | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                        |
+| `src/pages/`         | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                               |
+| `src/performance/`   | 外部接続をモックした日次run全体の性能と予算のprofile                                                 |
+| `src/persistence/`   | canonical JSON、snapshot、履歴、AI cache、通知管理記録、run report、state branch transaction         |
+| `src/util/`          | null検査、到達不能検査、共通エラー、Zod診断                                                          |
+| `web/`               | ViteとPreactによる静的Web UIとサンプル公開DTO                                                        |
+| `fixtures/`          | Golden評価と性能profileへ渡す固定入力                                                                |
+| `schemas/`           | Codex分析出力とsnapshotのJSON Schema                                                                 |
+| `prompts/`           | Codexへ渡す固定system prompt                                                                         |
+| `docs/`              | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                         |
+| `.github/workflows/` | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                      |
 
 ## コードの方針
 
@@ -246,7 +265,7 @@ Tailwind CSSでスタイルを書きます。
 
 色とフォントサイズとブレークポイントは`@theme`のトークンを使います。
 トークンは役割で名付けてあるので、`bg-surface-card`や`text-state-danger-text`のように意味で選びます。
-生成りのページとカードに深緑のアクセントを合わせ、ライトテーマだけを提供します。
+生成りのページとカードに深緑のアクセントを合わせ、OSの設定に応じてライトテーマとダークテーマを提供します。
 本文は端末のゴシック体、サイト名とページや項目詳細の見出しは`font-display`、点数や時間や件数は`font-mono`を使います。
 Webフォントは読み込みません。
 余白と角丸と影はTailwindの既定スケールへ寄せ、`clamp()`のように既定で表せないものだけ`@theme`へ足します。

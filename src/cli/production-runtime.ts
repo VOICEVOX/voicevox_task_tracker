@@ -2,12 +2,15 @@ import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
+  CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+  CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
   createCodexEnvironment,
   createCodexAnalysisInput,
   estimateAiInputCost,
   getCodexEnvironmentVariableAllowlist,
   hashCanonicalJson,
   prepareAiAnalysisCandidate,
+  recordCodexDiagnostic,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
   runAiAnalyses,
@@ -26,6 +29,8 @@ import {
   type ReducedCodexDecision,
   type ValidatedCodexAnalysisOutput,
 } from "../codex/index.js";
+import { type CodexDiagnosticsContext } from "../codex/index.js";
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { type Config, type loadConfig } from "../config/index.js";
 import {
   aggregatePullRequestCheckState,
@@ -34,11 +39,13 @@ import {
   calculateImportance,
   combineImportance,
   classifyTrackingNotification,
+  createNotificationReason,
   createUtcIsoDateTime,
   createGitHubNodeId,
   createGitHubBotPredicate,
   createLabelEffectsResolver,
   createTrackedItemLatestEventActor,
+  createStalenessNotificationSeverityReason,
   calculateStaleness,
   determineDeadlineLevel,
   DETERMINISTIC_RULES_VERSION,
@@ -64,11 +71,15 @@ import {
   type GitHubRepositoryId,
   type GraphNodeId,
   type IssueBlocker,
+  type IssueEffectiveAssigneeAssessment,
+  type IssueEffectiveAssigneeCandidate,
+  type IssueEffectiveAssigneeTarget,
   type IssueExplicitRequestAssessment,
   type IssueExplicitRequestTarget,
   type IssueStateDecision,
   type BlockedParentContext,
   type BlockerRanking,
+  type NormalizedEvent,
   type OrganizationTrackingCandidate,
   type TrackingCandidate,
   type PullRequestStateDecision,
@@ -80,6 +91,7 @@ import {
   type SourceId,
   type Severity,
   type StalenessSeverityContext,
+  type StalenessNotificationSeverityReason,
   type StalenessWaitClass,
   type StalenessResult,
   type NaturalLanguageProgressAssessment,
@@ -183,6 +195,8 @@ import {
   type StateSnapshot,
   type StateSnapshotReadResult,
 } from "../persistence/index.js";
+import { resolveStateHistoryNotificationItemDisplayReference } from "../persistence/history.js";
+import { NOTIFICATION_LEDGER_SCHEMA_VERSION_4 } from "../persistence/state-documents.js";
 import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { CliApplication } from "./application.js";
 import { createTrackingBackfillRequest } from "./backfill.js";
@@ -358,12 +372,27 @@ type MentionedWaitingOnCandidate = Readonly<{
   sourceIds: readonly [SourceId, ...SourceId[]];
 }>;
 
+type EffectiveAssigneeSourceContext = Readonly<{
+  item: FreshObservedGitHubItem;
+  detail: GitHubItemDetail;
+}>;
+
+type EffectiveAssigneeCandidateContext = Readonly<{
+  candidate: IssueEffectiveAssigneeCandidate;
+  sourceContexts: readonly EffectiveAssigneeSourceContext[];
+}>;
+
+type EffectiveAssigneeCollectionContext = Readonly<
+  Pick<CollectedItems, "observedItems" | "details" | "trackedNodeIds">
+>;
+
 type DeterministicItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
   detail: GitHubItemDetail;
   decision: IssueStateDecision | PullRequestStateDecision;
   notificationClass: TrackingNotificationClass;
   relationCandidates: readonly RelationCandidate[];
+  effectiveAssigneeCandidates: readonly EffectiveAssigneeCandidateContext[];
 }>;
 
 type DeterministicAnalysis = Readonly<{
@@ -391,6 +420,7 @@ type ReducedItemAnalysis = Readonly<{
 type TrackedItemStaleness = Readonly<{
   elapsedHours: number;
   severity: Severity;
+  severityReason: StalenessNotificationSeverityReason;
   waitClass: StalenessWaitClass;
   severityContext: StalenessSeverityContext;
 }>;
@@ -474,6 +504,7 @@ export type ProductionTypes = DailyTransactionTypeMap &
 /** 日次実行配線へ注入する外部接続、時刻、永続化の境界。 */
 export type ProductionRuntimeAdapters = Readonly<{
   environment: Readonly<NodeJS.ProcessEnv>;
+  diagnosticsRecorder?: DiagnosticsJsonlRecorder;
   repositoryPath: string;
   pagesOutputDirectory: string;
   loadConfig: typeof loadConfig;
@@ -490,6 +521,10 @@ export type ProductionRuntimeAdapters = Readonly<{
     configuration: CodexAdapterConfiguration,
     dependencies: CodexAdapterDependencies,
   ) => Promise<unknown>;
+  executeCodexAuthenticationPreflight: (
+    configuration: CodexAdapterConfiguration,
+    dependencies: CodexAdapterDependencies,
+  ) => Promise<void>;
   readReplayFixture: typeof readReplayFixtureFile;
   readReplayState: typeof readReplayStateFile;
   readGoldenFixtures: typeof readGoldenFixtureFiles;
@@ -1639,6 +1674,309 @@ function createIssueRequestCandidates(
   return deduplicateByStableId(candidates, (candidate) => candidate.sourceId);
 }
 
+type EffectiveAssigneeCandidateAccumulator = Readonly<{
+  candidateId: string;
+  sourceIds: Set<SourceId>;
+  occurredAtBySourceId: Map<SourceId, UtcIsoDateTime>;
+  sourceContexts: Map<GitHubNodeId, EffectiveAssigneeSourceContext>;
+}>;
+
+type EffectiveAssigneeStateEvent = Extract<NormalizedEvent, { kind: "state" }>;
+
+function latestEffectiveAssigneeUnassignmentAt(
+  detail: Extract<GitHubItemDetail, { type: "issue" }>,
+): UtcIsoDateTime | undefined {
+  let latestUnassignedAt: UtcIsoDateTime | undefined;
+  for (const event of detail.timeline) {
+    if (event.kind !== "unassigned") {
+      continue;
+    }
+    if (latestUnassignedAt == null || latestUnassignedAt < event.occurredAt) {
+      latestUnassignedAt = event.occurredAt;
+    }
+  }
+  return latestUnassignedAt;
+}
+
+function resolveEffectiveAssigneePullRequestState(
+  pullRequest: Extract<FreshObservedGitHubItem, { type: "pull_request" }>,
+): "open" | "merged" | "closed_unmerged" {
+  const stateEvents = pullRequest.events
+    .filter((event): event is EffectiveAssigneeStateEvent => event.kind === "state")
+    .sort((left, right) => {
+      if (left.occurredAt !== right.occurredAt) {
+        return left.occurredAt < right.occurredAt ? -1 : 1;
+      }
+      if (left.sourceId === right.sourceId) {
+        return 0;
+      }
+      return left.sourceId < right.sourceId ? -1 : 1;
+    });
+  const latestStateEvent = stateEvents.at(-1);
+  if (pullRequest.state === "open") {
+    if (latestStateEvent == null) {
+      return "open";
+    }
+    switch (latestStateEvent.state) {
+      case "open":
+      case "reopened":
+        return "open";
+      case "closed":
+      case "merged":
+        throw new TypeError(
+          `openなPull Requestの最新state eventが現在状態と一致しません。対象: ${pullRequest.nodeId}`,
+        );
+      default:
+        throw new UnreachableError(latestStateEvent);
+    }
+  }
+  assertNonNullable(
+    latestStateEvent,
+    `closedなPull Requestの最新state eventがありません。対象: ${pullRequest.nodeId}`,
+  );
+  switch (latestStateEvent.state) {
+    case "merged":
+      return "merged";
+    case "closed":
+      return "closed_unmerged";
+    case "open":
+    case "reopened":
+      throw new TypeError(
+        `closedなPull Requestの最新state eventが現在状態と一致しません。対象: ${pullRequest.nodeId}`,
+      );
+    default:
+      throw new UnreachableError(latestStateEvent);
+  }
+}
+
+function createEffectiveAssigneeCandidateContexts(
+  collection: EffectiveAssigneeCollectionContext,
+  item: Extract<FreshObservedGitHubItem, { type: "issue" }>,
+  detail: Extract<GitHubItemDetail, { type: "issue" }>,
+  relationCandidates: readonly RelationCandidate[],
+): readonly EffectiveAssigneeCandidateContext[] {
+  if (item.state !== "open" || item.assignees.length !== 0) {
+    return Object.freeze([]);
+  }
+
+  const currentSourceContext = Object.freeze({
+    item,
+    detail,
+  }) satisfies EffectiveAssigneeSourceContext;
+  const observedItemsByNodeId = new Map(
+    collection.observedItems.map((observedItem) => [observedItem.nodeId, observedItem]),
+  );
+  const detailsByNodeId = new Map(
+    collection.details.map((itemDetail) => [itemDetail.nodeId, itemDetail]),
+  );
+  const candidatesById = new Map<string, EffectiveAssigneeCandidateAccumulator>();
+  const lastUnassignedAt = latestEffectiveAssigneeUnassignmentAt(detail);
+
+  const addCandidateEvidence = (
+    candidateId: string,
+    sourceId: SourceId,
+    occurredAt: UtcIsoDateTime,
+    sourceContext: EffectiveAssigneeSourceContext,
+  ): void => {
+    if (candidateId.length === 0) {
+      throw new TypeError("実質担当候補のGitHub loginは空にできません");
+    }
+    if (lastUnassignedAt != null && occurredAt <= lastUnassignedAt) {
+      return;
+    }
+    const key = candidateId.toLowerCase();
+    const existing = candidatesById.get(key);
+    if (existing == null) {
+      candidatesById.set(
+        key,
+        Object.freeze({
+          candidateId,
+          sourceIds: new Set([sourceId]),
+          occurredAtBySourceId: new Map([[sourceId, occurredAt]]),
+          sourceContexts: new Map([[sourceContext.item.nodeId, sourceContext]]),
+        }),
+      );
+      return;
+    }
+    existing.sourceIds.add(sourceId);
+    const existingOccurredAt = existing.occurredAtBySourceId.get(sourceId);
+    if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
+      if (parseSourceId(sourceId).kind !== "github_commit") {
+        throw new TypeError(`実質担当候補sourceの発生時刻が一致しません。対象: ${sourceId}`);
+      }
+      existing.occurredAtBySourceId.set(
+        sourceId,
+        existingOccurredAt < occurredAt ? existingOccurredAt : occurredAt,
+      );
+    } else {
+      existing.occurredAtBySourceId.set(sourceId, occurredAt);
+    }
+    existing.sourceContexts.set(sourceContext.item.nodeId, sourceContext);
+  };
+
+  if (
+    item.author.status === "identified" &&
+    item.author.actor.type === "human" &&
+    detail.body.trim().length > 0
+  ) {
+    addCandidateEvidence(
+      item.author.actor.login,
+      detail.bodySourceId,
+      item.createdAt,
+      currentSourceContext,
+    );
+  }
+
+  for (const comment of detail.comments) {
+    if (comment.body.trim().length === 0) {
+      continue;
+    }
+    const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+    if (event?.actor.type !== "human") {
+      continue;
+    }
+    addCandidateEvidence(
+      event.actor.login,
+      comment.sourceId,
+      comment.createdAt,
+      currentSourceContext,
+    );
+  }
+
+  for (const relationCandidate of relationCandidates) {
+    if (
+      relationCandidate.authority !== "authoritative" ||
+      relationCandidate.relation.type !== "implements"
+    ) {
+      continue;
+    }
+    const implementation = relationCandidate.relation.implementation;
+    const target = relationCandidate.relation.target;
+    if (
+      implementation.scope !== "organization" ||
+      implementation.kind !== "pull_request" ||
+      target.scope !== "organization" ||
+      target.nodeId !== item.nodeId
+    ) {
+      continue;
+    }
+    if (!collection.trackedNodeIds.has(implementation.nodeId)) {
+      continue;
+    }
+    const relatedItem = observedItemsByNodeId.get(implementation.nodeId);
+    if (relatedItem == null) {
+      continue;
+    }
+    if (relatedItem.type !== "pull_request") {
+      throw new TypeError(
+        `実装関係の対象がPull Requestではありません。対象: ${implementation.nodeId}`,
+      );
+    }
+    const expectedObservedState = implementation.state === "open" ? "open" : "closed";
+    if (relatedItem.state !== expectedObservedState) {
+      throw new TypeError(
+        `実装関係のPull Request状態が一致しません。対象: ${implementation.nodeId}`,
+      );
+    }
+    const relatedDetail = detailsByNodeId.get(implementation.nodeId);
+    if (relatedDetail == null) {
+      continue;
+    }
+    if (relatedDetail.type !== "pull_request") {
+      throw new TypeError(
+        `実装関係の詳細がPull Requestではありません。対象: ${implementation.nodeId}`,
+      );
+    }
+    if (relatedItem.author.status !== "identified" || relatedItem.author.actor.type !== "human") {
+      continue;
+    }
+    const relatedSourceContext = Object.freeze({
+      item: relatedItem,
+      detail: relatedDetail,
+    }) satisfies EffectiveAssigneeSourceContext;
+    const authorLogin = relatedItem.author.actor.login;
+    addCandidateEvidence(
+      authorLogin,
+      relatedItem.sourceId,
+      relatedItem.createdAt,
+      relatedSourceContext,
+    );
+    if (relatedDetail.body.trim().length > 0) {
+      addCandidateEvidence(
+        authorLogin,
+        relatedDetail.bodySourceId,
+        relatedItem.createdAt,
+        relatedSourceContext,
+      );
+    }
+    for (const event of relatedItem.events) {
+      if (event.kind !== "push") {
+        continue;
+      }
+      addCandidateEvidence(authorLogin, event.sourceId, event.occurredAt, relatedSourceContext);
+    }
+  }
+
+  return Object.freeze(
+    [...candidatesById.values()]
+      .map((candidate) => {
+        const orderedSourceIds = [...candidate.sourceIds].sort((left, right) => {
+          const leftOccurredAt = candidate.occurredAtBySourceId.get(left);
+          const rightOccurredAt = candidate.occurredAtBySourceId.get(right);
+          assertNonNullable(
+            leftOccurredAt,
+            `実質担当候補sourceの発生時刻がありません。対象: ${left}`,
+          );
+          assertNonNullable(
+            rightOccurredAt,
+            `実質担当候補sourceの発生時刻がありません。対象: ${right}`,
+          );
+          if (leftOccurredAt !== rightOccurredAt) {
+            return leftOccurredAt > rightOccurredAt ? -1 : 1;
+          }
+          return left.localeCompare(right);
+        });
+        const sourceIds = orderedSourceIds.slice(0, 10);
+        const firstSourceId = sourceIds[0];
+        assertNonNullable(
+          firstSourceId,
+          `実質担当候補 ${candidate.candidateId}のsource IDがありません`,
+        );
+        const occurredAt = candidate.occurredAtBySourceId.get(firstSourceId);
+        assertNonNullable(
+          occurredAt,
+          `実質担当候補sourceの発生時刻がありません。対象: ${firstSourceId}`,
+        );
+        return Object.freeze({
+          candidate: Object.freeze({
+            candidateId: candidate.candidateId,
+            sourceIds: Object.freeze([firstSourceId, ...sourceIds.slice(1)] satisfies [
+              SourceId,
+              ...SourceId[],
+            ]),
+            occurredAt,
+          }),
+          sourceContexts: Object.freeze(
+            [...candidate.sourceContexts.values()].sort((left, right) =>
+              left.item.nodeId.localeCompare(right.item.nodeId),
+            ),
+          ),
+        });
+      })
+      .sort((left, right) => {
+        const leftId = left.candidate.candidateId.toLowerCase();
+        const rightId = right.candidate.candidateId.toLowerCase();
+        if (leftId < rightId) {
+          return -1;
+        }
+        if (leftId > rightId) {
+          return 1;
+        }
+        return left.candidate.candidateId.localeCompare(right.candidate.candidateId);
+      }),
+  );
+}
+
 function mentionedCandidatesInSource(
   sourceId: SourceId,
   content: string,
@@ -1739,11 +2077,23 @@ function applyDeterministicAnalysis(
     const relationCandidates = candidatesForNode(item.nodeId, collection.relationCandidates);
     const blockers = createNativeBlockers(item, relationCandidates);
     if (item.type === "issue" && detail.type === "issue") {
+      const effectiveAssigneeCandidates = createEffectiveAssigneeCandidateContexts(
+        collection,
+        item,
+        detail,
+        relationCandidates,
+      );
       const decision = determineIssueState({
         issue: item,
         blockers,
         explicitRequestCandidates: createIssueRequestCandidates(item, detail),
         explicitRequestAssessment: {
+          status: "not_assessed",
+        },
+        effectiveAssigneeCandidates: effectiveAssigneeCandidates.map(
+          (candidate) => candidate.candidate,
+        ),
+        effectiveAssigneeAssessment: {
           status: "not_assessed",
         },
         maintainers,
@@ -1757,6 +2107,7 @@ function applyDeterministicAnalysis(
           decision,
           notificationClass,
           relationCandidates,
+          effectiveAssigneeCandidates,
         }),
       );
       continue;
@@ -1781,6 +2132,7 @@ function applyDeterministicAnalysis(
           decision,
           notificationClass,
           relationCandidates,
+          effectiveAssigneeCandidates: Object.freeze([]),
         }),
       );
       continue;
@@ -1897,7 +2249,14 @@ function addCodexSourceOccurredAt(
 ): void {
   const existingOccurredAt = sourceOccurredAtById.get(sourceId);
   if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
-    throw new TypeError(`同じCodex source IDに異なる発生時刻があります。対象: ${sourceId}`);
+    if (parseSourceId(sourceId).kind !== "github_commit") {
+      throw new TypeError(`同じCodex source IDに異なる発生時刻があります。対象: ${sourceId}`);
+    }
+    sourceOccurredAtById.set(
+      sourceId,
+      existingOccurredAt < occurredAt ? existingOccurredAt : occurredAt,
+    );
+    return;
   }
   sourceOccurredAtById.set(sourceId, occurredAt);
 }
@@ -1912,18 +2271,21 @@ function checkContextOccurredAt(
   return context.completedAt ?? headOccurredAt;
 }
 
-function createCodexSourceOccurredAtById(
+function addCodexSourceOccurredAtForContext(
+  sourceOccurredAtById: Map<SourceId, UtcIsoDateTime>,
   item: FreshObservedGitHubItem,
   detail: GitHubItemDetail,
-): ReadonlyMap<SourceId, UtcIsoDateTime> {
-  const sourceOccurredAtById = new Map(createEarliestRelationSourceOccurredAtById([item]));
+): void {
+  for (const [sourceId, occurredAt] of createEarliestRelationSourceOccurredAtById([item])) {
+    addCodexSourceOccurredAt(sourceOccurredAtById, sourceId, occurredAt);
+  }
   addCodexSourceOccurredAt(sourceOccurredAtById, item.sourceId, item.createdAt);
   addCodexSourceOccurredAt(sourceOccurredAtById, detail.bodySourceId, item.createdAt);
   for (const comment of detail.comments) {
     addCodexSourceOccurredAt(sourceOccurredAtById, comment.sourceId, comment.createdAt);
   }
   if (detail.type !== "pull_request" || detail.mergeState.checks.status !== "configured") {
-    return sourceOccurredAtById;
+    return;
   }
   const headOccurredAt = resolvePullRequestCommitOccurredAt(detail.headCommit, item.createdAt);
   const checkOccurredAts = detail.mergeState.checks.contexts.map((context) => {
@@ -1939,7 +2301,187 @@ function createCodexSourceOccurredAtById(
       `check rollup ${detail.mergeState.checks.sourceId}`,
     ),
   );
+}
+
+function createCodexSourceOccurredAtById(
+  item: FreshObservedGitHubItem,
+  detail: GitHubItemDetail,
+): ReadonlyMap<SourceId, UtcIsoDateTime> {
+  const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
+  addCodexSourceOccurredAtForContext(sourceOccurredAtById, item, detail);
   return sourceOccurredAtById;
+}
+
+function addCodexSourceRecord(
+  sourceRecords: Map<string, unknown>,
+  sourceId: SourceId,
+  record: unknown,
+): void {
+  if (sourceRecords.has(sourceId)) {
+    return;
+  }
+  sourceRecords.set(sourceId, record);
+}
+
+function addCodexSourceRecordsForContext(
+  sourceRecords: Map<string, unknown>,
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+  context: EffectiveAssigneeSourceContext,
+): void {
+  const { item, detail } = context;
+  addCodexSourceRecord(
+    sourceRecords,
+    item.sourceId,
+    Object.freeze({
+      id: item.sourceId,
+      kind: "item",
+      actorType: codexActorType(item),
+      createdAt: item.createdAt,
+    }),
+  );
+  for (const event of item.events) {
+    addCodexSourceRecord(
+      sourceRecords,
+      event.sourceId,
+      Object.freeze({
+        id: event.sourceId,
+        kind: event.kind,
+        actorType: event.actor.type,
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
+      }),
+    );
+  }
+  const itemActorType = codexActorType(item);
+  addCodexSourceRecord(
+    sourceRecords,
+    detail.bodySourceId,
+    Object.freeze({
+      id: detail.bodySourceId,
+      kind: "body",
+      actorType: itemActorType,
+      createdAt: item.createdAt,
+      ...(itemActorType === "human" ? { content: detail.body } : {}),
+    }),
+  );
+  for (const comment of detail.comments) {
+    const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+    const actorType = event?.actor.type ?? "system";
+    addCodexSourceRecord(
+      sourceRecords,
+      comment.sourceId,
+      Object.freeze({
+        id: comment.sourceId,
+        kind: "comment",
+        actorType,
+        createdAt: comment.createdAt,
+        ...(actorType === "human" ? { content: comment.body } : {}),
+      }),
+    );
+  }
+  if (detail.type !== "pull_request") {
+    return;
+  }
+  if (item.type !== "pull_request") {
+    throw new TypeError("Pull Request詳細にIssueの観測値が指定されています");
+  }
+  for (const thread of detail.reviewThreads) {
+    for (const comment of thread.comments) {
+      const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+      const actorType = event?.actor.type ?? "system";
+      addCodexSourceRecord(
+        sourceRecords,
+        comment.sourceId,
+        Object.freeze({
+          id: comment.sourceId,
+          kind: "comment",
+          actorType,
+          createdAt: comment.createdAt,
+          ...(actorType === "human" ? { content: comment.body } : {}),
+        }),
+      );
+    }
+  }
+  for (const review of detail.reviews) {
+    const event = item.events.find((candidate) => candidate.sourceId === review.sourceId);
+    const actorType = event?.actor.type ?? "system";
+    addCodexSourceRecord(
+      sourceRecords,
+      review.sourceId,
+      Object.freeze({
+        id: review.sourceId,
+        kind: "review",
+        actorType,
+        createdAt: review.submittedAt,
+        ...(actorType === "human" ? { content: review.body } : {}),
+      }),
+    );
+  }
+  for (const request of detail.reviewRequests.current) {
+    if (request.requestedAt.status === "unavailable") {
+      continue;
+    }
+    addCodexSourceRecord(
+      sourceRecords,
+      request.sourceId,
+      Object.freeze({
+        id: request.sourceId,
+        kind: "review_request",
+        actorType: "system",
+        createdAt: request.requestedAt.value,
+      }),
+    );
+  }
+  if (item.mergeState.autoMerge.status === "enabled") {
+    const autoMerge = item.mergeState.autoMerge;
+    addCodexSourceRecord(
+      sourceRecords,
+      autoMerge.sourceId,
+      Object.freeze({
+        id: autoMerge.sourceId,
+        kind: "auto_merge_request",
+        actorType: autoMerge.enabledBy.type,
+        createdAt: autoMerge.enabledAt,
+        mergeMethod: autoMerge.mergeMethod,
+      }),
+    );
+  }
+  if (detail.mergeState.checks.status !== "configured") {
+    return;
+  }
+  const checks = detail.mergeState.checks;
+  addCodexSourceRecord(
+    sourceRecords,
+    checks.sourceId,
+    Object.freeze({
+      id: checks.sourceId,
+      kind: "required_check_rollup",
+      actorType: "system",
+      createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, checks.sourceId),
+      combinedState: checks.combinedState,
+    }),
+  );
+  for (const check of checks.contexts) {
+    addCodexSourceRecord(
+      sourceRecords,
+      check.sourceId,
+      Object.freeze({
+        id: check.sourceId,
+        kind: check.type,
+        actorType: "system",
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, check.sourceId),
+        ...(check.type === "check_run"
+          ? {
+              name: check.name,
+              status: check.status,
+              conclusion: check.conclusion,
+            }
+          : {
+              context: check.context,
+              state: check.state,
+            }),
+      }),
+    );
+  }
 }
 
 function requireCodexSourceOccurredAt(
@@ -1952,6 +2494,7 @@ function requireCodexSourceOccurredAt(
 }
 
 function createCodexInput(
+  configuration: RuntimeConfiguration,
   evaluatedAt: UtcIsoDateTime,
   analysis: DeterministicItemAnalysis,
 ): CodexAnalysisInput {
@@ -1988,7 +2531,37 @@ function createCodexInput(
   for (const candidate of mentionedCandidates) {
     waitingOnCandidates.set(candidate.id, candidate);
   }
-  const sourceOccurredAtById = createCodexSourceOccurredAtById(analysis.item, analysis.detail);
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    const candidate = effectiveCandidateContext.candidate;
+    const existingKey = [...waitingOnCandidates.keys()].find(
+      (candidateId) => candidateId.toLowerCase() === candidate.candidateId.toLowerCase(),
+    );
+    if (existingKey != null && existingKey !== candidate.candidateId) {
+      waitingOnCandidates.delete(existingKey);
+    }
+    waitingOnCandidates.set(
+      candidate.candidateId,
+      Object.freeze({
+        id: candidate.candidateId,
+        kind: "user",
+        sourceIds: candidate.sourceIds,
+        effectiveAssigneeCandidate: true,
+        effectiveAssigneeSourceIds: candidate.sourceIds,
+      }),
+    );
+  }
+  const sourceOccurredAtById = new Map(
+    createCodexSourceOccurredAtById(analysis.item, analysis.detail),
+  );
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
+      addCodexSourceOccurredAtForContext(
+        sourceOccurredAtById,
+        sourceContext.item,
+        sourceContext.detail,
+      );
+    }
+  }
   const sourceRecords = new Map<string, unknown>();
   sourceRecords.set(
     analysis.item.sourceId,
@@ -2006,7 +2579,7 @@ function createCodexInput(
         id: event.sourceId,
         kind: event.kind,
         actorType: event.actor.type,
-        createdAt: event.occurredAt,
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
       }),
     );
   }
@@ -2135,6 +2708,11 @@ function createCodexInput(
       );
     }
   }
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
+      addCodexSourceRecordsForContext(sourceRecords, sourceOccurredAtById, sourceContext);
+    }
+  }
   return createCodexAnalysisInput({
     schemaVersion: "1",
     now: evaluatedAt,
@@ -2172,6 +2750,42 @@ function createCodexInput(
           ? analysis.detail.mergeState.checks
           : null,
       uncertainties: analysis.decision.uncertainties,
+      effectiveAssigneeEligible:
+        analysis.item.type === "issue" &&
+        analysis.item.state === "open" &&
+        analysis.item.assignees.length === 0,
+      effectiveAssigneeCandidates: analysis.effectiveAssigneeCandidates.map(({ candidate }) => ({
+        candidateId: candidate.candidateId,
+        sourceIds: candidate.sourceIds,
+        occurredAt: candidate.occurredAt,
+      })),
+      effectiveAssigneeImplementations: analysis.effectiveAssigneeCandidates.flatMap(
+        ({ candidate, sourceContexts }) =>
+          sourceContexts.flatMap(({ item: sourceItem }) => {
+            if (sourceItem.type !== "pull_request") {
+              return [];
+            }
+            return analysis.relationCandidates.flatMap((relationCandidate) => {
+              if (
+                relationCandidate.relation.type !== "implements" ||
+                relationCandidate.relation.implementation.nodeId !== sourceItem.nodeId ||
+                relationCandidate.relation.target.nodeId !== analysis.item.nodeId
+              ) {
+                return [];
+              }
+              return [
+                {
+                  candidateId: candidate.candidateId,
+                  pullRequestNodeId: sourceItem.nodeId,
+                  pullRequestUrl: sourceItem.url,
+                  pullRequestState: resolveEffectiveAssigneePullRequestState(sourceItem),
+                  relationCandidateIds: [relationCandidate.id],
+                },
+              ];
+            });
+          }),
+      ),
+      effectiveAssigneeConfidenceThreshold: configuration.config.ai.confidence.high,
     },
     priorAnalysis: null,
   });
@@ -2186,10 +2800,18 @@ function createAiCandidates(
 ): Readonly<{
   candidates: readonly PreparedAiAnalysisCandidate[];
   failures: readonly AiAnalysisRunFailure[];
+  inputValidationFailures: readonly Readonly<{
+    candidateId: string;
+    error: unknown;
+  }>[];
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
 }> {
   const inputByNodeId = new Map<GitHubNodeId, CodexAnalysisInput>();
   const failures: AiAnalysisRunFailure[] = [];
+  const inputValidationFailures: {
+    candidateId: string;
+    error: unknown;
+  }[] = [];
   const previousGraph = previousGraphSnapshot(state);
   const previousGraphAnalysis =
     previousGraph == null
@@ -2216,8 +2838,14 @@ function createAiCandidates(
   for (const analysis of deterministicAnalysis.items) {
     let input: CodexAnalysisInput;
     try {
-      input = createCodexInput(collection.evaluatedAt, analysis);
+      input = createCodexInput(configuration, collection.evaluatedAt, analysis);
     } catch (error: unknown) {
+      inputValidationFailures.push(
+        Object.freeze({
+          candidateId: analysis.item.nodeId,
+          error,
+        }),
+      );
       failures.push(
         Object.freeze({
           candidateId: analysis.item.nodeId,
@@ -2231,6 +2859,7 @@ function createAiCandidates(
     const naturalLanguageProgressCandidate = analysis.item.events.some(
       (event) => event.kind === "comment" && event.actor.type === "human" && !event.bodyEmpty,
     );
+    const effectiveAssigneeCandidate = analysis.effectiveAssigneeCandidates.length > 0;
     const relationAssessmentCandidates = selectRelationAssessmentCandidates(
       analysis.item.nodeId,
       analysis.relationCandidates,
@@ -2278,6 +2907,7 @@ function createAiCandidates(
           id: analysis.item.nodeId,
           deterministicResolution:
             analysis.decision.determination === "determined" &&
+            !effectiveAssigneeCandidate &&
             !naturalLanguageProgressCandidate &&
             relationAssessmentCandidates.every(
               (candidate) => candidate.authority === "authoritative",
@@ -2315,6 +2945,7 @@ function createAiCandidates(
   return Object.freeze({
     candidates: Object.freeze(candidates),
     failures: Object.freeze(failures),
+    inputValidationFailures: Object.freeze(inputValidationFailures),
     inputByNodeId,
   });
 }
@@ -2338,8 +2969,57 @@ function countRetainedAiResults(state: RuntimeState, collection: CollectedItems)
   ).length;
 }
 
+function createCodexAdapterConfiguration(config: Config): CodexAdapterConfiguration {
+  return Object.freeze({
+    authentication: config.ai.authentication,
+    model: config.ai.model,
+    execution: {
+      timeoutSeconds: config.ai.execution.timeoutSeconds,
+      maxAttempts: config.ai.execution.maxAttempts,
+      sandbox: config.ai.execution.sandbox,
+      approvalPolicy: config.ai.execution.approvalPolicy,
+      reasoningEffort: config.ai.execution.reasoningEffort,
+    },
+    retry: {
+      initialDelaySeconds: config.operations.retry.initialDelaySeconds,
+      maxDelaySeconds: config.operations.retry.maxDelaySeconds,
+    },
+  }) satisfies CodexAdapterConfiguration;
+}
+
+function createCodexAdapterDependencies(
+  adapters: ProductionRuntimeAdapters,
+  credentials: EnabledCodexCredentials,
+  diagnostics: CodexDiagnosticsContext | undefined,
+): CodexAdapterDependencies {
+  return Object.freeze({
+    environment: credentials.environment,
+    processRunner: adapters.codexProcessRunner,
+    runtime: {
+      sleep: adapters.sleep,
+      random: adapters.random,
+    },
+    ...(diagnostics == null ? {} : { diagnostics }),
+  });
+}
+
+function createCodexPreflightDiagnostics(
+  diagnostics: CodexDiagnosticsContext | undefined,
+  invocation: DailyRunInvocation,
+): CodexDiagnosticsContext | undefined {
+  if (diagnostics == null) {
+    return undefined;
+  }
+  return Object.freeze({
+    recorder: diagnostics.recorder,
+    ...(diagnostics.runId == null ? {} : { runId: diagnostics.runId }),
+    invocationId: `${invocation.runId}:codex:authentication-preflight`,
+  });
+}
+
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   collection: CollectedItems,
@@ -2363,6 +3043,30 @@ async function analyzeCodex(
     deterministicAnalysis,
     identity,
   );
+  const diagnostics: CodexDiagnosticsContext | undefined =
+    adapters.diagnosticsRecorder == null
+      ? undefined
+      : Object.freeze({
+          recorder: adapters.diagnosticsRecorder,
+          runId: invocation.runId,
+          invocationId: `${invocation.runId}:codex`,
+        });
+  for (const failure of prepared.inputValidationFailures) {
+    await recordCodexDiagnostic(
+      diagnostics == null
+        ? undefined
+        : Object.freeze({
+            ...diagnostics,
+            candidateId: failure.candidateId,
+          }),
+      "codex.input.validation_failed",
+      {
+        phase: "input_validation",
+        errorType: failure.error instanceof Error ? failure.error.name : typeof failure.error,
+      },
+      failure.error,
+    );
+  }
   if (!configuration.config.ai.enabled) {
     const fallback = prepared.failures.length > 0;
     return Object.freeze({
@@ -2382,6 +3086,35 @@ async function analyzeCodex(
   if (!codexCredentials.enabled) {
     throw new TypeError("AIが有効ですがCodex認証情報がありません");
   }
+  const codexConfiguration = createCodexAdapterConfiguration(configuration.config);
+  const codexDependencies = createCodexAdapterDependencies(adapters, codexCredentials, diagnostics);
+  const preflightInputCost =
+    codexCredentials.authentication === "auth-json"
+      ? estimateAiInputCost(
+          CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+          configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
+        )
+      : undefined;
+  const preflightDiagnostics = createCodexPreflightDiagnostics(diagnostics, invocation);
+  const preflight =
+    preflightInputCost == null
+      ? undefined
+      : Object.freeze({
+          inputCharacters: CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+          estimatedCostUsd: preflightInputCost.estimatedCostUsd,
+          execute: () =>
+            adapters.executeCodexAuthenticationPreflight(
+              codexConfiguration,
+              Object.freeze({
+                ...codexDependencies,
+                ...(preflightDiagnostics == null
+                  ? {}
+                  : {
+                      diagnostics: preflightDiagnostics,
+                    }),
+              }),
+            ),
+        });
   const executedRun = await runAiAnalyses(
     prepared.candidates,
     {
@@ -2391,32 +3124,24 @@ async function analyzeCodex(
     },
     {
       cache: state.session.aiCache,
-      execute: (input) =>
+      ...(preflight == null ? {} : { preflight }),
+      ...(diagnostics == null ? {} : { diagnostics }),
+      execute: (input, context) =>
         adapters.executeCodexAnalysis(
           input,
-          {
-            authentication: configuration.config.ai.authentication,
-            model: configuration.config.ai.model,
-            execution: {
-              timeoutSeconds: configuration.config.ai.execution.timeoutSeconds,
-              maxAttempts: configuration.config.ai.execution.maxAttempts,
-              sandbox: configuration.config.ai.execution.sandbox,
-              approvalPolicy: configuration.config.ai.execution.approvalPolicy,
-              reasoningEffort: configuration.config.ai.execution.reasoningEffort,
-            },
-            retry: {
-              initialDelaySeconds: configuration.config.operations.retry.initialDelaySeconds,
-              maxDelaySeconds: configuration.config.operations.retry.maxDelaySeconds,
-            },
-          },
-          {
-            environment: codexCredentials.environment,
-            processRunner: adapters.codexProcessRunner,
-            runtime: {
-              sleep: adapters.sleep,
-              random: adapters.random,
-            },
-          },
+          codexConfiguration,
+          Object.freeze({
+            ...codexDependencies,
+            ...(diagnostics == null
+              ? {}
+              : {
+                  diagnostics: Object.freeze({
+                    ...diagnostics,
+                    invocationId: `${invocation.runId}:${context.candidateId}`,
+                    candidateId: context.candidateId,
+                  }),
+                }),
+          }),
         ),
       executedAt: () => collection.evaluatedAt,
     },
@@ -2520,6 +3245,26 @@ function resolveDeadlineAssessment(
   return previous ?? unavailableDeadlineAssessment();
 }
 
+function preserveDeterministicUnassignedIssueDecision(
+  analysis: DeterministicItemAnalysis,
+  output: ValidatedCodexAnalysisOutput,
+  reduction: CodexAnalysisReduction,
+): CodexAnalysisReduction {
+  if (
+    analysis.item.type !== "issue" ||
+    analysis.item.state !== "open" ||
+    analysis.item.assignees.length !== 0 ||
+    output.status !== "waiting_for_work" ||
+    analysis.decision.status === "waiting_for_work"
+  ) {
+    return reduction;
+  }
+  return Object.freeze({
+    ...reduction,
+    decision: reducedDeterministicDecision(analysis.decision),
+  });
+}
+
 function reductionForAnalysis(
   configuration: RuntimeConfiguration,
   analysis: DeterministicItemAnalysis,
@@ -2533,7 +3278,7 @@ function reductionForAnalysis(
   const result = run.results.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (result != null) {
     assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
-    return reduceCodexAnalysis(
+    const reduction = reduceCodexAnalysis(
       input,
       deterministicCodexDecision(analysis.decision),
       {
@@ -2542,6 +3287,7 @@ function reductionForAnalysis(
       },
       configuration.config.ai.confidence,
     );
+    return preserveDeterministicUnassignedIssueDecision(analysis, result.output, reduction);
   }
   const failure = run.failures.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (failure != null) {
@@ -2606,6 +3352,134 @@ function nonEmptySourceIds(
   const firstSourceId = uniqueSourceIds[0];
   assertNonNullable(firstSourceId, `${context}のsource IDがありません`);
   return Object.freeze([firstSourceId, ...uniqueSourceIds.slice(1)]);
+}
+
+function sourceIdSetsMatch(left: readonly SourceId[], right: readonly SourceId[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const leftSourceIds = new Set(left);
+  const rightSourceIds = new Set(right);
+  return (
+    leftSourceIds.size === left.length &&
+    rightSourceIds.size === right.length &&
+    leftSourceIds.size === rightSourceIds.size &&
+    [...leftSourceIds].every((id) => rightSourceIds.has(id))
+  );
+}
+
+function createEffectiveAssigneeAssessment(
+  configuration: RuntimeConfiguration,
+  evaluatedAt: UtcIsoDateTime,
+  analysis: DeterministicItemAnalysis,
+  output: ValidatedCodexAnalysisOutput | undefined,
+): IssueEffectiveAssigneeAssessment {
+  if (
+    analysis.item.type !== "issue" ||
+    analysis.item.state !== "open" ||
+    analysis.item.assignees.length !== 0 ||
+    analysis.effectiveAssigneeCandidates.length === 0 ||
+    output?.status !== "waiting_for_work" ||
+    output.waitingOn.length === 0 ||
+    output.confidence < configuration.config.ai.confidence.high
+  ) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+
+  const candidatesById = new Map(
+    analysis.effectiveAssigneeCandidates.map((context) => [
+      context.candidate.candidateId.toLowerCase(),
+      context.candidate,
+    ]),
+  );
+  const targets: IssueEffectiveAssigneeTarget[] = [];
+  const targetIds = new Set<string>();
+  for (const waitingOn of output.waitingOn) {
+    if (
+      waitingOn.kind !== "user" ||
+      waitingOn.role !== "assignee" ||
+      waitingOn.confidence < configuration.config.ai.confidence.high
+    ) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    const normalizedCandidateId = waitingOn.candidateId.toLowerCase();
+    if (targetIds.has(normalizedCandidateId)) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    targetIds.add(normalizedCandidateId);
+    const candidate = candidatesById.get(normalizedCandidateId);
+    if (candidate == null) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    if (candidate.candidateId !== waitingOn.candidateId) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    if (!sourceIdSetsMatch(waitingOn.sourceIds, candidate.sourceIds)) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    targets.push(
+      Object.freeze({
+        kind: "user",
+        candidateId: waitingOn.candidateId,
+        sourceIds: waitingOn.sourceIds,
+        confidence: waitingOn.confidence,
+      }),
+    );
+  }
+  const selectedCandidateSourceIds = nonEmptySourceIds(
+    targets.flatMap((target) => target.sourceIds),
+    "実質担当判定対象",
+  );
+  const candidateSourceIds = nonEmptySourceIds(
+    analysis.effectiveAssigneeCandidates.flatMap(({ candidate }) => candidate.sourceIds),
+    "実質担当候補",
+  );
+  const selectedCandidates = targets.map((target) => {
+    const candidate = candidatesById.get(target.candidateId.toLowerCase());
+    assertNonNullable(candidate, `実質担当候補を取得できません。対象: ${target.candidateId}`);
+    return candidate;
+  });
+  const firstCandidate = selectedCandidates[0];
+  assertNonNullable(firstCandidate, "実質担当判定の候補がありません");
+  const occurredAt = selectedCandidates.reduce(
+    (latest, candidate) => (latest < candidate.occurredAt ? candidate.occurredAt : latest),
+    firstCandidate.occurredAt,
+  );
+  if (occurredAt > evaluatedAt) {
+    throw new RangeError("実質担当判定の根拠時刻は判定時刻以前にしてください");
+  }
+  const confidence = Math.min(output.confidence, ...targets.map((target) => target.confidence));
+  if (confidence < configuration.config.ai.confidence.high) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+  const firstTarget = targets[0];
+  assertNonNullable(firstTarget, "実質担当判定の対象userがありません");
+  return Object.freeze({
+    status: "assessed",
+    candidateSourceIds,
+    verdict: "effective_assignee",
+    targets: Object.freeze([firstTarget, ...targets.slice(1)] satisfies [
+      IssueEffectiveAssigneeTarget,
+      ...IssueEffectiveAssigneeTarget[],
+    ]),
+    occurredAt,
+    confidence,
+    sourceIds: selectedCandidateSourceIds,
+  });
 }
 
 function explicitRequestAssessment(
@@ -2905,6 +3779,15 @@ function reassessDeterministicAnalysis(
           analysis.detail,
           output,
         ),
+        effectiveAssigneeCandidates: analysis.effectiveAssigneeCandidates.map(
+          (candidate) => candidate.candidate,
+        ),
+        effectiveAssigneeAssessment: createEffectiveAssigneeAssessment(
+          configuration,
+          evaluatedAt,
+          analysis,
+          output,
+        ),
         maintainers,
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt,
@@ -3143,12 +4026,12 @@ function primaryWaitingOnForDecision(
   if (decision.waitingOn.length === 0) {
     return Object.freeze({
       index: "not_applicable",
-      selectionReason: "Codex判定にwaitingOnがないためprimaryはありません",
+      selectionReason: "Codex判定に待ち相手がないためprimaryはありません",
     });
   }
   return Object.freeze({
     index: 0,
-    selectionReason: "Codexが返したwaitingOnの優先順でprimaryを選定しました",
+    selectionReason: "Codexが返した待ち相手の優先順でprimaryを選定しました",
   });
 }
 
@@ -3169,7 +4052,18 @@ function transitionBasisForDecision(
     ...decision.evidence.map((evidence) => evidence.sourceId),
     ...decision.waitingOn.flatMap((waitingOn) => waitingOn.sourceIds),
   ];
-  const sourceOccurredAtById = createCodexSourceOccurredAtById(analysis.item, analysis.detail);
+  const sourceOccurredAtById = new Map(
+    createCodexSourceOccurredAtById(analysis.item, analysis.detail),
+  );
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
+      addCodexSourceOccurredAtForContext(
+        sourceOccurredAtById,
+        sourceContext.item,
+        sourceContext.detail,
+      );
+    }
+  }
   const resolvedOccurredAts = [...new Set(sourceIds)].flatMap((sourceId) => {
     const occurredAt = sourceOccurredAtById.get(sourceId);
     return occurredAt == null ? [] : [occurredAt];
@@ -3454,6 +4348,7 @@ function trackedItemStaleness(staleness: StalenessResult): TrackedItemStaleness 
   return Object.freeze({
     elapsedHours: staleness.elapsedHours.stall,
     severity: staleness.severity,
+    severityReason: createStalenessNotificationSeverityReason(staleness.severityReason),
     waitClass: staleness.waitClass,
     severityContext: staleness.severityContext,
   });
@@ -3481,6 +4376,7 @@ function recalculateTrackedItemStaleness(
   return Object.freeze({
     elapsedHours: recalculated.elapsedHours,
     severity: recalculated.severity,
+    severityReason: recalculated.severityReason,
     waitClass: recalculated.waitClass,
     severityContext: recalculated.severityContext,
   });
@@ -4019,7 +4915,6 @@ function notificationLedgerEntries(
       reasonCode: entry.reasonCode,
       severity: entry.severity,
       reservedAt: createUtcIsoDateTime(entry.reservedAt),
-      cooldownUntil: createUtcIsoDateTime(entry.cooldownUntil),
     };
     if (entry.status === "reserved") {
       entries.push(
@@ -4176,6 +5071,7 @@ function notificationItem(
       status: item.status,
       waitingOn: item.waitingOn,
       severity: staleness.severity,
+      severityReason: staleness.severityReason,
       waitClass: staleness.waitClass,
       statusSince: item.statusSince,
       ownerSince: item.ownerSince,
@@ -4267,7 +5163,7 @@ function mergeNotificationLedger(
     entries.set(entry.notificationKey, entry);
   }
   return createStateNotificationLedger({
-    schemaVersion: "3",
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
   });
@@ -4537,7 +5433,6 @@ function validateRunCompleteness(
     ledger: notificationLedgerEntries(state, reduction.items),
     settings: {
       maxItemsPerDigest: configuration.config.notifications.discord.maxItemsPerDigest,
-      cooldownDays: configuration.config.notifications.discord.cooldownDays,
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
       minimumAiConfidence: configuration.config.ai.confidence.medium,
     },
@@ -4649,7 +5544,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "2",
+    schemaVersion: "6",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -4749,6 +5644,70 @@ function operationsAlertLedgerEntry(
   });
 }
 
+function createNotificationWaitingOn(
+  item: StateSnapshot["items"][number],
+  snapshot: StateSnapshot,
+): StateHistoryNotificationEvent["waitingOn"] {
+  if (item.waitingOn.length === 0) {
+    throw new TypeError("通知送信eventの対象itemにwaitingOnがありません");
+  }
+  type NotificationWaitingOnReference = Extract<
+    StateHistoryNotificationEvent["waitingOn"],
+    Readonly<{ status: "recorded" }>
+  >["values"][number];
+  const values = item.waitingOn.map((waitingOn): NotificationWaitingOnReference => {
+    switch (waitingOn.kind) {
+      case "user":
+        return {
+          kind: "user",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "team":
+        return {
+          kind: "team",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "role":
+        return {
+          kind: "role",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "item": {
+        return {
+          kind: "item",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+          displayReference: resolveStateHistoryNotificationItemDisplayReference(
+            snapshot,
+            waitingOn.candidateId,
+          ),
+        };
+      }
+      case "automation":
+        return {
+          kind: "automation",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "unknown":
+        return {
+          kind: "unknown",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      default:
+        throw new UnreachableError(waitingOn.kind);
+    }
+  });
+  return {
+    status: "recorded",
+    values,
+  };
+}
+
 function createNotificationHistoryEvents(
   snapshot: StateSnapshot,
   selection: DiscordNotificationSelection,
@@ -4824,12 +5783,7 @@ function createNotificationHistoryEvents(
       if (candidateReasonsByKey.size !== candidate.reasons.length) {
         throw new TypeError("通知候補のnotification keyが重複しています");
       }
-      const firstReason = candidate.reasons[0];
-      assertNonNullable(firstReason, "通知候補の先頭理由がありません");
-      if (candidate.reasonCode !== firstReason.reasonCode) {
-        throw new TypeError("通知候補の代表理由が先頭理由と一致しません");
-      }
-      const reasonCodesByKey = new Map<string, SentNotificationLedgerEntry["reasonCode"]>();
+      const reasonsByKey = new Map<string, (typeof candidate.reasons)[number]>();
       let sentAt: UtcIsoDateTime | undefined;
       for (const entry of entries) {
         if (entry.itemNodeId !== candidate.itemNodeId || entry.severity !== candidate.severity) {
@@ -4839,25 +5793,26 @@ function createNotificationHistoryEvents(
         if (entry.reasonCode === "none" || candidateReason?.reasonCode !== entry.reasonCode) {
           throw new TypeError("Discord送信結果の通知理由が候補と一致しません");
         }
-        if (reasonCodesByKey.has(entry.notificationKey)) {
+        if (reasonsByKey.has(entry.notificationKey)) {
           throw new TypeError("Discord送信結果の通知理由が重複しています");
         }
-        reasonCodesByKey.set(entry.notificationKey, entry.reasonCode);
+        assertNonNullable(candidateReason, "Discord送信結果の通知理由を取得できません");
+        reasonsByKey.set(entry.notificationKey, candidateReason);
         if (sentAt == null) {
           sentAt = entry.sentAt;
         } else if (sentAt !== entry.sentAt) {
           throw new TypeError("同じDiscord messageの通知送信時刻が一致しません");
         }
       }
-      if (reasonCodesByKey.size !== candidateReasonsByKey.size) {
+      if (reasonsByKey.size !== candidateReasonsByKey.size) {
         throw new TypeError("Discord送信結果の通知理由数が候補と一致しません");
       }
-      const reasonCodes = candidate.reasons.map((reason) => {
-        const reasonCode = reasonCodesByKey.get(reason.notificationKey);
-        if (reasonCode == null || reasonCode === "none") {
+      const reasons = candidate.reasons.map((reason) => {
+        const selectedReason = reasonsByKey.get(reason.notificationKey);
+        if (selectedReason == null) {
           throw new TypeError("Discord送信結果の通知理由順序を候補から解決できません");
         }
-        return reasonCode;
+        return createNotificationReason(selectedReason.reasonCode, selectedReason.threshold);
       });
       const item = itemByNodeId.get(itemNodeId);
       assertNonNullable(item, "通知送信eventの対象itemがsnapshotにありません");
@@ -4877,7 +5832,8 @@ function createNotificationHistoryEvents(
         number: item.number,
         title: item.title,
         url: item.url,
-        reasonCodes,
+        waitingOn: createNotificationWaitingOn(item, snapshot),
+        reasons,
         severity: candidate.severity,
         sentAt,
       });
@@ -4972,7 +5928,7 @@ async function deliverDiscord(
     }),
     notificationEvents,
     notificationLedger: createStateNotificationLedger({
-      schemaVersion: "3",
+      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
       entries: [...notificationEntriesByKey.values()],
       operationsAlerts: [...operationsAlertsByKey.values()],
     }),
@@ -5097,7 +6053,7 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: "3",
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
   });
@@ -5412,6 +6368,202 @@ function relationExpansionRepositoriesByNodeId(
   return repositoriesByNodeId;
 }
 
+function changedTrackedImplementationTargetNodeIds(
+  aggregate: FreshRuntimeCollectionAggregate,
+  tracking: RuntimeTrackingSelection,
+  candidates: readonly RelationCandidate[],
+  requestedNodeIds: ReadonlySet<GitHubNodeId>,
+): readonly GitHubNodeId[] {
+  const enumeratedItemsByNodeId = new Map(
+    aggregate.enumeratedItems.map((item) => [item.nodeId, item]),
+  );
+  const detailNodeIds = new Set(aggregate.details.map((detail) => detail.nodeId));
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const candidate of candidates) {
+    if (candidate.authority !== "authoritative" || candidate.relation.type !== "implements") {
+      continue;
+    }
+    const implementation = candidate.relation.implementation;
+    const target = candidate.relation.target;
+    if (
+      implementation.scope !== "organization" ||
+      implementation.kind !== "pull_request" ||
+      target.scope !== "organization" ||
+      target.kind !== "issue" ||
+      !aggregate.changedNodeIds.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(target.nodeId) ||
+      detailNodeIds.has(target.nodeId) ||
+      requestedNodeIds.has(target.nodeId)
+    ) {
+      continue;
+    }
+    const targetItem = enumeratedItemsByNodeId.get(target.nodeId);
+    assertNonNullable(targetItem, `実装関係先の列挙値がありません。対象: ${target.nodeId}`);
+    if (targetItem.type !== "issue" || targetItem.state !== "open") {
+      continue;
+    }
+    targetNodeIds.add(target.nodeId);
+  }
+  return Object.freeze([...targetNodeIds].sort());
+}
+
+type EffectiveAssigneeImplementationRelation = Readonly<{
+  implementationNodeId: GitHubNodeId;
+  targetNodeId: GitHubNodeId;
+}>;
+
+function effectiveAssigneeImplementationRelationKey(
+  relation: EffectiveAssigneeImplementationRelation,
+): string {
+  return `${relation.implementationNodeId}\u0000${relation.targetNodeId}`;
+}
+
+function previousAuthoritativeImplementationRelations(
+  state: RuntimeState,
+): readonly EffectiveAssigneeImplementationRelation[] {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null) {
+    return Object.freeze([]);
+  }
+  const itemsByNodeId = new Map<GraphNodeId, SnapshotTrackedItem>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  return Object.freeze(
+    snapshot.relations.flatMap((relation) => {
+      if (!relation.active || relation.provenance !== "native" || relation.type !== "implements") {
+        return [];
+      }
+      const implementation = itemsByNodeId.get(relation.fromNodeId);
+      const target = itemsByNodeId.get(relation.toNodeId);
+      if (implementation?.type !== "pull_request" || target?.type !== "issue") {
+        return [];
+      }
+      return [
+        Object.freeze({
+          implementationNodeId: implementation.nodeId,
+          targetNodeId: target.nodeId,
+        }),
+      ];
+    }),
+  );
+}
+
+function trackedAuthoritativeImplementationRelationKeys(
+  relationCandidates: readonly RelationCandidate[],
+  tracking: RuntimeTrackingSelection,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const candidate of relationCandidates) {
+    if (candidate.authority !== "authoritative" || candidate.relation.type !== "implements") {
+      continue;
+    }
+    const implementation = candidate.relation.implementation;
+    const target = candidate.relation.target;
+    if (
+      implementation.scope !== "organization" ||
+      implementation.kind !== "pull_request" ||
+      target.scope !== "organization" ||
+      target.kind !== "issue" ||
+      !tracking.workByNodeId.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(target.nodeId)
+    ) {
+      continue;
+    }
+    keys.add(
+      effectiveAssigneeImplementationRelationKey({
+        implementationNodeId: implementation.nodeId,
+        targetNodeId: target.nodeId,
+      }),
+    );
+  }
+  return keys;
+}
+
+function effectiveAssigneeRelationChangeTargetNodeIds(
+  state: RuntimeState,
+  observedItems: readonly FreshObservedGitHubItem[],
+  relationCandidates: readonly RelationCandidate[],
+  tracking: RuntimeTrackingSelection,
+): ReadonlySet<GitHubNodeId> {
+  const observedPullRequestNodeIds = new Set(
+    observedItems
+      .filter(
+        (item): item is Extract<FreshObservedGitHubItem, { type: "pull_request" }> =>
+          item.type === "pull_request",
+      )
+      .map((item) => item.nodeId),
+  );
+  const currentRelationKeys = trackedAuthoritativeImplementationRelationKeys(
+    relationCandidates,
+    tracking,
+  );
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const relation of previousAuthoritativeImplementationRelations(state)) {
+    if (!observedPullRequestNodeIds.has(relation.implementationNodeId)) {
+      continue;
+    }
+    if (!currentRelationKeys.has(effectiveAssigneeImplementationRelationKey(relation))) {
+      targetNodeIds.add(relation.targetNodeId);
+    }
+  }
+  return targetNodeIds;
+}
+
+function staleEffectiveAssigneeTargetsToRetain(
+  state: RuntimeState,
+  observedItems: readonly FreshObservedGitHubItem[],
+  staleRepositoryIds: ReadonlySet<GitHubRepositoryId>,
+): ReadonlySet<GitHubNodeId> {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null || staleRepositoryIds.size === 0) {
+    return new Set<GitHubNodeId>();
+  }
+  const previousItemsByNodeId = new Map<GraphNodeId, SnapshotTrackedItem>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  const previousEffectiveAssigneeIssueNodeIds = new Set(
+    snapshot.items
+      .filter(
+        (item) =>
+          item.type === "issue" &&
+          item.state === "open" &&
+          item.assignees.length === 0 &&
+          item.status === "waiting_for_work" &&
+          item.waitingOn.some(
+            (waitingOn) => waitingOn.kind === "user" && waitingOn.role === "assignee",
+          ),
+      )
+      .map((item) => item.nodeId),
+  );
+  const observedItemsByNodeId = new Map(observedItems.map((item) => [item.nodeId, item]));
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const relation of previousAuthoritativeImplementationRelations(state)) {
+    const implementation = previousItemsByNodeId.get(relation.implementationNodeId);
+    const target = previousItemsByNodeId.get(relation.targetNodeId);
+    assertNonNullable(
+      implementation,
+      `前回実質担当relationのPRがありません。対象: ${relation.implementationNodeId}`,
+    );
+    assertNonNullable(
+      target,
+      `前回実質担当relationのIssueがありません。対象: ${relation.targetNodeId}`,
+    );
+    if (
+      !staleRepositoryIds.has(implementation.repositoryId) ||
+      !previousEffectiveAssigneeIssueNodeIds.has(target.nodeId)
+    ) {
+      continue;
+    }
+    const current = observedItemsByNodeId.get(target.nodeId);
+    if (current?.type !== "issue" || current.state !== "open" || current.assignees.length !== 0) {
+      continue;
+    }
+    targetNodeIds.add(target.nodeId);
+  }
+  return targetNodeIds;
+}
+
 async function collectRelationExpansionBatch(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -5511,7 +6663,7 @@ async function collectRelationExpandedItems(
       completedRelationCandidates.candidates,
     );
     const trackingState = relationExpansionTrackingState(tracking);
-    const nextRequests = planRelationExpansion({
+    const plannedRequests = planRelationExpansion({
       collectedCandidateNodeIds,
       trackingRootNodeIds: trackingState.trackingRootNodeIds,
       relationCandidates: discoveredRelationCandidates,
@@ -5521,6 +6673,26 @@ async function collectRelationExpandedItems(
         ? configuration.config.tracking.autoInclude.relationDepth
         : 0,
     });
+    const effectiveAssigneeTargetNodeIds = changedTrackedImplementationTargetNodeIds(
+      aggregate,
+      tracking,
+      discoveredRelationCandidates,
+      requestedNodeIds,
+    );
+    const requestsByNodeId = new Map(plannedRequests.map((request) => [request.nodeId, request]));
+    for (const nodeId of effectiveAssigneeTargetNodeIds) {
+      if (requestsByNodeId.has(nodeId)) {
+        continue;
+      }
+      requestsByNodeId.set(
+        nodeId,
+        Object.freeze({
+          nodeId,
+          nativeDepth: 0,
+        }),
+      );
+    }
+    const nextRequests = [...requestsByNodeId.values()];
     if (nextRequests.length === 0) {
       return Object.freeze({
         ...aggregate,
@@ -5778,11 +6950,70 @@ async function collectProductionItems(
     }
   }
   const observedNodeIds = new Set(uniqueObservedItems.map((item) => item.nodeId));
-  const analysisNodeIds = new Set<GitHubNodeId>();
+  const analysisNodeIds = new Set<GitHubNodeId>(
+    [...tracking.workByNodeId].flatMap(([nodeId, work]) =>
+      work.codexAnalysis.action === "analyze" && observedNodeIds.has(nodeId) ? [nodeId] : [],
+    ),
+  );
+  const effectiveAssigneeRelationChangeTargets = effectiveAssigneeRelationChangeTargetNodeIds(
+    state,
+    uniqueObservedItems,
+    relationCandidates,
+    tracking,
+  );
+  const staleEffectiveAssigneeTargets = staleEffectiveAssigneeTargetsToRetain(
+    state,
+    uniqueObservedItems,
+    staleRepositoryIds,
+  );
+  for (const nodeId of staleEffectiveAssigneeTargets) {
+    analysisNodeIds.delete(nodeId);
+  }
   for (const [nodeId, work] of tracking.workByNodeId) {
-    if (work.codexAnalysis.action === "analyze" && observedNodeIds.has(nodeId)) {
-      analysisNodeIds.add(nodeId);
+    if (staleEffectiveAssigneeTargets.has(nodeId)) {
+      continue;
     }
+    if (work.codexAnalysis.action === "analyze") {
+      continue;
+    }
+    const item = uniqueObservedItems.find((candidate) => candidate.nodeId === nodeId);
+    if (item?.type !== "issue" || item.state !== "open" || item.assignees.length !== 0) {
+      continue;
+    }
+    const issueRelationCandidates = candidatesForNode(item.nodeId, relationCandidates);
+    const hasAnalyzedImplementation = issueRelationCandidates.some((candidate) => {
+      if (candidate.relation.type !== "implements") {
+        return false;
+      }
+      if (candidate.authority !== "authoritative") {
+        return false;
+      }
+      const implementation = candidate.relation.implementation;
+      const target = candidate.relation.target;
+      if (
+        implementation.scope !== "organization" ||
+        implementation.kind !== "pull_request" ||
+        target.scope !== "organization" ||
+        target.kind !== "issue" ||
+        target.nodeId !== item.nodeId
+      ) {
+        return false;
+      }
+      const implementationWork = tracking.workByNodeId.get(implementation.nodeId);
+      return implementationWork?.codexAnalysis.action === "analyze";
+    });
+    const hasChangedImplementationRelation = effectiveAssigneeRelationChangeTargets.has(
+      item.nodeId,
+    );
+    if (!hasAnalyzedImplementation && !hasChangedImplementationRelation) {
+      continue;
+    }
+    const detail = uniqueDetails.find((candidate) => candidate.nodeId === item.nodeId);
+    assertNonNullable(detail, `実質担当候補抽出対象の詳細がありません。対象: ${item.nodeId}`);
+    if (detail.type !== "issue") {
+      throw new TypeError(`Issueの詳細種別が一致しません。対象: ${item.nodeId}`);
+    }
+    analysisNodeIds.add(item.nodeId);
   }
   return Object.freeze({
     value: Object.freeze({
@@ -5810,6 +7041,9 @@ function createDailyDependencies(
   adapters: ProductionRuntimeAdapters,
 ): DailyTransactionDependencies<ProductionTypes> {
   return Object.freeze({
+    ...(adapters.diagnosticsRecorder == null
+      ? {}
+      : { diagnosticsRecorder: adapters.diagnosticsRecorder }),
     validateConfiguration: async ({ invocation, configPath }) => {
       requireEnvironmentVariables(adapters.environment, ["GH_APP_ID", "GH_APP_PRIVATE_KEY"]);
       const config = await adapters.loadConfig(resolve(adapters.repositoryPath, configPath));
@@ -5888,9 +7122,16 @@ function createDailyDependencies(
       Promise.resolve(
         applyDeterministicAnalysis(configuration, state, repositoryInventory, collection),
       ),
-    analyzeWithCodex: async ({ configuration, state, collection, deterministicAnalysis }) => {
+    analyzeWithCodex: async ({
+      invocation,
+      configuration,
+      state,
+      collection,
+      deterministicAnalysis,
+    }) => {
       const analysis = await analyzeCodex(
         adapters,
+        invocation,
         configuration,
         state,
         collection,
@@ -6269,6 +7510,9 @@ function emptyOfflineMetrics(): OfflineAnalysisMetrics {
 function createOfflineRunner(adapters: ProductionRuntimeAdapters): OfflineRunRunner {
   return new OfflineRunRunner(
     {
+      ...(adapters.diagnosticsRecorder == null
+        ? {}
+        : { diagnosticsRecorder: adapters.diagnosticsRecorder }),
       engine: {
         replayFixture: (fixture: ReplayFixture): Promise<OfflineAnalysisResult> => {
           const goldenInput = goldenEvalInputSchema.safeParse(fixture.input);

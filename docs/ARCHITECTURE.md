@@ -1,6 +1,6 @@
 # アーキテクチャ
 
-VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評価し、曖昧な自然言語だけをCodexで補う日次バッチです。
+VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評価し、未回答の依頼やIssue全体の実質担当のような曖昧な自然言語だけをCodexで補う日次バッチです。
 結果は型付き依存グラフと追跡stateへ集約し、GitHub PagesとDiscord向けの公開データへ変換します。
 
 ## モジュール境界
@@ -8,13 +8,14 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | モジュール        | 責務                                                                                             | 主な依存先                                               |
 | ----------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
 | `src/config`      | YAMLの読み込み、Zod schemaとsemantic validation                                                  | `src/codex`、`src/domain`、`src/util`                    |
+| `src/diagnostics` | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                   | Node.js標準module                                        |
 | `src/github`      | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理             | `src/config`、`src/domain`                               |
-| `src/domain`      | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、severity、重要度、要対応度                  | `src/util`                                               |
+| `src/domain`      | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度                | `src/util`                                               |
 | `src/graph`       | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                                 | `src/domain`                                             |
 | `src/codex`       | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                        | `src/domain`、`src/graph`、`src/persistence`             |
-| `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、Git branch transaction         | `src/codex`、`src/domain`、`src/github`                  |
+| `src/persistence` | canonical JSON、snapshot、履歴、AI cache、通知管理記録、run report、Git branch transaction       | `src/codex`、`src/domain`、`src/github`                  |
 | `src/pages`       | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                           | `src/domain`、`src/graph`、`src/persistence`、`src/util` |
-| `src/discord`     | 通知候補選別、cooldown、payload分割、mention制限、Webhook送信                                    | `src/domain`、`src/graph`                                |
+| `src/discord`     | 通知候補選別、通知管理記録による重複抑制、payload分割、mention制限、Webhook送信                  | `src/domain`、`src/graph`                                |
 | `src/eval`        | golden fixtureの解析と期待値比較                                                                 | 判定、graph、公開DTO、通知の各pure処理                   |
 | `src/performance` | 外部接続をモックした日次run全体の性能と予算の検証                                                | `src/cli`と全実処理モジュール                            |
 | `src/cli`         | コマンド解析、日次トランザクション、実アダプターの合成、run report                               | 上記の全モジュール                                       |
@@ -61,16 +62,16 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 日次トランザクションは次の順で進みます。
 
 1. `config.yml`を検証し、必要な環境変数だけを読み取ります。
-2. `tracker-state` branchのsnapshotと通知ledgerを同じrevisionから読み取ります。
+2. `tracker-state` branchのsnapshotと通知管理記録を同じrevisionから読み取ります。
 3. GitHub Appのinstallation tokenを発行し、期限前に更新できる読み取り専用clientを作ります。
 4. Organizationのrepository metadataを全ページ取得し、run中に不変な公開allowlistを作ります。
 5. allowlist内repositoryのopen IssueとPull Requestを列挙して詳細を収集します。前回の`aiAnalysis.status`が`failed`か`deferred`の項目は、GitHub側の変化にかかわらず詳細を収集します。収集した詳細から関係先を抽出し、まだ取得していないOrganization内の関係先を識別子指定で個別列挙して収集結果へ統合します。追加した詳細から関係先を再び抽出し、対象がなくなるまで同じrun内で繰り返します。native relationは設定した深度まで、参照は追跡根から1 hopだけ辿ります。
 6. GitHubイベントをsource ID付きに正規化し、追跡対象と関係候補を選びます。Pull Request作成前のcommitは作成時刻を下限としてpushイベント化し、項目作成前のイベントを作りません。
-7. `config.yml`の`maintainers`からrepositoryごとのGitHubユーザー名一覧を解決し、IssueとPull Requestの状態と責務を決定論的に判定します。抽象的なmaintainer、reviewer、merge_deciderの責務は、メンテナ1人につき1件の`kind: "user"`候補へ展開します。
-8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
+7. `config.yml`の`maintainers`からrepositoryごとのGitHubユーザー名一覧を解決し、IssueとPull Requestの状態と責務を決定論的に判定します。抽象的なmaintainer、reviewer、merge_deciderの責務は、メンテナ1人につき1件の`kind: "user"`候補へ展開します。openかつ未アサインIssueでは、明確な着手宣言、追跡中のPRとのGitHub上で確定したauthoritativeな直接`implements`関係、継続成果物を持つ人間を実質担当候補として`candidates.waitingOn`へ加え、候補IDとsource IDを`deterministicSignals`へ渡します。正式assigneeを解除した場合は解除前のsourceを候補から除きます。
+8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。未アサインIssueの候補はIssue全体を進めているとhigh以上で判断できる場合だけ既存の`waiting_for_work`へ反映し、推論だけのrelation、部分実装、親・横断Issue、助言、検証、review、条件付き意向、撤回、延期、単なるauthorやcommenterは反映しません。一般的な活動状態の推察と、部分担当や部分実装のモデル化は行いません。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
 9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
-11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数と再通知cooldownに従ってDiscord送信を行い、`dismiss-current`は現在の通知条件を満たす候補をreasonごとに上限なしで手動抑制済みとしてledgerへ保存します。完了時に実測時刻と処理結果を反映したrun reportとledgerを追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
+11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数と通知管理記録の重複抑制に従ってDiscord送信を行い、`dismiss-current`は現在の通知条件を満たす候補をreasonごとに上限なしで手動抑制済みとして通知管理記録へ保存します。完了時に実測時刻と処理結果を反映したrun reportと通知管理記録を追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
 12. 成功、Codex縮退、失敗のいずれでもCLIのreport pathへrun reportを書き出します。
 
 `dry-run`は手順10まで実行し、state、Pages、Discordを変更せずに検証済みartifactとrun reportだけを書き出します。
@@ -83,11 +84,12 @@ repository単位の収集は、再試行後も503で失敗し、同じrepository
 この縮退はdiagnosticとstale件数を記録して後続処理を続け、run statusを変更しません。
 前回値がない503、503以外の例外、不完全な結果は`failure`となり、通常の後続stageを実行しません。
 反復を終えても端点を取得できなかった関係候補は追跡選定へ渡さず、除外した件数をdiagnosticへ記録します。
-GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。
-本文のclosing keywordだけから得た`implements`候補は推定のままです。
+GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。実質担当のPR根拠には、追跡中のPRに対するこの関係だけを使います。
+本文のclosing keywordだけから得た`implements`候補は推定のままとし、実質担当の根拠には使いません。
+関係先のPRや子Issueで確認した作業者を、親Issueや横断Issueの実質担当者へ拡張しません。
 
 `.github/workflows/daily.yml`は通常経路の`quality-eval`、`collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた8 jobで構成されています。
-workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと手動抑制済みledgerを同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合してから、`send`なら通知を送り、`dismiss-current`なら通常通知を送らずにrunを完了します。不一致の場合は通知もrun完了処理も行いません。運用障害通知はこの通知処理と別系統です。
+workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと手動抑制済みの通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合してから、`send`なら通知を送り、`dismiss-current`なら通常通知を送らずにrunを完了します。不一致の場合は通知もrun完了処理も行いません。運用障害通知はこの通知処理と別系統です。
 `collect-analyze`は`CODEX_AUTH_JSON`をrunnerの一時directoryへ配置し、配置直後の`auth.json`のsha256を指紋として保存します。
 配置直後とsecretへ書き戻す直前に、`auth.json`内のすべての文字列値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
 値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
@@ -101,10 +103,26 @@ jobの最後は成否を問わず`codex-home`と指紋ファイルを削除し�
 `report-workflow`は収集時のCLI reportと各jobの結果をActions artifactへ保存するだけで、stateとPagesを変更しません。
 現在のActions統合上の制約は[デプロイ手順](DEPLOYMENT.md)に記載しています。
 
+## 詳細診断は公開データから分離する
+
+run reportの`diagnostics`は、secretや信頼できない本文を含めない公開可能な要約です。
+調査用の詳細診断は別のJSONLへ記録し、state、公開可能なworkflow artifact、Pages、Discordへ渡しません。
+
+CLIの未処理エラーは既存の最上位境界まで伝播させ、境界でstack、cause、AggregateErrorの各errorを記録します。
+Codex実行では試行ごとに終了状態、標準出力、標準エラー出力、最終応答、検証エラーを記録します。
+認証preflightでは`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`を暗号化診断へ記録し、開始、終了、標準出力、標準エラー出力、stackを確認できます。raw出力は公開run reportへ載せません。
+通常のActions logには従来どおり公開可能なエラーだけを出します。
+
+日次workflowはtracker CLIを実行するjobごとにrunnerの一時directoryへJSONLを作ります。
+各jobの最後に32 byteの共通鍵とAES-256-GCMで暗号化し、暗号化済みファイルだけを保持期間7日のActions artifactへ保存します。
+暗号化鍵はrepository secretから暗号化stepだけへ渡します。
+平文JSONLは暗号化処理の成否にかかわらずjobの終了前に削除します。
+暗号化済みartifactはdefault branchのscheduleと手動実行でだけ作成します。
+
 ## 重要度の計算
 
 重要度は`src/domain`のpureな判定で計算します。
-停滞の深刻さを表すseverityとは独立した値です。
+停滞レベルとは独立した値です。
 `src/cli`は最終graphの解析後に必要な入力を集めて`src/domain`へ渡し、Codexやgraphがscoreとlevelを直接決めることはありません。
 
 | 入力                      | 依存する情報                                               |
@@ -164,8 +182,8 @@ AI分析の失敗と延期はGitHub側を動かさないため、この扱いが
 terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行します。
 
 決定論的規則versionとprompt versionは手で更新する定数です。
-判定ロジックやプロンプトを変えた場合は、判定結果が変わるかを確認してversionを上げます。
-現行の決定論的規則versionはIssueが`issue-v11`、Pull Requestが`pull-request-v10`です。
+`ai.promptVersion`はプロンプトファイルの改訂番号を表さず、意味上のAI判定規則を識別するversionです。変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は据え置きます。全件再推論をこの判断手段にしません。95％以上と見込めない場合、または影響を判断できない場合はversionを上げます。具体的な判断基準は[開発手順](DEVELOPMENT.md)の「Codexプロンプトのversionを判断する」を参照してください。
+現行の決定論的規則versionはIssueが`issue-v13`、Pull Requestが`pull-request-v11`です。
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
@@ -180,8 +198,9 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 同じGitHubデータなら、いつ走査しても同じ停滞時間になります。
 
 状態機械は、現在の状態が始まった時点をtimelineイベントの再生で求めます。
-担当区間はassignとunassign、draft区間はdraft変換とready for review、
+担当区間はassignとunassign、および未アサインIssueの実質担当が成立した根拠source、draft区間はdraft変換とready for review、
 merge queue区間は追加と削除、ラベル区間は付与と削除をそれぞれ時系列で再生します。
+実質担当はIssue全体への根拠が最新の状態で有効な場合だけ成立し、撤回、延期、引継ぎ、正式assigneeの設定などの最新情報で再判定します。正式assigneeを解除した場合は、解除前の根拠を再利用しません。単なる活動時刻は実質担当を成立させません。
 
 GitHubが時刻を持たない場面では、決定論的に決まる下限を使います。
 
@@ -196,12 +215,13 @@ GitHubが時刻を持たない場面では、決定論的に決まる下限を�
 `event`はGitHubのイベント時刻そのもの、`inferred`はGitHub由来の時刻から導いた下限です。
 
 停滞起点は一度確定するとstateへ保存し、statusと責務が変わるまで引き継ぎます。
-起点からrun開始時刻までの経過時間を毎回求め直し、severityと要対応度の算出に使います。
+起点からrun開始時刻までの経過時間を毎回求め直し、停滞レベルと要対応度の算出に使います。
 
 停滞起点には、現在の待ち先本人がGitHub上で活動した時刻も下限として効きます。
 `kind: "user"`の候補だけが責務アカウントを持ち、そのGitHubアカウントの活動を対象にします。
 `kind: "team"`の候補は責務アカウントを持たず、team memberの活動では停滞起点を更新しません。
 第三者やbotの活動、draft戻しやmerge queueの出し入れは対象外で、停滞を解除しません。
+活動は既存の待ち先の停滞起点にだけ使い、新しい実質担当者の推定には使いません。
 待ち先本人が動いていない項目は作成時刻まで下限が落ち、長い停滞として残ります。
 
 人間コメントを意味のある進捗と認めるかはCodexの判定に委ねているため、
@@ -217,7 +237,7 @@ AI判定を行わなかった項目では`lastProgressAt`が作成時刻のま�
 
 `src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度を公開します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
-日次履歴の送信済み通知は`notification-history.json`へ変換し、通知履歴ページを開いたときだけ取得します。`dismiss-current`の手動抑制はnotification ledgerへだけ保存し、`notification_sent`履歴やWeb UIの表示へ変換しません。
+日次履歴の送信済み通知は`notification-history.json`へ変換し、通知履歴ページを開いたときだけ取得します。`dismiss-current`の手動抑制は通知管理記録へだけ保存し、`notification_sent`履歴やWeb UIの表示へ変換しません。
 通知はPages公開後に確定するため、送信後の次回runで公開されます。
 
 共通ヘッダーは16px相当のサイト名、グローバルナビゲーション、「最新更新」と相対時刻を表示します。
@@ -234,7 +254,7 @@ repository、種別、状態、重要度、次の担当、停滞時間、AI利�
 専用UIの表示切り替えには表とカードと同じbreakpointを使います。
 待ち相手と状態には主な待ち相手、状態、主候補の理由を表示し、一覧の要対応度と重要度にはlevel名を付けずscoreだけを表示します。
 待ち相手は文字列とユーザー名の断片へ構造化し、表示文字列と画面表示を同じ断片から組み立てます。
-設定したメンテナのGitHubユーザー名は公開情報として`kind: "user"`のwaitingOnへ載せます。
+設定したメンテナのGitHubユーザー名は公開情報として、待ち相手を表す`waitingOn`へ`kind: "user"`で載せます。
 個人のユーザー名は共通部品で人ごとのページへリンクし、teamはプレーンテキストで表示します。
 人ページのhref生成とクライアント遷移はWeb UIのルートで一元化し、一覧、詳細、担当者一覧へ渡します。
 項目一覧の個人のユーザー名、担当者一覧の個人行、人ページの見出しには、ユーザー名から組み立てたGitHubアバターURLを表示します。
@@ -243,11 +263,11 @@ repository、種別、状態、重要度、次の担当、停滞時間、AI利�
 人ページのGitHubプロフィールリンクは、GitHub URLの検証と外部リンクの安全属性を共通部品へ委ねます。
 トップページの主候補は`primaryWaitingOn.index`で選び、`not_applicable`では先頭候補を使います。
 担当者ごとのページでは、閲覧者本人または選択した所属teamに対応する先頭候補を使います。
-所属teamの選択肢は公開summaryのwaitingOnに現れるteam識別子から作り、閲覧者が自身の所属を選びます。
+所属teamの選択肢は、公開summaryの待ち相手を表す`waitingOn`に現れるteam識別子から作り、閲覧者が自身の所属を選びます。
 `failed`と`deferred`は項目一覧へ警告アイコンを表示し、項目詳細でも警告として表示します。
 `not_required`は警告アイコンを表示せず、項目詳細では警告ではない情報として区別します。
 項目一覧のAI利用状況は、AI推定が最新でない項目とAI推定を省いた項目を別々に絞り込みます。
-Web UIはseverityを表示、絞り込み、並び替え、依存グラフのnode選定に使いません。
+Web UIは停滞レベルを表示、絞り込み、並び替え、依存グラフのnode選定に使いません。
 
 公開summaryの依存グラフは要対応度を最初の優先順位として初期nodeを選びます。
 項目詳細の依存グラフは中心項目を必ず残し、表示上限内の候補をfrontier、要対応度の順で優先します。
@@ -280,6 +300,8 @@ GitHubの確定情報で高信頼に解決した項目に加え、入力hash、�
 未変更候補はcontent-addressed cacheの検証済み結果をreducerへ渡し、変更候補も同じ判定入力が保存済みならcacheから再利用します。
 どちらの場合もcache hitではCodex processを実行しません。
 判定規則version、model、reasoning effort、backend version、prompt version、schema version、入力hashからcache keyを作り、同一入力だけを再利用します。
+prompt versionを上げたrunでは実行identityと判定規則fingerprintが変わるため、全項目を再取得し、Codex候補のうち曖昧な項目を新しいプロンプトで再推論します。高信頼に決定できる項目はCodex推論を行いません。
+prompt versionを据え置いたrunでは、入力と実行identityが変わらない項目に検証済みcacheを再利用します。プロンプトの表記だけを変更してversionを据え置いた場合、cacheやsnapshotの既存出力は書き換えず、別要因で再分析した項目だけが新しい表記になります。
 このcache再利用と重要度の前回判定利用は別の規則です。
 そのrunで利用できる重要度判定がない場合は、前回の判定を現在の決定論的な要因と組み合わせます。
 Codex入力の判定時刻は未来のsource参照を拒否するsemantic検証にだけ使い、時間依存の状態と停滞時間は決定論的処理で算出します。
@@ -287,6 +309,10 @@ Codex入力の判定時刻は未来のsource参照を拒否するsemantic検証�
 call数、入力文字数、推定費用の上限を超えた候補を優先順位に従って延期できる設計です。
 本番経路は実入力から推定費用を算出し、blocker変化と前回graphのdownstream impactを予算不足時の優先順位へ反映します。
 これらの条件が同じ候補では、前回延期された項目をnode ID順より先にします。
+
+`auth-json`で実行候補が1件以上あるrunだけ、候補workerより先にCodex認証preflightを1論理call実行します。preflightは固定した短文を、候補データと通常のsystem promptを含めず、空の一時directoryで実行します。preflightの完了を待ってから、予算計画で選ばれた候補を`ai.execution.maxConcurrentCalls`の設定値まで並列実行します。
+`api-key`、候補なし、cache hitだけのrun、全候補が予算延期されたrunではpreflightを実行しません。preflightに失敗したrunは候補を1件も開始せず、`codex_analysis`を失敗させます。
+preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の50 call設定では、preflightを含めて最大49候補を実行できます。retryで複数attemptになっても、予算上は1論理callです。
 
 予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`件まで同時に実行します。
 判定結果と失敗の並びは完了順ではなく予算計画順へ再構成するため、並列度を変えてもrun reportとstateのbyte列は変わりません。
@@ -310,15 +336,18 @@ call数、入力文字数、推定費用の上限を超えた候補を優先順�
 GitHub App private key、installation token、Discord Webhook URL、`CODEX_AUTH_SYNC_TOKEN`は渡しません。
 Issue本文、コメント、ラベル、ユーザー名はID付きの信頼できない入力データとして渡し、命令として扱いません。
 `deterministicSignals`にはnative relation候補のIDを`nativeBlockedBy`、`nativeBlocking`、`nativeParent`、`nativeSubIssues`へ分けて渡します。
+未アサインIssueの実質担当候補も、候補IDとsource IDを`deterministicSignals`へ渡します。Codexは入力された候補からIssue全体の担当可否だけを返し、候補を追加しません。
 
 Codexのtimeout、rate limit、不正JSON、一時的なprocess起動失敗、signal終了は`ai.execution.maxAttempts`まで再試行します。
 待機時間は`operations.retry`の初期待機時間と最大待機時間を使い、指数backoffとjitterを適用します。
 非ゼロ終了、固定資材や設定の不備、恒久的なprocess起動失敗は再試行しません。
+成功runの`aiCallCount`と`estimatedInputTokens`には、実行したpreflightを含めます。preflight失敗runでは通常のmetricsを完成させず、attemptの詳細を暗号化診断で確認します。
+preflightは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば、認証競合は残ります。
 Discordはtransport例外とHTTP 429、503だけを同じ設定で再試行し、他のHTTP status、secret不備、成功応答のschema不正は直ちに失敗します。
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
-`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v14`です。
+`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v16`です。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch
@@ -331,7 +360,7 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 | `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 10の最新snapshot |
 | `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分と送信済み通知を持つ日次履歴。手動抑制は記録しない                                |
 | `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                        |
-| `state/notification-ledger.json`    | 予約期限、送信結果、cooldown、期限のない手動抑制を持つ通知ledger                                      |
+| `state/notification-ledger.json`    | 予約期限、送信結果、期限のない送信済みと手動抑制済みの記録を持つ通知管理記録                          |
 | `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                 |
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
@@ -348,15 +377,15 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 `used`のcache keyはsnapshotだけへ保存します。
 Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しません。
 
-永続化sessionはbranch headを開始時に固定し、snapshot、履歴、追加cache、通知候補選別後のledgerを通常stateの最初のGit commitへまとめます。
+永続化sessionはbranch headを開始時に固定し、snapshot、履歴、追加cache、通知候補選別後の通知管理記録を通常stateの最初のGit commitへまとめます。
 通知予約はrun開始時刻から24時間だけ有効です。
 予約期限はworkflow内の排他用leaseであり通知方針ではないため、設定項目にせず、4時間周期をまたぐ重複送信を抑える24時間へ固定します。
 期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。
-cooldownと同日抑制は送信済みentryだけへ適用します。`dismiss-current`で保存したentryは同じnotification keyを期限なく抑制します。notification keyはstatus、severity、waitingOn、各種開始時刻などの状態から作られるため、これらが変わって別keyになった候補は通常の選別対象へ戻ります。
+`sent`と`dismissed`のentryは同じnotification keyを期限なく抑制します。notification keyは`status`、停滞レベルを表す`severity`、待ち相手を表す`waitingOn`、各種開始時刻などの状態から作られるため、これらが変わって別keyになった候補は通常の選別対象へ戻ります。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
 PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。
-この確定値、送信結果を反映したledger、run report、送信済み通知を追記した日次履歴は2回目のGit commitで一緒に保存します。
-`tracking.startAt`が確定済みのrunでも、送信結果を反映したledger、run report、日次履歴を2回目のGit commitで保存します。
+この確定値、送信結果を反映した通知管理記録、run report、送信済み通知を追記した日次履歴は2回目のGit commitで一緒に保存します。
+`tracking.startAt`が確定済みのrunでも、送信結果を反映した通知管理記録、run report、日次履歴を2回目のGit commitで保存します。
 各commitの前にheadが変わった場合は競合として失敗し、不完全なcommitへ切り替えません。
 GitHub Pagesはbranchを公開元にせず、ActionsのPages artifactからdeployします。

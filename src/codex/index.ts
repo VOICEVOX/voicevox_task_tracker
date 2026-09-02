@@ -1,6 +1,7 @@
 export {
   CODEX_AUTHENTICATIONS,
   createCodexEnvironment,
+  executeCodexAuthenticationPreflight,
   executeCodexAnalysis,
   getCodexEnvironmentVariableAllowlist,
   type CodexAdapterConfiguration,
@@ -9,10 +10,17 @@ export {
 } from "./adapter.js";
 export { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 export {
+  CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+  CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+} from "./preflight.js";
+export { recordCodexDiagnostic, type CodexDiagnosticsContext } from "./diagnostics.js";
+export {
   runAiAnalyses,
+  type AiAnalysisPreflight,
   type AiAnalysisRunConfiguration,
   type AiAnalysisRunDependencies,
   type AiAnalysisRunFailure,
+  type AiAnalysisExecutionContext,
   type AiAnalysisRunItemResult,
   type AiAnalysisRunResult,
 } from "./analysis-runner.js";
@@ -34,7 +42,9 @@ export {
 export {
   estimateAiInputCost,
   planAiAnalysisBudget,
+  planAiAnalysisBudgetWithPreflight,
   type AiInputCostEstimate,
+  type AiPreflightBudget,
   type AiAnalysisDeferReason,
   type AiBudgetPlan,
   type AiBudgetUsage,

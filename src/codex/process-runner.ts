@@ -41,7 +41,10 @@ export type CodexProcessResult = Readonly<{
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
+  standardInputError?: Error;
   apiError?: CodexApiErrorDiagnostic;
+  stdout?: string;
+  stderr?: string;
 }>;
 
 /** 差し替え可能なCodex CLI subprocess起動関数。 */
@@ -109,12 +112,14 @@ export async function runCodexProcess(request: CodexProcessRequest): Promise<Cod
     cwd: request.workingDirectory,
     env: request.environment,
     shell: false,
-    stdio: ["pipe", "ignore", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
 
   return await new Promise<CodexProcessResult>((resolve, reject) => {
     let timedOut = false;
+    const standardOutputChunks: Buffer[] = [];
+    const standardErrorChunks: Buffer[] = [];
     let standardErrorTail: Buffer = Buffer.alloc(0);
     let standardInputError:
       | Readonly<{
@@ -132,29 +137,38 @@ export async function runCodexProcess(request: CodexProcessRequest): Promise<Cod
       child.kill("SIGKILL");
     }, request.timeoutMilliseconds);
 
+    let processError: Error | undefined;
     child.once("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once("exit", () => {
-      clearTimeout(timeout);
+      processError = error;
     });
     child.once("close", (exitCode, signal) => {
       clearTimeout(timeout);
-      if (exitCode === 0 && standardInputError.status === "failed") {
-        reject(standardInputError.error);
+      if (processError != null) {
+        reject(processError);
         return;
       }
+      const stdout = Buffer.concat(standardOutputChunks).toString("utf8");
+      const stderr = Buffer.concat(standardErrorChunks).toString("utf8");
       const apiError = extractCodexApiError(standardErrorTail.toString("utf8"));
       resolve({
         exitCode,
         signal,
         timedOut,
+        ...(standardInputError.status === "failed"
+          ? { standardInputError: standardInputError.error }
+          : {}),
         ...(apiError == null ? {} : { apiError }),
+        stdout,
+        stderr,
       });
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      standardErrorTail = appendStandardErrorTail(standardErrorTail, chunk);
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      standardErrorChunks.push(buffer);
+      standardErrorTail = appendStandardErrorTail(standardErrorTail, buffer);
+    });
+    child.stdout.on("data", (chunk: Buffer) => {
+      standardOutputChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     });
     child.stdin.once("error", (error) => {
       standardInputError = {

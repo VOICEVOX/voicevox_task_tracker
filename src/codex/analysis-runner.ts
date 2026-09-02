@@ -5,7 +5,13 @@ import {
   type AiAnalysisSkipReason,
   type PreparedAiAnalysisCandidate,
 } from "./analysis-selection.js";
-import { planAiAnalysisBudget, type AiAnalysisDeferReason, type AiRunBudget } from "./budget.js";
+import {
+  planAiAnalysisBudget,
+  planAiAnalysisBudgetWithPreflight,
+  type AiAnalysisDeferReason,
+  type AiPreflightBudget,
+  type AiRunBudget,
+} from "./budget.js";
 import {
   createAiCacheEntry,
   createAiCacheKey,
@@ -16,16 +22,23 @@ import {
 } from "./cache.js";
 import { hashCanonicalJson } from "./canonical-json.js";
 import {
+  CodexAttemptError,
   CodexOutputValidationError,
+  CodexOutputSchemaValidationError,
+  CodexOutputSemanticValidationError,
   type CodexNonZeroExitDiagnostic,
   type CodexOutputValidationDiagnostic,
 } from "./errors.js";
+import { recordCodexDiagnostic, type CodexDiagnosticsContext } from "./diagnostics.js";
+import type { DiagnosticsJsonValue } from "../diagnostics/error-serializer.js";
 import { type CodexAnalysisInput } from "./input.js";
 import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
 import { executeValidatedCodexAnalysis, type CodexUnavailableReason } from "./reducer.js";
 import { createUtcIsoDateTime, type AnalysisMetadata } from "../domain/index.js";
 import { assertNonNullable } from "../util/index.js";
+
+const CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT = 5;
 
 /** 1 runのAI cache、予算、実行方針の設定。 */
 export type AiAnalysisRunConfiguration = Readonly<{
@@ -34,11 +47,25 @@ export type AiAnalysisRunConfiguration = Readonly<{
   maxConcurrentCalls: number;
 }>;
 
+/** AI分析前に実行するCodex認証preflight。 */
+export type AiAnalysisPreflight = Readonly<
+  AiPreflightBudget & {
+    execute: () => Promise<void>;
+  }
+>;
+
 /** AI分析runへ注入する副作用境界。 */
 export type AiAnalysisRunDependencies = Readonly<{
   cache: AiCacheStore;
-  execute: (input: CodexAnalysisInput) => Promise<unknown>;
+  execute: (input: CodexAnalysisInput, context: AiAnalysisExecutionContext) => Promise<unknown>;
   executedAt: () => string;
+  preflight?: AiAnalysisPreflight;
+  diagnostics?: CodexDiagnosticsContext;
+}>;
+
+/** AI分析の実行候補を識別するcontext。 */
+export type AiAnalysisExecutionContext = Readonly<{
+  candidateId: string;
 }>;
 
 /** cache再利用または新規実行で取得したAI結果。 */
@@ -94,6 +121,66 @@ type CandidateExecutionOutcome =
       failure: AiAnalysisRunFailure;
     }>;
 
+function candidateDiagnosticsContext(
+  context: CodexDiagnosticsContext | undefined,
+  candidateId: string,
+): CodexDiagnosticsContext | undefined {
+  if (context == null) {
+    return undefined;
+  }
+  return Object.freeze({
+    ...context,
+    candidateId,
+  });
+}
+
+function validationFailureEvent(error: unknown): string {
+  if (error instanceof CodexOutputSchemaValidationError) {
+    return "codex.output.schema_validation_failed";
+  }
+  if (error instanceof CodexOutputSemanticValidationError) {
+    return "codex.output.semantic_validation_failed";
+  }
+  if (error instanceof CodexAttemptError) {
+    return "codex.fallback";
+  }
+  return "codex.analysis.failed";
+}
+
+async function recordCandidateFailure(
+  context: CodexDiagnosticsContext | undefined,
+  candidateId: string,
+  error: unknown,
+  phase: "execution" | "cache",
+): Promise<void> {
+  const candidateContext = candidateDiagnosticsContext(context, candidateId);
+  const details: Record<string, string | number> = {
+    phase,
+    errorType: error instanceof Error ? error.name : typeof error,
+  };
+  if (error instanceof CodexAttemptError) {
+    details["attempt"] = error.attempts;
+  }
+  const structuredDetails: Record<string, DiagnosticsJsonValue> = details;
+  if (error instanceof CodexOutputValidationError) {
+    structuredDetails["issueCount"] = error.issues.length;
+    structuredDetails["issues"] = Object.freeze(
+      error.issues.slice(0, CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT).map((issue) =>
+        Object.freeze({
+          path: issue.path,
+          code: issue.code,
+        }),
+      ),
+    );
+  }
+  await recordCodexDiagnostic(
+    candidateContext,
+    validationFailureEvent(error),
+    structuredDetails,
+    error,
+  );
+}
+
 function createCacheIdentity(
   candidate: PreparedAiAnalysisCandidate,
   identity: AiAnalysisRunIdentity,
@@ -125,6 +212,7 @@ async function resolveCacheEntries(
   candidates: readonly PreparedAiAnalysisCandidate[],
   configuration: AiAnalysisRunConfiguration,
   cache: AiCacheStore,
+  diagnostics: CodexDiagnosticsContext | undefined,
 ): Promise<
   Readonly<{
     results: readonly AiAnalysisRunItemResult[];
@@ -150,6 +238,7 @@ async function resolveCacheEntries(
           if (!(error instanceof CodexOutputValidationError)) {
             throw error;
           }
+          await recordCandidateFailure(diagnostics, candidate.id, error, "cache");
         }
       }
     }
@@ -218,7 +307,12 @@ async function executeSelectedCandidates(
 
       try {
         const cacheMiss = findCacheMiss(cacheMisses, candidate);
-        const attempt = await executeValidatedCodexAnalysis(candidate.input, dependencies.execute);
+        const attempt = await executeValidatedCodexAnalysis(
+          candidate.input,
+          (input) => dependencies.execute(input, { candidateId: candidate.id }),
+          (error) =>
+            recordCandidateFailure(dependencies.diagnostics, candidate.id, error, "execution"),
+        );
         if (attempt.status === "unavailable") {
           outcomes.set(
             candidateIndex,
@@ -311,16 +405,25 @@ export async function runAiAnalyses(
     [...selection.selected, ...unchangedCandidates],
     configuration,
     dependencies.cache,
+    dependencies.diagnostics,
   );
   const selectedCandidateIds = new Set(selection.selected.map((candidate) => candidate.id));
   assertUnchangedCandidatesAreCached(cached.misses, selectedCandidateIds);
   const selectedCacheMisses = cached.misses.filter((value) =>
     selectedCandidateIds.has(value.candidate.id),
   );
-  const budgetPlan = planAiAnalysisBudget(
-    selectedCacheMisses.map((value) => value.candidate),
-    configuration.budget,
-  );
+  const selectedCandidates = selectedCacheMisses.map((value) => value.candidate);
+  const budgetPlan =
+    dependencies.preflight == null
+      ? planAiAnalysisBudget(selectedCandidates, configuration.budget)
+      : planAiAnalysisBudgetWithPreflight(
+          selectedCandidates,
+          configuration.budget,
+          dependencies.preflight,
+        );
+  if (dependencies.preflight != null && budgetPlan.selected.length > 0) {
+    await dependencies.preflight.execute();
+  }
   const executed = await executeSelectedCandidates(
     budgetPlan.selected,
     selectedCacheMisses,

@@ -7,6 +7,7 @@ import {
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
+  notificationReasonSchema,
   type Repository,
 } from "../domain/index.js";
 import {
@@ -29,6 +30,7 @@ import { notificationActionSchema, type NotificationAction } from "./command.js"
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
+const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "6";
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const dateTimeSchema = z.iso
   .datetime({
@@ -65,14 +67,34 @@ const notificationReasonCodeSchema = z.enum([
   "merge_overdue",
   "automation_stuck",
 ]);
-const selectedReasonSchema = z.strictObject({
-  reasonCode: notificationReasonCodeSchema,
-  notificationKey: z.string().min(1).max(1000),
-  cooldownUntil: dateTimeSchema,
-});
+const selectedReasonSchema = z
+  .strictObject({
+    notificationKey: z.string().min(1).max(1000),
+    reasonCode: notificationReasonCodeSchema,
+    threshold: z.unknown(),
+  })
+  .transform((selectedReason, context) => {
+    const reasonResult = notificationReasonSchema.safeParse({
+      reasonCode: selectedReason.reasonCode,
+      threshold: selectedReason.threshold,
+    });
+    if (!reasonResult.success) {
+      for (const issue of reasonResult.error.issues) {
+        context.addIssue({
+          code: "custom",
+          path: issue.path,
+          message: issue.message,
+        });
+      }
+      return z.NEVER;
+    }
+    return {
+      ...reasonResult.data,
+      notificationKey: selectedReason.notificationKey,
+    };
+  });
 const notificationCandidateSchema = z.strictObject({
   itemNodeId: nodeIdSchema,
-  reasonCode: notificationReasonCodeSchema,
   reasons: z.array(selectedReasonSchema).min(1),
   severity: severitySchema,
   downstreamImpact: z.strictObject({
@@ -89,7 +111,6 @@ const ledgerReservationSchema = z.strictObject({
   severity: severitySchema,
   reservedAt: dateTimeSchema,
   expiresAt: dateTimeSchema,
-  cooldownUntil: dateTimeSchema,
   status: z.literal("reserved"),
 });
 const notificationSelectionSchema = z.discriminatedUnion("action", [
@@ -162,7 +183,7 @@ const runMetadataSchema = z
     }
   });
 const workflowArtifactSchema = z.strictObject({
-  schemaVersion: z.literal("2"),
+  schemaVersion: z.literal(WORKFLOW_ARTIFACT_SCHEMA_VERSION),
   kind: z.literal("validated_public_run"),
   notificationAction: notificationActionSchema,
   repositoryAllowlist: z.array(repositoryAllowlistEntrySchema),
@@ -192,7 +213,7 @@ export type WorkflowRunMetadata = Readonly<{
 
 /** collect-analyzeが後続jobへ渡す公開可能な検証済み成果物。 */
 export type WorkflowArtifact = Readonly<{
-  schemaVersion: "2";
+  schemaVersion: typeof WORKFLOW_ARTIFACT_SCHEMA_VERSION;
   kind: "validated_public_run";
   notificationAction: NotificationAction;
   repositoryAllowlist: readonly WorkflowArtifactRepositoryAllowlistEntry[];
@@ -352,11 +373,8 @@ function assertNotificationSelectionConsistency(
     if (!itemIds.has(candidate.itemNodeId)) {
       throw new TypeError("workflow artifactの通知候補がsnapshot外の項目を参照しています");
     }
-    if (
-      candidate.downstreamImpact.nodeId !== candidate.itemNodeId ||
-      !candidate.reasons.some((reason) => reason.reasonCode === candidate.reasonCode)
-    ) {
-      throw new TypeError("workflow artifactの通知候補内で項目または主理由が一致しません");
+    if (candidate.downstreamImpact.nodeId !== candidate.itemNodeId) {
+      throw new TypeError("workflow artifactの通知候補内で項目が一致しません");
     }
     for (const reason of candidate.reasons) {
       reasonKeys.push(reason.notificationKey);
@@ -367,8 +385,7 @@ function assertNotificationSelectionConsistency(
       if (
         reservation.itemNodeId !== candidate.itemNodeId ||
         reservation.reasonCode !== reason.reasonCode ||
-        reservation.severity !== candidate.severity ||
-        reservation.cooldownUntil !== reason.cooldownUntil
+        reservation.severity !== candidate.severity
       ) {
         throw new TypeError("workflow artifactの通知候補と予約が一致しません");
       }
@@ -384,8 +401,7 @@ function assertNotificationSelectionConsistency(
         ledgerEntry.reasonCode !== reservation.reasonCode ||
         ledgerEntry.severity !== reservation.severity ||
         ledgerEntry.reservedAt !== reservation.reservedAt ||
-        ledgerEntry.expiresAt !== reservation.expiresAt ||
-        ledgerEntry.cooldownUntil !== reservation.cooldownUntil
+        ledgerEntry.expiresAt !== reservation.expiresAt
       ) {
         throw new TypeError("workflow artifactの通知予約がledgerへ反映されていません");
       }
@@ -434,7 +450,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
   const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
   const artifact = Object.freeze({
-    schemaVersion: "2",
+    schemaVersion: WORKFLOW_ARTIFACT_SCHEMA_VERSION,
     kind: "validated_public_run",
     notificationAction: result.data.notificationAction,
     repositoryAllowlist: createRepositoryAllowlist(result.data.repositoryAllowlist),

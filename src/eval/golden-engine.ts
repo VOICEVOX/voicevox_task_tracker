@@ -7,12 +7,15 @@ import {
   createCodexAnalysisInput,
   reduceCodexAnalysis,
   validateCodexAnalysisOutput,
+  type CodexAnalysisInput,
   type DeterministicCodexDecision,
   type ReducedCodexDecision,
+  type ValidatedCodexAnalysisOutput,
 } from "../codex/index.js";
 import {
   buildSourceId,
   calculateStaleness,
+  createStalenessNotificationSeverityReason,
   createExternalReferenceNodeId,
   createGitHubNodeId,
   createGitHubRepositoryId,
@@ -22,6 +25,7 @@ import {
   determineIssueState,
   determinePullRequestState,
   isTerminalStatus,
+  parseSourceId,
   resolveWaitingOnAccountIdentifiers,
   type Actor,
   type BlockedParentContext,
@@ -33,6 +37,9 @@ import {
   type GitHubItemUrl,
   type GitHubNodeId,
   type IssueBlocker,
+  type IssueEffectiveAssigneeAssessment,
+  type IssueEffectiveAssigneeCandidate,
+  type IssueEffectiveAssigneeTarget,
   type IssueStateDecision,
   type NaturalLanguageDeadlineAssessmentState,
   type NormalizedEvent,
@@ -108,10 +115,6 @@ const SEVERITY_THRESHOLDS = Object.freeze({
 }) satisfies SeverityThresholds;
 const NOTIFICATION_SETTINGS = Object.freeze({
   maxItemsPerDigest: 100,
-  cooldownDays: Object.freeze({
-    urgent: 3,
-    critical: 2,
-  }),
   recentProgressGraceHours: 24,
   minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,
 });
@@ -119,6 +122,23 @@ const MAINTAINERS = Object.freeze(["fixture-maintainer"]);
 
 type GoldenItemInput = StandardGoldenInput["items"][number];
 type GoldenRelationInput = StandardGoldenInput["relations"][number];
+type GoldenAssigneeEvent = Extract<GoldenItemInput["events"][number], { kind: "assignee" }>;
+
+const effectiveAssigneeCandidateSignalSchema = z.strictObject({
+  candidateId: z.string().min(1).regex(/^\S+$/u),
+  sourceIds: z.array(z.string().min(1)).min(1),
+  occurredAt: z.iso.datetime({
+    offset: true,
+    error: "実質担当候補の発生時刻はISO 8601形式で指定してください",
+  }),
+});
+
+type PreparedGoldenFixedAiAnalysis = Readonly<{
+  itemNodeId: string;
+  input: CodexAnalysisInput;
+  acceptedOutput: ValidatedCodexAnalysisOutput;
+  rejectedOutputs: readonly unknown[];
+}>;
 
 type ItemAnalysis = Readonly<{
   input: GoldenItemInput;
@@ -612,10 +632,242 @@ function createNativeBlockers(
   return Object.freeze(blockers);
 }
 
+function sourceIdTuple(sourceIds: readonly string[]): readonly [SourceId, ...SourceId[]] {
+  const parsedSourceIds = sourceIds.map((sourceId) => {
+    const parts = parseSourceId(sourceId);
+    return buildSourceId(parts.kind, parts.originalId);
+  });
+  const [firstSourceId, ...remainingSourceIds] = parsedSourceIds;
+  assertNonNullable(firstSourceId, "実質担当候補のsource IDがありません");
+  return Object.freeze([firstSourceId, ...remainingSourceIds]);
+}
+
+function effectiveAssigneeCandidatesFromCodexInput(
+  input: CodexAnalysisInput,
+): readonly IssueEffectiveAssigneeCandidate[] {
+  const rawCandidates = input.deterministicSignals["effectiveAssigneeCandidates"];
+  if (rawCandidates == null) {
+    return Object.freeze([]);
+  }
+  const result = z.array(effectiveAssigneeCandidateSignalSchema).safeParse(rawCandidates);
+  if (!result.success) {
+    throw new TypeError("deterministicSignals.effectiveAssigneeCandidatesが不正です", {
+      cause: result.error,
+    });
+  }
+  if (result.data.length > 0 && input.deterministicSignals["effectiveAssigneeEligible"] !== true) {
+    throw new TypeError(
+      "実質担当候補があるCodex入力にはdeterministicSignals.effectiveAssigneeEligible=trueが必要です",
+    );
+  }
+  return Object.freeze(
+    result.data.map((candidate) =>
+      Object.freeze({
+        candidateId: candidate.candidateId,
+        sourceIds: sourceIdTuple(candidate.sourceIds),
+        occurredAt: createUtcIsoDateTime(candidate.occurredAt),
+      }),
+    ),
+  );
+}
+
+function prepareFixedAiAnalyses(
+  input: StandardGoldenInput,
+): readonly PreparedGoldenFixedAiAnalysis[] {
+  return Object.freeze(
+    input.fixedAiAnalyses.map((analysis) => {
+      const codexInput = createCodexAnalysisInput(analysis.input);
+      if (codexInput.item.nodeId !== analysis.itemNodeId) {
+        throw new TypeError("固定AI判定のitem node IDが入力と一致しません");
+      }
+      return Object.freeze({
+        itemNodeId: analysis.itemNodeId,
+        input: codexInput,
+        acceptedOutput: validateCodexAnalysisOutput(analysis.acceptedOutput, codexInput),
+        rejectedOutputs: analysis.rejectedOutputs,
+      });
+    }),
+  );
+}
+
+function createEffectiveAssigneeCandidateMap(
+  input: StandardGoldenInput,
+  preparedAnalyses: readonly PreparedGoldenFixedAiAnalysis[],
+): ReadonlyMap<string, readonly IssueEffectiveAssigneeCandidate[]> {
+  const emptyCandidates: readonly IssueEffectiveAssigneeCandidate[] = Object.freeze([]);
+  const candidatesByNodeId = new Map<string, readonly IssueEffectiveAssigneeCandidate[]>(
+    input.items.map((item) => [item.nodeId, emptyCandidates]),
+  );
+  for (const analysis of preparedAnalyses) {
+    const candidates = effectiveAssigneeCandidatesFromCodexInput(analysis.input);
+    if (candidates.length === 0) {
+      continue;
+    }
+    if (analysis.input.item.type !== "issue") {
+      throw new TypeError("Pull Requestには実質担当候補を指定できません");
+    }
+    const existingCandidates = candidatesByNodeId.get(analysis.itemNodeId);
+    assertNonNullable(existingCandidates, `固定AI判定 ${analysis.itemNodeId}の対象がありません`);
+    if (existingCandidates.length > 0) {
+      throw new TypeError(`固定AI判定 ${analysis.itemNodeId}の実質担当候補が重複しています`);
+    }
+    candidatesByNodeId.set(analysis.itemNodeId, candidates);
+  }
+  return candidatesByNodeId;
+}
+
+function sourceIdSetsMatch(left: readonly SourceId[], right: readonly SourceId[]): boolean {
+  if (new Set(left).size !== left.length || new Set(right).size !== right.length) {
+    return false;
+  }
+  const rightSourceIds = new Set(right);
+  return left.length === right.length && left.every((sourceId) => rightSourceIds.has(sourceId));
+}
+
+function latestEffectiveAssigneeUnassignmentAt(
+  item: Extract<GoldenItemInput, { type: "issue" }>,
+): UtcIsoDateTime | undefined {
+  const activeAssigneeNodeIds = new Set<string>();
+  let latestUnassignedAt: UtcIsoDateTime | undefined;
+  const assigneeEvents = item.events
+    .filter((event): event is GoldenAssigneeEvent => event.kind === "assignee")
+    .sort((left, right) => {
+      if (left.occurredAt !== right.occurredAt) {
+        return compareStrings(left.occurredAt, right.occurredAt);
+      }
+      return compareStrings(left.id, right.id);
+    });
+  for (const event of assigneeEvents) {
+    if (event.action === "added") {
+      activeAssigneeNodeIds.add(event.assignee.nodeId);
+      continue;
+    }
+    const removed = activeAssigneeNodeIds.delete(event.assignee.nodeId);
+    if (removed && activeAssigneeNodeIds.size === 0) {
+      latestUnassignedAt = createUtcIsoDateTime(event.occurredAt);
+    }
+  }
+  return latestUnassignedAt;
+}
+
+function createEffectiveAssigneeAssessment(
+  item: GoldenItemInput,
+  evaluatedAt: UtcIsoDateTime,
+  candidates: readonly IssueEffectiveAssigneeCandidate[],
+  output: ValidatedCodexAnalysisOutput | undefined,
+): IssueEffectiveAssigneeAssessment {
+  if (
+    item.type !== "issue" ||
+    item.state !== "open" ||
+    item.assignees.length !== 0 ||
+    candidates.length === 0 ||
+    output?.status !== "waiting_for_work" ||
+    output.waitingOn.length === 0 ||
+    output.confidence < CONFIDENCE_THRESHOLDS.high
+  ) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+
+  const candidatesById = new Map(
+    candidates.map((candidate) => [candidate.candidateId.toLowerCase(), candidate]),
+  );
+  const targets: IssueEffectiveAssigneeTarget[] = [];
+  const targetIds = new Set<string>();
+  for (const waitingOn of output.waitingOn) {
+    if (
+      waitingOn.kind !== "user" ||
+      waitingOn.role !== "assignee" ||
+      waitingOn.confidence < CONFIDENCE_THRESHOLDS.high
+    ) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    const normalizedCandidateId = waitingOn.candidateId.toLowerCase();
+    if (targetIds.has(normalizedCandidateId)) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    targetIds.add(normalizedCandidateId);
+    const candidate = candidatesById.get(normalizedCandidateId);
+    if (candidate?.candidateId !== waitingOn.candidateId) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    if (!sourceIdSetsMatch(waitingOn.sourceIds, candidate.sourceIds)) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    targets.push(
+      Object.freeze({
+        kind: "user",
+        candidateId: waitingOn.candidateId,
+        sourceIds: waitingOn.sourceIds,
+        confidence: waitingOn.confidence,
+      }),
+    );
+  }
+
+  const selectedCandidateSourceIds = sourceIdTuple(targets.flatMap((target) => target.sourceIds));
+  const candidateSourceIds = sourceIdTuple(candidates.flatMap((candidate) => candidate.sourceIds));
+  const selectedCandidates = targets.map((target) => {
+    const candidate = candidatesById.get(target.candidateId.toLowerCase());
+    assertNonNullable(candidate, `実質担当候補を取得できません。対象: ${target.candidateId}`);
+    return candidate;
+  });
+  const firstCandidate = selectedCandidates[0];
+  assertNonNullable(firstCandidate, "実質担当判定の候補がありません");
+  const latestUnassignedAt = latestEffectiveAssigneeUnassignmentAt(item);
+  if (
+    latestUnassignedAt != null &&
+    selectedCandidates.some((candidate) => candidate.occurredAt <= latestUnassignedAt)
+  ) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+  const occurredAt = selectedCandidates
+    .slice(1)
+    .reduce(
+      (latest, candidate) => (latest < candidate.occurredAt ? candidate.occurredAt : latest),
+      firstCandidate.occurredAt,
+    );
+  if (occurredAt > evaluatedAt) {
+    throw new RangeError("実質担当判定の根拠時刻は判定時刻以前にしてください");
+  }
+  const confidence = Math.min(output.confidence, ...targets.map((target) => target.confidence));
+  if (confidence < CONFIDENCE_THRESHOLDS.high) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+  const firstTarget = targets[0];
+  assertNonNullable(firstTarget, "実質担当判定の対象userがありません");
+  return Object.freeze({
+    status: "assessed",
+    candidateSourceIds,
+    verdict: "effective_assignee",
+    targets: Object.freeze([firstTarget, ...targets.slice(1)] satisfies [
+      IssueEffectiveAssigneeTarget,
+      ...IssueEffectiveAssigneeTarget[],
+    ]),
+    occurredAt,
+    confidence,
+    sourceIds: selectedCandidateSourceIds,
+  });
+}
+
 function determineItemState(
   item: GoldenItemInput,
   input: StandardGoldenInput,
   items: ReadonlyMap<string, GoldenItemInput>,
+  effectiveAssigneeCandidates: readonly IssueEffectiveAssigneeCandidate[],
+  effectiveAssigneeAssessment: IssueEffectiveAssigneeAssessment,
 ): IssueStateDecision | PullRequestStateDecision {
   const blockers = createNativeBlockers(item, input.relations, items);
   const evaluatedAt = createUtcIsoDateTime(input.evaluatedAt);
@@ -635,6 +887,8 @@ function determineItemState(
       explicitRequestAssessment: Object.freeze({
         status: "not_assessed",
       }),
+      effectiveAssigneeCandidates,
+      effectiveAssigneeAssessment,
       maintainers: MAINTAINERS,
       confidenceThresholds: CONFIDENCE_THRESHOLDS,
       evaluatedAt,
@@ -690,9 +944,19 @@ function deterministicReducedDecision(
 
 function applyFixedAiAnalyses(
   input: StandardGoldenInput,
+  items: ReadonlyMap<string, GoldenItemInput>,
   deterministicDecisions: ReadonlyMap<string, IssueStateDecision | PullRequestStateDecision>,
+  effectiveAssigneeCandidatesByNodeId: ReadonlyMap<
+    string,
+    readonly IssueEffectiveAssigneeCandidate[]
+  >,
+  preparedAnalyses: readonly PreparedGoldenFixedAiAnalysis[],
 ): Readonly<{
   decisions: ReadonlyMap<string, ReducedCodexDecision>;
+  reassessedDeterministicDecisions: ReadonlyMap<
+    string,
+    IssueStateDecision | PullRequestStateDecision
+  >;
   deadlineAssessments: ReadonlyMap<string, NaturalLanguageDeadlineAssessmentState>;
   notificationRecommendations: ReadonlyMap<
     string,
@@ -703,6 +967,7 @@ function applyFixedAiAnalyses(
   rejectedOutputCount: number;
 }> {
   const decisions = new Map<string, ReducedCodexDecision>();
+  const reassessedDeterministicDecisions = new Map(deterministicDecisions);
   const deadlineAssessments = new Map<string, NaturalLanguageDeadlineAssessmentState>();
   const notificationRecommendations = new Map<
     string,
@@ -720,17 +985,12 @@ function applyFixedAiAnalyses(
   }
   const relationAssessments: RelationCandidateAssessment[] = [];
   let rejectedOutputCount = 0;
-  for (const analysis of input.fixedAiAnalyses) {
+  for (const analysis of preparedAnalyses) {
     const decision = deterministicDecisions.get(analysis.itemNodeId);
     assertNonNullable(decision, `固定AI判定 ${analysis.itemNodeId}の対象がありません`);
-    const codexInput = createCodexAnalysisInput(analysis.input);
-    if (codexInput.item.nodeId !== analysis.itemNodeId) {
-      throw new TypeError("固定AI判定のitem node IDが入力と一致しません");
-    }
-    const acceptedOutput = validateCodexAnalysisOutput(analysis.acceptedOutput, codexInput);
     for (const rejectedOutput of analysis.rejectedOutputs) {
       try {
-        validateCodexAnalysisOutput(rejectedOutput, codexInput);
+        validateCodexAnalysisOutput(rejectedOutput, analysis.input);
       } catch (error: unknown) {
         if (!(error instanceof CodexOutputValidationError)) {
           throw error;
@@ -740,12 +1000,34 @@ function applyFixedAiAnalyses(
       }
       throw new TypeError("拒否対象の固定AI出力が検証を通過しました");
     }
+    const item = items.get(analysis.itemNodeId);
+    assertNonNullable(item, `固定AI判定 ${analysis.itemNodeId}の対象がありません`);
+    const effectiveAssigneeCandidates = effectiveAssigneeCandidatesByNodeId.get(
+      analysis.itemNodeId,
+    );
+    assertNonNullable(
+      effectiveAssigneeCandidates,
+      `固定AI判定 ${analysis.itemNodeId}の実質担当候補がありません`,
+    );
+    const reassessedDecision = determineItemState(
+      item,
+      input,
+      items,
+      effectiveAssigneeCandidates,
+      createEffectiveAssigneeAssessment(
+        item,
+        createUtcIsoDateTime(input.evaluatedAt),
+        effectiveAssigneeCandidates,
+        analysis.acceptedOutput,
+      ),
+    );
+    reassessedDeterministicDecisions.set(analysis.itemNodeId, reassessedDecision);
     const reduction = reduceCodexAnalysis(
-      codexInput,
-      deterministicCodexDecision(decision),
+      analysis.input,
+      deterministicCodexDecision(reassessedDecision),
       Object.freeze({
         status: "validated",
-        output: acceptedOutput,
+        output: analysis.acceptedOutput,
       }),
       CONFIDENCE_THRESHOLDS,
     );
@@ -762,10 +1044,11 @@ function applyFixedAiAnalyses(
   }
   return Object.freeze({
     decisions,
+    reassessedDeterministicDecisions,
     deadlineAssessments,
     notificationRecommendations,
     relationAssessments: Object.freeze(relationAssessments),
-    acceptedOutputCount: input.fixedAiAnalyses.length,
+    acceptedOutputCount: preparedAnalyses.length,
     rejectedOutputCount,
   });
 }
@@ -980,11 +1263,11 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
       decision.waitingOn.length === 0
         ? Object.freeze({
             index: "not_applicable",
-            selectionReason: "waitingOnがないためprimaryはありません",
+            selectionReason: "待ち相手がないためprimaryはありません",
           })
         : Object.freeze({
             index: 0,
-            selectionReason: "waitingOnの先頭候補をprimaryとして選びました",
+            selectionReason: "待ち相手の先頭候補をprimaryとして選びました",
           }),
     nextAction: decision.nextAction,
     createdAt: createUtcIsoDateTime(item.createdAt),
@@ -1230,6 +1513,9 @@ function selectNotifications(
         status: analysis.decision.status,
         waitingOn: analysis.decision.waitingOn,
         severity: analysis.staleness.severity,
+        severityReason: createStalenessNotificationSeverityReason(
+          analysis.staleness.severityReason,
+        ),
         waitClass: analysis.staleness.waitClass,
         statusSince: analysis.staleness.statusSince,
         ownerSince: analysis.staleness.ownerSince,
@@ -1285,10 +1571,37 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
   const candidates = input.relations.map((relation) =>
     createRelationCandidate(relation, items, repositories),
   );
-  const deterministicDecisions = new Map(
-    input.items.map((item) => [item.nodeId, determineItemState(item, input, items)]),
+  const preparedAnalyses = prepareFixedAiAnalyses(input);
+  const effectiveAssigneeCandidatesByNodeId = createEffectiveAssigneeCandidateMap(
+    input,
+    preparedAnalyses,
   );
-  const fixedAi = applyFixedAiAnalyses(input, deterministicDecisions);
+  const deterministicDecisions = new Map(
+    input.items.map((item) => {
+      const effectiveAssigneeCandidates = effectiveAssigneeCandidatesByNodeId.get(item.nodeId);
+      assertNonNullable(
+        effectiveAssigneeCandidates,
+        `項目 ${item.nodeId}の実質担当候補がありません`,
+      );
+      return [
+        item.nodeId,
+        determineItemState(
+          item,
+          input,
+          items,
+          effectiveAssigneeCandidates,
+          Object.freeze({ status: "not_assessed" }),
+        ),
+      ];
+    }),
+  );
+  const fixedAi = applyFixedAiAnalyses(
+    input,
+    items,
+    deterministicDecisions,
+    effectiveAssigneeCandidatesByNodeId,
+    preparedAnalyses,
+  );
   const reconciled = reconcileGraph({
     previousGraph: Object.freeze({
       edges: Object.freeze([]),
@@ -1321,7 +1634,7 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
   });
   const analyses = Object.freeze(
     input.items.map((item) => {
-      const deterministicDecision = deterministicDecisions.get(item.nodeId);
+      const deterministicDecision = fixedAi.reassessedDeterministicDecisions.get(item.nodeId);
       const decision = fixedAi.decisions.get(item.nodeId);
       const deadlineAssessment = fixedAi.deadlineAssessments.get(item.nodeId);
       const notificationRecommendation = fixedAi.notificationRecommendations.get(item.nodeId);
@@ -1450,7 +1763,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         waitingOn: Object.freeze([largeWaitingOn(nodeId)]),
         primaryWaitingOn: Object.freeze({
           index: 0,
-          selectionReason: "waitingOnの先頭候補をprimaryとして選びました",
+          selectionReason: "待ち相手の先頭候補をprimaryとして選びました",
         }),
         nextAction: "担当者が作業を進める",
         createdAt,
