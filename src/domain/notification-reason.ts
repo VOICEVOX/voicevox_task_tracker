@@ -24,7 +24,7 @@ export function notificationReasonText(
     case "newly_unblocked":
       return "依存が解消して再開可能になりました";
     case "dependency_cycle":
-      return "新しい依存cycleを検出しました";
+      return "新しい依存関係の循環を検出しました";
     case "responsibility_changed":
       return "長期停止後に責務が移りました";
     case "merge_overdue":
