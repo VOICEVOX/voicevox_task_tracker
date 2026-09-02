@@ -8,6 +8,7 @@ import { createSharedDetailsLoader, type PublicDetailsLoader } from "./details-l
 import { ItemDetailsPage } from "./item-details-page.js";
 import { ItemsPage } from "./items-page.js";
 import { LogicGuidePage } from "./logic-guide-page.js";
+import { StatusGuidePage } from "./status-guide-page.js";
 import {
   collectWaitingTeamIds,
   createTableFilterOptions,
@@ -53,7 +54,8 @@ type AppProps = Readonly<{
   title: string;
 }>;
 
-type NavigationPage = "items" | "people" | "notification-history" | "guide" | "notifications";
+type NavigationPage =
+  "items" | "people" | "notification-history" | "status" | "guide" | "notifications";
 
 type RelativeTimeDisplayProps = Readonly<{
   locale: string;
@@ -80,6 +82,10 @@ const NAVIGATION_PAGES: readonly Readonly<{
   {
     label: "通知履歴",
     page: "notification-history",
+  },
+  {
+    label: "状態の決まり方",
+    page: "status",
   },
   {
     label: "指標の見方",
@@ -116,6 +122,10 @@ function routeForNavigationPage(page: NavigationPage): WebRoute {
     case "notification-history":
       return {
         page: "notification-history",
+      };
+    case "status":
+      return {
+        page: "status",
       };
     case "guide":
       return {
@@ -495,6 +505,8 @@ export function App({
             summary={summary}
           />
         );
+      case "status":
+        return <StatusGuidePage />;
       case "guide":
         return <LogicGuidePage />;
       case "notifications":
