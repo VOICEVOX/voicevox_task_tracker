@@ -107,6 +107,9 @@ export type WebRoute =
       page: "guide";
     }>
   | Readonly<{
+      page: "status";
+    }>
+  | Readonly<{
       page: "notification-history";
     }>
   | Readonly<{
@@ -395,6 +398,21 @@ function parseRelativeRoute(relativePath: string, targets: ValidWebRouteTargets)
         },
         status: "sanitized",
       };
+    case "status":
+      if (segments.length === 1) {
+        return {
+          route: {
+            page: "status",
+          },
+          status: "valid",
+        };
+      }
+      return {
+        route: {
+          page: "items",
+        },
+        status: "sanitized",
+      };
     case "notifications":
       if (segments.length === 1) {
         return {
@@ -673,6 +691,8 @@ function createRoutePath(basePath: string, route: WebRoute): string {
       return parsedBasePath;
     case "guide":
       return `${pathPrefix}/guide`;
+    case "status":
+      return `${pathPrefix}/status`;
     case "notifications":
       return `${pathPrefix}/notifications`;
     case "notification-history":

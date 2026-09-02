@@ -9,7 +9,14 @@ import { loadWebConfig } from "../src/config/index.js";
 
 const webConfig = await loadWebConfig(new URL("../config.yml", import.meta.url));
 const outputDirectory = resolve(import.meta.dirname, "../dist/web");
-const staticPagePaths = ["items", "people", "notification-history", "guide", "notifications"];
+const staticPagePaths = [
+  "items",
+  "people",
+  "notification-history",
+  "status",
+  "guide",
+  "notifications",
+];
 
 function createGitHubPagesFallbackPlugin(): Plugin {
   return {
