@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
 import { notificationReasonSchema } from "../domain/notification-reason.js";
+import { isTerminalStatus } from "../domain/status.js";
 import { assertNonNullable } from "../util/index.js";
 import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 
@@ -201,6 +202,17 @@ const publicDeadlineDetailsSchema = z.discriminatedUnion("status", [
 const publicItemAiAnalysisSchema = z.strictObject({
   status: z.enum(["used", "failed", "deferred", "not_required", "disabled", "not_recorded"]),
 });
+const publicCurrentImplementationSchema = z.strictObject({
+  nodeId: identifierSchema,
+  repositoryId: identifierSchema,
+  displayReference: z.string().min(4).max(600),
+  number: z.number().int().positive(),
+  url: githubUrlSchema,
+  title: z.string().max(500),
+  status: statusSchema,
+  waitingOn: z.array(waitingOnSchema),
+  nextAction: shortStringSchema,
+});
 const publicItemSummarySchema = z.strictObject({
   nodeId: identifierSchema,
   type: z.enum(["issue", "pull_request"]),
@@ -229,6 +241,7 @@ const publicItemSummarySchema = z.strictObject({
   repositoryFreshness: z.enum(["fresh", "stale"]),
   blockerNodeIds: z.array(identifierSchema),
   downstreamImpact: downstreamImpactSchema,
+  currentImplementations: z.array(publicCurrentImplementationSchema),
 });
 const itemTimestampsSchema = z.strictObject({
   createdAt: dateTimeSchema,
@@ -405,7 +418,7 @@ const publicAiStateSchema = z.union([
   }),
 ]);
 const publicSummaryDtoSchema = z.strictObject({
-  schemaVersion: z.literal("7"),
+  schemaVersion: z.literal("8"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
@@ -417,7 +430,7 @@ const publicSummaryDtoSchema = z.strictObject({
   graph: publicInitialGraphSchema,
 });
 const publicDetailsDtoSchema = z.strictObject({
-  schemaVersion: z.literal("7"),
+  schemaVersion: z.literal("8"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   items: z.array(publicItemDetailsSchema),
@@ -518,10 +531,10 @@ const publicNotificationHistoryDtoSchema = z
     }
   });
 
-/** Web初期表示で共有するschema version 7の公開summary DTO。 */
+/** Web初期表示で共有するschema version 8の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 7の公開details DTO。 */
+/** Web詳細表示で共有するschema version 8の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */
@@ -601,37 +614,35 @@ export function comparePublicNotificationHistoryEntries(
   return 0;
 }
 
-type PublicNotificationHistoryDisplayIdentity = Readonly<{
+type PublicItemDisplayIdentity = Readonly<{
   number: number;
   owner: string;
   repository: string;
 }>;
 
-type PublicNotificationHistoryUrlIdentity = Readonly<{
+type PublicItemUrlIdentity = Readonly<{
   number: number;
   owner: string;
   repository: string;
   type: "issue" | "pull_request";
 }>;
 
-function parsePublicNotificationHistoryDisplayReference(
-  displayReference: string,
-): PublicNotificationHistoryDisplayIdentity {
+function parsePublicItemDisplayReference(displayReference: string): PublicItemDisplayIdentity {
   const match = /^([^/\s#?%]+)\/([^/\s#?%]+)#([1-9]\d*)$/u.exec(displayReference);
   if (match == null) {
     throw new PublicDtoSemanticError(
-      "通知履歴の表示参照がowner/repository#number形式ではありません",
+      "公開項目の表示参照がowner/repository#number形式ではありません",
     );
   }
   const owner = match[1];
   const repository = match[2];
   const numberText = match[3];
-  assertNonNullable(owner, "通知履歴の表示参照ownerを取得できません");
-  assertNonNullable(repository, "通知履歴の表示参照repositoryを取得できません");
-  assertNonNullable(numberText, "通知履歴の表示参照numberを取得できません");
+  assertNonNullable(owner, "公開項目の表示参照ownerを取得できません");
+  assertNonNullable(repository, "公開項目の表示参照repositoryを取得できません");
+  assertNonNullable(numberText, "公開項目の表示参照numberを取得できません");
   const number = Number.parseInt(numberText, 10);
   if (!Number.isSafeInteger(number)) {
-    throw new PublicDtoSemanticError("通知履歴の表示参照numberが安全な整数ではありません");
+    throw new PublicDtoSemanticError("公開項目の表示参照numberが安全な整数ではありません");
   }
   return {
     owner,
@@ -640,10 +651,10 @@ function parsePublicNotificationHistoryDisplayReference(
   };
 }
 
-function parsePublicNotificationHistoryUrl(urlValue: string): PublicNotificationHistoryUrlIdentity {
+function parsePublicItemUrl(urlValue: string): PublicItemUrlIdentity {
   if (urlValue.includes("?") || urlValue.includes("#") || urlValue.includes("\\")) {
     throw new PublicDtoSemanticError(
-      "通知履歴のURLにquery、hash、または不正な区切り文字があります",
+      "公開項目のURLにquery、hash、または不正な区切り文字があります",
     );
   }
   const url = new URL(urlValue);
@@ -654,25 +665,25 @@ function parsePublicNotificationHistoryUrl(urlValue: string): PublicNotification
     url.username !== "" ||
     url.password !== ""
   ) {
-    throw new PublicDtoSemanticError("通知履歴のURLがGitHubのHTTPS URLではありません");
+    throw new PublicDtoSemanticError("公開項目のURLがGitHubのHTTPS URLではありません");
   }
   const match = /^\/([^/\s?#%]+)\/([^/\s?#%]+)\/(issues|pull)\/([1-9]\d*)$/u.exec(url.pathname);
   if (match == null) {
     throw new PublicDtoSemanticError(
-      "通知履歴のURL pathがIssueまたはPull Requestの形式ではありません",
+      "公開項目のURL pathがIssueまたはPull Requestの形式ではありません",
     );
   }
   const owner = match[1];
   const repository = match[2];
   const kind = match[3];
   const numberText = match[4];
-  assertNonNullable(owner, "通知履歴のURL ownerを取得できません");
-  assertNonNullable(repository, "通知履歴のURL repositoryを取得できません");
-  assertNonNullable(kind, "通知履歴のURL種別を取得できません");
-  assertNonNullable(numberText, "通知履歴のURL numberを取得できません");
+  assertNonNullable(owner, "公開項目のURL ownerを取得できません");
+  assertNonNullable(repository, "公開項目のURL repositoryを取得できません");
+  assertNonNullable(kind, "公開項目のURL種別を取得できません");
+  assertNonNullable(numberText, "公開項目のURL numberを取得できません");
   const number = Number.parseInt(numberText, 10);
   if (!Number.isSafeInteger(number)) {
-    throw new PublicDtoSemanticError("通知履歴のURL numberが安全な整数ではありません");
+    throw new PublicDtoSemanticError("公開項目のURL numberが安全な整数ではありません");
   }
   return {
     owner,
@@ -683,10 +694,8 @@ function parsePublicNotificationHistoryUrl(urlValue: string): PublicNotification
 }
 
 function assertPublicNotificationHistoryEntryItem(entry: PublicNotificationHistoryEntryDto): void {
-  const displayIdentity = parsePublicNotificationHistoryDisplayReference(
-    entry.item.displayReference,
-  );
-  const urlIdentity = parsePublicNotificationHistoryUrl(entry.item.url);
+  const displayIdentity = parsePublicItemDisplayReference(entry.item.displayReference);
+  const urlIdentity = parsePublicItemUrl(entry.item.url);
   if (
     displayIdentity.owner !== urlIdentity.owner ||
     displayIdentity.repository !== urlIdentity.repository ||
@@ -700,7 +709,100 @@ function assertPublicNotificationHistoryEntryItem(entry: PublicNotificationHisto
   }
   for (const waitingOn of entry.waitingOn) {
     if (waitingOn.kind === "item") {
-      parsePublicNotificationHistoryDisplayReference(waitingOn.displayReference);
+      parsePublicItemDisplayReference(waitingOn.displayReference);
+    }
+  }
+}
+
+function comparePublicCurrentImplementations(
+  left: PublicItemSummaryDto["currentImplementations"][number],
+  right: PublicItemSummaryDto["currentImplementations"][number],
+): number {
+  if (left.nodeId < right.nodeId) {
+    return -1;
+  }
+  if (left.nodeId > right.nodeId) {
+    return 1;
+  }
+  return 0;
+}
+
+function assertPublicCurrentImplementations(items: readonly PublicItemSummaryDto[]): void {
+  const summaryItemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
+  for (const item of items) {
+    if (item.type !== "issue" || item.state !== "open") {
+      if (item.currentImplementations.length !== 0) {
+        throw new PublicDtoSemanticError(
+          `Issue以外またはopenでないIssue ${item.nodeId}にcurrentImplementationsがあります`,
+        );
+      }
+      continue;
+    }
+    if (item.currentImplementations.length !== 0 && isTerminalStatus(item.status)) {
+      throw new PublicDtoSemanticError(
+        `Issue ${item.nodeId}はGitHub stateがopenなのにterminal statusでcurrentImplementationsを持っています`,
+      );
+    }
+    const implementationNodeIds = new Set<string>();
+    for (const [index, implementation] of item.currentImplementations.entries()) {
+      if (implementationNodeIds.has(implementation.nodeId)) {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsにPR ${implementation.nodeId}が重複しています`,
+        );
+      }
+      implementationNodeIds.add(implementation.nodeId);
+      const previous = item.currentImplementations[index - 1];
+      if (previous != null && comparePublicCurrentImplementations(previous, implementation) > 0) {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsが決定論的な順序になっていません`,
+        );
+      }
+      const implementationSummary = summaryItemsByNodeId.get(implementation.nodeId);
+      if (implementationSummary?.type !== "pull_request") {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsに対応するopen PR summaryがありません`,
+        );
+      }
+      if (implementationSummary.state !== "open") {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsに対応するopen PR summaryがありません`,
+        );
+      }
+      if (isTerminalStatus(implementationSummary.status)) {
+        throw new PublicDtoSemanticError(
+          `PR ${implementation.nodeId}はGitHub stateがopenなのにterminal statusでcurrentImplementationsに含まれています`,
+        );
+      }
+      if (
+        item.repositoryFreshness !== "fresh" ||
+        implementationSummary.repositoryFreshness !== "fresh"
+      ) {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsに対応するPR repositoryがfreshではありません`,
+        );
+      }
+      const displayIdentity = parsePublicItemDisplayReference(implementation.displayReference);
+      const urlIdentity = parsePublicItemUrl(implementation.url);
+      if (
+        urlIdentity.type !== "pull_request" ||
+        displayIdentity.owner !== urlIdentity.owner ||
+        displayIdentity.repository !== urlIdentity.repository ||
+        displayIdentity.number !== urlIdentity.number ||
+        implementation.number !== displayIdentity.number ||
+        implementation.repositoryId !== implementationSummary.repositoryId ||
+        implementation.displayReference !== implementationSummary.displayReference ||
+        implementation.number !== implementationSummary.number ||
+        implementation.url !== implementationSummary.url ||
+        implementation.title !== implementationSummary.title ||
+        implementation.status !== implementationSummary.status ||
+        JSON.stringify(implementation.waitingOn) !==
+          JSON.stringify(implementationSummary.waitingOn) ||
+        implementation.nextAction !== implementationSummary.nextAction
+      ) {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsとPR ${implementation.nodeId}のsummaryが一致しません`,
+        );
+      }
     }
   }
 }
@@ -714,7 +816,11 @@ function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void
   );
   const candidateIds = new Set<string>();
   for (const item of summary.items) {
-    for (const waitingOn of item.waitingOn) {
+    const waitingOnValues = [
+      ...item.waitingOn,
+      ...item.currentImplementations.flatMap((implementation) => implementation.waitingOn),
+    ];
+    for (const waitingOn of waitingOnValues) {
       if (waitingOn.kind === "item") {
         candidateIds.add(waitingOn.candidateId);
       }
@@ -739,6 +845,7 @@ export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
     });
   }
   assertPublicSummaryWaitingOnReferences(result.data);
+  assertPublicCurrentImplementations(result.data.items);
   return result.data;
 }
 
@@ -750,6 +857,7 @@ export function createPublicDetailsDto(value: unknown): PublicDetailsDto {
       cause: result.error,
     });
   }
+  assertPublicCurrentImplementations(result.data.items.map((item) => item.summary));
   return result.data;
 }
 

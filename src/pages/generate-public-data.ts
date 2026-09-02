@@ -1,6 +1,7 @@
 import {
   createLabelEffectsResolver,
   determineDeadlineLevel,
+  isTerminalStatus,
   type Evidence,
   type LabelRule,
   type Relation,
@@ -78,6 +79,7 @@ type ResponsibilityHistoryValue = Extract<
   Readonly<{ kind: "responsibility_changed" }>
 >["before"];
 type PublicWaitingOn = PublicItemSummaryDto["waitingOn"][number];
+type PublicCurrentImplementation = PublicItemSummaryDto["currentImplementations"][number];
 type EvidenceSourceItem = Readonly<Pick<TrackedItem, "nodeId" | "url">>;
 
 type PublicHistory = Readonly<{
@@ -538,9 +540,96 @@ function createBlockersByNodeId(snapshot: StateSnapshot): ReadonlyMap<string, re
   );
 }
 
+function createCurrentImplementationsByIssueNodeId(
+  snapshot: StateSnapshot,
+  repositoriesById: ReadonlyMap<string, SnapshotRepository>,
+): ReadonlyMap<string, readonly PublicCurrentImplementation[]> {
+  const itemsByNodeId = new Map<string, StateSnapshot["items"][number]>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  const externalNodeIds = new Set<string>(
+    snapshot.externalReferences.map((reference) => reference.nodeId),
+  );
+  const implementationsByIssueNodeId = new Map<string, Map<string, PublicCurrentImplementation>>();
+  for (const relation of snapshot.relations) {
+    if (!relation.active || relation.type !== "implements" || relation.provenance !== "native") {
+      continue;
+    }
+    if (externalNodeIds.has(relation.fromNodeId) || externalNodeIds.has(relation.toNodeId)) {
+      continue;
+    }
+    const implementation = itemsByNodeId.get(relation.fromNodeId);
+    const targetIssue = itemsByNodeId.get(relation.toNodeId);
+    assertNonNullable(implementation, `implements relation ${relation.id}の実装項目がありません`);
+    assertNonNullable(targetIssue, `implements relation ${relation.id}の対象項目がありません`);
+    if (implementation.type !== "pull_request" || targetIssue.type !== "issue") {
+      continue;
+    }
+    if (implementation.state === "open" && isTerminalStatus(implementation.status)) {
+      throw new PublicDtoSemanticError(
+        `implements relation ${relation.id}の実装PRはGitHub stateがopenなのにterminal statusです`,
+      );
+    }
+    if (targetIssue.state === "open" && isTerminalStatus(targetIssue.status)) {
+      throw new PublicDtoSemanticError(
+        `implements relation ${relation.id}の対象IssueはGitHub stateがopenなのにterminal statusです`,
+      );
+    }
+    if (implementation.state !== "open" || targetIssue.state !== "open") {
+      continue;
+    }
+    const implementationRepository = repositoriesById.get(implementation.repositoryId);
+    const targetRepository = repositoriesById.get(targetIssue.repositoryId);
+    assertNonNullable(
+      implementationRepository,
+      `implements relation ${relation.id}の実装repositoryがありません`,
+    );
+    assertNonNullable(
+      targetRepository,
+      `implements relation ${relation.id}の対象repositoryがありません`,
+    );
+    if (implementationRepository.freshness !== "fresh" || targetRepository.freshness !== "fresh") {
+      continue;
+    }
+    const implementations = implementationsByIssueNodeId.get(targetIssue.nodeId);
+    const currentImplementation: PublicCurrentImplementation = {
+      nodeId: implementation.nodeId,
+      repositoryId: implementation.repositoryId,
+      displayReference: implementation.displayReference,
+      number: implementation.number,
+      url: implementation.url,
+      title: implementation.title,
+      status: implementation.status,
+      waitingOn: implementation.waitingOn.map(createPublicWaitingOn),
+      nextAction: implementation.nextAction,
+    };
+    if (implementations == null) {
+      implementationsByIssueNodeId.set(
+        targetIssue.nodeId,
+        new Map([[implementation.nodeId, currentImplementation]]),
+      );
+      continue;
+    }
+    if (!implementations.has(implementation.nodeId)) {
+      implementations.set(implementation.nodeId, currentImplementation);
+    }
+  }
+  return new Map(
+    [...implementationsByIssueNodeId.entries()].map(([issueNodeId, implementations]) => [
+      issueNodeId,
+      Object.freeze(
+        [...implementations.values()].sort((left, right) =>
+          compareStrings(left.nodeId, right.nodeId),
+        ),
+      ),
+    ]),
+  );
+}
+
 function createItemSummary(
   item: StateSnapshot["items"][number],
   repository: SnapshotRepository,
+  currentImplementations: readonly PublicCurrentImplementation[],
   blockerNodeIds: readonly string[],
   downstreamImpact: AnalyzeGraphResult["downstreamImpacts"][number],
   priorityWeight: number,
@@ -599,6 +688,7 @@ function createItemSummary(
     downstreamImpact: {
       ...downstreamImpact,
     },
+    currentImplementations: [...currentImplementations],
   };
 }
 
@@ -677,7 +767,11 @@ function requiredInitialGraphNodes(
   const graphNodesByNodeId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
   const waitingOnItemCandidateIds = new Set<string>();
   for (const item of items) {
-    for (const waitingOn of item.waitingOn) {
+    const waitingOnValues = [
+      ...item.waitingOn,
+      ...item.currentImplementations.flatMap((implementation) => implementation.waitingOn),
+    ];
+    for (const waitingOn of waitingOnValues) {
       if (waitingOn.kind === "item") {
         waitingOnItemCandidateIds.add(waitingOn.candidateId);
       }
@@ -806,6 +900,10 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   const repositoriesById = new Map(
     snapshot.repositories.map((repository) => [repository.id, repository]),
   );
+  const currentImplementationsByIssueNodeId = createCurrentImplementationsByIssueNodeId(
+    snapshot,
+    repositoriesById,
+  );
   const blockersByNodeId = createBlockersByNodeId(snapshot);
   const resolveLabelEffects = createLabelEffectsResolver(input.options.labelRules);
   const impactByNodeId = new Map(
@@ -819,6 +917,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     return createItemSummary(
       item,
       repository,
+      currentImplementationsByIssueNodeId.get(item.nodeId) ?? Object.freeze([]),
       blockersByNodeId.get(item.nodeId) ?? Object.freeze([]),
       impact,
       resolveLabelEffects(`${repository.owner}/${repository.name}`, item.labels).priorityWeight,
@@ -835,7 +934,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     },
   }));
   const summary = createPublicSummaryDto({
-    schemaVersion: "7",
+    schemaVersion: "8",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
@@ -851,7 +950,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     graph: createInitialGraph(graph, itemSummaries, input.options.maxInitialGraphNodes),
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "7",
+    schemaVersion: "8",
     runId: snapshot.run.id,
     generatedAt: snapshot.generatedAt,
     items: snapshot.items.map((item, index) => {

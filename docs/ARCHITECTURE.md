@@ -237,6 +237,9 @@ AI判定を行わなかった項目では`lastProgressAt`が作成時刻のま�
 
 `src/pages`はsnapshotの各項目を`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度を公開します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
+Issue向けの`PublicItemSummaryDto.currentImplementations`は、from nodeがfreshなopen Pull Request、to nodeがfreshなopen Issueであるactiveなnative `implements`関係から導出します。
+導出結果は公開DTOのsummaryとdetailsに同じ値として含め、snapshot、履歴、責務判定、停滞、通知へ伝播させません。
+関係するPull Requestが複数ある場合はすべて公開し、Pull Request自身のstatus、waitingOn、nextActionをIssueのstatusに変換しません。
 日次履歴の送信済み通知は`notification-history.json`へ変換し、通知履歴ページを開いたときだけ取得します。`dismiss-current`の手動抑制は通知管理記録へだけ保存し、`notification_sent`履歴やWeb UIの表示へ変換しません。
 通知はPages公開後に確定するため、送信後の次回runで公開されます。
 

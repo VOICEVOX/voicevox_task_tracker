@@ -9,6 +9,7 @@ import {
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
+import { CurrentImplementations } from "./current-implementations.js";
 import { DeadlineDisplay } from "./deadline-display.js";
 import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
 import { type ItemGraphView } from "./graph-model.js";
@@ -770,6 +771,14 @@ export function ItemDetailsContent({
           </div>
         )}
       </section>
+
+      <CurrentImplementations
+        createPersonHref={createPersonHref}
+        currentImplementations={item.currentImplementations}
+        onSelectPerson={onSelectPerson}
+        summary={summary}
+        variant="detail"
+      />
 
       {hasItemDependencies(dependencyGraphView) && (
         <section
