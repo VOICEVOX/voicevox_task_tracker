@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "7",
+  "schemaVersion": "8",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "observedAt": "2026-07-31T00:00:00.000Z",
@@ -111,6 +111,7 @@
         "openNodeCount": 1,
         "repositoryCount": 1
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "available",
         "date": "2026-08-31",
@@ -180,6 +181,7 @@
         "openNodeCount": 4,
         "repositoryCount": 3
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -247,6 +249,27 @@
         "openNodeCount": 2,
         "repositoryCount": 2
       },
+      "currentImplementations": [
+        {
+          "nodeId": "sample-item-editor-101",
+          "repositoryId": "sample-repository-editor",
+          "displayReference": "VOICEVOX/sample-editor#101",
+          "number": 101,
+          "url": "https://github.com/VOICEVOX/sample-editor/pull/101",
+          "title": "サンプル辞書更新をマージする",
+          "status": "waiting_for_merge",
+          "waitingOn": [
+            {
+              "kind": "user",
+              "candidateId": "sample-maintainer",
+              "role": "merge_decider",
+              "reasonSummary": "確認が完了し、sample-maintainerさんのマージ判断を待っています",
+              "confidence": 1
+            }
+          ],
+          "nextAction": "メンテナーが内容を確認してマージする"
+        }
+      ],
       "deadline": {
         "status": "not_available"
       }
@@ -317,6 +340,7 @@
         "openNodeCount": 0,
         "repositoryCount": 0
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -384,6 +408,7 @@
         "openNodeCount": 3,
         "repositoryCount": 2
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -445,6 +470,7 @@
         "openNodeCount": 0,
         "repositoryCount": 0
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -506,6 +532,7 @@
         "openNodeCount": 0,
         "repositoryCount": 0
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -567,6 +594,7 @@
         "openNodeCount": 0,
         "repositoryCount": 0
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -634,6 +662,7 @@
         "openNodeCount": 0,
         "repositoryCount": 0
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -701,6 +730,7 @@
         "openNodeCount": 0,
         "repositoryCount": 0
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -762,6 +792,7 @@
         "openNodeCount": 0,
         "repositoryCount": 0
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
@@ -823,6 +854,7 @@
         "openNodeCount": 0,
         "repositoryCount": 0
       },
+      "currentImplementations": [],
       "deadline": {
         "status": "not_available"
       }
