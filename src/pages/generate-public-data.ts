@@ -1,6 +1,7 @@
 import {
   createLabelEffectsResolver,
   determineDeadlineLevel,
+  isTerminalStatus,
   type Evidence,
   type LabelRule,
   type Relation,
@@ -561,12 +562,20 @@ function createCurrentImplementationsByIssueNodeId(
     const targetIssue = itemsByNodeId.get(relation.toNodeId);
     assertNonNullable(implementation, `implements relation ${relation.id}の実装項目がありません`);
     assertNonNullable(targetIssue, `implements relation ${relation.id}の対象項目がありません`);
-    if (
-      implementation.type !== "pull_request" ||
-      targetIssue.type !== "issue" ||
-      implementation.state !== "open" ||
-      targetIssue.state !== "open"
-    ) {
+    if (implementation.type !== "pull_request" || targetIssue.type !== "issue") {
+      continue;
+    }
+    if (implementation.state === "open" && isTerminalStatus(implementation.status)) {
+      throw new PublicDtoSemanticError(
+        `implements relation ${relation.id}の実装PRはGitHub stateがopenなのにterminal statusです`,
+      );
+    }
+    if (targetIssue.state === "open" && isTerminalStatus(targetIssue.status)) {
+      throw new PublicDtoSemanticError(
+        `implements relation ${relation.id}の対象IssueはGitHub stateがopenなのにterminal statusです`,
+      );
+    }
+    if (implementation.state !== "open" || targetIssue.state !== "open") {
       continue;
     }
     const implementationRepository = repositoriesById.get(implementation.repositoryId);
@@ -758,7 +767,11 @@ function requiredInitialGraphNodes(
   const graphNodesByNodeId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
   const waitingOnItemCandidateIds = new Set<string>();
   for (const item of items) {
-    for (const waitingOn of item.waitingOn) {
+    const waitingOnValues = [
+      ...item.waitingOn,
+      ...item.currentImplementations.flatMap((implementation) => implementation.waitingOn),
+    ];
+    for (const waitingOn of waitingOnValues) {
       if (waitingOn.kind === "item") {
         waitingOnItemCandidateIds.add(waitingOn.candidateId);
       }

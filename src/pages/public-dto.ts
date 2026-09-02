@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
 import { notificationReasonSchema } from "../domain/notification-reason.js";
+import { isTerminalStatus } from "../domain/status.js";
 import { assertNonNullable } from "../util/index.js";
 import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 
@@ -737,6 +738,11 @@ function assertPublicCurrentImplementations(items: readonly PublicItemSummaryDto
       }
       continue;
     }
+    if (item.currentImplementations.length !== 0 && isTerminalStatus(item.status)) {
+      throw new PublicDtoSemanticError(
+        `Issue ${item.nodeId}はGitHub stateがopenなのにterminal statusでcurrentImplementationsを持っています`,
+      );
+    }
     const implementationNodeIds = new Set<string>();
     for (const [index, implementation] of item.currentImplementations.entries()) {
       if (implementationNodeIds.has(implementation.nodeId)) {
@@ -760,6 +766,11 @@ function assertPublicCurrentImplementations(items: readonly PublicItemSummaryDto
       if (implementationSummary.state !== "open") {
         throw new PublicDtoSemanticError(
           `Issue ${item.nodeId}のcurrentImplementationsに対応するopen PR summaryがありません`,
+        );
+      }
+      if (isTerminalStatus(implementationSummary.status)) {
+        throw new PublicDtoSemanticError(
+          `PR ${implementation.nodeId}はGitHub stateがopenなのにterminal statusでcurrentImplementationsに含まれています`,
         );
       }
       if (
