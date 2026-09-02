@@ -1,4 +1,5 @@
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import { CurrentImplementations } from "./current-implementations.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { DeadlineDisplay } from "./deadline-display.js";
 import { ItemListHeading } from "./item-list-heading.js";
@@ -120,6 +121,13 @@ function WaitingOnStatus({
       <Pill className="item-waiting-status" tone="neutral">
         {statusLabel(row.item.status)}
       </Pill>
+      <CurrentImplementations
+        createPersonHref={createPersonHref}
+        currentImplementations={row.item.currentImplementations}
+        onSelectPerson={onSelectPerson}
+        summary={summary}
+        variant="compact"
+      />
     </div>
   );
 }
