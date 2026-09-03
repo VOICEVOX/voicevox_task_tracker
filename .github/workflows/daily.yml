@@ -30,7 +30,7 @@ on:
         type: choice
         options:
           - send
-          - dismiss-current
+          - acknowledge-current
 
 permissions: {}
 
@@ -421,8 +421,8 @@ jobs:
         run: >-
           node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs notify-discord
           --pages-url "$PAGES_URL"
-      - name: 通知候補を抑制
-        if: github.event_name == 'workflow_dispatch' && inputs.notification_action == 'dismiss-current'
+      - name: 通知候補を確認済みにする
+        if: github.event_name == 'workflow_dispatch' && inputs.notification_action == 'acknowledge-current'
         env:
           PAGES_URL: ${{ needs.deploy-pages.outputs.page_url }}
           VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl

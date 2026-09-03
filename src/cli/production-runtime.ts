@@ -111,7 +111,7 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
-  createDismissedNotificationLedgerEntries,
+  createAcknowledgedNotificationLedgerEntries,
   selectDiscordNotifications,
   type sendDiscordDigest,
   type DiscordDigestDelivery,
@@ -179,6 +179,7 @@ import {
   createStateNotificationLedger,
   createStateRunReport,
   createStateSnapshot,
+  NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
   type StatePersistenceSession,
   type PersistStateTransactionResult,
   type SnapshotAiState,
@@ -196,7 +197,6 @@ import {
   type StateSnapshotReadResult,
 } from "../persistence/index.js";
 import { resolveStateHistoryNotificationItemDisplayReference } from "../persistence/history.js";
-import { NOTIFICATION_LEDGER_SCHEMA_VERSION_4 } from "../persistence/state-documents.js";
 import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { CliApplication } from "./application.js";
 import { createTrackingBackfillRequest } from "./backfill.js";
@@ -649,7 +649,7 @@ function readRuntimeCredentials(
               ),
             );
             break;
-          case "dismiss-current":
+          case "acknowledge-current":
             knownSecrets.push(
               requireEnvironmentValue(
                 environment,
@@ -4092,7 +4092,6 @@ function transitionBasisForDecision(
 function previousStalenessState(
   state: RuntimeState,
   nodeId: GitHubNodeId,
-  itemType: TrackedItem["type"],
 ): Parameters<typeof calculateStaleness>[0]["previousState"] {
   const snapshot = previousSnapshot(state);
   const previous = snapshot?.items.find((item) => item.nodeId === nodeId);
@@ -4103,8 +4102,7 @@ function previousStalenessState(
   if (
     previous == null ||
     previousRulesVersion == null ||
-    previousRulesVersion.status === "unavailable" ||
-    previousRulesVersion.version !== CURRENT_DETERMINISTIC_RULES_VERSIONS[itemType]
+    previousRulesVersion.status === "unavailable"
   ) {
     return Object.freeze({
       availability: "not_available",
@@ -4471,7 +4469,7 @@ function reduceAnalysisPass(
         responsibilityBasis: basis.responsibilityBasis,
       },
       decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
-      previousState: previousStalenessState(state, analysis.item.nodeId, analysis.item.type),
+      previousState: previousStalenessState(state, analysis.item.nodeId),
       events: analysis.item.events,
       responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
       dependencyResolutions: dependencyResolutions(
@@ -4937,8 +4935,8 @@ function notificationLedgerEntries(
       entries.push(
         Object.freeze({
           ...fields,
-          status: "dismissed",
-          dismissedAt: createUtcIsoDateTime(entry.dismissedAt),
+          status: "acknowledged",
+          acknowledgedAt: createUtcIsoDateTime(entry.acknowledgedAt),
         }),
       );
     }
@@ -5160,10 +5158,17 @@ function mergeNotificationLedger(
     state.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
   );
   for (const entry of entriesToMerge) {
+    const existing = entries.get(entry.notificationKey);
+    if (
+      entry.status === "acknowledged" &&
+      (existing?.status === "sent" || existing?.status === "acknowledged")
+    ) {
+      continue;
+    }
     entries.set(entry.notificationKey, entry);
   }
   return createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
   });
@@ -5442,7 +5447,7 @@ function validateRunCompleteness(
   const emptyCandidates: readonly [] = Object.freeze([]);
   const emptyLedgerReservations: readonly [] = Object.freeze([]);
   const notificationSelection: DiscordNotificationSelection =
-    notificationAction === "dismiss-current"
+    notificationAction === "acknowledge-current"
       ? Object.freeze({
           action: "skip_digest",
           reason: "no_candidates",
@@ -5451,8 +5456,8 @@ function validateRunCompleteness(
         })
       : selectDiscordNotifications(notificationInput);
   const notificationLedgerEntriesToMerge =
-    notificationAction === "dismiss-current"
-      ? createDismissedNotificationLedgerEntries(notificationInput)
+    notificationAction === "acknowledge-current"
+      ? createAcknowledgedNotificationLedgerEntries(notificationInput)
       : notificationSelection.ledgerReservations;
   return Object.freeze({
     snapshot,
@@ -5544,7 +5549,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "6",
+    schemaVersion: "7",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -5928,7 +5933,7 @@ async function deliverDiscord(
     }),
     notificationEvents,
     notificationLedger: createStateNotificationLedger({
-      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
+      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
       entries: [...notificationEntriesByKey.values()],
       operationsAlerts: [...operationsAlertsByKey.values()],
     }),
@@ -6053,7 +6058,7 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
   });
@@ -7209,7 +7214,7 @@ function createDailyDependencies(
     sendDiscord: async ({ invocation, configuration, validated, pages }) => {
       if (
         invocation.command.kind !== "dry-run" &&
-        invocation.command.notificationAction === "dismiss-current"
+        invocation.command.notificationAction === "acknowledge-current"
       ) {
         return Object.freeze({
           value: Object.freeze({
@@ -7396,7 +7401,7 @@ async function notifyWorkflowDiscord(
     snapshot: persistedSnapshot,
     notificationLedger: await session.loadNotificationLedger(),
   });
-  if (artifact.notificationAction === "dismiss-current") {
+  if (artifact.notificationAction === "acknowledge-current") {
     await persistSuccessfulRunCompletion(
       adapters,
       config,

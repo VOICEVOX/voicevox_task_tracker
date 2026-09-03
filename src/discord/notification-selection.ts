@@ -156,9 +156,12 @@ export type DiscordNotificationCandidate = Readonly<{
 }>;
 
 type NotificationLedgerReservation = Extract<NotificationLedgerEntry, { status: "reserved" }>;
-type NotificationLedgerDismissal = Extract<NotificationLedgerEntry, { status: "dismissed" }>;
+type NotificationLedgerAcknowledgement = Extract<
+  NotificationLedgerEntry,
+  { status: "acknowledged" }
+>;
 
-/** 空digest抑制を明示する通知選別結果。 */
+/** 空digestを明示する通知選別結果。 */
 export type DiscordNotificationSelection =
   | Readonly<{
       action: "skip_digest";
@@ -407,9 +410,9 @@ function validateLedger(
         throw new RangeError("ledgerの送信時刻は予約時刻以後かつ判定時刻以前にしてください");
       }
     } else {
-      const dismissedTimestamp = parseTimestamp(entry.dismissedAt, "ledgerの抑制時刻");
-      if (dismissedTimestamp < reservedTimestamp || dismissedTimestamp > evaluatedTimestamp) {
-        throw new RangeError("ledgerの抑制時刻は予約時刻以後かつ判定時刻以前にしてください");
+      const acknowledgedTimestamp = parseTimestamp(entry.acknowledgedAt, "ledgerの確認時刻");
+      if (acknowledgedTimestamp < reservedTimestamp || acknowledgedTimestamp > evaluatedTimestamp) {
+        throw new RangeError("ledgerの確認時刻は予約時刻以後かつ判定時刻以前にしてください");
       }
     }
   }
@@ -1218,36 +1221,36 @@ export function selectDiscordNotifications(
   });
 }
 
-function createDismissedLedgerEntry(
+function createAcknowledgedLedgerEntry(
   candidate: DiscordNotificationCandidate,
   reason: SelectedDiscordNotificationReason,
   evaluatedAt: UtcIsoDateTime,
-): NotificationLedgerDismissal {
+): NotificationLedgerAcknowledgement {
   return Object.freeze({
     notificationKey: reason.notificationKey,
     itemNodeId: candidate.itemNodeId,
     reasonCode: reason.reasonCode,
     severity: candidate.severity,
     reservedAt: evaluatedAt,
-    status: "dismissed",
-    dismissedAt: evaluatedAt,
+    status: "acknowledged",
+    acknowledgedAt: evaluatedAt,
   } satisfies NotificationLedgerEntry);
 }
 
-/** 現在の全通知候補に対応する手動抑制済みledger entryを上限なしで生成する。 */
-export function createDismissedNotificationLedgerEntries(
+/** 現在の全通知候補に対応する確認済みledger entryを上限なしで生成する。 */
+export function createAcknowledgedNotificationLedgerEntries(
   input: SelectDiscordNotificationsInput,
-): readonly NotificationLedgerDismissal[] {
+): readonly NotificationLedgerAcknowledgement[] {
   const evaluatedTimestamp = validateInput(input);
   const candidates = [
     ...createCandidateDrafts(input, evaluatedTimestamp, new Map<string, NotificationLedgerEntry>()),
   ]
     .sort((left, right) => compareCandidateDrafts(left, right, evaluatedTimestamp))
     .map(createCandidate);
-  const dismissedEntries = candidates.flatMap((candidate) =>
+  const acknowledgedEntries = candidates.flatMap((candidate) =>
     candidate.reasons.map((reason) =>
-      createDismissedLedgerEntry(candidate, reason, input.evaluatedAt),
+      createAcknowledgedLedgerEntry(candidate, reason, input.evaluatedAt),
     ),
   );
-  return Object.freeze(dismissedEntries);
+  return Object.freeze(acknowledgedEntries);
 }

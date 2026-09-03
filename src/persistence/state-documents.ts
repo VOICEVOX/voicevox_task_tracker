@@ -11,6 +11,7 @@ const NOTIFICATION_LEDGER_SCHEMA_VERSION_1 = "1";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_2 = "2";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_3 = "3";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_4 = "4";
+export const NOTIFICATION_LEDGER_SCHEMA_VERSION_5 = "5";
 
 const nonEmptyStringSchema = z.string().min(1).max(1000);
 const dateTimeSchema = z.iso
@@ -188,6 +189,15 @@ const ledgerEntryVersion4Schema = z.discriminatedUnion("status", [
   reservedLedgerEntryVersion4Schema,
   sentLedgerEntryVersion4Schema,
   dismissedLedgerEntryVersion4Schema,
+]);
+const acknowledgedLedgerEntryVersion5Schema = ledgerEntryVersion4BaseSchema.extend({
+  status: z.literal("acknowledged"),
+  acknowledgedAt: dateTimeSchema,
+});
+const ledgerEntryVersion5Schema = z.discriminatedUnion("status", [
+  reservedLedgerEntryVersion4Schema,
+  sentLedgerEntryVersion4Schema,
+  acknowledgedLedgerEntryVersion5Schema,
 ]);
 const operationsAlertEntrySchema = z.strictObject({
   alertKey: nonEmptyStringSchema,
@@ -383,6 +393,62 @@ const notificationLedgerVersion4Schema = z
       }
     }
   });
+const notificationLedgerVersion5Schema = z
+  .strictObject({
+    schemaVersion: z.literal(NOTIFICATION_LEDGER_SCHEMA_VERSION_5),
+    entries: z.array(ledgerEntryVersion5Schema),
+    operationsAlerts: z.array(operationsAlertEntrySchema),
+  })
+  .superRefine((ledger, context) => {
+    const keys = ledger.entries.map((entry) => entry.notificationKey);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["entries"],
+        message: "notificationKeyが重複しています",
+      });
+    }
+    const alertKeys = ledger.operationsAlerts.map((entry) => entry.alertKey);
+    if (new Set(alertKeys).size !== alertKeys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["operationsAlerts"],
+        message: "運用障害通知のalertKeyが重複しています",
+      });
+    }
+    for (const [index, entry] of ledger.operationsAlerts.entries()) {
+      if (entry.sentAt < entry.occurredAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["operationsAlerts", index, "sentAt"],
+          message: "送信時刻は障害発生時刻以後にしてください",
+        });
+      }
+    }
+    for (const [index, entry] of ledger.entries.entries()) {
+      if (entry.status === "reserved" && entry.expiresAt < entry.reservedAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["entries", index, "expiresAt"],
+          message: "予約期限は予約時刻以後にしてください",
+        });
+      }
+      if (entry.status === "sent" && entry.sentAt < entry.reservedAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["entries", index, "sentAt"],
+          message: "送信時刻は予約時刻以後にしてください",
+        });
+      }
+      if (entry.status === "acknowledged" && entry.acknowledgedAt < entry.reservedAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["entries", index, "acknowledgedAt"],
+          message: "確認時刻は予約時刻以後にしてください",
+        });
+      }
+    }
+  });
 
 /** 日次runの完了状態と運用metricsを保持するreport。 */
 export type StateRunReport = z.output<typeof runReportSchema>;
@@ -391,10 +457,11 @@ type StateNotificationLedgerVersion1 = z.output<typeof notificationLedgerVersion
 type StateNotificationLedgerVersion2 = z.output<typeof notificationLedgerVersion2Schema>;
 type StateNotificationLedgerVersion3 = z.output<typeof notificationLedgerVersion3Schema>;
 type StateNotificationLedgerVersion4 = z.output<typeof notificationLedgerVersion4Schema>;
+type StateNotificationLedgerVersion5 = z.output<typeof notificationLedgerVersion5Schema>;
 type StateNotificationLedgerVersionParser = (value: unknown) => StateNotificationLedger;
 
-/** 通常通知の予約、送信結果、手動抑制済みledger entry、送信済み運用障害を保持するledger。 */
-export type StateNotificationLedger = StateNotificationLedgerVersion4;
+/** 通常通知の予約、送信結果、確認済みledger entry、送信済み運用障害を保持するledger。 */
+export type StateNotificationLedger = StateNotificationLedgerVersion5;
 
 function createFormatError(kind: string, error: z.ZodError): StateFormatError {
   return StateFormatError.fromZodError(kind, error);
@@ -492,9 +559,42 @@ function parseStateNotificationLedgerVersion4(value: unknown): StateNotification
 function migrateStateNotificationLedgerVersion4(
   ledger: StateNotificationLedgerVersion4,
 ): StateNotificationLedger {
+  return migrateStateNotificationLedgerVersion5(
+    parseStateNotificationLedgerVersion5({
+      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
+      entries: ledger.entries.map((entry) => {
+        if (entry.status !== "dismissed") {
+          return entry;
+        }
+        return {
+          notificationKey: entry.notificationKey,
+          itemNodeId: entry.itemNodeId,
+          reasonCode: entry.reasonCode,
+          severity: entry.severity,
+          reservedAt: entry.reservedAt,
+          status: "acknowledged",
+          acknowledgedAt: entry.dismissedAt,
+        };
+      }),
+      operationsAlerts: ledger.operationsAlerts,
+    }),
+  );
+}
+
+function parseStateNotificationLedgerVersion5(value: unknown): StateNotificationLedgerVersion5 {
+  const result = notificationLedgerVersion5Schema.safeParse(value);
+  if (!result.success) {
+    throw createFormatError("notification ledger", result.error);
+  }
+  return result.data;
+}
+
+function migrateStateNotificationLedgerVersion5(
+  ledger: StateNotificationLedgerVersion5,
+): StateNotificationLedger {
   const compareNotificationKeys = (
-    left: StateNotificationLedger["entries"][number],
-    right: StateNotificationLedger["entries"][number],
+    left: StateNotificationLedgerVersion5["entries"][number],
+    right: StateNotificationLedgerVersion5["entries"][number],
   ): number => {
     if (left.notificationKey < right.notificationKey) {
       return -1;
@@ -505,7 +605,7 @@ function migrateStateNotificationLedgerVersion4(
     return 0;
   };
   return {
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
     entries: [...ledger.entries].sort(compareNotificationKeys),
     operationsAlerts: [...ledger.operationsAlerts].sort((left, right) => {
       if (left.alertKey < right.alertKey) {
@@ -558,6 +658,13 @@ const stateNotificationLedgerVersionParsers: ReadonlyMap<
       migrateStateNotificationLedgerVersion4,
     ),
   ],
+  [
+    NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
+    createStateNotificationLedgerVersionParser(
+      parseStateNotificationLedgerVersion5,
+      migrateStateNotificationLedgerVersion5,
+    ),
+  ],
 ]);
 
 function parseVersionedStateNotificationLedger(value: unknown): StateNotificationLedger {
@@ -582,7 +689,7 @@ export function createStateNotificationLedger(value: unknown): StateNotification
 /** 初回bootstrap用の空notification ledgerを生成する。 */
 export function createEmptyStateNotificationLedger(): StateNotificationLedger {
   return {
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_4,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
     entries: [],
     operationsAlerts: [],
   };
