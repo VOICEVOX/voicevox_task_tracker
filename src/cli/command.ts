@@ -16,7 +16,7 @@ const DEFAULT_PAGES_OUTPUT_DIRECTORY = "artifacts/workflow/pages";
 const DEFAULT_COLLECT_ANALYZE_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/collect-analyze.json`;
 const DEFAULT_WORKFLOW_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/workflow.json`;
 const REPOSITORY_FILTER_PATTERN = /^VOICEVOX\/[A-Za-z0-9._-]+$/u;
-export const notificationActionSchema = z.enum(["send", "dismiss-current"]);
+export const notificationActionSchema = z.enum(["send", "acknowledge-current"]);
 export type NotificationAction = z.output<typeof notificationActionSchema>;
 
 /** runの予定時刻を現在時刻または明示値から決める指定。 */
@@ -258,7 +258,7 @@ function parseNotificationAction(options: ParsedOptions): NotificationAction {
   );
   if (!result.success) {
     throw usageError(
-      "--notification-actionにはsendまたはdismiss-currentを指定してください",
+      "--notification-actionにはsendまたはacknowledge-currentを指定してください",
       result.error,
     );
   }
@@ -687,10 +687,10 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
 export function formatCliUsage(): string {
   return [
     "使用方法:",
-    "  voicevox-task-tracker daily [--config PATH] [--notification-action send|dismiss-current] [--scheduled-for ISO] [--report PATH]",
+    "  voicevox-task-tracker daily [--config PATH] [--notification-action send|acknowledge-current] [--scheduled-for ISO] [--report PATH]",
     "  voicevox-task-tracker dry-run [--config PATH] [--artifact PATH] [--report PATH]",
-    "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--notification-action send|dismiss-current] [--repository VOICEVOX/REPO]",
-    "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--notification-action send|dismiss-current] [--scheduled-for ISO] [--artifact PATH]",
+    "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--notification-action send|acknowledge-current] [--repository VOICEVOX/REPO]",
+    "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--notification-action send|acknowledge-current] [--scheduled-for ISO] [--artifact PATH]",
     "  voicevox-task-tracker persist-state [--config PATH] [--artifact PATH]",
     "  voicevox-task-tracker build-pages [--config PATH] [--artifact PATH] [--output PATH]",
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",

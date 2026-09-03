@@ -30,7 +30,7 @@ import { notificationActionSchema, type NotificationAction } from "./command.js"
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
-const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "6";
+const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "7";
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const dateTimeSchema = z.iso
   .datetime({
@@ -416,8 +416,10 @@ function assertNotificationActionConsistency(
   notificationAction: NotificationAction,
   selection: DiscordNotificationSelection,
 ): void {
-  if (notificationAction === "dismiss-current" && selection.action !== "skip_digest") {
-    throw new TypeError("dismiss-currentのworkflow artifactには空のDiscord通知selectionが必要です");
+  if (notificationAction === "acknowledge-current" && selection.action !== "skip_digest") {
+    throw new TypeError(
+      "acknowledge-currentのworkflow artifactには空のDiscord通知selectionが必要です",
+    );
   }
 }
 
