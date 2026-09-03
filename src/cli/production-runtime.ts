@@ -4092,7 +4092,6 @@ function transitionBasisForDecision(
 function previousStalenessState(
   state: RuntimeState,
   nodeId: GitHubNodeId,
-  itemType: TrackedItem["type"],
 ): Parameters<typeof calculateStaleness>[0]["previousState"] {
   const snapshot = previousSnapshot(state);
   const previous = snapshot?.items.find((item) => item.nodeId === nodeId);
@@ -4103,8 +4102,7 @@ function previousStalenessState(
   if (
     previous == null ||
     previousRulesVersion == null ||
-    previousRulesVersion.status === "unavailable" ||
-    previousRulesVersion.version !== CURRENT_DETERMINISTIC_RULES_VERSIONS[itemType]
+    previousRulesVersion.status === "unavailable"
   ) {
     return Object.freeze({
       availability: "not_available",
@@ -4471,7 +4469,7 @@ function reduceAnalysisPass(
         responsibilityBasis: basis.responsibilityBasis,
       },
       decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
-      previousState: previousStalenessState(state, analysis.item.nodeId, analysis.item.type),
+      previousState: previousStalenessState(state, analysis.item.nodeId),
       events: analysis.item.events,
       responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
       dependencyResolutions: dependencyResolutions(
