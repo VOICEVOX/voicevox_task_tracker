@@ -344,6 +344,7 @@ jobs:
       - name: Pages artifactを保存
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
+          name: daily-pages-${{ github.run_id }}-${{ github.run_attempt }}-initial
           path: dist/web
       - name: 診断JSONLを暗号化
         if: >-
@@ -382,6 +383,7 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
         with:
+          artifact_name: daily-pages-${{ github.run_id }}-${{ github.run_attempt }}-initial
           timeout: 1200000
 
   notify-discord:
@@ -395,6 +397,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    outputs:
+      has_notification_candidates: ${{ steps.detect-notification-candidates.outputs.has_notification_candidates }}
     steps:
       - name: ソースコードを取得
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -411,6 +415,20 @@ jobs:
         with:
           name: validated-public-run
           path: artifacts/workflow
+      - name: 通知候補の有無を確認
+        id: detect-notification-candidates
+        run: |
+          has_notification_candidates="$(jq -er '
+            if .notificationAction == "send" and .notificationSelection.action == "create_digest" then
+              "true"
+            elif (.notificationAction == "send" and .notificationSelection.action == "skip_digest") or
+              (.notificationAction == "acknowledge-current" and .notificationSelection.action == "skip_digest") then
+              "false"
+            else
+              error("workflow artifactの通知actionとselectionの組み合わせが不正です")
+            end
+          ' artifacts/workflow/validated-run.json)"
+          echo "has_notification_candidates=$has_notification_candidates" >> "$GITHUB_OUTPUT"
       - name: Discordへ通知
         if: github.event_name != 'workflow_dispatch' || inputs.notification_action == 'send'
         env:
@@ -451,12 +469,86 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  publish-notification-history:
+    needs: notify-discord
+    if: >-
+      needs.notify-discord.result == 'success' &&
+      needs.notify-discord.outputs.has_notification_candidates == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: ソースコードを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: 最新stateを取得
+        run: git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: pnpmを準備
+        run: corepack enable
+      - name: 依存関係をインストール
+        run: pnpm install --frozen-lockfile
+      - name: 公開可能なrun artifactを取得
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: validated-public-run
+          path: artifacts/workflow
+      - name: Pages用データを生成
+        env:
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
+        run: node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs build-pages --output web/public/data
+      - name: Pagesをビルド
+        run: pnpm build:web
+      - name: Pagesを構成
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - name: 通知履歴反映済みPages artifactを保存
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          name: daily-pages-${{ github.run_id }}-${{ github.run_attempt }}-notification-history
+          path: dist/web
+      - name: Pagesへdeploy
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        with:
+          artifact_name: daily-pages-${{ github.run_id }}-${{ github.run_attempt }}-notification-history
+          timeout: 1200000
+      - name: 診断JSONLを暗号化
+        if: >-
+          always() &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64: ${{ secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 }}
+        run: .github/scripts/encrypt-diagnostics.sh artifacts/workflow/runtime/tracker-run.mjs
+      - name: 暗号化済み診断artifactを保存
+        if: >-
+          always() &&
+          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: daily-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.bundle
+          if-no-files-found: error
+          retention-days: 7
+
   notify-operations:
     needs:
       - collect-analyze
       - build-pages
       - deploy-pages
       - notify-discord
+      - publish-notification-history
     if: >-
       always() &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
@@ -464,6 +556,7 @@ jobs:
       (needs.collect-analyze.result == 'failure' ||
       needs.build-pages.result == 'failure' ||
       needs.deploy-pages.result == 'failure' ||
+      needs.publish-notification-history.result == 'failure' ||
       needs.notify-discord.result == 'failure')
     runs-on: ubuntu-24.04
     permissions:
@@ -502,11 +595,12 @@ jobs:
           COLLECT_ANALYZE_RESULT: ${{ needs.collect-analyze.result }}
           DEPLOY_PAGES_RESULT: ${{ needs.deploy-pages.result }}
           NOTIFY_DISCORD_RESULT: ${{ needs.notify-discord.result }}
+          PUBLISH_NOTIFICATION_HISTORY_RESULT: ${{ needs.publish-notification-history.result }}
           VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
         run: |
           if [[ "$COLLECT_ANALYZE_RESULT" == "failure" ]]; then
             incident_kind=collection
-          elif [[ "$BUILD_PAGES_RESULT" == "failure" || "$DEPLOY_PAGES_RESULT" == "failure" ]]; then
+          elif [[ "$BUILD_PAGES_RESULT" == "failure" || "$DEPLOY_PAGES_RESULT" == "failure" || "$PUBLISH_NOTIFICATION_HISTORY_RESULT" == "failure" ]]; then
             incident_kind=pages
           elif [[ "$NOTIFY_DISCORD_RESULT" == "failure" ]]; then
             incident_kind=discord
@@ -549,6 +643,7 @@ jobs:
       - build-pages
       - deploy-pages
       - notify-discord
+      - publish-notification-history
       - notify-operations
     if: >-
       always() &&
@@ -586,6 +681,7 @@ jobs:
           DEPLOY_PAGES_RESULT: ${{ needs.deploy-pages.result }}
           NOTIFY_DISCORD_RESULT: ${{ needs.notify-discord.result }}
           NOTIFY_OPERATIONS_RESULT: ${{ needs.notify-operations.result }}
+          PUBLISH_NOTIFICATION_HISTORY_RESULT: ${{ needs.publish-notification-history.result }}
           PERSIST_STATE_RESULT: ${{ needs.persist-state.result }}
           QUALITY_EVAL_RESULT: ${{ needs.quality-eval.result }}
           VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
@@ -601,6 +697,7 @@ jobs:
           --build-pages-result "$BUILD_PAGES_RESULT"
           --deploy-pages-result "$DEPLOY_PAGES_RESULT"
           --notify-discord-result "$NOTIFY_DISCORD_RESULT"
+          --publish-notification-history-result "$PUBLISH_NOTIFICATION_HISTORY_RESULT"
           --notify-operations-result "$NOTIFY_OPERATIONS_RESULT"
       - name: workflow run reportを保存
         if: always()

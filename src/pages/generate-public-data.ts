@@ -1,5 +1,6 @@
 import {
   createLabelEffectsResolver,
+  createUtcIsoDateTime,
   determineDeadlineLevel,
   isTerminalStatus,
   type Evidence,
@@ -132,6 +133,32 @@ function validateHistoryRecords(
     throw new PublicDtoSemanticError("snapshot生成後のhistory recordを公開できません");
   }
   return Object.freeze([...validated].sort(compareHistoryRecords));
+}
+
+function publicDtoGeneratedAt(
+  records: readonly StateHistoryRecord[],
+  snapshot: StateSnapshot,
+): UtcIsoDateTime {
+  let generatedAt = snapshot.generatedAt;
+  for (const record of records) {
+    for (const event of record.events) {
+      if (event.kind !== "notification_sent") {
+        continue;
+      }
+      if (record.runId !== snapshot.run.id) {
+        if (event.sentAt > snapshot.generatedAt) {
+          throw new PublicDtoSemanticError(
+            "別runの通知送信時刻がsnapshot生成時刻より新しくなっています",
+          );
+        }
+        continue;
+      }
+      if (event.sentAt > generatedAt) {
+        generatedAt = createUtcIsoDateTime(event.sentAt);
+      }
+    }
+  }
+  return generatedAt;
 }
 
 function createPublicWaitingOn(waitingOn: PublicWaitingOn): PublicWaitingOn {
@@ -879,13 +906,14 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   validateOptions(input.options);
   const snapshot = createStateSnapshot(input.snapshot);
   const historyRecords = validateHistoryRecords(input.historyRecords, snapshot.generatedAt);
+  const generatedAt = publicDtoGeneratedAt(historyRecords, snapshot);
   const history = createPublicHistory(historyRecords);
   const notificationHistory = createPublicNotificationHistory(
     historyRecords,
     input.repositoryAllowlist,
     input.repositoryInventory,
     snapshot.run.id,
-    snapshot.generatedAt,
+    generatedAt,
   );
   const sourceOwnersById = createEvidenceSourceUrlMap(
     snapshot.items.flatMap((item) =>
@@ -936,7 +964,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   const summary = createPublicSummaryDto({
     schemaVersion: "8",
     runId: snapshot.run.id,
-    generatedAt: snapshot.generatedAt,
+    generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
     timezone: input.options.timezone,
     ai: {
@@ -952,7 +980,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   const details = createPublicDetailsDto({
     schemaVersion: "8",
     runId: snapshot.run.id,
-    generatedAt: snapshot.generatedAt,
+    generatedAt,
     items: snapshot.items.map((item, index) => {
       const summaryItem = itemSummaries[index];
       assertNonNullable(summaryItem, `item ${item.nodeId}のsummaryがありません`);

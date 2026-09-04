@@ -178,8 +178,8 @@ repositoryをpublicにした後、SettingsのPagesでSourceを`GitHub Actions`�
 branchをPages sourceへ指定しません。
 
 現行構成では`config.yml`の`web.basePath`を`/voicevox_task_tracker/`にし、公開URLを`https://voicevox.github.io/voicevox_task_tracker/`とします。
-workflowの`deploy-pages` jobはrepositoryをcheckoutせず、`build-pages`が保存したPages artifactを`github-pages` environmentへdeployするだけです。
-このため`pages: write`と`id-token: write`だけを使用します。
+workflowの初回`deploy-pages` jobはrepositoryをcheckoutせず、初回`build-pages`が保存したPages artifactを`github-pages` environmentへdeployするだけです。通常通知の送信後に候補がある場合は、`publish-notification-history` jobが最新の`tracker-state`からPagesを再生成し、別名のPages artifactを同じenvironmentへdeployします。
+このため初回`deploy-pages` jobだけが`pages: write`と`id-token: write`を使用します。`publish-notification-history` jobはこれらに加えて`contents: read`を使用します。
 
 ## config.yml
 
@@ -336,7 +336,7 @@ PagesのSourceを`GitHub Actions`にし、`notifications.discord.enabled: true`�
 workflowはdefault branchからのscheduleまたは手動実行だけを許可します。
 入力は`backfill: none`とし、repository filterは空にします。
 手動実行の`notification_action`は`send`が既定値で、通常の通知を送ります。現在の通知候補をDiscordへ送らず、通知済みと同様に扱いたい場合だけ`acknowledge-current`を選びます。
-手動実行でも`persist-state`、Pages buildとdeploy、`notify-discord`の順に進みます。
+手動実行でも`persist-state`、初回Pages buildとdeploy、`notify-discord`の順に進みます。`send`で通知候補がある場合は、通知後に`publish-notification-history`がPagesを再生成してdeployします。
 
 `acknowledge-current`では、現在の通知条件を満たす候補をreasonごとに最大件数の制限なく確認済みとして通知管理記録へ保存します。同じnotification keyは送信済みと同様に通知対象から除外します。すでに送信済みの同じkeyは送信日時とDiscord message IDを維持します。通常のDiscord digestと`notification_sent`履歴は作られません。snapshotとPagesは通常runと同じように生成し、通知管理記録の更新は同じatomic transactionで保存します。手動入力は現在の候補を一括で確認済みにする操作なので、対象範囲を確認してから実行してください。運用障害が起きた場合の`notify-operations`は別系統で通知します。
 
@@ -348,9 +348,10 @@ workflow artifactは`notificationAction`を保持します。`persist-state`はs
 - `tracker-state`がdefault branchと別の履歴を持つこと
 - `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知管理記録がまとまっていること
 - 後続の通知jobが実測時刻と実送信数を含むrun report、通知管理記録、当日の日次履歴のcommitを追加していること
-- Pagesの生成時刻がrun reportの`startedAt`と一致し、repository数、item数、stale表示も一致すること
+- 初回Pagesの生成時刻がsnapshotの生成時刻と一致し、repository数、item数、stale表示も一致すること
 - private repositoryのID、名前、URL、secret、不要な本文がstateとPagesにないこと
 - 通常digestがPages deploy後にだけ送信され、候補0件なら送信されないこと
+- 通知候補がある場合は通知後のPages deployが成功し、同じrunの通知履歴へ送信済み通知が表示されること
 - 同じ候補を含む再実行では送信されず、送信済みの通知管理記録項目が維持されること
 - `notification_action: acknowledge-current`では通常のDiscord送信と`notification_sent`履歴がなく、未送信だった対象候補の通知管理記録項目が`status: acknowledged`になっていること
 - `acknowledge-current`を実行しても、すでに送信済みだった同じnotification keyの送信日時とDiscord message IDが維持されていること
