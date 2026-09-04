@@ -88,8 +88,8 @@ GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativ
 本文のclosing keywordだけから得た`implements`候補は推定のままとし、実質担当の根拠には使いません。
 関係先のPRや子Issueで確認した作業者を、親Issueや横断Issueの実質担当者へ拡張しません。
 
-`.github/workflows/daily.yml`は通常経路の`quality-eval`、`collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた8 jobで構成されています。
-workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと確認済みの通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合してから、`send`なら通知を送り、`acknowledge-current`なら通常通知を送らずにrunを完了します。不一致の場合は通知もrun完了処理も行いません。運用障害通知はこの通知処理と別系統です。
+`.github/workflows/daily.yml`は通常経路の`quality-eval`、`collect-analyze`、`persist-state`、初回の`build-pages`、初回の`deploy-pages`、`notify-discord`、通知候補がある場合だけ動く`publish-notification-history`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた9 jobで構成されています。
+workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと確認済みの通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合してから、`send`なら通知を送り、`acknowledge-current`なら通常通知を送らずにrunを完了します。不一致の場合は通知もrun完了処理も行いません。`send`で通知候補がある場合だけ`publish-notification-history`が最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。運用障害通知はこの通知処理と別系統です。
 `collect-analyze`は`CODEX_AUTH_JSON`をrunnerの一時directoryへ配置し、配置直後の`auth.json`のsha256を指紋として保存します。
 配置直後とsecretへ書き戻す直前に、`auth.json`内のすべての文字列値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
 値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
@@ -241,7 +241,7 @@ Issue向けの`PublicItemSummaryDto.currentImplementations`は、from nodeがfre
 導出結果は公開DTOのsummaryとdetailsに同じ値として含め、snapshot、履歴、責務判定、停滞、通知へ伝播させません。
 関係するPull Requestが複数ある場合はすべて公開し、Pull Request自身のstatus、waitingOn、nextActionをIssueのstatusに変換しません。
 日次履歴の送信済み通知は`notification-history.json`へ変換し、通知履歴ページを開いたときだけ取得します。`acknowledge-current`の確認済み状態は通知管理記録へだけ保存し、`notification_sent`履歴やWeb UIの表示へ変換しません。
-通知はPages公開後に確定するため、送信後の次回runで公開されます。
+通知後のPages公開が成功した同じrunから送信済み通知が公開されます。summary、details、notification historyのmetadataは、通知がある場合はそのrunの最新の送信時刻へ揃えます。項目の停滞時間や期限の計算はsnapshot時刻を使います。
 
 共通ヘッダーは16px相当のサイト名、グローバルナビゲーション、「最新更新」と相対時刻を表示します。
 各ページの見出しは見出しレベルを保ったまま18px相当へ統一し、操作を説明する補助文は置きません。

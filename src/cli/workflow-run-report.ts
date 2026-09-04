@@ -18,6 +18,7 @@ const workflowJobResultsSchema = z.strictObject({
   "build-pages": workflowJobResultSchema,
   "deploy-pages": workflowJobResultSchema,
   "notify-discord": workflowJobResultSchema,
+  "publish-notification-history": workflowJobResultSchema,
   "notify-operations": workflowJobResultSchema,
 });
 const workflowRunReportInputSchema = z.strictObject({
@@ -41,7 +42,7 @@ export type WorkflowJobResults = Readonly<z.output<typeof workflowJobResultsSche
 
 /** CLI reportと全job結果をまとめたworkflow run report。 */
 export type WorkflowRunReport = Readonly<{
-  schemaVersion: "2";
+  schemaVersion: "3";
   workflowRunId: string;
   workflowRunAttempt: number;
   status: "success" | "fallback" | "failure";
@@ -58,7 +59,9 @@ function requiredJobFailed(jobs: WorkflowJobResults): boolean {
     jobs["persist-state"] !== "success" ||
     jobs["build-pages"] !== "success" ||
     jobs["deploy-pages"] !== "success" ||
-    jobs["notify-discord"] !== "success"
+    jobs["notify-discord"] !== "success" ||
+    (jobs["publish-notification-history"] !== "success" &&
+      jobs["publish-notification-history"] !== "skipped")
   );
 }
 
@@ -95,7 +98,7 @@ export function createWorkflowRunReport(value: unknown): WorkflowRunReport {
   const status = workflowStatus(parsed.data.jobs, collectAnalyzeReport);
   const metrics = collectAnalyzeReport?.metrics ?? createEmptyRunMetrics();
   return Object.freeze({
-    schemaVersion: "2",
+    schemaVersion: "3",
     workflowRunId: parsed.data.workflowRunId,
     workflowRunAttempt: parsed.data.workflowRunAttempt,
     status,

@@ -14,10 +14,11 @@ GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は�
 4. `build-pages`
 5. `deploy-pages`
 6. `notify-discord`
-7. `notify-operations` 失敗時のみ
-8. `report-workflow`
+7. `publish-notification-history` 通知候補があるときのみ
+8. `notify-operations` 失敗時のみ
+9. `report-workflow`
 
-通常の公開経路は`notify-discord`までの6 jobです。
+通常の公開経路は`notify-discord`までの6 jobです。通知候補があるrunでは、その後に`publish-notification-history`が動きます。
 `notify-operations`は収集、Pages関連、Discord通知のいずれかのjobが失敗したときだけ実行されます。
 `report-workflow`は先行jobの成否にかかわらず実行され、全job結果と収集metricをActions artifactへ保存します。
 
@@ -26,7 +27,7 @@ Pagesではトップの項目一覧に未完了の追跡項目が表示され、
 表が表示される幅では列見出しから並び替えられ、カードが表示される幅では並び順の選択UIが現れることも確認します。
 共通ヘッダーには「最新更新」と相対時刻、共通フッターにはrun IDだけが表示されます。
 通知履歴ではDiscordへ送信済みの項目通知が新しい順に表示され、履歴がなければ空状態になることを確認します。
-送信した通知は次回runのPages更新後に表示されます。
+送信した通知は、同じrunの`publish-notification-history`がPages公開に成功した後に表示されます。
 `tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
 ローカル実行のreportは`artifacts/run-reports/`へ出力されます。
 Actionsでは収集reportとworkflow全体のreportを、run IDと試行番号を含む別々のartifactへ保存します。
@@ -118,6 +119,8 @@ Pages buildは保存済みstateと同じ収集artifactから公開DTOを生成�
 pnpm tracker:run build-pages --output web/public/data
 pnpm build:web
 ```
+
+`notify-discord`が成功して通知候補がある場合は、`publish-notification-history`が通知後の最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。候補がない場合と`acknowledge-current`ではこのjobを実行しません。
 
 GitHub Pagesへのdeployが成功した後だけ、deploy結果のURLを渡してDiscord stageを実行します。
 このstageが読む外部secretは、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`の2つだけです。
@@ -271,7 +274,7 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 
 1. default branchのActionsから「日次タスク追跡」のworkflowを開きます。
 2. `backfill`を`none`、`repository_filter`を空、`notification_action`を`acknowledge-current`にして実行します。
-3. `collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`、`report-workflow`が成功することを確認します。
+3. `collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`、`report-workflow`が成功することを確認します。`publish-notification-history`は候補がないため実行されません。
 
 `acknowledge-current`は現在の通知条件を満たす候補を、reasonごとに最大件数の制限なく、確認済みとして通知管理記録へ保存します。同じnotification keyは送信済みと同様に通知対象から除外します。すでに送信済みの同じkeyは送信日時とDiscord message IDを維持します。通常のDiscord digestは送信せず、`notification_sent`履歴も作りません。snapshotとPagesの生成は通常runと同じで、通知管理記録の更新は同じatomic transactionへ含まれます。運用障害が発生した場合の`notify-operations`は別系統で動作します。
 
@@ -371,6 +374,7 @@ CLIが起動する前に失敗した場合や暗号化処理自体が失敗し�
 | `state_persistence`             | Actionsの`contents: write`、`tracker-state`のruleset、同時runがないことを確認する                                                                                                             |
 | `build-pages`                   | Pages DTO、`web.basePath`、Web build、公開guardの診断を確認する                                                                                                                               |
 | `deploy-pages`                  | Pages Source、`github-pages` environment、`pages: write`と`id-token: write`を確認する                                                                                                         |
+| `publish-notification-history`  | 通知後のstate取得、通知履歴を含むPages DTO、再deployの診断を確認する                                                                                                                          |
 | `discord`または`notify-discord` | enabled設定、Webhook secret、channel、Webhook失効、429と503を確認する                                                                                                                         |
 
 `incremental_collection`が`errorType=CliRelationExpansionLimitError`で失敗した場合は、同じ診断行の`relationExpansionLimit`、`relationExpansionFetchedCount`、`relationExpansionUnfetchedCount`を確認します。
@@ -393,9 +397,8 @@ Actions上でCodexの認証エラーが起きた場合は、まず過去の`coll
 対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。
 `failure`が`state_persistence`より前ならstateは更新されません。
 `pages`か`discord`で失敗した場合はstate commit後の可能性があるため、snapshotのrun IDとPagesの生成時刻を比較し、両者が同じrunか確認します。
-Pages deployに失敗した場合は最後に成功したPagesを基準にし、Discordを送信しません。
+初回Pages deployに失敗した場合は最後に成功したPagesを基準にし、Discordを送信しません。通知後の`publish-notification-history`に失敗した場合も最後に成功したPagesを基準にし、通知自体は重複送信しません。
 state commit後のPages失敗は想定内であり、stateを巻き戻しません。
-次回runはcommit済みsnapshotを前回値として新しいsnapshotを作り、state commit後にPagesを更新するため、同じrun IDと生成時刻へ再び揃います。
 
 公開guardが失敗した場合は安全設定を無効化しません。
 どの入力にallowlist外repository、private sentinel、secretらしい値、長すぎる全文、安全でないURLが入ったかを、secretをlogへ出さずに調べます。
