@@ -1,7 +1,8 @@
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
+import { GitHubIconButton } from "./github-icon-button.js";
+import { ItemDetailsLink } from "./item-details.js";
 import { formatWaitingOnCandidateParts, formatWaitingOnParts, statusLabel } from "./model.js";
-import { SafeGitHubLink } from "./safe-link.js";
 import { Pill } from "./ui.js";
 import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
 
@@ -9,7 +10,9 @@ type CurrentImplementation = PublicItemSummaryDto["currentImplementations"][numb
 
 type CurrentImplementationsProps = PersonNavigation &
   Readonly<{
+    createItemHref: (nodeId: string) => string;
     currentImplementations: readonly CurrentImplementation[];
+    onSelectItem: (nodeId: string) => void;
     summary: PublicSummaryDto;
     variant: "compact" | "detail";
   }>;
@@ -76,23 +79,31 @@ function ImplementationWaitingOn({
 
 type CurrentImplementationRowProps = PersonNavigation &
   Readonly<{
+    createItemHref: (nodeId: string) => string;
     implementation: CurrentImplementation;
+    onSelectItem: (nodeId: string) => void;
     summary: PublicSummaryDto;
     variant: "compact" | "detail";
   }>;
 
 function CurrentImplementationRow({
+  createItemHref,
   createPersonHref,
   implementation,
+  onSelectItem,
   onSelectPerson,
   summary,
   variant,
 }: CurrentImplementationRowProps) {
   const implementationItem = findImplementationItem(implementation, summary);
   const reference = (
-    <SafeGitHubLink href={implementation.url} variant="inline">
+    <ItemDetailsLink
+      href={createItemHref(implementation.nodeId)}
+      nodeId={implementation.nodeId}
+      onSelect={onSelectItem}
+    >
       {implementation.displayReference}
-    </SafeGitHubLink>
+    </ItemDetailsLink>
   );
   const status = (
     <Pill className="current-implementation-status" tone="neutral">
@@ -104,6 +115,7 @@ function CurrentImplementationRow({
       <li class="current-implementation-compact-item min-w-0">
         <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <span class="min-w-0 wrap-anywhere">{reference}</span>
+          <GitHubIconButton href={implementation.url} />
           {status}
         </div>
       </li>
@@ -113,6 +125,7 @@ function CurrentImplementationRow({
     <li class="current-implementation-detail-item min-w-0 border-l-2 border-border-default pl-3">
       <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <strong class="min-w-0 wrap-anywhere">{reference}</strong>
+        <GitHubIconButton href={implementation.url} />
         {status}
       </div>
       <p class="mt-1 mb-0 text-text-primary wrap-anywhere">{implementation.title}</p>
@@ -140,8 +153,10 @@ function CurrentImplementationRow({
 
 /** 関連する実装Pull Requestを一覧と詳細へ表示する。 */
 export function CurrentImplementations({
+  createItemHref,
   createPersonHref,
   currentImplementations,
+  onSelectItem,
   onSelectPerson,
   summary,
   variant,
@@ -156,8 +171,10 @@ export function CurrentImplementations({
       {currentImplementations.map((implementation) => (
         <CurrentImplementationRow
           key={implementation.nodeId}
+          createItemHref={createItemHref}
           createPersonHref={createPersonHref}
           implementation={implementation}
+          onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
           summary={summary}
           variant={variant}

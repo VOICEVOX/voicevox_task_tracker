@@ -5,7 +5,6 @@ import { AiAnalysisNoticeIcon } from "./ai-analysis-notice-icon.js";
 import { GitHubIconButton } from "./github-icon-button.js";
 import { ItemDetailsLink } from "./item-details.js";
 import { aiAnalysisNotice, type ItemTableRow } from "./model.js";
-import { SafeGitHubLink } from "./safe-link.js";
 import { Pill } from "./ui.js";
 
 type ItemHeadingItem = Readonly<{
@@ -23,7 +22,7 @@ export type ItemHeadingLink =
       onSelectItem: (nodeId: string) => void;
     }>
   | Readonly<{
-      kind: "github";
+      kind: "text";
     }>;
 
 type ItemHeadingProps = Readonly<{
@@ -64,20 +63,25 @@ function itemTypeLabel(type: ItemHeadingItem["type"]): string {
 
 /** 項目見出しに共通するタイトルと補助情報を表示する。 */
 export function ItemHeading({ item, link, metaAccessory, titleAccessory }: ItemHeadingProps) {
-  const title =
-    link.kind === "internal" ? (
-      <ItemDetailsLink
-        href={link.createItemHref(item.nodeId)}
-        nodeId={item.nodeId}
-        onSelect={link.onSelectItem}
-      >
-        {item.title}
-      </ItemDetailsLink>
-    ) : (
-      <SafeGitHubLink href={item.url} variant="inline">
-        {item.title}
-      </SafeGitHubLink>
-    );
+  let title: ComponentChildren;
+  switch (link.kind) {
+    case "internal":
+      title = (
+        <ItemDetailsLink
+          href={link.createItemHref(item.nodeId)}
+          nodeId={item.nodeId}
+          onSelect={link.onSelectItem}
+        >
+          {item.title}
+        </ItemDetailsLink>
+      );
+      break;
+    case "text":
+      title = item.title;
+      break;
+    default:
+      throw new UnreachableError(link);
+  }
 
   return (
     <div class="item-list-heading grid min-w-0 gap-1">

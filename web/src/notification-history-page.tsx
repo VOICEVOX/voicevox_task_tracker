@@ -65,7 +65,7 @@ function NotificationItem({
         onSelectItem,
       }
     : {
-        kind: "github",
+        kind: "text",
       };
   return <ItemHeading item={item} link={link} metaAccessory={null} titleAccessory={null} />;
 }
