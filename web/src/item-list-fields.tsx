@@ -54,13 +54,17 @@ function orderWaitingOnCandidates(
 }
 
 function WaitingOnStatus({
+  createItemHref,
   createPersonHref,
+  onSelectItem,
   onSelectPerson,
   primaryWaitingOn,
   row,
   summary,
 }: Readonly<{
+  createItemHref: (nodeId: string) => string;
   createPersonHref: (login: string) => string;
+  onSelectItem: (nodeId: string) => void;
   onSelectPerson: (login: string) => void;
   primaryWaitingOn: WaitingOnCandidate | undefined;
   row: ItemTableRow;
@@ -122,8 +126,10 @@ function WaitingOnStatus({
         {statusLabel(row.item.status)}
       </Pill>
       <CurrentImplementations
+        createItemHref={createItemHref}
         createPersonHref={createPersonHref}
         currentImplementations={row.item.currentImplementations}
+        onSelectItem={onSelectItem}
         onSelectPerson={onSelectPerson}
         summary={summary}
         variant="compact"
@@ -171,7 +177,9 @@ export function createItemTableColumns({
       label: "待ち相手と状態",
       renderCell: (row) => (
         <WaitingOnStatus
+          createItemHref={createItemHref}
           createPersonHref={createPersonHref}
+          onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
           primaryWaitingOn={selectPrimaryWaitingOn(row)}
           row={row}
@@ -243,8 +251,10 @@ export function createItemTableColumns({
 
 /** 項目一覧で共通利用するカードのフィールドを作る。 */
 export function createItemCardFields({
+  createItemHref,
   createPersonHref,
   now,
+  onSelectItem,
   onSelectPerson,
   selectPrimaryWaitingOn,
   summary,
@@ -256,7 +266,9 @@ export function createItemCardFields({
       label: "待ち相手と状態",
       renderValue: (row) => (
         <WaitingOnStatus
+          createItemHref={createItemHref}
           createPersonHref={createPersonHref}
+          onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
           primaryWaitingOn={selectPrimaryWaitingOn(row)}
           row={row}

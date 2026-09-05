@@ -12,6 +12,7 @@ import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { CurrentImplementations } from "./current-implementations.js";
 import { DeadlineDisplay } from "./deadline-display.js";
 import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
+import { GitHubIconButton } from "./github-icon-button.js";
 import { type ItemGraphView } from "./graph-model.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import {
@@ -324,9 +325,12 @@ function RelatedItemReference({
     throw new TypeError(`blocker ${nodeId}の公開項目詳細がありません`);
   }
   return (
-    <SafeGitHubLink href={graphNode.url} variant="inline">
-      {graphNode.displayReference} {graphNode.title}
-    </SafeGitHubLink>
+    <span class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      <span class="min-w-0 wrap-anywhere">
+        {graphNode.displayReference} {graphNode.title}
+      </span>
+      <GitHubIconButton href={graphNode.url} />
+    </span>
   );
 }
 
@@ -773,8 +777,10 @@ export function ItemDetailsContent({
       </section>
 
       <CurrentImplementations
+        createItemHref={createItemHref}
         createPersonHref={createPersonHref}
         currentImplementations={item.currentImplementations}
+        onSelectItem={onSelectItem}
         onSelectPerson={onSelectPerson}
         summary={summary}
         variant="detail"
