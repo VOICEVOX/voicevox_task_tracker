@@ -47,6 +47,7 @@ const MINUTES_PER_HOUR = 60;
 const MINUTES_PER_DAY = 24 * MINUTES_PER_HOUR;
 const DISCORD_USER_ID_PATTERN = /^\d{17,20}$/u;
 const INCIDENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/u;
+const PUBLIC_ITEM_DISPLAY_REFERENCE_PATTERN = /^([^/\s#?%]+)\/([^/\s#?%]+)#([1-9]\d*)$/u;
 
 type DiscordDigestCategory = "blocking" | "unknown_responsibility" | "important_change";
 
@@ -180,6 +181,30 @@ function validateGitHubUrl(value: string): void {
   if (url.hostname !== "github.com" || characterCount(value) > GITHUB_URL_MAX_CHARACTERS) {
     throw new DiscordPayloadError("GitHub URLはgithub.comのURLとして安全な長さにしてください");
   }
+}
+
+function createPublicItemUrl(pagesUrl: URL, item: TrackedItem): string {
+  const match = PUBLIC_ITEM_DISPLAY_REFERENCE_PATTERN.exec(item.displayReference);
+  if (match == null) {
+    throw new DiscordPayloadError(
+      `${item.displayReference}の表示参照がowner/repository#number形式ではありません`,
+    );
+  }
+  const repositoryName = match[2];
+  const numberText = match[3];
+  assertNonNullable(repositoryName, "公開項目ページのrepository名を取得できませんでした");
+  assertNonNullable(numberText, "公開項目ページのnumberを取得できませんでした");
+  if (numberText !== item.number.toString()) {
+    throw new DiscordPayloadError(
+      `${item.displayReference}の表示参照numberと項目番号が一致しません`,
+    );
+  }
+  const basePath = pagesUrl.pathname.endsWith("/") ? pagesUrl.pathname : `${pagesUrl.pathname}/`;
+  const publicItemUrl = new URL(pagesUrl.href);
+  publicItemUrl.pathname = `${basePath}items/${encodeURIComponent(repositoryName)}/${numberText}`;
+  publicItemUrl.search = "";
+  publicItemUrl.hash = "";
+  return publicItemUrl.href;
 }
 
 function truncateText(value: string, maximumCharacters: number): string {
@@ -444,6 +469,7 @@ function createReasonLines(candidate: DiscordNotificationCandidate): readonly st
 function createFieldDraft(
   candidate: DiscordNotificationCandidate,
   item: TrackedItem,
+  pagesUrl: URL,
   generatedTimestamp: number,
   itemReferences: ReadonlyMap<string, string>,
   mentionLookup: ReadonlyMap<string, string>,
@@ -460,6 +486,7 @@ function createFieldDraft(
   const waitingOn = formatWaitingOn(item.waitingOn, itemReferences, mentionLookup, mentionsEnabled);
   const title = truncateText(normalizeInlineText(item.title, "タイトル"), TITLE_MAX_CHARACTERS);
   const reasonLines = createReasonLines(candidate);
+  const publicItemUrl = createPublicItemUrl(pagesUrl, item);
   const firstReason = candidate.reasons[0];
   assertNonNullable(firstReason, `${candidate.itemNodeId}の通知理由を取得できませんでした`);
   const value = [
@@ -467,6 +494,7 @@ function createFieldDraft(
     `待ち相手: ${waitingOn.text}`,
     `経過時間: ${formatElapsedTime(stallTimestamp, generatedTimestamp)}、${formatJst(stallTimestamp)}から`,
     ...reasonLines,
+    `公開ページ: ${publicItemUrl}`,
     `GitHub: ${item.url}`,
   ].join("\n");
   if (characterCount(value) > DISCORD_SAFE_LIMITS.fieldValueCharacters) {
@@ -485,11 +513,12 @@ function createFieldDraft(
   });
 }
 
-function validateDigestInputs(
-  input: BuildDiscordDigestPlanInput,
-): ReadonlyMap<GitHubNodeId, TrackedItem> {
+function validateDigestInputs(input: BuildDiscordDigestPlanInput): Readonly<{
+  itemsByNodeId: ReadonlyMap<GitHubNodeId, TrackedItem>;
+  pagesUrl: URL;
+}> {
   parseTimestamp(input.generatedAt, "digest集計時刻");
-  validateHttpsUrl(input.pagesUrl, "Pages URL");
+  const pagesUrl = validateHttpsUrl(input.pagesUrl, "Pages URL");
   const itemsByNodeId = new Map(input.items.map((item) => [item.nodeId, item]));
   if (itemsByNodeId.size !== input.items.length) {
     throw new DiscordPayloadError("追跡項目のnode IDが重複しています");
@@ -529,7 +558,10 @@ function validateDigestInputs(
   ) {
     throw new DiscordPayloadError("通知候補とledger予約が1対1に対応していません");
   }
-  return itemsByNodeId;
+  return Object.freeze({
+    itemsByNodeId,
+    pagesUrl,
+  });
 }
 
 function emptyMessageDraft(): MutableMessageDraft {
@@ -792,7 +824,7 @@ export function buildDiscordDigestPlan(input: BuildDiscordDigestPlanInput): Disc
       messages: Object.freeze([]),
     });
   }
-  const itemsByNodeId = validateDigestInputs(input);
+  const { itemsByNodeId, pagesUrl } = validateDigestInputs(input);
   const generatedTimestamp = parseTimestamp(input.generatedAt, "digest集計時刻");
   const mentionLookup = createMentionLookup(input.mentions);
   const itemReferences = new Map(input.items.map((item) => [item.nodeId, item.displayReference]));
@@ -803,6 +835,7 @@ export function buildDiscordDigestPlan(input: BuildDiscordDigestPlanInput): Disc
       return createFieldDraft(
         candidate,
         item,
+        pagesUrl,
         generatedTimestamp,
         itemReferences,
         mentionLookup,
