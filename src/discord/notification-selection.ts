@@ -11,6 +11,8 @@ import {
   type NotificationTimeReasonCode,
   type NotificationLedgerEntry,
   type NotificationReasonCode,
+  type PendingNotification,
+  type PendingNotificationTarget,
   type Severity,
   type StalenessNotificationSeverityReason,
   type StalenessWaitClass,
@@ -27,6 +29,7 @@ const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
 const RESPONSIBILITY_CHANGE_STALL_HOURS = 48;
 const RESERVATION_DURATION_MILLISECONDS = MILLISECONDS_PER_DAY;
+const DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
 
 /** Discord通知で利用できるnone以外のreason code。 */
 export type DiscordNotificationReasonCode = Exclude<NotificationReason["reasonCode"], "none">;
@@ -96,6 +99,7 @@ export type DiscordNotificationPrevious =
 /** blocks graphの前回cycleと現在の影響範囲。 */
 export type DiscordNotificationGraphContext = Readonly<{
   downstreamImpact: DownstreamImpact;
+  hasOpenBlockers: boolean;
   newlyUnblocked: boolean;
   currentDependencyCycleIds: readonly DependencyCycleId[];
   previousDependencyCycles:
@@ -137,6 +141,7 @@ export type SelectDiscordNotificationsInput = Readonly<{
   evaluatedAt: UtcIsoDateTime;
   items: readonly DiscordNotificationItem[];
   ledger: readonly NotificationLedgerEntry[];
+  pendingNotifications: readonly PendingNotification[];
   settings: DiscordNotificationSelectionSettings;
 }>;
 
@@ -168,6 +173,7 @@ export type DiscordNotificationSelection =
       reason: "no_candidates";
       candidates: readonly [];
       ledgerReservations: readonly [];
+      pendingNotifications: readonly PendingNotification[];
     }>
   | Readonly<{
       action: "create_digest";
@@ -176,17 +182,25 @@ export type DiscordNotificationSelection =
         NotificationLedgerReservation,
         ...NotificationLedgerReservation[],
       ];
+      pendingNotifications: readonly PendingNotification[];
     }>;
+
+type PendingNotificationWaitingOn = Extract<
+  PendingNotificationTarget,
+  { kind: "responsibility" }
+>["waitingOn"][number];
 
 type ReasonSignal = Readonly<{
   reason: NotificationReason;
   stateDiscriminator: string;
   highPriorityEligible: boolean;
+  target: PendingNotificationTarget;
 }>;
 
 type EligibleReason = Readonly<{
   signal: ReasonSignal;
   notificationKey: string;
+  pendingNotification: PendingNotification;
 }>;
 
 type CandidateDraft = Readonly<{
@@ -214,10 +228,94 @@ function validateNonNegativeInteger(value: number, context: string): void {
   }
 }
 
-function waitingOnSignature(waitingOnValues: readonly WaitingOn[]): string {
+type WaitingOnReference = Readonly<Pick<WaitingOn, "kind" | "candidateId" | "role">>;
+
+function waitingOnKeySignature(waitingOnValues: readonly WaitingOn[]): string {
   return JSON.stringify(
     waitingOnValues.map((waitingOn) => [waitingOn.kind, waitingOn.candidateId, waitingOn.role]),
   );
+}
+
+function waitingOnComparisonSignature(waitingOnValues: readonly WaitingOnReference[]): string {
+  return JSON.stringify(
+    waitingOnValues
+      .map((waitingOn) => JSON.stringify([waitingOn.kind, waitingOn.candidateId, waitingOn.role]))
+      .sort(compareStrings),
+  );
+}
+
+function pendingWaitingOnValues(
+  waitingOnValues: readonly WaitingOn[],
+): readonly PendingNotificationWaitingOn[] {
+  return Object.freeze(
+    waitingOnValues.map((waitingOn) =>
+      Object.freeze({
+        kind: waitingOn.kind,
+        candidateId: waitingOn.candidateId,
+        role: waitingOn.role,
+      }),
+    ),
+  );
+}
+
+function pendingTargetForReason(
+  item: DiscordNotificationItem,
+  reasonCode: DiscordNotificationReasonCode,
+  cycleId: DependencyCycleId | undefined,
+): PendingNotificationTarget {
+  switch (reasonCode) {
+    case "responsibility_changed":
+      return Object.freeze({
+        kind: "responsibility",
+        waitingOn: pendingWaitingOnValues(item.current.waitingOn),
+      });
+    case "newly_unblocked":
+      return Object.freeze({
+        kind: "unblocked",
+      });
+    case "dependency_cycle":
+      if (cycleId == null) {
+        throw new TypeError(`${item.nodeId}のdependency_cycle通知にcycle IDがありません`);
+      }
+      return Object.freeze({
+        kind: "cycle",
+        cycleId,
+      });
+    case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
+    case "review_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
+    case "work_overdue":
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "merge_overdue":
+    case "automation_stuck":
+      return Object.freeze({
+        kind: "overdue",
+        status: item.current.status,
+        waitClass: item.current.waitClass,
+        waitingOn: pendingWaitingOnValues(item.current.waitingOn),
+        lastProgressAt: item.current.lastProgressAt,
+      });
+  }
+}
+
+function createPendingNotification(
+  item: DiscordNotificationItem,
+  signal: ReasonSignal,
+  notificationKey: string,
+  detectedAt: UtcIsoDateTime,
+): PendingNotification {
+  return Object.freeze({
+    notificationKey,
+    itemNodeId: item.nodeId,
+    reason: signal.reason,
+    detectedAt,
+    highPriorityEligible: signal.highPriorityEligible,
+    target: signal.target,
+  });
 }
 
 function validateResponsibility(
@@ -359,6 +457,9 @@ function validateGraphContext(item: DiscordNotificationItem): void {
   if (impact.nodeId !== item.nodeId) {
     throw new TypeError(`${item.nodeId}のdownstream impactが別のnodeを参照しています`);
   }
+  if (typeof item.graph.hasOpenBlockers !== "boolean") {
+    throw new TypeError(`${item.nodeId}のhasOpenBlockersはbooleanにしてください`);
+  }
   validateNonNegativeInteger(impact.openNodeCount, `${item.nodeId}のdownstream open node数`);
   validateNonNegativeInteger(impact.repositoryCount, `${item.nodeId}のdownstream repository数`);
   validateCycleIds(item.graph.currentDependencyCycleIds, `${item.nodeId}の現在値`);
@@ -404,6 +505,14 @@ function validateLedger(
       if (expiresTimestamp < reservedTimestamp) {
         throw new RangeError("ledgerの予約期限は予約時刻以後にしてください");
       }
+    } else if (entry.status === "delivery_started") {
+      if (!DELIVERY_ID_PATTERN.test(entry.deliveryId)) {
+        throw new TypeError("ledgerのdelivery IDが不正です");
+      }
+      const startedTimestamp = parseTimestamp(entry.startedAt, "ledgerの送信開始時刻");
+      if (startedTimestamp < reservedTimestamp || startedTimestamp > evaluatedTimestamp) {
+        throw new RangeError("ledgerの送信開始時刻は予約時刻以後かつ判定時刻以前にしてください");
+      }
     } else if (entry.status === "sent") {
       const sentTimestamp = parseTimestamp(entry.sentAt, "ledgerの送信時刻");
       if (sentTimestamp < reservedTimestamp || sentTimestamp > evaluatedTimestamp) {
@@ -414,6 +523,31 @@ function validateLedger(
       if (acknowledgedTimestamp < reservedTimestamp || acknowledgedTimestamp > evaluatedTimestamp) {
         throw new RangeError("ledgerの確認時刻は予約時刻以後かつ判定時刻以前にしてください");
       }
+    }
+  }
+}
+
+function validatePendingNotifications(
+  pendingNotifications: readonly PendingNotification[],
+  evaluatedTimestamp: number,
+): void {
+  const notificationKeys = pendingNotifications.map((pending) => pending.notificationKey);
+  if (new Set(notificationKeys).size !== notificationKeys.length) {
+    throw new TypeError("送信待ち通知のnotificationKeyが重複しています");
+  }
+  for (const pending of pendingNotifications) {
+    const detectedTimestamp = parseTimestamp(pending.detectedAt, "送信待ち通知の検出時刻");
+    if (detectedTimestamp > evaluatedTimestamp) {
+      throw new RangeError("送信待ち通知の検出時刻は判定時刻以前にしてください");
+    }
+    if (
+      (pending.target.kind === "responsibility" || pending.target.kind === "overdue") &&
+      pending.target.waitingOn.length === 0
+    ) {
+      throw new TypeError("送信待ち通知の待ち相手は空にできません");
+    }
+    if (pending.target.kind === "cycle" && pending.target.cycleId.length === 0) {
+      throw new TypeError("送信待ち通知のcycle IDは空にできません");
     }
   }
 }
@@ -451,6 +585,7 @@ function validateInput(input: SelectDiscordNotificationsInput): number {
     validateGraphContext(item);
   }
   validateLedger(input.ledger, evaluatedTimestamp);
+  validatePendingNotifications(input.pendingNotifications, evaluatedTimestamp);
   return evaluatedTimestamp;
 }
 
@@ -697,6 +832,7 @@ function createOverdueSignals(
         reason,
         stateDiscriminator: item.current.waitClass,
         highPriorityEligible: true,
+        target: pendingTargetForReason(item, reasonCode, undefined),
       });
     }
   }
@@ -714,6 +850,7 @@ function createOverdueSignals(
       reason: notificationReasonForNonTimeSelection("blocker_overdue"),
       stateDiscriminator: JSON.stringify([impact.openNodeCount, impact.repositoryCount]),
       highPriorityEligible: true,
+      target: pendingTargetForReason(item, "blocker_overdue", undefined),
     });
   }
   return signals;
@@ -738,6 +875,7 @@ function createNewlyUnblockedSignal(item: DiscordNotificationItem): ReasonSignal
     reason: notificationReasonForNonTimeSelection("newly_unblocked"),
     stateDiscriminator: item.current.statusSince,
     highPriorityEligible: true,
+    target: pendingTargetForReason(item, "newly_unblocked", undefined),
   };
 }
 
@@ -759,7 +897,8 @@ function createResponsibilityChangedSignal(
   );
   if (
     previousStallHours < RESPONSIBILITY_CHANGE_STALL_HOURS ||
-    waitingOnSignature(previous.waitingOn) === waitingOnSignature(item.current.waitingOn)
+    waitingOnComparisonSignature(previous.waitingOn) ===
+      waitingOnComparisonSignature(item.current.waitingOn)
   ) {
     return undefined;
   }
@@ -767,6 +906,7 @@ function createResponsibilityChangedSignal(
     reason: notificationReasonForNonTimeSelection("responsibility_changed"),
     stateDiscriminator: item.current.ownerSince,
     highPriorityEligible: true,
+    target: pendingTargetForReason(item, "responsibility_changed", undefined),
   };
 }
 
@@ -787,6 +927,9 @@ function createRecommendationSignal(item: DiscordNotificationItem): ReasonSignal
       return undefined;
     }
   }
+  if (recommendation.reasonCode === "dependency_cycle") {
+    return undefined;
+  }
   const reason = isTimeNotificationReasonCode(recommendation.reasonCode)
     ? notificationReasonForSelection({
         item,
@@ -801,6 +944,7 @@ function createRecommendationSignal(item: DiscordNotificationItem): ReasonSignal
     reason,
     stateDiscriminator: JSON.stringify([item.nodeId, "codex_recommendation"]),
     highPriorityEligible: recommendation.highPriorityEligible,
+    target: pendingTargetForReason(item, recommendation.reasonCode, undefined),
   };
 }
 
@@ -920,8 +1064,12 @@ function createSignals(
   for (const cycleId of assignedCycleIds) {
     signals.push({
       reason: notificationReasonForNonTimeSelection("dependency_cycle"),
-      stateDiscriminator: cycleId,
+      stateDiscriminator: JSON.stringify([
+        cycleId,
+        createUtcIsoDateTime(new Date(evaluatedTimestamp).toISOString()),
+      ]),
       highPriorityEligible: true,
+      target: pendingTargetForReason(item, "dependency_cycle", cycleId),
     });
   }
   const recommendation = createRecommendationSignal(item);
@@ -943,7 +1091,7 @@ function notificationState(item: DiscordNotificationItem, signal: ReasonSignal):
     signal.reason.reasonCode,
     item.current.status,
     item.current.severity,
-    waitingOnSignature(item.current.waitingOn),
+    waitingOnKeySignature(item.current.waitingOn),
     item.current.statusSince,
     item.current.ownerSince,
     item.current.stallSince,
@@ -1058,7 +1206,7 @@ function toNonEmptyReasons(
   return Object.freeze([first, ...rest]);
 }
 
-function createCandidateDrafts(
+function createCurrentCandidateDrafts(
   input: SelectDiscordNotificationsInput,
   evaluatedTimestamp: number,
   ledgerByKey: ReadonlyMap<string, NotificationLedgerEntry>,
@@ -1083,6 +1231,12 @@ function createCandidateDrafts(
         return {
           signal,
           notificationKey,
+          pendingNotification: createPendingNotification(
+            item,
+            signal,
+            notificationKey,
+            input.evaluatedAt,
+          ),
         } satisfies EligibleReason;
       })
       .filter((reason) =>
@@ -1105,6 +1259,243 @@ function createCandidateDrafts(
     });
   }
   return drafts;
+}
+
+type PendingNotificationDisposition = "send" | "hold" | "drop";
+
+type PendingSelectionState = Readonly<{
+  pendingNotifications: readonly PendingNotification[];
+  candidateDrafts: readonly CandidateDraft[];
+}>;
+
+function pendingReplacementKey(pending: PendingNotification): string {
+  if (pending.target.kind === "cycle") {
+    return JSON.stringify([pending.itemNodeId, pending.reason.reasonCode, pending.target.cycleId]);
+  }
+  return JSON.stringify([pending.itemNodeId, pending.reason.reasonCode]);
+}
+
+function pendingReasonSignal(pending: PendingNotification): ReasonSignal {
+  return Object.freeze({
+    reason: pending.reason,
+    stateDiscriminator: pending.notificationKey,
+    highPriorityEligible: pending.highPriorityEligible,
+    target: pending.target,
+  });
+}
+
+function pendingReasonMatchesCurrent(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+  evaluatedTimestamp: number,
+  settings: DiscordNotificationSelectionSettings,
+): boolean {
+  const reasonCode = pending.reason.reasonCode;
+  switch (pending.target.kind) {
+    case "responsibility":
+      return (
+        !isTerminalStatus(item.current.status) &&
+        isStateReasonAllowed(item, reasonCode, settings.minimumAiConfidence) &&
+        waitingOnComparisonSignature(item.current.waitingOn) ===
+          waitingOnComparisonSignature(pending.target.waitingOn)
+      );
+    case "unblocked":
+      return !item.graph.hasOpenBlockers && isImportantNewlyUnblocked(item);
+    case "cycle": {
+      const cycleId = pending.target.cycleId;
+      return item.graph.currentDependencyCycleIds.some(
+        (currentCycleId) => currentCycleId === cycleId,
+      );
+    }
+    case "overdue": {
+      if (
+        pending.target.status !== item.current.status ||
+        pending.target.waitClass !== item.current.waitClass ||
+        pending.target.lastProgressAt !== item.current.lastProgressAt ||
+        waitingOnComparisonSignature(item.current.waitingOn) !==
+          waitingOnComparisonSignature(pending.target.waitingOn) ||
+        item.current.severity === "none" ||
+        hasRecentMeaningfulProgress(item, evaluatedTimestamp, settings.recentProgressGraceHours) ||
+        !isStateReasonAllowed(item, reasonCode, settings.minimumAiConfidence)
+      ) {
+        return false;
+      }
+      if (isTimeNotificationReasonCode(reasonCode)) {
+        if (overdueReasonCode(item.current.status, item.current.waitClass) !== reasonCode) {
+          return false;
+        }
+        return (
+          notificationReasonForSelection({
+            item,
+            reasonCode,
+            source: "deterministic",
+          }) != null
+        );
+      }
+      if (reasonCode === "owner_unknown") {
+        return item.current.status === "unknown" && item.current.waitClass === "owner";
+      }
+      if (reasonCode === "blocker_overdue") {
+        const impact = item.graph.downstreamImpact;
+        return (
+          (impact.openNodeCount > 0 || impact.repositoryCount > 0) &&
+          (item.current.severity === "urgent" || item.current.severity === "critical")
+        );
+      }
+      throw new TypeError(`overdue対象に対応しない通知理由があります。理由: ${reasonCode}`);
+    }
+  }
+}
+
+function pendingNotificationDisposition(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+  evaluatedTimestamp: number,
+  settings: DiscordNotificationSelectionSettings,
+): PendingNotificationDisposition {
+  if (isTerminalStatus(item.current.status)) {
+    return "drop";
+  }
+  if (item.notificationsSuppressedByLabel || item.notificationClass === "automation_noise") {
+    return "drop";
+  }
+  if (item.repositoryFreshness === "stale") {
+    return "hold";
+  }
+  if (!pendingReasonMatchesCurrent(item, pending, evaluatedTimestamp, settings)) {
+    return "drop";
+  }
+  if (
+    isRecentDraft(item, evaluatedTimestamp, settings.recentProgressGraceHours) ||
+    item.latestChange === "bot_only" ||
+    item.latestChange === "preview_update" ||
+    item.latestChange === "renovate_dashboard_update"
+  ) {
+    return "hold";
+  }
+  return "send";
+}
+
+function mergePendingNotifications(
+  input: SelectDiscordNotificationsInput,
+  currentDrafts: readonly CandidateDraft[],
+  ledgerByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+  evaluatedTimestamp: number,
+): readonly PendingNotification[] {
+  const pendingByReplacementKey = new Map<string, PendingNotification>();
+  for (const pending of input.pendingNotifications) {
+    pendingByReplacementKey.set(pendingReplacementKey(pending), pending);
+  }
+  for (const draft of currentDrafts) {
+    for (const reason of draft.reasons) {
+      const existing = pendingByReplacementKey.get(
+        pendingReplacementKey(reason.pendingNotification),
+      );
+      pendingByReplacementKey.set(
+        pendingReplacementKey(reason.pendingNotification),
+        existing?.notificationKey === reason.pendingNotification.notificationKey
+          ? existing
+          : reason.pendingNotification,
+      );
+    }
+  }
+
+  const itemsByNodeId = new Map(input.items.map((item) => [item.nodeId, item]));
+  const currentNotificationKeys = new Set(
+    currentDrafts.flatMap((draft) => draft.reasons.map((reason) => reason.notificationKey)),
+  );
+  return Object.freeze(
+    [...pendingByReplacementKey.values()]
+      .filter((pending) => {
+        const ledgerEntry = ledgerByKey.get(pending.notificationKey);
+        if (ledgerEntry?.status === "sent" || ledgerEntry?.status === "acknowledged") {
+          return false;
+        }
+        const item = itemsByNodeId.get(pending.itemNodeId);
+        if (item == null) {
+          return false;
+        }
+        if (currentNotificationKeys.has(pending.notificationKey)) {
+          return true;
+        }
+        return (
+          pendingNotificationDisposition(item, pending, evaluatedTimestamp, input.settings) !==
+          "drop"
+        );
+      })
+      .sort((left, right) => compareStrings(left.notificationKey, right.notificationKey)),
+  );
+}
+
+function createPendingSelectionState(
+  input: SelectDiscordNotificationsInput,
+  evaluatedTimestamp: number,
+): PendingSelectionState {
+  const ledgerByKey = new Map(input.ledger.map((entry) => [entry.notificationKey, entry]));
+  const currentDrafts = createCurrentCandidateDrafts(
+    input,
+    evaluatedTimestamp,
+    ledgerByKey,
+    input.ledger,
+  );
+  const pendingNotifications = mergePendingNotifications(
+    input,
+    currentDrafts,
+    ledgerByKey,
+    evaluatedTimestamp,
+  );
+  const itemsByNodeId = new Map(input.items.map((item) => [item.nodeId, item]));
+  const currentNotificationKeys = new Set(
+    currentDrafts.flatMap((draft) => draft.reasons.map((reason) => reason.notificationKey)),
+  );
+  const reasonsByNodeId = new Map<GitHubNodeId, EligibleReason[]>();
+
+  for (const pending of pendingNotifications) {
+    const item = itemsByNodeId.get(pending.itemNodeId);
+    assertNonNullable(item, `送信待ち通知の対象項目がありません。対象: ${pending.itemNodeId}`);
+    if (
+      (!currentNotificationKeys.has(pending.notificationKey) &&
+        pendingNotificationDisposition(item, pending, evaluatedTimestamp, input.settings) !==
+          "send") ||
+      !isEligibleAgainstLedger(
+        item,
+        pendingReasonSignal(pending),
+        pending.notificationKey,
+        ledgerByKey,
+        input.ledger,
+        evaluatedTimestamp,
+      )
+    ) {
+      continue;
+    }
+    const reasons = reasonsByNodeId.get(item.nodeId);
+    const eligibleReason = Object.freeze({
+      signal: pendingReasonSignal(pending),
+      notificationKey: pending.notificationKey,
+      pendingNotification: pending,
+    });
+    if (reasons == null) {
+      reasonsByNodeId.set(item.nodeId, [eligibleReason]);
+    } else {
+      reasons.push(eligibleReason);
+    }
+  }
+
+  const candidateDrafts = Object.freeze(
+    [...reasonsByNodeId.entries()].map(([nodeId, reasons]) => {
+      const item = itemsByNodeId.get(nodeId);
+      assertNonNullable(item, `送信待ち通知の対象項目がありません。対象: ${nodeId}`);
+      reasons.sort(compareEligibleReasons);
+      return {
+        item,
+        reasons: toNonEmptyReasons(reasons, `${nodeId}の通知理由を選択できませんでした`),
+      };
+    }),
+  );
+  return Object.freeze({
+    pendingNotifications,
+    candidateDrafts,
+  });
 }
 
 function candidateTier(draft: CandidateDraft): number {
@@ -1250,10 +1641,8 @@ export function selectDiscordNotifications(
   input: SelectDiscordNotificationsInput,
 ): DiscordNotificationSelection {
   const evaluatedTimestamp = validateInput(input);
-  const ledgerByKey = new Map(input.ledger.map((entry) => [entry.notificationKey, entry]));
-  const candidates = [
-    ...createCandidateDrafts(input, evaluatedTimestamp, ledgerByKey, input.ledger),
-  ]
+  const pendingSelection = createPendingSelectionState(input, evaluatedTimestamp);
+  const candidates = [...pendingSelection.candidateDrafts]
     .sort((left, right) => compareCandidateDrafts(left, right, evaluatedTimestamp))
     .slice(0, input.settings.maxItemsPerDigest)
     .map(createCandidate);
@@ -1265,6 +1654,7 @@ export function selectDiscordNotifications(
       reason: "no_candidates",
       candidates: emptyCandidates,
       ledgerReservations: emptyLedgerReservations,
+      pendingNotifications: pendingSelection.pendingNotifications,
     });
   }
 
@@ -1278,6 +1668,7 @@ export function selectDiscordNotifications(
     action: "create_digest",
     candidates: selectedCandidates,
     ledgerReservations: nonEmptyLedgerEntries(ledgerReservations),
+    pendingNotifications: pendingSelection.pendingNotifications,
   });
 }
 
@@ -1302,14 +1693,14 @@ export function createAcknowledgedNotificationLedgerEntries(
   input: SelectDiscordNotificationsInput,
 ): readonly NotificationLedgerAcknowledgement[] {
   const evaluatedTimestamp = validateInput(input);
-  const candidates = [
-    ...createCandidateDrafts(
-      input,
-      evaluatedTimestamp,
-      new Map<string, NotificationLedgerEntry>(),
-      [],
-    ),
-  ]
+  const pendingSelection = createPendingSelectionState(
+    {
+      ...input,
+      ledger: Object.freeze([]),
+    },
+    evaluatedTimestamp,
+  );
+  const candidates = [...pendingSelection.candidateDrafts]
     .sort((left, right) => compareCandidateDrafts(left, right, evaluatedTimestamp))
     .map(createCandidate);
   const acknowledgedEntries = candidates.flatMap((candidate) =>

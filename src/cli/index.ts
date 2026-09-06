@@ -22,6 +22,7 @@ export {
   type ReportWorkflowCliCommand,
   type ReplayCliCommand,
   type ReplaySource,
+  type ResolveDiscordDeliveryCliCommand,
   type VerifyStateCliCommand,
 } from "./command.js";
 export {

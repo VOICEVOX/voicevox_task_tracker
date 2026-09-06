@@ -8,6 +8,9 @@ import {
   createGitHubRepositoryId,
   createUtcIsoDateTime,
   notificationReasonSchema,
+  pendingNotificationSchema,
+  type PendingNotification,
+  type NotificationReason,
   type Repository,
 } from "../domain/index.js";
 import {
@@ -20,6 +23,7 @@ import {
   createStateHistoryInputEvents,
   createStateNotificationLedger,
   createStateSnapshot,
+  serializeCanonicalJson,
   StatePublicSafetyError,
   type StateNotificationLedger,
   type StateHistoryInputEvent,
@@ -30,7 +34,7 @@ import { notificationActionSchema, type NotificationAction } from "./command.js"
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
-const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "7";
+const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "9";
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const dateTimeSchema = z.iso
   .datetime({
@@ -120,11 +124,13 @@ const notificationSelectionSchema = z.discriminatedUnion("action", [
     reason: z.literal("no_candidates"),
     candidates: z.tuple([]),
     ledgerReservations: z.tuple([]),
+    pendingNotifications: z.array(pendingNotificationSchema),
   }),
   z.strictObject({
     action: z.literal("create_digest"),
     candidates: z.array(notificationCandidateSchema).min(1),
     ledgerReservations: z.array(ledgerReservationSchema).min(1),
+    pendingNotifications: z.array(pendingNotificationSchema),
   }),
 ]);
 const discordSettingsSchema = z.strictObject({
@@ -241,6 +247,12 @@ function emptyValues(): readonly [] {
   return Object.freeze([]);
 }
 
+function pendingNotificationValues(
+  values: readonly PendingNotification[],
+): readonly PendingNotification[] {
+  return Object.freeze(values.map((value) => Object.freeze({ ...value })));
+}
+
 function createNotificationSelection(value: unknown): DiscordNotificationSelection {
   const result = notificationSelectionSchema.safeParse(value);
   if (!result.success) {
@@ -254,6 +266,7 @@ function createNotificationSelection(value: unknown): DiscordNotificationSelecti
       reason: "no_candidates",
       candidates: emptyValues(),
       ledgerReservations: emptyValues(),
+      pendingNotifications: pendingNotificationValues(result.data.pendingNotifications),
     });
   }
   const candidates = result.data.candidates.map((candidate) =>
@@ -269,6 +282,7 @@ function createNotificationSelection(value: unknown): DiscordNotificationSelecti
     action: "create_digest",
     candidates: nonEmptyValues(candidates, "通知候補"),
     ledgerReservations: nonEmptyValues(result.data.ledgerReservations, "通知予約"),
+    pendingNotifications: pendingNotificationValues(result.data.pendingNotifications),
   });
 }
 
@@ -358,6 +372,41 @@ function assertRunConsistency(snapshot: StateSnapshot, metadata: WorkflowRunMeta
   }
 }
 
+function pendingNotificationMatches(
+  left: PendingNotification | undefined,
+  right: PendingNotification,
+): boolean {
+  if (left == null) {
+    return false;
+  }
+  return (
+    left.notificationKey === right.notificationKey &&
+    left.itemNodeId === right.itemNodeId &&
+    left.detectedAt === right.detectedAt &&
+    left.highPriorityEligible === right.highPriorityEligible &&
+    serializeCanonicalJson(left.reason) === serializeCanonicalJson(right.reason) &&
+    serializeCanonicalJson(left.target) === serializeCanonicalJson(right.target)
+  );
+}
+
+function pendingNotificationMatchesReason(
+  pending: PendingNotification | undefined,
+  itemNodeId: StateSnapshot["items"][number]["nodeId"],
+  reason: NotificationReason,
+): boolean {
+  if (pending == null) {
+    return false;
+  }
+  return (
+    pending.itemNodeId === itemNodeId &&
+    serializeCanonicalJson(pending.reason) ===
+      serializeCanonicalJson({
+        reasonCode: reason.reasonCode,
+        threshold: reason.threshold,
+      })
+  );
+}
+
 function assertNotificationSelectionConsistency(
   snapshot: StateSnapshot,
   ledger: StateNotificationLedger,
@@ -368,6 +417,33 @@ function assertNotificationSelectionConsistency(
     selection.ledgerReservations.map((entry) => [entry.notificationKey, entry]),
   );
   const ledgerEntries = new Map(ledger.entries.map((entry) => [entry.notificationKey, entry]));
+  const pendingNotifications = new Map(
+    selection.pendingNotifications.map((notification) => [
+      notification.notificationKey,
+      notification,
+    ]),
+  );
+  if (pendingNotifications.size !== selection.pendingNotifications.length) {
+    throw new TypeError("workflow artifactの送信待ち通知keyが重複しています");
+  }
+  const ledgerPendingNotifications = new Map(
+    ledger.pendingNotifications.map((notification) => [notification.notificationKey, notification]),
+  );
+  if (ledgerPendingNotifications.size !== ledger.pendingNotifications.length) {
+    throw new TypeError("workflow artifactのledger送信待ち通知keyが重複しています");
+  }
+  for (const notification of selection.pendingNotifications) {
+    if (!itemIds.has(notification.itemNodeId)) {
+      throw new TypeError("workflow artifactの送信待ち通知がsnapshot外の項目を参照しています");
+    }
+    const ledgerNotification = ledgerPendingNotifications.get(notification.notificationKey);
+    if (!pendingNotificationMatches(ledgerNotification, notification)) {
+      throw new TypeError("workflow artifactの送信待ち通知がledgerへ反映されていません");
+    }
+  }
+  if (ledgerPendingNotifications.size !== pendingNotifications.size) {
+    throw new TypeError("workflow artifactの送信待ち通知とledgerの件数が一致しません");
+  }
   const reasonKeys: string[] = [];
 
   for (const candidate of selection.candidates) {
@@ -405,6 +481,10 @@ function assertNotificationSelectionConsistency(
         ledgerEntry.expiresAt !== reservation.expiresAt
       ) {
         throw new TypeError("workflow artifactの通知予約がledgerへ反映されていません");
+      }
+      const pendingNotification = pendingNotifications.get(reason.notificationKey);
+      if (!pendingNotificationMatchesReason(pendingNotification, candidate.itemNodeId, reason)) {
+        throw new TypeError("workflow artifactの通知候補が送信待ち通知へ反映されていません");
       }
     }
   }
@@ -533,7 +613,7 @@ export function assertWorkflowArtifactPublicSafety(
 
 /** workflow artifactから公開repository inventoryを復元する。 */
 export function workflowArtifactRepositoryInventory(
-  artifact: WorkflowArtifact,
+  artifact: Pick<WorkflowArtifact, "snapshot">,
 ): readonly Repository[] {
   return repositoryInventory(artifact.snapshot);
 }

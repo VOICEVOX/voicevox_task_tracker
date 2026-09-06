@@ -10,6 +10,7 @@ import {
   type StateBranchCommitRequest,
   type StateBranchCommitResult,
   type StateBranchHead,
+  type StateBranchPublishRequest,
   type StateFileReadResult,
 } from "./branch-adapter.js";
 import {
@@ -22,6 +23,8 @@ import {
 const TRACKER_STATE_BRANCH = "tracker-state";
 const ZERO_OBJECT_ID = "0000000000000000000000000000000000000000";
 const OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
+const PUBLISH_MAX_ATTEMPTS = 3;
+const PUBLISH_RETRY_DELAY_MILLISECONDS = 1000;
 
 type GitCommandInput =
   | Readonly<{
@@ -122,6 +125,19 @@ function validateCommitRequest(request: StateBranchCommitRequest): void {
   ) {
     throw new StateConfigurationError("expected headのobject IDが不正です");
   }
+}
+
+function validatePublishRequest(request: StateBranchPublishRequest): void {
+  validateBranch(request.branch);
+  if (!OBJECT_ID_PATTERN.test(request.revision)) {
+    throw new StateConfigurationError("公開revisionのobject IDが不正です");
+  }
+}
+
+function waitBeforePublishRetry(): Promise<void> {
+  return new Promise<void>((resolvePromise) => {
+    setTimeout(resolvePromise, PUBLISH_RETRY_DELAY_MILLISECONDS);
+  });
 }
 
 /** checkoutせずGit objectとrefを操作してstateをatomic commitするadapter。 */
@@ -439,5 +455,37 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
       revision,
       branchCreated: request.expectedHead.status === "missing",
     });
+  }
+
+  /** state branchの指定revisionをリモートへ公開する。 */
+  public async publish(request: StateBranchPublishRequest): Promise<void> {
+    validatePublishRequest(request);
+    for (let attempt = 1; attempt <= PUBLISH_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        await this.#runGit({
+          arguments: [
+            "push",
+            "--no-follow-tags",
+            "origin",
+            `${request.revision}:refs/heads/${request.branch}`,
+          ],
+          input: {
+            status: "none",
+          },
+          environment: {
+            ...process.env,
+            ...this.#baseEnvironment,
+          },
+          acceptedExitCodes: new Set([0]),
+        });
+        return;
+      } catch (error: unknown) {
+        if (attempt === PUBLISH_MAX_ATTEMPTS) {
+          throw error;
+        }
+        await waitBeforePublishRetry();
+      }
+    }
+    throw new TypeError("state branch公開の到達不能な分岐へ到達しました");
   }
 }

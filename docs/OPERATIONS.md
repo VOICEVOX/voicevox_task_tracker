@@ -123,7 +123,11 @@ pnpm build:web
 `notify-discord`が成功して通知候補がある場合は、`publish-notification-history`が通知後の最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。候補がない場合と`acknowledge-current`ではこのjobを実行しません。
 
 GitHub Pagesへのdeployが成功した後だけ、deploy結果のURLを渡してDiscord stageを実行します。
-このstageが読む外部secretは、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`の2つだけです。
+Discordへの送信には、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`を使います。
+通常digestはHTTP送信の前に、送信開始済みの記録を保存して`origin`の`tracker-state`へpushします。送信結果が不明なまま停止しても、同じ通知を自動再送しないための記録です。
+メッセージを1通送信するたびに、送信済みの通知管理記録と通知履歴を同じcommitへ保存し、`origin`の`tracker-state`へpushします。pushが成功してから次のメッセージを送信します。途中で失敗しても、保存済みの送信結果は残ります。同じrunを再実行するときは、送信済みまたは確認済みの通知理由を除いて送信します。
+
+GitHub Actionsではcheckoutが設定したGit認証を使います。ローカルで`notify-discord`または`daily`を実行する場合も、`origin`の`tracker-state`へpushできる認証が必要です。追跡開始時刻とrun完了の記録は、すべてのメッセージを処理した後に確定します。
 
 ```console
 pnpm tracker:run notify-discord --pages-url https://voicevox.github.io/voicevox_task_tracker/
@@ -269,6 +273,23 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 
 ## 通知量の調整
 
+### 送信結果が不明な通知を確認する
+
+通信例外、HTTP 5xx、応答不正が発生すると、Discordに届いたかどうかを判定できません。プロセスが送信中に停止した場合も、通知管理記録には送信開始済みの`delivery_started`が残ります。この記録は時間が経っても解除しません。同じrunの再実行は確認を求めるエラーで停止し、次の通常runは保留中の通知を除いて処理します。
+
+Discordの投稿と実行ログを確認し、対象メッセージを確認済みにするか、次回の送信候補へ戻します。運用障害通知のincident ID、または再実行時のエラーに表示される`deliveryId`で対象を指定します。ログが残っていない場合は、`tracker-state`の`state/notification-ledger.json`から`status`が`delivery_started`の記録を確認します。
+
+1. 日次workflowが実行中でないことを確認し、ローカルの`tracker-state`を`origin`の最新状態へ取得します。
+2. Discordで通知を確認できた場合、または送信を不要と判断した場合は、次のコマンドで確認済みにします。`ID`には対象の`deliveryId`を指定します。
+
+   ```console
+   pnpm tracker:run resolve-discord-delivery --delivery-id ID --resolution acknowledge
+   ```
+
+3. Discordへ届いていないことを確認できた場合は、`--resolution retry`を指定して実行します。その後、新しい日次runを開始します。
+
+このコマンドは通知管理記録を保存してpushします。ローカルでのビルドと、`origin`の`tracker-state`へpushできる認証が必要です。`retry`は通知を直接送信せず、次の集計時にまだ有効な候補だけを選別対象に戻します。`acknowledge`は確認済みにし、送信済みの履歴は作りません。受信の有無を確認せずに`retry`を選ぶと重複送信する可能性があります。
+
 ### 現在の通知候補を一括で確認済みにする
 
 通知条件を調整した直後など、現在の候補をDiscordへ送らず、通知済みと同様に扱いたい場合は、日次workflowの手動実行で通知処理を`acknowledge-current`にします。
@@ -287,6 +308,11 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 確認済みにする操作は、実行時点で通知条件を満たす候補だけを対象にします。まだ基準時間に達していない項目の将来の通知は抑制しません。
 
 通常の`send`は、`maxItemsPerDigest`を含む既存の通知選別を行います。
+件数上限で送れなかった候補は、検出日時と通知理由を通知管理記録の`pendingNotifications`へ保存します。次回以降の集計では、保存した理由が現在も有効な候補を通知対象に戻し、その時点の停滞レベルと優先順位で選別します。新しい候補が増え続ける場合、優先順位の低い候補は引き続き送信を待ちます。
+
+持ち越した責務移動の通知は、移動先の待ち相手が変わったら破棄します。たとえばAからBへの移動を通知する前にCへ移った場合、Bへの移動は通知しません。BからCへの移動は、その変化自体が通知条件を満たす場合に新しい候補になります。依存解消の候補は再び依存待ちになったら破棄し、停滞の候補は進捗や状態が変わったら見直します。収集に失敗したリポジトリの候補は送信せずに保持し、次に収集できたときに有効性を確認します。送信済みまたは確認済みになった候補は持ち越し対象から除きます。
+
+依存循環の通知候補は、グラフで新しく検出した循環から作ります。同じ循環が続いている間は同じ通知として扱い、一度解消してから再発した場合は新しい通知にします。
 
 停滞レベルはDiscord通知の判断にだけ使います。
 通知選別は停滞レベルの変化、長期停滞、責務移動、重要な依存解消、dependency cycleを優先します。
@@ -409,4 +435,4 @@ state commit後のPages失敗は想定内であり、stateを巻き戻しませ�
 原因を除いた後に`backfill: none`で手動再実行します。
 
 同じrunを再実行してもworkflow concurrencyと通知管理記録が競合と通常通知の重複を抑えます。
-GitHub、Codex、Discordの429と503は設定した回数だけretryし、それでも失敗する場合は外部サービスの回復後に再実行します。
+GitHubとCodexの429と503は設定した回数だけretryし、それでも失敗する場合は外部サービスの回復後に再実行します。Discordが自動retryするのは429だけです。通信例外、5xx、応答不正の場合は、送信結果が不明な通知の確認手順に従います。

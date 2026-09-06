@@ -36,6 +36,7 @@ import {
   type GitHubItemDisplayReference,
   type GitHubItemUrl,
   type GitHubNodeId,
+  type GraphNodeId,
   type IssueBlocker,
   type IssueEffectiveAssigneeAssessment,
   type IssueEffectiveAssigneeCandidate,
@@ -1457,6 +1458,24 @@ function findDownstreamImpact(
   return impact;
 }
 
+function hasOpenBlockers(
+  nodeId: GitHubNodeId,
+  activeEdges: readonly (ReconciledGraphEdge & Readonly<{ active: true }>)[],
+  nodeStateById: ReadonlyMap<GraphNodeId, StandardGoldenInput["items"][number]["state"]>,
+): boolean {
+  for (const edge of activeEdges) {
+    if (edge.type !== "blocks" || edge.toNodeId !== nodeId) {
+      continue;
+    }
+    const sourceState = nodeStateById.get(edge.fromNodeId);
+    assertNonNullable(sourceState, `blocks関係元 ${edge.fromNodeId}の状態がありません`);
+    if (sourceState === "open") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function notificationPrevious(analysis: ItemAnalysis): DiscordNotificationItem["previous"] {
   const previous = analysis.input.previousState;
   if (previous.availability === "not_available") {
@@ -1480,8 +1499,12 @@ function selectNotifications(
   input: StandardGoldenInput,
   analyses: readonly ItemAnalysis[],
   graph: ReturnType<typeof analyzeGraph>,
+  activeEdges: readonly (ReconciledGraphEdge & Readonly<{ active: true }>)[],
   previousGraphAvailable: boolean,
 ): readonly StandardGoldenOutput["notifications"][number][] {
+  const nodeStateById = new Map<GraphNodeId, StandardGoldenInput["items"][number]["state"]>(
+    input.items.map((item) => [createGitHubNodeId(item.nodeId), item.state]),
+  );
   const notificationItems = analyses.map((analysis): DiscordNotificationItem => {
     const nodeId = createGitHubNodeId(analysis.input.nodeId);
     const cycleIds = graph.dependencyCycles
@@ -1528,6 +1551,7 @@ function selectNotifications(
       graph: Object.freeze({
         downstreamImpact: findDownstreamImpact(nodeId, graph.downstreamImpacts),
         newlyUnblocked: graph.newlyUnblockedNodeIds.includes(nodeId),
+        hasOpenBlockers: hasOpenBlockers(nodeId, activeEdges, nodeStateById),
         currentDependencyCycleIds: Object.freeze(cycleIds),
         previousDependencyCycles: previousGraphAvailable
           ? Object.freeze({
@@ -1544,6 +1568,7 @@ function selectNotifications(
     evaluatedAt: createUtcIsoDateTime(input.evaluatedAt),
     items: notificationItems,
     ledger: Object.freeze([]),
+    pendingNotifications: Object.freeze([]),
     settings: NOTIFICATION_SETTINGS,
   });
   return selection.candidates.map((candidate) => ({
@@ -1662,7 +1687,7 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
   const publication = publicationStatus(snapshot, inventory);
   const notifications =
     publication.status === "published"
-      ? selectNotifications(input, analyses, graph, previousGraphAvailable)
+      ? selectNotifications(input, analyses, graph, reconciled.activeEdges, previousGraphAvailable)
       : Object.freeze([]);
   const output = goldenEvalOutputSchema.parse({
     schemaVersion: "1",

@@ -1,6 +1,8 @@
 import {
   DiscordDigestDeliveryError,
   DiscordLedgerError,
+  DiscordWebhookDeliveryUnknownError,
+  DiscordWebhookRequestError,
   DiscordWebhookRetryExhaustedError,
 } from "./errors.js";
 import {
@@ -24,6 +26,7 @@ import {
   type TrackedItem,
   type UtcIsoDateTime,
 } from "../domain/index.js";
+import { assertNonNullable } from "../util/index.js";
 
 export type DiscordDeliverySettings = Readonly<{
   enabled: boolean;
@@ -110,6 +113,8 @@ export type DiscordDigestDelivery =
       ledgerEntries: readonly NotificationLedgerEntry[];
     }>;
 
+type NotificationLedgerReservation = Extract<NotificationLedgerEntry, { status: "reserved" }>;
+
 function createSafeLedgerCause(error: unknown): Error {
   if (error instanceof Error && error.message.length > 0) {
     return new Error(error.message);
@@ -125,27 +130,61 @@ function currentUtcDateTime(runtime: DiscordWebhookRuntime): UtcIsoDateTime {
   return createUtcIsoDateTime(current.toISOString());
 }
 
-function createSentNotificationEntries(
+function reservedEntriesForMessage(
   reservations: ReadonlyMap<string, NotificationLedgerEntry>,
   notificationKeys: readonly string[],
-  sentAt: UtcIsoDateTime,
-  discordMessageId: string,
-): readonly NotificationLedgerEntry[] {
-  const sentEntries = notificationKeys.map((notificationKey) => {
+): readonly NotificationLedgerReservation[] {
+  const reservedEntries = notificationKeys.map((notificationKey) => {
     const reservation = reservations.get(notificationKey);
     if (reservation?.status !== "reserved") {
       throw new DiscordLedgerError("write", {
         cause: new TypeError("送信messageに対応するledger予約がありません"),
       });
     }
-    if (sentAt < reservation.reservedAt) {
+    return reservation;
+  });
+  return Object.freeze(reservedEntries);
+}
+
+function createDeliveryStartedNotificationEntries(
+  reservations: ReadonlyMap<string, NotificationLedgerEntry>,
+  notificationKeys: readonly string[],
+  deliveryId: string,
+  startedAt: UtcIsoDateTime,
+): readonly NotificationLedgerEntry[] {
+  const reservedEntries = reservedEntriesForMessage(reservations, notificationKeys);
+  const startedEntries = reservedEntries.map((reservation) => {
+    if (startedAt < reservation.reservedAt || startedAt > reservation.expiresAt) {
       throw new DiscordLedgerError("write", {
-        cause: new RangeError("ledgerの送信時刻が予約時刻より前です"),
+        cause: new RangeError("ledgerの送信開始時刻が予約期間外です"),
       });
     }
-    if (sentAt > reservation.expiresAt) {
+    return Object.freeze({
+      notificationKey: reservation.notificationKey,
+      itemNodeId: reservation.itemNodeId,
+      reasonCode: reservation.reasonCode,
+      severity: reservation.severity,
+      reservedAt: reservation.reservedAt,
+      status: "delivery_started",
+      deliveryId,
+      startedAt,
+    } satisfies NotificationLedgerEntry);
+  });
+  return Object.freeze(startedEntries);
+}
+
+function createSentNotificationEntries(
+  reservations: ReadonlyMap<string, NotificationLedgerEntry>,
+  notificationKeys: readonly string[],
+  startedAt: UtcIsoDateTime,
+  sentAt: UtcIsoDateTime,
+  discordMessageId: string,
+): readonly NotificationLedgerEntry[] {
+  const reservedEntries = reservedEntriesForMessage(reservations, notificationKeys);
+  const sentEntries = reservedEntries.map((reservation) => {
+    if (sentAt < startedAt) {
       throw new DiscordLedgerError("write", {
-        cause: new RangeError("ledgerの送信時刻が予約期限より後です"),
+        cause: new RangeError("ledgerの送信時刻が送信開始時刻より前です"),
       });
     }
     return Object.freeze({
@@ -162,7 +201,7 @@ function createSentNotificationEntries(
   return Object.freeze(sentEntries);
 }
 
-async function recordSentNotifications(
+async function recordNotificationEntries(
   ledger: DiscordDeliveryLedger,
   entries: readonly NotificationLedgerEntry[],
 ): Promise<void> {
@@ -173,6 +212,10 @@ async function recordSentNotifications(
       cause: createSafeLedgerCause(error),
     });
   }
+}
+
+async function noopBeforeFirstAttempt(): Promise<void> {
+  await Promise.resolve();
 }
 
 async function hasOperationsAlert(
@@ -216,14 +259,15 @@ function operationsAlertStatus(
 
 async function reportDiscordDeliveryFailure(
   digestId: string,
-  failure: DiscordWebhookRetryExhaustedError,
+  incidentId: string,
+  failure: DiscordWebhookDeliveryUnknownError | DiscordWebhookRetryExhaustedError,
   input: SendDiscordDigestInput,
 ): Promise<never> {
   const occurredAt = currentUtcDateTime(input.dependencies.runtime);
   try {
     const delivery = await sendDiscordOperationsAlert({
       incident: {
-        incidentId: digestId,
+        incidentId,
         kind: "discord",
         occurredAt,
         retryAttempts: failure.attempts,
@@ -270,6 +314,7 @@ export async function sendDiscordOperationsAlert(
     secretProvider: input.dependencies.secretProvider,
     httpClient: input.dependencies.httpClient,
     runtime: input.dependencies.runtime,
+    beforeFirstAttempt: noopBeforeFirstAttempt,
   });
   const sentAt = currentUtcDateTime(input.dependencies.runtime);
   if (sentAt < input.incident.occurredAt) {
@@ -294,7 +339,7 @@ export async function sendDiscordOperationsAlert(
   });
 }
 
-/** Pages成功後にだけ通常digestを送り、各message成功直後にledgerへ記録する。 */
+/** Pages成功後にだけ通常digestを送り、送信前後のledger状態を記録する。 */
 export async function sendDiscordDigest(
   input: SendDiscordDigestInput,
 ): Promise<DiscordDigestDelivery> {
@@ -345,7 +390,9 @@ export async function sendDiscordDigest(
   );
   const discordMessageIds: string[] = [];
   const ledgerEntries: NotificationLedgerEntry[] = [];
-  for (const message of plan.messages) {
+  for (const [messageIndex, message] of plan.messages.entries()) {
+    const deliveryId = `${plan.digestId}:message:${(messageIndex + 1).toString()}`;
+    let startedAt: UtcIsoDateTime | undefined;
     let execution;
     try {
       execution = await executeDiscordWebhook({
@@ -355,20 +402,51 @@ export async function sendDiscordDigest(
         secretProvider: input.dependencies.secretProvider,
         httpClient: input.dependencies.httpClient,
         runtime: input.dependencies.runtime,
+        beforeFirstAttempt: async () => {
+          const candidateStartedAt = currentUtcDateTime(input.dependencies.runtime);
+          const startedEntries = createDeliveryStartedNotificationEntries(
+            reservations,
+            message.notificationKeys,
+            deliveryId,
+            candidateStartedAt,
+          );
+          await recordNotificationEntries(input.dependencies.ledger, startedEntries);
+          startedAt = candidateStartedAt;
+        },
       });
     } catch (error: unknown) {
+      if (startedAt == null) {
+        throw error;
+      }
+      if (error instanceof DiscordWebhookDeliveryUnknownError) {
+        return reportDiscordDeliveryFailure(plan.digestId, deliveryId, error, input);
+      }
       if (error instanceof DiscordWebhookRetryExhaustedError) {
-        return reportDiscordDeliveryFailure(plan.digestId, error, input);
+        await recordNotificationEntries(
+          input.dependencies.ledger,
+          reservedEntriesForMessage(reservations, message.notificationKeys),
+        );
+        return reportDiscordDeliveryFailure(plan.digestId, plan.digestId, error, input);
+      }
+      if (error instanceof DiscordWebhookRequestError) {
+        await recordNotificationEntries(
+          input.dependencies.ledger,
+          reservedEntriesForMessage(reservations, message.notificationKeys),
+        );
+        throw error;
       }
       throw error;
     }
+    const deliveryStartedAt = startedAt;
+    assertNonNullable(deliveryStartedAt, "Discord送信開始時刻を取得できませんでした");
     const sentEntries = createSentNotificationEntries(
       reservations,
       message.notificationKeys,
+      deliveryStartedAt,
       currentUtcDateTime(input.dependencies.runtime),
       execution.discordMessageId,
     );
-    await recordSentNotifications(input.dependencies.ledger, sentEntries);
+    await recordNotificationEntries(input.dependencies.ledger, sentEntries);
     discordMessageIds.push(execution.discordMessageId);
     ledgerEntries.push(...sentEntries);
   }
