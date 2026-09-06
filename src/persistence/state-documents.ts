@@ -6,7 +6,7 @@ import {
   type LegacyNotificationReasonCode,
   migrateLegacyNotificationReasonCode,
 } from "./legacy-enum.js";
-import { pendingNotificationSchema } from "../domain/index.js";
+import { pendingNotificationSchema } from "../domain/types.js";
 
 const NOTIFICATION_LEDGER_SCHEMA_VERSION_1 = "1";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_2 = "2";
