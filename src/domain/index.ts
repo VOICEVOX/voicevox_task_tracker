@@ -224,6 +224,7 @@ export {
   type NonTerminalStatus,
   type NormalizedEvent,
   type NotificationLedgerEntry,
+  type NotificationLedgerReasonCode,
   type NotificationReasonCode,
   type OperationsAlertKind,
   type OperationsAlertLedgerEntry,
