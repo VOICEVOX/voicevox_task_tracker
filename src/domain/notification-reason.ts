@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { type NotificationReasonCode } from "./types.js";
+import type { NotificationReasonCode } from "./types.js";
 
 /** 通知理由に対応する時間系理由コード。 */
 export type NotificationTimeReasonCode =
