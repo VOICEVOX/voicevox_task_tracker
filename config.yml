@@ -128,8 +128,11 @@ ai:
   enabled: true
   authentication: auth-json
   model: gpt-5.6-luna
-  promptVersion: v16
-  promptUpdates: []
+  promptVersion: v17
+  promptUpdates:
+    - fromVersion: v16
+      toVersion: v17
+      scope: existing_deadline
   confidence:
     high: 0.85
     medium: 0.65
