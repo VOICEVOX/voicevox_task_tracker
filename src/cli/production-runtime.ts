@@ -70,6 +70,7 @@ import {
   type GitHubNodeId,
   type GitHubRepositoryId,
   type GraphNodeId,
+  type PendingNotification,
   type IssueBlocker,
   type IssueEffectiveAssigneeAssessment,
   type IssueEffectiveAssigneeCandidate,
@@ -179,7 +180,7 @@ import {
   createStateNotificationLedger,
   createStateRunReport,
   createStateSnapshot,
-  NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
+  NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
   type StatePersistenceSession,
   type PersistStateTransactionResult,
   type SnapshotAiState,
@@ -4995,8 +4996,12 @@ function notificationDecisionBasis(
 function notificationDraftState(
   item: PendingTrackedItem,
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
+  repositoryFreshness: DiscordNotificationItem["repositoryFreshness"],
 ): DiscordNotificationItem["draftState"] {
   const observed = enumeratedItemsByNodeId.get(item.nodeId);
+  if (observed == null && repositoryFreshness === "stale") {
+    return item.type === "issue" ? "not_applicable" : "ready_for_review";
+  }
   assertNonNullable(observed, `通知対象 ${item.nodeId}の列挙値がありません`);
   if (observed.type !== item.type) {
     throw new TypeError(`通知対象 ${item.nodeId}の項目種別が前回値と一致しません`);
@@ -5008,15 +5013,35 @@ function notificationDraftState(
       : "ready_for_review";
 }
 
+function hasOpenBlockers(
+  itemNodeId: GitHubNodeId,
+  graph: GraphResult,
+  nodeStateById: ReadonlyMap<GraphNodeId, PendingTrackedItem["state"]>,
+): boolean {
+  for (const edge of graph.edges) {
+    if (!edge.active || edge.type !== "blocks" || edge.toNodeId !== itemNodeId) {
+      continue;
+    }
+    const sourceState = nodeStateById.get(edge.fromNodeId);
+    assertNonNullable(sourceState, `blocks関係元 ${edge.fromNodeId}の状態がありません`);
+    if (sourceState === "open") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function notificationItem(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   inventory: RepositoryInventory,
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
   graph: GraphResult,
+  nodeStateById: ReadonlyMap<GraphNodeId, PendingTrackedItem["state"]>,
   item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
+  repositoryFreshness: DiscordNotificationItem["repositoryFreshness"],
 ): DiscordNotificationItem {
   const repository = findRepository(inventory, item.repositoryId);
   const previous = previousSnapshot(state)?.items.find(
@@ -5049,8 +5074,8 @@ function notificationItem(
   return Object.freeze({
     nodeId: item.nodeId,
     createdAt: item.createdAt,
-    draftState: notificationDraftState(item, enumeratedItemsByNodeId),
-    repositoryFreshness: "fresh",
+    draftState: notificationDraftState(item, enumeratedItemsByNodeId, repositoryFreshness),
+    repositoryFreshness,
     notificationClass: item.notificationClass,
     notificationsSuppressedByLabel: labelEffects.suppressNotifications,
     latestChange:
@@ -5094,6 +5119,7 @@ function notificationItem(
     graph: Object.freeze({
       downstreamImpact,
       newlyUnblocked: graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId),
+      hasOpenBlockers: hasOpenBlockers(item.nodeId, graph, nodeStateById),
       currentDependencyCycleIds: cycleIds,
       previousDependencyCycles,
     }),
@@ -5116,14 +5142,16 @@ function notificationItems(
   const currentItemsByNodeId = new Map(
     reduction.currentItems.map((current) => [current.item.nodeId, current]),
   );
+  const nodeStateById = new Map<GraphNodeId, PendingTrackedItem["state"]>([
+    ...reduction.items.map((item) => [item.nodeId, item.state] as const),
+    ...graph.externalReferences.map((reference) => [reference.nodeId, reference.state] as const),
+  ]);
   const enumeratedItemsByNodeId = new Map(
     collection.enumeratedItems.map((item) => [item.nodeId, item]),
   );
   return Object.freeze(
     reduction.items.flatMap((item) => {
-      if (staleRepositoryIds.has(item.repositoryId)) {
-        return [];
-      }
+      const repositoryFreshness = staleRepositoryIds.has(item.repositoryId) ? "stale" : "fresh";
       const staleness = reduction.stalenessByNodeId.get(item.nodeId);
       assertNonNullable(staleness, `通知対象 ${item.nodeId}のseverity再計算結果がありません`);
       const current = currentItemsByNodeId.get(item.nodeId);
@@ -5134,6 +5162,7 @@ function notificationItems(
           inventory,
           enumeratedItemsByNodeId,
           graph,
+          nodeStateById,
           item,
           staleness,
           current == null
@@ -5144,6 +5173,7 @@ function notificationItems(
                 availability: "available",
                 value: current,
               }),
+          repositoryFreshness,
         ),
       ];
     }),
@@ -5153,6 +5183,7 @@ function notificationItems(
 function mergeNotificationLedger(
   state: RuntimeState,
   entriesToMerge: readonly NotificationLedgerEntry[],
+  pendingNotifications: readonly PendingNotification[],
 ): StateNotificationLedger {
   const entries = new Map(
     state.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
@@ -5168,9 +5199,10 @@ function mergeNotificationLedger(
     entries.set(entry.notificationKey, entry);
   }
   return createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
+    pendingNotifications,
   });
 }
 
@@ -5436,6 +5468,7 @@ function validateRunCompleteness(
     evaluatedAt: collection.evaluatedAt,
     items: notificationItems(configuration, state, inventory, collection, reduction, graph),
     ledger: notificationLedgerEntries(state, reduction.items),
+    pendingNotifications: state.notificationLedger.pendingNotifications,
     settings: {
       maxItemsPerDigest: configuration.config.notifications.discord.maxItemsPerDigest,
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
@@ -5446,23 +5479,42 @@ function validateRunCompleteness(
     invocation.command.kind === "dry-run" ? "send" : invocation.command.notificationAction;
   const emptyCandidates: readonly [] = Object.freeze([]);
   const emptyLedgerReservations: readonly [] = Object.freeze([]);
+  const acknowledgedNotificationLedgerEntries =
+    notificationAction === "acknowledge-current"
+      ? createAcknowledgedNotificationLedgerEntries(notificationInput)
+      : Object.freeze([]);
   const notificationSelection: DiscordNotificationSelection =
     notificationAction === "acknowledge-current"
-      ? Object.freeze({
-          action: "skip_digest",
-          reason: "no_candidates",
-          candidates: emptyCandidates,
-          ledgerReservations: emptyLedgerReservations,
-        })
+      ? (() => {
+          const recalculatedSelection = selectDiscordNotifications(notificationInput);
+          const acknowledgedKeys = new Set(
+            acknowledgedNotificationLedgerEntries.map((entry) => entry.notificationKey),
+          );
+          const pendingNotifications = recalculatedSelection.pendingNotifications.filter(
+            (pending) => !acknowledgedKeys.has(pending.notificationKey),
+          );
+          return Object.freeze({
+            action: "skip_digest",
+            reason: "no_candidates",
+            candidates: emptyCandidates,
+            ledgerReservations: emptyLedgerReservations,
+            pendingNotifications: Object.freeze(pendingNotifications),
+          });
+        })()
       : selectDiscordNotifications(notificationInput);
   const notificationLedgerEntriesToMerge =
     notificationAction === "acknowledge-current"
-      ? createAcknowledgedNotificationLedgerEntries(notificationInput)
+      ? acknowledgedNotificationLedgerEntries
       : notificationSelection.ledgerReservations;
+  const notificationPendingToMerge = notificationSelection.pendingNotifications;
   return Object.freeze({
     snapshot,
     historyInputEvents: stateHistoryInputEvents(reduction),
-    notificationLedger: mergeNotificationLedger(state, notificationLedgerEntriesToMerge),
+    notificationLedger: mergeNotificationLedger(
+      state,
+      notificationLedgerEntriesToMerge,
+      notificationPendingToMerge,
+    ),
     notificationSelection,
   });
 }
@@ -5549,7 +5601,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "7",
+    schemaVersion: "8",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -5926,6 +5978,16 @@ async function deliverDiscord(
       firstEntry.sentAt,
     );
   }
+  const sentNotificationKeys = new Set(
+    delivery.status === "sent"
+      ? delivery.ledgerEntries
+          .filter((entry) => entry.status === "sent")
+          .map((entry) => entry.notificationKey)
+      : [],
+  );
+  const pendingNotifications = validated.notificationLedger.pendingNotifications.filter(
+    (pending) => !sentNotificationKeys.has(pending.notificationKey),
+  );
   return Object.freeze({
     value: Object.freeze({
       delivery,
@@ -5933,9 +5995,10 @@ async function deliverDiscord(
     }),
     notificationEvents,
     notificationLedger: createStateNotificationLedger({
-      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
+      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
       entries: [...notificationEntriesByKey.values()],
       operationsAlerts: [...operationsAlertsByKey.values()],
+      pendingNotifications,
     }),
     notificationCount: sentNotificationEntries.length,
     discordSentAt: sentAt,
@@ -6058,9 +6121,10 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
+    pendingNotifications: state.notificationLedger.pendingNotifications,
   });
   const persistenceInput = Object.freeze({
     notificationLedger,

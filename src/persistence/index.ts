@@ -88,6 +88,7 @@ export {
   createEmptyStateNotificationLedger,
   createStateNotificationLedger,
   createStateRunReport,
+  NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
   NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
   parseStateNotificationLedger,
   serializeStateNotificationLedger,

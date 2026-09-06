@@ -6,12 +6,14 @@ import {
   type LegacyNotificationReasonCode,
   migrateLegacyNotificationReasonCode,
 } from "./legacy-enum.js";
+import { pendingNotificationSchema } from "../domain/index.js";
 
 const NOTIFICATION_LEDGER_SCHEMA_VERSION_1 = "1";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_2 = "2";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_3 = "3";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_4 = "4";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_5 = "5";
+export const NOTIFICATION_LEDGER_SCHEMA_VERSION_6 = "6";
 
 const nonEmptyStringSchema = z.string().min(1).max(1000);
 const dateTimeSchema = z.iso
@@ -449,6 +451,103 @@ const notificationLedgerVersion5Schema = z
       }
     }
   });
+const notificationLedgerVersion6Schema = z
+  .strictObject({
+    schemaVersion: z.literal(NOTIFICATION_LEDGER_SCHEMA_VERSION_6),
+    entries: z.array(ledgerEntryVersion5Schema),
+    operationsAlerts: z.array(operationsAlertEntrySchema),
+    pendingNotifications: z.array(pendingNotificationSchema),
+  })
+  .superRefine((ledger, context) => {
+    const keys = ledger.entries.map((entry) => entry.notificationKey);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["entries"],
+        message: "notificationKeyが重複しています",
+      });
+    }
+    const alertKeys = ledger.operationsAlerts.map((entry) => entry.alertKey);
+    if (new Set(alertKeys).size !== alertKeys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["operationsAlerts"],
+        message: "alertKeyが重複しています",
+      });
+    }
+    for (const [index, entry] of ledger.operationsAlerts.entries()) {
+      if (entry.sentAt < entry.occurredAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["operationsAlerts", index, "sentAt"],
+          message: "運用障害通知の送信時刻は発生時刻以後にしてください",
+        });
+      }
+    }
+    for (const [index, entry] of ledger.entries.entries()) {
+      if (entry.status === "reserved" && entry.expiresAt < entry.reservedAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["entries", index, "expiresAt"],
+          message: "予約期限は予約時刻以後にしてください",
+        });
+      }
+      if (entry.status === "sent" && entry.sentAt < entry.reservedAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["entries", index, "sentAt"],
+          message: "送信時刻は予約時刻以後にしてください",
+        });
+      }
+      if (entry.status === "acknowledged" && entry.acknowledgedAt < entry.reservedAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["entries", index, "acknowledgedAt"],
+          message: "確認時刻は予約時刻以後にしてください",
+        });
+      }
+    }
+    const pendingKeys = new Set<string>();
+    const itemReasonKeys = new Set<string>();
+    const cycleKeys = new Set<string>();
+    for (const [index, notification] of ledger.pendingNotifications.entries()) {
+      if (pendingKeys.has(notification.notificationKey)) {
+        context.addIssue({
+          code: "custom",
+          path: ["pendingNotifications", index, "notificationKey"],
+          message: "送信待ち通知のnotificationKeyが重複しています",
+        });
+      }
+      pendingKeys.add(notification.notificationKey);
+      const itemReasonKey = JSON.stringify([
+        notification.itemNodeId,
+        notification.reason.reasonCode,
+      ]);
+      if (notification.target.kind === "cycle") {
+        const cycleKey = JSON.stringify([
+          notification.itemNodeId,
+          notification.reason.reasonCode,
+          notification.target.cycleId,
+        ]);
+        if (cycleKeys.has(cycleKey)) {
+          context.addIssue({
+            code: "custom",
+            path: ["pendingNotifications", index],
+            message: "同じ項目、理由、cycleの送信待ち通知が重複しています",
+          });
+        }
+        cycleKeys.add(cycleKey);
+      } else if (itemReasonKeys.has(itemReasonKey)) {
+        context.addIssue({
+          code: "custom",
+          path: ["pendingNotifications", index],
+          message: "同じ項目と理由の送信待ち通知が重複しています",
+        });
+      } else {
+        itemReasonKeys.add(itemReasonKey);
+      }
+    }
+  });
 
 /** 日次runの完了状態と運用metricsを保持するreport。 */
 export type StateRunReport = z.output<typeof runReportSchema>;
@@ -458,10 +557,11 @@ type StateNotificationLedgerVersion2 = z.output<typeof notificationLedgerVersion
 type StateNotificationLedgerVersion3 = z.output<typeof notificationLedgerVersion3Schema>;
 type StateNotificationLedgerVersion4 = z.output<typeof notificationLedgerVersion4Schema>;
 type StateNotificationLedgerVersion5 = z.output<typeof notificationLedgerVersion5Schema>;
+type StateNotificationLedgerVersion6 = z.output<typeof notificationLedgerVersion6Schema>;
 type StateNotificationLedgerVersionParser = (value: unknown) => StateNotificationLedger;
 
-/** 通常通知の予約、送信結果、確認済みledger entry、送信済み運用障害を保持するledger。 */
-export type StateNotificationLedger = StateNotificationLedgerVersion5;
+/** 通常通知の予約、送信結果、確認済みledger entry、送信待ち通知、送信済み運用障害を保持するledger。 */
+export type StateNotificationLedger = StateNotificationLedgerVersion6;
 
 function createFormatError(kind: string, error: z.ZodError): StateFormatError {
   return StateFormatError.fromZodError(kind, error);
@@ -592,6 +692,27 @@ function parseStateNotificationLedgerVersion5(value: unknown): StateNotification
 function migrateStateNotificationLedgerVersion5(
   ledger: StateNotificationLedgerVersion5,
 ): StateNotificationLedger {
+  return migrateStateNotificationLedgerVersion6(
+    parseStateNotificationLedgerVersion6({
+      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
+      entries: ledger.entries,
+      operationsAlerts: ledger.operationsAlerts,
+      pendingNotifications: [],
+    }),
+  );
+}
+
+function parseStateNotificationLedgerVersion6(value: unknown): StateNotificationLedgerVersion6 {
+  const result = notificationLedgerVersion6Schema.safeParse(value);
+  if (!result.success) {
+    throw createFormatError("notification ledger", result.error);
+  }
+  return result.data;
+}
+
+function migrateStateNotificationLedgerVersion6(
+  ledger: StateNotificationLedgerVersion6,
+): StateNotificationLedger {
   const compareNotificationKeys = (
     left: StateNotificationLedgerVersion5["entries"][number],
     right: StateNotificationLedgerVersion5["entries"][number],
@@ -604,8 +725,20 @@ function migrateStateNotificationLedgerVersion5(
     }
     return 0;
   };
+  const comparePendingNotificationKeys = (
+    left: StateNotificationLedgerVersion6["pendingNotifications"][number],
+    right: StateNotificationLedgerVersion6["pendingNotifications"][number],
+  ): number => {
+    if (left.notificationKey < right.notificationKey) {
+      return -1;
+    }
+    if (left.notificationKey > right.notificationKey) {
+      return 1;
+    }
+    return 0;
+  };
   return {
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
     entries: [...ledger.entries].sort(compareNotificationKeys),
     operationsAlerts: [...ledger.operationsAlerts].sort((left, right) => {
       if (left.alertKey < right.alertKey) {
@@ -616,6 +749,7 @@ function migrateStateNotificationLedgerVersion5(
       }
       return 0;
     }),
+    pendingNotifications: [...ledger.pendingNotifications].sort(comparePendingNotificationKeys),
   };
 }
 
@@ -665,6 +799,13 @@ const stateNotificationLedgerVersionParsers: ReadonlyMap<
       migrateStateNotificationLedgerVersion5,
     ),
   ],
+  [
+    NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
+    createStateNotificationLedgerVersionParser(
+      parseStateNotificationLedgerVersion6,
+      migrateStateNotificationLedgerVersion6,
+    ),
+  ],
 ]);
 
 function parseVersionedStateNotificationLedger(value: unknown): StateNotificationLedger {
@@ -689,9 +830,10 @@ export function createStateNotificationLedger(value: unknown): StateNotification
 /** 初回bootstrap用の空notification ledgerを生成する。 */
 export function createEmptyStateNotificationLedger(): StateNotificationLedger {
   return {
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_5,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
     entries: [],
     operationsAlerts: [],
+    pendingNotifications: [],
   };
 }
 

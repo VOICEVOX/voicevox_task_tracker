@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 import { type Importance } from "./importance.js";
+import { notificationReasonSchema, type NotificationReason } from "./notification-reason.js";
 import { type SourceId } from "./source-id.js";
+import { type StalenessWaitClass } from "./staleness.js";
 
 const opaqueIdSchema = z
   .string()
@@ -331,6 +333,152 @@ export type WaitingOn = Readonly<{
   sourceIds: readonly [SourceId, ...SourceId[]];
   confidence: number;
 }>;
+
+/** 通知候補に保存する待ち相手の参照。 */
+type PendingNotificationWaitingOn = Pick<WaitingOn, "kind" | "candidateId" | "role">;
+
+/** 通知候補の判定対象。 */
+export type PendingNotificationTarget =
+  | Readonly<{
+      kind: "responsibility";
+      waitingOn: readonly PendingNotificationWaitingOn[];
+    }>
+  | Readonly<{
+      kind: "unblocked";
+    }>
+  | Readonly<{
+      kind: "cycle";
+      cycleId: string;
+    }>
+  | Readonly<{
+      kind: "overdue";
+      status: Status;
+      waitClass: StalenessWaitClass;
+      waitingOn: readonly PendingNotificationWaitingOn[];
+      lastProgressAt: UtcIsoDateTime;
+    }>;
+
+/** 送信待ち通知の判定結果と公開可能な対象状態。 */
+export type PendingNotification = Readonly<{
+  notificationKey: string;
+  itemNodeId: GitHubNodeId;
+  reason: NotificationReason;
+  detectedAt: UtcIsoDateTime;
+  highPriorityEligible: boolean;
+  target: PendingNotificationTarget;
+}>;
+
+const pendingNotificationWaitingOnSchema = z.strictObject({
+  kind: z.enum(["user", "team", "role", "item", "automation", "unknown"]),
+  candidateId: opaqueIdSchema,
+  role: z.enum([
+    "author",
+    "maintainer",
+    "reviewer",
+    "assignee",
+    "respondent",
+    "dependency",
+    "merge_decider",
+    "ci",
+    "unknown",
+  ]),
+});
+const pendingNotificationStatusSchema = z.enum([
+  "waiting_for_assessment",
+  "waiting_for_owner",
+  "waiting_for_decision",
+  "waiting_for_review",
+  "waiting_for_revision",
+  "waiting_for_reply",
+  "waiting_for_work",
+  "waiting_for_unblock",
+  "waiting_for_automation",
+  "waiting_for_merge",
+  "in_progress",
+  "unknown",
+  "terminal_merged",
+  "terminal_completed",
+  "terminal_not_planned",
+]);
+const pendingNotificationWaitClassSchema = z.enum([
+  "assessment",
+  "owner",
+  "decision",
+  "review",
+  "revision",
+  "reply",
+  "work",
+  "merge",
+  "automation",
+  "blockedParent",
+  "notApplicable",
+]);
+const pendingNotificationTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("responsibility"),
+    waitingOn: z.array(pendingNotificationWaitingOnSchema).min(1),
+  }),
+  z.strictObject({
+    kind: z.literal("unblocked"),
+  }),
+  z.strictObject({
+    kind: z.literal("cycle"),
+    cycleId: opaqueIdSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("overdue"),
+    status: pendingNotificationStatusSchema,
+    waitClass: pendingNotificationWaitClassSchema,
+    waitingOn: z.array(pendingNotificationWaitingOnSchema).min(1),
+    lastProgressAt: utcIsoDateTimeSchema,
+  }),
+]);
+
+function pendingNotificationTargetKind(
+  reasonCode: Exclude<NotificationReasonCode, "none">,
+): PendingNotificationTarget["kind"] {
+  switch (reasonCode) {
+    case "responsibility_changed":
+      return "responsibility";
+    case "newly_unblocked":
+      return "unblocked";
+    case "dependency_cycle":
+      return "cycle";
+    case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
+    case "review_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "merge_overdue":
+    case "automation_stuck":
+      return "overdue";
+  }
+}
+
+/** 送信待ち通知の判定結果を検証するschema。 */
+export const pendingNotificationSchema = z
+  .strictObject({
+    notificationKey: opaqueIdSchema,
+    itemNodeId: githubNodeIdSchema,
+    reason: notificationReasonSchema,
+    detectedAt: utcIsoDateTimeSchema,
+    highPriorityEligible: z.boolean(),
+    target: pendingNotificationTargetSchema,
+  })
+  .superRefine((notification, context) => {
+    if (
+      notification.target.kind !== pendingNotificationTargetKind(notification.reason.reasonCode)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["target", "kind"],
+        message: "通知理由と対象kindの組み合わせが不正です",
+      });
+    }
+  });
 
 /** waitingOn配列でprimaryに選んだ要素と選定理由。 */
 export type PrimaryWaitingOn =
