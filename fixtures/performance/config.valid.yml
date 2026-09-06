@@ -94,6 +94,7 @@ ai:
   authentication: api-key
   model: codex-model
   promptVersion: v13
+  promptUpdates: []
   confidence:
     high: 0.85
     medium: 0.65

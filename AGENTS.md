@@ -19,6 +19,7 @@
   - `ai.promptVersion`はプロンプトファイルの改訂番号を表さず、意味上のAI判定規則versionとする。同じ入力で代表的な分析対象の95％以上の判定が維持されると判断できる変更は据え置き、判断不能を含めそれ以外は上げる
   - 用語、表記、説明文だけの変更や、行動主体、行動、対象を変えない自由文の言い換えは原則として据え置く
   - `status`、`waitingOn`、`importance`、`deadline`、`notification`、`relations`、`meaningful progress`、`confidence`、根拠`source`、`nextAction`など、構造化された選択や下流処理に使う意味が変わり得る場合は上げる
+  - プロンプト変更の影響を項目条件で限定できる場合は、`ai.promptUpdates`へ適用範囲を記録する。期限の誤採用を除く`existing_deadline`を、新たな期限を拾う変更へ使わない。詳しくは`docs/DEVELOPMENT.md`の再推論対象の指定手順に従う
 
 # 作業手順
 

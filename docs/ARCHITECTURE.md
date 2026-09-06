@@ -171,7 +171,9 @@ Codexとgraphは要対応度のscoreとlevelを直接決めません。
 
 そのため、項目ごとに判定規則fingerprintをsnapshotへ保存し、現在値と異なる項目を詳細取得の対象へ加えます。
 判定規則fingerprintは項目種別に対応する決定論的規則versionと、Codex実行identityのhashから作ります。
-Issueの規則だけを変えた場合はIssueだけが再取得され、modelやprompt versionを変えた場合は全項目が再取得されます。
+Issueの規則だけを変えた場合はIssueだけが再取得され、modelを変えた場合は全項目が再取得されます。
+prompt versionの変更では、`ai.promptUpdates`から項目ごとの適用範囲を調べます。
+前回の判定がすべての更新の対象外なら、前回と同じidentityを使って現在の有効な判定規則fingerprintを計算し、変更対象外の項目の再取得を避けます。
 
 判定規則fingerprintを現在値で保存するのは、そのrunで実際に再判定した項目だけです。
 再判定していない項目に現在値を書くと、古い判定のまま最新規則で判定済みと記録され、以後再判定されなくなります。
@@ -180,6 +182,14 @@ Issueの規則だけを変えた場合はIssueだけが再取得され、model�
 前回の`aiAnalysis.status`が`failed`か`deferred`の項目も、GitHub側の変化と判定規則fingerprintにかかわらず詳細取得の対象へ加えます。
 AI分析の失敗と延期はGitHub側を動かさないため、この扱いがなければ縮退した判定が固着します。
 terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行します。
+
+AI候補の入力は現在のidentityで作ります。
+現在のcacheがない場合は、更新履歴上の対象外で、source、入力、隣接graphのhashも前回と一致する項目に限り、生成時のidentityで元のcacheを探します。
+元のcacheもschemaとsemantic validationを通し、結果のmetadataとfingerprintは生成時の値を保持します。
+元のcacheを利用できなければ、現在のidentityで新たに実行します。
+失敗・延期中の項目にはこの再利用を適用しません。
+プロンプト変更の適用対象になった項目は、状態の決定論的な高信頼判定だけを理由にAI分析を省きません。
+1項目の全出力は引き続き1回の呼び出しで判定します。
 
 決定論的規則versionとprompt versionは手で更新する定数です。
 `ai.promptVersion`はプロンプトファイルの改訂番号を表さず、意味上のAI判定規則を識別するversionです。変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は据え置きます。全件再推論をこの判断手段にしません。95％以上と見込めない場合、または影響を判断できない場合はversionを上げます。具体的な判断基準は[開発手順](DEVELOPMENT.md)の「Codexプロンプトのversionを判断する」を参照してください。
@@ -350,7 +360,7 @@ Discordはtransport例外とHTTP 429、503だけを同じ設定で再試行し�
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
-`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v16`です。
+`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v17`です。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch

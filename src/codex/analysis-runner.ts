@@ -197,15 +197,62 @@ function createResult(
   cacheKey: AiCacheKey,
   output: ValidatedCodexAnalysisOutput,
   metadata: AnalysisMetadata,
+  fingerprint: AiAnalysisFingerprint,
 ): AiAnalysisRunItemResult {
   return Object.freeze({
     candidateId: candidate.id,
     origin,
     cacheKey,
-    fingerprint: candidate.fingerprint,
+    fingerprint,
     output,
     metadata,
   });
+}
+
+function fingerprintForIdentity(
+  candidate: PreparedAiAnalysisCandidate,
+  identity: AiAnalysisRunIdentity,
+): AiAnalysisFingerprint {
+  return Object.freeze({
+    ...candidate.fingerprint,
+    identityHash: hashCanonicalJson(identity),
+  });
+}
+
+function validateCompatibleCacheIdentity(
+  candidate: PreparedAiAnalysisCandidate,
+  currentIdentity: AiAnalysisRunIdentity,
+): void {
+  const compatibleIdentity = candidate.compatibleCacheIdentity;
+  if (compatibleIdentity == null) {
+    return;
+  }
+  if (
+    compatibleIdentity.deterministicRulesVersion !== currentIdentity.deterministicRulesVersion ||
+    compatibleIdentity.model !== currentIdentity.model ||
+    compatibleIdentity.reasoningEffort !== currentIdentity.reasoningEffort ||
+    compatibleIdentity.backendVersion !== currentIdentity.backendVersion ||
+    compatibleIdentity.schemaVersion !== currentIdentity.schemaVersion
+  ) {
+    throw new TypeError(
+      `互換cacheのidentityが現在の実行identityと一致しません。対象: ${candidate.id}`,
+    );
+  }
+  if (candidate.previousFingerprint.status !== "available") {
+    throw new TypeError(`互換cacheに前回AI分析fingerprintがありません。対象: ${candidate.id}`);
+  }
+  if (
+    candidate.previousFingerprint.fingerprint.identityHash !==
+      hashCanonicalJson(compatibleIdentity) ||
+    candidate.previousFingerprint.fingerprint.sourceHash !== candidate.fingerprint.sourceHash ||
+    candidate.previousFingerprint.fingerprint.inputHash !== candidate.fingerprint.inputHash ||
+    candidate.previousFingerprint.fingerprint.graphNeighborhoodHash !==
+      candidate.fingerprint.graphNeighborhoodHash
+  ) {
+    throw new TypeError(
+      `互換cacheの入力fingerprintが前回結果と一致しません。対象: ${candidate.id}`,
+    );
+  }
 }
 
 async function resolveCacheEntries(
@@ -222,32 +269,59 @@ async function resolveCacheEntries(
   const results: AiAnalysisRunItemResult[] = [];
   const misses: CacheMissCandidate[] = [];
   for (const candidate of candidates) {
-    const identity = createCacheIdentity(candidate, configuration.identity);
-    const cacheKey = createAiCacheKey(identity);
-    const cached = await cache.read(cacheKey);
-    if (cached.status === "hit") {
-      const reuse = determineAiCacheReuse(cached.entry, identity, candidate.fingerprint.sourceHash);
-      if (reuse.status === "reusable") {
-        try {
-          const output = validateCodexAnalysisOutput(reuse.entry.output, candidate.input);
-          results.push(
-            createResult(candidate, "cache", reuse.entry.cacheKey, output, reuse.entry.metadata),
-          );
-          continue;
-        } catch (error: unknown) {
-          if (!(error instanceof CodexOutputValidationError)) {
-            throw error;
+    validateCompatibleCacheIdentity(candidate, configuration.identity);
+    const identities: AiAnalysisRunIdentity[] = [configuration.identity];
+    const compatibleCacheIdentity = candidate.compatibleCacheIdentity;
+    if (
+      compatibleCacheIdentity != null &&
+      hashCanonicalJson(compatibleCacheIdentity) !== hashCanonicalJson(configuration.identity)
+    ) {
+      identities.push(compatibleCacheIdentity);
+    }
+    let cacheMiss: CacheMissCandidate | undefined;
+    for (const candidateIdentity of identities) {
+      const identity = createCacheIdentity(candidate, candidateIdentity);
+      const cacheKey = createAiCacheKey(identity);
+      const cached = await cache.read(cacheKey);
+      if (cached.status === "hit") {
+        const reuse = determineAiCacheReuse(
+          cached.entry,
+          identity,
+          candidate.fingerprint.sourceHash,
+        );
+        if (reuse.status === "reusable") {
+          try {
+            const output = validateCodexAnalysisOutput(reuse.entry.output, candidate.input);
+            results.push(
+              createResult(
+                candidate,
+                "cache",
+                reuse.entry.cacheKey,
+                output,
+                reuse.entry.metadata,
+                fingerprintForIdentity(candidate, candidateIdentity),
+              ),
+            );
+            cacheMiss = undefined;
+            break;
+          } catch (error: unknown) {
+            if (!(error instanceof CodexOutputValidationError)) {
+              throw error;
+            }
+            await recordCandidateFailure(diagnostics, candidate.id, error, "cache");
           }
-          await recordCandidateFailure(diagnostics, candidate.id, error, "cache");
         }
       }
+      if (candidateIdentity === configuration.identity) {
+        cacheMiss = Object.freeze({
+          candidate,
+          identity,
+        });
+      }
     }
-    misses.push(
-      Object.freeze({
-        candidate,
-        identity,
-      }),
-    );
+    if (cacheMiss != null) {
+      misses.push(cacheMiss);
+    }
   }
   return Object.freeze({
     results: Object.freeze(results),
@@ -348,7 +422,14 @@ async function executeSelectedCandidates(
           candidateIndex,
           Object.freeze({
             status: "result",
-            result: createResult(candidate, "executed", entry.cacheKey, output, entry.metadata),
+            result: createResult(
+              candidate,
+              "executed",
+              entry.cacheKey,
+              output,
+              entry.metadata,
+              candidate.fingerprint,
+            ),
           }),
         );
       } catch (error: unknown) {
