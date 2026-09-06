@@ -21,6 +21,7 @@ import {
   type NormalizedEvent,
   type Severity,
   type Status,
+  type TrackedItemType,
   type UtcIsoDateTime,
   type WaitClass,
   type WaitingOn,
@@ -67,6 +68,7 @@ export type PreviousStalenessState =
   | Readonly<{
       availability: "available";
       value: StalenessState;
+      stallSincePolicy: "inherit" | "recalculate";
     }>;
 
 /** blocked親の代わりに通知順位へ使うblocker情報。 */
@@ -134,6 +136,7 @@ export type StalenessElapsedHours = Readonly<{
 
 /** 停滞時間とseverityを算出する入力。 */
 export type CalculateStalenessInput = Readonly<{
+  itemType: TrackedItemType;
   createdAt: UtcIsoDateTime;
   evaluatedAt: UtcIsoDateTime;
   currentDecision: StateDecisionForStaleness;
@@ -387,10 +390,54 @@ function determineLastResponsibleHumanActivityAt(
     : latestTimestamp(responsibleActivityTimes);
 }
 
+function determineLastHumanReviewAt(
+  events: readonly NormalizedEvent[],
+): UtcIsoDateTime | undefined {
+  const reviewTimes = events
+    .filter((event) => event.kind === "review" && event.actor.type === "human")
+    .map((event) => event.occurredAt);
+  return reviewTimes.length === 0 ? undefined : latestTimestamp(reviewTimes);
+}
+
+function isPullRequestReviewWait(input: CalculateStalenessInput): boolean {
+  return (
+    input.itemType === "pull_request" &&
+    (input.currentDecision.status === "waiting_for_owner" ||
+      input.currentDecision.status === "waiting_for_review")
+  );
+}
+
+function determineExplicitReviewRequestOwnerSince(
+  input: CalculateStalenessInput,
+  previousOwnerSince: UtcIsoDateTime,
+): UtcIsoDateTime | undefined {
+  if (
+    input.itemType !== "pull_request" ||
+    input.currentDecision.status !== "waiting_for_review" ||
+    input.currentDecision.responsibilityBasis.precision !== "event"
+  ) {
+    return undefined;
+  }
+  const basisSourceIds = new Set(input.currentDecision.responsibilityBasis.sourceIds);
+  const explicitReviewRequestTimes = input.events
+    .filter(
+      (event) =>
+        event.kind === "review_request" &&
+        event.action === "added" &&
+        basisSourceIds.has(event.sourceId) &&
+        event.occurredAt > previousOwnerSince,
+    )
+    .map((event) => event.occurredAt);
+  return explicitReviewRequestTimes.length === 0
+    ? undefined
+    : latestTimestamp(explicitReviewRequestTimes);
+}
+
 function determineTransitionTimes(
   input: CalculateStalenessInput,
   lastProgressAt: UtcIsoDateTime,
   lastResponsibleHumanActivityAt: UtcIsoDateTime | undefined,
+  lastHumanReviewAt: UtcIsoDateTime | undefined,
 ): Readonly<{
   statusSince: UtcIsoDateTime;
   ownerSince: UtcIsoDateTime;
@@ -404,11 +451,19 @@ function determineTransitionTimes(
     return Object.freeze({
       statusSince: input.currentDecision.statusBasis.occurredAt,
       ownerSince,
-      stallSince: latestTimestamp([
-        ownerSince,
-        lastProgressAt,
-        ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
-      ]),
+      stallSince: latestTimestamp(
+        isPullRequestReviewWait(input)
+          ? [
+              ownerSince,
+              ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
+              ...(lastHumanReviewAt == null ? [] : [lastHumanReviewAt]),
+            ]
+          : [
+              ownerSince,
+              lastProgressAt,
+              ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
+            ],
+      ),
     });
   }
 
@@ -431,6 +486,27 @@ function determineTransitionTimes(
     ownerSince = input.currentDecision.statusBasis.occurredAt;
   } else if (responsibilityChanged) {
     ownerSince = input.currentDecision.responsibilityBasis.occurredAt;
+  }
+
+  const explicitReviewRequestOwnerSince = determineExplicitReviewRequestOwnerSince(
+    input,
+    previous.ownerSince,
+  );
+  if (explicitReviewRequestOwnerSince != null && explicitReviewRequestOwnerSince > ownerSince) {
+    ownerSince = explicitReviewRequestOwnerSince;
+  }
+
+  if (isPullRequestReviewWait(input)) {
+    return Object.freeze({
+      statusSince,
+      ownerSince,
+      stallSince: latestTimestamp([
+        ownerSince,
+        ...(lastResponsibleHumanActivityAt == null ? [] : [lastResponsibleHumanActivityAt]),
+        ...(lastHumanReviewAt == null ? [] : [lastHumanReviewAt]),
+        ...(input.previousState.stallSincePolicy === "inherit" ? [previous.stallSince] : []),
+      ]),
+    });
   }
 
   return Object.freeze({
@@ -694,6 +770,7 @@ export function calculateStaleness(input: CalculateStalenessInput): StalenessRes
     input,
     progress.lastProgressAt,
     determineLastResponsibleHumanActivityAt(input),
+    determineLastHumanReviewAt(input.events),
   );
   const elapsed = Object.freeze({
     status: elapsedHours(transitionTimes.statusSince, input.evaluatedAt),

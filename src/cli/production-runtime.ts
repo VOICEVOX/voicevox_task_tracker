@@ -4092,6 +4092,7 @@ function transitionBasisForDecision(
 function previousStalenessState(
   state: RuntimeState,
   nodeId: GitHubNodeId,
+  itemType: TrackedItem["type"],
 ): Parameters<typeof calculateStaleness>[0]["previousState"] {
   const snapshot = previousSnapshot(state);
   const previous = snapshot?.items.find((item) => item.nodeId === nodeId);
@@ -4110,6 +4111,10 @@ function previousStalenessState(
   }
   return Object.freeze({
     availability: "available",
+    stallSincePolicy:
+      previousRulesVersion.version === CURRENT_DETERMINISTIC_RULES_VERSIONS[itemType]
+        ? "inherit"
+        : "recalculate",
     value: Object.freeze({
       status: previous.status,
       waitingOn: previous.waitingOn,
@@ -4459,6 +4464,7 @@ function reduceAnalysisPass(
     const basis = transitionBasisForDecision(analysis, decision);
     const repository = findRepository(inventory, analysis.item.repositoryId);
     const staleness = calculateStaleness({
+      itemType: analysis.item.type,
       createdAt: analysis.item.createdAt,
       evaluatedAt: collection.evaluatedAt,
       currentDecision: {
@@ -4469,7 +4475,7 @@ function reduceAnalysisPass(
         responsibilityBasis: basis.responsibilityBasis,
       },
       decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
-      previousState: previousStalenessState(state, analysis.item.nodeId),
+      previousState: previousStalenessState(state, analysis.item.nodeId, analysis.item.type),
       events: analysis.item.events,
       responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
       dependencyResolutions: dependencyResolutions(
