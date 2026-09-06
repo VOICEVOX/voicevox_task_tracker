@@ -5,10 +5,8 @@ import {
 } from "../domain/index.js";
 import { type EnumeratedGitHubItem, type Sha256Fingerprint } from "./item-enumeration.js";
 
-/** 項目種別ごとの現在の判定規則fingerprint。 */
-export type CurrentAnalysisRulesFingerprints = Readonly<
-  Record<EnumeratedGitHubItem["type"], Sha256Fingerprint>
->;
+/** 項目ごとの現在の判定規則fingerprint。 */
+export type CurrentAnalysisRulesFingerprints = ReadonlyMap<GitHubNodeId, Sha256Fingerprint>;
 
 /** 項目を前回判定したときの判定規則fingerprint。 */
 export type PreviousAnalysisRulesFingerprint =
@@ -97,10 +95,14 @@ function selectChangedItemNodeIds(
       changedItemNodeIds.push(item.nodeId);
       continue;
     }
+    const currentRulesFingerprint = currentAnalysisRulesFingerprints.get(item.nodeId);
+    if (currentRulesFingerprint == null) {
+      throw new TypeError(`現在の判定規則fingerprintがありません。対象: ${item.nodeId}`);
+    }
     const previousRulesFingerprint = previousItem.analysisRulesFingerprint;
     if (
       previousRulesFingerprint.status === "unavailable" ||
-      previousRulesFingerprint.fingerprint !== currentAnalysisRulesFingerprints[item.type]
+      previousRulesFingerprint.fingerprint !== currentRulesFingerprint
     ) {
       changedItemNodeIds.push(item.nodeId);
       continue;

@@ -45,6 +45,7 @@ export type AiAnalysisCandidate = Readonly<{
   input: CodexAnalysisInput;
   graphNeighborhood: unknown;
   previousFingerprint: PreviousAiAnalysisFingerprint;
+  compatibleCacheIdentity?: AiAnalysisRunIdentity;
   priority: AiAnalysisPriority;
   estimatedCostUsd: number;
 }>;

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ConfigError, type ConfigIssue } from "./config-error.js";
 import { CODEX_AUTHENTICATIONS } from "../codex/index.js";
+import { PROMPT_UPDATE_SCOPES, type PromptUpdate } from "../codex/prompt-updates.js";
 import { REASONING_EFFORTS } from "../domain/index.js";
 import { assertNonNullable } from "../util/assert-non-nullable.js";
 
@@ -121,6 +122,57 @@ const aiProviderSchema = requiredStringSchema.transform((value, context) => {
 
   return SUPPORTED_AI_PROVIDER;
 });
+
+const promptUpdateSchema: z.ZodType<PromptUpdate> = z.strictObject({
+  fromVersion: requiredStringSchema,
+  toVersion: requiredStringSchema,
+  scope: z.enum(PROMPT_UPDATE_SCOPES),
+});
+
+function validatePromptUpdateChain(
+  updates: readonly PromptUpdate[],
+  currentVersion: string,
+  context: z.RefinementCtx,
+): void {
+  if (updates.length === 0) {
+    return;
+  }
+
+  const firstUpdate = updates[0];
+  assertNonNullable(firstUpdate, "プロンプト更新履歴の先頭を取得できませんでした");
+  const versions = new Set<string>([firstUpdate.fromVersion]);
+  for (const [index, update] of updates.entries()) {
+    if (index > 0) {
+      const previousUpdate = updates[index - 1];
+      assertNonNullable(previousUpdate, "前のプロンプト更新履歴を取得できませんでした");
+      if (previousUpdate.toVersion !== update.fromVersion) {
+        context.addIssue({
+          code: "custom",
+          path: ["promptUpdates", index, "fromVersion"],
+          message: "プロンプト更新履歴のversionが連続していません",
+        });
+      }
+    }
+    if (versions.has(update.toVersion)) {
+      context.addIssue({
+        code: "custom",
+        path: ["promptUpdates", index, "toVersion"],
+        message: "プロンプト更新履歴に重複または循環するversionがあります",
+      });
+    }
+    versions.add(update.toVersion);
+  }
+
+  const lastUpdate = updates.at(-1);
+  assertNonNullable(lastUpdate, "プロンプト更新履歴の末尾を取得できませんでした");
+  if (lastUpdate.toVersion !== currentVersion) {
+    context.addIssue({
+      code: "custom",
+      path: ["promptUpdates", updates.length - 1, "toVersion"],
+      message: "プロンプト更新履歴の末尾versionが現在のversionと一致しません",
+    });
+  }
+}
 
 const regexPatternSchema = requiredStringSchema.superRefine((value, context) => {
   try {
@@ -465,6 +517,7 @@ const configSchema = z.strictObject({
       authentication: z.enum(CODEX_AUTHENTICATIONS),
       model: requiredStringSchema,
       promptVersion: requiredStringSchema,
+      promptUpdates: z.array(promptUpdateSchema),
       confidence: aiConfidenceSchema.default({
         high: DEFAULT_HIGH_CONFIDENCE,
         medium: DEFAULT_MEDIUM_CONFIDENCE,
@@ -486,6 +539,7 @@ const configSchema = z.strictObject({
       }),
     })
     .superRefine((ai, context) => {
+      validatePromptUpdateChain(ai.promptUpdates, ai.promptVersion, context);
       if (ai.enabled && ai.model.startsWith("YOUR_")) {
         context.addIssue({
           code: "custom",
