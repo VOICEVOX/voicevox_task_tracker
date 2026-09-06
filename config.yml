@@ -12,7 +12,7 @@ tracking:
     relationDepth: 3
   relationExpansion:
     # 1 runで関係先として個別列挙する一意なnode IDの上限。
-    maxItemsPerRun: 500
+    maxItemsPerRun: 1000
   include: []
   retentionDaysAfterTerminal: 180
   backfill:
