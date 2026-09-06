@@ -43,12 +43,27 @@ export class DiscordWebhookSecretReadError extends DiscordError {
 /** Discord webhookへの送信が失敗したことを表す。 */
 export class DiscordWebhookRequestError extends DiscordError {
   public readonly attempts: number;
+  public readonly status: number;
+
+  public constructor(status: number, attempts: number, options: ErrorOptions) {
+    super(
+      `Discord webhookへの送信に失敗しました。status: ${status.toString()} attempts: ${attempts.toString()}`,
+      options,
+    );
+    this.status = status;
+    this.attempts = attempts;
+  }
+}
+
+/** Discord webhookの送信結果を確認できないことを表す。 */
+export class DiscordWebhookDeliveryUnknownError extends DiscordError {
+  public readonly attempts: number;
   public readonly status: number | undefined;
 
   public constructor(status: number | undefined, attempts: number, options: ErrorOptions) {
     const statusText = status == null ? "不明" : status.toString();
     super(
-      `Discord webhookへの送信に失敗しました。status: ${statusText} attempts: ${attempts.toString()}`,
+      `Discord webhookの送信結果を確認できません。status: ${statusText} attempts: ${attempts.toString()}`,
       options,
     );
     this.status = status;
@@ -58,23 +73,8 @@ export class DiscordWebhookRequestError extends DiscordError {
 
 /** Discord webhookのretry上限へ到達したことを表す。 */
 export class DiscordWebhookRetryExhaustedError extends DiscordWebhookRequestError {
-  public constructor(status: 429 | 503 | undefined, attempts: number, options: ErrorOptions) {
+  public constructor(status: 429, attempts: number, options: ErrorOptions) {
     super(status, attempts, options);
-  }
-}
-
-/** Discord webhookの成功応答がMessage契約を満たさないことを表す。 */
-export class DiscordWebhookResponseError extends DiscordError {
-  public readonly attempts: number;
-  public readonly status: number;
-
-  public constructor(status: number, attempts: number, options: ErrorOptions) {
-    super(
-      `Discord webhookの成功応答からmessage IDを取得できません。status: ${status.toString()} attempts: ${attempts.toString()}`,
-      options,
-    );
-    this.status = status;
-    this.attempts = attempts;
   }
 }
 

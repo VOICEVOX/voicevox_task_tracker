@@ -29,6 +29,7 @@ const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
 const RESPONSIBILITY_CHANGE_STALL_HOURS = 48;
 const RESERVATION_DURATION_MILLISECONDS = MILLISECONDS_PER_DAY;
+const DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
 
 /** 通知理由として利用できるnone以外のreason code。 */
 export type DiscordNotificationReasonCode = Exclude<NotificationReasonCode, "none">;
@@ -502,6 +503,14 @@ function validateLedger(
       const expiresTimestamp = parseTimestamp(entry.expiresAt, "ledgerの予約期限");
       if (expiresTimestamp < reservedTimestamp) {
         throw new RangeError("ledgerの予約期限は予約時刻以後にしてください");
+      }
+    } else if (entry.status === "delivery_started") {
+      if (!DELIVERY_ID_PATTERN.test(entry.deliveryId)) {
+        throw new TypeError("ledgerのdelivery IDが不正です");
+      }
+      const startedTimestamp = parseTimestamp(entry.startedAt, "ledgerの送信開始時刻");
+      if (startedTimestamp < reservedTimestamp || startedTimestamp > evaluatedTimestamp) {
+        throw new RangeError("ledgerの送信開始時刻は予約時刻以後かつ判定時刻以前にしてください");
       }
     } else if (entry.status === "sent") {
       const sentTimestamp = parseTimestamp(entry.sentAt, "ledgerの送信時刻");

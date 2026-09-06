@@ -447,8 +447,6 @@ jobs:
         run: >-
           node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs notify-discord
           --pages-url "$PAGES_URL"
-      - name: run完了stateを更新
-        run: git push origin refs/heads/tracker-state:refs/heads/tracker-state
       - name: 診断JSONLを暗号化
         if: >-
           always() &&
@@ -613,8 +611,6 @@ jobs:
             --kind "$incident_kind" \
             --incident-id "$INCIDENT_ID:$incident_kind" \
             --occurred-at "$occurred_at"
-      - name: 通知管理記録を更新
-        run: git push origin refs/heads/tracker-state:refs/heads/tracker-state
       - name: 診断JSONLを暗号化
         if: >-
           always() &&

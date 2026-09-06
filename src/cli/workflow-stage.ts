@@ -4,6 +4,7 @@ import {
   type NotifyOperationsCliCommand,
   type PersistStateCliCommand,
   type ReportWorkflowCliCommand,
+  type ResolveDiscordDeliveryCliCommand,
 } from "./command.js";
 
 /** 日次workflowの後続stageで受け付けるCLI入力。 */
@@ -11,6 +12,7 @@ export type WorkflowStageCliCommand =
   | PersistStateCliCommand
   | BuildPagesCliCommand
   | NotifyDiscordCliCommand
+  | ResolveDiscordDeliveryCliCommand
   | NotifyOperationsCliCommand
   | ReportWorkflowCliCommand;
 
@@ -19,6 +21,7 @@ export type WorkflowStageDependencies = Readonly<{
   persistState: (command: PersistStateCliCommand) => Promise<void>;
   buildPages: (command: BuildPagesCliCommand) => Promise<void>;
   notifyDiscord: (command: NotifyDiscordCliCommand) => Promise<void>;
+  resolveDiscordDelivery: (command: ResolveDiscordDeliveryCliCommand) => Promise<void>;
   notifyOperations: (command: NotifyOperationsCliCommand) => Promise<void>;
   reportWorkflow: (command: ReportWorkflowCliCommand) => Promise<void>;
 }>;
@@ -42,6 +45,9 @@ export class WorkflowStageRunner {
         return;
       case "notify-discord":
         await this.#dependencies.notifyDiscord(command);
+        return;
+      case "resolve-discord-delivery":
+        await this.#dependencies.resolveDiscordDelivery(command);
         return;
       case "notify-operations":
         await this.#dependencies.notifyOperations(command);

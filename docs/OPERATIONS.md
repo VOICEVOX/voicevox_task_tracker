@@ -124,6 +124,7 @@ pnpm build:web
 
 GitHub Pagesへのdeployが成功した後だけ、deploy結果のURLを渡してDiscord stageを実行します。
 Discordへの送信には、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`を使います。
+通常digestはHTTP送信の前に、送信開始済みの記録を保存して`origin`の`tracker-state`へpushします。送信結果が不明なまま停止しても、同じ通知を自動再送しないための記録です。
 メッセージを1通送信するたびに、送信済みの通知管理記録と通知履歴を同じcommitへ保存し、`origin`の`tracker-state`へpushします。pushが成功してから次のメッセージを送信します。途中で失敗しても、保存済みの送信結果は残ります。同じrunを再実行するときは、送信済みまたは確認済みの通知理由を除いて送信します。
 
 GitHub Actionsではcheckoutが設定したGit認証を使います。ローカルで`notify-discord`または`daily`を実行する場合も、`origin`の`tracker-state`へpushできる認証が必要です。追跡開始時刻とrun完了の記録は、すべてのメッセージを処理した後に確定します。
@@ -271,6 +272,23 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 
 ## 通知量の調整
 
+### 送信結果が不明な通知を確認する
+
+通信例外、HTTP 5xx、応答不正が発生すると、Discordに届いたかどうかを判定できません。プロセスが送信中に停止した場合も、通知管理記録には送信開始済みの`delivery_started`が残ります。この記録は時間が経っても解除しません。同じrunの再実行は確認を求めるエラーで停止し、次の通常runは保留中の通知を除いて処理します。
+
+Discordの投稿と実行ログを確認し、対象メッセージを確認済みにするか、次回の送信候補へ戻します。運用障害通知のincident ID、または再実行時のエラーに表示される`deliveryId`で対象を指定します。ログが残っていない場合は、`tracker-state`の`state/notification-ledger.json`から`status`が`delivery_started`の記録を確認します。
+
+1. 日次workflowが実行中でないことを確認し、ローカルの`tracker-state`を`origin`の最新状態へ取得します。
+2. Discordで通知を確認できた場合、または送信を不要と判断した場合は、次のコマンドで確認済みにします。`ID`には対象の`deliveryId`を指定します。
+
+   ```console
+   pnpm tracker:run resolve-discord-delivery --delivery-id ID --resolution acknowledge
+   ```
+
+3. Discordへ届いていないことを確認できた場合は、`--resolution retry`を指定して実行します。その後、新しい日次runを開始します。
+
+このコマンドは通知管理記録を保存してpushします。ローカルでのビルドと、`origin`の`tracker-state`へpushできる認証が必要です。`retry`は通知を直接送信せず、次の集計時にまだ有効な候補だけを選別対象に戻します。`acknowledge`は確認済みにし、送信済みの履歴は作りません。受信の有無を確認せずに`retry`を選ぶと重複送信する可能性があります。
+
 ### 現在の通知候補を一括で確認済みにする
 
 通知条件を調整した直後など、現在の候補をDiscordへ送らず、通知済みと同様に扱いたい場合は、日次workflowの手動実行で通知処理を`acknowledge-current`にします。
@@ -413,4 +431,4 @@ state commit後のPages失敗は想定内であり、stateを巻き戻しませ�
 原因を除いた後に`backfill: none`で手動再実行します。
 
 同じrunを再実行してもworkflow concurrencyと通知管理記録が競合と通常通知の重複を抑えます。
-GitHub、Codex、Discordの429と503は設定した回数だけretryし、それでも失敗する場合は外部サービスの回復後に再実行します。
+GitHubとCodexの429と503は設定した回数だけretryし、それでも失敗する場合は外部サービスの回復後に再実行します。Discordが自動retryするのは429だけです。通信例外、5xx、応答不正の場合は、送信結果が不明な通知の確認手順に従います。

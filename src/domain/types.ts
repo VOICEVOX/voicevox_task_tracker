@@ -686,12 +686,18 @@ type NotificationLedgerEntryBase = Readonly<{
   reservedAt: UtcIsoDateTime;
 }>;
 
-/** Discord通知の予約、送信結果、確認済みledger entryを記録する型。 */
+/** Discord通知の予約、送信開始、送信結果、確認済みledger entryを記録する型。 */
 export type NotificationLedgerEntry =
   | (NotificationLedgerEntryBase &
       Readonly<{
         status: "reserved";
         expiresAt: UtcIsoDateTime;
+      }>)
+  | (NotificationLedgerEntryBase &
+      Readonly<{
+        status: "delivery_started";
+        deliveryId: string;
+        startedAt: UtcIsoDateTime;
       }>)
   | (NotificationLedgerEntryBase &
       Readonly<{

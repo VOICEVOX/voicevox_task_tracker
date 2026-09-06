@@ -34,7 +34,7 @@ import { notificationActionSchema, type NotificationAction } from "./command.js"
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
-const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "8";
+const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "9";
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const dateTimeSchema = z.iso
   .datetime({
@@ -612,7 +612,7 @@ export function assertWorkflowArtifactPublicSafety(
 
 /** workflow artifactから公開repository inventoryを復元する。 */
 export function workflowArtifactRepositoryInventory(
-  artifact: WorkflowArtifact,
+  artifact: Pick<WorkflowArtifact, "snapshot">,
 ): readonly Repository[] {
   return repositoryInventory(artifact.snapshot);
 }

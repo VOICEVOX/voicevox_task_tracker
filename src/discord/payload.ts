@@ -887,7 +887,7 @@ function operationsSummary(kind: OperationsAlertKind): string {
     case "pages":
       return "Pages公開に失敗したため、通常digestを停止しました";
     case "discord":
-      return "通常digestのDiscord送信がretry上限に達しました";
+      return "通常digestのDiscord送信を完了できませんでした。送信結果を確認してください";
   }
 }
 
@@ -929,7 +929,7 @@ export function buildDiscordOperationsAlertPlan(
             inline: false,
           }),
           Object.freeze({
-            name: "retry回数",
+            name: "試行回数",
             value: incident.retryAttempts.toString(),
             inline: false,
           }),

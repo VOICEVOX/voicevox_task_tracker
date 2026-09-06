@@ -107,6 +107,7 @@ export function createTrackerRunCliArguments(args: readonly string[]): readonly 
     args[0] === "persist-state" ||
     args[0] === "build-pages" ||
     args[0] === "notify-discord" ||
+    args[0] === "resolve-discord-delivery" ||
     args[0] === "notify-operations" ||
     args[0] === "report-workflow" ||
     args[0] === "verify-state"
@@ -162,6 +163,7 @@ export async function runTrackerCommand<Result>(
 function topLevelDiagnosticStage(command: CliCommand): RunStage | "unknown" {
   switch (command.kind) {
     case "persist-state":
+    case "resolve-discord-delivery":
       return "state_persistence";
     case "build-pages":
       return "pages";

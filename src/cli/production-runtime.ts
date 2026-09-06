@@ -181,7 +181,8 @@ import {
   createStateNotificationLedger,
   createStateRunReport,
   createStateSnapshot,
-  NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
+  NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+  assertStatePublicSafety,
   type StatePersistenceSession,
   type PersistStateTransactionResult,
   type SnapshotAiState,
@@ -208,6 +209,7 @@ import {
   type NotifyOperationsCliCommand,
   type PersistStateCliCommand,
   type ReportWorkflowCliCommand,
+  type ResolveDiscordDeliveryCliCommand,
 } from "./command.js";
 import { type OnlineCliCommand } from "./daily-transaction.js";
 import {
@@ -253,6 +255,7 @@ const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
 const CODEX_SCHEMA_VERSION = "4";
 const PAGES_BASE_URL = "https://voicevox.github.io";
+const DISCORD_DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
 const GITHUB_MENTION_PATTERN =
   /(?<![A-Za-z0-9-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?:\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,99})))?/gu;
 const CURRENT_DETERMINISTIC_RULES_VERSIONS = Object.freeze({
@@ -4924,6 +4927,15 @@ function notificationLedgerEntries(
           expiresAt: createUtcIsoDateTime(entry.expiresAt),
         }),
       );
+    } else if (entry.status === "delivery_started") {
+      entries.push(
+        Object.freeze({
+          ...fields,
+          status: "delivery_started",
+          deliveryId: entry.deliveryId,
+          startedAt: createUtcIsoDateTime(entry.startedAt),
+        }),
+      );
     } else if (entry.status === "sent") {
       entries.push(
         Object.freeze({
@@ -5200,7 +5212,7 @@ function mergeNotificationLedger(
     entries.set(entry.notificationKey, entry);
   }
   return createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
     pendingNotifications,
@@ -5602,7 +5614,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "8",
+    schemaVersion: "9",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -5717,6 +5729,14 @@ function notificationLedgerEntry(
       ...fields,
       status: "reserved",
       expiresAt: createUtcIsoDateTime(entry.expiresAt),
+    });
+  }
+  if (entry.status === "delivery_started") {
+    return Object.freeze({
+      ...fields,
+      status: "delivery_started",
+      deliveryId: entry.deliveryId,
+      startedAt: createUtcIsoDateTime(entry.startedAt),
     });
   }
   if (entry.status === "sent") {
@@ -6081,13 +6101,199 @@ function filterNotificationSelectionForLedger(
   });
 }
 
+function notificationLedgerEntryIdentityMatches(
+  left: NotificationLedgerEntry,
+  right: NotificationLedgerEntry,
+): boolean {
+  return (
+    left.notificationKey === right.notificationKey &&
+    left.itemNodeId === right.itemNodeId &&
+    left.reasonCode === right.reasonCode &&
+    left.severity === right.severity &&
+    left.reservedAt === right.reservedAt
+  );
+}
+
+function assertNotificationDeliveryBatch(
+  selection: DiscordDigestSelection,
+  currentEntriesByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+  entries: readonly NotificationLedgerEntry[],
+): void {
+  const firstEntry = entries[0];
+  assertNonNullable(firstEntry, "Discord送信結果にledger entryがありません");
+  if (firstEntry.status === "acknowledged") {
+    throw new TypeError("Discord送信callbackに確認済みledger entryを渡せません");
+  }
+  for (const entry of entries) {
+    if (entry.status !== firstEntry.status) {
+      throw new TypeError("Discord送信callbackのledger statusが一致しません");
+    }
+  }
+
+  const candidateByKey = new Map<
+    string,
+    Readonly<{
+      candidate: DiscordNotificationCandidate;
+      reason: DiscordNotificationCandidate["reasons"][number];
+    }>
+  >();
+  for (const candidate of selection.candidates) {
+    for (const reason of candidate.reasons) {
+      if (candidateByKey.has(reason.notificationKey)) {
+        throw new TypeError("通知候補のnotification keyが重複しています");
+      }
+      candidateByKey.set(reason.notificationKey, { candidate, reason });
+    }
+  }
+
+  const reservationByKey = new Map<
+    string,
+    Extract<NotificationLedgerEntry, { status: "reserved" }>
+  >();
+  for (const reservation of selection.ledgerReservations) {
+    if (reservationByKey.has(reservation.notificationKey)) {
+      throw new TypeError("通知予約のnotification keyが重複しています");
+    }
+    reservationByKey.set(reservation.notificationKey, reservation);
+  }
+  if (candidateByKey.size !== reservationByKey.size) {
+    throw new TypeError("通知候補とledger予約の件数が一致しません");
+  }
+  for (const notificationKey of candidateByKey.keys()) {
+    if (!reservationByKey.has(notificationKey)) {
+      throw new TypeError("通知候補とledger予約が一致しません");
+    }
+  }
+
+  const keysByItemNodeId = new Map<GitHubNodeId, Set<string>>();
+  for (const entry of entries) {
+    const candidateEntry = candidateByKey.get(entry.notificationKey);
+    if (candidateEntry == null) {
+      throw new TypeError("Discord送信結果のnotification keyが通知候補にありません");
+    }
+    const reservation = reservationByKey.get(entry.notificationKey);
+    assertNonNullable(reservation, "Discord送信結果に対応する通知予約がありません");
+    if (
+      !notificationLedgerEntryIdentityMatches(entry, reservation) ||
+      entry.itemNodeId !== candidateEntry.candidate.itemNodeId ||
+      entry.reasonCode !== candidateEntry.reason.reasonCode ||
+      entry.severity !== candidateEntry.candidate.severity
+    ) {
+      throw new TypeError("Discord送信結果と通知候補またはledger予約が一致しません");
+    }
+    const currentEntry = currentEntriesByKey.get(entry.notificationKey);
+    assertNonNullable(currentEntry, "Discord送信結果の現在ledger entryがありません");
+    if (!notificationLedgerEntryIdentityMatches(currentEntry, entry)) {
+      throw new TypeError("Discord送信結果と現在の通知ledgerが一致しません");
+    }
+    let itemKeys = keysByItemNodeId.get(entry.itemNodeId);
+    if (itemKeys == null) {
+      itemKeys = new Set<string>();
+      keysByItemNodeId.set(entry.itemNodeId, itemKeys);
+    }
+    if (itemKeys.has(entry.notificationKey)) {
+      throw new TypeError("Discord送信callbackのnotification keyが重複しています");
+    }
+    itemKeys.add(entry.notificationKey);
+
+    if (firstEntry.status === "delivery_started") {
+      if (entry.status !== "delivery_started") {
+        throw new TypeError("Discord送信callbackのledger statusが一致しません");
+      }
+      if (currentEntry.status !== "reserved") {
+        throw new TypeError("送信開始callbackは対応する通知予約から遷移させてください");
+      }
+      if (!notificationLedgerEntryIdentityMatches(currentEntry, reservation)) {
+        throw new TypeError("送信開始callbackは対応する通知予約から遷移させてください");
+      }
+      if (
+        currentEntry.expiresAt !== reservation.expiresAt ||
+        entry.startedAt < entry.reservedAt ||
+        entry.startedAt > reservation.expiresAt ||
+        !DISCORD_DELIVERY_ID_PATTERN.test(entry.deliveryId)
+      ) {
+        throw new TypeError("送信開始callbackは対応する通知予約から遷移させてください");
+      }
+      if (entry.deliveryId !== firstEntry.deliveryId || entry.startedAt !== firstEntry.startedAt) {
+        throw new TypeError("同じDiscord messageの送信開始時刻が一致しません");
+      }
+    } else if (firstEntry.status === "sent") {
+      if (entry.status !== "sent") {
+        throw new TypeError("Discord送信callbackのledger statusが一致しません");
+      }
+      if (
+        currentEntry.status !== "delivery_started" ||
+        currentEntry.startedAt < currentEntry.reservedAt ||
+        entry.sentAt < currentEntry.startedAt
+      ) {
+        throw new TypeError("送信済みcallbackは送信開始済み通知から遷移させてください");
+      }
+      const firstCurrentEntry = currentEntriesByKey.get(firstEntry.notificationKey);
+      assertNonNullable(firstCurrentEntry, "Discord送信結果の先頭entryが現在ledgerにありません");
+      if (
+        firstCurrentEntry.status !== "delivery_started" ||
+        currentEntry.deliveryId !== firstCurrentEntry.deliveryId ||
+        currentEntry.startedAt !== firstCurrentEntry.startedAt ||
+        entry.sentAt !== firstEntry.sentAt ||
+        entry.discordMessageId !== firstEntry.discordMessageId
+      ) {
+        throw new TypeError("同じDiscord messageの送信結果が一致しません");
+      }
+    } else {
+      if (entry.status !== "reserved") {
+        throw new TypeError("Discord送信callbackのledger statusが一致しません");
+      }
+      if (currentEntry.status !== "delivery_started" || entry.expiresAt !== reservation.expiresAt) {
+        throw new TypeError("予約復帰callbackは送信開始済み通知から遷移させてください");
+      }
+      const firstCurrentEntry = currentEntriesByKey.get(firstEntry.notificationKey);
+      assertNonNullable(firstCurrentEntry, "Discord送信結果の先頭entryが現在ledgerにありません");
+      if (
+        firstCurrentEntry.status !== "delivery_started" ||
+        currentEntry.deliveryId !== firstCurrentEntry.deliveryId ||
+        currentEntry.startedAt !== firstCurrentEntry.startedAt
+      ) {
+        throw new TypeError("同じDiscord messageの予約復帰結果が一致しません");
+      }
+    }
+  }
+
+  for (const [itemNodeId, itemKeys] of keysByItemNodeId) {
+    const candidate = selection.candidates.find((value) => value.itemNodeId === itemNodeId);
+    assertNonNullable(candidate, "Discord送信結果のitemが通知候補にありません");
+    const candidateKeys = new Set(candidate.reasons.map((reason) => reason.notificationKey));
+    if (
+      itemKeys.size !== candidateKeys.size ||
+      [...candidateKeys].some((notificationKey) => !itemKeys.has(notificationKey))
+    ) {
+      throw new TypeError("Discord送信結果の通知理由数が候補と一致しません");
+    }
+  }
+}
+
+function assertNoStartedNotificationDelivery(
+  selection: DiscordNotificationSelection,
+  entriesByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+): void {
+  for (const candidate of selection.candidates) {
+    for (const reason of candidate.reasons) {
+      const entry = entriesByKey.get(reason.notificationKey);
+      if (entry?.status === "delivery_started") {
+        throw new TypeError(
+          `通知 ${reason.notificationKey} は送信開始済みです。delivery ID: ${entry.deliveryId}。手動解決を実行してください: resolve-discord-delivery --delivery-id ${entry.deliveryId} --resolution retry または acknowledge`,
+        );
+      }
+    }
+  }
+}
+
 function createNotificationLedgerFromMaps(
   entriesByKey: ReadonlyMap<string, NotificationLedgerEntry>,
   operationsAlertsByKey: ReadonlyMap<string, OperationsAlertLedgerEntry>,
   pendingNotifications: readonly PendingNotification[],
 ): StateNotificationLedger {
   return createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
     entries: [...entriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
     pendingNotifications,
@@ -6206,6 +6412,7 @@ async function deliverDiscord(
       return entry?.status !== "sent" && entry?.status !== "acknowledged";
     }),
   );
+  assertNoStartedNotificationDelivery(validated.notificationSelection, notificationEntriesByKey);
   const notificationSelection = filterNotificationSelectionForLedger(
     validated.notificationSelection,
     notificationEntriesByKey,
@@ -6214,7 +6421,7 @@ async function deliverDiscord(
     snapshot,
     notificationSelection,
   );
-  const sentNotificationEntries: NotificationLedgerEntry[] = [];
+  const sentNotificationEntries: SentNotificationLedgerEntry[] = [];
   const notificationEvents: StateHistoryNotificationEvent[] = [];
 
   const persistDelivery = async (
@@ -6254,21 +6461,39 @@ async function deliverDiscord(
       ledger: {
         hasOperationsAlert: (alertKey) => Promise.resolve(operationsAlertsByKey.has(alertKey)),
         recordNotifications: async (entries) => {
-          const messageEvents = createNotificationHistoryEventsForMessage(
-            snapshot,
-            notificationHistoryContext,
-            entries,
-          );
           const firstEntry = entries[0];
           assertNonNullable(firstEntry, "Discord送信結果にledger entryがありません");
-          if (firstEntry.status !== "sent") {
-            throw new TypeError("Discord送信成功結果に未送信ledger entryがあります");
+          if (notificationSelection.action !== "create_digest") {
+            throw new TypeError("通知候補がないdigestから通知ledger callbackを呼び出せません");
+          }
+          assertNotificationDeliveryBatch(notificationSelection, notificationEntriesByKey, entries);
+          let messageEvents: readonly StateHistoryNotificationEvent[] = Object.freeze([]);
+          let committedAt: UtcIsoDateTime;
+          switch (firstEntry.status) {
+            case "delivery_started":
+              committedAt = firstEntry.startedAt;
+              break;
+            case "reserved":
+              committedAt = createUtcIsoDateTime(adapters.now().toISOString());
+              break;
+            case "sent":
+              messageEvents = createNotificationHistoryEventsForMessage(
+                snapshot,
+                notificationHistoryContext,
+                entries,
+              );
+              committedAt = firstEntry.sentAt;
+              break;
+            case "acknowledged":
+              throw new TypeError("Discord送信callbackに確認済みledger entryを渡せません");
           }
           const nextEntriesByKey = new Map(notificationEntriesByKey);
           for (const entry of entries) {
             nextEntriesByKey.set(entry.notificationKey, entry);
           }
-          const sentKeys = new Set(entries.map((entry) => entry.notificationKey));
+          const sentKeys = new Set(
+            firstEntry.status === "sent" ? entries.map((entry) => entry.notificationKey) : [],
+          );
           const nextPendingNotifications = Object.freeze(
             pendingNotifications.filter((pending) => !sentKeys.has(pending.notificationKey)),
           );
@@ -6277,10 +6502,17 @@ async function deliverDiscord(
             operationsAlertsByKey,
             nextPendingNotifications,
           );
-          await persistDelivery(notificationLedger, messageEvents, firstEntry.sentAt);
+          await persistDelivery(notificationLedger, messageEvents, committedAt);
           notificationEntriesByKey = nextEntriesByKey;
           pendingNotifications = nextPendingNotifications;
-          sentNotificationEntries.push(...entries);
+          if (firstEntry.status === "sent") {
+            for (const entry of entries) {
+              if (entry.status !== "sent") {
+                throw new TypeError("Discord送信結果のstatusが一致しません");
+              }
+              sentNotificationEntries.push(entry);
+            }
+          }
           notificationEvents.push(...messageEvents);
         },
         recordOperationsAlert: async (entry) => {
@@ -6462,7 +6694,7 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_6,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
     pendingNotifications: currentNotificationLedger.pendingNotifications,
@@ -7900,6 +8132,96 @@ async function notifyWorkflowOperations(
   });
 }
 
+function acknowledgeDeliveryStartedEntry(
+  entry: Extract<NotificationLedgerEntry, { status: "delivery_started" }>,
+  acknowledgedAt: UtcIsoDateTime,
+): NotificationLedgerEntry {
+  return Object.freeze({
+    notificationKey: entry.notificationKey,
+    itemNodeId: entry.itemNodeId,
+    reasonCode: entry.reasonCode,
+    severity: entry.severity,
+    reservedAt: entry.reservedAt,
+    status: "acknowledged",
+    acknowledgedAt,
+  });
+}
+
+async function resolveDiscordDelivery(
+  adapters: ProductionRuntimeAdapters,
+  command: ResolveDiscordDeliveryCliCommand,
+): Promise<void> {
+  if (!DISCORD_DELIVERY_ID_PATTERN.test(command.deliveryId)) {
+    throw new TypeError("Discord送信のdelivery IDが不正です");
+  }
+  const config = await adapters.loadConfig(resolve(adapters.repositoryPath, command.configPath));
+  const session = await adapters.openStateSession(
+    adapters.createStateBranchAdapter(),
+    config.state,
+  );
+  const persistedSnapshot = await session.loadSnapshot();
+  if (persistedSnapshot.status !== "available") {
+    throw new TypeError("Discord送信の手動解決対象となるstate snapshotがありません");
+  }
+  const currentLedger = await session.loadNotificationLedger();
+  const entries = currentLedger.entries.map(notificationLedgerEntry);
+  const matchingEntries = entries.filter(
+    (entry): entry is Extract<NotificationLedgerEntry, { status: "delivery_started" }> =>
+      entry.status === "delivery_started" && entry.deliveryId === command.deliveryId,
+  );
+  if (matchingEntries.length === 0) {
+    throw new TypeError(`指定されたdelivery IDの送信開始記録がありません: ${command.deliveryId}`);
+  }
+  const matchingKeys = new Set(matchingEntries.map((entry) => entry.notificationKey));
+  const resolvedAt = createUtcIsoDateTime(adapters.now().toISOString());
+  if (matchingEntries.some((entry) => resolvedAt < entry.startedAt)) {
+    throw new TypeError("Discord送信の解決時刻は送信開始時刻以後にしてください");
+  }
+  let nextEntries: readonly NotificationLedgerEntry[];
+  let pendingNotifications: readonly PendingNotification[];
+  if (command.resolution === "retry") {
+    nextEntries = Object.freeze(
+      entries.filter((entry) => !matchingKeys.has(entry.notificationKey)),
+    );
+    pendingNotifications = currentLedger.pendingNotifications;
+  } else {
+    nextEntries = Object.freeze(
+      entries.map((entry) => {
+        if (entry.status !== "delivery_started" || entry.deliveryId !== command.deliveryId) {
+          return entry;
+        }
+        return acknowledgeDeliveryStartedEntry(entry, resolvedAt);
+      }),
+    );
+    pendingNotifications = Object.freeze(
+      currentLedger.pendingNotifications.filter(
+        (pending) => !matchingKeys.has(pending.notificationKey),
+      ),
+    );
+  }
+  const notificationLedger = createStateNotificationLedger({
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+    entries: nextEntries,
+    operationsAlerts: currentLedger.operationsAlerts,
+    pendingNotifications,
+  });
+  const repositoryInventory = workflowArtifactRepositoryInventory({
+    snapshot: persistedSnapshot.snapshot,
+  });
+  assertStatePublicSafety({
+    snapshot: persistedSnapshot.snapshot,
+    repositoryInventory,
+    additionalValues: [currentLedger, notificationLedger],
+    knownSecrets: [],
+  });
+  await session.persistNotificationLedger({
+    notificationLedger,
+    committedAt: resolvedAt,
+    knownSecrets: [],
+  });
+  await session.publish();
+}
+
 async function reportWorkflowRun(
   adapters: ProductionRuntimeAdapters,
   command: ReportWorkflowCliCommand,
@@ -7922,6 +8244,7 @@ function createWorkflowStageRunner(adapters: ProductionRuntimeAdapters): Workflo
     buildPages: (command) => buildWorkflowPages(adapters, command),
     notifyDiscord: (command) => notifyWorkflowDiscord(adapters, command),
     notifyOperations: (command) => notifyWorkflowOperations(adapters, command),
+    resolveDiscordDelivery: (command) => resolveDiscordDelivery(adapters, command),
     reportWorkflow: (command) => reportWorkflowRun(adapters, command),
   });
 }

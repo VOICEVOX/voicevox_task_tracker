@@ -16,8 +16,11 @@ const DEFAULT_PAGES_OUTPUT_DIRECTORY = "artifacts/workflow/pages";
 const DEFAULT_COLLECT_ANALYZE_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/collect-analyze.json`;
 const DEFAULT_WORKFLOW_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/workflow.json`;
 const REPOSITORY_FILTER_PATTERN = /^VOICEVOX\/[A-Za-z0-9._-]+$/u;
+const DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
 export const notificationActionSchema = z.enum(["send", "acknowledge-current"]);
 export type NotificationAction = z.output<typeof notificationActionSchema>;
+const deliveryIdSchema = z.string().regex(DELIVERY_ID_PATTERN);
+const resolveDiscordDeliveryResolutionSchema = z.enum(["retry", "acknowledge"]);
 
 /** runの予定時刻を現在時刻または明示値から決める指定。 */
 export type CliSchedule =
@@ -95,6 +98,14 @@ export type NotifyDiscordCliCommand = Readonly<{
   pagesUrl: string;
 }>;
 
+/** Discord通知の送信保留を解除するCLI入力。 */
+export type ResolveDiscordDeliveryCliCommand = Readonly<{
+  kind: "resolve-discord-delivery";
+  configPath: string;
+  deliveryId: string;
+  resolution: "retry" | "acknowledge";
+}>;
+
 /** workflow障害時に運用障害通知だけを送るCLI入力。 */
 export type NotifyOperationsCliCommand = Readonly<{
   kind: "notify-operations";
@@ -164,6 +175,7 @@ export type CliCommand =
   | PersistStateCliCommand
   | BuildPagesCliCommand
   | NotifyDiscordCliCommand
+  | ResolveDiscordDeliveryCliCommand
   | NotifyOperationsCliCommand
   | ReportWorkflowCliCommand
   | VerifyStateCliCommand
@@ -447,6 +459,37 @@ function parseNotifyDiscord(args: readonly string[]): NotifyDiscordCliCommand {
   });
 }
 
+function parseResolveDiscordDelivery(args: readonly string[]): ResolveDiscordDeliveryCliCommand {
+  const options = parseOptions(args, new Set(["--config", "--delivery-id", "--resolution"]));
+  const deliveryIdSource = requiredSingleOption(
+    options,
+    "--delivery-id",
+    "resolve-discord-delivery",
+  );
+  const deliveryIdResult = deliveryIdSchema.safeParse(deliveryIdSource);
+  if (!deliveryIdResult.success) {
+    throw usageError(
+      "--delivery-idにはdiscord-digest:v1のdelivery IDを指定してください",
+      deliveryIdResult.error,
+    );
+  }
+  const resolutionResult = resolveDiscordDeliveryResolutionSchema.safeParse(
+    requiredSingleOption(options, "--resolution", "resolve-discord-delivery"),
+  );
+  if (!resolutionResult.success) {
+    throw usageError(
+      "--resolutionにはretryまたはacknowledgeを指定してください",
+      resolutionResult.error,
+    );
+  }
+  return Object.freeze({
+    kind: "resolve-discord-delivery",
+    configPath: singleOption(options, "--config", DEFAULT_CONFIG_PATH),
+    deliveryId: deliveryIdResult.data,
+    resolution: resolutionResult.data,
+  });
+}
+
 function parseNotifyOperations(args: readonly string[]): NotifyOperationsCliCommand {
   const options = parseOptions(
     args,
@@ -673,6 +716,8 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
       return parseBuildPages(options);
     case "notify-discord":
       return parseNotifyDiscord(options);
+    case "resolve-discord-delivery":
+      return parseResolveDiscordDelivery(options);
     case "notify-operations":
       return parseNotifyOperations(options);
     case "report-workflow":
@@ -699,6 +744,7 @@ export function formatCliUsage(): string {
     "  voicevox-task-tracker persist-state [--config PATH] [--artifact PATH]",
     "  voicevox-task-tracker build-pages [--config PATH] [--artifact PATH] [--output PATH]",
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",
+    "  voicevox-task-tracker resolve-discord-delivery --delivery-id ID --resolution retry|acknowledge [--config PATH]",
     "  voicevox-task-tracker notify-operations --kind collection|pages|discord --incident-id ID --occurred-at ISO",
     "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --quality-eval-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --publish-notification-history-result RESULT --notify-operations-result RESULT",
     "  voicevox-task-tracker verify-state --state-directory PATH",
