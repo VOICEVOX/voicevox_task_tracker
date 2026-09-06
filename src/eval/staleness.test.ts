@@ -7,9 +7,12 @@ import {
   createGitHubNodeId,
   createLabelEffectsResolver,
   createUtcIsoDateTime,
+  determinePullRequestState,
+  type FreshObservedGitHubPullRequest,
   type GitHubAccountActor,
   type NormalizedEvent,
   type PreviousStalenessState,
+  type PullRequestStateDecision,
   type SeverityThresholds,
   type SourceId,
   type StalenessResult,
@@ -176,6 +179,209 @@ function createReviewRequestEvent(
     actor,
     target,
     action: "added",
+  });
+}
+
+type ProductionReviewRequestFixture = Readonly<{
+  requestSourceId: SourceId;
+  requestEventSourceId: SourceId;
+  reviewer: GitHubAccountActor;
+  requestedAt: UtcIsoDateTime;
+}>;
+
+function productionSource(
+  kind:
+    | "github_commit"
+    | "github_item"
+    | "github_pull_request_review"
+    | "github_review_request"
+    | "github_timeline_event",
+  value: string,
+): SourceId {
+  return buildSourceId(kind, value);
+}
+
+function createProductionReviewRequestFixture(
+  reviewer: GitHubAccountActor,
+  requestId: string,
+  requestEventId: string,
+  requestedAt: UtcIsoDateTime,
+): ProductionReviewRequestFixture {
+  return Object.freeze({
+    requestSourceId: productionSource("github_review_request", requestId),
+    requestEventSourceId: productionSource("github_timeline_event", requestEventId),
+    reviewer,
+    requestedAt,
+  });
+}
+
+function createProductionReviewRequest(
+  fixture: ProductionReviewRequestFixture,
+): FreshObservedGitHubPullRequest["reviewRequests"][number] {
+  return Object.freeze({
+    sourceId: fixture.requestSourceId,
+    nodeId: createGitHubNodeId(`review-request-${fixture.requestSourceId}`),
+    target: Object.freeze({ type: "user", actor: fixture.reviewer }),
+    requestedAt: Object.freeze({ status: "available", value: fixture.requestedAt }),
+  });
+}
+
+function createProductionReviewRequestEvent(
+  fixture: ProductionReviewRequestFixture,
+): ReviewRequestEvent {
+  return Object.freeze({
+    kind: "review_request",
+    sourceId: fixture.requestEventSourceId,
+    itemNodeId,
+    occurredAt: fixture.requestedAt,
+    actor: author,
+    target: Object.freeze({ type: "user", nodeId: fixture.reviewer.nodeId }),
+    action: "added",
+  });
+}
+
+function createProductionReviewEvent(
+  id: string,
+  occurredAt: UtcIsoDateTime,
+  actor: GitHubAccountActor,
+  state: ReviewEvent["state"],
+  commitSha: string,
+): ReviewEvent {
+  return Object.freeze({
+    kind: "review",
+    sourceId: productionSource("github_pull_request_review", id),
+    itemNodeId,
+    occurredAt,
+    actor,
+    state,
+    bodyFingerprint: `body-${id}`,
+    bodyEmpty: true,
+    commitStatus: "available",
+    commitSha,
+  });
+}
+
+function createProductionPushEvent(
+  id: string,
+  occurredAt: UtcIsoDateTime,
+  headCommitSha: string,
+): EventByKind<"push"> {
+  return Object.freeze({
+    kind: "push",
+    sourceId: productionSource("github_timeline_event", id),
+    itemNodeId,
+    occurredAt,
+    actor: author,
+    headCommitSha,
+    forcePush: false,
+  });
+}
+
+function createProductionPullRequest(
+  requests: readonly ProductionReviewRequestFixture[],
+  events: readonly NormalizedEvent[],
+  headSha: string,
+  headPushedAt: UtcIsoDateTime,
+): FreshObservedGitHubPullRequest {
+  return Object.freeze({
+    freshness: "fresh",
+    sourceId: productionSource("github_item", "staleness-test-item"),
+    nodeId: itemNodeId,
+    type: "pull_request",
+    createdAt,
+    state: "open",
+    stateReason: null,
+    closedAt: null,
+    author: Object.freeze({ status: "identified", actor: author }),
+    assignees: Object.freeze([]),
+    draft: false,
+    headSha,
+    headCommit: Object.freeze({
+      sourceId: productionSource("github_commit", `head-${headSha}`),
+      nodeId: createGitHubNodeId(`head-${headSha}`),
+      sha: headSha,
+      committedAt: headPushedAt,
+      pushedAt: Object.freeze({ status: "available", value: headPushedAt }),
+    }),
+    reviewThreads: Object.freeze([]),
+    reviewRequests: Object.freeze(requests.map(createProductionReviewRequest)),
+    mergeState: Object.freeze({
+      mergeability: "mergeable",
+      mergeState: "clean",
+      autoMerge: Object.freeze({ status: "not_enabled" }),
+      mergeQueue: Object.freeze({ status: "not_queued" }),
+      checks: Object.freeze({ status: "not_configured" }),
+    }),
+    events: Object.freeze(events),
+    observedAt: evaluatedAt,
+  });
+}
+
+function determineProductionReviewDecision(
+  requests: readonly ProductionReviewRequestFixture[],
+  events: readonly NormalizedEvent[],
+  headSha: string,
+  headPushedAt: UtcIsoDateTime,
+): PullRequestStateDecision {
+  return determinePullRequestState({
+    pullRequest: createProductionPullRequest(requests, events, headSha, headPushedAt),
+    blockers: [],
+    checkFailureAssessment: Object.freeze({ cause: "not_assessed" }),
+    labelEffects: Object.freeze({
+      priorityWeight: 0,
+      severityLift: 0,
+      requiresMaintainerDecision: false,
+      maintainerDecisionLabelNames: Object.freeze([]),
+      suppressNotifications: false,
+      countsAsProgress: false,
+    }),
+    maintainers: ["maintainer"],
+    confidenceThresholds: Object.freeze({ high: 0.8, medium: 0.5 }),
+    evaluatedAt,
+  });
+}
+
+function calculateDecisionStaleness(
+  decision: PullRequestStateDecision,
+  events: readonly NormalizedEvent[],
+  previousState: PreviousStalenessState,
+): StalenessResult {
+  const threshold = Object.freeze({ watch: 100, urgent: 200, critical: 300 });
+  return calculateStaleness({
+    itemType: "pull_request",
+    createdAt,
+    evaluatedAt,
+    currentDecision: {
+      status: decision.status,
+      waitingOn: decision.waitingOn,
+      confidence: decision.confidence,
+      statusBasis: decision.statusBasis,
+      responsibilityBasis: decision.responsibilityBasis,
+    },
+    decisionBasis: "deterministic",
+    previousState,
+    events,
+    responsibleAccountIdentifiers: new Set(
+      decision.waitingOn.map((waitingOn) => waitingOn.candidateId),
+    ),
+    dependencyResolutions: [],
+    naturalLanguageAssessments: [],
+    minimumAiConfidence: 0.5,
+    repositoryFullName: "voicevox/test",
+    currentLabels: [],
+    resolveLabelEffects,
+    thresholdsHours: Object.freeze({
+      assessment: threshold,
+      owner: threshold,
+      decision: threshold,
+      review: threshold,
+      revision: threshold,
+      reply: threshold,
+      work: threshold,
+      merge: threshold,
+      automation: threshold,
+    }),
+    blockedParentContext: { status: "not_applicable" },
   });
 }
 
@@ -522,7 +728,7 @@ void test("同じreviewerへの明示的な新規依頼だけownerSinceを進め
       "pull_request",
       "waiting_for_review",
       [currentWaitingOn],
-      [newRequest],
+      [],
       previousState,
       createBasis(newRequest.sourceId, reviewAt, "inferred"),
       ["reviewer"],
@@ -530,4 +736,131 @@ void test("同じreviewerへの明示的な新規依頼だけownerSinceを進め
   );
   assert.equal(inferred.ownerSince, ownerSince);
   assert.equal(inferred.stallSince, initialStallSince);
+});
+
+void test("現行review requestの実eventを通常依頼と再reviewの責務時計へ反映する", () => {
+  const regularRequest = createProductionReviewRequestFixture(
+    reviewer,
+    "regular-current",
+    "regular-added",
+    reviewAt,
+  );
+  const regularEvents = Object.freeze([
+    createProductionReviewRequestEvent(regularRequest),
+  ] satisfies readonly NormalizedEvent[]);
+  const regularDecision = determineProductionReviewDecision(
+    [regularRequest],
+    regularEvents,
+    "regular-head",
+    ownerSince,
+  );
+  assert.equal(regularDecision.status, "waiting_for_review");
+  assert.ok(
+    regularDecision.responsibilityBasis.sourceIds.includes(regularRequest.requestEventSourceId),
+  );
+  const regularResult = calculateDecisionStaleness(
+    regularDecision,
+    regularEvents,
+    createPreviousState(
+      "waiting_for_review",
+      regularDecision.waitingOn,
+      "inherit",
+      initialStallSince,
+      initialStallSince,
+      initialStallSince,
+    ),
+  );
+  assert.equal(regularResult.ownerSince, reviewAt);
+  assert.equal(regularResult.stallSince, reviewAt);
+
+  const rereviewRequest = createProductionReviewRequestFixture(
+    reviewer,
+    "rereview-current",
+    "rereview-added",
+    reviewAt,
+  );
+  const rereviewEvents = Object.freeze([
+    createProductionReviewEvent(
+      "rereview-changes",
+      ownerSince,
+      reviewer,
+      "changes_requested",
+      "old-head",
+    ),
+    createProductionPushEvent("rereview-push", activityAt, "rereview-head"),
+    createProductionReviewRequestEvent(rereviewRequest),
+  ] satisfies readonly NormalizedEvent[]);
+  const rereviewDecision = determineProductionReviewDecision(
+    [rereviewRequest],
+    rereviewEvents,
+    "rereview-head",
+    activityAt,
+  );
+  assert.equal(rereviewDecision.status, "waiting_for_review");
+  assert.equal(rereviewDecision.responsibilityBasis.occurredAt, activityAt);
+  assert.ok(
+    rereviewDecision.responsibilityBasis.sourceIds.includes(rereviewRequest.requestEventSourceId),
+  );
+  const rereviewResult = calculateDecisionStaleness(
+    rereviewDecision,
+    rereviewEvents,
+    createPreviousState(
+      "waiting_for_review",
+      rereviewDecision.waitingOn,
+      "inherit",
+      initialStallSince,
+      initialStallSince,
+      initialStallSince,
+    ),
+  );
+  assert.equal(rereviewResult.ownerSince, reviewAt);
+  assert.equal(rereviewResult.stallSince, reviewAt);
+
+  const secondaryReviewer = createAccountActor(
+    "human",
+    createGitHubNodeId("secondary-reviewer"),
+    "secondary-reviewer",
+  );
+  const primaryRequest = createProductionReviewRequestFixture(
+    reviewer,
+    "primary-current",
+    "primary-added",
+    activityAt,
+  );
+  const secondaryRequest = createProductionReviewRequestFixture(
+    secondaryReviewer,
+    "secondary-current",
+    "secondary-added",
+    reviewAt,
+  );
+  const multipleReviewerEvents = Object.freeze([
+    createProductionReviewRequestEvent(primaryRequest),
+    createProductionReviewRequestEvent(secondaryRequest),
+  ] satisfies readonly NormalizedEvent[]);
+  const multipleReviewerDecision = determineProductionReviewDecision(
+    [primaryRequest, secondaryRequest],
+    multipleReviewerEvents,
+    "multiple-reviewer-head",
+    ownerSince,
+  );
+  assert.equal(multipleReviewerDecision.status, "waiting_for_review");
+  assert.ok(
+    multipleReviewerDecision.responsibilityBasis.sourceIds.includes(
+      secondaryRequest.requestEventSourceId,
+    ),
+  );
+  const multipleReviewerResult = calculateDecisionStaleness(
+    multipleReviewerDecision,
+    multipleReviewerEvents,
+    createPreviousState(
+      "waiting_for_review",
+      multipleReviewerDecision.waitingOn,
+      "inherit",
+      initialStallSince,
+      initialStallSince,
+      initialStallSince,
+    ),
+  );
+  assert.equal(multipleReviewerResult.ownerSince, reviewAt);
+  assert.equal(multipleReviewerResult.stallSince, reviewAt);
 });

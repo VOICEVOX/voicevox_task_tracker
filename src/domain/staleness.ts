@@ -411,11 +411,7 @@ function determineExplicitReviewRequestOwnerSince(
   input: CalculateStalenessInput,
   previousOwnerSince: UtcIsoDateTime,
 ): UtcIsoDateTime | undefined {
-  if (
-    input.itemType !== "pull_request" ||
-    input.currentDecision.status !== "waiting_for_review" ||
-    input.currentDecision.responsibilityBasis.precision !== "event"
-  ) {
+  if (input.itemType !== "pull_request" || input.currentDecision.status !== "waiting_for_review") {
     return undefined;
   }
   const basisSourceIds = new Set(input.currentDecision.responsibilityBasis.sourceIds);

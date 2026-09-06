@@ -124,6 +124,7 @@ type LabelEventReplay = Readonly<{
 
 type ResolvedReviewRequest = Readonly<{
   requestSourceId: SourceId;
+  requestEventSourceIds: readonly SourceId[];
   waitingOn: WaitingOn;
   basis: PullRequestTransitionBasis;
 }>;
@@ -1097,8 +1098,26 @@ function resolveHumanReviewRequests(
       request.requestedAt.status === "available"
         ? createBasis([request.sourceId], request.requestedAt.value, "event")
         : createBasis([pullRequest.sourceId], pullRequest.createdAt, "inferred");
+    const targetNodeId =
+      request.target.type === "user" ? request.target.actor.nodeId : request.target.nodeId;
+    let requestEventSourceIds: readonly SourceId[] = Object.freeze([]);
+    if (request.requestedAt.status === "available") {
+      const requestedAt = request.requestedAt.value;
+      requestEventSourceIds = Object.freeze(
+        pullRequest.events
+          .filter(
+            (event): event is Extract<NormalizedEvent, { kind: "review_request" }> =>
+              event.kind === "review_request" &&
+              event.action === "added" &&
+              event.target.nodeId === targetNodeId &&
+              event.occurredAt === requestedAt,
+          )
+          .map((event) => event.sourceId),
+      );
+    }
     const resolved = Object.freeze({
       requestSourceId: request.sourceId,
+      requestEventSourceIds,
       waitingOn: createWaitingOn({
         kind,
         candidateId,
@@ -1116,6 +1135,21 @@ function resolveHumanReviewRequests(
     }
   }
   return Object.freeze([...requests.values()].sort(compareResolvedReviewRequests));
+}
+
+function createReviewResponsibilityBasis(
+  baseBasis: PullRequestTransitionBasis,
+  reviewRequests: readonly ResolvedReviewRequest[],
+): PullRequestTransitionBasis {
+  const requestEventSourceIds = reviewRequests.flatMap((request) => request.requestEventSourceIds);
+  if (requestEventSourceIds.length === 0) {
+    return baseBasis;
+  }
+  return createBasis(
+    [...baseBasis.sourceIds, ...requestEventSourceIds],
+    baseBasis.occurredAt,
+    baseBasis.precision,
+  );
 }
 
 function createRereviewDecision(
@@ -1210,6 +1244,7 @@ function createRereviewDecision(
     ...headBasis.sourceIds,
     ...reviewRequests.flatMap((request) => request.waitingOn.sourceIds),
   ];
+  const responsibilityBasis = createReviewResponsibilityBasis(headBasis, reviewRequests);
   return finalizeDecision(input, context, {
     status: "waiting_for_review",
     waitingOn,
@@ -1221,7 +1256,7 @@ function createRereviewDecision(
       ...createEvidence(sourceIds, "waiting_on", "再reviewはreviewer側の責務です"),
     ],
     statusBasis: headBasis,
-    responsibilityBasis: headBasis,
+    responsibilityBasis,
   });
 }
 
@@ -1235,6 +1270,7 @@ function createReviewRequestDecision(
   }
   const primary = reviewRequests[0];
   assertNonNullable(primary, "primary review requestを選定できませんでした");
+  const responsibilityBasis = createReviewResponsibilityBasis(primary.basis, reviewRequests);
   const sourceIds = reviewRequests.flatMap((request) => request.waitingOn.sourceIds);
   const resolvedUserRequestsBySourceId = new Map<SourceId, ResolvedReviewRequest>();
   for (const request of reviewRequests) {
@@ -1297,7 +1333,7 @@ function createReviewRequestDecision(
       ...createEvidence(sourceIds, "waiting_on", "review request先の対応待ちです"),
     ],
     statusBasis: primary.basis,
-    responsibilityBasis: primary.basis,
+    responsibilityBasis,
   });
 }
 
