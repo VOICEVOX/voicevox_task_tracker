@@ -154,6 +154,9 @@ export type NotificationReasonCode =
   | "merge_overdue"
   | "automation_stuck";
 
+/** 通知管理記録へ保存できるreason code。 */
+export type NotificationLedgerReasonCode = NotificationReasonCode | "work_overdue";
+
 /** イベントを起こした主体の種別。 */
 export type ActorType = "human" | "bot" | "system";
 
@@ -533,7 +536,7 @@ export type AnalysisMetadata = Readonly<{
 type NotificationLedgerEntryBase = Readonly<{
   notificationKey: string;
   itemNodeId: GitHubNodeId;
-  reasonCode: NotificationReasonCode;
+  reasonCode: NotificationLedgerReasonCode;
   severity: Severity;
   reservedAt: UtcIsoDateTime;
 }>;

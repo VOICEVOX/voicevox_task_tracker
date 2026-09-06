@@ -256,6 +256,7 @@ const expectedNotificationSchema = z.strictObject({
       "review_overdue",
       "revision_overdue",
       "reply_overdue",
+      "work_overdue",
       "owner_unknown",
       "blocker_overdue",
       "newly_unblocked",
