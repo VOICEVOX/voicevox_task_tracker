@@ -171,7 +171,9 @@ Codexとgraphは要対応度のscoreとlevelを直接決めません。
 
 そのため、項目ごとに判定規則fingerprintをsnapshotへ保存し、現在値と異なる項目を詳細取得の対象へ加えます。
 判定規則fingerprintは項目種別に対応する決定論的規則versionと、Codex実行identityのhashから作ります。
-Issueの規則だけを変えた場合はIssueだけが再取得され、modelやprompt versionを変えた場合は全項目が再取得されます。
+Issueの規則だけを変えた場合はIssueだけが再取得され、modelを変えた場合は全項目が再取得されます。
+prompt versionの変更では、`ai.promptUpdates`から項目ごとの適用範囲を調べます。
+前回の判定がすべての更新の対象外なら、前回と同じidentityを使って現在の有効な判定規則fingerprintを計算し、変更対象外の項目の再取得を避けます。
 
 判定規則fingerprintを現在値で保存するのは、そのrunで実際に再判定した項目だけです。
 再判定していない項目に現在値を書くと、古い判定のまま最新規則で判定済みと記録され、以後再判定されなくなります。
@@ -181,9 +183,17 @@ Issueの規則だけを変えた場合はIssueだけが再取得され、model�
 AI分析の失敗と延期はGitHub側を動かさないため、この扱いがなければ縮退した判定が固着します。
 terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行します。
 
+AI候補の入力は現在のidentityで作ります。
+現在のcacheがない場合は、更新履歴上の対象外で、source、入力、隣接graphのhashも前回と一致する項目に限り、生成時のidentityで元のcacheを探します。
+元のcacheもschemaとsemantic validationを通し、結果のmetadataとfingerprintは生成時の値を保持します。
+元のcacheを利用できなければ、現在のidentityで新たに実行します。
+失敗・延期中の項目にはこの再利用を適用しません。
+プロンプト変更の適用対象になった項目は、状態の決定論的な高信頼判定だけを理由にAI分析を省きません。
+1項目の全出力は引き続き1回の呼び出しで判定します。
+
 決定論的規則versionとprompt versionは手で更新する定数です。
 `ai.promptVersion`はプロンプトファイルの改訂番号を表さず、意味上のAI判定規則を識別するversionです。変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は据え置きます。全件再推論をこの判断手段にしません。95％以上と見込めない場合、または影響を判断できない場合はversionを上げます。具体的な判断基準は[開発手順](DEVELOPMENT.md)の「Codexプロンプトのversionを判断する」を参照してください。
-現行の決定論的規則versionはIssueが`issue-v13`、Pull Requestが`pull-request-v11`です。
+現行の決定論的規則versionはIssueが`issue-v14`、Pull Requestが`pull-request-v12`です。
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 
@@ -219,9 +229,19 @@ GitHubが時刻を持たない場面では、決定論的に決まる下限を�
 
 停滞起点には、現在の待ち先本人がGitHub上で活動した時刻も下限として効きます。
 `kind: "user"`の候補だけが責務アカウントを持ち、そのGitHubアカウントの活動を対象にします。
-`kind: "team"`の候補は責務アカウントを持たず、team memberの活動では停滞起点を更新しません。
-第三者やbotの活動、draft戻しやmerge queueの出し入れは対象外で、停滞を解除しません。
+`kind: "team"`の候補は責務アカウントを持たず、コメントした人のteam所属から責務主体の活動とみなすことはしません。
+第三者の一般コメントやbotの活動、draft戻しやmerge queueの出し入れは対象外で、停滞を解除しません。
 活動は既存の待ち先の停滞起点にだけ使い、新しい実質担当者の推定には使いません。
+
+PRのレビュー担当選定待ちとレビュー待ちでは、全体の進捗と、待っている対応の進展を分けます。
+`lastProgressAt`は作者のpushなどを含む全体の進捗を記録します。
+この2状態の`stallSince`には、待ち期間の開始、現在の待ち相手本人の活動、人間のレビューを反映します。作者のpushや第三者の一般コメントは反映しません。
+teamへの依頼でも人間のレビューは進展として扱いますが、コメントした人のteam所属は推定しません。
+同じレビュワーへの新しいレビュー依頼は、GitHubの依頼イベントを根拠に新しい待ち期間とします。
+
+Issueの議論・作業、PRの修正・返答・自動処理・マージ・Draft、依存項目待ちは、各状態の進捗判定を使います。
+規則versionの更新で上記2状態を再判定するときは、状態と責務の開始時刻を維持し、停滞起点を取得したイベントから再計算します。
+詳細取得に失敗して保持する項目は、保存済みの起点を維持します。
 待ち先本人が動いていない項目は作成時刻まで下限が落ち、長い停滞として残ります。
 
 人間コメントを意味のある進捗と認めるかはCodexの判定に委ねているため、
@@ -350,7 +370,7 @@ DiscordはHTTP 429だけを同じ設定で再試行します。通信例外、HT
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
-`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v16`です。
+`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v17`です。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch
@@ -385,7 +405,10 @@ Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しま�
 予約期限はworkflow内の排他用leaseであり通知方針ではないため、設定項目にせず、4時間周期をまたぐ重複送信を抑える24時間へ固定します。
 送信開始前の期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。
 通常digestのHTTP送信前に、メッセージ単位の識別子と開始時刻を持つ`delivery_started`を保存してpushします。送信開始済みの記録は期限では解除せず、同じnotification keyの自動再送を抑えます。明確なHTTP拒否を受けた場合は予約へ戻し、送信成功時は`sent`へ進めます。通信が途切れた場合やプロセスが停止した場合は、送信開始済みの記録を残します。
-`sent`と`acknowledged`のentryは同じnotification keyを期限なく通知対象から除外します。notification keyは`status`、停滞レベルを表す`severity`、待ち相手を表す`waitingOn`、各種開始時刻などの状態から作ります。判定規則versionだけが変わり、状態、待ち相手、進捗が変わらない場合は前回の開始時刻を引き継ぐため、同じkeyを維持します。状態、停滞レベル、待ち相手、進捗が変わって別keyになった候補は通常の選別対象へ戻ります。
+`sent`と`acknowledged`のentryは同じnotification keyを期限なく通知対象から除外します。notification keyは`status`、停滞レベルを表す`severity`、待ち相手を表す`waitingOn`、各種開始時刻などの状態から作ります。
+時間系通知と待ち先不明の通知では、同じ項目・通知理由・停滞レベルについて、現在の待ち期間内に予約した記録も照合します。期間内の送信開始済み・送信済み・確認済み記録があれば除外し、予約中の記録は期限まで再送を抑えます。
+待ち期間は`statusSince`と`ownerSince`の新しい方から始まります。照合には`reservedAt`を使い、送信完了が次の待ち期間に遅れた記録を新しい期間の通知と取り違えないようにします。
+進捗で停滞起点だけが変わっても、同じ待ち期間の同じ停滞レベルは再送しません。新しい待ち期間や停滞レベルの上昇は再び選別対象とします。依存解消・循環検出などの非時間系通知は、それぞれのトリガーを使います。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
 PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。

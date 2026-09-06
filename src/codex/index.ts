@@ -40,6 +40,11 @@ export {
   type PreviousAiResultReuseDecision,
 } from "./analysis-selection.js";
 export {
+  assessPromptUpdates,
+  type PromptUpdateAssessment,
+  type PromptUpdateContext,
+} from "./prompt-updates.js";
+export {
   estimateAiInputCost,
   planAiAnalysisBudget,
   planAiAnalysisBudgetWithPreflight,

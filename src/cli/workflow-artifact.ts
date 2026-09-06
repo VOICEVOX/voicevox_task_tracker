@@ -63,6 +63,7 @@ const notificationReasonCodeSchema = z.enum([
   "review_overdue",
   "revision_overdue",
   "reply_overdue",
+  "work_overdue",
   "owner_unknown",
   "blocker_overdue",
   "newly_unblocked",

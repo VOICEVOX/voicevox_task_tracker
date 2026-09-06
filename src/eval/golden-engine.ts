@@ -1122,6 +1122,7 @@ function createStaleness(
         })
       : Object.freeze({
           availability: "available",
+          stallSincePolicy: "inherit",
           value: Object.freeze({
             status: decision.status,
             waitingOn: decision.waitingOn,
@@ -1138,6 +1139,7 @@ function createStaleness(
     item.nodeId,
   );
   return calculateStaleness({
+    itemType: item.type,
     createdAt: createUtcIsoDateTime(item.createdAt),
     evaluatedAt,
     currentDecision: Object.freeze({

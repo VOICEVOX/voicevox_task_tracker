@@ -156,6 +156,9 @@ export type NotificationReasonCode =
   | "merge_overdue"
   | "automation_stuck";
 
+/** 通知管理記録へ保存できるreason code。 */
+export type NotificationLedgerReasonCode = NotificationReasonCode | "work_overdue";
+
 /** イベントを起こした主体の種別。 */
 export type ActorType = "human" | "bot" | "system";
 
@@ -435,7 +438,7 @@ const pendingNotificationTargetSchema = z.discriminatedUnion("kind", [
 ]);
 
 function pendingNotificationTargetKind(
-  reasonCode: Exclude<NotificationReasonCode, "none">,
+  reasonCode: Exclude<NotificationReason["reasonCode"], "none">,
 ): PendingNotificationTarget["kind"] {
   switch (reasonCode) {
     case "responsibility_changed":
@@ -450,6 +453,7 @@ function pendingNotificationTargetKind(
     case "review_overdue":
     case "revision_overdue":
     case "reply_overdue":
+    case "work_overdue":
     case "owner_unknown":
     case "blocker_overdue":
     case "merge_overdue":
@@ -681,7 +685,7 @@ export type AnalysisMetadata = Readonly<{
 type NotificationLedgerEntryBase = Readonly<{
   notificationKey: string;
   itemNodeId: GitHubNodeId;
-  reasonCode: NotificationReasonCode;
+  reasonCode: NotificationLedgerReasonCode;
   severity: Severity;
   reservedAt: UtcIsoDateTime;
 }>;

@@ -17,7 +17,12 @@
     }
   ],
   "relations": [],
-  "notifications": [],
+  "notifications": [
+    {
+      "itemNodeId": "prompt-injection-issue",
+      "reasonCodes": ["work_overdue"]
+    }
+  ],
   "publication": {
     "status": "published"
   },

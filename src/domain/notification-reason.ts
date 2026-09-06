@@ -10,6 +10,7 @@ export type NotificationTimeReasonCode =
   | "review_overdue"
   | "revision_overdue"
   | "reply_overdue"
+  | "work_overdue"
   | "merge_overdue"
   | "automation_stuck";
 
@@ -94,6 +95,10 @@ export const notificationReasonSchema = z.discriminatedUnion("reasonCode", [
     threshold: notificationTimeReasonThresholdSchema,
   }),
   z.strictObject({
+    reasonCode: z.literal("work_overdue"),
+    threshold: notificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
     reasonCode: z.literal("merge_overdue"),
     threshold: notificationTimeReasonThresholdSchema,
   }),
@@ -124,7 +129,7 @@ export const notificationReasonSchema = z.discriminatedUnion("reasonCode", [
 ]);
 
 function isTimeReasonCode(
-  reasonCode: Exclude<NotificationReasonCode, "none">,
+  reasonCode: NotificationTimeReasonCode | NotificationNonTimeReasonCode,
 ): reasonCode is NotificationTimeReasonCode {
   switch (reasonCode) {
     case "assessment_overdue":
@@ -133,6 +138,7 @@ function isTimeReasonCode(
     case "review_overdue":
     case "revision_overdue":
     case "reply_overdue":
+    case "work_overdue":
     case "merge_overdue":
     case "automation_stuck":
       return true;
@@ -147,7 +153,7 @@ function isTimeReasonCode(
 
 /** 理由コードと基準時間の記録状態から通知理由を生成する。 */
 export function createNotificationReason(
-  reasonCode: Exclude<NotificationReasonCode, "none">,
+  reasonCode: NotificationTimeReasonCode | NotificationNonTimeReasonCode,
   threshold: NotificationReasonThreshold,
 ): NotificationReason {
   if (isTimeReasonCode(reasonCode)) {
@@ -201,19 +207,19 @@ export function createNotificationReason(
 function overdueReasonText(label: string, reason: NotificationReason): string {
   switch (reason.threshold.status) {
     case "recorded":
-      return `${label}が基準となる${reason.threshold.hours.toString()}時間に達しました`;
+      return `${label}の停滞時間が基準となる${reason.threshold.hours.toString()}時間に達しました`;
     case "not_reached": {
       const elapsedMinutes = Math.floor(reason.threshold.elapsedHours * 60);
       if (elapsedMinutes < 1) {
-        return `${label}が1分未満続いています`;
+        return `${label}の停滞時間は1分未満です`;
       }
       if (elapsedMinutes < 60) {
-        return `${label}が${elapsedMinutes.toString()}分続いています`;
+        return `${label}の停滞時間は${elapsedMinutes.toString()}分です`;
       }
-      return `${label}が${Math.floor(reason.threshold.elapsedHours).toString()}時間続いています`;
+      return `${label}の停滞時間は${Math.floor(reason.threshold.elapsedHours).toString()}時間です`;
     }
     case "not_recorded":
-      return `${label}が基準時間を超えました`;
+      return `${label}の停滞時間が基準時間を超えました`;
     case "not_applicable":
       throw new TypeError("時間系通知理由に適用不能な基準時間があります");
   }
@@ -225,15 +231,17 @@ export function notificationReasonText(reason: NotificationReason): string {
     case "assessment_overdue":
       return overdueReasonText("内容確認待ち", reason);
     case "owner_overdue":
-      return overdueReasonText("担当決め待ち", reason);
+      return overdueReasonText("対応先の確認待ち", reason);
     case "decision_overdue":
       return overdueReasonText("方針判断待ち", reason);
     case "review_overdue":
       return overdueReasonText("レビュー待ち", reason);
     case "revision_overdue":
-      return overdueReasonText("修正待ち", reason);
+      return overdueReasonText("修正・指摘への対応待ち", reason);
     case "reply_overdue":
       return overdueReasonText("返答待ち", reason);
+    case "work_overdue":
+      return overdueReasonText("作業待ち", reason);
     case "owner_unknown":
       return "待ち先不明です";
     case "blocker_overdue":

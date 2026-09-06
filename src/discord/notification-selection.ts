@@ -31,8 +31,8 @@ const RESPONSIBILITY_CHANGE_STALL_HOURS = 48;
 const RESERVATION_DURATION_MILLISECONDS = MILLISECONDS_PER_DAY;
 const DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
 
-/** 通知理由として利用できるnone以外のreason code。 */
-export type DiscordNotificationReasonCode = Exclude<NotificationReasonCode, "none">;
+/** Discord通知で利用できるnone以外のreason code。 */
+export type DiscordNotificationReasonCode = Exclude<NotificationReason["reasonCode"], "none">;
 
 /** 通知判定に使う最新変更の分類。 */
 export type DiscordNotificationLatestChange =
@@ -287,6 +287,7 @@ function pendingTargetForReason(
     case "review_overdue":
     case "revision_overdue":
     case "reply_overdue":
+    case "work_overdue":
     case "owner_unknown":
     case "blocker_overdue":
     case "merge_overdue":
@@ -633,6 +634,7 @@ const TIME_REASON_WAIT_CLASS = {
   review_overdue: "review",
   revision_overdue: "revision",
   reply_overdue: "reply",
+  work_overdue: "work",
   merge_overdue: "merge",
   automation_stuck: "automation",
 } satisfies Readonly<Record<NotificationTimeReasonCode, WaitClass>>;
@@ -661,6 +663,9 @@ function overdueReasonCode(
 ): DiscordNotificationReasonCode | undefined {
   if (waitClass === "owner" && status === "unknown") {
     return "owner_unknown";
+  }
+  if (waitClass === "work" && status !== "waiting_for_work") {
+    return undefined;
   }
   return timeReasonCodeForWaitClass(waitClass);
 }
@@ -703,6 +708,7 @@ function notificationReasonForSelection(
     case "review_overdue":
     case "revision_overdue":
     case "reply_overdue":
+    case "work_overdue":
     case "merge_overdue":
     case "automation_stuck": {
       const waitClass = waitClassForTimeReasonCode(input.reasonCode);
@@ -775,6 +781,14 @@ function shouldEvaluateOverdue(item: DiscordNotificationItem): boolean {
   if (comparison < 0) {
     return false;
   }
+  if (
+    item.current.status === "waiting_for_work" &&
+    item.current.waitClass === "work" &&
+    item.current.severityReason.kind === "elapsed_threshold" &&
+    item.current.severityReason.crossedThreshold.status === "reached"
+  ) {
+    return true;
+  }
   return item.current.severity === "urgent" || item.current.severity === "critical";
 }
 
@@ -783,7 +797,12 @@ function hasRecentMeaningfulProgress(
   evaluatedTimestamp: number,
   graceHours: number,
 ): boolean {
-  return hoursBetween(item.current.lastProgressAt, evaluatedTimestamp) < graceHours;
+  const graceSince =
+    item.draftState !== "not_applicable" &&
+    (item.current.status === "waiting_for_owner" || item.current.status === "waiting_for_review")
+      ? item.current.stallSince
+      : item.current.lastProgressAt;
+  return hoursBetween(graceSince, evaluatedTimestamp) < graceHours;
 }
 
 function createOverdueSignals(
@@ -1086,18 +1105,49 @@ function createNotificationKey(item: DiscordNotificationItem, signal: ReasonSign
 }
 
 function isEligibleAgainstLedger(
+  item: DiscordNotificationItem,
+  reason: ReasonSignal,
   notificationKey: string,
   ledgerByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+  ledger: readonly NotificationLedgerEntry[],
   evaluatedTimestamp: number,
 ): boolean {
   const existing = ledgerByKey.get(notificationKey);
-  if (existing == null) {
+  if (existing != null) {
+    if (existing.status === "reserved") {
+      if (evaluatedTimestamp < parseTimestamp(existing.expiresAt, "ledgerの予約期限")) {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
+  if (
+    !isTimeNotificationReasonCode(reason.reason.reasonCode) &&
+    reason.reason.reasonCode !== "owner_unknown"
+  ) {
     return true;
   }
-  if (existing.status === "reserved") {
-    return evaluatedTimestamp >= parseTimestamp(existing.expiresAt, "ledgerの予約期限");
-  }
-  return false;
+  const statusSinceTimestamp = parseTimestamp(
+    item.current.statusSince,
+    `${item.nodeId}のstatusSince`,
+  );
+  const ownerSinceTimestamp = parseTimestamp(item.current.ownerSince, `${item.nodeId}のownerSince`);
+  const periodStartTimestamp = Math.max(statusSinceTimestamp, ownerSinceTimestamp);
+  return !ledger.some((entry) => {
+    if (
+      entry.itemNodeId !== item.nodeId ||
+      entry.reasonCode !== reason.reason.reasonCode ||
+      entry.severity !== item.current.severity ||
+      parseTimestamp(entry.reservedAt, "ledgerの予約時刻") < periodStartTimestamp
+    ) {
+      return false;
+    }
+    if (entry.status === "reserved") {
+      return evaluatedTimestamp < parseTimestamp(entry.expiresAt, "ledgerの予約期限");
+    }
+    return true;
+  });
 }
 
 function reservationExpiresAt(reservedAt: UtcIsoDateTime): UtcIsoDateTime {
@@ -1131,6 +1181,7 @@ function reasonPriority(reasonCode: DiscordNotificationReasonCode): number {
       return 3;
     case "owner_overdue":
     case "assessment_overdue":
+    case "work_overdue":
       return 2;
     case "automation_stuck":
       return 1;
@@ -1158,6 +1209,8 @@ function toNonEmptyReasons(
 function createCurrentCandidateDrafts(
   input: SelectDiscordNotificationsInput,
   evaluatedTimestamp: number,
+  ledgerByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+  ledger: readonly NotificationLedgerEntry[],
 ): readonly CandidateDraft[] {
   const unsuppressedItems = input.items.filter(
     (item) => !isItemSuppressed(item, evaluatedTimestamp, input.settings),
@@ -1186,6 +1239,16 @@ function createCurrentCandidateDrafts(
           ),
         } satisfies EligibleReason;
       })
+      .filter((reason) =>
+        isEligibleAgainstLedger(
+          item,
+          reason.signal,
+          reason.notificationKey,
+          ledgerByKey,
+          ledger,
+          evaluatedTimestamp,
+        ),
+      )
       .sort(compareEligibleReasons);
     if (eligibleReasons.length === 0) {
       continue;
@@ -1369,7 +1432,12 @@ function createPendingSelectionState(
   evaluatedTimestamp: number,
 ): PendingSelectionState {
   const ledgerByKey = new Map(input.ledger.map((entry) => [entry.notificationKey, entry]));
-  const currentDrafts = createCurrentCandidateDrafts(input, evaluatedTimestamp);
+  const currentDrafts = createCurrentCandidateDrafts(
+    input,
+    evaluatedTimestamp,
+    ledgerByKey,
+    input.ledger,
+  );
   const pendingNotifications = mergePendingNotifications(
     input,
     currentDrafts,
@@ -1389,7 +1457,14 @@ function createPendingSelectionState(
       (!currentNotificationKeys.has(pending.notificationKey) &&
         pendingNotificationDisposition(item, pending, evaluatedTimestamp, input.settings) !==
           "send") ||
-      !isEligibleAgainstLedger(pending.notificationKey, ledgerByKey, evaluatedTimestamp)
+      !isEligibleAgainstLedger(
+        item,
+        pendingReasonSignal(pending),
+        pending.notificationKey,
+        ledgerByKey,
+        input.ledger,
+        evaluatedTimestamp,
+      )
     ) {
       continue;
     }

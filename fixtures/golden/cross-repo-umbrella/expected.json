@@ -61,7 +61,7 @@
   "notifications": [
     {
       "itemNodeId": "umbrella-engine-issue",
-      "reasonCodes": ["blocker_overdue"]
+      "reasonCodes": ["blocker_overdue", "work_overdue"]
     }
   ],
   "publication": {
