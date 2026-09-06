@@ -123,7 +123,10 @@ pnpm build:web
 `notify-discord`が成功して通知候補がある場合は、`publish-notification-history`が通知後の最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。候補がない場合と`acknowledge-current`ではこのjobを実行しません。
 
 GitHub Pagesへのdeployが成功した後だけ、deploy結果のURLを渡してDiscord stageを実行します。
-このstageが読む外部secretは、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`の2つだけです。
+Discordへの送信には、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`を使います。
+メッセージを1通送信するたびに、送信済みの通知管理記録と通知履歴を同じcommitへ保存し、`origin`の`tracker-state`へpushします。pushが成功してから次のメッセージを送信します。途中で失敗しても、保存済みの送信結果は残ります。同じrunを再実行するときは、送信済みまたは確認済みの通知理由を除いて送信します。
+
+GitHub Actionsではcheckoutが設定したGit認証を使います。ローカルで`notify-discord`または`daily`を実行する場合も、`origin`の`tracker-state`へpushできる認証が必要です。追跡開始時刻とrun完了の記録は、すべてのメッセージを処理した後に確定します。
 
 ```console
 pnpm tracker:run notify-discord --pages-url https://voicevox.github.io/voicevox_task_tracker/

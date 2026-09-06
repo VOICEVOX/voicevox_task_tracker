@@ -6,6 +6,7 @@ export {
   type StateBranchCommitRequest,
   type StateBranchCommitResult,
   type StateBranchHead,
+  type StateBranchPublishRequest,
   type StateFileReadResult,
   type StateFileUpdate,
   type StatePersistenceConfiguration,
@@ -78,6 +79,7 @@ export {
 } from "./snapshot.js";
 export {
   StatePersistenceSession,
+  type PersistNotificationDeliveryInput,
   type PersistNotificationLedgerInput,
   type PersistRunCompletionInput,
   type PersistStateTransactionInput,

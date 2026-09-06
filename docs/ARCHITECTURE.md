@@ -388,7 +388,7 @@ Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しま�
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
 PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。
-この確定値、送信結果を反映した通知管理記録、run report、送信済み通知を追記した日次履歴は2回目のGit commitで一緒に保存します。
-`tracking.startAt`が確定済みのrunでも、送信結果を反映した通知管理記録、run report、日次履歴を2回目のGit commitで保存します。
+Discordの各メッセージを送信した後、送信済みの通知管理記録と日次履歴を同じGit commitへ保存し、`origin`の`tracker-state`へpushします。pushが成功してから次のメッセージを送信します。
+全メッセージの処理が完了した後、追跡開始時刻の確定値、最新の通知管理記録、run reportを保存してpushします。送信履歴は各メッセージの送信後に保存済みなので、完了時に再度追加しません。
 各commitの前にheadが変わった場合は競合として失敗し、不完全なcommitへ切り替えません。
 GitHub Pagesはbranchを公開元にせず、ActionsのPages artifactからdeployします。

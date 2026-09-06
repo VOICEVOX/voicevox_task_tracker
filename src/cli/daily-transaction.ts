@@ -215,6 +215,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
       state: Types["state"];
+      repositoryInventory: Types["repositoryInventory"];
       validated: Types["validated"];
       persisted: Types["persisted"];
       pages: Types["pages"];
@@ -745,6 +746,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
           invocation,
           configuration,
           state,
+          repositoryInventory: repositoryInventory.value,
           validated: validation.value,
           persisted,
           pages,

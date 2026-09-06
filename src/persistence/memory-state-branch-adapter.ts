@@ -5,6 +5,7 @@ import {
   type StateBranchCommitRequest,
   type StateBranchCommitResult,
   type StateBranchHead,
+  type StateBranchPublishRequest,
   type StateFileReadResult,
 } from "./branch-adapter.js";
 import {
@@ -36,6 +37,7 @@ function headsEqual(left: StateBranchHead, right: StateBranchHead): boolean {
 export class MemoryStateBranchAdapter implements StateBranchAdapter {
   readonly #branches = new Map<string, string>();
   readonly #commits = new Map<string, MemoryCommit>();
+  readonly #publishedBranches = new Map<string, string>();
   #revisionSequence = 0;
 
   public resolveHead(branch: string): Promise<StateBranchHead> {
@@ -176,5 +178,27 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
         branchCreated: currentHead.status === "missing",
       }),
     );
+  }
+
+  /** メモリ上のstate branchを公開済みとして扱う。 */
+  public publish(request: StateBranchPublishRequest): Promise<void> {
+    if (request.branch !== "tracker-state") {
+      return Promise.reject(new StateConfigurationError("tracker-state branchだけを公開できます"));
+    }
+    if (!this.#commits.has(request.revision)) {
+      return Promise.reject(
+        new StateBranchReadError({
+          cause: new TypeError("公開対象revisionが保存されていません"),
+        }),
+      );
+    }
+    if (this.#branches.get(request.branch) !== request.revision) {
+      return Promise.reject(new StateBranchConflictError());
+    }
+    if (this.#publishedBranches.get(request.branch) === request.revision) {
+      return Promise.resolve();
+    }
+    this.#publishedBranches.set(request.branch, request.revision);
+    return Promise.resolve();
   }
 }
