@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "11"
+      "const": "12"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -299,7 +299,7 @@
               "const": "migration"
             },
             "result": {
-              "$ref": "#/$defs/aiAnalysisResult"
+              "$ref": "#/$defs/aiAnalysisMigrationResult"
             }
           }
         }
@@ -358,6 +358,34 @@
         },
         {
           "$ref": "#/$defs/aiAnalysisResultNotification"
+        }
+      ]
+    },
+    "aiAnalysisMigrationResult": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultStatus"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultWaitingOn"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultNextAction"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultRelations"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultProgress"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultImportance"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultDeadline"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultNotification"
         }
       ]
     },
@@ -420,6 +448,35 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 30,
+          "items": {
+            "$ref": "#/$defs/aiAnalysisElementEvidence"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uncertainties": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        }
+      }
+    },
+    "aiAnalysisMigrationElementResultBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "evidence", "confidence", "uncertainties"],
+      "properties": {
+        "value": {},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
           "items": {
             "$ref": "#/$defs/aiAnalysisElementEvidence"
           }
@@ -505,6 +562,37 @@
         }
       ]
     },
+    "aiAnalysisMigrationResultStatus": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationElementResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "enum": [
+                "waiting_for_assessment",
+                "waiting_for_owner",
+                "waiting_for_decision",
+                "waiting_for_review",
+                "waiting_for_revision",
+                "waiting_for_reply",
+                "waiting_for_work",
+                "waiting_for_unblock",
+                "waiting_for_automation",
+                "waiting_for_merge",
+                "in_progress",
+                "unknown",
+                "terminal_merged",
+                "terminal_completed",
+                "terminal_not_planned"
+              ]
+            }
+          }
+        }
+      ]
+    },
     "aiAnalysisWaitingOnValue": {
       "type": "object",
       "additionalProperties": false,
@@ -550,6 +638,69 @@
         }
       }
     },
+    "aiAnalysisMigrationResultWaitingOn": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationElementResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "$ref": "#/$defs/aiAnalysisMigrationWaitingOnValue"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisMigrationWaitingOnValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "candidateId", "role", "reasonSummary", "sourceIds", "confidence"],
+      "properties": {
+        "kind": {
+          "enum": ["user", "team", "role", "item", "automation", "unknown"]
+        },
+        "candidateId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "role": {
+          "enum": [
+            "author",
+            "maintainer",
+            "reviewer",
+            "assignee",
+            "respondent",
+            "dependency",
+            "merge_decider",
+            "ci",
+            "unknown"
+          ]
+        },
+        "reasonSummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "sourceIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
     "aiAnalysisResultNextAction": {
       "allOf": [
         {
@@ -567,10 +718,46 @@
         }
       ]
     },
+    "aiAnalysisMigrationResultNextAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationElementResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            }
+          }
+        }
+      ]
+    },
     "aiAnalysisResultRelations": {
       "allOf": [
         {
           "$ref": "#/$defs/aiAnalysisElementResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "$ref": "#/$defs/aiAnalysisRelationValue"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisMigrationResultRelations": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationElementResultBase"
         },
         {
           "type": "object",
@@ -642,6 +829,21 @@
         }
       ]
     },
+    "aiAnalysisMigrationResultProgress": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationElementResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/aiAnalysisProgressValue"
+            }
+          }
+        }
+      ]
+    },
     "aiAnalysisProgressValue": {
       "type": "object",
       "additionalProperties": false,
@@ -666,6 +868,21 @@
       "allOf": [
         {
           "$ref": "#/$defs/aiAnalysisElementResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/aiAnalysisImportanceValue"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisMigrationResultImportance": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationElementResultBase"
         },
         {
           "type": "object",
@@ -710,6 +927,21 @@
         }
       ]
     },
+    "aiAnalysisMigrationResultDeadline": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationElementResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/aiAnalysisDeadlineValue"
+            }
+          }
+        }
+      ]
+    },
     "aiAnalysisDeadlineValue": {
       "type": "object",
       "additionalProperties": false,
@@ -730,6 +962,21 @@
       "allOf": [
         {
           "$ref": "#/$defs/aiAnalysisElementResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/aiAnalysisNotificationValue"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisMigrationResultNotification": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationElementResultBase"
         },
         {
           "type": "object",

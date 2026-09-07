@@ -7,9 +7,9 @@ import {
 } from "../domain/index.js";
 import type {
   AiAnalysisElement,
-  AiAnalysisElementResult,
+  AiAnalysisElementMigrationResult,
   AiAnalysisRelations,
-  AiAnalysisWaitingOnValue,
+  AiAnalysisMigrationWaitingOnValue,
 } from "../domain/ai-analysis-elements.js";
 import type { RelationAssessmentVerdict } from "../graph/index.js";
 import { CodexOutputSemanticValidationError, type CodexOutputValidationIssue } from "./errors.js";
@@ -103,7 +103,7 @@ function createKnownSources(input: CodexAnalysisInput): ReadonlyMap<string, Know
 }
 
 function addResultEvidence(
-  result: Pick<AiAnalysisElementResult, "evidence">,
+  result: Pick<AiAnalysisElementMigrationResult, "evidence">,
   path: string,
   references: SourceReference[],
 ): void {
@@ -330,7 +330,7 @@ function validateResultSourceIdUniqueness(
 }
 
 function validateWaitingOnCandidates(
-  values: AiAnalysisWaitingOnValue,
+  values: AiAnalysisMigrationWaitingOnValue,
   input: CodexAnalysisInput,
   path: string,
   issues: CodexOutputValidationIssue[],
@@ -457,7 +457,7 @@ function resultPath(output: SchemaValidCodexElementOutput, element: AiAnalysisEl
 }
 
 function appendCommonTextFields(
-  result: Pick<AiAnalysisElementResult, "evidence" | "uncertainties">,
+  result: Pick<AiAnalysisElementMigrationResult, "evidence" | "uncertainties">,
   path: string,
   fields: TextField[],
 ): void {
