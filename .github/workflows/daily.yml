@@ -41,6 +41,9 @@ concurrency:
 
 jobs:
   quality-eval:
+    if: >-
+      github.event_name != 'schedule' ||
+      vars.VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED != 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -561,6 +564,7 @@ jobs:
       always() &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'schedule' || vars.VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED != 'true') &&
       (needs.collect-analyze.result == 'failure' ||
       needs.build-pages.result == 'failure' ||
       needs.deploy-pages.result == 'failure' ||
@@ -654,7 +658,8 @@ jobs:
     if: >-
       always() &&
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      (github.event_name != 'schedule' || vars.VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED != 'true')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
