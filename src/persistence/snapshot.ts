@@ -24,12 +24,14 @@ import {
   type TrackingStartAtState,
   type TrackedItem,
   type TrackedItemAiAnalysis,
+  type TrackedItemAiAnalysisMigrationAdoptedElements,
   type UtcIsoDateTime,
   validateDeadlineDate,
 } from "../domain/index.js";
 import {
   aiAnalysisElementSchema,
   createAiAnalysisElementGenerationSchema,
+  createAiAnalysisElementResultSchema,
 } from "../domain/ai-analysis-elements.js";
 import { type PublicRepositoryId, type Sha256Fingerprint } from "../github/index.js";
 
@@ -63,12 +65,22 @@ export type SnapshotTrackedItem = TrackedItem &
   }>;
 
 /** 次回の増分収集計画とterminal保持判定へ渡す軽量な項目観測値。 */
+export type SnapshotAnalysisPlanFingerprint =
+  | Readonly<{
+      status: "planned";
+      fingerprint: Sha256Fingerprint;
+    }>
+  | Readonly<{
+      status: "unplanned";
+      reason: "migration" | "detail_required";
+    }>;
+
 export type SnapshotCollectionItem = Readonly<{
   freshness: "fresh";
   nodeId: GitHubNodeId;
   repositoryId: PublicRepositoryId;
   itemFingerprint: Sha256Fingerprint;
-  analysisPlanFingerprint: Sha256Fingerprint;
+  analysisPlanFingerprint: SnapshotAnalysisPlanFingerprint;
   aiAnalysis: TrackedItemAiAnalysis;
   observedAt: UtcIsoDateTime;
 }> &
@@ -212,12 +224,71 @@ function assertAiAnalysisElementMapSemantics(
   }
 }
 
+function assertAiAnalysisMigrationAdoptedMapSemantics(
+  elements: TrackedItemAiAnalysisMigrationAdoptedElements,
+  description: string,
+): void {
+  for (const key of Object.keys(elements)) {
+    const elementResult = aiAnalysisElementSchema.safeParse(key);
+    if (!elementResult.success) {
+      throw new StateSnapshotSemanticError(`${description}が不正です。対象: ${key}`, {
+        cause: elementResult.error,
+      });
+    }
+    const adopted = elements[elementResult.data];
+    if (adopted == null) {
+      throw new StateSnapshotSemanticError(`${description}が不正です。対象: ${key}`);
+    }
+    switch (adopted.origin) {
+      case "current": {
+        const generationSchema = createAiAnalysisElementGenerationSchema(elementResult.data);
+        const parsedGeneration = generationSchema.safeParse(adopted.generation);
+        if (!parsedGeneration.success) {
+          throw new StateSnapshotSemanticError(`${description}が不正です。対象: ${key}`, {
+            cause: parsedGeneration.error,
+          });
+        }
+        assertUtcDateTime(
+          parsedGeneration.data.metadata.generatedAt,
+          `${description}の生成時刻。対象: ${key}`,
+        );
+        if (
+          hashCanonicalJson(parsedGeneration.data.result) !==
+          parsedGeneration.data.metadata.outputHash
+        ) {
+          throw new StateSnapshotSemanticError(
+            `${description}の出力hashが一致しません。対象: ${key}`,
+          );
+        }
+        continue;
+      }
+      case "migration": {
+        const resultSchema = createAiAnalysisElementResultSchema(elementResult.data);
+        const parsedResult = resultSchema.safeParse(adopted.result);
+        if (!parsedResult.success) {
+          throw new StateSnapshotSemanticError(`${description}が不正です。対象: ${key}`, {
+            cause: parsedResult.error,
+          });
+        }
+        continue;
+      }
+      default:
+        throw new StateSnapshotSemanticError(`${description}の生成元が不正です。対象: ${key}`);
+    }
+  }
+}
+
 function assertAiAnalysisSemantics(aiAnalysis: TrackedItemAiAnalysis): void {
-  if (aiAnalysis.status === "used" && Object.keys(aiAnalysis.elements).length === 0) {
-    throw new StateSnapshotSemanticError("AI分析がusedなのに生成記録がありません");
+  if (aiAnalysis.origin === "current") {
+    if (aiAnalysis.status === "used" && Object.keys(aiAnalysis.elements).length === 0) {
+      throw new StateSnapshotSemanticError("AI分析がusedなのに生成記録がありません");
+    }
+    assertAiAnalysisElementMapSemantics(aiAnalysis.elements, "AI判定要素");
+    assertAiAnalysisElementMapSemantics(aiAnalysis.adoptedElements, "AI採用要素");
+    return;
   }
   assertAiAnalysisElementMapSemantics(aiAnalysis.elements, "AI判定要素");
-  assertAiAnalysisElementMapSemantics(aiAnalysis.adoptedElements, "AI採用要素");
+  assertAiAnalysisMigrationAdoptedMapSemantics(aiAnalysis.adoptedElements, "移行AI採用要素");
 }
 
 function normalizeActor(actor: Actor): Actor {
@@ -465,15 +536,7 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
                   .map((item) =>
                     Object.freeze({
                       ...item,
-                      aiAnalysis: Object.freeze({
-                        ...item.aiAnalysis,
-                        elements: Object.freeze({
-                          ...item.aiAnalysis.elements,
-                        }),
-                        adoptedElements: Object.freeze({
-                          ...item.aiAnalysis.adoptedElements,
-                        }),
-                      }),
+                      aiAnalysis: normalizeTrackedItemAiAnalysis(item.aiAnalysis),
                     }),
                   ),
               ),
@@ -539,15 +602,7 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
                     ...item.latestEventActor,
                     actor: normalizeActor(item.latestEventActor.actor),
                   }),
-            aiAnalysis: Object.freeze({
-              ...item.aiAnalysis,
-              elements: Object.freeze({
-                ...item.aiAnalysis.elements,
-              }),
-              adoptedElements: Object.freeze({
-                ...item.aiAnalysis.adoptedElements,
-              }),
-            }),
+            aiAnalysis: normalizeTrackedItemAiAnalysis(item.aiAnalysis),
             inputEvents: Object.freeze(
               [...item.inputEvents]
                 .sort((left, right) => compareStrings(left.sourceId, right.sourceId))
@@ -573,6 +628,29 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
     ),
     run: Object.freeze({
       ...snapshot.run,
+    }),
+  });
+}
+
+function normalizeTrackedItemAiAnalysis(aiAnalysis: TrackedItemAiAnalysis): TrackedItemAiAnalysis {
+  if (aiAnalysis.origin === "current") {
+    return Object.freeze({
+      ...aiAnalysis,
+      elements: Object.freeze({
+        ...aiAnalysis.elements,
+      }),
+      adoptedElements: Object.freeze({
+        ...aiAnalysis.adoptedElements,
+      }),
+    });
+  }
+  return Object.freeze({
+    ...aiAnalysis,
+    elements: Object.freeze({
+      ...aiAnalysis.elements,
+    }),
+    adoptedElements: Object.freeze({
+      ...aiAnalysis.adoptedElements,
     }),
   });
 }

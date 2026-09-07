@@ -8,6 +8,7 @@ import type {
   AiAnalysisElement,
   AiAnalysisElementMetadata,
   AiAnalysisElementGeneration,
+  AiAnalysisElementResult,
 } from "./ai-analysis-elements.js";
 
 export type {
@@ -543,15 +544,47 @@ export type GitHubItemUrl = `https://github.com/${string}`;
 export type AiCacheEntryId = `sha256:${string}`;
 
 /** 追跡項目へ保存する要素別AI分析結果。 */
-type TrackedItemAiAnalysisElements = Readonly<{
+export type TrackedItemAiAnalysisCurrentElements = Readonly<{
   [Element in AiAnalysisElement]?: AiAnalysisElementGeneration<Element>;
 }>;
 
-export type TrackedItemAiAnalysis = Readonly<{
-  status: "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
-  elements: TrackedItemAiAnalysisElements;
-  adoptedElements: TrackedItemAiAnalysisElements;
+export type TrackedItemAiAnalysisMigrationElements = Readonly<{
+  [Element in AiAnalysisElement]?: AiAnalysisElementResult<Element>;
 }>;
+
+export type TrackedItemAiAnalysisMigrationAdoptedElement<
+  Element extends AiAnalysisElement = AiAnalysisElement,
+> =
+  | Readonly<{
+      origin: "current";
+      generation: AiAnalysisElementGeneration<Element>;
+    }>
+  | Readonly<{
+      origin: "migration";
+      result: AiAnalysisElementResult<Element>;
+    }>;
+
+export type TrackedItemAiAnalysisMigrationAdoptedElements = Readonly<{
+  [Element in AiAnalysisElement]?: TrackedItemAiAnalysisMigrationAdoptedElement<Element>;
+}>;
+
+type TrackedItemAiAnalysisStatus =
+  "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
+
+/** 追跡項目へ保存する要素別AI分析結果と生成元。 */
+export type TrackedItemAiAnalysis =
+  | Readonly<{
+      origin: "current";
+      status: TrackedItemAiAnalysisStatus;
+      elements: TrackedItemAiAnalysisCurrentElements;
+      adoptedElements: TrackedItemAiAnalysisCurrentElements;
+    }>
+  | Readonly<{
+      origin: "migration";
+      status: TrackedItemAiAnalysisStatus;
+      elements: TrackedItemAiAnalysisCurrentElements;
+      adoptedElements: TrackedItemAiAnalysisMigrationAdoptedElements;
+    }>;
 
 export type TrackedItemInputEvent = Readonly<{
   sourceId: SourceId;

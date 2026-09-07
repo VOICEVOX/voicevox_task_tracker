@@ -100,6 +100,7 @@ export {
 } from "./production-source-id.js";
 export {
   planIncrementalItemCollection,
+  type AnalysisPlanFingerprint,
   type IncrementalItemCollectionPlan,
   type PlanIncrementalItemCollectionOptions,
   type PreviousItemCollection,

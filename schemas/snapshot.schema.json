@@ -110,43 +110,76 @@
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "trackedItemAiAnalysis": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["status", "elements", "adoptedElements"],
-      "properties": {
-        "status": {
-          "enum": [
-            "used",
-            "failed",
-            "deferred",
-            "not_required",
-            "disabled",
-            "not_recorded"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "status", "elements", "adoptedElements"],
+          "properties": {
+            "origin": {
+              "const": "current"
+            },
+            "status": {
+              "enum": [
+                "used",
+                "failed",
+                "deferred",
+                "not_required",
+                "disabled",
+                "not_recorded"
+              ]
+            },
+            "elements": {
+              "$ref": "#/$defs/aiAnalysisElements"
+            },
+            "adoptedElements": {
+              "$ref": "#/$defs/aiAnalysisElements"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "used"
+                  }
+                },
+                "required": ["status"]
+              },
+              "then": {
+                "properties": {
+                  "elements": {
+                    "type": "object",
+                    "minProperties": 1
+                  }
+                }
+              }
+            }
           ]
         },
-        "elements": {
-          "$ref": "#/$defs/aiAnalysisElements"
-        },
-        "adoptedElements": {
-          "$ref": "#/$defs/aiAnalysisElements"
-        }
-      },
-      "allOf": [
         {
-          "if": {
-            "properties": {
-              "status": {
-                "const": "used"
-              }
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "status", "elements", "adoptedElements"],
+          "properties": {
+            "origin": {
+              "const": "migration"
             },
-            "required": ["status"]
-          },
-          "then": {
-            "properties": {
-              "elements": {
-                "type": "object",
-                "minProperties": 1
-              }
+            "status": {
+              "enum": [
+                "used",
+                "failed",
+                "deferred",
+                "not_required",
+                "disabled",
+                "not_recorded"
+              ]
+            },
+            "elements": {
+              "$ref": "#/$defs/aiAnalysisElements"
+            },
+            "adoptedElements": {
+              "$ref": "#/$defs/aiAnalysisMigrationAdoptedElements"
             }
           }
         }
@@ -181,6 +214,152 @@
           "$ref": "#/$defs/aiAnalysisGenerationNotification"
         }
       }
+    },
+    "aiAnalysisResultElements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/aiAnalysisResultStatus"
+        },
+        "waitingOn": {
+          "$ref": "#/$defs/aiAnalysisResultWaitingOn"
+        },
+        "nextAction": {
+          "$ref": "#/$defs/aiAnalysisResultNextAction"
+        },
+        "relations": {
+          "$ref": "#/$defs/aiAnalysisResultRelations"
+        },
+        "progress": {
+          "$ref": "#/$defs/aiAnalysisResultProgress"
+        },
+        "importance": {
+          "$ref": "#/$defs/aiAnalysisResultImportance"
+        },
+        "deadline": {
+          "$ref": "#/$defs/aiAnalysisResultDeadline"
+        },
+        "notification": {
+          "$ref": "#/$defs/aiAnalysisResultNotification"
+        }
+      }
+    },
+    "aiAnalysisMigrationAdoptedElements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        },
+        "waitingOn": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        },
+        "nextAction": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        },
+        "relations": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        },
+        "progress": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        },
+        "importance": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        },
+        "deadline": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        },
+        "notification": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        }
+      }
+    },
+    "aiAnalysisMigrationAdoptedElement": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "generation"],
+          "properties": {
+            "origin": {
+              "const": "current"
+            },
+            "generation": {
+              "$ref": "#/$defs/aiAnalysisGeneration"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "result"],
+          "properties": {
+            "origin": {
+              "const": "migration"
+            },
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResult"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGeneration": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationStatus"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationWaitingOn"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationNextAction"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationRelations"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationProgress"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationImportance"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationDeadline"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationNotification"
+        }
+      ]
+    },
+    "aiAnalysisResult": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisResultStatus"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisResultWaitingOn"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisResultNextAction"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisResultRelations"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisResultProgress"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisResultImportance"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisResultDeadline"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisResultNotification"
+        }
+      ]
     },
     "aiAnalysisElementMetadata": {
       "type": "object",
@@ -855,7 +1034,34 @@
           "$ref": "#/$defs/fingerprint"
         },
         "analysisPlanFingerprint": {
-          "$ref": "#/$defs/fingerprint"
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "fingerprint"],
+              "properties": {
+                "status": {
+                  "const": "planned"
+                },
+                "fingerprint": {
+                  "$ref": "#/$defs/fingerprint"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["status", "reason"],
+              "properties": {
+                "status": {
+                  "const": "unplanned"
+                },
+                "reason": {
+                  "enum": ["migration", "detail_required"]
+                }
+              }
+            }
+          ]
         },
         "aiAnalysis": {
           "$ref": "#/$defs/trackedItemAiAnalysis"

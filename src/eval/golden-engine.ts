@@ -1307,6 +1307,7 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
     reviewState: item.type === "issue" ? "not_applicable" : "unknown",
     checkState: item.type === "issue" ? "not_applicable" : "unknown",
     aiAnalysis: Object.freeze({
+      origin: "current",
       status: "not_required",
       elements: Object.freeze({}),
       adoptedElements: Object.freeze({}),
@@ -1829,6 +1830,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         reviewState: index % 2 === 0 ? "not_applicable" : "requested",
         checkState: index % 2 === 0 ? "not_applicable" : "pending",
         aiAnalysis: Object.freeze({
+          origin: "current",
           status: "disabled",
           elements: Object.freeze({}),
           adoptedElements: Object.freeze({}),

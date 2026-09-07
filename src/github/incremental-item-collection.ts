@@ -5,9 +5,19 @@ import {
 } from "../domain/index.js";
 import { type EnumeratedGitHubItem, type Sha256Fingerprint } from "./item-enumeration.js";
 
+export type AnalysisPlanFingerprint =
+  | Readonly<{
+      status: "planned";
+      fingerprint: Sha256Fingerprint;
+    }>
+  | Readonly<{
+      status: "unplanned";
+      reason: "migration" | "detail_required";
+    }>;
+
 type PreviousItemCollectionValue = Readonly<{
   itemFingerprint: Sha256Fingerprint;
-  analysisPlanFingerprint: Sha256Fingerprint;
+  analysisPlanFingerprint: AnalysisPlanFingerprint;
 }>;
 
 /** 前回成功時点の項目と判定計画のfingerprint。 */
@@ -140,7 +150,10 @@ function selectAnalysisPlanChangedItemNodeIds(
       throw new TypeError(`AI判定計画の規則fingerprintがありません。対象: ${item.nodeId}`);
     }
     const previousItem = previous.items.get(item.nodeId);
-    if (previousItem?.analysisPlanFingerprint !== currentFingerprint) {
+    if (
+      previousItem?.analysisPlanFingerprint.status !== "planned" ||
+      previousItem.analysisPlanFingerprint.fingerprint !== currentFingerprint
+    ) {
       changedItemNodeIds.push(item.nodeId);
     }
   }

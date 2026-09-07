@@ -125,6 +125,10 @@ import {
   type ExternalGhostNode,
   type TrackedItem,
   type TrackedItemAiAnalysis,
+  type TrackedItemAiAnalysisCurrentElements,
+  type TrackedItemAiAnalysisMigrationAdoptedElement,
+  type TrackedItemAiAnalysisMigrationAdoptedElements,
+  type TrackedItemAiAnalysisMigrationElements,
   type TrackedItemInputEvent,
   type TrackingConnection,
   type TrackingNotificationClass,
@@ -208,6 +212,7 @@ import {
   type StatePersistenceSession,
   type PersistStateTransactionResult,
   type SnapshotAiState,
+  type SnapshotAnalysisPlanFingerprint,
   type SnapshotCollectionItem,
   type SnapshotCollectionRepository,
   type SnapshotRepository,
@@ -810,6 +815,9 @@ function staleAiAnalysisElementsForLifecycle(
   if (item == null || item.aiAnalysis.status === "not_required") {
     return Object.freeze([]);
   }
+  if (item.aiAnalysis.origin === "migration") {
+    return staleMigrationAiAnalysisElementsForLifecycle(item.aiAnalysis, identity);
+  }
   return Object.freeze(
     AI_ANALYSIS_ELEMENTS.filter((element) => {
       const generation = item.aiAnalysis.elements[element];
@@ -821,6 +829,27 @@ function staleAiAnalysisElementsForLifecycle(
         generation.metadata.model !== identity.model ||
         generation.metadata.reasoningEffort !== identity.reasoningEffort ||
         generation.metadata.backendVersion !== identity.backendVersion
+      );
+    }),
+  );
+}
+
+function staleMigrationAiAnalysisElementsForLifecycle(
+  aiAnalysis: Extract<TrackedItemAiAnalysis, { origin: "migration" }>,
+  identity: AiAnalysisRunIdentity,
+): readonly AiAnalysisElement[] {
+  return Object.freeze(
+    AI_ANALYSIS_ELEMENTS.filter((element) => {
+      const adopted = aiAnalysis.adoptedElements[element];
+      if (adopted == null || adopted.origin === "migration") {
+        return adopted != null;
+      }
+      const metadata = adopted.generation.metadata;
+      return (
+        metadata.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[element] ||
+        metadata.model !== identity.model ||
+        metadata.reasoningEffort !== identity.reasoningEffort ||
+        metadata.backendVersion !== identity.backendVersion
       );
     }),
   );
@@ -854,7 +883,7 @@ function analysisPlanFingerprintForItem(
 
 function createSnapshotCollectionItem(
   item: EnumeratedGitHubItem,
-  identity: AiAnalysisRunIdentity,
+  analysisPlanFingerprint: SnapshotAnalysisPlanFingerprint,
 ): SnapshotCollectionItem {
   if (item.state === "open") {
     return Object.freeze({
@@ -862,8 +891,9 @@ function createSnapshotCollectionItem(
       nodeId: item.nodeId,
       repositoryId: item.repositoryId,
       itemFingerprint: item.itemFingerprint,
-      analysisPlanFingerprint: analysisPlanFingerprintForItem(item, identity),
+      analysisPlanFingerprint,
       aiAnalysis: Object.freeze({
+        origin: "current",
         status: "not_recorded",
         elements: Object.freeze({}),
         adoptedElements: Object.freeze({}),
@@ -878,8 +908,9 @@ function createSnapshotCollectionItem(
     nodeId: item.nodeId,
     repositoryId: item.repositoryId,
     itemFingerprint: item.itemFingerprint,
-    analysisPlanFingerprint: analysisPlanFingerprintForItem(item, identity),
+    analysisPlanFingerprint,
     aiAnalysis: Object.freeze({
+      origin: "current",
       status: "not_recorded",
       elements: Object.freeze({}),
       adoptedElements: Object.freeze({}),
@@ -894,12 +925,18 @@ function createSnapshotCollectionRepository(
   repository: PublicRepository,
   successfulAt: UtcIsoDateTime,
   items: readonly EnumeratedGitHubItem[],
-  identity: AiAnalysisRunIdentity,
 ): SnapshotCollectionRepository {
   return Object.freeze({
     repositoryId: repository.id,
     successfulAt,
-    items: Object.freeze(items.map((item) => createSnapshotCollectionItem(item, identity))),
+    items: Object.freeze(
+      items.map((item) =>
+        createSnapshotCollectionItem(item, {
+          status: "unplanned",
+          reason: "detail_required",
+        }),
+      ),
+    ),
   });
 }
 
@@ -3009,6 +3046,30 @@ function savedAdoptedGenerationsForItem(
   if (item == null) {
     return Object.freeze({});
   }
+  if (item.aiAnalysis.origin === "current") {
+    return item.aiAnalysis.adoptedElements;
+  }
+  const generations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const adopted = item.aiAnalysis.adoptedElements[element];
+    if (adopted?.origin !== "current") {
+      continue;
+    }
+    generations[element] = createAiAnalysisElementGenerationSchema(element).parse(
+      adopted.generation,
+    );
+  }
+  return Object.freeze(generations);
+}
+
+function savedMigrationAdoptedElementsForItem(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): TrackedItemAiAnalysisMigrationAdoptedElements {
+  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  if (item?.aiAnalysis.origin !== "migration") {
+    return Object.freeze({});
+  }
   return item.aiAnalysis.adoptedElements;
 }
 
@@ -3071,6 +3132,18 @@ function currentAdoptedGenerationForElement(
   return parsedGeneration;
 }
 
+function migrationAdoptedResultForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+): AiAnalysisElementResult | undefined {
+  const adopted = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element];
+  if (adopted?.origin !== "migration") {
+    return undefined;
+  }
+  return createAiAnalysisElementResultSchema(element).parse(adopted.result);
+}
+
 function lockedElementsForSelection(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
@@ -3085,8 +3158,9 @@ function lockedElementsForSelection(
         skipped.candidate.element,
         skipped.candidate.inputFingerprint,
       );
+      const migrated = migrationAdoptedResultForElement(state, analysis, skipped.candidate.element);
       const deterministic = deterministicElementResult(analysis, skipped.candidate.element);
-      const result = adopted?.result ?? deterministic;
+      const result = adopted?.result ?? migrated ?? deterministic;
       if (result != null) {
         lockedElements[skipped.candidate.element] = result;
       }
@@ -3341,6 +3415,10 @@ function codexFallbackDiagnostic(failure: AiAnalysisRunFailure): string {
 
 type AiAnalysisRunElement = AiAnalysisRunResult["results"][number]["elements"][number];
 
+type MutablePartial<Value> = {
+  -readonly [Key in keyof Value]?: Value[Key];
+};
+
 function generationMapForRunElements(
   elements: readonly AiAnalysisRunElement[],
 ): AiAnalysisElementGenerationMap {
@@ -3357,7 +3435,7 @@ function generationMapForRunElements(
 
 function trackedAiAnalysisElementsForGenerations(
   generations: AiAnalysisElementGenerationMap,
-): TrackedItemAiAnalysis["elements"] {
+): TrackedItemAiAnalysisCurrentElements {
   let status: AiAnalysisElementGeneration<"status"> | undefined;
   let waitingOn: AiAnalysisElementGeneration<"waitingOn"> | undefined;
   let nextAction: AiAnalysisElementGeneration<"nextAction"> | undefined;
@@ -3485,7 +3563,7 @@ function adoptedElementsForAnalysis(
   run: AiAnalysisRunResult | undefined,
   reduction: CodexAnalysisReduction | undefined,
   consumerOutput: SchemaValidCodexElementOutput | undefined,
-): TrackedItemAiAnalysis["adoptedElements"] {
+): TrackedItemAiAnalysisCurrentElements {
   const adoptedGenerations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const generation = adoptedGenerationForElement(
@@ -3539,6 +3617,178 @@ function adoptedElementsForAnalysis(
   return trackedAiAnalysisElementsForGenerations(Object.freeze(adoptedGenerations));
 }
 
+function migratedElementsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: SchemaValidCodexElementOutput | undefined,
+): TrackedItemAiAnalysisMigrationElements {
+  const saved = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId);
+  const migrated: MutablePartial<TrackedItemAiAnalysisMigrationElements> = {};
+  const generated = generatedElementsForNode(run, analysis.item.nodeId);
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const savedResult = saved[element];
+    if (savedResult?.origin !== "migration") {
+      continue;
+    }
+    const candidate = planning.candidates[element];
+    if (candidate.necessity === "not_required") {
+      continue;
+    }
+    const application =
+      reduction?.ai.status === "available"
+        ? reduction.ai.elements[element]?.application
+        : undefined;
+    const consumerResult =
+      consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
+    const generatedResult = generated[element];
+    const generatedWasConsumed =
+      generatedResult != null &&
+      consumerResult != null &&
+      hashCanonicalJson(consumerResult) === hashCanonicalJson(generatedResult.result);
+    if (application === "applied" || generatedWasConsumed) {
+      continue;
+    }
+    if (
+      currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint) !=
+      null
+    ) {
+      continue;
+    }
+    switch (element) {
+      case "status":
+        migrated.status = createAiAnalysisElementResultSchema("status").parse(savedResult.result);
+        break;
+      case "waitingOn":
+        migrated.waitingOn = createAiAnalysisElementResultSchema("waitingOn").parse(
+          savedResult.result,
+        );
+        break;
+      case "nextAction":
+        migrated.nextAction = createAiAnalysisElementResultSchema("nextAction").parse(
+          savedResult.result,
+        );
+        break;
+      case "relations":
+        migrated.relations = createAiAnalysisElementResultSchema("relations").parse(
+          savedResult.result,
+        );
+        break;
+      case "progress":
+        migrated.progress = createAiAnalysisElementResultSchema("progress").parse(
+          savedResult.result,
+        );
+        break;
+      case "importance":
+        migrated.importance = createAiAnalysisElementResultSchema("importance").parse(
+          savedResult.result,
+        );
+        break;
+      case "deadline":
+        migrated.deadline = createAiAnalysisElementResultSchema("deadline").parse(
+          savedResult.result,
+        );
+        break;
+      case "notification":
+        migrated.notification = createAiAnalysisElementResultSchema("notification").parse(
+          savedResult.result,
+        );
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze(migrated);
+}
+
+function mixedAdoptedElementsForAnalysis(
+  current: TrackedItemAiAnalysisCurrentElements,
+  migration: TrackedItemAiAnalysisMigrationElements,
+): TrackedItemAiAnalysisMigrationAdoptedElements {
+  let status: TrackedItemAiAnalysisMigrationAdoptedElement<"status"> | undefined;
+  let waitingOn: TrackedItemAiAnalysisMigrationAdoptedElement<"waitingOn"> | undefined;
+  let nextAction: TrackedItemAiAnalysisMigrationAdoptedElement<"nextAction"> | undefined;
+  let relations: TrackedItemAiAnalysisMigrationAdoptedElement<"relations"> | undefined;
+  let progress: TrackedItemAiAnalysisMigrationAdoptedElement<"progress"> | undefined;
+  let importance: TrackedItemAiAnalysisMigrationAdoptedElement<"importance"> | undefined;
+  let deadline: TrackedItemAiAnalysisMigrationAdoptedElement<"deadline"> | undefined;
+  let notification: TrackedItemAiAnalysisMigrationAdoptedElement<"notification"> | undefined;
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    switch (element) {
+      case "status":
+        if (current.status != null) {
+          status = { origin: "current", generation: current.status };
+        } else if (migration.status != null) {
+          status = { origin: "migration", result: migration.status };
+        }
+        break;
+      case "waitingOn":
+        if (current.waitingOn != null) {
+          waitingOn = { origin: "current", generation: current.waitingOn };
+        } else if (migration.waitingOn != null) {
+          waitingOn = { origin: "migration", result: migration.waitingOn };
+        }
+        break;
+      case "nextAction":
+        if (current.nextAction != null) {
+          nextAction = { origin: "current", generation: current.nextAction };
+        } else if (migration.nextAction != null) {
+          nextAction = { origin: "migration", result: migration.nextAction };
+        }
+        break;
+      case "relations":
+        if (current.relations != null) {
+          relations = { origin: "current", generation: current.relations };
+        } else if (migration.relations != null) {
+          relations = { origin: "migration", result: migration.relations };
+        }
+        break;
+      case "progress":
+        if (current.progress != null) {
+          progress = { origin: "current", generation: current.progress };
+        } else if (migration.progress != null) {
+          progress = { origin: "migration", result: migration.progress };
+        }
+        break;
+      case "importance":
+        if (current.importance != null) {
+          importance = { origin: "current", generation: current.importance };
+        } else if (migration.importance != null) {
+          importance = { origin: "migration", result: migration.importance };
+        }
+        break;
+      case "deadline":
+        if (current.deadline != null) {
+          deadline = { origin: "current", generation: current.deadline };
+        } else if (migration.deadline != null) {
+          deadline = { origin: "migration", result: migration.deadline };
+        }
+        break;
+      case "notification":
+        if (current.notification != null) {
+          notification = { origin: "current", generation: current.notification };
+        } else if (migration.notification != null) {
+          notification = { origin: "migration", result: migration.notification };
+        }
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze({
+    ...(status == null ? {} : { status }),
+    ...(waitingOn == null ? {} : { waitingOn }),
+    ...(nextAction == null ? {} : { nextAction }),
+    ...(relations == null ? {} : { relations }),
+    ...(progress == null ? {} : { progress }),
+    ...(importance == null ? {} : { importance }),
+    ...(deadline == null ? {} : { deadline }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
 function preservedElementsForReduction(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
@@ -3564,33 +3814,48 @@ function preservedElementsForReduction(
       element,
       candidate.inputFingerprint,
     );
-    if (adopted == null) {
+    const migrated = migrationAdoptedResultForElement(state, analysis, element);
+    if (adopted == null && migrated == null) {
       continue;
     }
     switch (element) {
       case "status":
-        status = createAiAnalysisElementResultSchema("status").parse(adopted.result);
+        status = createAiAnalysisElementResultSchema("status").parse(adopted?.result ?? migrated);
         break;
       case "waitingOn":
-        waitingOn = createAiAnalysisElementResultSchema("waitingOn").parse(adopted.result);
+        waitingOn = createAiAnalysisElementResultSchema("waitingOn").parse(
+          adopted?.result ?? migrated,
+        );
         break;
       case "nextAction":
-        nextAction = createAiAnalysisElementResultSchema("nextAction").parse(adopted.result);
+        nextAction = createAiAnalysisElementResultSchema("nextAction").parse(
+          adopted?.result ?? migrated,
+        );
         break;
       case "relations":
-        relations = createAiAnalysisElementResultSchema("relations").parse(adopted.result);
+        relations = createAiAnalysisElementResultSchema("relations").parse(
+          adopted?.result ?? migrated,
+        );
         break;
       case "progress":
-        progress = createAiAnalysisElementResultSchema("progress").parse(adopted.result);
+        progress = createAiAnalysisElementResultSchema("progress").parse(
+          adopted?.result ?? migrated,
+        );
         break;
       case "importance":
-        importance = createAiAnalysisElementResultSchema("importance").parse(adopted.result);
+        importance = createAiAnalysisElementResultSchema("importance").parse(
+          adopted?.result ?? migrated,
+        );
         break;
       case "deadline":
-        deadline = createAiAnalysisElementResultSchema("deadline").parse(adopted.result);
+        deadline = createAiAnalysisElementResultSchema("deadline").parse(
+          adopted?.result ?? migrated,
+        );
         break;
       case "notification":
-        notification = createAiAnalysisElementResultSchema("notification").parse(adopted.result);
+        notification = createAiAnalysisElementResultSchema("notification").parse(
+          adopted?.result ?? migrated,
+        );
         break;
       default:
         throw new UnreachableError(element);
@@ -3910,7 +4175,19 @@ function currentAdoptedImportanceAssessment(
     planning.candidates.importance.inputFingerprint,
   );
   if (generation == null) {
-    return undefined;
+    const migrated = migrationAdoptedResultForElement(state, analysis, "importance");
+    if (migrated == null) {
+      return undefined;
+    }
+    const parsed = createAiAnalysisElementResultSchema("importance").parse(migrated);
+    return Object.freeze({
+      status: "available",
+      value: Object.freeze({
+        significantFeature: parsed.value.significantFeature,
+        futureRisk: parsed.value.futureRisk,
+        rationale: parsed.value.rationale,
+      }),
+    });
   }
   const parsed = createAiAnalysisElementResultSchema("importance").parse(generation.result);
   return Object.freeze({
@@ -3935,7 +4212,18 @@ function currentAdoptedDeadlineAssessment(
     planning.candidates.deadline.inputFingerprint,
   );
   if (generation == null) {
-    return undefined;
+    const migrated = migrationAdoptedResultForElement(state, analysis, "deadline");
+    if (migrated == null) {
+      return undefined;
+    }
+    const parsed = createAiAnalysisElementResultSchema("deadline").parse(migrated);
+    return Object.freeze({
+      status: "available",
+      value: Object.freeze({
+        date: parsed.value.date,
+        rationale: parsed.value.rationale,
+      }),
+    });
   }
   const parsed = createAiAnalysisElementResultSchema("deadline").parse(generation.result);
   return Object.freeze({
@@ -4152,6 +4440,10 @@ function codexOutputForConsumers(
       candidate.necessity === "required"
         ? currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint)
         : undefined;
+    const migrated =
+      candidate.necessity === "required"
+        ? migrationAdoptedResultForElement(state, analysis, element)
+        : undefined;
     const stateElement =
       element === "status" || element === "waitingOn" || element === "nextAction";
     const result =
@@ -4159,7 +4451,7 @@ function codexOutputForConsumers(
       effectiveElementConfidence(element, raw) >= configuration.config.ai.confidence.medium &&
       !(deterministicStatePriority && stateElement)
         ? raw
-        : adopted?.result) ?? undefined;
+        : (adopted?.result ?? migrated)) ?? undefined;
     if (result != null) {
       output[element] = result;
       outputElements.push(element);
@@ -5073,49 +5365,51 @@ function trackedItemAiAnalysis(
     consumerOutput,
   );
   const run = codexAnalysis.run;
-  if (run == null) {
-    return Object.freeze({
-      status: "disabled",
-      elements,
-      adoptedElements,
-    });
-  }
-  const result = run.results.find((candidate) => candidate.candidateId === nodeId);
-  if (result != null) {
-    return Object.freeze({
-      status: "used",
-      elements,
-      adoptedElements,
-    });
-  }
-  const failure = run.failures.find((candidate) => candidate.candidateId === nodeId);
-  if (failure != null) {
-    return Object.freeze({
-      status: "failed",
-      elements,
-      adoptedElements,
-    });
-  }
-  const deferred = run.deferred.find((candidate) => candidate.candidateId === nodeId);
-  if (deferred != null) {
-    return Object.freeze({
-      status: "deferred",
-      elements,
-      adoptedElements,
-    });
-  }
-  const skipped = run.skipped.find((candidate) => candidate.candidateId === nodeId);
-  assertNonNullable(skipped, `Codex分析候補の分類がありません。対象: ${nodeId}`);
-  const hasNotRequiredElement = planning.selection.skipped.some(
-    (element) => element.reason === "not_required",
-  );
   let status: TrackedItemAiAnalysis["status"];
-  if (hasNotRequiredElement || skipped.reason === "not_required") {
-    status = "not_required";
+  if (run == null) {
+    status = "disabled";
   } else {
-    status = "used";
+    const result = run.results.find((candidate) => candidate.candidateId === nodeId);
+    if (result != null) {
+      status = "used";
+    } else {
+      const failure = run.failures.find((candidate) => candidate.candidateId === nodeId);
+      if (failure != null) {
+        status = "failed";
+      } else {
+        const deferred = run.deferred.find((candidate) => candidate.candidateId === nodeId);
+        if (deferred != null) {
+          status = "deferred";
+        } else {
+          const skipped = run.skipped.find((candidate) => candidate.candidateId === nodeId);
+          assertNonNullable(skipped, `Codex分析候補の分類がありません。対象: ${nodeId}`);
+          const hasNotRequiredElement = planning.selection.skipped.some(
+            (element) => element.reason === "not_required",
+          );
+          status =
+            hasNotRequiredElement || skipped.reason === "not_required" ? "not_required" : "used";
+        }
+      }
+    }
+  }
+  const migratedElements = migratedElementsForAnalysis(
+    state,
+    analysis,
+    planning,
+    run,
+    reduction,
+    consumerOutput,
+  );
+  if (Object.keys(migratedElements).length !== 0) {
+    return Object.freeze({
+      origin: "migration",
+      status,
+      elements,
+      adoptedElements: mixedAdoptedElementsForAnalysis(adoptedElements, migratedElements),
+    });
   }
   return Object.freeze({
+    origin: "current",
     status,
     elements,
     adoptedElements,
@@ -6229,7 +6523,6 @@ function validateRunCompleteness(
       ),
     );
   });
-  const previousCollectionItems = previousCollectionItemsByNodeId(state);
   const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
     schemaVersion: "11",
@@ -6237,17 +6530,13 @@ function validateRunCompleteness(
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
     collection: {
-      repositories: collection.collectionRepositories.map((repository) => ({
-        ...repository,
-        items: repository.items.map((item) => {
-          const previousItem = previousCollectionItems.get(item.nodeId);
-          const currentItem = itemsByNodeId.get(item.nodeId);
-          return {
-            ...item,
-            aiAnalysis: currentItem?.aiAnalysis ?? previousItem?.aiAnalysis ?? item.aiAnalysis,
-          };
-        }),
-      })),
+      repositories: validatedCollectionRepositories(
+        state,
+        configuration,
+        collection,
+        codexAnalysis,
+        itemsByNodeId,
+      ),
     },
     repositories: snapshotRepositories(collection),
     items: items.map((item) => {
@@ -7627,7 +7916,6 @@ async function collectFreshRepositoryItems(
   adjacentNodeIds: ReadonlySet<GitHubNodeId>,
 ): Promise<FreshRepositoryRuntimeCollection> {
   const allowlist = createPublicRepositoryAllowlist([repository]);
-  const identity = createAiAnalysisRunIdentity(configuration.config);
   const openItems = await adapters.enumerateOpenGitHubItems({
     allowlist,
     observedAt: invocation.startedAt,
@@ -7666,12 +7954,7 @@ async function collectFreshRepositoryItems(
     adjacentNodeIds,
   );
   return Object.freeze({
-    state: createSnapshotCollectionRepository(
-      repository,
-      invocation.startedAt,
-      enumeratedItems,
-      identity,
-    ),
+    state: createSnapshotCollectionRepository(repository, invocation.startedAt, enumeratedItems),
     ...itemCollection,
   });
 }
@@ -7705,7 +7988,6 @@ async function collectAdditionalRelationItems(
   requestedNodeIds: readonly GitHubNodeId[],
   current: FreshRepositoryRuntimeCollection,
 ): Promise<FreshRepositoryRuntimeCollection> {
-  const identity = createAiAnalysisRunIdentity(configuration.config);
   const currentItemsByNodeId = new Map(current.enumeratedItems.map((item) => [item.nodeId, item]));
   const missingNodeIds = requestedNodeIds.filter((nodeId) => !currentItemsByNodeId.has(nodeId));
   const individuallyEnumeratedItems =
@@ -7761,7 +8043,6 @@ async function collectAdditionalRelationItems(
       repository,
       invocation.startedAt,
       mergedEnumeratedItems,
-      identity,
     ),
     enumeratedItems: mergedEnumeratedItems,
     details: mergedDetails,
@@ -8293,6 +8574,105 @@ function finalizeRepositoryCollectionResult(
     });
   }
   return result;
+}
+
+function analysisPlanFingerprintForValidatedCollectionItem(
+  item: SnapshotCollectionItem,
+  currentItem: EnumeratedGitHubItem,
+  previousItem: SnapshotCollectionItem | undefined,
+  identity: AiAnalysisRunIdentity,
+  detailNodeIds: ReadonlySet<GitHubNodeId>,
+  trackedNodeIds: ReadonlySet<GitHubNodeId>,
+  plannedNodeIds: ReadonlySet<GitHubNodeId>,
+): SnapshotAnalysisPlanFingerprint {
+  const currentFingerprint = analysisPlanFingerprintForItem(currentItem, identity);
+  if (
+    previousItem != null &&
+    previousItem.itemFingerprint !== item.itemFingerprint &&
+    !detailNodeIds.has(item.nodeId)
+  ) {
+    throw new TypeError(`項目fingerprintが変化した項目の詳細がありません。対象: ${item.nodeId}`);
+  }
+  if (plannedNodeIds.has(item.nodeId)) {
+    if (!detailNodeIds.has(item.nodeId)) {
+      throw new TypeError(`AI判定計画の詳細がありません。対象: ${item.nodeId}`);
+    }
+    return {
+      status: "planned",
+      fingerprint: currentFingerprint,
+    };
+  }
+  if (detailNodeIds.has(item.nodeId) && !trackedNodeIds.has(item.nodeId)) {
+    return {
+      status: "planned",
+      fingerprint: currentFingerprint,
+    };
+  }
+  if (previousItem != null) {
+    return previousItem.analysisPlanFingerprint;
+  }
+  return {
+    status: "unplanned",
+    reason: "detail_required",
+  };
+}
+
+function validatedCollectionRepositories(
+  state: RuntimeState,
+  configuration: RuntimeConfiguration,
+  collection: CollectedItems,
+  codexAnalysis: CodexAnalysis,
+  itemsByNodeId: ReadonlyMap<GitHubNodeId, PendingTrackedItem>,
+): readonly SnapshotCollectionRepository[] {
+  const identity = createAiAnalysisRunIdentity(configuration.config);
+  const freshRepositoryIds = new Set(
+    collection.repositoryResults
+      .filter((result) => result.freshness === "fresh")
+      .map((result) => result.repository.id),
+  );
+  const currentItemsByNodeId = new Map(
+    collection.enumeratedItems.map((item) => [item.nodeId, item]),
+  );
+  const detailNodeIds = new Set(collection.details.map((detail) => detail.nodeId));
+  const trackedNodeIds = collection.trackedNodeIds;
+  const plannedNodeIds = new Set(codexAnalysis.elementPlanningByNodeId.keys());
+  const previousItemsByNodeId = previousCollectionItemsByNodeId(state);
+  return Object.freeze(
+    collection.collectionRepositories.map((repository) => {
+      if (!freshRepositoryIds.has(repository.repositoryId)) {
+        return repository;
+      }
+      return Object.freeze({
+        ...repository,
+        items: Object.freeze(
+          repository.items.map((item) => {
+            const currentItem = currentItemsByNodeId.get(item.nodeId);
+            assertNonNullable(
+              currentItem,
+              `fresh収集項目の列挙値がありません。対象: ${item.nodeId}`,
+            );
+            const previousItem = previousItemsByNodeId.get(item.nodeId);
+            const currentTrackedItem = itemsByNodeId.get(item.nodeId);
+            const analysisPlanFingerprint = analysisPlanFingerprintForValidatedCollectionItem(
+              item,
+              currentItem,
+              previousItem,
+              identity,
+              detailNodeIds,
+              trackedNodeIds,
+              plannedNodeIds,
+            );
+            return Object.freeze({
+              ...item,
+              analysisPlanFingerprint,
+              aiAnalysis:
+                currentTrackedItem?.aiAnalysis ?? previousItem?.aiAnalysis ?? item.aiAnalysis,
+            });
+          }),
+        ),
+      });
+    }),
+  );
 }
 
 async function collectProductionItems(
