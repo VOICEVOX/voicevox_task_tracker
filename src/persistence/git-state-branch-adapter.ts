@@ -113,10 +113,13 @@ function validateCommitRequest(request: StateBranchCommitRequest): void {
     throw new StateConfigurationError("commit日時をUTCへ正規化してください");
   }
   const paths = request.updates.map((update) => update.path);
-  if (new Set(paths).size !== paths.length) {
+  if (new Set([...paths, ...request.deletions]).size !== paths.length + request.deletions.length) {
     throw new StateConfigurationError("commit内でstateファイルが重複しています");
   }
   for (const path of paths) {
+    assertValidStatePath(path);
+  }
+  for (const path of request.deletions) {
     assertValidStatePath(path);
   }
   if (
@@ -365,6 +368,24 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
             parseObjectId(blob.stdout),
             update.path,
           ],
+          input: {
+            status: "none",
+          },
+          environment: indexEnvironment,
+          acceptedExitCodes: new Set([0]),
+        });
+      }
+      for (const path of request.deletions) {
+        await this.#runGit({
+          arguments: ["ls-files", "--error-unmatch", "--", path],
+          input: {
+            status: "none",
+          },
+          environment: indexEnvironment,
+          acceptedExitCodes: new Set([0]),
+        });
+        await this.#runGit({
+          arguments: ["update-index", "--force-remove", "--", path],
           input: {
             status: "none",
           },

@@ -123,7 +123,10 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
       );
     }
     const paths = request.updates.map((update) => update.path);
-    if (new Set(paths).size !== paths.length) {
+    if (
+      new Set([...paths, ...request.deletions]).size !==
+      paths.length + request.deletions.length
+    ) {
       return Promise.reject(
         new StateBranchCommitError({
           cause: new TypeError("commit内でstateファイルが重複しています"),
@@ -131,6 +134,9 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
       );
     }
     for (const path of paths) {
+      assertValidStatePath(path);
+    }
+    for (const path of request.deletions) {
       assertValidStatePath(path);
     }
 
@@ -161,6 +167,16 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     }
     for (const update of request.updates) {
       files.set(update.path, copyBytes(update.bytes));
+    }
+    for (const path of request.deletions) {
+      if (!files.has(path)) {
+        return Promise.reject(
+          new StateBranchCommitError({
+            cause: new TypeError("commit対象の削除stateファイルが存在しません"),
+          }),
+        );
+      }
+      files.delete(path);
     }
 
     this.#revisionSequence += 1;
