@@ -45,11 +45,12 @@ import {
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
   createAiAnalysisElementGenerationSchema,
   createAiAnalysisElementResultSchema,
+  createAiAnalysisMigrationElementResultSchema,
   type AiAnalysisElement,
+  type AiAnalysisElementMigrationResult,
   type AiAnalysisElementExecutionFingerprint,
   type AiAnalysisElementGeneration,
   type AiAnalysisElementInputFingerprint,
-  type AiAnalysisElementResult,
 } from "../domain/ai-analysis-elements.js";
 import { type CodexDiagnosticsContext } from "../codex/index.js";
 import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
@@ -2606,7 +2607,7 @@ function createCodexInput(
   evaluatedAt: UtcIsoDateTime,
   analysis: DeterministicItemAnalysis,
   selectedElements: readonly AiAnalysisElement[],
-  lockedElements: Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementResult>>>,
+  lockedElements: Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>>>,
 ): CodexAnalysisInput {
   const relationCandidates = deduplicateByStableId(
     selectRelationAssessmentCandidates(analysis.item.nodeId, analysis.relationCandidates),
@@ -3076,7 +3077,7 @@ function savedMigrationAdoptedElementsForItem(
 function deterministicElementResult(
   analysis: DeterministicItemAnalysis,
   element: AiAnalysisElement,
-): AiAnalysisElementResult | undefined {
+): AiAnalysisElementMigrationResult | undefined {
   const evidence = Object.freeze([
     Object.freeze({
       sourceId: analysis.item.sourceId,
@@ -3095,7 +3096,7 @@ function deterministicElementResult(
         value: analysis.decision.status,
       });
     case "waitingOn":
-      return createAiAnalysisElementResultSchema("waitingOn").parse({
+      return createAiAnalysisMigrationElementResultSchema("waitingOn").parse({
         ...common,
         value: analysis.decision.waitingOn,
       });
@@ -3136,20 +3137,20 @@ function migrationAdoptedResultForElement(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   element: AiAnalysisElement,
-): AiAnalysisElementResult | undefined {
+): AiAnalysisElementMigrationResult | undefined {
   const adopted = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element];
   if (adopted?.origin !== "migration") {
     return undefined;
   }
-  return createAiAnalysisElementResultSchema(element).parse(adopted.result);
+  return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
 }
 
 function lockedElementsForSelection(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning,
-): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementResult>>> {
-  const lockedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementResult>> = {};
+): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>>> {
+  const lockedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> = {};
   for (const skipped of planning.selection.skipped) {
     if (skipped.reason === "up_to_date") {
       const adopted = currentAdoptedGenerationForElement(
@@ -3419,6 +3420,26 @@ type MutablePartial<Value> = {
   -readonly [Key in keyof Value]?: Value[Key];
 };
 
+type ConsumerCodexElementOutput = Readonly<{
+  schemaVersion: typeof CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION;
+  item: Readonly<{
+    nodeId: string;
+    url: string;
+  }>;
+  status?: AiAnalysisElementMigrationResult<"status"> | undefined;
+  waitingOn?: AiAnalysisElementMigrationResult<"waitingOn"> | undefined;
+  nextAction?: AiAnalysisElementMigrationResult<"nextAction"> | undefined;
+  relations?: AiAnalysisElementMigrationResult<"relations"> | undefined;
+  progress?: AiAnalysisElementMigrationResult<"progress"> | undefined;
+  importance?: AiAnalysisElementMigrationResult<"importance"> | undefined;
+  deadline?: AiAnalysisElementMigrationResult<"deadline"> | undefined;
+  notification?: AiAnalysisElementMigrationResult<"notification"> | undefined;
+}>;
+
+type MutableConsumerCodexElementOutput = {
+  -readonly [Key in keyof ConsumerCodexElementOutput]: ConsumerCodexElementOutput[Key];
+};
+
 function generationMapForRunElements(
   elements: readonly AiAnalysisRunElement[],
 ): AiAnalysisElementGenerationMap {
@@ -3534,7 +3555,7 @@ function adoptedGenerationForElement(
   element: AiAnalysisElement,
   run: AiAnalysisRunResult | undefined,
   reduction: CodexAnalysisReduction | undefined,
-  consumerOutput: SchemaValidCodexElementOutput | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
 ): AiAnalysisElementGeneration | undefined {
   const candidate = planning.candidates[element];
   if (candidate.necessity === "not_required") {
@@ -3562,7 +3583,7 @@ function adoptedElementsForAnalysis(
   planning: AnalysisElementPlanning,
   run: AiAnalysisRunResult | undefined,
   reduction: CodexAnalysisReduction | undefined,
-  consumerOutput: SchemaValidCodexElementOutput | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
 ): TrackedItemAiAnalysisCurrentElements {
   const adoptedGenerations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
   for (const element of AI_ANALYSIS_ELEMENTS) {
@@ -3623,7 +3644,7 @@ function migratedElementsForAnalysis(
   planning: AnalysisElementPlanning,
   run: AiAnalysisRunResult | undefined,
   reduction: CodexAnalysisReduction | undefined,
-  consumerOutput: SchemaValidCodexElementOutput | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
 ): TrackedItemAiAnalysisMigrationElements {
   const saved = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId);
   const migrated: MutablePartial<TrackedItemAiAnalysisMigrationElements> = {};
@@ -3659,40 +3680,42 @@ function migratedElementsForAnalysis(
     }
     switch (element) {
       case "status":
-        migrated.status = createAiAnalysisElementResultSchema("status").parse(savedResult.result);
+        migrated.status = createAiAnalysisMigrationElementResultSchema("status").parse(
+          savedResult.result,
+        );
         break;
       case "waitingOn":
-        migrated.waitingOn = createAiAnalysisElementResultSchema("waitingOn").parse(
+        migrated.waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
           savedResult.result,
         );
         break;
       case "nextAction":
-        migrated.nextAction = createAiAnalysisElementResultSchema("nextAction").parse(
+        migrated.nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(
           savedResult.result,
         );
         break;
       case "relations":
-        migrated.relations = createAiAnalysisElementResultSchema("relations").parse(
+        migrated.relations = createAiAnalysisMigrationElementResultSchema("relations").parse(
           savedResult.result,
         );
         break;
       case "progress":
-        migrated.progress = createAiAnalysisElementResultSchema("progress").parse(
+        migrated.progress = createAiAnalysisMigrationElementResultSchema("progress").parse(
           savedResult.result,
         );
         break;
       case "importance":
-        migrated.importance = createAiAnalysisElementResultSchema("importance").parse(
+        migrated.importance = createAiAnalysisMigrationElementResultSchema("importance").parse(
           savedResult.result,
         );
         break;
       case "deadline":
-        migrated.deadline = createAiAnalysisElementResultSchema("deadline").parse(
+        migrated.deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(
           savedResult.result,
         );
         break;
       case "notification":
-        migrated.notification = createAiAnalysisElementResultSchema("notification").parse(
+        migrated.notification = createAiAnalysisMigrationElementResultSchema("notification").parse(
           savedResult.result,
         );
         break;
@@ -3794,14 +3817,14 @@ function preservedElementsForReduction(
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning,
 ): CodexAnalysisInput["lockedElements"] {
-  let status: AiAnalysisElementResult<"status"> | undefined;
-  let waitingOn: AiAnalysisElementResult<"waitingOn"> | undefined;
-  let nextAction: AiAnalysisElementResult<"nextAction"> | undefined;
-  let relations: AiAnalysisElementResult<"relations"> | undefined;
-  let progress: AiAnalysisElementResult<"progress"> | undefined;
-  let importance: AiAnalysisElementResult<"importance"> | undefined;
-  let deadline: AiAnalysisElementResult<"deadline"> | undefined;
-  let notification: AiAnalysisElementResult<"notification"> | undefined;
+  let status: AiAnalysisElementMigrationResult<"status"> | undefined;
+  let waitingOn: AiAnalysisElementMigrationResult<"waitingOn"> | undefined;
+  let nextAction: AiAnalysisElementMigrationResult<"nextAction"> | undefined;
+  let relations: AiAnalysisElementMigrationResult<"relations"> | undefined;
+  let progress: AiAnalysisElementMigrationResult<"progress"> | undefined;
+  let importance: AiAnalysisElementMigrationResult<"importance"> | undefined;
+  let deadline: AiAnalysisElementMigrationResult<"deadline"> | undefined;
+  let notification: AiAnalysisElementMigrationResult<"notification"> | undefined;
 
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const candidate = planning.candidates[element];
@@ -3820,40 +3843,42 @@ function preservedElementsForReduction(
     }
     switch (element) {
       case "status":
-        status = createAiAnalysisElementResultSchema("status").parse(adopted?.result ?? migrated);
+        status = createAiAnalysisMigrationElementResultSchema("status").parse(
+          adopted?.result ?? migrated,
+        );
         break;
       case "waitingOn":
-        waitingOn = createAiAnalysisElementResultSchema("waitingOn").parse(
+        waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
           adopted?.result ?? migrated,
         );
         break;
       case "nextAction":
-        nextAction = createAiAnalysisElementResultSchema("nextAction").parse(
+        nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(
           adopted?.result ?? migrated,
         );
         break;
       case "relations":
-        relations = createAiAnalysisElementResultSchema("relations").parse(
+        relations = createAiAnalysisMigrationElementResultSchema("relations").parse(
           adopted?.result ?? migrated,
         );
         break;
       case "progress":
-        progress = createAiAnalysisElementResultSchema("progress").parse(
+        progress = createAiAnalysisMigrationElementResultSchema("progress").parse(
           adopted?.result ?? migrated,
         );
         break;
       case "importance":
-        importance = createAiAnalysisElementResultSchema("importance").parse(
+        importance = createAiAnalysisMigrationElementResultSchema("importance").parse(
           adopted?.result ?? migrated,
         );
         break;
       case "deadline":
-        deadline = createAiAnalysisElementResultSchema("deadline").parse(
+        deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(
           adopted?.result ?? migrated,
         );
         break;
       case "notification":
-        notification = createAiAnalysisElementResultSchema("notification").parse(
+        notification = createAiAnalysisMigrationElementResultSchema("notification").parse(
           adopted?.result ?? migrated,
         );
         break;
@@ -4371,9 +4396,9 @@ function codexOutputForAnalysis(
 }
 
 function codexElementResult(
-  output: SchemaValidCodexElementOutput,
+  output: ConsumerCodexElementOutput,
   element: AiAnalysisElement,
-): AiAnalysisElementResult | undefined {
+): AiAnalysisElementMigrationResult | undefined {
   switch (element) {
     case "status":
       return output.status;
@@ -4396,19 +4421,55 @@ function codexElementResult(
   }
 }
 
+function setConsumerCodexElementResult(
+  output: MutableConsumerCodexElementOutput,
+  element: AiAnalysisElement,
+  result: AiAnalysisElementMigrationResult,
+): void {
+  switch (element) {
+    case "status":
+      output.status = createAiAnalysisMigrationElementResultSchema("status").parse(result);
+      break;
+    case "waitingOn":
+      output.waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(result);
+      break;
+    case "nextAction":
+      output.nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(result);
+      break;
+    case "relations":
+      output.relations = createAiAnalysisMigrationElementResultSchema("relations").parse(result);
+      break;
+    case "progress":
+      output.progress = createAiAnalysisMigrationElementResultSchema("progress").parse(result);
+      break;
+    case "importance":
+      output.importance = createAiAnalysisMigrationElementResultSchema("importance").parse(result);
+      break;
+    case "deadline":
+      output.deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(result);
+      break;
+    case "notification":
+      output.notification =
+        createAiAnalysisMigrationElementResultSchema("notification").parse(result);
+      break;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
 function codexOutputForConsumers(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
-): SchemaValidCodexElementOutput | undefined {
+): ConsumerCodexElementOutput | undefined {
   const rawOutput = codexOutputForAnalysis(analysis, codexAnalysis);
   const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
   const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
   if (input == null || planning == null) {
     return rawOutput;
   }
-  const rawResults = new Map<AiAnalysisElement, AiAnalysisElementResult>();
+  const rawResults = new Map<AiAnalysisElement, AiAnalysisElementMigrationResult>();
   if (rawOutput != null) {
     for (const element of AI_ANALYSIS_ELEMENTS) {
       const result = codexElementResult(rawOutput, element);
@@ -4425,7 +4486,7 @@ function codexOutputForConsumers(
     listNativeRelationConstraints(input).some(
       (constraint) => constraint.verdict === "current_is_blocked_by_target",
     );
-  const output: Record<string, unknown> = {
+  const output: MutableConsumerCodexElementOutput = {
     schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
     item: {
       nodeId: input.item.nodeId,
@@ -4453,14 +4514,25 @@ function codexOutputForConsumers(
         ? raw
         : (adopted?.result ?? migrated)) ?? undefined;
     if (result != null) {
-      output[element] = result;
+      setConsumerCodexElementResult(output, element, result);
       outputElements.push(element);
     }
   }
   if (outputElements.length === 0) {
     return undefined;
   }
-  return validateCodexElementOutputSchema(output, outputElements);
+  return Object.freeze({
+    schemaVersion: output.schemaVersion,
+    item: output.item,
+    ...(output.status == null ? {} : { status: output.status }),
+    ...(output.waitingOn == null ? {} : { waitingOn: output.waitingOn }),
+    ...(output.nextAction == null ? {} : { nextAction: output.nextAction }),
+    ...(output.relations == null ? {} : { relations: output.relations }),
+    ...(output.progress == null ? {} : { progress: output.progress }),
+    ...(output.importance == null ? {} : { importance: output.importance }),
+    ...(output.deadline == null ? {} : { deadline: output.deadline }),
+    ...(output.notification == null ? {} : { notification: output.notification }),
+  });
 }
 
 function nonEmptySourceIds(
@@ -4504,7 +4576,7 @@ function createEffectiveAssigneeAssessment(
   configuration: RuntimeConfiguration,
   evaluatedAt: UtcIsoDateTime,
   analysis: DeterministicItemAnalysis,
-  output: SchemaValidCodexElementOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
 ): IssueEffectiveAssigneeAssessment {
   if (
     analysis.item.type !== "issue" ||
@@ -4628,7 +4700,7 @@ function createEffectiveAssigneeAssessment(
 function explicitRequestAssessment(
   item: Extract<FreshObservedGitHubItem, Readonly<{ type: "issue" }>>,
   detail: Extract<GitHubItemDetail, Readonly<{ type: "issue" }>>,
-  output: SchemaValidCodexElementOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
 ): IssueExplicitRequestAssessment {
   const candidates = createIssueRequestCandidates(item, detail);
   const waitingOnResult = output?.waitingOn;
@@ -4753,7 +4825,7 @@ function checkFailureSourceIds(
 
 function checkFailureAssessment(
   detail: Extract<GitHubItemDetail, Readonly<{ type: "pull_request" }>>,
-  output: SchemaValidCodexElementOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
 ): PullRequestCheckFailureAssessment {
   const sourceIds = checkFailureSourceIds(detail);
   if (sourceIds == null || output?.status == null || output.waitingOn == null) {
@@ -4797,7 +4869,7 @@ function checkFailureAssessment(
 
 function naturalLanguageProgressAssessments(
   analysis: DeterministicItemAnalysis,
-  output: SchemaValidCodexElementOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
 ): readonly NaturalLanguageProgressAssessment[] {
   const progressResult = output?.progress;
   if (progressResult == null) {
@@ -4908,7 +4980,7 @@ function reassessDeterministicAnalysis(
   inventory: RepositoryInventory,
   deterministicAnalysis: DeterministicAnalysis,
   analysis: DeterministicItemAnalysis,
-  output: SchemaValidCodexElementOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
   graph: GraphResult | undefined,
 ): DeterministicItemAnalysis {
   const repository = findRepository(inventory, analysis.item.repositoryId);
@@ -5348,7 +5420,7 @@ function trackedItemAiAnalysis(
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
   reduction: CodexAnalysisReduction | undefined,
-  consumerOutput: SchemaValidCodexElementOutput | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
 ): TrackedItemAiAnalysis {
   const nodeId = analysis.item.nodeId;
   const generations = codexAnalysis.elementGenerationsByNodeId.get(nodeId);
@@ -5424,7 +5496,7 @@ function createTrackedItem(
   staleness: StalenessResult,
   codexAnalysis: CodexAnalysis,
   reduction: CodexAnalysisReduction | undefined,
-  consumerOutput: SchemaValidCodexElementOutput | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
 ): PendingTrackedItem {
   const commonFields = {
     nodeId: analysis.item.nodeId,
@@ -6525,7 +6597,7 @@ function validateRunCompleteness(
   });
   const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
-    schemaVersion: "11",
+    schemaVersion: "12",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),

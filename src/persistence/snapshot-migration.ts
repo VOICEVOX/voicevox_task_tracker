@@ -4,20 +4,25 @@ import {
   aiAnalysisElementEvidenceSchema,
   aiAnalysisImportanceSchema,
   aiAnalysisNextActionSchema,
+  aiAnalysisNotificationSchema,
+  aiAnalysisRelationsSchema,
   aiAnalysisStatusSchema,
   aiAnalysisWaitingOnSchema,
-  createAiAnalysisElementResultSchema,
+  createAiAnalysisMigrationElementResultSchema,
   createAiAnalysisElementValueSchema,
   type AiAnalysisElement,
-  type AiAnalysisElementResult,
+  type AiAnalysisElementMigrationResult,
+  type AiAnalysisRelation,
 } from "../domain/ai-analysis-elements.js";
 import { type TrackedItemAiAnalysisMigrationAdoptedElements } from "../domain/index.js";
 import { type AiCacheKey } from "../codex/cache.js";
 import { type LegacyAiCacheEntry } from "./ai-cache-migration.js";
 import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
 import { StateFormatError, StateSnapshotSemanticError } from "./errors.js";
+import { UnreachableError } from "../util/index.js";
 import {
   createStateSnapshot,
+  parseStateSnapshotVersion11,
   parseStateSnapshot,
   type SnapshotAnalysisPlanFingerprint,
   type StateSnapshot,
@@ -64,6 +69,49 @@ const legacyEvidenceSchema = z.strictObject({
   supports: z.enum(["status", "waiting_on", "relation", "progress", "notification", "uncertainty"]),
   summary: z.string().min(1).max(240),
 });
+const legacyRelationContradictionSchema = z.strictObject({
+  verdict: z.enum([
+    "current_is_blocked_by_target",
+    "current_blocks_target",
+    "current_implements_target",
+    "target_is_subtask_of_current",
+    "current_is_subtask_of_target",
+    "duplicates",
+    "related",
+    "none",
+  ]),
+  confidence: z.number().min(0).max(1),
+});
+const legacyRelationFieldsSchema = {
+  id: z.string().min(1).regex(/^\S+$/u),
+  fromNodeId: z.string().min(1).regex(/^\S+$/u),
+  toNodeId: z.string().min(1).regex(/^\S+$/u),
+  type: z.enum(["blocks", "parent_of", "implements", "related_to", "duplicates"]),
+  provenance: z.enum([
+    "native",
+    "explicit_text",
+    "closing_keyword",
+    "checklist",
+    "cross_reference",
+    "ai_inference",
+  ]),
+  confidence: z.number().min(0).max(1),
+  evidence: z.array(legacyEvidenceSchema),
+  contradictions: z.array(legacyRelationContradictionSchema),
+  firstSeenAt: z.string().min(1),
+  lastConfirmedAt: z.string().min(1),
+};
+const legacyRelationSchema = z.union([
+  z.strictObject({
+    ...legacyRelationFieldsSchema,
+    active: z.literal(true),
+  }),
+  z.strictObject({
+    ...legacyRelationFieldsSchema,
+    active: z.literal(false),
+    removedAt: z.string().min(1),
+  }),
+]);
 const legacyImportanceAssessmentSchema = z.union([
   z.strictObject({
     status: z.literal("not_available"),
@@ -101,6 +149,16 @@ const legacyTrackedItemSchema = z
     severityContext: legacySeverityContextSchema,
     evidence: z.array(legacyEvidenceSchema),
     confidence: z.number().min(0).max(1),
+  })
+  .catchall(z.unknown());
+const legacyIdentifiedAuthorSchema = z
+  .object({
+    status: z.literal("identified"),
+    actor: z
+      .object({
+        login: z.string().min(1),
+      })
+      .catchall(z.unknown()),
   })
   .catchall(z.unknown());
 const legacyCollectionItemSchema = z.strictObject({
@@ -160,7 +218,7 @@ const legacySnapshotSchema = z.strictObject({
   repositories: z.array(z.unknown()),
   items: z.array(legacyTrackedItemSchema),
   externalReferences: z.array(z.unknown()),
-  relations: z.array(z.unknown()),
+  relations: z.array(legacyRelationSchema),
   run: z.unknown(),
 });
 const snapshotVersionSchema = z.object({
@@ -193,6 +251,12 @@ const legacyOutputSchema = z.strictObject({
 
 type LegacyTrackedItem = z.output<typeof legacyTrackedItemSchema>;
 type LegacyOutput = z.output<typeof legacyOutputSchema>;
+type LegacyRelation = z.output<typeof legacyRelationSchema>;
+type LegacyWaitingOnCandidate = z.output<typeof legacyWaitingOnSchema>[number];
+type AdoptedLegacyRelation = Readonly<{
+  candidate: AiAnalysisRelation;
+  relation: LegacyRelation;
+}>;
 type MutablePartial<Value> = {
   -readonly [Key in keyof Value]?: Value[Key];
 };
@@ -227,14 +291,15 @@ function migrationFormatError(error: unknown): StateFormatError {
 function resultEvidence(
   values: readonly z.output<typeof legacyEvidenceSchema>[],
 ): readonly z.output<typeof aiAnalysisElementEvidenceSchema>[] {
-  return Object.freeze(
-    values.slice(0, 30).map((value) =>
-      aiAnalysisElementEvidenceSchema.parse({
-        sourceId: value.sourceId,
-        summary: value.summary,
-      }),
-    ),
-  );
+  const evidenceByKey = new Map<string, z.output<typeof aiAnalysisElementEvidenceSchema>>();
+  for (const value of values) {
+    const evidence = aiAnalysisElementEvidenceSchema.parse({
+      sourceId: value.sourceId,
+      summary: value.summary,
+    });
+    evidenceByKey.set(serializeCanonicalJson([evidence.sourceId, evidence.summary]), evidence);
+  }
+  return Object.freeze([...evidenceByKey.values()]);
 }
 
 function outputEvidenceForElement(
@@ -247,12 +312,19 @@ function outputEvidenceForElement(
       ? "status"
       : element === "waitingOn"
         ? "waiting_on"
-        : undefined;
+        : element === "relations"
+          ? "relation"
+          : element === "notification"
+            ? "notification"
+            : undefined;
   const selected =
     supports == null
       ? output.evidence
       : output.evidence.filter((value) => value.supports === supports);
-  return resultEvidence(selected.length === 0 ? fallback : selected);
+  if (selected.length !== 0) {
+    return resultEvidence(selected);
+  }
+  return resultEvidence(element === "notification" ? output.evidence : fallback);
 }
 
 function createMigrationResult(
@@ -261,7 +333,7 @@ function createMigrationResult(
   evidence: readonly z.output<typeof aiAnalysisElementEvidenceSchema>[],
   confidence: number,
   uncertainties: readonly string[],
-): AiAnalysisElementResult {
+): AiAnalysisElementMigrationResult {
   if (evidence.length === 0) {
     throw new StateSnapshotSemanticError(`移行AI採用要素の根拠がありません。対象: ${element}`);
   }
@@ -273,21 +345,21 @@ function createMigrationResult(
   };
   switch (element) {
     case "status":
-      return createAiAnalysisElementResultSchema("status").parse(common);
+      return createAiAnalysisMigrationElementResultSchema("status").parse(common);
     case "waitingOn":
-      return createAiAnalysisElementResultSchema("waitingOn").parse(common);
+      return createAiAnalysisMigrationElementResultSchema("waitingOn").parse(common);
     case "nextAction":
-      return createAiAnalysisElementResultSchema("nextAction").parse(common);
+      return createAiAnalysisMigrationElementResultSchema("nextAction").parse(common);
     case "relations":
-      return createAiAnalysisElementResultSchema("relations").parse(common);
+      return createAiAnalysisMigrationElementResultSchema("relations").parse(common);
     case "progress":
-      return createAiAnalysisElementResultSchema("progress").parse(common);
+      return createAiAnalysisMigrationElementResultSchema("progress").parse(common);
     case "importance":
-      return createAiAnalysisElementResultSchema("importance").parse(common);
+      return createAiAnalysisMigrationElementResultSchema("importance").parse(common);
     case "deadline":
-      return createAiAnalysisElementResultSchema("deadline").parse(common);
+      return createAiAnalysisMigrationElementResultSchema("deadline").parse(common);
     case "notification":
-      return createAiAnalysisElementResultSchema("notification").parse(common);
+      return createAiAnalysisMigrationElementResultSchema("notification").parse(common);
   }
 }
 
@@ -299,6 +371,106 @@ function equalJson(left: unknown, right: unknown): boolean {
       cause: error,
     });
   }
+}
+
+function waitingOnCandidateMeaningfullyEquals(
+  item: LegacyTrackedItem,
+  output: LegacyWaitingOnCandidate,
+  adopted: LegacyWaitingOnCandidate,
+): boolean {
+  if (
+    output.kind === adopted.kind &&
+    output.candidateId === adopted.candidateId &&
+    output.role === adopted.role
+  ) {
+    return true;
+  }
+  if (
+    output.kind !== "user" ||
+    output.role !== "author" ||
+    adopted.kind !== "role" ||
+    adopted.role !== "author" ||
+    adopted.candidateId !== "author"
+  ) {
+    return false;
+  }
+  const authorResult = legacyIdentifiedAuthorSchema.safeParse(item["author"]);
+  return authorResult.success && authorResult.data.actor.login === output.candidateId;
+}
+
+function waitingOnMeaningfullyEquals(
+  item: LegacyTrackedItem,
+  output: readonly LegacyWaitingOnCandidate[],
+  adopted: readonly LegacyWaitingOnCandidate[],
+): boolean {
+  return (
+    output.length === adopted.length &&
+    output.every((candidate, index) => {
+      const adoptedCandidate = adopted[index];
+      return (
+        adoptedCandidate != null &&
+        waitingOnCandidateMeaningfullyEquals(item, candidate, adoptedCandidate)
+      );
+    })
+  );
+}
+
+function relationMatchesCandidate(
+  relation: LegacyRelation,
+  itemNodeId: string,
+  candidate: AiAnalysisRelation,
+): boolean {
+  if (
+    !relation.active ||
+    relation.provenance === "native" ||
+    relation.id !== candidate.candidateId
+  ) {
+    return false;
+  }
+  switch (candidate.verdict) {
+    case "current_is_blocked_by_target":
+      return relation.type === "blocks" && relation.toNodeId === itemNodeId;
+    case "current_blocks_target":
+      return relation.type === "blocks" && relation.fromNodeId === itemNodeId;
+    case "current_implements_target":
+      return relation.type === "implements" && relation.fromNodeId === itemNodeId;
+    case "target_is_subtask_of_current":
+      return relation.type === "parent_of" && relation.fromNodeId === itemNodeId;
+    case "current_is_subtask_of_target":
+      return relation.type === "parent_of" && relation.toNodeId === itemNodeId;
+    case "duplicates":
+      return relation.type === "duplicates" && relation.fromNodeId === itemNodeId;
+    case "related":
+      return relation.type === "related_to" && relation.fromNodeId === itemNodeId;
+    case "none":
+      return false;
+    default:
+      throw new UnreachableError(candidate.verdict);
+  }
+}
+
+function adoptedRelationCandidates(
+  item: LegacyTrackedItem,
+  output: LegacyOutput,
+  legacyRelationsById: ReadonlyMap<string, LegacyRelation>,
+): readonly AdoptedLegacyRelation[] {
+  const candidates = aiAnalysisRelationsSchema.parse(output.relations);
+  const adopted: AdoptedLegacyRelation[] = [];
+  const adoptedIds = new Set<string>();
+  for (const candidate of candidates) {
+    const relation = legacyRelationsById.get(candidate.candidateId);
+    if (relation == null || !relationMatchesCandidate(relation, item.nodeId, candidate)) {
+      continue;
+    }
+    if (adoptedIds.has(candidate.candidateId)) {
+      throw new StateSnapshotSemanticError(
+        `移行AI採用relationsのcandidate IDが重複しています。対象: ${item.nodeId}`,
+      );
+    }
+    adoptedIds.add(candidate.candidateId);
+    adopted.push({ candidate, relation });
+  }
+  return Object.freeze(adopted);
 }
 
 function parseLegacyOutput(entry: LegacyAiCacheEntry, item: LegacyTrackedItem): LegacyOutput {
@@ -316,21 +488,28 @@ function parseLegacyOutput(entry: LegacyAiCacheEntry, item: LegacyTrackedItem): 
   return output;
 }
 
+function effectiveStateConfidence(output: LegacyOutput): number {
+  return output.waitingOn.reduce(
+    (confidence, waitingOn) => Math.min(confidence, waitingOn.confidence),
+    output.confidence,
+  );
+}
+
 function createAssessmentResult(
   item: LegacyTrackedItem,
   output: LegacyOutput | undefined,
   element: "importance",
-): AiAnalysisElementResult<"importance"> | undefined;
+): AiAnalysisElementMigrationResult<"importance"> | undefined;
 function createAssessmentResult(
   item: LegacyTrackedItem,
   output: LegacyOutput | undefined,
   element: "deadline",
-): AiAnalysisElementResult<"deadline"> | undefined;
+): AiAnalysisElementMigrationResult<"deadline"> | undefined;
 function createAssessmentResult(
   item: LegacyTrackedItem,
   output: LegacyOutput | undefined,
   element: "importance" | "deadline",
-): AiAnalysisElementResult | undefined {
+): AiAnalysisElementMigrationResult | undefined {
   const assessment = item[`${element}Assessment`];
   if (assessment.status !== "available") {
     return undefined;
@@ -351,12 +530,13 @@ function createAssessmentResult(
     matchedOutput?.confidence ?? item.confidence,
     matchedOutput?.uncertainties ?? [],
   );
-  return createAiAnalysisElementResultSchema(element).parse(result);
+  return createAiAnalysisMigrationElementResultSchema(element).parse(result);
 }
 
 function createLegacyAdoptedElements(
   item: LegacyTrackedItem,
   output: LegacyOutput | undefined,
+  legacyRelationsById: ReadonlyMap<string, LegacyRelation>,
 ): TrackedItemAiAnalysisMigrationAdoptedElements {
   const adopted: MutablePartial<TrackedItemAiAnalysisMigrationAdoptedElements> = {};
   const importance = createAssessmentResult(item, output, "importance");
@@ -373,49 +553,82 @@ function createLegacyAdoptedElements(
       result: deadline,
     };
   }
-  if (output != null && item.severityContext.decisionBasis === "ai_only") {
-    if (equalJson(output.status, item.status)) {
-      adopted.status = {
-        origin: "migration",
-        result: createAiAnalysisElementResultSchema("status").parse(
-          createMigrationResult(
-            "status",
-            item.status,
-            outputEvidenceForElement(output, "status", item.evidence),
-            output.confidence,
-            output.uncertainties,
-          ),
+  if (output == null) {
+    return Object.freeze(adopted);
+  }
+  const statusMatched = equalJson(output.status, item.status);
+  const waitingOnMatched = waitingOnMeaningfullyEquals(item, output.waitingOn, item.waitingOn);
+  if (statusMatched) {
+    adopted.status = {
+      origin: "migration",
+      result: createAiAnalysisMigrationElementResultSchema("status").parse(
+        createMigrationResult(
+          "status",
+          item.status,
+          outputEvidenceForElement(output, "status", item.evidence),
+          output.confidence,
+          output.uncertainties,
         ),
-      };
-    }
-    if (equalJson(output.waitingOn, item.waitingOn)) {
-      adopted.waitingOn = {
-        origin: "migration",
-        result: createAiAnalysisElementResultSchema("waitingOn").parse(
-          createMigrationResult(
-            "waitingOn",
-            item.waitingOn,
-            outputEvidenceForElement(output, "waitingOn", item.evidence),
-            output.confidence,
-            output.uncertainties,
-          ),
+      ),
+    };
+  }
+  if (waitingOnMatched) {
+    adopted.waitingOn = {
+      origin: "migration",
+      result: createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
+        createMigrationResult(
+          "waitingOn",
+          item.waitingOn,
+          outputEvidenceForElement(output, "waitingOn", item.evidence),
+          output.confidence,
+          output.uncertainties,
         ),
-      };
-    }
-    if (equalJson(output.nextAction, item.nextAction)) {
-      adopted.nextAction = {
-        origin: "migration",
-        result: createAiAnalysisElementResultSchema("nextAction").parse(
-          createMigrationResult(
-            "nextAction",
-            item.nextAction,
-            outputEvidenceForElement(output, "nextAction", item.evidence),
-            output.confidence,
-            output.uncertainties,
-          ),
+      ),
+    };
+  }
+  if (statusMatched && waitingOnMatched) {
+    adopted.nextAction = {
+      origin: "migration",
+      result: createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+        createMigrationResult(
+          "nextAction",
+          item.nextAction,
+          outputEvidenceForElement(output, "nextAction", item.evidence),
+          output.confidence,
+          output.uncertainties,
         ),
-      };
-    }
+      ),
+    };
+  }
+  const adoptedRelations = adoptedRelationCandidates(item, output, legacyRelationsById);
+  if (adoptedRelations.length > 0) {
+    adopted.relations = {
+      origin: "migration",
+      result: createAiAnalysisMigrationElementResultSchema("relations").parse(
+        createMigrationResult(
+          "relations",
+          adoptedRelations.map(({ candidate }) => candidate),
+          resultEvidence(adoptedRelations.flatMap(({ relation }) => relation.evidence)),
+          output.confidence,
+          output.uncertainties,
+        ),
+      ),
+    };
+  }
+  if (item.severityContext.decisionBasis === "ai_only") {
+    const notification = aiAnalysisNotificationSchema.parse(output.notification);
+    adopted.notification = {
+      origin: "migration",
+      result: createAiAnalysisMigrationElementResultSchema("notification").parse(
+        createMigrationResult(
+          "notification",
+          notification,
+          outputEvidenceForElement(output, "notification", item.evidence),
+          effectiveStateConfidence(output),
+          output.uncertainties,
+        ),
+      ),
+    };
   }
   return Object.freeze(adopted);
 }
@@ -423,6 +636,7 @@ function createLegacyAdoptedElements(
 function migrateTrackedItem(
   item: LegacyTrackedItem,
   legacyEntriesByCacheKey: ReadonlyMap<AiCacheKey, LegacyAiCacheEntry>,
+  legacyRelationsById: ReadonlyMap<string, LegacyRelation>,
 ): Record<string, unknown> {
   let output: LegacyOutput | undefined;
   if (item.aiAnalysis.status === "used") {
@@ -440,7 +654,7 @@ function migrateTrackedItem(
       origin: "migration",
       status: item.aiAnalysis.status,
       elements: {},
-      adoptedElements: createLegacyAdoptedElements(item, output),
+      adoptedElements: createLegacyAdoptedElements(item, output, legacyRelationsById),
     },
   };
 }
@@ -459,14 +673,28 @@ function migrationCollectionAiAnalysis(): Readonly<{
   };
 }
 
+function createLegacyRelationsById(
+  relations: readonly LegacyRelation[],
+): ReadonlyMap<string, LegacyRelation> {
+  const relationsById = new Map<string, LegacyRelation>();
+  for (const relation of relations) {
+    if (relationsById.has(relation.id)) {
+      throw new StateSnapshotSemanticError(`relation IDが重複しています。対象: ${relation.id}`);
+    }
+    relationsById.set(relation.id, relation);
+  }
+  return relationsById;
+}
+
 function migrateLegacyStateSnapshot(
   source: string,
   legacyEntriesByCacheKey: ReadonlyMap<AiCacheKey, LegacyAiCacheEntry>,
 ): StateSnapshot {
   try {
     const value = legacySnapshotSchema.parse(parseJson(source));
+    const legacyRelationsById = createLegacyRelationsById(value.relations);
     const migratedItems = value.items.map((item) =>
-      migrateTrackedItem(item, legacyEntriesByCacheKey),
+      migrateTrackedItem(item, legacyEntriesByCacheKey, legacyRelationsById),
     );
     const collectionRepositories = value.collection.repositories.map((repository) => ({
       repositoryId: repository.repositoryId,
@@ -489,7 +717,7 @@ function migrateLegacyStateSnapshot(
       }),
     }));
     return createStateSnapshot({
-      schemaVersion: "11",
+      schemaVersion: "12",
       generatedAt: value.generatedAt,
       trackingStartAt: value.trackingStartAt,
       ai: value.ai,
@@ -520,6 +748,11 @@ export function migrateStateSnapshot(
     case "10":
       return migrateLegacyStateSnapshot(source, legacyEntriesByCacheKey);
     case "11":
+      return createStateSnapshot({
+        ...parseStateSnapshotVersion11(source),
+        schemaVersion: "12",
+      });
+    case "12":
       return parseStateSnapshot(source);
     default:
       throw new StateFormatError("snapshot", {

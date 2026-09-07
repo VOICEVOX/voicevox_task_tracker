@@ -33,8 +33,8 @@ import {
 } from "./confidence.js";
 import {
   AI_ANALYSIS_ELEMENTS,
-  createAiAnalysisElementResultSchema,
-  type AiAnalysisElementResult,
+  createAiAnalysisMigrationElementResultSchema,
+  type AiAnalysisElementMigrationResult,
   type AiAnalysisElement,
   type AiAnalysisElementGeneration,
 } from "../domain/ai-analysis-elements.js";
@@ -388,7 +388,7 @@ type AiAnalysisElementResultMap = CodexAnalysisInput["lockedElements"];
 type ElementResultSource = CodexElementOutput | AiAnalysisElementResultMap;
 
 type ElementResultSelection = Readonly<{
-  result: AiAnalysisElementResult | undefined;
+  result: AiAnalysisElementMigrationResult | undefined;
   classification: CodexConfidenceClassification | undefined;
   application: "applied" | "preserved" | "deterministic_fallback";
 }>;
@@ -398,7 +398,7 @@ const relationCandidateIdSchema = z.templateLiteral(["rel:", z.string()]);
 function resultForElement(
   source: ElementResultSource,
   element: AiAnalysisElement,
-): AiAnalysisElementResult | undefined {
+): AiAnalysisElementMigrationResult | undefined {
   switch (element) {
     case "status":
       return source.status;
@@ -431,25 +431,25 @@ function validatePreservedElementKeys(values: AiAnalysisElementResultMap): void 
 /** 要素内部のconfidenceを含めた実効confidenceを算出する。 */
 export function effectiveElementConfidence(
   element: AiAnalysisElement,
-  result: AiAnalysisElementResult,
+  result: AiAnalysisElementMigrationResult,
 ): number {
   switch (element) {
     case "waitingOn": {
-      const parsed = createAiAnalysisElementResultSchema("waitingOn").parse(result);
+      const parsed = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(result);
       return parsed.value.reduce(
         (minimum, candidate) => Math.min(minimum, candidate.confidence),
         parsed.confidence,
       );
     }
     case "relations": {
-      const parsed = createAiAnalysisElementResultSchema("relations").parse(result);
+      const parsed = createAiAnalysisMigrationElementResultSchema("relations").parse(result);
       return parsed.value.reduce(
         (minimum, candidate) => Math.min(minimum, candidate.confidence),
         parsed.confidence,
       );
     }
     case "progress": {
-      const parsed = createAiAnalysisElementResultSchema("progress").parse(result);
+      const parsed = createAiAnalysisMigrationElementResultSchema("progress").parse(result);
       return Math.min(parsed.confidence, parsed.value.confidence);
     }
     case "status":
@@ -547,12 +547,12 @@ function createUnavailableDeadlineAssessment(): NaturalLanguageDeadlineAssessmen
 }
 
 function createImportanceAssessment(
-  result: AiAnalysisElementResult | undefined,
+  result: AiAnalysisElementMigrationResult | undefined,
 ): NaturalLanguageImportanceAssessmentState {
   if (result == null) {
     return createUnavailableImportanceAssessment();
   }
-  const parsed = createAiAnalysisElementResultSchema("importance").parse(result);
+  const parsed = createAiAnalysisMigrationElementResultSchema("importance").parse(result);
   return Object.freeze({
     status: "available",
     value: Object.freeze({
@@ -564,12 +564,12 @@ function createImportanceAssessment(
 }
 
 function createDeadlineAssessment(
-  result: AiAnalysisElementResult | undefined,
+  result: AiAnalysisElementMigrationResult | undefined,
 ): NaturalLanguageDeadlineAssessmentState {
   if (result == null) {
     return createUnavailableDeadlineAssessment();
   }
-  const parsed = createAiAnalysisElementResultSchema("deadline").parse(result);
+  const parsed = createAiAnalysisMigrationElementResultSchema("deadline").parse(result);
   return Object.freeze({
     status: "available",
     value: Object.freeze({
@@ -586,7 +586,9 @@ function createCodexNotification(
   if (selection.result == null) {
     return createFallbackNotification("notification要素の有効な判定がありません");
   }
-  const parsed = createAiAnalysisElementResultSchema("notification").parse(selection.result);
+  const parsed = createAiAnalysisMigrationElementResultSchema("notification").parse(
+    selection.result,
+  );
   const classification =
     selection.classification ?? classifyCodexConfidence(parsed.confidence, confidenceThresholds);
   return Object.freeze({
@@ -634,10 +636,10 @@ function relationCandidateId(value: string): RelationCandidateId {
 }
 
 function createRelationAssessments(
-  result: AiAnalysisElementResult,
+  result: AiAnalysisElementMigrationResult,
   currentNodeId: string,
 ): readonly RelationCandidateAssessment[] {
-  const parsed = createAiAnalysisElementResultSchema("relations").parse(result);
+  const parsed = createAiAnalysisMigrationElementResultSchema("relations").parse(result);
   const nodeId = createGitHubNodeId(currentNodeId);
   return Object.freeze(
     parsed.value.map((relation) =>
@@ -654,7 +656,7 @@ function createRelationAssessments(
 }
 
 function createElementEvidence(
-  result: AiAnalysisElementResult,
+  result: AiAnalysisElementMigrationResult,
   supports: Evidence["supports"],
 ): readonly Evidence[] {
   return Object.freeze(
@@ -762,15 +764,17 @@ function createStateDecision(
   const statusResult =
     statusSelection.result == null
       ? undefined
-      : createAiAnalysisElementResultSchema("status").parse(statusSelection.result);
+      : createAiAnalysisMigrationElementResultSchema("status").parse(statusSelection.result);
   const waitingOnResult =
     waitingOnSelection.result == null
       ? undefined
-      : createAiAnalysisElementResultSchema("waitingOn").parse(waitingOnSelection.result);
+      : createAiAnalysisMigrationElementResultSchema("waitingOn").parse(waitingOnSelection.result);
   const nextActionResult =
     nextActionSelection.result == null
       ? undefined
-      : createAiAnalysisElementResultSchema("nextAction").parse(nextActionSelection.result);
+      : createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+          nextActionSelection.result,
+        );
 
   const status = deterministicStatePriority ? deterministicDecision.status : statusResult?.value;
   const waitingOn = deterministicStatePriority

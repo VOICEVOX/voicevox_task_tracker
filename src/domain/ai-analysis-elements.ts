@@ -147,6 +147,18 @@ export type AiAnalysisWaitingOn = z.output<typeof waitingOnCandidateSchema>;
 /** waitingOn要素の値。 */
 export type AiAnalysisWaitingOnValue = z.output<typeof aiAnalysisWaitingOnSchema>;
 
+const migrationWaitingOnCandidateSchema = waitingOnCandidateSchema.extend({
+  sourceIds: z.array(z.string().min(1).regex(/^\S+$/u, "source IDに空白は使えません")).min(1),
+});
+
+/** 移行済みwaitingOn要素の値schema。 */
+export const aiAnalysisMigrationWaitingOnSchema = z
+  .array(migrationWaitingOnCandidateSchema)
+  .max(20);
+
+/** 移行済みwaitingOn要素の値。 */
+export type AiAnalysisMigrationWaitingOnValue = z.output<typeof aiAnalysisMigrationWaitingOnSchema>;
+
 /** nextAction要素の値schema。 */
 export const aiAnalysisNextActionSchema = z.string().min(1).max(300);
 
@@ -291,24 +303,56 @@ type AiAnalysisElementValueByElement = {
 export type AiAnalysisElementValue<Element extends AiAnalysisElement = AiAnalysisElement> =
   AiAnalysisElementValueByElement[Element];
 
-function createElementResultSchema<ValueSchema extends z.ZodType>(valueSchema: ValueSchema) {
+const aiAnalysisElementResultEvidenceSchema = z
+  .array(aiAnalysisElementEvidenceSchema)
+  .min(1)
+  .max(30);
+const aiAnalysisMigrationElementResultEvidenceSchema = z
+  .array(aiAnalysisElementEvidenceSchema)
+  .min(1);
+
+function createElementResultSchema<ValueSchema extends z.ZodType, EvidenceSchema extends z.ZodType>(
+  valueSchema: ValueSchema,
+  evidenceSchema: EvidenceSchema,
+) {
   return z.strictObject({
     value: valueSchema,
-    evidence: z.array(aiAnalysisElementEvidenceSchema).min(1).max(30),
+    evidence: evidenceSchema,
     confidence: z.number().min(0).max(1),
     uncertainties: z.array(z.string().min(1).max(240)).max(20),
   });
 }
 
 const aiAnalysisElementResultSchemas = {
-  status: createElementResultSchema(aiAnalysisStatusSchema),
-  waitingOn: createElementResultSchema(aiAnalysisWaitingOnSchema),
-  nextAction: createElementResultSchema(aiAnalysisNextActionSchema),
-  relations: createElementResultSchema(aiAnalysisRelationsSchema),
-  progress: createElementResultSchema(aiAnalysisProgressSchema),
-  importance: createElementResultSchema(aiAnalysisImportanceSchema),
-  deadline: createElementResultSchema(aiAnalysisDeadlineSchema),
-  notification: createElementResultSchema(aiAnalysisNotificationSchema),
+  status: createElementResultSchema(aiAnalysisStatusSchema, aiAnalysisElementResultEvidenceSchema),
+  waitingOn: createElementResultSchema(
+    aiAnalysisWaitingOnSchema,
+    aiAnalysisElementResultEvidenceSchema,
+  ),
+  nextAction: createElementResultSchema(
+    aiAnalysisNextActionSchema,
+    aiAnalysisElementResultEvidenceSchema,
+  ),
+  relations: createElementResultSchema(
+    aiAnalysisRelationsSchema,
+    aiAnalysisElementResultEvidenceSchema,
+  ),
+  progress: createElementResultSchema(
+    aiAnalysisProgressSchema,
+    aiAnalysisElementResultEvidenceSchema,
+  ),
+  importance: createElementResultSchema(
+    aiAnalysisImportanceSchema,
+    aiAnalysisElementResultEvidenceSchema,
+  ),
+  deadline: createElementResultSchema(
+    aiAnalysisDeadlineSchema,
+    aiAnalysisElementResultEvidenceSchema,
+  ),
+  notification: createElementResultSchema(
+    aiAnalysisNotificationSchema,
+    aiAnalysisElementResultEvidenceSchema,
+  ),
 };
 
 /** 要素ごとのresult schemaを取得する。 */
@@ -325,6 +369,59 @@ type AiAnalysisElementResultByElement = {
 /** 要素の値と根拠、confidence、不確実な点。 */
 export type AiAnalysisElementResult<Element extends AiAnalysisElement = AiAnalysisElement> =
   AiAnalysisElementResultByElement[Element];
+
+const aiAnalysisMigrationElementResultSchemas = {
+  status: createElementResultSchema(
+    aiAnalysisStatusSchema,
+    aiAnalysisMigrationElementResultEvidenceSchema,
+  ),
+  waitingOn: createElementResultSchema(
+    aiAnalysisMigrationWaitingOnSchema,
+    aiAnalysisMigrationElementResultEvidenceSchema,
+  ),
+  nextAction: createElementResultSchema(
+    aiAnalysisNextActionSchema,
+    aiAnalysisMigrationElementResultEvidenceSchema,
+  ),
+  relations: createElementResultSchema(
+    aiAnalysisRelationsSchema,
+    aiAnalysisMigrationElementResultEvidenceSchema,
+  ),
+  progress: createElementResultSchema(
+    aiAnalysisProgressSchema,
+    aiAnalysisMigrationElementResultEvidenceSchema,
+  ),
+  importance: createElementResultSchema(
+    aiAnalysisImportanceSchema,
+    aiAnalysisMigrationElementResultEvidenceSchema,
+  ),
+  deadline: createElementResultSchema(
+    aiAnalysisDeadlineSchema,
+    aiAnalysisMigrationElementResultEvidenceSchema,
+  ),
+  notification: createElementResultSchema(
+    aiAnalysisNotificationSchema,
+    aiAnalysisMigrationElementResultEvidenceSchema,
+  ),
+};
+
+/** 移行後のruntimeで利用する要素別result schemaを取得する。 */
+export function createAiAnalysisMigrationElementResultSchema<Element extends AiAnalysisElement>(
+  element: Element,
+): (typeof aiAnalysisMigrationElementResultSchemas)[Element] {
+  return aiAnalysisMigrationElementResultSchemas[element];
+}
+
+type AiAnalysisElementMigrationResultByElement = {
+  [Element in AiAnalysisElement]: z.output<
+    (typeof aiAnalysisMigrationElementResultSchemas)[Element]
+  >;
+};
+
+/** 移行後のruntimeで利用する要素の値と根拠、confidence、不確実な点。 */
+export type AiAnalysisElementMigrationResult<
+  Element extends AiAnalysisElement = AiAnalysisElement,
+> = AiAnalysisElementMigrationResultByElement[Element];
 
 /** 要素別resultのいずれかを検証するschema。 */
 export const aiAnalysisElementResultSchema = z.union([

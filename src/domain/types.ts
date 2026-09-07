@@ -8,7 +8,7 @@ import type {
   AiAnalysisElement,
   AiAnalysisElementMetadata,
   AiAnalysisElementGeneration,
-  AiAnalysisElementResult,
+  AiAnalysisElementMigrationResult,
 } from "./ai-analysis-elements.js";
 
 export type {
@@ -549,7 +549,7 @@ export type TrackedItemAiAnalysisCurrentElements = Readonly<{
 }>;
 
 export type TrackedItemAiAnalysisMigrationElements = Readonly<{
-  [Element in AiAnalysisElement]?: AiAnalysisElementResult<Element>;
+  [Element in AiAnalysisElement]?: AiAnalysisElementMigrationResult<Element>;
 }>;
 
 export type TrackedItemAiAnalysisMigrationAdoptedElement<
@@ -561,7 +561,7 @@ export type TrackedItemAiAnalysisMigrationAdoptedElement<
     }>
   | Readonly<{
       origin: "migration";
-      result: AiAnalysisElementResult<Element>;
+      result: AiAnalysisElementMigrationResult<Element>;
     }>;
 
 export type TrackedItemAiAnalysisMigrationAdoptedElements = Readonly<{

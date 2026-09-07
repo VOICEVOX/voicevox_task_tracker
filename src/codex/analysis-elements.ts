@@ -16,6 +16,7 @@ export {
   aiAnalysisElementRevisionSchema,
   aiAnalysisElementResultSchema,
   aiAnalysisElementSchema,
+  aiAnalysisMigrationWaitingOnSchema,
   aiAnalysisImportanceSchema,
   aiAnalysisNextActionSchema,
   aiAnalysisNotificationReasonCodeSchema,
@@ -32,6 +33,7 @@ export {
   createAiAnalysisElementGenerationSchema,
   createAiAnalysisElementResultSchema,
   createAiAnalysisElementValueSchema,
+  createAiAnalysisMigrationElementResultSchema,
 } from "../domain/ai-analysis-elements.js";
 export type {
   AiAnalysisElement,
@@ -40,6 +42,7 @@ export type {
   AiAnalysisElementGeneration,
   AiAnalysisElementInputFingerprint,
   AiAnalysisElementMetadata,
+  AiAnalysisElementMigrationResult,
   AiAnalysisElementNecessity,
   AiAnalysisElementResult,
   AiAnalysisElementValue,
@@ -58,6 +61,7 @@ export type {
   AiAnalysisWaitingOnKind,
   AiAnalysisWaitingOnRole,
   AiAnalysisWaitingOnValue,
+  AiAnalysisMigrationWaitingOnValue,
 } from "../domain/ai-analysis-elements.js";
 export {
   aiAnalysisElementFingerprintSchema as analysisElementFingerprintSchema,

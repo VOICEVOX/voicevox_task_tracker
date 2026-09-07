@@ -4,7 +4,7 @@ import { parseSourceId } from "../domain/source-id.js";
 import {
   AI_ANALYSIS_ELEMENTS,
   aiAnalysisElementSchema,
-  createAiAnalysisElementResultSchema,
+  createAiAnalysisMigrationElementResultSchema,
 } from "./analysis-elements.js";
 
 const opaqueIdSchema = z
@@ -70,14 +70,14 @@ const sourceSchema = z
   .catchall(jsonValueSchema);
 
 const lockedElementsSchema = z.strictObject({
-  status: createAiAnalysisElementResultSchema("status").optional(),
-  waitingOn: createAiAnalysisElementResultSchema("waitingOn").optional(),
-  nextAction: createAiAnalysisElementResultSchema("nextAction").optional(),
-  relations: createAiAnalysisElementResultSchema("relations").optional(),
-  progress: createAiAnalysisElementResultSchema("progress").optional(),
-  importance: createAiAnalysisElementResultSchema("importance").optional(),
-  deadline: createAiAnalysisElementResultSchema("deadline").optional(),
-  notification: createAiAnalysisElementResultSchema("notification").optional(),
+  status: createAiAnalysisMigrationElementResultSchema("status").optional(),
+  waitingOn: createAiAnalysisMigrationElementResultSchema("waitingOn").optional(),
+  nextAction: createAiAnalysisMigrationElementResultSchema("nextAction").optional(),
+  relations: createAiAnalysisMigrationElementResultSchema("relations").optional(),
+  progress: createAiAnalysisMigrationElementResultSchema("progress").optional(),
+  importance: createAiAnalysisMigrationElementResultSchema("importance").optional(),
+  deadline: createAiAnalysisMigrationElementResultSchema("deadline").optional(),
+  notification: createAiAnalysisMigrationElementResultSchema("notification").optional(),
 });
 
 const codexAnalysisInputSchema = z
