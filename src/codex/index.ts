@@ -197,6 +197,7 @@ export {
   executeValidatedCodexAnalysis,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
+  reducePreservedCodexRelationsAndNotification,
   runCodexAnalysisWithFallback,
   reduceAiAnalysisElements,
   type CodexAnalysisAttempt,

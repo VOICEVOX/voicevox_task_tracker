@@ -654,6 +654,36 @@ function createRelationAssessments(
   );
 }
 
+/** 保存済みの関係と通知の採用結果を変換する。 */
+export function reducePreservedCodexRelationsAndNotification(
+  currentNodeId: string,
+  preservedElements: Pick<CodexPreservedElements, "relations" | "notification">,
+  confidenceThresholds: CodexConfidenceThresholds,
+): Readonly<{
+  relationAssessments: readonly RelationCandidateAssessment[];
+  notification: ReducedCodexNotification | undefined;
+}> {
+  validatePreservedElementKeys(preservedElements);
+  const notificationResult = preservedElements.notification;
+  return Object.freeze({
+    relationAssessments:
+      preservedElements.relations == null
+        ? Object.freeze([])
+        : createRelationAssessments(preservedElements.relations, currentNodeId),
+    notification:
+      notificationResult == null
+        ? undefined
+        : createCodexNotification(
+            Object.freeze({
+              result: notificationResult,
+              classification: undefined,
+              application: "preserved",
+            }),
+            confidenceThresholds,
+          ),
+  });
+}
+
 function createElementEvidence(
   result: AiAnalysisElementMigrationResult,
   supports: Evidence["supports"],
