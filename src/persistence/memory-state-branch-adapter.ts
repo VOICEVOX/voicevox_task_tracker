@@ -83,6 +83,45 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     );
   }
 
+  public readFiles(
+    revision: string,
+    paths: readonly string[],
+  ): Promise<ReadonlyMap<string, StateFileReadResult>> {
+    if (paths.length === 0) {
+      return Promise.resolve(new Map<string, StateFileReadResult>());
+    }
+    if (new Set(paths).size !== paths.length) {
+      throw new StateConfigurationError("読み取りpathが重複しています");
+    }
+    for (const path of paths) {
+      assertValidStatePath(path);
+    }
+    const commit = this.#commits.get(revision);
+    if (commit == null) {
+      return Promise.reject(
+        new StateBranchReadError({
+          cause: new TypeError("指定revisionが存在しません"),
+        }),
+      );
+    }
+    const results = new Map<string, StateFileReadResult>();
+    for (const path of paths) {
+      const bytes = commit.files.get(path);
+      results.set(
+        path,
+        bytes == null
+          ? Object.freeze({
+              status: "missing",
+            })
+          : Object.freeze({
+              status: "present",
+              bytes: copyBytes(bytes),
+            }),
+      );
+    }
+    return Promise.resolve(results);
+  }
+
   public listFiles(revision: string, directory: string): Promise<readonly string[]> {
     assertValidStateDirectory(directory);
     const commit = this.#commits.get(revision);

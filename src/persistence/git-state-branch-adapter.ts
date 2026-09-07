@@ -110,6 +110,134 @@ function parseNullSeparatedPaths(bytes: Uint8Array): readonly string[] {
   return Object.freeze(paths);
 }
 
+function validateReadPaths(paths: readonly string[]): void {
+  if (new Set(paths).size !== paths.length) {
+    throw new StateConfigurationError("読み取りpathが重複しています");
+  }
+  for (const path of paths) {
+    assertValidStatePath(path);
+  }
+}
+
+function findLineFeed(bytes: Uint8Array, offset: number): number {
+  const lineFeedIndex = bytes.indexOf(0x0a, offset);
+  if (lineFeedIndex < 0) {
+    throw new TypeError("git cat-fileの応答headerが改行で終わっていません");
+  }
+  return lineFeedIndex;
+}
+
+function parseBatchSize(value: string): number {
+  if (!/^[0-9]+$/u.test(value)) {
+    throw new TypeError("git cat-fileのblob byte sizeが不正です");
+  }
+  const size = Number(value);
+  if (!Number.isSafeInteger(size)) {
+    throw new TypeError("git cat-fileのblob byte sizeが大きすぎます");
+  }
+  return size;
+}
+
+type GitBatchObjectHeader =
+  | Readonly<{
+      status: "missing";
+      offset: number;
+    }>
+  | Readonly<{
+      status: "present";
+      objectId: string;
+      objectType: string;
+      size: number;
+      offset: number;
+    }>;
+
+function parseGitBatchHeader(
+  bytes: Uint8Array,
+  offset: number,
+  expectedObjectName: string,
+): GitBatchObjectHeader {
+  const headerEnd = findLineFeed(bytes, offset);
+  const header = decodeUtf8(bytes.slice(offset, headerEnd));
+  const nextOffset = headerEnd + 1;
+  const fields = header.split(" ");
+  const firstField = fields[0];
+  if (fields.length === 2 && fields[1] === "missing") {
+    if (firstField !== expectedObjectName) {
+      throw new TypeError("git cat-fileのmissing対象が要求pathと一致しません");
+    }
+    return Object.freeze({
+      status: "missing",
+      offset: nextOffset,
+    });
+  }
+  if (fields.length !== 3 || firstField == null || fields[1] == null || fields[2] == null) {
+    throw new TypeError("git cat-fileの応答headerが不正です");
+  }
+  if (!OBJECT_ID_PATTERN.test(firstField)) {
+    throw new TypeError("git cat-fileのobject IDが不正です");
+  }
+  return Object.freeze({
+    status: "present",
+    objectId: firstField,
+    objectType: fields[1],
+    size: parseBatchSize(fields[2]),
+    offset: nextOffset,
+  });
+}
+
+function parseGitBatchResult(
+  revision: string,
+  paths: readonly string[],
+  bytes: Uint8Array,
+): ReadonlyMap<string, StateFileReadResult> {
+  const results = new Map<string, StateFileReadResult>();
+  const revisionHeader = parseGitBatchHeader(bytes, 0, `${revision}^{tree}`);
+  if (revisionHeader.status === "missing") {
+    throw new TypeError("指定revisionが存在しません");
+  }
+  if (revisionHeader.objectType !== "tree") {
+    throw new TypeError("指定revisionがtreeとして解決できません");
+  }
+  let offset = revisionHeader.offset;
+  for (const path of paths) {
+    const objectName = `${revision}:${path}`;
+    const header = parseGitBatchHeader(bytes, offset, objectName);
+    offset = header.offset;
+    if (header.status === "missing") {
+      results.set(
+        path,
+        Object.freeze({
+          status: "missing",
+        }),
+      );
+      continue;
+    }
+    if (header.objectType !== "blob") {
+      throw new TypeError("state pathがblobではありません");
+    }
+    const size = header.size;
+    if (size > bytes.length - offset) {
+      throw new TypeError("git cat-fileのblob byte sizeが応答長を超えています");
+    }
+    const contentEnd = offset + size;
+    if (bytes[contentEnd] !== 0x0a) {
+      throw new TypeError("git cat-fileのblob本文後の区切りが不正です");
+    }
+    results.set(
+      path,
+      Object.freeze({
+        status: "present",
+        bytes: bytes.slice(offset, contentEnd),
+      }),
+    );
+    offset = contentEnd + 1;
+  }
+  if (offset !== bytes.length) {
+    throw new TypeError("git cat-fileの応答に余剰データがあります");
+  }
+  return results;
+}
+
 function validateBranch(branch: string): void {
   if (branch !== TRACKER_STATE_BRANCH) {
     throw new StateConfigurationError(`${TRACKER_STATE_BRANCH} branchだけを操作できます`);
@@ -301,6 +429,45 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
       }
       throw new StateBranchReadError({
         cause: new Error("git treeのファイル取得に失敗しました", {
+          cause: error,
+        }),
+      });
+    }
+  }
+
+  public async readFiles(
+    revision: string,
+    paths: readonly string[],
+  ): Promise<ReadonlyMap<string, StateFileReadResult>> {
+    if (paths.length === 0) {
+      return new Map<string, StateFileReadResult>();
+    }
+    validateReadPaths(paths);
+    if (!OBJECT_ID_PATTERN.test(revision)) {
+      throw new StateConfigurationError("一括読み取りrevisionのobject IDが不正です");
+    }
+    const input = new TextEncoder().encode(
+      [`info ${revision}^{tree}`, ...paths.map((path) => `contents ${revision}:${path}`)].join(
+        "\n",
+      ) + "\n",
+    );
+    try {
+      const result = await this.#runGit({
+        arguments: ["cat-file", "--batch-command"],
+        input: {
+          status: "present",
+          bytes: input,
+        },
+        environment: this.#baseEnvironment,
+        acceptedExitCodes: new Set([0]),
+      });
+      return parseGitBatchResult(revision, paths, result.stdout);
+    } catch (error: unknown) {
+      if (error instanceof StateConfigurationError) {
+        throw error;
+      }
+      throw new StateBranchReadError({
+        cause: new Error("git treeのstateファイル一括取得に失敗しました", {
           cause: error,
         }),
       });

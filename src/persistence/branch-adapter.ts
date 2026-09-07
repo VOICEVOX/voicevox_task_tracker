@@ -67,6 +67,10 @@ export type StateBranchPublishRequest = Readonly<{
 export type StateBranchAdapter = Readonly<{
   resolveHead: (branch: string) => Promise<StateBranchHead>;
   readFile: (revision: string, path: string) => Promise<StateFileReadResult>;
+  readFiles: (
+    revision: string,
+    paths: readonly string[],
+  ) => Promise<ReadonlyMap<string, StateFileReadResult>>;
   listFiles: (revision: string, directory: string) => Promise<readonly string[]>;
   commit: (request: StateBranchCommitRequest) => Promise<StateBranchCommitResult>;
   publish: (request: StateBranchPublishRequest) => Promise<void>;
