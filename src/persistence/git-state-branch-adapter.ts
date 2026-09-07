@@ -95,6 +95,21 @@ function parseObjectId(bytes: Uint8Array): string {
   return objectId;
 }
 
+function parseNullSeparatedPaths(bytes: Uint8Array): readonly string[] {
+  const source = decodeUtf8(bytes);
+  if (source.length === 0) {
+    return Object.freeze([]);
+  }
+  const paths = source.split("\0");
+  if (paths.at(-1) === "") {
+    paths.pop();
+  }
+  if (paths.some((path) => path.length === 0)) {
+    throw new TypeError("gitの追跡path一覧が不正です");
+  }
+  return Object.freeze(paths);
+}
+
 function validateBranch(branch: string): void {
   if (branch !== TRACKER_STATE_BRANCH) {
     throw new StateConfigurationError(`${TRACKER_STATE_BRANCH} branchだけを操作できます`);
@@ -375,19 +390,30 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
           acceptedExitCodes: new Set([0]),
         });
       }
-      for (const path of request.deletions) {
+      if (request.deletions.length > 0) {
+        const trackedPaths = parseNullSeparatedPaths(
+          (
+            await this.#runGit({
+              arguments: ["ls-files", "-z"],
+              input: {
+                status: "none",
+              },
+              environment: indexEnvironment,
+              acceptedExitCodes: new Set([0]),
+            })
+          ).stdout,
+        );
+        const trackedPathSet = new Set(trackedPaths);
+        for (const path of request.deletions) {
+          if (!trackedPathSet.has(path)) {
+            throw new TypeError("commit対象の削除stateファイルが存在しません");
+          }
+        }
         await this.#runGit({
-          arguments: ["ls-files", "--error-unmatch", "--", path],
+          arguments: ["update-index", "--force-remove", "-z", "--stdin"],
           input: {
-            status: "none",
-          },
-          environment: indexEnvironment,
-          acceptedExitCodes: new Set([0]),
-        });
-        await this.#runGit({
-          arguments: ["update-index", "--force-remove", "--", path],
-          input: {
-            status: "none",
+            status: "present",
+            bytes: new TextEncoder().encode(`${request.deletions.join("\0")}\0`),
           },
           environment: indexEnvironment,
           acceptedExitCodes: new Set([0]),
