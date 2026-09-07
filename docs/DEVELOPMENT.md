@@ -69,7 +69,7 @@ pnpm tracker:run build-pages --output web/public/data
 外部サービスへ接続しないサブコマンドは`eval`、`report-workflow`、`persist-state`、`build-pages`です。
 `persist-state`と`build-pages`は検証済みartifactとローカルのGit stateを必要とします。
 
-`daily`、`backfill`、`collect-analyze`には`--notification-action send|acknowledge-current`を指定できます。省略時は`send`です。`dry-run`にはこの指定はありません。
+`daily`、`backfill`、`collect-analyze`には`--notification-action send|hold|acknowledge-current`を指定できます。省略時は`send`です。`dry-run`にはこの指定はありません。
 
 ```console
 pnpm tracker:run --backfill none --notification-action acknowledge-current
@@ -78,6 +78,8 @@ pnpm tracker:run collect-analyze --mode none --notification-action acknowledge-c
 ```
 
 `tracker:run`は`--backfill none`を`daily`へ変換し、`linked`または`all-open`を`backfill`へ変換します。
+
+`hold`は送信可能な候補を含めて未送信候補を通知管理記録へ保存し、通常のDiscord送信を保留します。送信予約、送信済み、確認済みの記録は追加しません。次の`send`では保存した候補の有効性を再確認して送信します。保留は指定したrunだけに適用されます。
 
 `acknowledge-current`は現在の通知条件を満たす候補を上限なしで確認済みとして通知管理記録へ保存し、同じnotification keyを送信済みと同様に通知対象から除外します。通常のDiscord送信と`notification_sent`履歴は作りません。すでに送信済みの同じkeyは送信日時とDiscord message IDを維持します。通知判定規則、Web UI、README、`config.yml`は変わりません。
 
@@ -189,23 +191,40 @@ cacheが欠落しても保存済みの有効な結果があれば再分析せず
 要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 期限日から切迫度を求める規則を変えた場合は、IssueとPull Requestの決定論的規則versionを上げます。
 
-### 永続stateの列挙値を変更する
+### 永続stateの形式を変更する
 
-snapshot、履歴、通知管理記録が保存する列挙値は、次の順序で変更します。
+snapshot、履歴、通知管理記録の保存形式や列挙値は、次の順序で変更します。
 
 1. 対象文書のschema versionを上げる。
-2. 保存側と読み込み側を現行schemaへそろえる。
-3. CLIをビルドし、checkoutした`tracker-state`の実stateを検証する。
+2. 対応する旧versionから現行形式への一方向のマイグレーションを追加し、保存側も現行形式へそろえる。
+3. CLIをビルドし、コミットIDを固定した`tracker-state`のコピーを移行して検証する。
+4. 実際の保存経路で保存し、再読み込みと再実行で追加の移行が発生しないことを確認する。
 
 ```console
 pnpm build
 pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
 ```
 
-snapshotは現行schemaだけを受け付けます。
-稼働中のstateを読み込めない変更では、コードだけを先に通常運用へ切り替えず、stateの再構築と合わせて切り替えてください。
-検証は実stateのコピーで行い、新しいsnapshotの保存と再読み込み、cacheなしでの再利用、失敗・延期後の再試行を確かめます。
-再構築中の通知抑制は[運用手順](OPERATIONS.md)の「現在の通知候補を一括で確認済みにする」に従います。
+移行の入口で旧形式を検証し、業務処理には現行の型だけを渡します。
+未知のversionや不正なデータは例外にし、形式の番号だけを書き換えて受け入れません。
+再生成できる旧cacheは、対応する形式と保存先を識別して削除できます。
+再利用するcacheは現行形式として検証します。
+snapshotの更新と旧cacheの削除は同じcommitに含め、GitHubへの反映まで確認して移行完了とします。
+読み込みや`verify-state`だけでは本番stateを書き換えません。
+
+CIの`verify-state`は、本番と同じ移行処理を使ってstate全体を検証し、対象のコミットIDと移行内容をログへ残します。
+マージ前の確認では、コピー上で保存失敗と再試行も確かめます。
+検証用コードはコミットしません。
+
+移行だけでAIの採用値や通知管理記録を失わせません。
+旧AI結果へ現在のrevisionや入力hashを後付けせず、再推論の成功と採用が確定するまで、引き継いだ値と新しい生成結果を区別します。
+初回の再計画、AIの失敗・延期後の再試行、無関係な採用値が変わらないことも確認してください。
+保存形式の移行完了とAIの再推論完了は別に判断します。
+保存形式を変えないプロンプト変更には、要素ごとのrevisionと再推論の規則を使います。
+
+通常読み込む履歴や、復旧を保証する保存点に旧形式が残る間は、その形式からの移行処理を残します。
+対応versionと復旧用のコード・stateの保存点を更新時に記録し、保証対象から外す判断をしてから不要な移行処理を削除します。
+本番への切替と通知の保留は[運用手順](OPERATIONS.md)に従います。
 
 ## ディレクトリ構成
 

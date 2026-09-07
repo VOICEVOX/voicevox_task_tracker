@@ -34,25 +34,25 @@ Actionsでは収集reportとworkflow全体のreportを、run IDと試行番号�
 
 run reportの主な確認項目は次のとおりです。
 
-| field                               | 意味                                                                          |
-| ----------------------------------- | ----------------------------------------------------------------------------- |
-| `status`                            | `success`は完全成功、`fallback`はCodex縮退を含む完全run、`failure`は不完全run |
-| `complete`                          | stateと公開処理へ進める完全性を満たしたか                                     |
-| `failedStage`                       | failureが起きた処理段階                                                       |
-| `diagnostics`                       | secretや信頼できない本文を含まない診断                                        |
-| `metrics.repositoryCount`           | 公開allowlistに入ったrepository数                                             |
-| `metrics.itemCount`                 | 追跡項目数                                                                    |
-| `metrics.changedItemCount`          | 前回から更新された追跡項目数                                                  |
-| `metrics.activeEdgeCount`           | 有効な関係edge数                                                              |
-| `metrics.aiCallCount`               | preflightを含むCodexの論理call数。retryのattempt数は含めない                  |
-| `metrics.aiCacheHitCount`           | AI cacheを再利用した件数                                                      |
-| `metrics.aiRetainedResultCount`     | AI分析対象へ入れず前回のAI結果を保持した件数                                  |
-| `metrics.estimatedInputTokens`      | preflightを含むCodex入力tokenの見積り                                         |
-| `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                  |
-| `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                  |
-| `metrics.notificationCount`         | Discord送信結果を通知管理記録へ記録した通知数。`acknowledge-current`では0     |
-| `metrics.scheduleDelayMilliseconds` | 予定起動時刻からCLI開始までの遅延                                             |
-| `metrics.durationMilliseconds`      | CLI開始からrun完了までの所要時間                                              |
+| field                               | 意味                                                                              |
+| ----------------------------------- | --------------------------------------------------------------------------------- |
+| `status`                            | `success`は完全成功、`fallback`はCodex縮退を含む完全run、`failure`は不完全run     |
+| `complete`                          | stateと公開処理へ進める完全性を満たしたか                                         |
+| `failedStage`                       | failureが起きた処理段階                                                           |
+| `diagnostics`                       | secretや信頼できない本文を含まない診断                                            |
+| `metrics.repositoryCount`           | 公開allowlistに入ったrepository数                                                 |
+| `metrics.itemCount`                 | 追跡項目数                                                                        |
+| `metrics.changedItemCount`          | 前回から更新された追跡項目数                                                      |
+| `metrics.activeEdgeCount`           | 有効な関係edge数                                                                  |
+| `metrics.aiCallCount`               | preflightを含むCodexの論理call数。retryのattempt数は含めない                      |
+| `metrics.aiCacheHitCount`           | AI cacheを再利用した件数                                                          |
+| `metrics.aiRetainedResultCount`     | AI分析対象へ入れず前回のAI結果を保持した件数                                      |
+| `metrics.estimatedInputTokens`      | preflightを含むCodex入力tokenの見積り                                             |
+| `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                      |
+| `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                      |
+| `metrics.notificationCount`         | Discord送信結果を通知管理記録へ記録した通知数。`hold`と`acknowledge-current`では0 |
+| `metrics.scheduleDelayMilliseconds` | 予定起動時刻からCLI開始までの遅延                                                 |
+| `metrics.durationMilliseconds`      | CLI開始からrun完了までの所要時間                                                  |
 
 Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`へ違反件数が`validationIssueCount`として残ります。
 違反した検証ルールは先頭5件まで`validationIssue0Path`と`validationIssue0Code`の形式で残り、添字は0から始まります。
@@ -120,7 +120,7 @@ pnpm tracker:run build-pages --output web/public/data
 pnpm build:web
 ```
 
-`notify-discord`が成功して通知候補がある場合は、`publish-notification-history`が通知後の最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。候補がない場合と`acknowledge-current`ではこのjobを実行しません。
+`notify-discord`が成功して通知候補がある場合は、`publish-notification-history`が通知後の最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。候補がない場合、`hold`、`acknowledge-current`ではこのjobを実行しません。
 
 GitHub Pagesへのdeployが成功した後だけ、deploy結果のURLを渡してDiscord stageを実行します。
 Discordへの送信には、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`を使います。
@@ -290,6 +290,46 @@ Discordの投稿と実行ログを確認し、対象メッセージを確認済�
 
 このコマンドは通知管理記録を保存してpushします。ローカルでのビルドと、`origin`の`tracker-state`へpushできる認証が必要です。`retry`は通知を直接送信せず、次の集計時にまだ有効な候補だけを選別対象に戻します。`acknowledge`は確認済みにし、送信済みの履歴は作りません。受信の有無を確認せずに`retry`を選ぶと重複送信する可能性があります。
 
+### 通知候補を保持して送信を保留する
+
+AI判定の更新内容を確認してから通知したい場合は、手動実行の`notification_action`を`hold`にします。
+通知候補は通知管理記録の`pendingNotifications`へ保存し、送信予約、確認済み、送信済みの記録は追加しません。
+すでに送信済み・確認済み・送信開始済みの記録は維持します。
+
+1. repository variableの`VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED`を文字列`true`にし、定期実行を停止します。
+2. 実行中と待機中の日次runを確認します。変数の変更だけでは開始済みのrunは止まらないため、state更新と通知処理の完了を待ちます。
+3. default branchの「日次タスク追跡」を、`backfill: none`、`repository_filter`は空、`notification_action: hold`で手動実行します。
+4. `persist-state`、`notify-discord`、`report-workflow`の成功を確認します。`notify-discord`は送信せずにrunの完了処理を行うため、jobを省略しません。
+5. Pagesとrun reportで判定結果を確認し、通知管理記録で保留候補を確認します。分析の失敗・延期が残る場合は、各runの完了を待って`hold`で再実行します。
+6. 通常送信に戻すときは、手動実行で`send`を指定します。保留候補は現在の条件で再検証され、まだ有効な候補だけが通常の件数上限に従って送信されます。
+7. 古いrunが残っていないことを確認し、停止用変数を削除するか`false`にして定期実行を再開します。
+
+停止用変数は手動実行を止めません。
+定期実行のイベントは発生しますが、開始jobと、障害通知・run報告を含む後続jobを省略します。
+`hold`自体は指定したrunだけに適用されるため、確認中は停止用変数を維持してください。
+手動実行中に障害が発生した場合の運用障害通知は通常どおり動きます。
+
+### stateの保存形式を移行する
+
+保存形式を変更するPRは、実stateのコピーで移行と保存後の再読み込みを検証し、CIが通ったことを確認してから切り替えます。
+
+1. 停止用変数を`true`にし、Actionsで日次workflow全体を無効にします。切替前のコードによる新たなstate更新を防ぐため、マージ前に行います。
+2. 実行中・待機中のrunと手動のstate操作を確認し、更新と送信の完了を待ちます。受信結果が不明な`delivery_started`は消さず、既存の送信結果確認手順で扱います。
+3. 稼働中のコードと`tracker-state`のコミットIDを復旧用に記録します。そのstateに対して`verify-state`を再実行し、成功後にPRをマージします。
+4. マージしたコードのCI成功を確認して日次workflowを有効に戻します。停止用変数は維持し、初回を`hold`で手動実行します。
+5. GitHubへ反映されたstateで、snapshotが現行形式になり、旧cacheが削除され、追跡開始時刻・追跡対象・履歴・通知管理記録を引き継いでいることを確認します。
+6. 必要なAI再推論の結果と通知候補を確認してから、前節の手順で通常送信と定期実行を再開します。
+
+snapshotの更新と旧cacheの削除は同じcommitで保存します。
+ローカルのcommit作成とGitHubへの反映は別なので、pushが成立しなければ移行完了として扱いません。
+反映前に失敗した場合は、日次停止を維持し、最新のremote headを取得して再試行します。
+反映後にAI分析が失敗・延期した場合は、新形式のstateで再試行します。保存形式の移行をやり直す必要はありません。
+
+移行後は、原則として新形式のまま修正します。
+旧stateへ単純に戻すと、移行後の通知済み・確認済み記録を失うためです。
+コードとstateを復旧用の保存点へ戻せるのは、以後の外部送信やstate更新を確認し、失われる記録がないか整合を取れた場合だけです。
+履歴と保証対象の復旧用保存点に旧形式が残る間は、その形式を読み込む移行処理を削除しません。
+
 ### 現在の通知候補を一括で確認済みにする
 
 通知条件を調整した直後など、現在の候補をDiscordへ送らず、通知済みと同様に扱いたい場合は、日次workflowの手動実行で通知処理を`acknowledge-current`にします。
@@ -307,11 +347,9 @@ Discordの投稿と実行ログを確認し、対象メッセージを確認済�
 待つ行動や相手の変更、同じレビュワーへの新しいレビュー依頼、停滞レベルの上昇は新たな通知候補になります。依存解消や循環検出などは、それぞれの変化に応じた選別を行います。
 確認済みにする操作は、実行時点で通知条件を満たす候補だけを対象にします。まだ基準時間に達していない項目の将来の通知は抑制しません。
 
-AI判定の再構築を伴う場合は、分析が延期された項目から後日のrunで通知候補が生じることがあります。
-再構築の間は通常送信する定期実行を止め、失敗・延期した分析が完了するまで`acknowledge-current`で繰り返し実行します。
-最後のrunでも通知候補を確認済みにしてから通常送信を再開します。
-この期間に成立した本来の通知も確認済みになるため、Pagesとrun reportで内容を確認してください。
-Discordを無効にするだけでは通知候補を確認済みにできず、有効化後に送信される可能性があります。
+分析が延期された項目から、後日のrunで新たな通知候補が生じることがあります。
+判定結果の確認中に候補を失わず保留する場合は`hold`を使います。
+`acknowledge-current`は本来送るべき通知も確認済みにするため、一時的な送信停止には使いません。
 
 通常の`send`は、`maxItemsPerDigest`を含む既存の通知選別を行います。
 件数上限で送れなかった候補は、検出日時と通知理由を通知管理記録の`pendingNotifications`へ保存します。次回以降の集計では、保存した理由が現在も有効な候補を通知対象に戻し、その時点の停滞レベルと優先順位で選別します。新しい候補が増え続ける場合、優先順位の低い候補は引き続き送信を待ちます。
