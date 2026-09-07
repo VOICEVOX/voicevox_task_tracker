@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 import { parseSourceId } from "../domain/source-id.js";
+import {
+  AI_ANALYSIS_ELEMENTS,
+  aiAnalysisElementSchema,
+  createAiAnalysisElementResultSchema,
+} from "./analysis-elements.js";
 
 const opaqueIdSchema = z
   .string()
@@ -64,9 +69,20 @@ const sourceSchema = z
   })
   .catchall(jsonValueSchema);
 
+const lockedElementsSchema = z.strictObject({
+  status: createAiAnalysisElementResultSchema("status").optional(),
+  waitingOn: createAiAnalysisElementResultSchema("waitingOn").optional(),
+  nextAction: createAiAnalysisElementResultSchema("nextAction").optional(),
+  relations: createAiAnalysisElementResultSchema("relations").optional(),
+  progress: createAiAnalysisElementResultSchema("progress").optional(),
+  importance: createAiAnalysisElementResultSchema("importance").optional(),
+  deadline: createAiAnalysisElementResultSchema("deadline").optional(),
+  notification: createAiAnalysisElementResultSchema("notification").optional(),
+});
+
 const codexAnalysisInputSchema = z
   .strictObject({
-    schemaVersion: z.literal("1"),
+    schemaVersion: z.literal("2"),
     now: z.iso.datetime({
       offset: true,
       error: "タイムゾーンを含むISO 8601日時を指定してください",
@@ -78,9 +94,41 @@ const codexAnalysisInputSchema = z
     }),
     sources: z.array(sourceSchema).min(1, "sourceを1件以上指定してください"),
     deterministicSignals: z.record(z.string(), jsonValueSchema),
-    priorAnalysis: z.null(),
+    selectedElements: z.array(aiAnalysisElementSchema).max(AI_ANALYSIS_ELEMENTS.length),
+    lockedElements: lockedElementsSchema,
   })
   .superRefine((input, context) => {
+    const selectedElements = new Set(input.selectedElements);
+    const statusSelected = selectedElements.has("status");
+    const waitingOnSelected = selectedElements.has("waitingOn");
+    if (statusSelected !== waitingOnSelected) {
+      const counterpart = statusSelected ? "waitingOn" : "status";
+      if (input.lockedElements[counterpart] == null) {
+        context.addIssue({
+          code: "custom",
+          path: ["selectedElements"],
+          message:
+            "statusとwaitingOnは同時に選択するか、未選択の要素をlockedElementsへ指定してください",
+        });
+      }
+    }
+    for (const element of AI_ANALYSIS_ELEMENTS) {
+      if (selectedElements.has(element) && input.lockedElements[element] != null) {
+        context.addIssue({
+          code: "custom",
+          path: ["lockedElements", element],
+          message: "選択したAI判定要素をlockedElementsへ指定できません",
+        });
+      }
+    }
+    if (selectedElements.size !== input.selectedElements.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["selectedElements"],
+        message: "selectedElementsの要素が重複しています",
+      });
+    }
+
     const waitingOnIds = new Set<string>();
     for (const [index, candidate] of input.candidates.waitingOn.entries()) {
       if (waitingOnIds.has(candidate.id)) {
