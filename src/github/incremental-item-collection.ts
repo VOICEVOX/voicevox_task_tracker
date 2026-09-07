@@ -5,25 +5,12 @@ import {
 } from "../domain/index.js";
 import { type EnumeratedGitHubItem, type Sha256Fingerprint } from "./item-enumeration.js";
 
-/** 項目ごとの現在の判定規則fingerprint。 */
-export type CurrentAnalysisRulesFingerprints = ReadonlyMap<GitHubNodeId, Sha256Fingerprint>;
-
-/** 項目を前回判定したときの判定規則fingerprint。 */
-export type PreviousAnalysisRulesFingerprint =
-  | Readonly<{
-      status: "unavailable";
-    }>
-  | Readonly<{
-      status: "available";
-      fingerprint: Sha256Fingerprint;
-    }>;
-
 type PreviousItemCollectionValue = Readonly<{
   itemFingerprint: Sha256Fingerprint;
-  analysisRulesFingerprint: PreviousAnalysisRulesFingerprint;
+  analysisPlanFingerprint: Sha256Fingerprint;
 }>;
 
-/** 前回成功時点の項目fingerprintと判定規則fingerprint。 */
+/** 前回成功時点の項目と判定計画のfingerprint。 */
 export type PreviousItemCollection =
   | Readonly<{
       status: "none";
@@ -36,15 +23,17 @@ export type PreviousItemCollection =
 /** 変更項目と全履歴の詳細取得対象を含む収集計画。 */
 export type IncrementalItemCollectionPlan = Readonly<{
   changedItemNodeIds: readonly GitHubNodeId[];
+  analysisPlanChangedItemNodeIds: readonly GitHubNodeId[];
   detailItemNodeIds: readonly GitHubNodeId[];
   currentItemFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>;
+  currentAnalysisPlanFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>;
 }>;
 
 export type PlanIncrementalItemCollectionOptions = Readonly<{
   items: readonly EnumeratedGitHubItem[];
   previous: PreviousItemCollection;
   previousAiAnalysisStatusesByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemAiAnalysis["status"]>;
-  currentAnalysisRulesFingerprints: CurrentAnalysisRulesFingerprints;
+  currentAnalysisPlanFingerprintsByNodeId: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>;
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>;
 }>;
 
@@ -71,11 +60,27 @@ function createCurrentFingerprints(
   return fingerprints;
 }
 
+function validateCurrentAnalysisPlanFingerprints(
+  items: readonly EnumeratedGitHubItem[],
+  fingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>,
+): void {
+  const itemNodeIds = new Set(items.map((item) => item.nodeId));
+  for (const item of items) {
+    if (!fingerprints.has(item.nodeId)) {
+      throw new TypeError(`AI判定計画の規則fingerprintがありません。対象: ${item.nodeId}`);
+    }
+  }
+  for (const nodeId of fingerprints.keys()) {
+    if (!itemNodeIds.has(nodeId)) {
+      throw new TypeError(`AI判定計画の規則fingerprintに対象外の項目があります。対象: ${nodeId}`);
+    }
+  }
+}
+
 function selectChangedItemNodeIds(
   items: readonly EnumeratedGitHubItem[],
   previous: PreviousItemCollection,
   previouslyTrackedItemNodeIds: ReadonlySet<GitHubNodeId>,
-  currentAnalysisRulesFingerprints: CurrentAnalysisRulesFingerprints,
 ): readonly GitHubNodeId[] {
   if (previous.status === "none") {
     return Object.freeze(items.map((item) => item.nodeId));
@@ -92,18 +97,6 @@ function selectChangedItemNodeIds(
       continue;
     }
     if (previousItem == null) {
-      changedItemNodeIds.push(item.nodeId);
-      continue;
-    }
-    const currentRulesFingerprint = currentAnalysisRulesFingerprints.get(item.nodeId);
-    if (currentRulesFingerprint == null) {
-      throw new TypeError(`現在の判定規則fingerprintがありません。対象: ${item.nodeId}`);
-    }
-    const previousRulesFingerprint = previousItem.analysisRulesFingerprint;
-    if (
-      previousRulesFingerprint.status === "unavailable" ||
-      previousRulesFingerprint.fingerprint !== currentRulesFingerprint
-    ) {
       changedItemNodeIds.push(item.nodeId);
       continue;
     }
@@ -128,13 +121,43 @@ function selectAiAnalysisRetryItemNodeIds(
   return Object.freeze(nodeIds);
 }
 
+function selectAnalysisPlanChangedItemNodeIds(
+  items: readonly EnumeratedGitHubItem[],
+  previous: PreviousItemCollection,
+  previouslyTrackedItemNodeIds: ReadonlySet<GitHubNodeId>,
+  currentAnalysisPlanFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>,
+): readonly GitHubNodeId[] {
+  if (previous.status === "none") {
+    return Object.freeze([]);
+  }
+  const changedItemNodeIds: GitHubNodeId[] = [];
+  for (const item of items) {
+    if (!previouslyTrackedItemNodeIds.has(item.nodeId)) {
+      continue;
+    }
+    const currentFingerprint = currentAnalysisPlanFingerprints.get(item.nodeId);
+    if (currentFingerprint == null) {
+      throw new TypeError(`AI判定計画の規則fingerprintがありません。対象: ${item.nodeId}`);
+    }
+    const previousItem = previous.items.get(item.nodeId);
+    if (previousItem?.analysisPlanFingerprint !== currentFingerprint) {
+      changedItemNodeIds.push(item.nodeId);
+    }
+  }
+  return Object.freeze(changedItemNodeIds);
+}
+
 function selectDetailItemNodeIds(
   changedItemNodeIds: readonly GitHubNodeId[],
+  analysisPlanChangedItemNodeIds: readonly GitHubNodeId[],
   aiAnalysisRetryItemNodeIds: readonly GitHubNodeId[],
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>,
 ): readonly GitHubNodeId[] {
   const detailItemNodeIds = new Set<GitHubNodeId>();
   for (const nodeId of changedItemNodeIds) {
+    detailItemNodeIds.add(nodeId);
+  }
+  for (const nodeId of analysisPlanChangedItemNodeIds) {
     detailItemNodeIds.add(nodeId);
   }
   for (const nodeId of aiAnalysisRetryItemNodeIds) {
@@ -149,18 +172,23 @@ function selectDetailItemNodeIds(
 
 function createPlanFields(
   changedItemNodeIds: readonly GitHubNodeId[],
+  analysisPlanChangedItemNodeIds: readonly GitHubNodeId[],
   aiAnalysisRetryItemNodeIds: readonly GitHubNodeId[],
   adjacentItemNodeIds: ReadonlySet<GitHubNodeId>,
   currentItemFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>,
+  currentAnalysisPlanFingerprints: ReadonlyMap<GitHubNodeId, Sha256Fingerprint>,
 ): IncrementalItemCollectionPlan {
   return Object.freeze({
     changedItemNodeIds,
+    analysisPlanChangedItemNodeIds,
     detailItemNodeIds: selectDetailItemNodeIds(
       changedItemNodeIds,
+      analysisPlanChangedItemNodeIds,
       aiAnalysisRetryItemNodeIds,
       adjacentItemNodeIds,
     ),
     currentItemFingerprints,
+    currentAnalysisPlanFingerprints,
   });
 }
 
@@ -169,12 +197,21 @@ export function planIncrementalItemCollection(
   options: PlanIncrementalItemCollectionOptions,
 ): IncrementalItemCollectionPlan {
   const currentItemFingerprints = createCurrentFingerprints(options.items);
+  validateCurrentAnalysisPlanFingerprints(
+    options.items,
+    options.currentAnalysisPlanFingerprintsByNodeId,
+  );
   const previouslyTrackedItemNodeIds = new Set(options.previousAiAnalysisStatusesByNodeId.keys());
   const changedItemNodeIds = selectChangedItemNodeIds(
     options.items,
     options.previous,
     previouslyTrackedItemNodeIds,
-    options.currentAnalysisRulesFingerprints,
+  );
+  const analysisPlanChangedItemNodeIds = selectAnalysisPlanChangedItemNodeIds(
+    options.items,
+    options.previous,
+    previouslyTrackedItemNodeIds,
+    options.currentAnalysisPlanFingerprintsByNodeId,
   );
   const aiAnalysisRetryItemNodeIds = selectAiAnalysisRetryItemNodeIds(
     options.items,
@@ -183,8 +220,10 @@ export function planIncrementalItemCollection(
 
   return createPlanFields(
     changedItemNodeIds,
+    analysisPlanChangedItemNodeIds,
     aiAnalysisRetryItemNodeIds,
     options.adjacentItemNodeIds,
     currentItemFingerprints,
+    options.currentAnalysisPlanFingerprintsByNodeId,
   );
 }

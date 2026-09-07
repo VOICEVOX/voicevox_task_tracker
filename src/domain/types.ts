@@ -4,6 +4,17 @@ import { type Importance } from "./importance.js";
 import { notificationReasonSchema, type NotificationReason } from "./notification-reason.js";
 import { type SourceId } from "./source-id.js";
 import type { StalenessWaitClass } from "./staleness.js";
+import type {
+  AiAnalysisElement,
+  AiAnalysisElementMetadata,
+  AiAnalysisElementGeneration,
+} from "./ai-analysis-elements.js";
+
+export type {
+  AiAnalysisElement,
+  AiAnalysisElementMetadata,
+  AiAnalysisElementGeneration,
+} from "./ai-analysis-elements.js";
 
 const opaqueIdSchema = z
   .string()
@@ -531,15 +542,16 @@ export type GitHubItemUrl = `https://github.com/${string}`;
 
 export type AiCacheEntryId = `sha256:${string}`;
 
-/** 追跡項目を判定したときのAI分析利用状況。 */
-export type TrackedItemAiAnalysis =
-  | Readonly<{
-      status: "used";
-      cacheKey: AiCacheEntryId;
-    }>
-  | Readonly<{
-      status: "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
-    }>;
+/** 追跡項目へ保存する要素別AI分析結果。 */
+type TrackedItemAiAnalysisElements = Readonly<{
+  [Element in AiAnalysisElement]?: AiAnalysisElementGeneration<Element>;
+}>;
+
+export type TrackedItemAiAnalysis = Readonly<{
+  status: "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
+  elements: TrackedItemAiAnalysisElements;
+  adoptedElements: TrackedItemAiAnalysisElements;
+}>;
 
 export type TrackedItemInputEvent = Readonly<{
   sourceId: SourceId;
@@ -669,18 +681,8 @@ export const REASONING_EFFORTS = [
 /** Codex実行で指定するreasoning effort。 */
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-/** Codex分析を再現するための実行設定、version、hash、実行時刻。 */
-export type AnalysisMetadata = Readonly<{
-  deterministicRulesVersion: string;
-  model: string;
-  reasoningEffort: ReasoningEffort;
-  backendVersion: string;
-  promptVersion: string;
-  schemaVersion: string;
-  inputHash: string;
-  outputHash: string;
-  executedAt: UtcIsoDateTime;
-}>;
+/** Codex分析要素を再現するための実行設定、hash、生成時刻。 */
+export type AnalysisMetadata = AiAnalysisElementMetadata;
 
 type NotificationLedgerEntryBase = Readonly<{
   notificationKey: string;

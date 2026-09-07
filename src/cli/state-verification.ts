@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { z } from "zod";
 
+import { createAiCacheEntry } from "../codex/cache.js";
 import {
   StateFormatError,
   parseStateHistoryRecords,
@@ -14,6 +15,7 @@ import { type VerifyStateCliCommand } from "./command.js";
 import { CliStateVerificationError } from "./errors.js";
 
 const HISTORY_FILE_PATTERN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/u;
+const AI_CACHE_FILE_PATTERN = /^([0-9a-f]{64})\.json$/u;
 const schemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
 });
@@ -25,11 +27,12 @@ export type StateDocumentVerification = Readonly<{
   migratedSchemaVersions: readonly string[];
 }>;
 
-/** snapshot、通知ledger、履歴を検証した結果。 */
+/** snapshot、通知ledger、履歴、AI cacheを検証した結果。 */
 export type StateVerificationResult = Readonly<{
   snapshot: StateDocumentVerification;
   notificationLedger: StateDocumentVerification;
   history: StateDocumentVerification;
+  aiCache: StateDocumentVerification;
 }>;
 
 /** 永続state検証が利用する読み込みと標準出力境界。 */
@@ -203,19 +206,66 @@ async function verifyHistory(stateDirectory: string): Promise<StateDocumentVerif
   return createVerification(verifiedCount, sourceSchemaVersions, migratedSchemaVersions);
 }
 
+async function readAiCacheEntries(cacheDirectory: string): Promise<Dirent[]> {
+  try {
+    return await readdir(cacheDirectory, {
+      withFileTypes: true,
+    });
+  } catch (error: unknown) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw verificationError(cacheDirectory, error);
+  }
+}
+
+async function verifyAiCache(stateDirectory: string): Promise<StateDocumentVerification> {
+  const cacheDirectory = join(stateDirectory, "ai-cache");
+  const entries = await readAiCacheEntries(cacheDirectory);
+  const sourceSchemaVersions: string[] = [];
+  const migratedSchemaVersions: string[] = [];
+  let verifiedCount = 0;
+  for (const entry of entries.sort((left, right) => compareStrings(left.name, right.name))) {
+    const path = join(cacheDirectory, entry.name);
+    const match = AI_CACHE_FILE_PATTERN.exec(entry.name);
+    if (!entry.isFile() || match == null) {
+      throw verificationError(path, new TypeError("AI cacheのファイル名または種別が不正です"));
+    }
+    const digest = match[1];
+    if (digest == null) {
+      throw verificationError(path, new TypeError("AI cacheのファイル名からhashを取得できません"));
+    }
+    const source = await readUtf8(path);
+    try {
+      const entryValue = createAiCacheEntry(parseJson(source, "AI cache"));
+      if (entryValue.cacheKey !== `sha256:${digest}`) {
+        throw new TypeError("AI cacheのcache keyとファイル名が一致しません");
+      }
+      verifiedCount += 1;
+      sourceSchemaVersions.push(entryValue.generation.metadata.schemaVersion);
+      migratedSchemaVersions.push(entryValue.generation.metadata.schemaVersion);
+    } catch (error: unknown) {
+      throw verificationError(path, error);
+    }
+  }
+  return createVerification(verifiedCount, sourceSchemaVersions, migratedSchemaVersions);
+}
+
 /** 指定したディレクトリのsnapshot、通知ledger、履歴を検証する。 */
 export async function verifyPersistentStateDirectory(
   stateDirectory: string,
 ): Promise<StateVerificationResult> {
-  const [snapshot, notificationLedger, history] = await Promise.all([
+  const [snapshot, notificationLedger, history, aiCache] = await Promise.all([
     verifySnapshot(stateDirectory),
     verifyNotificationLedger(stateDirectory),
     verifyHistory(stateDirectory),
+    verifyAiCache(stateDirectory),
   ]);
   return Object.freeze({
     snapshot,
     notificationLedger,
     history,
+    aiCache,
   });
 }
 
@@ -233,6 +283,7 @@ export function formatStateVerificationResult(result: StateVerificationResult): 
     formatDocumentResult("snapshot", result.snapshot),
     formatDocumentResult("notification ledger", result.notificationLedger),
     formatDocumentResult("history", result.history),
+    formatDocumentResult("AI cache", result.aiCache),
   ].join("\n");
 }
 

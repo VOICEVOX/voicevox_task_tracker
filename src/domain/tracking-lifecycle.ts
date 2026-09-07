@@ -5,6 +5,7 @@ import {
   type TrackedItemState,
   type UtcIsoDateTime,
 } from "./types.js";
+import { aiAnalysisElementSchema, type AiAnalysisElement } from "./ai-analysis-elements.js";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -79,7 +80,7 @@ export type TerminalRetentionDecision =
       retainedThrough: UtcIsoDateTime;
     }>;
 
-/** 前回のCodex分析入力、判定規則、GitHub状態。 */
+/** 前回のAI判定状態とGitHub状態。 */
 export type PreviousTrackedItemObservation =
   | Readonly<{
       status: "not_available";
@@ -87,22 +88,12 @@ export type PreviousTrackedItemObservation =
   | Readonly<{
       status: "available";
       state: TrackedItemState;
-      analysisInputFingerprint: string;
-      analysisRulesFingerprint:
-        | Readonly<{
-            status: "unavailable";
-          }>
-        | Readonly<{
-            status: "available";
-            fingerprint: string;
-          }>;
     }>;
 
-/** tracked itemのCodex再分析と停滞通知評価を決める入力。 */
+/** tracked itemのAI再分析と停滞通知評価を決める入力。 */
 export type DetermineTrackedItemWorkInput = Readonly<{
   state: TrackedItemState;
-  analysisInputFingerprint: string;
-  analysisRulesFingerprint: string;
+  requiredAiAnalysisElements: readonly AiAnalysisElement[];
   previousAiAnalysisStatus: TrackedItemAiAnalysis["status"] | "not_available";
   previousObservation: PreviousTrackedItemObservation;
 }>;
@@ -114,8 +105,7 @@ export type CodexAnalysisWorkDecision =
       reason:
         | "active_item"
         | "terminal_transition"
-        | "analysis_input_changed"
-        | "analysis_rules_changed"
+        | "analysis_elements_required"
         | "previous_analysis_failed"
         | "previous_analysis_deferred";
     }>
@@ -168,9 +158,17 @@ function parseTimestamp(value: UtcIsoDateTime, context: string): number {
   return timestamp;
 }
 
-function validateFingerprint(value: string, context: string): void {
-  if (value.length === 0) {
-    throw new TypeError(`${context}は空にできません`);
+function validateRequiredAiAnalysisElements(elements: readonly AiAnalysisElement[]): void {
+  const seen = new Set<AiAnalysisElement>();
+  for (const element of elements) {
+    const parsed = aiAnalysisElementSchema.safeParse(element);
+    if (!parsed.success) {
+      throw new TypeError("必要なAI判定要素が不正です", { cause: parsed.error });
+    }
+    if (seen.has(parsed.data)) {
+      throw new TypeError(`必要なAI判定要素が重複しています。対象: ${parsed.data}`);
+    }
+    seen.add(parsed.data);
   }
 }
 
@@ -287,24 +285,11 @@ export function determineTerminalRetention(
   });
 }
 
-/** terminal遷移、分析入力変更、判定規則変更がない項目のCodex再分析と停滞通知評価を抑止する。 */
+/** terminal遷移がない項目のAI再分析と停滞通知評価を抑止する。 */
 export function determineTrackedItemWork(
   input: DetermineTrackedItemWorkInput,
 ): TrackedItemWorkDecision {
-  validateFingerprint(input.analysisInputFingerprint, "現在の分析入力fingerprint");
-  validateFingerprint(input.analysisRulesFingerprint, "現在の判定規則fingerprint");
-  if (input.previousObservation.status === "available") {
-    validateFingerprint(
-      input.previousObservation.analysisInputFingerprint,
-      "前回の分析入力fingerprint",
-    );
-    if (input.previousObservation.analysisRulesFingerprint.status === "available") {
-      validateFingerprint(
-        input.previousObservation.analysisRulesFingerprint.fingerprint,
-        "前回の判定規則fingerprint",
-      );
-    }
-  }
+  validateRequiredAiAnalysisElements(input.requiredAiAnalysisElements);
 
   if (!isTerminalState(input.state)) {
     return Object.freeze({
@@ -335,31 +320,11 @@ export function determineTrackedItemWork(
     });
   }
 
-  if (
-    input.previousObservation.status === "not_available" ||
-    input.previousObservation.analysisInputFingerprint !== input.analysisInputFingerprint
-  ) {
+  if (input.requiredAiAnalysisElements.length > 0) {
     return Object.freeze({
       codexAnalysis: Object.freeze({
         action: "analyze",
-        reason: "analysis_input_changed",
-      }),
-      stallNotification: Object.freeze({
-        action: "evaluate",
-        reason: "analysis_input_changed",
-      }),
-    });
-  }
-
-  if (
-    input.previousObservation.analysisRulesFingerprint.status === "unavailable" ||
-    input.previousObservation.analysisRulesFingerprint.fingerprint !==
-      input.analysisRulesFingerprint
-  ) {
-    return Object.freeze({
-      codexAnalysis: Object.freeze({
-        action: "analyze",
-        reason: "analysis_rules_changed",
+        reason: "analysis_elements_required",
       }),
       stallNotification: Object.freeze({
         action: "suppress",
