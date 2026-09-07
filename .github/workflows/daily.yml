@@ -30,6 +30,7 @@ on:
         type: choice
         options:
           - send
+          - hold
           - acknowledge-current
 
 permissions: {}
@@ -421,8 +422,9 @@ jobs:
           has_notification_candidates="$(jq -er '
             if .notificationAction == "send" and .notificationSelection.action == "create_digest" then
               "true"
-            elif (.notificationAction == "send" and .notificationSelection.action == "skip_digest") or
-              (.notificationAction == "acknowledge-current" and .notificationSelection.action == "skip_digest") then
+            elif (.notificationAction == "send" and .notificationSelection.action == "skip_digest" and .notificationSelection.reason == "no_candidates") or
+              (.notificationAction == "acknowledge-current" and .notificationSelection.action == "skip_digest" and .notificationSelection.reason == "no_candidates") or
+              (.notificationAction == "hold" and .notificationSelection.action == "skip_digest" and .notificationSelection.reason == "held") then
               "false"
             else
               error("workflow artifactの通知actionとselectionの組み合わせが不正です")
@@ -441,6 +443,14 @@ jobs:
           --pages-url "$PAGES_URL"
       - name: 通知候補を確認済みにする
         if: github.event_name == 'workflow_dispatch' && inputs.notification_action == 'acknowledge-current'
+        env:
+          PAGES_URL: ${{ needs.deploy-pages.outputs.page_url }}
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
+        run: >-
+          node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs notify-discord
+          --pages-url "$PAGES_URL"
+      - name: 通知を保留してrunを完了する
+        if: github.event_name == 'workflow_dispatch' && inputs.notification_action == 'hold'
         env:
           PAGES_URL: ${{ needs.deploy-pages.outputs.page_url }}
           VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl

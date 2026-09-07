@@ -660,6 +660,7 @@ function readRuntimeCredentials(
               ),
             );
             break;
+          case "hold":
           case "acknowledge-current":
             knownSecrets.push(
               requireEnvironmentValue(
@@ -6299,25 +6300,33 @@ function validateRunCompleteness(
     notificationAction === "acknowledge-current"
       ? createAcknowledgedNotificationLedgerEntries(notificationInput)
       : Object.freeze([]);
-  const notificationSelection: DiscordNotificationSelection =
-    notificationAction === "acknowledge-current"
-      ? (() => {
-          const recalculatedSelection = selectDiscordNotifications(notificationInput);
-          const acknowledgedKeys = new Set(
-            acknowledgedNotificationLedgerEntries.map((entry) => entry.notificationKey),
-          );
-          const pendingNotifications = recalculatedSelection.pendingNotifications.filter(
-            (pending) => !acknowledgedKeys.has(pending.notificationKey),
-          );
-          return Object.freeze({
-            action: "skip_digest",
-            reason: "no_candidates",
-            candidates: emptyCandidates,
-            ledgerReservations: emptyLedgerReservations,
-            pendingNotifications: Object.freeze(pendingNotifications),
-          });
-        })()
-      : selectDiscordNotifications(notificationInput);
+  const recalculatedSelection = selectDiscordNotifications(notificationInput);
+  let notificationSelection: DiscordNotificationSelection;
+  if (notificationAction === "acknowledge-current") {
+    const acknowledgedKeys = new Set(
+      acknowledgedNotificationLedgerEntries.map((entry) => entry.notificationKey),
+    );
+    const pendingNotifications = recalculatedSelection.pendingNotifications.filter(
+      (pending) => !acknowledgedKeys.has(pending.notificationKey),
+    );
+    notificationSelection = Object.freeze({
+      action: "skip_digest",
+      reason: "no_candidates",
+      candidates: emptyCandidates,
+      ledgerReservations: emptyLedgerReservations,
+      pendingNotifications: Object.freeze(pendingNotifications),
+    });
+  } else if (notificationAction === "hold") {
+    notificationSelection = Object.freeze({
+      action: "skip_digest",
+      reason: "held",
+      candidates: emptyCandidates,
+      ledgerReservations: emptyLedgerReservations,
+      pendingNotifications: recalculatedSelection.pendingNotifications,
+    });
+  } else {
+    notificationSelection = recalculatedSelection;
+  }
   const notificationLedgerEntriesToMerge =
     notificationAction === "acknowledge-current"
       ? acknowledgedNotificationLedgerEntries
@@ -6417,7 +6426,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "9",
+    schemaVersion: "10",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -6860,7 +6869,7 @@ function filterNotificationSelectionForLedger(
   if (selection.action === "skip_digest") {
     return Object.freeze({
       action: "skip_digest",
-      reason: "no_candidates",
+      reason: selection.reason,
       candidates: emptyCandidates,
       ledgerReservations: emptyReservations,
       pendingNotifications,
@@ -8695,13 +8704,14 @@ function createDailyDependencies(
     }) => {
       if (
         invocation.command.kind !== "dry-run" &&
-        invocation.command.notificationAction === "acknowledge-current"
+        (invocation.command.notificationAction === "acknowledge-current" ||
+          invocation.command.notificationAction === "hold")
       ) {
         return Object.freeze({
           value: Object.freeze({
             delivery: Object.freeze({
               status: "skipped",
-              reason: "no_candidates",
+              reason: invocation.command.notificationAction === "hold" ? "held" : "no_candidates",
             }),
             notificationEvents: Object.freeze([]),
             notificationLedger: validated.notificationLedger,
@@ -8885,7 +8895,10 @@ async function notifyWorkflowDiscord(
     snapshot: persistedSnapshot,
     notificationLedger: await session.loadNotificationLedger(),
   });
-  if (artifact.notificationAction === "acknowledge-current") {
+  if (
+    artifact.notificationAction === "acknowledge-current" ||
+    artifact.notificationAction === "hold"
+  ) {
     await persistSuccessfulRunCompletion(
       adapters,
       config,

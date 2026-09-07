@@ -99,7 +99,7 @@ export type DiscordDigestDelivery =
     }>
   | Readonly<{
       status: "skipped";
-      reason: "no_candidates";
+      reason: "no_candidates" | "held";
     }>
   | Readonly<{
       status: "skipped";

@@ -170,7 +170,7 @@ type NotificationLedgerAcknowledgement = Extract<
 export type DiscordNotificationSelection =
   | Readonly<{
       action: "skip_digest";
-      reason: "no_candidates";
+      reason: "no_candidates" | "held";
       candidates: readonly [];
       ledgerReservations: readonly [];
       pendingNotifications: readonly PendingNotification[];
