@@ -1,10 +1,23 @@
 import { z } from "zod";
 
 import { parseSourceId } from "../domain/source-id.js";
+import { UnreachableError } from "../util/index.js";
 import {
   AI_ANALYSIS_ELEMENTS,
   aiAnalysisElementSchema,
+  aiAnalysisDeadlineSchema,
+  aiAnalysisImportanceSchema,
+  aiAnalysisNextActionSchema,
+  aiAnalysisNotificationSchema,
+  aiAnalysisProgressSchema,
+  aiAnalysisRelationsSchema,
+  aiAnalysisStatusSchema,
+  aiAnalysisWaitingOnSchema,
   createAiAnalysisMigrationElementResultSchema,
+  type AiAnalysisElement,
+  type AiAnalysisElementMigrationResult,
+  type AiAnalysisElementResult,
+  type CodexPreservedElements,
 } from "./analysis-elements.js";
 
 const opaqueIdSchema = z
@@ -69,20 +82,173 @@ const sourceSchema = z
   })
   .catchall(jsonValueSchema);
 
+const lockedResultBaseShape = {
+  confidence: z.number().min(0).max(1),
+  uncertainties: z.array(z.string().min(1).max(240)).max(20),
+};
+
+const lockedWaitingOnSchema = aiAnalysisWaitingOnSchema.element
+  .omit({ sourceIds: true })
+  .array()
+  .max(20);
+const lockedRelationsSchema = aiAnalysisRelationsSchema.element
+  .omit({ sourceIds: true })
+  .array()
+  .max(100);
+const lockedProgressSchema = aiAnalysisProgressSchema.omit({ latestMeaningfulSourceId: true });
+
+function createCodexLockedElementResultSchema<ValueSchema extends z.ZodType>(
+  valueSchema: ValueSchema,
+) {
+  return z.strictObject({
+    value: valueSchema,
+    ...lockedResultBaseShape,
+  });
+}
+
+const codexLockedElementResultSchemas = {
+  status: createCodexLockedElementResultSchema(aiAnalysisStatusSchema),
+  waitingOn: createCodexLockedElementResultSchema(lockedWaitingOnSchema),
+  nextAction: createCodexLockedElementResultSchema(aiAnalysisNextActionSchema),
+  relations: createCodexLockedElementResultSchema(lockedRelationsSchema),
+  progress: createCodexLockedElementResultSchema(lockedProgressSchema),
+  importance: createCodexLockedElementResultSchema(aiAnalysisImportanceSchema),
+  deadline: createCodexLockedElementResultSchema(aiAnalysisDeadlineSchema),
+  notification: createCodexLockedElementResultSchema(aiAnalysisNotificationSchema),
+};
+
+type CodexLockedElementResultByElement = {
+  [Element in AiAnalysisElement]: z.output<(typeof codexLockedElementResultSchemas)[Element]>;
+};
+
+/** Codex入力へ渡す要素別の固定context。 */
+type CodexLockedElementResult<Element extends AiAnalysisElement = AiAnalysisElement> =
+  CodexLockedElementResultByElement[Element];
+
+/** 保存済みresultからCodex入力用の固定contextを要素別に投影する。 */
+export function projectCodexLockedElementResult(
+  element: AiAnalysisElement,
+  result: AiAnalysisElementResult | AiAnalysisElementMigrationResult,
+): CodexLockedElementResult {
+  switch (element) {
+    case "status": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("status").parse(result);
+      return codexLockedElementResultSchemas.status.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "waitingOn": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(result);
+      return codexLockedElementResultSchemas.waitingOn.parse({
+        value: parsed.value.map((candidate) => ({
+          kind: candidate.kind,
+          candidateId: candidate.candidateId,
+          role: candidate.role,
+          reasonSummary: candidate.reasonSummary,
+          confidence: candidate.confidence,
+        })),
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "nextAction": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("nextAction").parse(result);
+      return codexLockedElementResultSchemas.nextAction.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "relations": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("relations").parse(result);
+      return codexLockedElementResultSchemas.relations.parse({
+        value: parsed.value.map((candidate) => ({
+          candidateId: candidate.candidateId,
+          verdict: candidate.verdict,
+          reasonSummary: candidate.reasonSummary,
+          confidence: candidate.confidence,
+        })),
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "progress": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("progress").parse(result);
+      return codexLockedElementResultSchemas.progress.parse({
+        value: {
+          reasonSummary: parsed.value.reasonSummary,
+          confidence: parsed.value.confidence,
+        },
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "importance": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("importance").parse(result);
+      return codexLockedElementResultSchemas.importance.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "deadline": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("deadline").parse(result);
+      return codexLockedElementResultSchemas.deadline.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "notification": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("notification").parse(result);
+      return codexLockedElementResultSchemas.notification.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+/** 保存済み要素別full resultをCodex入力用の固定contextへ投影する。 */
+export function projectCodexLockedElements(
+  preservedElements: CodexPreservedElements,
+): Readonly<Partial<Record<AiAnalysisElement, CodexLockedElementResult>>> {
+  const knownElements = new Set<string>(AI_ANALYSIS_ELEMENTS);
+  for (const element of Object.keys(preservedElements)) {
+    if (!knownElements.has(element)) {
+      throw new TypeError(`保持するAI判定要素が不正です。対象: ${element}`);
+    }
+  }
+  const lockedElements: Partial<Record<AiAnalysisElement, CodexLockedElementResult>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const result = preservedElements[element];
+    if (result == null) {
+      continue;
+    }
+    lockedElements[element] = projectCodexLockedElementResult(element, result);
+  }
+  return Object.freeze(lockedElements);
+}
+
 const lockedElementsSchema = z.strictObject({
-  status: createAiAnalysisMigrationElementResultSchema("status").optional(),
-  waitingOn: createAiAnalysisMigrationElementResultSchema("waitingOn").optional(),
-  nextAction: createAiAnalysisMigrationElementResultSchema("nextAction").optional(),
-  relations: createAiAnalysisMigrationElementResultSchema("relations").optional(),
-  progress: createAiAnalysisMigrationElementResultSchema("progress").optional(),
-  importance: createAiAnalysisMigrationElementResultSchema("importance").optional(),
-  deadline: createAiAnalysisMigrationElementResultSchema("deadline").optional(),
-  notification: createAiAnalysisMigrationElementResultSchema("notification").optional(),
+  status: codexLockedElementResultSchemas.status.optional(),
+  waitingOn: codexLockedElementResultSchemas.waitingOn.optional(),
+  nextAction: codexLockedElementResultSchemas.nextAction.optional(),
+  relations: codexLockedElementResultSchemas.relations.optional(),
+  progress: codexLockedElementResultSchemas.progress.optional(),
+  importance: codexLockedElementResultSchemas.importance.optional(),
+  deadline: codexLockedElementResultSchemas.deadline.optional(),
+  notification: codexLockedElementResultSchemas.notification.optional(),
 });
 
 const codexAnalysisInputSchema = z
   .strictObject({
-    schemaVersion: z.literal("2"),
+    schemaVersion: z.literal("3"),
     now: z.iso.datetime({
       offset: true,
       error: "タイムゾーンを含むISO 8601日時を指定してください",

@@ -99,7 +99,7 @@
       {
         "itemNodeId": "author-question-after-changes-requested-pr",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "author-question-after-changes-requested-pr",

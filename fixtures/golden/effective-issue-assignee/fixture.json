@@ -240,7 +240,7 @@
       {
         "itemNodeId": "effective-single-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-single-issue",
@@ -780,7 +780,7 @@
       {
         "itemNodeId": "effective-joint-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-joint-issue",
@@ -1053,7 +1053,7 @@
       {
         "itemNodeId": "effective-partial-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-partial-issue",
@@ -1260,7 +1260,7 @@
       {
         "itemNodeId": "effective-conditional-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-conditional-issue",
@@ -1467,7 +1467,7 @@
       {
         "itemNodeId": "effective-withdrawn-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-withdrawn-issue",
@@ -1674,7 +1674,7 @@
       {
         "itemNodeId": "effective-source-mismatch-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-source-mismatch-issue",
@@ -1888,7 +1888,7 @@
       {
         "itemNodeId": "effective-formal-assignee-released-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-formal-assignee-released-issue",
