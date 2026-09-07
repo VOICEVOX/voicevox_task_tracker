@@ -39,7 +39,11 @@ import {
 } from "./errors.js";
 import { recordCodexDiagnostic, type CodexDiagnosticsContext } from "./diagnostics.js";
 import type { DiagnosticsJsonValue } from "../diagnostics/error-serializer.js";
-import { createCodexAnalysisInput, type CodexAnalysisInput } from "./input.js";
+import {
+  createCodexAnalysisInput,
+  projectCodexLockedElementResult,
+  type CodexAnalysisInput,
+} from "./input.js";
 import { type SchemaValidCodexElementOutput } from "./element-output.js";
 import { CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION } from "./element-output-schema.js";
 import { aiAnalysisElementGenerationSchema } from "./analysis-elements.js";
@@ -287,7 +291,10 @@ function createExecutionInput(state: CandidateCacheState): PreparedAiAnalysisCan
     ...state.candidate.input.lockedElements,
   };
   for (const result of state.cached) {
-    lockedElements[result.element] = result.generation.result;
+    lockedElements[result.element] = projectCodexLockedElementResult(
+      result.element,
+      result.generation.result,
+    );
   }
   const input = createCodexAnalysisInput({
     ...state.candidate.input,

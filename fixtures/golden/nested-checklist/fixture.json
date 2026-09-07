@@ -139,7 +139,7 @@
       {
         "itemNodeId": "nested-release-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "nested-release-issue",
@@ -315,7 +315,7 @@
       {
         "itemNodeId": "nested-core-issue",
         "input": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "nested-core-issue",

@@ -39,6 +39,7 @@ import {
   type AiAnalysisElementGeneration,
 } from "../domain/ai-analysis-elements.js";
 import { type CodexAnalysisInput } from "./input.js";
+import { type CodexPreservedElements } from "./analysis-elements.js";
 import { type CodexElementOutput } from "./semantic-validation.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
 import { listNativeRelationConstraints } from "./semantic-validation.js";
@@ -166,7 +167,7 @@ export type RunCodexAnalysisWithFallbackInput = Readonly<{
   analysisInput: CodexAnalysisInput;
   deterministicDecision: DeterministicCodexDecision;
   confidenceThresholds: CodexConfidenceThresholds;
-  preservedElements: CodexAnalysisInput["lockedElements"];
+  preservedElements: CodexPreservedElements;
 }>;
 
 /** 1件のCodex実行へ注入する副作用境界。 */
@@ -383,9 +384,7 @@ function validateDecision(value: DeterministicCodexDecision): void {
   }
 }
 
-type AiAnalysisElementResultMap = CodexAnalysisInput["lockedElements"];
-
-type ElementResultSource = CodexElementOutput | AiAnalysisElementResultMap;
+type ElementResultSource = CodexElementOutput | CodexPreservedElements;
 
 type ElementResultSelection = Readonly<{
   result: AiAnalysisElementMigrationResult | undefined;
@@ -419,7 +418,7 @@ function resultForElement(
   }
 }
 
-function validatePreservedElementKeys(values: AiAnalysisElementResultMap): void {
+function validatePreservedElementKeys(values: CodexPreservedElements): void {
   const knownElements = new Set<string>(AI_ANALYSIS_ELEMENTS);
   for (const element of Object.keys(values)) {
     if (!knownElements.has(element)) {
@@ -482,7 +481,7 @@ function selectElementResult(
   element: AiAnalysisElement,
   selectedElements: ReadonlySet<string>,
   attempt: CodexAnalysisAttempt,
-  preservedElements: AiAnalysisElementResultMap,
+  preservedElements: CodexPreservedElements,
   confidenceThresholds: CodexConfidenceThresholds,
 ): ElementResultSelection {
   const preserved = resultForElement(preservedElements, element);
@@ -878,7 +877,7 @@ function reduceUnavailableCodexAnalysis(
   relationCandidateIds: readonly string[],
   reason: CodexUnavailableReason,
   errorType: string,
-  preservedElements: AiAnalysisElementResultMap,
+  preservedElements: CodexPreservedElements,
 ): CodexAnalysisReduction {
   const uncertainty = unavailableUncertainty(reason);
   const importanceAssessment = createImportanceAssessment(preservedElements.importance);
@@ -921,7 +920,7 @@ export function reduceCodexAnalysis(
   deterministicDecision: DeterministicCodexDecision,
   attempt: CodexAnalysisAttempt,
   confidenceThresholds: CodexConfidenceThresholds,
-  preservedElements: CodexAnalysisInput["lockedElements"],
+  preservedElements: CodexPreservedElements,
 ): CodexAnalysisReduction {
   validateDecision(deterministicDecision);
   validatePreservedElementKeys(preservedElements);

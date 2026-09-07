@@ -15,6 +15,7 @@ import {
   listNativeRelationConstraints,
   prepareAiAnalysisCandidate,
   planAnalysisElements,
+  projectCodexLockedElements,
   recordCodexDiagnostic,
   reduceAiAnalysisElements,
   reduceCodexAnalysis,
@@ -31,6 +32,7 @@ import {
   type AiAnalysisRunResult,
   type AiAnalysisElementGenerationMap,
   type CodexAnalysisInput,
+  type CodexPreservedElements,
   type CodexAdapterConfiguration,
   type CodexAdapterDependencies,
   type CodexAnalysisReduction,
@@ -2607,7 +2609,7 @@ function createCodexInput(
   evaluatedAt: UtcIsoDateTime,
   analysis: DeterministicItemAnalysis,
   selectedElements: readonly AiAnalysisElement[],
-  lockedElements: Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>>>,
+  preservedElements: CodexPreservedElements,
 ): CodexAnalysisInput {
   const relationCandidates = deduplicateByStableId(
     selectRelationAssessmentCandidates(analysis.item.nodeId, analysis.relationCandidates),
@@ -2825,7 +2827,7 @@ function createCodexInput(
     }
   }
   return createCodexAnalysisInput({
-    schemaVersion: "2",
+    schemaVersion: "3",
     now: evaluatedAt,
     item: {
       nodeId: analysis.item.nodeId,
@@ -2899,7 +2901,7 @@ function createCodexInput(
       effectiveAssigneeConfidenceThreshold: configuration.config.ai.confidence.high,
     },
     selectedElements,
-    lockedElements,
+    lockedElements: projectCodexLockedElements(preservedElements),
   });
 }
 
@@ -3145,12 +3147,13 @@ function migrationAdoptedResultForElement(
   return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
 }
 
-function lockedElementsForSelection(
+function preservedElementsForSelection(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning,
-): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>>> {
-  const lockedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> = {};
+): CodexPreservedElements {
+  const preservedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> =
+    {};
   for (const skipped of planning.selection.skipped) {
     if (skipped.reason === "up_to_date") {
       const adopted = currentAdoptedGenerationForElement(
@@ -3163,16 +3166,16 @@ function lockedElementsForSelection(
       const deterministic = deterministicElementResult(analysis, skipped.candidate.element);
       const result = adopted?.result ?? migrated ?? deterministic;
       if (result != null) {
-        lockedElements[skipped.candidate.element] = result;
+        preservedElements[skipped.candidate.element] = result;
       }
       continue;
     }
     const deterministic = deterministicElementResult(analysis, skipped.candidate.element);
     if (deterministic != null) {
-      lockedElements[skipped.candidate.element] = deterministic;
+      preservedElements[skipped.candidate.element] = deterministic;
     }
   }
-  return Object.freeze(lockedElements);
+  return Object.freeze(preservedElements);
 }
 
 function necessityInputForAnalysis(
@@ -3335,7 +3338,7 @@ function createAiCandidates(
       collection.evaluatedAt,
       analysis,
       planning.selection.selected.map((candidate) => candidate.element),
-      lockedElementsForSelection(state, analysis, planning),
+      preservedElementsForSelection(state, analysis, planning),
     );
     inputByNodeId.set(analysis.item.nodeId, input);
     const previousIncomingBlockers = new Set<string>(
@@ -3816,7 +3819,7 @@ function preservedElementsForReduction(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning,
-): CodexAnalysisInput["lockedElements"] {
+): CodexPreservedElements {
   let status: AiAnalysisElementMigrationResult<"status"> | undefined;
   let waitingOn: AiAnalysisElementMigrationResult<"waitingOn"> | undefined;
   let nextAction: AiAnalysisElementMigrationResult<"nextAction"> | undefined;
@@ -3902,7 +3905,7 @@ function preservedElementsForAnalysisReduction(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
-): CodexAnalysisInput["lockedElements"] {
+): CodexPreservedElements {
   const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
   assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${analysis.item.nodeId}`);
   return preservedElementsForReduction(state, analysis, planning);

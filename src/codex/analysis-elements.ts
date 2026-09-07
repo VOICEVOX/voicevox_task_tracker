@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   aiAnalysisElementRevisionSchema,
   type AiAnalysisElement,
+  type AiAnalysisElementMigrationResult,
 } from "../domain/ai-analysis-elements.js";
 
 export {
@@ -17,6 +18,7 @@ export {
   aiAnalysisElementResultSchema,
   aiAnalysisElementSchema,
   aiAnalysisMigrationWaitingOnSchema,
+  aiAnalysisDeadlineSchema,
   aiAnalysisImportanceSchema,
   aiAnalysisNextActionSchema,
   aiAnalysisNotificationReasonCodeSchema,
@@ -63,6 +65,11 @@ export type {
   AiAnalysisWaitingOnValue,
   AiAnalysisMigrationWaitingOnValue,
 } from "../domain/ai-analysis-elements.js";
+
+/** 保存済みの要素別full result。 */
+export type CodexPreservedElements = Readonly<
+  Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>>
+>;
 export {
   aiAnalysisElementFingerprintSchema as analysisElementFingerprintSchema,
   aiAnalysisElementNecessitySchema as analysisElementNecessitySchema,

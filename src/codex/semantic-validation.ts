@@ -8,8 +8,8 @@ import {
 import type {
   AiAnalysisElement,
   AiAnalysisElementMigrationResult,
-  AiAnalysisRelations,
-  AiAnalysisMigrationWaitingOnValue,
+  AiAnalysisRelation,
+  AiAnalysisWaitingOn,
 } from "../domain/ai-analysis-elements.js";
 import type { RelationAssessmentVerdict } from "../graph/index.js";
 import { CodexOutputSemanticValidationError, type CodexOutputValidationIssue } from "./errors.js";
@@ -119,27 +119,19 @@ function addResultEvidence(
 
 function collectReferencedSourceIds(
   output: SchemaValidCodexElementOutput,
-  input: CodexAnalysisInput,
 ): readonly SourceReference[] {
   const references: SourceReference[] = [];
-  const status = output.status ?? input.lockedElements.status;
-  if (status != null) {
-    addResultEvidence(
-      status,
-      output.status == null ? "/lockedElements/status" : "/status",
-      references,
-    );
+  if (output.status != null) {
+    addResultEvidence(output.status, "/status", references);
   }
 
-  const waitingOn = output.waitingOn ?? input.lockedElements.waitingOn;
-  if (waitingOn != null) {
-    const path = output.waitingOn == null ? "/lockedElements/waitingOn" : "/waitingOn";
-    addResultEvidence(waitingOn, path, references);
-    for (const [index, candidate] of waitingOn.value.entries()) {
+  if (output.waitingOn != null) {
+    addResultEvidence(output.waitingOn, "/waitingOn", references);
+    for (const [index, candidate] of output.waitingOn.value.entries()) {
       for (const [sourceIndex, sourceId] of candidate.sourceIds.entries()) {
         references.push(
           Object.freeze({
-            path: `${path}/value/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
+            path: `/waitingOn/value/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
             sourceId,
           }),
         );
@@ -147,24 +139,17 @@ function collectReferencedSourceIds(
     }
   }
 
-  const nextAction = output.nextAction ?? input.lockedElements.nextAction;
-  if (nextAction != null) {
-    addResultEvidence(
-      nextAction,
-      output.nextAction == null ? "/lockedElements/nextAction" : "/nextAction",
-      references,
-    );
+  if (output.nextAction != null) {
+    addResultEvidence(output.nextAction, "/nextAction", references);
   }
 
-  const relations = output.relations ?? input.lockedElements.relations;
-  if (relations != null) {
-    const path = output.relations == null ? "/lockedElements/relations" : "/relations";
-    addResultEvidence(relations, path, references);
-    for (const [index, candidate] of relations.value.entries()) {
+  if (output.relations != null) {
+    addResultEvidence(output.relations, "/relations", references);
+    for (const [index, candidate] of output.relations.value.entries()) {
       for (const [sourceIndex, sourceId] of candidate.sourceIds.entries()) {
         references.push(
           Object.freeze({
-            path: `${path}/value/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
+            path: `/relations/value/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
             sourceId,
           }),
         );
@@ -172,45 +157,28 @@ function collectReferencedSourceIds(
     }
   }
 
-  const progress = output.progress ?? input.lockedElements.progress;
-  if (progress != null) {
-    const path = output.progress == null ? "/lockedElements/progress" : "/progress";
-    addResultEvidence(progress, path, references);
-    if (progress.value.latestMeaningfulSourceId != null) {
+  if (output.progress != null) {
+    addResultEvidence(output.progress, "/progress", references);
+    if (output.progress.value.latestMeaningfulSourceId != null) {
       references.push(
         Object.freeze({
-          path: `${path}/value/latestMeaningfulSourceId`,
-          sourceId: progress.value.latestMeaningfulSourceId,
+          path: "/progress/value/latestMeaningfulSourceId",
+          sourceId: output.progress.value.latestMeaningfulSourceId,
         }),
       );
     }
   }
 
-  const importance = output.importance ?? input.lockedElements.importance;
-  if (importance != null) {
-    addResultEvidence(
-      importance,
-      output.importance == null ? "/lockedElements/importance" : "/importance",
-      references,
-    );
+  if (output.importance != null) {
+    addResultEvidence(output.importance, "/importance", references);
   }
 
-  const deadline = output.deadline ?? input.lockedElements.deadline;
-  if (deadline != null) {
-    addResultEvidence(
-      deadline,
-      output.deadline == null ? "/lockedElements/deadline" : "/deadline",
-      references,
-    );
+  if (output.deadline != null) {
+    addResultEvidence(output.deadline, "/deadline", references);
   }
 
-  const notification = output.notification ?? input.lockedElements.notification;
-  if (notification != null) {
-    addResultEvidence(
-      notification,
-      output.notification == null ? "/lockedElements/notification" : "/notification",
-      references,
-    );
+  if (output.notification != null) {
+    addResultEvidence(output.notification, "/notification", references);
   }
   return Object.freeze(references);
 }
@@ -227,7 +195,7 @@ function validateSourceReferences(
   }
   let inputStrings: ReadonlySet<string> | undefined;
 
-  for (const reference of collectReferencedSourceIds(output, input)) {
+  for (const reference of collectReferencedSourceIds(output)) {
     const source = knownSources.get(reference.sourceId);
     if (source == null) {
       if (inputStrings == null) {
@@ -302,27 +270,22 @@ function validateUniqueSourceIds(
 
 function validateResultSourceIdUniqueness(
   output: SchemaValidCodexElementOutput,
-  input: CodexAnalysisInput,
   issues: CodexOutputValidationIssue[],
 ): void {
-  const waitingOn = output.waitingOn ?? input.lockedElements.waitingOn;
-  if (waitingOn != null) {
-    const path = output.waitingOn == null ? "/lockedElements/waitingOn" : "/waitingOn";
-    for (const [index, candidate] of waitingOn.value.entries()) {
+  if (output.waitingOn != null) {
+    for (const [index, candidate] of output.waitingOn.value.entries()) {
       validateUniqueSourceIds(
         candidate.sourceIds,
-        `${path}/value/${index.toString()}/sourceIds`,
+        `/waitingOn/value/${index.toString()}/sourceIds`,
         issues,
       );
     }
   }
-  const relations = output.relations ?? input.lockedElements.relations;
-  if (relations != null) {
-    const path = output.relations == null ? "/lockedElements/relations" : "/relations";
-    for (const [index, candidate] of relations.value.entries()) {
+  if (output.relations != null) {
+    for (const [index, candidate] of output.relations.value.entries()) {
       validateUniqueSourceIds(
         candidate.sourceIds,
-        `${path}/value/${index.toString()}/sourceIds`,
+        `/relations/value/${index.toString()}/sourceIds`,
         issues,
       );
     }
@@ -330,7 +293,7 @@ function validateResultSourceIdUniqueness(
 }
 
 function validateWaitingOnCandidates(
-  values: AiAnalysisMigrationWaitingOnValue,
+  values: readonly Pick<AiAnalysisWaitingOn, "kind" | "candidateId">[],
   input: CodexAnalysisInput,
   path: string,
   issues: CodexOutputValidationIssue[],
@@ -377,7 +340,7 @@ function validateWaitingOnCandidates(
 }
 
 function validateRelationCandidates(
-  values: AiAnalysisRelations,
+  values: readonly Pick<AiAnalysisRelation, "candidateId" | "verdict">[],
   input: CodexAnalysisInput,
   path: string,
   requireComplete: boolean,
@@ -456,18 +419,21 @@ function resultPath(output: SchemaValidCodexElementOutput, element: AiAnalysisEl
   return Object.hasOwn(output, element) ? `/${element}` : `/lockedElements/${element}`;
 }
 
-function appendCommonTextFields(
-  result: Pick<AiAnalysisElementMigrationResult, "evidence" | "uncertainties">,
-  path: string,
-  fields: TextField[],
-): void {
-  for (const [index, evidence] of result.evidence.entries()) {
-    fields.push(
-      Object.freeze({
-        path: `${path}/evidence/${index.toString()}/summary`,
-        value: evidence.summary,
-      }),
-    );
+type TextResult = Readonly<{
+  evidence?: readonly Readonly<{ summary: string }>[];
+  uncertainties: readonly string[];
+}>;
+
+function appendCommonTextFields(result: TextResult, path: string, fields: TextField[]): void {
+  if (result.evidence != null) {
+    for (const [index, evidence] of result.evidence.entries()) {
+      fields.push(
+        Object.freeze({
+          path: `${path}/evidence/${index.toString()}/summary`,
+          value: evidence.summary,
+        }),
+      );
+    }
   }
   for (const [index, uncertainty] of result.uncertainties.entries()) {
     fields.push(
@@ -755,7 +721,7 @@ export function validateCodexAnalysisSemantics(
       issues,
     );
   }
-  validateResultSourceIdUniqueness(output, input, issues);
+  validateResultSourceIdUniqueness(output, issues);
   validateSourceReferences(output, input, knownSources, issues);
   validateUrls(output, input, issues);
   validateNativeRelationReferences(input, issues);

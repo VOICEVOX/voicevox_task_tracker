@@ -104,6 +104,7 @@ export {
 } from "./confidence.js";
 export {
   createCodexAnalysisInput,
+  projectCodexLockedElements,
   serializeCodexAnalysisInput,
   type CodexAnalysisInput,
 } from "./input.js";
@@ -136,6 +137,7 @@ export {
   aiAnalysisElementResultSchema,
   aiAnalysisElementSchema,
   aiAnalysisMigrationWaitingOnSchema,
+  aiAnalysisDeadlineSchema,
   aiAnalysisImportanceSchema,
   aiAnalysisNextActionSchema,
   aiAnalysisNotificationReasonCodeSchema,
@@ -175,6 +177,7 @@ export {
   type AiAnalysisWaitingOnRole,
   type AiAnalysisWaitingOnValue,
   type AiAnalysisMigrationWaitingOnValue,
+  type CodexPreservedElements,
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
   type AnalysisElementInputFingerprint,
