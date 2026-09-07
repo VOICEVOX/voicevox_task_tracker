@@ -34,7 +34,7 @@ import { notificationActionSchema, type NotificationAction } from "./command.js"
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
-const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "9";
+const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "10";
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const dateTimeSchema = z.iso
   .datetime({
@@ -118,10 +118,11 @@ const ledgerReservationSchema = z.strictObject({
   expiresAt: dateTimeSchema,
   status: z.literal("reserved"),
 });
+const notificationSelectionSkipReasonSchema = z.enum(["no_candidates", "held"]);
 const notificationSelectionSchema = z.discriminatedUnion("action", [
   z.strictObject({
     action: z.literal("skip_digest"),
-    reason: z.literal("no_candidates"),
+    reason: notificationSelectionSkipReasonSchema,
     candidates: z.tuple([]),
     ledgerReservations: z.tuple([]),
     pendingNotifications: z.array(pendingNotificationSchema),
@@ -263,7 +264,7 @@ function createNotificationSelection(value: unknown): DiscordNotificationSelecti
   if (result.data.action === "skip_digest") {
     return Object.freeze({
       action: "skip_digest",
-      reason: "no_candidates",
+      reason: result.data.reason,
       candidates: emptyValues(),
       ledgerReservations: emptyValues(),
       pendingNotifications: pendingNotificationValues(result.data.pendingNotifications),
@@ -497,9 +498,21 @@ function assertNotificationActionConsistency(
   notificationAction: NotificationAction,
   selection: DiscordNotificationSelection,
 ): void {
-  if (notificationAction === "acknowledge-current" && selection.action !== "skip_digest") {
+  if (selection.action === "create_digest") {
+    if (notificationAction !== "send") {
+      throw new TypeError("通知を送信しないworkflow artifactにはDiscord通知候補を含められません");
+    }
+    return;
+  }
+  if (notificationAction === "send" && selection.reason !== "no_candidates") {
+    throw new TypeError("sendのworkflow artifactには通知保留理由を指定できません");
+  }
+  if (notificationAction === "hold" && selection.reason !== "held") {
+    throw new TypeError("holdのworkflow artifactにはheldの通知selectionが必要です");
+  }
+  if (notificationAction === "acknowledge-current" && selection.reason !== "no_candidates") {
     throw new TypeError(
-      "acknowledge-currentのworkflow artifactには空のDiscord通知selectionが必要です",
+      "acknowledge-currentのworkflow artifactにはno_candidatesの通知selectionが必要です",
     );
   }
 }

@@ -99,7 +99,7 @@
       {
         "itemNodeId": "author-acknowledgement-after-changes-requested-pr",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "author-acknowledgement-after-changes-requested-pr",
@@ -152,57 +152,138 @@
               "変更要求後にauthorが発言しているためreviewer対応が必要か判断できません"
             ]
           },
-          "priorAnalysis": null
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "item": {
             "nodeId": "author-acknowledgement-after-changes-requested-pr",
             "url": "https://github.com/VOICEVOX/fixture-change/pull/204"
           },
-          "status": "waiting_for_revision",
-          "waitingOn": [
-            {
-              "kind": "role",
-              "candidateId": "author",
-              "role": "author",
-              "reasonSummary": "authorが変更要求への対応を予定しています",
-              "sourceIds": [
-                "golden_event:acknowledgement-changes-requested",
-                "golden_event:author-acknowledgement"
-              ],
-              "confidence": 0.95
-            }
-          ],
-          "nextAction": "authorが変更要求へ対応してpushする",
-          "relations": [],
+          "status": {
+            "value": "waiting_for_revision",
+            "evidence": [
+              {
+                "sourceId": "golden_event:author-acknowledgement",
+                "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "role",
+                "candidateId": "author",
+                "role": "author",
+                "reasonSummary": "authorが変更要求への対応を予定しています",
+                "sourceIds": [
+                  "golden_event:acknowledgement-changes-requested",
+                  "golden_event:author-acknowledgement"
+                ],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "golden_event:author-acknowledgement",
+                "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "authorが変更要求へ対応してpushする",
+            "evidence": [
+              {
+                "sourceId": "golden_event:author-acknowledgement",
+                "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [],
+            "evidence": [
+              {
+                "sourceId": "golden_event:author-acknowledgement",
+                "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
           "progress": {
-            "latestMeaningfulSourceId": "golden_event:acknowledgement-changes-requested",
-            "reasonSummary": "reviewerが現行headへ変更を要求しました",
-            "confidence": 0.95
+            "value": {
+              "latestMeaningfulSourceId": "golden_event:acknowledgement-changes-requested",
+              "reasonSummary": "reviewerが現行headへ変更を要求しました",
+              "confidence": 0.95
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_event:author-acknowledgement",
+                "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "importance": {
-            "significantFeature": false,
-            "futureRisk": false,
-            "rationale": "重要度の自然言語要因はありません"
-          },
-          "evidence": [
-            {
-              "sourceId": "golden_event:author-acknowledgement",
-              "supports": "waiting_on",
-              "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
-            }
-          ],
-          "confidence": 0.95,
-          "uncertainties": [],
-          "notification": {
-            "recommended": false,
-            "reasonCode": "none",
-            "reasonSummary": "通知閾値は決定論的な停滞判定へ委ねます"
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の自然言語要因はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_event:author-acknowledgement",
+                "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "deadline": {
-            "date": null,
-            "rationale": "期限や時期の根拠はありません"
+            "value": {
+              "date": null,
+              "rationale": "期限や時期の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_event:author-acknowledgement",
+                "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "notification": {
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "通知閾値は決定論的な停滞判定へ委ねます"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_event:author-acknowledgement",
+                "summary": "authorの最新発言は対応予定の表明でありreviewerへ応答を求めていません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           }
         },
         "rejectedOutputs": []

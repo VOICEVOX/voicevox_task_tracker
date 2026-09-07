@@ -1,13 +1,10 @@
 import { type CodexAnalysisInput } from "./input.js";
-import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
-import { validateCodexAnalysisSchema } from "./schema-validation.js";
-import { validateCodexAnalysisSemantics } from "./semantic-validation.js";
+import { validateCodexAnalysisSemantics, type CodexElementOutput } from "./semantic-validation.js";
 
-/** JSON Schema検証後にsemantic検証を行い、reducer用のCodex出力を返す。 */
+/** 要素別Codex出力を入力に対応するschemaとsemantic制約で検証する。 */
 export function validateCodexAnalysisOutput(
   value: unknown,
   input: CodexAnalysisInput,
-): ValidatedCodexAnalysisOutput {
-  const schemaValidOutput = validateCodexAnalysisSchema(value);
-  return validateCodexAnalysisSemantics(schemaValidOutput, input);
+): CodexElementOutput {
+  return validateCodexAnalysisSemantics(value, input);
 }

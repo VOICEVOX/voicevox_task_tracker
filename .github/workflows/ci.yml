@@ -59,6 +59,8 @@ jobs:
           ref: tracker-state
           path: tracker-state
           persist-credentials: false
+      - name: 永続stateのrevisionを記録
+        run: git -C tracker-state rev-parse HEAD
       - name: Node.jsを準備
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:

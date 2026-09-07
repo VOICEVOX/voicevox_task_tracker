@@ -83,6 +83,45 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     );
   }
 
+  public readFiles(
+    revision: string,
+    paths: readonly string[],
+  ): Promise<ReadonlyMap<string, StateFileReadResult>> {
+    if (paths.length === 0) {
+      return Promise.resolve(new Map<string, StateFileReadResult>());
+    }
+    if (new Set(paths).size !== paths.length) {
+      throw new StateConfigurationError("読み取りpathが重複しています");
+    }
+    for (const path of paths) {
+      assertValidStatePath(path);
+    }
+    const commit = this.#commits.get(revision);
+    if (commit == null) {
+      return Promise.reject(
+        new StateBranchReadError({
+          cause: new TypeError("指定revisionが存在しません"),
+        }),
+      );
+    }
+    const results = new Map<string, StateFileReadResult>();
+    for (const path of paths) {
+      const bytes = commit.files.get(path);
+      results.set(
+        path,
+        bytes == null
+          ? Object.freeze({
+              status: "missing",
+            })
+          : Object.freeze({
+              status: "present",
+              bytes: copyBytes(bytes),
+            }),
+      );
+    }
+    return Promise.resolve(results);
+  }
+
   public listFiles(revision: string, directory: string): Promise<readonly string[]> {
     assertValidStateDirectory(directory);
     const commit = this.#commits.get(revision);
@@ -123,7 +162,10 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
       );
     }
     const paths = request.updates.map((update) => update.path);
-    if (new Set(paths).size !== paths.length) {
+    if (
+      new Set([...paths, ...request.deletions]).size !==
+      paths.length + request.deletions.length
+    ) {
       return Promise.reject(
         new StateBranchCommitError({
           cause: new TypeError("commit内でstateファイルが重複しています"),
@@ -131,6 +173,9 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
       );
     }
     for (const path of paths) {
+      assertValidStatePath(path);
+    }
+    for (const path of request.deletions) {
       assertValidStatePath(path);
     }
 
@@ -161,6 +206,16 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     }
     for (const update of request.updates) {
       files.set(update.path, copyBytes(update.bytes));
+    }
+    for (const path of request.deletions) {
+      if (!files.has(path)) {
+        return Promise.reject(
+          new StateBranchCommitError({
+            cause: new TypeError("commit対象の削除stateファイルが存在しません"),
+          }),
+        );
+      }
+      files.delete(path);
     }
 
     this.#revisionSequence += 1;

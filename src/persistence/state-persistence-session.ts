@@ -7,7 +7,13 @@ import {
   type AiCacheReadResult,
   type AiCacheStore,
 } from "../codex/cache.js";
+import {
+  createAiCacheMigrationPlan,
+  type AiCacheMigrationFile,
+  type AiCacheMigrationPlan,
+} from "./ai-cache-migration.js";
 import { parseSha256Hash, serializeCanonicalJsonLine } from "./canonical-json.js";
+import { migrateStateSnapshot } from "./snapshot-migration.js";
 import {
   joinStatePath,
   validateStatePersistenceConfiguration,
@@ -32,12 +38,7 @@ import {
   type StateHistoryRecord,
 } from "./history.js";
 import { assertStatePublicSafety, assertStateValuesPublicSafety } from "./public-safety.js";
-import {
-  createStateSnapshot,
-  parseStateSnapshot,
-  serializeStateSnapshot,
-  type StateSnapshot,
-} from "./snapshot.js";
+import { createStateSnapshot, serializeStateSnapshot, type StateSnapshot } from "./snapshot.js";
 import {
   createEmptyStateNotificationLedger,
   createStateNotificationLedger,
@@ -114,6 +115,43 @@ type PreparedNotificationHistory = Readonly<{
   historySource: string;
   historyRecords: readonly StateHistoryRecord[];
 }>;
+
+async function readAiCacheMigrationPlan(
+  adapter: StateBranchAdapter,
+  configuration: StatePersistenceConfiguration,
+  head: StateBranchHead,
+): Promise<AiCacheMigrationPlan> {
+  if (head.status === "missing") {
+    return createAiCacheMigrationPlan(configuration.aiCacheDirectory, []);
+  }
+  const paths = await adapter.listFiles(head.revision, configuration.aiCacheDirectory);
+  if (paths.length === 0) {
+    return createAiCacheMigrationPlan(configuration.aiCacheDirectory, []);
+  }
+  const results = await adapter.readFiles(head.revision, paths);
+  const files: AiCacheMigrationFile[] = [];
+  for (const path of paths) {
+    const result = results.get(path);
+    if (result == null) {
+      throw new StateFormatError("AI cache", {
+        cause: new TypeError("一覧にあるAI cacheを一括で読み取れません"),
+      });
+    }
+    const source = decodeStateFile(result, "AI cache");
+    if (source == null) {
+      throw new StateFormatError("AI cache", {
+        cause: new TypeError("一覧にあるAI cacheを読み取れません"),
+      });
+    }
+    files.push(
+      Object.freeze({
+        path,
+        source,
+      }),
+    );
+  }
+  return createAiCacheMigrationPlan(configuration.aiCacheDirectory, files);
+}
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -231,7 +269,9 @@ function assertNotificationWaitingOnMatchesSnapshot(
 export class StatePersistenceSession {
   readonly #adapter: StateBranchAdapter;
   readonly #configuration: StatePersistenceConfiguration;
+  readonly #aiCacheMigrationPlan: AiCacheMigrationPlan;
   readonly #pendingAiCacheEntries = new Map<AiCacheKey, AiCacheEntry>();
+  #pendingAiCacheDeletionPaths: readonly string[];
   #head: StateBranchHead;
 
   public readonly aiCache: AiCacheStore;
@@ -240,12 +280,15 @@ export class StatePersistenceSession {
     adapter: StateBranchAdapter,
     configuration: StatePersistenceConfiguration,
     head: StateBranchHead,
+    aiCacheMigrationPlan: AiCacheMigrationPlan,
   ) {
     this.#adapter = adapter;
     this.#configuration = Object.freeze({
       ...configuration,
     });
     this.#head = head;
+    this.#aiCacheMigrationPlan = aiCacheMigrationPlan;
+    this.#pendingAiCacheDeletionPaths = aiCacheMigrationPlan.legacyCachePaths;
     this.aiCache = Object.freeze({
       read: (cacheKey) => this.#readAiCache(cacheKey),
       write: (entry) => this.#bufferAiCache(entry),
@@ -259,7 +302,19 @@ export class StatePersistenceSession {
   ): Promise<StatePersistenceSession> {
     validateStatePersistenceConfiguration(configuration);
     const head = await adapter.resolveHead(configuration.branch);
-    return new StatePersistenceSession(adapter, configuration, head);
+    const aiCacheMigrationPlan = await readAiCacheMigrationPlan(adapter, configuration, head);
+    return new StatePersistenceSession(adapter, configuration, head, aiCacheMigrationPlan);
+  }
+
+  #consumeAiCacheMigration(): void {
+    this.#pendingAiCacheDeletionPaths = Object.freeze([]);
+  }
+
+  #snapshotUpdate(snapshot: StateSnapshot): StateFileUpdate {
+    return Object.freeze({
+      path: this.#configuration.snapshotPath,
+      bytes: encodeStateFile(serializeStateSnapshot(snapshot)),
+    });
   }
 
   /** 現在のsession headをリモートへ公開する。 */
@@ -367,7 +422,7 @@ export class StatePersistenceSession {
     }
     return Object.freeze({
       status: "available",
-      snapshot: parseStateSnapshot(source),
+      snapshot: migrateStateSnapshot(source, this.#aiCacheMigrationPlan.legacyEntriesByCacheKey),
     });
   }
 
@@ -517,15 +572,33 @@ export class StatePersistenceSession {
     input: PersistNotificationLedgerInput,
   ): Promise<PersistStateTransactionResult> {
     const notificationLedger = createStateNotificationLedger(input.notificationLedger);
-    assertStateValuesPublicSafety([notificationLedger], input.knownSecrets);
+    const snapshotResult = this.#head.status === "present" ? await this.loadSnapshot() : undefined;
+    const snapshot = snapshotResult?.status === "available" ? snapshotResult.snapshot : undefined;
+    if (snapshot == null) {
+      assertStateValuesPublicSafety([notificationLedger], input.knownSecrets);
+    } else {
+      assertStatePublicSafety({
+        snapshot,
+        repositoryInventory: snapshot.repositories,
+        additionalValues: [notificationLedger],
+        knownSecrets: input.knownSecrets,
+      });
+    }
     const update = Object.freeze({
       path: this.#configuration.notificationLedgerPath,
       bytes: encodeStateFile(serializeStateNotificationLedger(notificationLedger)),
     } satisfies StateFileUpdate);
+    const updates: StateFileUpdate[] = [];
+    if (snapshot != null) {
+      updates.push(this.#snapshotUpdate(snapshot));
+    }
+    updates.push(update);
+    updates.sort((left, right) => compareStrings(left.path, right.path));
     const result = await this.#adapter.commit({
       branch: this.#configuration.branch,
       expectedHead: this.#head,
-      updates: [update],
+      updates,
+      deletions: this.#pendingAiCacheDeletionPaths,
       message: `tracker notification ledger ${input.committedAt}`,
       committedAt: input.committedAt,
     });
@@ -533,9 +606,10 @@ export class StatePersistenceSession {
       status: "present",
       revision: result.revision,
     });
+    this.#consumeAiCacheMigration();
     return Object.freeze({
       ...result,
-      updatedPaths: Object.freeze([update.path]),
+      updatedPaths: Object.freeze(updates.map((value) => value.path)),
     });
   }
 
@@ -613,6 +687,7 @@ export class StatePersistenceSession {
       knownSecrets: input.knownSecrets,
     });
     const updates: StateFileUpdate[] = [
+      this.#snapshotUpdate(snapshot),
       {
         path: this.#configuration.notificationLedgerPath,
         bytes: encodeStateFile(serializeStateNotificationLedger(notificationLedger)),
@@ -627,6 +702,7 @@ export class StatePersistenceSession {
       branch: this.#configuration.branch,
       expectedHead: this.#head,
       updates,
+      deletions: this.#pendingAiCacheDeletionPaths,
       message: `tracker notification delivery ${snapshot.run.id}`,
       committedAt: input.committedAt,
     });
@@ -634,6 +710,7 @@ export class StatePersistenceSession {
       status: "present",
       revision: result.revision,
     });
+    this.#consumeAiCacheMigration();
     return Object.freeze({
       ...result,
       updatedPaths: Object.freeze(updates.map((update) => update.path)),
@@ -690,6 +767,9 @@ export class StatePersistenceSession {
         "run完了時にtracking.startAt以外のsnapshot内容が変化しています",
       );
     }
+    if (snapshotUpdates.length === 0) {
+      snapshotUpdates.push(this.#snapshotUpdate(snapshot));
+    }
     const notificationLedger = createStateNotificationLedger(input.notificationLedger);
     const history = await this.#prepareNotificationHistory(
       snapshot,
@@ -724,6 +804,7 @@ export class StatePersistenceSession {
       branch: this.#configuration.branch,
       expectedHead: this.#head,
       updates,
+      deletions: this.#pendingAiCacheDeletionPaths,
       message: `tracker run completion ${snapshot.run.id}`,
       committedAt: runReport.finishedAt,
     });
@@ -731,6 +812,7 @@ export class StatePersistenceSession {
       status: "present",
       revision: result.revision,
     });
+    this.#consumeAiCacheMigration();
     return Object.freeze({
       ...result,
       updatedPaths: Object.freeze(updates.map((update) => update.path)),
@@ -798,6 +880,7 @@ export class StatePersistenceSession {
       branch: this.#configuration.branch,
       expectedHead: this.#head,
       updates,
+      deletions: this.#pendingAiCacheDeletionPaths,
       message: `tracker state ${runDate} ${snapshot.run.id}`,
       committedAt: snapshot.generatedAt,
     });
@@ -805,6 +888,7 @@ export class StatePersistenceSession {
       status: "present",
       revision: result.revision,
     });
+    this.#consumeAiCacheMigration();
     this.#pendingAiCacheEntries.clear();
     return Object.freeze({
       ...result,

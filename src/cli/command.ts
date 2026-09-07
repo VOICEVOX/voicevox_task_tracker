@@ -17,7 +17,7 @@ const DEFAULT_COLLECT_ANALYZE_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/collect
 const DEFAULT_WORKFLOW_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/workflow.json`;
 const REPOSITORY_FILTER_PATTERN = /^VOICEVOX\/[A-Za-z0-9._-]+$/u;
 const DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
-export const notificationActionSchema = z.enum(["send", "acknowledge-current"]);
+export const notificationActionSchema = z.enum(["send", "hold", "acknowledge-current"]);
 export type NotificationAction = z.output<typeof notificationActionSchema>;
 const deliveryIdSchema = z.string().regex(DELIVERY_ID_PATTERN);
 const resolveDiscordDeliveryResolutionSchema = z.enum(["retry", "acknowledge"]);
@@ -270,7 +270,7 @@ function parseNotificationAction(options: ParsedOptions): NotificationAction {
   );
   if (!result.success) {
     throw usageError(
-      "--notification-actionにはsendまたはacknowledge-currentを指定してください",
+      "--notification-actionにはsend、holdまたはacknowledge-currentを指定してください",
       result.error,
     );
   }
@@ -737,10 +737,10 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
 export function formatCliUsage(): string {
   return [
     "使用方法:",
-    "  voicevox-task-tracker daily [--config PATH] [--notification-action send|acknowledge-current] [--scheduled-for ISO] [--report PATH]",
+    "  voicevox-task-tracker daily [--config PATH] [--notification-action send|hold|acknowledge-current] [--scheduled-for ISO] [--report PATH]",
     "  voicevox-task-tracker dry-run [--config PATH] [--artifact PATH] [--report PATH]",
-    "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--notification-action send|acknowledge-current] [--repository VOICEVOX/REPO]",
-    "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--notification-action send|acknowledge-current] [--scheduled-for ISO] [--artifact PATH]",
+    "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--notification-action send|hold|acknowledge-current] [--repository VOICEVOX/REPO]",
+    "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--notification-action send|hold|acknowledge-current] [--scheduled-for ISO] [--artifact PATH]",
     "  voicevox-task-tracker persist-state [--config PATH] [--artifact PATH]",
     "  voicevox-task-tracker build-pages [--config PATH] [--artifact PATH] [--output PATH]",
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",

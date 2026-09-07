@@ -240,7 +240,7 @@
       {
         "itemNodeId": "effective-single-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-single-issue",
@@ -337,165 +337,442 @@
             ],
             "effectiveAssigneeConfidenceThreshold": 0.85
           },
-          "priorAnalysis": null
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "item": {
             "nodeId": "effective-single-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
           },
-          "status": "waiting_for_work",
-          "waitingOn": [
-            {
-              "kind": "user",
-              "candidateId": "worker-single",
-              "role": "assignee",
-              "reasonSummary": "Issue全体を直接実装しています",
-              "sourceIds": [
-                "golden_event:pr-single-push",
-                "body:pr-single",
-                "golden_item:pr-single"
-              ],
-              "confidence": 0.95
-            }
-          ],
-          "nextAction": "worker-singleがIssue全体を進める",
-          "relations": [],
-          "progress": {
-            "latestMeaningfulSourceId": "golden_event:pr-single-push",
-            "reasonSummary": "直接実装のPRがあります",
-            "confidence": 0.95
-          },
-          "importance": {
-            "significantFeature": false,
-            "futureRisk": false,
-            "rationale": "重要度の根拠はありません"
-          },
-          "deadline": {
-            "date": null,
-            "rationale": "期限の根拠はありません"
-          },
-          "evidence": [
-            {
-              "sourceId": "golden_event:pr-single-push",
-              "supports": "waiting_on",
-              "summary": "Issue全体を直接実装するPRの最新pushです"
-            },
-            {
-              "sourceId": "body:pr-single",
-              "supports": "waiting_on",
-              "summary": "Issue全体を直接実装するPR本文です"
-            },
-            {
-              "sourceId": "golden_item:pr-single",
-              "supports": "waiting_on",
-              "summary": "Issue全体を直接実装するPRです"
-            }
-          ],
-          "confidence": 0.95,
-          "uncertainties": [],
-          "notification": {
-            "recommended": false,
-            "reasonCode": "none",
-            "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
-          }
-        },
-        "rejectedOutputs": [
-          {
-            "schemaVersion": "4",
-            "item": {
-              "nodeId": "effective-single-issue",
-              "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
-            },
-            "status": "waiting_for_work",
-            "waitingOn": [
-              {
-                "kind": "user",
-                "candidateId": "worker-outside",
-                "role": "assignee",
-                "reasonSummary": "入力にない候補です",
-                "sourceIds": ["golden_item:pr-single"],
-                "confidence": 0.95
-              }
-            ],
-            "nextAction": "worker-outsideが進める",
-            "relations": [],
-            "progress": {
-              "latestMeaningfulSourceId": "golden_item:pr-single",
-              "reasonSummary": "候補外userを選びました",
-              "confidence": 0.95
-            },
-            "importance": {
-              "significantFeature": false,
-              "futureRisk": false,
-              "rationale": "重要度の根拠はありません"
-            },
-            "deadline": {
-              "date": null,
-              "rationale": "期限の根拠はありません"
-            },
+          "status": {
+            "value": "waiting_for_work",
             "evidence": [
               {
+                "sourceId": "golden_event:pr-single-push",
+                "summary": "Issue全体を直接実装するPRの最新pushです"
+              },
+              {
+                "sourceId": "body:pr-single",
+                "summary": "Issue全体を直接実装するPR本文です"
+              },
+              {
                 "sourceId": "golden_item:pr-single",
-                "supports": "waiting_on",
-                "summary": "候補外userを根拠にしました"
+                "summary": "Issue全体を直接実装するPRです"
               }
             ],
             "confidence": 0.95,
-            "uncertainties": [],
-            "notification": {
-              "recommended": false,
-              "reasonCode": "none",
-              "reasonSummary": "候補外userは拒否します"
-            }
+            "uncertainties": []
           },
-          {
-            "schemaVersion": "4",
-            "item": {
-              "nodeId": "effective-single-issue",
-              "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
-            },
-            "status": "waiting_for_work",
-            "waitingOn": [
+          "waitingOn": {
+            "value": [
               {
                 "kind": "user",
                 "candidateId": "worker-single",
                 "role": "assignee",
-                "reasonSummary": "source集合外を参照しました",
-                "sourceIds": ["golden_missing:source"],
+                "reasonSummary": "Issue全体を直接実装しています",
+                "sourceIds": [
+                  "golden_event:pr-single-push",
+                  "body:pr-single",
+                  "golden_item:pr-single"
+                ],
                 "confidence": 0.95
               }
             ],
-            "nextAction": "worker-singleが進める",
-            "relations": [],
-            "progress": {
-              "latestMeaningfulSourceId": "golden_item:pr-single",
-              "reasonSummary": "未登録sourceを参照しました",
+            "evidence": [
+              {
+                "sourceId": "golden_event:pr-single-push",
+                "summary": "Issue全体を直接実装するPRの最新pushです"
+              },
+              {
+                "sourceId": "body:pr-single",
+                "summary": "Issue全体を直接実装するPR本文です"
+              },
+              {
+                "sourceId": "golden_item:pr-single",
+                "summary": "Issue全体を直接実装するPRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "worker-singleがIssue全体を進める",
+            "evidence": [
+              {
+                "sourceId": "golden_event:pr-single-push",
+                "summary": "Issue全体を直接実装するPRの最新pushです"
+              },
+              {
+                "sourceId": "body:pr-single",
+                "summary": "Issue全体を直接実装するPR本文です"
+              },
+              {
+                "sourceId": "golden_item:pr-single",
+                "summary": "Issue全体を直接実装するPRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [],
+            "evidence": [
+              {
+                "sourceId": "golden_event:pr-single-push",
+                "summary": "Issue全体を直接実装するPRの最新pushです"
+              },
+              {
+                "sourceId": "body:pr-single",
+                "summary": "Issue全体を直接実装するPR本文です"
+              },
+              {
+                "sourceId": "golden_item:pr-single",
+                "summary": "Issue全体を直接実装するPRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "progress": {
+            "value": {
+              "latestMeaningfulSourceId": "golden_event:pr-single-push",
+              "reasonSummary": "直接実装のPRがあります",
               "confidence": 0.95
             },
-            "importance": {
+            "evidence": [
+              {
+                "sourceId": "golden_event:pr-single-push",
+                "summary": "Issue全体を直接実装するPRの最新pushです"
+              },
+              {
+                "sourceId": "body:pr-single",
+                "summary": "Issue全体を直接実装するPR本文です"
+              },
+              {
+                "sourceId": "golden_item:pr-single",
+                "summary": "Issue全体を直接実装するPRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "importance": {
+            "value": {
               "significantFeature": false,
               "futureRisk": false,
               "rationale": "重要度の根拠はありません"
             },
-            "deadline": {
+            "evidence": [
+              {
+                "sourceId": "golden_event:pr-single-push",
+                "summary": "Issue全体を直接実装するPRの最新pushです"
+              },
+              {
+                "sourceId": "body:pr-single",
+                "summary": "Issue全体を直接実装するPR本文です"
+              },
+              {
+                "sourceId": "golden_item:pr-single",
+                "summary": "Issue全体を直接実装するPRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "deadline": {
+            "value": {
               "date": null,
               "rationale": "期限の根拠はありません"
             },
             "evidence": [
               {
+                "sourceId": "golden_event:pr-single-push",
+                "summary": "Issue全体を直接実装するPRの最新pushです"
+              },
+              {
+                "sourceId": "body:pr-single",
+                "summary": "Issue全体を直接実装するPR本文です"
+              },
+              {
                 "sourceId": "golden_item:pr-single",
-                "supports": "waiting_on",
-                "summary": "source集合外の参照を含みます"
+                "summary": "Issue全体を直接実装するPRです"
               }
             ],
             "confidence": 0.95,
-            "uncertainties": [],
-            "notification": {
+            "uncertainties": []
+          },
+          "notification": {
+            "value": {
               "recommended": false,
               "reasonCode": "none",
-              "reasonSummary": "source集合外の参照は拒否します"
+              "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_event:pr-single-push",
+                "summary": "Issue全体を直接実装するPRの最新pushです"
+              },
+              {
+                "sourceId": "body:pr-single",
+                "summary": "Issue全体を直接実装するPR本文です"
+              },
+              {
+                "sourceId": "golden_item:pr-single",
+                "summary": "Issue全体を直接実装するPRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          }
+        },
+        "rejectedOutputs": [
+          {
+            "schemaVersion": "5",
+            "item": {
+              "nodeId": "effective-single-issue",
+              "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
+            },
+            "status": {
+              "value": "waiting_for_work",
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "候補外userを根拠にしました"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "waitingOn": {
+              "value": [
+                {
+                  "kind": "user",
+                  "candidateId": "worker-outside",
+                  "role": "assignee",
+                  "reasonSummary": "入力にない候補です",
+                  "sourceIds": ["golden_item:pr-single"],
+                  "confidence": 0.95
+                }
+              ],
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "候補外userを根拠にしました"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "nextAction": {
+              "value": "worker-outsideが進める",
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "候補外userを根拠にしました"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "relations": {
+              "value": [],
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "候補外userを根拠にしました"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "progress": {
+              "value": {
+                "latestMeaningfulSourceId": "golden_item:pr-single",
+                "reasonSummary": "候補外userを選びました",
+                "confidence": 0.95
+              },
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "候補外userを根拠にしました"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "importance": {
+              "value": {
+                "significantFeature": false,
+                "futureRisk": false,
+                "rationale": "重要度の根拠はありません"
+              },
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "候補外userを根拠にしました"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "deadline": {
+              "value": {
+                "date": null,
+                "rationale": "期限の根拠はありません"
+              },
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "候補外userを根拠にしました"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "notification": {
+              "value": {
+                "recommended": false,
+                "reasonCode": "none",
+                "reasonSummary": "候補外userは拒否します"
+              },
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "候補外userを根拠にしました"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            }
+          },
+          {
+            "schemaVersion": "5",
+            "item": {
+              "nodeId": "effective-single-issue",
+              "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
+            },
+            "status": {
+              "value": "waiting_for_work",
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "source集合外の参照を含みます"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "waitingOn": {
+              "value": [
+                {
+                  "kind": "user",
+                  "candidateId": "worker-single",
+                  "role": "assignee",
+                  "reasonSummary": "source集合外を参照しました",
+                  "sourceIds": ["golden_missing:source"],
+                  "confidence": 0.95
+                }
+              ],
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "source集合外の参照を含みます"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "nextAction": {
+              "value": "worker-singleが進める",
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "source集合外の参照を含みます"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "relations": {
+              "value": [],
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "source集合外の参照を含みます"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "progress": {
+              "value": {
+                "latestMeaningfulSourceId": "golden_item:pr-single",
+                "reasonSummary": "未登録sourceを参照しました",
+                "confidence": 0.95
+              },
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "source集合外の参照を含みます"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "importance": {
+              "value": {
+                "significantFeature": false,
+                "futureRisk": false,
+                "rationale": "重要度の根拠はありません"
+              },
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "source集合外の参照を含みます"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "deadline": {
+              "value": {
+                "date": null,
+                "rationale": "期限の根拠はありません"
+              },
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "source集合外の参照を含みます"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
+            },
+            "notification": {
+              "value": {
+                "recommended": false,
+                "reasonCode": "none",
+                "reasonSummary": "source集合外の参照は拒否します"
+              },
+              "evidence": [
+                {
+                  "sourceId": "golden_item:pr-single",
+                  "summary": "source集合外の参照を含みます"
+                }
+              ],
+              "confidence": 0.95,
+              "uncertainties": []
             }
           }
         ]
@@ -503,7 +780,7 @@
       {
         "itemNodeId": "effective-joint-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-joint-issue",
@@ -600,67 +877,175 @@
             ],
             "effectiveAssigneeConfidenceThreshold": 0.85
           },
-          "priorAnalysis": null
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "item": {
             "nodeId": "effective-joint-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/702"
           },
-          "status": "waiting_for_work",
-          "waitingOn": [
-            {
-              "kind": "user",
-              "candidateId": "worker-joint-a",
-              "role": "assignee",
-              "reasonSummary": "Issue全体を共同で実装しています",
-              "sourceIds": ["golden_item:pr-joint-a"],
+          "status": {
+            "value": "waiting_for_work",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-joint-a",
+                "summary": "共同担当の直接実装PRです"
+              },
+              {
+                "sourceId": "golden_item:pr-joint-b",
+                "summary": "共同担当の直接実装PRです"
+              }
+            ],
+            "confidence": 0.93,
+            "uncertainties": []
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "user",
+                "candidateId": "worker-joint-a",
+                "role": "assignee",
+                "reasonSummary": "Issue全体を共同で実装しています",
+                "sourceIds": ["golden_item:pr-joint-a"],
+                "confidence": 0.93
+              },
+              {
+                "kind": "user",
+                "candidateId": "worker-joint-b",
+                "role": "assignee",
+                "reasonSummary": "Issue全体を共同で実装しています",
+                "sourceIds": ["golden_item:pr-joint-b"],
+                "confidence": 0.92
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-joint-a",
+                "summary": "共同担当の直接実装PRです"
+              },
+              {
+                "sourceId": "golden_item:pr-joint-b",
+                "summary": "共同担当の直接実装PRです"
+              }
+            ],
+            "confidence": 0.93,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "worker-joint-aとworker-joint-bがIssue全体を共同で進める",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-joint-a",
+                "summary": "共同担当の直接実装PRです"
+              },
+              {
+                "sourceId": "golden_item:pr-joint-b",
+                "summary": "共同担当の直接実装PRです"
+              }
+            ],
+            "confidence": 0.93,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-joint-a",
+                "summary": "共同担当の直接実装PRです"
+              },
+              {
+                "sourceId": "golden_item:pr-joint-b",
+                "summary": "共同担当の直接実装PRです"
+              }
+            ],
+            "confidence": 0.93,
+            "uncertainties": []
+          },
+          "progress": {
+            "value": {
+              "latestMeaningfulSourceId": "golden_item:pr-joint-b",
+              "reasonSummary": "共同で直接実装するPRがあります",
               "confidence": 0.93
             },
-            {
-              "kind": "user",
-              "candidateId": "worker-joint-b",
-              "role": "assignee",
-              "reasonSummary": "Issue全体を共同で実装しています",
-              "sourceIds": ["golden_item:pr-joint-b"],
-              "confidence": 0.92
-            }
-          ],
-          "nextAction": "worker-joint-aとworker-joint-bがIssue全体を共同で進める",
-          "relations": [],
-          "progress": {
-            "latestMeaningfulSourceId": "golden_item:pr-joint-b",
-            "reasonSummary": "共同で直接実装するPRがあります",
-            "confidence": 0.93
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-joint-a",
+                "summary": "共同担当の直接実装PRです"
+              },
+              {
+                "sourceId": "golden_item:pr-joint-b",
+                "summary": "共同担当の直接実装PRです"
+              }
+            ],
+            "confidence": 0.93,
+            "uncertainties": []
           },
           "importance": {
-            "significantFeature": false,
-            "futureRisk": false,
-            "rationale": "重要度の根拠はありません"
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-joint-a",
+                "summary": "共同担当の直接実装PRです"
+              },
+              {
+                "sourceId": "golden_item:pr-joint-b",
+                "summary": "共同担当の直接実装PRです"
+              }
+            ],
+            "confidence": 0.93,
+            "uncertainties": []
           },
           "deadline": {
-            "date": null,
-            "rationale": "期限の根拠はありません"
-          },
-          "evidence": [
-            {
-              "sourceId": "golden_item:pr-joint-a",
-              "supports": "waiting_on",
-              "summary": "共同担当の直接実装PRです"
+            "value": {
+              "date": null,
+              "rationale": "期限の根拠はありません"
             },
-            {
-              "sourceId": "golden_item:pr-joint-b",
-              "supports": "waiting_on",
-              "summary": "共同担当の直接実装PRです"
-            }
-          ],
-          "confidence": 0.93,
-          "uncertainties": [],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-joint-a",
+                "summary": "共同担当の直接実装PRです"
+              },
+              {
+                "sourceId": "golden_item:pr-joint-b",
+                "summary": "共同担当の直接実装PRです"
+              }
+            ],
+            "confidence": 0.93,
+            "uncertainties": []
+          },
           "notification": {
-            "recommended": false,
-            "reasonCode": "none",
-            "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-joint-a",
+                "summary": "共同担当の直接実装PRです"
+              },
+              {
+                "sourceId": "golden_item:pr-joint-b",
+                "summary": "共同担当の直接実装PRです"
+              }
+            ],
+            "confidence": 0.93,
+            "uncertainties": []
           }
         },
         "rejectedOutputs": []
@@ -668,7 +1053,7 @@
       {
         "itemNodeId": "effective-partial-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-partial-issue",
@@ -739,54 +1124,135 @@
             ],
             "effectiveAssigneeConfidenceThreshold": 0.85
           },
-          "priorAnalysis": null
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "item": {
             "nodeId": "effective-partial-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/703"
           },
-          "status": "waiting_for_owner",
-          "waitingOn": [
-            {
-              "kind": "role",
-              "candidateId": "maintainer",
-              "role": "maintainer",
-              "reasonSummary": "部分対応だけではIssue全体の担当を決められません",
-              "sourceIds": ["golden_item:effective-partial-issue"],
-              "confidence": 0.95
-            }
-          ],
-          "nextAction": "maintainerがIssue全体の担当を決める",
-          "relations": [],
+          "status": {
+            "value": "waiting_for_owner",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-partial",
+                "summary": "部分実装はIssue全体の担当根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "reasonSummary": "部分対応だけではIssue全体の担当を決められません",
+                "sourceIds": ["golden_item:effective-partial-issue"],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-partial",
+                "summary": "部分実装はIssue全体の担当根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "maintainerがIssue全体の担当を決める",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-partial",
+                "summary": "部分実装はIssue全体の担当根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-partial",
+                "summary": "部分実装はIssue全体の担当根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
           "progress": {
-            "latestMeaningfulSourceId": "golden_item:pr-partial",
-            "reasonSummary": "部分実装のPRだけがあります",
-            "confidence": 0.95
+            "value": {
+              "latestMeaningfulSourceId": "golden_item:pr-partial",
+              "reasonSummary": "部分実装のPRだけがあります",
+              "confidence": 0.95
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-partial",
+                "summary": "部分実装はIssue全体の担当根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "importance": {
-            "significantFeature": false,
-            "futureRisk": false,
-            "rationale": "重要度の根拠はありません"
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-partial",
+                "summary": "部分実装はIssue全体の担当根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "deadline": {
-            "date": null,
-            "rationale": "期限の根拠はありません"
+            "value": {
+              "date": null,
+              "rationale": "期限の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-partial",
+                "summary": "部分実装はIssue全体の担当根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
-          "evidence": [
-            {
-              "sourceId": "golden_item:pr-partial",
-              "supports": "uncertainty",
-              "summary": "部分実装はIssue全体の担当根拠になりません"
-            }
-          ],
-          "confidence": 0.95,
-          "uncertainties": [],
           "notification": {
-            "recommended": false,
-            "reasonCode": "none",
-            "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-partial",
+                "summary": "部分実装はIssue全体の担当根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           }
         },
         "rejectedOutputs": []
@@ -794,7 +1260,7 @@
       {
         "itemNodeId": "effective-conditional-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-conditional-issue",
@@ -865,54 +1331,135 @@
             ],
             "effectiveAssigneeConfidenceThreshold": 0.85
           },
-          "priorAnalysis": null
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "item": {
             "nodeId": "effective-conditional-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/704"
           },
-          "status": "waiting_for_work",
-          "waitingOn": [
-            {
-              "kind": "user",
-              "candidateId": "worker-conditional",
-              "role": "assignee",
-              "reasonSummary": "条件付きで対応する意向があります",
-              "sourceIds": ["golden_item:pr-conditional"],
-              "confidence": 0.84
-            }
-          ],
-          "nextAction": "worker-conditionalの対応意向を確認する",
-          "relations": [],
+          "status": {
+            "value": "waiting_for_work",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-conditional",
+                "summary": "条件付き意向はhigh未満です"
+              }
+            ],
+            "confidence": 0.84,
+            "uncertainties": ["対応条件が満たされるか不明です"]
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "user",
+                "candidateId": "worker-conditional",
+                "role": "assignee",
+                "reasonSummary": "条件付きで対応する意向があります",
+                "sourceIds": ["golden_item:pr-conditional"],
+                "confidence": 0.84
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-conditional",
+                "summary": "条件付き意向はhigh未満です"
+              }
+            ],
+            "confidence": 0.84,
+            "uncertainties": ["対応条件が満たされるか不明です"]
+          },
+          "nextAction": {
+            "value": "worker-conditionalの対応意向を確認する",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-conditional",
+                "summary": "条件付き意向はhigh未満です"
+              }
+            ],
+            "confidence": 0.84,
+            "uncertainties": ["対応条件が満たされるか不明です"]
+          },
+          "relations": {
+            "value": [],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-conditional",
+                "summary": "条件付き意向はhigh未満です"
+              }
+            ],
+            "confidence": 0.84,
+            "uncertainties": ["対応条件が満たされるか不明です"]
+          },
           "progress": {
-            "latestMeaningfulSourceId": "golden_item:pr-conditional",
-            "reasonSummary": "条件付きの意向が記録されています",
-            "confidence": 0.84
+            "value": {
+              "latestMeaningfulSourceId": "golden_item:pr-conditional",
+              "reasonSummary": "条件付きの意向が記録されています",
+              "confidence": 0.84
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-conditional",
+                "summary": "条件付き意向はhigh未満です"
+              }
+            ],
+            "confidence": 0.84,
+            "uncertainties": ["対応条件が満たされるか不明です"]
           },
           "importance": {
-            "significantFeature": false,
-            "futureRisk": false,
-            "rationale": "重要度の根拠はありません"
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-conditional",
+                "summary": "条件付き意向はhigh未満です"
+              }
+            ],
+            "confidence": 0.84,
+            "uncertainties": ["対応条件が満たされるか不明です"]
           },
           "deadline": {
-            "date": null,
-            "rationale": "期限の根拠はありません"
+            "value": {
+              "date": null,
+              "rationale": "期限の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-conditional",
+                "summary": "条件付き意向はhigh未満です"
+              }
+            ],
+            "confidence": 0.84,
+            "uncertainties": ["対応条件が満たされるか不明です"]
           },
-          "evidence": [
-            {
-              "sourceId": "golden_item:pr-conditional",
-              "supports": "uncertainty",
-              "summary": "条件付き意向はhigh未満です"
-            }
-          ],
-          "confidence": 0.84,
-          "uncertainties": ["対応条件が満たされるか不明です"],
           "notification": {
-            "recommended": false,
-            "reasonCode": "none",
-            "reasonSummary": "high未満のため通知しません"
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "high未満のため通知しません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-conditional",
+                "summary": "条件付き意向はhigh未満です"
+              }
+            ],
+            "confidence": 0.84,
+            "uncertainties": ["対応条件が満たされるか不明です"]
           }
         },
         "rejectedOutputs": []
@@ -920,7 +1467,7 @@
       {
         "itemNodeId": "effective-withdrawn-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-withdrawn-issue",
@@ -991,54 +1538,135 @@
             ],
             "effectiveAssigneeConfidenceThreshold": 0.85
           },
-          "priorAnalysis": null
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "item": {
             "nodeId": "effective-withdrawn-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/705"
           },
-          "status": "waiting_for_owner",
-          "waitingOn": [
-            {
-              "kind": "role",
-              "candidateId": "maintainer",
-              "role": "maintainer",
-              "reasonSummary": "撤回済みPRだけでは担当を決められません",
-              "sourceIds": ["golden_item:effective-withdrawn-issue"],
-              "confidence": 0.95
-            }
-          ],
-          "nextAction": "maintainerがIssue全体の担当を決める",
-          "relations": [],
+          "status": {
+            "value": "waiting_for_owner",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-withdrawn",
+                "summary": "撤回済みPRは実質担当の根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer",
+                "reasonSummary": "撤回済みPRだけでは担当を決められません",
+                "sourceIds": ["golden_item:effective-withdrawn-issue"],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-withdrawn",
+                "summary": "撤回済みPRは実質担当の根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "maintainerがIssue全体の担当を決める",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-withdrawn",
+                "summary": "撤回済みPRは実質担当の根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-withdrawn",
+                "summary": "撤回済みPRは実質担当の根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
           "progress": {
-            "latestMeaningfulSourceId": "golden_item:pr-withdrawn",
-            "reasonSummary": "PRは撤回されました",
-            "confidence": 0.95
+            "value": {
+              "latestMeaningfulSourceId": "golden_item:pr-withdrawn",
+              "reasonSummary": "PRは撤回されました",
+              "confidence": 0.95
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-withdrawn",
+                "summary": "撤回済みPRは実質担当の根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "importance": {
-            "significantFeature": false,
-            "futureRisk": false,
-            "rationale": "重要度の根拠はありません"
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-withdrawn",
+                "summary": "撤回済みPRは実質担当の根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "deadline": {
-            "date": null,
-            "rationale": "期限の根拠はありません"
+            "value": {
+              "date": null,
+              "rationale": "期限の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-withdrawn",
+                "summary": "撤回済みPRは実質担当の根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
-          "evidence": [
-            {
-              "sourceId": "golden_item:pr-withdrawn",
-              "supports": "uncertainty",
-              "summary": "撤回済みPRは実質担当の根拠になりません"
-            }
-          ],
-          "confidence": 0.95,
-          "uncertainties": [],
           "notification": {
-            "recommended": false,
-            "reasonCode": "none",
-            "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-withdrawn",
+                "summary": "撤回済みPRは実質担当の根拠になりません"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           }
         },
         "rejectedOutputs": []
@@ -1046,7 +1674,7 @@
       {
         "itemNodeId": "effective-source-mismatch-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-source-mismatch-issue",
@@ -1124,54 +1752,135 @@
             ],
             "effectiveAssigneeConfidenceThreshold": 0.85
           },
-          "priorAnalysis": null
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "item": {
             "nodeId": "effective-source-mismatch-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/706"
           },
-          "status": "waiting_for_work",
-          "waitingOn": [
-            {
-              "kind": "user",
-              "candidateId": "worker-source-mismatch",
-              "role": "assignee",
-              "reasonSummary": "候補source集合と異なるsourceを参照しています",
-              "sourceIds": ["golden_item:pr-source-mismatch-comment"],
-              "confidence": 0.95
-            }
-          ],
-          "nextAction": "worker-source-mismatchがIssueを進める",
-          "relations": [],
+          "status": {
+            "value": "waiting_for_work",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-source-mismatch-comment",
+                "summary": "候補に含まれないsourceを参照しています"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "user",
+                "candidateId": "worker-source-mismatch",
+                "role": "assignee",
+                "reasonSummary": "候補source集合と異なるsourceを参照しています",
+                "sourceIds": ["golden_item:pr-source-mismatch-comment"],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-source-mismatch-comment",
+                "summary": "候補に含まれないsourceを参照しています"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "worker-source-mismatchがIssueを進める",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-source-mismatch-comment",
+                "summary": "候補に含まれないsourceを参照しています"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-source-mismatch-comment",
+                "summary": "候補に含まれないsourceを参照しています"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
           "progress": {
-            "latestMeaningfulSourceId": "golden_item:pr-source-mismatch",
-            "reasonSummary": "source集合不一致の出力です",
-            "confidence": 0.95
+            "value": {
+              "latestMeaningfulSourceId": "golden_item:pr-source-mismatch",
+              "reasonSummary": "source集合不一致の出力です",
+              "confidence": 0.95
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-source-mismatch-comment",
+                "summary": "候補に含まれないsourceを参照しています"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "importance": {
-            "significantFeature": false,
-            "futureRisk": false,
-            "rationale": "重要度の根拠はありません"
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-source-mismatch-comment",
+                "summary": "候補に含まれないsourceを参照しています"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "deadline": {
-            "date": null,
-            "rationale": "期限の根拠はありません"
+            "value": {
+              "date": null,
+              "rationale": "期限の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-source-mismatch-comment",
+                "summary": "候補に含まれないsourceを参照しています"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
-          "evidence": [
-            {
-              "sourceId": "golden_item:pr-source-mismatch-comment",
-              "supports": "waiting_on",
-              "summary": "候補に含まれないsourceを参照しています"
-            }
-          ],
-          "confidence": 0.95,
-          "uncertainties": [],
           "notification": {
-            "recommended": false,
-            "reasonCode": "none",
-            "reasonSummary": "source集合不一致はstrict gateで拒否します"
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "source集合不一致はstrict gateで拒否します"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-source-mismatch-comment",
+                "summary": "候補に含まれないsourceを参照しています"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           }
         },
         "rejectedOutputs": []
@@ -1179,7 +1888,7 @@
       {
         "itemNodeId": "effective-formal-assignee-released-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-formal-assignee-released-issue",
@@ -1250,54 +1959,135 @@
             ],
             "effectiveAssigneeConfidenceThreshold": 0.85
           },
-          "priorAnalysis": null
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "item": {
             "nodeId": "effective-formal-assignee-released-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/707"
           },
-          "status": "waiting_for_work",
-          "waitingOn": [
-            {
-              "kind": "user",
-              "candidateId": "worker-formal-old",
-              "role": "assignee",
-              "reasonSummary": "正式担当解除前にIssue全体を直接実装していました",
-              "sourceIds": ["golden_item:pr-formal-old"],
-              "confidence": 0.95
-            }
-          ],
-          "nextAction": "worker-formal-oldがIssueを進める",
-          "relations": [],
+          "status": {
+            "value": "waiting_for_work",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-formal-old",
+                "summary": "正式担当解除前の直接実装PRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "user",
+                "candidateId": "worker-formal-old",
+                "role": "assignee",
+                "reasonSummary": "正式担当解除前にIssue全体を直接実装していました",
+                "sourceIds": ["golden_item:pr-formal-old"],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-formal-old",
+                "summary": "正式担当解除前の直接実装PRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "worker-formal-oldがIssueを進める",
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-formal-old",
+                "summary": "正式担当解除前の直接実装PRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [],
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-formal-old",
+                "summary": "正式担当解除前の直接実装PRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
           "progress": {
-            "latestMeaningfulSourceId": "golden_item:pr-formal-old",
-            "reasonSummary": "正式担当解除前の直接実装PRがあります",
-            "confidence": 0.95
+            "value": {
+              "latestMeaningfulSourceId": "golden_item:pr-formal-old",
+              "reasonSummary": "正式担当解除前の直接実装PRがあります",
+              "confidence": 0.95
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-formal-old",
+                "summary": "正式担当解除前の直接実装PRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "importance": {
-            "significantFeature": false,
-            "futureRisk": false,
-            "rationale": "重要度の根拠はありません"
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-formal-old",
+                "summary": "正式担当解除前の直接実装PRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
           "deadline": {
-            "date": null,
-            "rationale": "期限の根拠はありません"
+            "value": {
+              "date": null,
+              "rationale": "期限の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-formal-old",
+                "summary": "正式担当解除前の直接実装PRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           },
-          "evidence": [
-            {
-              "sourceId": "golden_item:pr-formal-old",
-              "supports": "waiting_on",
-              "summary": "正式担当解除前の直接実装PRです"
-            }
-          ],
-          "confidence": 0.95,
-          "uncertainties": [],
           "notification": {
-            "recommended": false,
-            "reasonCode": "none",
-            "reasonSummary": "正式担当解除後のため担当推定は適用しません"
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "正式担当解除後のため担当推定は適用しません"
+            },
+            "evidence": [
+              {
+                "sourceId": "golden_item:pr-formal-old",
+                "summary": "正式担当解除前の直接実装PRです"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
           }
         },
         "rejectedOutputs": []

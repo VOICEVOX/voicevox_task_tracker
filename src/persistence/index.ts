@@ -36,6 +36,14 @@ export {
   type GitStateBranchAdapterOptions,
 } from "./git-state-branch-adapter.js";
 export {
+  createAiCacheMigrationPlan,
+  type AiCacheMigrationFile,
+  type AiCacheMigrationPlan,
+  type LegacyAiCacheEntry,
+  type LegacyAiCacheMetadata,
+  type LegacyAiCacheSchemaVersion,
+} from "./ai-cache-migration.js";
+export {
   appendStateHistoryRecord,
   appendStateHistoryNotificationEvents,
   createStateHistoryInputEvents,
@@ -65,18 +73,17 @@ export {
   createStateSnapshot,
   parseStateSnapshot,
   serializeStateSnapshot,
-  type SnapshotAiAnalysisFingerprint,
-  type SnapshotAnalysisRulesFingerprint,
   type SnapshotAiState,
+  type SnapshotAnalysisPlanFingerprint,
   type SnapshotCollectionItem,
   type SnapshotCollectionRepository,
   type SnapshotCollectionState,
-  type SnapshotDeterministicRulesVersion,
   type SnapshotRun,
   type SnapshotRepository,
   type SnapshotTrackedItem,
   type StateSnapshot,
 } from "./snapshot.js";
+export { migrateStateSnapshot } from "./snapshot-migration.js";
 export {
   StatePersistenceSession,
   type PersistNotificationDeliveryInput,

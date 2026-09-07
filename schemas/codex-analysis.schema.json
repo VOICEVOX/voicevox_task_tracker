@@ -1,36 +1,48 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://voicevox.github.io/voicevox_task_tracker/schemas/codex-analysis.schema.json",
-  "title": "VOICEVOX Task Tracker Codex Analysis",
+  "$id": "https://voicevox.github.io/voicevox_task_tracker/schemas/codex-element-output.schema.json",
+  "title": "VOICEVOX Task Tracker Codex Element Output",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schemaVersion",
-    "item",
-    "status",
-    "waitingOn",
-    "nextAction",
-    "relations",
-    "progress",
-    "importance",
-    "deadline",
-    "evidence",
-    "confidence",
-    "uncertainties",
-    "notification"
-  ],
+  "required": ["schemaVersion", "item"],
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "4"
+      "const": "5"
     },
+    "item": {
+      "$ref": "#/$defs/item"
+    },
+    "status": {
+      "$ref": "#/$defs/statusResult"
+    },
+    "waitingOn": {
+      "$ref": "#/$defs/waitingOnResult"
+    },
+    "nextAction": {
+      "$ref": "#/$defs/nextActionResult"
+    },
+    "relations": {
+      "$ref": "#/$defs/relationsResult"
+    },
+    "progress": {
+      "$ref": "#/$defs/progressResult"
+    },
+    "importance": {
+      "$ref": "#/$defs/importanceResult"
+    },
+    "deadline": {
+      "$ref": "#/$defs/deadlineResult"
+    },
+    "notification": {
+      "$ref": "#/$defs/notificationResult"
+    }
+  },
+  "$defs": {
     "item": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "nodeId",
-        "url"
-      ],
+      "required": ["nodeId", "url"],
       "properties": {
         "nodeId": {
           "type": "string",
@@ -39,6 +51,53 @@
         "url": {
           "type": "string",
           "pattern": "^https://github\\.com/"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "summary"],
+      "properties": {
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        }
+      }
+    },
+    "resultBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "evidence", "confidence", "uncertainties"],
+      "properties": {
+        "value": {},
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 30,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uncertainties": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
         }
       }
     },
@@ -62,145 +121,111 @@
         "terminal_not_planned"
       ]
     },
-    "waitingOn": {
-      "type": "array",
-      "maxItems": 20,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "kind",
-          "candidateId",
-          "role",
-          "reasonSummary",
-          "sourceIds",
-          "confidence"
-        ],
-        "properties": {
-          "kind": {
-            "type": "string",
-            "enum": [
-              "user",
-              "team",
-              "role",
-              "item",
-              "automation",
-              "unknown"
-            ]
-          },
-          "candidateId": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 300
-          },
-          "role": {
-            "type": "string",
-            "enum": [
-              "author",
-              "maintainer",
-              "reviewer",
-              "assignee",
-              "respondent",
-              "dependency",
-              "merge_decider",
-              "ci",
-              "unknown"
-            ]
-          },
-          "reasonSummary": {
+    "waitingOnCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "candidateId", "role", "reasonSummary", "sourceIds", "confidence"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["user", "team", "role", "item", "automation", "unknown"]
+        },
+        "candidateId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "pattern": "^\\S+$"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "author",
+            "maintainer",
+            "reviewer",
+            "assignee",
+            "respondent",
+            "dependency",
+            "merge_decider",
+            "ci",
+            "unknown"
+          ]
+        },
+        "reasonSummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "sourceIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 300
-          },
-          "sourceIds": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 10,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
+            "pattern": "^\\S+$"
           }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       }
     },
-    "nextAction": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 300
-    },
-    "relations": {
-      "type": "array",
-      "maxItems": 100,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "candidateId",
-          "verdict",
-          "reasonSummary",
-          "sourceIds",
-          "confidence"
-        ],
-        "properties": {
-          "candidateId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "verdict": {
-            "type": "string",
-            "enum": [
-              "current_is_blocked_by_target",
-              "current_blocks_target",
-              "current_implements_target",
-              "target_is_subtask_of_current",
-              "current_is_subtask_of_target",
-              "duplicates",
-              "related",
-              "none"
-            ]
-          },
-          "reasonSummary": {
+    "relationCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidateId", "verdict", "reasonSummary", "sourceIds", "confidence"],
+      "properties": {
+        "candidateId": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^\\S+$"
+        },
+        "verdict": {
+          "type": "string",
+          "enum": [
+            "current_is_blocked_by_target",
+            "current_blocks_target",
+            "current_implements_target",
+            "target_is_subtask_of_current",
+            "current_is_subtask_of_target",
+            "duplicates",
+            "related",
+            "none"
+          ]
+        },
+        "reasonSummary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "sourceIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 300
-          },
-          "sourceIds": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 10,
-            "items": {
-              "type": "string",
-              "minLength": 1
-            }
-          },
-          "confidence": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1
+            "pattern": "^\\S+$"
           }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       }
     },
     "progress": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "latestMeaningfulSourceId",
-        "reasonSummary",
-        "confidence"
-      ],
+      "required": ["latestMeaningfulSourceId", "reasonSummary", "confidence"],
       "properties": {
         "latestMeaningfulSourceId": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "type": ["string", "null"],
+          "minLength": 1,
+          "pattern": "^\\S+$"
         },
         "reasonSummary": {
           "type": "string",
@@ -217,11 +242,7 @@
     "importance": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "significantFeature",
-        "futureRisk",
-        "rationale"
-      ],
+      "required": ["significantFeature", "futureRisk", "rationale"],
       "properties": {
         "significantFeature": {
           "type": "boolean"
@@ -252,64 +273,10 @@
         }
       }
     },
-    "evidence": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 30,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": [
-          "sourceId",
-          "supports",
-          "summary"
-        ],
-        "properties": {
-          "sourceId": {
-            "type": "string",
-            "minLength": 1
-          },
-          "supports": {
-            "type": "string",
-            "enum": [
-              "status",
-              "waiting_on",
-              "relation",
-              "progress",
-              "notification",
-              "uncertainty"
-            ]
-          },
-          "summary": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 240
-          }
-        }
-      }
-    },
-    "confidence": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1
-    },
-    "uncertainties": {
-      "type": "array",
-      "maxItems": 20,
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 240
-      }
-    },
     "notification": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "recommended",
-        "reasonCode",
-        "reasonSummary"
-      ],
+      "required": ["recommended", "reasonCode", "reasonSummary"],
       "properties": {
         "recommended": {
           "type": "boolean"
@@ -338,6 +305,136 @@
           "maxLength": 240
         }
       }
+    },
+    "statusResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/resultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/status"
+            }
+          }
+        }
+      ]
+    },
+    "waitingOnResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/resultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "$ref": "#/$defs/waitingOnCandidate"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "nextActionResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/resultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            }
+          }
+        }
+      ]
+    },
+    "relationsResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/resultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "$ref": "#/$defs/relationCandidate"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "progressResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/resultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/progress"
+            }
+          }
+        }
+      ]
+    },
+    "importanceResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/resultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/importance"
+            }
+          }
+        }
+      ]
+    },
+    "deadlineResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/resultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/deadline"
+            }
+          }
+        }
+      ]
+    },
+    "notificationResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/resultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/notification"
+            }
+          }
+        }
+      ]
     }
   }
 }

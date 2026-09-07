@@ -4,16 +4,27 @@ import { join } from "node:path";
 
 import { z } from "zod";
 
+import { createAiCacheEntry, type AiCacheKey } from "../codex/cache.js";
 import {
+  createAiCacheMigrationPlan,
+  serializeCanonicalJsonLine,
+  serializeStateHistoryRecords,
+  serializeStateNotificationLedger,
+  serializeStateSnapshot,
   StateFormatError,
+  migrateStateSnapshot,
   parseStateHistoryRecords,
   parseStateNotificationLedger,
-  parseStateSnapshot,
+  type AiCacheMigrationFile,
+  type AiCacheMigrationPlan,
+  type LegacyAiCacheEntry,
 } from "../persistence/index.js";
 import { type VerifyStateCliCommand } from "./command.js";
 import { CliStateVerificationError } from "./errors.js";
 
 const HISTORY_FILE_PATTERN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/u;
+const AI_CACHE_FILE_PATTERN = /^[0-9a-f]{64}\.json$/u;
+const AI_CACHE_STATE_DIRECTORY = "state/ai-cache";
 const schemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
 });
@@ -25,17 +36,29 @@ export type StateDocumentVerification = Readonly<{
   migratedSchemaVersions: readonly string[];
 }>;
 
-/** snapshot、通知ledger、履歴を検証した結果。 */
+/** AI cacheの検証結果と仮想削除件数。 */
+export type AiCacheVerification = StateDocumentVerification &
+  Readonly<{
+    deletedCount: number;
+  }>;
+
+/** snapshot、通知ledger、履歴、AI cacheを検証した結果。 */
 export type StateVerificationResult = Readonly<{
   snapshot: StateDocumentVerification;
   notificationLedger: StateDocumentVerification;
   history: StateDocumentVerification;
+  aiCache: AiCacheVerification;
 }>;
 
 /** 永続state検証が利用する読み込みと標準出力境界。 */
 export type StateVerificationDependencies = Readonly<{
   verifyStateDirectory: (stateDirectory: string) => Promise<StateVerificationResult>;
   writeStandardOutput: (source: string) => Promise<void>;
+}>;
+
+type VerifiedAiCache = Readonly<{
+  verification: AiCacheVerification;
+  migrationPlan: AiCacheMigrationPlan;
 }>;
 
 function compareStrings(left: string, right: string): number {
@@ -129,11 +152,19 @@ async function readUtf8(path: string): Promise<string> {
   }
 }
 
-async function verifySnapshot(stateDirectory: string): Promise<StateDocumentVerification> {
+async function verifySnapshot(
+  stateDirectory: string,
+  legacyEntriesByCacheKey: ReadonlyMap<AiCacheKey, LegacyAiCacheEntry>,
+): Promise<StateDocumentVerification> {
   const path = join(stateDirectory, "snapshot.json");
   const source = await readUtf8(path);
   try {
-    const snapshot = parseStateSnapshot(source);
+    const snapshot = migrateStateSnapshot(source, legacyEntriesByCacheKey);
+    const canonicalSource = serializeStateSnapshot(snapshot);
+    const reloadedSnapshot = migrateStateSnapshot(canonicalSource, legacyEntriesByCacheKey);
+    if (serializeStateSnapshot(reloadedSnapshot) !== canonicalSource) {
+      throw new TypeError("snapshotをcanonical JSONへ再読み込みできません");
+    }
     return createVerification(
       1,
       [jsonDocumentSchemaVersion(source, "snapshot")],
@@ -151,6 +182,11 @@ async function verifyNotificationLedger(
   const source = await readUtf8(path);
   try {
     const ledger = parseStateNotificationLedger(source);
+    const canonicalSource = serializeStateNotificationLedger(ledger);
+    const reloadedLedger = parseStateNotificationLedger(canonicalSource);
+    if (serializeStateNotificationLedger(reloadedLedger) !== canonicalSource) {
+      throw new TypeError("notification ledgerをcanonical JSONへ再読み込みできません");
+    }
     return createVerification(
       1,
       [jsonDocumentSchemaVersion(source, "notification ledger")],
@@ -193,6 +229,11 @@ async function verifyHistory(stateDirectory: string): Promise<StateDocumentVerif
       if (records.some((record) => record.date !== date)) {
         throw new TypeError("日次履歴のファイル名とrecordの日付が一致しません");
       }
+      const canonicalSource = serializeStateHistoryRecords(records);
+      const reloadedRecords = parseStateHistoryRecords(canonicalSource);
+      if (serializeStateHistoryRecords(reloadedRecords) !== canonicalSource) {
+        throw new TypeError("日次履歴をcanonical JSONへ再読み込みできません");
+      }
       verifiedCount += records.length;
       sourceSchemaVersions.push(...jsonLinesSchemaVersions(source));
       migratedSchemaVersions.push(...records.map((record) => record.schemaVersion));
@@ -203,12 +244,101 @@ async function verifyHistory(stateDirectory: string): Promise<StateDocumentVerif
   return createVerification(verifiedCount, sourceSchemaVersions, migratedSchemaVersions);
 }
 
+async function readAiCacheEntries(cacheDirectory: string): Promise<Dirent[]> {
+  try {
+    return await readdir(cacheDirectory, {
+      withFileTypes: true,
+    });
+  } catch (error: unknown) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw verificationError(cacheDirectory, error);
+  }
+}
+
+async function verifyAiCache(stateDirectory: string): Promise<VerifiedAiCache> {
+  const cacheDirectory = join(stateDirectory, "ai-cache");
+  const entries = await readAiCacheEntries(cacheDirectory);
+  const files: AiCacheMigrationFile[] = [];
+  for (const entry of entries.sort((left, right) => compareStrings(left.name, right.name))) {
+    const path = join(cacheDirectory, entry.name);
+    const match = AI_CACHE_FILE_PATTERN.exec(entry.name);
+    if (!entry.isFile() || match == null) {
+      throw verificationError(path, new TypeError("AI cacheのファイル名または種別が不正です"));
+    }
+    const source = await readUtf8(path);
+    files.push({
+      path: `${AI_CACHE_STATE_DIRECTORY}/${entry.name}`,
+      source,
+    });
+  }
+  let migrationPlan: AiCacheMigrationPlan;
+  try {
+    migrationPlan = createAiCacheMigrationPlan(AI_CACHE_STATE_DIRECTORY, files);
+  } catch (error: unknown) {
+    throw verificationError(cacheDirectory, error);
+  }
+  const sourceByPath = new Map(files.map((file) => [file.path, file.source]));
+  for (const entry of migrationPlan.currentEntriesByCacheKey.values()) {
+    const statePath = `${AI_CACHE_STATE_DIRECTORY}/${entry.cacheKey.slice("sha256:".length)}.json`;
+    const source = sourceByPath.get(statePath);
+    if (source == null) {
+      throw verificationError(cacheDirectory, new TypeError("AI cacheのpathを再取得できません"));
+    }
+    const canonicalSource = serializeCanonicalJsonLine(entry);
+    if (source !== canonicalSource) {
+      throw verificationError(
+        join(cacheDirectory, statePath.slice(`${AI_CACHE_STATE_DIRECTORY}/`.length)),
+        new TypeError("AI cacheがcanonical JSONではありません"),
+      );
+    }
+    try {
+      const reloadedEntry = createAiCacheEntry(parseJson(canonicalSource, "AI cache"));
+      if (serializeCanonicalJsonLine(reloadedEntry) !== canonicalSource) {
+        throw new TypeError("AI cacheをcanonical JSONへ再読み込みできません");
+      }
+    } catch (error: unknown) {
+      throw verificationError(
+        join(cacheDirectory, statePath.slice(`${AI_CACHE_STATE_DIRECTORY}/`.length)),
+        error,
+      );
+    }
+  }
+  const legacyPathSet = new Set(migrationPlan.legacyCachePaths);
+  const remainingFiles = files.filter((file) => !legacyPathSet.has(file.path));
+  let remainingPlan: AiCacheMigrationPlan;
+  try {
+    remainingPlan = createAiCacheMigrationPlan(AI_CACHE_STATE_DIRECTORY, remainingFiles);
+  } catch (error: unknown) {
+    throw verificationError(cacheDirectory, error);
+  }
+  if (remainingPlan.legacyCachePaths.length !== 0) {
+    throw verificationError(
+      cacheDirectory,
+      new TypeError("AI cacheの移行後にも旧cacheが残っています"),
+    );
+  }
+  return Object.freeze({
+    migrationPlan,
+    verification: Object.freeze({
+      ...createVerification(
+        files.length,
+        migrationPlan.sourceSchemaVersions,
+        migrationPlan.migratedSchemaVersions,
+      ),
+      deletedCount: migrationPlan.legacyCachePaths.length,
+    }),
+  });
+}
+
 /** 指定したディレクトリのsnapshot、通知ledger、履歴を検証する。 */
 export async function verifyPersistentStateDirectory(
   stateDirectory: string,
 ): Promise<StateVerificationResult> {
+  const verifiedAiCache = await verifyAiCache(stateDirectory);
   const [snapshot, notificationLedger, history] = await Promise.all([
-    verifySnapshot(stateDirectory),
+    verifySnapshot(stateDirectory, verifiedAiCache.migrationPlan.legacyEntriesByCacheKey),
     verifyNotificationLedger(stateDirectory),
     verifyHistory(stateDirectory),
   ]);
@@ -216,6 +346,7 @@ export async function verifyPersistentStateDirectory(
     snapshot,
     notificationLedger,
     history,
+    aiCache: verifiedAiCache.verification,
   });
 }
 
@@ -233,6 +364,8 @@ export function formatStateVerificationResult(result: StateVerificationResult): 
     formatDocumentResult("snapshot", result.snapshot),
     formatDocumentResult("notification ledger", result.notificationLedger),
     formatDocumentResult("history", result.history),
+    formatDocumentResult("AI cache", result.aiCache),
+    `AI cache旧形式削除予定: ${result.aiCache.deletedCount.toString()}件`,
   ].join("\n");
 }
 

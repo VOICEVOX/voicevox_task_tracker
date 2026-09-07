@@ -4,6 +4,7 @@ import { type FreshObservedGitHubIssue } from "./github-item-observation.js";
 import { resolveRepositoryRoleWaitingOn } from "./maintainer-resolution.js";
 import { type SourceId } from "./source-id.js";
 import { isTerminalStatus } from "./status.js";
+import { type AiAnalysisElementNecessity } from "./ai-analysis-elements.js";
 import {
   type Evidence,
   type EvidenceSupport,
@@ -140,6 +141,11 @@ export type IssueStateDecision = Readonly<{
   deterministicRulesVersion: typeof ISSUE_DETERMINISTIC_RULES_VERSION;
   evaluatedAt: UtcIsoDateTime;
   determination: "determined" | "codex_candidate";
+  aiAnalysisElementNecessities: Readonly<{
+    status: AiAnalysisElementNecessity;
+    waitingOn: AiAnalysisElementNecessity;
+    nextAction: AiAnalysisElementNecessity;
+  }>;
   status: Status;
   waitingOn: readonly WaitingOn[];
   primaryWaitingOn: IssuePrimaryWaitingOn;
@@ -166,6 +172,7 @@ interface DecisionContext {
   uncertainties: string[];
   evidence: Evidence[];
   confidenceCap: number;
+  uncertainStateElements: Set<"status" | "waitingOn" | "nextAction">;
 }
 
 type ResolvedAssignee = Readonly<{
@@ -604,10 +611,14 @@ function addUncertainty(
   message: string,
   sourceIds: readonly SourceId[],
   confidenceCap: number,
+  stateElements: readonly ("status" | "waitingOn" | "nextAction")[],
 ): void {
   context.uncertainties.push(message);
   context.evidence.push(...createEvidence(sourceIds, "uncertainty", message));
   context.confidenceCap = Math.min(context.confidenceCap, confidenceCap);
+  for (const element of stateElements) {
+    context.uncertainStateElements.add(element);
+  }
 }
 
 function finalizeDecision(
@@ -649,6 +660,11 @@ function finalizeDecision(
     deterministicRulesVersion: ISSUE_DETERMINISTIC_RULES_VERSION,
     evaluatedAt: input.evaluatedAt,
     determination: uncertainties.length === 0 ? "determined" : "codex_candidate",
+    aiAnalysisElementNecessities: Object.freeze({
+      status: context.uncertainStateElements.has("status") ? "required" : "not_required",
+      waitingOn: context.uncertainStateElements.has("waitingOn") ? "required" : "not_required",
+      nextAction: context.uncertainStateElements.has("nextAction") ? "required" : "not_required",
+    }),
     status: draft.status,
     waitingOn,
     primaryWaitingOn,
@@ -726,6 +742,7 @@ function createTerminalDecision(
     "close理由をGitHubの観測値から区別できません",
     [closedSourceId],
     input.confidenceThresholds.medium,
+    ["status"],
   );
   return finalizeDecision(input, context, {
     status: "terminal_completed",
@@ -790,6 +807,7 @@ function createBlockedDecision(
       `${blocker.candidateId}が現在のblockerか確定していません`,
       blocker.sourceIds,
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
   }
   if (confirmedBlockers.length === 0) {
@@ -881,6 +899,7 @@ function createExplicitRequestDecision(
       "未回答の明示依頼らしき候補を決定論的に確定できません",
       candidates.map((candidate) => candidate.sourceId),
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
     return undefined;
   }
@@ -892,6 +911,7 @@ function createExplicitRequestDecision(
         "明示依頼候補に未回答の依頼がないという判定の信頼度が十分ではありません",
         assessment.sourceIds,
         Math.min(input.confidenceThresholds.medium, assessment.confidence),
+        ["status", "waitingOn", "nextAction"],
       );
     } else {
       context.evidence.push(
@@ -914,6 +934,7 @@ function createExplicitRequestDecision(
       "明示依頼の相手に関する外部判定の信頼度が低いため責務へ反映しません",
       assessment.sourceIds,
       confidence,
+      ["status", "waitingOn", "nextAction"],
     );
     return undefined;
   }
@@ -923,6 +944,7 @@ function createExplicitRequestDecision(
       "明示依頼の相手は外部判定による推定です",
       assessment.sourceIds,
       confidence,
+      ["status", "waitingOn", "nextAction"],
     );
   }
 
@@ -1231,6 +1253,7 @@ export function determineIssueState(input: IssueStateMachineInput): IssueStateDe
     uncertainties: [],
     evidence: [],
     confidenceCap: 1,
+    uncertainStateElements: new Set(),
   };
 
   const terminalDecision = createTerminalDecision(input, context);

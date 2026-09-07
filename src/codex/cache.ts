@@ -1,57 +1,47 @@
 import { z } from "zod";
 
-import { hashCanonicalJson, parseSha256Hash, type Sha256Hash } from "./canonical-json.js";
 import {
-  createUtcIsoDateTime,
-  REASONING_EFFORTS,
-  type AiCacheEntryId,
-  type AnalysisMetadata,
-  type ReasoningEffort,
-} from "../domain/index.js";
+  AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
+  aiAnalysisElementGenerationSchema,
+  aiAnalysisElementSchema,
+  createAiAnalysisElementGeneration,
+  createAiAnalysisElementGenerationSchema,
+  type AiAnalysisElement,
+  type AiAnalysisElementGeneration,
+} from "./analysis-elements.js";
+import { hashCanonicalJson, parseSha256Hash, type Sha256Hash } from "./canonical-json.js";
+import { REASONING_EFFORTS, type AiCacheEntryId, type ReasoningEffort } from "../domain/index.js";
 
-const nonEmptyStringSchema = z.string().min(1, "空文字は指定できません");
-const sha256HashSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/u, "SHA-256 hashが不正です");
-const analysisMetadataSchema = z.strictObject({
-  deterministicRulesVersion: nonEmptyStringSchema,
-  model: nonEmptyStringSchema,
-  reasoningEffort: z.enum(REASONING_EFFORTS),
-  backendVersion: nonEmptyStringSchema,
-  promptVersion: nonEmptyStringSchema,
-  schemaVersion: nonEmptyStringSchema,
-  inputHash: sha256HashSchema,
-  outputHash: sha256HashSchema,
-  executedAt: z.iso.datetime({
-    offset: true,
-    error: "タイムゾーンを含むISO 8601日時を指定してください",
-  }),
-});
+const sha256HashSchema = z
+  .string()
+  .regex(/^sha256:[0-9a-f]{64}$/u, "SHA-256 hashが不正です")
+  .transform((value) => parseSha256Hash(value));
 const cacheEntrySchema = z.strictObject({
   cacheKey: sha256HashSchema,
-  sourceHash: sha256HashSchema,
-  metadata: analysisMetadataSchema,
-  output: z.json(),
+  element: aiAnalysisElementSchema,
+  generation: aiAnalysisElementGenerationSchema,
 });
 
-/** content-addressed cacheを構成する実行設定、versionと入力hash。 */
+/** 一つの要素のAI実行を再現する実行設定と入力識別情報。 */
 export type AiCacheIdentity = Readonly<{
-  deterministicRulesVersion: string;
+  element: AiAnalysisElement;
+  revision: number;
   model: string;
   reasoningEffort: ReasoningEffort;
   backendVersion: string;
-  promptVersion: string;
-  schemaVersion: string;
-  inputHash: Sha256Hash;
+  schemaVersion: typeof AI_ANALYSIS_ELEMENT_SCHEMA_VERSION;
+  inputFingerprint: Sha256Hash;
+  executionFingerprint: Sha256Hash;
 }>;
 
 /** content-addressed AI cacheのkey。 */
 export type AiCacheKey = AiCacheEntryId;
 
-/** 再現metadataとAI出力を保持するcache entry。 */
+/** 一つのAI判定要素の結果と生成元を保持するcache entry。 */
 export type AiCacheEntry = Readonly<{
   cacheKey: AiCacheKey;
-  sourceHash: Sha256Hash;
-  metadata: AnalysisMetadata;
-  output: unknown;
+  element: AiAnalysisElement;
+  generation: AiAnalysisElementGeneration;
 }>;
 
 /** AI cacheの読み取り結果。 */
@@ -80,35 +70,54 @@ export type AiCacheReuseDecision =
       status: "stale";
       reason:
         | "cache_key_changed"
-        | "source_hash_changed"
-        | "deterministic_rules_version_changed"
+        | "element_changed"
+        | "revision_changed"
         | "model_changed"
         | "reasoning_effort_changed"
         | "backend_version_changed"
-        | "prompt_version_changed"
-        | "schema_version_changed"
-        | "input_hash_changed";
+        | "input_fingerprint_changed"
+        | "execution_fingerprint_changed";
     }>;
 
-function validateIdentity(identity: AiCacheIdentity): void {
-  for (const [name, value] of Object.entries(identity)) {
-    if (value.length === 0) {
-      throw new TypeError(`AI cache identityの${name}は空にできません`);
-    }
-  }
-  parseSha256Hash(identity.inputHash);
+function freezeGeneration(generation: AiAnalysisElementGeneration): AiAnalysisElementGeneration {
+  return Object.freeze(createAiAnalysisElementGeneration(generation));
 }
 
-/** model、reasoning effort、各versionと正規化入力hashからcache keyを生成する。 */
+function validateIdentity(identity: AiCacheIdentity): void {
+  if (identity.element.length === 0) {
+    throw new TypeError("AI cache identityのelementは空にできません");
+  }
+  if (!Number.isSafeInteger(identity.revision) || identity.revision <= 0) {
+    throw new TypeError("AI cache identityのrevisionは正の安全な整数にしてください");
+  }
+  if (identity.model.length === 0) {
+    throw new TypeError("AI cache identityのmodelは空にできません");
+  }
+  if (identity.backendVersion.length === 0) {
+    throw new TypeError("AI cache identityのbackendVersionは空にできません");
+  }
+  if (identity.schemaVersion.length === 0) {
+    throw new TypeError("AI cache identityのschemaVersionは空にできません");
+  }
+  if (!REASONING_EFFORTS.includes(identity.reasoningEffort)) {
+    throw new TypeError("AI cache identityのreasoningEffortが不正です");
+  }
+  aiAnalysisElementSchema.parse(identity.element);
+  parseSha256Hash(identity.inputFingerprint);
+  parseSha256Hash(identity.executionFingerprint);
+}
+
+/** 要素revision、入力fingerprint、実行条件からcache keyを生成する。 */
 export function createAiCacheKey(identity: AiCacheIdentity): AiCacheKey {
   validateIdentity(identity);
   return hashCanonicalJson({
     backendVersion: identity.backendVersion,
-    deterministicRulesVersion: identity.deterministicRulesVersion,
-    inputHash: identity.inputHash,
+    element: identity.element,
+    executionFingerprint: identity.executionFingerprint,
+    inputFingerprint: identity.inputFingerprint,
     model: identity.model,
-    promptVersion: identity.promptVersion,
     reasoningEffort: identity.reasoningEffort,
+    revision: identity.revision,
     schemaVersion: identity.schemaVersion,
   });
 }
@@ -116,31 +125,20 @@ export function createAiCacheKey(identity: AiCacheIdentity): AiCacheKey {
 /** 未検証の値からAI cache entryを生成する。 */
 export function createAiCacheEntry(value: unknown): AiCacheEntry {
   const parsed = cacheEntrySchema.parse(value);
+  const generation = freezeGeneration(parsed.generation);
   const entry = Object.freeze({
-    cacheKey: parseSha256Hash(parsed.cacheKey),
-    sourceHash: parseSha256Hash(parsed.sourceHash),
-    metadata: Object.freeze({
-      deterministicRulesVersion: parsed.metadata.deterministicRulesVersion,
-      model: parsed.metadata.model,
-      reasoningEffort: parsed.metadata.reasoningEffort,
-      backendVersion: parsed.metadata.backendVersion,
-      promptVersion: parsed.metadata.promptVersion,
-      schemaVersion: parsed.metadata.schemaVersion,
-      inputHash: parseSha256Hash(parsed.metadata.inputHash),
-      outputHash: parseSha256Hash(parsed.metadata.outputHash),
-      executedAt: createUtcIsoDateTime(parsed.metadata.executedAt),
-    }),
-    output: parsed.output,
+    cacheKey: parsed.cacheKey,
+    element: parsed.element,
+    generation,
   });
   assertCacheIntegrity(entry);
   return entry;
 }
 
-/** sourceと入力hashが一致するcache entryだけを再利用対象にする。 */
+/** 要素の実行条件と入力fingerprintが一致するcache entryだけを再利用する。 */
 export function determineAiCacheReuse(
   entry: AiCacheEntry,
   identity: AiCacheIdentity,
-  sourceHash: Sha256Hash,
 ): AiCacheReuseDecision {
   const expectedCacheKey = createAiCacheKey(identity);
   if (entry.cacheKey !== expectedCacheKey) {
@@ -149,52 +147,47 @@ export function determineAiCacheReuse(
       reason: "cache_key_changed",
     });
   }
-  if (entry.sourceHash !== sourceHash) {
+  if (entry.element !== identity.element) {
     return Object.freeze({
       status: "stale",
-      reason: "source_hash_changed",
+      reason: "element_changed",
     });
   }
-  if (entry.metadata.deterministicRulesVersion !== identity.deterministicRulesVersion) {
+  const metadata = entry.generation.metadata;
+  if (metadata.revision !== identity.revision) {
     return Object.freeze({
       status: "stale",
-      reason: "deterministic_rules_version_changed",
+      reason: "revision_changed",
     });
   }
-  if (entry.metadata.model !== identity.model) {
+  if (metadata.model !== identity.model) {
     return Object.freeze({
       status: "stale",
       reason: "model_changed",
     });
   }
-  if (entry.metadata.reasoningEffort !== identity.reasoningEffort) {
+  if (metadata.reasoningEffort !== identity.reasoningEffort) {
     return Object.freeze({
       status: "stale",
       reason: "reasoning_effort_changed",
     });
   }
-  if (entry.metadata.backendVersion !== identity.backendVersion) {
+  if (metadata.backendVersion !== identity.backendVersion) {
     return Object.freeze({
       status: "stale",
       reason: "backend_version_changed",
     });
   }
-  if (entry.metadata.promptVersion !== identity.promptVersion) {
+  if (metadata.inputFingerprint !== identity.inputFingerprint) {
     return Object.freeze({
       status: "stale",
-      reason: "prompt_version_changed",
+      reason: "input_fingerprint_changed",
     });
   }
-  if (entry.metadata.schemaVersion !== identity.schemaVersion) {
+  if (metadata.executionFingerprint !== identity.executionFingerprint) {
     return Object.freeze({
       status: "stale",
-      reason: "schema_version_changed",
-    });
-  }
-  if (entry.metadata.inputHash !== identity.inputHash) {
-    return Object.freeze({
-      status: "stale",
-      reason: "input_hash_changed",
+      reason: "execution_fingerprint_changed",
     });
   }
   return Object.freeze({
@@ -204,19 +197,29 @@ export function determineAiCacheReuse(
 }
 
 function assertCacheIntegrity(entry: AiCacheEntry): void {
+  const metadata = entry.generation.metadata;
   const metadataCacheKey = createAiCacheKey({
-    deterministicRulesVersion: entry.metadata.deterministicRulesVersion,
-    model: entry.metadata.model,
-    reasoningEffort: entry.metadata.reasoningEffort,
-    backendVersion: entry.metadata.backendVersion,
-    promptVersion: entry.metadata.promptVersion,
-    schemaVersion: entry.metadata.schemaVersion,
-    inputHash: parseSha256Hash(entry.metadata.inputHash),
+    element: entry.element,
+    revision: metadata.revision,
+    model: metadata.model,
+    reasoningEffort: metadata.reasoningEffort,
+    backendVersion: metadata.backendVersion,
+    schemaVersion: metadata.schemaVersion,
+    inputFingerprint: parseSha256Hash(metadata.inputFingerprint),
+    executionFingerprint: parseSha256Hash(metadata.executionFingerprint),
   });
   if (metadataCacheKey !== entry.cacheKey) {
     throw new TypeError("AI cache entryのmetadataとcache keyが一致しません");
   }
-  if (hashCanonicalJson(entry.output) !== entry.metadata.outputHash) {
+  if (hashCanonicalJson(entry.generation.result) !== metadata.outputHash) {
     throw new TypeError("AI cache entryの出力hashが一致しません");
+  }
+  const parsedGeneration = createAiAnalysisElementGenerationSchema(entry.element).safeParse(
+    entry.generation,
+  );
+  if (!parsedGeneration.success) {
+    throw new TypeError("AI cache entryの生成記録が不正です", {
+      cause: parsedGeneration.error,
+    });
   }
 }

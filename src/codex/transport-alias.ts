@@ -4,8 +4,9 @@ import {
   transformCodexSourceReferences,
 } from "./input.js";
 import { CodexTransportAliasError } from "./errors.js";
-import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
+import { type CodexElementOutput } from "./semantic-validation.js";
+import { type SchemaValidCodexElementOutput } from "./element-output.js";
 
 const SOURCE_ALIAS_PREFIX = "codex_source:";
 const RELATION_ALIAS_PREFIX = "rel:codex-";
@@ -102,6 +103,10 @@ function mapRelationReference(
   return requireAlias(relationAliases, value, path);
 }
 
+function isLockedRelationCandidateIdPath(path: string, field: string): boolean {
+  return field === "candidateId" && /^\/lockedElements\/relations\/value\/\d+$/u.test(path);
+}
+
 function transformRelationReferences(
   value: unknown,
   path: string,
@@ -133,6 +138,8 @@ function transformRelationReferences(
           relationAliases,
         ),
       );
+    } else if (isLockedRelationCandidateIdPath(path, field)) {
+      transformedEntry = mapRelationReference(entry, entryPath, relationAliases);
     }
     transformed[field] = transformRelationReferences(transformedEntry, entryPath, relationAliases);
   }
@@ -199,64 +206,113 @@ function createCodexTransportInput(input: CodexAnalysisInput): CodexTransportInp
   });
 }
 
-function restoreCodexOutput(
-  value: ValidatedCodexAnalysisOutput,
+function restoreSourceId(value: string, path: string, codec: CodexTransportAliasCodec): string {
+  return requireCanonicalId(codec.sourceCanonicalIdByAlias, value, path);
+}
+
+function restoreElementResultEvidence(
+  value: Readonly<{
+    evidence: readonly Readonly<{ sourceId: string; summary: string }>[];
+  }>,
+  path: string,
   codec: CodexTransportAliasCodec,
-): unknown {
+): Record<string, unknown> {
   return {
     ...value,
-    waitingOn: value.waitingOn.map((waitingOn, index) => ({
-      ...waitingOn,
-      sourceIds: waitingOn.sourceIds.map((sourceId, sourceIndex) =>
-        requireCanonicalId(
-          codec.sourceCanonicalIdByAlias,
-          sourceId,
-          `/waitingOn/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
-        ),
-      ),
-    })),
-    relations: value.relations.map((relation, index) => ({
-      ...relation,
-      candidateId: requireCanonicalId(
-        codec.relationCanonicalIdByAlias,
-        relation.candidateId,
-        `/relations/${index.toString()}/candidateId`,
-      ),
-      sourceIds: relation.sourceIds.map((sourceId, sourceIndex) =>
-        requireCanonicalId(
-          codec.sourceCanonicalIdByAlias,
-          sourceId,
-          `/relations/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
-        ),
-      ),
-    })),
-    progress: {
-      ...value.progress,
-      latestMeaningfulSourceId:
-        value.progress.latestMeaningfulSourceId == null
-          ? null
-          : requireCanonicalId(
-              codec.sourceCanonicalIdByAlias,
-              value.progress.latestMeaningfulSourceId,
-              "/progress/latestMeaningfulSourceId",
-            ),
-    },
     evidence: value.evidence.map((evidence, index) => ({
       ...evidence,
-      sourceId: requireCanonicalId(
-        codec.sourceCanonicalIdByAlias,
+      sourceId: restoreSourceId(
         evidence.sourceId,
-        `/evidence/${index.toString()}/sourceId`,
+        `${path}/evidence/${index.toString()}/sourceId`,
+        codec,
       ),
     })),
   };
 }
 
-/** Codexをtransport aliasで実行し、検証済み出力をcanonical IDへ戻す。 */
+function restoreCodexOutput(
+  value: SchemaValidCodexElementOutput,
+  codec: CodexTransportAliasCodec,
+): unknown {
+  const restored: Record<string, unknown> = {
+    schemaVersion: value.schemaVersion,
+    item: value.item,
+  };
+  if (value.status != null) {
+    restored["status"] = restoreElementResultEvidence(value.status, "/status", codec);
+  }
+  if (value.waitingOn != null) {
+    const restoredWaitingOn = restoreElementResultEvidence(value.waitingOn, "/waitingOn", codec);
+    restoredWaitingOn["value"] = value.waitingOn.value.map((waitingOn, index) => ({
+      ...waitingOn,
+      sourceIds: waitingOn.sourceIds.map((sourceId, sourceIndex) =>
+        restoreSourceId(
+          sourceId,
+          `/waitingOn/value/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
+          codec,
+        ),
+      ),
+    }));
+    restored["waitingOn"] = restoredWaitingOn;
+  }
+  if (value.nextAction != null) {
+    restored["nextAction"] = restoreElementResultEvidence(value.nextAction, "/nextAction", codec);
+  }
+  if (value.relations != null) {
+    const restoredRelations = restoreElementResultEvidence(value.relations, "/relations", codec);
+    restoredRelations["value"] = value.relations.value.map((relation, index) => ({
+      ...relation,
+      candidateId: requireCanonicalId(
+        codec.relationCanonicalIdByAlias,
+        relation.candidateId,
+        `/relations/value/${index.toString()}/candidateId`,
+      ),
+      sourceIds: relation.sourceIds.map((sourceId, sourceIndex) =>
+        restoreSourceId(
+          sourceId,
+          `/relations/value/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
+          codec,
+        ),
+      ),
+    }));
+    restored["relations"] = restoredRelations;
+  }
+  if (value.progress != null) {
+    const restoredProgress = restoreElementResultEvidence(value.progress, "/progress", codec);
+    restoredProgress["value"] = {
+      ...value.progress.value,
+      latestMeaningfulSourceId:
+        value.progress.value.latestMeaningfulSourceId == null
+          ? null
+          : restoreSourceId(
+              value.progress.value.latestMeaningfulSourceId,
+              "/progress/value/latestMeaningfulSourceId",
+              codec,
+            ),
+    };
+    restored["progress"] = restoredProgress;
+  }
+  if (value.importance != null) {
+    restored["importance"] = restoreElementResultEvidence(value.importance, "/importance", codec);
+  }
+  if (value.deadline != null) {
+    restored["deadline"] = restoreElementResultEvidence(value.deadline, "/deadline", codec);
+  }
+  if (value.notification != null) {
+    restored["notification"] = restoreElementResultEvidence(
+      value.notification,
+      "/notification",
+      codec,
+    );
+  }
+  return restored;
+}
+
+/** Codexをtransport aliasで実行し、canonical IDへ戻した要素別出力を返す。 */
 export async function executeCodexAnalysisWithTransportAliases(
   input: CodexAnalysisInput,
   execute: (input: CodexAnalysisInput) => Promise<unknown>,
-): Promise<ValidatedCodexAnalysisOutput> {
+): Promise<CodexElementOutput> {
   let transport: CodexTransportInput;
   try {
     transport = createCodexTransportInput(input);

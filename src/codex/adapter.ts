@@ -1,5 +1,4 @@
-import { constants } from "node:fs";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +22,7 @@ import {
   createCodexAnalysisInput,
   serializeCodexAnalysisInput,
 } from "./input.js";
-import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
+import { createCodexElementOutputSchema } from "./element-output-schema.js";
 import {
   type CodexApiErrorDiagnostic,
   type CodexProcessRequest,
@@ -33,12 +32,13 @@ import {
 import { REASONING_EFFORTS } from "../domain/index.js";
 import { UnreachableError } from "../util/index.js";
 import { CODEX_AUTHENTICATION_PREFLIGHT_PROMPT } from "./preflight.js";
+import { type CodexElementOutput } from "./semantic-validation.js";
 import { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 
 const CODEX_COMMAND = "codex";
 const CODEX_TEMPORARY_DIRECTORY_PREFIX = "voicevox-task-tracker-codex-";
 const SYSTEM_PROMPT_URL = new URL("../../prompts/codex-system.md", import.meta.url);
-const OUTPUT_SCHEMA_URL = new URL("../../schemas/codex-analysis.schema.json", import.meta.url);
+const OUTPUT_SCHEMA_FILE_NAME = "codex-element-output.schema.json";
 const OUTPUT_LAST_MESSAGE_FILE_NAME = "last-message.json";
 const MAX_TIMEOUT_SECONDS = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
 const TEMPORARY_PROCESS_ERROR_CODES = new Set([
@@ -153,11 +153,20 @@ async function readFixedSystemPrompt(): Promise<string> {
   }
 }
 
-async function assertOutputSchemaIsReadable(): Promise<void> {
+async function writeOutputSchema(
+  workingDirectory: string,
+  selectedElements: CodexAnalysisInput["selectedElements"],
+): Promise<string> {
+  const outputSchemaPath = join(workingDirectory, OUTPUT_SCHEMA_FILE_NAME);
   try {
-    await access(fileURLToPath(OUTPUT_SCHEMA_URL), constants.R_OK);
+    const schema = createCodexElementOutputSchema(selectedElements);
+    await writeFile(outputSchemaPath, `${JSON.stringify(schema)}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    return outputSchemaPath;
   } catch (error: unknown) {
-    throw new CodexResourceError("schemas/codex-analysis.schema.json", { cause: error });
+    throw new CodexResourceError("要素別Codex出力schema", { cause: error });
   }
 }
 
@@ -175,6 +184,7 @@ function createProcessRequest(
   systemPrompt: string,
   inputJson: string,
   workingDirectory: string,
+  outputSchemaPath: string,
 ): CodexProcessRequest {
   const outputLastMessagePath = join(workingDirectory, OUTPUT_LAST_MESSAGE_FILE_NAME);
   return {
@@ -200,7 +210,7 @@ function createProcessRequest(
       "-C",
       workingDirectory,
       "--output-schema",
-      fileURLToPath(OUTPUT_SCHEMA_URL),
+      outputSchemaPath,
       "--color",
       "never",
       systemPrompt,
@@ -507,6 +517,7 @@ async function executeAttempt(
   dependencies: CodexAdapterDependencies,
   systemPrompt: string,
   inputJson: string,
+  selectedElements: CodexAnalysisInput["selectedElements"],
   attempts: number,
 ): Promise<unknown> {
   const diagnostics = dependencies.diagnostics;
@@ -536,12 +547,14 @@ async function executeAttempt(
   };
   try {
     workingDirectory = await createTemporaryWorkspace();
+    const outputSchemaPath = await writeOutputSchema(workingDirectory, selectedElements);
     request = createProcessRequest(
       configuration,
       dependencies,
       systemPrompt,
       inputJson,
       workingDirectory,
+      outputSchemaPath,
     );
     processResult = await runProcess(request, dependencies.processRunner, attempts);
     stdout = normalizedProcessOutput(processResult.stdout, "stdout");
@@ -959,11 +972,17 @@ async function executeRawCodexAnalysis(
   const validatedInput = createCodexAnalysisInput(input);
   const inputJson = serializeCodexAnalysisInput(validatedInput);
   const systemPrompt = await readFixedSystemPrompt();
-  await assertOutputSchemaIsReadable();
 
   for (let attempts = 1; ; attempts += 1) {
     try {
-      return await executeAttempt(configuration, dependencies, systemPrompt, inputJson, attempts);
+      return await executeAttempt(
+        configuration,
+        dependencies,
+        systemPrompt,
+        inputJson,
+        validatedInput.selectedElements,
+        attempts,
+      );
     } catch (error: unknown) {
       if (!(error instanceof CodexAttemptError)) {
         throw error;
@@ -1004,7 +1023,7 @@ export async function executeCodexAnalysis(
   input: CodexAnalysisInput,
   configurationValue: CodexAdapterConfiguration,
   dependencies: CodexAdapterDependencies,
-): Promise<ValidatedCodexAnalysisOutput> {
+): Promise<CodexElementOutput> {
   return executeCodexAnalysisWithTransportAliases(input, (transportInput) =>
     executeRawCodexAnalysis(transportInput, configurationValue, dependencies),
   );

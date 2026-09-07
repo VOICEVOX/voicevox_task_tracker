@@ -71,7 +71,7 @@ option形式の引数は`--backfill`に従って`daily`または`backfill`へ変
 8. 高信頼で確定しない項目をCodexで分析し、出力を検証します。未アサインIssueの候補はIssue全体を進めているとhigh以上で判断できる場合だけ既存の`waiting_for_work`へ反映し、推論だけのrelation、部分実装、親・横断Issue、助言、検証、review、条件付き意向、撤回、延期、単なるauthorやcommenterは反映しません。一般的な活動状態の推察と、部分担当や部分実装のモデル化は行いません。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
 9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
 10. snapshotと通知候補を作り、完全性と公開安全性を検証します。
-11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数と通知管理記録の重複抑制に従ってDiscord送信を行い、`acknowledge-current`は現在の通知条件を満たす候補をreasonごとに上限なしで確認済みとして通知管理記録へ保存します。完了時に実測時刻と処理結果を反映したrun reportと通知管理記録を追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
+11. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数と通知管理記録の重複抑制に従ってDiscord送信を行い、`hold`は候補を未送信のまま保存します。`acknowledge-current`は現在の通知条件を満たす候補をreasonごとに上限なしで確認済みとして通知管理記録へ保存します。完了時に実測時刻と処理結果を反映したrun reportと通知管理記録を追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
 12. 成功、Codex縮退、失敗のいずれでもCLIのreport pathへrun reportを書き出します。
 
 `dry-run`は手順10まで実行し、state、Pages、Discordを変更せずに検証済みartifactとrun reportだけを書き出します。
@@ -89,7 +89,8 @@ GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativ
 関係先のPRや子Issueで確認した作業者を、親Issueや横断Issueの実質担当者へ拡張しません。
 
 `.github/workflows/daily.yml`は通常経路の`quality-eval`、`collect-analyze`、`persist-state`、初回の`build-pages`、初回の`deploy-pages`、`notify-discord`、通知候補がある場合だけ動く`publish-notification-history`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた9 jobで構成されています。
-workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと確認済みの通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合してから、`send`なら通知を送り、`acknowledge-current`なら通常通知を送らずにrunを完了します。不一致の場合は通知もrun完了処理も行いません。`send`で通知候補がある場合だけ`publish-notification-history`が最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。運用障害通知はこの通知処理と別系統です。
+workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと、未送信候補を含む通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合してから、`send`なら通知を送り、`hold`と`acknowledge-current`なら通常通知を送らずにrunを完了します。不一致の場合は通知もrun完了処理も行いません。`send`で通知候補がある場合だけ`publish-notification-history`が最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。運用障害通知はこの通知処理と別系統です。
+repository variableの`VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED`が`true`の場合は、定期実行の開始jobと障害通知・run報告を省略します。手動実行には影響しません。
 `collect-analyze`は`CODEX_AUTH_JSON`をrunnerの一時directoryへ配置し、配置直後の`auth.json`のsha256を指紋として保存します。
 配置直後とsecretへ書き戻す直前に、`auth.json`内のすべての文字列値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
 値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
@@ -170,10 +171,10 @@ Codexとgraphは要対応度のscoreとlevelを直接決めません。
 このままでは判定規則を変えても、GitHub側が動いていない項目の判定が古いまま残ります。
 
 そのため、項目ごとに判定規則fingerprintをsnapshotへ保存し、現在値と異なる項目を詳細取得の対象へ加えます。
-判定規則fingerprintは項目種別に対応する決定論的規則versionと、Codex実行identityのhashから作ります。
-Issueの規則だけを変えた場合はIssueだけが再取得され、modelを変えた場合は全項目が再取得されます。
-prompt versionの変更では、`ai.promptUpdates`から項目ごとの適用範囲を調べます。
-前回の判定がすべての更新の対象外なら、前回と同じidentityを使って現在の有効な判定規則fingerprintを計算し、変更対象外の項目の再取得を避けます。
+判定規則の比較では、項目種別に対応する決定論的規則versionと、必要なAI判定要素のrevision、入力依存、実行条件を区別します。
+Issueの規則だけを変えた場合はIssueを再取得します。
+AIの規則変更は判定要素ごとに調べ、コードだけで確定できる判定や、影響しない保存結果を巻き込みません。
+詳細取得前に必要性を確定できない場合は情報を取得し、その後の要素選別でAI呼び出しの要否を決めます。
 
 判定規則fingerprintを現在値で保存するのは、そのrunで実際に再判定した項目だけです。
 再判定していない項目に現在値を書くと、古い判定のまま最新規則で判定済みと記録され、以後再判定されなくなります。
@@ -183,16 +184,26 @@ prompt versionの変更では、`ai.promptUpdates`から項目ごとの適用範
 AI分析の失敗と延期はGitHub側を動かさないため、この扱いがなければ縮退した判定が固着します。
 terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行します。
 
-AI候補の入力は現在のidentityで作ります。
-現在のcacheがない場合は、更新履歴上の対象外で、source、入力、隣接graphのhashも前回と一致する項目に限り、生成時のidentityで元のcacheを探します。
-元のcacheもschemaとsemantic validationを通し、結果のmetadataとfingerprintは生成時の値を保持します。
-元のcacheを利用できなければ、現在のidentityで新たに実行します。
-失敗・延期中の項目にはこの再利用を適用しません。
-プロンプト変更の適用対象になった項目は、状態の決定論的な高信頼判定だけを理由にAI分析を省きません。
-1項目の全出力は引き続き1回の呼び出しで判定します。
+AI判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨の8要素で選別します。
+各要素の必要性を既存の確定情報と利用箇所から判断し、必要な要素だけ保存済み結果と比較します。
+根拠、信頼度、不確実性は所有する判定にまとめ、生成したrevision、入力、実行条件、実行時刻を保持します。
+期限なしや通知を推奨しないという結果も、有効な分析結果として比較します。
+snapshotに有効な結果があればcache欠落だけで再生成しません。
+最新の完了結果と、現在採用している結果は別々に保存します。
+新しい結果が低信頼でも、保持する以前の値の根拠や生成元を失わないためです。
 
-決定論的規則versionとprompt versionは手で更新する定数です。
-`ai.promptVersion`はプロンプトファイルの改訂番号を表さず、意味上のAI判定規則を識別するversionです。変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は据え置きます。全件再推論をこの判断手段にしません。95％以上と見込めない場合、または影響を判断できない場合はversionを上げます。具体的な判断基準は[開発手順](DEVELOPMENT.md)の「Codexプロンプトのversionを判断する」を参照してください。
+一項目で必要になった要素は1回の呼び出しにまとめます。
+選択外の保存値は再採用し直さず保持し、選択結果と合成した状態の整合性を検証します。
+選択結果がすべて検証を通った場合だけまとめて保存し、失敗・延期した結果を適用済みのrevisionで記録しません。
+既存のIssue・PR間グラフは確定関係や依存先の判断に使いますが、AI要素の必要性や入力依存は別に定義します。
+収集には判定計画の規則fingerprintを保存し、確定規則やAI規則が変わった項目を必要性の再評価へ届けます。
+判定要否を確認するための詳細取得が終わっていない項目は、計画済みとして記録しません。計画の完了とAI分析の成功は別に扱います。
+このfingerprintはAI結果の再利用条件には使わず、呼び出しの要否は各要素の入力、revision、実行条件で決めます。
+
+決定論的規則versionとAI判定要素のrevisionは、コードで管理する定数です。
+AIのrevisionは意味上の判定規則を表し、プロンプトの共通本文の変更だけで全要素を無効化しません。
+変更する開発者が全要素への影響を判断し、必要なrevisionだけを上げます。
+具体的な判断基準は[開発手順](DEVELOPMENT.md)の「Codexプロンプトのversionを判断する」を参照してください。
 現行の決定論的規則versionはIssueが`issue-v14`、Pull Requestが`pull-request-v12`です。
 
 要対応度は前回の判定結果を引き継がず毎run全項目で再計算するため、要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
@@ -370,7 +381,8 @@ DiscordはHTTP 429だけを同じ設定で再試行します。通信例外、HT
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
-`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、現行の`ai.promptVersion`は`v17`です。
+`prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、指定した要素以外の返却を禁止します。
+意味上の規則のrevisionは`src/codex/analysis-elements.ts`で判定要素ごとに管理します。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch
@@ -378,13 +390,13 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 `main`にはsource、設定、schema、prompt、Web UI、fixture、文書を置きます。
 日次stateはorphan branchの`tracker-state`へcanonical JSONとして保存し、外部databaseは使いません。
 
-| 既定パス                            | 内容                                                                                                  |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、tracking.startAtを含むschema version 10の最新snapshot |
-| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                            |
-| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                        |
-| `state/notification-ledger.json`    | 予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                    |
-| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                 |
+| 既定パス                            | 内容                                                                                                 |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、trackingStartAtを含むschema version 11の最新snapshot |
+| `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                           |
+| `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                       |
+| `state/notification-ledger.json`    | 予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                   |
+| `state/run-reports/YYYY-MM-DD.json` | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                |
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
 
@@ -397,10 +409,13 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 | `disabled`     | 設定でAI分析が無効だった                           |
 | `not_recorded` | 項目単位のAI利用状況が記録されていない             |
 
-`used`のcache keyはsnapshotだけへ保存します。
-Pagesのsummaryとdetailsには全statusを公開し、cache keyは公開しません。
+要素ごとの生成結果と採用結果はsnapshotへ保存します。
+Pagesのsummaryとdetailsには全statusを公開し、生成元のcache keyは公開しません。
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、追加cache、通知候補選別後の通知管理記録を通常stateの最初のGit commitへまとめます。
+旧形式は入口で現行形式へ移行し、旧cacheの削除もsnapshot更新と同じcommitへ含めます。
+読み込みやCI検証だけでは本番へ保存せず、workflowによるpushまで完了してから移行済みとします。
+移行したAIの採用値は新しい生成結果と区別し、再推論の失敗・延期だけで消しません。
 通知予約はrun開始時刻から24時間だけ有効です。
 予約期限はworkflow内の排他用leaseであり通知方針ではないため、設定項目にせず、4時間周期をまたぐ重複送信を抑える24時間へ固定します。
 送信開始前の期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。

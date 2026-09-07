@@ -100,10 +100,9 @@ export {
 } from "./production-source-id.js";
 export {
   planIncrementalItemCollection,
-  type CurrentAnalysisRulesFingerprints,
+  type AnalysisPlanFingerprint,
   type IncrementalItemCollectionPlan,
   type PlanIncrementalItemCollectionOptions,
-  type PreviousAnalysisRulesFingerprint,
   type PreviousItemCollection,
 } from "./incremental-item-collection.js";
 export { assertReadOnlyGraphQL, extractGraphQLRateLimit } from "./graphql.js";

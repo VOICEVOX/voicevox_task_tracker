@@ -4,22 +4,32 @@ import { join, resolve } from "node:path";
 import {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
   CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+  CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
   createCodexEnvironment,
   createCodexAnalysisInput,
-  assessPromptUpdates,
+  determineAnalysisElementNecessities,
   estimateAiInputCost,
+  effectiveElementConfidence,
   getCodexEnvironmentVariableAllowlist,
   hashCanonicalJson,
+  listNativeRelationConstraints,
   prepareAiAnalysisCandidate,
+  planAnalysisElements,
   recordCodexDiagnostic,
+  reduceAiAnalysisElements,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
   runAiAnalyses,
   serializeCanonicalJson,
+  validateCodexElementOutputSchema,
+  AI_ANALYSIS_ELEMENT_REVISIONS,
   type AiAnalysisCandidate,
+  type AnalysisElementPlanning,
+  type AnalysisElementNecessityInput,
   type AiAnalysisRunFailure,
   type AiAnalysisRunIdentity,
   type AiAnalysisRunResult,
+  type AiAnalysisElementGenerationMap,
   type CodexAnalysisInput,
   type CodexAdapterConfiguration,
   type CodexAdapterDependencies,
@@ -27,11 +37,20 @@ import {
   type CodexProcessRunner,
   type DeterministicCodexDecision,
   type PreparedAiAnalysisCandidate,
-  type PromptUpdateAssessment,
-  type PromptUpdateContext,
   type ReducedCodexDecision,
-  type ValidatedCodexAnalysisOutput,
+  type SchemaValidCodexElementOutput,
 } from "../codex/index.js";
+import {
+  AI_ANALYSIS_ELEMENTS,
+  AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
+  createAiAnalysisElementGenerationSchema,
+  createAiAnalysisElementResultSchema,
+  type AiAnalysisElement,
+  type AiAnalysisElementExecutionFingerprint,
+  type AiAnalysisElementGeneration,
+  type AiAnalysisElementInputFingerprint,
+  type AiAnalysisElementResult,
+} from "../domain/ai-analysis-elements.js";
 import { type CodexDiagnosticsContext } from "../codex/index.js";
 import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { type Config, type loadConfig } from "../config/index.js";
@@ -46,12 +65,12 @@ import {
   createUtcIsoDateTime,
   createGitHubNodeId,
   createGitHubBotPredicate,
+  buildSourceId,
   createLabelEffectsResolver,
   createTrackedItemLatestEventActor,
   createStalenessNotificationSeverityReason,
   calculateStaleness,
   determineDeadlineLevel,
-  DETERMINISTIC_RULES_VERSION,
   recalculateStalenessSeverity,
   determineIssueState,
   determineMeaningfulProgress,
@@ -106,6 +125,10 @@ import {
   type ExternalGhostNode,
   type TrackedItem,
   type TrackedItemAiAnalysis,
+  type TrackedItemAiAnalysisCurrentElements,
+  type TrackedItemAiAnalysisMigrationAdoptedElement,
+  type TrackedItemAiAnalysisMigrationAdoptedElements,
+  type TrackedItemAiAnalysisMigrationElements,
   type TrackedItemInputEvent,
   type TrackingConnection,
   type TrackingNotificationClass,
@@ -141,7 +164,6 @@ import {
   planIncrementalItemCollection,
   parseGitHubAppCredentials,
   type CreateGitHubClientOptions,
-  type CurrentAnalysisRulesFingerprints,
   type EnumeratedGitHubItem,
   type FreshObservedGitHubItem,
   type GitHubAppCredentials,
@@ -190,6 +212,7 @@ import {
   type StatePersistenceSession,
   type PersistStateTransactionResult,
   type SnapshotAiState,
+  type SnapshotAnalysisPlanFingerprint,
   type SnapshotCollectionItem,
   type SnapshotCollectionRepository,
   type SnapshotRepository,
@@ -257,16 +280,11 @@ import { WorkflowStageRunner } from "./workflow-stage.js";
 
 const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
-const CODEX_SCHEMA_VERSION = "4";
+const CODEX_PROMPT_FINGERPRINT = hashCanonicalJson("codex-system-prompt");
 const PAGES_BASE_URL = "https://voicevox.github.io";
 const DISCORD_DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
 const GITHUB_MENTION_PATTERN =
   /(?<![A-Za-z0-9-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?:\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,99})))?/gu;
-const CURRENT_DETERMINISTIC_RULES_VERSIONS = Object.freeze({
-  issue: ISSUE_DETERMINISTIC_RULES_VERSION,
-  pull_request: PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
-}) satisfies Readonly<Record<TrackedItem["type"], string>>;
-
 type EnabledCodexCredentials = Readonly<{
   enabled: true;
   authentication: Config["ai"]["authentication"];
@@ -292,12 +310,10 @@ type RuntimeConfiguration = Readonly<{
 
 function createAiAnalysisRunIdentity(config: Config): AiAnalysisRunIdentity {
   return Object.freeze({
-    deterministicRulesVersion: DETERMINISTIC_RULES_VERSION,
     model: config.ai.model,
     reasoningEffort: config.ai.execution.reasoningEffort,
     backendVersion: CODEX_BACKEND_VERSION,
-    promptVersion: config.ai.promptVersion,
-    schemaVersion: CODEX_SCHEMA_VERSION,
+    schemaVersion: AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
   });
 }
 
@@ -306,194 +322,6 @@ type RuntimeState = Readonly<{
   snapshot: StateSnapshotReadResult;
   notificationLedger: StateNotificationLedger;
 }>;
-
-type CurrentAnalysisIdentity = Readonly<{
-  analysisRulesFingerprint: Sha256Fingerprint;
-  compatibleCacheIdentity?: AiAnalysisRunIdentity;
-  promptUpdateStatus: PromptUpdateAssessment["status"];
-}>;
-
-function createAnalysisRulesFingerprint(
-  itemType: TrackedItem["type"],
-  identity: AiAnalysisRunIdentity,
-): Sha256Fingerprint {
-  return createAnalysisRulesFingerprintFromIdentityHash(itemType, hashCanonicalJson(identity));
-}
-
-function createAnalysisRulesFingerprintFromIdentityHash(
-  itemType: TrackedItem["type"],
-  identityHash: Sha256Fingerprint,
-): Sha256Fingerprint {
-  return hashCanonicalJson({
-    deterministicRulesVersion: CURRENT_DETERMINISTIC_RULES_VERSIONS[itemType],
-    identityHash,
-  });
-}
-
-function promptUpdateDeadline(
-  assessment: NaturalLanguageDeadlineAssessmentState | undefined,
-): PromptUpdateContext["deadline"] {
-  if (assessment?.status === "available") {
-    return Object.freeze({
-      status: "available",
-      date: assessment.value.date,
-    });
-  }
-  return Object.freeze({
-    status: "unavailable",
-  });
-}
-
-function promptUpdateStateForEnumeratedItem(
-  item: EnumeratedGitHubItem,
-): PromptUpdateContext["state"] {
-  if (item.type === "pull_request" && item.mergeStatus === "merged") {
-    return "merged";
-  }
-  return item.state;
-}
-
-function promptUpdateContextForEnumeratedItem(
-  item: EnumeratedGitHubItem,
-  deadline: NaturalLanguageDeadlineAssessmentState | undefined,
-): PromptUpdateContext {
-  return Object.freeze({
-    type: item.type,
-    state: promptUpdateStateForEnumeratedItem(item),
-    hasAssignees: item.assignees.length > 0,
-    deadline: promptUpdateDeadline(deadline),
-  });
-}
-
-function promptUpdateContextForTrackedItem(
-  item: SnapshotTrackedItem,
-  deadline: NaturalLanguageDeadlineAssessmentState,
-): PromptUpdateContext {
-  return Object.freeze({
-    type: item.type,
-    state: item.state,
-    hasAssignees: item.assignees.length > 0,
-    deadline: promptUpdateDeadline(deadline),
-  });
-}
-
-function promptIdentityVersions(config: Config): readonly string[] {
-  return Object.freeze([
-    config.ai.promptVersion,
-    ...new Set(config.ai.promptUpdates.flatMap((update) => [update.fromVersion])),
-  ]);
-}
-
-function previousIdentityHashFromAnalysisRules(
-  config: Config,
-  itemType: TrackedItem["type"],
-  previousAnalysisRulesFingerprint: SnapshotCollectionItem["analysisRulesFingerprint"] | undefined,
-): Sha256Fingerprint | undefined {
-  if (previousAnalysisRulesFingerprint?.status !== "available") {
-    return undefined;
-  }
-  const identity = createAiAnalysisRunIdentity(config);
-  for (const promptVersion of promptIdentityVersions(config)) {
-    const candidateIdentity = Object.freeze({
-      ...identity,
-      promptVersion,
-    });
-    if (
-      createAnalysisRulesFingerprint(itemType, candidateIdentity) ===
-      previousAnalysisRulesFingerprint.fingerprint
-    ) {
-      return hashCanonicalJson(candidateIdentity);
-    }
-  }
-  return undefined;
-}
-
-function createCurrentAnalysisIdentities(
-  config: Config,
-  items: readonly EnumeratedGitHubItem[],
-  state: RuntimeState,
-): ReadonlyMap<GitHubNodeId, CurrentAnalysisIdentity> {
-  const latestIdentity = createAiAnalysisRunIdentity(config);
-  const previousItemsByNodeId = new Map(
-    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
-  );
-  const previousCollectionItems = previousCollectionItemsByNodeId(state);
-  const identities = new Map<GitHubNodeId, CurrentAnalysisIdentity>();
-  for (const item of items) {
-    if (identities.has(item.nodeId)) {
-      throw new TypeError(`同じitem node IDが重複しています。対象: ${item.nodeId}`);
-    }
-    const previousItem = previousItemsByNodeId.get(item.nodeId);
-    const previousCollectionItem = previousCollectionItems.get(item.nodeId);
-    let compatibleCacheIdentity: AiAnalysisRunIdentity | undefined;
-    let effectiveIdentity = latestIdentity;
-    let promptUpdateStatus: PromptUpdateAssessment["status"] = "unknown";
-    let previousIdentityHash: Sha256Fingerprint | undefined;
-    if (previousItem?.aiAnalysis.status === "used") {
-      if (previousCollectionItem?.aiAnalysisFingerprint.status === "available") {
-        previousIdentityHash =
-          previousCollectionItem.aiAnalysisFingerprint.fingerprint.identityHash;
-      }
-    } else {
-      previousIdentityHash = previousIdentityHashFromAnalysisRules(
-        config,
-        item.type,
-        previousCollectionItem?.analysisRulesFingerprint,
-      );
-    }
-    if (previousIdentityHash != null) {
-      const contexts: PromptUpdateContext[] = [];
-      if (previousItem != null) {
-        contexts.push(
-          promptUpdateContextForTrackedItem(previousItem, previousItem.deadlineAssessment),
-        );
-      }
-      const currentContext = promptUpdateContextForEnumeratedItem(
-        item,
-        previousItem?.deadlineAssessment,
-      );
-      contexts.push(currentContext);
-      const assessment = assessPromptUpdates(
-        latestIdentity,
-        config.ai.promptUpdates,
-        previousIdentityHash,
-        Object.freeze(contexts),
-      );
-      promptUpdateStatus = assessment.status;
-      if (
-        assessment.status === "compatible" &&
-        (previousItem?.aiAnalysis.status === "used" ||
-          previousItem?.aiAnalysis.status === "not_required")
-      ) {
-        effectiveIdentity = assessment.identity;
-        if (previousItem.aiAnalysis.status === "used") {
-          compatibleCacheIdentity = assessment.identity;
-        }
-      }
-    }
-    identities.set(
-      item.nodeId,
-      Object.freeze({
-        analysisRulesFingerprint: createAnalysisRulesFingerprint(item.type, effectiveIdentity),
-        ...(compatibleCacheIdentity == null ? {} : { compatibleCacheIdentity }),
-        promptUpdateStatus,
-      }),
-    );
-  }
-  return identities;
-}
-
-function createCurrentAnalysisRulesFingerprints(
-  config: Config,
-  items: readonly EnumeratedGitHubItem[],
-  state: RuntimeState,
-): CurrentAnalysisRulesFingerprints {
-  return new Map(
-    [...createCurrentAnalysisIdentities(config, items, state)].map(
-      ([nodeId, value]) => [nodeId, value.analysisRulesFingerprint] as const,
-    ),
-  );
-}
 
 type RepositoryInventory = Readonly<{
   inventory: readonly Repository[];
@@ -521,6 +349,7 @@ type FreshRepositoryItemCollection = Readonly<{
   details: readonly GitHubItemDetail[];
   observedItems: readonly FreshObservedGitHubItem[];
   changedNodeIds: readonly GitHubNodeId[];
+  analysisPlanChangedNodeIds: readonly GitHubNodeId[];
 }>;
 
 type FreshRepositoryRuntimeCollection = FreshRepositoryItemCollection &
@@ -533,6 +362,7 @@ type FreshRuntimeCollectionAggregate = Readonly<{
   details: readonly GitHubItemDetail[];
   observedItems: readonly FreshObservedGitHubItem[];
   changedNodeIds: ReadonlySet<GitHubNodeId>;
+  analysisPlanChangedNodeIds: ReadonlySet<GitHubNodeId>;
 }>;
 
 type RelationExpandedRuntimeCollection = FreshRuntimeCollectionAggregate &
@@ -574,6 +404,7 @@ type DeterministicItemAnalysis = Readonly<{
   detail: GitHubItemDetail;
   decision: IssueStateDecision | PullRequestStateDecision;
   notificationClass: TrackingNotificationClass;
+  notificationsSuppressedByLabel: boolean;
   relationCandidates: readonly RelationCandidate[];
   effectiveAssigneeCandidates: readonly EffectiveAssigneeCandidateContext[];
 }>;
@@ -587,6 +418,8 @@ type DeterministicAnalysis = Readonly<{
 type CodexAnalysis = Readonly<{
   run: AiAnalysisRunResult | undefined;
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
+  elementPlanningByNodeId: ReadonlyMap<GitHubNodeId, AnalysisElementPlanning>;
+  elementGenerationsByNodeId: ReadonlyMap<GitHubNodeId, AiAnalysisElementGenerationMap>;
 }>;
 
 type ReducedItemAnalysis = Readonly<{
@@ -832,6 +665,7 @@ function readRuntimeCredentials(
               ),
             );
             break;
+          case "hold":
           case "acknowledge-current":
             knownSecrets.push(
               requireEnvironmentValue(
@@ -974,21 +808,95 @@ function previousCollectionItemsByNodeId(
   );
 }
 
-function createSnapshotCollectionItem(item: EnumeratedGitHubItem): SnapshotCollectionItem {
+function staleAiAnalysisElementsForLifecycle(
+  item: SnapshotTrackedItem | undefined,
+  identity: AiAnalysisRunIdentity,
+): readonly AiAnalysisElement[] {
+  if (item == null || item.aiAnalysis.status === "not_required") {
+    return Object.freeze([]);
+  }
+  if (item.aiAnalysis.origin === "migration") {
+    return staleMigrationAiAnalysisElementsForLifecycle(item.aiAnalysis, identity);
+  }
+  return Object.freeze(
+    AI_ANALYSIS_ELEMENTS.filter((element) => {
+      const generation = item.aiAnalysis.elements[element];
+      if (generation == null) {
+        return false;
+      }
+      return (
+        generation.metadata.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[element] ||
+        generation.metadata.model !== identity.model ||
+        generation.metadata.reasoningEffort !== identity.reasoningEffort ||
+        generation.metadata.backendVersion !== identity.backendVersion
+      );
+    }),
+  );
+}
+
+function staleMigrationAiAnalysisElementsForLifecycle(
+  aiAnalysis: Extract<TrackedItemAiAnalysis, { origin: "migration" }>,
+  identity: AiAnalysisRunIdentity,
+): readonly AiAnalysisElement[] {
+  return Object.freeze(
+    AI_ANALYSIS_ELEMENTS.filter((element) => {
+      const adopted = aiAnalysis.adoptedElements[element];
+      if (adopted == null || adopted.origin === "migration") {
+        return adopted != null;
+      }
+      const metadata = adopted.generation.metadata;
+      return (
+        metadata.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[element] ||
+        metadata.model !== identity.model ||
+        metadata.reasoningEffort !== identity.reasoningEffort ||
+        metadata.backendVersion !== identity.backendVersion
+      );
+    }),
+  );
+}
+
+function deterministicRulesVersionForItem(item: EnumeratedGitHubItem): string {
+  switch (item.type) {
+    case "issue":
+      return ISSUE_DETERMINISTIC_RULES_VERSION;
+    case "pull_request":
+      return PULL_REQUEST_DETERMINISTIC_RULES_VERSION;
+  }
+}
+
+function analysisPlanFingerprintForItem(
+  item: EnumeratedGitHubItem,
+  identity: AiAnalysisRunIdentity,
+): Sha256Fingerprint {
+  return hashCanonicalJson({
+    itemType: item.type,
+    deterministicRulesVersion: deterministicRulesVersionForItem(item),
+    elementRevisions: AI_ANALYSIS_ELEMENT_REVISIONS,
+    execution: {
+      model: identity.model,
+      reasoningEffort: identity.reasoningEffort,
+      backendVersion: identity.backendVersion,
+      schemaVersion: identity.schemaVersion,
+    },
+  });
+}
+
+function createSnapshotCollectionItem(
+  item: EnumeratedGitHubItem,
+  analysisPlanFingerprint: SnapshotAnalysisPlanFingerprint,
+): SnapshotCollectionItem {
   if (item.state === "open") {
     return Object.freeze({
       freshness: "fresh",
       nodeId: item.nodeId,
       repositoryId: item.repositoryId,
       itemFingerprint: item.itemFingerprint,
-      aiAnalysisFingerprint: Object.freeze({
-        status: "unavailable",
-      }),
-      analysisRulesFingerprint: Object.freeze({
-        status: "unavailable",
-      }),
-      deterministicRulesVersion: Object.freeze({
-        status: "unavailable",
+      analysisPlanFingerprint,
+      aiAnalysis: Object.freeze({
+        origin: "current",
+        status: "not_recorded",
+        elements: Object.freeze({}),
+        adoptedElements: Object.freeze({}),
       }),
       observedAt: item.observedAt,
       state: "open",
@@ -1000,14 +908,12 @@ function createSnapshotCollectionItem(item: EnumeratedGitHubItem): SnapshotColle
     nodeId: item.nodeId,
     repositoryId: item.repositoryId,
     itemFingerprint: item.itemFingerprint,
-    aiAnalysisFingerprint: Object.freeze({
-      status: "unavailable",
-    }),
-    analysisRulesFingerprint: Object.freeze({
-      status: "unavailable",
-    }),
-    deterministicRulesVersion: Object.freeze({
-      status: "unavailable",
+    analysisPlanFingerprint,
+    aiAnalysis: Object.freeze({
+      origin: "current",
+      status: "not_recorded",
+      elements: Object.freeze({}),
+      adoptedElements: Object.freeze({}),
     }),
     observedAt: item.observedAt,
     state: "closed",
@@ -1023,7 +929,14 @@ function createSnapshotCollectionRepository(
   return Object.freeze({
     repositoryId: repository.id,
     successfulAt,
-    items: Object.freeze(items.map(createSnapshotCollectionItem)),
+    items: Object.freeze(
+      items.map((item) =>
+        createSnapshotCollectionItem(item, {
+          status: "unplanned",
+          reason: "detail_required",
+        }),
+      ),
+    ),
   });
 }
 
@@ -1044,7 +957,7 @@ function previousItemCollection(
         item.nodeId,
         Object.freeze({
           itemFingerprint: item.itemFingerprint,
-          analysisRulesFingerprint: item.analysisRulesFingerprint,
+          analysisPlanFingerprint: item.analysisPlanFingerprint,
         }),
       ]),
     ),
@@ -1192,6 +1105,7 @@ function requiredTrackingDetailNodeIds(
     invocation.command,
     Object.freeze({ status: "start" }),
   );
+  const identity = createAiAnalysisRunIdentity(configuration.config);
   const includesAllOpenBackfill =
     backfill.mode === "all-open"
       ? backfill.repositoryFilter.length === 0 ||
@@ -1200,14 +1114,21 @@ function requiredTrackingDetailNodeIds(
   const previouslyTrackedNodeIds = new Set(
     (previousSnapshot(state)?.items ?? []).map((item) => item.nodeId),
   );
+  const previousItemsByNodeId = new Map(
+    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
+  );
   return Object.freeze(
     enumeratedItems
-      .filter(
-        (item) =>
-          !previouslyTrackedNodeIds.has(item.nodeId) &&
-          (explicitIdentifierMatchesItem(configuration.config.tracking.include, item) ||
-            (includesAllOpenBackfill && item.state === "open")),
-      )
+      .filter((item) => {
+        if (!previouslyTrackedNodeIds.has(item.nodeId)) {
+          return (
+            explicitIdentifierMatchesItem(configuration.config.tracking.include, item) ||
+            (includesAllOpenBackfill && item.state === "open")
+          );
+        }
+        const previousItem = previousItemsByNodeId.get(item.nodeId);
+        return staleAiAnalysisElementsForLifecycle(previousItem, identity).length !== 0;
+      })
       .map((item) => item.nodeId),
   );
 }
@@ -1510,6 +1431,7 @@ function collectTrackingCandidates(
   relationCandidates: readonly RelationCandidate[],
 ): RuntimeTrackingSelection {
   const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
+  const identity = createAiAnalysisRunIdentity(configuration.config);
   const previousItems = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
   );
@@ -1665,28 +1587,20 @@ function collectTrackingCandidates(
     maxBackfillItemsPerRun: configuration.config.tracking.backfill.maxItemsPerRun,
   });
   const previousCollectionItems = previousCollectionItemsByNodeId(state);
-  const currentAnalysisRulesFingerprints = createCurrentAnalysisRulesFingerprints(
-    configuration.config,
-    enumeratedItems,
-    state,
-  );
   const workByNodeId = new Map<GitHubNodeId, TrackedItemWorkDecision>();
   for (const selected of result.trackedItems) {
     const item = enumeratedItemsByNodeId.get(selected.item.nodeId);
     assertNonNullable(item, `追跡対象の列挙値がありません。対象: ${selected.item.nodeId}`);
     const previousCollectionItem = previousCollectionItems.get(item.nodeId);
     const previousTrackedItem = previousItems.get(item.nodeId);
-    const analysisRulesFingerprint = currentAnalysisRulesFingerprints.get(item.nodeId);
-    assertNonNullable(
-      analysisRulesFingerprint,
-      `現在の判定規則fingerprintがありません。対象: ${item.nodeId}`,
-    );
     workByNodeId.set(
       item.nodeId,
       determineTrackedItemWork({
         state: item.state,
-        analysisInputFingerprint: item.itemFingerprint,
-        analysisRulesFingerprint,
+        requiredAiAnalysisElements: staleAiAnalysisElementsForLifecycle(
+          previousTrackedItem,
+          identity,
+        ),
         previousAiAnalysisStatus:
           previousTrackedItem == null ? "not_available" : previousTrackedItem.aiAnalysis.status,
         previousObservation:
@@ -1695,8 +1609,6 @@ function collectTrackingCandidates(
             : Object.freeze({
                 status: "available",
                 state: previousCollectionItem.state,
-                analysisInputFingerprint: previousCollectionItem.itemFingerprint,
-                analysisRulesFingerprint: previousCollectionItem.analysisRulesFingerprint,
               }),
       }),
     );
@@ -2264,6 +2176,10 @@ function applyDeterministicAnalysis(
     const detail = findDetail(collection, item.nodeId);
     const notificationClass = collection.trackingNotificationClassByNodeId.get(item.nodeId);
     assertNonNullable(notificationClass, `追跡項目の通知分類がありません。対象: ${item.nodeId}`);
+    const notificationsSuppressedByLabel = resolveLabelEffects(
+      repositoryFullName(repository),
+      item.labels,
+    ).suppressNotifications;
     const relationCandidates = candidatesForNode(item.nodeId, collection.relationCandidates);
     const blockers = createNativeBlockers(item, relationCandidates);
     if (item.type === "issue" && detail.type === "issue") {
@@ -2296,6 +2212,7 @@ function applyDeterministicAnalysis(
           detail,
           decision,
           notificationClass,
+          notificationsSuppressedByLabel,
           relationCandidates,
           effectiveAssigneeCandidates,
         }),
@@ -2321,6 +2238,7 @@ function applyDeterministicAnalysis(
           detail,
           decision,
           notificationClass,
+          notificationsSuppressedByLabel,
           relationCandidates,
           effectiveAssigneeCandidates: Object.freeze([]),
         }),
@@ -2687,6 +2605,8 @@ function createCodexInput(
   configuration: RuntimeConfiguration,
   evaluatedAt: UtcIsoDateTime,
   analysis: DeterministicItemAnalysis,
+  selectedElements: readonly AiAnalysisElement[],
+  lockedElements: Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementResult>>>,
 ): CodexAnalysisInput {
   const relationCandidates = deduplicateByStableId(
     selectRelationAssessmentCandidates(analysis.item.nodeId, analysis.relationCandidates),
@@ -2904,7 +2824,7 @@ function createCodexInput(
     }
   }
   return createCodexAnalysisInput({
-    schemaVersion: "1",
+    schemaVersion: "2",
     now: evaluatedAt,
     item: {
       nodeId: analysis.item.nodeId,
@@ -2977,7 +2897,363 @@ function createCodexInput(
       ),
       effectiveAssigneeConfidenceThreshold: configuration.config.ai.confidence.high,
     },
-    priorAnalysis: null,
+    selectedElements,
+    lockedElements,
+  });
+}
+
+type AnalysisElementInputFingerprintMap = Readonly<
+  Record<AiAnalysisElement, AiAnalysisElementInputFingerprint>
+>;
+
+type AnalysisElementExecutionFingerprintMap = Readonly<
+  Record<AiAnalysisElement, AiAnalysisElementExecutionFingerprint>
+>;
+
+function codexNaturalLanguageSources(input: CodexAnalysisInput): readonly object[] {
+  return input.sources.filter(
+    (source) => source.kind === "body" || source.kind === "comment" || source.kind === "review",
+  );
+}
+
+function codexRelationSources(input: CodexAnalysisInput): readonly object[] {
+  return input.sources.filter((source) => source.kind === "relation");
+}
+
+function codexTextItem(input: CodexAnalysisInput): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    nodeId: input.item.nodeId,
+    url: input.item.url,
+    type: input.item.type,
+    title: input.item.title,
+    ...(input.item.authorCandidateId == null
+      ? {}
+      : { authorCandidateId: input.item.authorCandidateId }),
+  });
+}
+
+function deterministicSignalProjection(
+  signals: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+): Readonly<Record<string, unknown>> {
+  const projection: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (Object.hasOwn(signals, key)) {
+      projection[key] = signals[key];
+    }
+  }
+  return Object.freeze(projection);
+}
+
+function elementInputFingerprints(input: CodexAnalysisInput): AnalysisElementInputFingerprintMap {
+  const naturalLanguageSources = codexNaturalLanguageSources(input);
+  const relationSources = [...codexRelationSources(input), ...naturalLanguageSources];
+  const stateInput = {
+    item: input.item,
+    candidates: input.candidates.waitingOn,
+    sources: naturalLanguageSources,
+    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
+      "status",
+      "waitingOn",
+      "requiredCheckFailure",
+      "effectiveAssigneeCandidates",
+      "effectiveAssigneeImplementations",
+      "mentionedWaitingOnCandidates",
+      "uncertainties",
+    ]),
+  };
+  const relationInput = {
+    item: codexTextItem(input),
+    candidates: input.candidates.relations,
+    sources: relationSources,
+    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
+      "relationCandidateIds",
+      "nativeBlockedBy",
+      "nativeBlocking",
+      "nativeParent",
+      "nativeSubIssues",
+    ]),
+  };
+  const textInput = {
+    item: codexTextItem(input),
+    sources: naturalLanguageSources,
+  };
+  const notificationInput = {
+    item: codexTextItem(input),
+    candidates: input.candidates,
+    sources: naturalLanguageSources,
+    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
+      "status",
+      "waitingOn",
+      "requiredCheckFailure",
+      "effectiveAssigneeCandidates",
+      "effectiveAssigneeImplementations",
+      "mentionedWaitingOnCandidates",
+      "uncertainties",
+    ]),
+  };
+  return Object.freeze({
+    status: hashCanonicalJson(stateInput),
+    waitingOn: hashCanonicalJson(stateInput),
+    nextAction: hashCanonicalJson(stateInput),
+    relations: hashCanonicalJson(relationInput),
+    progress: hashCanonicalJson(textInput),
+    importance: hashCanonicalJson(textInput),
+    deadline: hashCanonicalJson(textInput),
+    notification: hashCanonicalJson(notificationInput),
+  });
+}
+
+function elementExecutionFingerprints(
+  identity: AiAnalysisRunIdentity,
+): AnalysisElementExecutionFingerprintMap {
+  const createFingerprint = (element: AiAnalysisElement): AiAnalysisElementExecutionFingerprint =>
+    hashCanonicalJson({
+      element,
+      model: identity.model,
+      reasoningEffort: identity.reasoningEffort,
+      backendVersion: identity.backendVersion,
+      schemaVersion: identity.schemaVersion,
+    });
+  return Object.freeze({
+    status: createFingerprint("status"),
+    waitingOn: createFingerprint("waitingOn"),
+    nextAction: createFingerprint("nextAction"),
+    relations: createFingerprint("relations"),
+    progress: createFingerprint("progress"),
+    importance: createFingerprint("importance"),
+    deadline: createFingerprint("deadline"),
+    notification: createFingerprint("notification"),
+  });
+}
+
+function savedGenerationsForItem(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>>> {
+  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  if (item == null) {
+    return Object.freeze({});
+  }
+  return item.aiAnalysis.elements;
+}
+
+function savedAdoptedGenerationsForItem(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>>> {
+  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  if (item == null) {
+    return Object.freeze({});
+  }
+  if (item.aiAnalysis.origin === "current") {
+    return item.aiAnalysis.adoptedElements;
+  }
+  const generations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const adopted = item.aiAnalysis.adoptedElements[element];
+    if (adopted?.origin !== "current") {
+      continue;
+    }
+    generations[element] = createAiAnalysisElementGenerationSchema(element).parse(
+      adopted.generation,
+    );
+  }
+  return Object.freeze(generations);
+}
+
+function savedMigrationAdoptedElementsForItem(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): TrackedItemAiAnalysisMigrationAdoptedElements {
+  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  if (item?.aiAnalysis.origin !== "migration") {
+    return Object.freeze({});
+  }
+  return item.aiAnalysis.adoptedElements;
+}
+
+function deterministicElementResult(
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+): AiAnalysisElementResult | undefined {
+  const evidence = Object.freeze([
+    Object.freeze({
+      sourceId: analysis.item.sourceId,
+      summary: "決定論的な判定結果です",
+    }),
+  ]);
+  const common = {
+    evidence,
+    confidence: analysis.decision.confidence,
+    uncertainties: analysis.decision.uncertainties,
+  };
+  switch (element) {
+    case "status":
+      return createAiAnalysisElementResultSchema("status").parse({
+        ...common,
+        value: analysis.decision.status,
+      });
+    case "waitingOn":
+      return createAiAnalysisElementResultSchema("waitingOn").parse({
+        ...common,
+        value: analysis.decision.waitingOn,
+      });
+    case "nextAction":
+      return createAiAnalysisElementResultSchema("nextAction").parse({
+        ...common,
+        value: analysis.decision.nextAction,
+      });
+    case "relations":
+    case "progress":
+    case "importance":
+    case "deadline":
+    case "notification":
+      return undefined;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+function currentAdoptedGenerationForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+  inputFingerprint: AiAnalysisElementInputFingerprint,
+): AiAnalysisElementGeneration | undefined {
+  const generation = savedAdoptedGenerationsForItem(state, analysis.item.nodeId)[element];
+  if (generation == null) {
+    return undefined;
+  }
+  const parsedGeneration = createAiAnalysisElementGenerationSchema(element).parse(generation);
+  if (parsedGeneration.metadata.inputFingerprint !== inputFingerprint) {
+    return undefined;
+  }
+  return parsedGeneration;
+}
+
+function migrationAdoptedResultForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+): AiAnalysisElementResult | undefined {
+  const adopted = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element];
+  if (adopted?.origin !== "migration") {
+    return undefined;
+  }
+  return createAiAnalysisElementResultSchema(element).parse(adopted.result);
+}
+
+function lockedElementsForSelection(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementResult>>> {
+  const lockedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementResult>> = {};
+  for (const skipped of planning.selection.skipped) {
+    if (skipped.reason === "up_to_date") {
+      const adopted = currentAdoptedGenerationForElement(
+        state,
+        analysis,
+        skipped.candidate.element,
+        skipped.candidate.inputFingerprint,
+      );
+      const migrated = migrationAdoptedResultForElement(state, analysis, skipped.candidate.element);
+      const deterministic = deterministicElementResult(analysis, skipped.candidate.element);
+      const result = adopted?.result ?? migrated ?? deterministic;
+      if (result != null) {
+        lockedElements[skipped.candidate.element] = result;
+      }
+      continue;
+    }
+    const deterministic = deterministicElementResult(analysis, skipped.candidate.element);
+    if (deterministic != null) {
+      lockedElements[skipped.candidate.element] = deterministic;
+    }
+  }
+  return Object.freeze(lockedElements);
+}
+
+function necessityInputForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+): AnalysisElementNecessityInput {
+  const terminal = isTerminalStatus(analysis.decision.status);
+  const unresolvedRequest =
+    !terminal && analysis.item.type === "issue" && analysis.detail.type === "issue"
+      ? createIssueRequestCandidates(analysis.item, analysis.detail).length > 0
+      : false;
+  const unresolvedCi =
+    !terminal && analysis.item.type === "pull_request" && analysis.detail.type === "pull_request"
+      ? checkFailureSourceIds(analysis.detail) != null
+      : false;
+  const relationAssessmentCandidates = selectRelationAssessmentCandidates(
+    analysis.item.nodeId,
+    analysis.relationCandidates,
+  );
+  const hasUnresolvedRelationCandidate = relationAssessmentCandidates.some(
+    (candidate) => candidate.authority === "inferred",
+  );
+  const hasHumanProgressCandidate = analysis.item.events.some(
+    (event) => event.kind === "comment" && event.actor.type === "human" && !event.bodyEmpty,
+  );
+  const hasNativeBlocker = analysis.relationCandidates.some(
+    (candidate) =>
+      candidate.provenance === "native" &&
+      candidate.relation.type === "blocks" &&
+      candidate.relation.blocked.nodeId === analysis.item.nodeId,
+  );
+  const notificationAiIsConsumed =
+    !terminal &&
+    analysis.decision.determination === "codex_candidate" &&
+    !hasNativeBlocker &&
+    analysis.notificationClass !== "automation_noise" &&
+    !analysis.notificationsSuppressedByLabel;
+  const stateDecisionNecessities = analysis.decision.aiAnalysisElementNecessities;
+  const stateCandidate = {
+    unresolvedRequest,
+    unresolvedCi,
+    effectiveAssigneeCandidate: analysis.effectiveAssigneeCandidates.length !== 0,
+  };
+  const allRelationCandidatesAuthoritative = relationAssessmentCandidates.every(
+    (candidate) => candidate.authority === "authoritative",
+  );
+  const normalAiAnalysisScope =
+    analysis.decision.determination !== "determined" ||
+    analysis.effectiveAssigneeCandidates.length !== 0 ||
+    hasHumanProgressCandidate ||
+    !allRelationCandidatesAuthoritative;
+  const previousItem = previousSnapshot(state)?.items.find(
+    (candidate) => candidate.nodeId === analysis.item.nodeId,
+  );
+  return Object.freeze({
+    state: Object.freeze({
+      status: Object.freeze({
+        deterministic: stateDecisionNecessities.status === "not_required",
+        ...stateCandidate,
+      }),
+      waitingOn: Object.freeze({
+        deterministic: stateDecisionNecessities.waitingOn === "not_required",
+        ...stateCandidate,
+      }),
+      nextAction: Object.freeze({
+        deterministic: stateDecisionNecessities.nextAction === "not_required",
+        ...stateCandidate,
+      }),
+    }),
+    hasUnresolvedRelationCandidate,
+    hasHumanProgressCandidate,
+    importance: Object.freeze({
+      normalAiAnalysisScope,
+      currentlyAdopted: previousItem?.importanceAssessment.status === "available",
+    }),
+    deadline: Object.freeze({
+      normalAiAnalysisScope,
+      currentlyAdopted: previousItem?.deadlineAssessment.status === "available",
+    }),
+    notification: Object.freeze({
+      aiIsConsumed: notificationAiIsConsumed,
+    }),
   });
 }
 
@@ -2995,8 +3271,10 @@ function createAiCandidates(
     error: unknown;
   }>[];
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
+  elementPlanningByNodeId: ReadonlyMap<GitHubNodeId, AnalysisElementPlanning>;
 }> {
   const inputByNodeId = new Map<GitHubNodeId, CodexAnalysisInput>();
+  const elementPlanningByNodeId = new Map<GitHubNodeId, AnalysisElementPlanning>();
   const failures: AiAnalysisRunFailure[] = [];
   const inputValidationFailures: {
     candidateId: string;
@@ -3016,24 +3294,14 @@ function createAiCandidates(
     (previousGraphAnalysis?.downstreamImpacts ?? []).map((impact) => [impact.nodeId, impact]),
   );
   const previousRelations = previousSnapshot(state)?.relations ?? [];
-  const previousAiFingerprintByNodeId = new Map(
-    (previousSnapshot(state)?.collection.repositories ?? []).flatMap((repository) =>
-      repository.items.map((item) => [item.nodeId, item.aiAnalysisFingerprint] as const),
-    ),
-  );
   const previousAiAnalysisStatusByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item.aiAnalysis.status]),
   );
-  const currentAnalysisIdentities = createCurrentAnalysisIdentities(
-    configuration.config,
-    collection.enumeratedItems,
-    state,
-  );
   const candidates: PreparedAiAnalysisCandidate[] = [];
   for (const analysis of deterministicAnalysis.items) {
-    let input: CodexAnalysisInput;
+    let baseInput: CodexAnalysisInput;
     try {
-      input = createCodexInput(configuration, collection.evaluatedAt, analysis);
+      baseInput = createCodexInput(configuration, collection.evaluatedAt, analysis, [], {});
     } catch (error: unknown) {
       inputValidationFailures.push(
         Object.freeze({
@@ -3050,15 +3318,25 @@ function createAiCandidates(
       );
       continue;
     }
+    const savedGenerations = savedGenerationsForItem(state, analysis.item.nodeId);
+    const necessities = determineAnalysisElementNecessities(
+      necessityInputForAnalysis(state, analysis),
+    );
+    const planning = planAnalysisElements({
+      necessities,
+      inputFingerprints: elementInputFingerprints(baseInput),
+      executionFingerprints: elementExecutionFingerprints(identity),
+      savedGenerations,
+    });
+    elementPlanningByNodeId.set(analysis.item.nodeId, planning);
+    const input = createCodexInput(
+      configuration,
+      collection.evaluatedAt,
+      analysis,
+      planning.selection.selected.map((candidate) => candidate.element),
+      lockedElementsForSelection(state, analysis, planning),
+    );
     inputByNodeId.set(analysis.item.nodeId, input);
-    const naturalLanguageProgressCandidate = analysis.item.events.some(
-      (event) => event.kind === "comment" && event.actor.type === "human" && !event.bodyEmpty,
-    );
-    const effectiveAssigneeCandidate = analysis.effectiveAssigneeCandidates.length > 0;
-    const relationAssessmentCandidates = selectRelationAssessmentCandidates(
-      analysis.item.nodeId,
-      analysis.relationCandidates,
-    );
     const previousIncomingBlockers = new Set<string>(
       previousRelations
         .filter(
@@ -3092,42 +3370,16 @@ function createAiCandidates(
       previousIncomingBlockers.size !== currentPotentialBlockers.size ||
       [...previousIncomingBlockers].some((id) => !currentPotentialBlockers.has(id));
     const previousImpact = previousImpactByNodeId.get(analysis.item.nodeId);
-    const currentAnalysisIdentity = currentAnalysisIdentities.get(analysis.item.nodeId);
-    assertNonNullable(
-      currentAnalysisIdentity,
-      `現在のAI分析identityがありません。対象: ${analysis.item.nodeId}`,
-    );
     const previousAiAnalysisStatus = previousAiAnalysisStatusByNodeId.get(analysis.item.nodeId);
-    const retryablePreviousAnalysis =
-      previousAiAnalysisStatus === "failed" || previousAiAnalysisStatus === "deferred";
-    const persistedPreviousFingerprint = previousAiFingerprintByNodeId.get(analysis.item.nodeId);
-    const previousFingerprint =
-      retryablePreviousAnalysis || persistedPreviousFingerprint == null
-        ? Object.freeze({
-            status: "unavailable",
-          })
-        : persistedPreviousFingerprint;
-    const forcePromptUpdateAnalysis = currentAnalysisIdentity.promptUpdateStatus === "affected";
     const estimatedCost = estimateAiInputCost(
       `${serializeCanonicalJson(input)}\n`,
       configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
     );
     const candidate = Object.freeze({
       id: analysis.item.nodeId,
-      deterministicResolution:
-        !forcePromptUpdateAnalysis &&
-        !retryablePreviousAnalysis &&
-        analysis.decision.determination === "determined" &&
-        !effectiveAssigneeCandidate &&
-        !naturalLanguageProgressCandidate &&
-        relationAssessmentCandidates.every((candidate) => candidate.authority === "authoritative")
-          ? "high_confidence"
-          : "ambiguous",
       input,
-      graphNeighborhood: Object.freeze(
-        analysis.relationCandidates.map((candidate) => candidate.id),
-      ),
-      previousFingerprint,
+      elements: Object.freeze(AI_ANALYSIS_ELEMENTS.map((element) => planning.candidates[element])),
+      promptFingerprint: CODEX_PROMPT_FINGERPRINT,
       priority: Object.freeze({
         previouslyDeferred: previousAiAnalysisStatus === "deferred",
         severityCandidate: analysis.decision.determination === "codex_candidate",
@@ -3140,33 +3392,14 @@ function createAiCandidates(
       }),
       estimatedCostUsd: estimatedCost.estimatedCostUsd,
     } satisfies AiAnalysisCandidate);
-    const prepared = prepareAiAnalysisCandidate(candidate, identity);
-    const compatibleCacheIdentity = currentAnalysisIdentity.compatibleCacheIdentity;
-    if (
-      compatibleCacheIdentity != null &&
-      !retryablePreviousAnalysis &&
-      previousFingerprint.status === "available" &&
-      previousFingerprint.fingerprint.identityHash === hashCanonicalJson(compatibleCacheIdentity) &&
-      prepared.fingerprint.sourceHash === previousFingerprint.fingerprint.sourceHash &&
-      prepared.fingerprint.inputHash === previousFingerprint.fingerprint.inputHash &&
-      prepared.fingerprint.graphNeighborhoodHash ===
-        previousFingerprint.fingerprint.graphNeighborhoodHash
-    ) {
-      candidates.push(
-        Object.freeze({
-          ...prepared,
-          compatibleCacheIdentity,
-        }),
-      );
-      continue;
-    }
-    candidates.push(prepared);
+    candidates.push(prepareAiAnalysisCandidate(candidate));
   }
   return Object.freeze({
     candidates: Object.freeze(candidates),
     failures: Object.freeze(failures),
     inputValidationFailures: Object.freeze(inputValidationFailures),
     inputByNodeId,
+    elementPlanningByNodeId,
   });
 }
 
@@ -3178,6 +3411,492 @@ function codexFallbackDiagnostic(failure: AiAnalysisRunFailure): string {
     failure.diagnostic,
     failure.validationDiagnostic,
   );
+}
+
+type AiAnalysisRunElement = AiAnalysisRunResult["results"][number]["elements"][number];
+
+type MutablePartial<Value> = {
+  -readonly [Key in keyof Value]?: Value[Key];
+};
+
+function generationMapForRunElements(
+  elements: readonly AiAnalysisRunElement[],
+): AiAnalysisElementGenerationMap {
+  const generations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const elementResult of elements) {
+    const element = elementResult.element;
+    const generation = createAiAnalysisElementGenerationSchema(element).parse(
+      elementResult.generation,
+    );
+    generations[element] = generation;
+  }
+  return Object.freeze(generations);
+}
+
+function trackedAiAnalysisElementsForGenerations(
+  generations: AiAnalysisElementGenerationMap,
+): TrackedItemAiAnalysisCurrentElements {
+  let status: AiAnalysisElementGeneration<"status"> | undefined;
+  let waitingOn: AiAnalysisElementGeneration<"waitingOn"> | undefined;
+  let nextAction: AiAnalysisElementGeneration<"nextAction"> | undefined;
+  let relations: AiAnalysisElementGeneration<"relations"> | undefined;
+  let progress: AiAnalysisElementGeneration<"progress"> | undefined;
+  let importance: AiAnalysisElementGeneration<"importance"> | undefined;
+  let deadline: AiAnalysisElementGeneration<"deadline"> | undefined;
+  let notification: AiAnalysisElementGeneration<"notification"> | undefined;
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const generation = generations[element];
+    if (generation == null) {
+      continue;
+    }
+    switch (element) {
+      case "status":
+        status = createAiAnalysisElementGenerationSchema("status").parse(generation);
+        break;
+      case "waitingOn":
+        waitingOn = createAiAnalysisElementGenerationSchema("waitingOn").parse(generation);
+        break;
+      case "nextAction":
+        nextAction = createAiAnalysisElementGenerationSchema("nextAction").parse(generation);
+        break;
+      case "relations":
+        relations = createAiAnalysisElementGenerationSchema("relations").parse(generation);
+        break;
+      case "progress":
+        progress = createAiAnalysisElementGenerationSchema("progress").parse(generation);
+        break;
+      case "importance":
+        importance = createAiAnalysisElementGenerationSchema("importance").parse(generation);
+        break;
+      case "deadline":
+        deadline = createAiAnalysisElementGenerationSchema("deadline").parse(generation);
+        break;
+      case "notification":
+        notification = createAiAnalysisElementGenerationSchema("notification").parse(generation);
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze({
+    ...(status == null ? {} : { status }),
+    ...(waitingOn == null ? {} : { waitingOn }),
+    ...(nextAction == null ? {} : { nextAction }),
+    ...(relations == null ? {} : { relations }),
+    ...(progress == null ? {} : { progress }),
+    ...(importance == null ? {} : { importance }),
+    ...(deadline == null ? {} : { deadline }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
+function generatedElementsForNode(
+  run: AiAnalysisRunResult | undefined,
+  nodeId: GitHubNodeId,
+): AiAnalysisElementGenerationMap {
+  const result = run?.results.find((candidate) => candidate.candidateId === nodeId);
+  return result == null ? Object.freeze({}) : generationMapForRunElements(result.elements);
+}
+
+function generationsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning | undefined,
+  run: AiAnalysisRunResult | undefined,
+): AiAnalysisElementGenerationMap {
+  const saved = savedGenerationsForItem(state, analysis.item.nodeId);
+  if (planning == null) {
+    return saved;
+  }
+  const generated = generatedElementsForNode(run, analysis.item.nodeId);
+  const preserved: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    if (generated[element] != null) {
+      continue;
+    }
+    const generation = saved[element];
+    if (generation == null) {
+      continue;
+    }
+    preserved[element] = createAiAnalysisElementGenerationSchema(element).parse(generation);
+  }
+  return reduceAiAnalysisElements({
+    selectedElements: planning.selection.selected.map((candidate) => candidate.element),
+    generatedElements: generated,
+    preservedElements: preserved,
+  }).elements;
+}
+
+function adoptedGenerationForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  element: AiAnalysisElement,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: SchemaValidCodexElementOutput | undefined,
+): AiAnalysisElementGeneration | undefined {
+  const candidate = planning.candidates[element];
+  if (candidate.necessity === "not_required") {
+    return undefined;
+  }
+  const generated = generatedElementsForNode(run, analysis.item.nodeId)[element];
+  const application =
+    reduction?.ai.status === "available" ? reduction.ai.elements[element]?.application : undefined;
+  const consumerResult =
+    consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
+  const generatedWasConsumed =
+    generated != null &&
+    consumerResult != null &&
+    hashCanonicalJson(consumerResult) === hashCanonicalJson(generated.result);
+  if (application === "applied" || generatedWasConsumed) {
+    assertNonNullable(generated, `採用されたAI生成結果がありません。対象: ${element}`);
+    return createAiAnalysisElementGenerationSchema(element).parse(generated);
+  }
+  return currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint);
+}
+
+function adoptedElementsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: SchemaValidCodexElementOutput | undefined,
+): TrackedItemAiAnalysisCurrentElements {
+  const adoptedGenerations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const generation = adoptedGenerationForElement(
+      state,
+      analysis,
+      planning,
+      element,
+      run,
+      reduction,
+      consumerOutput,
+    );
+    if (generation != null) {
+      switch (element) {
+        case "status":
+          adoptedGenerations.status =
+            createAiAnalysisElementGenerationSchema("status").parse(generation);
+          break;
+        case "waitingOn":
+          adoptedGenerations.waitingOn =
+            createAiAnalysisElementGenerationSchema("waitingOn").parse(generation);
+          break;
+        case "nextAction":
+          adoptedGenerations.nextAction =
+            createAiAnalysisElementGenerationSchema("nextAction").parse(generation);
+          break;
+        case "relations":
+          adoptedGenerations.relations =
+            createAiAnalysisElementGenerationSchema("relations").parse(generation);
+          break;
+        case "progress":
+          adoptedGenerations.progress =
+            createAiAnalysisElementGenerationSchema("progress").parse(generation);
+          break;
+        case "importance":
+          adoptedGenerations.importance =
+            createAiAnalysisElementGenerationSchema("importance").parse(generation);
+          break;
+        case "deadline":
+          adoptedGenerations.deadline =
+            createAiAnalysisElementGenerationSchema("deadline").parse(generation);
+          break;
+        case "notification":
+          adoptedGenerations.notification =
+            createAiAnalysisElementGenerationSchema("notification").parse(generation);
+          break;
+        default:
+          throw new UnreachableError(element);
+      }
+    }
+  }
+  return trackedAiAnalysisElementsForGenerations(Object.freeze(adoptedGenerations));
+}
+
+function migratedElementsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: SchemaValidCodexElementOutput | undefined,
+): TrackedItemAiAnalysisMigrationElements {
+  const saved = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId);
+  const migrated: MutablePartial<TrackedItemAiAnalysisMigrationElements> = {};
+  const generated = generatedElementsForNode(run, analysis.item.nodeId);
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const savedResult = saved[element];
+    if (savedResult?.origin !== "migration") {
+      continue;
+    }
+    const candidate = planning.candidates[element];
+    if (candidate.necessity === "not_required") {
+      continue;
+    }
+    const application =
+      reduction?.ai.status === "available"
+        ? reduction.ai.elements[element]?.application
+        : undefined;
+    const consumerResult =
+      consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
+    const generatedResult = generated[element];
+    const generatedWasConsumed =
+      generatedResult != null &&
+      consumerResult != null &&
+      hashCanonicalJson(consumerResult) === hashCanonicalJson(generatedResult.result);
+    if (application === "applied" || generatedWasConsumed) {
+      continue;
+    }
+    if (
+      currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint) !=
+      null
+    ) {
+      continue;
+    }
+    switch (element) {
+      case "status":
+        migrated.status = createAiAnalysisElementResultSchema("status").parse(savedResult.result);
+        break;
+      case "waitingOn":
+        migrated.waitingOn = createAiAnalysisElementResultSchema("waitingOn").parse(
+          savedResult.result,
+        );
+        break;
+      case "nextAction":
+        migrated.nextAction = createAiAnalysisElementResultSchema("nextAction").parse(
+          savedResult.result,
+        );
+        break;
+      case "relations":
+        migrated.relations = createAiAnalysisElementResultSchema("relations").parse(
+          savedResult.result,
+        );
+        break;
+      case "progress":
+        migrated.progress = createAiAnalysisElementResultSchema("progress").parse(
+          savedResult.result,
+        );
+        break;
+      case "importance":
+        migrated.importance = createAiAnalysisElementResultSchema("importance").parse(
+          savedResult.result,
+        );
+        break;
+      case "deadline":
+        migrated.deadline = createAiAnalysisElementResultSchema("deadline").parse(
+          savedResult.result,
+        );
+        break;
+      case "notification":
+        migrated.notification = createAiAnalysisElementResultSchema("notification").parse(
+          savedResult.result,
+        );
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze(migrated);
+}
+
+function mixedAdoptedElementsForAnalysis(
+  current: TrackedItemAiAnalysisCurrentElements,
+  migration: TrackedItemAiAnalysisMigrationElements,
+): TrackedItemAiAnalysisMigrationAdoptedElements {
+  let status: TrackedItemAiAnalysisMigrationAdoptedElement<"status"> | undefined;
+  let waitingOn: TrackedItemAiAnalysisMigrationAdoptedElement<"waitingOn"> | undefined;
+  let nextAction: TrackedItemAiAnalysisMigrationAdoptedElement<"nextAction"> | undefined;
+  let relations: TrackedItemAiAnalysisMigrationAdoptedElement<"relations"> | undefined;
+  let progress: TrackedItemAiAnalysisMigrationAdoptedElement<"progress"> | undefined;
+  let importance: TrackedItemAiAnalysisMigrationAdoptedElement<"importance"> | undefined;
+  let deadline: TrackedItemAiAnalysisMigrationAdoptedElement<"deadline"> | undefined;
+  let notification: TrackedItemAiAnalysisMigrationAdoptedElement<"notification"> | undefined;
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    switch (element) {
+      case "status":
+        if (current.status != null) {
+          status = { origin: "current", generation: current.status };
+        } else if (migration.status != null) {
+          status = { origin: "migration", result: migration.status };
+        }
+        break;
+      case "waitingOn":
+        if (current.waitingOn != null) {
+          waitingOn = { origin: "current", generation: current.waitingOn };
+        } else if (migration.waitingOn != null) {
+          waitingOn = { origin: "migration", result: migration.waitingOn };
+        }
+        break;
+      case "nextAction":
+        if (current.nextAction != null) {
+          nextAction = { origin: "current", generation: current.nextAction };
+        } else if (migration.nextAction != null) {
+          nextAction = { origin: "migration", result: migration.nextAction };
+        }
+        break;
+      case "relations":
+        if (current.relations != null) {
+          relations = { origin: "current", generation: current.relations };
+        } else if (migration.relations != null) {
+          relations = { origin: "migration", result: migration.relations };
+        }
+        break;
+      case "progress":
+        if (current.progress != null) {
+          progress = { origin: "current", generation: current.progress };
+        } else if (migration.progress != null) {
+          progress = { origin: "migration", result: migration.progress };
+        }
+        break;
+      case "importance":
+        if (current.importance != null) {
+          importance = { origin: "current", generation: current.importance };
+        } else if (migration.importance != null) {
+          importance = { origin: "migration", result: migration.importance };
+        }
+        break;
+      case "deadline":
+        if (current.deadline != null) {
+          deadline = { origin: "current", generation: current.deadline };
+        } else if (migration.deadline != null) {
+          deadline = { origin: "migration", result: migration.deadline };
+        }
+        break;
+      case "notification":
+        if (current.notification != null) {
+          notification = { origin: "current", generation: current.notification };
+        } else if (migration.notification != null) {
+          notification = { origin: "migration", result: migration.notification };
+        }
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze({
+    ...(status == null ? {} : { status }),
+    ...(waitingOn == null ? {} : { waitingOn }),
+    ...(nextAction == null ? {} : { nextAction }),
+    ...(relations == null ? {} : { relations }),
+    ...(progress == null ? {} : { progress }),
+    ...(importance == null ? {} : { importance }),
+    ...(deadline == null ? {} : { deadline }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
+function preservedElementsForReduction(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+): CodexAnalysisInput["lockedElements"] {
+  let status: AiAnalysisElementResult<"status"> | undefined;
+  let waitingOn: AiAnalysisElementResult<"waitingOn"> | undefined;
+  let nextAction: AiAnalysisElementResult<"nextAction"> | undefined;
+  let relations: AiAnalysisElementResult<"relations"> | undefined;
+  let progress: AiAnalysisElementResult<"progress"> | undefined;
+  let importance: AiAnalysisElementResult<"importance"> | undefined;
+  let deadline: AiAnalysisElementResult<"deadline"> | undefined;
+  let notification: AiAnalysisElementResult<"notification"> | undefined;
+
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const candidate = planning.candidates[element];
+    if (candidate.necessity !== "required") {
+      continue;
+    }
+    const adopted = currentAdoptedGenerationForElement(
+      state,
+      analysis,
+      element,
+      candidate.inputFingerprint,
+    );
+    const migrated = migrationAdoptedResultForElement(state, analysis, element);
+    if (adopted == null && migrated == null) {
+      continue;
+    }
+    switch (element) {
+      case "status":
+        status = createAiAnalysisElementResultSchema("status").parse(adopted?.result ?? migrated);
+        break;
+      case "waitingOn":
+        waitingOn = createAiAnalysisElementResultSchema("waitingOn").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "nextAction":
+        nextAction = createAiAnalysisElementResultSchema("nextAction").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "relations":
+        relations = createAiAnalysisElementResultSchema("relations").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "progress":
+        progress = createAiAnalysisElementResultSchema("progress").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "importance":
+        importance = createAiAnalysisElementResultSchema("importance").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "deadline":
+        deadline = createAiAnalysisElementResultSchema("deadline").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "notification":
+        notification = createAiAnalysisElementResultSchema("notification").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze({
+    ...(status == null ? {} : { status }),
+    ...(waitingOn == null ? {} : { waitingOn }),
+    ...(nextAction == null ? {} : { nextAction }),
+    ...(relations == null ? {} : { relations }),
+    ...(progress == null ? {} : { progress }),
+    ...(importance == null ? {} : { importance }),
+    ...(deadline == null ? {} : { deadline }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
+function preservedElementsForAnalysisReduction(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  codexAnalysis: CodexAnalysis,
+): CodexAnalysisInput["lockedElements"] {
+  const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
+  assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${analysis.item.nodeId}`);
+  return preservedElementsForReduction(state, analysis, planning);
+}
+
+function elementGenerationsByNodeId(
+  state: RuntimeState,
+  analyses: readonly DeterministicItemAnalysis[],
+  planningByNodeId: ReadonlyMap<GitHubNodeId, AnalysisElementPlanning>,
+  run: AiAnalysisRunResult | undefined,
+): ReadonlyMap<GitHubNodeId, AiAnalysisElementGenerationMap> {
+  const generations = new Map<GitHubNodeId, AiAnalysisElementGenerationMap>();
+  for (const analysis of analyses) {
+    generations.set(
+      analysis.item.nodeId,
+      generationsForAnalysis(state, analysis, planningByNodeId.get(analysis.item.nodeId), run),
+    );
+  }
+  return generations;
 }
 
 function countRetainedAiResults(state: RuntimeState, collection: CollectedItems): number {
@@ -3293,6 +4012,13 @@ async function analyzeCodex(
       stage: Object.freeze({
         run: undefined,
         inputByNodeId: prepared.inputByNodeId,
+        elementPlanningByNodeId: prepared.elementPlanningByNodeId,
+        elementGenerationsByNodeId: elementGenerationsByNodeId(
+          state,
+          deterministicAnalysis.items,
+          prepared.elementPlanningByNodeId,
+          undefined,
+        ),
       }),
       status: fallback ? "fallback" : "success",
       aiCallCount: 0,
@@ -3375,6 +4101,13 @@ async function analyzeCodex(
     stage: Object.freeze({
       run,
       inputByNodeId: prepared.inputByNodeId,
+      elementPlanningByNodeId: prepared.elementPlanningByNodeId,
+      elementGenerationsByNodeId: elementGenerationsByNodeId(
+        state,
+        deterministicAnalysis.items,
+        prepared.elementPlanningByNodeId,
+        run,
+      ),
     }),
     status: fallback ? "fallback" : "success",
     aiCallCount: run.usage.calls,
@@ -3430,6 +4163,78 @@ function unavailableDeadlineAssessment(): NaturalLanguageDeadlineAssessmentState
   });
 }
 
+function currentAdoptedImportanceAssessment(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+): NaturalLanguageImportanceAssessmentState | undefined {
+  const generation = currentAdoptedGenerationForElement(
+    state,
+    analysis,
+    "importance",
+    planning.candidates.importance.inputFingerprint,
+  );
+  if (generation == null) {
+    const migrated = migrationAdoptedResultForElement(state, analysis, "importance");
+    if (migrated == null) {
+      return undefined;
+    }
+    const parsed = createAiAnalysisElementResultSchema("importance").parse(migrated);
+    return Object.freeze({
+      status: "available",
+      value: Object.freeze({
+        significantFeature: parsed.value.significantFeature,
+        futureRisk: parsed.value.futureRisk,
+        rationale: parsed.value.rationale,
+      }),
+    });
+  }
+  const parsed = createAiAnalysisElementResultSchema("importance").parse(generation.result);
+  return Object.freeze({
+    status: "available",
+    value: Object.freeze({
+      significantFeature: parsed.value.significantFeature,
+      futureRisk: parsed.value.futureRisk,
+      rationale: parsed.value.rationale,
+    }),
+  });
+}
+
+function currentAdoptedDeadlineAssessment(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+): NaturalLanguageDeadlineAssessmentState | undefined {
+  const generation = currentAdoptedGenerationForElement(
+    state,
+    analysis,
+    "deadline",
+    planning.candidates.deadline.inputFingerprint,
+  );
+  if (generation == null) {
+    const migrated = migrationAdoptedResultForElement(state, analysis, "deadline");
+    if (migrated == null) {
+      return undefined;
+    }
+    const parsed = createAiAnalysisElementResultSchema("deadline").parse(migrated);
+    return Object.freeze({
+      status: "available",
+      value: Object.freeze({
+        date: parsed.value.date,
+        rationale: parsed.value.rationale,
+      }),
+    });
+  }
+  const parsed = createAiAnalysisElementResultSchema("deadline").parse(generation.result);
+  return Object.freeze({
+    status: "available",
+    value: Object.freeze({
+      date: parsed.value.date,
+      rationale: parsed.value.rationale,
+    }),
+  });
+}
+
 function deadlineLevelForAssessment(
   assessment: NaturalLanguageDeadlineAssessmentState,
   evaluatedAt: UtcIsoDateTime,
@@ -3447,46 +4252,27 @@ function deadlineLevelForAssessment(
 
 function resolveImportanceAssessment(
   current: NaturalLanguageImportanceAssessmentState | undefined,
-  previous: NaturalLanguageImportanceAssessmentState | undefined,
+  adopted: NaturalLanguageImportanceAssessmentState | undefined,
 ): NaturalLanguageImportanceAssessmentState {
   if (current?.status === "available") {
     return current;
   }
-  return previous ?? unavailableImportanceAssessment();
+  return adopted ?? unavailableImportanceAssessment();
 }
 
 function resolveDeadlineAssessment(
   current: NaturalLanguageDeadlineAssessmentState | undefined,
-  previous: NaturalLanguageDeadlineAssessmentState | undefined,
+  adopted: NaturalLanguageDeadlineAssessmentState | undefined,
 ): NaturalLanguageDeadlineAssessmentState {
   if (current?.status === "available") {
     return current;
   }
-  return previous ?? unavailableDeadlineAssessment();
-}
-
-function preserveDeterministicUnassignedIssueDecision(
-  analysis: DeterministicItemAnalysis,
-  output: ValidatedCodexAnalysisOutput,
-  reduction: CodexAnalysisReduction,
-): CodexAnalysisReduction {
-  if (
-    analysis.item.type !== "issue" ||
-    analysis.item.state !== "open" ||
-    analysis.item.assignees.length !== 0 ||
-    output.status !== "waiting_for_work" ||
-    analysis.decision.status === "waiting_for_work"
-  ) {
-    return reduction;
-  }
-  return Object.freeze({
-    ...reduction,
-    decision: reducedDeterministicDecision(analysis.decision),
-  });
+  return adopted ?? unavailableDeadlineAssessment();
 }
 
 function reductionForAnalysis(
   configuration: RuntimeConfiguration,
+  state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
 ): CodexAnalysisReduction | undefined {
@@ -3498,16 +4284,18 @@ function reductionForAnalysis(
   const result = run.results.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (result != null) {
     assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
-    const reduction = reduceCodexAnalysis(
+    const output = codexOutputForAnalysis(analysis, codexAnalysis);
+    assertNonNullable(output, `Codex出力がありません。対象: ${analysis.item.nodeId}`);
+    return reduceCodexAnalysis(
       input,
       deterministicCodexDecision(analysis.decision),
       {
         status: "validated",
-        output: result.output,
+        output,
       },
       configuration.config.ai.confidence,
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
     );
-    return preserveDeterministicUnassignedIssueDecision(analysis, result.output, reduction);
   }
   const failure = run.failures.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (failure != null) {
@@ -3536,6 +4324,7 @@ function reductionForAnalysis(
         errorType: failure.errorType,
       },
       configuration.config.ai.confidence,
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
     );
   }
   const deferred = run.deferred.find((candidate) => candidate.candidateId === analysis.item.nodeId);
@@ -3550,6 +4339,7 @@ function reductionForAnalysis(
         errorType: `CodexBudgetDeferred:${deferred.reason}`,
       },
       configuration.config.ai.confidence,
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
     );
   }
   return undefined;
@@ -3558,10 +4348,119 @@ function reductionForAnalysis(
 function codexOutputForAnalysis(
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
-): ValidatedCodexAnalysisOutput | undefined {
-  return codexAnalysis.run?.results.find(
+): SchemaValidCodexElementOutput | undefined {
+  const result = codexAnalysis.run?.results.find(
     (candidate) => candidate.candidateId === analysis.item.nodeId,
-  )?.output;
+  );
+  if (result == null) {
+    return undefined;
+  }
+  const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
+  assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
+  const output: Record<string, unknown> = {
+    schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+    item: {
+      nodeId: input.item.nodeId,
+      url: input.item.url,
+    },
+  };
+  for (const element of result.elements) {
+    output[element.element] = element.generation.result;
+  }
+  return validateCodexElementOutputSchema(output, input.selectedElements);
+}
+
+function codexElementResult(
+  output: SchemaValidCodexElementOutput,
+  element: AiAnalysisElement,
+): AiAnalysisElementResult | undefined {
+  switch (element) {
+    case "status":
+      return output.status;
+    case "waitingOn":
+      return output.waitingOn;
+    case "nextAction":
+      return output.nextAction;
+    case "relations":
+      return output.relations;
+    case "progress":
+      return output.progress;
+    case "importance":
+      return output.importance;
+    case "deadline":
+      return output.deadline;
+    case "notification":
+      return output.notification;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+function codexOutputForConsumers(
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  codexAnalysis: CodexAnalysis,
+): SchemaValidCodexElementOutput | undefined {
+  const rawOutput = codexOutputForAnalysis(analysis, codexAnalysis);
+  const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
+  const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
+  if (input == null || planning == null) {
+    return rawOutput;
+  }
+  const rawResults = new Map<AiAnalysisElement, AiAnalysisElementResult>();
+  if (rawOutput != null) {
+    for (const element of AI_ANALYSIS_ELEMENTS) {
+      const result = codexElementResult(rawOutput, element);
+      if (result != null) {
+        rawResults.set(element, result);
+      }
+    }
+  }
+  const deterministicStatePriority =
+    (analysis.decision.determination === "determined" &&
+      planning.necessities.status === "not_required" &&
+      planning.necessities.waitingOn === "not_required" &&
+      planning.necessities.nextAction === "not_required") ||
+    listNativeRelationConstraints(input).some(
+      (constraint) => constraint.verdict === "current_is_blocked_by_target",
+    );
+  const output: Record<string, unknown> = {
+    schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+    item: {
+      nodeId: input.item.nodeId,
+      url: input.item.url,
+    },
+  };
+  const outputElements: AiAnalysisElement[] = [];
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const candidate = planning.candidates[element];
+    const raw = rawResults.get(element);
+    const adopted =
+      candidate.necessity === "required"
+        ? currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint)
+        : undefined;
+    const migrated =
+      candidate.necessity === "required"
+        ? migrationAdoptedResultForElement(state, analysis, element)
+        : undefined;
+    const stateElement =
+      element === "status" || element === "waitingOn" || element === "nextAction";
+    const result =
+      (raw != null &&
+      effectiveElementConfidence(element, raw) >= configuration.config.ai.confidence.medium &&
+      !(deterministicStatePriority && stateElement)
+        ? raw
+        : (adopted?.result ?? migrated)) ?? undefined;
+    if (result != null) {
+      output[element] = result;
+      outputElements.push(element);
+    }
+  }
+  if (outputElements.length === 0) {
+    return undefined;
+  }
+  return validateCodexElementOutputSchema(output, outputElements);
 }
 
 function nonEmptySourceIds(
@@ -3588,20 +4487,36 @@ function sourceIdSetsMatch(left: readonly SourceId[], right: readonly SourceId[]
   );
 }
 
+function outputSourceIds(
+  sourceIds: readonly string[],
+  context: string,
+): readonly [SourceId, ...SourceId[]] {
+  return nonEmptySourceIds(
+    sourceIds.map((sourceId) => {
+      const parts = parseSourceId(sourceId);
+      return buildSourceId(parts.kind, parts.originalId);
+    }),
+    context,
+  );
+}
+
 function createEffectiveAssigneeAssessment(
   configuration: RuntimeConfiguration,
   evaluatedAt: UtcIsoDateTime,
   analysis: DeterministicItemAnalysis,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: SchemaValidCodexElementOutput | undefined,
 ): IssueEffectiveAssigneeAssessment {
   if (
     analysis.item.type !== "issue" ||
     analysis.item.state !== "open" ||
     analysis.item.assignees.length !== 0 ||
     analysis.effectiveAssigneeCandidates.length === 0 ||
-    output?.status !== "waiting_for_work" ||
-    output.waitingOn.length === 0 ||
-    output.confidence < configuration.config.ai.confidence.high
+    output?.status == null ||
+    output.waitingOn == null ||
+    output.status.value !== "waiting_for_work" ||
+    output.waitingOn.value.length === 0 ||
+    output.status.confidence < configuration.config.ai.confidence.high ||
+    output.waitingOn.confidence < configuration.config.ai.confidence.high
   ) {
     return Object.freeze({
       status: "not_assessed",
@@ -3616,7 +4531,7 @@ function createEffectiveAssigneeAssessment(
   );
   const targets: IssueEffectiveAssigneeTarget[] = [];
   const targetIds = new Set<string>();
-  for (const waitingOn of output.waitingOn) {
+  for (const waitingOn of output.waitingOn.value) {
     if (
       waitingOn.kind !== "user" ||
       waitingOn.role !== "assignee" ||
@@ -3644,7 +4559,11 @@ function createEffectiveAssigneeAssessment(
         status: "not_assessed",
       });
     }
-    if (!sourceIdSetsMatch(waitingOn.sourceIds, candidate.sourceIds)) {
+    const sourceIds = outputSourceIds(
+      waitingOn.sourceIds,
+      `実質担当判定 ${waitingOn.candidateId}のsource ID`,
+    );
+    if (!sourceIdSetsMatch(sourceIds, candidate.sourceIds)) {
       return Object.freeze({
         status: "not_assessed",
       });
@@ -3653,7 +4572,7 @@ function createEffectiveAssigneeAssessment(
       Object.freeze({
         kind: "user",
         candidateId: waitingOn.candidateId,
-        sourceIds: waitingOn.sourceIds,
+        sourceIds,
         confidence: waitingOn.confidence,
       }),
     );
@@ -3680,7 +4599,11 @@ function createEffectiveAssigneeAssessment(
   if (occurredAt > evaluatedAt) {
     throw new RangeError("実質担当判定の根拠時刻は判定時刻以前にしてください");
   }
-  const confidence = Math.min(output.confidence, ...targets.map((target) => target.confidence));
+  const confidence = Math.min(
+    output.status.confidence,
+    output.waitingOn.confidence,
+    ...targets.map((target) => target.confidence),
+  );
   if (confidence < configuration.config.ai.confidence.high) {
     return Object.freeze({
       status: "not_assessed",
@@ -3705,10 +4628,11 @@ function createEffectiveAssigneeAssessment(
 function explicitRequestAssessment(
   item: Extract<FreshObservedGitHubItem, Readonly<{ type: "issue" }>>,
   detail: Extract<GitHubItemDetail, Readonly<{ type: "issue" }>>,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: SchemaValidCodexElementOutput | undefined,
 ): IssueExplicitRequestAssessment {
   const candidates = createIssueRequestCandidates(item, detail);
-  if (output == null || candidates.length === 0) {
+  const waitingOnResult = output?.waitingOn;
+  if (waitingOnResult == null || candidates.length === 0) {
     return Object.freeze({
       status: "not_assessed",
     });
@@ -3724,7 +4648,11 @@ function explicitRequestAssessment(
       candidate,
     ]),
   );
-  const targets: IssueExplicitRequestTarget[] = output.waitingOn.flatMap((waitingOn) => {
+  const targets: IssueExplicitRequestTarget[] = waitingOnResult.value.flatMap((waitingOn) => {
+    const sourceIds = outputSourceIds(
+      waitingOn.sourceIds,
+      `明示依頼 ${waitingOn.candidateId}のsource ID`,
+    );
     if (waitingOn.kind !== "user" && waitingOn.kind !== "team") {
       return [];
     }
@@ -3733,7 +4661,7 @@ function explicitRequestAssessment(
     );
     if (
       mentioned == null ||
-      !waitingOn.sourceIds.some((sourceId) => mentioned.sourceIds.includes(sourceId))
+      !sourceIds.some((sourceId) => mentioned.sourceIds.includes(sourceId))
     ) {
       return [];
     }
@@ -3748,8 +4676,8 @@ function explicitRequestAssessment(
         kind: waitingOn.kind,
         candidateId: waitingOn.candidateId,
         role,
-        sourceIds: waitingOn.sourceIds,
-        confidence: Math.min(output.confidence, waitingOn.confidence),
+        sourceIds,
+        confidence: Math.min(waitingOnResult.confidence, waitingOn.confidence),
       }),
     ];
   });
@@ -3758,7 +4686,7 @@ function explicitRequestAssessment(
       status: "assessed",
       candidateSourceIds,
       verdict: "no_unanswered_request",
-      confidence: output.confidence,
+      confidence: waitingOnResult.confidence,
       sourceIds: candidateSourceIds,
     });
   }
@@ -3785,7 +4713,10 @@ function explicitRequestAssessment(
       IssueExplicitRequestTarget,
       ...IssueExplicitRequestTarget[],
     ]),
-    confidence: Math.min(output.confidence, ...latestTargets.map((target) => target.confidence)),
+    confidence: Math.min(
+      waitingOnResult.confidence,
+      ...latestTargets.map((target) => target.confidence),
+    ),
     sourceIds: nonEmptySourceIds(
       latestTargets.flatMap((target) => target.sourceIds),
       "未回答の明示依頼判定",
@@ -3822,21 +4753,22 @@ function checkFailureSourceIds(
 
 function checkFailureAssessment(
   detail: Extract<GitHubItemDetail, Readonly<{ type: "pull_request" }>>,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: SchemaValidCodexElementOutput | undefined,
 ): PullRequestCheckFailureAssessment {
   const sourceIds = checkFailureSourceIds(detail);
-  if (sourceIds == null || output == null) {
+  if (sourceIds == null || output?.status == null || output.waitingOn == null) {
     return Object.freeze({
       cause: "not_assessed",
     });
   }
   const effectiveConfidence = Math.min(
-    output.confidence,
-    ...output.waitingOn.map((waitingOn) => waitingOn.confidence),
+    output.status.confidence,
+    output.waitingOn.confidence,
+    ...output.waitingOn.value.map((waitingOn) => waitingOn.confidence),
   );
   const authorAction =
-    output.status === "waiting_for_revision" ||
-    output.waitingOn.some((waitingOn) => waitingOn.role === "author");
+    output.status.value === "waiting_for_revision" ||
+    output.waitingOn.value.some((waitingOn) => waitingOn.role === "author");
   if (authorAction) {
     return Object.freeze({
       cause: "pull_request_change",
@@ -3845,10 +4777,10 @@ function checkFailureAssessment(
     });
   }
   const infrastructureOrFlaky =
-    output.status === "waiting_for_automation" ||
-    output.status === "waiting_for_decision" ||
-    output.status === "unknown" ||
-    output.waitingOn.some(
+    output.status.value === "waiting_for_automation" ||
+    output.status.value === "waiting_for_decision" ||
+    output.status.value === "unknown" ||
+    output.waitingOn.value.some(
       (waitingOn) =>
         waitingOn.kind === "automation" ||
         waitingOn.kind === "unknown" ||
@@ -3865,9 +4797,10 @@ function checkFailureAssessment(
 
 function naturalLanguageProgressAssessments(
   analysis: DeterministicItemAnalysis,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: SchemaValidCodexElementOutput | undefined,
 ): readonly NaturalLanguageProgressAssessment[] {
-  if (output == null) {
+  const progressResult = output?.progress;
+  if (progressResult == null) {
     return Object.freeze([]);
   }
   return Object.freeze(
@@ -3877,10 +4810,10 @@ function naturalLanguageProgressAssessments(
         Object.freeze({
           candidateSourceId: event.sourceId,
           verdict:
-            output.progress.latestMeaningfulSourceId === event.sourceId
+            progressResult.value.latestMeaningfulSourceId === event.sourceId
               ? "meaningful_progress"
               : "not_meaningful_progress",
-          confidence: Math.min(output.confidence, output.progress.confidence),
+          confidence: Math.min(progressResult.confidence, progressResult.value.confidence),
           sourceIds: Object.freeze([event.sourceId] satisfies [SourceId]),
         }),
       ),
@@ -3975,7 +4908,7 @@ function reassessDeterministicAnalysis(
   inventory: RepositoryInventory,
   deterministicAnalysis: DeterministicAnalysis,
   analysis: DeterministicItemAnalysis,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: SchemaValidCodexElementOutput | undefined,
   graph: GraphResult | undefined,
 ): DeterministicItemAnalysis {
   const repository = findRepository(inventory, analysis.item.repositoryId);
@@ -4312,29 +5245,17 @@ function transitionBasisForDecision(
 function previousStalenessState(
   state: RuntimeState,
   nodeId: GitHubNodeId,
-  itemType: TrackedItem["type"],
 ): Parameters<typeof calculateStaleness>[0]["previousState"] {
   const snapshot = previousSnapshot(state);
   const previous = snapshot?.items.find((item) => item.nodeId === nodeId);
-  const previousCollectionItem = snapshot?.collection.repositories
-    .flatMap((repository) => repository.items)
-    .find((item) => item.nodeId === nodeId);
-  const previousRulesVersion = previousCollectionItem?.deterministicRulesVersion;
-  if (
-    previous == null ||
-    previousRulesVersion == null ||
-    previousRulesVersion.status === "unavailable"
-  ) {
+  if (previous == null) {
     return Object.freeze({
       availability: "not_available",
     });
   }
   return Object.freeze({
     availability: "available",
-    stallSincePolicy:
-      previousRulesVersion.version === CURRENT_DETERMINISTIC_RULES_VERSIONS[itemType]
-        ? "inherit"
-        : "recalculate",
+    stallSincePolicy: "inherit",
     value: Object.freeze({
       status: previous.status,
       waitingOn: previous.waitingOn,
@@ -4423,50 +5344,87 @@ function trackedItemInputEvents(
 }
 
 function trackedItemAiAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
-  nodeId: GitHubNodeId,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: SchemaValidCodexElementOutput | undefined,
 ): TrackedItemAiAnalysis {
+  const nodeId = analysis.item.nodeId;
+  const generations = codexAnalysis.elementGenerationsByNodeId.get(nodeId);
+  assertNonNullable(generations, `AI判定要素の保存結果がありません。対象: ${nodeId}`);
+  const elements = trackedAiAnalysisElementsForGenerations(generations);
+  const planning = codexAnalysis.elementPlanningByNodeId.get(nodeId);
+  assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${nodeId}`);
+  const adoptedElements = adoptedElementsForAnalysis(
+    state,
+    analysis,
+    planning,
+    codexAnalysis.run,
+    reduction,
+    consumerOutput,
+  );
   const run = codexAnalysis.run;
+  let status: TrackedItemAiAnalysis["status"];
   if (run == null) {
-    return Object.freeze({
-      status: "disabled",
-    });
+    status = "disabled";
+  } else {
+    const result = run.results.find((candidate) => candidate.candidateId === nodeId);
+    if (result != null) {
+      status = "used";
+    } else {
+      const failure = run.failures.find((candidate) => candidate.candidateId === nodeId);
+      if (failure != null) {
+        status = "failed";
+      } else {
+        const deferred = run.deferred.find((candidate) => candidate.candidateId === nodeId);
+        if (deferred != null) {
+          status = "deferred";
+        } else {
+          const skipped = run.skipped.find((candidate) => candidate.candidateId === nodeId);
+          assertNonNullable(skipped, `Codex分析候補の分類がありません。対象: ${nodeId}`);
+          const hasNotRequiredElement = planning.selection.skipped.some(
+            (element) => element.reason === "not_required",
+          );
+          status =
+            hasNotRequiredElement || skipped.reason === "not_required" ? "not_required" : "used";
+        }
+      }
+    }
   }
-  const result = run.results.find((candidate) => candidate.candidateId === nodeId);
-  if (result != null) {
+  const migratedElements = migratedElementsForAnalysis(
+    state,
+    analysis,
+    planning,
+    run,
+    reduction,
+    consumerOutput,
+  );
+  if (Object.keys(migratedElements).length !== 0) {
     return Object.freeze({
-      status: "used",
-      cacheKey: result.cacheKey,
+      origin: "migration",
+      status,
+      elements,
+      adoptedElements: mixedAdoptedElementsForAnalysis(adoptedElements, migratedElements),
     });
-  }
-  const failure = run.failures.find((candidate) => candidate.candidateId === nodeId);
-  if (failure != null) {
-    return Object.freeze({
-      status: "failed",
-    });
-  }
-  const deferred = run.deferred.find((candidate) => candidate.candidateId === nodeId);
-  if (deferred != null) {
-    return Object.freeze({
-      status: "deferred",
-    });
-  }
-  const skipped = run.skipped.find((candidate) => candidate.candidateId === nodeId);
-  assertNonNullable(skipped, `Codex分析候補の分類がありません。対象: ${nodeId}`);
-  if (skipped.reason === "unchanged") {
-    throw new TypeError("未変更項目のCodex cache結果がありません");
   }
   return Object.freeze({
-    status: "not_required",
+    origin: "current",
+    status,
+    elements,
+    adoptedElements,
   });
 }
 
 function createTrackedItem(
+  state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   decision: ReducedCodexDecision,
   primaryWaitingOn: PrimaryWaitingOn,
   staleness: StalenessResult,
   codexAnalysis: CodexAnalysis,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: SchemaValidCodexElementOutput | undefined,
 ): PendingTrackedItem {
   const commonFields = {
     nodeId: analysis.item.nodeId,
@@ -4500,7 +5458,7 @@ function createTrackedItem(
       analysis.item.type === "issue"
         ? "not_applicable"
         : aggregatePullRequestCheckState(analysis.item.mergeState),
-    aiAnalysis: trackedItemAiAnalysis(codexAnalysis, analysis.item.nodeId),
+    aiAnalysis: trackedItemAiAnalysis(state, analysis, codexAnalysis, reduction, consumerOutput),
     inputEvents: trackedItemInputEvents(analysis),
     confidence: decision.confidence,
     evidence: decision.evidence,
@@ -4654,16 +5612,9 @@ function reduceAnalysisPass(
   const items: PendingTrackedItem[] = [];
   const stalenessByNodeId = new Map<GitHubNodeId, TrackedItemStaleness>();
   const relationAssessments: RelationCandidateAssessment[] = [];
-  const previousSnapshotItems = previousSnapshot(state)?.items ?? [];
-  const previousImportanceAssessmentByNodeId = new Map(
-    previousSnapshotItems.map((item) => [item.nodeId, item.importanceAssessment]),
-  );
-  const previousDeadlineAssessmentByNodeId = new Map(
-    previousSnapshotItems.map((item) => [item.nodeId, item.deadlineAssessment]),
-  );
   let runStatus: ReducedAnalysis["runStatus"] = "success";
   for (const originalAnalysis of deterministicAnalysis.items) {
-    const output = codexOutputForAnalysis(originalAnalysis, codexAnalysis);
+    const output = codexOutputForConsumers(configuration, state, originalAnalysis, codexAnalysis);
     const analysis = reassessDeterministicAnalysis(
       collection.evaluatedAt,
       configuration,
@@ -4674,7 +5625,9 @@ function reduceAnalysisPass(
       output,
       graph,
     );
-    const reduction = reductionForAnalysis(configuration, analysis, codexAnalysis);
+    const reduction = reductionForAnalysis(configuration, state, analysis, codexAnalysis);
+    const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
+    assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${analysis.item.nodeId}`);
     const decision = reduction?.decision ?? reducedDeterministicDecision(analysis.decision);
     const primaryWaitingOn = primaryWaitingOnForDecision(analysis.decision, decision);
     if (reduction?.ai.status === "unavailable") {
@@ -4695,7 +5648,7 @@ function reduceAnalysisPass(
         responsibilityBasis: basis.responsibilityBasis,
       },
       decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
-      previousState: previousStalenessState(state, analysis.item.nodeId, analysis.item.type),
+      previousState: previousStalenessState(state, analysis.item.nodeId),
       events: analysis.item.events,
       responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
       dependencyResolutions: dependencyResolutions(
@@ -4731,16 +5684,27 @@ function reduceAnalysisPass(
         staleness,
         importanceAssessment: resolveImportanceAssessment(
           reduction?.importanceAssessment,
-          previousImportanceAssessmentByNodeId.get(analysis.item.nodeId),
+          currentAdoptedImportanceAssessment(state, analysis, planning),
         ),
         deadlineAssessment: resolveDeadlineAssessment(
           reduction?.deadlineAssessment,
-          previousDeadlineAssessmentByNodeId.get(analysis.item.nodeId),
+          currentAdoptedDeadlineAssessment(state, analysis, planning),
         ),
       }),
     );
     stalenessByNodeId.set(analysis.item.nodeId, trackedItemStaleness(staleness));
-    items.push(createTrackedItem(analysis, decision, primaryWaitingOn, staleness, codexAnalysis));
+    items.push(
+      createTrackedItem(
+        state,
+        analysis,
+        decision,
+        primaryWaitingOn,
+        staleness,
+        codexAnalysis,
+        reduction,
+        output,
+      ),
+    );
   }
   const currentNodeIds = new Set(items.map((item) => item.nodeId));
   const currentRepositoryIds = new Set<string>(
@@ -5537,14 +6501,12 @@ function validateRunCompleteness(
     reduction.currentItems.map((analysis) => [analysis.item.nodeId, analysis]),
   );
   const previousSnapshotItems = previousSnapshot(state)?.items ?? [];
-  const previousImportanceAssessmentByNodeId = new Map(
-    previousSnapshotItems.map((item) => [item.nodeId, item.importanceAssessment]),
-  );
-  const previousDeadlineAssessmentByNodeId = new Map(
-    previousSnapshotItems.map((item) => [item.nodeId, item.deadlineAssessment]),
+  const previousSnapshotItemByNodeId = new Map(
+    previousSnapshotItems.map((item) => [item.nodeId, item]),
   );
   const items = reduction.items.map((item) => {
     const currentAnalysis = currentAnalysisByNodeId.get(item.nodeId);
+    const previousItem = previousSnapshotItemByNodeId.get(item.nodeId);
     return createTrackedItemWithImportance(
       configuration,
       inventory,
@@ -5552,112 +6514,29 @@ function validateRunCompleteness(
       resolveLabelEffects,
       item,
       resolveImportanceAssessment(
-        currentAnalysis?.importanceAssessment,
-        previousImportanceAssessmentByNodeId.get(item.nodeId),
+        currentAnalysis?.importanceAssessment ?? previousItem?.importanceAssessment,
+        undefined,
       ),
       resolveDeadlineAssessment(
-        currentAnalysis?.deadlineAssessment,
-        previousDeadlineAssessmentByNodeId.get(item.nodeId),
+        currentAnalysis?.deadlineAssessment ?? previousItem?.deadlineAssessment,
+        undefined,
       ),
     );
   });
-  const previousCollectionItems = previousCollectionItemsByNodeId(state);
-  const aiFingerprintByNodeId = new Map(
-    (codexAnalysis.run?.results ?? []).map((result) => [
-      result.candidateId,
-      Object.freeze({
-        status: "available",
-        fingerprint: result.fingerprint,
-      }),
-    ]),
-  );
-  const observedItemsByNodeId = new Map(
-    collection.observedItems.map((item) => [item.nodeId, item]),
-  );
-  const analysisRulesFingerprintByNodeId = new Map(
-    [...collection.analysisNodeIds].map((nodeId) => {
-      const item = observedItemsByNodeId.get(nodeId);
-      assertNonNullable(item, `再判定対象の観測項目がありません。対象: ${nodeId}`);
-      const resultFingerprint = aiFingerprintByNodeId.get(nodeId);
-      const fingerprint =
-        resultFingerprint == null
-          ? createAnalysisRulesFingerprint(
-              item.type,
-              createAiAnalysisRunIdentity(configuration.config),
-            )
-          : createAnalysisRulesFingerprintFromIdentityHash(
-              item.type,
-              resultFingerprint.fingerprint.identityHash,
-            );
-      return [
-        nodeId,
-        Object.freeze({
-          status: "available",
-          fingerprint,
-        }),
-      ] as const;
-    }),
-  );
-  const deterministicRulesVersionByNodeId = new Map(
-    [...collection.analysisNodeIds].map((nodeId) => {
-      const item = observedItemsByNodeId.get(nodeId);
-      assertNonNullable(item, `再判定対象の観測項目がありません。対象: ${nodeId}`);
-      return [
-        nodeId,
-        Object.freeze({
-          status: "available",
-          version: CURRENT_DETERMINISTIC_RULES_VERSIONS[item.type],
-        }),
-      ] as const;
-    }),
-  );
-  const persistedAiFingerprintNodeIds = new Set<string>();
-  const persistedAnalysisRulesFingerprintNodeIds = new Set<string>();
-  const persistedDeterministicRulesVersionNodeIds = new Set<string>();
+  const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
-    schemaVersion: "10",
+    schemaVersion: "11",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
     collection: {
-      repositories: collection.collectionRepositories.map((repository) => ({
-        ...repository,
-        items: repository.items.map((item) => {
-          const currentAiFingerprint = aiFingerprintByNodeId.get(item.nodeId);
-          if (currentAiFingerprint != null) {
-            persistedAiFingerprintNodeIds.add(item.nodeId);
-          }
-          const previousItem = previousCollectionItems.get(item.nodeId);
-          const currentAnalysisRulesFingerprint = analysisRulesFingerprintByNodeId.get(item.nodeId);
-          if (currentAnalysisRulesFingerprint != null) {
-            persistedAnalysisRulesFingerprintNodeIds.add(item.nodeId);
-          }
-          const currentDeterministicRulesVersion = deterministicRulesVersionByNodeId.get(
-            item.nodeId,
-          );
-          if (currentDeterministicRulesVersion != null) {
-            persistedDeterministicRulesVersionNodeIds.add(item.nodeId);
-          }
-          return {
-            ...item,
-            aiAnalysisFingerprint:
-              currentAiFingerprint ??
-              (previousItem == null
-                ? item.aiAnalysisFingerprint
-                : previousItem.aiAnalysisFingerprint),
-            analysisRulesFingerprint:
-              currentAnalysisRulesFingerprint ??
-              (previousItem == null
-                ? item.analysisRulesFingerprint
-                : previousItem.analysisRulesFingerprint),
-            deterministicRulesVersion:
-              currentDeterministicRulesVersion ??
-              (previousItem == null
-                ? item.deterministicRulesVersion
-                : previousItem.deterministicRulesVersion),
-          };
-        }),
-      })),
+      repositories: validatedCollectionRepositories(
+        state,
+        configuration,
+        collection,
+        codexAnalysis,
+        itemsByNodeId,
+      ),
     },
     repositories: snapshotRepositories(collection),
     items: items.map((item) => {
@@ -5691,21 +6570,6 @@ function validateRunCompleteness(
       complete: true,
     },
   });
-  for (const nodeId of aiFingerprintByNodeId.keys()) {
-    if (!persistedAiFingerprintNodeIds.has(nodeId)) {
-      throw new TypeError(`AI分析fingerprintの保存対象項目がありません。対象: ${nodeId}`);
-    }
-  }
-  for (const nodeId of analysisRulesFingerprintByNodeId.keys()) {
-    if (!persistedAnalysisRulesFingerprintNodeIds.has(nodeId)) {
-      throw new TypeError(`判定規則fingerprintの保存対象項目がありません。対象: ${nodeId}`);
-    }
-  }
-  for (const nodeId of deterministicRulesVersionByNodeId.keys()) {
-    if (!persistedDeterministicRulesVersionNodeIds.has(nodeId)) {
-      throw new TypeError(`決定規則versionの保存対象項目がありません。対象: ${nodeId}`);
-    }
-  }
   const notificationInput = {
     evaluatedAt: collection.evaluatedAt,
     items: notificationItems(configuration, state, inventory, collection, reduction, graph),
@@ -5725,25 +6589,33 @@ function validateRunCompleteness(
     notificationAction === "acknowledge-current"
       ? createAcknowledgedNotificationLedgerEntries(notificationInput)
       : Object.freeze([]);
-  const notificationSelection: DiscordNotificationSelection =
-    notificationAction === "acknowledge-current"
-      ? (() => {
-          const recalculatedSelection = selectDiscordNotifications(notificationInput);
-          const acknowledgedKeys = new Set(
-            acknowledgedNotificationLedgerEntries.map((entry) => entry.notificationKey),
-          );
-          const pendingNotifications = recalculatedSelection.pendingNotifications.filter(
-            (pending) => !acknowledgedKeys.has(pending.notificationKey),
-          );
-          return Object.freeze({
-            action: "skip_digest",
-            reason: "no_candidates",
-            candidates: emptyCandidates,
-            ledgerReservations: emptyLedgerReservations,
-            pendingNotifications: Object.freeze(pendingNotifications),
-          });
-        })()
-      : selectDiscordNotifications(notificationInput);
+  const recalculatedSelection = selectDiscordNotifications(notificationInput);
+  let notificationSelection: DiscordNotificationSelection;
+  if (notificationAction === "acknowledge-current") {
+    const acknowledgedKeys = new Set(
+      acknowledgedNotificationLedgerEntries.map((entry) => entry.notificationKey),
+    );
+    const pendingNotifications = recalculatedSelection.pendingNotifications.filter(
+      (pending) => !acknowledgedKeys.has(pending.notificationKey),
+    );
+    notificationSelection = Object.freeze({
+      action: "skip_digest",
+      reason: "no_candidates",
+      candidates: emptyCandidates,
+      ledgerReservations: emptyLedgerReservations,
+      pendingNotifications: Object.freeze(pendingNotifications),
+    });
+  } else if (notificationAction === "hold") {
+    notificationSelection = Object.freeze({
+      action: "skip_digest",
+      reason: "held",
+      candidates: emptyCandidates,
+      ledgerReservations: emptyLedgerReservations,
+      pendingNotifications: recalculatedSelection.pendingNotifications,
+    });
+  } else {
+    notificationSelection = recalculatedSelection;
+  }
   const notificationLedgerEntriesToMerge =
     notificationAction === "acknowledge-current"
       ? acknowledgedNotificationLedgerEntries
@@ -5843,7 +6715,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "9",
+    schemaVersion: "10",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -6286,7 +7158,7 @@ function filterNotificationSelectionForLedger(
   if (selection.action === "skip_digest") {
     return Object.freeze({
       action: "skip_digest",
-      reason: "no_candidates",
+      reason: selection.reason,
       candidates: emptyCandidates,
       ledgerReservations: emptyReservations,
       pendingNotifications,
@@ -6983,21 +7855,21 @@ async function collectFreshRepositoryItemObservations(
   adjacentNodeIds: ReadonlySet<GitHubNodeId>,
 ): Promise<FreshRepositoryItemCollection> {
   const allowlist = createPublicRepositoryAllowlist([repository]);
+  const identity = createAiAnalysisRunIdentity(configuration.config);
   const currentNodeIds = new Set(enumeratedItems.map((item) => item.nodeId));
   const previousAiAnalysisStatusesByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map(
       (item) => [item.nodeId, item.aiAnalysis.status] as const,
     ),
   );
+  const currentAnalysisPlanFingerprintsByNodeId = new Map(
+    enumeratedItems.map((item) => [item.nodeId, analysisPlanFingerprintForItem(item, identity)]),
+  );
   const plan = planIncrementalItemCollection({
     items: enumeratedItems,
     previous: previousItemCollection(state, repository),
     previousAiAnalysisStatusesByNodeId,
-    currentAnalysisRulesFingerprints: createCurrentAnalysisRulesFingerprints(
-      configuration.config,
-      enumeratedItems,
-      state,
-    ),
+    currentAnalysisPlanFingerprintsByNodeId,
     adjacentItemNodeIds: new Set(
       [...adjacentNodeIds].filter((nodeId) => currentNodeIds.has(nodeId)),
     ),
@@ -7029,6 +7901,7 @@ async function collectFreshRepositoryItemObservations(
     details,
     observedItems,
     changedNodeIds: plan.changedItemNodeIds,
+    analysisPlanChangedNodeIds: plan.analysisPlanChangedItemNodeIds,
   });
 }
 
@@ -7161,6 +8034,10 @@ async function collectAdditionalRelationItems(
     (item) => item.nodeId,
   );
   const changedNodeIds = new Set([...current.changedNodeIds, ...additions.changedNodeIds]);
+  const analysisPlanChangedNodeIds = new Set([
+    ...current.analysisPlanChangedNodeIds,
+    ...additions.analysisPlanChangedNodeIds,
+  ]);
   return Object.freeze({
     state: createSnapshotCollectionRepository(
       repository,
@@ -7171,6 +8048,7 @@ async function collectAdditionalRelationItems(
     details: mergedDetails,
     observedItems: mergedObservedItems,
     changedNodeIds: Object.freeze([...changedNodeIds]),
+    analysisPlanChangedNodeIds: Object.freeze([...analysisPlanChangedNodeIds]),
   });
 }
 
@@ -7182,6 +8060,7 @@ function aggregateFreshRepositoryCollections(
   const details: GitHubItemDetail[] = [];
   const observedItems: FreshObservedGitHubItem[] = [];
   const changedNodeIds = new Set<GitHubNodeId>();
+  const analysisPlanChangedNodeIds = new Set<GitHubNodeId>();
   for (const repository of allowlist.repositories) {
     const collection = freshCollectionsByRepositoryId.get(repository.id);
     if (collection == null) {
@@ -7193,12 +8072,16 @@ function aggregateFreshRepositoryCollections(
     for (const nodeId of collection.changedNodeIds) {
       changedNodeIds.add(nodeId);
     }
+    for (const nodeId of collection.analysisPlanChangedNodeIds) {
+      analysisPlanChangedNodeIds.add(nodeId);
+    }
   }
   return Object.freeze({
     enumeratedItems: deduplicateByStableId(enumeratedItems, (item) => item.nodeId),
     details: deduplicateByStableId(details, (detail) => detail.nodeId),
     observedItems: deduplicateByStableId(observedItems, (item) => item.nodeId),
     changedNodeIds,
+    analysisPlanChangedNodeIds,
   });
 }
 
@@ -7693,6 +8576,105 @@ function finalizeRepositoryCollectionResult(
   return result;
 }
 
+function analysisPlanFingerprintForValidatedCollectionItem(
+  item: SnapshotCollectionItem,
+  currentItem: EnumeratedGitHubItem,
+  previousItem: SnapshotCollectionItem | undefined,
+  identity: AiAnalysisRunIdentity,
+  detailNodeIds: ReadonlySet<GitHubNodeId>,
+  trackedNodeIds: ReadonlySet<GitHubNodeId>,
+  plannedNodeIds: ReadonlySet<GitHubNodeId>,
+): SnapshotAnalysisPlanFingerprint {
+  const currentFingerprint = analysisPlanFingerprintForItem(currentItem, identity);
+  if (
+    previousItem != null &&
+    previousItem.itemFingerprint !== item.itemFingerprint &&
+    !detailNodeIds.has(item.nodeId)
+  ) {
+    throw new TypeError(`項目fingerprintが変化した項目の詳細がありません。対象: ${item.nodeId}`);
+  }
+  if (plannedNodeIds.has(item.nodeId)) {
+    if (!detailNodeIds.has(item.nodeId)) {
+      throw new TypeError(`AI判定計画の詳細がありません。対象: ${item.nodeId}`);
+    }
+    return {
+      status: "planned",
+      fingerprint: currentFingerprint,
+    };
+  }
+  if (detailNodeIds.has(item.nodeId) && !trackedNodeIds.has(item.nodeId)) {
+    return {
+      status: "planned",
+      fingerprint: currentFingerprint,
+    };
+  }
+  if (previousItem != null) {
+    return previousItem.analysisPlanFingerprint;
+  }
+  return {
+    status: "unplanned",
+    reason: "detail_required",
+  };
+}
+
+function validatedCollectionRepositories(
+  state: RuntimeState,
+  configuration: RuntimeConfiguration,
+  collection: CollectedItems,
+  codexAnalysis: CodexAnalysis,
+  itemsByNodeId: ReadonlyMap<GitHubNodeId, PendingTrackedItem>,
+): readonly SnapshotCollectionRepository[] {
+  const identity = createAiAnalysisRunIdentity(configuration.config);
+  const freshRepositoryIds = new Set(
+    collection.repositoryResults
+      .filter((result) => result.freshness === "fresh")
+      .map((result) => result.repository.id),
+  );
+  const currentItemsByNodeId = new Map(
+    collection.enumeratedItems.map((item) => [item.nodeId, item]),
+  );
+  const detailNodeIds = new Set(collection.details.map((detail) => detail.nodeId));
+  const trackedNodeIds = collection.trackedNodeIds;
+  const plannedNodeIds = new Set(codexAnalysis.elementPlanningByNodeId.keys());
+  const previousItemsByNodeId = previousCollectionItemsByNodeId(state);
+  return Object.freeze(
+    collection.collectionRepositories.map((repository) => {
+      if (!freshRepositoryIds.has(repository.repositoryId)) {
+        return repository;
+      }
+      return Object.freeze({
+        ...repository,
+        items: Object.freeze(
+          repository.items.map((item) => {
+            const currentItem = currentItemsByNodeId.get(item.nodeId);
+            assertNonNullable(
+              currentItem,
+              `fresh収集項目の列挙値がありません。対象: ${item.nodeId}`,
+            );
+            const previousItem = previousItemsByNodeId.get(item.nodeId);
+            const currentTrackedItem = itemsByNodeId.get(item.nodeId);
+            const analysisPlanFingerprint = analysisPlanFingerprintForValidatedCollectionItem(
+              item,
+              currentItem,
+              previousItem,
+              identity,
+              detailNodeIds,
+              trackedNodeIds,
+              plannedNodeIds,
+            );
+            return Object.freeze({
+              ...item,
+              analysisPlanFingerprint,
+              aiAnalysis:
+                currentTrackedItem?.aiAnalysis ?? previousItem?.aiAnalysis ?? item.aiAnalysis,
+            });
+          }),
+        ),
+      });
+    }),
+  );
+}
+
 async function collectProductionItems(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -7831,6 +8813,16 @@ async function collectProductionItems(
       work.codexAnalysis.action === "analyze" && observedNodeIds.has(nodeId) ? [nodeId] : [],
     ),
   );
+  for (const nodeId of changedNodeIds) {
+    if (trackedNodeIds.has(nodeId) && observedNodeIds.has(nodeId)) {
+      analysisNodeIds.add(nodeId);
+    }
+  }
+  for (const nodeId of expanded.analysisPlanChangedNodeIds) {
+    if (trackedNodeIds.has(nodeId) && observedNodeIds.has(nodeId)) {
+      analysisNodeIds.add(nodeId);
+    }
+  }
   const effectiveAssigneeRelationChangeTargets = effectiveAssigneeRelationChangeTargetNodeIds(
     state,
     uniqueObservedItems,
@@ -8092,13 +9084,14 @@ function createDailyDependencies(
     }) => {
       if (
         invocation.command.kind !== "dry-run" &&
-        invocation.command.notificationAction === "acknowledge-current"
+        (invocation.command.notificationAction === "acknowledge-current" ||
+          invocation.command.notificationAction === "hold")
       ) {
         return Object.freeze({
           value: Object.freeze({
             delivery: Object.freeze({
               status: "skipped",
-              reason: "no_candidates",
+              reason: invocation.command.notificationAction === "hold" ? "held" : "no_candidates",
             }),
             notificationEvents: Object.freeze([]),
             notificationLedger: validated.notificationLedger,
@@ -8282,7 +9275,10 @@ async function notifyWorkflowDiscord(
     snapshot: persistedSnapshot,
     notificationLedger: await session.loadNotificationLedger(),
   });
-  if (artifact.notificationAction === "acknowledge-current") {
+  if (
+    artifact.notificationAction === "acknowledge-current" ||
+    artifact.notificationAction === "hold"
+  ) {
     await persistSuccessfulRunCompletion(
       adapters,
       config,

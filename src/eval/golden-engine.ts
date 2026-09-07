@@ -8,9 +8,9 @@ import {
   reduceCodexAnalysis,
   validateCodexAnalysisOutput,
   type CodexAnalysisInput,
+  type CodexElementOutput,
   type DeterministicCodexDecision,
   type ReducedCodexDecision,
-  type ValidatedCodexAnalysisOutput,
 } from "../codex/index.js";
 import {
   buildSourceId,
@@ -137,7 +137,7 @@ const effectiveAssigneeCandidateSignalSchema = z.strictObject({
 type PreparedGoldenFixedAiAnalysis = Readonly<{
   itemNodeId: string;
   input: CodexAnalysisInput;
-  acceptedOutput: ValidatedCodexAnalysisOutput;
+  acceptedOutput: CodexElementOutput;
   rejectedOutputs: readonly unknown[];
 }>;
 
@@ -717,7 +717,7 @@ function createEffectiveAssigneeCandidateMap(
   return candidatesByNodeId;
 }
 
-function sourceIdSetsMatch(left: readonly SourceId[], right: readonly SourceId[]): boolean {
+function sourceIdSetsMatch(left: readonly string[], right: readonly string[]): boolean {
   if (new Set(left).size !== left.length || new Set(right).size !== right.length) {
     return false;
   }
@@ -755,16 +755,32 @@ function createEffectiveAssigneeAssessment(
   item: GoldenItemInput,
   evaluatedAt: UtcIsoDateTime,
   candidates: readonly IssueEffectiveAssigneeCandidate[],
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: CodexElementOutput | undefined,
 ): IssueEffectiveAssigneeAssessment {
+  if (output == null) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+  const status = output.status;
+  const waitingOnResult = output.waitingOn;
   if (
     item.type !== "issue" ||
     item.state !== "open" ||
     item.assignees.length !== 0 ||
     candidates.length === 0 ||
-    output?.status !== "waiting_for_work" ||
-    output.waitingOn.length === 0 ||
-    output.confidence < CONFIDENCE_THRESHOLDS.high
+    status == null ||
+    waitingOnResult == null
+  ) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+  if (
+    status.value !== "waiting_for_work" ||
+    waitingOnResult.value.length === 0 ||
+    status.confidence < CONFIDENCE_THRESHOLDS.high ||
+    waitingOnResult.confidence < CONFIDENCE_THRESHOLDS.high
   ) {
     return Object.freeze({
       status: "not_assessed",
@@ -776,7 +792,7 @@ function createEffectiveAssigneeAssessment(
   );
   const targets: IssueEffectiveAssigneeTarget[] = [];
   const targetIds = new Set<string>();
-  for (const waitingOn of output.waitingOn) {
+  for (const waitingOn of waitingOnResult.value) {
     if (
       waitingOn.kind !== "user" ||
       waitingOn.role !== "assignee" ||
@@ -808,7 +824,7 @@ function createEffectiveAssigneeAssessment(
       Object.freeze({
         kind: "user",
         candidateId: waitingOn.candidateId,
-        sourceIds: waitingOn.sourceIds,
+        sourceIds: sourceIdTuple(waitingOn.sourceIds),
         confidence: waitingOn.confidence,
       }),
     );
@@ -841,7 +857,11 @@ function createEffectiveAssigneeAssessment(
   if (occurredAt > evaluatedAt) {
     throw new RangeError("実質担当判定の根拠時刻は判定時刻以前にしてください");
   }
-  const confidence = Math.min(output.confidence, ...targets.map((target) => target.confidence));
+  const confidence = Math.min(
+    status.confidence,
+    waitingOnResult.confidence,
+    ...targets.map((target) => target.confidence),
+  );
   if (confidence < CONFIDENCE_THRESHOLDS.high) {
     return Object.freeze({
       status: "not_assessed",
@@ -1031,6 +1051,7 @@ function applyFixedAiAnalyses(
         output: analysis.acceptedOutput,
       }),
       CONFIDENCE_THRESHOLDS,
+      Object.freeze({}),
     );
     decisions.set(analysis.itemNodeId, reduction.decision);
     deadlineAssessments.set(analysis.itemNodeId, reduction.deadlineAssessment);
@@ -1286,7 +1307,10 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
     reviewState: item.type === "issue" ? "not_applicable" : "unknown",
     checkState: item.type === "issue" ? "not_applicable" : "unknown",
     aiAnalysis: Object.freeze({
+      origin: "current",
       status: "not_required",
+      elements: Object.freeze({}),
+      adoptedElements: Object.freeze({}),
     }),
     inputEvents: Object.freeze(
       item.events.map((event) =>
@@ -1339,7 +1363,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "10",
+    schemaVersion: "11",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1806,7 +1830,10 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         reviewState: index % 2 === 0 ? "not_applicable" : "requested",
         checkState: index % 2 === 0 ? "not_applicable" : "pending",
         aiAnalysis: Object.freeze({
+          origin: "current",
           status: "disabled",
+          elements: Object.freeze({}),
+          adoptedElements: Object.freeze({}),
         }),
         inputEvents: Object.freeze([]),
         confidence: 1,
@@ -2021,7 +2048,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "10",
+    schemaVersion: "11",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",
