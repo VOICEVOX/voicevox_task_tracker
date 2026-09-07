@@ -20,8 +20,10 @@ import {
   reduceAiAnalysisElements,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
+  reducePreservedCodexRelationsAndNotification,
   runAiAnalyses,
   serializeCanonicalJson,
+  validateCodexAnalysisOutput,
   validateCodexElementOutputSchema,
   AI_ANALYSIS_ELEMENT_REVISIONS,
   type AiAnalysisCandidate,
@@ -457,6 +459,10 @@ type ReducedAnalysis = Readonly<{
   currentItems: readonly ReducedItemAnalysis[];
   stalenessByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemStaleness>;
   relationAssessments: readonly RelationCandidateAssessment[];
+  retainedNotificationRecommendations: ReadonlyMap<
+    GitHubNodeId,
+    DiscordNotificationItem["notificationRecommendation"]
+  >;
   runStatus: "success" | "fallback";
 }>;
 
@@ -3076,6 +3082,40 @@ function savedMigrationAdoptedElementsForItem(
   return item.aiAnalysis.adoptedElements;
 }
 
+function adoptedResultForRetainedItem(
+  item: SnapshotTrackedItem,
+  element: AiAnalysisElement,
+): AiAnalysisElementMigrationResult | undefined {
+  if (item.aiAnalysis.origin === "current") {
+    const generation = item.aiAnalysis.adoptedElements[element];
+    if (generation == null) {
+      return undefined;
+    }
+    const parsedGeneration = createAiAnalysisElementGenerationSchema(element).parse(generation);
+    return createAiAnalysisMigrationElementResultSchema(element).parse(parsedGeneration.result);
+  }
+  const adopted = item.aiAnalysis.adoptedElements[element];
+  if (adopted == null) {
+    return undefined;
+  }
+  if (adopted.origin === "current") {
+    const generation = createAiAnalysisElementGenerationSchema(element).parse(adopted.generation);
+    return createAiAnalysisMigrationElementResultSchema(element).parse(generation.result);
+  }
+  return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
+}
+
+function preservedElementsForRetainedItem(
+  item: SnapshotTrackedItem,
+): Pick<CodexPreservedElements, "relations" | "notification"> {
+  const relations = adoptedResultForRetainedItem(item, "relations");
+  const notification = adoptedResultForRetainedItem(item, "notification");
+  return Object.freeze({
+    ...(relations == null ? {} : { relations }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
 function deterministicElementResult(
   analysis: DeterministicItemAnalysis,
   element: AiAnalysisElement,
@@ -4370,7 +4410,40 @@ function reductionForAnalysis(
       preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
     );
   }
-  return undefined;
+  const skipped = run.skipped.find((candidate) => candidate.candidateId === analysis.item.nodeId);
+  if (skipped?.reason !== "up_to_date") {
+    return undefined;
+  }
+  assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
+  if (input.selectedElements.length !== 0) {
+    throw new TypeError(
+      `up_to_date項目のCodex入力に選択要素があります。対象: ${analysis.item.nodeId}`,
+    );
+  }
+  const preservedElements = preservedElementsForAnalysisReduction(state, analysis, codexAnalysis);
+  if (Object.keys(preservedElements).length === 0) {
+    return undefined;
+  }
+  const output = validateCodexAnalysisOutput(
+    {
+      schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+      item: {
+        nodeId: input.item.nodeId,
+        url: input.item.url,
+      },
+    },
+    input,
+  );
+  return reduceCodexAnalysis(
+    input,
+    deterministicCodexDecision(analysis.decision),
+    {
+      status: "validated",
+      output,
+    },
+    configuration.config.ai.confidence,
+    preservedElements,
+  );
 }
 
 function codexOutputForAnalysis(
@@ -5687,6 +5760,10 @@ function reduceAnalysisPass(
   const items: PendingTrackedItem[] = [];
   const stalenessByNodeId = new Map<GitHubNodeId, TrackedItemStaleness>();
   const relationAssessments: RelationCandidateAssessment[] = [];
+  const retainedNotificationRecommendations = new Map<
+    GitHubNodeId,
+    DiscordNotificationItem["notificationRecommendation"]
+  >();
   let runStatus: ReducedAnalysis["runStatus"] = "success";
   for (const originalAnalysis of deterministicAnalysis.items) {
     const output = codexOutputForConsumers(configuration, state, originalAnalysis, codexAnalysis);
@@ -5808,6 +5885,24 @@ function reduceAnalysisPass(
           resolveLabelEffects,
         ),
       );
+      if (codexAnalysis.run != null) {
+        const preservedElements = preservedElementsForRetainedItem(previousItem);
+        const preservedReduction = reducePreservedCodexRelationsAndNotification(
+          previousItem.nodeId,
+          preservedElements,
+          configuration.config.ai.confidence,
+        );
+        relationAssessments.push(...preservedReduction.relationAssessments);
+        if (preservedReduction.notification != null) {
+          retainedNotificationRecommendations.set(
+            previousItem.nodeId,
+            Object.freeze({
+              availability: "available",
+              value: preservedReduction.notification,
+            }),
+          );
+        }
+      }
     }
   }
   if (stalenessByNodeId.size !== items.length) {
@@ -5818,6 +5913,7 @@ function reduceAnalysisPass(
     currentItems: Object.freeze(currentItems),
     stalenessByNodeId,
     relationAssessments: Object.freeze(relationAssessments),
+    retainedNotificationRecommendations,
     runStatus,
   });
 }
@@ -6314,6 +6410,8 @@ function notificationItem(
   item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
+  retainedNotificationRecommendation:
+    DiscordNotificationItem["notificationRecommendation"] | undefined,
   repositoryFreshness: DiscordNotificationItem["repositoryFreshness"],
 ): DiscordNotificationItem {
   const repository = findRepository(inventory, item.repositoryId);
@@ -6331,6 +6429,10 @@ function notificationItem(
   const cycleIds = graph.analysis.dependencyCycles
     .filter((cycle) => cycle.nodeIds.includes(item.nodeId))
     .map((cycle) => cycle.id);
+  const notificationRecommendation =
+    analysisState.availability === "available"
+      ? analysisState.value.notificationRecommendation
+      : (retainedNotificationRecommendation ?? Object.freeze({ availability: "not_available" }));
   const previousDependencyCycles: DiscordNotificationItem["graph"]["previousDependencyCycles"] =
     graph.previousAnalysis.availability === "unavailable"
       ? Object.freeze({
@@ -6356,12 +6458,7 @@ function notificationItem(
         ? notificationLatestChange(analysisState.value, previous)
         : "none",
     decisionBasis: notificationDecisionBasis(item, staleness, analysisState),
-    notificationRecommendation:
-      analysisState.availability === "available"
-        ? analysisState.value.notificationRecommendation
-        : Object.freeze({
-            availability: "not_available",
-          }),
+    notificationRecommendation,
     priorityWeight: labelEffects.priorityWeight,
     current: {
       status: item.status,
@@ -6446,6 +6543,7 @@ function notificationItems(
                 availability: "available",
                 value: current,
               }),
+          reduction.retainedNotificationRecommendations.get(item.nodeId),
           repositoryFreshness,
         ),
       ];
