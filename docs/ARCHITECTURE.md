@@ -376,8 +376,10 @@ Issue本文、コメント、ラベル、ユーザー名はID付きの信頼で�
 未アサインIssueの実質担当候補も、候補IDとsource IDを`deterministicSignals`へ渡します。Codexは入力された候補からIssue全体の担当可否だけを返し、候補を追加しません。
 
 Codexのtimeout、rate limit、不正JSON、一時的なprocess起動失敗、signal終了は`ai.execution.maxAttempts`まで再試行します。
+APIエラーも、構造化されたエラー情報から認証不正、不正なリクエスト、利用上限超過などの恒久失敗と判定できない場合は、同じ上限で再試行します。
+HTTP 400から499は、408、409、429を除いて恒久失敗として扱います。
 待機時間は`operations.retry`の初期待機時間と最大待機時間を使い、指数backoffとjitterを適用します。
-非ゼロ終了、固定資材や設定の不備、恒久的なprocess起動失敗は再試行しません。
+API情報のない非ゼロ終了、固定資材や設定の不備、恒久的なprocess起動失敗は再試行しません。
 成功runの`aiCallCount`と`estimatedInputTokens`には、実行したpreflightを含めます。preflight失敗runでは通常のmetricsを完成させず、attemptの詳細を暗号化診断で確認します。
 preflightは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば、認証競合は残ります。
 DiscordはHTTP 429だけを同じ設定で再試行します。通信例外、HTTP 5xx、応答不正は送信結果を確定できないため、自動再送せず停止します。secret不備とその他のHTTPエラーも直ちに失敗します。

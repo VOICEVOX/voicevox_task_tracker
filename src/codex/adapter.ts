@@ -283,10 +283,20 @@ function assertSuccessfulProcess(
     throw new CodexProcessStartError(attempts, { cause: result.standardInputError });
   }
   if (stdoutApiError != null) {
-    throw new CodexNonZeroExitError(attempts, result.exitCode, result.signal, stdoutApiError);
+    throw new CodexNonZeroExitError(
+      attempts,
+      result.exitCode,
+      result.signal,
+      mergeCodexApiErrors(stdoutApiError, result.apiError),
+    );
   }
   if (result.exitCode !== 0 || result.signal != null) {
-    throw new CodexNonZeroExitError(attempts, result.exitCode, result.signal, result.apiError);
+    throw new CodexNonZeroExitError(
+      attempts,
+      result.exitCode,
+      result.signal,
+      mergeCodexApiErrors(stdoutApiError, result.apiError),
+    );
   }
 }
 
@@ -350,6 +360,16 @@ async function readLastMessage(
 
 const CODEX_API_ERROR_VALUE_PATTERN = /^[A-Za-z0-9._:-]+$/u;
 const codexJsonObjectSchema = z.record(z.string(), z.unknown());
+const CODEX_API_ERROR_EVENT_TYPES = new Set(["error", "turn.failed"]);
+const PERMANENT_CODEX_API_ERROR_TYPES = new Set([
+  "invalid_request_error",
+  "authentication_error",
+  "permission_error",
+  "insufficient_quota",
+  "context_length_exceeded",
+  "model_not_found",
+  "invalid_api_key",
+]);
 
 type CodexStdoutInspection = Readonly<{
   apiError: CodexApiErrorDiagnostic | undefined;
@@ -377,6 +397,28 @@ function apiErrorValue(
   field: string,
 ): string | undefined {
   return safeApiErrorValue(source[field]);
+}
+
+function mergeCodexApiErrors(
+  primary: CodexApiErrorDiagnostic | undefined,
+  secondary: CodexApiErrorDiagnostic | undefined,
+): CodexApiErrorDiagnostic | undefined {
+  if (primary == null) {
+    return secondary;
+  }
+  if (secondary == null) {
+    return primary;
+  }
+  const primaryTypeIsGeneric =
+    primary.type != null && CODEX_API_ERROR_EVENT_TYPES.has(primary.type);
+  const type = primaryTypeIsGeneric ? (secondary.type ?? primary.type) : primary.type;
+  const code = primary.code ?? secondary.code;
+  const status = primary.status ?? secondary.status;
+  return Object.freeze({
+    ...(type == null ? {} : { type }),
+    ...(code == null ? {} : { code }),
+    ...(status == null ? {} : { status }),
+  });
 }
 
 function inspectCodexStdout(source: string): CodexStdoutInspection {
@@ -412,11 +454,14 @@ function inspectCodexStdout(source: string): CodexStdoutInspection {
     const type = apiErrorValue(errorObject, "type");
     const code = apiErrorValue(errorObject, "code");
     const status = apiErrorValue(errorObject, "status");
-    apiError ??= Object.freeze({
-      type: type ?? eventType,
-      ...(code == null ? {} : { code }),
-      ...(status == null ? {} : { status }),
-    });
+    apiError = mergeCodexApiErrors(
+      apiError,
+      Object.freeze({
+        type: type ?? eventType,
+        ...(code == null ? {} : { code }),
+        ...(status == null ? {} : { status }),
+      }),
+    );
   }
   return Object.freeze({
     apiError,
@@ -540,6 +585,7 @@ async function executeAttempt(
     apiEvents: Object.freeze([]),
     parseErrors: Object.freeze([]),
   });
+  let apiError: CodexApiErrorDiagnostic | undefined;
   let lastMessageResult: LastMessageReadResult | undefined;
   let outcome: AttemptOutcome = {
     success: false,
@@ -560,6 +606,7 @@ async function executeAttempt(
     stdout = normalizedProcessOutput(processResult.stdout, "stdout");
     stderr = normalizedProcessOutput(processResult.stderr, "stderr");
     stdoutInspection = inspectCodexStdout(stdout);
+    apiError = mergeCodexApiErrors(stdoutInspection.apiError, processResult.apiError);
     if (diagnostics == null) {
       assertSuccessfulProcess(processResult, request, attempts, stdoutInspection.apiError);
     }
@@ -617,7 +664,7 @@ async function executeAttempt(
       attempt: attempts,
       apiEvent,
     };
-    const safeApiError = safeApiErrorDetails(stdoutInspection.apiError);
+    const safeApiError = safeApiErrorDetails(apiError);
     if (safeApiError != null) {
       apiEventDetails["apiError"] = safeApiError;
     }
@@ -668,7 +715,7 @@ async function executeAttempt(
         stdout,
         stderr,
         lastMessage,
-        stdoutInspection.apiError ?? processResult?.apiError,
+        apiError,
         "failure",
       ),
       outcome.error,
@@ -684,7 +731,7 @@ async function executeAttempt(
         stdout,
         stderr,
         lastMessage,
-        stdoutInspection.apiError ?? processResult?.apiError,
+        apiError,
         "failure",
       ),
       outcome.error,
@@ -702,7 +749,7 @@ async function executeAttempt(
       stdout,
       stderr,
       lastMessage,
-      stdoutInspection.apiError ?? processResult?.apiError,
+      apiError,
       "success",
     ),
   );
@@ -773,6 +820,7 @@ async function executeAuthenticationPreflightAttempt(
     apiEvents: Object.freeze([]),
     parseErrors: Object.freeze([]),
   });
+  let apiError: CodexApiErrorDiagnostic | undefined;
   let outcome: AttemptOutcome = {
     success: false,
     error: new Error("Codex認証preflightが実行されませんでした"),
@@ -788,6 +836,7 @@ async function executeAuthenticationPreflightAttempt(
     stdout = normalizedProcessOutput(processResult.stdout, "stdout");
     stderr = normalizedProcessOutput(processResult.stderr, "stderr");
     stdoutInspection = inspectCodexStdout(stdout);
+    apiError = mergeCodexApiErrors(stdoutInspection.apiError, processResult.apiError);
     assertSuccessfulProcess(processResult, request, attempts, stdoutInspection.apiError);
     outcome = {
       success: true,
@@ -835,7 +884,7 @@ async function executeAuthenticationPreflightAttempt(
       attempt: attempts,
       apiEvent,
     };
-    const safeApiError = safeApiErrorDetails(stdoutInspection.apiError ?? processResult?.apiError);
+    const safeApiError = safeApiErrorDetails(apiError);
     if (safeApiError != null) {
       apiEventDetails["apiError"] = safeApiError;
     }
@@ -862,7 +911,7 @@ async function executeAuthenticationPreflightAttempt(
       processResult,
       stdout,
       stderr,
-      stdoutInspection.apiError ?? processResult?.apiError,
+      apiError,
       "failure",
     );
     await recordCodexDiagnostic(
@@ -890,7 +939,7 @@ async function executeAuthenticationPreflightAttempt(
       processResult,
       stdout,
       stderr,
-      stdoutInspection.apiError ?? processResult?.apiError,
+      apiError,
       "success",
     ),
   );
@@ -908,6 +957,23 @@ function processErrorCode(error: unknown): string | undefined {
   return undefined;
 }
 
+function isPermanentCodexApiError(apiError: CodexApiErrorDiagnostic): boolean {
+  if (apiError.type != null && PERMANENT_CODEX_API_ERROR_TYPES.has(apiError.type)) {
+    return true;
+  }
+  if (apiError.code != null && PERMANENT_CODEX_API_ERROR_TYPES.has(apiError.code)) {
+    return true;
+  }
+  if (apiError.status == null) {
+    return false;
+  }
+  const status = Number(apiError.status);
+  if (!Number.isSafeInteger(status) || status < 400 || status > 499) {
+    return false;
+  }
+  return status !== 408 && status !== 409 && status !== 429;
+}
+
 function isTemporaryAttemptError(error: CodexAttemptError): boolean {
   if (
     error instanceof CodexTimeoutError ||
@@ -921,7 +987,13 @@ function isTemporaryAttemptError(error: CodexAttemptError): boolean {
     return code != null && TEMPORARY_PROCESS_ERROR_CODES.has(code);
   }
   if (error instanceof CodexNonZeroExitError) {
-    return error.signal != null;
+    if (error.signal != null) {
+      return true;
+    }
+    if (error.apiError == null) {
+      return false;
+    }
+    return !isPermanentCodexApiError(error.apiError);
   }
   return false;
 }
