@@ -36,7 +36,6 @@ export {
   type GitHubItemAccount,
   type GitHubItemAuthor,
   type GitHubItemBodyLocator,
-  type GitHubItemMilestone,
   type Sha256Fingerprint,
 } from "./item-enumeration.js";
 export {
@@ -101,10 +100,9 @@ export {
 } from "./production-source-id.js";
 export {
   planIncrementalItemCollection,
-  type CurrentAnalysisRulesFingerprints,
+  type AnalysisPlanFingerprint,
   type IncrementalItemCollectionPlan,
   type PlanIncrementalItemCollectionOptions,
-  type PreviousAnalysisRulesFingerprint,
   type PreviousItemCollection,
 } from "./incremental-item-collection.js";
 export { assertReadOnlyGraphQL, extractGraphQLRateLimit } from "./graphql.js";

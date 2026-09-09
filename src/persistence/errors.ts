@@ -29,8 +29,8 @@ export class StateSnapshotSchemaError extends StatePersistenceError {
 
 /** snapshot内の参照関係または完了条件が不正であることを表す。 */
 export class StateSnapshotSemanticError extends StatePersistenceError {
-  public constructor(message: string) {
-    super(`snapshotの意味検証に失敗しました。${message}`, {});
+  public constructor(message: string, options?: ErrorOptions) {
+    super(`snapshotの意味検証に失敗しました。${message}`, options ?? {});
   }
 }
 

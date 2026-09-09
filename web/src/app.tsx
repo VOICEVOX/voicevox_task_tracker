@@ -7,6 +7,8 @@ import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { createSharedDetailsLoader, type PublicDetailsLoader } from "./details-loader.js";
 import { ItemDetailsPage } from "./item-details-page.js";
 import { ItemsPage } from "./items-page.js";
+import { LogicGuidePage } from "./logic-guide-page.js";
+import { StatusGuidePage } from "./status-guide-page.js";
 import {
   collectWaitingTeamIds,
   createTableFilterOptions,
@@ -20,6 +22,12 @@ import {
 } from "./model.js";
 import { PeoplePage } from "./people-page.js";
 import { PersonPage } from "./person-page.js";
+import { NotificationConditionsPage } from "./notification-conditions-page.js";
+import {
+  createSharedNotificationHistoryLoader,
+  type PublicNotificationHistoryLoader,
+} from "./notification-history-loader.js";
+import { NotificationHistoryPage } from "./notification-history-page.js";
 import {
   createItemRouteTargets,
   createWebViewHref,
@@ -39,13 +47,15 @@ import {
 type AppProps = Readonly<{
   basePath: string;
   loadDetails: PublicDetailsLoader;
+  loadNotificationHistory: PublicNotificationHistoryLoader;
   locale: string;
   now: Date;
   summary: PublicSummaryDto;
   title: string;
 }>;
 
-type NavigationPage = "items" | "people";
+type NavigationPage =
+  "items" | "people" | "notification-history" | "status" | "guide" | "notifications";
 
 type RelativeTimeDisplayProps = Readonly<{
   locale: string;
@@ -68,6 +78,22 @@ const NAVIGATION_PAGES: readonly Readonly<{
   {
     label: "担当者",
     page: "people",
+  },
+  {
+    label: "通知履歴",
+    page: "notification-history",
+  },
+  {
+    label: "状態の決まり方",
+    page: "status",
+  },
+  {
+    label: "指標の見方",
+    page: "guide",
+  },
+  {
+    label: "通知条件",
+    page: "notifications",
   },
 ];
 
@@ -92,6 +118,22 @@ function routeForNavigationPage(page: NavigationPage): WebRoute {
     case "people":
       return {
         page: "people",
+      };
+    case "notification-history":
+      return {
+        page: "notification-history",
+      };
+    case "status":
+      return {
+        page: "status",
+      };
+    case "guide":
+      return {
+        page: "guide",
+      };
+    case "notifications":
+      return {
+        page: "notifications",
       };
   }
 }
@@ -137,11 +179,23 @@ function nextSort<Key extends string>(
 }
 
 /** 公開summary DTOをpathnameで選択したページとして表示する。 */
-export function App({ basePath, loadDetails, locale, now, summary, title }: AppProps) {
+export function App({
+  basePath,
+  loadDetails,
+  loadNotificationHistory,
+  locale,
+  now,
+  summary,
+  title,
+}: AppProps) {
   const itemTargets = useMemo(() => createItemRouteTargets(summary.items), [summary.items]);
   const itemTargetsByNodeId = useMemo(
     () => new Map(itemTargets.map((target) => [target.nodeId, target])),
     [itemTargets],
+  );
+  const currentItemNodeIds = useMemo(
+    () => new Set(summary.items.map((item) => item.nodeId)),
+    [summary.items],
   );
   const validTeamIds = useMemo(() => collectWaitingTeamIds(summary), [summary]);
   const validTeamKeys = useMemo(
@@ -158,6 +212,10 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
     [itemTargets, tableFilterOptions, validTeamIds],
   );
   const sharedLoadDetails = useMemo(() => createSharedDetailsLoader(loadDetails), [loadDetails]);
+  const sharedLoadNotificationHistory = useMemo(
+    () => createSharedNotificationHistoryLoader(loadNotificationHistory),
+    [loadNotificationHistory],
+  );
   const viewerIdentityStore = useMemo(createViewerIdentityStore, []);
   const [viewerIdentityState, setViewerIdentityState] = useState(() => viewerIdentityStore.read());
   const [navigationState, setNavigationState] = useState<ParsedWebViewState>(() =>
@@ -434,6 +492,25 @@ export function App({ basePath, loadDetails, locale, now, summary, title }: AppP
             onSelectPerson={selectPerson}
           />
         );
+      case "notification-history":
+        return (
+          <NotificationHistoryPage
+            createItemHref={createItemHref}
+            createPersonHref={createPersonHref}
+            currentItemNodeIds={currentItemNodeIds}
+            loadNotificationHistory={sharedLoadNotificationHistory}
+            locale={locale}
+            onSelectItem={selectItem}
+            onSelectPerson={selectPerson}
+            summary={summary}
+          />
+        );
+      case "status":
+        return <StatusGuidePage />;
+      case "guide":
+        return <LogicGuidePage />;
+      case "notifications":
+        return <NotificationConditionsPage />;
       case "person":
         return (
           <PersonPage

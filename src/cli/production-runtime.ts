@@ -2,21 +2,39 @@ import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import {
+  CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+  CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+  CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
   createCodexEnvironment,
   createCodexAnalysisInput,
+  determineAnalysisElementNecessities,
   estimateAiInputCost,
+  effectiveElementConfidence,
   getCodexEnvironmentVariableAllowlist,
   hashCanonicalJson,
+  listNativeRelationConstraints,
   prepareAiAnalysisCandidate,
+  planAnalysisElements,
+  projectCodexLockedElements,
+  recordCodexDiagnostic,
+  reduceAiAnalysisElements,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
+  reducePreservedCodexRelationsAndNotification,
   runAiAnalyses,
   serializeCanonicalJson,
+  validateCodexAnalysisOutput,
+  validateCodexElementOutputSchema,
+  AI_ANALYSIS_ELEMENT_REVISIONS,
   type AiAnalysisCandidate,
+  type AnalysisElementPlanning,
+  type AnalysisElementNecessityInput,
   type AiAnalysisRunFailure,
   type AiAnalysisRunIdentity,
   type AiAnalysisRunResult,
+  type AiAnalysisElementGenerationMap,
   type CodexAnalysisInput,
+  type CodexPreservedElements,
   type CodexAdapterConfiguration,
   type CodexAdapterDependencies,
   type CodexAnalysisReduction,
@@ -24,8 +42,22 @@ import {
   type DeterministicCodexDecision,
   type PreparedAiAnalysisCandidate,
   type ReducedCodexDecision,
-  type ValidatedCodexAnalysisOutput,
+  type SchemaValidCodexElementOutput,
 } from "../codex/index.js";
+import {
+  AI_ANALYSIS_ELEMENTS,
+  AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
+  createAiAnalysisElementGenerationSchema,
+  createAiAnalysisElementResultSchema,
+  createAiAnalysisMigrationElementResultSchema,
+  type AiAnalysisElement,
+  type AiAnalysisElementMigrationResult,
+  type AiAnalysisElementExecutionFingerprint,
+  type AiAnalysisElementGeneration,
+  type AiAnalysisElementInputFingerprint,
+} from "../domain/ai-analysis-elements.js";
+import { type CodexDiagnosticsContext } from "../codex/index.js";
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { type Config, type loadConfig } from "../config/index.js";
 import {
   aggregatePullRequestCheckState,
@@ -34,13 +66,16 @@ import {
   calculateImportance,
   combineImportance,
   classifyTrackingNotification,
+  createNotificationReason,
   createUtcIsoDateTime,
   createGitHubNodeId,
   createGitHubBotPredicate,
+  buildSourceId,
   createLabelEffectsResolver,
   createTrackedItemLatestEventActor,
+  createStalenessNotificationSeverityReason,
   calculateStaleness,
-  DETERMINISTIC_RULES_VERSION,
+  determineDeadlineLevel,
   recalculateStalenessSeverity,
   determineIssueState,
   determineMeaningfulProgress,
@@ -62,12 +97,17 @@ import {
   type GitHubNodeId,
   type GitHubRepositoryId,
   type GraphNodeId,
+  type PendingNotification,
   type IssueBlocker,
+  type IssueEffectiveAssigneeAssessment,
+  type IssueEffectiveAssigneeCandidate,
+  type IssueEffectiveAssigneeTarget,
   type IssueExplicitRequestAssessment,
   type IssueExplicitRequestTarget,
   type IssueStateDecision,
   type BlockedParentContext,
   type BlockerRanking,
+  type NormalizedEvent,
   type OrganizationTrackingCandidate,
   type TrackingCandidate,
   type PullRequestStateDecision,
@@ -79,30 +119,37 @@ import {
   type SourceId,
   type Severity,
   type StalenessSeverityContext,
+  type StalenessNotificationSeverityReason,
   type StalenessWaitClass,
   type StalenessResult,
-  type NaturalLanguageProgressAssessment,
+  type NaturalLanguageDeadlineAssessmentState,
   type NaturalLanguageImportanceAssessmentState,
+  type NaturalLanguageProgressAssessment,
   type DependencyResolutionProgress,
+  type DeadlineLevel,
   type ExternalGhostNode,
-  type NormalizedEvent,
   type TrackedItem,
   type TrackedItemAiAnalysis,
+  type TrackedItemAiAnalysisCurrentElements,
+  type TrackedItemAiAnalysisMigrationAdoptedElement,
+  type TrackedItemAiAnalysisMigrationAdoptedElements,
+  type TrackedItemAiAnalysisMigrationElements,
   type TrackedItemInputEvent,
   type TrackingConnection,
   type TrackingNotificationClass,
   type TrackingRunCompletion,
   type TrackingStartAtState,
   type TrackedItemWorkDecision,
-  type WaitingOnKind,
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
+  createAcknowledgedNotificationLedgerEntries,
   createNotificationCauses,
   selectDiscordNotifications,
   type sendDiscordDigest,
   type DiscordDigestDelivery,
   type DiscordDeliverySettings,
+  type DiscordNotificationCandidate,
   type DiscordNotificationItem,
   type NotificationCause,
   type NotificationCauseEvidence,
@@ -127,7 +174,6 @@ import {
   planIncrementalItemCollection,
   parseGitHubAppCredentials,
   type CreateGitHubClientOptions,
-  type CurrentAnalysisRulesFingerprints,
   type EnumeratedGitHubItem,
   type FreshObservedGitHubItem,
   type GitHubAppCredentials,
@@ -140,6 +186,7 @@ import {
   type PublicRepositoryAllowlist,
   type PreviousItemCollection,
   type RepositoryCollectionResult,
+  type Sha256Fingerprint,
   type StaleObservedGitHubItem,
 } from "../github/index.js";
 import {
@@ -172,9 +219,12 @@ import {
   createStateNotificationLedger,
   createStateRunReport,
   createStateSnapshot,
+  NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+  assertStatePublicSafety,
   type StatePersistenceSession,
   type PersistStateTransactionResult,
   type SnapshotAiState,
+  type SnapshotAnalysisPlanFingerprint,
   type SnapshotCollectionItem,
   type SnapshotCollectionRepository,
   type SnapshotRepository,
@@ -184,9 +234,11 @@ import {
   type StateRunReport,
   type StateHistoryRecord,
   type StateHistoryInputEvent,
+  type StateHistoryNotificationEvent,
   type StateSnapshot,
   type StateSnapshotReadResult,
 } from "../persistence/index.js";
+import { resolveStateHistoryNotificationItemDisplayReference } from "../persistence/history.js";
 import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { CliApplication } from "./application.js";
 import { createTrackingBackfillRequest } from "./backfill.js";
@@ -196,6 +248,7 @@ import {
   type NotifyOperationsCliCommand,
   type PersistStateCliCommand,
   type ReportWorkflowCliCommand,
+  type ResolveDiscordDeliveryCliCommand,
 } from "./command.js";
 import { type OnlineCliCommand } from "./daily-transaction.js";
 import {
@@ -239,15 +292,11 @@ import { WorkflowStageRunner } from "./workflow-stage.js";
 
 const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
-const CODEX_SCHEMA_VERSION = "3";
+const CODEX_PROMPT_FINGERPRINT = hashCanonicalJson("codex-system-prompt");
 const PAGES_BASE_URL = "https://voicevox.github.io";
+const DISCORD_DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
 const GITHUB_MENTION_PATTERN =
   /(?<![A-Za-z0-9-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?:\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,99})))?/gu;
-const CURRENT_DETERMINISTIC_RULES_VERSIONS = Object.freeze({
-  issue: ISSUE_DETERMINISTIC_RULES_VERSION,
-  pull_request: PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
-}) satisfies Readonly<Record<TrackedItem["type"], string>>;
-
 type EnabledCodexCredentials = Readonly<{
   enabled: true;
   authentication: Config["ai"]["authentication"];
@@ -273,26 +322,10 @@ type RuntimeConfiguration = Readonly<{
 
 function createAiAnalysisRunIdentity(config: Config): AiAnalysisRunIdentity {
   return Object.freeze({
-    deterministicRulesVersion: DETERMINISTIC_RULES_VERSION,
     model: config.ai.model,
     reasoningEffort: config.ai.execution.reasoningEffort,
     backendVersion: CODEX_BACKEND_VERSION,
-    promptVersion: config.ai.promptVersion,
-    schemaVersion: CODEX_SCHEMA_VERSION,
-  });
-}
-
-function createCurrentAnalysisRulesFingerprints(config: Config): CurrentAnalysisRulesFingerprints {
-  const identityHash = hashCanonicalJson(createAiAnalysisRunIdentity(config));
-  return Object.freeze({
-    issue: hashCanonicalJson({
-      deterministicRulesVersion: CURRENT_DETERMINISTIC_RULES_VERSIONS.issue,
-      identityHash,
-    }),
-    pull_request: hashCanonicalJson({
-      deterministicRulesVersion: CURRENT_DETERMINISTIC_RULES_VERSIONS.pull_request,
-      identityHash,
-    }),
+    schemaVersion: AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
   });
 }
 
@@ -328,6 +361,7 @@ type FreshRepositoryItemCollection = Readonly<{
   details: readonly GitHubItemDetail[];
   observedItems: readonly FreshObservedGitHubItem[];
   changedNodeIds: readonly GitHubNodeId[];
+  analysisPlanChangedNodeIds: readonly GitHubNodeId[];
 }>;
 
 type FreshRepositoryRuntimeCollection = FreshRepositoryItemCollection &
@@ -340,6 +374,7 @@ type FreshRuntimeCollectionAggregate = Readonly<{
   details: readonly GitHubItemDetail[];
   observedItems: readonly FreshObservedGitHubItem[];
   changedNodeIds: ReadonlySet<GitHubNodeId>;
+  analysisPlanChangedNodeIds: ReadonlySet<GitHubNodeId>;
 }>;
 
 type RelationExpandedRuntimeCollection = FreshRuntimeCollectionAggregate &
@@ -364,18 +399,32 @@ type MentionedWaitingOnCandidate = Readonly<{
 
 type CodexWaitingOnCandidate = Readonly<{
   id: string;
-  kind: WaitingOnKind;
-  sourceIds: readonly [SourceId, ...SourceId[]];
 }>;
 
 type CodexSourceAuthor = CodexAnalysisInput["sources"][number]["author"];
+
+type EffectiveAssigneeSourceContext = Readonly<{
+  item: FreshObservedGitHubItem;
+  detail: GitHubItemDetail;
+}>;
+
+type EffectiveAssigneeCandidateContext = Readonly<{
+  candidate: IssueEffectiveAssigneeCandidate;
+  sourceContexts: readonly EffectiveAssigneeSourceContext[];
+}>;
+
+type EffectiveAssigneeCollectionContext = Readonly<
+  Pick<CollectedItems, "observedItems" | "details" | "trackedNodeIds">
+>;
 
 type DeterministicItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
   detail: GitHubItemDetail;
   decision: IssueStateDecision | PullRequestStateDecision;
   notificationClass: TrackingNotificationClass;
+  notificationsSuppressedByLabel: boolean;
   relationCandidates: readonly RelationCandidate[];
+  effectiveAssigneeCandidates: readonly EffectiveAssigneeCandidateContext[];
 }>;
 
 type DeterministicAnalysis = Readonly<{
@@ -387,6 +436,8 @@ type DeterministicAnalysis = Readonly<{
 type CodexAnalysis = Readonly<{
   run: AiAnalysisRunResult | undefined;
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
+  elementPlanningByNodeId: ReadonlyMap<GitHubNodeId, AnalysisElementPlanning>;
+  elementGenerationsByNodeId: ReadonlyMap<GitHubNodeId, AiAnalysisElementGenerationMap>;
 }>;
 
 type ReducedItemAnalysis = Readonly<{
@@ -400,6 +451,7 @@ type ReducedItemAnalysis = Readonly<{
   primaryWaitingOn: PrimaryWaitingOn;
   staleness: StalenessResult;
   importanceAssessment: NaturalLanguageImportanceAssessmentState;
+  deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
 }>;
 
 type DependencyResolutionResult = Readonly<{
@@ -415,6 +467,7 @@ type NotificationCauseEvidenceList = readonly [
 type TrackedItemStaleness = Readonly<{
   elapsedHours: number;
   severity: Severity;
+  severityReason: StalenessNotificationSeverityReason;
   waitClass: StalenessWaitClass;
   severityContext: StalenessSeverityContext;
 }>;
@@ -424,6 +477,7 @@ type PendingTrackedItem = WithoutImportance<TrackedItem>;
 type TrackedItemWithImportanceAssessment = TrackedItem &
   Readonly<{
     importanceAssessment: NaturalLanguageImportanceAssessmentState;
+    deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
   }>;
 
 type ReducedAnalysis = Readonly<{
@@ -431,6 +485,10 @@ type ReducedAnalysis = Readonly<{
   currentItems: readonly ReducedItemAnalysis[];
   stalenessByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemStaleness>;
   relationAssessments: readonly RelationCandidateAssessment[];
+  retainedNotificationRecommendations: ReadonlyMap<
+    GitHubNodeId,
+    DiscordNotificationItem["notificationRecommendation"]
+  >;
   runStatus: "success" | "fallback";
 }>;
 
@@ -458,6 +516,7 @@ type ValidatedRun = Readonly<{
 type PersistedRun = Readonly<{
   result: PersistStateTransactionResult;
   historyRecords: readonly StateHistoryRecord[];
+  notificationLedger: StateNotificationLedger;
 }>;
 
 type PagesResult = Readonly<{
@@ -468,6 +527,7 @@ type PagesResult = Readonly<{
 
 type DiscordDeliveryResult = Readonly<{
   delivery: DiscordDigestDelivery;
+  notificationEvents: readonly StateHistoryNotificationEvent[];
 }>;
 
 type DiscordResult = DiscordDeliveryResult &
@@ -495,6 +555,7 @@ export type ProductionTypes = DailyTransactionTypeMap &
 /** 日次実行配線へ注入する外部接続、時刻、永続化の境界。 */
 export type ProductionRuntimeAdapters = Readonly<{
   environment: Readonly<NodeJS.ProcessEnv>;
+  diagnosticsRecorder?: DiagnosticsJsonlRecorder;
   repositoryPath: string;
   pagesOutputDirectory: string;
   loadConfig: typeof loadConfig;
@@ -511,6 +572,10 @@ export type ProductionRuntimeAdapters = Readonly<{
     configuration: CodexAdapterConfiguration,
     dependencies: CodexAdapterDependencies,
   ) => Promise<unknown>;
+  executeCodexAuthenticationPreflight: (
+    configuration: CodexAdapterConfiguration,
+    dependencies: CodexAdapterDependencies,
+  ) => Promise<void>;
   readReplayFixture: typeof readReplayFixtureFile;
   readReplayState: typeof readReplayStateFile;
   readGoldenFixtures: typeof readGoldenFixtureFiles;
@@ -621,18 +686,39 @@ function readRuntimeCredentials(
   }
   const codex = readCodexCredentials(environment, config);
   const knownSecrets = [github.privateKey, ...codexKnownSecrets(codex)];
-  if (
-    command.kind !== "dry-run" &&
-    command.kind !== "collect-analyze" &&
-    config.notifications.discord.enabled
-  ) {
-    knownSecrets.push(
-      requireEnvironmentValue(environment, config.notifications.discord.webhookSecretName),
-      requireEnvironmentValue(
-        environment,
-        config.notifications.discord.operationsWebhookSecretName,
-      ),
-    );
+  if (config.notifications.discord.enabled) {
+    switch (command.kind) {
+      case "daily":
+      case "backfill":
+        switch (command.notificationAction) {
+          case "send":
+            knownSecrets.push(
+              requireEnvironmentValue(environment, config.notifications.discord.webhookSecretName),
+              requireEnvironmentValue(
+                environment,
+                config.notifications.discord.operationsWebhookSecretName,
+              ),
+            );
+            break;
+          case "hold":
+          case "acknowledge-current":
+            knownSecrets.push(
+              requireEnvironmentValue(
+                environment,
+                config.notifications.discord.operationsWebhookSecretName,
+              ),
+            );
+            break;
+          default:
+            throw new UnreachableError(command.notificationAction);
+        }
+        break;
+      case "dry-run":
+      case "collect-analyze":
+        break;
+      default:
+        throw new UnreachableError(command);
+    }
   }
   return Object.freeze({
     github,
@@ -757,21 +843,95 @@ function previousCollectionItemsByNodeId(
   );
 }
 
-function createSnapshotCollectionItem(item: EnumeratedGitHubItem): SnapshotCollectionItem {
+function staleAiAnalysisElementsForLifecycle(
+  item: SnapshotTrackedItem | undefined,
+  identity: AiAnalysisRunIdentity,
+): readonly AiAnalysisElement[] {
+  if (item == null || item.aiAnalysis.status === "not_required") {
+    return Object.freeze([]);
+  }
+  if (item.aiAnalysis.origin === "migration") {
+    return staleMigrationAiAnalysisElementsForLifecycle(item.aiAnalysis, identity);
+  }
+  return Object.freeze(
+    AI_ANALYSIS_ELEMENTS.filter((element) => {
+      const generation = item.aiAnalysis.elements[element];
+      if (generation == null) {
+        return false;
+      }
+      return (
+        generation.metadata.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[element] ||
+        generation.metadata.model !== identity.model ||
+        generation.metadata.reasoningEffort !== identity.reasoningEffort ||
+        generation.metadata.backendVersion !== identity.backendVersion
+      );
+    }),
+  );
+}
+
+function staleMigrationAiAnalysisElementsForLifecycle(
+  aiAnalysis: Extract<TrackedItemAiAnalysis, { origin: "migration" }>,
+  identity: AiAnalysisRunIdentity,
+): readonly AiAnalysisElement[] {
+  return Object.freeze(
+    AI_ANALYSIS_ELEMENTS.filter((element) => {
+      const adopted = aiAnalysis.adoptedElements[element];
+      if (adopted == null || adopted.origin === "migration") {
+        return adopted != null;
+      }
+      const metadata = adopted.generation.metadata;
+      return (
+        metadata.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[element] ||
+        metadata.model !== identity.model ||
+        metadata.reasoningEffort !== identity.reasoningEffort ||
+        metadata.backendVersion !== identity.backendVersion
+      );
+    }),
+  );
+}
+
+function deterministicRulesVersionForItem(item: EnumeratedGitHubItem): string {
+  switch (item.type) {
+    case "issue":
+      return ISSUE_DETERMINISTIC_RULES_VERSION;
+    case "pull_request":
+      return PULL_REQUEST_DETERMINISTIC_RULES_VERSION;
+  }
+}
+
+function analysisPlanFingerprintForItem(
+  item: EnumeratedGitHubItem,
+  identity: AiAnalysisRunIdentity,
+): Sha256Fingerprint {
+  return hashCanonicalJson({
+    itemType: item.type,
+    deterministicRulesVersion: deterministicRulesVersionForItem(item),
+    elementRevisions: AI_ANALYSIS_ELEMENT_REVISIONS,
+    execution: {
+      model: identity.model,
+      reasoningEffort: identity.reasoningEffort,
+      backendVersion: identity.backendVersion,
+      schemaVersion: identity.schemaVersion,
+    },
+  });
+}
+
+function createSnapshotCollectionItem(
+  item: EnumeratedGitHubItem,
+  analysisPlanFingerprint: SnapshotAnalysisPlanFingerprint,
+): SnapshotCollectionItem {
   if (item.state === "open") {
     return Object.freeze({
       freshness: "fresh",
       nodeId: item.nodeId,
       repositoryId: item.repositoryId,
       itemFingerprint: item.itemFingerprint,
-      aiAnalysisFingerprint: Object.freeze({
-        status: "unavailable",
-      }),
-      analysisRulesFingerprint: Object.freeze({
-        status: "unavailable",
-      }),
-      deterministicRulesVersion: Object.freeze({
-        status: "unavailable",
+      analysisPlanFingerprint,
+      aiAnalysis: Object.freeze({
+        origin: "current",
+        status: "not_recorded",
+        elements: Object.freeze({}),
+        adoptedElements: Object.freeze({}),
       }),
       observedAt: item.observedAt,
       state: "open",
@@ -783,14 +943,12 @@ function createSnapshotCollectionItem(item: EnumeratedGitHubItem): SnapshotColle
     nodeId: item.nodeId,
     repositoryId: item.repositoryId,
     itemFingerprint: item.itemFingerprint,
-    aiAnalysisFingerprint: Object.freeze({
-      status: "unavailable",
-    }),
-    analysisRulesFingerprint: Object.freeze({
-      status: "unavailable",
-    }),
-    deterministicRulesVersion: Object.freeze({
-      status: "unavailable",
+    analysisPlanFingerprint,
+    aiAnalysis: Object.freeze({
+      origin: "current",
+      status: "not_recorded",
+      elements: Object.freeze({}),
+      adoptedElements: Object.freeze({}),
     }),
     observedAt: item.observedAt,
     state: "closed",
@@ -806,7 +964,14 @@ function createSnapshotCollectionRepository(
   return Object.freeze({
     repositoryId: repository.id,
     successfulAt,
-    items: Object.freeze(items.map(createSnapshotCollectionItem)),
+    items: Object.freeze(
+      items.map((item) =>
+        createSnapshotCollectionItem(item, {
+          status: "unplanned",
+          reason: "detail_required",
+        }),
+      ),
+    ),
   });
 }
 
@@ -827,7 +992,7 @@ function previousItemCollection(
         item.nodeId,
         Object.freeze({
           itemFingerprint: item.itemFingerprint,
-          analysisRulesFingerprint: item.analysisRulesFingerprint,
+          analysisPlanFingerprint: item.analysisPlanFingerprint,
         }),
       ]),
     ),
@@ -975,6 +1140,7 @@ function requiredTrackingDetailNodeIds(
     invocation.command,
     Object.freeze({ status: "start" }),
   );
+  const identity = createAiAnalysisRunIdentity(configuration.config);
   const includesAllOpenBackfill =
     backfill.mode === "all-open"
       ? backfill.repositoryFilter.length === 0 ||
@@ -983,14 +1149,21 @@ function requiredTrackingDetailNodeIds(
   const previouslyTrackedNodeIds = new Set(
     (previousSnapshot(state)?.items ?? []).map((item) => item.nodeId),
   );
+  const previousItemsByNodeId = new Map(
+    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
+  );
   return Object.freeze(
     enumeratedItems
-      .filter(
-        (item) =>
-          !previouslyTrackedNodeIds.has(item.nodeId) &&
-          (explicitIdentifierMatchesItem(configuration.config.tracking.include, item) ||
-            (includesAllOpenBackfill && item.state === "open")),
-      )
+      .filter((item) => {
+        if (!previouslyTrackedNodeIds.has(item.nodeId)) {
+          return (
+            explicitIdentifierMatchesItem(configuration.config.tracking.include, item) ||
+            (includesAllOpenBackfill && item.state === "open")
+          );
+        }
+        const previousItem = previousItemsByNodeId.get(item.nodeId);
+        return staleAiAnalysisElementsForLifecycle(previousItem, identity).length !== 0;
+      })
       .map((item) => item.nodeId),
   );
 }
@@ -1293,6 +1466,7 @@ function collectTrackingCandidates(
   relationCandidates: readonly RelationCandidate[],
 ): RuntimeTrackingSelection {
   const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
+  const identity = createAiAnalysisRunIdentity(configuration.config);
   const previousItems = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
   );
@@ -1448,9 +1622,6 @@ function collectTrackingCandidates(
     maxBackfillItemsPerRun: configuration.config.tracking.backfill.maxItemsPerRun,
   });
   const previousCollectionItems = previousCollectionItemsByNodeId(state);
-  const currentAnalysisRulesFingerprints = createCurrentAnalysisRulesFingerprints(
-    configuration.config,
-  );
   const workByNodeId = new Map<GitHubNodeId, TrackedItemWorkDecision>();
   for (const selected of result.trackedItems) {
     const item = enumeratedItemsByNodeId.get(selected.item.nodeId);
@@ -1461,8 +1632,10 @@ function collectTrackingCandidates(
       item.nodeId,
       determineTrackedItemWork({
         state: item.state,
-        analysisInputFingerprint: item.itemFingerprint,
-        analysisRulesFingerprint: currentAnalysisRulesFingerprints[item.type],
+        requiredAiAnalysisElements: staleAiAnalysisElementsForLifecycle(
+          previousTrackedItem,
+          identity,
+        ),
         previousAiAnalysisStatus:
           previousTrackedItem == null ? "not_available" : previousTrackedItem.aiAnalysis.status,
         previousObservation:
@@ -1471,8 +1644,6 @@ function collectTrackingCandidates(
             : Object.freeze({
                 status: "available",
                 state: previousCollectionItem.state,
-                analysisInputFingerprint: previousCollectionItem.itemFingerprint,
-                analysisRulesFingerprint: previousCollectionItem.analysisRulesFingerprint,
               }),
       }),
     );
@@ -1641,6 +1812,309 @@ function createIssueRequestCandidates(
   return deduplicateByStableId(candidates, (candidate) => candidate.sourceId);
 }
 
+type EffectiveAssigneeCandidateAccumulator = Readonly<{
+  candidateId: string;
+  sourceIds: Set<SourceId>;
+  occurredAtBySourceId: Map<SourceId, UtcIsoDateTime>;
+  sourceContexts: Map<GitHubNodeId, EffectiveAssigneeSourceContext>;
+}>;
+
+type EffectiveAssigneeStateEvent = Extract<NormalizedEvent, { kind: "state" }>;
+
+function latestEffectiveAssigneeUnassignmentAt(
+  detail: Extract<GitHubItemDetail, { type: "issue" }>,
+): UtcIsoDateTime | undefined {
+  let latestUnassignedAt: UtcIsoDateTime | undefined;
+  for (const event of detail.timeline) {
+    if (event.kind !== "unassigned") {
+      continue;
+    }
+    if (latestUnassignedAt == null || latestUnassignedAt < event.occurredAt) {
+      latestUnassignedAt = event.occurredAt;
+    }
+  }
+  return latestUnassignedAt;
+}
+
+function resolveEffectiveAssigneePullRequestState(
+  pullRequest: Extract<FreshObservedGitHubItem, { type: "pull_request" }>,
+): "open" | "merged" | "closed_unmerged" {
+  const stateEvents = pullRequest.events
+    .filter((event): event is EffectiveAssigneeStateEvent => event.kind === "state")
+    .sort((left, right) => {
+      if (left.occurredAt !== right.occurredAt) {
+        return left.occurredAt < right.occurredAt ? -1 : 1;
+      }
+      if (left.sourceId === right.sourceId) {
+        return 0;
+      }
+      return left.sourceId < right.sourceId ? -1 : 1;
+    });
+  const latestStateEvent = stateEvents.at(-1);
+  if (pullRequest.state === "open") {
+    if (latestStateEvent == null) {
+      return "open";
+    }
+    switch (latestStateEvent.state) {
+      case "open":
+      case "reopened":
+        return "open";
+      case "closed":
+      case "merged":
+        throw new TypeError(
+          `openなPull Requestの最新state eventが現在状態と一致しません。対象: ${pullRequest.nodeId}`,
+        );
+      default:
+        throw new UnreachableError(latestStateEvent);
+    }
+  }
+  assertNonNullable(
+    latestStateEvent,
+    `closedなPull Requestの最新state eventがありません。対象: ${pullRequest.nodeId}`,
+  );
+  switch (latestStateEvent.state) {
+    case "merged":
+      return "merged";
+    case "closed":
+      return "closed_unmerged";
+    case "open":
+    case "reopened":
+      throw new TypeError(
+        `closedなPull Requestの最新state eventが現在状態と一致しません。対象: ${pullRequest.nodeId}`,
+      );
+    default:
+      throw new UnreachableError(latestStateEvent);
+  }
+}
+
+function createEffectiveAssigneeCandidateContexts(
+  collection: EffectiveAssigneeCollectionContext,
+  item: Extract<FreshObservedGitHubItem, { type: "issue" }>,
+  detail: Extract<GitHubItemDetail, { type: "issue" }>,
+  relationCandidates: readonly RelationCandidate[],
+): readonly EffectiveAssigneeCandidateContext[] {
+  if (item.state !== "open" || item.assignees.length !== 0) {
+    return Object.freeze([]);
+  }
+
+  const currentSourceContext = Object.freeze({
+    item,
+    detail,
+  }) satisfies EffectiveAssigneeSourceContext;
+  const observedItemsByNodeId = new Map(
+    collection.observedItems.map((observedItem) => [observedItem.nodeId, observedItem]),
+  );
+  const detailsByNodeId = new Map(
+    collection.details.map((itemDetail) => [itemDetail.nodeId, itemDetail]),
+  );
+  const candidatesById = new Map<string, EffectiveAssigneeCandidateAccumulator>();
+  const lastUnassignedAt = latestEffectiveAssigneeUnassignmentAt(detail);
+
+  const addCandidateEvidence = (
+    candidateId: string,
+    sourceId: SourceId,
+    occurredAt: UtcIsoDateTime,
+    sourceContext: EffectiveAssigneeSourceContext,
+  ): void => {
+    if (candidateId.length === 0) {
+      throw new TypeError("実質担当候補のGitHub loginは空にできません");
+    }
+    if (lastUnassignedAt != null && occurredAt <= lastUnassignedAt) {
+      return;
+    }
+    const key = candidateId.toLowerCase();
+    const existing = candidatesById.get(key);
+    if (existing == null) {
+      candidatesById.set(
+        key,
+        Object.freeze({
+          candidateId,
+          sourceIds: new Set([sourceId]),
+          occurredAtBySourceId: new Map([[sourceId, occurredAt]]),
+          sourceContexts: new Map([[sourceContext.item.nodeId, sourceContext]]),
+        }),
+      );
+      return;
+    }
+    existing.sourceIds.add(sourceId);
+    const existingOccurredAt = existing.occurredAtBySourceId.get(sourceId);
+    if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
+      if (parseSourceId(sourceId).kind !== "github_commit") {
+        throw new TypeError(`実質担当候補sourceの発生時刻が一致しません。対象: ${sourceId}`);
+      }
+      existing.occurredAtBySourceId.set(
+        sourceId,
+        existingOccurredAt < occurredAt ? existingOccurredAt : occurredAt,
+      );
+    } else {
+      existing.occurredAtBySourceId.set(sourceId, occurredAt);
+    }
+    existing.sourceContexts.set(sourceContext.item.nodeId, sourceContext);
+  };
+
+  if (
+    item.author.status === "identified" &&
+    item.author.actor.type === "human" &&
+    detail.body.trim().length > 0
+  ) {
+    addCandidateEvidence(
+      item.author.actor.login,
+      detail.bodySourceId,
+      item.createdAt,
+      currentSourceContext,
+    );
+  }
+
+  for (const comment of detail.comments) {
+    if (comment.body.trim().length === 0) {
+      continue;
+    }
+    const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+    if (event?.actor.type !== "human") {
+      continue;
+    }
+    addCandidateEvidence(
+      event.actor.login,
+      comment.sourceId,
+      comment.createdAt,
+      currentSourceContext,
+    );
+  }
+
+  for (const relationCandidate of relationCandidates) {
+    if (
+      relationCandidate.authority !== "authoritative" ||
+      relationCandidate.relation.type !== "implements"
+    ) {
+      continue;
+    }
+    const implementation = relationCandidate.relation.implementation;
+    const target = relationCandidate.relation.target;
+    if (
+      implementation.scope !== "organization" ||
+      implementation.kind !== "pull_request" ||
+      target.scope !== "organization" ||
+      target.nodeId !== item.nodeId
+    ) {
+      continue;
+    }
+    if (!collection.trackedNodeIds.has(implementation.nodeId)) {
+      continue;
+    }
+    const relatedItem = observedItemsByNodeId.get(implementation.nodeId);
+    if (relatedItem == null) {
+      continue;
+    }
+    if (relatedItem.type !== "pull_request") {
+      throw new TypeError(
+        `実装関係の対象がPull Requestではありません。対象: ${implementation.nodeId}`,
+      );
+    }
+    const expectedObservedState = implementation.state === "open" ? "open" : "closed";
+    if (relatedItem.state !== expectedObservedState) {
+      throw new TypeError(
+        `実装関係のPull Request状態が一致しません。対象: ${implementation.nodeId}`,
+      );
+    }
+    const relatedDetail = detailsByNodeId.get(implementation.nodeId);
+    if (relatedDetail == null) {
+      continue;
+    }
+    if (relatedDetail.type !== "pull_request") {
+      throw new TypeError(
+        `実装関係の詳細がPull Requestではありません。対象: ${implementation.nodeId}`,
+      );
+    }
+    if (relatedItem.author.status !== "identified" || relatedItem.author.actor.type !== "human") {
+      continue;
+    }
+    const relatedSourceContext = Object.freeze({
+      item: relatedItem,
+      detail: relatedDetail,
+    }) satisfies EffectiveAssigneeSourceContext;
+    const authorLogin = relatedItem.author.actor.login;
+    addCandidateEvidence(
+      authorLogin,
+      relatedItem.sourceId,
+      relatedItem.createdAt,
+      relatedSourceContext,
+    );
+    if (relatedDetail.body.trim().length > 0) {
+      addCandidateEvidence(
+        authorLogin,
+        relatedDetail.bodySourceId,
+        relatedItem.createdAt,
+        relatedSourceContext,
+      );
+    }
+    for (const event of relatedItem.events) {
+      if (event.kind !== "push") {
+        continue;
+      }
+      addCandidateEvidence(authorLogin, event.sourceId, event.occurredAt, relatedSourceContext);
+    }
+  }
+
+  return Object.freeze(
+    [...candidatesById.values()]
+      .map((candidate) => {
+        const orderedSourceIds = [...candidate.sourceIds].sort((left, right) => {
+          const leftOccurredAt = candidate.occurredAtBySourceId.get(left);
+          const rightOccurredAt = candidate.occurredAtBySourceId.get(right);
+          assertNonNullable(
+            leftOccurredAt,
+            `実質担当候補sourceの発生時刻がありません。対象: ${left}`,
+          );
+          assertNonNullable(
+            rightOccurredAt,
+            `実質担当候補sourceの発生時刻がありません。対象: ${right}`,
+          );
+          if (leftOccurredAt !== rightOccurredAt) {
+            return leftOccurredAt > rightOccurredAt ? -1 : 1;
+          }
+          return left.localeCompare(right);
+        });
+        const sourceIds = orderedSourceIds.slice(0, 10);
+        const firstSourceId = sourceIds[0];
+        assertNonNullable(
+          firstSourceId,
+          `実質担当候補 ${candidate.candidateId}のsource IDがありません`,
+        );
+        const occurredAt = candidate.occurredAtBySourceId.get(firstSourceId);
+        assertNonNullable(
+          occurredAt,
+          `実質担当候補sourceの発生時刻がありません。対象: ${firstSourceId}`,
+        );
+        return Object.freeze({
+          candidate: Object.freeze({
+            candidateId: candidate.candidateId,
+            sourceIds: Object.freeze([firstSourceId, ...sourceIds.slice(1)] satisfies [
+              SourceId,
+              ...SourceId[],
+            ]),
+            occurredAt,
+          }),
+          sourceContexts: Object.freeze(
+            [...candidate.sourceContexts.values()].sort((left, right) =>
+              left.item.nodeId.localeCompare(right.item.nodeId),
+            ),
+          ),
+        });
+      })
+      .sort((left, right) => {
+        const leftId = left.candidate.candidateId.toLowerCase();
+        const rightId = right.candidate.candidateId.toLowerCase();
+        if (leftId < rightId) {
+          return -1;
+        }
+        if (leftId > rightId) {
+          return 1;
+        }
+        return left.candidate.candidateId.localeCompare(right.candidate.candidateId);
+      }),
+  );
+}
+
 function mentionedCandidatesInSource(
   sourceId: SourceId,
   content: string,
@@ -1738,14 +2212,30 @@ function applyDeterministicAnalysis(
     const detail = findDetail(collection, item.nodeId);
     const notificationClass = collection.trackingNotificationClassByNodeId.get(item.nodeId);
     assertNonNullable(notificationClass, `追跡項目の通知分類がありません。対象: ${item.nodeId}`);
+    const notificationsSuppressedByLabel = resolveLabelEffects(
+      repositoryFullName(repository),
+      item.labels,
+    ).suppressNotifications;
     const relationCandidates = candidatesForNode(item.nodeId, collection.relationCandidates);
     const blockers = createNativeBlockers(item, relationCandidates);
     if (item.type === "issue" && detail.type === "issue") {
+      const effectiveAssigneeCandidates = createEffectiveAssigneeCandidateContexts(
+        collection,
+        item,
+        detail,
+        relationCandidates,
+      );
       const decision = determineIssueState({
         issue: item,
         blockers,
         explicitRequestCandidates: createIssueRequestCandidates(item, detail),
         explicitRequestAssessment: {
+          status: "not_assessed",
+        },
+        effectiveAssigneeCandidates: effectiveAssigneeCandidates.map(
+          (candidate) => candidate.candidate,
+        ),
+        effectiveAssigneeAssessment: {
           status: "not_assessed",
         },
         maintainers,
@@ -1758,7 +2248,9 @@ function applyDeterministicAnalysis(
           detail,
           decision,
           notificationClass,
+          notificationsSuppressedByLabel,
           relationCandidates,
+          effectiveAssigneeCandidates,
         }),
       );
       continue;
@@ -1782,7 +2274,9 @@ function applyDeterministicAnalysis(
           detail,
           decision,
           notificationClass,
+          notificationsSuppressedByLabel,
           relationCandidates,
+          effectiveAssigneeCandidates: Object.freeze([]),
         }),
       );
       continue;
@@ -1812,35 +2306,6 @@ function createUnavailableCodexSourceAuthor(): CodexSourceAuthor {
   return Object.freeze({
     status: "unavailable",
   });
-}
-
-function addCodexCommentAuthorCandidate(
-  candidates: Map<string, CodexWaitingOnCandidate>,
-  candidate: CodexWaitingOnCandidate,
-): boolean {
-  const existing = candidates.get(candidate.id);
-  if (existing == null) {
-    candidates.set(candidate.id, candidate);
-    return true;
-  }
-  if (existing.kind !== candidate.kind) {
-    return false;
-  }
-  const sourceIds = [...new Set([...existing.sourceIds, ...candidate.sourceIds])].sort();
-  const firstSourceId = sourceIds[0];
-  assertNonNullable(firstSourceId, `Codex候補 ${candidate.id}のsource IDがありません`);
-  candidates.set(
-    candidate.id,
-    Object.freeze({
-      id: existing.id,
-      kind: existing.kind,
-      sourceIds: Object.freeze([firstSourceId, ...sourceIds.slice(1)] satisfies [
-        SourceId,
-        ...SourceId[],
-      ]),
-    }),
-  );
-  return true;
 }
 
 function codexCommentSources(
@@ -1874,8 +2339,6 @@ function createCodexCommentAuthor(
   }
   const candidate: CodexWaitingOnCandidate = Object.freeze({
     id: comment.author.account.login,
-    kind: "user",
-    sourceIds: Object.freeze([comment.sourceId] satisfies [SourceId]),
   });
   const sourceAuthor: CodexSourceAuthor =
     comment.createdAt === comment.updatedAt
@@ -1982,7 +2445,14 @@ function addCodexSourceOccurredAt(
 ): void {
   const existingOccurredAt = sourceOccurredAtById.get(sourceId);
   if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
-    throw new TypeError(`同じCodex source IDに異なる発生時刻があります。対象: ${sourceId}`);
+    if (parseSourceId(sourceId).kind !== "github_commit") {
+      throw new TypeError(`同じCodex source IDに異なる発生時刻があります。対象: ${sourceId}`);
+    }
+    sourceOccurredAtById.set(
+      sourceId,
+      existingOccurredAt < occurredAt ? existingOccurredAt : occurredAt,
+    );
+    return;
   }
   sourceOccurredAtById.set(sourceId, occurredAt);
 }
@@ -1997,18 +2467,21 @@ function checkContextOccurredAt(
   return context.completedAt ?? headOccurredAt;
 }
 
-function createCodexSourceOccurredAtById(
+function addCodexSourceOccurredAtForContext(
+  sourceOccurredAtById: Map<SourceId, UtcIsoDateTime>,
   item: FreshObservedGitHubItem,
   detail: GitHubItemDetail,
-): ReadonlyMap<SourceId, UtcIsoDateTime> {
-  const sourceOccurredAtById = new Map(createEarliestRelationSourceOccurredAtById([item]));
+): void {
+  for (const [sourceId, occurredAt] of createEarliestRelationSourceOccurredAtById([item])) {
+    addCodexSourceOccurredAt(sourceOccurredAtById, sourceId, occurredAt);
+  }
   addCodexSourceOccurredAt(sourceOccurredAtById, item.sourceId, item.createdAt);
   addCodexSourceOccurredAt(sourceOccurredAtById, detail.bodySourceId, item.createdAt);
   for (const comment of detail.comments) {
     addCodexSourceOccurredAt(sourceOccurredAtById, comment.sourceId, comment.createdAt);
   }
   if (detail.type !== "pull_request" || detail.mergeState.checks.status !== "configured") {
-    return sourceOccurredAtById;
+    return;
   }
   const headOccurredAt = resolvePullRequestCommitOccurredAt(detail.headCommit, item.createdAt);
   const checkOccurredAts = detail.mergeState.checks.contexts.map((context) => {
@@ -2024,7 +2497,197 @@ function createCodexSourceOccurredAtById(
       `check rollup ${detail.mergeState.checks.sourceId}`,
     ),
   );
+}
+
+function createCodexSourceOccurredAtById(
+  item: FreshObservedGitHubItem,
+  detail: GitHubItemDetail,
+): ReadonlyMap<SourceId, UtcIsoDateTime> {
+  const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
+  addCodexSourceOccurredAtForContext(sourceOccurredAtById, item, detail);
   return sourceOccurredAtById;
+}
+
+function addCodexSourceRecord(
+  sourceRecords: Map<string, unknown>,
+  sourceId: SourceId,
+  record: unknown,
+): void {
+  if (sourceRecords.has(sourceId)) {
+    return;
+  }
+  sourceRecords.set(sourceId, record);
+}
+
+function addCodexSourceRecordsForContext(
+  sourceRecords: Map<string, unknown>,
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+  context: EffectiveAssigneeSourceContext,
+): void {
+  const { item, detail } = context;
+  addCodexSourceRecord(
+    sourceRecords,
+    item.sourceId,
+    Object.freeze({
+      id: item.sourceId,
+      kind: "item",
+      actorType: codexActorType(item),
+      author: createUnavailableCodexSourceAuthor(),
+      createdAt: item.createdAt,
+    }),
+  );
+  for (const event of item.events) {
+    addCodexSourceRecord(
+      sourceRecords,
+      event.sourceId,
+      Object.freeze({
+        id: event.sourceId,
+        kind: event.kind,
+        actorType: event.actor.type,
+        author: createUnavailableCodexSourceAuthor(),
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
+      }),
+    );
+  }
+  const itemActorType = codexActorType(item);
+  addCodexSourceRecord(
+    sourceRecords,
+    detail.bodySourceId,
+    Object.freeze({
+      id: detail.bodySourceId,
+      kind: "body",
+      actorType: itemActorType,
+      author: createUnavailableCodexSourceAuthor(),
+      createdAt: item.createdAt,
+      ...(itemActorType === "human" ? { content: detail.body } : {}),
+    }),
+  );
+  for (const comment of detail.comments) {
+    const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+    const actorType = event?.actor.type ?? "system";
+    addCodexSourceRecord(
+      sourceRecords,
+      comment.sourceId,
+      Object.freeze({
+        id: comment.sourceId,
+        kind: "comment",
+        actorType,
+        author: createUnavailableCodexSourceAuthor(),
+        createdAt: comment.createdAt,
+        ...(actorType === "human" ? { content: comment.body } : {}),
+      }),
+    );
+  }
+  if (detail.type !== "pull_request") {
+    return;
+  }
+  if (item.type !== "pull_request") {
+    throw new TypeError("Pull Request詳細にIssueの観測値が指定されています");
+  }
+  for (const thread of detail.reviewThreads) {
+    for (const comment of thread.comments) {
+      const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+      const actorType = event?.actor.type ?? "system";
+      addCodexSourceRecord(
+        sourceRecords,
+        comment.sourceId,
+        Object.freeze({
+          id: comment.sourceId,
+          kind: "comment",
+          actorType,
+          author: createUnavailableCodexSourceAuthor(),
+          createdAt: comment.createdAt,
+          ...(actorType === "human" ? { content: comment.body } : {}),
+        }),
+      );
+    }
+  }
+  for (const review of detail.reviews) {
+    const event = item.events.find((candidate) => candidate.sourceId === review.sourceId);
+    const actorType = event?.actor.type ?? "system";
+    addCodexSourceRecord(
+      sourceRecords,
+      review.sourceId,
+      Object.freeze({
+        id: review.sourceId,
+        kind: "review",
+        actorType,
+        author: createUnavailableCodexSourceAuthor(),
+        createdAt: review.submittedAt,
+        ...(actorType === "human" ? { content: review.body } : {}),
+      }),
+    );
+  }
+  for (const request of detail.reviewRequests.current) {
+    if (request.requestedAt.status === "unavailable") {
+      continue;
+    }
+    addCodexSourceRecord(
+      sourceRecords,
+      request.sourceId,
+      Object.freeze({
+        id: request.sourceId,
+        kind: "review_request",
+        actorType: "system",
+        author: createUnavailableCodexSourceAuthor(),
+        createdAt: request.requestedAt.value,
+      }),
+    );
+  }
+  if (item.mergeState.autoMerge.status === "enabled") {
+    const autoMerge = item.mergeState.autoMerge;
+    addCodexSourceRecord(
+      sourceRecords,
+      autoMerge.sourceId,
+      Object.freeze({
+        id: autoMerge.sourceId,
+        kind: "auto_merge_request",
+        actorType: autoMerge.enabledBy.type,
+        author: createUnavailableCodexSourceAuthor(),
+        createdAt: autoMerge.enabledAt,
+        mergeMethod: autoMerge.mergeMethod,
+      }),
+    );
+  }
+  if (detail.mergeState.checks.status !== "configured") {
+    return;
+  }
+  const checks = detail.mergeState.checks;
+  addCodexSourceRecord(
+    sourceRecords,
+    checks.sourceId,
+    Object.freeze({
+      id: checks.sourceId,
+      kind: "required_check_rollup",
+      actorType: "system",
+      author: createUnavailableCodexSourceAuthor(),
+      createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, checks.sourceId),
+      combinedState: checks.combinedState,
+    }),
+  );
+  for (const check of checks.contexts) {
+    addCodexSourceRecord(
+      sourceRecords,
+      check.sourceId,
+      Object.freeze({
+        id: check.sourceId,
+        kind: check.type,
+        actorType: "system",
+        author: createUnavailableCodexSourceAuthor(),
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, check.sourceId),
+        ...(check.type === "check_run"
+          ? {
+              name: check.name,
+              status: check.status,
+              conclusion: check.conclusion,
+            }
+          : {
+              context: check.context,
+              state: check.state,
+            }),
+      }),
+    );
+  }
 }
 
 function requireCodexSourceOccurredAt(
@@ -2037,8 +2700,11 @@ function requireCodexSourceOccurredAt(
 }
 
 function createCodexInput(
+  configuration: RuntimeConfiguration,
   evaluatedAt: UtcIsoDateTime,
   analysis: DeterministicItemAnalysis,
+  selectedElements: readonly AiAnalysisElement[],
+  preservedElements: CodexPreservedElements,
 ): CodexAnalysisInput {
   const relationCandidates = deduplicateByStableId(
     selectRelationAssessmentCandidates(analysis.item.nodeId, analysis.relationCandidates),
@@ -2056,8 +2722,6 @@ function createCodexInput(
           waitingOn.candidateId,
           Object.freeze({
             id: waitingOn.candidateId,
-            kind: waitingOn.kind,
-            sourceIds: waitingOn.sourceIds,
           }),
         ] satisfies readonly [string, CodexWaitingOnCandidate],
     ),
@@ -2068,13 +2732,11 @@ function createCodexInput(
       authorCandidateId,
       Object.freeze({
         id: authorCandidateId,
-        kind: "user",
-        sourceIds: Object.freeze([analysis.item.sourceId] satisfies [SourceId]),
       }),
     );
   }
   for (const candidate of mentionedCandidates) {
-    waitingOnCandidates.set(candidate.id, candidate);
+    waitingOnCandidates.set(candidate.id, Object.freeze({ id: candidate.id }));
   }
   const commentAuthorBySourceId = new Map<SourceId, CodexSourceAuthor>();
   for (const comment of codexCommentSources(analysis.detail)) {
@@ -2082,16 +2744,36 @@ function createCodexInput(
     if (commentAuthor == null) {
       continue;
     }
-    const candidateAdded = addCodexCommentAuthorCandidate(
-      waitingOnCandidates,
-      commentAuthor.candidate,
+    waitingOnCandidates.set(commentAuthor.candidate.id, commentAuthor.candidate);
+    commentAuthorBySourceId.set(comment.sourceId, commentAuthor.sourceAuthor);
+  }
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    const candidate = effectiveCandidateContext.candidate;
+    const existingKey = [...waitingOnCandidates.keys()].find(
+      (candidateId) => candidateId.toLowerCase() === candidate.candidateId.toLowerCase(),
     );
-    commentAuthorBySourceId.set(
-      comment.sourceId,
-      candidateAdded ? commentAuthor.sourceAuthor : createUnavailableCodexSourceAuthor(),
+    if (existingKey != null && existingKey !== candidate.candidateId) {
+      waitingOnCandidates.delete(existingKey);
+    }
+    waitingOnCandidates.set(
+      candidate.candidateId,
+      Object.freeze({
+        id: candidate.candidateId,
+      }),
     );
   }
-  const sourceOccurredAtById = createCodexSourceOccurredAtById(analysis.item, analysis.detail);
+  const sourceOccurredAtById = new Map(
+    createCodexSourceOccurredAtById(analysis.item, analysis.detail),
+  );
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
+      addCodexSourceOccurredAtForContext(
+        sourceOccurredAtById,
+        sourceContext.item,
+        sourceContext.detail,
+      );
+    }
+  }
   const sourceRecords = new Map<string, unknown>();
   sourceRecords.set(
     analysis.item.sourceId,
@@ -2111,7 +2793,7 @@ function createCodexInput(
         kind: event.kind,
         actorType: event.actor.type,
         author: createUnavailableCodexSourceAuthor(),
-        createdAt: event.occurredAt,
+        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
       }),
     );
   }
@@ -2250,8 +2932,13 @@ function createCodexInput(
       );
     }
   }
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
+      addCodexSourceRecordsForContext(sourceRecords, sourceOccurredAtById, sourceContext);
+    }
+  }
   return createCodexAnalysisInput({
-    schemaVersion: "2",
+    schemaVersion: "4",
     now: evaluatedAt,
     item: {
       nodeId: analysis.item.nodeId,
@@ -2287,8 +2974,435 @@ function createCodexInput(
           ? analysis.detail.mergeState.checks
           : null,
       uncertainties: analysis.decision.uncertainties,
+      effectiveAssigneeEligible:
+        analysis.item.type === "issue" &&
+        analysis.item.state === "open" &&
+        analysis.item.assignees.length === 0,
+      effectiveAssigneeCandidates: analysis.effectiveAssigneeCandidates.map(({ candidate }) => ({
+        candidateId: candidate.candidateId,
+        sourceIds: candidate.sourceIds,
+        occurredAt: candidate.occurredAt,
+      })),
+      effectiveAssigneeImplementations: analysis.effectiveAssigneeCandidates.flatMap(
+        ({ candidate, sourceContexts }) =>
+          sourceContexts.flatMap(({ item: sourceItem }) => {
+            if (sourceItem.type !== "pull_request") {
+              return [];
+            }
+            return analysis.relationCandidates.flatMap((relationCandidate) => {
+              if (
+                relationCandidate.relation.type !== "implements" ||
+                relationCandidate.relation.implementation.nodeId !== sourceItem.nodeId ||
+                relationCandidate.relation.target.nodeId !== analysis.item.nodeId
+              ) {
+                return [];
+              }
+              return [
+                {
+                  candidateId: candidate.candidateId,
+                  pullRequestNodeId: sourceItem.nodeId,
+                  pullRequestUrl: sourceItem.url,
+                  pullRequestState: resolveEffectiveAssigneePullRequestState(sourceItem),
+                  relationCandidateIds: [relationCandidate.id],
+                },
+              ];
+            });
+          }),
+      ),
+      effectiveAssigneeConfidenceThreshold: configuration.config.ai.confidence.high,
     },
-    priorAnalysis: null,
+    selectedElements,
+    lockedElements: projectCodexLockedElements(preservedElements),
+  });
+}
+
+type AnalysisElementInputFingerprintMap = Readonly<
+  Record<AiAnalysisElement, AiAnalysisElementInputFingerprint>
+>;
+
+type AnalysisElementExecutionFingerprintMap = Readonly<
+  Record<AiAnalysisElement, AiAnalysisElementExecutionFingerprint>
+>;
+
+function codexNaturalLanguageSources(input: CodexAnalysisInput): readonly object[] {
+  return input.sources.filter(
+    (source) => source.kind === "body" || source.kind === "comment" || source.kind === "review",
+  );
+}
+
+function codexRelationSources(input: CodexAnalysisInput): readonly object[] {
+  return input.sources.filter((source) => source.kind === "relation");
+}
+
+function codexTextItem(input: CodexAnalysisInput): Readonly<Record<string, unknown>> {
+  return Object.freeze({
+    nodeId: input.item.nodeId,
+    url: input.item.url,
+    type: input.item.type,
+    title: input.item.title,
+    ...(input.item.authorCandidateId == null
+      ? {}
+      : { authorCandidateId: input.item.authorCandidateId }),
+  });
+}
+
+function deterministicSignalProjection(
+  signals: Readonly<Record<string, unknown>>,
+  keys: readonly string[],
+): Readonly<Record<string, unknown>> {
+  const projection: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (Object.hasOwn(signals, key)) {
+      projection[key] = signals[key];
+    }
+  }
+  return Object.freeze(projection);
+}
+
+function elementInputFingerprints(input: CodexAnalysisInput): AnalysisElementInputFingerprintMap {
+  const naturalLanguageSources = codexNaturalLanguageSources(input);
+  const relationSources = [...codexRelationSources(input), ...naturalLanguageSources];
+  const stateInput = {
+    item: input.item,
+    candidates: input.candidates.waitingOn,
+    sources: naturalLanguageSources,
+    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
+      "status",
+      "waitingOn",
+      "requiredCheckFailure",
+      "effectiveAssigneeCandidates",
+      "effectiveAssigneeImplementations",
+      "mentionedWaitingOnCandidates",
+      "uncertainties",
+    ]),
+  };
+  const relationInput = {
+    item: codexTextItem(input),
+    candidates: input.candidates.relations,
+    sources: relationSources,
+    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
+      "relationCandidateIds",
+      "nativeBlockedBy",
+      "nativeBlocking",
+      "nativeParent",
+      "nativeSubIssues",
+    ]),
+  };
+  const textInput = {
+    item: codexTextItem(input),
+    sources: naturalLanguageSources,
+  };
+  const notificationInput = {
+    item: codexTextItem(input),
+    candidates: input.candidates,
+    sources: naturalLanguageSources,
+    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
+      "status",
+      "waitingOn",
+      "requiredCheckFailure",
+      "effectiveAssigneeCandidates",
+      "effectiveAssigneeImplementations",
+      "mentionedWaitingOnCandidates",
+      "uncertainties",
+    ]),
+  };
+  return Object.freeze({
+    status: hashCanonicalJson(stateInput),
+    waitingOn: hashCanonicalJson(stateInput),
+    nextAction: hashCanonicalJson(stateInput),
+    relations: hashCanonicalJson(relationInput),
+    progress: hashCanonicalJson(textInput),
+    importance: hashCanonicalJson(textInput),
+    deadline: hashCanonicalJson(textInput),
+    notification: hashCanonicalJson(notificationInput),
+  });
+}
+
+function elementExecutionFingerprints(
+  identity: AiAnalysisRunIdentity,
+): AnalysisElementExecutionFingerprintMap {
+  const createFingerprint = (element: AiAnalysisElement): AiAnalysisElementExecutionFingerprint =>
+    hashCanonicalJson({
+      element,
+      model: identity.model,
+      reasoningEffort: identity.reasoningEffort,
+      backendVersion: identity.backendVersion,
+      schemaVersion: identity.schemaVersion,
+    });
+  return Object.freeze({
+    status: createFingerprint("status"),
+    waitingOn: createFingerprint("waitingOn"),
+    nextAction: createFingerprint("nextAction"),
+    relations: createFingerprint("relations"),
+    progress: createFingerprint("progress"),
+    importance: createFingerprint("importance"),
+    deadline: createFingerprint("deadline"),
+    notification: createFingerprint("notification"),
+  });
+}
+
+function savedGenerationsForItem(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>>> {
+  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  if (item == null) {
+    return Object.freeze({});
+  }
+  return item.aiAnalysis.elements;
+}
+
+function savedAdoptedGenerationsForItem(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>>> {
+  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  if (item == null) {
+    return Object.freeze({});
+  }
+  if (item.aiAnalysis.origin === "current") {
+    return item.aiAnalysis.adoptedElements;
+  }
+  const generations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const adopted = item.aiAnalysis.adoptedElements[element];
+    if (adopted?.origin !== "current") {
+      continue;
+    }
+    generations[element] = createAiAnalysisElementGenerationSchema(element).parse(
+      adopted.generation,
+    );
+  }
+  return Object.freeze(generations);
+}
+
+function savedMigrationAdoptedElementsForItem(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): TrackedItemAiAnalysisMigrationAdoptedElements {
+  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  if (item?.aiAnalysis.origin !== "migration") {
+    return Object.freeze({});
+  }
+  return item.aiAnalysis.adoptedElements;
+}
+
+function adoptedResultForRetainedItem(
+  item: SnapshotTrackedItem,
+  element: AiAnalysisElement,
+): AiAnalysisElementMigrationResult | undefined {
+  if (item.aiAnalysis.origin === "current") {
+    const generation = item.aiAnalysis.adoptedElements[element];
+    if (generation == null) {
+      return undefined;
+    }
+    const parsedGeneration = createAiAnalysisElementGenerationSchema(element).parse(generation);
+    return createAiAnalysisMigrationElementResultSchema(element).parse(parsedGeneration.result);
+  }
+  const adopted = item.aiAnalysis.adoptedElements[element];
+  if (adopted == null) {
+    return undefined;
+  }
+  if (adopted.origin === "current") {
+    const generation = createAiAnalysisElementGenerationSchema(element).parse(adopted.generation);
+    return createAiAnalysisMigrationElementResultSchema(element).parse(generation.result);
+  }
+  return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
+}
+
+function preservedElementsForRetainedItem(
+  item: SnapshotTrackedItem,
+): Pick<CodexPreservedElements, "relations" | "notification"> {
+  const relations = adoptedResultForRetainedItem(item, "relations");
+  const notification = adoptedResultForRetainedItem(item, "notification");
+  return Object.freeze({
+    ...(relations == null ? {} : { relations }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
+function deterministicElementResult(
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+): AiAnalysisElementMigrationResult | undefined {
+  const evidence = Object.freeze([
+    Object.freeze({
+      sourceId: analysis.item.sourceId,
+      summary: "決定論的な判定結果です",
+    }),
+  ]);
+  const common = {
+    evidence,
+    confidence: analysis.decision.confidence,
+    uncertainties: analysis.decision.uncertainties,
+  };
+  switch (element) {
+    case "status":
+      return createAiAnalysisElementResultSchema("status").parse({
+        ...common,
+        value: analysis.decision.status,
+      });
+    case "waitingOn":
+      return createAiAnalysisMigrationElementResultSchema("waitingOn").parse({
+        ...common,
+        value: analysis.decision.waitingOn,
+      });
+    case "nextAction":
+      return createAiAnalysisElementResultSchema("nextAction").parse({
+        ...common,
+        value: analysis.decision.nextAction,
+      });
+    case "relations":
+    case "progress":
+    case "importance":
+    case "deadline":
+    case "notification":
+      return undefined;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+function currentAdoptedGenerationForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+  inputFingerprint: AiAnalysisElementInputFingerprint,
+): AiAnalysisElementGeneration | undefined {
+  const generation = savedAdoptedGenerationsForItem(state, analysis.item.nodeId)[element];
+  if (generation == null) {
+    return undefined;
+  }
+  const parsedGeneration = createAiAnalysisElementGenerationSchema(element).parse(generation);
+  if (parsedGeneration.metadata.inputFingerprint !== inputFingerprint) {
+    return undefined;
+  }
+  return parsedGeneration;
+}
+
+function migrationAdoptedResultForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+): AiAnalysisElementMigrationResult | undefined {
+  const adopted = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element];
+  if (adopted?.origin !== "migration") {
+    return undefined;
+  }
+  return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
+}
+
+function preservedElementsForSelection(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+): CodexPreservedElements {
+  const preservedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> =
+    {};
+  for (const skipped of planning.selection.skipped) {
+    if (skipped.reason === "up_to_date") {
+      const adopted = currentAdoptedGenerationForElement(
+        state,
+        analysis,
+        skipped.candidate.element,
+        skipped.candidate.inputFingerprint,
+      );
+      const migrated = migrationAdoptedResultForElement(state, analysis, skipped.candidate.element);
+      const deterministic = deterministicElementResult(analysis, skipped.candidate.element);
+      const result = adopted?.result ?? migrated ?? deterministic;
+      if (result != null) {
+        preservedElements[skipped.candidate.element] = result;
+      }
+      continue;
+    }
+    const deterministic = deterministicElementResult(analysis, skipped.candidate.element);
+    if (deterministic != null) {
+      preservedElements[skipped.candidate.element] = deterministic;
+    }
+  }
+  return Object.freeze(preservedElements);
+}
+
+function necessityInputForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+): AnalysisElementNecessityInput {
+  const terminal = isTerminalStatus(analysis.decision.status);
+  const unresolvedRequest =
+    !terminal && analysis.item.type === "issue" && analysis.detail.type === "issue"
+      ? createIssueRequestCandidates(analysis.item, analysis.detail).length > 0
+      : false;
+  const unresolvedCi =
+    !terminal && analysis.item.type === "pull_request" && analysis.detail.type === "pull_request"
+      ? checkFailureSourceIds(analysis.detail) != null
+      : false;
+  const relationAssessmentCandidates = selectRelationAssessmentCandidates(
+    analysis.item.nodeId,
+    analysis.relationCandidates,
+  );
+  const hasUnresolvedRelationCandidate = relationAssessmentCandidates.some(
+    (candidate) => candidate.authority === "inferred",
+  );
+  const hasHumanProgressCandidate = analysis.item.events.some(
+    (event) => event.kind === "comment" && event.actor.type === "human" && !event.bodyEmpty,
+  );
+  const hasNativeBlocker = analysis.relationCandidates.some(
+    (candidate) =>
+      candidate.provenance === "native" &&
+      candidate.relation.type === "blocks" &&
+      candidate.relation.blocked.nodeId === analysis.item.nodeId,
+  );
+  const notificationAiIsConsumed =
+    !terminal &&
+    analysis.decision.determination === "codex_candidate" &&
+    !hasNativeBlocker &&
+    analysis.notificationClass !== "automation_noise" &&
+    !analysis.notificationsSuppressedByLabel;
+  const stateDecisionNecessities = analysis.decision.aiAnalysisElementNecessities;
+  const stateCandidate = {
+    unresolvedRequest,
+    unresolvedCi,
+    effectiveAssigneeCandidate: analysis.effectiveAssigneeCandidates.length !== 0,
+  };
+  const allRelationCandidatesAuthoritative = relationAssessmentCandidates.every(
+    (candidate) => candidate.authority === "authoritative",
+  );
+  const normalAiAnalysisScope =
+    analysis.decision.determination !== "determined" ||
+    analysis.effectiveAssigneeCandidates.length !== 0 ||
+    hasHumanProgressCandidate ||
+    !allRelationCandidatesAuthoritative;
+  const previousItem = previousSnapshot(state)?.items.find(
+    (candidate) => candidate.nodeId === analysis.item.nodeId,
+  );
+  return Object.freeze({
+    state: Object.freeze({
+      status: Object.freeze({
+        deterministic: stateDecisionNecessities.status === "not_required",
+        ...stateCandidate,
+      }),
+      waitingOn: Object.freeze({
+        deterministic: stateDecisionNecessities.waitingOn === "not_required",
+        ...stateCandidate,
+      }),
+      nextAction: Object.freeze({
+        deterministic: stateDecisionNecessities.nextAction === "not_required",
+        ...stateCandidate,
+      }),
+    }),
+    hasUnresolvedRelationCandidate,
+    hasHumanProgressCandidate,
+    importance: Object.freeze({
+      normalAiAnalysisScope,
+      currentlyAdopted: previousItem?.importanceAssessment.status === "available",
+    }),
+    deadline: Object.freeze({
+      normalAiAnalysisScope,
+      currentlyAdopted: previousItem?.deadlineAssessment.status === "available",
+    }),
+    notification: Object.freeze({
+      aiIsConsumed: notificationAiIsConsumed,
+    }),
   });
 }
 
@@ -2301,10 +3415,20 @@ function createAiCandidates(
 ): Readonly<{
   candidates: readonly PreparedAiAnalysisCandidate[];
   failures: readonly AiAnalysisRunFailure[];
+  inputValidationFailures: readonly Readonly<{
+    candidateId: string;
+    error: unknown;
+  }>[];
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
+  elementPlanningByNodeId: ReadonlyMap<GitHubNodeId, AnalysisElementPlanning>;
 }> {
   const inputByNodeId = new Map<GitHubNodeId, CodexAnalysisInput>();
+  const elementPlanningByNodeId = new Map<GitHubNodeId, AnalysisElementPlanning>();
   const failures: AiAnalysisRunFailure[] = [];
+  const inputValidationFailures: {
+    candidateId: string;
+    error: unknown;
+  }[] = [];
   const previousGraph = previousGraphSnapshot(state);
   const previousGraphAnalysis =
     previousGraph == null
@@ -2319,20 +3443,21 @@ function createAiCandidates(
     (previousGraphAnalysis?.downstreamImpacts ?? []).map((impact) => [impact.nodeId, impact]),
   );
   const previousRelations = previousSnapshot(state)?.relations ?? [];
-  const previousAiFingerprintByNodeId = new Map(
-    (previousSnapshot(state)?.collection.repositories ?? []).flatMap((repository) =>
-      repository.items.map((item) => [item.nodeId, item.aiAnalysisFingerprint] as const),
-    ),
-  );
   const previousAiAnalysisStatusByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item.aiAnalysis.status]),
   );
   const candidates: PreparedAiAnalysisCandidate[] = [];
   for (const analysis of deterministicAnalysis.items) {
-    let input: CodexAnalysisInput;
+    let baseInput: CodexAnalysisInput;
     try {
-      input = createCodexInput(collection.evaluatedAt, analysis);
+      baseInput = createCodexInput(configuration, collection.evaluatedAt, analysis, [], {});
     } catch (error: unknown) {
+      inputValidationFailures.push(
+        Object.freeze({
+          candidateId: analysis.item.nodeId,
+          error,
+        }),
+      );
       failures.push(
         Object.freeze({
           candidateId: analysis.item.nodeId,
@@ -2342,14 +3467,25 @@ function createAiCandidates(
       );
       continue;
     }
+    const savedGenerations = savedGenerationsForItem(state, analysis.item.nodeId);
+    const necessities = determineAnalysisElementNecessities(
+      necessityInputForAnalysis(state, analysis),
+    );
+    const planning = planAnalysisElements({
+      necessities,
+      inputFingerprints: elementInputFingerprints(baseInput),
+      executionFingerprints: elementExecutionFingerprints(identity),
+      savedGenerations,
+    });
+    elementPlanningByNodeId.set(analysis.item.nodeId, planning);
+    const input = createCodexInput(
+      configuration,
+      collection.evaluatedAt,
+      analysis,
+      planning.selection.selected.map((candidate) => candidate.element),
+      preservedElementsForSelection(state, analysis, planning),
+    );
     inputByNodeId.set(analysis.item.nodeId, input);
-    const naturalLanguageProgressCandidate = analysis.item.events.some(
-      (event) => event.kind === "comment" && event.actor.type === "human" && !event.bodyEmpty,
-    );
-    const relationAssessmentCandidates = selectRelationAssessmentCandidates(
-      analysis.item.nodeId,
-      analysis.relationCandidates,
-    );
     const previousIncomingBlockers = new Set<string>(
       previousRelations
         .filter(
@@ -2383,54 +3519,36 @@ function createAiCandidates(
       previousIncomingBlockers.size !== currentPotentialBlockers.size ||
       [...previousIncomingBlockers].some((id) => !currentPotentialBlockers.has(id));
     const previousImpact = previousImpactByNodeId.get(analysis.item.nodeId);
+    const previousAiAnalysisStatus = previousAiAnalysisStatusByNodeId.get(analysis.item.nodeId);
     const estimatedCost = estimateAiInputCost(
       `${serializeCanonicalJson(input)}\n`,
       configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
     );
-    candidates.push(
-      prepareAiAnalysisCandidate(
-        Object.freeze({
-          id: analysis.item.nodeId,
-          deterministicResolution:
-            analysis.decision.determination === "determined" &&
-            !naturalLanguageProgressCandidate &&
-            relationAssessmentCandidates.every(
-              (candidate) => candidate.authority === "authoritative",
-            )
-              ? "high_confidence"
-              : "ambiguous",
-          input,
-          graphNeighborhood: Object.freeze(
-            analysis.relationCandidates.map((candidate) => candidate.id),
-          ),
-          previousFingerprint:
-            previousAiFingerprintByNodeId.get(analysis.item.nodeId) ??
-            Object.freeze({
-              status: "unavailable",
-            }),
-          priority: Object.freeze({
-            previouslyDeferred:
-              previousAiAnalysisStatusByNodeId.get(analysis.item.nodeId) === "deferred",
-            severityCandidate: analysis.decision.determination === "codex_candidate",
-            ownerUnknown: analysis.decision.waitingOn.some(
-              (waitingOn) => waitingOn.kind === "unknown",
-            ),
-            changedBlocker,
-            downstreamImpact: Object.freeze({
-              openNodeCount: previousImpact?.openNodeCount ?? 0,
-              repositoryCount: previousImpact?.repositoryCount ?? 0,
-            }),
-          }),
-          estimatedCostUsd: estimatedCost.estimatedCostUsd,
-        } satisfies AiAnalysisCandidate),
-        identity,
-      ),
-    );
+    const candidate = Object.freeze({
+      id: analysis.item.nodeId,
+      input,
+      elements: Object.freeze(AI_ANALYSIS_ELEMENTS.map((element) => planning.candidates[element])),
+      promptFingerprint: CODEX_PROMPT_FINGERPRINT,
+      priority: Object.freeze({
+        previouslyDeferred: previousAiAnalysisStatus === "deferred",
+        severityCandidate: analysis.decision.determination === "codex_candidate",
+        ownerUnknown: analysis.decision.waitingOn.some((waitingOn) => waitingOn.kind === "unknown"),
+        changedBlocker,
+        downstreamImpact: Object.freeze({
+          openNodeCount: previousImpact?.openNodeCount ?? 0,
+          repositoryCount: previousImpact?.repositoryCount ?? 0,
+        }),
+      }),
+      estimatedCostUsd: estimatedCost.estimatedCostUsd,
+    } satisfies AiAnalysisCandidate);
+    candidates.push(prepareAiAnalysisCandidate(candidate));
   }
   return Object.freeze({
     candidates: Object.freeze(candidates),
     failures: Object.freeze(failures),
+    inputValidationFailures: Object.freeze(inputValidationFailures),
     inputByNodeId,
+    elementPlanningByNodeId,
   });
 }
 
@@ -2444,6 +3562,516 @@ function codexFallbackDiagnostic(failure: AiAnalysisRunFailure): string {
   );
 }
 
+type AiAnalysisRunElement = AiAnalysisRunResult["results"][number]["elements"][number];
+
+type MutablePartial<Value> = {
+  -readonly [Key in keyof Value]?: Value[Key];
+};
+
+type ConsumerCodexElementOutput = Readonly<{
+  schemaVersion: typeof CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION;
+  item: Readonly<{
+    nodeId: string;
+    url: string;
+  }>;
+  status?: AiAnalysisElementMigrationResult<"status"> | undefined;
+  waitingOn?: AiAnalysisElementMigrationResult<"waitingOn"> | undefined;
+  nextAction?: AiAnalysisElementMigrationResult<"nextAction"> | undefined;
+  relations?: AiAnalysisElementMigrationResult<"relations"> | undefined;
+  progress?: AiAnalysisElementMigrationResult<"progress"> | undefined;
+  importance?: AiAnalysisElementMigrationResult<"importance"> | undefined;
+  deadline?: AiAnalysisElementMigrationResult<"deadline"> | undefined;
+  notification?: AiAnalysisElementMigrationResult<"notification"> | undefined;
+}>;
+
+type MutableConsumerCodexElementOutput = {
+  -readonly [Key in keyof ConsumerCodexElementOutput]: ConsumerCodexElementOutput[Key];
+};
+
+function generationMapForRunElements(
+  elements: readonly AiAnalysisRunElement[],
+): AiAnalysisElementGenerationMap {
+  const generations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const elementResult of elements) {
+    const element = elementResult.element;
+    const generation = createAiAnalysisElementGenerationSchema(element).parse(
+      elementResult.generation,
+    );
+    generations[element] = generation;
+  }
+  return Object.freeze(generations);
+}
+
+function trackedAiAnalysisElementsForGenerations(
+  generations: AiAnalysisElementGenerationMap,
+): TrackedItemAiAnalysisCurrentElements {
+  let status: AiAnalysisElementGeneration<"status"> | undefined;
+  let waitingOn: AiAnalysisElementGeneration<"waitingOn"> | undefined;
+  let nextAction: AiAnalysisElementGeneration<"nextAction"> | undefined;
+  let relations: AiAnalysisElementGeneration<"relations"> | undefined;
+  let progress: AiAnalysisElementGeneration<"progress"> | undefined;
+  let importance: AiAnalysisElementGeneration<"importance"> | undefined;
+  let deadline: AiAnalysisElementGeneration<"deadline"> | undefined;
+  let notification: AiAnalysisElementGeneration<"notification"> | undefined;
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const generation = generations[element];
+    if (generation == null) {
+      continue;
+    }
+    switch (element) {
+      case "status":
+        status = createAiAnalysisElementGenerationSchema("status").parse(generation);
+        break;
+      case "waitingOn":
+        waitingOn = createAiAnalysisElementGenerationSchema("waitingOn").parse(generation);
+        break;
+      case "nextAction":
+        nextAction = createAiAnalysisElementGenerationSchema("nextAction").parse(generation);
+        break;
+      case "relations":
+        relations = createAiAnalysisElementGenerationSchema("relations").parse(generation);
+        break;
+      case "progress":
+        progress = createAiAnalysisElementGenerationSchema("progress").parse(generation);
+        break;
+      case "importance":
+        importance = createAiAnalysisElementGenerationSchema("importance").parse(generation);
+        break;
+      case "deadline":
+        deadline = createAiAnalysisElementGenerationSchema("deadline").parse(generation);
+        break;
+      case "notification":
+        notification = createAiAnalysisElementGenerationSchema("notification").parse(generation);
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze({
+    ...(status == null ? {} : { status }),
+    ...(waitingOn == null ? {} : { waitingOn }),
+    ...(nextAction == null ? {} : { nextAction }),
+    ...(relations == null ? {} : { relations }),
+    ...(progress == null ? {} : { progress }),
+    ...(importance == null ? {} : { importance }),
+    ...(deadline == null ? {} : { deadline }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
+function generatedElementsForNode(
+  run: AiAnalysisRunResult | undefined,
+  nodeId: GitHubNodeId,
+): AiAnalysisElementGenerationMap {
+  const result = run?.results.find((candidate) => candidate.candidateId === nodeId);
+  return result == null ? Object.freeze({}) : generationMapForRunElements(result.elements);
+}
+
+function generationsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning | undefined,
+  run: AiAnalysisRunResult | undefined,
+): AiAnalysisElementGenerationMap {
+  const saved = savedGenerationsForItem(state, analysis.item.nodeId);
+  if (planning == null) {
+    return saved;
+  }
+  const generated = generatedElementsForNode(run, analysis.item.nodeId);
+  const preserved: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    if (generated[element] != null) {
+      continue;
+    }
+    const generation = saved[element];
+    if (generation == null) {
+      continue;
+    }
+    preserved[element] = createAiAnalysisElementGenerationSchema(element).parse(generation);
+  }
+  return reduceAiAnalysisElements({
+    selectedElements: planning.selection.selected.map((candidate) => candidate.element),
+    generatedElements: generated,
+    preservedElements: preserved,
+  }).elements;
+}
+
+function adoptedGenerationForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  element: AiAnalysisElement,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
+): AiAnalysisElementGeneration | undefined {
+  const candidate = planning.candidates[element];
+  if (candidate.necessity === "not_required") {
+    return undefined;
+  }
+  const generated = generatedElementsForNode(run, analysis.item.nodeId)[element];
+  const application =
+    reduction?.ai.status === "available" ? reduction.ai.elements[element]?.application : undefined;
+  const consumerResult =
+    consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
+  const generatedWasConsumed =
+    generated != null &&
+    consumerResult != null &&
+    hashCanonicalJson(consumerResult) === hashCanonicalJson(generated.result);
+  if (application === "applied" || generatedWasConsumed) {
+    assertNonNullable(generated, `採用されたAI生成結果がありません。対象: ${element}`);
+    return createAiAnalysisElementGenerationSchema(element).parse(generated);
+  }
+  return currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint);
+}
+
+function adoptedElementsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
+): TrackedItemAiAnalysisCurrentElements {
+  const adoptedGenerations: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const generation = adoptedGenerationForElement(
+      state,
+      analysis,
+      planning,
+      element,
+      run,
+      reduction,
+      consumerOutput,
+    );
+    if (generation != null) {
+      switch (element) {
+        case "status":
+          adoptedGenerations.status =
+            createAiAnalysisElementGenerationSchema("status").parse(generation);
+          break;
+        case "waitingOn":
+          adoptedGenerations.waitingOn =
+            createAiAnalysisElementGenerationSchema("waitingOn").parse(generation);
+          break;
+        case "nextAction":
+          adoptedGenerations.nextAction =
+            createAiAnalysisElementGenerationSchema("nextAction").parse(generation);
+          break;
+        case "relations":
+          adoptedGenerations.relations =
+            createAiAnalysisElementGenerationSchema("relations").parse(generation);
+          break;
+        case "progress":
+          adoptedGenerations.progress =
+            createAiAnalysisElementGenerationSchema("progress").parse(generation);
+          break;
+        case "importance":
+          adoptedGenerations.importance =
+            createAiAnalysisElementGenerationSchema("importance").parse(generation);
+          break;
+        case "deadline":
+          adoptedGenerations.deadline =
+            createAiAnalysisElementGenerationSchema("deadline").parse(generation);
+          break;
+        case "notification":
+          adoptedGenerations.notification =
+            createAiAnalysisElementGenerationSchema("notification").parse(generation);
+          break;
+        default:
+          throw new UnreachableError(element);
+      }
+    }
+  }
+  return trackedAiAnalysisElementsForGenerations(Object.freeze(adoptedGenerations));
+}
+
+function migratedElementsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
+): TrackedItemAiAnalysisMigrationElements {
+  const saved = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId);
+  const migrated: MutablePartial<TrackedItemAiAnalysisMigrationElements> = {};
+  const generated = generatedElementsForNode(run, analysis.item.nodeId);
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const savedResult = saved[element];
+    if (savedResult?.origin !== "migration") {
+      continue;
+    }
+    const candidate = planning.candidates[element];
+    if (candidate.necessity === "not_required") {
+      continue;
+    }
+    const application =
+      reduction?.ai.status === "available"
+        ? reduction.ai.elements[element]?.application
+        : undefined;
+    const consumerResult =
+      consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
+    const generatedResult = generated[element];
+    const generatedWasConsumed =
+      generatedResult != null &&
+      consumerResult != null &&
+      hashCanonicalJson(consumerResult) === hashCanonicalJson(generatedResult.result);
+    if (application === "applied" || generatedWasConsumed) {
+      continue;
+    }
+    if (
+      currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint) !=
+      null
+    ) {
+      continue;
+    }
+    switch (element) {
+      case "status":
+        migrated.status = createAiAnalysisMigrationElementResultSchema("status").parse(
+          savedResult.result,
+        );
+        break;
+      case "waitingOn":
+        migrated.waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
+          savedResult.result,
+        );
+        break;
+      case "nextAction":
+        migrated.nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+          savedResult.result,
+        );
+        break;
+      case "relations":
+        migrated.relations = createAiAnalysisMigrationElementResultSchema("relations").parse(
+          savedResult.result,
+        );
+        break;
+      case "progress":
+        migrated.progress = createAiAnalysisMigrationElementResultSchema("progress").parse(
+          savedResult.result,
+        );
+        break;
+      case "importance":
+        migrated.importance = createAiAnalysisMigrationElementResultSchema("importance").parse(
+          savedResult.result,
+        );
+        break;
+      case "deadline":
+        migrated.deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(
+          savedResult.result,
+        );
+        break;
+      case "notification":
+        migrated.notification = createAiAnalysisMigrationElementResultSchema("notification").parse(
+          savedResult.result,
+        );
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze(migrated);
+}
+
+function mixedAdoptedElementsForAnalysis(
+  current: TrackedItemAiAnalysisCurrentElements,
+  migration: TrackedItemAiAnalysisMigrationElements,
+): TrackedItemAiAnalysisMigrationAdoptedElements {
+  let status: TrackedItemAiAnalysisMigrationAdoptedElement<"status"> | undefined;
+  let waitingOn: TrackedItemAiAnalysisMigrationAdoptedElement<"waitingOn"> | undefined;
+  let nextAction: TrackedItemAiAnalysisMigrationAdoptedElement<"nextAction"> | undefined;
+  let relations: TrackedItemAiAnalysisMigrationAdoptedElement<"relations"> | undefined;
+  let progress: TrackedItemAiAnalysisMigrationAdoptedElement<"progress"> | undefined;
+  let importance: TrackedItemAiAnalysisMigrationAdoptedElement<"importance"> | undefined;
+  let deadline: TrackedItemAiAnalysisMigrationAdoptedElement<"deadline"> | undefined;
+  let notification: TrackedItemAiAnalysisMigrationAdoptedElement<"notification"> | undefined;
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    switch (element) {
+      case "status":
+        if (current.status != null) {
+          status = { origin: "current", generation: current.status };
+        } else if (migration.status != null) {
+          status = { origin: "migration", result: migration.status };
+        }
+        break;
+      case "waitingOn":
+        if (current.waitingOn != null) {
+          waitingOn = { origin: "current", generation: current.waitingOn };
+        } else if (migration.waitingOn != null) {
+          waitingOn = { origin: "migration", result: migration.waitingOn };
+        }
+        break;
+      case "nextAction":
+        if (current.nextAction != null) {
+          nextAction = { origin: "current", generation: current.nextAction };
+        } else if (migration.nextAction != null) {
+          nextAction = { origin: "migration", result: migration.nextAction };
+        }
+        break;
+      case "relations":
+        if (current.relations != null) {
+          relations = { origin: "current", generation: current.relations };
+        } else if (migration.relations != null) {
+          relations = { origin: "migration", result: migration.relations };
+        }
+        break;
+      case "progress":
+        if (current.progress != null) {
+          progress = { origin: "current", generation: current.progress };
+        } else if (migration.progress != null) {
+          progress = { origin: "migration", result: migration.progress };
+        }
+        break;
+      case "importance":
+        if (current.importance != null) {
+          importance = { origin: "current", generation: current.importance };
+        } else if (migration.importance != null) {
+          importance = { origin: "migration", result: migration.importance };
+        }
+        break;
+      case "deadline":
+        if (current.deadline != null) {
+          deadline = { origin: "current", generation: current.deadline };
+        } else if (migration.deadline != null) {
+          deadline = { origin: "migration", result: migration.deadline };
+        }
+        break;
+      case "notification":
+        if (current.notification != null) {
+          notification = { origin: "current", generation: current.notification };
+        } else if (migration.notification != null) {
+          notification = { origin: "migration", result: migration.notification };
+        }
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze({
+    ...(status == null ? {} : { status }),
+    ...(waitingOn == null ? {} : { waitingOn }),
+    ...(nextAction == null ? {} : { nextAction }),
+    ...(relations == null ? {} : { relations }),
+    ...(progress == null ? {} : { progress }),
+    ...(importance == null ? {} : { importance }),
+    ...(deadline == null ? {} : { deadline }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
+function preservedElementsForReduction(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+): CodexPreservedElements {
+  let status: AiAnalysisElementMigrationResult<"status"> | undefined;
+  let waitingOn: AiAnalysisElementMigrationResult<"waitingOn"> | undefined;
+  let nextAction: AiAnalysisElementMigrationResult<"nextAction"> | undefined;
+  let relations: AiAnalysisElementMigrationResult<"relations"> | undefined;
+  let progress: AiAnalysisElementMigrationResult<"progress"> | undefined;
+  let importance: AiAnalysisElementMigrationResult<"importance"> | undefined;
+  let deadline: AiAnalysisElementMigrationResult<"deadline"> | undefined;
+  let notification: AiAnalysisElementMigrationResult<"notification"> | undefined;
+
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const candidate = planning.candidates[element];
+    if (candidate.necessity !== "required") {
+      continue;
+    }
+    const adopted = currentAdoptedGenerationForElement(
+      state,
+      analysis,
+      element,
+      candidate.inputFingerprint,
+    );
+    const migrated = migrationAdoptedResultForElement(state, analysis, element);
+    if (adopted == null && migrated == null) {
+      continue;
+    }
+    switch (element) {
+      case "status":
+        status = createAiAnalysisMigrationElementResultSchema("status").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "waitingOn":
+        waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "nextAction":
+        nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "relations":
+        relations = createAiAnalysisMigrationElementResultSchema("relations").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "progress":
+        progress = createAiAnalysisMigrationElementResultSchema("progress").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "importance":
+        importance = createAiAnalysisMigrationElementResultSchema("importance").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "deadline":
+        deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      case "notification":
+        notification = createAiAnalysisMigrationElementResultSchema("notification").parse(
+          adopted?.result ?? migrated,
+        );
+        break;
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze({
+    ...(status == null ? {} : { status }),
+    ...(waitingOn == null ? {} : { waitingOn }),
+    ...(nextAction == null ? {} : { nextAction }),
+    ...(relations == null ? {} : { relations }),
+    ...(progress == null ? {} : { progress }),
+    ...(importance == null ? {} : { importance }),
+    ...(deadline == null ? {} : { deadline }),
+    ...(notification == null ? {} : { notification }),
+  });
+}
+
+function preservedElementsForAnalysisReduction(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  codexAnalysis: CodexAnalysis,
+): CodexPreservedElements {
+  const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
+  assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${analysis.item.nodeId}`);
+  return preservedElementsForReduction(state, analysis, planning);
+}
+
+function elementGenerationsByNodeId(
+  state: RuntimeState,
+  analyses: readonly DeterministicItemAnalysis[],
+  planningByNodeId: ReadonlyMap<GitHubNodeId, AnalysisElementPlanning>,
+  run: AiAnalysisRunResult | undefined,
+): ReadonlyMap<GitHubNodeId, AiAnalysisElementGenerationMap> {
+  const generations = new Map<GitHubNodeId, AiAnalysisElementGenerationMap>();
+  for (const analysis of analyses) {
+    generations.set(
+      analysis.item.nodeId,
+      generationsForAnalysis(state, analysis, planningByNodeId.get(analysis.item.nodeId), run),
+    );
+  }
+  return generations;
+}
+
 function countRetainedAiResults(state: RuntimeState, collection: CollectedItems): number {
   return (previousSnapshot(state)?.items ?? []).filter(
     (item) =>
@@ -2453,8 +4081,57 @@ function countRetainedAiResults(state: RuntimeState, collection: CollectedItems)
   ).length;
 }
 
+function createCodexAdapterConfiguration(config: Config): CodexAdapterConfiguration {
+  return Object.freeze({
+    authentication: config.ai.authentication,
+    model: config.ai.model,
+    execution: {
+      timeoutSeconds: config.ai.execution.timeoutSeconds,
+      maxAttempts: config.ai.execution.maxAttempts,
+      sandbox: config.ai.execution.sandbox,
+      approvalPolicy: config.ai.execution.approvalPolicy,
+      reasoningEffort: config.ai.execution.reasoningEffort,
+    },
+    retry: {
+      initialDelaySeconds: config.operations.retry.initialDelaySeconds,
+      maxDelaySeconds: config.operations.retry.maxDelaySeconds,
+    },
+  }) satisfies CodexAdapterConfiguration;
+}
+
+function createCodexAdapterDependencies(
+  adapters: ProductionRuntimeAdapters,
+  credentials: EnabledCodexCredentials,
+  diagnostics: CodexDiagnosticsContext | undefined,
+): CodexAdapterDependencies {
+  return Object.freeze({
+    environment: credentials.environment,
+    processRunner: adapters.codexProcessRunner,
+    runtime: {
+      sleep: adapters.sleep,
+      random: adapters.random,
+    },
+    ...(diagnostics == null ? {} : { diagnostics }),
+  });
+}
+
+function createCodexPreflightDiagnostics(
+  diagnostics: CodexDiagnosticsContext | undefined,
+  invocation: DailyRunInvocation,
+): CodexDiagnosticsContext | undefined {
+  if (diagnostics == null) {
+    return undefined;
+  }
+  return Object.freeze({
+    recorder: diagnostics.recorder,
+    ...(diagnostics.runId == null ? {} : { runId: diagnostics.runId }),
+    invocationId: `${invocation.runId}:codex:authentication-preflight`,
+  });
+}
+
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   collection: CollectedItems,
@@ -2478,12 +4155,43 @@ async function analyzeCodex(
     deterministicAnalysis,
     identity,
   );
+  const diagnostics: CodexDiagnosticsContext | undefined =
+    adapters.diagnosticsRecorder == null
+      ? undefined
+      : Object.freeze({
+          recorder: adapters.diagnosticsRecorder,
+          runId: invocation.runId,
+          invocationId: `${invocation.runId}:codex`,
+        });
+  for (const failure of prepared.inputValidationFailures) {
+    await recordCodexDiagnostic(
+      diagnostics == null
+        ? undefined
+        : Object.freeze({
+            ...diagnostics,
+            candidateId: failure.candidateId,
+          }),
+      "codex.input.validation_failed",
+      {
+        phase: "input_validation",
+        errorType: failure.error instanceof Error ? failure.error.name : typeof failure.error,
+      },
+      failure.error,
+    );
+  }
   if (!configuration.config.ai.enabled) {
     const fallback = prepared.failures.length > 0;
     return Object.freeze({
       stage: Object.freeze({
         run: undefined,
         inputByNodeId: prepared.inputByNodeId,
+        elementPlanningByNodeId: prepared.elementPlanningByNodeId,
+        elementGenerationsByNodeId: elementGenerationsByNodeId(
+          state,
+          deterministicAnalysis.items,
+          prepared.elementPlanningByNodeId,
+          undefined,
+        ),
       }),
       status: fallback ? "fallback" : "success",
       aiCallCount: 0,
@@ -2497,6 +4205,35 @@ async function analyzeCodex(
   if (!codexCredentials.enabled) {
     throw new TypeError("AIが有効ですがCodex認証情報がありません");
   }
+  const codexConfiguration = createCodexAdapterConfiguration(configuration.config);
+  const codexDependencies = createCodexAdapterDependencies(adapters, codexCredentials, diagnostics);
+  const preflightInputCost =
+    codexCredentials.authentication === "auth-json"
+      ? estimateAiInputCost(
+          CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+          configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
+        )
+      : undefined;
+  const preflightDiagnostics = createCodexPreflightDiagnostics(diagnostics, invocation);
+  const preflight =
+    preflightInputCost == null
+      ? undefined
+      : Object.freeze({
+          inputCharacters: CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+          estimatedCostUsd: preflightInputCost.estimatedCostUsd,
+          execute: () =>
+            adapters.executeCodexAuthenticationPreflight(
+              codexConfiguration,
+              Object.freeze({
+                ...codexDependencies,
+                ...(preflightDiagnostics == null
+                  ? {}
+                  : {
+                      diagnostics: preflightDiagnostics,
+                    }),
+              }),
+            ),
+        });
   const executedRun = await runAiAnalyses(
     prepared.candidates,
     {
@@ -2506,32 +4243,24 @@ async function analyzeCodex(
     },
     {
       cache: state.session.aiCache,
-      execute: (input) =>
+      ...(preflight == null ? {} : { preflight }),
+      ...(diagnostics == null ? {} : { diagnostics }),
+      execute: (input, context) =>
         adapters.executeCodexAnalysis(
           input,
-          {
-            authentication: configuration.config.ai.authentication,
-            model: configuration.config.ai.model,
-            execution: {
-              timeoutSeconds: configuration.config.ai.execution.timeoutSeconds,
-              maxAttempts: configuration.config.ai.execution.maxAttempts,
-              sandbox: configuration.config.ai.execution.sandbox,
-              approvalPolicy: configuration.config.ai.execution.approvalPolicy,
-              reasoningEffort: configuration.config.ai.execution.reasoningEffort,
-            },
-            retry: {
-              initialDelaySeconds: configuration.config.operations.retry.initialDelaySeconds,
-              maxDelaySeconds: configuration.config.operations.retry.maxDelaySeconds,
-            },
-          },
-          {
-            environment: codexCredentials.environment,
-            processRunner: adapters.codexProcessRunner,
-            runtime: {
-              sleep: adapters.sleep,
-              random: adapters.random,
-            },
-          },
+          codexConfiguration,
+          Object.freeze({
+            ...codexDependencies,
+            ...(diagnostics == null
+              ? {}
+              : {
+                  diagnostics: Object.freeze({
+                    ...diagnostics,
+                    invocationId: `${invocation.runId}:${context.candidateId}`,
+                    candidateId: context.candidateId,
+                  }),
+                }),
+          }),
         ),
       executedAt: () => collection.evaluatedAt,
     },
@@ -2545,6 +4274,13 @@ async function analyzeCodex(
     stage: Object.freeze({
       run,
       inputByNodeId: prepared.inputByNodeId,
+      elementPlanningByNodeId: prepared.elementPlanningByNodeId,
+      elementGenerationsByNodeId: elementGenerationsByNodeId(
+        state,
+        deterministicAnalysis.items,
+        prepared.elementPlanningByNodeId,
+        run,
+      ),
     }),
     status: fallback ? "fallback" : "success",
     aiCallCount: run.usage.calls,
@@ -2594,18 +4330,122 @@ function unavailableImportanceAssessment(): NaturalLanguageImportanceAssessmentS
   });
 }
 
+function unavailableDeadlineAssessment(): NaturalLanguageDeadlineAssessmentState {
+  return Object.freeze({
+    status: "not_available",
+  });
+}
+
+function currentAdoptedImportanceAssessment(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+): NaturalLanguageImportanceAssessmentState | undefined {
+  const generation = currentAdoptedGenerationForElement(
+    state,
+    analysis,
+    "importance",
+    planning.candidates.importance.inputFingerprint,
+  );
+  if (generation == null) {
+    const migrated = migrationAdoptedResultForElement(state, analysis, "importance");
+    if (migrated == null) {
+      return undefined;
+    }
+    const parsed = createAiAnalysisElementResultSchema("importance").parse(migrated);
+    return Object.freeze({
+      status: "available",
+      value: Object.freeze({
+        significantFeature: parsed.value.significantFeature,
+        futureRisk: parsed.value.futureRisk,
+        rationale: parsed.value.rationale,
+      }),
+    });
+  }
+  const parsed = createAiAnalysisElementResultSchema("importance").parse(generation.result);
+  return Object.freeze({
+    status: "available",
+    value: Object.freeze({
+      significantFeature: parsed.value.significantFeature,
+      futureRisk: parsed.value.futureRisk,
+      rationale: parsed.value.rationale,
+    }),
+  });
+}
+
+function currentAdoptedDeadlineAssessment(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+): NaturalLanguageDeadlineAssessmentState | undefined {
+  const generation = currentAdoptedGenerationForElement(
+    state,
+    analysis,
+    "deadline",
+    planning.candidates.deadline.inputFingerprint,
+  );
+  if (generation == null) {
+    const migrated = migrationAdoptedResultForElement(state, analysis, "deadline");
+    if (migrated == null) {
+      return undefined;
+    }
+    const parsed = createAiAnalysisElementResultSchema("deadline").parse(migrated);
+    return Object.freeze({
+      status: "available",
+      value: Object.freeze({
+        date: parsed.value.date,
+        rationale: parsed.value.rationale,
+      }),
+    });
+  }
+  const parsed = createAiAnalysisElementResultSchema("deadline").parse(generation.result);
+  return Object.freeze({
+    status: "available",
+    value: Object.freeze({
+      date: parsed.value.date,
+      rationale: parsed.value.rationale,
+    }),
+  });
+}
+
+function deadlineLevelForAssessment(
+  assessment: NaturalLanguageDeadlineAssessmentState,
+  evaluatedAt: UtcIsoDateTime,
+  timezone: string,
+): DeadlineLevel {
+  if (assessment.status === "not_available") {
+    return "none";
+  }
+  return determineDeadlineLevel({
+    deadlineDate: assessment.value.date,
+    evaluatedAt,
+    timezone,
+  });
+}
+
 function resolveImportanceAssessment(
   current: NaturalLanguageImportanceAssessmentState | undefined,
-  previous: NaturalLanguageImportanceAssessmentState | undefined,
+  adopted: NaturalLanguageImportanceAssessmentState | undefined,
 ): NaturalLanguageImportanceAssessmentState {
   if (current?.status === "available") {
     return current;
   }
-  return previous ?? unavailableImportanceAssessment();
+  return adopted ?? unavailableImportanceAssessment();
+}
+
+function resolveDeadlineAssessment(
+  current: NaturalLanguageDeadlineAssessmentState | undefined,
+  adopted: NaturalLanguageDeadlineAssessmentState | undefined,
+): NaturalLanguageDeadlineAssessmentState {
+  if (current?.status === "available") {
+    return current;
+  }
+  return adopted ?? unavailableDeadlineAssessment();
 }
 
 function reductionForAnalysis(
   configuration: RuntimeConfiguration,
+  state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
 ): CodexAnalysisReduction | undefined {
@@ -2617,14 +4457,17 @@ function reductionForAnalysis(
   const result = run.results.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (result != null) {
     assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
+    const output = codexOutputForAnalysis(analysis, codexAnalysis);
+    assertNonNullable(output, `Codex出力がありません。対象: ${analysis.item.nodeId}`);
     return reduceCodexAnalysis(
       input,
       deterministicCodexDecision(analysis.decision),
       {
         status: "validated",
-        output: result.output,
+        output,
       },
       configuration.config.ai.confidence,
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
     );
   }
   const failure = run.failures.find((candidate) => candidate.candidateId === analysis.item.nodeId);
@@ -2654,6 +4497,7 @@ function reductionForAnalysis(
         errorType: failure.errorType,
       },
       configuration.config.ai.confidence,
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
     );
   }
   const deferred = run.deferred.find((candidate) => candidate.candidateId === analysis.item.nodeId);
@@ -2668,18 +4512,208 @@ function reductionForAnalysis(
         errorType: `CodexBudgetDeferred:${deferred.reason}`,
       },
       configuration.config.ai.confidence,
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
     );
   }
-  return undefined;
+  const skipped = run.skipped.find((candidate) => candidate.candidateId === analysis.item.nodeId);
+  if (skipped?.reason !== "up_to_date") {
+    return undefined;
+  }
+  assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
+  if (input.selectedElements.length !== 0) {
+    throw new TypeError(
+      `up_to_date項目のCodex入力に選択要素があります。対象: ${analysis.item.nodeId}`,
+    );
+  }
+  const preservedElements = preservedElementsForAnalysisReduction(state, analysis, codexAnalysis);
+  if (Object.keys(preservedElements).length === 0) {
+    return undefined;
+  }
+  const output = validateCodexAnalysisOutput(
+    {
+      schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+      item: {
+        nodeId: input.item.nodeId,
+        url: input.item.url,
+      },
+    },
+    input,
+  );
+  return reduceCodexAnalysis(
+    input,
+    deterministicCodexDecision(analysis.decision),
+    {
+      status: "validated",
+      output,
+    },
+    configuration.config.ai.confidence,
+    preservedElements,
+  );
 }
 
 function codexOutputForAnalysis(
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
-): ValidatedCodexAnalysisOutput | undefined {
-  return codexAnalysis.run?.results.find(
+): SchemaValidCodexElementOutput | undefined {
+  const result = codexAnalysis.run?.results.find(
     (candidate) => candidate.candidateId === analysis.item.nodeId,
-  )?.output;
+  );
+  if (result == null) {
+    return undefined;
+  }
+  const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
+  assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
+  const output: Record<string, unknown> = {
+    schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+    item: {
+      nodeId: input.item.nodeId,
+      url: input.item.url,
+    },
+  };
+  for (const element of result.elements) {
+    output[element.element] = element.generation.result;
+  }
+  return validateCodexElementOutputSchema(output, input.selectedElements);
+}
+
+function codexElementResult(
+  output: ConsumerCodexElementOutput,
+  element: AiAnalysisElement,
+): AiAnalysisElementMigrationResult | undefined {
+  switch (element) {
+    case "status":
+      return output.status;
+    case "waitingOn":
+      return output.waitingOn;
+    case "nextAction":
+      return output.nextAction;
+    case "relations":
+      return output.relations;
+    case "progress":
+      return output.progress;
+    case "importance":
+      return output.importance;
+    case "deadline":
+      return output.deadline;
+    case "notification":
+      return output.notification;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+function setConsumerCodexElementResult(
+  output: MutableConsumerCodexElementOutput,
+  element: AiAnalysisElement,
+  result: AiAnalysisElementMigrationResult,
+): void {
+  switch (element) {
+    case "status":
+      output.status = createAiAnalysisMigrationElementResultSchema("status").parse(result);
+      break;
+    case "waitingOn":
+      output.waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(result);
+      break;
+    case "nextAction":
+      output.nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(result);
+      break;
+    case "relations":
+      output.relations = createAiAnalysisMigrationElementResultSchema("relations").parse(result);
+      break;
+    case "progress":
+      output.progress = createAiAnalysisMigrationElementResultSchema("progress").parse(result);
+      break;
+    case "importance":
+      output.importance = createAiAnalysisMigrationElementResultSchema("importance").parse(result);
+      break;
+    case "deadline":
+      output.deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(result);
+      break;
+    case "notification":
+      output.notification =
+        createAiAnalysisMigrationElementResultSchema("notification").parse(result);
+      break;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+function codexOutputForConsumers(
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  codexAnalysis: CodexAnalysis,
+): ConsumerCodexElementOutput | undefined {
+  const rawOutput = codexOutputForAnalysis(analysis, codexAnalysis);
+  const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
+  const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
+  if (input == null || planning == null) {
+    return rawOutput;
+  }
+  const rawResults = new Map<AiAnalysisElement, AiAnalysisElementMigrationResult>();
+  if (rawOutput != null) {
+    for (const element of AI_ANALYSIS_ELEMENTS) {
+      const result = codexElementResult(rawOutput, element);
+      if (result != null) {
+        rawResults.set(element, result);
+      }
+    }
+  }
+  const deterministicStatePriority =
+    (analysis.decision.determination === "determined" &&
+      planning.necessities.status === "not_required" &&
+      planning.necessities.waitingOn === "not_required" &&
+      planning.necessities.nextAction === "not_required") ||
+    listNativeRelationConstraints(input).some(
+      (constraint) => constraint.verdict === "current_is_blocked_by_target",
+    );
+  const output: MutableConsumerCodexElementOutput = {
+    schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+    item: {
+      nodeId: input.item.nodeId,
+      url: input.item.url,
+    },
+  };
+  const outputElements: AiAnalysisElement[] = [];
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const candidate = planning.candidates[element];
+    const raw = rawResults.get(element);
+    const adopted =
+      candidate.necessity === "required"
+        ? currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint)
+        : undefined;
+    const migrated =
+      candidate.necessity === "required"
+        ? migrationAdoptedResultForElement(state, analysis, element)
+        : undefined;
+    const stateElement =
+      element === "status" || element === "waitingOn" || element === "nextAction";
+    const result =
+      (raw != null &&
+      effectiveElementConfidence(element, raw) >= configuration.config.ai.confidence.medium &&
+      !(deterministicStatePriority && stateElement)
+        ? raw
+        : (adopted?.result ?? migrated)) ?? undefined;
+    if (result != null) {
+      setConsumerCodexElementResult(output, element, result);
+      outputElements.push(element);
+    }
+  }
+  if (outputElements.length === 0) {
+    return undefined;
+  }
+  return Object.freeze({
+    schemaVersion: output.schemaVersion,
+    item: output.item,
+    ...(output.status == null ? {} : { status: output.status }),
+    ...(output.waitingOn == null ? {} : { waitingOn: output.waitingOn }),
+    ...(output.nextAction == null ? {} : { nextAction: output.nextAction }),
+    ...(output.relations == null ? {} : { relations: output.relations }),
+    ...(output.progress == null ? {} : { progress: output.progress }),
+    ...(output.importance == null ? {} : { importance: output.importance }),
+    ...(output.deadline == null ? {} : { deadline: output.deadline }),
+    ...(output.notification == null ? {} : { notification: output.notification }),
+  });
 }
 
 function nonEmptySourceIds(
@@ -2692,13 +4726,166 @@ function nonEmptySourceIds(
   return Object.freeze([firstSourceId, ...uniqueSourceIds.slice(1)]);
 }
 
+function sourceIdSetsMatch(left: readonly SourceId[], right: readonly SourceId[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const leftSourceIds = new Set(left);
+  const rightSourceIds = new Set(right);
+  return (
+    leftSourceIds.size === left.length &&
+    rightSourceIds.size === right.length &&
+    leftSourceIds.size === rightSourceIds.size &&
+    [...leftSourceIds].every((id) => rightSourceIds.has(id))
+  );
+}
+
+function outputSourceIds(
+  sourceIds: readonly string[],
+  context: string,
+): readonly [SourceId, ...SourceId[]] {
+  return nonEmptySourceIds(
+    sourceIds.map((sourceId) => {
+      const parts = parseSourceId(sourceId);
+      return buildSourceId(parts.kind, parts.originalId);
+    }),
+    context,
+  );
+}
+
+function createEffectiveAssigneeAssessment(
+  configuration: RuntimeConfiguration,
+  evaluatedAt: UtcIsoDateTime,
+  analysis: DeterministicItemAnalysis,
+  output: ConsumerCodexElementOutput | undefined,
+): IssueEffectiveAssigneeAssessment {
+  if (
+    analysis.item.type !== "issue" ||
+    analysis.item.state !== "open" ||
+    analysis.item.assignees.length !== 0 ||
+    analysis.effectiveAssigneeCandidates.length === 0 ||
+    output?.status == null ||
+    output.waitingOn == null ||
+    output.status.value !== "waiting_for_work" ||
+    output.waitingOn.value.length === 0 ||
+    output.status.confidence < configuration.config.ai.confidence.high ||
+    output.waitingOn.confidence < configuration.config.ai.confidence.high
+  ) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+
+  const candidatesById = new Map(
+    analysis.effectiveAssigneeCandidates.map((context) => [
+      context.candidate.candidateId.toLowerCase(),
+      context.candidate,
+    ]),
+  );
+  const targets: IssueEffectiveAssigneeTarget[] = [];
+  const targetIds = new Set<string>();
+  for (const waitingOn of output.waitingOn.value) {
+    if (
+      waitingOn.kind !== "user" ||
+      waitingOn.role !== "assignee" ||
+      waitingOn.confidence < configuration.config.ai.confidence.high
+    ) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    const normalizedCandidateId = waitingOn.candidateId.toLowerCase();
+    if (targetIds.has(normalizedCandidateId)) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    targetIds.add(normalizedCandidateId);
+    const candidate = candidatesById.get(normalizedCandidateId);
+    if (candidate == null) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    if (candidate.candidateId !== waitingOn.candidateId) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    const sourceIds = outputSourceIds(
+      waitingOn.sourceIds,
+      `実質担当判定 ${waitingOn.candidateId}のsource ID`,
+    );
+    if (!sourceIdSetsMatch(sourceIds, candidate.sourceIds)) {
+      return Object.freeze({
+        status: "not_assessed",
+      });
+    }
+    targets.push(
+      Object.freeze({
+        kind: "user",
+        candidateId: waitingOn.candidateId,
+        sourceIds,
+        confidence: waitingOn.confidence,
+      }),
+    );
+  }
+  const selectedCandidateSourceIds = nonEmptySourceIds(
+    targets.flatMap((target) => target.sourceIds),
+    "実質担当判定対象",
+  );
+  const candidateSourceIds = nonEmptySourceIds(
+    analysis.effectiveAssigneeCandidates.flatMap(({ candidate }) => candidate.sourceIds),
+    "実質担当候補",
+  );
+  const selectedCandidates = targets.map((target) => {
+    const candidate = candidatesById.get(target.candidateId.toLowerCase());
+    assertNonNullable(candidate, `実質担当候補を取得できません。対象: ${target.candidateId}`);
+    return candidate;
+  });
+  const firstCandidate = selectedCandidates[0];
+  assertNonNullable(firstCandidate, "実質担当判定の候補がありません");
+  const occurredAt = selectedCandidates.reduce(
+    (latest, candidate) => (latest < candidate.occurredAt ? candidate.occurredAt : latest),
+    firstCandidate.occurredAt,
+  );
+  if (occurredAt > evaluatedAt) {
+    throw new RangeError("実質担当判定の根拠時刻は判定時刻以前にしてください");
+  }
+  const confidence = Math.min(
+    output.status.confidence,
+    output.waitingOn.confidence,
+    ...targets.map((target) => target.confidence),
+  );
+  if (confidence < configuration.config.ai.confidence.high) {
+    return Object.freeze({
+      status: "not_assessed",
+    });
+  }
+  const firstTarget = targets[0];
+  assertNonNullable(firstTarget, "実質担当判定の対象userがありません");
+  return Object.freeze({
+    status: "assessed",
+    candidateSourceIds,
+    verdict: "effective_assignee",
+    targets: Object.freeze([firstTarget, ...targets.slice(1)] satisfies [
+      IssueEffectiveAssigneeTarget,
+      ...IssueEffectiveAssigneeTarget[],
+    ]),
+    occurredAt,
+    confidence,
+    sourceIds: selectedCandidateSourceIds,
+  });
+}
+
 function explicitRequestAssessment(
   item: Extract<FreshObservedGitHubItem, Readonly<{ type: "issue" }>>,
   detail: Extract<GitHubItemDetail, Readonly<{ type: "issue" }>>,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
 ): IssueExplicitRequestAssessment {
   const candidates = createIssueRequestCandidates(item, detail);
-  if (output == null || candidates.length === 0) {
+  const waitingOnResult = output?.waitingOn;
+  if (waitingOnResult == null || candidates.length === 0) {
     return Object.freeze({
       status: "not_assessed",
     });
@@ -2714,7 +4901,11 @@ function explicitRequestAssessment(
       candidate,
     ]),
   );
-  const targets: IssueExplicitRequestTarget[] = output.waitingOn.flatMap((waitingOn) => {
+  const targets: IssueExplicitRequestTarget[] = waitingOnResult.value.flatMap((waitingOn) => {
+    const sourceIds = outputSourceIds(
+      waitingOn.sourceIds,
+      `明示依頼 ${waitingOn.candidateId}のsource ID`,
+    );
     if (waitingOn.kind !== "user" && waitingOn.kind !== "team") {
       return [];
     }
@@ -2723,7 +4914,7 @@ function explicitRequestAssessment(
     );
     if (
       mentioned == null ||
-      !waitingOn.sourceIds.some((sourceId) => mentioned.sourceIds.includes(sourceId))
+      !sourceIds.some((sourceId) => mentioned.sourceIds.includes(sourceId))
     ) {
       return [];
     }
@@ -2738,8 +4929,8 @@ function explicitRequestAssessment(
         kind: waitingOn.kind,
         candidateId: waitingOn.candidateId,
         role,
-        sourceIds: waitingOn.sourceIds,
-        confidence: Math.min(output.confidence, waitingOn.confidence),
+        sourceIds,
+        confidence: Math.min(waitingOnResult.confidence, waitingOn.confidence),
       }),
     ];
   });
@@ -2748,7 +4939,7 @@ function explicitRequestAssessment(
       status: "assessed",
       candidateSourceIds,
       verdict: "no_unanswered_request",
-      confidence: output.confidence,
+      confidence: waitingOnResult.confidence,
       sourceIds: candidateSourceIds,
     });
   }
@@ -2775,7 +4966,10 @@ function explicitRequestAssessment(
       IssueExplicitRequestTarget,
       ...IssueExplicitRequestTarget[],
     ]),
-    confidence: Math.min(output.confidence, ...latestTargets.map((target) => target.confidence)),
+    confidence: Math.min(
+      waitingOnResult.confidence,
+      ...latestTargets.map((target) => target.confidence),
+    ),
     sourceIds: nonEmptySourceIds(
       latestTargets.flatMap((target) => target.sourceIds),
       "未回答の明示依頼判定",
@@ -2812,21 +5006,22 @@ function checkFailureSourceIds(
 
 function checkFailureAssessment(
   detail: Extract<GitHubItemDetail, Readonly<{ type: "pull_request" }>>,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
 ): PullRequestCheckFailureAssessment {
   const sourceIds = checkFailureSourceIds(detail);
-  if (sourceIds == null || output == null) {
+  if (sourceIds == null || output?.status == null || output.waitingOn == null) {
     return Object.freeze({
       cause: "not_assessed",
     });
   }
   const effectiveConfidence = Math.min(
-    output.confidence,
-    ...output.waitingOn.map((waitingOn) => waitingOn.confidence),
+    output.status.confidence,
+    output.waitingOn.confidence,
+    ...output.waitingOn.value.map((waitingOn) => waitingOn.confidence),
   );
   const authorAction =
-    output.status === "waiting_for_revision" ||
-    output.waitingOn.some((waitingOn) => waitingOn.role === "author");
+    output.status.value === "waiting_for_revision" ||
+    output.waitingOn.value.some((waitingOn) => waitingOn.role === "author");
   if (authorAction) {
     return Object.freeze({
       cause: "pull_request_change",
@@ -2835,10 +5030,10 @@ function checkFailureAssessment(
     });
   }
   const infrastructureOrFlaky =
-    output.status === "waiting_for_automation" ||
-    output.status === "waiting_for_decision" ||
-    output.status === "unknown" ||
-    output.waitingOn.some(
+    output.status.value === "waiting_for_automation" ||
+    output.status.value === "waiting_for_decision" ||
+    output.status.value === "unknown" ||
+    output.waitingOn.value.some(
       (waitingOn) =>
         waitingOn.kind === "automation" ||
         waitingOn.kind === "unknown" ||
@@ -2855,9 +5050,10 @@ function checkFailureAssessment(
 
 function naturalLanguageProgressAssessments(
   analysis: DeterministicItemAnalysis,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
 ): readonly NaturalLanguageProgressAssessment[] {
-  if (output == null) {
+  const progressResult = output?.progress;
+  if (progressResult == null) {
     return Object.freeze([]);
   }
   return Object.freeze(
@@ -2867,10 +5063,10 @@ function naturalLanguageProgressAssessments(
         Object.freeze({
           candidateSourceId: event.sourceId,
           verdict:
-            output.progress.latestMeaningfulSourceId === event.sourceId
+            progressResult.value.latestMeaningfulSourceId === event.sourceId
               ? "meaningful_progress"
               : "not_meaningful_progress",
-          confidence: Math.min(output.confidence, output.progress.confidence),
+          confidence: Math.min(progressResult.confidence, progressResult.value.confidence),
           sourceIds: Object.freeze([event.sourceId] satisfies [SourceId]),
         }),
       ),
@@ -2965,7 +5161,7 @@ function reassessDeterministicAnalysis(
   inventory: RepositoryInventory,
   deterministicAnalysis: DeterministicAnalysis,
   analysis: DeterministicItemAnalysis,
-  output: ValidatedCodexAnalysisOutput | undefined,
+  output: ConsumerCodexElementOutput | undefined,
   graph: GraphResult | undefined,
 ): DeterministicItemAnalysis {
   const repository = findRepository(inventory, analysis.item.repositoryId);
@@ -2987,6 +5183,15 @@ function reassessDeterministicAnalysis(
         explicitRequestAssessment: explicitRequestAssessment(
           analysis.item,
           analysis.detail,
+          output,
+        ),
+        effectiveAssigneeCandidates: analysis.effectiveAssigneeCandidates.map(
+          (candidate) => candidate.candidate,
+        ),
+        effectiveAssigneeAssessment: createEffectiveAssigneeAssessment(
+          configuration,
+          evaluatedAt,
+          analysis,
           output,
         ),
         maintainers,
@@ -3523,12 +5728,12 @@ function primaryWaitingOnForDecision(
   if (decision.waitingOn.length === 0) {
     return Object.freeze({
       index: "not_applicable",
-      selectionReason: "Codex判定にwaitingOnがないためprimaryはありません",
+      selectionReason: "Codex判定に待ち相手がないためprimaryはありません",
     });
   }
   return Object.freeze({
     index: 0,
-    selectionReason: "Codexが返したwaitingOnの優先順でprimaryを選定しました",
+    selectionReason: "Codexが返した待ち相手の優先順でprimaryを選定しました",
   });
 }
 
@@ -3549,7 +5754,18 @@ function transitionBasisForDecision(
     ...decision.evidence.map((evidence) => evidence.sourceId),
     ...decision.waitingOn.flatMap((waitingOn) => waitingOn.sourceIds),
   ];
-  const sourceOccurredAtById = createCodexSourceOccurredAtById(analysis.item, analysis.detail);
+  const sourceOccurredAtById = new Map(
+    createCodexSourceOccurredAtById(analysis.item, analysis.detail),
+  );
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
+      addCodexSourceOccurredAtForContext(
+        sourceOccurredAtById,
+        sourceContext.item,
+        sourceContext.detail,
+      );
+    }
+  }
   const resolvedOccurredAts = [...new Set(sourceIds)].flatMap((sourceId) => {
     const occurredAt = sourceOccurredAtById.get(sourceId);
     return occurredAt == null ? [] : [occurredAt];
@@ -3578,26 +5794,17 @@ function transitionBasisForDecision(
 function previousStalenessState(
   state: RuntimeState,
   nodeId: GitHubNodeId,
-  itemType: TrackedItem["type"],
 ): Parameters<typeof calculateStaleness>[0]["previousState"] {
   const snapshot = previousSnapshot(state);
   const previous = snapshot?.items.find((item) => item.nodeId === nodeId);
-  const previousCollectionItem = snapshot?.collection.repositories
-    .flatMap((repository) => repository.items)
-    .find((item) => item.nodeId === nodeId);
-  const previousRulesVersion = previousCollectionItem?.deterministicRulesVersion;
-  if (
-    previous == null ||
-    previousRulesVersion == null ||
-    previousRulesVersion.status === "unavailable" ||
-    previousRulesVersion.version !== CURRENT_DETERMINISTIC_RULES_VERSIONS[itemType]
-  ) {
+  if (previous == null) {
     return Object.freeze({
       availability: "not_available",
     });
   }
   return Object.freeze({
     availability: "available",
+    stallSincePolicy: "inherit",
     value: Object.freeze({
       status: previous.status,
       waitingOn: previous.waitingOn,
@@ -3686,50 +5893,87 @@ function trackedItemInputEvents(
 }
 
 function trackedItemAiAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
-  nodeId: GitHubNodeId,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
 ): TrackedItemAiAnalysis {
+  const nodeId = analysis.item.nodeId;
+  const generations = codexAnalysis.elementGenerationsByNodeId.get(nodeId);
+  assertNonNullable(generations, `AI判定要素の保存結果がありません。対象: ${nodeId}`);
+  const elements = trackedAiAnalysisElementsForGenerations(generations);
+  const planning = codexAnalysis.elementPlanningByNodeId.get(nodeId);
+  assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${nodeId}`);
+  const adoptedElements = adoptedElementsForAnalysis(
+    state,
+    analysis,
+    planning,
+    codexAnalysis.run,
+    reduction,
+    consumerOutput,
+  );
   const run = codexAnalysis.run;
+  let status: TrackedItemAiAnalysis["status"];
   if (run == null) {
-    return Object.freeze({
-      status: "disabled",
-    });
+    status = "disabled";
+  } else {
+    const result = run.results.find((candidate) => candidate.candidateId === nodeId);
+    if (result != null) {
+      status = "used";
+    } else {
+      const failure = run.failures.find((candidate) => candidate.candidateId === nodeId);
+      if (failure != null) {
+        status = "failed";
+      } else {
+        const deferred = run.deferred.find((candidate) => candidate.candidateId === nodeId);
+        if (deferred != null) {
+          status = "deferred";
+        } else {
+          const skipped = run.skipped.find((candidate) => candidate.candidateId === nodeId);
+          assertNonNullable(skipped, `Codex分析候補の分類がありません。対象: ${nodeId}`);
+          const hasNotRequiredElement = planning.selection.skipped.some(
+            (element) => element.reason === "not_required",
+          );
+          status =
+            hasNotRequiredElement || skipped.reason === "not_required" ? "not_required" : "used";
+        }
+      }
+    }
   }
-  const result = run.results.find((candidate) => candidate.candidateId === nodeId);
-  if (result != null) {
+  const migratedElements = migratedElementsForAnalysis(
+    state,
+    analysis,
+    planning,
+    run,
+    reduction,
+    consumerOutput,
+  );
+  if (Object.keys(migratedElements).length !== 0) {
     return Object.freeze({
-      status: "used",
-      cacheKey: result.cacheKey,
+      origin: "migration",
+      status,
+      elements,
+      adoptedElements: mixedAdoptedElementsForAnalysis(adoptedElements, migratedElements),
     });
-  }
-  const failure = run.failures.find((candidate) => candidate.candidateId === nodeId);
-  if (failure != null) {
-    return Object.freeze({
-      status: "failed",
-    });
-  }
-  const deferred = run.deferred.find((candidate) => candidate.candidateId === nodeId);
-  if (deferred != null) {
-    return Object.freeze({
-      status: "deferred",
-    });
-  }
-  const skipped = run.skipped.find((candidate) => candidate.candidateId === nodeId);
-  assertNonNullable(skipped, `Codex分析候補の分類がありません。対象: ${nodeId}`);
-  if (skipped.reason === "unchanged") {
-    throw new TypeError("未変更項目のCodex cache結果がありません");
   }
   return Object.freeze({
-    status: "not_required",
+    origin: "current",
+    status,
+    elements,
+    adoptedElements,
   });
 }
 
 function createTrackedItem(
+  state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   decision: ReducedCodexDecision,
   primaryWaitingOn: PrimaryWaitingOn,
   staleness: StalenessResult,
   codexAnalysis: CodexAnalysis,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
 ): PendingTrackedItem {
   const commonFields = {
     nodeId: analysis.item.nodeId,
@@ -3739,7 +5983,6 @@ function createTrackedItem(
     number: analysis.item.number,
     url: analysis.item.url,
     title: analysis.item.title,
-    milestone: analysis.item.milestone,
     author: analysis.item.author,
     latestEventActor: createTrackedItemLatestEventActor(analysis.item.events),
     state: trackedItemState(analysis.item, decision),
@@ -3764,7 +6007,7 @@ function createTrackedItem(
       analysis.item.type === "issue"
         ? "not_applicable"
         : aggregatePullRequestCheckState(analysis.item.mergeState),
-    aiAnalysis: trackedItemAiAnalysis(codexAnalysis, analysis.item.nodeId),
+    aiAnalysis: trackedItemAiAnalysis(state, analysis, codexAnalysis, reduction, consumerOutput),
     inputEvents: trackedItemInputEvents(analysis),
     confidence: decision.confidence,
     evidence: decision.evidence,
@@ -3835,6 +6078,7 @@ function trackedItemStaleness(staleness: StalenessResult): TrackedItemStaleness 
   return Object.freeze({
     elapsedHours: staleness.elapsedHours.stall,
     severity: staleness.severity,
+    severityReason: createStalenessNotificationSeverityReason(staleness.severityReason),
     waitClass: staleness.waitClass,
     severityContext: staleness.severityContext,
   });
@@ -3862,6 +6106,7 @@ function recalculateTrackedItemStaleness(
   return Object.freeze({
     elapsedHours: recalculated.elapsedHours,
     severity: recalculated.severity,
+    severityReason: recalculated.severityReason,
     waitClass: recalculated.waitClass,
     severityContext: recalculated.severityContext,
   });
@@ -3914,6 +6159,7 @@ type SelfCommitmentPreviousObservation =
 type SelfCommitmentCauseInput = Readonly<{
   analysis: DeterministicItemAnalysis;
   decision: ReducedCodexDecision;
+  waitingOnResult: AiAnalysisElementMigrationResult<"waitingOn"> | undefined;
   analysisInput: CodexAnalysisInput | undefined;
   previous: SelfCommitmentPreviousObservation;
   evaluatedAt: UtcIsoDateTime;
@@ -3928,7 +6174,8 @@ type SelfCommitmentCauseEvidence = Extract<
 function createSelfCommitmentCause(input: SelfCommitmentCauseInput): NotificationCause {
   if (
     input.decision.origin !== "codex" ||
-    input.decision.confidence < input.highConfidence ||
+    input.waitingOnResult == null ||
+    effectiveElementConfidence("waitingOn", input.waitingOnResult) < input.highConfidence ||
     input.analysisInput == null ||
     input.previous.availability !== "available"
   ) {
@@ -3945,10 +6192,7 @@ function createSelfCommitmentCause(input: SelfCommitmentCauseInput): Notificatio
   const waitingOnCandidate = input.analysisInput.candidates.waitingOn.find(
     (candidate) => candidate.id === waitingOn.candidateId,
   );
-  if (
-    waitingOnCandidate?.kind !== "user" ||
-    !waitingOn.sourceIds.some((sourceId) => waitingOnCandidate.sourceIds.includes(sourceId))
-  ) {
+  if (waitingOnCandidate == null) {
     return Object.freeze({ status: "indeterminate" });
   }
   const selfCommitments = input.decision.evidence.filter(
@@ -3967,8 +6211,7 @@ function createSelfCommitmentCause(input: SelfCommitmentCauseInput): Notificatio
       source.actorType !== "human" ||
       source.author.status !== "identified" ||
       source.author.candidateId !== waitingOn.candidateId ||
-      !waitingOn.sourceIds.some((sourceId) => sourceId === source.id) ||
-      !waitingOnCandidate.sourceIds.some((sourceId) => sourceId === source.id)
+      !waitingOn.sourceIds.some((sourceId) => sourceId === source.id)
     ) {
       return Object.freeze({ status: "indeterminate" });
     }
@@ -4051,12 +6294,13 @@ function reduceAnalysisPass(
   const items: PendingTrackedItem[] = [];
   const stalenessByNodeId = new Map<GitHubNodeId, TrackedItemStaleness>();
   const relationAssessments: RelationCandidateAssessment[] = [];
-  const previousImportanceAssessmentByNodeId = new Map(
-    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item.importanceAssessment]),
-  );
+  const retainedNotificationRecommendations = new Map<
+    GitHubNodeId,
+    DiscordNotificationItem["notificationRecommendation"]
+  >();
   let runStatus: ReducedAnalysis["runStatus"] = "success";
   for (const originalAnalysis of deterministicAnalysis.items) {
-    const output = codexOutputForAnalysis(originalAnalysis, codexAnalysis);
+    const output = codexOutputForConsumers(configuration, state, originalAnalysis, codexAnalysis);
     const analysis = reassessDeterministicAnalysis(
       collection.evaluatedAt,
       configuration,
@@ -4067,7 +6311,9 @@ function reduceAnalysisPass(
       output,
       graph,
     );
-    const reduction = reductionForAnalysis(configuration, analysis, codexAnalysis);
+    const reduction = reductionForAnalysis(configuration, state, analysis, codexAnalysis);
+    const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
+    assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${analysis.item.nodeId}`);
     const decision = reduction?.decision ?? reducedDeterministicDecision(analysis.decision);
     const primaryWaitingOn = primaryWaitingOnForDecision(analysis.decision, decision);
     if (reduction?.ai.status === "unavailable") {
@@ -4089,6 +6335,7 @@ function reduceAnalysisPass(
     const selfCommitmentCause = createSelfCommitmentCause({
       analysis,
       decision,
+      waitingOnResult: output?.waitingOn,
       analysisInput: codexAnalysis.inputByNodeId.get(analysis.item.nodeId),
       previous:
         previousItem == null
@@ -4103,6 +6350,7 @@ function reduceAnalysisPass(
       highConfidence: configuration.config.ai.confidence.high,
     });
     const staleness = calculateStaleness({
+      itemType: analysis.item.type,
       createdAt: analysis.item.createdAt,
       evaluatedAt: collection.evaluatedAt,
       currentDecision: {
@@ -4113,7 +6361,7 @@ function reduceAnalysisPass(
         responsibilityBasis: basis.responsibilityBasis,
       },
       decisionBasis: decision.origin === "deterministic" ? "deterministic" : "ai_only",
-      previousState: previousStalenessState(state, analysis.item.nodeId, analysis.item.type),
+      previousState: previousStalenessState(state, analysis.item.nodeId),
       events: analysis.item.events,
       responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
       dependencyResolutions: dependencyResolution.progress,
@@ -4146,12 +6394,27 @@ function reduceAnalysisPass(
         staleness,
         importanceAssessment: resolveImportanceAssessment(
           reduction?.importanceAssessment,
-          previousImportanceAssessmentByNodeId.get(analysis.item.nodeId),
+          currentAdoptedImportanceAssessment(state, analysis, planning),
+        ),
+        deadlineAssessment: resolveDeadlineAssessment(
+          reduction?.deadlineAssessment,
+          currentAdoptedDeadlineAssessment(state, analysis, planning),
         ),
       }),
     );
     stalenessByNodeId.set(analysis.item.nodeId, trackedItemStaleness(staleness));
-    items.push(createTrackedItem(analysis, decision, primaryWaitingOn, staleness, codexAnalysis));
+    items.push(
+      createTrackedItem(
+        state,
+        analysis,
+        decision,
+        primaryWaitingOn,
+        staleness,
+        codexAnalysis,
+        reduction,
+        output,
+      ),
+    );
   }
   const currentNodeIds = new Set(items.map((item) => item.nodeId));
   const currentRepositoryIds = new Set<string>(
@@ -4180,6 +6443,24 @@ function reduceAnalysisPass(
           resolveLabelEffects,
         ),
       );
+      if (codexAnalysis.run != null) {
+        const preservedElements = preservedElementsForRetainedItem(previousItem);
+        const preservedReduction = reducePreservedCodexRelationsAndNotification(
+          previousItem.nodeId,
+          preservedElements,
+          configuration.config.ai.confidence,
+        );
+        relationAssessments.push(...preservedReduction.relationAssessments);
+        if (preservedReduction.notification != null) {
+          retainedNotificationRecommendations.set(
+            previousItem.nodeId,
+            Object.freeze({
+              availability: "available",
+              value: preservedReduction.notification,
+            }),
+          );
+        }
+      }
     }
   }
   if (stalenessByNodeId.size !== items.length) {
@@ -4190,6 +6471,7 @@ function reduceAnalysisPass(
     currentItems: Object.freeze(currentItems),
     stalenessByNodeId,
     relationAssessments: Object.freeze(relationAssessments),
+    retainedNotificationRecommendations,
     runStatus,
   });
 }
@@ -4550,7 +6832,6 @@ function notificationLedgerEntries(
       reasonCode: entry.reasonCode,
       severity: entry.severity,
       reservedAt: createUtcIsoDateTime(entry.reservedAt),
-      cooldownUntil: createUtcIsoDateTime(entry.cooldownUntil),
     };
     if (entry.status === "reserved") {
       entries.push(
@@ -4560,13 +6841,30 @@ function notificationLedgerEntries(
           expiresAt: createUtcIsoDateTime(entry.expiresAt),
         }),
       );
-    } else {
+    } else if (entry.status === "delivery_started") {
+      entries.push(
+        Object.freeze({
+          ...fields,
+          status: "delivery_started",
+          deliveryId: entry.deliveryId,
+          startedAt: createUtcIsoDateTime(entry.startedAt),
+        }),
+      );
+    } else if (entry.status === "sent") {
       entries.push(
         Object.freeze({
           ...fields,
           status: "sent",
           sentAt: createUtcIsoDateTime(entry.sentAt),
           discordMessageId: entry.discordMessageId,
+        }),
+      );
+    } else {
+      entries.push(
+        Object.freeze({
+          ...fields,
+          status: "acknowledged",
+          acknowledgedAt: createUtcIsoDateTime(entry.acknowledgedAt),
         }),
       );
     }
@@ -4625,8 +6923,12 @@ function notificationDecisionBasis(
 function notificationDraftState(
   item: PendingTrackedItem,
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
+  repositoryFreshness: DiscordNotificationItem["repositoryFreshness"],
 ): DiscordNotificationItem["draftState"] {
   const observed = enumeratedItemsByNodeId.get(item.nodeId);
+  if (observed == null && repositoryFreshness === "stale") {
+    return item.type === "issue" ? "not_applicable" : "ready_for_review";
+  }
   assertNonNullable(observed, `通知対象 ${item.nodeId}の列挙値がありません`);
   if (observed.type !== item.type) {
     throw new TypeError(`通知対象 ${item.nodeId}の項目種別が前回値と一致しません`);
@@ -4660,6 +6962,24 @@ function hasUnobservedPullRequestHeadChange(
   return headEvent.occurredAt <= previous.observedAt || headEvent.occurredAt > evaluatedAt;
 }
 
+function hasOpenBlockers(
+  itemNodeId: GitHubNodeId,
+  graph: GraphResult,
+  nodeStateById: ReadonlyMap<GraphNodeId, PendingTrackedItem["state"]>,
+): boolean {
+  for (const edge of graph.edges) {
+    if (!edge.active || edge.type !== "blocks" || edge.toNodeId !== itemNodeId) {
+      continue;
+    }
+    const sourceState = nodeStateById.get(edge.fromNodeId);
+    assertNonNullable(sourceState, `blocks関係元 ${edge.fromNodeId}の状態がありません`);
+    if (sourceState === "open") {
+      return true;
+    }
+  }
+  return false;
+}
+
 function notificationItem(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
@@ -4667,9 +6987,13 @@ function notificationItem(
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
   graph: GraphResult,
   evaluatedAt: UtcIsoDateTime,
+  nodeStateById: ReadonlyMap<GraphNodeId, PendingTrackedItem["state"]>,
   item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
+  retainedNotificationRecommendation:
+    DiscordNotificationItem["notificationRecommendation"] | undefined,
+  repositoryFreshness: DiscordNotificationItem["repositoryFreshness"],
 ): DiscordNotificationItem {
   const repository = findRepository(inventory, item.repositoryId);
   const previous = previousSnapshot(state)?.items.find(
@@ -4686,6 +7010,10 @@ function notificationItem(
   const cycleIds = graph.analysis.dependencyCycles
     .filter((cycle) => cycle.nodeIds.includes(item.nodeId))
     .map((cycle) => cycle.id);
+  const notificationRecommendation =
+    analysisState.availability === "available"
+      ? analysisState.value.notificationRecommendation
+      : (retainedNotificationRecommendation ?? Object.freeze({ availability: "not_available" }));
   const previousDependencyCycles: DiscordNotificationItem["graph"]["previousDependencyCycles"] =
     graph.previousAnalysis.availability === "unavailable"
       ? Object.freeze({
@@ -4733,8 +7061,8 @@ function notificationItem(
   return Object.freeze({
     nodeId: item.nodeId,
     createdAt: item.createdAt,
-    draftState: notificationDraftState(item, enumeratedItemsByNodeId),
-    repositoryFreshness: "fresh",
+    draftState: notificationDraftState(item, enumeratedItemsByNodeId, repositoryFreshness),
+    repositoryFreshness,
     notificationClass: item.notificationClass,
     notificationsSuppressedByLabel: labelEffects.suppressNotifications,
     latestChange:
@@ -4742,17 +7070,13 @@ function notificationItem(
         ? notificationLatestChange(analysisState.value, previous)
         : "none",
     decisionBasis: notificationDecisionBasis(item, staleness, analysisState),
-    notificationRecommendation:
-      analysisState.availability === "available"
-        ? analysisState.value.notificationRecommendation
-        : Object.freeze({
-            availability: "not_available",
-          }),
+    notificationRecommendation,
     priorityWeight: labelEffects.priorityWeight,
     current: {
       status: item.status,
       waitingOn: item.waitingOn,
       severity: staleness.severity,
+      severityReason: staleness.severityReason,
       waitClass: staleness.waitClass,
       statusSince: item.statusSince,
       ownerSince: item.ownerSince,
@@ -4778,6 +7102,7 @@ function notificationItem(
     graph: Object.freeze({
       downstreamImpact,
       newlyUnblocked: graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId),
+      hasOpenBlockers: hasOpenBlockers(item.nodeId, graph, nodeStateById),
       currentDependencyCycleIds: cycleIds,
       previousDependencyCycles,
     }),
@@ -4800,14 +7125,16 @@ function notificationItems(
   const currentItemsByNodeId = new Map(
     reduction.currentItems.map((current) => [current.item.nodeId, current]),
   );
+  const nodeStateById = new Map<GraphNodeId, PendingTrackedItem["state"]>([
+    ...reduction.items.map((item) => [item.nodeId, item.state] as const),
+    ...graph.externalReferences.map((reference) => [reference.nodeId, reference.state] as const),
+  ]);
   const enumeratedItemsByNodeId = new Map(
     collection.enumeratedItems.map((item) => [item.nodeId, item]),
   );
   return Object.freeze(
     reduction.items.flatMap((item) => {
-      if (staleRepositoryIds.has(item.repositoryId)) {
-        return [];
-      }
+      const repositoryFreshness = staleRepositoryIds.has(item.repositoryId) ? "stale" : "fresh";
       const staleness = reduction.stalenessByNodeId.get(item.nodeId);
       assertNonNullable(staleness, `通知対象 ${item.nodeId}のseverity再計算結果がありません`);
       const current = currentItemsByNodeId.get(item.nodeId);
@@ -4819,6 +7146,7 @@ function notificationItems(
           enumeratedItemsByNodeId,
           graph,
           collection.evaluatedAt,
+          nodeStateById,
           item,
           staleness,
           current == null
@@ -4829,6 +7157,8 @@ function notificationItems(
                 availability: "available",
                 value: current,
               }),
+          reduction.retainedNotificationRecommendations.get(item.nodeId),
+          repositoryFreshness,
         ),
       ];
     }),
@@ -4837,18 +7167,27 @@ function notificationItems(
 
 function mergeNotificationLedger(
   state: RuntimeState,
-  selection: DiscordNotificationSelection,
+  entriesToMerge: readonly NotificationLedgerEntry[],
+  pendingNotifications: readonly PendingNotification[],
 ): StateNotificationLedger {
   const entries = new Map(
     state.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
   );
-  for (const reservation of selection.ledgerReservations) {
-    entries.set(reservation.notificationKey, reservation);
+  for (const entry of entriesToMerge) {
+    const existing = entries.get(entry.notificationKey);
+    if (
+      entry.status === "acknowledged" &&
+      (existing?.status === "sent" || existing?.status === "acknowledged")
+    ) {
+      continue;
+    }
+    entries.set(entry.notificationKey, entry);
   }
   return createStateNotificationLedger({
-    schemaVersion: "2",
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
+    pendingNotifications,
   });
 }
 
@@ -4898,13 +7237,13 @@ function stateHistoryInputEvents(reduction: ReducedAnalysis): readonly StateHist
 }
 
 function createTrackedItemWithImportance(
-  evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
   inventory: RepositoryInventory,
   graph: GraphResult,
   resolveLabelEffects: ReturnType<typeof createLabelEffectsResolver>,
   item: PendingTrackedItem,
   naturalLanguageAssessment: NaturalLanguageImportanceAssessmentState,
+  deadlineAssessment: NaturalLanguageDeadlineAssessmentState,
 ): TrackedItemWithImportanceAssessment {
   const repository = findRepository(inventory, item.repositoryId);
   const downstreamImpact = graph.analysis.downstreamImpacts.find(
@@ -4918,15 +7257,13 @@ function createTrackedItemWithImportance(
   const deterministicImportance = calculateImportance({
     priorityWeight: labelEffects.priorityWeight,
     downstreamImpact,
-    milestone: item.milestone,
-    evaluatedAt,
     weights: configuration.config.importance.weights,
-    dueSoonDays: configuration.config.importance.dueSoonDays,
     levels: configuration.config.importance.levels,
   });
   return Object.freeze({
     ...item,
     importanceAssessment: naturalLanguageAssessment,
+    deadlineAssessment,
     importance: combineImportance({
       deterministic: deterministicImportance,
       naturalLanguageAssessment,
@@ -4950,113 +7287,43 @@ function validateRunCompleteness(
   const currentAnalysisByNodeId = new Map(
     reduction.currentItems.map((analysis) => [analysis.item.nodeId, analysis]),
   );
-  const previousImportanceAssessmentByNodeId = new Map(
-    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item.importanceAssessment]),
+  const previousSnapshotItems = previousSnapshot(state)?.items ?? [];
+  const previousSnapshotItemByNodeId = new Map(
+    previousSnapshotItems.map((item) => [item.nodeId, item]),
   );
   const items = reduction.items.map((item) => {
     const currentAnalysis = currentAnalysisByNodeId.get(item.nodeId);
+    const previousItem = previousSnapshotItemByNodeId.get(item.nodeId);
     return createTrackedItemWithImportance(
-      collection.evaluatedAt,
       configuration,
       inventory,
       graph,
       resolveLabelEffects,
       item,
       resolveImportanceAssessment(
-        currentAnalysis?.importanceAssessment,
-        previousImportanceAssessmentByNodeId.get(item.nodeId),
+        currentAnalysis?.importanceAssessment ?? previousItem?.importanceAssessment,
+        undefined,
+      ),
+      resolveDeadlineAssessment(
+        currentAnalysis?.deadlineAssessment ?? previousItem?.deadlineAssessment,
+        undefined,
       ),
     );
   });
-  const previousCollectionItems = previousCollectionItemsByNodeId(state);
-  const currentAnalysisRulesFingerprints = createCurrentAnalysisRulesFingerprints(
-    configuration.config,
-  );
-  const aiFingerprintByNodeId = new Map(
-    (codexAnalysis.run?.results ?? []).map((result) => [
-      result.candidateId,
-      Object.freeze({
-        status: "available",
-        fingerprint: result.fingerprint,
-      }),
-    ]),
-  );
-  const observedItemsByNodeId = new Map(
-    collection.observedItems.map((item) => [item.nodeId, item]),
-  );
-  const analysisRulesFingerprintByNodeId = new Map(
-    [...collection.analysisNodeIds].map((nodeId) => {
-      const item = observedItemsByNodeId.get(nodeId);
-      assertNonNullable(item, `再判定対象の観測項目がありません。対象: ${nodeId}`);
-      return [
-        nodeId,
-        Object.freeze({
-          status: "available",
-          fingerprint: currentAnalysisRulesFingerprints[item.type],
-        }),
-      ] as const;
-    }),
-  );
-  const deterministicRulesVersionByNodeId = new Map(
-    [...collection.analysisNodeIds].map((nodeId) => {
-      const item = observedItemsByNodeId.get(nodeId);
-      assertNonNullable(item, `再判定対象の観測項目がありません。対象: ${nodeId}`);
-      return [
-        nodeId,
-        Object.freeze({
-          status: "available",
-          version: CURRENT_DETERMINISTIC_RULES_VERSIONS[item.type],
-        }),
-      ] as const;
-    }),
-  );
-  const persistedAiFingerprintNodeIds = new Set<string>();
-  const persistedAnalysisRulesFingerprintNodeIds = new Set<string>();
-  const persistedDeterministicRulesVersionNodeIds = new Set<string>();
+  const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
-    schemaVersion: "8",
+    schemaVersion: "12",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
     collection: {
-      repositories: collection.collectionRepositories.map((repository) => ({
-        ...repository,
-        items: repository.items.map((item) => {
-          const currentAiFingerprint = aiFingerprintByNodeId.get(item.nodeId);
-          if (currentAiFingerprint != null) {
-            persistedAiFingerprintNodeIds.add(item.nodeId);
-          }
-          const previousItem = previousCollectionItems.get(item.nodeId);
-          const currentAnalysisRulesFingerprint = analysisRulesFingerprintByNodeId.get(item.nodeId);
-          if (currentAnalysisRulesFingerprint != null) {
-            persistedAnalysisRulesFingerprintNodeIds.add(item.nodeId);
-          }
-          const currentDeterministicRulesVersion = deterministicRulesVersionByNodeId.get(
-            item.nodeId,
-          );
-          if (currentDeterministicRulesVersion != null) {
-            persistedDeterministicRulesVersionNodeIds.add(item.nodeId);
-          }
-          return {
-            ...item,
-            aiAnalysisFingerprint:
-              currentAiFingerprint ??
-              (previousItem == null
-                ? item.aiAnalysisFingerprint
-                : previousItem.aiAnalysisFingerprint),
-            analysisRulesFingerprint:
-              currentAnalysisRulesFingerprint ??
-              (previousItem == null
-                ? item.analysisRulesFingerprint
-                : previousItem.analysisRulesFingerprint),
-            deterministicRulesVersion:
-              currentDeterministicRulesVersion ??
-              (previousItem == null
-                ? item.deterministicRulesVersion
-                : previousItem.deterministicRulesVersion),
-          };
-        }),
-      })),
+      repositories: validatedCollectionRepositories(
+        state,
+        configuration,
+        collection,
+        codexAnalysis,
+        itemsByNodeId,
+      ),
     },
     repositories: snapshotRepositories(collection),
     items: items.map((item) => {
@@ -5066,6 +7333,12 @@ function validateRunCompleteness(
         ...item,
         attention: calculateAttention({
           importanceScore: item.importance.score,
+          deadlineLevel: deadlineLevelForAssessment(
+            item.deadlineAssessment,
+            collection.evaluatedAt,
+            configuration.config.staleness.timezone,
+          ),
+          deadlinePoints: configuration.config.attention.deadlinePoints,
           elapsedHours: staleness.elapsedHours,
           waitClass: staleness.waitClass,
           thresholdsHours: configuration.config.staleness.thresholdsHours,
@@ -5084,36 +7357,65 @@ function validateRunCompleteness(
       complete: true,
     },
   });
-  for (const nodeId of aiFingerprintByNodeId.keys()) {
-    if (!persistedAiFingerprintNodeIds.has(nodeId)) {
-      throw new TypeError(`AI分析fingerprintの保存対象項目がありません。対象: ${nodeId}`);
-    }
-  }
-  for (const nodeId of analysisRulesFingerprintByNodeId.keys()) {
-    if (!persistedAnalysisRulesFingerprintNodeIds.has(nodeId)) {
-      throw new TypeError(`判定規則fingerprintの保存対象項目がありません。対象: ${nodeId}`);
-    }
-  }
-  for (const nodeId of deterministicRulesVersionByNodeId.keys()) {
-    if (!persistedDeterministicRulesVersionNodeIds.has(nodeId)) {
-      throw new TypeError(`決定規則versionの保存対象項目がありません。対象: ${nodeId}`);
-    }
-  }
-  const notificationSelection = selectDiscordNotifications({
+  const notificationInput = {
     evaluatedAt: collection.evaluatedAt,
     items: notificationItems(configuration, state, inventory, collection, reduction, graph),
     ledger: notificationLedgerEntries(state, reduction.items),
+    pendingNotifications: state.notificationLedger.pendingNotifications,
     settings: {
       maxItemsPerDigest: configuration.config.notifications.discord.maxItemsPerDigest,
-      cooldownDays: configuration.config.notifications.discord.cooldownDays,
       recentProgressGraceHours: configuration.config.staleness.recentProgressGraceHours,
       minimumAiConfidence: configuration.config.ai.confidence.medium,
     },
-  });
+  };
+  const notificationAction =
+    invocation.command.kind === "dry-run" ? "send" : invocation.command.notificationAction;
+  const emptyCandidates: readonly [] = Object.freeze([]);
+  const emptyLedgerReservations: readonly [] = Object.freeze([]);
+  const acknowledgedNotificationLedgerEntries =
+    notificationAction === "acknowledge-current"
+      ? createAcknowledgedNotificationLedgerEntries(notificationInput)
+      : Object.freeze([]);
+  const recalculatedSelection = selectDiscordNotifications(notificationInput);
+  let notificationSelection: DiscordNotificationSelection;
+  if (notificationAction === "acknowledge-current") {
+    const acknowledgedKeys = new Set(
+      acknowledgedNotificationLedgerEntries.map((entry) => entry.notificationKey),
+    );
+    const pendingNotifications = recalculatedSelection.pendingNotifications.filter(
+      (pending) => !acknowledgedKeys.has(pending.notificationKey),
+    );
+    notificationSelection = Object.freeze({
+      action: "skip_digest",
+      reason: "no_candidates",
+      candidates: emptyCandidates,
+      ledgerReservations: emptyLedgerReservations,
+      pendingNotifications: Object.freeze(pendingNotifications),
+    });
+  } else if (notificationAction === "hold") {
+    notificationSelection = Object.freeze({
+      action: "skip_digest",
+      reason: "held",
+      candidates: emptyCandidates,
+      ledgerReservations: emptyLedgerReservations,
+      pendingNotifications: recalculatedSelection.pendingNotifications,
+    });
+  } else {
+    notificationSelection = recalculatedSelection;
+  }
+  const notificationLedgerEntriesToMerge =
+    notificationAction === "acknowledge-current"
+      ? acknowledgedNotificationLedgerEntries
+      : notificationSelection.ledgerReservations;
+  const notificationPendingToMerge = notificationSelection.pendingNotifications;
   return Object.freeze({
     snapshot,
     historyInputEvents: stateHistoryInputEvents(reduction),
-    notificationLedger: mergeNotificationLedger(state, notificationSelection),
+    notificationLedger: mergeNotificationLedger(
+      state,
+      notificationLedgerEntriesToMerge,
+      notificationPendingToMerge,
+    ),
     notificationSelection,
   });
 }
@@ -5196,9 +7498,13 @@ function createCollectAnalyzeArtifact(
   metrics: RunMetrics,
   diagnostics: readonly string[],
 ): WorkflowArtifact {
+  if (invocation.command.kind !== "collect-analyze") {
+    throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
+  }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "1",
+    schemaVersion: "10",
     kind: "validated_public_run",
+    notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
       id: repository.id,
       owner: repository.owner,
@@ -5238,6 +7544,7 @@ async function persistValidatedRun(
   return Object.freeze({
     result,
     historyRecords,
+    notificationLedger: validated.notificationLedger,
   });
 }
 
@@ -5295,34 +7602,737 @@ function operationsAlertLedgerEntry(
   });
 }
 
+function notificationLedgerEntry(
+  entry: StateNotificationLedger["entries"][number],
+): NotificationLedgerEntry {
+  const fields = {
+    notificationKey: entry.notificationKey,
+    itemNodeId: createGitHubNodeId(entry.itemNodeId),
+    reasonCode: entry.reasonCode,
+    severity: entry.severity,
+    reservedAt: createUtcIsoDateTime(entry.reservedAt),
+  };
+  if (entry.status === "reserved") {
+    return Object.freeze({
+      ...fields,
+      status: "reserved",
+      expiresAt: createUtcIsoDateTime(entry.expiresAt),
+    });
+  }
+  if (entry.status === "delivery_started") {
+    return Object.freeze({
+      ...fields,
+      status: "delivery_started",
+      deliveryId: entry.deliveryId,
+      startedAt: createUtcIsoDateTime(entry.startedAt),
+    });
+  }
+  if (entry.status === "sent") {
+    return Object.freeze({
+      ...fields,
+      status: "sent",
+      sentAt: createUtcIsoDateTime(entry.sentAt),
+      discordMessageId: entry.discordMessageId,
+    });
+  }
+  return Object.freeze({
+    ...fields,
+    status: "acknowledged",
+    acknowledgedAt: createUtcIsoDateTime(entry.acknowledgedAt),
+  });
+}
+
+function createNotificationWaitingOn(
+  item: StateSnapshot["items"][number],
+  snapshot: StateSnapshot,
+): StateHistoryNotificationEvent["waitingOn"] {
+  if (item.waitingOn.length === 0) {
+    throw new TypeError("通知送信eventの対象itemにwaitingOnがありません");
+  }
+  type NotificationWaitingOnReference = Extract<
+    StateHistoryNotificationEvent["waitingOn"],
+    Readonly<{ status: "recorded" }>
+  >["values"][number];
+  const values = item.waitingOn.map((waitingOn): NotificationWaitingOnReference => {
+    switch (waitingOn.kind) {
+      case "user":
+        return {
+          kind: "user",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "team":
+        return {
+          kind: "team",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "role":
+        return {
+          kind: "role",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "item": {
+        return {
+          kind: "item",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+          displayReference: resolveStateHistoryNotificationItemDisplayReference(
+            snapshot,
+            waitingOn.candidateId,
+          ),
+        };
+      }
+      case "automation":
+        return {
+          kind: "automation",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      case "unknown":
+        return {
+          kind: "unknown",
+          candidateId: waitingOn.candidateId,
+          role: waitingOn.role,
+        };
+      default:
+        throw new UnreachableError(waitingOn.kind);
+    }
+  });
+  return {
+    status: "recorded",
+    values,
+  };
+}
+
+type NotificationHistoryContext = Readonly<{
+  candidateByNodeId: ReadonlyMap<GitHubNodeId, DiscordNotificationCandidate>;
+  itemByNodeId: ReadonlyMap<GitHubNodeId, StateSnapshot["items"][number]>;
+  candidateMessageIds: Map<GitHubNodeId, string>;
+  sentNotificationKeys: Set<string>;
+}>;
+
+function createNotificationHistoryContext(
+  snapshot: StateSnapshot,
+  selection: DiscordNotificationSelection,
+): NotificationHistoryContext {
+  const candidateByNodeId = new Map<GitHubNodeId, DiscordNotificationCandidate>(
+    selection.candidates.map((candidate) => [candidate.itemNodeId, candidate]),
+  );
+  if (candidateByNodeId.size !== selection.candidates.length) {
+    throw new TypeError("通知候補のitem node IDが重複しています");
+  }
+  const itemByNodeId = new Map<GitHubNodeId, StateSnapshot["items"][number]>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  if (itemByNodeId.size !== snapshot.items.length) {
+    throw new TypeError("snapshotのitem node IDが重複しています");
+  }
+  return {
+    candidateByNodeId,
+    itemByNodeId,
+    candidateMessageIds: new Map(),
+    sentNotificationKeys: new Set(),
+  };
+}
+
+type SentNotificationLedgerEntry = Extract<NotificationLedgerEntry, { status: "sent" }>;
+
+function createNotificationHistoryEventsForMessage(
+  snapshot: StateSnapshot,
+  context: NotificationHistoryContext,
+  entries: readonly NotificationLedgerEntry[],
+): readonly StateHistoryNotificationEvent[] {
+  const firstEntry = entries[0];
+  assertNonNullable(firstEntry, "Discord送信結果にledger entryがありません");
+  if (firstEntry.status !== "sent") {
+    throw new TypeError("Discord送信成功結果に未送信ledger entryがあります");
+  }
+  const discordMessageId = firstEntry.discordMessageId;
+  const entriesByMessageAndItem = new Map<GitHubNodeId, SentNotificationLedgerEntry[]>();
+  const messageNotificationKeys = new Set<string>();
+  for (const entry of entries) {
+    if (entry.status !== "sent") {
+      throw new TypeError("Discord送信成功結果に未送信ledger entryがあります");
+    }
+    if (entry.discordMessageId !== discordMessageId) {
+      throw new TypeError("同じDiscord messageの送信結果に異なるmessage IDがあります");
+    }
+    if (
+      context.sentNotificationKeys.has(entry.notificationKey) ||
+      messageNotificationKeys.has(entry.notificationKey)
+    ) {
+      throw new TypeError("Discord送信結果のnotification keyが重複しています");
+    }
+    messageNotificationKeys.add(entry.notificationKey);
+    const itemEntries = entriesByMessageAndItem.get(entry.itemNodeId);
+    if (itemEntries == null) {
+      entriesByMessageAndItem.set(entry.itemNodeId, [entry]);
+    } else {
+      itemEntries.push(entry);
+    }
+  }
+  const candidateMessageIds = new Map<GitHubNodeId, string>();
+  const events: StateHistoryNotificationEvent[] = [];
+  for (const [itemNodeId, itemEntries] of entriesByMessageAndItem) {
+    const candidate = context.candidateByNodeId.get(itemNodeId);
+    if (candidate == null) {
+      throw new TypeError("Discord送信結果のitemが通知候補にありません");
+    }
+    const previousMessageId = context.candidateMessageIds.get(itemNodeId);
+    if (previousMessageId != null) {
+      throw new TypeError("同じitemが複数のDiscord messageへ送信されています");
+    }
+    const candidateReasonsByKey = new Map(
+      candidate.reasons.map((reason) => [reason.notificationKey, reason]),
+    );
+    if (candidateReasonsByKey.size !== candidate.reasons.length) {
+      throw new TypeError("通知候補のnotification keyが重複しています");
+    }
+    const reasonsByKey = new Map<string, (typeof candidate.reasons)[number]>();
+    let sentAt: UtcIsoDateTime | undefined;
+    for (const entry of itemEntries) {
+      if (entry.itemNodeId !== candidate.itemNodeId || entry.severity !== candidate.severity) {
+        throw new TypeError("Discord送信結果と通知候補のitemまたはseverityが一致しません");
+      }
+      const candidateReason = candidateReasonsByKey.get(entry.notificationKey);
+      if (entry.reasonCode === "none" || candidateReason?.reasonCode !== entry.reasonCode) {
+        throw new TypeError("Discord送信結果の通知理由が候補と一致しません");
+      }
+      if (reasonsByKey.has(entry.notificationKey)) {
+        throw new TypeError("Discord送信結果の通知理由が重複しています");
+      }
+      assertNonNullable(candidateReason, "Discord送信結果の通知理由を取得できません");
+      reasonsByKey.set(entry.notificationKey, candidateReason);
+      if (sentAt == null) {
+        sentAt = entry.sentAt;
+      } else if (sentAt !== entry.sentAt) {
+        throw new TypeError("同じDiscord messageの通知送信時刻が一致しません");
+      }
+    }
+    if (reasonsByKey.size !== candidateReasonsByKey.size) {
+      throw new TypeError("Discord送信結果の通知理由数が候補と一致しません");
+    }
+    const reasons = candidate.reasons.map((reason) => {
+      const selectedReason = reasonsByKey.get(reason.notificationKey);
+      if (selectedReason == null) {
+        throw new TypeError("Discord送信結果の通知理由順序を候補から解決できません");
+      }
+      return createNotificationReason(selectedReason.reasonCode, selectedReason.threshold);
+    });
+    const item = context.itemByNodeId.get(itemNodeId);
+    assertNonNullable(item, "通知送信eventの対象itemがsnapshotにありません");
+    assertNonNullable(sentAt, "Discord送信eventの送信時刻がありません");
+    candidateMessageIds.set(itemNodeId, discordMessageId);
+    events.push({
+      kind: "notification_sent",
+      deliveryId: hashCanonicalJson([
+        "notification-history-v1",
+        snapshot.run.id,
+        discordMessageId,
+        itemNodeId,
+      ]),
+      itemNodeId: item.nodeId,
+      repositoryId: item.repositoryId,
+      type: item.type,
+      displayReference: item.displayReference,
+      number: item.number,
+      title: item.title,
+      url: item.url,
+      waitingOn: createNotificationWaitingOn(item, snapshot),
+      reasons,
+      severity: candidate.severity,
+      sentAt,
+    });
+  }
+  for (const notificationKey of messageNotificationKeys) {
+    context.sentNotificationKeys.add(notificationKey);
+  }
+  for (const [itemNodeId] of candidateMessageIds) {
+    context.candidateMessageIds.set(itemNodeId, discordMessageId);
+  }
+  return Object.freeze(events);
+}
+
+function createNotificationHistoryEvents(
+  snapshot: StateSnapshot,
+  selection: DiscordNotificationSelection,
+  delivery: DiscordDigestDelivery,
+): readonly StateHistoryNotificationEvent[] {
+  if (delivery.status !== "sent") {
+    return Object.freeze([]);
+  }
+  const context = createNotificationHistoryContext(snapshot, selection);
+  if (delivery.ledgerEntries.length === 0) {
+    throw new TypeError("Discord送信成功結果にledger entryがありません");
+  }
+  const entriesByMessage = new Map<string, SentNotificationLedgerEntry[]>();
+  for (const entry of delivery.ledgerEntries) {
+    if (entry.status !== "sent") {
+      throw new TypeError("Discord送信成功結果に未送信ledger entryがあります");
+    }
+    const entries = entriesByMessage.get(entry.discordMessageId);
+    if (entries == null) {
+      entriesByMessage.set(entry.discordMessageId, [entry]);
+    } else {
+      entries.push(entry);
+    }
+  }
+  const deliveryMessageIds = new Set(delivery.discordMessageIds);
+  if (deliveryMessageIds.size !== delivery.discordMessageIds.length) {
+    throw new TypeError("Discord送信結果のmessage IDが重複しています");
+  }
+  const events: StateHistoryNotificationEvent[] = [];
+  for (const [discordMessageId, entries] of entriesByMessage) {
+    if (!deliveryMessageIds.has(discordMessageId)) {
+      throw new TypeError("Discord送信結果のledgerにないmessage IDがあります");
+    }
+    events.push(...createNotificationHistoryEventsForMessage(snapshot, context, entries));
+  }
+  if (context.candidateMessageIds.size !== context.candidateByNodeId.size) {
+    throw new TypeError("Discord送信結果のitem数が通知候補と一致しません");
+  }
+  if (deliveryMessageIds.size !== entriesByMessage.size) {
+    throw new TypeError("Discord送信結果のmessage数がledgerと一致しません");
+  }
+  return Object.freeze(events);
+}
+
+type DiscordDigestSelection = Extract<DiscordNotificationSelection, { action: "create_digest" }>;
+type SkippedDiscordDigestSelection = Extract<
+  DiscordNotificationSelection,
+  { action: "skip_digest" }
+>;
+
+function nonEmptyNotificationReasons(
+  reasons: readonly DiscordNotificationCandidate["reasons"][number][],
+  itemNodeId: GitHubNodeId,
+): DiscordNotificationCandidate["reasons"] {
+  const [first, ...rest] = reasons;
+  assertNonNullable(first, `${itemNodeId}の通知理由がありません`);
+  return Object.freeze([first, ...rest]);
+}
+
+function nonEmptyNotificationCandidates(
+  candidates: readonly DiscordDigestSelection["candidates"][number][],
+): DiscordDigestSelection["candidates"] {
+  const [first, ...rest] = candidates;
+  assertNonNullable(first, "通知候補がありません");
+  return Object.freeze([first, ...rest]);
+}
+
+function nonEmptyNotificationReservations(
+  reservations: readonly DiscordDigestSelection["ledgerReservations"][number][],
+): DiscordDigestSelection["ledgerReservations"] {
+  const [first, ...rest] = reservations;
+  assertNonNullable(first, "通知候補に対応するledger予約がありません");
+  return Object.freeze([first, ...rest]);
+}
+
+function filterNotificationSelectionForLedger(
+  selection: DiscordNotificationSelection,
+  ledgerEntries: ReadonlyMap<string, NotificationLedgerEntry>,
+): DiscordNotificationSelection {
+  const emptyCandidates: SkippedDiscordDigestSelection["candidates"] = Object.freeze([]);
+  const emptyReservations: SkippedDiscordDigestSelection["ledgerReservations"] = Object.freeze([]);
+  const pendingNotifications = Object.freeze(
+    selection.pendingNotifications.filter((pending) => {
+      const entry = ledgerEntries.get(pending.notificationKey);
+      return entry?.status !== "sent" && entry?.status !== "acknowledged";
+    }),
+  );
+  if (selection.action === "skip_digest") {
+    return Object.freeze({
+      action: "skip_digest",
+      reason: selection.reason,
+      candidates: emptyCandidates,
+      ledgerReservations: emptyReservations,
+      pendingNotifications,
+    });
+  }
+  const candidates = selection.candidates.flatMap((candidate) => {
+    const reasons = candidate.reasons.filter((reason) => {
+      const entry = ledgerEntries.get(reason.notificationKey);
+      return entry?.status !== "sent" && entry?.status !== "acknowledged";
+    });
+    if (reasons.length === 0) {
+      return [];
+    }
+    return [
+      Object.freeze({
+        ...candidate,
+        reasons: nonEmptyNotificationReasons(reasons, candidate.itemNodeId),
+      }),
+    ];
+  });
+  const candidateKeys = new Set(
+    candidates.flatMap((candidate) => candidate.reasons.map((reason) => reason.notificationKey)),
+  );
+  const ledgerReservations = selection.ledgerReservations.filter((reservation) =>
+    candidateKeys.has(reservation.notificationKey),
+  );
+  if (candidates.length === 0) {
+    return Object.freeze({
+      action: "skip_digest",
+      reason: "no_candidates",
+      candidates: emptyCandidates,
+      ledgerReservations: emptyReservations,
+      pendingNotifications,
+    });
+  }
+  return Object.freeze({
+    action: "create_digest",
+    candidates: nonEmptyNotificationCandidates(candidates),
+    ledgerReservations: nonEmptyNotificationReservations(ledgerReservations),
+    pendingNotifications,
+  });
+}
+
+function notificationLedgerEntryIdentityMatches(
+  left: NotificationLedgerEntry,
+  right: NotificationLedgerEntry,
+): boolean {
+  return (
+    left.notificationKey === right.notificationKey &&
+    left.itemNodeId === right.itemNodeId &&
+    left.reasonCode === right.reasonCode &&
+    left.severity === right.severity &&
+    left.reservedAt === right.reservedAt
+  );
+}
+
+function assertNotificationDeliveryBatch(
+  selection: DiscordDigestSelection,
+  currentEntriesByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+  entries: readonly NotificationLedgerEntry[],
+): void {
+  const firstEntry = entries[0];
+  assertNonNullable(firstEntry, "Discord送信結果にledger entryがありません");
+  if (firstEntry.status === "acknowledged") {
+    throw new TypeError("Discord送信callbackに確認済みledger entryを渡せません");
+  }
+  for (const entry of entries) {
+    if (entry.status !== firstEntry.status) {
+      throw new TypeError("Discord送信callbackのledger statusが一致しません");
+    }
+  }
+
+  const candidateByKey = new Map<
+    string,
+    Readonly<{
+      candidate: DiscordNotificationCandidate;
+      reason: DiscordNotificationCandidate["reasons"][number];
+    }>
+  >();
+  for (const candidate of selection.candidates) {
+    for (const reason of candidate.reasons) {
+      if (candidateByKey.has(reason.notificationKey)) {
+        throw new TypeError("通知候補のnotification keyが重複しています");
+      }
+      candidateByKey.set(reason.notificationKey, { candidate, reason });
+    }
+  }
+
+  const reservationByKey = new Map<
+    string,
+    Extract<NotificationLedgerEntry, { status: "reserved" }>
+  >();
+  for (const reservation of selection.ledgerReservations) {
+    if (reservationByKey.has(reservation.notificationKey)) {
+      throw new TypeError("通知予約のnotification keyが重複しています");
+    }
+    reservationByKey.set(reservation.notificationKey, reservation);
+  }
+  if (candidateByKey.size !== reservationByKey.size) {
+    throw new TypeError("通知候補とledger予約の件数が一致しません");
+  }
+  for (const notificationKey of candidateByKey.keys()) {
+    if (!reservationByKey.has(notificationKey)) {
+      throw new TypeError("通知候補とledger予約が一致しません");
+    }
+  }
+
+  const keysByItemNodeId = new Map<GitHubNodeId, Set<string>>();
+  for (const entry of entries) {
+    const candidateEntry = candidateByKey.get(entry.notificationKey);
+    if (candidateEntry == null) {
+      throw new TypeError("Discord送信結果のnotification keyが通知候補にありません");
+    }
+    const reservation = reservationByKey.get(entry.notificationKey);
+    assertNonNullable(reservation, "Discord送信結果に対応する通知予約がありません");
+    if (
+      !notificationLedgerEntryIdentityMatches(entry, reservation) ||
+      entry.itemNodeId !== candidateEntry.candidate.itemNodeId ||
+      entry.reasonCode !== candidateEntry.reason.reasonCode ||
+      entry.severity !== candidateEntry.candidate.severity
+    ) {
+      throw new TypeError("Discord送信結果と通知候補またはledger予約が一致しません");
+    }
+    const currentEntry = currentEntriesByKey.get(entry.notificationKey);
+    assertNonNullable(currentEntry, "Discord送信結果の現在ledger entryがありません");
+    if (!notificationLedgerEntryIdentityMatches(currentEntry, entry)) {
+      throw new TypeError("Discord送信結果と現在の通知ledgerが一致しません");
+    }
+    let itemKeys = keysByItemNodeId.get(entry.itemNodeId);
+    if (itemKeys == null) {
+      itemKeys = new Set<string>();
+      keysByItemNodeId.set(entry.itemNodeId, itemKeys);
+    }
+    if (itemKeys.has(entry.notificationKey)) {
+      throw new TypeError("Discord送信callbackのnotification keyが重複しています");
+    }
+    itemKeys.add(entry.notificationKey);
+
+    if (firstEntry.status === "delivery_started") {
+      if (entry.status !== "delivery_started") {
+        throw new TypeError("Discord送信callbackのledger statusが一致しません");
+      }
+      if (currentEntry.status !== "reserved") {
+        throw new TypeError("送信開始callbackは対応する通知予約から遷移させてください");
+      }
+      if (!notificationLedgerEntryIdentityMatches(currentEntry, reservation)) {
+        throw new TypeError("送信開始callbackは対応する通知予約から遷移させてください");
+      }
+      if (
+        currentEntry.expiresAt !== reservation.expiresAt ||
+        entry.startedAt < entry.reservedAt ||
+        entry.startedAt > reservation.expiresAt ||
+        !DISCORD_DELIVERY_ID_PATTERN.test(entry.deliveryId)
+      ) {
+        throw new TypeError("送信開始callbackは対応する通知予約から遷移させてください");
+      }
+      if (entry.deliveryId !== firstEntry.deliveryId || entry.startedAt !== firstEntry.startedAt) {
+        throw new TypeError("同じDiscord messageの送信開始時刻が一致しません");
+      }
+    } else if (firstEntry.status === "sent") {
+      if (entry.status !== "sent") {
+        throw new TypeError("Discord送信callbackのledger statusが一致しません");
+      }
+      if (
+        currentEntry.status !== "delivery_started" ||
+        currentEntry.startedAt < currentEntry.reservedAt ||
+        entry.sentAt < currentEntry.startedAt
+      ) {
+        throw new TypeError("送信済みcallbackは送信開始済み通知から遷移させてください");
+      }
+      const firstCurrentEntry = currentEntriesByKey.get(firstEntry.notificationKey);
+      assertNonNullable(firstCurrentEntry, "Discord送信結果の先頭entryが現在ledgerにありません");
+      if (
+        firstCurrentEntry.status !== "delivery_started" ||
+        currentEntry.deliveryId !== firstCurrentEntry.deliveryId ||
+        currentEntry.startedAt !== firstCurrentEntry.startedAt ||
+        entry.sentAt !== firstEntry.sentAt ||
+        entry.discordMessageId !== firstEntry.discordMessageId
+      ) {
+        throw new TypeError("同じDiscord messageの送信結果が一致しません");
+      }
+    } else {
+      if (entry.status !== "reserved") {
+        throw new TypeError("Discord送信callbackのledger statusが一致しません");
+      }
+      if (currentEntry.status !== "delivery_started" || entry.expiresAt !== reservation.expiresAt) {
+        throw new TypeError("予約復帰callbackは送信開始済み通知から遷移させてください");
+      }
+      const firstCurrentEntry = currentEntriesByKey.get(firstEntry.notificationKey);
+      assertNonNullable(firstCurrentEntry, "Discord送信結果の先頭entryが現在ledgerにありません");
+      if (
+        firstCurrentEntry.status !== "delivery_started" ||
+        currentEntry.deliveryId !== firstCurrentEntry.deliveryId ||
+        currentEntry.startedAt !== firstCurrentEntry.startedAt
+      ) {
+        throw new TypeError("同じDiscord messageの予約復帰結果が一致しません");
+      }
+    }
+  }
+
+  for (const [itemNodeId, itemKeys] of keysByItemNodeId) {
+    const candidate = selection.candidates.find((value) => value.itemNodeId === itemNodeId);
+    assertNonNullable(candidate, "Discord送信結果のitemが通知候補にありません");
+    const candidateKeys = new Set(candidate.reasons.map((reason) => reason.notificationKey));
+    if (
+      itemKeys.size !== candidateKeys.size ||
+      [...candidateKeys].some((notificationKey) => !itemKeys.has(notificationKey))
+    ) {
+      throw new TypeError("Discord送信結果の通知理由数が候補と一致しません");
+    }
+  }
+}
+
+function assertNoStartedNotificationDelivery(
+  selection: DiscordNotificationSelection,
+  entriesByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+): void {
+  for (const candidate of selection.candidates) {
+    for (const reason of candidate.reasons) {
+      const entry = entriesByKey.get(reason.notificationKey);
+      if (entry?.status === "delivery_started") {
+        throw new TypeError(
+          `通知 ${reason.notificationKey} は送信開始済みです。delivery ID: ${entry.deliveryId}。手動解決を実行してください: resolve-discord-delivery --delivery-id ${entry.deliveryId} --resolution retry または acknowledge`,
+        );
+      }
+    }
+  }
+}
+
+function createNotificationLedgerFromMaps(
+  entriesByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+  operationsAlertsByKey: ReadonlyMap<string, OperationsAlertLedgerEntry>,
+  pendingNotifications: readonly PendingNotification[],
+): StateNotificationLedger {
+  return createStateNotificationLedger({
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+    entries: [...entriesByKey.values()],
+    operationsAlerts: [...operationsAlertsByKey.values()],
+    pendingNotifications,
+  });
+}
+
+function assertNotificationDeliveryLedgerConsistency(
+  delivery: DiscordDigestDelivery,
+  savedEntries: readonly NotificationLedgerEntry[],
+): void {
+  if (delivery.status !== "sent") {
+    if (savedEntries.length !== 0) {
+      throw new TypeError("Discord送信結果がないのに送信済みledger entryがあります");
+    }
+    return;
+  }
+  const savedEntriesByKey = new Map(savedEntries.map((entry) => [entry.notificationKey, entry]));
+  if (savedEntriesByKey.size !== savedEntries.length) {
+    throw new TypeError("callbackで保存したDiscord送信結果のnotification keyが重複しています");
+  }
+  if (delivery.ledgerEntries.length !== savedEntries.length) {
+    throw new TypeError("Discord送信結果とcallbackで保存したledgerの件数が一致しません");
+  }
+  for (const entry of delivery.ledgerEntries) {
+    const savedEntry = savedEntriesByKey.get(entry.notificationKey);
+    if (
+      savedEntry == null ||
+      serializeCanonicalJson(savedEntry) !== serializeCanonicalJson(entry)
+    ) {
+      throw new TypeError("Discord送信結果とcallbackで保存したledgerが一致しません");
+    }
+  }
+}
+
+function notificationCountForSelection(
+  selection: DiscordNotificationSelection,
+  entriesByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+): number {
+  const notificationKeys = new Set(
+    selection.candidates.flatMap((candidate) =>
+      candidate.reasons.map((reason) => reason.notificationKey),
+    ),
+  );
+  let count = 0;
+  for (const notificationKey of notificationKeys) {
+    if (entriesByKey.get(notificationKey)?.status === "sent") {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function latestSentAtForSelection(
+  selection: DiscordNotificationSelection,
+  entriesByKey: ReadonlyMap<string, NotificationLedgerEntry>,
+): UtcIsoDateTime | null {
+  const notificationKeys = new Set(
+    selection.candidates.flatMap((candidate) =>
+      candidate.reasons.map((reason) => reason.notificationKey),
+    ),
+  );
+  let latestSentAt: UtcIsoDateTime | null = null;
+  for (const notificationKey of notificationKeys) {
+    const entry = entriesByKey.get(notificationKey);
+    if (entry?.status !== "sent") {
+      continue;
+    }
+    if (latestSentAt == null || entry.sentAt > latestSentAt) {
+      latestSentAt = entry.sentAt;
+    }
+  }
+  return latestSentAt;
+}
+
 async function deliverDiscord(
   adapters: ProductionRuntimeAdapters,
   settings: DiscordDeliverySettings,
+  state: RuntimeState,
+  repositoryInventory: readonly Repository[],
+  knownSecrets: readonly string[],
   validated: ValidatedRun,
   deployedPagesUrl: string,
 ): Promise<
   Readonly<{
     value: DiscordDeliveryResult;
+    notificationEvents: readonly StateHistoryNotificationEvent[];
     notificationLedger: StateNotificationLedger;
     notificationCount: number;
     discordSentAt: UtcIsoDateTime | null;
   }>
 > {
-  const sentNotificationEntries: NotificationLedgerEntry[] = [];
-  const notificationEntriesByKey = new Map(
-    validated.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
+  const persistedSnapshot = await state.session.loadSnapshot();
+  if (persistedSnapshot.status !== "available") {
+    throw new TypeError("Discord通知対象のstate snapshotがありません");
+  }
+  if (persistedSnapshot.snapshot.run.id !== validated.snapshot.run.id) {
+    throw new TypeError("Discord通知対象のrunがstate snapshotと一致しません");
+  }
+  const snapshot = persistedSnapshot.snapshot;
+  const persistedLedger = await state.session.loadNotificationLedger();
+  let notificationEntriesByKey = new Map<string, NotificationLedgerEntry>(
+    persistedLedger.entries.map((entry): readonly [string, NotificationLedgerEntry] => {
+      const normalizedEntry = notificationLedgerEntry(entry);
+      return [normalizedEntry.notificationKey, normalizedEntry];
+    }),
   );
-  const operationsAlertsByKey = new Map<string, OperationsAlertLedgerEntry>(
-    validated.notificationLedger.operationsAlerts.map((entry) => [
+  let operationsAlertsByKey = new Map<string, OperationsAlertLedgerEntry>(
+    persistedLedger.operationsAlerts.map((entry) => [
       entry.alertKey,
       operationsAlertLedgerEntry(entry),
     ]),
   );
+  let pendingNotifications: readonly PendingNotification[] = Object.freeze(
+    persistedLedger.pendingNotifications.filter((pending) => {
+      const entry = notificationEntriesByKey.get(pending.notificationKey);
+      return entry?.status !== "sent" && entry?.status !== "acknowledged";
+    }),
+  );
+  assertNoStartedNotificationDelivery(validated.notificationSelection, notificationEntriesByKey);
+  const notificationSelection = filterNotificationSelectionForLedger(
+    validated.notificationSelection,
+    notificationEntriesByKey,
+  );
+  const notificationHistoryContext = createNotificationHistoryContext(
+    snapshot,
+    notificationSelection,
+  );
+  const sentNotificationEntries: SentNotificationLedgerEntry[] = [];
+  const notificationEvents: StateHistoryNotificationEvent[] = [];
+
+  const persistDelivery = async (
+    notificationLedger: StateNotificationLedger,
+    events: readonly StateHistoryNotificationEvent[],
+    committedAt: UtcIsoDateTime,
+  ): Promise<void> => {
+    await state.session.persistNotificationDelivery({
+      snapshot,
+      notificationEvents: events,
+      notificationLedger,
+      committedAt,
+      repositoryInventory,
+      knownSecrets,
+    });
+    await state.session.publish();
+  };
+
   const delivery = await adapters.sendDiscord({
-    candidates: validated.notificationSelection.candidates,
-    ledgerReservations: validated.notificationSelection.ledgerReservations,
-    items: validated.snapshot.items,
-    generatedAt: validated.snapshot.generatedAt,
+    candidates: notificationSelection.candidates,
+    ledgerReservations: notificationSelection.ledgerReservations,
+    items: snapshot.items,
+    generatedAt: snapshot.generatedAt,
     pagesDeployment: {
       status: "succeeded",
       pagesUrl: deployedPagesUrl,
@@ -5338,40 +8348,107 @@ async function deliverDiscord(
       },
       ledger: {
         hasOperationsAlert: (alertKey) => Promise.resolve(operationsAlertsByKey.has(alertKey)),
-        recordNotifications: (entries) => {
-          sentNotificationEntries.push(...entries);
-          for (const entry of entries) {
-            notificationEntriesByKey.set(entry.notificationKey, entry);
+        recordNotifications: async (entries) => {
+          const firstEntry = entries[0];
+          assertNonNullable(firstEntry, "Discord送信結果にledger entryがありません");
+          if (notificationSelection.action !== "create_digest") {
+            throw new TypeError("通知候補がないdigestから通知ledger callbackを呼び出せません");
           }
-          return Promise.resolve();
+          assertNotificationDeliveryBatch(notificationSelection, notificationEntriesByKey, entries);
+          let messageEvents: readonly StateHistoryNotificationEvent[] = Object.freeze([]);
+          let committedAt: UtcIsoDateTime;
+          switch (firstEntry.status) {
+            case "delivery_started":
+              committedAt = firstEntry.startedAt;
+              break;
+            case "reserved":
+              committedAt = createUtcIsoDateTime(adapters.now().toISOString());
+              break;
+            case "sent":
+              messageEvents = createNotificationHistoryEventsForMessage(
+                snapshot,
+                notificationHistoryContext,
+                entries,
+              );
+              committedAt = firstEntry.sentAt;
+              break;
+            case "acknowledged":
+              throw new TypeError("Discord送信callbackに確認済みledger entryを渡せません");
+          }
+          const nextEntriesByKey = new Map(notificationEntriesByKey);
+          for (const entry of entries) {
+            nextEntriesByKey.set(entry.notificationKey, entry);
+          }
+          const sentKeys = new Set(
+            firstEntry.status === "sent" ? entries.map((entry) => entry.notificationKey) : [],
+          );
+          const nextPendingNotifications = Object.freeze(
+            pendingNotifications.filter((pending) => !sentKeys.has(pending.notificationKey)),
+          );
+          const notificationLedger = createNotificationLedgerFromMaps(
+            nextEntriesByKey,
+            operationsAlertsByKey,
+            nextPendingNotifications,
+          );
+          await persistDelivery(notificationLedger, messageEvents, committedAt);
+          notificationEntriesByKey = nextEntriesByKey;
+          pendingNotifications = nextPendingNotifications;
+          if (firstEntry.status === "sent") {
+            for (const entry of entries) {
+              if (entry.status !== "sent") {
+                throw new TypeError("Discord送信結果のstatusが一致しません");
+              }
+              sentNotificationEntries.push(entry);
+            }
+          }
+          notificationEvents.push(...messageEvents);
         },
-        recordOperationsAlert: (entry) => {
-          operationsAlertsByKey.set(entry.alertKey, entry);
-          return Promise.resolve();
+        recordOperationsAlert: async (entry) => {
+          const nextOperationsAlertsByKey = new Map(operationsAlertsByKey);
+          nextOperationsAlertsByKey.set(entry.alertKey, entry);
+          const notificationLedger = createNotificationLedgerFromMaps(
+            notificationEntriesByKey,
+            nextOperationsAlertsByKey,
+            pendingNotifications,
+          );
+          await persistDelivery(notificationLedger, Object.freeze([]), entry.sentAt);
+          operationsAlertsByKey = nextOperationsAlertsByKey;
         },
       },
     },
   });
-  let sentAt: UtcIsoDateTime | null = null;
-  if (delivery.status === "sent") {
-    const entries = delivery.ledgerEntries.filter((entry) => entry.status === "sent");
-    const firstEntry = entries[0];
-    assertNonNullable(firstEntry, "Discord送信結果に送信済みledger entryがありません");
-    sentAt = entries.reduce(
-      (latest, entry) => (entry.sentAt > latest ? entry.sentAt : latest),
-      firstEntry.sentAt,
-    );
+  const sentAt = latestSentAtForSelection(
+    validated.notificationSelection,
+    notificationEntriesByKey,
+  );
+  assertNotificationDeliveryLedgerConsistency(delivery, sentNotificationEntries);
+  const returnedNotificationEvents = createNotificationHistoryEvents(
+    snapshot,
+    notificationSelection,
+    delivery,
+  );
+  if (
+    serializeCanonicalJson(returnedNotificationEvents) !==
+    serializeCanonicalJson(notificationEvents)
+  ) {
+    throw new TypeError("Discord送信結果とcallbackで保存した通知履歴が一致しません");
   }
+  const notificationLedger = createNotificationLedgerFromMaps(
+    notificationEntriesByKey,
+    operationsAlertsByKey,
+    pendingNotifications,
+  );
   return Object.freeze({
     value: Object.freeze({
       delivery,
+      notificationEvents: Object.freeze(notificationEvents),
     }),
-    notificationLedger: createStateNotificationLedger({
-      schemaVersion: "2",
-      entries: [...notificationEntriesByKey.values()],
-      operationsAlerts: [...operationsAlertsByKey.values()],
-    }),
-    notificationCount: sentNotificationEntries.length,
+    notificationEvents: Object.freeze(notificationEvents),
+    notificationLedger,
+    notificationCount: notificationCountForSelection(
+      validated.notificationSelection,
+      notificationEntriesByKey,
+    ),
     discordSentAt: sentAt,
   });
 }
@@ -5386,19 +8463,29 @@ async function persistSuccessfulRunCompletion(
   delivery: Readonly<{
     notificationLedger: StateNotificationLedger;
     notificationCount: number;
+    notificationEvents: readonly StateHistoryNotificationEvent[];
   }>,
   knownSecrets: readonly string[],
 ): Promise<void> {
   const completedAt = createUtcIsoDateTime(adapters.now().toISOString());
-  const trackingStartAt = completedSnapshotTrackingStartAt(config, validated.snapshot, completedAt);
+  const persistedSnapshot = await state.session.loadSnapshot();
+  if (persistedSnapshot.status !== "available") {
+    throw new TypeError("run完了対象のstate snapshotがありません");
+  }
+  if (persistedSnapshot.snapshot.run.id !== validated.snapshot.run.id) {
+    throw new TypeError("run完了対象のrunがstate snapshotと一致しません");
+  }
+  const snapshot = persistedSnapshot.snapshot;
+  const trackingStartAt = completedSnapshotTrackingStartAt(config, snapshot, completedAt);
   await state.session.persistRunCompletion({
     snapshot: createStateSnapshot({
-      ...validated.snapshot,
+      ...snapshot,
       trackingStartAt,
     }),
+    notificationEvents: Object.freeze([]),
     notificationLedger: delivery.notificationLedger,
     runReport: createPersistedRunReport(
-      validated.snapshot,
+      snapshot,
       runMetadata,
       delivery.notificationCount,
       completedAt,
@@ -5406,6 +8493,7 @@ async function persistSuccessfulRunCompletion(
     repositoryInventory,
     knownSecrets,
   });
+  await state.session.publish();
 }
 
 async function deliverOperationsAlert(
@@ -5421,11 +8509,15 @@ async function deliverOperationsAlert(
     discordSentAt: UtcIsoDateTime | null;
   }>
 > {
-  const notificationEntriesByKey = new Map(
-    state.notificationLedger.entries.map((entry) => [entry.notificationKey, entry]),
+  const currentNotificationLedger = await state.session.loadNotificationLedger();
+  const notificationEntriesByKey = new Map<string, NotificationLedgerEntry>(
+    currentNotificationLedger.entries.map((entry): readonly [string, NotificationLedgerEntry] => {
+      const normalizedEntry = notificationLedgerEntry(entry);
+      return [normalizedEntry.notificationKey, normalizedEntry];
+    }),
   );
   const operationsAlertsByKey = new Map<string, OperationsAlertLedgerEntry>(
-    state.notificationLedger.operationsAlerts.map((entry) => [
+    currentNotificationLedger.operationsAlerts.map((entry) => [
       entry.alertKey,
       operationsAlertLedgerEntry(entry),
     ]),
@@ -5470,7 +8562,8 @@ async function deliverOperationsAlert(
     return Object.freeze({
       value: Object.freeze({
         delivery,
-        notificationLedger: state.notificationLedger,
+        notificationEvents: Object.freeze([]),
+        notificationLedger: currentNotificationLedger,
       }),
       notificationCount: 0,
       discordSentAt: null,
@@ -5481,16 +8574,18 @@ async function deliverOperationsAlert(
     return Object.freeze({
       value: Object.freeze({
         delivery,
-        notificationLedger: state.notificationLedger,
+        notificationEvents: Object.freeze([]),
+        notificationLedger: currentNotificationLedger,
       }),
       notificationCount: 0,
       discordSentAt: null,
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: "2",
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
+    pendingNotifications: currentNotificationLedger.pendingNotifications,
   });
   const persistenceInput = Object.freeze({
     notificationLedger,
@@ -5502,9 +8597,11 @@ async function deliverOperationsAlert(
   } else {
     await state.session.persistNotificationLedger(persistenceInput);
   }
+  await state.session.publish();
   return Object.freeze({
     value: Object.freeze({
       delivery,
+      notificationEvents: Object.freeze([]),
       notificationLedger,
     }),
     notificationCount: 1,
@@ -5545,17 +8642,21 @@ async function collectFreshRepositoryItemObservations(
   adjacentNodeIds: ReadonlySet<GitHubNodeId>,
 ): Promise<FreshRepositoryItemCollection> {
   const allowlist = createPublicRepositoryAllowlist([repository]);
+  const identity = createAiAnalysisRunIdentity(configuration.config);
   const currentNodeIds = new Set(enumeratedItems.map((item) => item.nodeId));
   const previousAiAnalysisStatusesByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map(
       (item) => [item.nodeId, item.aiAnalysis.status] as const,
     ),
   );
+  const currentAnalysisPlanFingerprintsByNodeId = new Map(
+    enumeratedItems.map((item) => [item.nodeId, analysisPlanFingerprintForItem(item, identity)]),
+  );
   const plan = planIncrementalItemCollection({
     items: enumeratedItems,
     previous: previousItemCollection(state, repository),
     previousAiAnalysisStatusesByNodeId,
-    currentAnalysisRulesFingerprints: createCurrentAnalysisRulesFingerprints(configuration.config),
+    currentAnalysisPlanFingerprintsByNodeId,
     adjacentItemNodeIds: new Set(
       [...adjacentNodeIds].filter((nodeId) => currentNodeIds.has(nodeId)),
     ),
@@ -5587,6 +8688,7 @@ async function collectFreshRepositoryItemObservations(
     details,
     observedItems,
     changedNodeIds: plan.changedItemNodeIds,
+    analysisPlanChangedNodeIds: plan.analysisPlanChangedItemNodeIds,
   });
 }
 
@@ -5719,6 +8821,10 @@ async function collectAdditionalRelationItems(
     (item) => item.nodeId,
   );
   const changedNodeIds = new Set([...current.changedNodeIds, ...additions.changedNodeIds]);
+  const analysisPlanChangedNodeIds = new Set([
+    ...current.analysisPlanChangedNodeIds,
+    ...additions.analysisPlanChangedNodeIds,
+  ]);
   return Object.freeze({
     state: createSnapshotCollectionRepository(
       repository,
@@ -5729,6 +8835,7 @@ async function collectAdditionalRelationItems(
     details: mergedDetails,
     observedItems: mergedObservedItems,
     changedNodeIds: Object.freeze([...changedNodeIds]),
+    analysisPlanChangedNodeIds: Object.freeze([...analysisPlanChangedNodeIds]),
   });
 }
 
@@ -5740,6 +8847,7 @@ function aggregateFreshRepositoryCollections(
   const details: GitHubItemDetail[] = [];
   const observedItems: FreshObservedGitHubItem[] = [];
   const changedNodeIds = new Set<GitHubNodeId>();
+  const analysisPlanChangedNodeIds = new Set<GitHubNodeId>();
   for (const repository of allowlist.repositories) {
     const collection = freshCollectionsByRepositoryId.get(repository.id);
     if (collection == null) {
@@ -5751,12 +8859,16 @@ function aggregateFreshRepositoryCollections(
     for (const nodeId of collection.changedNodeIds) {
       changedNodeIds.add(nodeId);
     }
+    for (const nodeId of collection.analysisPlanChangedNodeIds) {
+      analysisPlanChangedNodeIds.add(nodeId);
+    }
   }
   return Object.freeze({
     enumeratedItems: deduplicateByStableId(enumeratedItems, (item) => item.nodeId),
     details: deduplicateByStableId(details, (detail) => detail.nodeId),
     observedItems: deduplicateByStableId(observedItems, (item) => item.nodeId),
     changedNodeIds,
+    analysisPlanChangedNodeIds,
   });
 }
 
@@ -5800,6 +8912,202 @@ function relationExpansionRepositoriesByNodeId(
     }
   }
   return repositoriesByNodeId;
+}
+
+function changedTrackedImplementationTargetNodeIds(
+  aggregate: FreshRuntimeCollectionAggregate,
+  tracking: RuntimeTrackingSelection,
+  candidates: readonly RelationCandidate[],
+  requestedNodeIds: ReadonlySet<GitHubNodeId>,
+): readonly GitHubNodeId[] {
+  const enumeratedItemsByNodeId = new Map(
+    aggregate.enumeratedItems.map((item) => [item.nodeId, item]),
+  );
+  const detailNodeIds = new Set(aggregate.details.map((detail) => detail.nodeId));
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const candidate of candidates) {
+    if (candidate.authority !== "authoritative" || candidate.relation.type !== "implements") {
+      continue;
+    }
+    const implementation = candidate.relation.implementation;
+    const target = candidate.relation.target;
+    if (
+      implementation.scope !== "organization" ||
+      implementation.kind !== "pull_request" ||
+      target.scope !== "organization" ||
+      target.kind !== "issue" ||
+      !aggregate.changedNodeIds.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(target.nodeId) ||
+      detailNodeIds.has(target.nodeId) ||
+      requestedNodeIds.has(target.nodeId)
+    ) {
+      continue;
+    }
+    const targetItem = enumeratedItemsByNodeId.get(target.nodeId);
+    assertNonNullable(targetItem, `実装関係先の列挙値がありません。対象: ${target.nodeId}`);
+    if (targetItem.type !== "issue" || targetItem.state !== "open") {
+      continue;
+    }
+    targetNodeIds.add(target.nodeId);
+  }
+  return Object.freeze([...targetNodeIds].sort());
+}
+
+type EffectiveAssigneeImplementationRelation = Readonly<{
+  implementationNodeId: GitHubNodeId;
+  targetNodeId: GitHubNodeId;
+}>;
+
+function effectiveAssigneeImplementationRelationKey(
+  relation: EffectiveAssigneeImplementationRelation,
+): string {
+  return `${relation.implementationNodeId}\u0000${relation.targetNodeId}`;
+}
+
+function previousAuthoritativeImplementationRelations(
+  state: RuntimeState,
+): readonly EffectiveAssigneeImplementationRelation[] {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null) {
+    return Object.freeze([]);
+  }
+  const itemsByNodeId = new Map<GraphNodeId, SnapshotTrackedItem>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  return Object.freeze(
+    snapshot.relations.flatMap((relation) => {
+      if (!relation.active || relation.provenance !== "native" || relation.type !== "implements") {
+        return [];
+      }
+      const implementation = itemsByNodeId.get(relation.fromNodeId);
+      const target = itemsByNodeId.get(relation.toNodeId);
+      if (implementation?.type !== "pull_request" || target?.type !== "issue") {
+        return [];
+      }
+      return [
+        Object.freeze({
+          implementationNodeId: implementation.nodeId,
+          targetNodeId: target.nodeId,
+        }),
+      ];
+    }),
+  );
+}
+
+function trackedAuthoritativeImplementationRelationKeys(
+  relationCandidates: readonly RelationCandidate[],
+  tracking: RuntimeTrackingSelection,
+): ReadonlySet<string> {
+  const keys = new Set<string>();
+  for (const candidate of relationCandidates) {
+    if (candidate.authority !== "authoritative" || candidate.relation.type !== "implements") {
+      continue;
+    }
+    const implementation = candidate.relation.implementation;
+    const target = candidate.relation.target;
+    if (
+      implementation.scope !== "organization" ||
+      implementation.kind !== "pull_request" ||
+      target.scope !== "organization" ||
+      target.kind !== "issue" ||
+      !tracking.workByNodeId.has(implementation.nodeId) ||
+      !tracking.workByNodeId.has(target.nodeId)
+    ) {
+      continue;
+    }
+    keys.add(
+      effectiveAssigneeImplementationRelationKey({
+        implementationNodeId: implementation.nodeId,
+        targetNodeId: target.nodeId,
+      }),
+    );
+  }
+  return keys;
+}
+
+function effectiveAssigneeRelationChangeTargetNodeIds(
+  state: RuntimeState,
+  observedItems: readonly FreshObservedGitHubItem[],
+  relationCandidates: readonly RelationCandidate[],
+  tracking: RuntimeTrackingSelection,
+): ReadonlySet<GitHubNodeId> {
+  const observedPullRequestNodeIds = new Set(
+    observedItems
+      .filter(
+        (item): item is Extract<FreshObservedGitHubItem, { type: "pull_request" }> =>
+          item.type === "pull_request",
+      )
+      .map((item) => item.nodeId),
+  );
+  const currentRelationKeys = trackedAuthoritativeImplementationRelationKeys(
+    relationCandidates,
+    tracking,
+  );
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const relation of previousAuthoritativeImplementationRelations(state)) {
+    if (!observedPullRequestNodeIds.has(relation.implementationNodeId)) {
+      continue;
+    }
+    if (!currentRelationKeys.has(effectiveAssigneeImplementationRelationKey(relation))) {
+      targetNodeIds.add(relation.targetNodeId);
+    }
+  }
+  return targetNodeIds;
+}
+
+function staleEffectiveAssigneeTargetsToRetain(
+  state: RuntimeState,
+  observedItems: readonly FreshObservedGitHubItem[],
+  staleRepositoryIds: ReadonlySet<GitHubRepositoryId>,
+): ReadonlySet<GitHubNodeId> {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null || staleRepositoryIds.size === 0) {
+    return new Set<GitHubNodeId>();
+  }
+  const previousItemsByNodeId = new Map<GraphNodeId, SnapshotTrackedItem>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  const previousEffectiveAssigneeIssueNodeIds = new Set(
+    snapshot.items
+      .filter(
+        (item) =>
+          item.type === "issue" &&
+          item.state === "open" &&
+          item.assignees.length === 0 &&
+          item.status === "waiting_for_work" &&
+          item.waitingOn.some(
+            (waitingOn) => waitingOn.kind === "user" && waitingOn.role === "assignee",
+          ),
+      )
+      .map((item) => item.nodeId),
+  );
+  const observedItemsByNodeId = new Map(observedItems.map((item) => [item.nodeId, item]));
+  const targetNodeIds = new Set<GitHubNodeId>();
+  for (const relation of previousAuthoritativeImplementationRelations(state)) {
+    const implementation = previousItemsByNodeId.get(relation.implementationNodeId);
+    const target = previousItemsByNodeId.get(relation.targetNodeId);
+    assertNonNullable(
+      implementation,
+      `前回実質担当relationのPRがありません。対象: ${relation.implementationNodeId}`,
+    );
+    assertNonNullable(
+      target,
+      `前回実質担当relationのIssueがありません。対象: ${relation.targetNodeId}`,
+    );
+    if (
+      !staleRepositoryIds.has(implementation.repositoryId) ||
+      !previousEffectiveAssigneeIssueNodeIds.has(target.nodeId)
+    ) {
+      continue;
+    }
+    const current = observedItemsByNodeId.get(target.nodeId);
+    if (current?.type !== "issue" || current.state !== "open" || current.assignees.length !== 0) {
+      continue;
+    }
+    targetNodeIds.add(target.nodeId);
+  }
+  return targetNodeIds;
 }
 
 async function collectRelationExpansionBatch(
@@ -5901,7 +9209,7 @@ async function collectRelationExpandedItems(
       completedRelationCandidates.candidates,
     );
     const trackingState = relationExpansionTrackingState(tracking);
-    const nextRequests = planRelationExpansion({
+    const plannedRequests = planRelationExpansion({
       collectedCandidateNodeIds,
       trackingRootNodeIds: trackingState.trackingRootNodeIds,
       relationCandidates: discoveredRelationCandidates,
@@ -5911,6 +9219,26 @@ async function collectRelationExpandedItems(
         ? configuration.config.tracking.autoInclude.relationDepth
         : 0,
     });
+    const effectiveAssigneeTargetNodeIds = changedTrackedImplementationTargetNodeIds(
+      aggregate,
+      tracking,
+      discoveredRelationCandidates,
+      requestedNodeIds,
+    );
+    const requestsByNodeId = new Map(plannedRequests.map((request) => [request.nodeId, request]));
+    for (const nodeId of effectiveAssigneeTargetNodeIds) {
+      if (requestsByNodeId.has(nodeId)) {
+        continue;
+      }
+      requestsByNodeId.set(
+        nodeId,
+        Object.freeze({
+          nodeId,
+          nativeDepth: 0,
+        }),
+      );
+    }
+    const nextRequests = [...requestsByNodeId.values()];
     if (nextRequests.length === 0) {
       return Object.freeze({
         ...aggregate,
@@ -6033,6 +9361,105 @@ function finalizeRepositoryCollectionResult(
     });
   }
   return result;
+}
+
+function analysisPlanFingerprintForValidatedCollectionItem(
+  item: SnapshotCollectionItem,
+  currentItem: EnumeratedGitHubItem,
+  previousItem: SnapshotCollectionItem | undefined,
+  identity: AiAnalysisRunIdentity,
+  detailNodeIds: ReadonlySet<GitHubNodeId>,
+  trackedNodeIds: ReadonlySet<GitHubNodeId>,
+  plannedNodeIds: ReadonlySet<GitHubNodeId>,
+): SnapshotAnalysisPlanFingerprint {
+  const currentFingerprint = analysisPlanFingerprintForItem(currentItem, identity);
+  if (
+    previousItem != null &&
+    previousItem.itemFingerprint !== item.itemFingerprint &&
+    !detailNodeIds.has(item.nodeId)
+  ) {
+    throw new TypeError(`項目fingerprintが変化した項目の詳細がありません。対象: ${item.nodeId}`);
+  }
+  if (plannedNodeIds.has(item.nodeId)) {
+    if (!detailNodeIds.has(item.nodeId)) {
+      throw new TypeError(`AI判定計画の詳細がありません。対象: ${item.nodeId}`);
+    }
+    return {
+      status: "planned",
+      fingerprint: currentFingerprint,
+    };
+  }
+  if (detailNodeIds.has(item.nodeId) && !trackedNodeIds.has(item.nodeId)) {
+    return {
+      status: "planned",
+      fingerprint: currentFingerprint,
+    };
+  }
+  if (previousItem != null) {
+    return previousItem.analysisPlanFingerprint;
+  }
+  return {
+    status: "unplanned",
+    reason: "detail_required",
+  };
+}
+
+function validatedCollectionRepositories(
+  state: RuntimeState,
+  configuration: RuntimeConfiguration,
+  collection: CollectedItems,
+  codexAnalysis: CodexAnalysis,
+  itemsByNodeId: ReadonlyMap<GitHubNodeId, PendingTrackedItem>,
+): readonly SnapshotCollectionRepository[] {
+  const identity = createAiAnalysisRunIdentity(configuration.config);
+  const freshRepositoryIds = new Set(
+    collection.repositoryResults
+      .filter((result) => result.freshness === "fresh")
+      .map((result) => result.repository.id),
+  );
+  const currentItemsByNodeId = new Map(
+    collection.enumeratedItems.map((item) => [item.nodeId, item]),
+  );
+  const detailNodeIds = new Set(collection.details.map((detail) => detail.nodeId));
+  const trackedNodeIds = collection.trackedNodeIds;
+  const plannedNodeIds = new Set(codexAnalysis.elementPlanningByNodeId.keys());
+  const previousItemsByNodeId = previousCollectionItemsByNodeId(state);
+  return Object.freeze(
+    collection.collectionRepositories.map((repository) => {
+      if (!freshRepositoryIds.has(repository.repositoryId)) {
+        return repository;
+      }
+      return Object.freeze({
+        ...repository,
+        items: Object.freeze(
+          repository.items.map((item) => {
+            const currentItem = currentItemsByNodeId.get(item.nodeId);
+            assertNonNullable(
+              currentItem,
+              `fresh収集項目の列挙値がありません。対象: ${item.nodeId}`,
+            );
+            const previousItem = previousItemsByNodeId.get(item.nodeId);
+            const currentTrackedItem = itemsByNodeId.get(item.nodeId);
+            const analysisPlanFingerprint = analysisPlanFingerprintForValidatedCollectionItem(
+              item,
+              currentItem,
+              previousItem,
+              identity,
+              detailNodeIds,
+              trackedNodeIds,
+              plannedNodeIds,
+            );
+            return Object.freeze({
+              ...item,
+              analysisPlanFingerprint,
+              aiAnalysis:
+                currentTrackedItem?.aiAnalysis ?? previousItem?.aiAnalysis ?? item.aiAnalysis,
+            });
+          }),
+        ),
+      });
+    }),
+  );
 }
 
 async function collectProductionItems(
@@ -6168,11 +9595,80 @@ async function collectProductionItems(
     }
   }
   const observedNodeIds = new Set(uniqueObservedItems.map((item) => item.nodeId));
-  const analysisNodeIds = new Set<GitHubNodeId>();
-  for (const [nodeId, work] of tracking.workByNodeId) {
-    if (work.codexAnalysis.action === "analyze" && observedNodeIds.has(nodeId)) {
+  const analysisNodeIds = new Set<GitHubNodeId>(
+    [...tracking.workByNodeId].flatMap(([nodeId, work]) =>
+      work.codexAnalysis.action === "analyze" && observedNodeIds.has(nodeId) ? [nodeId] : [],
+    ),
+  );
+  for (const nodeId of changedNodeIds) {
+    if (trackedNodeIds.has(nodeId) && observedNodeIds.has(nodeId)) {
       analysisNodeIds.add(nodeId);
     }
+  }
+  for (const nodeId of expanded.analysisPlanChangedNodeIds) {
+    if (trackedNodeIds.has(nodeId) && observedNodeIds.has(nodeId)) {
+      analysisNodeIds.add(nodeId);
+    }
+  }
+  const effectiveAssigneeRelationChangeTargets = effectiveAssigneeRelationChangeTargetNodeIds(
+    state,
+    uniqueObservedItems,
+    relationCandidates,
+    tracking,
+  );
+  const staleEffectiveAssigneeTargets = staleEffectiveAssigneeTargetsToRetain(
+    state,
+    uniqueObservedItems,
+    staleRepositoryIds,
+  );
+  for (const nodeId of staleEffectiveAssigneeTargets) {
+    analysisNodeIds.delete(nodeId);
+  }
+  for (const [nodeId, work] of tracking.workByNodeId) {
+    if (staleEffectiveAssigneeTargets.has(nodeId)) {
+      continue;
+    }
+    if (work.codexAnalysis.action === "analyze") {
+      continue;
+    }
+    const item = uniqueObservedItems.find((candidate) => candidate.nodeId === nodeId);
+    if (item?.type !== "issue" || item.state !== "open" || item.assignees.length !== 0) {
+      continue;
+    }
+    const issueRelationCandidates = candidatesForNode(item.nodeId, relationCandidates);
+    const hasAnalyzedImplementation = issueRelationCandidates.some((candidate) => {
+      if (candidate.relation.type !== "implements") {
+        return false;
+      }
+      if (candidate.authority !== "authoritative") {
+        return false;
+      }
+      const implementation = candidate.relation.implementation;
+      const target = candidate.relation.target;
+      if (
+        implementation.scope !== "organization" ||
+        implementation.kind !== "pull_request" ||
+        target.scope !== "organization" ||
+        target.kind !== "issue" ||
+        target.nodeId !== item.nodeId
+      ) {
+        return false;
+      }
+      const implementationWork = tracking.workByNodeId.get(implementation.nodeId);
+      return implementationWork?.codexAnalysis.action === "analyze";
+    });
+    const hasChangedImplementationRelation = effectiveAssigneeRelationChangeTargets.has(
+      item.nodeId,
+    );
+    if (!hasAnalyzedImplementation && !hasChangedImplementationRelation) {
+      continue;
+    }
+    const detail = uniqueDetails.find((candidate) => candidate.nodeId === item.nodeId);
+    assertNonNullable(detail, `実質担当候補抽出対象の詳細がありません。対象: ${item.nodeId}`);
+    if (detail.type !== "issue") {
+      throw new TypeError(`Issueの詳細種別が一致しません。対象: ${item.nodeId}`);
+    }
+    analysisNodeIds.add(item.nodeId);
   }
   return Object.freeze({
     value: Object.freeze({
@@ -6200,6 +9696,9 @@ function createDailyDependencies(
   adapters: ProductionRuntimeAdapters,
 ): DailyTransactionDependencies<ProductionTypes> {
   return Object.freeze({
+    ...(adapters.diagnosticsRecorder == null
+      ? {}
+      : { diagnosticsRecorder: adapters.diagnosticsRecorder }),
     validateConfiguration: async ({ invocation, configPath }) => {
       requireEnvironmentVariables(adapters.environment, ["GH_APP_ID", "GH_APP_PRIVATE_KEY"]);
       const config = await adapters.loadConfig(resolve(adapters.repositoryPath, configPath));
@@ -6278,9 +9777,16 @@ function createDailyDependencies(
       Promise.resolve(
         applyDeterministicAnalysis(configuration, state, repositoryInventory, collection),
       ),
-    analyzeWithCodex: async ({ configuration, state, collection, deterministicAnalysis }) => {
+    analyzeWithCodex: async ({
+      invocation,
+      configuration,
+      state,
+      collection,
+      deterministicAnalysis,
+    }) => {
       const analysis = await analyzeCodex(
         adapters,
+        invocation,
         configuration,
         state,
         collection,
@@ -6355,10 +9861,38 @@ function createDailyDependencies(
         adapters.pagesOutputDirectory,
         configuration.credentials.knownSecrets,
       ),
-    sendDiscord: async ({ configuration, validated, pages }) => {
+    sendDiscord: async ({
+      invocation,
+      configuration,
+      state,
+      repositoryInventory,
+      validated,
+      pages,
+    }) => {
+      if (
+        invocation.command.kind !== "dry-run" &&
+        (invocation.command.notificationAction === "acknowledge-current" ||
+          invocation.command.notificationAction === "hold")
+      ) {
+        return Object.freeze({
+          value: Object.freeze({
+            delivery: Object.freeze({
+              status: "skipped",
+              reason: invocation.command.notificationAction === "hold" ? "held" : "no_candidates",
+            }),
+            notificationEvents: Object.freeze([]),
+            notificationLedger: validated.notificationLedger,
+          }),
+          notificationCount: 0,
+          discordSentAt: null,
+        });
+      }
       const result = await deliverDiscord(
         adapters,
         discordDeliverySettings(configuration.config),
+        state,
+        repositoryInventory.inventory,
+        configuration.credentials.knownSecrets,
         validated,
         pages.pagesUrl,
       );
@@ -6391,15 +9925,21 @@ function createDailyDependencies(
         {
           notificationLedger: discord.notificationLedger,
           notificationCount: metrics.notificationCount,
+          notificationEvents: discord.notificationEvents,
         },
         configuration.credentials.knownSecrets,
       ),
-    sendOperationsAlert: ({ invocation, configuration, state, kind, retryAttempts }) =>
+    sendOperationsAlert: ({ invocation, configuration, state, persisted, kind, retryAttempts }) =>
       deliverOperationsAlert(
         adapters,
         configuration.config,
         configuration.credentials.knownSecrets,
-        state,
+        persisted == null
+          ? state
+          : Object.freeze({
+              ...state,
+              notificationLedger: persisted.notificationLedger,
+            }),
         {
           incidentId: `${invocation.runId}:${kind}`,
           kind,
@@ -6522,9 +10062,41 @@ async function notifyWorkflowDiscord(
     snapshot: persistedSnapshot,
     notificationLedger: await session.loadNotificationLedger(),
   });
+  if (
+    artifact.notificationAction === "acknowledge-current" ||
+    artifact.notificationAction === "hold"
+  ) {
+    await persistSuccessfulRunCompletion(
+      adapters,
+      config,
+      state,
+      workflowArtifactRepositoryInventory(artifact),
+      validatedRunFromArtifact(artifact),
+      artifact.runMetadata,
+      {
+        notificationLedger: state.notificationLedger,
+        notificationCount: 0,
+        notificationEvents: Object.freeze([]),
+      },
+      [],
+    );
+    return;
+  }
+  const knownSecrets = artifact.discordSettings.enabled
+    ? Object.freeze([
+        requireEnvironmentValue(adapters.environment, artifact.discordSettings.webhookSecretName),
+        requireEnvironmentValue(
+          adapters.environment,
+          artifact.discordSettings.operationsWebhookSecretName,
+        ),
+      ])
+    : Object.freeze([]);
   const result = await deliverDiscord(
     adapters,
     artifact.discordSettings,
+    state,
+    workflowArtifactRepositoryInventory(artifact),
+    knownSecrets,
     Object.freeze({
       snapshot: artifact.snapshot,
       historyInputEvents: artifact.historyInputEvents,
@@ -6541,7 +10113,7 @@ async function notifyWorkflowDiscord(
     validatedRunFromArtifact(artifact),
     artifact.runMetadata,
     result,
-    [],
+    knownSecrets,
   );
 }
 
@@ -6576,6 +10148,96 @@ async function notifyWorkflowOperations(
   });
 }
 
+function acknowledgeDeliveryStartedEntry(
+  entry: Extract<NotificationLedgerEntry, { status: "delivery_started" }>,
+  acknowledgedAt: UtcIsoDateTime,
+): NotificationLedgerEntry {
+  return Object.freeze({
+    notificationKey: entry.notificationKey,
+    itemNodeId: entry.itemNodeId,
+    reasonCode: entry.reasonCode,
+    severity: entry.severity,
+    reservedAt: entry.reservedAt,
+    status: "acknowledged",
+    acknowledgedAt,
+  });
+}
+
+async function resolveDiscordDelivery(
+  adapters: ProductionRuntimeAdapters,
+  command: ResolveDiscordDeliveryCliCommand,
+): Promise<void> {
+  if (!DISCORD_DELIVERY_ID_PATTERN.test(command.deliveryId)) {
+    throw new TypeError("Discord送信のdelivery IDが不正です");
+  }
+  const config = await adapters.loadConfig(resolve(adapters.repositoryPath, command.configPath));
+  const session = await adapters.openStateSession(
+    adapters.createStateBranchAdapter(),
+    config.state,
+  );
+  const persistedSnapshot = await session.loadSnapshot();
+  if (persistedSnapshot.status !== "available") {
+    throw new TypeError("Discord送信の手動解決対象となるstate snapshotがありません");
+  }
+  const currentLedger = await session.loadNotificationLedger();
+  const entries = currentLedger.entries.map(notificationLedgerEntry);
+  const matchingEntries = entries.filter(
+    (entry): entry is Extract<NotificationLedgerEntry, { status: "delivery_started" }> =>
+      entry.status === "delivery_started" && entry.deliveryId === command.deliveryId,
+  );
+  if (matchingEntries.length === 0) {
+    throw new TypeError(`指定されたdelivery IDの送信開始記録がありません: ${command.deliveryId}`);
+  }
+  const matchingKeys = new Set(matchingEntries.map((entry) => entry.notificationKey));
+  const resolvedAt = createUtcIsoDateTime(adapters.now().toISOString());
+  if (matchingEntries.some((entry) => resolvedAt < entry.startedAt)) {
+    throw new TypeError("Discord送信の解決時刻は送信開始時刻以後にしてください");
+  }
+  let nextEntries: readonly NotificationLedgerEntry[];
+  let pendingNotifications: readonly PendingNotification[];
+  if (command.resolution === "retry") {
+    nextEntries = Object.freeze(
+      entries.filter((entry) => !matchingKeys.has(entry.notificationKey)),
+    );
+    pendingNotifications = currentLedger.pendingNotifications;
+  } else {
+    nextEntries = Object.freeze(
+      entries.map((entry) => {
+        if (entry.status !== "delivery_started" || entry.deliveryId !== command.deliveryId) {
+          return entry;
+        }
+        return acknowledgeDeliveryStartedEntry(entry, resolvedAt);
+      }),
+    );
+    pendingNotifications = Object.freeze(
+      currentLedger.pendingNotifications.filter(
+        (pending) => !matchingKeys.has(pending.notificationKey),
+      ),
+    );
+  }
+  const notificationLedger = createStateNotificationLedger({
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+    entries: nextEntries,
+    operationsAlerts: currentLedger.operationsAlerts,
+    pendingNotifications,
+  });
+  const repositoryInventory = workflowArtifactRepositoryInventory({
+    snapshot: persistedSnapshot.snapshot,
+  });
+  assertStatePublicSafety({
+    snapshot: persistedSnapshot.snapshot,
+    repositoryInventory,
+    additionalValues: [currentLedger, notificationLedger],
+    knownSecrets: [],
+  });
+  await session.persistNotificationLedger({
+    notificationLedger,
+    committedAt: resolvedAt,
+    knownSecrets: [],
+  });
+  await session.publish();
+}
+
 async function reportWorkflowRun(
   adapters: ProductionRuntimeAdapters,
   command: ReportWorkflowCliCommand,
@@ -6598,6 +10260,7 @@ function createWorkflowStageRunner(adapters: ProductionRuntimeAdapters): Workflo
     buildPages: (command) => buildWorkflowPages(adapters, command),
     notifyDiscord: (command) => notifyWorkflowDiscord(adapters, command),
     notifyOperations: (command) => notifyWorkflowOperations(adapters, command),
+    resolveDiscordDelivery: (command) => resolveDiscordDelivery(adapters, command),
     reportWorkflow: (command) => reportWorkflowRun(adapters, command),
   });
 }
@@ -6619,6 +10282,9 @@ function emptyOfflineMetrics(): OfflineAnalysisMetrics {
 function createOfflineRunner(adapters: ProductionRuntimeAdapters): OfflineRunRunner {
   return new OfflineRunRunner(
     {
+      ...(adapters.diagnosticsRecorder == null
+        ? {}
+        : { diagnosticsRecorder: adapters.diagnosticsRecorder }),
       engine: {
         replayFixture: (fixture: ReplayFixture): Promise<OfflineAnalysisResult> => {
           const goldenInput = goldenEvalInputSchema.safeParse(fixture.input);

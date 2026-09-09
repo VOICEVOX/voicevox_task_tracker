@@ -1,6 +1,24 @@
 import { z } from "zod";
 
 import { parseSourceId } from "../domain/source-id.js";
+import { UnreachableError } from "../util/index.js";
+import {
+  AI_ANALYSIS_ELEMENTS,
+  aiAnalysisElementSchema,
+  aiAnalysisDeadlineSchema,
+  aiAnalysisImportanceSchema,
+  aiAnalysisNextActionSchema,
+  aiAnalysisNotificationSchema,
+  aiAnalysisProgressSchema,
+  aiAnalysisRelationsSchema,
+  aiAnalysisStatusSchema,
+  aiAnalysisWaitingOnSchema,
+  createAiAnalysisMigrationElementResultSchema,
+  type AiAnalysisElement,
+  type AiAnalysisElementMigrationResult,
+  type AiAnalysisElementResult,
+  type CodexPreservedElements,
+} from "./analysis-elements.js";
 
 const opaqueIdSchema = z
   .string()
@@ -39,27 +57,9 @@ const itemSchema = z
   })
   .catchall(jsonValueSchema);
 
-const waitingOnCandidateKindSchema = z.enum([
-  "user",
-  "team",
-  "role",
-  "item",
-  "automation",
-  "unknown",
-]);
-
 const waitingOnCandidateSchema = z
   .strictObject({
     id: opaqueIdSchema,
-    kind: waitingOnCandidateKindSchema,
-    sourceIds: z.array(sourceIdSchema).min(1, "candidateにsource IDを1件以上指定してください"),
-  })
-  .catchall(jsonValueSchema);
-
-const relationCandidateSchema = z
-  .strictObject({
-    id: z.string().regex(/^rel:\S+$/u, "relation candidate IDはrel:で始めてください"),
-    targetUrl: githubItemUrlSchema,
   })
   .catchall(jsonValueSchema);
 
@@ -74,6 +74,13 @@ const sourceAuthorSchema = z.discriminatedUnion("status", [
   }),
 ]);
 
+const relationCandidateSchema = z
+  .strictObject({
+    id: z.string().regex(/^rel:\S+$/u, "relation candidate IDはrel:で始めてください"),
+    targetUrl: githubItemUrlSchema,
+  })
+  .catchall(jsonValueSchema);
+
 const sourceSchema = z
   .strictObject({
     id: sourceIdSchema,
@@ -87,9 +94,173 @@ const sourceSchema = z
   })
   .catchall(jsonValueSchema);
 
+const lockedResultBaseShape = {
+  confidence: z.number().min(0).max(1),
+  uncertainties: z.array(z.string().min(1).max(240)).max(20),
+};
+
+const lockedWaitingOnSchema = aiAnalysisWaitingOnSchema.element
+  .omit({ sourceIds: true })
+  .array()
+  .max(20);
+const lockedRelationsSchema = aiAnalysisRelationsSchema.element
+  .omit({ sourceIds: true })
+  .array()
+  .max(100);
+const lockedProgressSchema = aiAnalysisProgressSchema.omit({ latestMeaningfulSourceId: true });
+
+function createCodexLockedElementResultSchema<ValueSchema extends z.ZodType>(
+  valueSchema: ValueSchema,
+) {
+  return z.strictObject({
+    value: valueSchema,
+    ...lockedResultBaseShape,
+  });
+}
+
+const codexLockedElementResultSchemas = {
+  status: createCodexLockedElementResultSchema(aiAnalysisStatusSchema),
+  waitingOn: createCodexLockedElementResultSchema(lockedWaitingOnSchema),
+  nextAction: createCodexLockedElementResultSchema(aiAnalysisNextActionSchema),
+  relations: createCodexLockedElementResultSchema(lockedRelationsSchema),
+  progress: createCodexLockedElementResultSchema(lockedProgressSchema),
+  importance: createCodexLockedElementResultSchema(aiAnalysisImportanceSchema),
+  deadline: createCodexLockedElementResultSchema(aiAnalysisDeadlineSchema),
+  notification: createCodexLockedElementResultSchema(aiAnalysisNotificationSchema),
+};
+
+type CodexLockedElementResultByElement = {
+  [Element in AiAnalysisElement]: z.output<(typeof codexLockedElementResultSchemas)[Element]>;
+};
+
+/** Codex入力へ渡す要素別の固定context。 */
+type CodexLockedElementResult<Element extends AiAnalysisElement = AiAnalysisElement> =
+  CodexLockedElementResultByElement[Element];
+
+/** 保存済みresultからCodex入力用の固定contextを要素別に投影する。 */
+export function projectCodexLockedElementResult(
+  element: AiAnalysisElement,
+  result: AiAnalysisElementResult | AiAnalysisElementMigrationResult,
+): CodexLockedElementResult {
+  switch (element) {
+    case "status": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("status").parse(result);
+      return codexLockedElementResultSchemas.status.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "waitingOn": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(result);
+      return codexLockedElementResultSchemas.waitingOn.parse({
+        value: parsed.value.map((candidate) => ({
+          kind: candidate.kind,
+          candidateId: candidate.candidateId,
+          role: candidate.role,
+          reasonSummary: candidate.reasonSummary,
+          confidence: candidate.confidence,
+        })),
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "nextAction": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("nextAction").parse(result);
+      return codexLockedElementResultSchemas.nextAction.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "relations": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("relations").parse(result);
+      return codexLockedElementResultSchemas.relations.parse({
+        value: parsed.value.map((candidate) => ({
+          candidateId: candidate.candidateId,
+          verdict: candidate.verdict,
+          reasonSummary: candidate.reasonSummary,
+          confidence: candidate.confidence,
+        })),
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "progress": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("progress").parse(result);
+      return codexLockedElementResultSchemas.progress.parse({
+        value: {
+          reasonSummary: parsed.value.reasonSummary,
+          confidence: parsed.value.confidence,
+        },
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "importance": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("importance").parse(result);
+      return codexLockedElementResultSchemas.importance.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "deadline": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("deadline").parse(result);
+      return codexLockedElementResultSchemas.deadline.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    case "notification": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("notification").parse(result);
+      return codexLockedElementResultSchemas.notification.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+/** 保存済み要素別full resultをCodex入力用の固定contextへ投影する。 */
+export function projectCodexLockedElements(
+  preservedElements: CodexPreservedElements,
+): Readonly<Partial<Record<AiAnalysisElement, CodexLockedElementResult>>> {
+  const knownElements = new Set<string>(AI_ANALYSIS_ELEMENTS);
+  for (const element of Object.keys(preservedElements)) {
+    if (!knownElements.has(element)) {
+      throw new TypeError(`保持するAI判定要素が不正です。対象: ${element}`);
+    }
+  }
+  const lockedElements: Partial<Record<AiAnalysisElement, CodexLockedElementResult>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const result = preservedElements[element];
+    if (result == null) {
+      continue;
+    }
+    lockedElements[element] = projectCodexLockedElementResult(element, result);
+  }
+  return Object.freeze(lockedElements);
+}
+
+const lockedElementsSchema = z.strictObject({
+  status: codexLockedElementResultSchemas.status.optional(),
+  waitingOn: codexLockedElementResultSchemas.waitingOn.optional(),
+  nextAction: codexLockedElementResultSchemas.nextAction.optional(),
+  relations: codexLockedElementResultSchemas.relations.optional(),
+  progress: codexLockedElementResultSchemas.progress.optional(),
+  importance: codexLockedElementResultSchemas.importance.optional(),
+  deadline: codexLockedElementResultSchemas.deadline.optional(),
+  notification: codexLockedElementResultSchemas.notification.optional(),
+});
+
 const codexAnalysisInputSchema = z
   .strictObject({
-    schemaVersion: z.literal("2"),
+    schemaVersion: z.literal("4"),
     now: z.iso.datetime({
       offset: true,
       error: "タイムゾーンを含むISO 8601日時を指定してください",
@@ -101,9 +272,41 @@ const codexAnalysisInputSchema = z
     }),
     sources: z.array(sourceSchema).min(1, "sourceを1件以上指定してください"),
     deterministicSignals: z.record(z.string(), jsonValueSchema),
-    priorAnalysis: z.null(),
+    selectedElements: z.array(aiAnalysisElementSchema).max(AI_ANALYSIS_ELEMENTS.length),
+    lockedElements: lockedElementsSchema,
   })
   .superRefine((input, context) => {
+    const selectedElements = new Set(input.selectedElements);
+    const statusSelected = selectedElements.has("status");
+    const waitingOnSelected = selectedElements.has("waitingOn");
+    if (statusSelected !== waitingOnSelected) {
+      const counterpart = statusSelected ? "waitingOn" : "status";
+      if (input.lockedElements[counterpart] == null) {
+        context.addIssue({
+          code: "custom",
+          path: ["selectedElements"],
+          message:
+            "statusとwaitingOnは同時に選択するか、未選択の要素をlockedElementsへ指定してください",
+        });
+      }
+    }
+    for (const element of AI_ANALYSIS_ELEMENTS) {
+      if (selectedElements.has(element) && input.lockedElements[element] != null) {
+        context.addIssue({
+          code: "custom",
+          path: ["lockedElements", element],
+          message: "選択したAI判定要素をlockedElementsへ指定できません",
+        });
+      }
+    }
+    if (selectedElements.size !== input.selectedElements.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["selectedElements"],
+        message: "selectedElementsの要素が重複しています",
+      });
+    }
+
     const waitingOnIds = new Set<string>();
     for (const [index, candidate] of input.candidates.waitingOn.entries()) {
       if (waitingOnIds.has(candidate.id)) {
@@ -138,44 +341,22 @@ const codexAnalysisInputSchema = z
         });
       }
       sourceIds.add(source.id);
-    }
-
-    const waitingOnCandidates = new Map(
-      input.candidates.waitingOn.map((candidate) => [candidate.id, candidate]),
-    );
-    for (const [index, source] of input.sources.entries()) {
-      if (source.author.status !== "identified") {
-        continue;
-      }
-      if (source.actorType !== "human") {
-        context.addIssue({
-          code: "custom",
-          path: ["sources", index, "author"],
-          message: "identifiedなsource作者はhuman sourceに限ります",
-        });
-      }
-      const candidate = waitingOnCandidates.get(source.author.candidateId);
-      if (candidate == null) {
-        context.addIssue({
-          code: "custom",
-          path: ["sources", index, "author", "candidateId"],
-          message: "source作者に対応するwaitingOn候補がありません",
-        });
-        continue;
-      }
-      if (candidate.kind !== "user") {
-        context.addIssue({
-          code: "custom",
-          path: ["sources", index, "author", "candidateId"],
-          message: "source作者に対応する候補はuserでなければなりません",
-        });
-      }
-      if (!candidate.sourceIds.includes(source.id)) {
-        context.addIssue({
-          code: "custom",
-          path: ["sources", index, "author", "candidateId"],
-          message: "source作者候補のsource ID集合に対象sourceがありません",
-        });
+      if (source.author.status === "identified") {
+        const author = source.author;
+        if (source.actorType !== "human") {
+          context.addIssue({
+            code: "custom",
+            path: ["sources", index, "author"],
+            message: "identified authorはhuman sourceにだけ指定できます",
+          });
+        }
+        if (!input.candidates.waitingOn.some((candidate) => candidate.id === author.candidateId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["sources", index, "author", "candidateId"],
+            message: "source authorのcandidate IDがwaitingOn候補集合にありません",
+          });
+        }
       }
     }
   });

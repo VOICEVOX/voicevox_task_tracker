@@ -4,6 +4,7 @@ import { type FreshObservedGitHubIssue } from "./github-item-observation.js";
 import { resolveRepositoryRoleWaitingOn } from "./maintainer-resolution.js";
 import { type SourceId } from "./source-id.js";
 import { isTerminalStatus } from "./status.js";
+import { type AiAnalysisElementNecessity } from "./ai-analysis-elements.js";
 import {
   type Evidence,
   type EvidenceSupport,
@@ -20,7 +21,7 @@ import { assertNonNullable } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Issue判定へ適用した決定規則のversion。 */
-export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v10";
+export const ISSUE_DETERMINISTIC_RULES_VERSION = "issue-v14";
 
 /** 依存グラフからIssue判定へ渡すblocker。 */
 export type IssueBlocker = Readonly<{
@@ -69,12 +70,51 @@ export type IssueExplicitRequestAssessment =
       sourceIds: readonly [SourceId, ...SourceId[]];
     }>;
 
+/** Issue全体を進める実質担当者らしき候補。 */
+export type IssueEffectiveAssigneeCandidate = Readonly<{
+  candidateId: string;
+  sourceIds: readonly [SourceId, ...SourceId[]];
+  occurredAt: UtcIsoDateTime;
+}>;
+
+/** 実質担当者の候補として選ばれたuser。 */
+export type IssueEffectiveAssigneeTarget = Readonly<{
+  kind: "user";
+  candidateId: string;
+  sourceIds: readonly [SourceId, ...SourceId[]];
+  confidence: number;
+}>;
+
+/** Issue全体の実質担当者に対する検証済みの外部判定。 */
+export type IssueEffectiveAssigneeAssessment =
+  | Readonly<{
+      status: "not_assessed";
+    }>
+  | Readonly<{
+      status: "assessed";
+      candidateSourceIds: readonly [SourceId, ...SourceId[]];
+      verdict: "no_effective_assignee";
+      confidence: number;
+      sourceIds: readonly [SourceId, ...SourceId[]];
+    }>
+  | Readonly<{
+      status: "assessed";
+      candidateSourceIds: readonly [SourceId, ...SourceId[]];
+      verdict: "effective_assignee";
+      targets: readonly [IssueEffectiveAssigneeTarget, ...IssueEffectiveAssigneeTarget[]];
+      occurredAt: UtcIsoDateTime;
+      confidence: number;
+      sourceIds: readonly [SourceId, ...SourceId[]];
+    }>;
+
 /** Issue状態機械へ渡す設定解決済み入力。 */
 export type IssueStateMachineInput = Readonly<{
   issue: FreshObservedGitHubIssue;
   blockers: readonly IssueBlocker[];
   explicitRequestCandidates: readonly IssueExplicitRequestCandidate[];
   explicitRequestAssessment: IssueExplicitRequestAssessment;
+  effectiveAssigneeCandidates: readonly IssueEffectiveAssigneeCandidate[];
+  effectiveAssigneeAssessment: IssueEffectiveAssigneeAssessment;
   maintainers: readonly string[];
   confidenceThresholds: Readonly<{
     high: number;
@@ -101,6 +141,11 @@ export type IssueStateDecision = Readonly<{
   deterministicRulesVersion: typeof ISSUE_DETERMINISTIC_RULES_VERSION;
   evaluatedAt: UtcIsoDateTime;
   determination: "determined" | "codex_candidate";
+  aiAnalysisElementNecessities: Readonly<{
+    status: AiAnalysisElementNecessity;
+    waitingOn: AiAnalysisElementNecessity;
+    nextAction: AiAnalysisElementNecessity;
+  }>;
   status: Status;
   waitingOn: readonly WaitingOn[];
   primaryWaitingOn: IssuePrimaryWaitingOn;
@@ -127,6 +172,7 @@ interface DecisionContext {
   uncertainties: string[];
   evidence: Evidence[];
   confidenceCap: number;
+  uncertainStateElements: Set<"status" | "waitingOn" | "nextAction">;
 }
 
 type ResolvedAssignee = Readonly<{
@@ -281,6 +327,132 @@ function validateAssessment(
   }
 }
 
+function compareEffectiveAssigneeCandidates(
+  left: IssueEffectiveAssigneeCandidate,
+  right: IssueEffectiveAssigneeCandidate,
+): -1 | 0 | 1 {
+  if (left.occurredAt < right.occurredAt) {
+    return -1;
+  }
+  if (left.occurredAt > right.occurredAt) {
+    return 1;
+  }
+  const leftCandidateId = left.candidateId.toLowerCase();
+  const rightCandidateId = right.candidateId.toLowerCase();
+  if (leftCandidateId < rightCandidateId) {
+    return -1;
+  }
+  if (leftCandidateId > rightCandidateId) {
+    return 1;
+  }
+  return 0;
+}
+
+function sourceIdsMatch(left: readonly SourceId[], right: readonly SourceId[]): boolean {
+  const leftSourceIds = createSourceIds(left);
+  const rightSourceIds = createSourceIds(right);
+  return (
+    leftSourceIds.length === rightSourceIds.length &&
+    leftSourceIds.every((sourceId, index) => sourceId === rightSourceIds[index])
+  );
+}
+
+function validateEffectiveAssigneeTargetKind(kind: string): void {
+  if (kind !== "user") {
+    throw new TypeError("実質担当者にはuserだけを指定できます");
+  }
+}
+
+function validateEffectiveAssigneeAssessment(
+  input: IssueStateMachineInput,
+  candidates: readonly IssueEffectiveAssigneeCandidate[],
+): void {
+  const assessment = input.effectiveAssigneeAssessment;
+  if (assessment.status === "not_assessed") {
+    return;
+  }
+  if (candidates.length === 0) {
+    throw new TypeError("実質担当候補がないため外部判定を適用できません");
+  }
+
+  validateConfidence(assessment.confidence, "実質担当の外部判定confidence");
+  validateSourceIds(assessment.candidateSourceIds, "実質担当の外部判定対象");
+  validateSourceIds(assessment.sourceIds, "実質担当の外部判定根拠");
+  if (assessment.verdict === "effective_assignee" && assessment.occurredAt > input.evaluatedAt) {
+    throw new RangeError("実質担当の根拠時刻は判定時刻以前にしてください");
+  }
+
+  const actualCandidateSourceIds = createSourceIds(
+    candidates.flatMap((candidate) => candidate.sourceIds),
+  );
+  if (!sourceIdsMatch(actualCandidateSourceIds, assessment.candidateSourceIds)) {
+    throw new TypeError("実質担当候補と外部判定の対象source IDが一致しません");
+  }
+
+  const knownSourceIds = new Set<SourceId>([
+    input.issue.sourceId,
+    ...input.issue.events.map((event) => event.sourceId),
+    ...actualCandidateSourceIds,
+  ]);
+  for (const sourceId of assessment.sourceIds) {
+    if (!knownSourceIds.has(sourceId)) {
+      throw new TypeError(`実質担当の外部判定が未知のsource IDを参照しています。対象: ${sourceId}`);
+    }
+  }
+
+  if (assessment.verdict === "no_effective_assignee") {
+    if (!assessment.sourceIds.some((sourceId) => actualCandidateSourceIds.includes(sourceId))) {
+      throw new TypeError("実質担当者がいないという外部判定に候補のsource IDがありません");
+    }
+    return;
+  }
+
+  if (assessment.targets.length === 0) {
+    throw new TypeError("実質担当者の外部判定には対象userが1件以上必要です");
+  }
+
+  const candidatesById = new Map(
+    candidates.map((candidate) => [candidate.candidateId.toLowerCase(), candidate]),
+  );
+  const lastUnassignedEvent = replayAssigneeEvents(input.issue.events).lastUnassignedEvent;
+  const targetIds = new Set<string>();
+  for (const target of assessment.targets) {
+    validateEffectiveAssigneeTargetKind(target.kind);
+    if (target.candidateId.length === 0) {
+      throw new TypeError("実質担当者のcandidate IDは空にできません");
+    }
+    const normalizedCandidateId = target.candidateId.toLowerCase();
+    if (targetIds.has(normalizedCandidateId)) {
+      throw new TypeError(`実質担当者が重複しています。対象: ${target.candidateId}`);
+    }
+    targetIds.add(normalizedCandidateId);
+    validateConfidence(target.confidence, `実質担当者 ${target.candidateId}のconfidence`);
+    validateSourceIds(target.sourceIds, `実質担当者 ${target.candidateId}`);
+
+    const candidate = candidatesById.get(normalizedCandidateId);
+    if (candidate?.candidateId !== target.candidateId) {
+      throw new TypeError(`実質担当者が現在の候補に含まれていません。対象: ${target.candidateId}`);
+    }
+    if (lastUnassignedEvent != null && candidate.occurredAt <= lastUnassignedEvent.occurredAt) {
+      throw new RangeError(
+        `正式assignee解除前の実質担当候補は選択できません。対象: ${target.candidateId}`,
+      );
+    }
+    if (!sourceIdsMatch(candidate.sourceIds, target.sourceIds)) {
+      throw new TypeError(
+        `実質担当者の根拠source IDが候補と一致しません。対象: ${target.candidateId}`,
+      );
+    }
+    for (const sourceId of target.sourceIds) {
+      if (!assessment.sourceIds.includes(sourceId)) {
+        throw new TypeError(
+          `実質担当者の根拠が外部判定の根拠に含まれていません。対象: ${target.candidateId}`,
+        );
+      }
+    }
+  }
+}
+
 function validateInput(input: IssueStateMachineInput): void {
   validateConfidence(input.confidenceThresholds.high, "high confidence閾値");
   validateConfidence(input.confidenceThresholds.medium, "medium confidence閾値");
@@ -342,6 +514,32 @@ function validateInput(input: IssueStateMachineInput): void {
     }
   }
   validateAssessment(input, candidates);
+
+  const effectiveAssigneeCandidates = [...input.effectiveAssigneeCandidates].sort(
+    compareEffectiveAssigneeCandidates,
+  );
+  const effectiveCandidateIds = new Set<string>();
+  for (const candidate of effectiveAssigneeCandidates) {
+    if (candidate.candidateId.length === 0) {
+      throw new TypeError("実質担当候補のcandidate IDは空にできません");
+    }
+    const normalizedCandidateId = candidate.candidateId.toLowerCase();
+    if (effectiveCandidateIds.has(normalizedCandidateId)) {
+      throw new TypeError(`実質担当候補が重複しています。対象: ${candidate.candidateId}`);
+    }
+    effectiveCandidateIds.add(normalizedCandidateId);
+    validateSourceIds(candidate.sourceIds, `実質担当候補 ${candidate.candidateId}`);
+    if (candidate.occurredAt > input.evaluatedAt) {
+      throw new RangeError("実質担当候補の発生時刻は判定時刻以前にしてください");
+    }
+  }
+  if (effectiveAssigneeCandidates.length > 0 && input.issue.state !== "open") {
+    throw new TypeError("openでないIssueには実質担当候補を指定できません");
+  }
+  if (effectiveAssigneeCandidates.length > 0 && input.issue.assignees.length > 0) {
+    throw new TypeError("正式assigneeがあるIssueには実質担当候補を指定できません");
+  }
+  validateEffectiveAssigneeAssessment(input, effectiveAssigneeCandidates);
   validateMaintainerLoginList(input.maintainers);
 }
 
@@ -413,10 +611,14 @@ function addUncertainty(
   message: string,
   sourceIds: readonly SourceId[],
   confidenceCap: number,
+  stateElements: readonly ("status" | "waitingOn" | "nextAction")[],
 ): void {
   context.uncertainties.push(message);
   context.evidence.push(...createEvidence(sourceIds, "uncertainty", message));
   context.confidenceCap = Math.min(context.confidenceCap, confidenceCap);
+  for (const element of stateElements) {
+    context.uncertainStateElements.add(element);
+  }
 }
 
 function finalizeDecision(
@@ -458,6 +660,11 @@ function finalizeDecision(
     deterministicRulesVersion: ISSUE_DETERMINISTIC_RULES_VERSION,
     evaluatedAt: input.evaluatedAt,
     determination: uncertainties.length === 0 ? "determined" : "codex_candidate",
+    aiAnalysisElementNecessities: Object.freeze({
+      status: context.uncertainStateElements.has("status") ? "required" : "not_required",
+      waitingOn: context.uncertainStateElements.has("waitingOn") ? "required" : "not_required",
+      nextAction: context.uncertainStateElements.has("nextAction") ? "required" : "not_required",
+    }),
     status: draft.status,
     waitingOn,
     primaryWaitingOn,
@@ -505,7 +712,7 @@ function createTerminalDecision(
     return finalizeDecision(input, context, {
       status: "terminal_not_planned",
       waitingOn: [],
-      primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+      primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
       nextAction: "対応は不要です",
       confidence: 1,
       evidence: createEvidence(
@@ -521,7 +728,7 @@ function createTerminalDecision(
     return finalizeDecision(input, context, {
       status: "terminal_completed",
       waitingOn: [],
-      primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+      primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
       nextAction: "対応は不要です",
       confidence: 1,
       evidence: createEvidence([closedSourceId], "status", "Issueは完了としてcloseされています"),
@@ -535,11 +742,12 @@ function createTerminalDecision(
     "close理由をGitHubの観測値から区別できません",
     [closedSourceId],
     input.confidenceThresholds.medium,
+    ["status"],
   );
   return finalizeDecision(input, context, {
     status: "terminal_completed",
     waitingOn: [],
-    primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+    primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
     nextAction: "対応は不要です",
     confidence: input.confidenceThresholds.medium,
     evidence: createEvidence(
@@ -599,6 +807,7 @@ function createBlockedDecision(
       `${blocker.candidateId}が現在のblockerか確定していません`,
       blocker.sourceIds,
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
   }
   if (confirmedBlockers.length === 0) {
@@ -690,6 +899,7 @@ function createExplicitRequestDecision(
       "未回答の明示依頼らしき候補を決定論的に確定できません",
       candidates.map((candidate) => candidate.sourceId),
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
     return undefined;
   }
@@ -701,6 +911,7 @@ function createExplicitRequestDecision(
         "明示依頼候補に未回答の依頼がないという判定の信頼度が十分ではありません",
         assessment.sourceIds,
         Math.min(input.confidenceThresholds.medium, assessment.confidence),
+        ["status", "waitingOn", "nextAction"],
       );
     } else {
       context.evidence.push(
@@ -723,6 +934,7 @@ function createExplicitRequestDecision(
       "明示依頼の相手に関する外部判定の信頼度が低いため責務へ反映しません",
       assessment.sourceIds,
       confidence,
+      ["status", "waitingOn", "nextAction"],
     );
     return undefined;
   }
@@ -732,6 +944,7 @@ function createExplicitRequestDecision(
       "明示依頼の相手は外部判定による推定です",
       assessment.sourceIds,
       confidence,
+      ["status", "waitingOn", "nextAction"],
     );
   }
 
@@ -865,6 +1078,89 @@ function createAssigneeDecision(
   });
 }
 
+function createEffectiveAssigneeDecision(
+  input: IssueStateMachineInput,
+  context: DecisionContext,
+): IssueStateDecision | undefined {
+  if (input.issue.state !== "open" || input.issue.assignees.length !== 0) {
+    return undefined;
+  }
+  if (context.uncertainties.length !== 0) {
+    return undefined;
+  }
+
+  const assessment = input.effectiveAssigneeAssessment;
+  if (assessment.status !== "assessed" || assessment.verdict !== "effective_assignee") {
+    return undefined;
+  }
+
+  const candidatesById = new Map(
+    input.effectiveAssigneeCandidates.map((candidate) => [
+      candidate.candidateId.toLowerCase(),
+      candidate,
+    ]),
+  );
+  const basis = createBasis(assessment.sourceIds, assessment.occurredAt, "inferred");
+  const targets = assessment.targets
+    .map((target) => {
+      const candidate = candidatesById.get(target.candidateId.toLowerCase());
+      assertNonNullable(candidate, `実質担当候補を取得できません。対象: ${target.candidateId}`);
+      return Object.freeze({
+        waitingOn: createWaitingOn({
+          kind: "user",
+          candidateId: target.candidateId,
+          role: "assignee",
+          reasonSummary: "GitHub assigneeではなくIssue全体の作業から実質担当者を推定しました",
+          sourceIds: target.sourceIds,
+          confidence: Math.min(target.confidence, assessment.confidence),
+        }),
+        basis,
+      });
+    })
+    .sort(compareResolvedAssignees);
+  const primaryTarget = targets[0];
+  assertNonNullable(primaryTarget, "実質担当者のprimaryを選定できませんでした");
+  const confidence = Math.min(
+    assessment.confidence,
+    ...assessment.targets.map((target) => target.confidence),
+  );
+  if (confidence < input.confidenceThresholds.high) {
+    return undefined;
+  }
+
+  const candidateIds = targets.map((target) => target.waitingOn.candidateId);
+  const responsibilitySummary =
+    targets.length === 1
+      ? "Issue全体を進める実質担当者を推定しました"
+      : "Issue全体を共同で進める実質担当者を推定しました";
+  const nextAction =
+    targets.length === 1
+      ? `${primaryTarget.waitingOn.candidateId}がIssueを進める`
+      : `${candidateIds.join("、")}がIssueを共同で進める`;
+
+  return finalizeDecision(input, context, {
+    status: "waiting_for_work",
+    waitingOn: targets.map((target) => target.waitingOn),
+    primarySelectionReason: responsibilitySummary,
+    nextAction,
+    confidence,
+    evidence: [
+      ...createEvidence(
+        assessment.sourceIds,
+        "status",
+        "GitHub assigneeではなくIssue全体の作業から実質担当者を推定しました",
+      ),
+      ...createEvidence(
+        targets.flatMap((target) => target.waitingOn.sourceIds),
+        "waiting_on",
+        "Issue全体の実質担当者の作業を待っています",
+      ),
+    ],
+    statusBasis: basis,
+    responsibilityBasis: basis,
+  });
+}
+
 function determineUnassignedNextAction(
   assessmentCompleted: boolean,
   hasUncertainty: boolean,
@@ -957,6 +1253,7 @@ export function determineIssueState(input: IssueStateMachineInput): IssueStateDe
     uncertainties: [],
     evidence: [],
     confidenceCap: 1,
+    uncertainStateElements: new Set(),
   };
 
   const terminalDecision = createTerminalDecision(input, context);
@@ -977,6 +1274,11 @@ export function determineIssueState(input: IssueStateMachineInput): IssueStateDe
   const assigneeDecision = createAssigneeDecision(input, context);
   if (assigneeDecision != null) {
     return assigneeDecision;
+  }
+
+  const effectiveAssigneeDecision = createEffectiveAssigneeDecision(input, context);
+  if (effectiveAssigneeDecision != null) {
+    return effectiveAssigneeDecision;
   }
 
   return createUnassignedDecision(input, context);

@@ -46,6 +46,7 @@ export type StateBranchCommitRequest = Readonly<{
   branch: string;
   expectedHead: StateBranchHead;
   updates: readonly StateFileUpdate[];
+  deletions: readonly string[];
   message: string;
   committedAt: string;
 }>;
@@ -56,12 +57,23 @@ export type StateBranchCommitResult = Readonly<{
   branchCreated: boolean;
 }>;
 
+/** state branchをリモートへ公開する要求。 */
+export type StateBranchPublishRequest = Readonly<{
+  branch: string;
+  revision: string;
+}>;
+
 /** Git操作と永続化ロジックを分離するbranch adapter境界。 */
 export type StateBranchAdapter = Readonly<{
   resolveHead: (branch: string) => Promise<StateBranchHead>;
   readFile: (revision: string, path: string) => Promise<StateFileReadResult>;
+  readFiles: (
+    revision: string,
+    paths: readonly string[],
+  ) => Promise<ReadonlyMap<string, StateFileReadResult>>;
   listFiles: (revision: string, directory: string) => Promise<readonly string[]>;
   commit: (request: StateBranchCommitRequest) => Promise<StateBranchCommitResult>;
+  publish: (request: StateBranchPublishRequest) => Promise<void>;
 }>;
 
 /** state branch内で利用できる正規化済み相対パスか検証する。 */

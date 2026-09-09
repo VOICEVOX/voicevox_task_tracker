@@ -4,6 +4,7 @@ import { basename, dirname, join } from "node:path";
 
 import { z } from "zod";
 
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { createUtcIsoDateTime, type UtcIsoDateTime } from "../domain/index.js";
 import { evaluateGoldenRegression, type GoldenEvaluationPair } from "../eval/index.js";
 import {
@@ -71,6 +72,7 @@ export type OfflineAnalysisEngine = Readonly<{
 
 /** offline commandが利用するファイル入出力と判定境界。 */
 export type OfflineRunDependencies = Readonly<{
+  diagnosticsRecorder?: DiagnosticsJsonlRecorder;
   engine: OfflineAnalysisEngine;
   readReplayFixture: (path: string) => Promise<ReplayFixture>;
   readState: (path: string) => Promise<StateSnapshot>;
@@ -445,6 +447,37 @@ export class OfflineRunRunner {
     this.#runtime = runtime;
   }
 
+  async #recordError(
+    command: ReplayCliCommand | EvalCliCommand,
+    runId: string,
+    stage: "replay" | "eval",
+    error: unknown,
+  ): Promise<void> {
+    const recorder = this.#dependencies.diagnosticsRecorder;
+    if (recorder == null) {
+      return;
+    }
+    try {
+      await recorder.append({
+        event: "cli.stage.failed",
+        details: {
+          command: command.kind,
+          stage,
+          runId,
+        },
+        error,
+      });
+    } catch (recordingError: unknown) {
+      throw new AggregateError(
+        [error, recordingError],
+        "offline段階エラーの診断記録に失敗しました",
+        {
+          cause: error,
+        },
+      );
+    }
+  }
+
   async #runReplay(
     command: ReplayCliCommand,
     runId: string,
@@ -482,6 +515,7 @@ export class OfflineRunRunner {
         artifactWritten,
       });
     } catch (error: unknown) {
+      await this.#recordError(command, runId, "replay", error);
       const errorType = error instanceof Error ? error.name : typeof error;
       const report = createFailureReport(
         command,
@@ -575,6 +609,7 @@ export class OfflineRunRunner {
         artifactWritten,
       });
     } catch (error: unknown) {
+      await this.#recordError(command, runId, "eval", error);
       const errorType = error instanceof Error ? error.name : typeof error;
       const report = createFailureReport(
         command,

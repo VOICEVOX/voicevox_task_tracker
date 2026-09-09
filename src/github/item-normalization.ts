@@ -41,7 +41,6 @@ import {
   createGitHubBodyFingerprint,
   type EnumeratedGitHubItem,
   type GitHubItemAuthor,
-  type GitHubItemMilestone,
   type Sha256Fingerprint,
 } from "./item-enumeration.js";
 import { type PublicRepositoryId } from "./public-repository-allowlist.js";
@@ -95,7 +94,6 @@ type FreshObservedGitHubItemMetadata = Readonly<{
   createdAt: UtcIsoDateTime;
   githubUpdatedAt: UtcIsoDateTime;
   labels: readonly string[];
-  milestone: GitHubItemMilestone | null;
   inboundCrossReferences: readonly GitHubInboundCrossReferenceCandidate[];
 }>;
 
@@ -910,16 +908,6 @@ function createFreshItemFields(
       options.item.assignees.map((assignee) => normalizeAccountActor(assignee, options.isBot)),
     ),
     labels: Object.freeze([...options.item.labels]),
-    milestone:
-      options.item.milestone == null
-        ? null
-        : Object.freeze({
-            nodeId: options.item.milestone.nodeId,
-            number: options.item.milestone.number,
-            title: options.item.milestone.title,
-            state: options.item.milestone.state,
-            dueOn: options.item.milestone.dueOn,
-          }),
     inboundCrossReferences: Object.freeze([...options.detail.inboundCrossReferences]),
     events: normalizeEvents(options),
     observedAt: options.detail.observedAt,

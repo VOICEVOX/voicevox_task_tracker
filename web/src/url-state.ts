@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import {
-  createEmptyTableFilters,
+  createDefaultTableFilters,
   waitingSubjectKey,
   type TableFilterKey,
   type TableFilterOption,
@@ -69,7 +69,7 @@ const ITEMS_QUERY_PARAMETER_NAMES: readonly string[] = [
 ];
 const PERSON_QUERY_PARAMETER_NAMES: readonly string[] = ["teams", "sort", "direction"];
 
-const itemSortKeySchema = z.enum(["attention", "importance", "stall"]);
+const itemSortKeySchema = z.enum(["attention", "importance", "stall", "deadline"]);
 const sortDirectionSchema = z.enum(["ascending", "descending"]);
 const filterValueSchema = z
   .string()
@@ -102,6 +102,18 @@ export type ItemRouteTarget = Readonly<{
 export type WebRoute =
   | Readonly<{
       page: "items";
+    }>
+  | Readonly<{
+      page: "guide";
+    }>
+  | Readonly<{
+      page: "status";
+    }>
+  | Readonly<{
+      page: "notification-history";
+    }>
+  | Readonly<{
+      page: "notifications";
     }>
   | Readonly<{
       page: "item-details";
@@ -175,7 +187,7 @@ export function createWebViewState(route: WebRoute): WebViewState {
   return {
     route,
     searchQuery: "",
-    tableFilters: createEmptyTableFilters(),
+    tableFilters: createDefaultTableFilters(),
     tableSort: {
       key: "attention",
       direction: "descending",
@@ -371,6 +383,66 @@ function parseRelativeRoute(relativePath: string, targets: ValidWebRouteTargets)
   switch (segments[0]) {
     case "items":
       return parseItemRoute(segments, targets.items);
+    case "guide":
+      if (segments.length === 1) {
+        return {
+          route: {
+            page: "guide",
+          },
+          status: "valid",
+        };
+      }
+      return {
+        route: {
+          page: "items",
+        },
+        status: "sanitized",
+      };
+    case "status":
+      if (segments.length === 1) {
+        return {
+          route: {
+            page: "status",
+          },
+          status: "valid",
+        };
+      }
+      return {
+        route: {
+          page: "items",
+        },
+        status: "sanitized",
+      };
+    case "notifications":
+      if (segments.length === 1) {
+        return {
+          route: {
+            page: "notifications",
+          },
+          status: "valid",
+        };
+      }
+      return {
+        route: {
+          page: "items",
+        },
+        status: "sanitized",
+      };
+    case "notification-history":
+      if (segments.length === 1) {
+        return {
+          route: {
+            page: "notification-history",
+          },
+          status: "valid",
+        };
+      }
+      return {
+        route: {
+          page: "items",
+        },
+        status: "sanitized",
+      };
     case "people":
       if (segments.length === 1) {
         return {
@@ -617,6 +689,14 @@ function createRoutePath(basePath: string, route: WebRoute): string {
   switch (route.page) {
     case "items":
       return parsedBasePath;
+    case "guide":
+      return `${pathPrefix}/guide`;
+    case "status":
+      return `${pathPrefix}/status`;
+    case "notifications":
+      return `${pathPrefix}/notifications`;
+    case "notification-history":
+      return `${pathPrefix}/notification-history`;
     case "item-details":
       return `${pathPrefix}/items/${encodeURIComponent(route.target.repositoryName)}/${route.target.number.toString()}`;
     case "people":

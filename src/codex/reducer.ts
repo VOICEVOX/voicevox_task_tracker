@@ -1,5 +1,9 @@
 import {
+  buildSourceId,
+  createGitHubNodeId,
   isTerminalStatus,
+  parseSourceId,
+  type NaturalLanguageDeadlineAssessmentState,
   type Evidence,
   type NotificationReasonCode,
   type NaturalLanguageImportanceAssessmentState,
@@ -7,8 +11,9 @@ import {
   type Status,
   type WaitingOn,
 } from "../domain/index.js";
-import { type RelationCandidateAssessment } from "../graph/index.js";
+import { type RelationCandidateAssessment, type RelationCandidateId } from "../graph/index.js";
 import { assertNonNullable } from "../util/index.js";
+import { z } from "zod";
 import {
   CodexInvalidJsonError,
   CodexNonZeroExitError,
@@ -26,8 +31,16 @@ import {
   type CodexConfidenceClassification,
   type CodexConfidenceThresholds,
 } from "./confidence.js";
+import {
+  AI_ANALYSIS_ELEMENTS,
+  createAiAnalysisMigrationElementResultSchema,
+  type AiAnalysisElementMigrationResult,
+  type AiAnalysisElement,
+  type AiAnalysisElementGeneration,
+} from "../domain/ai-analysis-elements.js";
 import { type CodexAnalysisInput } from "./input.js";
-import { type ValidatedCodexAnalysisOutput } from "./output-types.js";
+import { type CodexPreservedElements } from "./analysis-elements.js";
+import { type CodexElementOutput } from "./semantic-validation.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
 import { listNativeRelationConstraints } from "./semantic-validation.js";
 
@@ -48,7 +61,7 @@ export type CodexUnavailableReason =
 export type CodexAnalysisAttempt =
   | Readonly<{
       status: "validated";
-      output: ValidatedCodexAnalysisOutput;
+      output: CodexElementOutput;
     }>
   | Readonly<{
       status: "unavailable";
@@ -104,15 +117,21 @@ export type CodexAnalysisReduction = Readonly<{
   decision: ReducedCodexDecision;
   displayMode: CodexConfidenceClassification["displayMode"];
   importanceAssessment: NaturalLanguageImportanceAssessmentState;
+  deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
   ai:
     | Readonly<{
         status: "available";
-        confidenceLevel: CodexConfidenceClassification["level"];
-        application:
-          | "applied"
-          | "deterministic_preserved"
-          | "native_relation_preserved"
-          | "low_confidence_fallback";
+        elements: Readonly<
+          Partial<
+            Record<
+              AiAnalysisElement,
+              Readonly<{
+                confidenceLevel: CodexConfidenceClassification["level"];
+                application: "applied" | "preserved" | "deterministic_fallback";
+              }>
+            >
+          >
+        >;
       }>
     | Readonly<{
         status: "unavailable";
@@ -124,17 +143,40 @@ export type CodexAnalysisReduction = Readonly<{
   notification: ReducedCodexNotification;
 }>;
 
+/** 要素単位で保存するAI生成結果の集合。 */
+export type AiAnalysisElementGenerationMap = Readonly<
+  Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>>
+>;
+
+/** 要素別の実生成結果と保存済み結果を反映する入力。 */
+export type ReduceAiAnalysisElementsInput = Readonly<{
+  selectedElements: readonly AiAnalysisElement[];
+  generatedElements: AiAnalysisElementGenerationMap;
+  preservedElements: AiAnalysisElementGenerationMap;
+}>;
+
+/** 要素別AI生成結果を選択対象だけ更新し、選択外を保持した結果。 */
+export type AiAnalysisElementsReduction = Readonly<{
+  elements: AiAnalysisElementGenerationMap;
+  generatedElements: readonly AiAnalysisElement[];
+  missingElements: readonly AiAnalysisElement[];
+}>;
+
 /** 1件のCodex実行とfallback reducerをつなぐ入力。 */
 export type RunCodexAnalysisWithFallbackInput = Readonly<{
   analysisInput: CodexAnalysisInput;
   deterministicDecision: DeterministicCodexDecision;
   confidenceThresholds: CodexConfidenceThresholds;
+  preservedElements: CodexPreservedElements;
 }>;
 
 /** 1件のCodex実行へ注入する副作用境界。 */
 export type RunCodexAnalysisWithFallbackDependencies = Readonly<{
   execute: (input: CodexAnalysisInput) => Promise<unknown>;
+  recordFailure?: (error: unknown) => Promise<void>;
 }>;
+
+type CodexAnalysisFailureRecorder = (error: unknown) => Promise<void>;
 
 function httpStatusFromError(error: unknown): number | undefined {
   if (typeof error !== "object" || error == null) {
@@ -177,7 +219,8 @@ export function classifyCodexUnavailableReason(error: unknown): CodexUnavailable
     return "semantic_validation_failed";
   }
   if (error instanceof CodexNonZeroExitError) {
-    return error.exitCode != null && error.exitCode !== 0 && error.signal == null
+    return (error.exitCode != null && error.exitCode !== 0 && error.signal == null) ||
+      (error.apiError != null && error.exitCode === 0 && error.signal == null)
       ? "execution_failed"
       : "service_unavailable";
   }
@@ -219,6 +262,7 @@ function outputValidationDiagnostic(error: unknown): CodexOutputValidationDiagno
 export async function executeValidatedCodexAnalysis(
   input: CodexAnalysisInput,
   execute: (input: CodexAnalysisInput) => Promise<unknown>,
+  recordFailure?: CodexAnalysisFailureRecorder,
 ): Promise<CodexAnalysisAttempt> {
   try {
     const output = await execute(input);
@@ -229,6 +273,9 @@ export async function executeValidatedCodexAnalysis(
   } catch (error: unknown) {
     if (error instanceof CodexTransportAliasError) {
       throw error;
+    }
+    if (recordFailure != null) {
+      await recordFailure(error);
     }
     const diagnostic = nonZeroExitDiagnostic(error);
     const validationDiagnostic = outputValidationDiagnostic(error);
@@ -248,13 +295,26 @@ function validateProbability(value: number, context: string): void {
   }
 }
 
-function createSourceIdTuple(sourceIds: readonly SourceId[]): readonly [SourceId, ...SourceId[]] {
-  const [firstSourceId, ...remainingSourceIds] = sourceIds;
+function createSourceIdTuple(sourceIds: readonly string[]): readonly [SourceId, ...SourceId[]] {
+  const parsedSourceIds = sourceIds.map((sourceId) => {
+    const parts = parseSourceId(sourceId);
+    return buildSourceId(parts.kind, parts.originalId);
+  });
+  const [firstSourceId, ...remainingSourceIds] = parsedSourceIds;
   assertNonNullable(firstSourceId, "source IDが1件もありません");
   return Object.freeze([firstSourceId, ...remainingSourceIds]);
 }
 
-function copyWaitingOn(waitingOn: readonly WaitingOn[]): readonly WaitingOn[] {
+function copyWaitingOn(
+  waitingOn: readonly Readonly<{
+    kind: WaitingOn["kind"];
+    candidateId: string;
+    role: WaitingOn["role"];
+    reasonSummary: string;
+    sourceIds: readonly string[];
+    confidence: number;
+  }>[],
+): readonly WaitingOn[] {
   return Object.freeze(
     waitingOn.map((value) =>
       Object.freeze({
@@ -324,29 +384,143 @@ function validateDecision(value: DeterministicCodexDecision): void {
   }
 }
 
-function effectiveStateConfidence(output: ValidatedCodexAnalysisOutput): number {
-  let confidence = output.confidence;
-  for (const waitingOn of output.waitingOn) {
-    confidence = Math.min(confidence, waitingOn.confidence);
+type ElementResultSource = CodexElementOutput | CodexPreservedElements;
+
+type ElementResultSelection = Readonly<{
+  result: AiAnalysisElementMigrationResult | undefined;
+  classification: CodexConfidenceClassification | undefined;
+  application: "applied" | "preserved" | "deterministic_fallback";
+}>;
+
+const relationCandidateIdSchema = z.templateLiteral(["rel:", z.string()]);
+
+function resultForElement(
+  source: ElementResultSource,
+  element: AiAnalysisElement,
+): AiAnalysisElementMigrationResult | undefined {
+  switch (element) {
+    case "status":
+      return source.status;
+    case "waitingOn":
+      return source.waitingOn;
+    case "nextAction":
+      return source.nextAction;
+    case "relations":
+      return source.relations;
+    case "progress":
+      return source.progress;
+    case "importance":
+      return source.importance;
+    case "deadline":
+      return source.deadline;
+    case "notification":
+      return source.notification;
   }
-  return confidence;
 }
 
-function createRelationAssessments(
-  output: ValidatedCodexAnalysisOutput,
-): readonly RelationCandidateAssessment[] {
-  return Object.freeze(
-    output.relations.map((relation) =>
-      Object.freeze({
-        candidateId: relation.candidateId,
-        currentNodeId: output.item.nodeId,
-        verdict: relation.verdict,
-        reasonSummary: relation.reasonSummary,
-        sourceIds: createSourceIdTuple(relation.sourceIds),
-        confidence: Math.min(output.confidence, relation.confidence),
-      }),
-    ),
+function validatePreservedElementKeys(values: CodexPreservedElements): void {
+  const knownElements = new Set<string>(AI_ANALYSIS_ELEMENTS);
+  for (const element of Object.keys(values)) {
+    if (!knownElements.has(element)) {
+      throw new TypeError(`保持するAI判定要素が不正です。対象: ${element}`);
+    }
+  }
+}
+
+/** 要素内部のconfidenceを含めた実効confidenceを算出する。 */
+export function effectiveElementConfidence(
+  element: AiAnalysisElement,
+  result: AiAnalysisElementMigrationResult,
+): number {
+  switch (element) {
+    case "waitingOn": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(result);
+      return parsed.value.reduce(
+        (minimum, candidate) => Math.min(minimum, candidate.confidence),
+        parsed.confidence,
+      );
+    }
+    case "relations": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("relations").parse(result);
+      return parsed.value.reduce(
+        (minimum, candidate) => Math.min(minimum, candidate.confidence),
+        parsed.confidence,
+      );
+    }
+    case "progress": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("progress").parse(result);
+      return Math.min(parsed.confidence, parsed.value.confidence);
+    }
+    case "status":
+    case "nextAction":
+    case "importance":
+    case "deadline":
+    case "notification":
+      return result.confidence;
+  }
+}
+
+function classificationForSelection(
+  element: AiAnalysisElement,
+  selection: ElementResultSelection,
+  confidenceThresholds: CodexConfidenceThresholds,
+): CodexConfidenceClassification | undefined {
+  if (selection.classification != null) {
+    return selection.classification;
+  }
+  if (selection.application !== "preserved" || selection.result == null) {
+    return undefined;
+  }
+  return classifyCodexConfidence(
+    effectiveElementConfidence(element, selection.result),
+    confidenceThresholds,
   );
+}
+
+function selectElementResult(
+  element: AiAnalysisElement,
+  selectedElements: ReadonlySet<string>,
+  attempt: CodexAnalysisAttempt,
+  preservedElements: CodexPreservedElements,
+  confidenceThresholds: CodexConfidenceThresholds,
+): ElementResultSelection {
+  const preserved = resultForElement(preservedElements, element);
+  if (!selectedElements.has(element)) {
+    return Object.freeze({
+      result: preserved,
+      classification: undefined,
+      application: preserved == null ? "deterministic_fallback" : "preserved",
+    });
+  }
+
+  if (attempt.status === "unavailable") {
+    return Object.freeze({
+      result: preserved,
+      classification: undefined,
+      application: preserved == null ? "deterministic_fallback" : "preserved",
+    });
+  }
+
+  const generated = resultForElement(attempt.output, element);
+  if (generated == null) {
+    throw new TypeError(`検証済みCodex出力の${element}がありません`);
+  }
+  const classification = classifyCodexConfidence(
+    effectiveElementConfidence(element, generated),
+    confidenceThresholds,
+  );
+  if (classification.level === "low") {
+    return Object.freeze({
+      result: preserved,
+      classification,
+      application: preserved == null ? "deterministic_fallback" : "preserved",
+    });
+  }
+  return Object.freeze({
+    result: generated,
+    classification,
+    application: "applied",
+  });
 }
 
 function createFallbackNotification(reasonSummary: string): ReducedCodexNotification {
@@ -365,35 +539,64 @@ function createUnavailableImportanceAssessment(): NaturalLanguageImportanceAsses
   });
 }
 
+function createUnavailableDeadlineAssessment(): NaturalLanguageDeadlineAssessmentState {
+  return Object.freeze({
+    status: "not_available",
+  });
+}
+
 function createImportanceAssessment(
-  output: ValidatedCodexAnalysisOutput,
-  classification: CodexConfidenceClassification,
+  result: AiAnalysisElementMigrationResult | undefined,
 ): NaturalLanguageImportanceAssessmentState {
-  if (classification.level === "low") {
+  if (result == null) {
     return createUnavailableImportanceAssessment();
   }
+  const parsed = createAiAnalysisMigrationElementResultSchema("importance").parse(result);
   return Object.freeze({
     status: "available",
     value: Object.freeze({
-      significantFeature: output.importance.significantFeature,
-      explicitDeadline: output.importance.explicitDeadline,
-      futureRisk: output.importance.futureRisk,
-      rationale: output.importance.rationale,
+      significantFeature: parsed.value.significantFeature,
+      futureRisk: parsed.value.futureRisk,
+      rationale: parsed.value.rationale,
+    }),
+  });
+}
+
+function createDeadlineAssessment(
+  result: AiAnalysisElementMigrationResult | undefined,
+): NaturalLanguageDeadlineAssessmentState {
+  if (result == null) {
+    return createUnavailableDeadlineAssessment();
+  }
+  const parsed = createAiAnalysisMigrationElementResultSchema("deadline").parse(result);
+  return Object.freeze({
+    status: "available",
+    value: Object.freeze({
+      date: parsed.value.date,
+      rationale: parsed.value.rationale,
     }),
   });
 }
 
 function createCodexNotification(
-  output: ValidatedCodexAnalysisOutput,
-  confidence: CodexConfidenceClassification,
+  selection: ElementResultSelection,
+  confidenceThresholds: CodexConfidenceThresholds,
 ): ReducedCodexNotification {
+  if (selection.result == null) {
+    return createFallbackNotification("notification要素の有効な判定がありません");
+  }
+  const parsed = createAiAnalysisMigrationElementResultSchema("notification").parse(
+    selection.result,
+  );
+  const classification =
+    selection.classification ?? classifyCodexConfidence(parsed.confidence, confidenceThresholds);
   return Object.freeze({
-    recommended: output.notification.recommended,
-    reasonCode: output.notification.reasonCode,
-    reasonSummary: output.notification.reasonSummary,
-    policy: confidence.notificationPolicy,
+    recommended: parsed.value.recommended,
+    reasonCode: parsed.value.reasonCode,
+    reasonSummary: parsed.value.reasonSummary,
+    policy: classification.notificationPolicy,
     highPriorityEligible:
-      output.notification.recommended && confidence.notificationPolicy === "eligible",
+      parsed.value.recommended && classification.notificationPolicy === "eligible",
   });
 }
 
@@ -427,17 +630,296 @@ function unresolvedRelationCoverage(
   });
 }
 
+function relationCandidateId(value: string): RelationCandidateId {
+  return relationCandidateIdSchema.parse(value);
+}
+
+function createRelationAssessments(
+  result: AiAnalysisElementMigrationResult,
+  currentNodeId: string,
+): readonly RelationCandidateAssessment[] {
+  const parsed = createAiAnalysisMigrationElementResultSchema("relations").parse(result);
+  const nodeId = createGitHubNodeId(currentNodeId);
+  return Object.freeze(
+    parsed.value.map((relation) =>
+      Object.freeze({
+        candidateId: relationCandidateId(relation.candidateId),
+        currentNodeId: nodeId,
+        verdict: relation.verdict,
+        reasonSummary: relation.reasonSummary,
+        sourceIds: createSourceIdTuple(relation.sourceIds),
+        confidence: Math.min(parsed.confidence, relation.confidence),
+      }),
+    ),
+  );
+}
+
+/** 保存済みの関係と通知の採用結果を変換する。 */
+export function reducePreservedCodexRelationsAndNotification(
+  currentNodeId: string,
+  preservedElements: Pick<CodexPreservedElements, "relations" | "notification">,
+  confidenceThresholds: CodexConfidenceThresholds,
+): Readonly<{
+  relationAssessments: readonly RelationCandidateAssessment[];
+  notification: ReducedCodexNotification | undefined;
+}> {
+  validatePreservedElementKeys(preservedElements);
+  const notificationResult = preservedElements.notification;
+  return Object.freeze({
+    relationAssessments:
+      preservedElements.relations == null
+        ? Object.freeze([])
+        : createRelationAssessments(preservedElements.relations, currentNodeId),
+    notification:
+      notificationResult == null
+        ? undefined
+        : createCodexNotification(
+            Object.freeze({
+              result: notificationResult,
+              classification: undefined,
+              application: "preserved",
+            }),
+            confidenceThresholds,
+          ),
+  });
+}
+
+function createElementEvidence(
+  result: AiAnalysisElementMigrationResult,
+  supports: Evidence["supports"],
+): readonly Evidence[] {
+  return Object.freeze(
+    result.evidence.map((evidence) => {
+      if (evidence.supports === "self_commitment" && supports !== "waiting_on") {
+        throw new TypeError("self_commitmentの根拠はwaitingOn要素にだけ指定できます");
+      }
+      return Object.freeze({
+        sourceId: createSourceIdTuple([evidence.sourceId])[0],
+        supports: evidence.supports === "self_commitment" ? "self_commitment" : supports,
+        summary: evidence.summary,
+      });
+    }),
+  );
+}
+
+function createElementApplications(
+  selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
+  deterministicStatePriority: boolean,
+): Readonly<
+  Partial<
+    Record<
+      AiAnalysisElement,
+      Readonly<{
+        confidenceLevel: CodexConfidenceClassification["level"];
+        application: "applied" | "preserved" | "deterministic_fallback";
+      }>
+    >
+  >
+> {
+  const applications: Partial<
+    Record<
+      AiAnalysisElement,
+      Readonly<{
+        confidenceLevel: CodexConfidenceClassification["level"];
+        application: "applied" | "preserved" | "deterministic_fallback";
+      }>
+    >
+  > = {};
+  for (const [element, selection] of selections) {
+    if (selection.classification == null) {
+      continue;
+    }
+    const statePriority =
+      deterministicStatePriority &&
+      (element === "status" || element === "waitingOn" || element === "nextAction");
+    applications[element] = Object.freeze({
+      confidenceLevel: selection.classification.level,
+      application: statePriority ? "deterministic_fallback" : selection.application,
+    });
+  }
+  return Object.freeze(applications);
+}
+
+function stateDisplayMode(
+  selections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[],
+  deterministicStatePriority: boolean,
+  confidenceThresholds: CodexConfidenceThresholds,
+): CodexConfidenceClassification["displayMode"] {
+  if (deterministicStatePriority) {
+    return "confirmed";
+  }
+  const stateClassifications = selections
+    .filter(
+      ([, selection]) =>
+        selection.application === "applied" || selection.application === "preserved",
+    )
+    .map(([element, selection]) =>
+      classificationForSelection(element, selection, confidenceThresholds),
+    )
+    .filter(
+      (classification): classification is CodexConfidenceClassification => classification != null,
+    );
+  if (stateClassifications.length === 0) {
+    return "fallback";
+  }
+  if (stateClassifications.some((classification) => classification.level === "low")) {
+    return "fallback";
+  }
+  if (stateClassifications.some((classification) => classification.level === "medium")) {
+    return "estimated";
+  }
+  return "confirmed";
+}
+
+function validateStateValues(status: Status, waitingOn: readonly WaitingOn[]): void {
+  if (isTerminalStatus(status) && waitingOn.length !== 0) {
+    throw new TypeError("統合後のterminal状態にwaitingOnを設定できません");
+  }
+  if (!isTerminalStatus(status) && waitingOn.length === 0) {
+    throw new TypeError("統合後の継続中状態にはwaitingOnが1件以上必要です");
+  }
+}
+
+function createStateDecision(
+  deterministicDecision: DeterministicCodexDecision,
+  selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
+  deterministicStatePriority: boolean,
+  confidenceThresholds: CodexConfidenceThresholds,
+): ReducedCodexDecision {
+  const statusSelection = selections.get("status");
+  const waitingOnSelection = selections.get("waitingOn");
+  const nextActionSelection = selections.get("nextAction");
+  assertNonNullable(statusSelection, "status要素の選択結果がありません");
+  assertNonNullable(waitingOnSelection, "waitingOn要素の選択結果がありません");
+  assertNonNullable(nextActionSelection, "nextAction要素の選択結果がありません");
+
+  const statusResult =
+    statusSelection.result == null
+      ? undefined
+      : createAiAnalysisMigrationElementResultSchema("status").parse(statusSelection.result);
+  const waitingOnResult =
+    waitingOnSelection.result == null
+      ? undefined
+      : createAiAnalysisMigrationElementResultSchema("waitingOn").parse(waitingOnSelection.result);
+  const nextActionResult =
+    nextActionSelection.result == null
+      ? undefined
+      : createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+          nextActionSelection.result,
+        );
+
+  const status = deterministicStatePriority ? deterministicDecision.status : statusResult?.value;
+  const waitingOn = deterministicStatePriority
+    ? deterministicDecision.waitingOn
+    : waitingOnResult?.value;
+  const nextAction = deterministicStatePriority
+    ? deterministicDecision.nextAction
+    : nextActionResult?.value;
+  const reducedStatus = status ?? deterministicDecision.status;
+  const reducedWaitingOn =
+    waitingOn == null ? deterministicDecision.waitingOn : copyWaitingOn(waitingOn);
+  const reducedNextAction = nextAction ?? deterministicDecision.nextAction;
+  validateStateValues(reducedStatus, reducedWaitingOn);
+
+  const aiStateApplied =
+    !deterministicStatePriority &&
+    [statusSelection, waitingOnSelection, nextActionSelection].some(
+      (selection) => selection.application === "applied" || selection.application === "preserved",
+    );
+  const aiStateSelections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[] = [
+    ["status", statusSelection],
+    ["waitingOn", waitingOnSelection],
+    ["nextAction", nextActionSelection],
+  ];
+  const resultEvidence: Evidence[] = [];
+  for (const [element, selection] of aiStateSelections) {
+    if (
+      selection.result == null ||
+      (selection.application !== "applied" && selection.application !== "preserved")
+    ) {
+      continue;
+    }
+    const supports = element === "waitingOn" ? "waiting_on" : "status";
+    resultEvidence.push(...createElementEvidence(selection.result, supports));
+  }
+  const evidence =
+    aiStateApplied && resultEvidence.length > 0
+      ? Object.freeze(resultEvidence)
+      : deterministicDecision.evidence;
+  const aiStateResultConfidences = aiStateSelections
+    .filter(
+      ([, selection]) =>
+        selection.result != null &&
+        (selection.application === "applied" || selection.application === "preserved"),
+    )
+    .map(([element, selection]) => {
+      if (selection.result == null) {
+        throw new TypeError(`${element}要素の採用結果がありません`);
+      }
+      return effectiveElementConfidence(element, selection.result);
+    });
+  const stateConfidence =
+    aiStateResultConfidences.length === 0
+      ? deterministicDecision.confidence
+      : Math.min(...aiStateResultConfidences);
+  const uncertainties = [...deterministicDecision.uncertainties];
+  for (const [, selection] of aiStateSelections) {
+    if (
+      (selection.application === "applied" || selection.application === "preserved") &&
+      selection.result != null
+    ) {
+      uncertainties.push(...selection.result.uncertainties);
+    }
+  }
+  if (
+    aiStateApplied &&
+    aiStateSelections.some(
+      ([element, selection]) =>
+        classificationForSelection(element, selection, confidenceThresholds)?.level === "medium",
+    )
+  ) {
+    uncertainties.push("Codexによる推定表示です");
+  }
+  if (
+    !deterministicStatePriority &&
+    [statusSelection, waitingOnSelection, nextActionSelection].some(
+      (selection) =>
+        selection.classification?.level === "low" &&
+        selection.application === "deterministic_fallback",
+    )
+  ) {
+    uncertainties.push("Codex判定のconfidenceが低いため決定論的判定へ縮退しました");
+  }
+
+  return createDecision(
+    aiStateApplied ? "codex" : "deterministic",
+    {
+      status: reducedStatus,
+      waitingOn: reducedWaitingOn,
+      nextAction: reducedNextAction,
+      confidence: aiStateApplied ? stateConfidence : deterministicDecision.confidence,
+      evidence,
+      uncertainties,
+    },
+    undefined,
+  );
+}
+
 function reduceUnavailableCodexAnalysis(
   deterministicDecision: DeterministicCodexDecision,
   relationCandidateIds: readonly string[],
   reason: CodexUnavailableReason,
   errorType: string,
+  preservedElements: CodexPreservedElements,
 ): CodexAnalysisReduction {
   const uncertainty = unavailableUncertainty(reason);
+  const importanceAssessment = createImportanceAssessment(preservedElements.importance);
+  const deadlineAssessment = createDeadlineAssessment(preservedElements.deadline);
   return Object.freeze({
     decision: createDecision("deterministic", deterministicDecision, uncertainty),
     displayMode: "fallback",
-    importanceAssessment: createUnavailableImportanceAssessment(),
+    importanceAssessment,
+    deadlineAssessment,
     ai: Object.freeze({
       status: "unavailable",
       reason,
@@ -461,129 +943,253 @@ export function reduceCodexInputValidationFailure(
     relationCandidateIds,
     "input_validation_failed",
     errorType,
+    Object.freeze({}),
   );
 }
 
-/** 検証済みCodex出力だけを決定論的判定へ統合するpure reducer。 */
+/** 検証済みCodex出力を要素別の保存済み値と統合するpure reducer。 */
 export function reduceCodexAnalysis(
   analysisInput: CodexAnalysisInput,
   deterministicDecision: DeterministicCodexDecision,
   attempt: CodexAnalysisAttempt,
   confidenceThresholds: CodexConfidenceThresholds,
+  preservedElements: CodexPreservedElements,
 ): CodexAnalysisReduction {
   validateDecision(deterministicDecision);
+  validatePreservedElementKeys(preservedElements);
+  const selectedElements = new Set<string>(analysisInput.selectedElements);
+  const selections = new Map<AiAnalysisElement, ElementResultSelection>();
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    selections.set(
+      element,
+      selectElementResult(
+        element,
+        selectedElements,
+        attempt,
+        preservedElements,
+        confidenceThresholds,
+      ),
+    );
+  }
 
   if (attempt.status === "unavailable") {
-    return reduceUnavailableCodexAnalysis(
+    const unavailable = reduceUnavailableCodexAnalysis(
       deterministicDecision,
       analysisInput.candidates.relations.map((candidate) => candidate.id),
       attempt.reason,
       attempt.errorType,
+      preservedElements,
     );
-  }
-
-  const stateConfidence = effectiveStateConfidence(attempt.output);
-  const classification = classifyCodexConfidence(stateConfidence, confidenceThresholds);
-  const importanceAssessment = createImportanceAssessment(attempt.output, classification);
-  const relationAssessments = createRelationAssessments(attempt.output);
-  const completeCoverage = Object.freeze({
-    status: "complete",
-  }) satisfies CodexRelationCoverage;
-
-  if (deterministicDecision.determination === "determined") {
+    const relationSelection = selections.get("relations");
+    assertNonNullable(relationSelection, "relations要素の選択結果がありません");
+    const relationAssessments =
+      relationSelection.result == null
+        ? Object.freeze([])
+        : createRelationAssessments(relationSelection.result, analysisInput.item.nodeId);
+    const relationCoverage =
+      relationSelection.result == null
+        ? unavailable.relationCoverage
+        : (Object.freeze({ status: "complete" }) satisfies CodexRelationCoverage);
+    const deterministicStatePriority =
+      deterministicDecision.determination === "determined" ||
+      listNativeRelationConstraints(analysisInput).some(
+        (constraint) => constraint.verdict === "current_is_blocked_by_target",
+      );
+    const importanceSelection = selections.get("importance");
+    const deadlineSelection = selections.get("deadline");
+    const notificationSelection = selections.get("notification");
+    const statusSelection = selections.get("status");
+    const waitingOnSelection = selections.get("waitingOn");
+    const nextActionSelection = selections.get("nextAction");
+    assertNonNullable(importanceSelection, "importance要素の選択結果がありません");
+    assertNonNullable(deadlineSelection, "deadline要素の選択結果がありません");
+    assertNonNullable(notificationSelection, "notification要素の選択結果がありません");
+    assertNonNullable(statusSelection, "status要素の選択結果がありません");
+    assertNonNullable(waitingOnSelection, "waitingOn要素の選択結果がありません");
+    assertNonNullable(nextActionSelection, "nextAction要素の選択結果がありません");
+    const stateSelections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[] = [
+      ["status", statusSelection],
+      ["waitingOn", waitingOnSelection],
+      ["nextAction", nextActionSelection],
+    ];
     return Object.freeze({
-      decision: createDecision("deterministic", deterministicDecision, undefined),
-      displayMode: "confirmed",
-      importanceAssessment,
-      ai: Object.freeze({
-        status: "available",
-        confidenceLevel: classification.level,
-        application: "deterministic_preserved",
-      }),
-      relationAssessments,
-      relationCoverage: completeCoverage,
-      notification: createFallbackNotification(
-        "決定論的判定を優先するためCodexの通知提案は使用しません",
+      ...unavailable,
+      decision: createStateDecision(
+        deterministicDecision,
+        selections,
+        deterministicStatePriority,
+        confidenceThresholds,
       ),
+      displayMode: stateDisplayMode(
+        stateSelections,
+        deterministicStatePriority,
+        confidenceThresholds,
+      ),
+      importanceAssessment: createImportanceAssessment(importanceSelection.result),
+      deadlineAssessment: createDeadlineAssessment(deadlineSelection.result),
+      notification:
+        notificationSelection.result == null
+          ? unavailable.notification
+          : createCodexNotification(notificationSelection, confidenceThresholds),
+      relationAssessments,
+      relationCoverage,
     });
   }
 
-  const hasNativeBlocker = listNativeRelationConstraints(analysisInput).some(
-    (constraint) => constraint.verdict === "current_is_blocked_by_target",
+  const deterministicStatePriority =
+    deterministicDecision.determination === "determined" ||
+    listNativeRelationConstraints(analysisInput).some(
+      (constraint) => constraint.verdict === "current_is_blocked_by_target",
+    );
+  const decision = createStateDecision(
+    deterministicDecision,
+    selections,
+    deterministicStatePriority,
+    confidenceThresholds,
   );
-  if (hasNativeBlocker) {
-    return Object.freeze({
-      decision: createDecision("deterministic", deterministicDecision, undefined),
-      displayMode: "confirmed",
-      importanceAssessment,
-      ai: Object.freeze({
-        status: "available",
-        confidenceLevel: classification.level,
-        application: "native_relation_preserved",
-      }),
-      relationAssessments,
-      relationCoverage: completeCoverage,
-      notification: createFallbackNotification(
-        "GitHub native relationを優先するためCodexの通知提案は使用しません",
-      ),
-    });
-  }
+  const importanceSelection = selections.get("importance");
+  const deadlineSelection = selections.get("deadline");
+  const notificationSelection = selections.get("notification");
+  const relationSelection = selections.get("relations");
+  assertNonNullable(importanceSelection, "importance要素の選択結果がありません");
+  assertNonNullable(deadlineSelection, "deadline要素の選択結果がありません");
+  assertNonNullable(notificationSelection, "notification要素の選択結果がありません");
+  assertNonNullable(relationSelection, "relations要素の選択結果がありません");
 
-  if (classification.level === "low") {
-    const uncertainty = "Codex判定のconfidenceが低いため決定論的判定へ縮退しました";
-    return Object.freeze({
-      decision: createDecision("deterministic", deterministicDecision, uncertainty),
-      displayMode: classification.displayMode,
-      importanceAssessment,
-      ai: Object.freeze({
-        status: "available",
-        confidenceLevel: classification.level,
-        application: "low_confidence_fallback",
-      }),
-      relationAssessments,
-      relationCoverage: completeCoverage,
-      notification: createFallbackNotification(uncertainty),
-    });
-  }
-
-  const additionalUncertainty =
-    classification.level === "medium" ? "Codexによる推定表示です" : undefined;
+  const relationAssessments =
+    relationSelection.result == null
+      ? Object.freeze([])
+      : createRelationAssessments(relationSelection.result, analysisInput.item.nodeId);
+  const relationCoverage =
+    relationSelection.result == null
+      ? unresolvedRelationCoverage(
+          analysisInput.candidates.relations.map((candidate) => candidate.id),
+        )
+      : (Object.freeze({ status: "complete" }) satisfies CodexRelationCoverage);
+  const statusSelection = selections.get("status");
+  const waitingOnSelection = selections.get("waitingOn");
+  const nextActionSelection = selections.get("nextAction");
+  assertNonNullable(statusSelection, "status要素の選択結果がありません");
+  assertNonNullable(waitingOnSelection, "waitingOn要素の選択結果がありません");
+  assertNonNullable(nextActionSelection, "nextAction要素の選択結果がありません");
+  const stateSelections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[] = [
+    ["status", statusSelection],
+    ["waitingOn", waitingOnSelection],
+    ["nextAction", nextActionSelection],
+  ];
+  const applications = createElementApplications(selections, deterministicStatePriority);
+  const notification = createCodexNotification(notificationSelection, confidenceThresholds);
   return Object.freeze({
-    decision: createDecision(
-      "codex",
-      {
-        status: attempt.output.status,
-        waitingOn: attempt.output.waitingOn,
-        nextAction: attempt.output.nextAction,
-        confidence: stateConfidence,
-        evidence: attempt.output.evidence,
-        uncertainties: attempt.output.uncertainties,
-      },
-      additionalUncertainty,
+    decision,
+    displayMode: stateDisplayMode(
+      stateSelections,
+      deterministicStatePriority,
+      confidenceThresholds,
     ),
-    displayMode: classification.displayMode,
-    importanceAssessment,
+    importanceAssessment: createImportanceAssessment(importanceSelection.result),
+    deadlineAssessment: createDeadlineAssessment(deadlineSelection.result),
     ai: Object.freeze({
       status: "available",
-      confidenceLevel: classification.level,
-      application: "applied",
+      elements: applications,
     }),
     relationAssessments,
-    relationCoverage: completeCoverage,
-    notification: createCodexNotification(attempt.output, classification),
+    relationCoverage,
+    notification,
   });
 }
 
-/** Codex実行、二段階検証、fallback reducerを1件分実行する。 */
+/** Codex実行、二段階検証、要素別fallback reducerを1件分実行する。 */
 export async function runCodexAnalysisWithFallback(
   input: RunCodexAnalysisWithFallbackInput,
   dependencies: RunCodexAnalysisWithFallbackDependencies,
 ): Promise<CodexAnalysisReduction> {
-  const attempt = await executeValidatedCodexAnalysis(input.analysisInput, dependencies.execute);
+  const attempt = await executeValidatedCodexAnalysis(
+    input.analysisInput,
+    dependencies.execute,
+    dependencies.recordFailure,
+  );
   return reduceCodexAnalysis(
     input.analysisInput,
     input.deterministicDecision,
     attempt,
     input.confidenceThresholds,
+    input.preservedElements,
   );
+}
+
+function validateElementGenerationMap(
+  values: AiAnalysisElementGenerationMap,
+  context: string,
+): void {
+  const knownElements = new Set<string>(AI_ANALYSIS_ELEMENTS);
+  for (const element of Object.keys(values)) {
+    if (!knownElements.has(element)) {
+      throw new TypeError(`${context}に未知の要素があります。対象: ${element}`);
+    }
+  }
+}
+
+function validateSelectedElements(selectedElements: readonly AiAnalysisElement[]): Set<string> {
+  const knownElements = new Set<string>(AI_ANALYSIS_ELEMENTS);
+  const selected = new Set<string>();
+  for (const element of selectedElements) {
+    if (!knownElements.has(element)) {
+      throw new TypeError(`選択したAI判定要素が不正です。対象: ${element}`);
+    }
+    if (selected.has(element)) {
+      throw new TypeError(`選択したAI判定要素が重複しています。対象: ${element}`);
+    }
+    selected.add(element);
+  }
+  return selected;
+}
+
+/** 要素別の成功結果だけを反映し、選択外の保存済み結果を保持する。 */
+export function reduceAiAnalysisElements(
+  input: ReduceAiAnalysisElementsInput,
+): AiAnalysisElementsReduction {
+  const selected = validateSelectedElements(input.selectedElements);
+  validateElementGenerationMap(input.generatedElements, "実生成結果");
+  validateElementGenerationMap(input.preservedElements, "保持する保存済み生成結果");
+
+  const elements: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  let generatedCount = 0;
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const generated = input.generatedElements[element];
+    const preserved = input.preservedElements[element];
+    if (selected.has(element)) {
+      if (generated != null) {
+        if (preserved != null) {
+          throw new TypeError(`生成結果と保持結果を同時に指定できません。対象: ${element}`);
+        }
+        elements[element] = generated;
+        generatedCount += 1;
+      } else if (preserved != null) {
+        elements[element] = preserved;
+      }
+      continue;
+    }
+    if (generated != null) {
+      throw new TypeError(`選択外の要素に実生成結果があります。対象: ${element}`);
+    }
+    if (preserved != null) {
+      elements[element] = preserved;
+    }
+  }
+
+  if (generatedCount !== 0 && generatedCount !== selected.size) {
+    throw new TypeError("選択したAI判定要素の生成結果を一括で反映できません");
+  }
+
+  const generatedElements = Object.freeze(
+    input.selectedElements.filter((element) => input.generatedElements[element] != null),
+  );
+  const missingElements = Object.freeze(
+    input.selectedElements.filter((element) => input.generatedElements[element] == null),
+  );
+  return Object.freeze({
+    elements: Object.freeze(elements),
+    generatedElements,
+    missingElements,
+  });
 }

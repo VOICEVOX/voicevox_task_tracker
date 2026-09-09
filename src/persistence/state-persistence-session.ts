@@ -7,7 +7,13 @@ import {
   type AiCacheReadResult,
   type AiCacheStore,
 } from "../codex/cache.js";
+import {
+  createAiCacheMigrationPlan,
+  type AiCacheMigrationFile,
+  type AiCacheMigrationPlan,
+} from "./ai-cache-migration.js";
 import { parseSha256Hash, serializeCanonicalJsonLine } from "./canonical-json.js";
+import { migrateStateSnapshot } from "./snapshot-migration.js";
 import {
   joinStatePath,
   validateStatePersistenceConfiguration,
@@ -20,21 +26,19 @@ import {
 } from "./branch-adapter.js";
 import { StateFormatError, StateHistoryError, StateSnapshotSemanticError } from "./errors.js";
 import {
+  appendStateHistoryNotificationEvents,
   appendStateHistoryRecord,
   createStateHistoryRecord,
   diffStateHistory,
   parseStateHistoryRecords,
+  resolveStateHistoryNotificationItemDisplayReference,
   type StateHistoryDiff,
   type StateHistoryInputEvent,
+  type StateHistoryNotificationEvent,
   type StateHistoryRecord,
 } from "./history.js";
 import { assertStatePublicSafety, assertStateValuesPublicSafety } from "./public-safety.js";
-import {
-  createStateSnapshot,
-  parseStateSnapshot,
-  serializeStateSnapshot,
-  type StateSnapshot,
-} from "./snapshot.js";
+import { createStateSnapshot, serializeStateSnapshot, type StateSnapshot } from "./snapshot.js";
 import {
   createEmptyStateNotificationLedger,
   createStateNotificationLedger,
@@ -45,7 +49,7 @@ import {
   type StateNotificationLedger,
   type StateRunReport,
 } from "./state-documents.js";
-import { type Repository, type UtcIsoDateTime } from "../domain/index.js";
+import { createUtcIsoDateTime, type Repository, type UtcIsoDateTime } from "../domain/index.js";
 
 const CACHE_KEY_PREFIX = "sha256:";
 const HISTORY_FILE_PATTERN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/u;
@@ -86,14 +90,68 @@ export type PersistNotificationLedgerInput = Readonly<{
   knownSecrets: readonly string[];
 }>;
 
+/** 通知送信結果と対応する履歴を保存する入力。 */
+export type PersistNotificationDeliveryInput = Readonly<{
+  snapshot: StateSnapshot;
+  notificationEvents: readonly StateHistoryNotificationEvent[];
+  notificationLedger: StateNotificationLedger;
+  committedAt: UtcIsoDateTime;
+  repositoryInventory: readonly Repository[];
+  knownSecrets: readonly string[];
+}>;
+
 /** 完全成功したrunの追跡開始時刻、通知ledger、run reportを保存する入力。 */
 export type PersistRunCompletionInput = Readonly<{
   snapshot: StateSnapshot;
+  notificationEvents: readonly StateHistoryNotificationEvent[];
   notificationLedger: StateNotificationLedger;
   runReport: StateRunReport;
   repositoryInventory: readonly Repository[];
   knownSecrets: readonly string[];
 }>;
+
+type PreparedNotificationHistory = Readonly<{
+  historyPath: string;
+  historySource: string;
+  historyRecords: readonly StateHistoryRecord[];
+}>;
+
+async function readAiCacheMigrationPlan(
+  adapter: StateBranchAdapter,
+  configuration: StatePersistenceConfiguration,
+  head: StateBranchHead,
+): Promise<AiCacheMigrationPlan> {
+  if (head.status === "missing") {
+    return createAiCacheMigrationPlan(configuration.aiCacheDirectory, []);
+  }
+  const paths = await adapter.listFiles(head.revision, configuration.aiCacheDirectory);
+  if (paths.length === 0) {
+    return createAiCacheMigrationPlan(configuration.aiCacheDirectory, []);
+  }
+  const results = await adapter.readFiles(head.revision, paths);
+  const files: AiCacheMigrationFile[] = [];
+  for (const path of paths) {
+    const result = results.get(path);
+    if (result == null) {
+      throw new StateFormatError("AI cache", {
+        cause: new TypeError("一覧にあるAI cacheを一括で読み取れません"),
+      });
+    }
+    const source = decodeStateFile(result, "AI cache");
+    if (source == null) {
+      throw new StateFormatError("AI cache", {
+        cause: new TypeError("一覧にあるAI cacheを読み取れません"),
+      });
+    }
+    files.push(
+      Object.freeze({
+        path,
+        source,
+      }),
+    );
+  }
+  return createAiCacheMigrationPlan(configuration.aiCacheDirectory, files);
+}
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -166,11 +224,54 @@ function assertRunConsistency(snapshot: StateSnapshot, report: StateRunReport): 
   }
 }
 
+function assertNotificationWaitingOnMatchesSnapshot(
+  event: StateHistoryNotificationEvent,
+  snapshot: StateSnapshot,
+  item: StateSnapshot["items"][number],
+): void {
+  if (event.waitingOn.status !== "recorded") {
+    throw new StateHistoryError("新規通知送信eventのwaitingOnが記録済みではありません");
+  }
+  if (item.waitingOn.length === 0) {
+    throw new StateHistoryError("通知送信eventの対象itemにwaitingOnがありません");
+  }
+  if (event.waitingOn.values.length !== item.waitingOn.length) {
+    throw new StateHistoryError("通知送信eventとsnapshotのwaitingOn件数が一致しません");
+  }
+  for (const [index, expected] of item.waitingOn.entries()) {
+    const actual = event.waitingOn.values[index];
+    if (actual == null) {
+      throw new StateHistoryError("通知送信eventとsnapshotのwaitingOnが順序込みで一致しません");
+    }
+    if (
+      actual.kind !== expected.kind ||
+      actual.candidateId !== expected.candidateId ||
+      actual.role !== expected.role
+    ) {
+      throw new StateHistoryError("通知送信eventとsnapshotのwaitingOnが順序込みで一致しません");
+    }
+    if (expected.kind !== "item") {
+      continue;
+    }
+    if (actual.kind !== "item") {
+      throw new StateHistoryError("通知送信eventのitem waitingOn種別が一致しません");
+    }
+    if (
+      actual.displayReference !==
+      resolveStateHistoryNotificationItemDisplayReference(snapshot, expected.candidateId)
+    ) {
+      throw new StateHistoryError("通知送信eventのitem waitingOn表示参照とsnapshotが一致しません");
+    }
+  }
+}
+
 /** 同じbranch revisionを読み、全成果物を一つのcommitへまとめるsession。 */
 export class StatePersistenceSession {
   readonly #adapter: StateBranchAdapter;
   readonly #configuration: StatePersistenceConfiguration;
+  readonly #aiCacheMigrationPlan: AiCacheMigrationPlan;
   readonly #pendingAiCacheEntries = new Map<AiCacheKey, AiCacheEntry>();
+  #pendingAiCacheDeletionPaths: readonly string[];
   #head: StateBranchHead;
 
   public readonly aiCache: AiCacheStore;
@@ -179,12 +280,15 @@ export class StatePersistenceSession {
     adapter: StateBranchAdapter,
     configuration: StatePersistenceConfiguration,
     head: StateBranchHead,
+    aiCacheMigrationPlan: AiCacheMigrationPlan,
   ) {
     this.#adapter = adapter;
     this.#configuration = Object.freeze({
       ...configuration,
     });
     this.#head = head;
+    this.#aiCacheMigrationPlan = aiCacheMigrationPlan;
+    this.#pendingAiCacheDeletionPaths = aiCacheMigrationPlan.legacyCachePaths;
     this.aiCache = Object.freeze({
       read: (cacheKey) => this.#readAiCache(cacheKey),
       write: (entry) => this.#bufferAiCache(entry),
@@ -198,7 +302,32 @@ export class StatePersistenceSession {
   ): Promise<StatePersistenceSession> {
     validateStatePersistenceConfiguration(configuration);
     const head = await adapter.resolveHead(configuration.branch);
-    return new StatePersistenceSession(adapter, configuration, head);
+    const aiCacheMigrationPlan = await readAiCacheMigrationPlan(adapter, configuration, head);
+    return new StatePersistenceSession(adapter, configuration, head, aiCacheMigrationPlan);
+  }
+
+  #consumeAiCacheMigration(): void {
+    this.#pendingAiCacheDeletionPaths = Object.freeze([]);
+  }
+
+  #snapshotUpdate(snapshot: StateSnapshot): StateFileUpdate {
+    return Object.freeze({
+      path: this.#configuration.snapshotPath,
+      bytes: encodeStateFile(serializeStateSnapshot(snapshot)),
+    });
+  }
+
+  /** 現在のsession headをリモートへ公開する。 */
+  public async publish(): Promise<void> {
+    if (this.#head.status === "missing") {
+      throw new StateFormatError("state branch", {
+        cause: new TypeError("state branch作成前に公開できません"),
+      });
+    }
+    await this.#adapter.publish({
+      branch: this.#configuration.branch,
+      revision: this.#head.revision,
+    });
   }
 
   async #readFile(path: string): Promise<StateFileReadResult> {
@@ -293,7 +422,7 @@ export class StatePersistenceSession {
     }
     return Object.freeze({
       status: "available",
-      snapshot: parseStateSnapshot(source),
+      snapshot: migrateStateSnapshot(source, this.#aiCacheMigrationPlan.legacyEntriesByCacheKey),
     });
   }
 
@@ -377,19 +506,99 @@ export class StatePersistenceSession {
     );
   }
 
+  async #prepareNotificationHistory(
+    snapshot: StateSnapshot,
+    runId: string,
+    notificationEvents: readonly StateHistoryNotificationEvent[],
+    committedAt: UtcIsoDateTime,
+    context: string,
+  ): Promise<PreparedNotificationHistory> {
+    const historyDate = snapshot.generatedAt.slice(0, 10);
+    const historyPath = joinStatePath(this.#configuration.historyDirectory, `${historyDate}.jsonl`);
+    const existingHistorySource = await this.#readHistorySource(historyPath);
+    if (existingHistorySource == null) {
+      throw new StateHistoryError(`${context}の対象history fileを読み取れません`);
+    }
+    const existingHistoryRecords = parseStateHistoryRecords(existingHistorySource);
+    if (existingHistoryRecords.some((record) => record.date !== historyDate)) {
+      throw new StateHistoryError("日次履歴のファイル名とrecordの日付が一致しません");
+    }
+    const targetHistoryRecords = existingHistoryRecords.filter((record) => record.runId === runId);
+    if (targetHistoryRecords.length !== 1) {
+      throw new StateHistoryError(`${context}の対象history recordが一意に定まりません`);
+    }
+    const historySource = appendStateHistoryNotificationEvents(
+      existingHistorySource,
+      runId,
+      notificationEvents,
+    );
+    const historyRecords = parseStateHistoryRecords(historySource);
+    const updatedTargetHistoryRecords = historyRecords.filter((record) => record.runId === runId);
+    if (updatedTargetHistoryRecords.length !== 1) {
+      throw new StateHistoryError(`${context}の対象history recordが一意に定まりません`);
+    }
+    const targetHistoryRecord = updatedTargetHistoryRecords[0];
+    if (targetHistoryRecord == null) {
+      throw new StateHistoryError(`${context}の対象history recordを取得できません`);
+    }
+    for (const event of notificationEvents) {
+      if (event.sentAt < targetHistoryRecord.recordedAt || event.sentAt > committedAt) {
+        throw new StateHistoryError("通知送信時刻がrunの記録時刻範囲外です");
+      }
+      const item = snapshot.items.find((candidate) => candidate.nodeId === event.itemNodeId);
+      if (item == null) {
+        throw new StateHistoryError("通知送信eventの対象itemがsnapshotにありません");
+      }
+      if (
+        item.repositoryId !== event.repositoryId ||
+        item.type !== event.type ||
+        item.displayReference !== event.displayReference ||
+        item.number !== event.number ||
+        item.title !== event.title ||
+        item.url !== event.url
+      ) {
+        throw new StateHistoryError("通知送信eventとsnapshotのitem表示情報が一致しません");
+      }
+      assertNotificationWaitingOnMatchesSnapshot(event, snapshot, item);
+    }
+    return Object.freeze({
+      historyPath,
+      historySource,
+      historyRecords,
+    });
+  }
+
   async #commitNotificationLedger(
     input: PersistNotificationLedgerInput,
   ): Promise<PersistStateTransactionResult> {
     const notificationLedger = createStateNotificationLedger(input.notificationLedger);
-    assertStateValuesPublicSafety([notificationLedger], input.knownSecrets);
+    const snapshotResult = this.#head.status === "present" ? await this.loadSnapshot() : undefined;
+    const snapshot = snapshotResult?.status === "available" ? snapshotResult.snapshot : undefined;
+    if (snapshot == null) {
+      assertStateValuesPublicSafety([notificationLedger], input.knownSecrets);
+    } else {
+      assertStatePublicSafety({
+        snapshot,
+        repositoryInventory: snapshot.repositories,
+        additionalValues: [notificationLedger],
+        knownSecrets: input.knownSecrets,
+      });
+    }
     const update = Object.freeze({
       path: this.#configuration.notificationLedgerPath,
       bytes: encodeStateFile(serializeStateNotificationLedger(notificationLedger)),
     } satisfies StateFileUpdate);
+    const updates: StateFileUpdate[] = [];
+    if (snapshot != null) {
+      updates.push(this.#snapshotUpdate(snapshot));
+    }
+    updates.push(update);
+    updates.sort((left, right) => compareStrings(left.path, right.path));
     const result = await this.#adapter.commit({
       branch: this.#configuration.branch,
       expectedHead: this.#head,
-      updates: [update],
+      updates,
+      deletions: this.#pendingAiCacheDeletionPaths,
       message: `tracker notification ledger ${input.committedAt}`,
       committedAt: input.committedAt,
     });
@@ -397,9 +606,10 @@ export class StatePersistenceSession {
       status: "present",
       revision: result.revision,
     });
+    this.#consumeAiCacheMigration();
     return Object.freeze({
       ...result,
-      updatedPaths: Object.freeze([update.path]),
+      updatedPaths: Object.freeze(updates.map((value) => value.path)),
     });
   }
 
@@ -439,6 +649,74 @@ export class StatePersistenceSession {
     });
   }
 
+  /** 通知送信結果と履歴を同じstate branch commitへ保存する。 */
+  public async persistNotificationDelivery(
+    input: PersistNotificationDeliveryInput,
+  ): Promise<PersistStateTransactionResult> {
+    if (this.#head.status === "missing") {
+      throw new StateFormatError("notification delivery", {
+        cause: new TypeError("state branch作成前に通知送信結果を保存できません"),
+      });
+    }
+    const snapshot = createStateSnapshot(input.snapshot);
+    const notificationEvents = input.notificationEvents.map((event) => ({
+      ...event,
+      reasons: [...event.reasons],
+    }));
+    const notificationLedger = createStateNotificationLedger(input.notificationLedger);
+    const currentResult = await this.loadSnapshot();
+    if (currentResult.status !== "available") {
+      throw new StateFormatError("notification delivery", {
+        cause: new TypeError("state branchのsnapshotを読み取れません"),
+      });
+    }
+    if (serializeStateSnapshot(snapshot) !== serializeStateSnapshot(currentResult.snapshot)) {
+      throw new StateSnapshotSemanticError("通知送信時にsnapshot内容が変化しています");
+    }
+    const history = await this.#prepareNotificationHistory(
+      snapshot,
+      snapshot.run.id,
+      notificationEvents,
+      input.committedAt,
+      "通知送信",
+    );
+    assertStatePublicSafety({
+      snapshot,
+      repositoryInventory: input.repositoryInventory,
+      additionalValues: [...history.historyRecords, notificationLedger],
+      knownSecrets: input.knownSecrets,
+    });
+    const updates: StateFileUpdate[] = [
+      this.#snapshotUpdate(snapshot),
+      {
+        path: this.#configuration.notificationLedgerPath,
+        bytes: encodeStateFile(serializeStateNotificationLedger(notificationLedger)),
+      },
+      {
+        path: history.historyPath,
+        bytes: encodeStateFile(history.historySource),
+      },
+    ];
+    updates.sort((left, right) => compareStrings(left.path, right.path));
+    const result = await this.#adapter.commit({
+      branch: this.#configuration.branch,
+      expectedHead: this.#head,
+      updates,
+      deletions: this.#pendingAiCacheDeletionPaths,
+      message: `tracker notification delivery ${snapshot.run.id}`,
+      committedAt: input.committedAt,
+    });
+    this.#head = Object.freeze({
+      status: "present",
+      revision: result.revision,
+    });
+    this.#consumeAiCacheMigration();
+    return Object.freeze({
+      ...result,
+      updatedPaths: Object.freeze(updates.map((update) => update.path)),
+    });
+  }
+
   /** 完全成功したrunの追跡開始時刻、通知ledger、run reportをatomic commitする。 */
   public async persistRunCompletion(
     input: PersistRunCompletionInput,
@@ -449,6 +727,10 @@ export class StatePersistenceSession {
       });
     }
     const snapshot = createStateSnapshot(input.snapshot);
+    const notificationEvents = input.notificationEvents.map((event) => ({
+      ...event,
+      reasons: [...event.reasons],
+    }));
     const runReport = createStateRunReport(input.runReport);
     assertRunConsistency(snapshot, runReport);
     const currentResult = await this.loadSnapshot();
@@ -485,11 +767,21 @@ export class StatePersistenceSession {
         "run完了時にtracking.startAt以外のsnapshot内容が変化しています",
       );
     }
+    if (snapshotUpdates.length === 0) {
+      snapshotUpdates.push(this.#snapshotUpdate(snapshot));
+    }
     const notificationLedger = createStateNotificationLedger(input.notificationLedger);
+    const history = await this.#prepareNotificationHistory(
+      snapshot,
+      runReport.runId,
+      notificationEvents,
+      createUtcIsoDateTime(runReport.finishedAt),
+      "run完了",
+    );
     assertStatePublicSafety({
       snapshot,
       repositoryInventory: input.repositoryInventory,
-      additionalValues: [notificationLedger, runReport],
+      additionalValues: [...history.historyRecords, notificationLedger, runReport],
       knownSecrets: input.knownSecrets,
     });
     const updates: StateFileUpdate[] = [
@@ -502,12 +794,17 @@ export class StatePersistenceSession {
         path: joinStatePath(this.#configuration.runReportsDirectory, `${runReport.date}.json`),
         bytes: encodeStateFile(serializeStateRunReport(runReport)),
       },
+      {
+        path: history.historyPath,
+        bytes: encodeStateFile(history.historySource),
+      },
     ];
     updates.sort((left, right) => compareStrings(left.path, right.path));
     const result = await this.#adapter.commit({
       branch: this.#configuration.branch,
       expectedHead: this.#head,
       updates,
+      deletions: this.#pendingAiCacheDeletionPaths,
       message: `tracker run completion ${snapshot.run.id}`,
       committedAt: runReport.finishedAt,
     });
@@ -515,6 +812,7 @@ export class StatePersistenceSession {
       status: "present",
       revision: result.revision,
     });
+    this.#consumeAiCacheMigration();
     return Object.freeze({
       ...result,
       updatedPaths: Object.freeze(updates.map((update) => update.path)),
@@ -582,6 +880,7 @@ export class StatePersistenceSession {
       branch: this.#configuration.branch,
       expectedHead: this.#head,
       updates,
+      deletions: this.#pendingAiCacheDeletionPaths,
       message: `tracker state ${runDate} ${snapshot.run.id}`,
       committedAt: snapshot.generatedAt,
     });
@@ -589,6 +888,7 @@ export class StatePersistenceSession {
       status: "present",
       revision: result.revision,
     });
+    this.#consumeAiCacheMigration();
     this.#pendingAiCacheEntries.clear();
     return Object.freeze({
       ...result,

@@ -12,12 +12,13 @@ import {
 
 const workflowJobResultSchema = z.enum(["success", "failure", "cancelled", "skipped"]);
 const workflowJobResultsSchema = z.strictObject({
-  "test-eval": workflowJobResultSchema,
+  "quality-eval": workflowJobResultSchema,
   "collect-analyze": workflowJobResultSchema,
   "persist-state": workflowJobResultSchema,
   "build-pages": workflowJobResultSchema,
   "deploy-pages": workflowJobResultSchema,
   "notify-discord": workflowJobResultSchema,
+  "publish-notification-history": workflowJobResultSchema,
   "notify-operations": workflowJobResultSchema,
 });
 const workflowRunReportInputSchema = z.strictObject({
@@ -41,7 +42,7 @@ export type WorkflowJobResults = Readonly<z.output<typeof workflowJobResultsSche
 
 /** CLI reportと全job結果をまとめたworkflow run report。 */
 export type WorkflowRunReport = Readonly<{
-  schemaVersion: "1";
+  schemaVersion: "3";
   workflowRunId: string;
   workflowRunAttempt: number;
   status: "success" | "fallback" | "failure";
@@ -53,12 +54,14 @@ export type WorkflowRunReport = Readonly<{
 
 function requiredJobFailed(jobs: WorkflowJobResults): boolean {
   return (
-    jobs["test-eval"] !== "success" ||
+    jobs["quality-eval"] !== "success" ||
     jobs["collect-analyze"] !== "success" ||
     jobs["persist-state"] !== "success" ||
     jobs["build-pages"] !== "success" ||
     jobs["deploy-pages"] !== "success" ||
-    jobs["notify-discord"] !== "success"
+    jobs["notify-discord"] !== "success" ||
+    (jobs["publish-notification-history"] !== "success" &&
+      jobs["publish-notification-history"] !== "skipped")
   );
 }
 
@@ -95,7 +98,7 @@ export function createWorkflowRunReport(value: unknown): WorkflowRunReport {
   const status = workflowStatus(parsed.data.jobs, collectAnalyzeReport);
   const metrics = collectAnalyzeReport?.metrics ?? createEmptyRunMetrics();
   return Object.freeze({
-    schemaVersion: "1",
+    schemaVersion: "3",
     workflowRunId: parsed.data.workflowRunId,
     workflowRunAttempt: parsed.data.workflowRunAttempt,
     status,

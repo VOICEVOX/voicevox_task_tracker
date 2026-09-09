@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "1",
+  "kind": "standard",
+  "items": [
+    {
+      "nodeId": "prompt-injection-issue",
+      "status": "waiting_for_work",
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "reviewer-two",
+          "role": "assignee"
+        }
+      ],
+      "severity": "watch",
+      "stallSince": "2026-07-20T00:00:00.000Z"
+    }
+  ],
+  "relations": [],
+  "notifications": [
+    {
+      "itemNodeId": "prompt-injection-issue",
+      "reasonCodes": ["work_overdue"]
+    }
+  ],
+  "publication": {
+    "status": "published"
+  },
+  "fixedAi": {
+    "acceptedOutputCount": 1,
+    "rejectedOutputCount": 1,
+    "networkCallCount": 0
+  }
+}

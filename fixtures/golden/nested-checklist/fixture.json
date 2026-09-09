@@ -1,0 +1,512 @@
+{
+  "schemaVersion": "1",
+  "name": "nested-checklist",
+  "input": {
+    "kind": "standard",
+    "evaluatedAt": "2026-08-01T00:00:00.000Z",
+    "repositories": [
+      {
+        "id": "fixture-repository-release",
+        "name": "fixture-release",
+        "visibility": "public"
+      }
+    ],
+    "items": [
+      {
+        "type": "issue",
+        "nodeId": "nested-release-issue",
+        "repositoryId": "fixture-repository-release",
+        "number": 501,
+        "title": "匿名リリースの入れ子チェックリスト",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-06-01T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-01T00:00:00.000Z",
+        "observedAt": "2026-08-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "fixture-release-planner",
+          "login": "release-planner"
+        },
+        "assignees": [],
+        "labels": [],
+        "events": [],
+        "explicitRequestSourceIds": ["release-body"],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "available",
+          "observedAt": "2026-07-02T00:00:00.000Z",
+          "statusSince": "2026-07-01T00:00:00.000Z",
+          "ownerSince": "2026-07-01T00:00:00.000Z",
+          "stallSince": "2026-07-01T00:00:00.000Z",
+          "lastProgressAt": "2026-07-01T00:00:00.000Z",
+          "lastHumanActivityAt": "2026-07-01T00:00:00.000Z",
+          "severity": "urgent"
+        }
+      },
+      {
+        "type": "issue",
+        "nodeId": "nested-core-issue",
+        "repositoryId": "fixture-repository-release",
+        "number": 502,
+        "title": "匿名リリースの中間作業",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-06-02T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-01T00:00:00.000Z",
+        "observedAt": "2026-08-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "fixture-release-worker-one",
+          "login": "release-worker-one"
+        },
+        "assignees": [],
+        "labels": [],
+        "events": [],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "available",
+          "observedAt": "2026-07-02T00:00:00.000Z",
+          "statusSince": "2026-07-01T00:00:00.000Z",
+          "ownerSince": "2026-07-01T00:00:00.000Z",
+          "stallSince": "2026-07-01T00:00:00.000Z",
+          "lastProgressAt": "2026-07-01T00:00:00.000Z",
+          "lastHumanActivityAt": "2026-07-01T00:00:00.000Z",
+          "severity": "urgent"
+        }
+      },
+      {
+        "type": "issue",
+        "nodeId": "nested-engine-issue",
+        "repositoryId": "fixture-repository-release",
+        "number": 503,
+        "title": "匿名リリースの内側作業",
+        "state": "open",
+        "closedAt": null,
+        "createdAt": "2026-06-03T00:00:00.000Z",
+        "githubUpdatedAt": "2026-07-01T00:00:00.000Z",
+        "observedAt": "2026-08-01T00:00:00.000Z",
+        "author": {
+          "type": "human",
+          "nodeId": "fixture-release-worker-two",
+          "login": "release-worker-two"
+        },
+        "assignees": [],
+        "labels": [],
+        "events": [],
+        "explicitRequestSourceIds": [],
+        "latestChange": "none",
+        "notificationClass": "standard",
+        "priorityWeight": 0,
+        "previousState": {
+          "availability": "available",
+          "observedAt": "2026-07-02T00:00:00.000Z",
+          "statusSince": "2026-07-01T00:00:00.000Z",
+          "ownerSince": "2026-07-01T00:00:00.000Z",
+          "stallSince": "2026-07-01T00:00:00.000Z",
+          "lastProgressAt": "2026-07-01T00:00:00.000Z",
+          "lastHumanActivityAt": "2026-07-01T00:00:00.000Z",
+          "severity": "urgent"
+        }
+      }
+    ],
+    "relations": [
+      {
+        "id": "rel:checklist-release-core",
+        "sourceId": "release-core-checklist",
+        "currentNodeId": "nested-release-issue",
+        "fromNodeId": "nested-release-issue",
+        "toNodeId": "nested-core-issue",
+        "candidateType": "parent_of",
+        "provenance": "checklist"
+      },
+      {
+        "id": "rel:checklist-core-engine",
+        "sourceId": "core-engine-checklist",
+        "currentNodeId": "nested-core-issue",
+        "fromNodeId": "nested-core-issue",
+        "toNodeId": "nested-engine-issue",
+        "candidateType": "parent_of",
+        "provenance": "checklist"
+      }
+    ],
+    "fixedAiAnalyses": [
+      {
+        "itemNodeId": "nested-release-issue",
+        "input": {
+          "schemaVersion": "4",
+          "now": "2026-08-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "nested-release-issue",
+            "url": "https://github.com/VOICEVOX/fixture-release/issues/501",
+            "type": "issue",
+            "title": "匿名リリースの入れ子チェックリスト",
+            "authorCandidateId": "release-planner"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "fixture-maintainer"
+              }
+            ],
+            "relations": [
+              {
+                "id": "rel:checklist-release-core",
+                "targetUrl": "https://github.com/VOICEVOX/fixture-release/issues/502"
+              }
+            ]
+          },
+          "sources": [
+            {
+              "id": "body:release",
+              "kind": "body",
+              "actorType": "human",
+              "author": { "status": "unavailable" },
+              "createdAt": "2026-06-01T00:00:00.000Z",
+              "content": "- [ ] 中間作業\n  - [ ] 内側作業"
+            }
+          ],
+          "deterministicSignals": {},
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
+        },
+        "acceptedOutput": {
+          "schemaVersion": "6",
+          "item": {
+            "nodeId": "nested-release-issue",
+            "url": "https://github.com/VOICEVOX/fixture-release/issues/501"
+          },
+          "status": {
+            "value": "waiting_for_assessment",
+            "evidence": [
+              {
+                "sourceId": "body:release",
+                "summary": "チェックリストの字下げで階層が示されています",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "user",
+                "candidateId": "fixture-maintainer",
+                "role": "maintainer",
+                "reasonSummary": "未アサインのため内容確認待ちです",
+                "sourceIds": ["body:release"],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "body:release",
+                "summary": "チェックリストの字下げで階層が示されています",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "maintainerがリリース作業の内容を確認する",
+            "evidence": [
+              {
+                "sourceId": "body:release",
+                "summary": "チェックリストの字下げで階層が示されています",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [
+              {
+                "candidateId": "rel:checklist-release-core",
+                "verdict": "target_is_subtask_of_current",
+                "reasonSummary": "入れ子チェックリストの直下作業です",
+                "sourceIds": ["body:release"],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "body:release",
+                "summary": "チェックリストの字下げで階層が示されています",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "progress": {
+            "value": {
+              "latestMeaningfulSourceId": "body:release",
+              "reasonSummary": "リリース作業一覧が作成されました",
+              "confidence": 0.9
+            },
+            "evidence": [
+              {
+                "sourceId": "body:release",
+                "summary": "チェックリストの字下げで階層が示されています",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "importance": {
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の自然言語要因はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "body:release",
+                "summary": "チェックリストの字下げで階層が示されています",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "deadline": {
+            "value": {
+              "date": null,
+              "rationale": "期限や時期の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "body:release",
+                "summary": "チェックリストの字下げで階層が示されています",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "notification": {
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            },
+            "evidence": [
+              {
+                "sourceId": "body:release",
+                "summary": "チェックリストの字下げで階層が示されています",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          }
+        },
+        "rejectedOutputs": []
+      },
+      {
+        "itemNodeId": "nested-core-issue",
+        "input": {
+          "schemaVersion": "4",
+          "now": "2026-08-01T00:00:00.000Z",
+          "item": {
+            "nodeId": "nested-core-issue",
+            "url": "https://github.com/VOICEVOX/fixture-release/issues/502",
+            "type": "issue",
+            "title": "匿名リリースの中間作業",
+            "authorCandidateId": "release-worker-one"
+          },
+          "candidates": {
+            "waitingOn": [
+              {
+                "id": "fixture-maintainer"
+              }
+            ],
+            "relations": [
+              {
+                "id": "rel:checklist-core-engine",
+                "targetUrl": "https://github.com/VOICEVOX/fixture-release/issues/503"
+              }
+            ]
+          },
+          "sources": [
+            {
+              "id": "body:core-task",
+              "kind": "body",
+              "actorType": "human",
+              "author": { "status": "unavailable" },
+              "createdAt": "2026-06-02T00:00:00.000Z",
+              "content": "- [ ] 内側作業"
+            }
+          ],
+          "deterministicSignals": {},
+          "selectedElements": [
+            "status",
+            "waitingOn",
+            "nextAction",
+            "relations",
+            "progress",
+            "importance",
+            "deadline",
+            "notification"
+          ],
+          "lockedElements": {}
+        },
+        "acceptedOutput": {
+          "schemaVersion": "6",
+          "item": {
+            "nodeId": "nested-core-issue",
+            "url": "https://github.com/VOICEVOX/fixture-release/issues/502"
+          },
+          "status": {
+            "value": "waiting_for_assessment",
+            "evidence": [
+              {
+                "sourceId": "body:core-task",
+                "summary": "チェックリストに内側作業があります",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "waitingOn": {
+            "value": [
+              {
+                "kind": "user",
+                "candidateId": "fixture-maintainer",
+                "role": "maintainer",
+                "reasonSummary": "未アサインのため内容確認待ちです",
+                "sourceIds": ["body:core-task"],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "body:core-task",
+                "summary": "チェックリストに内側作業があります",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "nextAction": {
+            "value": "maintainerが中間作業の内容を確認する",
+            "evidence": [
+              {
+                "sourceId": "body:core-task",
+                "summary": "チェックリストに内側作業があります",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "relations": {
+            "value": [
+              {
+                "candidateId": "rel:checklist-core-engine",
+                "verdict": "target_is_subtask_of_current",
+                "reasonSummary": "入れ子チェックリストの内側作業です",
+                "sourceIds": ["body:core-task"],
+                "confidence": 0.95
+              }
+            ],
+            "evidence": [
+              {
+                "sourceId": "body:core-task",
+                "summary": "チェックリストに内側作業があります",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "progress": {
+            "value": {
+              "latestMeaningfulSourceId": "body:core-task",
+              "reasonSummary": "中間作業が作成されました",
+              "confidence": 0.9
+            },
+            "evidence": [
+              {
+                "sourceId": "body:core-task",
+                "summary": "チェックリストに内側作業があります",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "importance": {
+            "value": {
+              "significantFeature": false,
+              "futureRisk": false,
+              "rationale": "重要度の自然言語要因はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "body:core-task",
+                "summary": "チェックリストに内側作業があります",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "deadline": {
+            "value": {
+              "date": null,
+              "rationale": "期限や時期の根拠はありません"
+            },
+            "evidence": [
+              {
+                "sourceId": "body:core-task",
+                "summary": "チェックリストに内側作業があります",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          },
+          "notification": {
+            "value": {
+              "recommended": false,
+              "reasonCode": "none",
+              "reasonSummary": "通知は決定論的な停滞判定へ委ねます"
+            },
+            "evidence": [
+              {
+                "sourceId": "body:core-task",
+                "summary": "チェックリストに内側作業があります",
+                "supports": "element"
+              }
+            ],
+            "confidence": 0.95,
+            "uncertainties": []
+          }
+        },
+        "rejectedOutputs": []
+      }
+    ],
+    "previousNodeStates": {}
+  }
+}

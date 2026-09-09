@@ -1,19 +1,23 @@
 import {
   buildSourceId,
-  createGitHubNodeId,
   isTerminalStatus,
   parseSourceId,
-  type GitHubItemUrl,
+  validateDeadlineDate,
   type SourceId,
 } from "../domain/index.js";
-import { type RelationAssessmentVerdict, type RelationCandidateId } from "../graph/index.js";
-import { assertNonNullable } from "../util/index.js";
+import type {
+  AiAnalysisElement,
+  AiAnalysisElementMigrationResult,
+  AiAnalysisRelation,
+  AiAnalysisWaitingOn,
+} from "../domain/ai-analysis-elements.js";
+import type { RelationAssessmentVerdict } from "../graph/index.js";
 import { CodexOutputSemanticValidationError, type CodexOutputValidationIssue } from "./errors.js";
 import { type CodexAnalysisInput } from "./input.js";
 import {
-  type SchemaValidCodexAnalysisOutput,
-  type ValidatedCodexAnalysisOutput,
-} from "./output-types.js";
+  validateCodexElementOutput,
+  type SchemaValidCodexElementOutput,
+} from "./element-output.js";
 
 const TARGET_ORGANIZATION = "VOICEVOX";
 const URL_IN_TEXT_PATTERN = /https?:\/\/[^\s<>"']+/gu;
@@ -25,20 +29,23 @@ export type NativeRelationConstraint = Readonly<{
   verdict: RelationAssessmentVerdict;
 }>;
 
-type InputSource = CodexAnalysisInput["sources"][number];
-
 type KnownSource = Readonly<{
   id: SourceId;
   occurredAt: number;
-  kind: InputSource["kind"];
-  actorType: InputSource["actorType"];
-  author: InputSource["author"];
 }>;
 
 type TextField = Readonly<{
   path: string;
   value: string;
 }>;
+
+type SourceReference = Readonly<{
+  path: string;
+  sourceId: string;
+}>;
+
+/** 入力へ対応するsemantic検証済みの要素別Codex出力。 */
+export type CodexElementOutput = SchemaValidCodexElementOutput;
 
 type NativeSignalDefinition = Readonly<{
   key: string;
@@ -77,21 +84,6 @@ function createSourceId(value: string): SourceId {
   return buildSourceId(parts.kind, parts.originalId);
 }
 
-function createRelationCandidateId(value: string): RelationCandidateId {
-  if (!value.startsWith("rel:") || value.length === "rel:".length) {
-    throw new TypeError("relation candidate IDはrel:で始めてください");
-  }
-  return `rel:${value.slice("rel:".length)}`;
-}
-
-function createGitHubItemUrl(value: string): GitHubItemUrl {
-  const prefix = "https://github.com/";
-  if (!value.startsWith(prefix) || value.length === prefix.length) {
-    throw new TypeError("GitHub項目URLの形式が不正です");
-  }
-  return `https://github.com/${value.slice(prefix.length)}`;
-}
-
 function createKnownSources(input: CodexAnalysisInput): ReadonlyMap<string, KnownSource> {
   const sources = new Map<string, KnownSource>();
   for (const source of input.sources) {
@@ -104,115 +96,95 @@ function createKnownSources(input: CodexAnalysisInput): ReadonlyMap<string, Know
       Object.freeze({
         id: createSourceId(source.id),
         occurredAt,
-        kind: source.kind,
-        actorType: source.actorType,
-        author: source.author,
       }),
     );
   }
   return sources;
 }
 
-function collectReferencedSourceIds(
-  output: SchemaValidCodexAnalysisOutput,
-): readonly Readonly<{ path: string; sourceId: string }>[] {
-  const references: Readonly<{ path: string; sourceId: string }>[] = [];
-  for (const [waitingOnIndex, waitingOn] of output.waitingOn.entries()) {
-    for (const [sourceIndex, sourceId] of waitingOn.sourceIds.entries()) {
-      references.push(
-        Object.freeze({
-          path: `/waitingOn/${waitingOnIndex.toString()}/sourceIds/${sourceIndex.toString()}`,
-          sourceId,
-        }),
-      );
-    }
-  }
-  for (const [relationIndex, relation] of output.relations.entries()) {
-    for (const [sourceIndex, sourceId] of relation.sourceIds.entries()) {
-      references.push(
-        Object.freeze({
-          path: `/relations/${relationIndex.toString()}/sourceIds/${sourceIndex.toString()}`,
-          sourceId,
-        }),
-      );
-    }
-  }
-  if (output.progress.latestMeaningfulSourceId != null) {
+function addResultEvidence(
+  result: Pick<AiAnalysisElementMigrationResult, "evidence">,
+  path: string,
+  references: SourceReference[],
+): void {
+  for (const [index, evidence] of result.evidence.entries()) {
     references.push(
       Object.freeze({
-        path: "/progress/latestMeaningfulSourceId",
-        sourceId: output.progress.latestMeaningfulSourceId,
-      }),
-    );
-  }
-  for (const [evidenceIndex, evidence] of output.evidence.entries()) {
-    references.push(
-      Object.freeze({
-        path: `/evidence/${evidenceIndex.toString()}/sourceId`,
+        path: `${path}/evidence/${index.toString()}/sourceId`,
         sourceId: evidence.sourceId,
       }),
     );
   }
+}
+
+function collectReferencedSourceIds(
+  output: SchemaValidCodexElementOutput,
+): readonly SourceReference[] {
+  const references: SourceReference[] = [];
+  if (output.status != null) {
+    addResultEvidence(output.status, "/status", references);
+  }
+
+  if (output.waitingOn != null) {
+    addResultEvidence(output.waitingOn, "/waitingOn", references);
+    for (const [index, candidate] of output.waitingOn.value.entries()) {
+      for (const [sourceIndex, sourceId] of candidate.sourceIds.entries()) {
+        references.push(
+          Object.freeze({
+            path: `/waitingOn/value/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
+            sourceId,
+          }),
+        );
+      }
+    }
+  }
+
+  if (output.nextAction != null) {
+    addResultEvidence(output.nextAction, "/nextAction", references);
+  }
+
+  if (output.relations != null) {
+    addResultEvidence(output.relations, "/relations", references);
+    for (const [index, candidate] of output.relations.value.entries()) {
+      for (const [sourceIndex, sourceId] of candidate.sourceIds.entries()) {
+        references.push(
+          Object.freeze({
+            path: `/relations/value/${index.toString()}/sourceIds/${sourceIndex.toString()}`,
+            sourceId,
+          }),
+        );
+      }
+    }
+  }
+
+  if (output.progress != null) {
+    addResultEvidence(output.progress, "/progress", references);
+    if (output.progress.value.latestMeaningfulSourceId != null) {
+      references.push(
+        Object.freeze({
+          path: "/progress/value/latestMeaningfulSourceId",
+          sourceId: output.progress.value.latestMeaningfulSourceId,
+        }),
+      );
+    }
+  }
+
+  if (output.importance != null) {
+    addResultEvidence(output.importance, "/importance", references);
+  }
+
+  if (output.deadline != null) {
+    addResultEvidence(output.deadline, "/deadline", references);
+  }
+
+  if (output.notification != null) {
+    addResultEvidence(output.notification, "/notification", references);
+  }
   return Object.freeze(references);
 }
 
-function validateUniqueSourceIds(
-  sourceIds: readonly string[],
-  path: string,
-  issues: CodexOutputValidationIssue[],
-): void {
-  const usedSourceIds = new Set<string>();
-  for (const [index, sourceId] of sourceIds.entries()) {
-    if (usedSourceIds.has(sourceId)) {
-      issues.push(
-        createIssue(
-          `${path}/${index.toString()}`,
-          "duplicate_source_id",
-          "source IDが重複しています",
-        ),
-      );
-    }
-    usedSourceIds.add(sourceId);
-  }
-}
-
-function validateSourceIdUniqueness(
-  output: SchemaValidCodexAnalysisOutput,
-  issues: CodexOutputValidationIssue[],
-): void {
-  for (const [index, waitingOn] of output.waitingOn.entries()) {
-    validateUniqueSourceIds(
-      waitingOn.sourceIds,
-      `/waitingOn/${index.toString()}/sourceIds`,
-      issues,
-    );
-  }
-  for (const [index, relation] of output.relations.entries()) {
-    validateUniqueSourceIds(relation.sourceIds, `/relations/${index.toString()}/sourceIds`, issues);
-  }
-}
-
-function collectInputStrings(value: unknown, strings: Set<string>): void {
-  if (typeof value === "string") {
-    strings.add(value);
-    return;
-  }
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      collectInputStrings(entry, strings);
-    }
-    return;
-  }
-  if (typeof value !== "object" || value == null) {
-    return;
-  }
-  for (const entry of Object.values(value)) {
-    collectInputStrings(entry, strings);
-  }
-}
-
 function validateSourceReferences(
-  output: SchemaValidCodexAnalysisOutput,
+  output: SchemaValidCodexElementOutput,
   input: CodexAnalysisInput,
   knownSources: ReadonlyMap<string, KnownSource>,
   issues: CodexOutputValidationIssue[],
@@ -257,86 +229,182 @@ function validateSourceReferences(
   }
 }
 
-function validateSelfCommitmentEvidence(
-  output: SchemaValidCodexAnalysisOutput,
-  knownSources: ReadonlyMap<string, KnownSource>,
-  issues: CodexOutputValidationIssue[],
-): void {
-  const selfCommitments = output.evidence.flatMap((evidence, index) =>
-    evidence.supports === "self_commitment" ? [{ evidence, index }] : [],
-  );
-  if (selfCommitments.length === 0) {
+function collectInputStrings(value: unknown, strings: Set<string>): void {
+  if (typeof value === "string") {
+    strings.add(value);
     return;
   }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectInputStrings(entry, strings);
+    }
+    return;
+  }
+  if (typeof value !== "object" || value == null) {
+    return;
+  }
+  for (const entry of Object.values(value)) {
+    collectInputStrings(entry, strings);
+  }
+}
 
-  const soleUserWaitingOn =
-    output.waitingOn.length === 1 && output.waitingOn[0]?.kind === "user"
-      ? output.waitingOn[0]
-      : undefined;
-  if (soleUserWaitingOn == null) {
-    for (const { index } of selfCommitments) {
+function validateUniqueSourceIds(
+  sourceIds: readonly string[],
+  path: string,
+  issues: CodexOutputValidationIssue[],
+): void {
+  const usedSourceIds = new Set<string>();
+  for (const [index, sourceId] of sourceIds.entries()) {
+    if (usedSourceIds.has(sourceId)) {
       issues.push(
         createIssue(
-          `/evidence/${index.toString()}/supports`,
-          "self_commitment_waiting_on_ambiguous",
-          "self_commitmentにはuserのwaitingOnを1件だけ指定してください",
+          `${path}/${index.toString()}`,
+          "duplicate_source_id",
+          "source IDが重複しています",
+        ),
+      );
+    }
+    usedSourceIds.add(sourceId);
+  }
+}
+
+function validateResultSourceIdUniqueness(
+  output: SchemaValidCodexElementOutput,
+  issues: CodexOutputValidationIssue[],
+): void {
+  if (output.waitingOn != null) {
+    for (const [index, candidate] of output.waitingOn.value.entries()) {
+      validateUniqueSourceIds(
+        candidate.sourceIds,
+        `/waitingOn/value/${index.toString()}/sourceIds`,
+        issues,
+      );
+    }
+  }
+  if (output.relations != null) {
+    for (const [index, candidate] of output.relations.value.entries()) {
+      validateUniqueSourceIds(
+        candidate.sourceIds,
+        `/relations/value/${index.toString()}/sourceIds`,
+        issues,
+      );
+    }
+  }
+}
+
+function validateNoSelfCommitmentEvidence(
+  result: Pick<AiAnalysisElementMigrationResult, "evidence"> | undefined,
+  path: string,
+  issues: CodexOutputValidationIssue[],
+): void {
+  if (result == null) {
+    return;
+  }
+  for (const [index, evidence] of result.evidence.entries()) {
+    if (evidence.supports === "self_commitment") {
+      issues.push(
+        createIssue(
+          `${path}/evidence/${index.toString()}/supports`,
+          "self_commitment_wrong_element",
+          "self_commitmentの根拠はwaitingOn要素にだけ指定できます",
         ),
       );
     }
   }
+}
 
-  for (const { evidence, index } of selfCommitments) {
-    const path = `/evidence/${index.toString()}`;
-    const source = knownSources.get(evidence.sourceId);
+function validateSelfCommitmentEvidence(
+  output: SchemaValidCodexElementOutput,
+  input: CodexAnalysisInput,
+  issues: CodexOutputValidationIssue[],
+): void {
+  validateNoSelfCommitmentEvidence(output.status, "/status", issues);
+  validateNoSelfCommitmentEvidence(output.nextAction, "/nextAction", issues);
+  validateNoSelfCommitmentEvidence(output.relations, "/relations", issues);
+  validateNoSelfCommitmentEvidence(output.progress, "/progress", issues);
+  validateNoSelfCommitmentEvidence(output.importance, "/importance", issues);
+  validateNoSelfCommitmentEvidence(output.deadline, "/deadline", issues);
+  validateNoSelfCommitmentEvidence(output.notification, "/notification", issues);
+
+  const waitingOn = output.waitingOn;
+  if (waitingOn == null) {
+    return;
+  }
+  for (const [index, evidence] of waitingOn.evidence.entries()) {
+    if (evidence.supports !== "self_commitment") {
+      continue;
+    }
+    const evidencePath = `/waitingOn/evidence/${index.toString()}`;
+    const source = input.sources.find((candidate) => candidate.id === evidence.sourceId);
     if (source == null) {
       continue;
     }
     if (source.kind !== "comment") {
       issues.push(
         createIssue(
-          `${path}/sourceId`,
-          "self_commitment_source_not_comment",
-          "self_commitmentのsourceはコメントでなければなりません",
+          `${evidencePath}/supports`,
+          "self_commitment_source_kind",
+          "self_commitmentの根拠はcomment sourceにだけ指定できます",
         ),
       );
     }
     if (source.actorType !== "human") {
       issues.push(
         createIssue(
-          `${path}/sourceId`,
-          "self_commitment_source_not_human",
-          "self_commitmentのsource作者はhumanでなければなりません",
+          `${evidencePath}/supports`,
+          "self_commitment_source_actor",
+          "self_commitmentの根拠はhuman sourceにだけ指定できます",
         ),
       );
     }
     if (source.author.status !== "identified") {
       issues.push(
         createIssue(
-          `${path}/sourceId`,
-          "self_commitment_source_author_unavailable",
-          "self_commitmentのsource作者を識別できません",
+          `${evidencePath}/supports`,
+          "self_commitment_author_unavailable",
+          "self_commitmentの根拠には識別済みのcomment authorが必要です",
         ),
       );
       continue;
     }
-    if (soleUserWaitingOn == null) {
-      continue;
-    }
-    if (soleUserWaitingOn.candidateId !== source.author.candidateId) {
+    if (waitingOn.value.length !== 1) {
       issues.push(
         createIssue(
-          `${path}/sourceId`,
-          "self_commitment_waiting_on_mismatch",
-          "self_commitmentのsource作者とuserのwaitingOn対象が一致しません",
+          "/waitingOn/value",
+          "self_commitment_multiple_waiting_on",
+          "self_commitmentの根拠には唯一のwaitingOn候補が必要です",
+        ),
+      );
+      continue;
+    }
+    const [waitingCandidate] = waitingOn.value;
+    if (waitingCandidate == null) {
+      throw new TypeError("self_commitmentのwaitingOn候補がありません");
+    }
+    if (waitingCandidate.kind !== "user") {
+      issues.push(
+        createIssue(
+          "/waitingOn/value/0/kind",
+          "self_commitment_waiting_on_kind",
+          "self_commitmentの根拠にはuserのwaitingOn候補が必要です",
         ),
       );
     }
-    if (!soleUserWaitingOn.sourceIds.includes(evidence.sourceId)) {
+    if (waitingCandidate.candidateId !== source.author.candidateId) {
       issues.push(
         createIssue(
-          `${path}/sourceId`,
-          "self_commitment_waiting_on_source_mismatch",
-          "self_commitmentのsourceがuserのwaitingOn根拠に含まれていません",
+          "/waitingOn/value/0/candidateId",
+          "self_commitment_author_mismatch",
+          "self_commitmentの根拠のauthorとwaitingOn候補が一致しません",
+        ),
+      );
+    }
+    if (!waitingCandidate.sourceIds.includes(evidence.sourceId)) {
+      issues.push(
+        createIssue(
+          "/waitingOn/value/0/sourceIds",
+          "self_commitment_source_unlinked",
+          "self_commitmentの根拠sourceがwaitingOn候補へ結び付いていません",
         ),
       );
     }
@@ -344,18 +412,19 @@ function validateSelfCommitmentEvidence(
 }
 
 function validateWaitingOnCandidates(
-  output: SchemaValidCodexAnalysisOutput,
+  values: readonly Pick<AiAnalysisWaitingOn, "kind" | "candidateId">[],
   input: CodexAnalysisInput,
+  path: string,
   issues: CodexOutputValidationIssue[],
 ): void {
   const candidateIds = new Set(input.candidates.waitingOn.map((candidate) => candidate.id));
   const usedCandidateIds = new Set<string>();
-  for (const [index, waitingOn] of output.waitingOn.entries()) {
-    const path = `/waitingOn/${index.toString()}/candidateId`;
+  for (const [index, waitingOn] of values.entries()) {
+    const candidatePath = `${path}/value/${index.toString()}/candidateId`;
     if (!candidateIds.has(waitingOn.candidateId)) {
       issues.push(
         createIssue(
-          path,
+          candidatePath,
           "unknown_waiting_on_candidate",
           "入力のwaitingOn候補集合にない対象を参照しています",
         ),
@@ -363,7 +432,11 @@ function validateWaitingOnCandidates(
     }
     if (usedCandidateIds.has(waitingOn.candidateId)) {
       issues.push(
-        createIssue(path, "duplicate_waiting_on_candidate", "waitingOn候補が重複しています"),
+        createIssue(
+          candidatePath,
+          "duplicate_waiting_on_candidate",
+          "waitingOn候補が重複しています",
+        ),
       );
     }
     usedCandidateIds.add(waitingOn.candidateId);
@@ -376,7 +449,7 @@ function validateWaitingOnCandidates(
     ) {
       issues.push(
         createIssue(
-          `/waitingOn/${index.toString()}/kind`,
+          `${path}/value/${index.toString()}/kind`,
           "waiting_on_kind_mismatch",
           "candidate IDの種別とwaitingOnの種別が一致しません",
         ),
@@ -386,19 +459,21 @@ function validateWaitingOnCandidates(
 }
 
 function validateRelationCandidates(
-  output: SchemaValidCodexAnalysisOutput,
+  values: readonly Pick<AiAnalysisRelation, "candidateId" | "verdict">[],
   input: CodexAnalysisInput,
+  path: string,
+  requireComplete: boolean,
   issues: CodexOutputValidationIssue[],
 ): void {
   const candidateIds = new Set(input.candidates.relations.map((candidate) => candidate.id));
   const verdictCounts = new Map<string, number>();
 
-  for (const [index, relation] of output.relations.entries()) {
-    const path = `/relations/${index.toString()}/candidateId`;
+  for (const [index, relation] of values.entries()) {
+    const relationPath = `${path}/value/${index.toString()}/candidateId`;
     if (!candidateIds.has(relation.candidateId)) {
       issues.push(
         createIssue(
-          path,
+          relationPath,
           "unknown_relation_candidate",
           "入力のrelation候補集合にない対象を参照しています",
         ),
@@ -407,12 +482,15 @@ function validateRelationCandidates(
     verdictCounts.set(relation.candidateId, (verdictCounts.get(relation.candidateId) ?? 0) + 1);
   }
 
+  if (!requireComplete) {
+    return;
+  }
   for (const candidateId of candidateIds) {
     const count = verdictCounts.get(candidateId) ?? 0;
     if (count === 0) {
       issues.push(
         createIssue(
-          "/relations",
+          `${path}/value`,
           "missing_relation_verdict",
           `relation候補のverdictがありません。対象: ${candidateId}`,
         ),
@@ -420,7 +498,7 @@ function validateRelationCandidates(
     } else if (count > 1) {
       issues.push(
         createIssue(
-          "/relations",
+          `${path}/value`,
           "duplicate_relation_verdict",
           `relation候補のverdictが重複しています。対象: ${candidateId}`,
         ),
@@ -456,62 +534,120 @@ function organizationFromUrl(value: string): string | null {
   return organization ?? null;
 }
 
-function collectTextFields(output: SchemaValidCodexAnalysisOutput): readonly TextField[] {
-  const fields: TextField[] = [
-    Object.freeze({
-      path: "/nextAction",
-      value: output.nextAction,
-    }),
-    Object.freeze({
-      path: "/progress/reasonSummary",
-      value: output.progress.reasonSummary,
-    }),
-    Object.freeze({
-      path: "/importance/rationale",
-      value: output.importance.rationale,
-    }),
-    Object.freeze({
-      path: "/notification/reasonSummary",
-      value: output.notification.reasonSummary,
-    }),
-  ];
-  for (const [index, waitingOn] of output.waitingOn.entries()) {
-    fields.push(
-      Object.freeze({
-        path: `/waitingOn/${index.toString()}/reasonSummary`,
-        value: waitingOn.reasonSummary,
-      }),
-    );
+function resultPath(output: SchemaValidCodexElementOutput, element: AiAnalysisElement): string {
+  return Object.hasOwn(output, element) ? `/${element}` : `/lockedElements/${element}`;
+}
+
+type TextResult = Readonly<{
+  evidence?: readonly Readonly<{ summary: string }>[];
+  uncertainties: readonly string[];
+}>;
+
+function appendCommonTextFields(result: TextResult, path: string, fields: TextField[]): void {
+  if (result.evidence != null) {
+    for (const [index, evidence] of result.evidence.entries()) {
+      fields.push(
+        Object.freeze({
+          path: `${path}/evidence/${index.toString()}/summary`,
+          value: evidence.summary,
+        }),
+      );
+    }
   }
-  for (const [index, relation] of output.relations.entries()) {
+  for (const [index, uncertainty] of result.uncertainties.entries()) {
     fields.push(
       Object.freeze({
-        path: `/relations/${index.toString()}/reasonSummary`,
-        value: relation.reasonSummary,
-      }),
-    );
-  }
-  for (const [index, evidence] of output.evidence.entries()) {
-    fields.push(
-      Object.freeze({
-        path: `/evidence/${index.toString()}/summary`,
-        value: evidence.summary,
-      }),
-    );
-  }
-  for (const [index, uncertainty] of output.uncertainties.entries()) {
-    fields.push(
-      Object.freeze({
-        path: `/uncertainties/${index.toString()}`,
+        path: `${path}/uncertainties/${index.toString()}`,
         value: uncertainty,
       }),
     );
+  }
+}
+
+function collectTextFields(
+  output: SchemaValidCodexElementOutput,
+  input: CodexAnalysisInput,
+): readonly TextField[] {
+  const fields: TextField[] = [];
+  const nextAction = output.nextAction ?? input.lockedElements.nextAction;
+  if (nextAction != null) {
+    const path = resultPath(output, "nextAction");
+    fields.push(Object.freeze({ path: `${path}/value`, value: nextAction.value }));
+    appendCommonTextFields(nextAction, path, fields);
+  }
+  const waitingOn = output.waitingOn ?? input.lockedElements.waitingOn;
+  if (waitingOn != null) {
+    const path = resultPath(output, "waitingOn");
+    for (const [index, candidate] of waitingOn.value.entries()) {
+      fields.push(
+        Object.freeze({
+          path: `${path}/value/${index.toString()}/reasonSummary`,
+          value: candidate.reasonSummary,
+        }),
+      );
+    }
+    appendCommonTextFields(waitingOn, path, fields);
+  }
+  const relations = output.relations ?? input.lockedElements.relations;
+  if (relations != null) {
+    const path = resultPath(output, "relations");
+    for (const [index, candidate] of relations.value.entries()) {
+      fields.push(
+        Object.freeze({
+          path: `${path}/value/${index.toString()}/reasonSummary`,
+          value: candidate.reasonSummary,
+        }),
+      );
+    }
+    appendCommonTextFields(relations, path, fields);
+  }
+  const progress = output.progress ?? input.lockedElements.progress;
+  if (progress != null) {
+    const path = resultPath(output, "progress");
+    fields.push(
+      Object.freeze({
+        path: `${path}/value/reasonSummary`,
+        value: progress.value.reasonSummary,
+      }),
+    );
+    appendCommonTextFields(progress, path, fields);
+  }
+  const importance = output.importance ?? input.lockedElements.importance;
+  if (importance != null) {
+    const path = resultPath(output, "importance");
+    fields.push(
+      Object.freeze({ path: `${path}/value/rationale`, value: importance.value.rationale }),
+    );
+    appendCommonTextFields(importance, path, fields);
+  }
+  const deadline = output.deadline ?? input.lockedElements.deadline;
+  if (deadline != null) {
+    const path = resultPath(output, "deadline");
+    fields.push(
+      Object.freeze({ path: `${path}/value/rationale`, value: deadline.value.rationale }),
+    );
+    appendCommonTextFields(deadline, path, fields);
+  }
+  const notification = output.notification ?? input.lockedElements.notification;
+  if (notification != null) {
+    const path = resultPath(output, "notification");
+    fields.push(
+      Object.freeze({
+        path: `${path}/value/reasonSummary`,
+        value: notification.value.reasonSummary,
+      }),
+    );
+    appendCommonTextFields(notification, path, fields);
+  }
+  const status = output.status ?? input.lockedElements.status;
+  if (status != null) {
+    appendCommonTextFields(status, resultPath(output, "status"), fields);
   }
   return Object.freeze(fields);
 }
 
 function validateUrls(
-  output: SchemaValidCodexAnalysisOutput,
+  output: SchemaValidCodexElementOutput,
   input: CodexAnalysisInput,
   issues: CodexOutputValidationIssue[],
 ): void {
@@ -535,7 +671,7 @@ function validateUrls(
   );
   allowedExternalUrls.add(input.item.url);
 
-  for (const field of collectTextFields(output)) {
+  for (const field of collectTextFields(output, input)) {
     for (const match of field.value.matchAll(URL_IN_TEXT_PATTERN)) {
       const rawUrl = match[0].replace(URL_TRAILING_PUNCTUATION_PATTERN, "");
       const normalized = normalizedUrl(rawUrl);
@@ -558,7 +694,7 @@ function validateUrls(
 }
 
 function validateItemIdentity(
-  output: SchemaValidCodexAnalysisOutput,
+  output: SchemaValidCodexElementOutput,
   input: CodexAnalysisInput,
   issues: CodexOutputValidationIssue[],
 ): void {
@@ -574,20 +710,52 @@ function validateItemIdentity(
 }
 
 function validateStatusAndWaitingOn(
-  output: SchemaValidCodexAnalysisOutput,
+  output: SchemaValidCodexElementOutput,
+  input: CodexAnalysisInput,
   issues: CodexOutputValidationIssue[],
 ): void {
-  if (isTerminalStatus(output.status) && output.waitingOn.length !== 0) {
+  const status = output.status ?? input.lockedElements.status;
+  const waitingOn = output.waitingOn ?? input.lockedElements.waitingOn;
+  if (status == null || waitingOn == null) {
+    return;
+  }
+  const path = output.waitingOn == null ? "/lockedElements/waitingOn" : "/waitingOn";
+  if (isTerminalStatus(status.value) && waitingOn.value.length !== 0) {
     issues.push(
-      createIssue("/waitingOn", "terminal_waiting_on", "terminal状態にwaitingOnを設定できません"),
+      createIssue(path, "terminal_waiting_on", "terminal状態にwaitingOnを設定できません"),
     );
   }
-  if (!isTerminalStatus(output.status) && output.waitingOn.length === 0) {
+  if (!isTerminalStatus(status.value) && waitingOn.value.length === 0) {
     issues.push(
       createIssue(
-        "/waitingOn",
+        path,
         "non_terminal_without_waiting_on",
         "継続中の状態にはwaitingOnが1件以上必要です",
+      ),
+    );
+  }
+}
+
+function validateDeadline(
+  output: SchemaValidCodexElementOutput,
+  input: CodexAnalysisInput,
+  issues: CodexOutputValidationIssue[],
+): void {
+  const deadline = output.deadline ?? input.lockedElements.deadline;
+  if (deadline == null) {
+    return;
+  }
+  try {
+    validateDeadlineDate(deadline.value.date, "期限日");
+  } catch (error: unknown) {
+    if (!(error instanceof RangeError)) {
+      throw error;
+    }
+    issues.push(
+      createIssue(
+        `${resultPath(output, "deadline")}/value/date`,
+        "invalid_deadline_date",
+        "期限日は実在するYYYY-MM-DD形式の実在日付またはnullを指定してください",
       ),
     );
   }
@@ -645,113 +813,41 @@ function validateNativeRelationReferences(
   }
 }
 
-function knownSourceId(sourceIds: ReadonlyMap<string, KnownSource>, value: string): SourceId {
-  const source = sourceIds.get(value);
-  assertNonNullable(source, `検証済みのsource IDを取得できません。対象: ${value}`);
-  return source.id;
-}
-
-function createSourceIdTuple(
-  sourceIds: ReadonlyMap<string, KnownSource>,
-  values: readonly string[],
-): readonly [SourceId, ...SourceId[]] {
-  const [firstValue, ...remainingValues] = values;
-  assertNonNullable(firstValue, "source IDが1件もありません");
-  return Object.freeze([
-    knownSourceId(sourceIds, firstValue),
-    ...remainingValues.map((value) => knownSourceId(sourceIds, value)),
-  ]);
-}
-
-function createValidatedOutput(
-  output: SchemaValidCodexAnalysisOutput,
-  sources: ReadonlyMap<string, KnownSource>,
-): ValidatedCodexAnalysisOutput {
-  return Object.freeze({
-    schemaVersion: output.schemaVersion,
-    item: Object.freeze({
-      nodeId: createGitHubNodeId(output.item.nodeId),
-      url: createGitHubItemUrl(output.item.url),
-    }),
-    status: output.status,
-    waitingOn: Object.freeze(
-      output.waitingOn.map((waitingOn) =>
-        Object.freeze({
-          kind: waitingOn.kind,
-          candidateId: waitingOn.candidateId,
-          role: waitingOn.role,
-          reasonSummary: waitingOn.reasonSummary,
-          sourceIds: createSourceIdTuple(sources, waitingOn.sourceIds),
-          confidence: waitingOn.confidence,
-        }),
-      ),
-    ),
-    nextAction: output.nextAction,
-    relations: Object.freeze(
-      output.relations.map((relation) =>
-        Object.freeze({
-          candidateId: createRelationCandidateId(relation.candidateId),
-          verdict: relation.verdict,
-          reasonSummary: relation.reasonSummary,
-          sourceIds: createSourceIdTuple(sources, relation.sourceIds),
-          confidence: relation.confidence,
-        }),
-      ),
-    ),
-    progress: Object.freeze({
-      latestMeaningfulSourceId:
-        output.progress.latestMeaningfulSourceId == null
-          ? null
-          : knownSourceId(sources, output.progress.latestMeaningfulSourceId),
-      reasonSummary: output.progress.reasonSummary,
-      confidence: output.progress.confidence,
-    }),
-    importance: Object.freeze({
-      significantFeature: output.importance.significantFeature,
-      explicitDeadline: output.importance.explicitDeadline,
-      futureRisk: output.importance.futureRisk,
-      rationale: output.importance.rationale,
-    }),
-    evidence: Object.freeze(
-      output.evidence.map((evidence) =>
-        Object.freeze({
-          sourceId: knownSourceId(sources, evidence.sourceId),
-          supports: evidence.supports,
-          summary: evidence.summary,
-        }),
-      ),
-    ),
-    confidence: output.confidence,
-    uncertainties: Object.freeze([...output.uncertainties]),
-    notification: Object.freeze({
-      recommended: output.notification.recommended,
-      reasonCode: output.notification.reasonCode,
-      reasonSummary: output.notification.reasonSummary,
-    }),
-  });
-}
-
 /** schema検証済みのCodex出力を入力候補とsourceの範囲でsemantic検証する。 */
 export function validateCodexAnalysisSemantics(
-  output: SchemaValidCodexAnalysisOutput,
+  value: unknown,
   input: CodexAnalysisInput,
-): ValidatedCodexAnalysisOutput {
-  const validatedInput = input;
-  const knownSources = createKnownSources(validatedInput);
+): SchemaValidCodexElementOutput {
+  const output = validateCodexElementOutput(value, input.selectedElements);
+  const knownSources = createKnownSources(input);
   const issues: CodexOutputValidationIssue[] = [];
 
-  validateItemIdentity(output, validatedInput, issues);
-  validateStatusAndWaitingOn(output, issues);
-  validateWaitingOnCandidates(output, validatedInput, issues);
-  validateRelationCandidates(output, validatedInput, issues);
-  validateSourceIdUniqueness(output, issues);
-  validateSourceReferences(output, validatedInput, knownSources, issues);
-  validateSelfCommitmentEvidence(output, knownSources, issues);
-  validateUrls(output, validatedInput, issues);
-  validateNativeRelationReferences(validatedInput, issues);
+  validateItemIdentity(output, input, issues);
+  validateStatusAndWaitingOn(output, input, issues);
+  validateDeadline(output, input, issues);
+
+  const waitingOn = output.waitingOn ?? input.lockedElements.waitingOn;
+  if (waitingOn != null) {
+    validateWaitingOnCandidates(waitingOn.value, input, resultPath(output, "waitingOn"), issues);
+  }
+  const relations = output.relations ?? input.lockedElements.relations;
+  if (relations != null) {
+    validateRelationCandidates(
+      relations.value,
+      input,
+      resultPath(output, "relations"),
+      output.relations != null,
+      issues,
+    );
+  }
+  validateResultSourceIdUniqueness(output, issues);
+  validateSelfCommitmentEvidence(output, input, issues);
+  validateSourceReferences(output, input, knownSources, issues);
+  validateUrls(output, input, issues);
+  validateNativeRelationReferences(input, issues);
 
   if (issues.length > 0) {
     throw new CodexOutputSemanticValidationError(issues);
   }
-  return createValidatedOutput(output, knownSources);
+  return output;
 }

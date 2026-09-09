@@ -1,32 +1,23 @@
-import { hashCanonicalJson, serializeCanonicalJson, type Sha256Hash } from "./canonical-json.js";
-import { type AiCacheIdentity } from "./cache.js";
+import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
+import { AI_ANALYSIS_ELEMENT_SCHEMA_VERSION } from "./analysis-elements.js";
+import {
+  selectAiAnalysisElements,
+  type AiAnalysisElementSelection,
+  type AiAnalysisElementSelectionCandidate,
+} from "./element-selection.js";
+import { type AiAnalysisElement } from "./analysis-elements.js";
 import { type CodexAnalysisInput } from "./input.js";
+import { type ReasoningEffort } from "../domain/index.js";
 
-/** AI実行とcache再現性を固定する実行設定とversion情報。 */
-export type AiAnalysisRunIdentity = Omit<AiCacheIdentity, "inputHash">;
-
-/** Codex分析候補の決定論的な確定状態。 */
-export type DeterministicAnalysisResolution = "high_confidence" | "ambiguous";
-
-/** Codex分析の再実行と旧結果再利用を判定するhash一式。 */
-export type AiAnalysisFingerprint = Readonly<{
-  sourceHash: Sha256Hash;
-  inputHash: Sha256Hash;
-  graphNeighborhoodHash: Sha256Hash;
-  identityHash: Sha256Hash;
+/** AI呼び出しの共通実行条件。要素revisionやprompt digestは含めない。 */
+export type AiAnalysisRunIdentity = Readonly<{
+  model: string;
+  reasoningEffort: ReasoningEffort;
+  backendVersion: string;
+  schemaVersion: typeof AI_ANALYSIS_ELEMENT_SCHEMA_VERSION;
 }>;
 
-/** 前回のCodex分析fingerprint。 */
-export type PreviousAiAnalysisFingerprint =
-  | Readonly<{
-      status: "unavailable";
-    }>
-  | Readonly<{
-      status: "available";
-      fingerprint: AiAnalysisFingerprint;
-    }>;
-
-/** 予算不足時のCodex分析優先順位。 */
+/** 予算配分に使うAI分析候補の優先順位。 */
 export type AiAnalysisPriority = Readonly<{
   previouslyDeferred: boolean;
   severityCandidate: boolean;
@@ -38,29 +29,29 @@ export type AiAnalysisPriority = Readonly<{
   }>;
 }>;
 
-/** Codexへ送る可能性がある項目。 */
+/** 一つのIssueまたはPull Requestの要素別AI分析候補。 */
 export type AiAnalysisCandidate = Readonly<{
   id: string;
-  deterministicResolution: DeterministicAnalysisResolution;
   input: CodexAnalysisInput;
-  graphNeighborhood: unknown;
-  previousFingerprint: PreviousAiAnalysisFingerprint;
+  elements: readonly AiAnalysisElementSelectionCandidate[];
+  promptFingerprint: string;
   priority: AiAnalysisPriority;
   estimatedCostUsd: number;
 }>;
 
-/** hashと入力文字数を確定したCodex分析候補。 */
+/** 要素選別と入力文字数を確定したAI分析候補。 */
 export type PreparedAiAnalysisCandidate = AiAnalysisCandidate &
   Readonly<{
-    fingerprint: AiAnalysisFingerprint;
+    elementSelection: AiAnalysisElementSelection;
+    selectedElements: readonly AiAnalysisElementSelectionCandidate[];
     normalizedInput: string;
     inputCharacters: number;
   }>;
 
-/** Codexへ送らない理由。 */
-export type AiAnalysisSkipReason = "determined_with_high_confidence" | "unchanged";
+/** AIへ送らない候補の理由。 */
+export type AiAnalysisSkipReason = "not_required" | "up_to_date";
 
-/** Codex呼び出し対象の純粋な選別結果。 */
+/** Codex呼び出し対象の要素別選別結果。 */
 export type AiAnalysisSelection = Readonly<{
   selected: readonly PreparedAiAnalysisCandidate[];
   skipped: readonly Readonly<{
@@ -68,17 +59,6 @@ export type AiAnalysisSelection = Readonly<{
     reason: AiAnalysisSkipReason;
   }>[];
 }>;
-
-/** 前回AI結果の安全な再利用判定。 */
-export type PreviousAiResultReuseDecision<Result> =
-  | Readonly<{
-      status: "reusable";
-      result: Result;
-    }>
-  | Readonly<{
-      status: "stale";
-      reason: "source_hash_changed" | "input_hash_changed";
-    }>;
 
 function countUnicodeCharacters(value: string): number {
   let count = 0;
@@ -97,61 +77,35 @@ function validateCandidateId(id: string): void {
   }
 }
 
-/** run開始時刻を除いたinput hash値を生成する。 */
-function createInputHashValue(input: CodexAnalysisInput): unknown {
-  const { now: excludedRunStartTime, ...inputHashValue } = input;
-  void excludedRunStartTime;
-  return Object.freeze(inputHashValue);
+function validatePromptFingerprint(value: string): void {
+  parseSha256Hash(value);
 }
 
-/** Codex分析候補の正規化入力、source、グラフ隣接hashを生成する。 */
+/** 要素選別、正規化入力、入力文字数を候補へ付加する。 */
 export function prepareAiAnalysisCandidate(
   candidate: AiAnalysisCandidate,
-  identity: AiAnalysisRunIdentity,
 ): PreparedAiAnalysisCandidate {
   validateCandidateId(candidate.id);
+  validatePromptFingerprint(candidate.promptFingerprint);
   const normalizedInput = `${serializeCanonicalJson(candidate.input)}\n`;
-  const graphNeighborhoodHash = hashCanonicalJson(candidate.graphNeighborhood);
-  const fingerprint = Object.freeze({
-    sourceHash: hashCanonicalJson(candidate.input.sources),
-    inputHash: hashCanonicalJson({
-      graphNeighborhood: candidate.graphNeighborhood,
-      input: createInputHashValue(candidate.input),
-    }),
-    graphNeighborhoodHash,
-    identityHash: hashCanonicalJson(identity),
-  });
+  const elementSelection = selectAiAnalysisElements(candidate.elements);
   return Object.freeze({
     ...candidate,
-    fingerprint,
+    elementSelection,
+    selectedElements: elementSelection.selected,
     normalizedInput,
     inputCharacters: countUnicodeCharacters(normalizedInput),
   });
 }
 
-function shouldSelectCandidate(candidate: PreparedAiAnalysisCandidate): boolean {
-  if (candidate.deterministicResolution === "high_confidence") {
-    return false;
-  }
-  if (candidate.previousFingerprint.status === "unavailable") {
-    return true;
-  }
-  return (
-    candidate.fingerprint.inputHash !== candidate.previousFingerprint.fingerprint.inputHash ||
-    candidate.fingerprint.graphNeighborhoodHash !==
-      candidate.previousFingerprint.fingerprint.graphNeighborhoodHash ||
-    candidate.fingerprint.identityHash !== candidate.previousFingerprint.fingerprint.identityHash
-  );
-}
-
 function determineSkipReason(candidate: PreparedAiAnalysisCandidate): AiAnalysisSkipReason {
-  if (candidate.deterministicResolution === "high_confidence") {
-    return "determined_with_high_confidence";
+  if (candidate.elementSelection.skipped.some((value) => value.reason === "up_to_date")) {
+    return "up_to_date";
   }
-  return "unchanged";
+  return "not_required";
 }
 
-/** 高信頼の確定項目と未変更項目を除き、曖昧な変更項目だけを選ぶ。 */
+/** 必要要素が残る項目だけを一回のCodex呼び出し候補として選ぶ。 */
 export function selectAiAnalysisCandidates(
   candidates: readonly PreparedAiAnalysisCandidate[],
 ): AiAnalysisSelection {
@@ -167,7 +121,7 @@ export function selectAiAnalysisCandidates(
       throw new TypeError(`Codex分析候補IDが重複しています。対象: ${candidate.id}`);
     }
     candidateIds.add(candidate.id);
-    if (shouldSelectCandidate(candidate)) {
+    if (candidate.selectedElements.length > 0) {
       selected.push(candidate);
     } else {
       skipped.push({
@@ -183,26 +137,9 @@ export function selectAiAnalysisCandidates(
   });
 }
 
-/** sourceと正規化入力のhashが一致する前回AI結果だけを再利用する。 */
-export function determinePreviousAiResultReuse<Result>(
-  currentFingerprint: AiAnalysisFingerprint,
-  previousFingerprint: AiAnalysisFingerprint,
-  previousResult: Result,
-): PreviousAiResultReuseDecision<Result> {
-  if (currentFingerprint.sourceHash !== previousFingerprint.sourceHash) {
-    return Object.freeze({
-      status: "stale",
-      reason: "source_hash_changed",
-    });
-  }
-  if (currentFingerprint.inputHash !== previousFingerprint.inputHash) {
-    return Object.freeze({
-      status: "stale",
-      reason: "input_hash_changed",
-    });
-  }
-  return Object.freeze({
-    status: "reusable",
-    result: previousResult,
-  });
+/** 選別候補からAIへ渡す要素名を安定した順序で取得する。 */
+export function selectedAiAnalysisElements(
+  candidate: PreparedAiAnalysisCandidate,
+): readonly AiAnalysisElement[] {
+  return Object.freeze(candidate.selectedElements.map((value) => value.element));
 }

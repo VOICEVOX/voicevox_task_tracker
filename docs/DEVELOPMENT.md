@@ -25,7 +25,6 @@ pnpm install --frozen-lockfile
 | `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る            | `artifacts/workflow/runtime/tracker-run.mjs`             |
 | `pnpm dev:web`            | Web UIの開発serverを起動する                                 | なし                                                     |
 | `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                              | なし                                                     |
-| `pnpm test`               | Vitestのテストを1回実行する                                  | なし                                                     |
 | `pnpm lint`               | ESLintでコードを検査する                                     | なし                                                     |
 | `pnpm format`             | Prettierで対象ファイルを整形する                             | 対象ファイル                                             |
 | `pnpm format:check`       | Prettierによる整形差分がないことを検査する                   | なし                                                     |
@@ -33,7 +32,7 @@ pnpm install --frozen-lockfile
 | `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の上限を検証する | `artifacts/performance-profile.json`                     |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                                       |
 
-`build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`を生成します。
+`build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`status/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
 GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdeep linkをこの複製で受けます。
 
 `tracker:run`はビルドを兼ねません。
@@ -46,8 +45,9 @@ pnpm dev:web
 ```
 
 Viteは起動時に`config.yml`の`web`設定を読み、base path、画面名、localeを反映します。
-表示に使うサンプル公開DTOは`web/public/data/summary.json`と`web/public/data/details.json`です。
-Web UIは`summary.json`を最初に取得し、項目詳細を開いたときと項目を検索したときだけ`details.json`を取得します。
+表示に使うサンプル公開DTOは`web/public/data/summary.json`、`web/public/data/details.json`、`web/public/data/notification-history.json`です。
+Web UIは`summary.json`を最初に取得します。
+項目詳細を開いたときと項目を検索したときだけ`details.json`を取得し、通知履歴を開いたときだけ`notification-history.json`を取得します。
 
 実データで表示を確かめる場合は、収集結果を保存してからPages用DTOを書き出します。
 
@@ -61,13 +61,27 @@ pnpm tracker:run build-pages --output web/public/data
 `collect-analyze`にはGitHub AppとCodexの認証情報が必要です。
 `persist-state`はローカルの`tracker-state` refへ保存するだけで、remoteへはpushしません。
 `build-pages --output web/public/data`はサンプル公開DTOを実データで上書きします。
-実データは一時出力として扱い、確認後は元のサンプルへ戻してからテストとコミットを行ってください。
+実データは一時出力として扱い、確認後は元のサンプルへ戻してからコミットしてください。
 
 ## CLIをローカルで動かす
 
 各stageの役割と操作は[運用手順](OPERATIONS.md)の「stageごとの実行」にまとめてあります。
 外部サービスへ接続しないサブコマンドは`eval`、`report-workflow`、`persist-state`、`build-pages`です。
 `persist-state`と`build-pages`は検証済みartifactとローカルのGit stateを必要とします。
+
+`daily`、`backfill`、`collect-analyze`には`--notification-action send|hold|acknowledge-current`を指定できます。省略時は`send`です。`dry-run`にはこの指定はありません。
+
+```console
+pnpm tracker:run --backfill none --notification-action acknowledge-current
+pnpm tracker:run --backfill linked --notification-action acknowledge-current
+pnpm tracker:run collect-analyze --mode none --notification-action acknowledge-current
+```
+
+`tracker:run`は`--backfill none`を`daily`へ変換し、`linked`または`all-open`を`backfill`へ変換します。
+
+`hold`は送信可能な候補を含めて未送信候補を通知管理記録へ保存し、通常のDiscord送信を保留します。送信予約、送信済み、確認済みの記録は追加しません。次の`send`では保存した候補の有効性を再確認して送信します。保留は指定したrunだけに適用されます。
+
+`acknowledge-current`は現在の通知条件を満たす候補を上限なしで確認済みとして通知管理記録へ保存し、同じnotification keyを送信済みと同様に通知対象から除外します。通常のDiscord送信と`notification_sent`履歴は作りません。すでに送信済みの同じkeyは送信日時とDiscord message IDを維持します。通知判定規則、Web UI、README、`config.yml`は変わりません。
 
 オンラインで収集する場合は、実行するshellへ次の環境変数を設定します。
 
@@ -89,31 +103,22 @@ state、Pages、Discordを更新せずに収集から検証までを通したい
 
 ## テスト
 
-`vitest.config.ts`は2つのprojectへテストを分けます。
+ユーザーの指示の有無にかかわらず、テストを一切実装しません。
 
-| project | 対象                 | 実行環境 |
-| ------- | -------------------- | -------- |
-| `node`  | `tests/**/*.test.ts` | Node.js  |
-| `web`   | `web/**/*.test.tsx`  | jsdom    |
+## Golden評価
 
-`pnpm test`は両方を実行します。
-Node.js側にはunit、integration、security、CLI、golden、性能profileのテストがあります。
-`tests/attention.test.ts`は要対応度の計算式、設定境界、terminal項目とblocker待ちの0点を検証します。
-Web UIのテストは要対応項目の絞り込み、三つの並び替え、要対応度を使う依存グラフのnode選定を検証します。
-
-### golden fixtureを更新する
-
-`tests/fixtures/golden/`の各ケースは`fixture.json`と`expected.json`の2ファイルで構成します。
+`fixtures/golden/`の各ケースは`fixture.json`と`expected.json`の2ファイルで構成します。
 `fixture.json`は評価時刻、repository、IssueとPull Request、関係候補、固定AI分析、前回状態を持ちます。
-`expected.json`はstatus、waitingOn、severity、停滞開始時刻、関係、通知、公開可否の期待値を持ちます。
+`expected.json`は`status`、待ち相手を表す`waitingOn`、停滞レベルを表す`severity`、停滞開始時刻、関係、通知、公開可否の期待値を持ちます。
 `large`ケースだけは集計値と性能、サイズ、API予算、Codex予算の合否を記録します。
 
 fixtureはネットワークへ接続しません。
 実在するIssue、Pull Request、repository、ユーザー名をfixtureへ持ち込まないでください。
 
 期待値の更新に自動化されたコマンドはありません。
-判定ロジックか`fixture.json`を変更したら`pnpm test`で実測値との差を確認し、意図した仕様を表す値だけを`expected.json`へ手で反映します。
-新しいケースを足す場合は同名のdirectoryへ2ファイルを追加し、`tests/golden-eval.test.ts`の`FIXTURE_NAMES`へ名前を加えます。
+判定ロジックか`fixture.json`を変更したら`pnpm eval:golden`で実測値との差を確認し、意図した仕様を表す値だけを`expected.json`へ手で反映します。
+新しいケースを足す場合は、同じdirectoryへ`fixture.json`と`expected.json`を追加します。
+`fixture.json`の`name`は既存ケースと重複させないでください。
 
 期待値を更新してよいのは、判定仕様を意図して変更した場合、fixtureの誤りを直す場合、回帰ケースを追加する場合だけです。
 意図しない回帰を通すために期待値を合わせないでください。
@@ -125,53 +130,133 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 判定規則を変えたら、対応するversionを上げてください。
 上げないと、GitHub側が動いていない項目は再判定されず、古い判定が残り続けます。
 
-| 変更した対象                | 上げるversion                              |
-| --------------------------- | ------------------------------------------ |
-| Issueの判定                 | `ISSUE_DETERMINISTIC_RULES_VERSION`        |
-| Pull Requestの判定          | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION` |
-| `prompts/`のCodexプロンプト | `config.yml`の`ai.promptVersion`           |
+| 変更した対象            | 上げるversion                                        |
+| ----------------------- | ---------------------------------------------------- |
+| Issueの判定             | `ISSUE_DETERMINISTIC_RULES_VERSION`                  |
+| Pull Requestの判定      | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION`           |
+| Codexの意味上の判定規則 | `src/codex/analysis-elements.ts`の判定要素別revision |
 
-`tests/rules-version-hash.test.ts`が判定に関わるファイルの内容hashを記録しており、更新漏れがあると失敗します。
-失敗したら、判定結果が変わるかを考えてversionを上げるか判断し、どちらの場合も記録hashを更新してください。
-要対応度は最新の重要度、停滞時間、設定から毎run全項目で再計算します。
+#### Codexプロンプトのversionを判断する
+
+AI推論のやり直しは重いため、プロンプトの差分だけを理由に全項目や全判定を再推論しません。
+`src/codex/analysis-elements.ts`のrevisionは、判定要素ごとの意味上のAI判定規則を識別します。
+プロンプトを編集するたびに、状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨の8要素すべてについて、更新するか維持するかを判断してください。
+変更のレビューには各要素の判断と理由を示し、変更が影響する要素のrevisionだけを上げます。
+根拠、信頼度、不確実性の規則や共通指示を変更するときも、影響を受ける所有判定を明示してください。
+
+変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は、その要素のrevisionを据え置きます。実際の全件再推論を判断手段にしません。比較する対象は、構造化された出力と下流処理に関わる判定の一致率です。文章の一致率は基準にしません。95％以上と見込めない場合、または影響を判断できない場合はrevisionを上げます。
+
+次の変更は、95％以上の判定が維持される条件を満たす限り、原則としてversionを据え置きます。
+
+- 用語、表記、説明文だけを変える
+- 行動主体、行動、対象を変えない自由文の言い換えを行う
+
+次の変更は、構造化された選択や下流処理の意味が変わり得るためversionを上げます。
+
+- `status`、`waitingOn`の候補や順序、`importance`、`deadline`、`notification`、`relations`の意味を変える
+- `meaningful progress`、`confidence`、根拠`source`、`nextAction`の意味を変える
+
+versionを据え置いた表記変更は、既存cacheやsnapshotへ即時反映されません。新規分析や別要因による再分析だけが新しい表記になり、新旧の文言が一時的に混在します。この挙動は推論負荷を避けるために受け入れます。既存項目の表記を即時に統一する必要がある場合は、全AI再推論を伴わない表示時の決定論的な変換などを検討します。
+
+#### 判定要素ごとに再推論の必要性を決める
+
+再推論するIssue・PRの選別と、更新する判定要素の範囲を分けます。
+各要素について、現在の入力と決定論的な規則だけで確定する判定をAI対象から除きます。
+残りの要素は、保存済みの結果と現在のrevision、利用入力、実行条件を比較し、再利用できないものだけを選びます。
+必要な要素が残らなければ、そのIssue・PRではAIを呼びません。
+
+項目のアサインや期限の有無だけで、AIの必要性を決めないでください。
+たとえばアサイン済みでも、未回答依頼の解釈が必要なら待ち相手のAI判定が必要です。
+期限なし、進捗なし、通知を推奨しないという結果も分析済みの結果であり、規則が変われば見直します。
+初回、通常の入力変更、失敗・延期の再試行も同じ要素別の選別を通します。
+期限・重要度については、既存の通常AI分析の適用範囲と、現在採用している結果の更新を対象にします。
+
+同じIssue・PRで必要な要素は1回の呼び出しにまとめます。
+選択外の値を再生成・再採用せず、根拠、信頼度、不確実性は所有判定と一緒に保存します。
+状態と待ち相手の片方だけを選ぶ場合は、もう片方の現在の採用値を入力へ含めます。
+終了状態と待ち相手の有無など、構造で判定できる整合性は選択結果と保持する値を合わせて検証します。
+次の行動の自由文まで、機械的な検証だけで意味の整合性を保証できません。
+状態の規則変更で次の行動も変わるなら、開発者が次の行動のrevisionも上げて同時更新を指定してください。
+矛盾を解消するために選択外の値を自動で書き換える処理は加えません。
+
+固定値をAI入力へ渡す際に、過去の根拠の再取得を必須にしないでください。
+過去の根拠は保存済みの判定結果に保持し、新しい判定の根拠は呼び出し時の入力だけで検証します。
+この境界を変更する場合は、過去の根拠が現在の取得範囲に含まれない実データで、正規化、要素選別、入力生成、出力検証、保存まで確認してください。
+取得していない根拠を新しい出力が参照すると拒否され、選択外の判定値と生成元が保持されることも確かめます。
+
+各要素の生成元のrevision、入力、実行時刻を保持し、再利用だけで現在の生成結果として記録しません。
+現在のrevisionと直接比較するため、途中の更新履歴を記録する必要はありません。
+cacheが欠落しても保存済みの有効な結果があれば再分析せず、失敗・延期した要素のrevisionを適用済みにしません。
+最新の完了結果と、現在採用している結果を分けて保存します。
+低信頼の新しい結果を完了として記録しながら以前の採用値を保持する場合も、採用値の根拠や生成時のrevisionを新しい結果で上書きしません。
+特定の判定にしか使わない入力を全要素へ追加すると、入力hashが変わって不要な再推論を増やします。
+入力の依存範囲も判定要素ごとに定義してください。
+
+再利用の検証では、AI呼び出しだけを省略する経路と、項目の解析自体を省略する経路を両方確認してください。
+採用値が保存されていることに加え、関係と通知推奨が下流のグラフと通知判定で使われることを確かめます。
+
+要対応度は最新の重要度、期限の切迫度、停滞時間、設定から毎run全項目で再計算します。
 要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
+期限日から切迫度を求める規則を変えた場合は、IssueとPull Requestの決定論的規則versionを上げます。
 
-### 永続stateの列挙値を変更する
+### 永続stateの形式を変更する
 
-snapshot、履歴、通知ledgerが保存する列挙値は、次の順序で変更します。
+snapshot、履歴、通知管理記録の保存形式や列挙値は、次の順序で変更します。
 
 1. 対象文書のschema versionを上げる。
-2. 旧versionから現行versionへのマイグレーションを追加する。
-3. `tests/state-schema-enum-lock.ts`のロック定義を更新する。
-4. CLIをビルドし、checkoutした`tracker-state`の実stateを検証する。
+2. 対応する旧versionから現行形式への一方向のマイグレーションを追加し、保存側も現行形式へそろえる。
+3. CLIをビルドし、コミットIDを固定した`tracker-state`のコピーを移行して検証する。
+4. 実際の保存経路で保存し、再読み込みと再実行で追加の移行が発生しないことを確認する。
 
 ```console
 pnpm build
 pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
 ```
 
+移行の入口で旧形式を検証し、業務処理には現行の型だけを渡します。
+未知のversionや不正なデータは例外にし、形式の番号だけを書き換えて受け入れません。
+再生成できる旧cacheは、対応する形式と保存先を識別して削除できます。
+再利用するcacheは現行形式として検証します。
+snapshotの更新と旧cacheの削除は同じcommitに含め、GitHubへの反映まで確認して移行完了とします。
+読み込みや`verify-state`だけでは本番stateを書き換えません。
+
+CIの`verify-state`は、本番と同じ移行処理を使ってstate全体を検証し、対象のコミットIDと移行内容をログへ残します。
+マージ前の確認では、コピー上で保存失敗と再試行も確かめます。
+検証用コードはコミットしません。
+
+移行だけでAIの採用値や通知管理記録を失わせません。
+旧AI結果へ現在のrevisionや入力hashを後付けせず、再推論の成功と採用が確定するまで、引き継いだ値と新しい生成結果を区別します。
+初回の再計画、AIの失敗・延期後の再試行、無関係な採用値が変わらないことも確認してください。
+保存形式の移行完了とAIの再推論完了は別に判断します。
+保存形式を変えないプロンプト変更には、要素ごとのrevisionと再推論の規則を使います。
+
+通常読み込む履歴や、復旧を保証する保存点に旧形式が残る間は、その形式からの移行処理を残します。
+対応versionと復旧用のコード・stateの保存点を更新時に記録し、保証対象から外す判断をしてから不要な移行処理を削除します。
+本番への切替と通知の保留は[運用手順](OPERATIONS.md)に従います。
+
 ## ディレクトリ構成
 
-| パス                 | 責務                                                                                               |
-| -------------------- | -------------------------------------------------------------------------------------------------- |
-| `src/cli/`           | 引数解析、日次トランザクション、workflow stage、実アダプターの合成、run report                     |
-| `src/codex/`         | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                          |
-| `src/config/`        | `config.yml`の読み込みとZod schema検証                                                             |
-| `src/discord/`       | 通知候補選別、cooldown、payload生成、Webhook送信                                                   |
-| `src/domain/`        | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、severity、重要度、要対応度のpure TypeScript |
-| `src/eval/`          | golden fixtureの解析、期待値との比較、回帰指標                                                     |
-| `src/github/`        | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                       |
-| `src/graph/`         | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                      |
-| `src/pages/`         | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                             |
-| `src/performance/`   | 外部接続をモックした日次run全体の性能と予算のprofile                                               |
-| `src/persistence/`   | canonical JSON、snapshot、履歴、AI cache、通知ledger、run report、state branch transaction         |
-| `src/util/`          | null検査、到達不能検査、共通エラー、Zod診断                                                        |
-| `web/`               | ViteとPreactによる静的Web UI、そのテスト、サンプル公開DTO                                          |
-| `tests/`             | Node.js側のテストとfixture                                                                         |
-| `schemas/`           | GitHub GraphQL schemaの写し、Codex分析出力とsnapshotのJSON Schema                                  |
-| `prompts/`           | Codexへ渡す固定system prompt                                                                       |
-| `docs/`              | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                       |
-| `.github/workflows/` | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                    |
+| パス                 | 責務                                                                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/cli/`           | 引数解析、日次トランザクション、workflow stage、実アダプターの合成、run report                       |
+| `src/codex/`         | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                            |
+| `src/config/`        | `config.yml`の読み込みとZod schema検証                                                               |
+| `src/diagnostics/`   | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                       |
+| `src/discord/`       | 通知候補選別、通知管理記録による重複抑制、payload生成、Webhook送信                                   |
+| `src/domain/`        | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度のpure TypeScript |
+| `src/eval/`          | golden fixtureの解析、期待値との比較、回帰指標                                                       |
+| `src/github/`        | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                         |
+| `src/graph/`         | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                        |
+| `src/pages/`         | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                               |
+| `src/performance/`   | 外部接続をモックした日次run全体の性能と予算のprofile                                                 |
+| `src/persistence/`   | canonical JSON、snapshot、履歴、AI cache、通知管理記録、run report、state branch transaction         |
+| `src/util/`          | null検査、到達不能検査、共通エラー、Zod診断                                                          |
+| `web/`               | ViteとPreactによる静的Web UIとサンプル公開DTO                                                        |
+| `fixtures/`          | Golden評価と性能profileへ渡す固定入力                                                                |
+| `schemas/`           | Codex分析出力とsnapshotのJSON Schema                                                                 |
+| `prompts/`           | Codexへ渡す固定system prompt                                                                         |
+| `docs/`              | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                         |
+| `.github/workflows/` | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                      |
 
 ## コードの方針
 
@@ -194,8 +279,20 @@ Codex出力は候補データとしてschema検証とsemantic検証を通し、�
 
 ページ間で変える理由がない表示は変えません。
 
+利用者向けの説明では、内部の列挙値やフィールド名をそのまま表示せず、意味を直接表す日本語を使います。
+英字やカタカナの用語は、日本語文化圏で広く使われている場合、固有名やサービス名である場合、外部サービスの正式な用語を保つ必要がある場合に限って使います。
+用語ごとの許可一覧は作らず、想定する利用者が説明なしで意味を理解できるかで判断します。
+同じ概念には同じ表現を使い、通知条件では通知対象、抑制条件、再通知条件が読み取れるようにします。
+既存の表示へ適用するときは変更対象の画面や説明に範囲を絞り、全件を一括置換しません。
+
+Web UI全体のリンク先は、[要求仕様の`WEB-019`](REQUIREMENTS.md#1110-webページ)に従います。
+項目詳細へのリンクには`ItemDetailsLink`を使います。
+GitHubへのリンクには`GitHubIconButton`を使うか、`SafeGitHubLink`に「GitHubで開く」などの文言を表示します。
+内部詳細がない項目の参照やタイトルはテキストで表示します。
+
 項目一覧 `/` と担当者個別 `/people/{ユーザー名}` の項目一覧では、次の規約を守ります。
 
+- マージ済み、完了、対応しないの項目は既定で表示せず、トップページの状態で「すべて」を選ぶと表示します。
 - `ResponsiveTableCardList`は画面幅だけで表とカードを切り替え、ページの種類では切り替えません。
 - 切り替え幅は`breakpoint`で呼び出し側が明示します。
 - 並び順の選択UIはカードを表示する幅でだけ表示し、`ResponsiveTableCardList`と同じ`breakpoint`で隠します。
@@ -221,7 +318,7 @@ Codex出力は候補データとしてschema検証とsemantic検証を通し、�
 - 要対応度のバッジは塗り、重要度のバッジは枠線で表し、色を見分けられなくても二つの指標を区別できるようにします。
 - 重要度が低の場合もバッジを表示し、未算出と区別します。
 - 表は固定レイアウトにし、項目を最も広く、待ち相手と状態を次に広くします。数値列は狭くして等幅数字を中央へ揃えます。
-- 項目一覧からGitHubへの導線は題名の隣に置くアイコンボタン一つだけにし、44px以上の操作領域を確保します。
+- GitHubアイコンボタンは、項目見出しでは題名の隣、現在の実装Pull Requestでは参照の隣に置きます。操作領域は44px以上にします。
 - 一覧の件数と選択中の並び替えキー名を要約表示しません。
 - サイト名は`text-base font-semibold`、ページ見出しは`text-lg font-semibold`で統一し、見出しレベルは表示サイズと分けて決めます。
 - 操作方法だけを説明する文章はページ見出しや一覧操作の周囲へ置きません。
@@ -238,7 +335,7 @@ Tailwind CSSでスタイルを書きます。
 
 色とフォントサイズとブレークポイントは`@theme`のトークンを使います。
 トークンは役割で名付けてあるので、`bg-surface-card`や`text-state-danger-text`のように意味で選びます。
-生成りのページとカードに深緑のアクセントを合わせ、ライトテーマだけを提供します。
+生成りのページとカードに深緑のアクセントを合わせ、OSの設定に応じてライトテーマとダークテーマを提供します。
 本文は端末のゴシック体、サイト名とページや項目詳細の見出しは`font-display`、点数や時間や件数は`font-mono`を使います。
 Webフォントは読み込みません。
 余白と角丸と影はTailwindの既定スケールへ寄せ、`clamp()`のように既定で表せないものだけ`@theme`へ足します。
@@ -256,9 +353,6 @@ IssueとPull Requestの種別はそれぞれsuccess系とinfo系、状態はneut
 | `Pill`                    | 意味に対応する配色のpill型label          |
 | `ActionButton`            | 操作button                               |
 
-`web/src/app.test.tsx`は識別用のclass名を選択子に使います。
-見た目をユーティリティclassへ移すときも、識別用のclass名は残します。
-
 ## Pull Requestを出す前に
 
 CIと同じ検査を手元で実行します。
@@ -267,7 +361,6 @@ CIと同じ検査を手元で実行します。
 pnpm typecheck
 pnpm lint
 pnpm format:check
-pnpm test
 pnpm eval:golden
 pnpm build
 pnpm build:workflow-cli

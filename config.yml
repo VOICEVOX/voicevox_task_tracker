@@ -12,7 +12,7 @@ tracking:
     relationDepth: 3
   relationExpansion:
     # 1 runで関係先として個別列挙する一意なnode IDの上限。
-    maxItemsPerRun: 500
+    maxItemsPerRun: 1000
   include: []
   retentionDaysAfterTerminal: 180
   backfill:
@@ -103,18 +103,22 @@ importance:
     blockedItem: 3
     blockedRepository: 5
     downstreamImpactMax: 30
-    milestoneWithDueDate: 10
-    milestoneDueSoon: 15
     significantFeature: 20
-    explicitDeadline: 15
     futureRisk: 15
-  dueSoonDays: 14
   levels:
     high: 40
     medium: 20
 
 attention:
   recencyFloor: 0.4
+  deadlinePoints:
+    none: 0
+    over_30_days: 5
+    within_30_days: 10
+    within_7_days: 15
+    within_3_days: 20
+    within_1_day: 25
+    overdue: 30
   levels:
     high: 40
     medium: 20
@@ -124,12 +128,11 @@ ai:
   enabled: true
   authentication: auth-json
   model: gpt-5.6-luna
-  promptVersion: v13
   confidence:
     high: 0.85
     medium: 0.65
   budget:
-    maxCallsPerRun: 300
+    maxCallsPerRun: 50
     maxInputCharactersPerItem: 60000
     maxTotalInputCharactersPerRun: 6000000
     maxEstimatedCostUsdPerRun: 10
@@ -155,9 +158,6 @@ notifications:
       users: {}
       # Hiroshiba: "123456789012345678"
     maxItemsPerDigest: 10
-    cooldownDays:
-      urgent: 3
-      critical: 2
 
 state:
   branch: tracker-state

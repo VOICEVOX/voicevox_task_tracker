@@ -3,6 +3,7 @@ import {
   type OperationsAlertKind,
   type UtcIsoDateTime,
 } from "../domain/index.js";
+import { z } from "zod";
 import { assertNonNullable } from "../util/index.js";
 import { CliUsageError } from "./errors.js";
 import { type WorkflowJobResult, type WorkflowJobResults } from "./workflow-run-report.js";
@@ -15,6 +16,11 @@ const DEFAULT_PAGES_OUTPUT_DIRECTORY = "artifacts/workflow/pages";
 const DEFAULT_COLLECT_ANALYZE_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/collect-analyze.json`;
 const DEFAULT_WORKFLOW_REPORT_PATH = `${DEFAULT_REPORT_DIRECTORY}/workflow.json`;
 const REPOSITORY_FILTER_PATTERN = /^VOICEVOX\/[A-Za-z0-9._-]+$/u;
+const DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
+export const notificationActionSchema = z.enum(["send", "hold", "acknowledge-current"]);
+export type NotificationAction = z.output<typeof notificationActionSchema>;
+const deliveryIdSchema = z.string().regex(DELIVERY_ID_PATTERN);
+const resolveDiscordDeliveryResolutionSchema = z.enum(["retry", "acknowledge"]);
 
 /** runの予定時刻を現在時刻または明示値から決める指定。 */
 export type CliSchedule =
@@ -32,8 +38,13 @@ type OnlineCommandFields = Readonly<{
   schedule: CliSchedule;
 }>;
 
+type NotificationActionCommandFields = Readonly<{
+  notificationAction: NotificationAction;
+}>;
+
 /** 通常の日次実行を表すCLI入力。 */
 export type DailyCliCommand = OnlineCommandFields &
+  NotificationActionCommandFields &
   Readonly<{
     kind: "daily";
   }>;
@@ -47,6 +58,7 @@ export type DryRunCliCommand = OnlineCommandFields &
 
 /** 追跡対象を追加する日次実行を表すCLI入力。 */
 export type BackfillCliCommand = OnlineCommandFields &
+  NotificationActionCommandFields &
   Readonly<{
     kind: "backfill";
     mode: "none" | "linked" | "all-open";
@@ -55,6 +67,7 @@ export type BackfillCliCommand = OnlineCommandFields &
 
 /** workflowの収集と判定だけを行うCLI入力。 */
 export type CollectAnalyzeCliCommand = OnlineCommandFields &
+  NotificationActionCommandFields &
   Readonly<{
     kind: "collect-analyze";
     mode: "none" | "linked" | "all-open";
@@ -83,6 +96,14 @@ export type NotifyDiscordCliCommand = Readonly<{
   configPath: string;
   artifactPath: string;
   pagesUrl: string;
+}>;
+
+/** Discord通知の送信保留を解除するCLI入力。 */
+export type ResolveDiscordDeliveryCliCommand = Readonly<{
+  kind: "resolve-discord-delivery";
+  configPath: string;
+  deliveryId: string;
+  resolution: "retry" | "acknowledge";
 }>;
 
 /** workflow障害時に運用障害通知だけを送るCLI入力。 */
@@ -154,6 +175,7 @@ export type CliCommand =
   | PersistStateCliCommand
   | BuildPagesCliCommand
   | NotifyDiscordCliCommand
+  | ResolveDiscordDeliveryCliCommand
   | NotifyOperationsCliCommand
   | ReportWorkflowCliCommand
   | VerifyStateCliCommand
@@ -242,6 +264,19 @@ function parseSchedule(options: ParsedOptions): CliSchedule {
   }
 }
 
+function parseNotificationAction(options: ParsedOptions): NotificationAction {
+  const result = notificationActionSchema.safeParse(
+    singleOption(options, "--notification-action", "send"),
+  );
+  if (!result.success) {
+    throw usageError(
+      "--notification-actionにはsend、holdまたはacknowledge-currentを指定してください",
+      result.error,
+    );
+  }
+  return result.data;
+}
+
 function assertDifferentOutputPaths(reportPath: string, artifactPath: string): void {
   if (reportPath === artifactPath) {
     throw usageError("--reportと--artifactには異なるパスを指定してください");
@@ -264,10 +299,14 @@ function parseOnlineFields(
 }
 
 function parseDaily(args: readonly string[]): DailyCliCommand {
-  const options = parseOptions(args, new Set(["--config", "--report", "--scheduled-for"]));
+  const options = parseOptions(
+    args,
+    new Set(["--config", "--notification-action", "--report", "--scheduled-for"]),
+  );
   return Object.freeze({
     kind: "daily",
     ...parseOnlineFields("daily", options),
+    notificationAction: parseNotificationAction(options),
   });
 }
 
@@ -317,7 +356,14 @@ function parseRepositoryFilter(options: ParsedOptions): readonly string[] {
 function parseBackfill(args: readonly string[]): BackfillCliCommand {
   const options = parseOptions(
     args,
-    new Set(["--config", "--mode", "--report", "--repository", "--scheduled-for"]),
+    new Set([
+      "--config",
+      "--mode",
+      "--notification-action",
+      "--report",
+      "--repository",
+      "--scheduled-for",
+    ]),
   );
   const mode = parseBackfillMode(singleOption(options, "--mode", "none"));
   const repositoryFilter = parseRepositoryFilter(options);
@@ -327,6 +373,7 @@ function parseBackfill(args: readonly string[]): BackfillCliCommand {
   return Object.freeze({
     kind: "backfill",
     ...parseOnlineFields("backfill", options),
+    notificationAction: parseNotificationAction(options),
     mode,
     repositoryFilter,
   });
@@ -335,7 +382,15 @@ function parseBackfill(args: readonly string[]): BackfillCliCommand {
 function parseCollectAnalyze(args: readonly string[]): CollectAnalyzeCliCommand {
   const options = parseOptions(
     args,
-    new Set(["--artifact", "--config", "--mode", "--report", "--repository", "--scheduled-for"]),
+    new Set([
+      "--artifact",
+      "--config",
+      "--mode",
+      "--notification-action",
+      "--report",
+      "--repository",
+      "--scheduled-for",
+    ]),
   );
   const mode = parseBackfillMode(singleOption(options, "--mode", "none"));
   const repositoryFilter = parseRepositoryFilter(options);
@@ -348,6 +403,7 @@ function parseCollectAnalyze(args: readonly string[]): CollectAnalyzeCliCommand 
   return Object.freeze({
     kind: "collect-analyze",
     ...fields,
+    notificationAction: parseNotificationAction(options),
     mode,
     repositoryFilter,
     artifactPath,
@@ -400,6 +456,37 @@ function parseNotifyDiscord(args: readonly string[]): NotifyDiscordCliCommand {
     configPath: singleOption(options, "--config", DEFAULT_CONFIG_PATH),
     artifactPath: singleOption(options, "--artifact", DEFAULT_WORKFLOW_ARTIFACT_PATH),
     pagesUrl: parsePagesUrl(options),
+  });
+}
+
+function parseResolveDiscordDelivery(args: readonly string[]): ResolveDiscordDeliveryCliCommand {
+  const options = parseOptions(args, new Set(["--config", "--delivery-id", "--resolution"]));
+  const deliveryIdSource = requiredSingleOption(
+    options,
+    "--delivery-id",
+    "resolve-discord-delivery",
+  );
+  const deliveryIdResult = deliveryIdSchema.safeParse(deliveryIdSource);
+  if (!deliveryIdResult.success) {
+    throw usageError(
+      "--delivery-idにはdiscord-digest:v1のdelivery IDを指定してください",
+      deliveryIdResult.error,
+    );
+  }
+  const resolutionResult = resolveDiscordDeliveryResolutionSchema.safeParse(
+    requiredSingleOption(options, "--resolution", "resolve-discord-delivery"),
+  );
+  if (!resolutionResult.success) {
+    throw usageError(
+      "--resolutionにはretryまたはacknowledgeを指定してください",
+      resolutionResult.error,
+    );
+  }
+  return Object.freeze({
+    kind: "resolve-discord-delivery",
+    configPath: singleOption(options, "--config", DEFAULT_CONFIG_PATH),
+    deliveryId: deliveryIdResult.data,
+    resolution: resolutionResult.data,
   });
 }
 
@@ -489,9 +576,10 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
       "--notify-operations-result",
       "--output",
       "--persist-state-result",
+      "--publish-notification-history-result",
       "--run-attempt",
       "--run-id",
-      "--test-eval-result",
+      "--quality-eval-result",
     ]),
   );
   const collectAnalyzeReportPath = singleOption(
@@ -510,12 +598,16 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
     workflowRunId: parseWorkflowRunId(options),
     workflowRunAttempt: parseWorkflowRunAttempt(options),
     jobResults: Object.freeze({
-      "test-eval": parseWorkflowJobResult(options, "--test-eval-result"),
+      "quality-eval": parseWorkflowJobResult(options, "--quality-eval-result"),
       "collect-analyze": parseWorkflowJobResult(options, "--collect-analyze-result"),
       "persist-state": parseWorkflowJobResult(options, "--persist-state-result"),
       "build-pages": parseWorkflowJobResult(options, "--build-pages-result"),
       "deploy-pages": parseWorkflowJobResult(options, "--deploy-pages-result"),
       "notify-discord": parseWorkflowJobResult(options, "--notify-discord-result"),
+      "publish-notification-history": parseWorkflowJobResult(
+        options,
+        "--publish-notification-history-result",
+      ),
       "notify-operations": parseWorkflowJobResult(options, "--notify-operations-result"),
     }),
   });
@@ -624,6 +716,8 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
       return parseBuildPages(options);
     case "notify-discord":
       return parseNotifyDiscord(options);
+    case "resolve-discord-delivery":
+      return parseResolveDiscordDelivery(options);
     case "notify-operations":
       return parseNotifyOperations(options);
     case "report-workflow":
@@ -643,15 +737,16 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
 export function formatCliUsage(): string {
   return [
     "使用方法:",
-    "  voicevox-task-tracker daily [--config PATH] [--scheduled-for ISO] [--report PATH]",
+    "  voicevox-task-tracker daily [--config PATH] [--notification-action send|hold|acknowledge-current] [--scheduled-for ISO] [--report PATH]",
     "  voicevox-task-tracker dry-run [--config PATH] [--artifact PATH] [--report PATH]",
-    "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--repository VOICEVOX/REPO]",
-    "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--scheduled-for ISO] [--artifact PATH]",
+    "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--notification-action send|hold|acknowledge-current] [--repository VOICEVOX/REPO]",
+    "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--notification-action send|hold|acknowledge-current] [--scheduled-for ISO] [--artifact PATH]",
     "  voicevox-task-tracker persist-state [--config PATH] [--artifact PATH]",
     "  voicevox-task-tracker build-pages [--config PATH] [--artifact PATH] [--output PATH]",
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",
+    "  voicevox-task-tracker resolve-discord-delivery --delivery-id ID --resolution retry|acknowledge [--config PATH]",
     "  voicevox-task-tracker notify-operations --kind collection|pages|discord --incident-id ID --occurred-at ISO",
-    "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --test-eval-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --notify-operations-result RESULT",
+    "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --quality-eval-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --publish-notification-history-result RESULT --notify-operations-result RESULT",
     "  voicevox-task-tracker verify-state --state-directory PATH",
     "  voicevox-task-tracker replay (--fixture PATH | --state PATH) [--artifact PATH]",
     "  voicevox-task-tracker eval --fixtures PATH [--artifact PATH]",

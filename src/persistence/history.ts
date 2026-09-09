@@ -4,10 +4,18 @@ import { serializeCanonicalJson, serializeCanonicalJsonLine } from "./canonical-
 import { StateFormatError, StateHistoryError } from "./errors.js";
 import { type LegacyStatus, migrateLegacyStatus } from "./legacy-enum.js";
 import { type StateSnapshot } from "./snapshot.js";
-import { type Repository } from "../domain/index.js";
+import {
+  createNotificationReason,
+  notificationReasonSchema,
+  type Repository,
+} from "../domain/index.js";
 
 const STATE_HISTORY_SCHEMA_VERSION_1 = "1";
 export const STATE_HISTORY_SCHEMA_VERSION_2 = "2";
+export const STATE_HISTORY_SCHEMA_VERSION_3 = "3";
+export const STATE_HISTORY_SCHEMA_VERSION_4 = "4";
+export const STATE_HISTORY_SCHEMA_VERSION_5 = "5";
+export const STATE_HISTORY_SCHEMA_VERSION_6 = "6";
 
 const historySchemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
@@ -114,29 +122,153 @@ export const STATE_HISTORY_STATUS_VALUES = [
   "terminal_not_planned",
 ] as const;
 const statusSchema = z.enum(STATE_HISTORY_STATUS_VALUES);
+const waitingOnRoleSchema = z.enum([
+  "author",
+  "maintainer",
+  "reviewer",
+  "assignee",
+  "respondent",
+  "dependency",
+  "merge_decider",
+  "ci",
+  "unknown",
+]);
 const waitingOnSchema = z.strictObject({
   kind: z.enum(["user", "team", "role", "item", "automation", "unknown"]),
   candidateId: identifierSchema,
-  role: z.enum([
-    "author",
-    "maintainer",
-    "reviewer",
-    "assignee",
-    "respondent",
-    "dependency",
-    "merge_decider",
-    "ci",
-    "unknown",
-  ]),
+  role: waitingOnRoleSchema,
   reasonSummary: z.string().max(1000),
   sourceIds: z.array(identifierSchema).min(1),
   confidence: z.number().min(0).max(1),
 });
+const notificationWaitingOnReferenceSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("user"),
+    candidateId: identifierSchema,
+    role: waitingOnRoleSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("team"),
+    candidateId: identifierSchema,
+    role: waitingOnRoleSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("role"),
+    candidateId: identifierSchema,
+    role: waitingOnRoleSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("item"),
+    candidateId: identifierSchema,
+    role: waitingOnRoleSchema,
+    displayReference: z.string().min(4).max(600).regex(/^\S+$/u),
+  }),
+  z.strictObject({
+    kind: z.literal("automation"),
+    candidateId: identifierSchema,
+    role: waitingOnRoleSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("unknown"),
+    candidateId: identifierSchema,
+    role: waitingOnRoleSchema,
+  }),
+]);
+const notificationWaitingOnRecordSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_recorded"),
+  }),
+  z.strictObject({
+    status: z.literal("recorded"),
+    values: z.array(notificationWaitingOnReferenceSchema).min(1),
+  }),
+]);
 const responsibilitySchema = z.strictObject({
   status: statusSchema,
   waitingOn: z.array(waitingOnSchema),
 });
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
+const notificationReasonCodeSchema = z.enum([
+  "assessment_overdue",
+  "owner_overdue",
+  "decision_overdue",
+  "review_overdue",
+  "revision_overdue",
+  "reply_overdue",
+  "owner_unknown",
+  "blocker_overdue",
+  "newly_unblocked",
+  "dependency_cycle",
+  "responsibility_changed",
+  "merge_overdue",
+  "automation_stuck",
+]);
+const legacyNotificationTimeReasonThresholdSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("recorded"),
+    hours: z.number().nonnegative(),
+  }),
+  z.strictObject({
+    status: z.literal("not_recorded"),
+  }),
+]);
+const legacyNotificationNotApplicableThresholdSchema = z.strictObject({
+  status: z.literal("not_applicable"),
+});
+const legacyNotificationReasonSchema = z.discriminatedUnion("reasonCode", [
+  z.strictObject({
+    reasonCode: z.literal("assessment_overdue"),
+    threshold: legacyNotificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("owner_overdue"),
+    threshold: legacyNotificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("decision_overdue"),
+    threshold: legacyNotificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("review_overdue"),
+    threshold: legacyNotificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("revision_overdue"),
+    threshold: legacyNotificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("reply_overdue"),
+    threshold: legacyNotificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("merge_overdue"),
+    threshold: legacyNotificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("automation_stuck"),
+    threshold: legacyNotificationTimeReasonThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("owner_unknown"),
+    threshold: legacyNotificationNotApplicableThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("blocker_overdue"),
+    threshold: legacyNotificationNotApplicableThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("newly_unblocked"),
+    threshold: legacyNotificationNotApplicableThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("dependency_cycle"),
+    threshold: legacyNotificationNotApplicableThresholdSchema,
+  }),
+  z.strictObject({
+    reasonCode: z.literal("responsibility_changed"),
+    threshold: legacyNotificationNotApplicableThresholdSchema,
+  }),
+]);
 const evidenceSchema = z.strictObject({
   sourceId: identifierSchema,
   supports: z.enum([
@@ -190,7 +322,7 @@ const edgeSchema = z.discriminatedUnion("active", [
     removedAt: dateTimeSchema,
   }),
 ]);
-const historyEventSchema = z.discriminatedUnion("kind", [
+const stateHistoryStateEventSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("responsibility_set"),
     nodeId: identifierSchema,
@@ -224,6 +356,129 @@ const historyEventSchema = z.discriminatedUnion("kind", [
     reason: z.literal("archived"),
   }),
 ]);
+const notificationSentEventCommonFieldsSchema = z.strictObject({
+  kind: z.literal("notification_sent"),
+  deliveryId: z.string().regex(/^sha256:[0-9a-f]{64}$/u),
+  itemNodeId: identifierSchema,
+  repositoryId: identifierSchema,
+  type: z.enum(["issue", "pull_request"]),
+  displayReference: z.string().min(4).max(600).regex(/^\S+$/u),
+  number: z.number().int().positive(),
+  title: z.string().max(500),
+  url: z
+    .url()
+    .max(1000)
+    .refine((value) => {
+      const url = new URL(value);
+      return (
+        url.protocol === "https:" &&
+        url.hostname === "github.com" &&
+        url.port === "" &&
+        url.username === "" &&
+        url.password === ""
+      );
+    }),
+  severity: severitySchema,
+  sentAt: dateTimeSchema,
+});
+const notificationSentEventLegacyFieldsSchema = notificationSentEventCommonFieldsSchema.extend({
+  reasonCodes: z.array(notificationReasonCodeSchema).min(1),
+});
+const notificationSentEventVersion3Schema = notificationSentEventLegacyFieldsSchema.superRefine(
+  (event, context) => {
+    if (new Set(event.reasonCodes).size !== event.reasonCodes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["reasonCodes"],
+        message: "通知理由コードが重複しています",
+      });
+    }
+  },
+);
+const notificationSentEventVersion4Schema = notificationSentEventLegacyFieldsSchema
+  .extend({
+    waitingOn: notificationWaitingOnRecordSchema,
+  })
+  .superRefine((event, context) => {
+    if (new Set(event.reasonCodes).size !== event.reasonCodes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["reasonCodes"],
+        message: "通知理由コードが重複しています",
+      });
+    }
+  });
+const notificationSentEventSchema = notificationSentEventCommonFieldsSchema
+  .extend({
+    waitingOn: notificationWaitingOnRecordSchema,
+    reasons: z.array(notificationReasonSchema).min(1),
+  })
+  .superRefine((event, context) => {
+    const reasonCodes = event.reasons.map((reason) => reason.reasonCode);
+    if (new Set(reasonCodes).size !== reasonCodes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["reasons"],
+        message: "通知理由コードが重複しています",
+      });
+    }
+  });
+const notificationSentEventVersion5Schema = notificationSentEventCommonFieldsSchema
+  .extend({
+    waitingOn: notificationWaitingOnRecordSchema,
+    reasons: z.array(legacyNotificationReasonSchema).min(1),
+  })
+  .superRefine((event, context) => {
+    const reasonCodes = event.reasons.map((reason) => reason.reasonCode);
+    if (new Set(reasonCodes).size !== reasonCodes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["reasons"],
+        message: "通知理由コードが重複しています",
+      });
+    }
+  });
+const historyEventSchema = z.discriminatedUnion("kind", [
+  stateHistoryStateEventSchema.options[0],
+  stateHistoryStateEventSchema.options[1],
+  stateHistoryStateEventSchema.options[2],
+  stateHistoryStateEventSchema.options[3],
+  stateHistoryStateEventSchema.options[4],
+  stateHistoryStateEventSchema.options[5],
+  stateHistoryStateEventSchema.options[6],
+  notificationSentEventSchema,
+]);
+const historyEventVersion5Schema = z.discriminatedUnion("kind", [
+  stateHistoryStateEventSchema.options[0],
+  stateHistoryStateEventSchema.options[1],
+  stateHistoryStateEventSchema.options[2],
+  stateHistoryStateEventSchema.options[3],
+  stateHistoryStateEventSchema.options[4],
+  stateHistoryStateEventSchema.options[5],
+  stateHistoryStateEventSchema.options[6],
+  notificationSentEventVersion5Schema,
+]);
+const historyEventVersion2Schema = stateHistoryStateEventSchema;
+const historyEventVersion3Schema = z.discriminatedUnion("kind", [
+  stateHistoryStateEventSchema.options[0],
+  stateHistoryStateEventSchema.options[1],
+  stateHistoryStateEventSchema.options[2],
+  stateHistoryStateEventSchema.options[3],
+  stateHistoryStateEventSchema.options[4],
+  stateHistoryStateEventSchema.options[5],
+  stateHistoryStateEventSchema.options[6],
+  notificationSentEventVersion3Schema,
+]);
+const historyEventVersion4Schema = z.discriminatedUnion("kind", [
+  stateHistoryStateEventSchema.options[0],
+  stateHistoryStateEventSchema.options[1],
+  stateHistoryStateEventSchema.options[2],
+  stateHistoryStateEventSchema.options[3],
+  stateHistoryStateEventSchema.options[4],
+  stateHistoryStateEventSchema.options[5],
+  stateHistoryStateEventSchema.options[6],
+  notificationSentEventVersion4Schema,
+]);
 const historyRecordVersion1EventSchema = z.union([
   z.looseObject({
     kind: z.literal("responsibility_set"),
@@ -253,6 +508,82 @@ const historyRecordVersion2Schema = z
     runId: identifierSchema,
     recordedAt: dateTimeSchema,
     inputEvents: inputEventsSchema,
+    events: z.array(historyEventVersion2Schema),
+  })
+  .superRefine((record, context) => {
+    const keys = record.events.map(historyEventKey);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["events"],
+        message: "同じ対象と分類のeventが重複しています",
+      });
+    }
+  });
+const historyRecordVersion3Schema = z
+  .strictObject({
+    schemaVersion: z.literal(STATE_HISTORY_SCHEMA_VERSION_3),
+    date: dateSchema,
+    runId: identifierSchema,
+    recordedAt: dateTimeSchema,
+    inputEvents: inputEventsSchema,
+    events: z.array(historyEventVersion3Schema),
+  })
+  .superRefine((record, context) => {
+    const keys = record.events.map(historyEventKey);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["events"],
+        message: "同じ対象と分類のeventが重複しています",
+      });
+    }
+  });
+const historyRecordVersion4Schema = z
+  .strictObject({
+    schemaVersion: z.literal(STATE_HISTORY_SCHEMA_VERSION_4),
+    date: dateSchema,
+    runId: identifierSchema,
+    recordedAt: dateTimeSchema,
+    inputEvents: inputEventsSchema,
+    events: z.array(historyEventVersion4Schema),
+  })
+  .superRefine((record, context) => {
+    const keys = record.events.map(historyEventKey);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["events"],
+        message: "同じ対象と分類のeventが重複しています",
+      });
+    }
+  });
+const historyRecordVersion5Schema = z
+  .strictObject({
+    schemaVersion: z.literal(STATE_HISTORY_SCHEMA_VERSION_5),
+    date: dateSchema,
+    runId: identifierSchema,
+    recordedAt: dateTimeSchema,
+    inputEvents: inputEventsSchema,
+    events: z.array(historyEventVersion5Schema),
+  })
+  .superRefine((record, context) => {
+    const keys = record.events.map(historyEventKey);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["events"],
+        message: "同じ対象と分類のeventが重複しています",
+      });
+    }
+  });
+const historyRecordVersion6Schema = z
+  .strictObject({
+    schemaVersion: z.literal(STATE_HISTORY_SCHEMA_VERSION_6),
+    date: dateSchema,
+    runId: identifierSchema,
+    recordedAt: dateTimeSchema,
+    inputEvents: inputEventsSchema,
     events: z.array(historyEventSchema),
   })
   .superRefine((record, context) => {
@@ -275,15 +606,59 @@ export type StateHistoryEdge = z.output<typeof edgeSchema>;
 /** 日次履歴の一つの変更event。 */
 export type StateHistoryEvent = z.output<typeof historyEventSchema>;
 
+/** Discord通知送信を保存する履歴event。 */
+export type StateHistoryNotificationEvent = z.output<typeof notificationSentEventSchema>;
+
 /** 日次履歴へ保存する一つの正規化入力イベント。 */
 export type StateHistoryInputEvent = z.output<typeof inputEventSchema>;
 
+/** 通知時点のsnapshotからwaitingOn項目の表示参照を解決する。 */
+export function resolveStateHistoryNotificationItemDisplayReference(
+  snapshot: StateSnapshot,
+  candidateId: string,
+): string {
+  const itemsByNodeId = new Map<string, StateSnapshot["items"][number]>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  if (itemsByNodeId.size !== snapshot.items.length) {
+    throw new StateHistoryError("snapshotのitem node IDが重複しています");
+  }
+  const externalReferencesByNodeId = new Map<string, StateSnapshot["externalReferences"][number]>(
+    snapshot.externalReferences.map((reference) => [reference.nodeId, reference]),
+  );
+  if (externalReferencesByNodeId.size !== snapshot.externalReferences.length) {
+    throw new StateHistoryError("snapshotのexternal reference node IDが重複しています");
+  }
+  const item = itemsByNodeId.get(candidateId);
+  const externalReference = externalReferencesByNodeId.get(candidateId);
+  if (item != null && externalReference != null) {
+    throw new StateHistoryError("snapshotでitemとexternal referenceのnode IDが重複しています");
+  }
+  if (item != null) {
+    return item.displayReference;
+  }
+  if (externalReference != null) {
+    return `${externalReference.repositoryFullName}#${externalReference.number.toString()}`;
+  }
+  throw new StateHistoryError(
+    `通知送信eventのitem waitingOn参照をsnapshotから解決できません。対象: ${candidateId}`,
+  );
+}
+
 type StateHistoryRecordVersion1 = z.output<typeof historyRecordVersion1MigrationSchema>;
 type StateHistoryRecordVersion2 = z.output<typeof historyRecordVersion2Schema>;
+type StateHistoryRecordVersion3 = z.output<typeof historyRecordVersion3Schema>;
+type StateHistoryRecordVersion4 = z.output<typeof historyRecordVersion4Schema>;
+type StateHistoryRecordVersion5 = z.output<typeof historyRecordVersion5Schema>;
+type StateHistoryRecordVersion6 = z.output<typeof historyRecordVersion6Schema>;
+type StateHistoryEventVersion3 = z.output<typeof historyEventVersion3Schema>;
+type StateHistoryEventVersion4 = z.output<typeof historyEventVersion4Schema>;
+type StateHistoryEventVersion5 = z.output<typeof historyEventVersion5Schema>;
+type StateHistoryNotificationEventVersion4 = z.output<typeof notificationSentEventVersion4Schema>;
 type StateHistoryRecordVersionParser = (value: unknown) => StateHistoryRecord;
 
-/** 一つの完全runが生成したschema version 2の日次履歴record。 */
-export type StateHistoryRecord = StateHistoryRecordVersion2;
+/** 一つの完全runが生成したschema version 6の日次履歴record。 */
+export type StateHistoryRecord = StateHistoryRecordVersion6;
 
 /** 履歴を指定時点まで再生した責務・edge・severity状態。 */
 export type ReplayedStateHistory = Readonly<{
@@ -362,7 +737,13 @@ export function createStateHistoryInputEvents(value: unknown): readonly StateHis
   );
 }
 
-function historyEventKey(event: StateHistoryEvent): string {
+function historyEventKey(
+  event:
+    | StateHistoryEvent
+    | StateHistoryEventVersion3
+    | StateHistoryEventVersion4
+    | StateHistoryEventVersion5,
+): string {
   switch (event.kind) {
     case "responsibility_set":
     case "responsibility_removed":
@@ -375,6 +756,8 @@ function historyEventKey(event: StateHistoryEvent): string {
       return `edge:${event.relationId}`;
     case "repository_excluded":
       return `repository_excluded:${event.repositoryFullName}`;
+    case "notification_sent":
+      return `notification_sent:${event.deliveryId}:${event.itemNodeId}`;
   }
 }
 
@@ -629,6 +1012,124 @@ function parseStateHistoryRecordVersion2(value: unknown): StateHistoryRecordVers
 }
 
 function migrateStateHistoryRecordVersion2(record: StateHistoryRecordVersion2): StateHistoryRecord {
+  return migrateStateHistoryRecordVersion3(
+    parseStateHistoryRecordVersion3({
+      ...record,
+      schemaVersion: STATE_HISTORY_SCHEMA_VERSION_3,
+    }),
+  );
+}
+
+function parseStateHistoryRecordVersion3(value: unknown): StateHistoryRecordVersion3 {
+  const result = historyRecordVersion3Schema.safeParse(value);
+  if (!result.success) {
+    throw StateFormatError.fromZodError("state history", result.error);
+  }
+  return result.data;
+}
+
+function migrateStateHistoryRecordVersion3(record: StateHistoryRecordVersion3): StateHistoryRecord {
+  return migrateStateHistoryRecordVersion4(
+    parseStateHistoryRecordVersion4({
+      ...record,
+      schemaVersion: STATE_HISTORY_SCHEMA_VERSION_4,
+      events: record.events.map((event) =>
+        event.kind === "notification_sent"
+          ? {
+              ...event,
+              waitingOn: {
+                status: "not_recorded",
+              },
+            }
+          : event,
+      ),
+    }),
+  );
+}
+
+function parseStateHistoryRecordVersion4(value: unknown): StateHistoryRecordVersion4 {
+  const result = historyRecordVersion4Schema.safeParse(value);
+  if (!result.success) {
+    throw StateFormatError.fromZodError("state history", result.error);
+  }
+  return result.data;
+}
+
+function migrateNotificationReasonCode(
+  reasonCode: z.output<typeof notificationReasonCodeSchema>,
+): z.output<typeof notificationReasonSchema> {
+  switch (reasonCode) {
+    case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
+    case "review_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
+    case "merge_overdue":
+    case "automation_stuck":
+      return createNotificationReason(reasonCode, {
+        status: "not_recorded",
+      });
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "newly_unblocked":
+    case "dependency_cycle":
+    case "responsibility_changed":
+      return createNotificationReason(reasonCode, {
+        status: "not_applicable",
+      });
+  }
+}
+
+function migrateNotificationSentEventVersion4(
+  event: StateHistoryNotificationEventVersion4,
+): z.output<typeof notificationSentEventSchema> {
+  const { reasonCodes, ...fields } = event;
+  return {
+    ...fields,
+    reasons: reasonCodes.map(migrateNotificationReasonCode),
+  };
+}
+
+function migrateStateHistoryRecordVersion4(record: StateHistoryRecordVersion4): StateHistoryRecord {
+  return migrateStateHistoryRecordVersion5(
+    parseStateHistoryRecordVersion5({
+      ...record,
+      schemaVersion: STATE_HISTORY_SCHEMA_VERSION_5,
+      events: record.events.map((event) =>
+        event.kind === "notification_sent" ? migrateNotificationSentEventVersion4(event) : event,
+      ),
+    }),
+  );
+}
+
+function parseStateHistoryRecordVersion5(value: unknown): StateHistoryRecordVersion5 {
+  const result = historyRecordVersion5Schema.safeParse(value);
+  if (!result.success) {
+    throw StateFormatError.fromZodError("state history", result.error);
+  }
+  return result.data;
+}
+
+function migrateStateHistoryRecordVersion5(record: StateHistoryRecordVersion5): StateHistoryRecord {
+  return migrateStateHistoryRecordVersion6(
+    parseStateHistoryRecordVersion6({
+      ...record,
+      schemaVersion: STATE_HISTORY_SCHEMA_VERSION_6,
+      events: record.events.map((event) => event),
+    }),
+  );
+}
+
+function parseStateHistoryRecordVersion6(value: unknown): StateHistoryRecordVersion6 {
+  const result = historyRecordVersion6Schema.safeParse(value);
+  if (!result.success) {
+    throw StateFormatError.fromZodError("state history", result.error);
+  }
+  return result.data;
+}
+
+function migrateStateHistoryRecordVersion6(record: StateHistoryRecordVersion6): StateHistoryRecord {
   return Object.freeze(record);
 }
 
@@ -655,6 +1156,34 @@ const stateHistoryRecordVersionParsers: ReadonlyMap<string, StateHistoryRecordVe
         migrateStateHistoryRecordVersion2,
       ),
     ],
+    [
+      STATE_HISTORY_SCHEMA_VERSION_3,
+      createStateHistoryRecordVersionParser(
+        parseStateHistoryRecordVersion3,
+        migrateStateHistoryRecordVersion3,
+      ),
+    ],
+    [
+      STATE_HISTORY_SCHEMA_VERSION_4,
+      createStateHistoryRecordVersionParser(
+        parseStateHistoryRecordVersion4,
+        migrateStateHistoryRecordVersion4,
+      ),
+    ],
+    [
+      STATE_HISTORY_SCHEMA_VERSION_5,
+      createStateHistoryRecordVersionParser(
+        parseStateHistoryRecordVersion5,
+        migrateStateHistoryRecordVersion5,
+      ),
+    ],
+    [
+      STATE_HISTORY_SCHEMA_VERSION_6,
+      createStateHistoryRecordVersionParser(
+        parseStateHistoryRecordVersion6,
+        migrateStateHistoryRecordVersion6,
+      ),
+    ],
   ]);
 
 function parseVersionedStateHistoryRecord(value: unknown): StateHistoryRecord {
@@ -672,7 +1201,7 @@ function parseVersionedStateHistoryRecord(value: unknown): StateHistoryRecord {
 }
 
 function validateHistoryRecord(value: unknown): StateHistoryRecord {
-  return migrateStateHistoryRecordVersion2(parseStateHistoryRecordVersion2(value));
+  return migrateStateHistoryRecordVersion6(parseStateHistoryRecordVersion6(value));
 }
 
 /** previous snapshotからcurrent snapshotへの日次履歴recordを生成する。 */
@@ -701,13 +1230,58 @@ export function createStateHistoryRecord(
   ].sort((left, right) => compareStrings(historyEventKey(left), historyEventKey(right)));
 
   return validateHistoryRecord({
-    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_2,
+    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_6,
     date,
     runId: currentSnapshot.run.id,
     recordedAt: currentSnapshot.generatedAt,
     inputEvents: createNewInputEvents(previousSnapshot, currentSnapshot, inputEvents),
     events,
   });
+}
+
+/** 対象runの履歴recordへDiscord通知送信eventを追記する。 */
+export function appendStateHistoryNotificationEvents(
+  existingSource: string,
+  runId: string,
+  notificationEvents: readonly StateHistoryNotificationEvent[],
+): string {
+  const records = [...parseStateHistoryRecords(existingSource)];
+  const targetRecords = records.filter((record) => record.runId === runId);
+  if (targetRecords.length !== 1) {
+    throw new StateHistoryError("通知履歴を追記するrun IDが一意に定まりません");
+  }
+  const targetRecord = targetRecords[0];
+  if (targetRecord == null) {
+    throw new StateHistoryError("通知履歴を追記する履歴recordを取得できません");
+  }
+  const validatedEvents = notificationEvents.map((event) => {
+    const result = notificationSentEventSchema.safeParse(event);
+    if (!result.success) {
+      throw StateFormatError.fromZodError("state history notification event", result.error);
+    }
+    return result.data;
+  });
+  const existingKeys = new Set(targetRecord.events.map((event) => historyEventKey(event)));
+  const newKeys = new Set<string>();
+  for (const event of validatedEvents) {
+    const key = historyEventKey(event);
+    if (existingKeys.has(key) || newKeys.has(key)) {
+      throw new StateHistoryError("同じ通知送信eventが既に存在します");
+    }
+    if (event.sentAt < targetRecord.recordedAt) {
+      throw new StateHistoryError("通知送信時刻が履歴recordの記録時刻より前です");
+    }
+    newKeys.add(key);
+  }
+  const updatedRecord = validateHistoryRecord({
+    ...targetRecord,
+    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_6,
+    events: [...targetRecord.events, ...validatedEvents].sort((left, right) =>
+      compareStrings(historyEventKey(left), historyEventKey(right)),
+    ),
+  });
+  const updatedRecords = records.map((record) => (record.runId === runId ? updatedRecord : record));
+  return serializeStateHistoryRecords(updatedRecords);
 }
 
 /** JSON Lines文字列から日次履歴recordを検証して読み取る。 */

@@ -1,5 +1,7 @@
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import { CurrentImplementations } from "./current-implementations.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
+import { DeadlineDisplay } from "./deadline-display.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import {
   formatStallDuration,
@@ -52,13 +54,17 @@ function orderWaitingOnCandidates(
 }
 
 function WaitingOnStatus({
+  createItemHref,
   createPersonHref,
+  onSelectItem,
   onSelectPerson,
   primaryWaitingOn,
   row,
   summary,
 }: Readonly<{
+  createItemHref: (nodeId: string) => string;
   createPersonHref: (login: string) => string;
+  onSelectItem: (nodeId: string) => void;
   onSelectPerson: (login: string) => void;
   primaryWaitingOn: WaitingOnCandidate | undefined;
   row: ItemTableRow;
@@ -119,6 +125,15 @@ function WaitingOnStatus({
       <Pill className="item-waiting-status" tone="neutral">
         {statusLabel(row.item.status)}
       </Pill>
+      <CurrentImplementations
+        createItemHref={createItemHref}
+        createPersonHref={createPersonHref}
+        currentImplementations={row.item.currentImplementations}
+        onSelectItem={onSelectItem}
+        onSelectPerson={onSelectPerson}
+        summary={summary}
+        variant="compact"
+      />
     </div>
   );
 }
@@ -151,7 +166,7 @@ export function createItemTableColumns({
           showFreshnessBadge={true}
         />
       ),
-      widthClassName: "w-[39%]",
+      widthClassName: "w-[32%]",
     },
     {
       ariaSort: undefined,
@@ -162,14 +177,16 @@ export function createItemTableColumns({
       label: "待ち相手と状態",
       renderCell: (row) => (
         <WaitingOnStatus
+          createItemHref={createItemHref}
           createPersonHref={createPersonHref}
+          onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
           primaryWaitingOn={selectPrimaryWaitingOn(row)}
           row={row}
           summary={summary}
         />
       ),
-      widthClassName: "w-[31%]",
+      widthClassName: "w-[24%]",
     },
     {
       ariaSort: sort.key === "attention" ? sort.direction : "none",
@@ -200,6 +217,19 @@ export function createItemTableColumns({
       widthClassName: "w-[9%]",
     },
     {
+      ariaSort: sort.key === "deadline" ? sort.direction : "none",
+      cellClassName: "min-w-0 wrap-anywhere",
+      cellKind: "data",
+      headerClassName: "whitespace-nowrap",
+      key: "deadline",
+      label: "期限",
+      onSort: () => {
+        onSortChange("deadline");
+      },
+      renderCell: (row) => <DeadlineDisplay dateClassName="text-xs" deadline={row.item.deadline} />,
+      widthClassName: "w-[14%]",
+    },
+    {
       ariaSort: sort.key === "stall" ? sort.direction : "none",
       cellClassName: "text-center font-mono whitespace-nowrap tabular-nums",
       cellKind: "data",
@@ -221,8 +251,10 @@ export function createItemTableColumns({
 
 /** 項目一覧で共通利用するカードのフィールドを作る。 */
 export function createItemCardFields({
+  createItemHref,
   createPersonHref,
   now,
+  onSelectItem,
   onSelectPerson,
   selectPrimaryWaitingOn,
   summary,
@@ -234,7 +266,9 @@ export function createItemCardFields({
       label: "待ち相手と状態",
       renderValue: (row) => (
         <WaitingOnStatus
+          createItemHref={createItemHref}
           createPersonHref={createPersonHref}
+          onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
           primaryWaitingOn={selectPrimaryWaitingOn(row)}
           row={row}
@@ -258,6 +292,15 @@ export function createItemCardFields({
         <ImportanceBadge importance={row.item.importance} presentation="score" />
       ),
       valueClassName: "font-mono text-text-primary tabular-nums",
+    },
+    {
+      className: "",
+      key: "deadline",
+      label: "期限",
+      renderValue: (row) => (
+        <DeadlineDisplay dateClassName="text-xs" deadline={row.item.deadline} />
+      ),
+      valueClassName: "text-text-primary",
     },
     {
       className: "",

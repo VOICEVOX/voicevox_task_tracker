@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { createUtcIsoDateTime, type UtcIsoDateTime } from "../domain/index.js";
 import { GitHubRetryExhaustedError } from "../github/index.js";
 import { serializeCanonicalJson } from "../persistence/index.js";
+import { UnreachableError } from "../util/index.js";
 import {
   type BackfillCliCommand,
   type CollectAnalyzeCliCommand,
@@ -103,6 +105,7 @@ export type DiscordStageResult<Value> = Readonly<{
 
 /** 日次transactionの外部接続と各モジュールの結合境界。 */
 export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> = Readonly<{
+  diagnosticsRecorder?: DiagnosticsJsonlRecorder;
   validateConfiguration: (
     input: Readonly<{
       invocation: DailyRunInvocation;
@@ -212,6 +215,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
       state: Types["state"];
+      repositoryInventory: Types["repositoryInventory"];
       validated: Types["validated"];
       persisted: Types["persisted"];
       pages: Types["pages"];
@@ -235,6 +239,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       invocation: DailyRunInvocation;
       configuration: Types["configuration"];
       state: Types["state"];
+      persisted: Types["persisted"] | undefined;
       kind: "collection" | "pages";
       retryAttempts: number;
     }>,
@@ -324,20 +329,37 @@ function resolveScheduledFor(command: OnlineCliCommand, startedAt: UtcIsoDateTim
 }
 
 function createRunId(command: OnlineCliCommand, scheduledFor: UtcIsoDateTime): string {
-  const commandIdentity =
-    command.kind === "backfill" || command.kind === "collect-analyze"
-      ? {
-          kind: command.kind,
-          configPath: command.configPath,
-          mode: command.mode,
-          repositoryFilter: command.repositoryFilter,
-          scheduledFor,
-        }
-      : {
-          kind: command.kind,
-          configPath: command.configPath,
-          scheduledFor,
-        };
+  let commandIdentity: unknown;
+  switch (command.kind) {
+    case "daily":
+      commandIdentity = {
+        kind: command.kind,
+        configPath: command.configPath,
+        notificationAction: command.notificationAction,
+        scheduledFor,
+      };
+      break;
+    case "backfill":
+    case "collect-analyze":
+      commandIdentity = {
+        kind: command.kind,
+        configPath: command.configPath,
+        mode: command.mode,
+        notificationAction: command.notificationAction,
+        repositoryFilter: command.repositoryFilter,
+        scheduledFor,
+      };
+      break;
+    case "dry-run":
+      commandIdentity = {
+        kind: command.kind,
+        configPath: command.configPath,
+        scheduledFor,
+      };
+      break;
+    default:
+      throw new UnreachableError(command);
+  }
   const digest = createHash("sha256")
     .update(serializeCanonicalJson(commandIdentity), "utf8")
     .digest("hex");
@@ -507,6 +529,33 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
     });
   }
 
+  async #recordError(
+    invocation: DailyRunInvocation,
+    stage: RunStage,
+    event: string,
+    error: unknown,
+  ): Promise<void> {
+    const recorder = this.#dependencies.diagnosticsRecorder;
+    if (recorder == null) {
+      return;
+    }
+    try {
+      await recorder.append({
+        event,
+        details: {
+          runId: invocation.runId,
+          command: invocation.command.kind,
+          stage,
+        },
+        error,
+      });
+    } catch (recordingError: unknown) {
+      throw new AggregateError([error, recordingError], "CLI段階エラーの診断記録に失敗しました", {
+        cause: error,
+      });
+    }
+  }
+
   async #execute(invocation: DailyRunInvocation): Promise<DailyRunExecutionResult> {
     let stage: RunStage = "configuration";
     let metrics = updateMetrics(createEmptyRunMetrics(), {
@@ -518,6 +567,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
     let discordSentAt: UtcIsoDateTime | null = null;
     let configuration: Types["configuration"] | undefined;
     let state: Types["state"] | undefined;
+    let persisted: Types["persisted"] | undefined;
 
     try {
       configuration = await this.#dependencies.validateConfiguration({
@@ -668,7 +718,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
 
       if (invocation.command.kind !== "dry-run" && invocation.command.kind !== "collect-analyze") {
         stage = "state_persistence";
-        const persisted = await this.#dependencies.persistState({
+        persisted = await this.#dependencies.persistState({
           invocation,
           configuration,
           state,
@@ -696,6 +746,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
           invocation,
           configuration,
           state,
+          repositoryInventory: repositoryInventory.value,
           validated: validation.value,
           persisted,
           pages,
@@ -733,6 +784,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         effects: freezeEffects(effects),
       });
     } catch (error: unknown) {
+      await this.#recordError(invocation, stage, "cli.stage.failed", error);
       const alertKind = operationsAlertKind(stage);
       if (
         alertKind != null &&
@@ -746,6 +798,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
             invocation,
             configuration,
             state,
+            persisted,
             kind: alertKind,
             retryAttempts: operationsAlertRetryAttempts(error),
           });
@@ -754,6 +807,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
             notificationCount: alert.notificationCount,
           });
         } catch (alertError: unknown) {
+          await this.#recordError(invocation, "discord", "cli.operations_alert.failed", alertError);
           diagnostics.push(safeErrorDiagnostic("discord", alertError));
         }
       }

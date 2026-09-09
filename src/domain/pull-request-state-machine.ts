@@ -9,6 +9,7 @@ import {
 import { type ResolvedLabelEffects } from "./label-resolution.js";
 import { resolveRepositoryRoleWaitingOn } from "./maintainer-resolution.js";
 import { type SourceId } from "./source-id.js";
+import { type AiAnalysisElementNecessity } from "./ai-analysis-elements.js";
 import {
   type Evidence,
   type EvidenceSupport,
@@ -25,7 +26,7 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 const confidenceSchema = z.number().min(0).max(1);
 
 /** Pull Request判定へ適用した決定規則のversion。 */
-export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v9";
+export const PULL_REQUEST_DETERMINISTIC_RULES_VERSION = "pull-request-v12";
 
 /** 依存グラフからPull Request判定へ渡すblocker。 */
 export type PullRequestBlocker = Readonly<{
@@ -80,6 +81,11 @@ export type PullRequestStateDecision = Readonly<{
   deterministicRulesVersion: typeof PULL_REQUEST_DETERMINISTIC_RULES_VERSION;
   evaluatedAt: UtcIsoDateTime;
   determination: "determined" | "codex_candidate";
+  aiAnalysisElementNecessities: Readonly<{
+    status: AiAnalysisElementNecessity;
+    waitingOn: AiAnalysisElementNecessity;
+    nextAction: AiAnalysisElementNecessity;
+  }>;
   status: Status;
   waitingOn: readonly WaitingOn[];
   primaryWaitingOn: PullRequestPrimaryWaitingOn;
@@ -106,6 +112,7 @@ interface DecisionContext {
   uncertainties: string[];
   evidence: Evidence[];
   confidenceCap: number;
+  uncertainStateElements: Set<"status" | "waitingOn" | "nextAction">;
 }
 
 type ReviewEvent = Extract<NormalizedEvent, { kind: "review" }> & {
@@ -124,6 +131,7 @@ type LabelEventReplay = Readonly<{
 
 type ResolvedReviewRequest = Readonly<{
   requestSourceId: SourceId;
+  requestEventSourceIds: readonly SourceId[];
   waitingOn: WaitingOn;
   basis: PullRequestTransitionBasis;
 }>;
@@ -293,10 +301,14 @@ function addUncertainty(
   message: string,
   sourceIds: readonly SourceId[],
   confidenceCap: number,
+  stateElements: readonly ("status" | "waitingOn" | "nextAction")[],
 ): void {
   context.uncertainties.push(message);
   context.evidence.push(...createEvidence(sourceIds, "uncertainty", message));
   context.confidenceCap = Math.min(context.confidenceCap, confidenceCap);
+  for (const element of stateElements) {
+    context.uncertainStateElements.add(element);
+  }
 }
 
 function isTerminalStatus(status: Status): boolean {
@@ -346,6 +358,11 @@ function finalizeDecision(
     deterministicRulesVersion: PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
     evaluatedAt: input.evaluatedAt,
     determination: uncertainties.length === 0 ? "determined" : "codex_candidate",
+    aiAnalysisElementNecessities: Object.freeze({
+      status: context.uncertainStateElements.has("status") ? "required" : "not_required",
+      waitingOn: context.uncertainStateElements.has("waitingOn") ? "required" : "not_required",
+      nextAction: context.uncertainStateElements.has("nextAction") ? "required" : "not_required",
+    }),
     status: draft.status,
     waitingOn,
     primaryWaitingOn,
@@ -489,7 +506,7 @@ function createTerminalDecision(
     return finalizeDecision(input, context, {
       status: "terminal_merged",
       waitingOn: [],
-      primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+      primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
       nextAction: "対応は不要です",
       confidence: 1,
       evidence: createEvidence([mergedEvent.sourceId], "status", "Pull Requestはmerge済みです"),
@@ -510,7 +527,7 @@ function createTerminalDecision(
     return finalizeDecision(input, context, {
       status: "terminal_not_planned",
       waitingOn: [],
-      primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+      primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
       nextAction: "対応は不要です",
       confidence: 1,
       evidence: createEvidence(
@@ -526,7 +543,7 @@ function createTerminalDecision(
     return finalizeDecision(input, context, {
       status: "terminal_completed",
       waitingOn: [],
-      primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+      primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
       nextAction: "対応は不要です",
       confidence: 1,
       evidence: createEvidence(
@@ -544,11 +561,12 @@ function createTerminalDecision(
     "close理由をGitHubの観測値から区別できません",
     [closedSourceId],
     input.confidenceThresholds.medium,
+    ["status"],
   );
   return finalizeDecision(input, context, {
     status: "terminal_completed",
     waitingOn: [],
-    primarySelectionReason: "terminal状態にはprimary waitingOnがありません",
+    primarySelectionReason: "terminal状態にはprimaryの待ち相手がありません",
     nextAction: "対応は不要です",
     confidence: input.confidenceThresholds.medium,
     evidence: createEvidence(
@@ -608,6 +626,7 @@ function createBlockedDecision(
       `${blocker.candidateId}が現在のblockerか確定していません`,
       blocker.sourceIds,
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
   }
   if (confirmedBlockers.length === 0) {
@@ -875,6 +894,7 @@ function createChangesRequestedDecision(
         "変更要求後にauthorが発言しているためreviewer対応が必要か判断できません",
         [latestReview.sourceId, ...authorSpeechEvents.map((event) => event.sourceId)],
         input.confidenceThresholds.medium,
+        ["status", "waitingOn", "nextAction"],
       );
     }
   }
@@ -945,6 +965,7 @@ function createReviewThreadDecision(
         "未解決のhuman review threadがoutdatedのため対応要否を確定できません",
         sourceIds,
         input.confidenceThresholds.medium,
+        ["status", "waitingOn", "nextAction"],
       );
       continue;
     }
@@ -968,6 +989,7 @@ function createReviewThreadDecision(
         "authorが返信済みのため未解決review threadへの対応が完了したか判断できません",
         authorRepliedSourceIds,
         input.confidenceThresholds.medium,
+        ["status", "waitingOn", "nextAction"],
       );
       continue;
     }
@@ -1015,6 +1037,7 @@ function createReviewThreadDecision(
         ...laterAuthorComments.map((comment) => comment.sourceId),
       ],
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
   }
 
@@ -1027,6 +1050,7 @@ function createReviewThreadDecision(
       "未解決review threadの最終human commentがauthor対応を求める内容か判断できません",
       threadsWithBodyBearingLatestComment.map((thread) => thread.latestHumanComment.sourceId),
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
   }
 
@@ -1097,8 +1121,26 @@ function resolveHumanReviewRequests(
       request.requestedAt.status === "available"
         ? createBasis([request.sourceId], request.requestedAt.value, "event")
         : createBasis([pullRequest.sourceId], pullRequest.createdAt, "inferred");
+    const targetNodeId =
+      request.target.type === "user" ? request.target.actor.nodeId : request.target.nodeId;
+    let requestEventSourceIds: readonly SourceId[] = Object.freeze([]);
+    if (request.requestedAt.status === "available") {
+      const requestedAt = request.requestedAt.value;
+      requestEventSourceIds = Object.freeze(
+        pullRequest.events
+          .filter(
+            (event): event is Extract<NormalizedEvent, { kind: "review_request" }> =>
+              event.kind === "review_request" &&
+              event.action === "added" &&
+              event.target.nodeId === targetNodeId &&
+              event.occurredAt === requestedAt,
+          )
+          .map((event) => event.sourceId),
+      );
+    }
     const resolved = Object.freeze({
       requestSourceId: request.sourceId,
+      requestEventSourceIds,
       waitingOn: createWaitingOn({
         kind,
         candidateId,
@@ -1116,6 +1158,21 @@ function resolveHumanReviewRequests(
     }
   }
   return Object.freeze([...requests.values()].sort(compareResolvedReviewRequests));
+}
+
+function createReviewResponsibilityBasis(
+  baseBasis: PullRequestTransitionBasis,
+  reviewRequests: readonly ResolvedReviewRequest[],
+): PullRequestTransitionBasis {
+  const requestEventSourceIds = reviewRequests.flatMap((request) => request.requestEventSourceIds);
+  if (requestEventSourceIds.length === 0) {
+    return baseBasis;
+  }
+  return createBasis(
+    [...baseBasis.sourceIds, ...requestEventSourceIds],
+    baseBasis.occurredAt,
+    baseBasis.precision,
+  );
 }
 
 function createRereviewDecision(
@@ -1153,6 +1210,7 @@ function createRereviewDecision(
         ...headBasis.sourceIds,
       ]),
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
   }
 
@@ -1182,6 +1240,7 @@ function createRereviewDecision(
           ...headBasis.sourceIds,
         ]),
         input.confidenceThresholds.medium,
+        ["status", "waitingOn", "nextAction"],
       );
     }
   }
@@ -1210,6 +1269,7 @@ function createRereviewDecision(
     ...headBasis.sourceIds,
     ...reviewRequests.flatMap((request) => request.waitingOn.sourceIds),
   ];
+  const responsibilityBasis = createReviewResponsibilityBasis(headBasis, reviewRequests);
   return finalizeDecision(input, context, {
     status: "waiting_for_review",
     waitingOn,
@@ -1221,7 +1281,7 @@ function createRereviewDecision(
       ...createEvidence(sourceIds, "waiting_on", "再reviewはreviewer側の責務です"),
     ],
     statusBasis: headBasis,
-    responsibilityBasis: headBasis,
+    responsibilityBasis,
   });
 }
 
@@ -1235,6 +1295,7 @@ function createReviewRequestDecision(
   }
   const primary = reviewRequests[0];
   assertNonNullable(primary, "primary review requestを選定できませんでした");
+  const responsibilityBasis = createReviewResponsibilityBasis(primary.basis, reviewRequests);
   const sourceIds = reviewRequests.flatMap((request) => request.waitingOn.sourceIds);
   const resolvedUserRequestsBySourceId = new Map<SourceId, ResolvedReviewRequest>();
   for (const request of reviewRequests) {
@@ -1270,6 +1331,7 @@ function createReviewRequestDecision(
         event.sourceId,
       ]),
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
   }
   const reviewerSpeechWithUnavailableRequestedAt = reviewerSpeechForRequests.filter(
@@ -1284,6 +1346,7 @@ function createReviewRequestDecision(
         event.sourceId,
       ]),
       input.confidenceThresholds.medium,
+      ["status", "waitingOn", "nextAction"],
     );
   }
   return finalizeDecision(input, context, {
@@ -1297,7 +1360,7 @@ function createReviewRequestDecision(
       ...createEvidence(sourceIds, "waiting_on", "review request先の対応待ちです"),
     ],
     statusBasis: primary.basis,
-    responsibilityBasis: primary.basis,
+    responsibilityBasis,
   });
 }
 
@@ -1414,6 +1477,7 @@ function addAmbiguousHumanCommentUncertainty(
     "human commentの意味を決定論的に確定できません",
     [latestEvent.sourceId],
     input.confidenceThresholds.medium,
+    ["status", "waitingOn", "nextAction"],
   );
 }
 
@@ -1506,6 +1570,7 @@ function analyzeCheckFailure(
         "required check失敗がPull Requestの変更に起因するか確定していません",
         sourceIds,
         input.confidenceThresholds.medium,
+        ["status", "waitingOn", "nextAction"],
       );
       return Object.freeze({
         authorAction: "not_applicable",
@@ -1518,6 +1583,7 @@ function analyzeCheckFailure(
         "required check失敗にinfrastructureまたはflakyの疑いがあります",
         sourceIds,
         input.confidenceThresholds.medium,
+        ["status", "waitingOn", "nextAction"],
       );
       return Object.freeze({
         authorAction: "not_applicable",
@@ -1530,6 +1596,7 @@ function analyzeCheckFailure(
         "required check失敗の原因を確定できません",
         sourceIds,
         input.confidenceThresholds.medium,
+        ["status", "waitingOn", "nextAction"],
       );
       return Object.freeze({
         authorAction: "not_applicable",
@@ -1541,6 +1608,7 @@ function analyzeCheckFailure(
         "required check失敗の原因が未評価です",
         checkSourceIds,
         input.confidenceThresholds.medium,
+        ["status", "waitingOn", "nextAction"],
       );
       return Object.freeze({
         authorAction: "not_applicable",
@@ -1707,6 +1775,7 @@ function addMergeStateUncertainty(
     "GitHubがmerge可否を確定できていません",
     [input.pullRequest.sourceId],
     input.confidenceThresholds.medium,
+    ["status", "waitingOn", "nextAction"],
   );
 }
 
@@ -1757,6 +1826,7 @@ export function determinePullRequestState(
     uncertainties: [],
     evidence: [],
     confidenceCap: 1,
+    uncertainStateElements: new Set(),
   };
 
   const terminalDecision = createTerminalDecision(input, context);

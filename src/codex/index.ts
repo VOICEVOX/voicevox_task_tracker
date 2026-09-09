@@ -1,6 +1,7 @@
 export {
   CODEX_AUTHENTICATIONS,
   createCodexEnvironment,
+  executeCodexAuthenticationPreflight,
   executeCodexAnalysis,
   getCodexEnvironmentVariableAllowlist,
   type CodexAdapterConfiguration,
@@ -9,32 +10,53 @@ export {
 } from "./adapter.js";
 export { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 export {
+  CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+  CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+} from "./preflight.js";
+export { recordCodexDiagnostic, type CodexDiagnosticsContext } from "./diagnostics.js";
+export {
   runAiAnalyses,
+  type AiAnalysisPreflight,
   type AiAnalysisRunConfiguration,
   type AiAnalysisRunDependencies,
   type AiAnalysisRunFailure,
+  type AiAnalysisExecutionContext,
+  type AiAnalysisRunElementResult,
   type AiAnalysisRunItemResult,
   type AiAnalysisRunResult,
 } from "./analysis-runner.js";
 export {
-  determinePreviousAiResultReuse,
   prepareAiAnalysisCandidate,
   selectAiAnalysisCandidates,
+  selectedAiAnalysisElements,
   type AiAnalysisCandidate,
-  type AiAnalysisFingerprint,
   type AiAnalysisPriority,
   type AiAnalysisRunIdentity,
   type AiAnalysisSelection,
   type AiAnalysisSkipReason,
-  type DeterministicAnalysisResolution,
   type PreparedAiAnalysisCandidate,
-  type PreviousAiAnalysisFingerprint,
-  type PreviousAiResultReuseDecision,
 } from "./analysis-selection.js";
+export {
+  selectAiAnalysisElements,
+  selectAnalysisElements,
+  type AnalysisElementSelection,
+  type AnalysisElementSelectionCandidate,
+  type AnalysisElementSelectionCandidates,
+  type AnalysisElementSkipReason,
+} from "./element-selection.js";
+export {
+  determineAnalysisElementNecessities,
+  planAnalysisElements,
+  type AnalysisElementNecessityInput,
+  type AnalysisElementPlanning,
+  type AnalysisElementPlanningInput,
+} from "./element-planning.js";
 export {
   estimateAiInputCost,
   planAiAnalysisBudget,
+  planAiAnalysisBudgetWithPreflight,
   type AiInputCostEstimate,
+  type AiPreflightBudget,
   type AiAnalysisDeferReason,
   type AiBudgetPlan,
   type AiBudgetUsage,
@@ -43,16 +65,12 @@ export {
 export {
   createAiCacheEntry,
   createAiCacheKey,
-  createFileAiCacheStore,
   determineAiCacheReuse,
-  FileAiCacheStore,
-  MemoryAiCacheStore,
   type AiCacheEntry,
   type AiCacheIdentity,
   type AiCacheKey,
   type AiCacheReadResult,
   type AiCacheReuseDecision,
-  type AiCacheStateConfiguration,
   type AiCacheStore,
 } from "./cache.js";
 export {
@@ -62,10 +80,6 @@ export {
   type Sha256Hash,
 } from "./canonical-json.js";
 export {
-  AiCacheError,
-  AiCacheFormatError,
-  AiCacheReadError,
-  AiCacheWriteError,
   CodexAdapterError,
   CodexAttemptError,
   CodexInvalidJsonError,
@@ -90,19 +104,85 @@ export {
 } from "./confidence.js";
 export {
   createCodexAnalysisInput,
+  projectCodexLockedElements,
   serializeCodexAnalysisInput,
   type CodexAnalysisInput,
 } from "./input.js";
 export {
-  type SchemaValidCodexAnalysisOutput,
-  type SchemaValidCodexEvidence,
-  type SchemaValidCodexImportance,
-  type SchemaValidCodexRelation,
-  type SchemaValidCodexWaitingOn,
-  type ValidatedCodexAnalysisOutput,
-  type ValidatedCodexImportance,
-  type ValidatedCodexRelation,
-} from "./output-types.js";
+  CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  parseCodexElementResult,
+  validateCodexElementOutput,
+  validateCodexElementOutputSchema,
+  validateCodexElementOutputSemantics,
+  type CodexElementEvidence,
+  type CodexElementResult,
+  type SchemaValidCodexElementOutput,
+} from "./element-output.js";
+export {
+  CODEX_ELEMENT_OUTPUT_SCHEMA_ID,
+  createCodexElementOutputSchema,
+  normalizeCodexElementSelection,
+  type CodexElementOutputJsonSchema,
+} from "./element-output-schema.js";
+export {
+  AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
+  AI_ANALYSIS_ELEMENTS,
+  AI_ANALYSIS_ELEMENT_REVISIONS,
+  aiAnalysisElementEvidenceSchema,
+  analysisElementFingerprintSchema as aiAnalysisElementFingerprintSchema,
+  aiAnalysisElementGenerationSchema,
+  aiAnalysisElementMetadataSchema,
+  aiAnalysisElementNecessitySchema,
+  aiAnalysisElementRevisionSchema,
+  aiAnalysisElementResultSchema,
+  aiAnalysisElementSchema,
+  aiAnalysisMigrationWaitingOnSchema,
+  aiAnalysisDeadlineSchema,
+  aiAnalysisImportanceSchema,
+  aiAnalysisNextActionSchema,
+  aiAnalysisNotificationReasonCodeSchema,
+  aiAnalysisNotificationSchema,
+  aiAnalysisProgressSchema,
+  aiAnalysisRelationVerdictSchema,
+  aiAnalysisRelationsSchema,
+  aiAnalysisReasoningEffortSchema,
+  aiAnalysisStatusSchema,
+  aiAnalysisWaitingOnKindSchema,
+  aiAnalysisWaitingOnRoleSchema,
+  aiAnalysisWaitingOnSchema,
+  createAiAnalysisElementGeneration,
+  createAiAnalysisElementGenerationSchema,
+  createAiAnalysisElementResultSchema,
+  createAiAnalysisElementValueSchema,
+  createAiAnalysisMigrationElementResultSchema,
+  type AiAnalysisElement,
+  type AiAnalysisElementGeneration,
+  type AiAnalysisElementMetadata,
+  type AiAnalysisElementMigrationResult,
+  type AiAnalysisElementResult,
+  type AiAnalysisElementValue,
+  type AiAnalysisDeadline,
+  type AiAnalysisImportance,
+  type AiAnalysisNextAction,
+  type AiAnalysisNotification,
+  type AiAnalysisNotificationReasonCode,
+  type AiAnalysisProgress,
+  type AiAnalysisRelation,
+  type AiAnalysisRelations,
+  type AiAnalysisRelationVerdict,
+  type AiAnalysisReasoningEffort,
+  type AiAnalysisStatus,
+  type AiAnalysisWaitingOn,
+  type AiAnalysisWaitingOnKind,
+  type AiAnalysisWaitingOnRole,
+  type AiAnalysisWaitingOnValue,
+  type AiAnalysisMigrationWaitingOnValue,
+  type CodexPreservedElements,
+  type AnalysisElement,
+  type AnalysisElementExecutionFingerprint,
+  type AnalysisElementInputFingerprint,
+  type AnalysisElementNecessity,
+} from "./analysis-elements.js";
 export { validateCodexAnalysisOutput } from "./output-validation.js";
 export {
   runCodexProcess,
@@ -113,23 +193,29 @@ export {
 } from "./process-runner.js";
 export {
   classifyCodexUnavailableReason,
+  effectiveElementConfidence,
   executeValidatedCodexAnalysis,
   reduceCodexAnalysis,
   reduceCodexInputValidationFailure,
+  reducePreservedCodexRelationsAndNotification,
   runCodexAnalysisWithFallback,
+  reduceAiAnalysisElements,
   type CodexAnalysisAttempt,
   type CodexAnalysisReduction,
   type CodexRelationCoverage,
   type CodexUnavailableReason,
+  type AiAnalysisElementGenerationMap,
+  type AiAnalysisElementsReduction,
   type DeterministicCodexDecision,
+  type ReduceAiAnalysisElementsInput,
   type ReducedCodexDecision,
   type ReducedCodexNotification,
   type RunCodexAnalysisWithFallbackDependencies,
   type RunCodexAnalysisWithFallbackInput,
 } from "./reducer.js";
-export { validateCodexAnalysisSchema } from "./schema-validation.js";
 export {
   listNativeRelationConstraints,
   validateCodexAnalysisSemantics,
+  type CodexElementOutput,
   type NativeRelationConstraint,
 } from "./semantic-validation.js";

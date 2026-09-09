@@ -1,9 +1,14 @@
 import {
   createLabelEffectsResolver,
+  createUtcIsoDateTime,
+  determineDeadlineLevel,
+  isTerminalStatus,
   type Evidence,
   type LabelRule,
   type Relation,
   type TrackedItem,
+  type NaturalLanguageDeadlineAssessmentState,
+  type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
   analyzeGraph,
@@ -24,17 +29,20 @@ import {
 import { assertNonNullable } from "../util/index.js";
 import {
   createEvidenceSourceUrlMap,
-  resolveEvidenceSourceUrl,
+  resolveEvidenceSourceUrlForItem,
   type EvidenceSourceUrlMap,
 } from "./evidence-source-url.js";
 import { PublicDtoSemanticError } from "./errors.js";
 import {
   createPublicDetailsDto,
+  createPublicNotificationHistoryDto,
+  comparePublicNotificationHistoryEntries,
   createPublicSummaryDto,
   type PublicDetailsDto,
   type PublicGraphEdgeDto,
   type PublicGraphNodeDto,
   type PublicItemHistoryEventDto,
+  type PublicNotificationHistoryDto,
   type PublicItemSummaryDto,
   type PublicSummaryDto,
 } from "./public-dto.js";
@@ -63,6 +71,7 @@ export type GeneratePublicDataInput = PagesPublicSafetyInput &
 export type GeneratedPublicData = Readonly<{
   summary: PublicSummaryDto;
   details: PublicDetailsDto;
+  notificationHistory: PublicNotificationHistoryDto;
   summarySize: PublicSummarySizeMeasurement;
 }>;
 
@@ -71,6 +80,7 @@ type ResponsibilityHistoryValue = Extract<
   Readonly<{ kind: "responsibility_changed" }>
 >["before"];
 type PublicWaitingOn = PublicItemSummaryDto["waitingOn"][number];
+type PublicCurrentImplementation = PublicItemSummaryDto["currentImplementations"][number];
 type EvidenceSourceItem = Readonly<Pick<TrackedItem, "nodeId" | "url">>;
 
 type PublicHistory = Readonly<{
@@ -123,6 +133,32 @@ function validateHistoryRecords(
     throw new PublicDtoSemanticError("snapshot生成後のhistory recordを公開できません");
   }
   return Object.freeze([...validated].sort(compareHistoryRecords));
+}
+
+function publicDtoGeneratedAt(
+  records: readonly StateHistoryRecord[],
+  snapshot: StateSnapshot,
+): UtcIsoDateTime {
+  let generatedAt = snapshot.generatedAt;
+  for (const record of records) {
+    for (const event of record.events) {
+      if (event.kind !== "notification_sent") {
+        continue;
+      }
+      if (record.runId !== snapshot.run.id) {
+        if (event.sentAt > snapshot.generatedAt) {
+          throw new PublicDtoSemanticError(
+            "別runの通知送信時刻がsnapshot生成時刻より新しくなっています",
+          );
+        }
+        continue;
+      }
+      if (event.sentAt > generatedAt) {
+        generatedAt = createUtcIsoDateTime(event.sentAt);
+      }
+    }
+  }
+  return generatedAt;
 }
 
 function createPublicWaitingOn(waitingOn: PublicWaitingOn): PublicWaitingOn {
@@ -240,6 +276,9 @@ function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHist
         case "repository_excluded": {
           break;
         }
+        case "notification_sent": {
+          break;
+        }
       }
     }
   }
@@ -251,6 +290,87 @@ function createPublicHistory(records: readonly StateHistoryRecord[]): PublicHist
         Object.freeze([...events]),
       ]),
     ),
+  });
+}
+
+function createPublicNotificationHistory(
+  records: readonly StateHistoryRecord[],
+  repositoryAllowlist: PagesPublicSafetyInput["repositoryAllowlist"],
+  repositoryInventory: readonly PagesPublicSafetyInput["repositoryInventory"][number][],
+  runId: string,
+  generatedAt: UtcIsoDateTime,
+): PublicNotificationHistoryDto {
+  const allowlistById = new Map<string, PagesPublicSafetyInput["repositoryAllowlist"][number]>(
+    repositoryAllowlist.map((repository) => [repository.id, repository]),
+  );
+  if (allowlistById.size !== repositoryAllowlist.length) {
+    throw new PublicDtoSemanticError("通知履歴の公開allowlistにrepository IDの重複があります");
+  }
+  const inventoryById = new Map<string, PagesPublicSafetyInput["repositoryInventory"][number]>(
+    repositoryInventory.map((repository) => [repository.id, repository]),
+  );
+  if (inventoryById.size !== repositoryInventory.length) {
+    throw new PublicDtoSemanticError("通知履歴のrepository inventoryにIDの重複があります");
+  }
+  const notifications: PublicNotificationHistoryDto["notifications"] = [];
+  for (const record of records) {
+    for (const event of record.events) {
+      if (event.kind !== "notification_sent") {
+        continue;
+      }
+      if (event.waitingOn.status === "not_recorded") {
+        continue;
+      }
+      if (event.reasons.some((reason) => reason.threshold.status === "not_recorded")) {
+        continue;
+      }
+      const repository = inventoryById.get(event.repositoryId);
+      if (repository == null) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のrepository ${event.repositoryId}をinventoryから解決できません`,
+        );
+      }
+      if (repository.visibility !== "public" || repository.archived || repository.disabled) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のrepository ${event.repositoryId}は公開対象ではありません`,
+        );
+      }
+      const allowlistedRepository = allowlistById.get(event.repositoryId);
+      if (allowlistedRepository == null) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のrepository ${event.repositoryId}が公開allowlistにありません`,
+        );
+      }
+      if (
+        allowlistedRepository.owner !== repository.owner ||
+        allowlistedRepository.name !== repository.name
+      ) {
+        throw new PublicDtoSemanticError(
+          `通知履歴のrepository ${event.repositoryId}のidentityが一致しません`,
+        );
+      }
+      notifications.push({
+        item: {
+          nodeId: event.itemNodeId,
+          type: event.type,
+          repositoryId: event.repositoryId,
+          displayReference: event.displayReference,
+          number: event.number,
+          title: event.title,
+          url: event.url,
+        },
+        waitingOn: event.waitingOn.values.map((waitingOn) => ({ ...waitingOn })),
+        reasons: [...event.reasons],
+        sentAt: event.sentAt,
+      });
+    }
+  }
+  notifications.sort(comparePublicNotificationHistoryEntries);
+  return createPublicNotificationHistoryDto({
+    schemaVersion: "4",
+    runId,
+    generatedAt,
+    notifications,
   });
 }
 
@@ -291,21 +411,30 @@ function createAnalysisEdge(relation: Relation, index: number): ReconciledGraphE
 
 function createPublicEvidenceEntry(
   entry: Evidence,
-  sourceItems: readonly EvidenceSourceItem[],
+  currentSourceItem: EvidenceSourceItem,
+  allSourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
 ): PublicDetailsDto["items"][number]["evidence"][number] {
   return {
     summary: entry.summary,
-    sourceUrl: resolveEvidenceSourceUrl(entry.sourceId, sourceItems, sourceOwnersById),
+    sourceUrl: resolveEvidenceSourceUrlForItem(
+      entry.sourceId,
+      currentSourceItem,
+      allSourceItems,
+      sourceOwnersById,
+    ),
   };
 }
 
 function createPublicEvidence(
   evidence: readonly Evidence[],
-  sourceItem: EvidenceSourceItem,
+  currentSourceItem: EvidenceSourceItem,
+  allSourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
 ): PublicDetailsDto["items"][number]["evidence"] {
-  return evidence.map((entry) => createPublicEvidenceEntry(entry, [sourceItem], sourceOwnersById));
+  return evidence.map((entry) =>
+    createPublicEvidenceEntry(entry, currentSourceItem, allSourceItems, sourceOwnersById),
+  );
 }
 
 function createPublicGraphEdge(relation: Relation): PublicGraphEdgeDto {
@@ -438,12 +567,101 @@ function createBlockersByNodeId(snapshot: StateSnapshot): ReadonlyMap<string, re
   );
 }
 
+function createCurrentImplementationsByIssueNodeId(
+  snapshot: StateSnapshot,
+  repositoriesById: ReadonlyMap<string, SnapshotRepository>,
+): ReadonlyMap<string, readonly PublicCurrentImplementation[]> {
+  const itemsByNodeId = new Map<string, StateSnapshot["items"][number]>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  const externalNodeIds = new Set<string>(
+    snapshot.externalReferences.map((reference) => reference.nodeId),
+  );
+  const implementationsByIssueNodeId = new Map<string, Map<string, PublicCurrentImplementation>>();
+  for (const relation of snapshot.relations) {
+    if (!relation.active || relation.type !== "implements" || relation.provenance !== "native") {
+      continue;
+    }
+    if (externalNodeIds.has(relation.fromNodeId) || externalNodeIds.has(relation.toNodeId)) {
+      continue;
+    }
+    const implementation = itemsByNodeId.get(relation.fromNodeId);
+    const targetIssue = itemsByNodeId.get(relation.toNodeId);
+    assertNonNullable(implementation, `implements relation ${relation.id}の実装項目がありません`);
+    assertNonNullable(targetIssue, `implements relation ${relation.id}の対象項目がありません`);
+    if (implementation.type !== "pull_request" || targetIssue.type !== "issue") {
+      continue;
+    }
+    if (implementation.state === "open" && isTerminalStatus(implementation.status)) {
+      throw new PublicDtoSemanticError(
+        `implements relation ${relation.id}の実装PRはGitHub stateがopenなのにterminal statusです`,
+      );
+    }
+    if (targetIssue.state === "open" && isTerminalStatus(targetIssue.status)) {
+      throw new PublicDtoSemanticError(
+        `implements relation ${relation.id}の対象IssueはGitHub stateがopenなのにterminal statusです`,
+      );
+    }
+    if (implementation.state !== "open" || targetIssue.state !== "open") {
+      continue;
+    }
+    const implementationRepository = repositoriesById.get(implementation.repositoryId);
+    const targetRepository = repositoriesById.get(targetIssue.repositoryId);
+    assertNonNullable(
+      implementationRepository,
+      `implements relation ${relation.id}の実装repositoryがありません`,
+    );
+    assertNonNullable(
+      targetRepository,
+      `implements relation ${relation.id}の対象repositoryがありません`,
+    );
+    if (implementationRepository.freshness !== "fresh" || targetRepository.freshness !== "fresh") {
+      continue;
+    }
+    const implementations = implementationsByIssueNodeId.get(targetIssue.nodeId);
+    const currentImplementation: PublicCurrentImplementation = {
+      nodeId: implementation.nodeId,
+      repositoryId: implementation.repositoryId,
+      displayReference: implementation.displayReference,
+      number: implementation.number,
+      url: implementation.url,
+      title: implementation.title,
+      status: implementation.status,
+      waitingOn: implementation.waitingOn.map(createPublicWaitingOn),
+      nextAction: implementation.nextAction,
+    };
+    if (implementations == null) {
+      implementationsByIssueNodeId.set(
+        targetIssue.nodeId,
+        new Map([[implementation.nodeId, currentImplementation]]),
+      );
+      continue;
+    }
+    if (!implementations.has(implementation.nodeId)) {
+      implementations.set(implementation.nodeId, currentImplementation);
+    }
+  }
+  return new Map(
+    [...implementationsByIssueNodeId.entries()].map(([issueNodeId, implementations]) => [
+      issueNodeId,
+      Object.freeze(
+        [...implementations.values()].sort((left, right) =>
+          compareStrings(left.nodeId, right.nodeId),
+        ),
+      ),
+    ]),
+  );
+}
+
 function createItemSummary(
   item: StateSnapshot["items"][number],
   repository: SnapshotRepository,
+  currentImplementations: readonly PublicCurrentImplementation[],
   blockerNodeIds: readonly string[],
   downstreamImpact: AnalyzeGraphResult["downstreamImpacts"][number],
   priorityWeight: number,
+  evaluatedAt: UtcIsoDateTime,
+  timezone: string,
 ): PublicItemSummaryDto {
   return {
     nodeId: item.nodeId,
@@ -453,12 +671,7 @@ function createItemSummary(
     number: item.number,
     url: item.url,
     title: item.title,
-    milestone:
-      item.milestone == null
-        ? null
-        : {
-            ...item.milestone,
-          },
+    deadline: createPublicDeadlineSummary(item.deadlineAssessment, evaluatedAt, timezone),
     state: item.state,
     author:
       item.author.status === "unavailable"
@@ -502,6 +715,50 @@ function createItemSummary(
     downstreamImpact: {
       ...downstreamImpact,
     },
+    currentImplementations: [...currentImplementations],
+  };
+}
+
+function createPublicDeadlineSummary(
+  assessment: NaturalLanguageDeadlineAssessmentState,
+  evaluatedAt: UtcIsoDateTime,
+  timezone: string,
+): PublicItemSummaryDto["deadline"] {
+  if (assessment.status === "not_available") {
+    return {
+      status: "not_available",
+    };
+  }
+  return {
+    status: "available",
+    date: assessment.value.date,
+    level: determineDeadlineLevel({
+      deadlineDate: assessment.value.date,
+      evaluatedAt,
+      timezone,
+    }),
+  };
+}
+
+function createPublicDeadlineDetails(
+  assessment: NaturalLanguageDeadlineAssessmentState,
+  evaluatedAt: UtcIsoDateTime,
+  timezone: string,
+): PublicDetailsDto["items"][number]["deadline"] {
+  if (assessment.status === "not_available") {
+    return {
+      status: "not_available",
+    };
+  }
+  return {
+    status: "available",
+    date: assessment.value.date,
+    level: determineDeadlineLevel({
+      deadlineDate: assessment.value.date,
+      evaluatedAt,
+      timezone,
+    }),
+    rationale: assessment.value.rationale,
   };
 }
 
@@ -529,6 +786,43 @@ function graphNodeImpact(
   return impact;
 }
 
+function requiredInitialGraphNodes(
+  graph: PublicGraph,
+  items: readonly PublicItemSummaryDto[],
+): readonly PublicGraphNodeDto[] {
+  const summaryItemNodeIds = new Set(items.map((item) => item.nodeId));
+  const graphNodesByNodeId = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+  const waitingOnItemCandidateIds = new Set<string>();
+  for (const item of items) {
+    const waitingOnValues = [
+      ...item.waitingOn,
+      ...item.currentImplementations.flatMap((implementation) => implementation.waitingOn),
+    ];
+    for (const waitingOn of waitingOnValues) {
+      if (waitingOn.kind === "item") {
+        waitingOnItemCandidateIds.add(waitingOn.candidateId);
+      }
+    }
+  }
+  const requiredNodes: PublicGraphNodeDto[] = [];
+  for (const candidateId of waitingOnItemCandidateIds) {
+    if (summaryItemNodeIds.has(candidateId)) {
+      continue;
+    }
+    const graphNode = graphNodesByNodeId.get(candidateId);
+    if (graphNode == null) {
+      throw new PublicDtoSemanticError(`waitingOn項目 ${candidateId}の公開graph nodeがありません`);
+    }
+    if (graphNode.kind !== "external_reference") {
+      throw new PublicDtoSemanticError(
+        `waitingOn項目 ${candidateId}はexternal_referenceではありません`,
+      );
+    }
+    requiredNodes.push(graphNode);
+  }
+  return Object.freeze(requiredNodes);
+}
+
 function createInitialGraph(
   graph: PublicGraph,
   items: readonly PublicItemSummaryDto[],
@@ -538,38 +832,48 @@ function createInitialGraph(
   const impactByNodeId = new Map<string, AnalyzeGraphResult["downstreamImpacts"][number]>(
     graph.analysis.downstreamImpacts.map((impact) => [impact.nodeId, impact]),
   );
-  const selectedNodes = [...graph.nodes]
-    .sort((left, right) => {
-      const attentionOrder =
-        graphNodeAttentionScore(right, summaryByNodeId) -
-        graphNodeAttentionScore(left, summaryByNodeId);
-      if (attentionOrder !== 0) {
-        return attentionOrder;
+  const requiredNodes = requiredInitialGraphNodes(graph, items);
+  if (requiredNodes.length > maxInitialGraphNodes) {
+    throw new PublicDtoSemanticError(
+      `waitingOnの必須external_reference node数 ${requiredNodes.length.toString()} がinitial graph上限 ${maxInitialGraphNodes.toString()}を超えています`,
+    );
+  }
+  const rankedNodes = [...graph.nodes].sort((left, right) => {
+    const attentionOrder =
+      graphNodeAttentionScore(right, summaryByNodeId) -
+      graphNodeAttentionScore(left, summaryByNodeId);
+    if (attentionOrder !== 0) {
+      return attentionOrder;
+    }
+    const leftImpact = graphNodeImpact(left, impactByNodeId);
+    const rightImpact = graphNodeImpact(right, impactByNodeId);
+    const impactOrder = rightImpact.openNodeCount - leftImpact.openNodeCount;
+    if (impactOrder !== 0) {
+      return impactOrder;
+    }
+    const leftSummary = summaryByNodeId.get(left.nodeId);
+    const rightSummary = summaryByNodeId.get(right.nodeId);
+    if (left.kind === "external_reference" || right.kind === "external_reference") {
+      if (left.kind === right.kind) {
+        return compareStrings(left.nodeId, right.nodeId);
       }
-      const leftImpact = graphNodeImpact(left, impactByNodeId);
-      const rightImpact = graphNodeImpact(right, impactByNodeId);
-      const impactOrder = rightImpact.openNodeCount - leftImpact.openNodeCount;
-      if (impactOrder !== 0) {
-        return impactOrder;
-      }
-      const leftSummary = summaryByNodeId.get(left.nodeId);
-      const rightSummary = summaryByNodeId.get(right.nodeId);
-      if (left.kind === "external_reference" || right.kind === "external_reference") {
-        if (left.kind === right.kind) {
-          return compareStrings(left.nodeId, right.nodeId);
-        }
-        return left.kind === "external_reference" ? 1 : -1;
-      }
-      assertNonNullable(leftSummary, `node ${left.nodeId}のsummaryがありません`);
-      assertNonNullable(rightSummary, `node ${right.nodeId}のsummaryがありません`);
-      const stallOrder = compareStrings(leftSummary.stallSince, rightSummary.stallSince);
-      if (stallOrder !== 0) {
-        return stallOrder;
-      }
-      return compareStrings(left.nodeId, right.nodeId);
-    })
-    .slice(0, maxInitialGraphNodes)
-    .sort((left, right) => compareStrings(left.nodeId, right.nodeId));
+      return left.kind === "external_reference" ? 1 : -1;
+    }
+    assertNonNullable(leftSummary, `node ${left.nodeId}のsummaryがありません`);
+    assertNonNullable(rightSummary, `node ${right.nodeId}のsummaryがありません`);
+    const stallOrder = compareStrings(leftSummary.stallSince, rightSummary.stallSince);
+    if (stallOrder !== 0) {
+      return stallOrder;
+    }
+    return compareStrings(left.nodeId, right.nodeId);
+  });
+  const requiredNodeIds = new Set(requiredNodes.map((node) => node.nodeId));
+  const selectedNodes = [
+    ...requiredNodes,
+    ...rankedNodes
+      .filter((node) => !requiredNodeIds.has(node.nodeId))
+      .slice(0, maxInitialGraphNodes - requiredNodes.length),
+  ].sort((left, right) => compareStrings(left.nodeId, right.nodeId));
   return {
     nodes: selectedNodes.map((node) =>
       node.kind === "external_reference"
@@ -602,7 +906,15 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   validateOptions(input.options);
   const snapshot = createStateSnapshot(input.snapshot);
   const historyRecords = validateHistoryRecords(input.historyRecords, snapshot.generatedAt);
+  const generatedAt = publicDtoGeneratedAt(historyRecords, snapshot);
   const history = createPublicHistory(historyRecords);
+  const notificationHistory = createPublicNotificationHistory(
+    historyRecords,
+    input.repositoryAllowlist,
+    input.repositoryInventory,
+    snapshot.run.id,
+    generatedAt,
+  );
   const sourceOwnersById = createEvidenceSourceUrlMap(
     snapshot.items.flatMap((item) =>
       item.inputEvents.map((event) => ({
@@ -615,6 +927,10 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   const graph = createPublicGraph(snapshot);
   const repositoriesById = new Map(
     snapshot.repositories.map((repository) => [repository.id, repository]),
+  );
+  const currentImplementationsByIssueNodeId = createCurrentImplementationsByIssueNodeId(
+    snapshot,
+    repositoriesById,
   );
   const blockersByNodeId = createBlockersByNodeId(snapshot);
   const resolveLabelEffects = createLabelEffectsResolver(input.options.labelRules);
@@ -629,9 +945,12 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     return createItemSummary(
       item,
       repository,
+      currentImplementationsByIssueNodeId.get(item.nodeId) ?? Object.freeze([]),
       blockersByNodeId.get(item.nodeId) ?? Object.freeze([]),
       impact,
       resolveLabelEffects(`${repository.owner}/${repository.name}`, item.labels).priorityWeight,
+      snapshot.generatedAt,
+      input.options.timezone,
     );
   });
   const repositories = snapshot.repositories.map((repository) => ({
@@ -643,9 +962,9 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     },
   }));
   const summary = createPublicSummaryDto({
-    schemaVersion: "5",
+    schemaVersion: "8",
     runId: snapshot.run.id,
-    generatedAt: snapshot.generatedAt,
+    generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
     timezone: input.options.timezone,
     ai: {
@@ -659,14 +978,19 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     graph: createInitialGraph(graph, itemSummaries, input.options.maxInitialGraphNodes),
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "5",
+    schemaVersion: "8",
     runId: snapshot.run.id,
-    generatedAt: snapshot.generatedAt,
+    generatedAt,
     items: snapshot.items.map((item, index) => {
       const summaryItem = itemSummaries[index];
       assertNonNullable(summaryItem, `item ${item.nodeId}のsummaryがありません`);
       return {
         summary: summaryItem,
+        deadline: createPublicDeadlineDetails(
+          item.deadlineAssessment,
+          snapshot.generatedAt,
+          input.options.timezone,
+        ),
         importanceFactors: item.importance.factors.map((factor) => ({
           ...factor,
         })),
@@ -679,7 +1003,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
         labels: [...item.labels],
         reviewState: item.reviewState,
         checkState: item.checkState,
-        evidence: createPublicEvidence(item.evidence, item, sourceOwnersById),
+        evidence: createPublicEvidence(item.evidence, item, snapshot.items, sourceOwnersById),
         uncertainties: [...item.uncertainties],
         history: [...(history.itemEventsByNodeId.get(item.nodeId) ?? [])],
       };
@@ -695,6 +1019,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   return Object.freeze({
     summary,
     details,
+    notificationHistory,
     summarySize,
   });
 }

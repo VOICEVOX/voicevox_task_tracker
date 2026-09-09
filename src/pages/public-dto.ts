@@ -1,7 +1,10 @@
 import { z } from "zod";
 
-import { PublicDtoValidationError } from "./errors.js";
 import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
+import { notificationReasonSchema } from "../domain/notification-reason.js";
+import { isTerminalStatus } from "../domain/status.js";
+import { assertNonNullable } from "../util/index.js";
+import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 
 const identifierSchema = z.string().min(1).max(512).regex(/^\S+$/u);
 const shortStringSchema = z.string().max(1000);
@@ -44,6 +47,29 @@ const statusSchema = z.enum([
 ]);
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
 const importanceLevelSchema = z.enum(["low", "medium", "high"]);
+const deadlineLevelSchema = z.enum([
+  "none",
+  "over_30_days",
+  "within_30_days",
+  "within_7_days",
+  "within_3_days",
+  "within_1_day",
+  "overdue",
+]);
+function isCalendarDate(value: string): boolean {
+  const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString().slice(0, 10) === value;
+}
+
+const deadlineDateSchema = z.union([
+  z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/u)
+    .refine(isCalendarDate, {
+      message: "実在する日付を指定してください",
+    }),
+  z.null(),
+]);
 const publicImportanceSchema = z.strictObject({
   score: z.number().int().min(0).max(100),
   level: importanceLevelSchema,
@@ -118,15 +144,74 @@ const itemAuthorSchema = z.discriminatedUnion("status", [
     reason: z.literal("deleted_account"),
   }),
 ]);
-const publicItemMilestoneSchema = z.strictObject({
-  nodeId: identifierSchema,
-  number: z.number().int().positive(),
-  title: z.string().max(500),
-  state: z.enum(["open", "closed"]),
-  dueOn: dateTimeSchema.nullable(),
-});
+const publicDeadlineSummarySchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_available"),
+  }),
+  z
+    .strictObject({
+      status: z.literal("available"),
+      date: deadlineDateSchema,
+      level: deadlineLevelSchema,
+    })
+    .superRefine((deadline, context) => {
+      if (deadline.date == null && deadline.level !== "none") {
+        context.addIssue({
+          code: "custom",
+          path: ["level"],
+          message: "期限日がnullの場合は切迫度をnoneにしてください",
+        });
+      }
+      if (deadline.date != null && deadline.level === "none") {
+        context.addIssue({
+          code: "custom",
+          path: ["level"],
+          message: "期限日がある場合は切迫度をnone以外にしてください",
+        });
+      }
+    }),
+]);
+const publicDeadlineDetailsSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_available"),
+  }),
+  z
+    .strictObject({
+      status: z.literal("available"),
+      date: deadlineDateSchema,
+      level: deadlineLevelSchema,
+      rationale: z.string().min(1).max(120),
+    })
+    .superRefine((deadline, context) => {
+      if (deadline.date == null && deadline.level !== "none") {
+        context.addIssue({
+          code: "custom",
+          path: ["level"],
+          message: "期限日がnullの場合は切迫度をnoneにしてください",
+        });
+      }
+      if (deadline.date != null && deadline.level === "none") {
+        context.addIssue({
+          code: "custom",
+          path: ["level"],
+          message: "期限日がある場合は切迫度をnone以外にしてください",
+        });
+      }
+    }),
+]);
 const publicItemAiAnalysisSchema = z.strictObject({
   status: z.enum(["used", "failed", "deferred", "not_required", "disabled", "not_recorded"]),
+});
+const publicCurrentImplementationSchema = z.strictObject({
+  nodeId: identifierSchema,
+  repositoryId: identifierSchema,
+  displayReference: z.string().min(4).max(600),
+  number: z.number().int().positive(),
+  url: githubUrlSchema,
+  title: z.string().max(500),
+  status: statusSchema,
+  waitingOn: z.array(waitingOnSchema),
+  nextAction: shortStringSchema,
 });
 const publicItemSummarySchema = z.strictObject({
   nodeId: identifierSchema,
@@ -136,7 +221,7 @@ const publicItemSummarySchema = z.strictObject({
   number: z.number().int().positive(),
   url: githubUrlSchema,
   title: z.string().max(500),
-  milestone: publicItemMilestoneSchema.nullable(),
+  deadline: publicDeadlineSummarySchema,
   state: z.enum(["open", "closed", "merged"]),
   author: itemAuthorSchema,
   assignees: z.array(accountActorSchema),
@@ -156,6 +241,7 @@ const publicItemSummarySchema = z.strictObject({
   repositoryFreshness: z.enum(["fresh", "stale"]),
   blockerNodeIds: z.array(identifierSchema),
   downstreamImpact: downstreamImpactSchema,
+  currentImplementations: z.array(publicCurrentImplementationSchema),
 });
 const itemTimestampsSchema = z.strictObject({
   createdAt: dateTimeSchema,
@@ -207,6 +293,7 @@ const publicItemHistoryEventSchema = z.strictObject({
 });
 const publicItemDetailsSchema = z.strictObject({
   summary: publicItemSummarySchema,
+  deadline: publicDeadlineDetailsSchema,
   importanceFactors: z.array(importanceFactorSchema),
   timestamps: itemTimestampsSchema,
   latestEventActor: latestEventActorSchema,
@@ -331,7 +418,7 @@ const publicAiStateSchema = z.union([
   }),
 ]);
 const publicSummaryDtoSchema = z.strictObject({
-  schemaVersion: z.literal("5"),
+  schemaVersion: z.literal("8"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
@@ -343,17 +430,111 @@ const publicSummaryDtoSchema = z.strictObject({
   graph: publicInitialGraphSchema,
 });
 const publicDetailsDtoSchema = z.strictObject({
-  schemaVersion: z.literal("5"),
+  schemaVersion: z.literal("8"),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   items: z.array(publicItemDetailsSchema),
   graph: publicGraphSchema,
 });
+const publicNotificationHistoryItemSchema = z.strictObject({
+  nodeId: identifierSchema,
+  type: z.enum(["issue", "pull_request"]),
+  repositoryId: identifierSchema,
+  displayReference: z.string().min(4).max(600),
+  number: z.number().int().positive(),
+  title: z.string().max(500),
+  url: githubUrlSchema,
+});
+const publicNotificationHistoryWaitingOnSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("user"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("team"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("role"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("item"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+    displayReference: z.string().min(4).max(600),
+  }),
+  z.strictObject({
+    kind: z.literal("automation"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+  z.strictObject({
+    kind: z.literal("unknown"),
+    candidateId: identifierSchema,
+    role: waitingOnSchema.shape.role,
+  }),
+]);
+const publicNotificationHistoryEntrySchema = z
+  .strictObject({
+    item: publicNotificationHistoryItemSchema,
+    waitingOn: z.array(publicNotificationHistoryWaitingOnSchema).min(1),
+    reasons: z.array(notificationReasonSchema).min(1),
+    sentAt: dateTimeSchema,
+  })
+  .superRefine((entry, context) => {
+    const reasonCodes = entry.reasons.map((reason) => reason.reasonCode);
+    if (new Set(reasonCodes).size !== reasonCodes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["reasons"],
+        message: "通知理由コードが重複しています",
+      });
+    }
+    for (const [index, reason] of entry.reasons.entries()) {
+      if (reason.threshold.status === "not_recorded") {
+        context.addIssue({
+          code: "custom",
+          path: ["reasons", index, "threshold"],
+          message: "公開通知履歴に基準時間未記録の理由を含めることはできません",
+        });
+      }
+    }
+  });
+const publicNotificationHistoryDtoSchema = z
+  .strictObject({
+    schemaVersion: z.literal("4"),
+    runId: identifierSchema,
+    generatedAt: dateTimeSchema,
+    notifications: z.array(publicNotificationHistoryEntrySchema),
+  })
+  .superRefine((history, context) => {
+    for (const [index, notification] of history.notifications.entries()) {
+      if (notification.sentAt > history.generatedAt) {
+        context.addIssue({
+          code: "custom",
+          path: ["notifications", index, "sentAt"],
+          message: "通知送信時刻は公開データ生成時刻以前にしてください",
+        });
+      }
+      const previous = history.notifications[index - 1];
+      if (previous != null && comparePublicNotificationHistoryEntries(previous, notification) > 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["notifications", index],
+          message: "通知履歴が決定論的な降順になっていません",
+        });
+      }
+    }
+  });
 
-/** Web初期表示で共有するschema version 5の公開summary DTO。 */
+/** Web初期表示で共有するschema version 8の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 5の公開details DTO。 */
+/** Web詳細表示で共有するschema version 8の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */
@@ -371,6 +552,290 @@ export type PublicGraphEdgeDto = z.output<typeof publicGraphEdgeSchema>;
 /** 公開DTO内の項目履歴差分。 */
 export type PublicItemHistoryEventDto = z.output<typeof publicItemHistoryEventSchema>;
 
+/** 通知履歴の公開DTO。 */
+export type PublicNotificationHistoryDto = z.output<typeof publicNotificationHistoryDtoSchema>;
+
+/** 通知履歴の公開entry。 */
+export type PublicNotificationHistoryEntryDto = z.output<
+  typeof publicNotificationHistoryEntrySchema
+>;
+
+/** 通知履歴entryを送信時刻降順と表示情報で比較する。 */
+export function comparePublicNotificationHistoryEntries(
+  left: PublicNotificationHistoryEntryDto,
+  right: PublicNotificationHistoryEntryDto,
+): number {
+  if (left.sentAt > right.sentAt) {
+    return -1;
+  }
+  if (left.sentAt < right.sentAt) {
+    return 1;
+  }
+  if (left.item.displayReference < right.item.displayReference) {
+    return -1;
+  }
+  if (left.item.displayReference > right.item.displayReference) {
+    return 1;
+  }
+  if (left.item.url < right.item.url) {
+    return -1;
+  }
+  if (left.item.url > right.item.url) {
+    return 1;
+  }
+  const reasonCount = Math.min(left.reasons.length, right.reasons.length);
+  for (let index = 0; index < reasonCount; index += 1) {
+    const leftReason = left.reasons[index];
+    const rightReason = right.reasons[index];
+    if (leftReason == null || rightReason == null) {
+      throw new TypeError("通知履歴の理由を取得できません");
+    }
+    if (leftReason.reasonCode < rightReason.reasonCode) {
+      return -1;
+    }
+    if (leftReason.reasonCode > rightReason.reasonCode) {
+      return 1;
+    }
+    const leftThreshold = JSON.stringify(leftReason.threshold);
+    const rightThreshold = JSON.stringify(rightReason.threshold);
+    if (leftThreshold < rightThreshold) {
+      return -1;
+    }
+    if (leftThreshold > rightThreshold) {
+      return 1;
+    }
+  }
+  if (left.reasons.length < right.reasons.length) {
+    return -1;
+  }
+  if (left.reasons.length > right.reasons.length) {
+    return 1;
+  }
+  return 0;
+}
+
+type PublicItemDisplayIdentity = Readonly<{
+  number: number;
+  owner: string;
+  repository: string;
+}>;
+
+type PublicItemUrlIdentity = Readonly<{
+  number: number;
+  owner: string;
+  repository: string;
+  type: "issue" | "pull_request";
+}>;
+
+function parsePublicItemDisplayReference(displayReference: string): PublicItemDisplayIdentity {
+  const match = /^([^/\s#?%]+)\/([^/\s#?%]+)#([1-9]\d*)$/u.exec(displayReference);
+  if (match == null) {
+    throw new PublicDtoSemanticError(
+      "公開項目の表示参照がowner/repository#number形式ではありません",
+    );
+  }
+  const owner = match[1];
+  const repository = match[2];
+  const numberText = match[3];
+  assertNonNullable(owner, "公開項目の表示参照ownerを取得できません");
+  assertNonNullable(repository, "公開項目の表示参照repositoryを取得できません");
+  assertNonNullable(numberText, "公開項目の表示参照numberを取得できません");
+  const number = Number.parseInt(numberText, 10);
+  if (!Number.isSafeInteger(number)) {
+    throw new PublicDtoSemanticError("公開項目の表示参照numberが安全な整数ではありません");
+  }
+  return {
+    owner,
+    repository,
+    number,
+  };
+}
+
+function parsePublicItemUrl(urlValue: string): PublicItemUrlIdentity {
+  if (urlValue.includes("?") || urlValue.includes("#") || urlValue.includes("\\")) {
+    throw new PublicDtoSemanticError(
+      "公開項目のURLにquery、hash、または不正な区切り文字があります",
+    );
+  }
+  const url = new URL(urlValue);
+  if (
+    url.protocol !== "https:" ||
+    url.hostname !== "github.com" ||
+    url.port !== "" ||
+    url.username !== "" ||
+    url.password !== ""
+  ) {
+    throw new PublicDtoSemanticError("公開項目のURLがGitHubのHTTPS URLではありません");
+  }
+  const match = /^\/([^/\s?#%]+)\/([^/\s?#%]+)\/(issues|pull)\/([1-9]\d*)$/u.exec(url.pathname);
+  if (match == null) {
+    throw new PublicDtoSemanticError(
+      "公開項目のURL pathがIssueまたはPull Requestの形式ではありません",
+    );
+  }
+  const owner = match[1];
+  const repository = match[2];
+  const kind = match[3];
+  const numberText = match[4];
+  assertNonNullable(owner, "公開項目のURL ownerを取得できません");
+  assertNonNullable(repository, "公開項目のURL repositoryを取得できません");
+  assertNonNullable(kind, "公開項目のURL種別を取得できません");
+  assertNonNullable(numberText, "公開項目のURL numberを取得できません");
+  const number = Number.parseInt(numberText, 10);
+  if (!Number.isSafeInteger(number)) {
+    throw new PublicDtoSemanticError("公開項目のURL numberが安全な整数ではありません");
+  }
+  return {
+    owner,
+    repository,
+    number,
+    type: kind === "issues" ? "issue" : "pull_request",
+  };
+}
+
+function assertPublicNotificationHistoryEntryItem(entry: PublicNotificationHistoryEntryDto): void {
+  const displayIdentity = parsePublicItemDisplayReference(entry.item.displayReference);
+  const urlIdentity = parsePublicItemUrl(entry.item.url);
+  if (
+    displayIdentity.owner !== urlIdentity.owner ||
+    displayIdentity.repository !== urlIdentity.repository ||
+    displayIdentity.number !== urlIdentity.number ||
+    entry.item.number !== displayIdentity.number ||
+    entry.item.type !== urlIdentity.type
+  ) {
+    throw new PublicDtoSemanticError(
+      `通知履歴の表示参照とURLのitem identityが一致しません。対象: ${entry.item.nodeId}`,
+    );
+  }
+  for (const waitingOn of entry.waitingOn) {
+    if (waitingOn.kind === "item") {
+      parsePublicItemDisplayReference(waitingOn.displayReference);
+    }
+  }
+}
+
+function comparePublicCurrentImplementations(
+  left: PublicItemSummaryDto["currentImplementations"][number],
+  right: PublicItemSummaryDto["currentImplementations"][number],
+): number {
+  if (left.nodeId < right.nodeId) {
+    return -1;
+  }
+  if (left.nodeId > right.nodeId) {
+    return 1;
+  }
+  return 0;
+}
+
+function assertPublicCurrentImplementations(items: readonly PublicItemSummaryDto[]): void {
+  const summaryItemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
+  for (const item of items) {
+    if (item.type !== "issue" || item.state !== "open") {
+      if (item.currentImplementations.length !== 0) {
+        throw new PublicDtoSemanticError(
+          `Issue以外またはopenでないIssue ${item.nodeId}にcurrentImplementationsがあります`,
+        );
+      }
+      continue;
+    }
+    if (item.currentImplementations.length !== 0 && isTerminalStatus(item.status)) {
+      throw new PublicDtoSemanticError(
+        `Issue ${item.nodeId}はGitHub stateがopenなのにterminal statusでcurrentImplementationsを持っています`,
+      );
+    }
+    const implementationNodeIds = new Set<string>();
+    for (const [index, implementation] of item.currentImplementations.entries()) {
+      if (implementationNodeIds.has(implementation.nodeId)) {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsにPR ${implementation.nodeId}が重複しています`,
+        );
+      }
+      implementationNodeIds.add(implementation.nodeId);
+      const previous = item.currentImplementations[index - 1];
+      if (previous != null && comparePublicCurrentImplementations(previous, implementation) > 0) {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsが決定論的な順序になっていません`,
+        );
+      }
+      const implementationSummary = summaryItemsByNodeId.get(implementation.nodeId);
+      if (implementationSummary?.type !== "pull_request") {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsに対応するopen PR summaryがありません`,
+        );
+      }
+      if (implementationSummary.state !== "open") {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsに対応するopen PR summaryがありません`,
+        );
+      }
+      if (isTerminalStatus(implementationSummary.status)) {
+        throw new PublicDtoSemanticError(
+          `PR ${implementation.nodeId}はGitHub stateがopenなのにterminal statusでcurrentImplementationsに含まれています`,
+        );
+      }
+      if (
+        item.repositoryFreshness !== "fresh" ||
+        implementationSummary.repositoryFreshness !== "fresh"
+      ) {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsに対応するPR repositoryがfreshではありません`,
+        );
+      }
+      const displayIdentity = parsePublicItemDisplayReference(implementation.displayReference);
+      const urlIdentity = parsePublicItemUrl(implementation.url);
+      if (
+        urlIdentity.type !== "pull_request" ||
+        displayIdentity.owner !== urlIdentity.owner ||
+        displayIdentity.repository !== urlIdentity.repository ||
+        displayIdentity.number !== urlIdentity.number ||
+        implementation.number !== displayIdentity.number ||
+        implementation.repositoryId !== implementationSummary.repositoryId ||
+        implementation.displayReference !== implementationSummary.displayReference ||
+        implementation.number !== implementationSummary.number ||
+        implementation.url !== implementationSummary.url ||
+        implementation.title !== implementationSummary.title ||
+        implementation.status !== implementationSummary.status ||
+        JSON.stringify(implementation.waitingOn) !==
+          JSON.stringify(implementationSummary.waitingOn) ||
+        implementation.nextAction !== implementationSummary.nextAction
+      ) {
+        throw new PublicDtoSemanticError(
+          `Issue ${item.nodeId}のcurrentImplementationsとPR ${implementation.nodeId}のsummaryが一致しません`,
+        );
+      }
+    }
+  }
+}
+
+function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void {
+  const summaryItemNodeIds = new Set(summary.items.map((item) => item.nodeId));
+  const externalGraphNodeIds = new Set(
+    summary.graph.nodes
+      .filter((node) => node.kind === "external_reference")
+      .map((node) => node.nodeId),
+  );
+  const candidateIds = new Set<string>();
+  for (const item of summary.items) {
+    const waitingOnValues = [
+      ...item.waitingOn,
+      ...item.currentImplementations.flatMap((implementation) => implementation.waitingOn),
+    ];
+    for (const waitingOn of waitingOnValues) {
+      if (waitingOn.kind === "item") {
+        candidateIds.add(waitingOn.candidateId);
+      }
+    }
+  }
+  for (const candidateId of candidateIds) {
+    if (summaryItemNodeIds.has(candidateId) || externalGraphNodeIds.has(candidateId)) {
+      continue;
+    }
+    throw new PublicDtoSemanticError(
+      `waitingOn項目 ${candidateId}をsummary itemsまたはinitial graphから解決できません`,
+    );
+  }
+}
+
 /** 未検証の値を共有公開summary DTOへ変換する。 */
 export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
   const result = publicSummaryDtoSchema.safeParse(value);
@@ -379,6 +844,8 @@ export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
       cause: result.error,
     });
   }
+  assertPublicSummaryWaitingOnReferences(result.data);
+  assertPublicCurrentImplementations(result.data.items);
   return result.data;
 }
 
@@ -389,6 +856,21 @@ export function createPublicDetailsDto(value: unknown): PublicDetailsDto {
     throw new PublicDtoValidationError("details", {
       cause: result.error,
     });
+  }
+  assertPublicCurrentImplementations(result.data.items.map((item) => item.summary));
+  return result.data;
+}
+
+/** 未検証の値を共有公開notification history DTOへ変換する。 */
+export function createPublicNotificationHistoryDto(value: unknown): PublicNotificationHistoryDto {
+  const result = publicNotificationHistoryDtoSchema.safeParse(value);
+  if (!result.success) {
+    throw new PublicDtoValidationError("notification-history", {
+      cause: result.error,
+    });
+  }
+  for (const notification of result.data.notifications) {
+    assertPublicNotificationHistoryEntryItem(notification);
   }
   return result.data;
 }

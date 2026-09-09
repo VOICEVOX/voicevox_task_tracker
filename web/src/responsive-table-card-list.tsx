@@ -44,7 +44,7 @@ type ResponsiveTableCardListProps<Row> = Readonly<{
   cardFields: readonly ResponsiveCardField<Row>[];
   cardListClassName: string;
   columns: readonly ResponsiveTableColumn<Row>[];
-  getRowPresentation: (row: Row) => ResponsiveListRowPresentation;
+  getRowPresentation: (row: Row, index: number) => ResponsiveListRowPresentation;
   renderCardFooter: (row: Row) => ComponentChildren;
   renderCardHeading: (row: Row) => ComponentChildren;
   rows: readonly Row[];
@@ -103,7 +103,7 @@ export function ResponsiveTableCardList<Row>({
   return (
     <>
       <div
-        class={`items-table-region hidden min-w-0 overflow-hidden rounded-2xl border border-border-default bg-surface-card shadow-[0_8px_24px_rgba(34,52,45,0.04)] ${breakpointClassNames.tableRegion}`}
+        class={`items-table-region hidden min-w-0 overflow-hidden rounded-2xl border border-border-default bg-surface-card shadow-card ${breakpointClassNames.tableRegion}`}
       >
         <table class={`w-full table-fixed border-collapse ${tableClassName}`}>
           <caption class="visually-hidden sr-only">{tableCaption}</caption>
@@ -139,8 +139,8 @@ export function ResponsiveTableCardList<Row>({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => {
-              const presentation = getRowPresentation(row);
+            {rows.map((row, index) => {
+              const presentation = getRowPresentation(row, index);
               return (
                 <tr
                   {...presentation.dataAttributes}
@@ -157,11 +157,11 @@ export function ResponsiveTableCardList<Row>({
         </table>
       </div>
       <ol
-        class={`items-card-list m-0 grid list-none overflow-hidden rounded-2xl border border-border-default bg-surface-card p-0 shadow-[0_8px_24px_rgba(34,52,45,0.04)] ${breakpointClassNames.cardList} ${cardListClassName}`}
+        class={`items-card-list m-0 grid list-none overflow-hidden rounded-2xl border border-border-default bg-surface-card p-0 shadow-card ${breakpointClassNames.cardList} ${cardListClassName}`}
         aria-label={cardAriaLabel}
       >
-        {rows.map((row) => {
-          const presentation = getRowPresentation(row);
+        {rows.map((row, index) => {
+          const presentation = getRowPresentation(row, index);
           return (
             <li
               {...presentation.dataAttributes}

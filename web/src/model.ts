@@ -2,17 +2,21 @@ import {
   type PublicDetailsDto,
   type PublicItemDetailsDto,
   type PublicItemSummaryDto,
+  type PublicNotificationHistoryEntryDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
+import { isTerminalStatus } from "../../src/domain/status.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 
 type ConfidenceThresholds = PublicSummaryDto["confidenceThresholds"];
 type ItemType = PublicItemSummaryDto["type"];
 type Status = PublicItemSummaryDto["status"];
 type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
+type DeadlineLevel = Extract<PublicItemSummaryDto["deadline"], { status: "available" }>["level"];
 type AiAnalysisStatus = PublicItemSummaryDto["aiAnalysis"]["status"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 type WaitingOnReference = Pick<WaitingOnCandidate, "candidateId" | "kind" | "role">;
+type NotificationWaitingOnReference = PublicNotificationHistoryEntryDto["waitingOn"][number];
 type WaitingOnRole = WaitingOnCandidate["role"];
 type PublicActor = Extract<
   PublicItemDetailsDto["latestEventActor"],
@@ -27,7 +31,7 @@ export type TableFilterKey =
 export type TableSelectFilterKey = Exclude<TableFilterKey, "waitingOn">;
 
 /** 項目一覧で並び替えの対象にするキー。 */
-export type ItemSortKey = "attention" | "importance" | "stall";
+export type ItemSortKey = "attention" | "importance" | "stall" | "deadline";
 
 /** 項目一覧の並び順。 */
 export type ItemSort = Readonly<{
@@ -40,6 +44,7 @@ export const ITEM_NATURAL_SORT_DIRECTIONS: Readonly<Record<ItemSortKey, ItemSort
   attention: "descending",
   importance: "descending",
   stall: "descending",
+  deadline: "descending",
 };
 
 /** 一覧表の列別絞り込み値。 */
@@ -60,7 +65,6 @@ export type TableFilterOptions = Readonly<
 export type ItemTableRow = Readonly<{
   item: PublicItemSummaryDto;
   repositoryText: string;
-  typeText: string;
   waitingOnText: string;
   stallDurationMilliseconds: number;
 }>;
@@ -140,6 +144,26 @@ const IMPORTANCE_LEVEL_LABELS = {
   high: "高",
 } satisfies Readonly<Record<ImportanceLevel, string>>;
 
+const DEADLINE_LEVEL_LABELS = {
+  none: "期限なし",
+  over_30_days: "30日超",
+  within_30_days: "30日以内",
+  within_7_days: "7日以内",
+  within_3_days: "3日以内",
+  within_1_day: "1日以内",
+  overdue: "期限超過",
+} satisfies Readonly<Record<DeadlineLevel, string>>;
+
+const DEADLINE_LEVEL_SORT_SCORES = {
+  none: 1,
+  over_30_days: 2,
+  within_30_days: 3,
+  within_7_days: 4,
+  within_3_days: 5,
+  within_1_day: 6,
+  overdue: 7,
+} satisfies Readonly<Record<DeadlineLevel, number>>;
+
 type StallFilterDefinition = Readonly<{
   label: string;
   thresholdMilliseconds: number;
@@ -195,8 +219,8 @@ const ROLE_LABELS = {
   unknown: "不明",
 } satisfies Readonly<Record<WaitingOnRole, string>>;
 
-/** 一覧表の空の絞り込み条件を作る。 */
-export function createEmptyTableFilters(): TableFilters {
+/** 一覧表の既定の絞り込み条件を作る。 */
+export function createDefaultTableFilters(): TableFilters {
   return {
     repository: "",
     type: "",
@@ -223,27 +247,24 @@ export function aiAnalysisNotice(status: AiAnalysisStatus): AiAnalysisNotice {
     case "not_required":
       return {
         kind: "skipped",
-        description: "確定ルールだけで判定できたため、AI推定を省いています。",
+        description:
+          "確定ルールだけで判定できたため、AI推定を省いています。期限日の抽出はAIが行い、切迫度は期限日から決定論的に算出します。",
       };
     case "failed":
       return {
         kind: "outdated",
         description:
-          "AI推定に失敗したため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
+          "AI推定に失敗したため、状態、待ち相手、重要度、期限日の抽出、停滞に最新のAI推定を反映できていません。期限の切迫度は期限日から決定論的に算出します。",
       };
     case "deferred":
       return {
         kind: "outdated",
         description:
-          "AI推定を今回実行しなかったため、状態、待ち相手、重要度、停滞に最新のAI推定を反映できていません。",
+          "AI推定を今回実行しなかったため、状態、待ち相手、重要度、期限日の抽出、停滞に最新のAI推定を反映できていません。期限の切迫度は期限日から決定論的に算出します。",
       };
     default:
       throw new UnreachableError(status);
   }
-}
-
-function itemTypeLabel(type: ItemType): string {
-  return ITEM_TYPE_LABELS[type];
 }
 
 /** statusの日本語表示名を返す。 */
@@ -254,6 +275,26 @@ export function statusLabel(status: Status): string {
 /** 重要度levelの日本語表示名を返す。 */
 export function importanceLevelLabel(level: ImportanceLevel): string {
   return IMPORTANCE_LEVEL_LABELS[level];
+}
+
+/** 期限の切迫度levelの日本語表示名を返す。 */
+export function deadlineLevelLabel(level: DeadlineLevel): string {
+  return DEADLINE_LEVEL_LABELS[level];
+}
+
+/** 期限日を日本語の年月日へ整形する。 */
+export function formatDeadlineDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(value);
+  if (match == null) {
+    throw new TypeError(`期限日を解釈できません: ${value}`);
+  }
+  const year = match[1];
+  const month = match[2];
+  const day = match[3];
+  assertNonNullable(year, "期限日から年を取得できませんでした");
+  assertNonNullable(month, "期限日から月を取得できませんでした");
+  assertNonNullable(day, "期限日から日を取得できませんでした");
+  return `${year}年${Number(month).toString()}月${Number(day).toString()}日`;
 }
 
 function createPresentTableFilterOptions(
@@ -289,7 +330,10 @@ export function createTableFilterOptions(summary: PublicSummaryDto): TableFilter
       .sort(compareStrings)
       .map((value) => ({ label: value, value })),
     type: createPresentTableFilterOptions(ITEM_TYPE_LABELS, typeValues),
-    status: createPresentTableFilterOptions(STATUS_LABELS, statusValues),
+    status: [
+      { label: "すべて", value: "all" },
+      ...createPresentTableFilterOptions(STATUS_LABELS, statusValues),
+    ],
     importance: createPresentTableFilterOptions(IMPORTANCE_LEVEL_LABELS, importanceValues),
     stall: STALL_FILTER_DEFINITIONS.map(({ label, value }) => ({ label, value })),
     aiAnalysis: AI_ANALYSIS_FILTER_OPTIONS,
@@ -590,6 +634,42 @@ export function waitingOnHistoryLabel(
   return waitingOnPartsText(
     waitingOnKindParts(waitingOn, summary, (role) => historyWaitingOnRoleParts(role, item)),
   );
+}
+
+function notificationWaitingOnCandidateLabelParts(
+  waitingOn: NotificationWaitingOnReference,
+): readonly WaitingOnDisplayPart[] {
+  switch (waitingOn.kind) {
+    case "user":
+      return [
+        textWaitingOnPart(`${waitingOnRoleName(waitingOn.role)} `),
+        loginWaitingOnPart(waitingOn.candidateId),
+      ];
+    case "team":
+      return [
+        textWaitingOnPart(`${waitingOnRoleName(waitingOn.role)} チーム ${waitingOn.candidateId}`),
+      ];
+    case "role":
+      return [textWaitingOnPart(waitingOnRoleName(waitingOn.role))];
+    case "item":
+      return [textWaitingOnPart(waitingOn.displayReference)];
+    case "automation":
+      return [textWaitingOnPart(`自動処理 ${waitingOn.candidateId}`)];
+    case "unknown":
+      return [textWaitingOnPart("不明")];
+    default:
+      throw new UnreachableError(waitingOn);
+  }
+}
+
+/** 通知履歴の保存済みwaitingOnを表示用の断片へ変換する。 */
+export function notificationWaitingOnLabelParts(
+  waitingOn: readonly NotificationWaitingOnReference[],
+): readonly WaitingOnDisplayPart[] {
+  if (waitingOn.length === 0) {
+    throw new TypeError("通知履歴のwaitingOnが空です");
+  }
+  return joinWaitingOnParts(waitingOn.map(notificationWaitingOnCandidateLabelParts), "、");
 }
 
 /** waitingOn候補から特定できる待ち相手を返す。 */
@@ -899,7 +979,6 @@ export function createItemTableRows(summary: PublicSummaryDto, now: Date): reado
     return {
       item,
       repositoryText: repository.fullName,
-      typeText: itemTypeLabel(item.type),
       waitingOnText: formatWaitingOn(item, summary),
       stallDurationMilliseconds,
     };
@@ -998,6 +1077,9 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: st
     case "type":
       return row.item.type === value;
     case "status":
+      if (value === "all") {
+        return true;
+      }
       return row.item.status === value;
     case "importance":
       return row.item.importance.level === value;
@@ -1018,7 +1100,39 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: st
   }
 }
 
-function compareTableRows(left: ItemTableRow, right: ItemTableRow, key: ItemSortKey): number {
+function compareDeadlineRows(
+  left: ItemTableRow,
+  right: ItemTableRow,
+  direction: ItemSort["direction"],
+): number {
+  const leftDeadline = left.item.deadline;
+  const rightDeadline = right.item.deadline;
+  if (leftDeadline.status !== rightDeadline.status) {
+    return leftDeadline.status === "not_available" ? 1 : -1;
+  }
+  if (leftDeadline.status === "not_available" || rightDeadline.status === "not_available") {
+    return 0;
+  }
+  const directionMultiplier = direction === "ascending" ? 1 : -1;
+  const levelOrder =
+    (DEADLINE_LEVEL_SORT_SCORES[leftDeadline.level] -
+      DEADLINE_LEVEL_SORT_SCORES[rightDeadline.level]) *
+    directionMultiplier;
+  if (levelOrder !== 0) {
+    return levelOrder;
+  }
+  if (leftDeadline.date == null || rightDeadline.date == null) {
+    return 0;
+  }
+  return compareStrings(leftDeadline.date, rightDeadline.date) * -directionMultiplier;
+}
+
+function compareTableRows(
+  left: ItemTableRow,
+  right: ItemTableRow,
+  key: ItemSortKey,
+  direction: ItemSort["direction"],
+): number {
   switch (key) {
     case "attention":
       return left.item.attention.score - right.item.attention.score;
@@ -1026,6 +1140,8 @@ function compareTableRows(left: ItemTableRow, right: ItemTableRow, key: ItemSort
       return left.item.importance.score - right.item.importance.score;
     case "stall":
       return left.stallDurationMilliseconds - right.stallDurationMilliseconds;
+    case "deadline":
+      return compareDeadlineRows(left, right, direction);
     default:
       throw new UnreachableError(key);
   }
@@ -1053,6 +1169,8 @@ function compareTableRowTieBreakers(
     }
     case "stall":
       break;
+    case "deadline":
+      break;
     default:
       throw new UnreachableError(key);
   }
@@ -1068,6 +1186,9 @@ export function filterAndSortTableRows(
   const filteredRows = rows.filter((row) =>
     Object.entries(filters).every(([key, value]) => {
       if (value.length === 0) {
+        if (key === "status") {
+          return !isTerminalStatus(row.item.status);
+        }
         return true;
       }
       if (
@@ -1086,9 +1207,9 @@ export function filterAndSortTableRows(
   );
   const direction = sort.direction === "ascending" ? 1 : -1;
   return filteredRows.sort((left, right) => {
-    const order = compareTableRows(left, right, sort.key);
+    const order = compareTableRows(left, right, sort.key, sort.direction);
     if (order !== 0) {
-      return order * direction;
+      return sort.key === "deadline" ? order : order * direction;
     }
     return compareTableRowTieBreakers(left, right, sort.key);
   });

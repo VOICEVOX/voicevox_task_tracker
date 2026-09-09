@@ -22,6 +22,11 @@ const requiredStringSchema = z.string().min(1, "空文字は指定できませ�
 const positiveIntegerSchema = z.number().int().positive();
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const nonNegativeNumberSchema = z.number().nonnegative();
+const positiveSafeIntegerSchema = z
+  .number()
+  .int()
+  .positive()
+  .refine(Number.isSafeInteger, "安全な整数を指定してください");
 const positiveNumberSchema = z.number().positive();
 const probabilitySchema = z.number().min(0).max(1);
 const statePathSchema = requiredStringSchema.superRefine((value, context) => {
@@ -381,17 +386,76 @@ const configSchema = z.strictObject({
       blockedItem: nonNegativeNumberSchema,
       blockedRepository: nonNegativeNumberSchema,
       downstreamImpactMax: nonNegativeNumberSchema,
-      milestoneWithDueDate: nonNegativeNumberSchema,
-      milestoneDueSoon: nonNegativeNumberSchema,
       significantFeature: nonNegativeNumberSchema,
-      explicitDeadline: nonNegativeNumberSchema,
       futureRisk: nonNegativeNumberSchema,
     }),
-    dueSoonDays: nonNegativeNumberSchema,
     levels: importanceLevelsSchema,
   }),
   attention: z.strictObject({
     recencyFloor: probabilitySchema,
+    deadlinePoints: z
+      .strictObject({
+        none: z.literal(0),
+        over_30_days: positiveSafeIntegerSchema,
+        within_30_days: positiveSafeIntegerSchema,
+        within_7_days: positiveSafeIntegerSchema,
+        within_3_days: positiveSafeIntegerSchema,
+        within_1_day: positiveSafeIntegerSchema,
+        overdue: positiveSafeIntegerSchema.refine(
+          (value) => value <= 30,
+          "overdueは30以下の整数を指定してください",
+        ),
+      })
+      .superRefine((points, context) => {
+        if (!(points.none < points.over_30_days)) {
+          context.addIssue({
+            code: "custom",
+            path: ["over_30_days"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+        if (!(points.over_30_days < points.within_30_days)) {
+          context.addIssue({
+            code: "custom",
+            path: ["within_30_days"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+        if (!(points.within_30_days < points.within_7_days)) {
+          context.addIssue({
+            code: "custom",
+            path: ["within_7_days"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+        if (!(points.within_7_days < points.within_3_days)) {
+          context.addIssue({
+            code: "custom",
+            path: ["within_3_days"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+        if (!(points.within_3_days < points.within_1_day)) {
+          context.addIssue({
+            code: "custom",
+            path: ["within_1_day"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+        if (!(points.within_1_day < points.overdue)) {
+          context.addIssue({
+            code: "custom",
+            path: ["overdue"],
+            message:
+              "0 = none < over_30_days < within_30_days < within_7_days < within_3_days < within_1_day < overdueを満たしてください",
+          });
+        }
+      }),
     levels: importanceLevelsSchema,
   }),
   ai: z
@@ -400,7 +464,6 @@ const configSchema = z.strictObject({
       enabled: z.boolean(),
       authentication: z.enum(CODEX_AUTHENTICATIONS),
       model: requiredStringSchema,
-      promptVersion: requiredStringSchema,
       confidence: aiConfidenceSchema.default({
         high: DEFAULT_HIGH_CONFIDENCE,
         medium: DEFAULT_MEDIUM_CONFIDENCE,
@@ -438,10 +501,6 @@ const configSchema = z.strictObject({
       operationsWebhookSecretName: requiredStringSchema,
       mentions: mentionsSchema,
       maxItemsPerDigest: positiveIntegerSchema,
-      cooldownDays: z.strictObject({
-        urgent: nonNegativeIntegerSchema,
-        critical: nonNegativeIntegerSchema,
-      }),
     }),
   }),
   state: stateSchema,

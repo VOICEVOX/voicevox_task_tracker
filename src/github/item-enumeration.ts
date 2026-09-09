@@ -78,15 +78,6 @@ const labelSchema = z.union([
     })
     .loose(),
 ]);
-const milestoneSchema = z
-  .object({
-    node_id: nodeIdSchema,
-    number: z.number().int().positive(),
-    title: z.string().min(1),
-    state: z.enum(["open", "closed"]),
-    due_on: utcIsoDateTimeSchema.nullable(),
-  })
-  .loose();
 const itemMetadataSchema = z
   .object({
     node_id: nodeIdSchema,
@@ -99,7 +90,6 @@ const itemMetadataSchema = z
     user: accountSchema.nullable(),
     labels: z.array(labelSchema),
     assignees: z.array(accountSchema).nullish(),
-    milestone: milestoneSchema.nullable(),
     pull_request: z
       .object({
         merged_at: utcIsoDateTimeSchema.nullable(),
@@ -191,15 +181,6 @@ export type GitHubItemAuthor =
       kind: "deleted_account";
     }>;
 
-/** GitHub項目に設定されたmilestone。 */
-export type GitHubItemMilestone = Readonly<{
-  nodeId: GitHubNodeId;
-  number: number;
-  title: string;
-  state: "open" | "closed";
-  dueOn: UtcIsoDateTime | null;
-}>;
-
 /** 本文を必要時に再取得するための公開リポジトリ内locator。 */
 export type GitHubItemBodyLocator = Readonly<{
   kind: "github_item_body";
@@ -222,7 +203,6 @@ type EnumeratedGitHubItemFields = Readonly<{
   updatedAt: UtcIsoDateTime;
   assignees: readonly GitHubItemAccount[];
   labels: readonly string[];
-  milestone: GitHubItemMilestone | null;
   itemFingerprint: Sha256Fingerprint;
   observedAt: UtcIsoDateTime;
 }>;
@@ -336,21 +316,6 @@ function normalizeAssignees(
   );
 }
 
-function normalizeMilestone(
-  milestone: z.output<typeof milestoneSchema> | null,
-): GitHubItemMilestone | null {
-  if (milestone == null) {
-    return null;
-  }
-  return Object.freeze({
-    nodeId: createGitHubNodeId(milestone.node_id),
-    number: milestone.number,
-    title: milestone.title,
-    state: milestone.state,
-    dueOn: milestone.due_on,
-  });
-}
-
 function normalizeState(item: ParsedItemMetadata): ObservedGitHubItemState {
   if (item.state === "open") {
     if (item.state_reason != null && item.state_reason !== "reopened") {
@@ -420,7 +385,6 @@ function createItemFingerprint(
     state: ObservedGitHubItemState;
     assignees: readonly GitHubItemAccount[];
     labels: readonly string[];
-    milestone: GitHubItemMilestone | null;
   }> &
     (
       | Readonly<{
@@ -454,7 +418,6 @@ function createItemFingerprint(
         ...fingerprintBase,
         assignees: value.assignees,
         labels: value.labels,
-        milestone: value.milestone,
       }),
     );
   }
@@ -466,7 +429,6 @@ function createItemFingerprint(
         mergedAt: value.mergedAt,
         assignees: value.assignees,
         labels: value.labels,
-        milestone: value.milestone,
       }),
     );
   }
@@ -476,7 +438,6 @@ function createItemFingerprint(
       mergeStatus: value.mergeStatus,
       assignees: value.assignees,
       labels: value.labels,
-      milestone: value.milestone,
     }),
   );
 }
@@ -515,7 +476,6 @@ function normalizeItem(
   const author = normalizeAuthor(item.user);
   const assignees = normalizeAssignees(item.assignees);
   const labels = normalizeLabels(item.labels);
-  const milestone = normalizeMilestone(item.milestone);
   const bodyLocator = Object.freeze({
     kind: "github_item_body",
     repositoryId: repository.id,
@@ -536,7 +496,6 @@ function normalizeItem(
     updatedAt: item.updated_at,
     assignees,
     labels,
-    milestone,
     observedAt,
   };
 
@@ -555,7 +514,6 @@ function normalizeItem(
       draft,
       assignees,
       labels,
-      milestone,
     });
     return Object.freeze({
       ...commonFields,
@@ -588,7 +546,6 @@ function normalizeItem(
     ...merge,
     assignees,
     labels,
-    milestone,
   });
   return Object.freeze({
     ...commonFields,

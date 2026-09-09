@@ -254,7 +254,6 @@ function createProfileItems(
         updatedAt,
         assignees: Object.freeze([]),
         labels: Object.freeze([]),
-        milestone: null,
         itemFingerprint: createGitHubBodyFingerprint(
           `performance-item-${index.toString()}-v${changedItemVersion.toString()}`,
         ),
@@ -398,7 +397,7 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
     `性能profileのCodex入力に作者候補IDがありません。対象: ${input.item.nodeId}`,
   );
   return {
-    schemaVersion: "2",
+    schemaVersion: "4",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,
@@ -429,9 +428,12 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
     },
     importance: {
       significantFeature: false,
-      explicitDeadline: false,
       futureRisk: false,
       rationale: "性能profileでは重要度の自然言語要因を設定しません",
+    },
+    deadline: {
+      date: null,
+      rationale: "性能profileでは期限日を設定しません",
     },
     evidence: [
       {
@@ -451,7 +453,7 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
 }
 
 async function createPerformanceConfig(repositoryPath: string): Promise<Config> {
-  const base = await loadConfig(join(repositoryPath, "tests/fixtures/config.valid.yml"));
+  const base = await loadConfig(join(repositoryPath, "fixtures/performance/config.valid.yml"));
   return Object.freeze({
     ...base,
     tracking: Object.freeze({
@@ -546,6 +548,8 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
       );
     },
     executeCodexAnalysis: (input) => Promise.resolve(createCodexOutput(input)),
+    executeCodexAuthenticationPreflight: () =>
+      Promise.reject(new TypeError("性能profileではCodex認証preflightを実行しません")),
     readReplayFixture: () => Promise.reject(new TypeError("性能profileではreplayしません")),
     readReplayState: () => Promise.reject(new TypeError("性能profileではstate replayしません")),
     readGoldenFixtures: () => Promise.reject(new TypeError("性能profileではgolden evalしません")),
@@ -588,11 +592,14 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
       generatedPublicData = data;
       const summarySource = serializeCanonicalJson(data.summary);
       const detailsSource = serializeCanonicalJson(data.details);
+      const notificationHistorySource = serializeCanonicalJson(data.notificationHistory);
       return Promise.resolve({
         summaryPath: "unused-performance-pages/summary.json",
         detailsPath: "unused-performance-pages/details.json",
+        notificationHistoryPath: "unused-performance-pages/notification-history.json",
         summaryBytes: Buffer.byteLength(summarySource, "utf8"),
         detailsBytes: Buffer.byteLength(detailsSource, "utf8"),
+        notificationHistoryBytes: Buffer.byteLength(notificationHistorySource, "utf8"),
       });
     },
     sendDiscord: () =>

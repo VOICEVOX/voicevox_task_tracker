@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 import {
+  DiscordWebhookDeliveryUnknownError,
   DiscordWebhookRequestError,
-  DiscordWebhookResponseError,
   DiscordWebhookRetryExhaustedError,
   DiscordWebhookSecretInvalidError,
   DiscordWebhookSecretMissingError,
@@ -71,6 +71,7 @@ export type ExecuteDiscordWebhookInput = Readonly<{
   secretProvider: DiscordSecretProvider;
   httpClient: DiscordWebhookHttpClient;
   runtime: DiscordWebhookRuntime;
+  beforeFirstAttempt: () => Promise<void>;
 }>;
 
 export type DiscordWebhookExecution = Readonly<{
@@ -166,6 +167,14 @@ function validateHttpResponse(response: DiscordWebhookHttpResponse): void {
   }
 }
 
+function validHttpStatus(response: DiscordWebhookHttpResponse | undefined): number | undefined {
+  const status = response?.status;
+  if (typeof status !== "number" || !Number.isInteger(status) || status < 100 || status > 599) {
+    return undefined;
+  }
+  return status;
+}
+
 function retryAfterMilliseconds(response: DiscordWebhookHttpResponse): number | undefined {
   const values: number[] = [];
   if (response.retryAfter != null && /^\d+(?:\.\d+)?$/u.test(response.retryAfter)) {
@@ -202,19 +211,19 @@ function calculateBackoffMilliseconds(
 
 async function waitBeforeRetry(
   attempt: number,
-  response: DiscordWebhookHttpResponse | undefined,
+  response: DiscordWebhookHttpResponse,
   settings: DiscordWebhookRetrySettings,
   runtime: DiscordWebhookRuntime,
   webhookSecret: string,
 ): Promise<void> {
-  const backoffMilliseconds = calculateBackoffMilliseconds(attempt, settings, runtime.random);
-  const requestedDelay = response == null ? undefined : retryAfterMilliseconds(response);
-  const delayMilliseconds =
-    requestedDelay == null ? backoffMilliseconds : Math.max(backoffMilliseconds, requestedDelay);
   try {
+    const backoffMilliseconds = calculateBackoffMilliseconds(attempt, settings, runtime.random);
+    const requestedDelay = retryAfterMilliseconds(response);
+    const delayMilliseconds =
+      requestedDelay == null ? backoffMilliseconds : Math.max(backoffMilliseconds, requestedDelay);
     await runtime.sleep(delayMilliseconds);
   } catch (error: unknown) {
-    throw new DiscordWebhookRequestError(response?.status, attempt, {
+    throw new DiscordWebhookRequestError(response.status, attempt, {
       cause: createSafeCause(error, webhookSecret),
     });
   }
@@ -248,43 +257,49 @@ export async function executeDiscordWebhook(
   validateRetrySettings(input.retry);
   const webhookSecret = readWebhookSecret(input.secretName, input.secretProvider);
   const webhookUrl = validateWebhookUrl(input.secretName, webhookSecret);
+  await input.beforeFirstAttempt();
 
   for (let attempt = 1; attempt <= input.retry.maxAttempts; attempt += 1) {
-    let response: DiscordWebhookHttpResponse;
+    let response: DiscordWebhookHttpResponse | undefined;
     try {
       response = await input.httpClient.execute({
         url: webhookUrl.toString(),
         payload: input.payload,
       });
+      validateHttpResponse(response);
     } catch (error: unknown) {
-      if (attempt === input.retry.maxAttempts) {
-        throw new DiscordWebhookRetryExhaustedError(undefined, attempt, {
+      throw new DiscordWebhookDeliveryUnknownError(validHttpStatus(response), attempt, {
+        cause: createSafeCause(error, webhookSecret),
+      });
+    }
+    if (response.status >= 200 && response.status < 300) {
+      try {
+        const messageResult = discordMessageResponseSchema.safeParse(response.body);
+        if (!messageResult.success) {
+          throw new TypeError("Discord Message応答のschema検証に失敗しました");
+        }
+        return Object.freeze({
+          discordMessageId: messageResult.data.id,
+          attempts: attempt,
+        });
+      } catch (error: unknown) {
+        throw new DiscordWebhookDeliveryUnknownError(response.status, attempt, {
           cause: createSafeCause(error, webhookSecret),
         });
       }
-      await waitBeforeRetry(attempt, undefined, input.retry, input.runtime, webhookSecret);
-      continue;
     }
-    validateHttpResponse(response);
-    if (response.status >= 200 && response.status < 300) {
-      const messageResult = discordMessageResponseSchema.safeParse(response.body);
-      if (!messageResult.success) {
-        throw new DiscordWebhookResponseError(response.status, attempt, {
-          cause: new TypeError("Discord Message応答のschema検証に失敗しました"),
-        });
-      }
-      return Object.freeze({
-        discordMessageId: messageResult.data.id,
-        attempts: attempt,
+    if (response.status >= 500) {
+      throw new DiscordWebhookDeliveryUnknownError(response.status, attempt, {
+        cause: new Error("Discord APIのserver errorで送信結果を確認できません"),
       });
     }
-    if (response.status !== 429 && response.status !== 503) {
+    if (response.status !== 429) {
       throw new DiscordWebhookRequestError(response.status, attempt, {
         cause: new Error("Discord APIが成功以外のstatusを返しました"),
       });
     }
     if (attempt === input.retry.maxAttempts) {
-      throw new DiscordWebhookRetryExhaustedError(response.status, attempt, {
+      throw new DiscordWebhookRetryExhaustedError(429, attempt, {
         cause: new Error("Discord APIへの一時的な失敗がretry上限まで続きました"),
       });
     }

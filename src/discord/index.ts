@@ -6,6 +6,7 @@ export {
   type NotificationDependencyCause,
 } from "./notification-cause.js";
 export {
+  createAcknowledgedNotificationLedgerEntries,
   selectDiscordNotifications,
   type DiscordNotificationCandidate,
   type DiscordNotificationCurrentState,
@@ -39,8 +40,8 @@ export {
   DiscordError,
   DiscordLedgerError,
   DiscordPayloadError,
+  DiscordWebhookDeliveryUnknownError,
   DiscordWebhookRequestError,
-  DiscordWebhookResponseError,
   DiscordWebhookRetryExhaustedError,
   DiscordWebhookSecretInvalidError,
   DiscordWebhookSecretMissingError,

@@ -9,7 +9,7 @@ import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
 import {
   collectWaitingTeamIds,
-  createEmptyTableFilters,
+  createDefaultTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
   selectWaitingSubjectItemNodeIds,
@@ -94,7 +94,7 @@ export function PersonPage({
     () =>
       filterAndSortTableRows(
         createItemTableRows(summary, now).filter((row) => selectedNodeIds.has(row.item.nodeId)),
-        createEmptyTableFilters(),
+        createDefaultTableFilters(),
         sort,
       ),
     [now, selectedNodeIds, sort, summary],

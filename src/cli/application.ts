@@ -25,6 +25,7 @@ export type CliExecutionResult =
         | "persist-state"
         | "build-pages"
         | "notify-discord"
+        | "resolve-discord-delivery"
         | "notify-operations"
         | "report-workflow";
       exitCode: 0;
@@ -83,6 +84,7 @@ export class CliApplication<Types extends DailyTransactionTypeMap> {
       case "persist-state":
       case "build-pages":
       case "notify-discord":
+      case "resolve-discord-delivery":
       case "notify-operations":
       case "report-workflow":
         await this.#dependencies.workflowStageRunner.run(command);

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "5",
+  "schemaVersion": "8",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "items": [
@@ -12,13 +12,6 @@
         "number": 101,
         "url": "https://github.com/VOICEVOX/sample-editor/pull/101",
         "title": "サンプル辞書更新をマージする",
-        "milestone": {
-          "nodeId": "sample-milestone-editor-1",
-          "number": 1,
-          "title": "サンプルリリース",
-          "state": "open",
-          "dueOn": "2026-08-31T00:00:00.000Z"
-        },
         "state": "open",
         "author": {
           "status": "identified",
@@ -47,16 +40,16 @@
         ],
         "primaryWaitingOn": {
           "index": 0,
-          "selectionReason": "waitingOnの先頭候補をprimaryとして選びました"
+          "selectionReason": "待ち相手の先頭候補をprimaryとして選びました"
         },
         "nextAction": "メンテナーが内容を確認してマージする",
         "severity": "critical",
         "importance": {
-          "score": 63,
+          "score": 53,
           "level": "high"
         },
         "attention": {
-          "score": 25,
+          "score": 35,
           "level": "medium"
         },
         "priorityWeight": 25,
@@ -73,6 +66,12 @@
           "nodeId": "sample-item-editor-101",
           "openNodeCount": 1,
           "repositoryCount": 1
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "available",
+          "date": "2026-08-31",
+          "level": "over_30_days"
         }
       },
       "importanceFactors": [
@@ -85,11 +84,6 @@
           "kind": "significantFeature",
           "points": 20,
           "detail": "Codex判定で20点です。利用者へ広く影響する重要な機能です"
-        },
-        {
-          "kind": "milestoneDeadline",
-          "points": 10,
-          "detail": "期限付きのopen milestoneで10点です"
         },
         {
           "kind": "downstreamImpact",
@@ -115,7 +109,13 @@
         }
       ],
       "uncertainties": [],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "available",
+        "date": "2026-08-31",
+        "level": "over_30_days",
+        "rationale": "期限は2026-08-31です"
+      }
     },
     {
       "summary": {
@@ -126,7 +126,6 @@
         "number": 202,
         "url": "https://github.com/VOICEVOX/sample-engine/pull/202",
         "title": "サンプルAPIのレビューを完了する",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -155,7 +154,7 @@
         ],
         "primaryWaitingOn": {
           "index": 0,
-          "selectionReason": "waitingOnの先頭候補をprimaryとして選びました"
+          "selectionReason": "待ち相手の先頭候補をprimaryとして選びました"
         },
         "nextAction": "レビューチームが変更内容を確認する",
         "severity": "none",
@@ -181,6 +180,10 @@
           "nodeId": "sample-item-engine-202",
           "openNodeCount": 4,
           "repositoryCount": 3
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [
@@ -217,7 +220,10 @@
         }
       ],
       "uncertainties": [],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -228,7 +234,6 @@
         "number": 103,
         "url": "https://github.com/VOICEVOX/sample-editor/issues/103",
         "title": "サンプル配布方針を決める",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -257,7 +262,7 @@
         ],
         "primaryWaitingOn": {
           "index": 0,
-          "selectionReason": "waitingOnの先頭候補をprimaryとして選びました"
+          "selectionReason": "待ち相手の先頭候補をprimaryとして選びました"
         },
         "nextAction": "メンテナーが配布方針を決める",
         "severity": "urgent",
@@ -283,6 +288,30 @@
           "nodeId": "sample-item-editor-103",
           "openNodeCount": 2,
           "repositoryCount": 2
+        },
+        "currentImplementations": [
+          {
+            "nodeId": "sample-item-editor-101",
+            "repositoryId": "sample-repository-editor",
+            "displayReference": "VOICEVOX/sample-editor#101",
+            "number": 101,
+            "url": "https://github.com/VOICEVOX/sample-editor/pull/101",
+            "title": "サンプル辞書更新をマージする",
+            "status": "waiting_for_merge",
+            "waitingOn": [
+              {
+                "kind": "user",
+                "candidateId": "sample-maintainer",
+                "role": "merge_decider",
+                "reasonSummary": "確認が完了し、sample-maintainerさんのマージ判断を待っています",
+                "confidence": 1
+              }
+            ],
+            "nextAction": "メンテナーが内容を確認してマージする"
+          }
+        ],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [
@@ -315,7 +344,10 @@
         }
       ],
       "uncertainties": ["最終的な判断者はGitHub上で明示されていません"],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -326,7 +358,6 @@
         "number": 204,
         "url": "https://github.com/VOICEVOX/sample-engine/issues/204",
         "title": "サンプル配布処理を実装する",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "unavailable",
@@ -384,6 +415,10 @@
           "nodeId": "sample-item-engine-204",
           "openNodeCount": 0,
           "repositoryCount": 0
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [
@@ -455,7 +490,10 @@
             }
           }
         }
-      ]
+      ],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -466,7 +504,6 @@
         "number": 305,
         "url": "https://github.com/VOICEVOX/sample-core/pull/305",
         "title": "サンプル修正へ回答する",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -495,7 +532,7 @@
         ],
         "primaryWaitingOn": {
           "index": 0,
-          "selectionReason": "waitingOnの先頭候補をprimaryとして選びました"
+          "selectionReason": "待ち相手の先頭候補をprimaryとして選びました"
         },
         "nextAction": "作成者がレビュー指摘へ対応する",
         "severity": "urgent",
@@ -521,6 +558,10 @@
           "nodeId": "sample-item-core-305",
           "openNodeCount": 3,
           "repositoryCount": 2
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [
@@ -557,7 +598,10 @@
         }
       ],
       "uncertainties": ["リポジトリの観測に失敗したため前回値です"],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -568,7 +612,6 @@
         "number": 401,
         "url": "https://github.com/example/sample-workflow/pull/401",
         "title": "サンプル要件の内容を確認する",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -617,6 +660,10 @@
           "nodeId": "sample-item-workflow-401",
           "openNodeCount": 0,
           "repositoryCount": 0
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [],
@@ -638,7 +685,10 @@
         }
       ],
       "uncertainties": [],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -649,7 +699,6 @@
         "number": 402,
         "url": "https://github.com/example/sample-workflow/pull/402",
         "title": "サンプル移行の担当を決める",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -698,6 +747,10 @@
           "nodeId": "sample-item-workflow-402",
           "openNodeCount": 0,
           "repositoryCount": 0
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [],
@@ -719,7 +772,10 @@
         }
       ],
       "uncertainties": [],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -730,7 +786,6 @@
         "number": 403,
         "url": "https://github.com/example/sample-workflow/pull/403",
         "title": "サンプル質問への返答を確認する",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -779,6 +834,10 @@
           "nodeId": "sample-item-workflow-403",
           "openNodeCount": 0,
           "repositoryCount": 0
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [],
@@ -804,7 +863,10 @@
         }
       ],
       "uncertainties": [],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -815,7 +877,6 @@
         "number": 404,
         "url": "https://github.com/example/sample-workflow/pull/404",
         "title": "サンプル画面の実装を開始する",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -870,6 +931,10 @@
           "nodeId": "sample-item-workflow-404",
           "openNodeCount": 0,
           "repositoryCount": 0
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [],
@@ -891,7 +956,10 @@
         }
       ],
       "uncertainties": [],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -902,7 +970,6 @@
         "number": 405,
         "url": "https://github.com/example/sample-workflow/pull/405",
         "title": "サンプル機能を実装する",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -957,6 +1024,10 @@
           "nodeId": "sample-item-workflow-405",
           "openNodeCount": 0,
           "repositoryCount": 0
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [],
@@ -978,7 +1049,10 @@
         }
       ],
       "uncertainties": [],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -989,7 +1063,6 @@
         "number": 406,
         "url": "https://github.com/example/sample-workflow/pull/406",
         "title": "サンプル配布の自動処理を待つ",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -1038,6 +1111,10 @@
           "nodeId": "sample-item-workflow-406",
           "openNodeCount": 0,
           "repositoryCount": 0
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [],
@@ -1063,7 +1140,10 @@
         }
       ],
       "uncertainties": [],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     },
     {
       "summary": {
@@ -1074,7 +1154,6 @@
         "number": 407,
         "url": "https://github.com/example/sample-workflow/pull/407",
         "title": "サンプル待ち先を調査する",
-        "milestone": null,
         "state": "open",
         "author": {
           "status": "identified",
@@ -1123,6 +1202,10 @@
           "nodeId": "sample-item-workflow-407",
           "openNodeCount": 0,
           "repositoryCount": 0
+        },
+        "currentImplementations": [],
+        "deadline": {
+          "status": "not_available"
         }
       },
       "importanceFactors": [],
@@ -1144,7 +1227,10 @@
         }
       ],
       "uncertainties": ["次に対応する相手を特定できていません"],
-      "history": []
+      "history": [],
+      "deadline": {
+        "status": "not_available"
+      }
     }
   ],
   "graph": {
@@ -1256,6 +1342,15 @@
       }
     ],
     "edges": [
+      {
+        "id": "sample-relation-editor-101-103",
+        "fromNodeId": "sample-item-editor-101",
+        "toNodeId": "sample-item-editor-103",
+        "type": "implements",
+        "provenance": "native",
+        "confidence": 1,
+        "active": true
+      },
       {
         "id": "sample-relation-editor-103-engine-204",
         "fromNodeId": "sample-item-editor-103",

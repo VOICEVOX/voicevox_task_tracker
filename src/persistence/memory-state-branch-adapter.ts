@@ -5,6 +5,7 @@ import {
   type StateBranchCommitRequest,
   type StateBranchCommitResult,
   type StateBranchHead,
+  type StateBranchPublishRequest,
   type StateFileReadResult,
 } from "./branch-adapter.js";
 import {
@@ -15,19 +16,8 @@ import {
 } from "./errors.js";
 
 type MemoryCommit = Readonly<{
-  revision: string;
-  parent: StateBranchHead;
   files: ReadonlyMap<string, Uint8Array>;
 }>;
-
-type NextCommitBehavior =
-  | Readonly<{
-      status: "succeed";
-    }>
-  | Readonly<{
-      status: "fail";
-      error: Error;
-    }>;
 
 function copyBytes(bytes: Uint8Array): Uint8Array {
   return Uint8Array.from(bytes);
@@ -43,13 +33,11 @@ function headsEqual(left: StateBranchHead, right: StateBranchHead): boolean {
   return left.revision === right.revision;
 }
 
-/** テストでstate branchとcommitをメモリ上に保持するadapter。 */
+/** 性能profile用にstate branchとcommitをメモリ上に保持するadapter。 */
 export class MemoryStateBranchAdapter implements StateBranchAdapter {
   readonly #branches = new Map<string, string>();
   readonly #commits = new Map<string, MemoryCommit>();
-  #nextCommitBehavior: NextCommitBehavior = {
-    status: "succeed",
-  };
+  readonly #publishedBranches = new Map<string, string>();
   #revisionSequence = 0;
 
   public resolveHead(branch: string): Promise<StateBranchHead> {
@@ -95,6 +83,45 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     );
   }
 
+  public readFiles(
+    revision: string,
+    paths: readonly string[],
+  ): Promise<ReadonlyMap<string, StateFileReadResult>> {
+    if (paths.length === 0) {
+      return Promise.resolve(new Map<string, StateFileReadResult>());
+    }
+    if (new Set(paths).size !== paths.length) {
+      throw new StateConfigurationError("読み取りpathが重複しています");
+    }
+    for (const path of paths) {
+      assertValidStatePath(path);
+    }
+    const commit = this.#commits.get(revision);
+    if (commit == null) {
+      return Promise.reject(
+        new StateBranchReadError({
+          cause: new TypeError("指定revisionが存在しません"),
+        }),
+      );
+    }
+    const results = new Map<string, StateFileReadResult>();
+    for (const path of paths) {
+      const bytes = commit.files.get(path);
+      results.set(
+        path,
+        bytes == null
+          ? Object.freeze({
+              status: "missing",
+            })
+          : Object.freeze({
+              status: "present",
+              bytes: copyBytes(bytes),
+            }),
+      );
+    }
+    return Promise.resolve(results);
+  }
+
   public listFiles(revision: string, directory: string): Promise<readonly string[]> {
     assertValidStateDirectory(directory);
     const commit = this.#commits.get(revision);
@@ -135,7 +162,10 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
       );
     }
     const paths = request.updates.map((update) => update.path);
-    if (new Set(paths).size !== paths.length) {
+    if (
+      new Set([...paths, ...request.deletions]).size !==
+      paths.length + request.deletions.length
+    ) {
       return Promise.reject(
         new StateBranchCommitError({
           cause: new TypeError("commit内でstateファイルが重複しています"),
@@ -143,6 +173,9 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
       );
     }
     for (const path of paths) {
+      assertValidStatePath(path);
+    }
+    for (const path of request.deletions) {
       assertValidStatePath(path);
     }
 
@@ -174,19 +207,15 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     for (const update of request.updates) {
       files.set(update.path, copyBytes(update.bytes));
     }
-
-    const behavior = this.#nextCommitBehavior;
-    this.#nextCommitBehavior = {
-      status: "succeed",
-    };
-    if (behavior.status === "fail") {
-      return Promise.reject(
-        new StateBranchCommitError({
-          cause: new Error("ref更新前にfixture failureが発生しました", {
-            cause: behavior.error,
+    for (const path of request.deletions) {
+      if (!files.has(path)) {
+        return Promise.reject(
+          new StateBranchCommitError({
+            cause: new TypeError("commit対象の削除stateファイルが存在しません"),
           }),
-        }),
-      );
+        );
+      }
+      files.delete(path);
     }
 
     this.#revisionSequence += 1;
@@ -194,8 +223,6 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     this.#commits.set(
       revision,
       Object.freeze({
-        revision,
-        parent: currentHead,
         files: new Map(files),
       }),
     );
@@ -208,37 +235,25 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     );
   }
 
-  /** 次のcommitをref更新直前で失敗させる。 */
-  public failNextCommit(error: Error): void {
-    this.#nextCommitBehavior = Object.freeze({
-      status: "fail",
-      error,
-    });
-  }
-
-  /** テスト検証用にbranch headの全ファイルを複製して返す。 */
-  public async readBranchFiles(branch: string): Promise<ReadonlyMap<string, Uint8Array>> {
-    const head = await this.resolveHead(branch);
-    if (head.status === "missing") {
-      return new Map();
+  /** メモリ上のstate branchを公開済みとして扱う。 */
+  public publish(request: StateBranchPublishRequest): Promise<void> {
+    if (request.branch !== "tracker-state") {
+      return Promise.reject(new StateConfigurationError("tracker-state branchだけを公開できます"));
     }
-    const commit = this.#commits.get(head.revision);
-    if (commit == null) {
-      throw new StateBranchReadError({
-        cause: new TypeError("branch headのcommitが存在しません"),
-      });
+    if (!this.#commits.has(request.revision)) {
+      return Promise.reject(
+        new StateBranchReadError({
+          cause: new TypeError("公開対象revisionが保存されていません"),
+        }),
+      );
     }
-    return new Map([...commit.files].map(([path, bytes]) => [path, copyBytes(bytes)]));
-  }
-
-  /** テスト検証用にcommitの親revision状態を返す。 */
-  public readParent(revision: string): StateBranchHead {
-    const commit = this.#commits.get(revision);
-    if (commit == null) {
-      throw new StateBranchReadError({
-        cause: new TypeError("指定revisionが存在しません"),
-      });
+    if (this.#branches.get(request.branch) !== request.revision) {
+      return Promise.reject(new StateBranchConflictError());
     }
-    return commit.parent;
+    if (this.#publishedBranches.get(request.branch) === request.revision) {
+      return Promise.resolve();
+    }
+    this.#publishedBranches.set(request.branch, request.revision);
+    return Promise.resolve();
   }
 }

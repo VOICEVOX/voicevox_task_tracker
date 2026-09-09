@@ -10,6 +10,5 @@
     "incremental": true,
     "tsBuildInfoFile": "node_modules/.cache/typescript/tsconfig.build.tsbuildinfo"
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts"]
+  "include": ["src/**/*.ts"]
 }

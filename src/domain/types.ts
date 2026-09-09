@@ -1,7 +1,21 @@
 import { z } from "zod";
 
 import { type Importance } from "./importance.js";
+import { notificationReasonSchema, type NotificationReason } from "./notification-reason.js";
 import { type SourceId } from "./source-id.js";
+import type { StalenessWaitClass } from "./staleness.js";
+import type {
+  AiAnalysisElement,
+  AiAnalysisElementMetadata,
+  AiAnalysisElementGeneration,
+  AiAnalysisElementMigrationResult,
+} from "./ai-analysis-elements.js";
+
+export type {
+  AiAnalysisElement,
+  AiAnalysisElementMetadata,
+  AiAnalysisElementGeneration,
+} from "./ai-analysis-elements.js";
 
 const opaqueIdSchema = z
   .string()
@@ -153,6 +167,9 @@ export type NotificationReasonCode =
   | "responsibility_changed"
   | "merge_overdue"
   | "automation_stuck";
+
+/** 通知管理記録へ保存できるreason code。 */
+export type NotificationLedgerReasonCode = NotificationReasonCode | "work_overdue";
 
 /** イベントを起こした主体の種別。 */
 export type ActorType = "human" | "bot" | "system";
@@ -338,6 +355,153 @@ export type WaitingOn = Readonly<{
   confidence: number;
 }>;
 
+/** 通知候補に保存する待ち相手の参照。 */
+type PendingNotificationWaitingOn = Pick<WaitingOn, "kind" | "candidateId" | "role">;
+
+/** 通知候補の判定対象。 */
+export type PendingNotificationTarget =
+  | Readonly<{
+      kind: "responsibility";
+      waitingOn: readonly PendingNotificationWaitingOn[];
+    }>
+  | Readonly<{
+      kind: "unblocked";
+    }>
+  | Readonly<{
+      kind: "cycle";
+      cycleId: string;
+    }>
+  | Readonly<{
+      kind: "overdue";
+      status: Status;
+      waitClass: StalenessWaitClass;
+      waitingOn: readonly PendingNotificationWaitingOn[];
+      lastProgressAt: UtcIsoDateTime;
+    }>;
+
+/** 送信待ち通知の判定結果と公開可能な対象状態。 */
+export type PendingNotification = Readonly<{
+  notificationKey: string;
+  itemNodeId: GitHubNodeId;
+  reason: NotificationReason;
+  detectedAt: UtcIsoDateTime;
+  highPriorityEligible: boolean;
+  target: PendingNotificationTarget;
+}>;
+
+const pendingNotificationWaitingOnSchema = z.strictObject({
+  kind: z.enum(["user", "team", "role", "item", "automation", "unknown"]),
+  candidateId: opaqueIdSchema,
+  role: z.enum([
+    "author",
+    "maintainer",
+    "reviewer",
+    "assignee",
+    "respondent",
+    "dependency",
+    "merge_decider",
+    "ci",
+    "unknown",
+  ]),
+});
+const pendingNotificationStatusSchema = z.enum([
+  "waiting_for_assessment",
+  "waiting_for_owner",
+  "waiting_for_decision",
+  "waiting_for_review",
+  "waiting_for_revision",
+  "waiting_for_reply",
+  "waiting_for_work",
+  "waiting_for_unblock",
+  "waiting_for_automation",
+  "waiting_for_merge",
+  "in_progress",
+  "unknown",
+  "terminal_merged",
+  "terminal_completed",
+  "terminal_not_planned",
+]);
+const pendingNotificationWaitClassSchema = z.enum([
+  "assessment",
+  "owner",
+  "decision",
+  "review",
+  "revision",
+  "reply",
+  "work",
+  "merge",
+  "automation",
+  "blockedParent",
+  "notApplicable",
+]);
+const pendingNotificationTargetSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("responsibility"),
+    waitingOn: z.array(pendingNotificationWaitingOnSchema).min(1),
+  }),
+  z.strictObject({
+    kind: z.literal("unblocked"),
+  }),
+  z.strictObject({
+    kind: z.literal("cycle"),
+    cycleId: opaqueIdSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("overdue"),
+    status: pendingNotificationStatusSchema,
+    waitClass: pendingNotificationWaitClassSchema,
+    waitingOn: z.array(pendingNotificationWaitingOnSchema).min(1),
+    lastProgressAt: utcIsoDateTimeSchema,
+  }),
+]);
+
+function pendingNotificationTargetKind(
+  reasonCode: Exclude<NotificationReason["reasonCode"], "none">,
+): PendingNotificationTarget["kind"] {
+  switch (reasonCode) {
+    case "responsibility_changed":
+      return "responsibility";
+    case "newly_unblocked":
+      return "unblocked";
+    case "dependency_cycle":
+      return "cycle";
+    case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
+    case "review_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
+    case "work_overdue":
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "merge_overdue":
+    case "automation_stuck":
+      return "overdue";
+  }
+}
+
+/** 送信待ち通知の判定結果を検証するschema。 */
+export const pendingNotificationSchema = z
+  .strictObject({
+    notificationKey: opaqueIdSchema,
+    itemNodeId: githubNodeIdSchema,
+    reason: notificationReasonSchema,
+    detectedAt: utcIsoDateTimeSchema,
+    highPriorityEligible: z.boolean(),
+    target: pendingNotificationTargetSchema,
+  })
+  .superRefine((notification, context) => {
+    if (
+      notification.target.kind !== pendingNotificationTargetKind(notification.reason.reasonCode)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["target", "kind"],
+        message: "通知理由と対象kindの組み合わせが不正です",
+      });
+    }
+  });
+
 /** waitingOn配列でprimaryに選んだ要素と選定理由。 */
 export type PrimaryWaitingOn =
   | Readonly<{
@@ -385,28 +549,52 @@ export type GitHubItemUrl = `https://github.com/${string}`;
 
 export type AiCacheEntryId = `sha256:${string}`;
 
-/** 追跡項目を判定したときのAI分析利用状況。 */
-export type TrackedItemAiAnalysis =
+/** 追跡項目へ保存する要素別AI分析結果。 */
+export type TrackedItemAiAnalysisCurrentElements = Readonly<{
+  [Element in AiAnalysisElement]?: AiAnalysisElementGeneration<Element>;
+}>;
+
+export type TrackedItemAiAnalysisMigrationElements = Readonly<{
+  [Element in AiAnalysisElement]?: AiAnalysisElementMigrationResult<Element>;
+}>;
+
+export type TrackedItemAiAnalysisMigrationAdoptedElement<
+  Element extends AiAnalysisElement = AiAnalysisElement,
+> =
   | Readonly<{
-      status: "used";
-      cacheKey: AiCacheEntryId;
+      origin: "current";
+      generation: AiAnalysisElementGeneration<Element>;
     }>
   | Readonly<{
-      status: "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
+      origin: "migration";
+      result: AiAnalysisElementMigrationResult<Element>;
+    }>;
+
+export type TrackedItemAiAnalysisMigrationAdoptedElements = Readonly<{
+  [Element in AiAnalysisElement]?: TrackedItemAiAnalysisMigrationAdoptedElement<Element>;
+}>;
+
+type TrackedItemAiAnalysisStatus =
+  "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
+
+/** 追跡項目へ保存する要素別AI分析結果と生成元。 */
+export type TrackedItemAiAnalysis =
+  | Readonly<{
+      origin: "current";
+      status: TrackedItemAiAnalysisStatus;
+      elements: TrackedItemAiAnalysisCurrentElements;
+      adoptedElements: TrackedItemAiAnalysisCurrentElements;
+    }>
+  | Readonly<{
+      origin: "migration";
+      status: TrackedItemAiAnalysisStatus;
+      elements: TrackedItemAiAnalysisCurrentElements;
+      adoptedElements: TrackedItemAiAnalysisMigrationAdoptedElements;
     }>;
 
 export type TrackedItemInputEvent = Readonly<{
   sourceId: SourceId;
   url: GitHubItemUrl;
-}>;
-
-/** 追跡項目に設定されたmilestone。 */
-export type TrackedItemMilestone = Readonly<{
-  nodeId: GitHubNodeId;
-  number: number;
-  title: string;
-  state: "open" | "closed";
-  dueOn: UtcIsoDateTime | null;
 }>;
 
 export type TrackedItemLatestEventActor =
@@ -454,7 +642,6 @@ type TrackedItemFields = Readonly<{
   number: number;
   url: GitHubItemUrl;
   title: string;
-  milestone: TrackedItemMilestone | null;
   importance: Importance;
   author: ObservedGitHubItemAuthor;
   latestEventActor: TrackedItemLatestEventActor;
@@ -533,29 +720,18 @@ export const REASONING_EFFORTS = [
 /** Codex実行で指定するreasoning effort。 */
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-/** Codex分析を再現するための実行設定、version、hash、実行時刻。 */
-export type AnalysisMetadata = Readonly<{
-  deterministicRulesVersion: string;
-  model: string;
-  reasoningEffort: ReasoningEffort;
-  backendVersion: string;
-  promptVersion: string;
-  schemaVersion: string;
-  inputHash: string;
-  outputHash: string;
-  executedAt: UtcIsoDateTime;
-}>;
+/** Codex分析要素を再現するための実行設定、hash、生成時刻。 */
+export type AnalysisMetadata = AiAnalysisElementMetadata;
 
 type NotificationLedgerEntryBase = Readonly<{
   notificationKey: string;
   itemNodeId: GitHubNodeId;
-  reasonCode: NotificationReasonCode;
+  reasonCode: NotificationLedgerReasonCode;
   severity: Severity;
   reservedAt: UtcIsoDateTime;
-  cooldownUntil: UtcIsoDateTime;
 }>;
 
-/** Discord通知の予約または送信結果を記録するledger entry。 */
+/** Discord通知の予約、送信開始、送信結果、確認済みledger entryを記録する型。 */
 export type NotificationLedgerEntry =
   | (NotificationLedgerEntryBase &
       Readonly<{
@@ -564,9 +740,20 @@ export type NotificationLedgerEntry =
       }>)
   | (NotificationLedgerEntryBase &
       Readonly<{
+        status: "delivery_started";
+        deliveryId: string;
+        startedAt: UtcIsoDateTime;
+      }>)
+  | (NotificationLedgerEntryBase &
+      Readonly<{
         status: "sent";
         sentAt: UtcIsoDateTime;
         discordMessageId: string;
+      }>)
+  | (NotificationLedgerEntryBase &
+      Readonly<{
+        status: "acknowledged";
+        acknowledgedAt: UtcIsoDateTime;
       }>);
 
 /** 運用障害として通知する処理の分類。 */

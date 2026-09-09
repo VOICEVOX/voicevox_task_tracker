@@ -10,6 +10,7 @@ import {
   type StateBranchCommitRequest,
   type StateBranchCommitResult,
   type StateBranchHead,
+  type StateBranchPublishRequest,
   type StateFileReadResult,
 } from "./branch-adapter.js";
 import {
@@ -22,6 +23,8 @@ import {
 const TRACKER_STATE_BRANCH = "tracker-state";
 const ZERO_OBJECT_ID = "0000000000000000000000000000000000000000";
 const OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
+const PUBLISH_MAX_ATTEMPTS = 3;
+const PUBLISH_RETRY_DELAY_MILLISECONDS = 1000;
 
 type GitCommandInput =
   | Readonly<{
@@ -92,6 +95,149 @@ function parseObjectId(bytes: Uint8Array): string {
   return objectId;
 }
 
+function parseNullSeparatedPaths(bytes: Uint8Array): readonly string[] {
+  const source = decodeUtf8(bytes);
+  if (source.length === 0) {
+    return Object.freeze([]);
+  }
+  const paths = source.split("\0");
+  if (paths.at(-1) === "") {
+    paths.pop();
+  }
+  if (paths.some((path) => path.length === 0)) {
+    throw new TypeError("gitの追跡path一覧が不正です");
+  }
+  return Object.freeze(paths);
+}
+
+function validateReadPaths(paths: readonly string[]): void {
+  if (new Set(paths).size !== paths.length) {
+    throw new StateConfigurationError("読み取りpathが重複しています");
+  }
+  for (const path of paths) {
+    assertValidStatePath(path);
+  }
+}
+
+function findLineFeed(bytes: Uint8Array, offset: number): number {
+  const lineFeedIndex = bytes.indexOf(0x0a, offset);
+  if (lineFeedIndex < 0) {
+    throw new TypeError("git cat-fileの応答headerが改行で終わっていません");
+  }
+  return lineFeedIndex;
+}
+
+function parseBatchSize(value: string): number {
+  if (!/^[0-9]+$/u.test(value)) {
+    throw new TypeError("git cat-fileのblob byte sizeが不正です");
+  }
+  const size = Number(value);
+  if (!Number.isSafeInteger(size)) {
+    throw new TypeError("git cat-fileのblob byte sizeが大きすぎます");
+  }
+  return size;
+}
+
+type GitBatchObjectHeader =
+  | Readonly<{
+      status: "missing";
+      offset: number;
+    }>
+  | Readonly<{
+      status: "present";
+      objectId: string;
+      objectType: string;
+      size: number;
+      offset: number;
+    }>;
+
+function parseGitBatchHeader(
+  bytes: Uint8Array,
+  offset: number,
+  expectedObjectName: string,
+): GitBatchObjectHeader {
+  const headerEnd = findLineFeed(bytes, offset);
+  const header = decodeUtf8(bytes.slice(offset, headerEnd));
+  const nextOffset = headerEnd + 1;
+  const fields = header.split(" ");
+  const firstField = fields[0];
+  if (fields.length === 2 && fields[1] === "missing") {
+    if (firstField !== expectedObjectName) {
+      throw new TypeError("git cat-fileのmissing対象が要求pathと一致しません");
+    }
+    return Object.freeze({
+      status: "missing",
+      offset: nextOffset,
+    });
+  }
+  if (fields.length !== 3 || firstField == null || fields[1] == null || fields[2] == null) {
+    throw new TypeError("git cat-fileの応答headerが不正です");
+  }
+  if (!OBJECT_ID_PATTERN.test(firstField)) {
+    throw new TypeError("git cat-fileのobject IDが不正です");
+  }
+  return Object.freeze({
+    status: "present",
+    objectId: firstField,
+    objectType: fields[1],
+    size: parseBatchSize(fields[2]),
+    offset: nextOffset,
+  });
+}
+
+function parseGitBatchResult(
+  revision: string,
+  paths: readonly string[],
+  bytes: Uint8Array,
+): ReadonlyMap<string, StateFileReadResult> {
+  const results = new Map<string, StateFileReadResult>();
+  const revisionHeader = parseGitBatchHeader(bytes, 0, `${revision}^{tree}`);
+  if (revisionHeader.status === "missing") {
+    throw new TypeError("指定revisionが存在しません");
+  }
+  if (revisionHeader.objectType !== "tree") {
+    throw new TypeError("指定revisionがtreeとして解決できません");
+  }
+  let offset = revisionHeader.offset;
+  for (const path of paths) {
+    const objectName = `${revision}:${path}`;
+    const header = parseGitBatchHeader(bytes, offset, objectName);
+    offset = header.offset;
+    if (header.status === "missing") {
+      results.set(
+        path,
+        Object.freeze({
+          status: "missing",
+        }),
+      );
+      continue;
+    }
+    if (header.objectType !== "blob") {
+      throw new TypeError("state pathがblobではありません");
+    }
+    const size = header.size;
+    if (size > bytes.length - offset) {
+      throw new TypeError("git cat-fileのblob byte sizeが応答長を超えています");
+    }
+    const contentEnd = offset + size;
+    if (bytes[contentEnd] !== 0x0a) {
+      throw new TypeError("git cat-fileのblob本文後の区切りが不正です");
+    }
+    results.set(
+      path,
+      Object.freeze({
+        status: "present",
+        bytes: bytes.slice(offset, contentEnd),
+      }),
+    );
+    offset = contentEnd + 1;
+  }
+  if (offset !== bytes.length) {
+    throw new TypeError("git cat-fileの応答に余剰データがあります");
+  }
+  return results;
+}
+
 function validateBranch(branch: string): void {
   if (branch !== TRACKER_STATE_BRANCH) {
     throw new StateConfigurationError(`${TRACKER_STATE_BRANCH} branchだけを操作できます`);
@@ -110,10 +256,13 @@ function validateCommitRequest(request: StateBranchCommitRequest): void {
     throw new StateConfigurationError("commit日時をUTCへ正規化してください");
   }
   const paths = request.updates.map((update) => update.path);
-  if (new Set(paths).size !== paths.length) {
+  if (new Set([...paths, ...request.deletions]).size !== paths.length + request.deletions.length) {
     throw new StateConfigurationError("commit内でstateファイルが重複しています");
   }
   for (const path of paths) {
+    assertValidStatePath(path);
+  }
+  for (const path of request.deletions) {
     assertValidStatePath(path);
   }
   if (
@@ -122,6 +271,19 @@ function validateCommitRequest(request: StateBranchCommitRequest): void {
   ) {
     throw new StateConfigurationError("expected headのobject IDが不正です");
   }
+}
+
+function validatePublishRequest(request: StateBranchPublishRequest): void {
+  validateBranch(request.branch);
+  if (!OBJECT_ID_PATTERN.test(request.revision)) {
+    throw new StateConfigurationError("公開revisionのobject IDが不正です");
+  }
+}
+
+function waitBeforePublishRetry(): Promise<void> {
+  return new Promise<void>((resolvePromise) => {
+    setTimeout(resolvePromise, PUBLISH_RETRY_DELAY_MILLISECONDS);
+  });
 }
 
 /** checkoutせずGit objectとrefを操作してstateをatomic commitするadapter。 */
@@ -273,6 +435,45 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
     }
   }
 
+  public async readFiles(
+    revision: string,
+    paths: readonly string[],
+  ): Promise<ReadonlyMap<string, StateFileReadResult>> {
+    if (paths.length === 0) {
+      return new Map<string, StateFileReadResult>();
+    }
+    validateReadPaths(paths);
+    if (!OBJECT_ID_PATTERN.test(revision)) {
+      throw new StateConfigurationError("一括読み取りrevisionのobject IDが不正です");
+    }
+    const input = new TextEncoder().encode(
+      [`info ${revision}^{tree}`, ...paths.map((path) => `contents ${revision}:${path}`)].join(
+        "\n",
+      ) + "\n",
+    );
+    try {
+      const result = await this.#runGit({
+        arguments: ["cat-file", "--batch-command"],
+        input: {
+          status: "present",
+          bytes: input,
+        },
+        environment: this.#baseEnvironment,
+        acceptedExitCodes: new Set([0]),
+      });
+      return parseGitBatchResult(revision, paths, result.stdout);
+    } catch (error: unknown) {
+      if (error instanceof StateConfigurationError) {
+        throw error;
+      }
+      throw new StateBranchReadError({
+        cause: new Error("git treeのstateファイル一括取得に失敗しました", {
+          cause: error,
+        }),
+      });
+    }
+  }
+
   public async listFiles(revision: string, directory: string): Promise<readonly string[]> {
     assertValidStateDirectory(directory);
     if (!OBJECT_ID_PATTERN.test(revision)) {
@@ -351,6 +552,35 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
           ],
           input: {
             status: "none",
+          },
+          environment: indexEnvironment,
+          acceptedExitCodes: new Set([0]),
+        });
+      }
+      if (request.deletions.length > 0) {
+        const trackedPaths = parseNullSeparatedPaths(
+          (
+            await this.#runGit({
+              arguments: ["ls-files", "-z"],
+              input: {
+                status: "none",
+              },
+              environment: indexEnvironment,
+              acceptedExitCodes: new Set([0]),
+            })
+          ).stdout,
+        );
+        const trackedPathSet = new Set(trackedPaths);
+        for (const path of request.deletions) {
+          if (!trackedPathSet.has(path)) {
+            throw new TypeError("commit対象の削除stateファイルが存在しません");
+          }
+        }
+        await this.#runGit({
+          arguments: ["update-index", "--force-remove", "-z", "--stdin"],
+          input: {
+            status: "present",
+            bytes: new TextEncoder().encode(`${request.deletions.join("\0")}\0`),
           },
           environment: indexEnvironment,
           acceptedExitCodes: new Set([0]),
@@ -439,5 +669,37 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
       revision,
       branchCreated: request.expectedHead.status === "missing",
     });
+  }
+
+  /** state branchの指定revisionをリモートへ公開する。 */
+  public async publish(request: StateBranchPublishRequest): Promise<void> {
+    validatePublishRequest(request);
+    for (let attempt = 1; attempt <= PUBLISH_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        await this.#runGit({
+          arguments: [
+            "push",
+            "--no-follow-tags",
+            "origin",
+            `${request.revision}:refs/heads/${request.branch}`,
+          ],
+          input: {
+            status: "none",
+          },
+          environment: {
+            ...process.env,
+            ...this.#baseEnvironment,
+          },
+          acceptedExitCodes: new Set([0]),
+        });
+        return;
+      } catch (error: unknown) {
+        if (attempt === PUBLISH_MAX_ATTEMPTS) {
+          throw error;
+        }
+        await waitBeforePublishRetry();
+      }
+    }
+    throw new TypeError("state branch公開の到達不能な分岐へ到達しました");
   }
 }
