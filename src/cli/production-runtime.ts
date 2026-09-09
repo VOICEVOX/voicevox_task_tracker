@@ -122,9 +122,9 @@ import {
   type StalenessNotificationSeverityReason,
   type StalenessWaitClass,
   type StalenessResult,
-  type NaturalLanguageProgressAssessment,
   type NaturalLanguageDeadlineAssessmentState,
   type NaturalLanguageImportanceAssessmentState,
+  type NaturalLanguageProgressAssessment,
   type DependencyResolutionProgress,
   type DeadlineLevel,
   type ExternalGhostNode,
@@ -144,12 +144,17 @@ import {
 } from "../domain/index.js";
 import {
   createAcknowledgedNotificationLedgerEntries,
+  createNotificationCauses,
   selectDiscordNotifications,
   type sendDiscordDigest,
   type DiscordDigestDelivery,
   type DiscordDeliverySettings,
   type DiscordNotificationCandidate,
   type DiscordNotificationItem,
+  type NotificationCause,
+  type NotificationCauseEvidence,
+  type NotificationDependencyCause,
+  type NotificationCauses,
   type DiscordNotificationSelection,
   type DiscordOperationsIncident,
   type DiscordSecretProvider,
@@ -174,7 +179,9 @@ import {
   type GitHubAppCredentials,
   type GitHubClient,
   type GitHubCheckContext,
+  type GitHubIssueComment,
   type GitHubItemDetail,
+  type GitHubPullRequestReviewComment,
   type PublicRepository,
   type PublicRepositoryAllowlist,
   type PreviousItemCollection,
@@ -390,6 +397,12 @@ type MentionedWaitingOnCandidate = Readonly<{
   sourceIds: readonly [SourceId, ...SourceId[]];
 }>;
 
+type CodexWaitingOnCandidate = Readonly<{
+  id: string;
+}>;
+
+type CodexSourceAuthor = CodexAnalysisInput["sources"][number]["author"];
+
 type EffectiveAssigneeSourceContext = Readonly<{
   item: FreshObservedGitHubItem;
   detail: GitHubItemDetail;
@@ -431,12 +444,25 @@ type ReducedItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
   detail: GitHubItemDetail;
   decision: ReducedCodexDecision;
+  selfCommitmentCause: NotificationCause;
+  responsibilityBasis: IssueStateDecision["responsibilityBasis"];
+  dependencyCause: NotificationDependencyCause;
   notificationRecommendation: DiscordNotificationItem["notificationRecommendation"];
   primaryWaitingOn: PrimaryWaitingOn;
   staleness: StalenessResult;
   importanceAssessment: NaturalLanguageImportanceAssessmentState;
   deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
 }>;
+
+type DependencyResolutionResult = Readonly<{
+  progress: readonly DependencyResolutionProgress[];
+  cause: NotificationDependencyCause;
+}>;
+
+type NotificationCauseEvidenceList = readonly [
+  NotificationCauseEvidence,
+  ...NotificationCauseEvidence[],
+];
 
 type TrackedItemStaleness = Readonly<{
   elapsedHours: number;
@@ -1747,6 +1773,7 @@ function addMirroredNativeBlockerSourceRecords(
           id: sourceId,
           kind: currentEvent.kind,
           actorType: currentEvent.actor.type,
+          author: createUnavailableCodexSourceAuthor(),
           createdAt: currentEvent.occurredAt,
         }),
       );
@@ -2275,6 +2302,58 @@ function codexAuthorCandidateId(item: FreshObservedGitHubItem): string | undefin
   return item.author.actor.login;
 }
 
+function createUnavailableCodexSourceAuthor(): CodexSourceAuthor {
+  return Object.freeze({
+    status: "unavailable",
+  });
+}
+
+function codexCommentSources(
+  detail: GitHubItemDetail,
+): readonly (GitHubIssueComment | GitHubPullRequestReviewComment)[] {
+  if (detail.type === "issue") {
+    return detail.comments;
+  }
+  return Object.freeze([
+    ...detail.comments,
+    ...detail.reviewThreads.flatMap((thread) => thread.comments),
+  ]);
+}
+
+function createCodexCommentAuthor(
+  item: FreshObservedGitHubItem,
+  comment: GitHubIssueComment | GitHubPullRequestReviewComment,
+):
+  | Readonly<{
+      candidate: CodexWaitingOnCandidate;
+      sourceAuthor: CodexSourceAuthor;
+    }>
+  | undefined {
+  const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
+  if (comment.author.status !== "identified" || event?.actor.type !== "human") {
+    return undefined;
+  }
+  assertNonNullable(event, `comment ${comment.sourceId}のeventがありません`);
+  if (event.actor.nodeId !== comment.author.account.nodeId) {
+    return undefined;
+  }
+  const candidate: CodexWaitingOnCandidate = Object.freeze({
+    id: comment.author.account.login,
+  });
+  const sourceAuthor: CodexSourceAuthor =
+    comment.createdAt === comment.updatedAt
+      ? Object.freeze({
+          status: "identified",
+          candidateId: candidate.id,
+          nodeId: comment.author.account.nodeId,
+        })
+      : createUnavailableCodexSourceAuthor();
+  return Object.freeze({
+    candidate,
+    sourceAuthor,
+  });
+}
+
 function relationTargetUrl(
   nodeId: GitHubNodeId,
   candidate: RelationCandidate,
@@ -2453,6 +2532,7 @@ function addCodexSourceRecordsForContext(
       id: item.sourceId,
       kind: "item",
       actorType: codexActorType(item),
+      author: createUnavailableCodexSourceAuthor(),
       createdAt: item.createdAt,
     }),
   );
@@ -2464,6 +2544,7 @@ function addCodexSourceRecordsForContext(
         id: event.sourceId,
         kind: event.kind,
         actorType: event.actor.type,
+        author: createUnavailableCodexSourceAuthor(),
         createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
       }),
     );
@@ -2476,6 +2557,7 @@ function addCodexSourceRecordsForContext(
       id: detail.bodySourceId,
       kind: "body",
       actorType: itemActorType,
+      author: createUnavailableCodexSourceAuthor(),
       createdAt: item.createdAt,
       ...(itemActorType === "human" ? { content: detail.body } : {}),
     }),
@@ -2490,6 +2572,7 @@ function addCodexSourceRecordsForContext(
         id: comment.sourceId,
         kind: "comment",
         actorType,
+        author: createUnavailableCodexSourceAuthor(),
         createdAt: comment.createdAt,
         ...(actorType === "human" ? { content: comment.body } : {}),
       }),
@@ -2512,6 +2595,7 @@ function addCodexSourceRecordsForContext(
           id: comment.sourceId,
           kind: "comment",
           actorType,
+          author: createUnavailableCodexSourceAuthor(),
           createdAt: comment.createdAt,
           ...(actorType === "human" ? { content: comment.body } : {}),
         }),
@@ -2528,6 +2612,7 @@ function addCodexSourceRecordsForContext(
         id: review.sourceId,
         kind: "review",
         actorType,
+        author: createUnavailableCodexSourceAuthor(),
         createdAt: review.submittedAt,
         ...(actorType === "human" ? { content: review.body } : {}),
       }),
@@ -2544,6 +2629,7 @@ function addCodexSourceRecordsForContext(
         id: request.sourceId,
         kind: "review_request",
         actorType: "system",
+        author: createUnavailableCodexSourceAuthor(),
         createdAt: request.requestedAt.value,
       }),
     );
@@ -2557,6 +2643,7 @@ function addCodexSourceRecordsForContext(
         id: autoMerge.sourceId,
         kind: "auto_merge_request",
         actorType: autoMerge.enabledBy.type,
+        author: createUnavailableCodexSourceAuthor(),
         createdAt: autoMerge.enabledAt,
         mergeMethod: autoMerge.mergeMethod,
       }),
@@ -2573,6 +2660,7 @@ function addCodexSourceRecordsForContext(
       id: checks.sourceId,
       kind: "required_check_rollup",
       actorType: "system",
+      author: createUnavailableCodexSourceAuthor(),
       createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, checks.sourceId),
       combinedState: checks.combinedState,
     }),
@@ -2585,6 +2673,7 @@ function addCodexSourceRecordsForContext(
         id: check.sourceId,
         kind: check.type,
         actorType: "system",
+        author: createUnavailableCodexSourceAuthor(),
         createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, check.sourceId),
         ...(check.type === "check_run"
           ? {
@@ -2626,15 +2715,16 @@ function createCodexInput(
     analysis.item.nodeId,
     relationCandidates,
   );
-  const waitingOnCandidates = new Map(
-    analysis.decision.waitingOn.map((waitingOn) => [
-      waitingOn.candidateId,
-      Object.freeze({
-        id: waitingOn.candidateId,
-        kind: waitingOn.kind,
-        sourceIds: waitingOn.sourceIds,
-      }),
-    ]),
+  const waitingOnCandidates = new Map<string, CodexWaitingOnCandidate>(
+    analysis.decision.waitingOn.map(
+      (waitingOn) =>
+        [
+          waitingOn.candidateId,
+          Object.freeze({
+            id: waitingOn.candidateId,
+          }),
+        ] satisfies readonly [string, CodexWaitingOnCandidate],
+    ),
   );
   const authorCandidateId = codexAuthorCandidateId(analysis.item);
   if (authorCandidateId != null) {
@@ -2642,13 +2732,20 @@ function createCodexInput(
       authorCandidateId,
       Object.freeze({
         id: authorCandidateId,
-        kind: "user",
-        sourceIds: Object.freeze([analysis.item.sourceId] satisfies [SourceId]),
       }),
     );
   }
   for (const candidate of mentionedCandidates) {
-    waitingOnCandidates.set(candidate.id, candidate);
+    waitingOnCandidates.set(candidate.id, Object.freeze({ id: candidate.id }));
+  }
+  const commentAuthorBySourceId = new Map<SourceId, CodexSourceAuthor>();
+  for (const comment of codexCommentSources(analysis.detail)) {
+    const commentAuthor = createCodexCommentAuthor(analysis.item, comment);
+    if (commentAuthor == null) {
+      continue;
+    }
+    waitingOnCandidates.set(commentAuthor.candidate.id, commentAuthor.candidate);
+    commentAuthorBySourceId.set(comment.sourceId, commentAuthor.sourceAuthor);
   }
   for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
     const candidate = effectiveCandidateContext.candidate;
@@ -2662,10 +2759,6 @@ function createCodexInput(
       candidate.candidateId,
       Object.freeze({
         id: candidate.candidateId,
-        kind: "user",
-        sourceIds: candidate.sourceIds,
-        effectiveAssigneeCandidate: true,
-        effectiveAssigneeSourceIds: candidate.sourceIds,
       }),
     );
   }
@@ -2688,6 +2781,7 @@ function createCodexInput(
       id: analysis.item.sourceId,
       kind: "item",
       actorType: codexActorType(analysis.item),
+      author: createUnavailableCodexSourceAuthor(),
       createdAt: analysis.item.createdAt,
     }),
   );
@@ -2698,6 +2792,7 @@ function createCodexInput(
         id: event.sourceId,
         kind: event.kind,
         actorType: event.actor.type,
+        author: createUnavailableCodexSourceAuthor(),
         createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
       }),
     );
@@ -2709,6 +2804,7 @@ function createCodexInput(
       id: analysis.detail.bodySourceId,
       kind: "body",
       actorType: codexActorType(analysis.item),
+      author: createUnavailableCodexSourceAuthor(),
       createdAt: analysis.item.createdAt,
       content: analysis.detail.body,
     }),
@@ -2721,6 +2817,8 @@ function createCodexInput(
         id: comment.sourceId,
         kind: "comment",
         actorType: event?.actor.type ?? "system",
+        author:
+          commentAuthorBySourceId.get(comment.sourceId) ?? createUnavailableCodexSourceAuthor(),
         createdAt: comment.createdAt,
         content: comment.body,
       }),
@@ -2741,6 +2839,8 @@ function createCodexInput(
             id: comment.sourceId,
             kind: "comment",
             actorType: event?.actor.type ?? "system",
+            author:
+              commentAuthorBySourceId.get(comment.sourceId) ?? createUnavailableCodexSourceAuthor(),
             createdAt: comment.createdAt,
             content: comment.body,
           }),
@@ -2757,6 +2857,7 @@ function createCodexInput(
           id: review.sourceId,
           kind: "review",
           actorType: event?.actor.type ?? "system",
+          author: createUnavailableCodexSourceAuthor(),
           createdAt: review.submittedAt,
           content: review.body,
         }),
@@ -2772,6 +2873,7 @@ function createCodexInput(
           id: request.sourceId,
           kind: "review_request",
           actorType: "system",
+          author: createUnavailableCodexSourceAuthor(),
           createdAt: request.requestedAt.value,
         }),
       );
@@ -2784,6 +2886,7 @@ function createCodexInput(
           id: autoMerge.sourceId,
           kind: "auto_merge_request",
           actorType: autoMerge.enabledBy.type,
+          author: createUnavailableCodexSourceAuthor(),
           createdAt: autoMerge.enabledAt,
           mergeMethod: autoMerge.mergeMethod,
         }),
@@ -2801,6 +2904,7 @@ function createCodexInput(
         id: checks.sourceId,
         kind: "required_check_rollup",
         actorType: "system",
+        author: createUnavailableCodexSourceAuthor(),
         createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, checks.sourceId),
         combinedState: checks.combinedState,
       }),
@@ -2812,6 +2916,7 @@ function createCodexInput(
           id: context.sourceId,
           kind: context.type,
           actorType: "system",
+          author: createUnavailableCodexSourceAuthor(),
           createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, context.sourceId),
           ...(context.type === "check_run"
             ? {
@@ -2833,7 +2938,7 @@ function createCodexInput(
     }
   }
   return createCodexAnalysisInput({
-    schemaVersion: "3",
+    schemaVersion: "4",
     now: evaluatedAt,
     item: {
       nodeId: analysis.item.nodeId,
@@ -5115,14 +5220,35 @@ function reassessDeterministicAnalysis(
   throw new TypeError(`GitHub項目と詳細の種別が一致しません。対象: ${analysis.item.nodeId}`);
 }
 
-function enumeratedTerminalAt(item: EnumeratedGitHubItem | undefined): UtcIsoDateTime | undefined {
+type EnumeratedTerminal = Readonly<{
+  state: "closed" | "merged";
+  occurredAt: UtcIsoDateTime;
+}>;
+
+function enumeratedTerminal(
+  item: EnumeratedGitHubItem | undefined,
+): EnumeratedTerminal | undefined {
   if (item == null) {
     return undefined;
   }
   if (item.type === "pull_request" && item.mergeStatus === "merged") {
-    return item.mergedAt;
+    return Object.freeze({
+      state: "merged",
+      occurredAt: item.mergedAt,
+    });
   }
-  return item.state === "closed" ? item.closedAt : undefined;
+  if (item.state === "closed") {
+    return Object.freeze({
+      state: "closed",
+      occurredAt: item.closedAt,
+    });
+  }
+  return undefined;
+}
+
+function enumeratedTerminalAt(item: EnumeratedGitHubItem | undefined): UtcIsoDateTime | undefined {
+  const terminal = enumeratedTerminal(item);
+  return terminal == null ? undefined : terminal.occurredAt;
 }
 
 function previousBlockerEdges(
@@ -5155,14 +5281,14 @@ function previousBlockerEdges(
   return edgesByBlockerNodeId;
 }
 
-function relationRemovalEventOccurredAts(
+function latestRelationEventForProgress(
   collection: CollectedItems,
   edge: Relation,
-): readonly UtcIsoDateTime[] {
-  const latestEvent = collection.observedItems
+): Extract<NormalizedEvent, { kind: "relation" }> | undefined {
+  const matchingEvents = collection.observedItems
     .flatMap((item) => item.events)
     .filter(
-      (event) =>
+      (event): event is Extract<NormalizedEvent, { kind: "relation" }> =>
         event.kind === "relation" &&
         event.target.type === "node" &&
         event.relationType === edge.type &&
@@ -5177,13 +5303,20 @@ function relationRemovalEventOccurredAts(
         return left.occurredAt.localeCompare(right.occurredAt);
       }
       return left.sourceId.localeCompare(right.sourceId);
-    })
-    .at(-1);
-  return Object.freeze(
-    latestEvent?.kind === "relation" && latestEvent.action === "removed"
-      ? [latestEvent.occurredAt]
-      : [],
-  );
+    });
+  const latestEvent = matchingEvents.at(-1);
+  if (latestEvent?.action !== "removed") {
+    return undefined;
+  }
+  return latestEvent;
+}
+
+function relationRemovalEventOccurredAts(
+  collection: CollectedItems,
+  edge: Relation,
+): readonly UtcIsoDateTime[] {
+  const event = latestRelationEventForProgress(collection, edge);
+  return event == null ? Object.freeze([]) : Object.freeze([event.occurredAt]);
 }
 
 function editedRelationSourceOccurredAts(
@@ -5267,23 +5400,288 @@ function relationResolutionOccurredAt(
     : latestUtcIsoDateTime(occurredAts, `relation ${edge.id}の再判定根拠`);
 }
 
+type DependencyBlockerCause =
+  | Readonly<{
+      status: "complete";
+      evidence: readonly NotificationCauseEvidence[];
+    }>
+  | Readonly<{
+      status: "indeterminate";
+    }>;
+
+function notificationCauseEvidenceForEvent(
+  event: NormalizedEvent,
+): NotificationCauseEvidence | undefined {
+  const actor = event.actor;
+  if (actor.type !== "human") {
+    return undefined;
+  }
+  const humanActor: NotificationCauseEvidence["actor"] = Object.freeze({
+    type: "human",
+    nodeId: actor.nodeId,
+    login: actor.login,
+  });
+  return Object.freeze({
+    sourceId: event.sourceId,
+    occurredAt: event.occurredAt,
+    actor: humanActor,
+  });
+}
+
+type NotificationRelationEvent = Extract<NormalizedEvent, { kind: "relation" }>;
+
+type RelationCauseResolution =
+  | Readonly<{
+      status: "not_applicable";
+      evidence: readonly NotificationCauseEvidence[];
+    }>
+  | Readonly<{
+      status: "complete";
+      evidence: readonly NotificationCauseEvidence[];
+    }>
+  | Readonly<{
+      status: "indeterminate";
+    }>;
+
+function nonEmptyNotificationCauseEvidence(
+  evidence: readonly NotificationCauseEvidence[],
+): NotificationCauseEvidenceList | undefined {
+  const evidenceBySourceId = new Map<SourceId, NotificationCauseEvidence>();
+  for (const entry of evidence) {
+    evidenceBySourceId.set(entry.sourceId, entry);
+  }
+  const sortedEvidence = [...evidenceBySourceId.values()].sort((left, right) => {
+    if (left.occurredAt < right.occurredAt) {
+      return -1;
+    }
+    if (left.occurredAt > right.occurredAt) {
+      return 1;
+    }
+    return left.sourceId.localeCompare(right.sourceId);
+  });
+  const [first, ...rest] = sortedEvidence;
+  if (first == null) {
+    return undefined;
+  }
+  return Object.freeze([first, ...rest]);
+}
+
+function terminalCauseForBlocker(
+  collection: CollectedItems,
+  enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  blockerNodeId: GraphNodeId,
+  previousObservedAt: UtcIsoDateTime,
+): DependencyBlockerCause | undefined {
+  const terminal = enumeratedTerminal(enumeratedItemsByNodeId.get(blockerNodeId));
+  if (terminal == null) {
+    return undefined;
+  }
+  if (terminal.occurredAt <= previousObservedAt || terminal.occurredAt > collection.evaluatedAt) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const observed = collection.observedItems.find((item) => item.nodeId === blockerNodeId);
+  if (observed == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const matchingEvents = observed.events.filter(
+    (event): event is Extract<NormalizedEvent, { kind: "state" }> =>
+      event.kind === "state" &&
+      event.itemNodeId === blockerNodeId &&
+      event.state === terminal.state &&
+      event.occurredAt === terminal.occurredAt &&
+      event.occurredAt > previousObservedAt &&
+      event.occurredAt <= collection.evaluatedAt,
+  );
+  if (matchingEvents.length !== 1) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const event = matchingEvents[0];
+  assertNonNullable(event, `blocker ${blockerNodeId}のterminal state eventがありません`);
+  const evidence = notificationCauseEvidenceForEvent(event);
+  if (evidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({
+    status: "complete",
+    evidence: Object.freeze([evidence]),
+  });
+}
+
+function relationCauseForEdge(
+  collection: CollectedItems,
+  edge: Relation,
+  previousObservedAt: UtcIsoDateTime,
+): RelationCauseResolution {
+  const matchingEvents: NotificationRelationEvent[] = collection.observedItems
+    .flatMap((item) => item.events)
+    .filter(
+      (event): event is NotificationRelationEvent =>
+        event.kind === "relation" &&
+        event.target.type === "node" &&
+        event.relationType === edge.type &&
+        event.provenance === edge.provenance &&
+        event.occurredAt >= edge.firstSeenAt &&
+        event.occurredAt > previousObservedAt &&
+        event.occurredAt <= collection.evaluatedAt &&
+        (event.direction === "from_item"
+          ? event.itemNodeId === edge.fromNodeId && event.target.nodeId === edge.toNodeId
+          : event.itemNodeId === edge.toNodeId && event.target.nodeId === edge.fromNodeId),
+    )
+    .sort((left, right) => {
+      if (left.occurredAt < right.occurredAt) {
+        return -1;
+      }
+      if (left.occurredAt > right.occurredAt) {
+        return 1;
+      }
+      return left.sourceId.localeCompare(right.sourceId);
+    });
+  const latestEvent = matchingEvents.at(-1);
+  if (latestEvent == null) {
+    return Object.freeze({ status: "not_applicable", evidence: Object.freeze([]) });
+  }
+  const latestEvents = matchingEvents.filter(
+    (event) => event.occurredAt === latestEvent.occurredAt,
+  );
+  const hasAddedEvent = latestEvents.some((event) => event.action === "added");
+  const hasRemovedEvent = latestEvents.some((event) => event.action === "removed");
+  if (hasAddedEvent && hasRemovedEvent) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  if (!hasRemovedEvent) {
+    return Object.freeze({ status: "not_applicable", evidence: Object.freeze([]) });
+  }
+  const evidence: NotificationCauseEvidence[] = [];
+  for (const event of matchingEvents) {
+    if (event.action !== "removed") {
+      continue;
+    }
+    const eventEvidence = notificationCauseEvidenceForEvent(event);
+    if (eventEvidence == null) {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    evidence.push(eventEvidence);
+  }
+  return Object.freeze({ status: "complete", evidence: Object.freeze(evidence) });
+}
+
+function dependencyCauseForBlocker(
+  collection: CollectedItems,
+  enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  blockerNodeId: GraphNodeId,
+  edges: readonly (Relation & Readonly<{ active: true }>)[],
+  previousObservedAt: UtcIsoDateTime,
+): DependencyBlockerCause {
+  const terminalCause = terminalCauseForBlocker(
+    collection,
+    enumeratedItemsByNodeId,
+    blockerNodeId,
+    previousObservedAt,
+  );
+  if (terminalCause?.status === "indeterminate") {
+    return terminalCause;
+  }
+  const relationEvidence: NotificationCauseEvidence[] = [];
+  let allRelationsRemoved = true;
+  for (const edge of edges) {
+    const relationCause = relationCauseForEdge(collection, edge, previousObservedAt);
+    if (relationCause.status === "indeterminate") {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    if (relationCause.status === "not_applicable") {
+      allRelationsRemoved = false;
+    } else {
+      relationEvidence.push(...relationCause.evidence);
+    }
+  }
+  if (terminalCause == null && !allRelationsRemoved) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const completeEvidence = nonEmptyNotificationCauseEvidence([
+    ...(terminalCause?.status === "complete" ? terminalCause.evidence : []),
+    ...relationEvidence,
+  ]);
+  if (completeEvidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({ status: "complete", evidence: completeEvidence });
+}
+
+function previousDependencyObservedAt(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): UtcIsoDateTime | undefined {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null) {
+    return undefined;
+  }
+  const item = snapshot.items.find((candidate) => candidate.nodeId === nodeId);
+  return item == null ? undefined : item.observedAt;
+}
+
+function dependencyCauseForBlockers(
+  collection: CollectedItems,
+  enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  edgesByBlockerNodeId: ReadonlyMap<
+    GraphNodeId,
+    readonly (Relation & Readonly<{ active: true }>)[]
+  >,
+  previousObservedAt: UtcIsoDateTime,
+): NotificationDependencyCause {
+  const evidence: NotificationCauseEvidence[] = [];
+  for (const [blockerNodeId, edges] of edgesByBlockerNodeId) {
+    const blockerCause = dependencyCauseForBlocker(
+      collection,
+      enumeratedItemsByNodeId,
+      blockerNodeId,
+      edges,
+      previousObservedAt,
+    );
+    if (blockerCause.status === "indeterminate") {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    evidence.push(...blockerCause.evidence);
+  }
+  const completeEvidence = nonEmptyNotificationCauseEvidence(evidence);
+  if (completeEvidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({
+    status: "complete",
+    evidence: completeEvidence,
+  });
+}
+
 function dependencyResolutions(
   state: RuntimeState,
   collection: CollectedItems,
   graph: GraphResult | undefined,
   relationAssessments: readonly RelationCandidateAssessment[],
   analysis: DeterministicItemAnalysis,
-): readonly DependencyResolutionProgress[] {
+): DependencyResolutionResult {
   if (graph?.analysis.newlyUnblockedNodeIds.includes(analysis.item.nodeId) !== true) {
-    return Object.freeze([]);
+    return Object.freeze({
+      progress: Object.freeze([]),
+      cause: Object.freeze({ status: "not_applicable" }),
+    });
   }
   const edgesByBlockerNodeId = previousBlockerEdges(state, analysis.item.nodeId);
   if (edgesByBlockerNodeId.size === 0) {
     throw new TypeError(`newly unblocked項目 ${analysis.item.nodeId}の前回blockerがありません`);
   }
+  const previousObservedAt = previousDependencyObservedAt(state, analysis.item.nodeId);
   const enumeratedItemsByNodeId = new Map<GraphNodeId, EnumeratedGitHubItem>(
     collection.enumeratedItems.map((item) => [item.nodeId, item]),
   );
+  const cause: NotificationDependencyCause =
+    previousObservedAt == null
+      ? Object.freeze({ status: "indeterminate" })
+      : dependencyCauseForBlockers(
+          collection,
+          enumeratedItemsByNodeId,
+          edgesByBlockerNodeId,
+          previousObservedAt,
+        );
   const sourceOccurredAtById = createDependencySourceOccurredAtById(collection);
   const blockerResolutionOccurredAts = [...edgesByBlockerNodeId].map(([blockerNodeId, edges]) => {
     const terminalAt = enumeratedTerminalAt(enumeratedItemsByNodeId.get(blockerNodeId));
@@ -5306,15 +5704,18 @@ function dependencyResolutions(
   const sourceIds = [...edgesByBlockerNodeId.values()]
     .flat()
     .flatMap((edge) => edge.evidence.map((evidence) => evidence.sourceId));
-  return Object.freeze([
-    Object.freeze({
-      occurredAt: latestUtcIsoDateTime(
-        [analysis.item.createdAt, ...blockerResolutionOccurredAts],
-        `newly unblocked項目 ${analysis.item.nodeId}`,
-      ),
-      sourceIds: nonEmptySourceIds(sourceIds, `newly unblocked項目 ${analysis.item.nodeId}`),
-    }),
-  ]);
+  return Object.freeze({
+    progress: Object.freeze([
+      Object.freeze({
+        occurredAt: latestUtcIsoDateTime(
+          [analysis.item.createdAt, ...blockerResolutionOccurredAts],
+          `newly unblocked項目 ${analysis.item.nodeId}`,
+        ),
+        sourceIds: nonEmptySourceIds(sourceIds, `newly unblocked項目 ${analysis.item.nodeId}`),
+      }),
+    ]),
+    cause,
+  });
 }
 
 function primaryWaitingOnForDecision(
@@ -5746,6 +6147,139 @@ function retainedItemObservedAt(
   return repositoryResult.freshness === "fresh" ? collection.evaluatedAt : item.observedAt;
 }
 
+type SelfCommitmentPreviousObservation =
+  | Readonly<{
+      availability: "not_available";
+    }>
+  | Readonly<{
+      availability: "available";
+      observedAt: UtcIsoDateTime;
+    }>;
+
+type SelfCommitmentCauseInput = Readonly<{
+  analysis: DeterministicItemAnalysis;
+  decision: ReducedCodexDecision;
+  waitingOnResult: AiAnalysisElementMigrationResult<"waitingOn"> | undefined;
+  analysisInput: CodexAnalysisInput | undefined;
+  previous: SelfCommitmentPreviousObservation;
+  evaluatedAt: UtcIsoDateTime;
+  highConfidence: number;
+}>;
+
+type SelfCommitmentCauseEvidence = Extract<
+  NotificationCause,
+  Readonly<{ status: "complete" }>
+>["evidence"][number];
+
+function createSelfCommitmentCause(input: SelfCommitmentCauseInput): NotificationCause {
+  if (
+    input.decision.origin !== "codex" ||
+    input.waitingOnResult == null ||
+    effectiveElementConfidence("waitingOn", input.waitingOnResult) < input.highConfidence ||
+    input.analysisInput == null ||
+    input.previous.availability !== "available"
+  ) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  if (input.decision.waitingOn.length !== 1) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const waitingOn = input.decision.waitingOn[0];
+  assertNonNullable(waitingOn, `Codex判定 ${input.analysis.item.nodeId}のwaitingOnがありません`);
+  if (waitingOn.kind !== "user") {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const waitingOnCandidate = input.analysisInput.candidates.waitingOn.find(
+    (candidate) => candidate.id === waitingOn.candidateId,
+  );
+  if (waitingOnCandidate == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const selfCommitments = input.decision.evidence.filter(
+    (evidence) => evidence.supports === "self_commitment",
+  );
+  if (selfCommitments.length === 0) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const evidenceBySourceId = new Map<SourceId, SelfCommitmentCauseEvidence>();
+  for (const commitment of selfCommitments) {
+    const source = input.analysisInput.sources.find(
+      (candidate) => candidate.id === commitment.sourceId,
+    );
+    if (
+      source?.kind !== "comment" ||
+      source.actorType !== "human" ||
+      source.author.status !== "identified" ||
+      source.author.candidateId !== waitingOn.candidateId ||
+      !waitingOn.sourceIds.some((sourceId) => sourceId === source.id)
+    ) {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    const comment = codexCommentSources(input.analysis.detail).find(
+      (candidate) => candidate.sourceId === source.id,
+    );
+    if (
+      comment?.author.status !== "identified" ||
+      comment.author.account.login !== source.author.candidateId ||
+      comment.author.account.nodeId !== source.author.nodeId ||
+      comment.updatedAt !== comment.createdAt ||
+      source.createdAt !== comment.createdAt
+    ) {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    const event = input.analysis.item.events.find((candidate) => candidate.sourceId === source.id);
+    if (
+      event?.kind !== "comment" ||
+      event.actor.type !== "human" ||
+      event.actor.nodeId !== source.author.nodeId ||
+      event.occurredAt !== source.createdAt ||
+      event.occurredAt <= input.previous.observedAt ||
+      event.occurredAt > input.evaluatedAt
+    ) {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    const actor: SelfCommitmentCauseEvidence["actor"] = Object.freeze({
+      type: "human",
+      nodeId: event.actor.nodeId,
+      login: comment.author.account.login,
+    });
+    evidenceBySourceId.set(
+      event.sourceId,
+      Object.freeze({
+        sourceId: event.sourceId,
+        occurredAt: event.occurredAt,
+        actor,
+      }),
+    );
+  }
+  const evidence = [...evidenceBySourceId.values()].sort((left, right) => {
+    if (left.occurredAt < right.occurredAt) {
+      return -1;
+    }
+    if (left.occurredAt > right.occurredAt) {
+      return 1;
+    }
+    return left.sourceId.localeCompare(right.sourceId);
+  });
+  const firstEvidence = evidence[0];
+  assertNonNullable(
+    firstEvidence,
+    `self_commitmentの根拠がありません。対象: ${input.analysis.item.nodeId}`,
+  );
+  if (evidence.some((candidate) => candidate.actor.nodeId !== firstEvidence.actor.nodeId)) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const causeEvidence = Object.freeze([firstEvidence, ...evidence.slice(1)] satisfies [
+    SelfCommitmentCauseEvidence,
+    ...SelfCommitmentCauseEvidence[],
+  ]);
+  return Object.freeze({
+    status: "complete",
+    responsible: firstEvidence.actor,
+    evidence: causeEvidence,
+  });
+}
+
 function reduceAnalysisPass(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
@@ -5788,6 +6322,33 @@ function reduceAnalysisPass(
     relationAssessments.push(...(reduction?.relationAssessments ?? []));
     const basis = transitionBasisForDecision(analysis, decision);
     const repository = findRepository(inventory, analysis.item.repositoryId);
+    const dependencyResolution = dependencyResolutions(
+      state,
+      collection,
+      graph,
+      reduction?.relationAssessments ?? [],
+      analysis,
+    );
+    const previousItem = previousSnapshot(state)?.items.find(
+      (item) => item.nodeId === analysis.item.nodeId,
+    );
+    const selfCommitmentCause = createSelfCommitmentCause({
+      analysis,
+      decision,
+      waitingOnResult: output?.waitingOn,
+      analysisInput: codexAnalysis.inputByNodeId.get(analysis.item.nodeId),
+      previous:
+        previousItem == null
+          ? Object.freeze({
+              availability: "not_available",
+            })
+          : Object.freeze({
+              availability: "available",
+              observedAt: previousItem.observedAt,
+            }),
+      evaluatedAt: collection.evaluatedAt,
+      highConfidence: configuration.config.ai.confidence.high,
+    });
     const staleness = calculateStaleness({
       itemType: analysis.item.type,
       createdAt: analysis.item.createdAt,
@@ -5803,13 +6364,7 @@ function reduceAnalysisPass(
       previousState: previousStalenessState(state, analysis.item.nodeId),
       events: analysis.item.events,
       responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
-      dependencyResolutions: dependencyResolutions(
-        state,
-        collection,
-        graph,
-        reduction?.relationAssessments ?? [],
-        analysis,
-      ),
+      dependencyResolutions: dependencyResolution.progress,
       naturalLanguageAssessments: naturalLanguageProgressAssessments(analysis, output),
       minimumAiConfidence: configuration.config.ai.confidence.medium,
       repositoryFullName: repositoryFullName(repository),
@@ -5823,6 +6378,9 @@ function reduceAnalysisPass(
         item: analysis.item,
         detail: analysis.detail,
         decision,
+        selfCommitmentCause,
+        responsibilityBasis: basis.responsibilityBasis,
+        dependencyCause: dependencyResolution.cause,
         notificationRecommendation:
           reduction == null
             ? Object.freeze({
@@ -6382,6 +6940,28 @@ function notificationDraftState(
       : "ready_for_review";
 }
 
+function hasUnobservedPullRequestHeadChange(
+  item: FreshObservedGitHubItem,
+  previous: SnapshotTrackedItem | undefined,
+  evaluatedAt: UtcIsoDateTime,
+): boolean {
+  if (item.type !== "pull_request" || previous == null) {
+    return false;
+  }
+  if (previous.inputEvents.some((event) => event.sourceId === item.headCommit.sourceId)) {
+    return item.githubUpdatedAt !== previous.githubUpdatedAt;
+  }
+  const headEvent = item.events.find(
+    (event): event is Extract<NormalizedEvent, { kind: "push" }> =>
+      event.kind === "push" &&
+      event.sourceId === item.headCommit.sourceId &&
+      event.headCommitSha === item.headCommit.sha &&
+      !event.forcePush,
+  );
+  assertNonNullable(headEvent, `Pull Request ${item.nodeId}のhead commit eventがありません`);
+  return headEvent.occurredAt <= previous.observedAt || headEvent.occurredAt > evaluatedAt;
+}
+
 function hasOpenBlockers(
   itemNodeId: GitHubNodeId,
   graph: GraphResult,
@@ -6406,6 +6986,7 @@ function notificationItem(
   inventory: RepositoryInventory,
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
   graph: GraphResult,
+  evaluatedAt: UtcIsoDateTime,
   nodeStateById: ReadonlyMap<GraphNodeId, PendingTrackedItem["state"]>,
   item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
@@ -6445,6 +7026,37 @@ function notificationItem(
               .filter((cycle) => cycle.nodeIds.includes(item.nodeId))
               .map((cycle) => cycle.id),
           ),
+        });
+  const causes: NotificationCauses =
+    analysisState.availability === "available"
+      ? createNotificationCauses({
+          item: analysisState.value.item,
+          currentWaitingOn: item.waitingOn,
+          previous:
+            previous == null
+              ? Object.freeze({
+                  availability: "not_available",
+                })
+              : Object.freeze({
+                  availability: "available",
+                  value: Object.freeze({
+                    waitingOn: previous.waitingOn,
+                    observedAt: previous.observedAt,
+                  }),
+                }),
+          currentResponsibilityBasis: analysisState.value.responsibilityBasis,
+          dependencyCause: analysisState.value.dependencyCause,
+          selfCommitmentCause: analysisState.value.selfCommitmentCause,
+          hasUnobservedHeadChange: hasUnobservedPullRequestHeadChange(
+            analysisState.value.item,
+            previous,
+            evaluatedAt,
+          ),
+          evaluatedAt,
+        })
+      : Object.freeze({
+          responsibility_changed: Object.freeze({ status: "indeterminate" }),
+          newly_unblocked: Object.freeze({ status: "indeterminate" }),
         });
   return Object.freeze({
     nodeId: item.nodeId,
@@ -6486,6 +7098,7 @@ function notificationItem(
               observedAt: previous.observedAt,
             }),
           }),
+    causes,
     graph: Object.freeze({
       downstreamImpact,
       newlyUnblocked: graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId),
@@ -6532,6 +7145,7 @@ function notificationItems(
           inventory,
           enumeratedItemsByNodeId,
           graph,
+          collection.evaluatedAt,
           nodeStateById,
           item,
           staleness,

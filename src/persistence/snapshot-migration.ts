@@ -8,6 +8,9 @@ import {
   aiAnalysisRelationsSchema,
   aiAnalysisStatusSchema,
   aiAnalysisWaitingOnSchema,
+  aiAnalysisElementMetadataSchema,
+  aiAnalysisElementSchema,
+  createAiAnalysisElementResultSchema,
   createAiAnalysisMigrationElementResultSchema,
   createAiAnalysisElementValueSchema,
   type AiAnalysisElement,
@@ -22,8 +25,9 @@ import { StateFormatError, StateSnapshotSemanticError } from "./errors.js";
 import { UnreachableError } from "../util/index.js";
 import {
   createStateSnapshot,
-  parseStateSnapshotVersion11,
   parseStateSnapshot,
+  parseStateSnapshotVersion11,
+  parseStateSnapshotVersion12,
   type SnapshotAnalysisPlanFingerprint,
   type StateSnapshot,
 } from "./snapshot.js";
@@ -261,6 +265,27 @@ type MutablePartial<Value> = {
   -readonly [Key in keyof Value]?: Value[Key];
 };
 
+const legacyElementMetadataSchema = aiAnalysisElementMetadataSchema.extend({
+  schemaVersion: z.literal("5"),
+});
+const legacyElementEvidenceSchema = z
+  .array(aiAnalysisElementEvidenceSchema.omit({ supports: true }))
+  .min(1)
+  .max(30);
+const legacyMigrationElementEvidenceSchema = z
+  .array(aiAnalysisElementEvidenceSchema.omit({ supports: true }))
+  .min(1);
+const legacyAdoptedElementSchema = z.discriminatedUnion("origin", [
+  z.strictObject({
+    origin: z.literal("current"),
+    generation: z.unknown(),
+  }),
+  z.strictObject({
+    origin: z.literal("migration"),
+    result: z.unknown(),
+  }),
+]);
+
 function parseJson(source: string): unknown {
   try {
     const parse: (value: string) => unknown = JSON.parse;
@@ -272,6 +297,174 @@ function parseJson(source: string): unknown {
       }),
     });
   }
+}
+
+function parseLegacyElementGenerationResult(
+  element: AiAnalysisElement,
+  generation: unknown,
+): AiAnalysisElementMigrationResult {
+  const generationSchema = z.strictObject({
+    metadata: legacyElementMetadataSchema,
+    result: createAiAnalysisElementResultSchema(element).extend({
+      evidence: legacyElementEvidenceSchema,
+    }),
+  });
+  const parsed = generationSchema.parse(generation);
+  return createAiAnalysisMigrationElementResultSchema(element).parse({
+    ...parsed.result,
+    evidence: parsed.result.evidence.map((evidence) => ({
+      ...evidence,
+      supports: "element",
+    })),
+  });
+}
+
+function parseLegacyElementMigrationResult(
+  element: AiAnalysisElement,
+  result: unknown,
+): AiAnalysisElementMigrationResult {
+  const resultSchema = createAiAnalysisMigrationElementResultSchema(element).extend({
+    evidence: legacyMigrationElementEvidenceSchema,
+  });
+  const parsed = resultSchema.parse(result);
+  return createAiAnalysisMigrationElementResultSchema(element).parse({
+    ...parsed,
+    evidence: parsed.evidence.map((evidence) => ({
+      ...evidence,
+      supports: "element",
+    })),
+  });
+}
+
+function parseMigrationElementResult(
+  element: AiAnalysisElement,
+  value: unknown,
+  origin: "current" | "migration",
+): AiAnalysisElementMigrationResult {
+  if (origin === "current") {
+    return parseLegacyElementGenerationResult(element, value);
+  }
+  const adoptedElement = legacyAdoptedElementSchema.parse(value);
+  if (adoptedElement.origin === "current") {
+    return parseLegacyElementGenerationResult(element, adoptedElement.generation);
+  }
+  return parseLegacyElementMigrationResult(element, adoptedElement.result);
+}
+
+function setMigratedAdoptedElement(
+  adopted: MutablePartial<TrackedItemAiAnalysisMigrationAdoptedElements>,
+  element: AiAnalysisElement,
+  value: unknown,
+  origin: "current" | "migration",
+): void {
+  switch (element) {
+    case "status":
+      adopted.status = {
+        origin: "migration",
+        result: createAiAnalysisMigrationElementResultSchema("status").parse(
+          parseMigrationElementResult("status", value, origin),
+        ),
+      };
+      return;
+    case "waitingOn":
+      adopted.waitingOn = {
+        origin: "migration",
+        result: createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
+          parseMigrationElementResult("waitingOn", value, origin),
+        ),
+      };
+      return;
+    case "nextAction":
+      adopted.nextAction = {
+        origin: "migration",
+        result: createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+          parseMigrationElementResult("nextAction", value, origin),
+        ),
+      };
+      return;
+    case "relations":
+      adopted.relations = {
+        origin: "migration",
+        result: createAiAnalysisMigrationElementResultSchema("relations").parse(
+          parseMigrationElementResult("relations", value, origin),
+        ),
+      };
+      return;
+    case "progress":
+      adopted.progress = {
+        origin: "migration",
+        result: createAiAnalysisMigrationElementResultSchema("progress").parse(
+          parseMigrationElementResult("progress", value, origin),
+        ),
+      };
+      return;
+    case "importance":
+      adopted.importance = {
+        origin: "migration",
+        result: createAiAnalysisMigrationElementResultSchema("importance").parse(
+          parseMigrationElementResult("importance", value, origin),
+        ),
+      };
+      return;
+    case "deadline":
+      adopted.deadline = {
+        origin: "migration",
+        result: createAiAnalysisMigrationElementResultSchema("deadline").parse(
+          parseMigrationElementResult("deadline", value, origin),
+        ),
+      };
+      return;
+    case "notification":
+      adopted.notification = {
+        origin: "migration",
+        result: createAiAnalysisMigrationElementResultSchema("notification").parse(
+          parseMigrationElementResult("notification", value, origin),
+        ),
+      };
+      return;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+function parseAdoptedElements(
+  elements: unknown,
+  origin: "current" | "migration",
+): TrackedItemAiAnalysisMigrationAdoptedElements {
+  const entries = z.record(z.string(), z.unknown()).parse(elements);
+  const adopted: MutablePartial<TrackedItemAiAnalysisMigrationAdoptedElements> = {};
+  for (const [key, value] of Object.entries(entries)) {
+    const elementResult = aiAnalysisElementSchema.safeParse(key);
+    if (!elementResult.success) {
+      throw new StateSnapshotSemanticError(`移行AI採用要素が不正です。対象: ${key}`, {
+        cause: elementResult.error,
+      });
+    }
+    setMigratedAdoptedElement(adopted, elementResult.data, value, origin);
+  }
+  return Object.freeze(adopted);
+}
+
+function migrateAiAnalysis(value: unknown): {
+  origin: "migration";
+  status: "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
+  elements: Readonly<Record<string, never>>;
+  adoptedElements: TrackedItemAiAnalysisMigrationAdoptedElements;
+} {
+  const aiAnalysis = z
+    .object({
+      origin: z.enum(["current", "migration"]),
+      status: z.enum(["used", "failed", "deferred", "not_required", "disabled", "not_recorded"]),
+      elements: z.unknown(),
+      adoptedElements: z.unknown(),
+    })
+    .parse(value);
+  return {
+    origin: "migration",
+    status: aiAnalysis.status,
+    elements: {},
+    adoptedElements: parseAdoptedElements(aiAnalysis.adoptedElements, aiAnalysis.origin),
+  };
 }
 
 function migrationFormatError(error: unknown): StateFormatError {
@@ -296,6 +489,7 @@ function resultEvidence(
     const evidence = aiAnalysisElementEvidenceSchema.parse({
       sourceId: value.sourceId,
       summary: value.summary,
+      supports: "element",
     });
     evidenceByKey.set(serializeCanonicalJson([evidence.sourceId, evidence.summary]), evidence);
   }
@@ -686,6 +880,56 @@ function createLegacyRelationsById(
   return relationsById;
 }
 
+function migrateVersion11StateSnapshot(source: string): StateSnapshot {
+  try {
+    const value = parseStateSnapshotVersion11(source);
+    return createStateSnapshot({
+      ...value,
+      schemaVersion: "13",
+      collection: {
+        repositories: value.collection.repositories.map((repository) => ({
+          ...repository,
+          items: repository.items.map((item) => ({
+            ...item,
+            aiAnalysis: migrateAiAnalysis(item.aiAnalysis),
+          })),
+        })),
+      },
+      items: value.items.map((item) => ({
+        ...item,
+        aiAnalysis: migrateAiAnalysis(item.aiAnalysis),
+      })),
+    });
+  } catch (error: unknown) {
+    throw migrationFormatError(error);
+  }
+}
+
+function migrateVersion12StateSnapshot(source: string): StateSnapshot {
+  try {
+    const value = parseStateSnapshotVersion12(source);
+    return createStateSnapshot({
+      ...value,
+      schemaVersion: "13",
+      collection: {
+        repositories: value.collection.repositories.map((repository) => ({
+          ...repository,
+          items: repository.items.map((item) => ({
+            ...item,
+            aiAnalysis: migrateAiAnalysis(item.aiAnalysis),
+          })),
+        })),
+      },
+      items: value.items.map((item) => ({
+        ...item,
+        aiAnalysis: migrateAiAnalysis(item.aiAnalysis),
+      })),
+    });
+  } catch (error: unknown) {
+    throw migrationFormatError(error);
+  }
+}
+
 function migrateLegacyStateSnapshot(
   source: string,
   legacyEntriesByCacheKey: ReadonlyMap<AiCacheKey, LegacyAiCacheEntry>,
@@ -717,7 +961,7 @@ function migrateLegacyStateSnapshot(
       }),
     }));
     return createStateSnapshot({
-      schemaVersion: "12",
+      schemaVersion: "13",
       generatedAt: value.generatedAt,
       trackingStartAt: value.trackingStartAt,
       ai: value.ai,
@@ -748,11 +992,10 @@ export function migrateStateSnapshot(
     case "10":
       return migrateLegacyStateSnapshot(source, legacyEntriesByCacheKey);
     case "11":
-      return createStateSnapshot({
-        ...parseStateSnapshotVersion11(source),
-        schemaVersion: "12",
-      });
+      return migrateVersion11StateSnapshot(source);
     case "12":
+      return migrateVersion12StateSnapshot(source);
+    case "13":
       return parseStateSnapshot(source);
     default:
       throw new StateFormatError("snapshot", {

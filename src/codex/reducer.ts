@@ -689,13 +689,16 @@ function createElementEvidence(
   supports: Evidence["supports"],
 ): readonly Evidence[] {
   return Object.freeze(
-    result.evidence.map((evidence) =>
-      Object.freeze({
+    result.evidence.map((evidence) => {
+      if (evidence.supports === "self_commitment" && supports !== "waiting_on") {
+        throw new TypeError("self_commitmentの根拠はwaitingOn要素にだけ指定できます");
+      }
+      return Object.freeze({
         sourceId: createSourceIdTuple([evidence.sourceId])[0],
-        supports,
+        supports: evidence.supports === "self_commitment" ? "self_commitment" : supports,
         summary: evidence.summary,
-      }),
-    ),
+      });
+    }),
   );
 }
 

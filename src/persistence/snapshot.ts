@@ -30,6 +30,9 @@ import {
 } from "../domain/index.js";
 import {
   aiAnalysisElementSchema,
+  aiAnalysisElementEvidenceSchema,
+  aiAnalysisElementMetadataSchema,
+  createAiAnalysisElementResultSchema,
   createAiAnalysisElementGenerationSchema,
   createAiAnalysisMigrationElementResultSchema,
 } from "../domain/ai-analysis-elements.js";
@@ -133,7 +136,8 @@ export type SnapshotRun = Readonly<{
 }>;
 
 const SNAPSHOT_SCHEMA_VERSION_11 = "11";
-export const SNAPSHOT_SCHEMA_VERSION_12 = "12";
+const SNAPSHOT_SCHEMA_VERSION_12 = "12";
+export const SNAPSHOT_SCHEMA_VERSION_13 = "13";
 
 type StateSnapshotFields = Readonly<{
   generatedAt: UtcIsoDateTime;
@@ -155,11 +159,18 @@ type StateSnapshotVersion12 = StateSnapshotFields &
   Readonly<{
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_12;
   }>;
+type StateSnapshotVersion13 = StateSnapshotFields &
+  Readonly<{
+    schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_13;
+  }>;
 
-/** tracker-stateへ保存するschema version 12のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion12;
+/** tracker-stateへ保存するschema version 13のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion13;
 
 const snapshotSchemaVersionSchema = z.object({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_13),
+});
+const snapshotSchemaVersion12Schema = z.object({
   schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_12),
 });
 const snapshotSchemaVersion11Schema = z.object({
@@ -182,20 +193,97 @@ ajv.addFormat("date-time", {
   },
 });
 
-function snapshotSchemaForVersion(version: string): object {
+const legacyElementMetadataSchema = aiAnalysisElementMetadataSchema.extend({
+  schemaVersion: z.literal("5"),
+});
+const legacyElementEvidenceSchema = z
+  .array(aiAnalysisElementEvidenceSchema.omit({ supports: true }))
+  .min(1)
+  .max(30);
+const legacyElementMigrationEvidenceSchema = z
+  .array(aiAnalysisElementEvidenceSchema.omit({ supports: true }))
+  .min(1);
+
+function createElementGenerationSchemaForVersion(
+  element: z.output<typeof aiAnalysisElementSchema>,
+  elementSchemaVersion: "5" | "6",
+) {
+  if (elementSchemaVersion === "6") {
+    return createAiAnalysisElementGenerationSchema(element);
+  }
+  return z.strictObject({
+    metadata: legacyElementMetadataSchema,
+    result: createAiAnalysisElementResultSchema(element).extend({
+      evidence: legacyElementEvidenceSchema,
+    }),
+  });
+}
+
+function createMigrationElementResultSchemaForVersion(
+  element: z.output<typeof aiAnalysisElementSchema>,
+  elementSchemaVersion: "5" | "6",
+) {
+  if (elementSchemaVersion === "6") {
+    return createAiAnalysisMigrationElementResultSchema(element);
+  }
+  return createAiAnalysisMigrationElementResultSchema(element).extend({
+    evidence: legacyElementMigrationEvidenceSchema,
+  });
+}
+
+function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "6"): object {
   const schema = Object.fromEntries(
     Object.entries(snapshotSchema).filter(([key]) => key !== "$id"),
   );
   const migrationAdoptedElement = snapshotSchema.$defs.aiAnalysisMigrationAdoptedElement;
+  const elementEvidence = snapshotSchema.$defs.aiAnalysisElementEvidence;
+  const elementMetadata = snapshotSchema.$defs.aiAnalysisElementMetadata;
+  const evidence = snapshotSchema.$defs.evidence;
   const currentVariant = migrationAdoptedElement.oneOf.at(0);
   const migrationResultVariant = migrationAdoptedElement.oneOf.at(1);
   if (currentVariant == null || migrationResultVariant == null) {
     throw new TypeError("snapshot schemaの移行要素定義が不正です");
   }
+  const evidenceProperties = Object.fromEntries(
+    Object.entries(elementEvidence.properties).filter(([key]) =>
+      elementSchemaVersion === "5" ? key !== "supports" : true,
+    ),
+  );
+  const evidenceRequired =
+    elementSchemaVersion === "5"
+      ? elementEvidence.required.filter((key) => key !== "supports")
+      : elementEvidence.required;
+  const versionedEvidence =
+    elementSchemaVersion === "5"
+      ? {
+          ...evidence,
+          properties: {
+            ...evidence.properties,
+            supports: {
+              enum: ["status", "waiting_on", "relation", "progress", "notification", "uncertainty"],
+            },
+          },
+        }
+      : evidence;
   return {
     ...schema,
     $defs: {
       ...snapshotSchema.$defs,
+      evidence: versionedEvidence,
+      aiAnalysisElementEvidence: {
+        ...elementEvidence,
+        required: evidenceRequired,
+        properties: evidenceProperties,
+      },
+      aiAnalysisElementMetadata: {
+        ...elementMetadata,
+        properties: {
+          ...elementMetadata.properties,
+          schemaVersion: {
+            const: elementSchemaVersion,
+          },
+        },
+      },
       aiAnalysisMigrationAdoptedElement:
         version === SNAPSHOT_SCHEMA_VERSION_11
           ? {
@@ -225,9 +313,12 @@ function snapshotSchemaForVersion(version: string): object {
 }
 
 const validateSnapshotVersion11Schema = ajv.compile<StateSnapshotVersion11>(
-  snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_11),
+  snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_11, "5"),
 );
-const validateSnapshotVersion12Schema = ajv.compile<StateSnapshotVersion12>(snapshotSchema);
+const validateSnapshotVersion12Schema = ajv.compile<StateSnapshotVersion12>(
+  snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_12, "5"),
+);
+const validateSnapshotVersion13Schema = ajv.compile<StateSnapshotVersion13>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -254,6 +345,7 @@ function assertUtcDateTime(value: string, description: string): void {
 function assertAiAnalysisElementMapSemantics(
   elements: TrackedItemAiAnalysis["elements"],
   description: string,
+  elementSchemaVersion: "5" | "6",
 ): void {
   for (const [key, generation] of Object.entries(elements)) {
     const elementResult = aiAnalysisElementSchema.safeParse(key);
@@ -262,9 +354,10 @@ function assertAiAnalysisElementMapSemantics(
         cause: elementResult.error,
       });
     }
-    const generationResult = createAiAnalysisElementGenerationSchema(elementResult.data).safeParse(
-      generation,
-    );
+    const generationResult = createElementGenerationSchemaForVersion(
+      elementResult.data,
+      elementSchemaVersion,
+    ).safeParse(generation);
     if (!generationResult.success) {
       throw new StateSnapshotSemanticError(`${description}の生成記録が不正です。対象: ${key}`, {
         cause: generationResult.error,
@@ -285,6 +378,7 @@ function assertAiAnalysisElementMapSemantics(
 function assertAiAnalysisMigrationAdoptedMapSemantics(
   elements: TrackedItemAiAnalysisMigrationAdoptedElements,
   description: string,
+  elementSchemaVersion: "5" | "6",
 ): void {
   for (const key of Object.keys(elements)) {
     const elementResult = aiAnalysisElementSchema.safeParse(key);
@@ -299,7 +393,10 @@ function assertAiAnalysisMigrationAdoptedMapSemantics(
     }
     switch (adopted.origin) {
       case "current": {
-        const generationSchema = createAiAnalysisElementGenerationSchema(elementResult.data);
+        const generationSchema = createElementGenerationSchemaForVersion(
+          elementResult.data,
+          elementSchemaVersion,
+        );
         const parsedGeneration = generationSchema.safeParse(adopted.generation);
         if (!parsedGeneration.success) {
           throw new StateSnapshotSemanticError(`${description}が不正です。対象: ${key}`, {
@@ -321,7 +418,10 @@ function assertAiAnalysisMigrationAdoptedMapSemantics(
         continue;
       }
       case "migration": {
-        const resultSchema = createAiAnalysisMigrationElementResultSchema(elementResult.data);
+        const resultSchema = createMigrationElementResultSchemaForVersion(
+          elementResult.data,
+          elementSchemaVersion,
+        );
         const parsedResult = resultSchema.safeParse(adopted.result);
         if (!parsedResult.success) {
           throw new StateSnapshotSemanticError(`${description}が不正です。対象: ${key}`, {
@@ -336,17 +436,28 @@ function assertAiAnalysisMigrationAdoptedMapSemantics(
   }
 }
 
-function assertAiAnalysisSemantics(aiAnalysis: TrackedItemAiAnalysis): void {
+function assertAiAnalysisSemantics(
+  aiAnalysis: TrackedItemAiAnalysis,
+  elementSchemaVersion: "5" | "6",
+): void {
   if (aiAnalysis.origin === "current") {
     if (aiAnalysis.status === "used" && Object.keys(aiAnalysis.elements).length === 0) {
       throw new StateSnapshotSemanticError("AI分析がusedなのに生成記録がありません");
     }
-    assertAiAnalysisElementMapSemantics(aiAnalysis.elements, "AI判定要素");
-    assertAiAnalysisElementMapSemantics(aiAnalysis.adoptedElements, "AI採用要素");
+    assertAiAnalysisElementMapSemantics(aiAnalysis.elements, "AI判定要素", elementSchemaVersion);
+    assertAiAnalysisElementMapSemantics(
+      aiAnalysis.adoptedElements,
+      "AI採用要素",
+      elementSchemaVersion,
+    );
     return;
   }
-  assertAiAnalysisElementMapSemantics(aiAnalysis.elements, "AI判定要素");
-  assertAiAnalysisMigrationAdoptedMapSemantics(aiAnalysis.adoptedElements, "移行AI採用要素");
+  assertAiAnalysisElementMapSemantics(aiAnalysis.elements, "AI判定要素", elementSchemaVersion);
+  assertAiAnalysisMigrationAdoptedMapSemantics(
+    aiAnalysis.adoptedElements,
+    "移行AI採用要素",
+    elementSchemaVersion,
+  );
 }
 
 function normalizeActor(actor: Actor): Actor {
@@ -371,7 +482,10 @@ function normalizeAccountActor(actor: GitHubAccountActor): GitHubAccountActor {
   });
 }
 
-function assertSnapshotSemantics(snapshot: StateSnapshotFields): void {
+function assertSnapshotSemantics(
+  snapshot: StateSnapshotFields,
+  elementSchemaVersion: "5" | "6",
+): void {
   assertUtcDateTime(snapshot.generatedAt, "generatedAt");
   if (snapshot.trackingStartAt.status === "fixed") {
     assertUtcDateTime(snapshot.trackingStartAt.value, "trackingStartAt");
@@ -425,7 +539,7 @@ function assertSnapshotSemantics(snapshot: StateSnapshotFields): void {
         );
       }
       assertUtcDateTime(item.observedAt, "収集stateのitem観測時刻");
-      assertAiAnalysisSemantics(item.aiAnalysis);
+      assertAiAnalysisSemantics(item.aiAnalysis, elementSchemaVersion);
       if (item.observedAt > collectionRepository.successfulAt) {
         throw new StateSnapshotSemanticError(
           "収集stateのitem観測時刻はrepository成功時刻以前にしてください",
@@ -465,7 +579,7 @@ function assertSnapshotSemantics(snapshot: StateSnapshotFields): void {
         "itemのrepositoryIdがsnapshotのrepository一覧にありません",
       );
     }
-    assertAiAnalysisSemantics(item.aiAnalysis);
+    assertAiAnalysisSemantics(item.aiAnalysis, elementSchemaVersion);
     if (isTerminalStatus(item.status) && item.waitingOn.length !== 0) {
       throw new StateSnapshotSemanticError("terminal itemにwaitingOnを保存できません");
     }
@@ -719,27 +833,37 @@ function parseStateSnapshotVersion11Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion11Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value);
+  assertSnapshotSemantics(value, "5");
   return value;
 }
 
-function parseStateSnapshotVersion12Value(value: unknown): StateSnapshot {
-  snapshotSchemaVersionSchema.parse(value);
+function parseStateSnapshotVersion12Value(value: unknown): StateSnapshotVersion12 {
+  snapshotSchemaVersion12Schema.parse(value);
   if (!validateSnapshotVersion12Schema(value)) {
     const issueCount = validateSnapshotVersion12Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value);
+  assertSnapshotSemantics(value, "5");
+  return value;
+}
+
+function parseStateSnapshotVersion13Value(value: unknown): StateSnapshot {
+  snapshotSchemaVersionSchema.parse(value);
+  if (!validateSnapshotVersion13Schema(value)) {
+    const issueCount = validateSnapshotVersion13Schema.errors?.length ?? 1;
+    throw new StateSnapshotSchemaError(issueCount);
+  }
+  assertSnapshotSemantics(value, "6");
   return value;
 }
 
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
-  return parseStateSnapshotVersion12Value(value);
+  return parseStateSnapshotVersion13Value(value);
 }
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return normalizeSnapshot(parseStateSnapshotVersion12Value(value));
+  return normalizeSnapshot(parseStateSnapshotVersion13Value(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */
@@ -795,6 +919,38 @@ export function parseStateSnapshotVersion11(source: string): StateSnapshotVersio
 
   try {
     return parseStateSnapshotVersion11Value(value);
+  } catch (error: unknown) {
+    if (
+      error instanceof StateFormatError ||
+      error instanceof StateSnapshotSchemaError ||
+      error instanceof StateSnapshotSemanticError
+    ) {
+      throw error;
+    }
+    throw new StateFormatError("snapshot", {
+      cause: new TypeError("snapshot検証中に予期しないエラーが発生しました", {
+        cause: error,
+      }),
+    });
+  }
+}
+
+/** schema version 12のsnapshotを検証して読み取る。 */
+export function parseStateSnapshotVersion12(source: string): StateSnapshotVersion12 {
+  let value: unknown;
+  try {
+    const parseJson: (text: string) => unknown = JSON.parse;
+    value = parseJson(source);
+  } catch (error: unknown) {
+    throw new StateFormatError("snapshot", {
+      cause: new SyntaxError("JSON構文が不正です", {
+        cause: error,
+      }),
+    });
+  }
+
+  try {
+    return parseStateSnapshotVersion12Value(value);
   } catch (error: unknown) {
     if (
       error instanceof StateFormatError ||

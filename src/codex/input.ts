@@ -63,6 +63,17 @@ const waitingOnCandidateSchema = z
   })
   .catchall(jsonValueSchema);
 
+const sourceAuthorSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("identified"),
+    candidateId: opaqueIdSchema,
+    nodeId: opaqueIdSchema,
+  }),
+  z.strictObject({
+    status: z.literal("unavailable"),
+  }),
+]);
+
 const relationCandidateSchema = z
   .strictObject({
     id: z.string().regex(/^rel:\S+$/u, "relation candidate IDはrel:で始めてください"),
@@ -75,6 +86,7 @@ const sourceSchema = z
     id: sourceIdSchema,
     kind: opaqueIdSchema,
     actorType: z.enum(["human", "bot", "system"]),
+    author: sourceAuthorSchema,
     createdAt: z.iso.datetime({
       offset: true,
       error: "タイムゾーンを含むISO 8601日時を指定してください",
@@ -248,7 +260,7 @@ const lockedElementsSchema = z.strictObject({
 
 const codexAnalysisInputSchema = z
   .strictObject({
-    schemaVersion: z.literal("3"),
+    schemaVersion: z.literal("4"),
     now: z.iso.datetime({
       offset: true,
       error: "タイムゾーンを含むISO 8601日時を指定してください",
@@ -329,6 +341,23 @@ const codexAnalysisInputSchema = z
         });
       }
       sourceIds.add(source.id);
+      if (source.author.status === "identified") {
+        const author = source.author;
+        if (source.actorType !== "human") {
+          context.addIssue({
+            code: "custom",
+            path: ["sources", index, "author"],
+            message: "identified authorはhuman sourceにだけ指定できます",
+          });
+        }
+        if (!input.candidates.waitingOn.some((candidate) => candidate.id === author.candidateId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["sources", index, "author", "candidateId"],
+            message: "source authorのcandidate IDがwaitingOn候補集合にありません",
+          });
+        }
+      }
     }
   });
 

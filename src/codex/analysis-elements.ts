@@ -86,7 +86,7 @@ export {
 /** AI判定要素の現在の規則revision。 */
 export const AI_ANALYSIS_ELEMENT_REVISIONS = Object.freeze({
   status: 1,
-  waitingOn: 1,
+  waitingOn: 2,
   nextAction: 1,
   relations: 1,
   progress: 1,

@@ -292,6 +292,125 @@ function validateResultSourceIdUniqueness(
   }
 }
 
+function validateNoSelfCommitmentEvidence(
+  result: Pick<AiAnalysisElementMigrationResult, "evidence"> | undefined,
+  path: string,
+  issues: CodexOutputValidationIssue[],
+): void {
+  if (result == null) {
+    return;
+  }
+  for (const [index, evidence] of result.evidence.entries()) {
+    if (evidence.supports === "self_commitment") {
+      issues.push(
+        createIssue(
+          `${path}/evidence/${index.toString()}/supports`,
+          "self_commitment_wrong_element",
+          "self_commitmentの根拠はwaitingOn要素にだけ指定できます",
+        ),
+      );
+    }
+  }
+}
+
+function validateSelfCommitmentEvidence(
+  output: SchemaValidCodexElementOutput,
+  input: CodexAnalysisInput,
+  issues: CodexOutputValidationIssue[],
+): void {
+  validateNoSelfCommitmentEvidence(output.status, "/status", issues);
+  validateNoSelfCommitmentEvidence(output.nextAction, "/nextAction", issues);
+  validateNoSelfCommitmentEvidence(output.relations, "/relations", issues);
+  validateNoSelfCommitmentEvidence(output.progress, "/progress", issues);
+  validateNoSelfCommitmentEvidence(output.importance, "/importance", issues);
+  validateNoSelfCommitmentEvidence(output.deadline, "/deadline", issues);
+  validateNoSelfCommitmentEvidence(output.notification, "/notification", issues);
+
+  const waitingOn = output.waitingOn;
+  if (waitingOn == null) {
+    return;
+  }
+  for (const [index, evidence] of waitingOn.evidence.entries()) {
+    if (evidence.supports !== "self_commitment") {
+      continue;
+    }
+    const evidencePath = `/waitingOn/evidence/${index.toString()}`;
+    const source = input.sources.find((candidate) => candidate.id === evidence.sourceId);
+    if (source == null) {
+      continue;
+    }
+    if (source.kind !== "comment") {
+      issues.push(
+        createIssue(
+          `${evidencePath}/supports`,
+          "self_commitment_source_kind",
+          "self_commitmentの根拠はcomment sourceにだけ指定できます",
+        ),
+      );
+    }
+    if (source.actorType !== "human") {
+      issues.push(
+        createIssue(
+          `${evidencePath}/supports`,
+          "self_commitment_source_actor",
+          "self_commitmentの根拠はhuman sourceにだけ指定できます",
+        ),
+      );
+    }
+    if (source.author.status !== "identified") {
+      issues.push(
+        createIssue(
+          `${evidencePath}/supports`,
+          "self_commitment_author_unavailable",
+          "self_commitmentの根拠には識別済みのcomment authorが必要です",
+        ),
+      );
+      continue;
+    }
+    if (waitingOn.value.length !== 1) {
+      issues.push(
+        createIssue(
+          "/waitingOn/value",
+          "self_commitment_multiple_waiting_on",
+          "self_commitmentの根拠には唯一のwaitingOn候補が必要です",
+        ),
+      );
+      continue;
+    }
+    const [waitingCandidate] = waitingOn.value;
+    if (waitingCandidate == null) {
+      throw new TypeError("self_commitmentのwaitingOn候補がありません");
+    }
+    if (waitingCandidate.kind !== "user") {
+      issues.push(
+        createIssue(
+          "/waitingOn/value/0/kind",
+          "self_commitment_waiting_on_kind",
+          "self_commitmentの根拠にはuserのwaitingOn候補が必要です",
+        ),
+      );
+    }
+    if (waitingCandidate.candidateId !== source.author.candidateId) {
+      issues.push(
+        createIssue(
+          "/waitingOn/value/0/candidateId",
+          "self_commitment_author_mismatch",
+          "self_commitmentの根拠のauthorとwaitingOn候補が一致しません",
+        ),
+      );
+    }
+    if (!waitingCandidate.sourceIds.includes(evidence.sourceId)) {
+      issues.push(
+        createIssue(
+          "/waitingOn/value/0/sourceIds",
+          "self_commitment_source_unlinked",
+          "self_commitmentの根拠sourceがwaitingOn候補へ結び付いていません",
+        ),
+      );
+    }
+  }
+}
+
 function validateWaitingOnCandidates(
   values: readonly Pick<AiAnalysisWaitingOn, "kind" | "candidateId">[],
   input: CodexAnalysisInput,
@@ -722,6 +841,7 @@ export function validateCodexAnalysisSemantics(
     );
   }
   validateResultSourceIdUniqueness(output, issues);
+  validateSelfCommitmentEvidence(output, input, issues);
   validateSourceReferences(output, input, knownSources, issues);
   validateUrls(output, input, issues);
   validateNativeRelationReferences(input, issues);

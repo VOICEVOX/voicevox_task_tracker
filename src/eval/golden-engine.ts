@@ -1363,7 +1363,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "12",
+    schemaVersion: "13",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1572,6 +1572,10 @@ function selectNotifications(
         lastProgressAt: analysis.staleness.lastProgressAt,
       }),
       previous: notificationPrevious(analysis),
+      causes: Object.freeze({
+        responsibility_changed: Object.freeze({ status: "indeterminate" }),
+        newly_unblocked: Object.freeze({ status: "indeterminate" }),
+      }),
       graph: Object.freeze({
         downstreamImpact: findDownstreamImpact(nodeId, graph.downstreamImpacts),
         newlyUnblocked: graph.newlyUnblockedNodeIds.includes(nodeId),
@@ -2048,7 +2052,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "12",
+    schemaVersion: "13",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

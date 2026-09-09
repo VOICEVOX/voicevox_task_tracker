@@ -6,7 +6,7 @@ import {
 import { CodexTransportAliasError } from "./errors.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
 import { type CodexElementOutput } from "./semantic-validation.js";
-import { type SchemaValidCodexElementOutput } from "./element-output.js";
+import { type CodexElementEvidence, type SchemaValidCodexElementOutput } from "./element-output.js";
 
 const SOURCE_ALIAS_PREFIX = "codex_source:";
 const RELATION_ALIAS_PREFIX = "rel:codex-";
@@ -212,7 +212,7 @@ function restoreSourceId(value: string, path: string, codec: CodexTransportAlias
 
 function restoreElementResultEvidence(
   value: Readonly<{
-    evidence: readonly Readonly<{ sourceId: string; summary: string }>[];
+    evidence: readonly CodexElementEvidence[];
   }>,
   path: string,
   codec: CodexTransportAliasCodec,

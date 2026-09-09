@@ -2,6 +2,12 @@ import { z } from "zod";
 
 import { createAiCacheEntry, type AiCacheEntry, type AiCacheKey } from "../codex/cache.js";
 import {
+  aiAnalysisElementEvidenceSchema,
+  aiAnalysisElementMetadataSchema,
+  aiAnalysisElementSchema,
+  createAiAnalysisElementResultSchema,
+} from "../domain/ai-analysis-elements.js";
+import {
   createUtcIsoDateTime,
   REASONING_EFFORTS,
   type ReasoningEffort,
@@ -40,6 +46,18 @@ const legacyAiCacheEnvelopeSchema = z.strictObject({
   metadata: legacyAiCacheMetadataSchema,
   output: z.json(),
 });
+const currentAiCacheEnvelopeSchema = z.strictObject({
+  cacheKey: sha256HashSchema,
+  element: aiAnalysisElementSchema,
+  generation: z.unknown(),
+});
+const legacyCurrentAiCacheMetadataSchema = aiAnalysisElementMetadataSchema.extend({
+  schemaVersion: z.literal("5"),
+});
+const legacyCurrentAiCacheEvidenceSchema = z
+  .array(aiAnalysisElementEvidenceSchema.omit({ supports: true }))
+  .min(1)
+  .max(30);
 
 /** 旧AI cache metadataのschema version。 */
 export type LegacyAiCacheSchemaVersion = z.output<typeof legacyAiCacheSchemaVersionSchema>;
@@ -64,6 +82,12 @@ export type LegacyAiCacheEntry = Readonly<{
   sourceHash: Sha256Hash;
   metadata: LegacyAiCacheMetadata;
   output: unknown;
+}>;
+
+type ObsoleteAiCacheEntry = Readonly<{
+  path: string;
+  cacheKey: AiCacheKey;
+  schemaVersion: "5";
 }>;
 
 /** AI cache移行へ渡す一つのstate file。 */
@@ -163,6 +187,51 @@ function parseLegacyAiCacheEntry(
   });
 }
 
+function legacyCurrentCacheKey(
+  element: z.output<typeof aiAnalysisElementSchema>,
+  metadata: z.output<typeof legacyCurrentAiCacheMetadataSchema>,
+): AiCacheKey {
+  return hashCanonicalJson({
+    backendVersion: metadata.backendVersion,
+    element,
+    executionFingerprint: metadata.executionFingerprint,
+    inputFingerprint: metadata.inputFingerprint,
+    model: metadata.model,
+    reasoningEffort: metadata.reasoningEffort,
+    revision: metadata.revision,
+    schemaVersion: metadata.schemaVersion,
+  });
+}
+
+function parseObsoleteAiCacheEntry(
+  path: string,
+  value: unknown,
+  expectedCacheKey: AiCacheKey,
+): ObsoleteAiCacheEntry {
+  const parsed = currentAiCacheEnvelopeSchema.parse(value);
+  const generationSchema = z.strictObject({
+    metadata: legacyCurrentAiCacheMetadataSchema,
+    result: createAiAnalysisElementResultSchema(parsed.element).extend({
+      evidence: legacyCurrentAiCacheEvidenceSchema,
+    }),
+  });
+  const generation = generationSchema.parse(parsed.generation);
+  if (parsed.cacheKey !== expectedCacheKey) {
+    throw new TypeError("AI cacheのcache keyとファイル名が一致しません");
+  }
+  if (legacyCurrentCacheKey(parsed.element, generation.metadata) !== parsed.cacheKey) {
+    throw new TypeError("AI cacheのmetadataとcache keyが一致しません");
+  }
+  if (hashCanonicalJson(generation.result) !== generation.metadata.outputHash) {
+    throw new TypeError("AI cacheの出力hashが一致しません");
+  }
+  return Object.freeze({
+    path,
+    cacheKey: parsed.cacheKey,
+    schemaVersion: "5",
+  });
+}
+
 function parseCacheFile(
   path: string,
   source: string,
@@ -175,6 +244,10 @@ function parseCacheFile(
   | Readonly<{
       status: "current";
       entry: AiCacheEntry;
+    }>
+  | Readonly<{
+      status: "obsolete";
+      entry: ObsoleteAiCacheEntry;
     }> {
   const value = parseJson(source);
   const legacyResult = legacyAiCacheEnvelopeSchema.safeParse(value);
@@ -183,6 +256,22 @@ function parseCacheFile(
       status: "legacy",
       entry: parseLegacyAiCacheEntry(path, legacyResult.data, expectedCacheKey),
     });
+  }
+  const currentEnvelope = currentAiCacheEnvelopeSchema.safeParse(value);
+  if (currentEnvelope.success) {
+    const generationMetadata = z
+      .object({
+        metadata: z.object({
+          schemaVersion: z.string(),
+        }),
+      })
+      .safeParse(currentEnvelope.data.generation);
+    if (generationMetadata.success && generationMetadata.data.metadata.schemaVersion === "5") {
+      return Object.freeze({
+        status: "obsolete",
+        entry: parseObsoleteAiCacheEntry(path, value, expectedCacheKey),
+      });
+    }
   }
   const entry = createAiCacheEntry(value);
   if (entry.cacheKey !== expectedCacheKey) {
@@ -205,6 +294,7 @@ export function createAiCacheMigrationPlan(
   const legacyCachePaths: string[] = [];
   const legacyEntriesByCacheKey = new Map<AiCacheKey, LegacyAiCacheEntry>();
   const currentEntriesByCacheKey = new Map<AiCacheKey, AiCacheEntry>();
+  const obsoleteCacheKeys = new Set<AiCacheKey>();
   const sourceSchemaVersions: string[] = [];
   const migratedSchemaVersions: string[] = [];
   for (const file of sortedFiles) {
@@ -221,7 +311,8 @@ export function createAiCacheMigrationPlan(
       if (parsed.status === "legacy") {
         if (
           legacyEntriesByCacheKey.has(parsed.entry.cacheKey) ||
-          currentEntriesByCacheKey.has(parsed.entry.cacheKey)
+          currentEntriesByCacheKey.has(parsed.entry.cacheKey) ||
+          obsoleteCacheKeys.has(parsed.entry.cacheKey)
         ) {
           throw new TypeError("AI cacheのcache keyが重複しています");
         }
@@ -230,9 +321,23 @@ export function createAiCacheMigrationPlan(
         sourceSchemaVersions.push(parsed.entry.metadata.schemaVersion);
         continue;
       }
+      if (parsed.status === "obsolete") {
+        if (
+          legacyEntriesByCacheKey.has(parsed.entry.cacheKey) ||
+          currentEntriesByCacheKey.has(parsed.entry.cacheKey) ||
+          obsoleteCacheKeys.has(parsed.entry.cacheKey)
+        ) {
+          throw new TypeError("AI cacheのcache keyが重複しています");
+        }
+        obsoleteCacheKeys.add(parsed.entry.cacheKey);
+        legacyCachePaths.push(parsed.entry.path);
+        sourceSchemaVersions.push(parsed.entry.schemaVersion);
+        continue;
+      }
       if (
         legacyEntriesByCacheKey.has(parsed.entry.cacheKey) ||
-        currentEntriesByCacheKey.has(parsed.entry.cacheKey)
+        currentEntriesByCacheKey.has(parsed.entry.cacheKey) ||
+        obsoleteCacheKeys.has(parsed.entry.cacheKey)
       ) {
         throw new TypeError("AI cacheのcache keyが重複しています");
       }

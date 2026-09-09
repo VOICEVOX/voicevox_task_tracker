@@ -330,7 +330,13 @@ export type NormalizedEvent =
 
 /** 根拠が支持する判定箇所。 */
 export type EvidenceSupport =
-  "status" | "waiting_on" | "relation" | "progress" | "notification" | "uncertainty";
+  | "status"
+  | "waiting_on"
+  | "relation"
+  | "progress"
+  | "notification"
+  | "uncertainty"
+  | "self_commitment";
 
 /** 判定をGitHub由来のsourceへ結び付ける根拠。 */
 export type Evidence = Readonly<{

@@ -23,7 +23,12 @@ import {
   type WaitingOn,
 } from "../domain/index.js";
 import { type DependencyCycleId, type DownstreamImpact } from "../graph/index.js";
-import { assertNonNullable } from "../util/index.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
+import {
+  notificationCauseSchema,
+  type NotificationCauses,
+  type NotificationCause,
+} from "./notification-cause.js";
 
 const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 const MILLISECONDS_PER_DAY = 24 * MILLISECONDS_PER_HOUR;
@@ -126,6 +131,7 @@ export type DiscordNotificationItem = Readonly<{
   priorityWeight: number;
   current: DiscordNotificationCurrentState;
   previous: DiscordNotificationPrevious;
+  causes: NotificationCauses;
   graph: DiscordNotificationGraphContext;
 }>;
 
@@ -487,6 +493,16 @@ function validateNotificationRecommendation(item: DiscordNotificationItem): void
   }
 }
 
+function validateNotificationCauses(item: DiscordNotificationItem): void {
+  const causeEntries: readonly NotificationCause[] = [
+    item.causes.responsibility_changed,
+    item.causes.newly_unblocked,
+  ];
+  for (const cause of causeEntries) {
+    notificationCauseSchema.parse(cause);
+  }
+}
+
 function validateLedger(
   ledger: readonly NotificationLedgerEntry[],
   evaluatedTimestamp: number,
@@ -580,6 +596,7 @@ function validateInput(input: SelectDiscordNotificationsInput): number {
       validateProbability(item.decisionBasis.confidence, `${item.nodeId}のAI confidence`);
     }
     validateNotificationRecommendation(item);
+    validateNotificationCauses(item);
     validateCurrentState(item, evaluatedTimestamp);
     validatePreviousState(item, evaluatedTimestamp);
     validateGraphContext(item);
@@ -1082,6 +1099,39 @@ function createSignals(
   return signals;
 }
 
+function isReasonSuppressedByCause(
+  item: DiscordNotificationItem,
+  reasonCode: DiscordNotificationReasonCode,
+): boolean {
+  const isSelfCause = (cause: NotificationCause): boolean => {
+    if (cause.status !== "complete") {
+      return false;
+    }
+    return cause.evidence.every((evidence) => evidence.actor.nodeId === cause.responsible.nodeId);
+  };
+  switch (reasonCode) {
+    case "responsibility_changed":
+      return isSelfCause(item.causes.responsibility_changed);
+    case "newly_unblocked":
+      return isSelfCause(item.causes.newly_unblocked);
+    case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
+    case "review_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
+    case "work_overdue":
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "dependency_cycle":
+    case "merge_overdue":
+    case "automation_stuck":
+      return false;
+    default:
+      throw new UnreachableError(reasonCode);
+  }
+}
+
 function notificationState(item: DiscordNotificationItem, signal: ReasonSignal): string {
   if (signal.reason.reasonCode === "dependency_cycle") {
     return JSON.stringify([signal.reason.reasonCode, signal.stateDiscriminator]);
@@ -1226,6 +1276,7 @@ function createCurrentCandidateDrafts(
       input.settings,
     );
     const eligibleReasons = signals
+      .filter((signal) => !isReasonSuppressedByCause(item, signal.reason.reasonCode))
       .map((signal) => {
         const notificationKey = createNotificationKey(item, signal);
         return {

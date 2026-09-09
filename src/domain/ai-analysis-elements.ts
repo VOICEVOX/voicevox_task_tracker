@@ -20,7 +20,7 @@ export const aiAnalysisElementSchema = z.enum([
 export const AI_ANALYSIS_ELEMENTS = Object.freeze(aiAnalysisElementSchema.options);
 
 /** AI分析要素出力のschema version。 */
-export const AI_ANALYSIS_ELEMENT_SCHEMA_VERSION = "5";
+export const AI_ANALYSIS_ELEMENT_SCHEMA_VERSION = "6";
 
 /** AI分析要素の識別子。 */
 export type AiAnalysisElement = z.output<typeof aiAnalysisElementSchema>;
@@ -72,6 +72,7 @@ export const aiAnalysisElementEvidenceSchema = z.strictObject({
     .min(1, "source IDは空にできません")
     .regex(/^\S+$/u, "source IDに空白は使えません"),
   summary: z.string().min(1, "根拠のsummaryは空にできません").max(240),
+  supports: z.enum(["element", "self_commitment"]),
 });
 
 /** AI分析要素に属する根拠。 */

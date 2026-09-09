@@ -1,4 +1,11 @@
 export {
+  createNotificationCauses,
+  type NotificationCause,
+  type NotificationCauseEvidence,
+  type NotificationCauses,
+  type NotificationDependencyCause,
+} from "./notification-cause.js";
+export {
   createAcknowledgedNotificationLedgerEntries,
   selectDiscordNotifications,
   type DiscordNotificationCandidate,

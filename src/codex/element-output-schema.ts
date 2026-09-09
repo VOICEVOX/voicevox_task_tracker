@@ -41,7 +41,7 @@ const itemSchema: CodexElementOutputJsonSchema = Object.freeze({
 const evidenceSchema: CodexElementOutputJsonSchema = Object.freeze({
   type: "object",
   additionalProperties: false,
-  required: ["sourceId", "summary"],
+  required: ["sourceId", "summary", "supports"],
   properties: {
     sourceId: {
       type: "string",
@@ -52,6 +52,10 @@ const evidenceSchema: CodexElementOutputJsonSchema = Object.freeze({
       type: "string",
       minLength: 1,
       maxLength: 240,
+    },
+    supports: {
+      type: "string",
+      enum: ["element", "self_commitment"],
     },
   },
 });

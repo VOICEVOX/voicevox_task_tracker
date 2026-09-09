@@ -99,7 +99,7 @@
       {
         "itemNodeId": "author-question-after-changes-requested-pr",
         "input": {
-          "schemaVersion": "3",
+          "schemaVersion": "4",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "author-question-after-changes-requested-pr",
@@ -128,6 +128,7 @@
               "id": "golden_event:question-changes-requested",
               "kind": "review",
               "actorType": "human",
+              "author": { "status": "unavailable" },
               "createdAt": "2026-07-20T00:00:00.000Z",
               "content": "例外を置き換えるときに元のエラーをcauseへ設定してください。"
             },
@@ -135,6 +136,7 @@
               "id": "golden_event:author-question",
               "kind": "comment",
               "actorType": "human",
+              "author": { "status": "unavailable" },
               "createdAt": "2026-07-31T12:00:00.000Z",
               "content": "@reviewer-two causeは外側の例外だけに設定すればよいでしょうか。内側の例外にも必要ですか。"
             }
@@ -165,7 +167,7 @@
           "lockedElements": {}
         },
         "acceptedOutput": {
-          "schemaVersion": "5",
+          "schemaVersion": "6",
           "item": {
             "nodeId": "author-question-after-changes-requested-pr",
             "url": "https://github.com/VOICEVOX/fixture-change/pull/203"
@@ -175,7 +177,8 @@
             "evidence": [
               {
                 "sourceId": "golden_event:author-question",
-                "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+                "summary": "authorの最新発言はreviewerへ回答を求める質問です",
+                "supports": "element"
               }
             ],
             "confidence": 0.95,
@@ -195,7 +198,8 @@
             "evidence": [
               {
                 "sourceId": "golden_event:author-question",
-                "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+                "summary": "authorの最新発言はreviewerへ回答を求める質問です",
+                "supports": "element"
               }
             ],
             "confidence": 0.95,
@@ -206,7 +210,8 @@
             "evidence": [
               {
                 "sourceId": "golden_event:author-question",
-                "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+                "summary": "authorの最新発言はreviewerへ回答を求める質問です",
+                "supports": "element"
               }
             ],
             "confidence": 0.95,
@@ -217,7 +222,8 @@
             "evidence": [
               {
                 "sourceId": "golden_event:author-question",
-                "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+                "summary": "authorの最新発言はreviewerへ回答を求める質問です",
+                "supports": "element"
               }
             ],
             "confidence": 0.95,
@@ -232,7 +238,8 @@
             "evidence": [
               {
                 "sourceId": "golden_event:author-question",
-                "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+                "summary": "authorの最新発言はreviewerへ回答を求める質問です",
+                "supports": "element"
               }
             ],
             "confidence": 0.95,
@@ -247,7 +254,8 @@
             "evidence": [
               {
                 "sourceId": "golden_event:author-question",
-                "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+                "summary": "authorの最新発言はreviewerへ回答を求める質問です",
+                "supports": "element"
               }
             ],
             "confidence": 0.95,
@@ -261,7 +269,8 @@
             "evidence": [
               {
                 "sourceId": "golden_event:author-question",
-                "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+                "summary": "authorの最新発言はreviewerへ回答を求める質問です",
+                "supports": "element"
               }
             ],
             "confidence": 0.95,
@@ -276,7 +285,8 @@
             "evidence": [
               {
                 "sourceId": "golden_event:author-question",
-                "summary": "authorの最新発言はreviewerへ回答を求める質問です"
+                "summary": "authorの最新発言はreviewerへ回答を求める質問です",
+                "supports": "element"
               }
             ],
             "confidence": 0.95,
