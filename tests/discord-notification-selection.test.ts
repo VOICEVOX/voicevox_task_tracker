@@ -155,6 +155,10 @@ function createItem(nodeIdValue: string, overrides: ItemOverrides): DiscordNotif
       lastProgressAt: overrides.lastProgressAt ?? CREATED_AT,
     }),
     previous: overrides.previous ?? Object.freeze({ availability: "not_available" }),
+    causes: Object.freeze({
+      responsibility_changed: Object.freeze({ status: "indeterminate" }),
+      newly_unblocked: Object.freeze({ status: "indeterminate" }),
+    }),
     graph: Object.freeze({
       downstreamImpact: Object.freeze({
         nodeId,

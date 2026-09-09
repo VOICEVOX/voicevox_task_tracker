@@ -1227,6 +1227,10 @@ function selectNotifications(
         lastProgressAt: analysis.staleness.lastProgressAt,
       }),
       previous: notificationPrevious(analysis),
+      causes: Object.freeze({
+        responsibility_changed: Object.freeze({ status: "indeterminate" }),
+        newly_unblocked: Object.freeze({ status: "indeterminate" }),
+      }),
       graph: Object.freeze({
         downstreamImpact: findDownstreamImpact(nodeId, graph.downstreamImpacts),
         newlyUnblocked: graph.newlyUnblockedNodeIds.includes(nodeId),

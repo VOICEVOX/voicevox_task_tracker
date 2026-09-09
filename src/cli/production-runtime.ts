@@ -96,11 +96,13 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
+  createNotificationCauses,
   selectDiscordNotifications,
   type sendDiscordDigest,
   type DiscordDigestDelivery,
   type DiscordDeliverySettings,
   type DiscordNotificationItem,
+  type NotificationCauses,
   type DiscordNotificationSelection,
   type DiscordOperationsIncident,
   type DiscordSecretProvider,
@@ -376,6 +378,7 @@ type ReducedItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
   detail: GitHubItemDetail;
   decision: ReducedCodexDecision;
+  responsibilityBasis: IssueStateDecision["responsibilityBasis"];
   notificationRecommendation: DiscordNotificationItem["notificationRecommendation"];
   primaryWaitingOn: PrimaryWaitingOn;
   staleness: StalenessResult;
@@ -3535,6 +3538,7 @@ function reduceAnalysisPass(
         item: analysis.item,
         detail: analysis.detail,
         decision,
+        responsibilityBasis: basis.responsibilityBasis,
         notificationRecommendation:
           reduction == null
             ? Object.freeze({
@@ -4046,6 +4050,7 @@ function notificationItem(
   inventory: RepositoryInventory,
   enumeratedItemsByNodeId: ReadonlyMap<GitHubNodeId, EnumeratedGitHubItem>,
   graph: GraphResult,
+  evaluatedAt: UtcIsoDateTime,
   item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
@@ -4077,6 +4082,38 @@ function notificationItem(
               .filter((cycle) => cycle.nodeIds.includes(item.nodeId))
               .map((cycle) => cycle.id),
           ),
+        });
+  const causes: NotificationCauses =
+    analysisState.availability === "available"
+      ? createNotificationCauses({
+          item: analysisState.value.item,
+          currentWaitingOn: item.waitingOn,
+          previous:
+            previous == null
+              ? Object.freeze({
+                  availability: "not_available",
+                })
+              : Object.freeze({
+                  availability: "available",
+                  value: Object.freeze({
+                    waitingOn: previous.waitingOn,
+                    observedAt: previous.observedAt,
+                  }),
+                }),
+          currentResponsibilityBasis: analysisState.value.responsibilityBasis,
+          dependencyResponsibilityIndeterminate:
+            graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId) ||
+            item.waitingOn.some(
+              (waitingOn) => waitingOn.kind === "item" || waitingOn.role === "dependency",
+            ) ||
+            previous?.waitingOn.some(
+              (waitingOn) => waitingOn.kind === "item" || waitingOn.role === "dependency",
+            ) === true,
+          evaluatedAt,
+        })
+      : Object.freeze({
+          responsibility_changed: Object.freeze({ status: "indeterminate" }),
+          newly_unblocked: Object.freeze({ status: "indeterminate" }),
         });
   return Object.freeze({
     nodeId: item.nodeId,
@@ -4122,6 +4159,7 @@ function notificationItem(
               observedAt: previous.observedAt,
             }),
           }),
+    causes,
     graph: Object.freeze({
       downstreamImpact,
       newlyUnblocked: graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId),
@@ -4165,6 +4203,7 @@ function notificationItems(
           inventory,
           enumeratedItemsByNodeId,
           graph,
+          collection.evaluatedAt,
           item,
           staleness,
           current == null
