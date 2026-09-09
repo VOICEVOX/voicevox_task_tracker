@@ -51,6 +51,7 @@ import {
   createAiAnalysisElementResultSchema,
   createAiAnalysisMigrationElementResultSchema,
   type AiAnalysisElement,
+  type AiAnalysisElementEvidence,
   type AiAnalysisElementMigrationResult,
   type AiAnalysisElementExecutionFingerprint,
   type AiAnalysisElementGeneration,
@@ -3225,10 +3226,11 @@ function deterministicElementResult(
   analysis: DeterministicItemAnalysis,
   element: AiAnalysisElement,
 ): AiAnalysisElementMigrationResult | undefined {
-  const evidence = Object.freeze([
+  const evidence: readonly AiAnalysisElementEvidence[] = Object.freeze([
     Object.freeze({
       sourceId: analysis.item.sourceId,
       summary: "決定論的な判定結果です",
+      supports: "element",
     }),
   ]);
   const common = {
