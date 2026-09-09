@@ -71,6 +71,19 @@ const notificationCauseEvidenceListSchema = z
     return Object.freeze([first, ...rest]);
   });
 
+const notificationDependencyCauseSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_applicable"),
+  }),
+  z.strictObject({
+    status: z.literal("complete"),
+    evidence: notificationCauseEvidenceListSchema,
+  }),
+  z.strictObject({
+    status: z.literal("indeterminate"),
+  }),
+]);
+
 /** 通知理由の原因対応結果を検証するcause schema。 */
 export const notificationCauseSchema = z.discriminatedUnion("status", [
   z.strictObject({
@@ -86,13 +99,31 @@ export const notificationCauseSchema = z.discriminatedUnion("status", [
 /** 通知理由の原因対応結果を表す検証済みcause。 */
 export type NotificationCause = z.output<typeof notificationCauseSchema>;
 
+type NotificationCauseEvidenceList = readonly [
+  NotificationCauseEvidence,
+  ...NotificationCauseEvidence[],
+];
+
+/** 責任者が確定する前の依存解消cause。 */
+export type NotificationDependencyCause =
+  | Readonly<{
+      status: "not_applicable";
+    }>
+  | Readonly<{
+      status: "complete";
+      evidence: NotificationCauseEvidenceList;
+    }>
+  | Readonly<{
+      status: "indeterminate";
+    }>;
+
 type PreviousResponsibility = Readonly<{
   waitingOn: readonly WaitingOn[];
   observedAt: UtcIsoDateTime;
 }>;
 
-/** 責務変更causeを同一項目の正規化eventから導出する入力。 */
-export type CreateResponsibilityChangedCauseInput = Readonly<{
+/** 通知理由のcauseを正規化eventと依存解消から導出する入力。 */
+export type CreateNotificationCausesInput = Readonly<{
   item: FreshObservedGitHubItem;
   currentWaitingOn: readonly WaitingOn[];
   previous:
@@ -107,7 +138,7 @@ export type CreateResponsibilityChangedCauseInput = Readonly<{
     sourceIds: readonly [SourceId, ...SourceId[]];
     occurredAt: UtcIsoDateTime;
   }>;
-  dependencyResponsibilityIndeterminate: boolean;
+  dependencyCause: NotificationDependencyCause;
   evaluatedAt: UtcIsoDateTime;
 }>;
 
@@ -129,6 +160,18 @@ type MappedEvent = Readonly<{
   addedSignatures: readonly string[];
   removedSignatures: readonly string[];
 }>;
+
+type LocalCauseResolution =
+  | Readonly<{
+      status: "not_applicable";
+    }>
+  | Readonly<{
+      status: "complete";
+      evidence: NotificationCauseEvidenceList;
+    }>
+  | Readonly<{
+      status: "indeterminate";
+    }>;
 
 function compareSourceIds(left: SourceId, right: SourceId): -1 | 0 | 1 {
   if (left < right) {
@@ -172,6 +215,10 @@ function waitingOnDifference(
       previous.filter((waitingOn) => !currentBySignature.has(waitingOnSignature(waitingOn))),
     ),
   });
+}
+
+function isDependencyWaitingOn(waitingOn: WaitingOn): boolean {
+  return waitingOn.kind === "item" || waitingOn.role === "dependency";
 }
 
 function actorIdentity(actor: GitHubAccountActor): string {
@@ -219,15 +266,10 @@ function candidateActors(item: FreshObservedGitHubItem): readonly GitHubAccountA
   return Object.freeze([...actorsByIdentity.values()]);
 }
 
-function actorForWaitingOn(
+function actorForWaitingOnEntry(
   item: FreshObservedGitHubItem,
-  waitingOn: readonly WaitingOn[],
+  target: WaitingOn,
 ): NotificationCauseActor | undefined {
-  if (waitingOn.length !== 1) {
-    return undefined;
-  }
-  const target = waitingOn[0];
-  assertNonNullable(target, "waitingOnのcause対象を取得できませんでした");
   if (target.kind === "role") {
     if (target.candidateId !== "author" || target.role !== "author") {
       return undefined;
@@ -261,6 +303,18 @@ function actorForWaitingOn(
   return responsible;
 }
 
+function actorForWaitingOn(
+  item: FreshObservedGitHubItem,
+  waitingOn: readonly WaitingOn[],
+): NotificationCauseActor | undefined {
+  if (waitingOn.length !== 1) {
+    return undefined;
+  }
+  const target = waitingOn[0];
+  assertNonNullable(target, "waitingOnのcause対象を取得できませんでした");
+  return actorForWaitingOnEntry(item, target);
+}
+
 function notificationCauseHumanActor(
   actor: GitHubAccountActor,
 ): NotificationCauseActor | undefined {
@@ -282,7 +336,7 @@ function eventInWindow(
   return event.occurredAt > previousObservedAt && event.occurredAt <= evaluatedAt;
 }
 
-function eventsInWindow(input: CreateResponsibilityChangedCauseInput): readonly NormalizedEvent[] {
+function eventsInWindow(input: CreateNotificationCausesInput): readonly NormalizedEvent[] {
   const previous = input.previous;
   if (previous.availability === "not_available") {
     return [];
@@ -302,10 +356,32 @@ function isImplicitMaintainerWaitingOn(waitingOn: WaitingOn): boolean {
 }
 
 function currentResponsibilityBasisContains(
-  input: CreateResponsibilityChangedCauseInput,
+  input: CreateNotificationCausesInput,
   sourceId: SourceId,
 ): boolean {
   return input.currentResponsibilityBasis.sourceIds.includes(sourceId);
+}
+
+function normalPushIsProvenByForcePush(
+  input: CreateNotificationCausesInput,
+  event: Extract<NormalizedEvent, { kind: "push" }>,
+): boolean {
+  const item = input.item;
+  if (event.forcePush || item.type !== "pull_request") {
+    return false;
+  }
+  const previous = input.previous;
+  if (previous.availability === "not_available") {
+    return false;
+  }
+  return input.item.events.some(
+    (candidate) =>
+      candidate.kind === "push" &&
+      candidate.forcePush &&
+      candidate.headCommitSha === event.headCommitSha &&
+      candidate.headCommitSha === item.headCommit.sha &&
+      eventInWindow(candidate, previous.value.observedAt, input.evaluatedAt),
+  );
 }
 
 function eventAssigneeMatches(
@@ -321,7 +397,7 @@ function eventAssigneeMatches(
 
 function mapAssigneeEvent(
   event: Extract<NormalizedEvent, { kind: "assignee" }>,
-  input: CreateResponsibilityChangedCauseInput,
+  input: CreateNotificationCausesInput,
   difference: WaitingOnDifference,
 ): MappedEvent | undefined {
   if (event.action === "added" && !currentResponsibilityBasisContains(input, event.sourceId)) {
@@ -349,7 +425,7 @@ function mapAssigneeEvent(
 
 function mapConvertedToDraftEvent(
   event: NormalizedEvent,
-  input: CreateResponsibilityChangedCauseInput,
+  input: CreateNotificationCausesInput,
   item: FreshObservedGitHubItem,
   difference: WaitingOnDifference,
 ): MappedEvent | undefined {
@@ -375,7 +451,7 @@ function mapConvertedToDraftEvent(
 
 function mapForcePushEvent(
   event: NormalizedEvent,
-  input: CreateResponsibilityChangedCauseInput,
+  input: CreateNotificationCausesInput,
   item: FreshObservedGitHubItem,
   difference: WaitingOnDifference,
 ): MappedEvent | undefined {
@@ -401,13 +477,11 @@ function mapForcePushEvent(
   });
 }
 
-function previousWaitingOn(input: CreateResponsibilityChangedCauseInput): readonly WaitingOn[] {
+function previousWaitingOn(input: CreateNotificationCausesInput): readonly WaitingOn[] {
   return input.previous.availability === "available" ? input.previous.value.waitingOn : [];
 }
 
-function responsibilitySourceIds(
-  input: CreateResponsibilityChangedCauseInput,
-): ReadonlySet<SourceId> {
+function responsibilitySourceIds(input: CreateNotificationCausesInput): ReadonlySet<SourceId> {
   return new Set([
     ...input.currentResponsibilityBasis.sourceIds,
     ...input.currentWaitingOn.flatMap((waitingOn) => waitingOn.sourceIds),
@@ -424,11 +498,14 @@ function waitingOnHasRole(
 
 function eventMayAffectResponsibility(
   event: NormalizedEvent,
-  input: CreateResponsibilityChangedCauseInput,
+  input: CreateNotificationCausesInput,
   difference: WaitingOnDifference,
 ): boolean {
   if (event.kind === "push" && !event.forcePush) {
-    return false;
+    return (
+      currentResponsibilityBasisContains(input, event.sourceId) &&
+      !normalPushIsProvenByForcePush(input, event)
+    );
   }
   if (responsibilitySourceIds(input).has(event.sourceId)) {
     return true;
@@ -480,7 +557,7 @@ function eventMayAffectResponsibility(
 
 function unsupportedEventInWindow(
   event: NormalizedEvent,
-  input: CreateResponsibilityChangedCauseInput,
+  input: CreateNotificationCausesInput,
   difference: WaitingOnDifference,
 ): boolean {
   if (!eventMayAffectResponsibility(event, input, difference)) {
@@ -516,7 +593,7 @@ function unsupportedEventInWindow(
 
 function mappedEventFor(
   event: NormalizedEvent,
-  input: CreateResponsibilityChangedCauseInput,
+  input: CreateNotificationCausesInput,
   item: FreshObservedGitHubItem,
   difference: WaitingOnDifference,
 ): MappedEvent | undefined {
@@ -579,7 +656,387 @@ function evidenceFromEvents(
   return Object.freeze([first, ...rest]);
 }
 
-function validateCauseInput(input: CreateResponsibilityChangedCauseInput): void {
+function mergeEvidence(
+  evidenceGroups: readonly (readonly NotificationCauseEvidence[])[],
+): NotificationCauseEvidenceList | undefined {
+  const evidenceBySourceId = new Map<SourceId, NotificationCauseEvidence>();
+  for (const evidenceGroup of evidenceGroups) {
+    for (const evidence of evidenceGroup) {
+      evidenceBySourceId.set(evidence.sourceId, evidence);
+    }
+  }
+  const evidence = [...evidenceBySourceId.values()].sort((left, right) => {
+    if (left.occurredAt < right.occurredAt) {
+      return -1;
+    }
+    if (left.occurredAt > right.occurredAt) {
+      return 1;
+    }
+    return compareSourceIds(left.sourceId, right.sourceId);
+  });
+  const [first, ...rest] = evidence;
+  if (first == null) {
+    return undefined;
+  }
+  return Object.freeze([first, ...rest]);
+}
+
+function hasWaitingOnDifference(difference: WaitingOnDifference): boolean {
+  return difference.added.length > 0 || difference.removed.length > 0;
+}
+
+function localWaitingOnDifference(difference: WaitingOnDifference): WaitingOnDifference {
+  return Object.freeze({
+    added: Object.freeze(difference.added.filter((waitingOn) => !isDependencyWaitingOn(waitingOn))),
+    removed: Object.freeze(
+      difference.removed.filter((waitingOn) => !isDependencyWaitingOn(waitingOn)),
+    ),
+  });
+}
+
+function localWaitingOn(waitingOn: readonly WaitingOn[]): readonly WaitingOn[] {
+  return Object.freeze(waitingOn.filter((value) => !isDependencyWaitingOn(value)));
+}
+
+function waitingOnSignaturesEqual(
+  left: readonly WaitingOn[],
+  right: readonly WaitingOn[],
+): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  const rightSignatures = new Set(right.map(waitingOnSignature));
+  return left.every((waitingOn) => rightSignatures.has(waitingOnSignature(waitingOn)));
+}
+
+function responsibilityBasisEvents(
+  input: CreateNotificationCausesInput,
+): readonly NormalizedEvent[] | undefined {
+  const eventsBySourceId = new Map<SourceId, NormalizedEvent>();
+  for (const event of input.item.events) {
+    eventsBySourceId.set(event.sourceId, event);
+  }
+  const events: NormalizedEvent[] = [];
+  for (const sourceId of input.currentResponsibilityBasis.sourceIds) {
+    const event = eventsBySourceId.get(sourceId);
+    if (event == null) {
+      return undefined;
+    }
+    events.push(event);
+  }
+  return Object.freeze(events);
+}
+
+function responsibilityBasisEventMatchesWaitingOn(
+  event: NormalizedEvent,
+  item: FreshObservedGitHubItem,
+  waitingOn: WaitingOn,
+  responsible: NotificationCauseActor,
+): boolean {
+  switch (event.kind) {
+    case "assignee":
+      return (
+        waitingOn.kind === "user" &&
+        waitingOn.role === "assignee" &&
+        event.action === "added" &&
+        event.assignee.nodeId === responsible.nodeId &&
+        event.assignee.login.toLowerCase() === waitingOn.candidateId.toLowerCase()
+      );
+    case "converted_to_draft":
+      return (
+        item.type === "pull_request" &&
+        waitingOn.kind === "role" &&
+        waitingOn.candidateId === "author" &&
+        waitingOn.role === "author"
+      );
+    case "push":
+      return (
+        item.type === "pull_request" &&
+        waitingOn.kind === "user" &&
+        waitingOn.role === "reviewer" &&
+        event.headCommitSha === item.headCommit.sha
+      );
+    case "review":
+      return (
+        item.type === "pull_request" &&
+        waitingOn.kind === "role" &&
+        waitingOn.candidateId === "author" &&
+        waitingOn.role === "author" &&
+        event.state === "changes_requested"
+      );
+    case "review_request":
+      return (
+        item.type === "pull_request" &&
+        waitingOn.kind === "user" &&
+        waitingOn.role === "reviewer" &&
+        event.action === "added" &&
+        event.target.type === "user" &&
+        event.target.nodeId === responsible.nodeId
+      );
+    case "comment":
+    case "ready_for_review":
+    case "label":
+    case "state":
+    case "relation":
+    case "added_to_merge_queue":
+    case "removed_from_merge_queue":
+    case "auto_merge_enabled":
+    case "auto_merge_disabled":
+      return false;
+    default:
+      throw new UnreachableError(event);
+  }
+}
+
+function currentResponsibilityWasContinuous(
+  input: CreateNotificationCausesInput,
+  responsible: NotificationCauseActor,
+): boolean {
+  if (input.previous.availability === "not_available") {
+    return false;
+  }
+  const currentLocalWaitingOn = localWaitingOn(input.currentWaitingOn);
+  if (currentLocalWaitingOn.length !== 1) {
+    return false;
+  }
+  const previous = input.previous;
+  const previousLocalWaitingOn = localWaitingOn(previous.value.waitingOn);
+  if (waitingOnSignaturesEqual(previousLocalWaitingOn, currentLocalWaitingOn)) {
+    const previousResponsible = actorForWaitingOn(input.item, previousLocalWaitingOn);
+    return previousResponsible?.nodeId === responsible.nodeId;
+  }
+  if (previousLocalWaitingOn.length !== 0) {
+    return false;
+  }
+  const current = currentLocalWaitingOn[0];
+  assertNonNullable(current, "現在のlocal waitingOnを取得できませんでした");
+  const basisEvents = responsibilityBasisEvents(input);
+  if (basisEvents == null || basisEvents.length === 0) {
+    return false;
+  }
+  const earliestBasisEvent = basisEvents.reduce((earliest, event) =>
+    event.occurredAt < earliest.occurredAt ? event : earliest,
+  );
+  if (earliestBasisEvent.occurredAt !== input.currentResponsibilityBasis.occurredAt) {
+    return false;
+  }
+  return basisEvents.every(
+    (event) =>
+      event.occurredAt <= previous.value.observedAt &&
+      responsibilityBasisEventMatchesWaitingOn(event, input.item, current, responsible),
+  );
+}
+
+function dependencyExplainedDifference(
+  input: CreateNotificationCausesInput,
+  difference: WaitingOnDifference,
+  responsible: NotificationCauseActor,
+): WaitingOnDifference {
+  if (input.previous.availability === "not_available") {
+    return difference;
+  }
+  const localDifference = localWaitingOnDifference(difference);
+  const previousLocalWaitingOn = localWaitingOn(input.previous.value.waitingOn);
+  if (
+    localDifference.removed.length !== 0 ||
+    localDifference.added.length !== 1 ||
+    previousLocalWaitingOn.length !== 0 ||
+    !currentResponsibilityWasContinuous(input, responsible)
+  ) {
+    return difference;
+  }
+  const added = localDifference.added[0];
+  assertNonNullable(added, "依存解消で説明するlocal waitingOnを取得できませんでした");
+  const currentLocalWaitingOn = localWaitingOn(input.currentWaitingOn);
+  const current = currentLocalWaitingOn[0];
+  assertNonNullable(current, "依存解消後のlocal waitingOnを取得できませんでした");
+  if (waitingOnSignature(added) !== waitingOnSignature(current)) {
+    return difference;
+  }
+  return Object.freeze({
+    added: Object.freeze(
+      difference.added.filter(
+        (waitingOn) => waitingOnSignature(waitingOn) !== waitingOnSignature(added),
+      ),
+    ),
+    removed: difference.removed,
+  });
+}
+
+function dependencyEvidenceSourceIds(
+  dependencyCause: NotificationDependencyCause,
+): ReadonlySet<SourceId> {
+  return new Set(
+    dependencyCause.status === "complete"
+      ? dependencyCause.evidence.map((evidence) => evidence.sourceId)
+      : [],
+  );
+}
+
+function localResponsibilityCause(
+  input: CreateNotificationCausesInput,
+  difference: WaitingOnDifference,
+  dependencyCause: NotificationDependencyCause,
+): LocalCauseResolution {
+  const localDifference = localWaitingOnDifference(difference);
+  if (!hasWaitingOnDifference(localDifference)) {
+    return Object.freeze({ status: "not_applicable" });
+  }
+  const dependencySourceIds = dependencyEvidenceSourceIds(dependencyCause);
+  const events = eventsInWindow(input).filter((event) => !dependencySourceIds.has(event.sourceId));
+  if (events.some((event) => unsupportedEventInWindow(event, input, localDifference))) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const mappedEvents = events.flatMap((event) => {
+    const mapped = mappedEventFor(event, input, input.item, localDifference);
+    return mapped == null ? [] : [mapped];
+  });
+  const addedSignatures = new Set<string>();
+  const removedSignatures = new Set<string>();
+  const causeEvents: NormalizedEvent[] = [];
+  for (const mapped of mappedEvents) {
+    if (mapped.event.actor.type !== "human") {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    for (const signature of mapped.addedSignatures) {
+      addedSignatures.add(signature);
+    }
+    for (const signature of mapped.removedSignatures) {
+      removedSignatures.add(signature);
+    }
+    causeEvents.push(mapped.event);
+  }
+  const expectedAddedSignatures = new Set(localDifference.added.map(waitingOnSignature));
+  const expectedRemovedSignatures = new Set(localDifference.removed.map(waitingOnSignature));
+  if (
+    addedSignatures.size !== expectedAddedSignatures.size ||
+    [...expectedAddedSignatures].some((signature) => !addedSignatures.has(signature)) ||
+    removedSignatures.size !== expectedRemovedSignatures.size ||
+    [...expectedRemovedSignatures].some((signature) => !removedSignatures.has(signature))
+  ) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const evidence = evidenceFromEvents(causeEvents);
+  if (evidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({ status: "complete", evidence });
+}
+
+function eventMayAffectNewlyUnblockedResponsibility(
+  event: NormalizedEvent,
+  input: CreateNotificationCausesInput,
+): boolean {
+  if (event.kind === "assignee") {
+    return (
+      responsibilitySourceIds(input).has(event.sourceId) ||
+      [...input.currentWaitingOn, ...previousWaitingOn(input)].some((waitingOn) =>
+        eventAssigneeMatches(event, waitingOn),
+      )
+    );
+  }
+  if (event.kind === "comment") {
+    return responsibilitySourceIds(input).has(event.sourceId);
+  }
+  const difference = waitingOnDifference(previousWaitingOn(input), input.currentWaitingOn);
+  return eventMayAffectResponsibility(event, input, difference);
+}
+
+function newlyUnblockedLocalCause(
+  input: CreateNotificationCausesInput,
+  dependencyCause: NotificationDependencyCause,
+): LocalCauseResolution {
+  const dependencySourceIds = dependencyEvidenceSourceIds(dependencyCause);
+  const events = eventsInWindow(input).filter(
+    (event) =>
+      !dependencySourceIds.has(event.sourceId) &&
+      eventMayAffectNewlyUnblockedResponsibility(event, input),
+  );
+  if (events.length === 0) {
+    return Object.freeze({ status: "not_applicable" });
+  }
+  const causeEvents: NormalizedEvent[] = [];
+  for (const event of events) {
+    if (event.actor.type !== "human") {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    switch (event.kind) {
+      case "assignee":
+      case "ready_for_review":
+      case "converted_to_draft":
+      case "review":
+      case "review_request":
+        causeEvents.push(event);
+        break;
+      case "push":
+        if (!event.forcePush) {
+          return Object.freeze({ status: "indeterminate" });
+        }
+        causeEvents.push(event);
+        break;
+      case "comment":
+      case "label":
+      case "state":
+      case "relation":
+      case "added_to_merge_queue":
+      case "removed_from_merge_queue":
+      case "auto_merge_enabled":
+      case "auto_merge_disabled":
+        return Object.freeze({ status: "indeterminate" });
+      default:
+        throw new UnreachableError(event);
+    }
+  }
+  const evidence = evidenceFromEvents(causeEvents);
+  if (evidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({ status: "complete", evidence });
+}
+
+function newlyUnblockedCause(input: CreateNotificationCausesInput): NotificationCause {
+  if (input.dependencyCause.status !== "complete") {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  if (input.previous.availability === "not_available") {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const responsible = actorForWaitingOn(input.item, input.currentWaitingOn);
+  if (responsible == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const difference = waitingOnDifference(previousWaitingOn(input), input.currentWaitingOn);
+  const causeDifference = dependencyExplainedDifference(input, difference, responsible);
+  const localCause = localResponsibilityCause(input, causeDifference, input.dependencyCause);
+  if (localCause.status === "indeterminate") {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  if (
+    localCause.status === "not_applicable" &&
+    !currentResponsibilityWasContinuous(input, responsible)
+  ) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const additionalLocalCause = newlyUnblockedLocalCause(input, input.dependencyCause);
+  if (additionalLocalCause.status === "indeterminate") {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const evidence = mergeEvidence([
+    input.dependencyCause.evidence,
+    localCause.status === "complete" ? localCause.evidence : [],
+    additionalLocalCause.status === "complete" ? additionalLocalCause.evidence : [],
+  ]);
+  if (evidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({
+    status: "complete",
+    responsible: Object.freeze({ ...responsible }),
+    evidence,
+  });
+}
+
+function validateCauseInput(input: CreateNotificationCausesInput): void {
   if (input.item.observedAt > input.evaluatedAt) {
     throw new RangeError("項目の観測時刻は評価時刻以前でなければなりません");
   }
@@ -598,6 +1055,7 @@ function validateCauseInput(input: CreateResponsibilityChangedCauseInput): void 
   ) {
     throw new TypeError("現在の責務根拠のsource IDが重複しています");
   }
+  notificationDependencyCauseSchema.parse(input.dependencyCause);
   for (const event of input.item.events) {
     if (event.itemNodeId !== input.item.nodeId) {
       throw new TypeError("項目と正規化イベントのitem node IDが一致しません");
@@ -605,14 +1063,8 @@ function validateCauseInput(input: CreateResponsibilityChangedCauseInput): void 
   }
 }
 
-function responsibilityChangedCause(
-  input: CreateResponsibilityChangedCauseInput,
-): NotificationCause {
-  validateCauseInput(input);
+function responsibilityChangedCause(input: CreateNotificationCausesInput): NotificationCause {
   if (input.previous.availability === "not_available") {
-    return Object.freeze({ status: "indeterminate" });
-  }
-  if (input.dependencyResponsibilityIndeterminate) {
     return Object.freeze({ status: "indeterminate" });
   }
   const responsible = actorForWaitingOn(input.item, input.currentWaitingOn);
@@ -620,43 +1072,31 @@ function responsibilityChangedCause(
     return Object.freeze({ status: "indeterminate" });
   }
   const difference = waitingOnDifference(input.previous.value.waitingOn, input.currentWaitingOn);
-  if (difference.added.length === 0 && difference.removed.length === 0) {
+  if (!hasWaitingOnDifference(difference)) {
     return Object.freeze({ status: "indeterminate" });
   }
-  const events = eventsInWindow(input);
-  if (events.some((event) => unsupportedEventInWindow(event, input, difference))) {
+  const dependencyChanged = [...difference.added, ...difference.removed].some(
+    isDependencyWaitingOn,
+  );
+  const dependencyEvidence =
+    dependencyChanged && input.dependencyCause.status === "complete"
+      ? input.dependencyCause.evidence
+      : [];
+  if (dependencyChanged && input.dependencyCause.status !== "complete") {
     return Object.freeze({ status: "indeterminate" });
   }
-  const mappedEvents = events.flatMap((event) => {
-    const mapped = mappedEventFor(event, input, input.item, difference);
-    return mapped == null ? [] : [mapped];
-  });
-  const addedSignatures = new Set<string>();
-  const removedSignatures = new Set<string>();
-  const causeEvents: NormalizedEvent[] = [];
-  for (const mapped of mappedEvents) {
-    if (mapped.event.actor.type !== "human") {
-      return Object.freeze({ status: "indeterminate" });
-    }
-    for (const signature of mapped.addedSignatures) {
-      addedSignatures.add(signature);
-    }
-    for (const signature of mapped.removedSignatures) {
-      removedSignatures.add(signature);
-    }
-    causeEvents.push(mapped.event);
-  }
-  const expectedAddedSignatures = new Set(difference.added.map(waitingOnSignature));
-  const expectedRemovedSignatures = new Set(difference.removed.map(waitingOnSignature));
-  if (
-    addedSignatures.size !== expectedAddedSignatures.size ||
-    [...expectedAddedSignatures].some((signature) => !addedSignatures.has(signature)) ||
-    removedSignatures.size !== expectedRemovedSignatures.size ||
-    [...expectedRemovedSignatures].some((signature) => !removedSignatures.has(signature))
-  ) {
+  const causeDifference = dependencyExplainedDifference(input, difference, responsible);
+  const localCause = localResponsibilityCause(input, causeDifference, input.dependencyCause);
+  if (localCause.status === "indeterminate") {
     return Object.freeze({ status: "indeterminate" });
   }
-  const evidence = evidenceFromEvents(causeEvents);
+  if (localCause.status === "not_applicable" && !dependencyChanged) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const evidence = mergeEvidence([
+    dependencyEvidence,
+    localCause.status === "complete" ? localCause.evidence : [],
+  ]);
   if (evidence == null) {
     return Object.freeze({ status: "indeterminate" });
   }
@@ -668,11 +1108,10 @@ function responsibilityChangedCause(
 }
 
 /** 同一項目のtimelineから通知理由ごとのcauseを生成する。 */
-export function createNotificationCauses(
-  input: CreateResponsibilityChangedCauseInput,
-): NotificationCauses {
+export function createNotificationCauses(input: CreateNotificationCausesInput): NotificationCauses {
+  validateCauseInput(input);
   return Object.freeze({
     responsibility_changed: responsibilityChangedCause(input),
-    newly_unblocked: Object.freeze({ status: "indeterminate" }),
+    newly_unblocked: newlyUnblockedCause(input),
   });
 }

@@ -85,6 +85,7 @@ import {
   type NaturalLanguageImportanceAssessmentState,
   type DependencyResolutionProgress,
   type ExternalGhostNode,
+  type NormalizedEvent,
   type TrackedItem,
   type TrackedItemAiAnalysis,
   type TrackedItemInputEvent,
@@ -102,6 +103,8 @@ import {
   type DiscordDigestDelivery,
   type DiscordDeliverySettings,
   type DiscordNotificationItem,
+  type NotificationCauseEvidence,
+  type NotificationDependencyCause,
   type NotificationCauses,
   type DiscordNotificationSelection,
   type DiscordOperationsIncident,
@@ -379,11 +382,22 @@ type ReducedItemAnalysis = Readonly<{
   detail: GitHubItemDetail;
   decision: ReducedCodexDecision;
   responsibilityBasis: IssueStateDecision["responsibilityBasis"];
+  dependencyCause: NotificationDependencyCause;
   notificationRecommendation: DiscordNotificationItem["notificationRecommendation"];
   primaryWaitingOn: PrimaryWaitingOn;
   staleness: StalenessResult;
   importanceAssessment: NaturalLanguageImportanceAssessmentState;
 }>;
+
+type DependencyResolutionResult = Readonly<{
+  progress: readonly DependencyResolutionProgress[];
+  cause: NotificationDependencyCause;
+}>;
+
+type NotificationCauseEvidenceList = readonly [
+  NotificationCauseEvidence,
+  ...NotificationCauseEvidence[],
+];
 
 type TrackedItemStaleness = Readonly<{
   elapsedHours: number;
@@ -2874,14 +2888,35 @@ function reassessDeterministicAnalysis(
   throw new TypeError(`GitHub項目と詳細の種別が一致しません。対象: ${analysis.item.nodeId}`);
 }
 
-function enumeratedTerminalAt(item: EnumeratedGitHubItem | undefined): UtcIsoDateTime | undefined {
+type EnumeratedTerminal = Readonly<{
+  state: "closed" | "merged";
+  occurredAt: UtcIsoDateTime;
+}>;
+
+function enumeratedTerminal(
+  item: EnumeratedGitHubItem | undefined,
+): EnumeratedTerminal | undefined {
   if (item == null) {
     return undefined;
   }
   if (item.type === "pull_request" && item.mergeStatus === "merged") {
-    return item.mergedAt;
+    return Object.freeze({
+      state: "merged",
+      occurredAt: item.mergedAt,
+    });
   }
-  return item.state === "closed" ? item.closedAt : undefined;
+  if (item.state === "closed") {
+    return Object.freeze({
+      state: "closed",
+      occurredAt: item.closedAt,
+    });
+  }
+  return undefined;
+}
+
+function enumeratedTerminalAt(item: EnumeratedGitHubItem | undefined): UtcIsoDateTime | undefined {
+  const terminal = enumeratedTerminal(item);
+  return terminal == null ? undefined : terminal.occurredAt;
 }
 
 function previousBlockerEdges(
@@ -2914,14 +2949,14 @@ function previousBlockerEdges(
   return edgesByBlockerNodeId;
 }
 
-function relationRemovalEventOccurredAts(
+function latestRelationEventForProgress(
   collection: CollectedItems,
   edge: Relation,
-): readonly UtcIsoDateTime[] {
-  const latestEvent = collection.observedItems
+): Extract<NormalizedEvent, { kind: "relation" }> | undefined {
+  const matchingEvents = collection.observedItems
     .flatMap((item) => item.events)
     .filter(
-      (event) =>
+      (event): event is Extract<NormalizedEvent, { kind: "relation" }> =>
         event.kind === "relation" &&
         event.target.type === "node" &&
         event.relationType === edge.type &&
@@ -2936,13 +2971,20 @@ function relationRemovalEventOccurredAts(
         return left.occurredAt.localeCompare(right.occurredAt);
       }
       return left.sourceId.localeCompare(right.sourceId);
-    })
-    .at(-1);
-  return Object.freeze(
-    latestEvent?.kind === "relation" && latestEvent.action === "removed"
-      ? [latestEvent.occurredAt]
-      : [],
-  );
+    });
+  const latestEvent = matchingEvents.at(-1);
+  if (latestEvent?.action !== "removed") {
+    return undefined;
+  }
+  return latestEvent;
+}
+
+function relationRemovalEventOccurredAts(
+  collection: CollectedItems,
+  edge: Relation,
+): readonly UtcIsoDateTime[] {
+  const event = latestRelationEventForProgress(collection, edge);
+  return event == null ? Object.freeze([]) : Object.freeze([event.occurredAt]);
 }
 
 function editedRelationSourceOccurredAts(
@@ -3026,23 +3068,288 @@ function relationResolutionOccurredAt(
     : latestUtcIsoDateTime(occurredAts, `relation ${edge.id}の再判定根拠`);
 }
 
+type DependencyBlockerCause =
+  | Readonly<{
+      status: "complete";
+      evidence: readonly NotificationCauseEvidence[];
+    }>
+  | Readonly<{
+      status: "indeterminate";
+    }>;
+
+function notificationCauseEvidenceForEvent(
+  event: NormalizedEvent,
+): NotificationCauseEvidence | undefined {
+  const actor = event.actor;
+  if (actor.type !== "human") {
+    return undefined;
+  }
+  const humanActor: NotificationCauseEvidence["actor"] = Object.freeze({
+    type: "human",
+    nodeId: actor.nodeId,
+    login: actor.login,
+  });
+  return Object.freeze({
+    sourceId: event.sourceId,
+    occurredAt: event.occurredAt,
+    actor: humanActor,
+  });
+}
+
+type NotificationRelationEvent = Extract<NormalizedEvent, { kind: "relation" }>;
+
+type RelationCauseResolution =
+  | Readonly<{
+      status: "not_applicable";
+      evidence: readonly NotificationCauseEvidence[];
+    }>
+  | Readonly<{
+      status: "complete";
+      evidence: readonly NotificationCauseEvidence[];
+    }>
+  | Readonly<{
+      status: "indeterminate";
+    }>;
+
+function nonEmptyNotificationCauseEvidence(
+  evidence: readonly NotificationCauseEvidence[],
+): NotificationCauseEvidenceList | undefined {
+  const evidenceBySourceId = new Map<SourceId, NotificationCauseEvidence>();
+  for (const entry of evidence) {
+    evidenceBySourceId.set(entry.sourceId, entry);
+  }
+  const sortedEvidence = [...evidenceBySourceId.values()].sort((left, right) => {
+    if (left.occurredAt < right.occurredAt) {
+      return -1;
+    }
+    if (left.occurredAt > right.occurredAt) {
+      return 1;
+    }
+    return left.sourceId.localeCompare(right.sourceId);
+  });
+  const [first, ...rest] = sortedEvidence;
+  if (first == null) {
+    return undefined;
+  }
+  return Object.freeze([first, ...rest]);
+}
+
+function terminalCauseForBlocker(
+  collection: CollectedItems,
+  enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  blockerNodeId: GraphNodeId,
+  previousObservedAt: UtcIsoDateTime,
+): DependencyBlockerCause | undefined {
+  const terminal = enumeratedTerminal(enumeratedItemsByNodeId.get(blockerNodeId));
+  if (terminal == null) {
+    return undefined;
+  }
+  if (terminal.occurredAt <= previousObservedAt || terminal.occurredAt > collection.evaluatedAt) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const observed = collection.observedItems.find((item) => item.nodeId === blockerNodeId);
+  if (observed == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const matchingEvents = observed.events.filter(
+    (event): event is Extract<NormalizedEvent, { kind: "state" }> =>
+      event.kind === "state" &&
+      event.itemNodeId === blockerNodeId &&
+      event.state === terminal.state &&
+      event.occurredAt === terminal.occurredAt &&
+      event.occurredAt > previousObservedAt &&
+      event.occurredAt <= collection.evaluatedAt,
+  );
+  if (matchingEvents.length !== 1) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const event = matchingEvents[0];
+  assertNonNullable(event, `blocker ${blockerNodeId}のterminal state eventがありません`);
+  const evidence = notificationCauseEvidenceForEvent(event);
+  if (evidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({
+    status: "complete",
+    evidence: Object.freeze([evidence]),
+  });
+}
+
+function relationCauseForEdge(
+  collection: CollectedItems,
+  edge: Relation,
+  previousObservedAt: UtcIsoDateTime,
+): RelationCauseResolution {
+  const matchingEvents: NotificationRelationEvent[] = collection.observedItems
+    .flatMap((item) => item.events)
+    .filter(
+      (event): event is NotificationRelationEvent =>
+        event.kind === "relation" &&
+        event.target.type === "node" &&
+        event.relationType === edge.type &&
+        event.provenance === edge.provenance &&
+        event.occurredAt >= edge.firstSeenAt &&
+        event.occurredAt > previousObservedAt &&
+        event.occurredAt <= collection.evaluatedAt &&
+        (event.direction === "from_item"
+          ? event.itemNodeId === edge.fromNodeId && event.target.nodeId === edge.toNodeId
+          : event.itemNodeId === edge.toNodeId && event.target.nodeId === edge.fromNodeId),
+    )
+    .sort((left, right) => {
+      if (left.occurredAt < right.occurredAt) {
+        return -1;
+      }
+      if (left.occurredAt > right.occurredAt) {
+        return 1;
+      }
+      return left.sourceId.localeCompare(right.sourceId);
+    });
+  const latestEvent = matchingEvents.at(-1);
+  if (latestEvent == null) {
+    return Object.freeze({ status: "not_applicable", evidence: Object.freeze([]) });
+  }
+  const latestEvents = matchingEvents.filter(
+    (event) => event.occurredAt === latestEvent.occurredAt,
+  );
+  const hasAddedEvent = latestEvents.some((event) => event.action === "added");
+  const hasRemovedEvent = latestEvents.some((event) => event.action === "removed");
+  if (hasAddedEvent && hasRemovedEvent) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  if (!hasRemovedEvent) {
+    return Object.freeze({ status: "not_applicable", evidence: Object.freeze([]) });
+  }
+  const evidence: NotificationCauseEvidence[] = [];
+  for (const event of matchingEvents) {
+    if (event.action !== "removed") {
+      continue;
+    }
+    const eventEvidence = notificationCauseEvidenceForEvent(event);
+    if (eventEvidence == null) {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    evidence.push(eventEvidence);
+  }
+  return Object.freeze({ status: "complete", evidence: Object.freeze(evidence) });
+}
+
+function dependencyCauseForBlocker(
+  collection: CollectedItems,
+  enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  blockerNodeId: GraphNodeId,
+  edges: readonly (Relation & Readonly<{ active: true }>)[],
+  previousObservedAt: UtcIsoDateTime,
+): DependencyBlockerCause {
+  const terminalCause = terminalCauseForBlocker(
+    collection,
+    enumeratedItemsByNodeId,
+    blockerNodeId,
+    previousObservedAt,
+  );
+  if (terminalCause?.status === "indeterminate") {
+    return terminalCause;
+  }
+  const relationEvidence: NotificationCauseEvidence[] = [];
+  let allRelationsRemoved = true;
+  for (const edge of edges) {
+    const relationCause = relationCauseForEdge(collection, edge, previousObservedAt);
+    if (relationCause.status === "indeterminate") {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    if (relationCause.status === "not_applicable") {
+      allRelationsRemoved = false;
+    } else {
+      relationEvidence.push(...relationCause.evidence);
+    }
+  }
+  if (terminalCause == null && !allRelationsRemoved) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  const completeEvidence = nonEmptyNotificationCauseEvidence([
+    ...(terminalCause?.status === "complete" ? terminalCause.evidence : []),
+    ...relationEvidence,
+  ]);
+  if (completeEvidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({ status: "complete", evidence: completeEvidence });
+}
+
+function previousDependencyObservedAt(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): UtcIsoDateTime | undefined {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null) {
+    return undefined;
+  }
+  const item = snapshot.items.find((candidate) => candidate.nodeId === nodeId);
+  return item == null ? undefined : item.observedAt;
+}
+
+function dependencyCauseForBlockers(
+  collection: CollectedItems,
+  enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  edgesByBlockerNodeId: ReadonlyMap<
+    GraphNodeId,
+    readonly (Relation & Readonly<{ active: true }>)[]
+  >,
+  previousObservedAt: UtcIsoDateTime,
+): NotificationDependencyCause {
+  const evidence: NotificationCauseEvidence[] = [];
+  for (const [blockerNodeId, edges] of edgesByBlockerNodeId) {
+    const blockerCause = dependencyCauseForBlocker(
+      collection,
+      enumeratedItemsByNodeId,
+      blockerNodeId,
+      edges,
+      previousObservedAt,
+    );
+    if (blockerCause.status === "indeterminate") {
+      return Object.freeze({ status: "indeterminate" });
+    }
+    evidence.push(...blockerCause.evidence);
+  }
+  const completeEvidence = nonEmptyNotificationCauseEvidence(evidence);
+  if (completeEvidence == null) {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  return Object.freeze({
+    status: "complete",
+    evidence: completeEvidence,
+  });
+}
+
 function dependencyResolutions(
   state: RuntimeState,
   collection: CollectedItems,
   graph: GraphResult | undefined,
   relationAssessments: readonly RelationCandidateAssessment[],
   analysis: DeterministicItemAnalysis,
-): readonly DependencyResolutionProgress[] {
+): DependencyResolutionResult {
   if (graph?.analysis.newlyUnblockedNodeIds.includes(analysis.item.nodeId) !== true) {
-    return Object.freeze([]);
+    return Object.freeze({
+      progress: Object.freeze([]),
+      cause: Object.freeze({ status: "not_applicable" }),
+    });
   }
   const edgesByBlockerNodeId = previousBlockerEdges(state, analysis.item.nodeId);
   if (edgesByBlockerNodeId.size === 0) {
     throw new TypeError(`newly unblocked項目 ${analysis.item.nodeId}の前回blockerがありません`);
   }
+  const previousObservedAt = previousDependencyObservedAt(state, analysis.item.nodeId);
   const enumeratedItemsByNodeId = new Map<GraphNodeId, EnumeratedGitHubItem>(
     collection.enumeratedItems.map((item) => [item.nodeId, item]),
   );
+  const cause: NotificationDependencyCause =
+    previousObservedAt == null
+      ? Object.freeze({ status: "indeterminate" })
+      : dependencyCauseForBlockers(
+          collection,
+          enumeratedItemsByNodeId,
+          edgesByBlockerNodeId,
+          previousObservedAt,
+        );
   const sourceOccurredAtById = createDependencySourceOccurredAtById(collection);
   const blockerResolutionOccurredAts = [...edgesByBlockerNodeId].map(([blockerNodeId, edges]) => {
     const terminalAt = enumeratedTerminalAt(enumeratedItemsByNodeId.get(blockerNodeId));
@@ -3065,15 +3372,18 @@ function dependencyResolutions(
   const sourceIds = [...edgesByBlockerNodeId.values()]
     .flat()
     .flatMap((edge) => edge.evidence.map((evidence) => evidence.sourceId));
-  return Object.freeze([
-    Object.freeze({
-      occurredAt: latestUtcIsoDateTime(
-        [analysis.item.createdAt, ...blockerResolutionOccurredAts],
-        `newly unblocked項目 ${analysis.item.nodeId}`,
-      ),
-      sourceIds: nonEmptySourceIds(sourceIds, `newly unblocked項目 ${analysis.item.nodeId}`),
-    }),
-  ]);
+  return Object.freeze({
+    progress: Object.freeze([
+      Object.freeze({
+        occurredAt: latestUtcIsoDateTime(
+          [analysis.item.createdAt, ...blockerResolutionOccurredAts],
+          `newly unblocked項目 ${analysis.item.nodeId}`,
+        ),
+        sourceIds: nonEmptySourceIds(sourceIds, `newly unblocked項目 ${analysis.item.nodeId}`),
+      }),
+    ]),
+    cause,
+  });
 }
 
 function primaryWaitingOnForDecision(
@@ -3504,6 +3814,13 @@ function reduceAnalysisPass(
     relationAssessments.push(...(reduction?.relationAssessments ?? []));
     const basis = transitionBasisForDecision(analysis, decision);
     const repository = findRepository(inventory, analysis.item.repositoryId);
+    const dependencyResolution = dependencyResolutions(
+      state,
+      collection,
+      graph,
+      reduction?.relationAssessments ?? [],
+      analysis,
+    );
     const staleness = calculateStaleness({
       createdAt: analysis.item.createdAt,
       evaluatedAt: collection.evaluatedAt,
@@ -3518,13 +3835,7 @@ function reduceAnalysisPass(
       previousState: previousStalenessState(state, analysis.item.nodeId, analysis.item.type),
       events: analysis.item.events,
       responsibleAccountIdentifiers: resolveWaitingOnAccountIdentifiers(decision.waitingOn),
-      dependencyResolutions: dependencyResolutions(
-        state,
-        collection,
-        graph,
-        reduction?.relationAssessments ?? [],
-        analysis,
-      ),
+      dependencyResolutions: dependencyResolution.progress,
       naturalLanguageAssessments: naturalLanguageProgressAssessments(analysis, output),
       minimumAiConfidence: configuration.config.ai.confidence.medium,
       repositoryFullName: repositoryFullName(repository),
@@ -3539,6 +3850,7 @@ function reduceAnalysisPass(
         detail: analysis.detail,
         decision,
         responsibilityBasis: basis.responsibilityBasis,
+        dependencyCause: dependencyResolution.cause,
         notificationRecommendation:
           reduction == null
             ? Object.freeze({
@@ -4101,14 +4413,7 @@ function notificationItem(
                   }),
                 }),
           currentResponsibilityBasis: analysisState.value.responsibilityBasis,
-          dependencyResponsibilityIndeterminate:
-            graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId) ||
-            item.waitingOn.some(
-              (waitingOn) => waitingOn.kind === "item" || waitingOn.role === "dependency",
-            ) ||
-            previous?.waitingOn.some(
-              (waitingOn) => waitingOn.kind === "item" || waitingOn.role === "dependency",
-            ) === true,
+          dependencyCause: analysisState.value.dependencyCause,
           evaluatedAt,
         })
       : Object.freeze({

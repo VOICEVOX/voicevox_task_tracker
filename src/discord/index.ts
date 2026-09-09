@@ -1,11 +1,8 @@
 export {
   createNotificationCauses,
-  notificationCauseSchema,
-  type CreateResponsibilityChangedCauseInput,
-  type NotificationCause,
-  type NotificationCauseActor,
   type NotificationCauseEvidence,
   type NotificationCauses,
+  type NotificationDependencyCause,
 } from "./notification-cause.js";
 export {
   selectDiscordNotifications,
