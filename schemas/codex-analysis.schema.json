@@ -21,7 +21,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "2"
+      "const": "3"
     },
     "item": {
       "type": "object",
@@ -264,7 +264,8 @@
               "relation",
               "progress",
               "notification",
-              "uncertainty"
+              "uncertainty",
+              "self_commitment"
             ]
           },
           "summary": {

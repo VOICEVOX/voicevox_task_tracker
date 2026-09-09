@@ -71,7 +71,7 @@ function createApiKeyEnvironment(): NodeJS.ProcessEnv {
 
 function createInput(untrustedText: string): CodexAnalysisInput {
   return createCodexAnalysisInput({
-    schemaVersion: "1",
+    schemaVersion: "2",
     now: "2026-07-30T23:00:00Z",
     item: {
       nodeId: "PR_example",
@@ -85,15 +85,23 @@ function createInput(untrustedText: string): CodexAnalysisInput {
       waitingOn: [
         {
           id: "role:maintainer",
+          kind: "role",
+          sourceIds: ["body:current"],
         },
         {
           id: "author",
+          kind: "user",
+          sourceIds: ["body:current"],
         },
         {
           id: "team:VOICEVOX/reviewers",
+          kind: "team",
+          sourceIds: ["body:current"],
         },
         {
           id: "item:blocker",
+          kind: "item",
+          sourceIds: ["github_native_dependency:45"],
         },
       ],
       relations: [
@@ -108,6 +116,7 @@ function createInput(untrustedText: string): CodexAnalysisInput {
         id: "body:current",
         kind: "body",
         actorType: "human",
+        author: { status: "unavailable" },
         createdAt: "2026-07-20T00:00:00Z",
         text: untrustedText,
       },
@@ -115,6 +124,7 @@ function createInput(untrustedText: string): CodexAnalysisInput {
         id: "github_native_dependency:45",
         kind: "native_dependency",
         actorType: "system",
+        author: { status: "unavailable" },
         createdAt: "2026-07-20T00:00:01Z",
         targetState: "open",
       },
@@ -146,7 +156,7 @@ function parseJson(source: string): unknown {
 function createIntegrationInput(untrustedText: string): CodexAnalysisInput {
   const relationId = "rel:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   return createCodexAnalysisInput({
-    schemaVersion: "1",
+    schemaVersion: "2",
     now: "2026-07-30T23:00:00Z",
     item: {
       nodeId: "PR_example",
@@ -157,7 +167,13 @@ function createIntegrationInput(untrustedText: string): CodexAnalysisInput {
       headSha: "bbbb",
     },
     candidates: {
-      waitingOn: [{ id: "role:maintainer" }],
+      waitingOn: [
+        {
+          id: "role:maintainer",
+          kind: "role",
+          sourceIds: ["github_issue_body:1234567890123456789012345678901234567890"],
+        },
+      ],
       relations: [
         {
           id: relationId,
@@ -170,6 +186,7 @@ function createIntegrationInput(untrustedText: string): CodexAnalysisInput {
         id: "github_issue_body:1234567890123456789012345678901234567890",
         kind: "body",
         actorType: "human",
+        author: { status: "unavailable" },
         createdAt: "2026-07-20T00:00:00Z",
         text: untrustedText,
       },
@@ -177,6 +194,7 @@ function createIntegrationInput(untrustedText: string): CodexAnalysisInput {
         id: "github_native_dependency:1234567890123456789012345678901234567890",
         kind: "native_dependency",
         actorType: "system",
+        author: { status: "unavailable" },
         createdAt: "2026-07-20T00:00:01Z",
         targetState: "open",
       },
@@ -195,7 +213,7 @@ function createValidOutput(input: CodexAnalysisInput): unknown {
   const source = input.sources.at(0);
   assertNonNullable(source, "Codex adapter testのsourceがありません");
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,
@@ -315,6 +333,7 @@ describe("Codex分析入力", () => {
           waitingOn: [
             {
               id: "role:maintainer",
+              kind: "role",
               sourceIds: ["comment:not-found"],
             },
           ],

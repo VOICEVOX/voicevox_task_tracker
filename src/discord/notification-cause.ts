@@ -139,6 +139,8 @@ export type CreateNotificationCausesInput = Readonly<{
     occurredAt: UtcIsoDateTime;
   }>;
   dependencyCause: NotificationDependencyCause;
+  selfCommitmentCause: NotificationCause;
+  hasUnobservedHeadChange: boolean;
   evaluatedAt: UtcIsoDateTime;
 }>;
 
@@ -873,6 +875,77 @@ function dependencyEvidenceSourceIds(
   );
 }
 
+function verifiedSelfCommitmentEvidence(
+  input: CreateNotificationCausesInput,
+): readonly NotificationCauseEvidence[] {
+  const cause = input.selfCommitmentCause;
+  if (cause.status !== "complete") {
+    return [];
+  }
+  if (input.previous.availability === "not_available") {
+    return [];
+  }
+  const previousObservedAt = input.previous.value.observedAt;
+  for (const evidence of cause.evidence) {
+    const event = input.item.events.find((candidate) => candidate.sourceId === evidence.sourceId);
+    if (
+      event?.kind !== "comment" ||
+      event.actor.type !== "human" ||
+      event.actor.nodeId !== cause.responsible.nodeId ||
+      event.actor.nodeId !== evidence.actor.nodeId ||
+      !eventInWindow(event, previousObservedAt, input.evaluatedAt)
+    ) {
+      return [];
+    }
+  }
+  return cause.evidence;
+}
+
+function selfCommitmentEvidenceForWaitingOn(
+  waitingOn: WaitingOn,
+  evidence: readonly NotificationCauseEvidence[],
+): readonly NotificationCauseEvidence[] {
+  return evidence.filter((entry) => waitingOn.sourceIds.includes(entry.sourceId));
+}
+
+function selfCommitmentExplainsWaitingOn(
+  input: CreateNotificationCausesInput,
+  waitingOn: WaitingOn,
+  evidence: readonly NotificationCauseEvidence[],
+): boolean {
+  const cause = input.selfCommitmentCause;
+  if (cause.status !== "complete") {
+    return false;
+  }
+  const responsible = actorForWaitingOnEntry(input.item, waitingOn);
+  return (
+    responsible?.nodeId === cause.responsible.nodeId &&
+    selfCommitmentEvidenceForWaitingOn(waitingOn, evidence).length > 0
+  );
+}
+
+function hasRelevantUnobservedHeadChange(input: CreateNotificationCausesInput): boolean {
+  if (!input.hasUnobservedHeadChange || input.item.type !== "pull_request") {
+    return false;
+  }
+  if (input.previous.availability === "not_available") {
+    return false;
+  }
+  const previousObservedAt = input.previous.value.observedAt;
+  const item = input.item;
+  return (
+    responsibilitySourceIds(input).has(item.headCommit.sourceId) &&
+    !item.events.some(
+      (event) =>
+        event.kind === "push" &&
+        event.forcePush &&
+        event.headCommitSha === item.headSha &&
+        event.actor.type === "human" &&
+        eventInWindow(event, previousObservedAt, input.evaluatedAt),
+    )
+  );
+}
+
 function localResponsibilityCause(
   input: CreateNotificationCausesInput,
   difference: WaitingOnDifference,
@@ -884,6 +957,18 @@ function localResponsibilityCause(
   }
   const dependencySourceIds = dependencyEvidenceSourceIds(dependencyCause);
   const events = eventsInWindow(input).filter((event) => !dependencySourceIds.has(event.sourceId));
+  const selfEvidence = verifiedSelfCommitmentEvidence(input);
+  const selfSourceIds = new Set(selfEvidence.map((evidence) => evidence.sourceId));
+  if (
+    events.some(
+      (event) =>
+        event.kind === "comment" &&
+        responsibilitySourceIds(input).has(event.sourceId) &&
+        !selfSourceIds.has(event.sourceId),
+    )
+  ) {
+    return Object.freeze({ status: "indeterminate" });
+  }
   if (events.some((event) => unsupportedEventInWindow(event, input, localDifference))) {
     return Object.freeze({ status: "indeterminate" });
   }
@@ -908,6 +993,19 @@ function localResponsibilityCause(
   }
   const expectedAddedSignatures = new Set(localDifference.added.map(waitingOnSignature));
   const expectedRemovedSignatures = new Set(localDifference.removed.map(waitingOnSignature));
+  const selfTransitionAdded = localDifference.added.filter((waitingOn) =>
+    selfCommitmentExplainsWaitingOn(input, waitingOn, selfEvidence),
+  );
+  for (const waitingOn of localDifference.added) {
+    if (selfCommitmentExplainsWaitingOn(input, waitingOn, selfEvidence)) {
+      addedSignatures.add(waitingOnSignature(waitingOn));
+    }
+  }
+  if (selfTransitionAdded.length === 1 && localDifference.added.length === 1) {
+    for (const waitingOn of localDifference.removed) {
+      removedSignatures.add(waitingOnSignature(waitingOn));
+    }
+  }
   if (
     addedSignatures.size !== expectedAddedSignatures.size ||
     [...expectedAddedSignatures].some((signature) => !addedSignatures.has(signature)) ||
@@ -916,7 +1014,14 @@ function localResponsibilityCause(
   ) {
     return Object.freeze({ status: "indeterminate" });
   }
-  const evidence = evidenceFromEvents(causeEvents);
+  const evidence = mergeEvidence([
+    evidenceFromEvents(causeEvents) ?? [],
+    selfEvidence.filter((entry) =>
+      [...localDifference.added, ...localDifference.removed].some((waitingOn) =>
+        waitingOn.sourceIds.includes(entry.sourceId),
+      ),
+    ),
+  ]);
   if (evidence == null) {
     return Object.freeze({ status: "indeterminate" });
   }
@@ -947,14 +1052,22 @@ function newlyUnblockedLocalCause(
   dependencyCause: NotificationDependencyCause,
 ): LocalCauseResolution {
   const dependencySourceIds = dependencyEvidenceSourceIds(dependencyCause);
+  const selfEvidence = verifiedSelfCommitmentEvidence(input);
+  const selfSourceIds = new Set(selfEvidence.map((evidence) => evidence.sourceId));
   const events = eventsInWindow(input).filter(
     (event) =>
       !dependencySourceIds.has(event.sourceId) &&
       eventMayAffectNewlyUnblockedResponsibility(event, input),
   );
+  if (events.some((event) => event.kind === "comment" && !selfSourceIds.has(event.sourceId))) {
+    return Object.freeze({ status: "indeterminate" });
+  }
   if (events.length === 0) {
     return Object.freeze({ status: "not_applicable" });
   }
+  const relevantSelfEvidence = selfEvidence.filter((entry) =>
+    events.some((event) => event.sourceId === entry.sourceId),
+  );
   const causeEvents: NormalizedEvent[] = [];
   for (const event of events) {
     if (event.actor.type !== "human") {
@@ -975,6 +1088,7 @@ function newlyUnblockedLocalCause(
         causeEvents.push(event);
         break;
       case "comment":
+        break;
       case "label":
       case "state":
       case "relation":
@@ -987,7 +1101,7 @@ function newlyUnblockedLocalCause(
         throw new UnreachableError(event);
     }
   }
-  const evidence = evidenceFromEvents(causeEvents);
+  const evidence = mergeEvidence([evidenceFromEvents(causeEvents) ?? [], relevantSelfEvidence]);
   if (evidence == null) {
     return Object.freeze({ status: "indeterminate" });
   }
@@ -996,6 +1110,9 @@ function newlyUnblockedLocalCause(
 
 function newlyUnblockedCause(input: CreateNotificationCausesInput): NotificationCause {
   if (input.dependencyCause.status !== "complete") {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  if (hasRelevantUnobservedHeadChange(input)) {
     return Object.freeze({ status: "indeterminate" });
   }
   if (input.previous.availability === "not_available") {
@@ -1056,6 +1173,7 @@ function validateCauseInput(input: CreateNotificationCausesInput): void {
     throw new TypeError("現在の責務根拠のsource IDが重複しています");
   }
   notificationDependencyCauseSchema.parse(input.dependencyCause);
+  notificationCauseSchema.parse(input.selfCommitmentCause);
   for (const event of input.item.events) {
     if (event.itemNodeId !== input.item.nodeId) {
       throw new TypeError("項目と正規化イベントのitem node IDが一致しません");
@@ -1065,6 +1183,9 @@ function validateCauseInput(input: CreateNotificationCausesInput): void {
 
 function responsibilityChangedCause(input: CreateNotificationCausesInput): NotificationCause {
   if (input.previous.availability === "not_available") {
+    return Object.freeze({ status: "indeterminate" });
+  }
+  if (hasRelevantUnobservedHeadChange(input)) {
     return Object.freeze({ status: "indeterminate" });
   }
   const responsible = actorForWaitingOn(input.item, input.currentWaitingOn);

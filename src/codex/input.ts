@@ -39,9 +39,20 @@ const itemSchema = z
   })
   .catchall(jsonValueSchema);
 
+const waitingOnCandidateKindSchema = z.enum([
+  "user",
+  "team",
+  "role",
+  "item",
+  "automation",
+  "unknown",
+]);
+
 const waitingOnCandidateSchema = z
   .strictObject({
     id: opaqueIdSchema,
+    kind: waitingOnCandidateKindSchema,
+    sourceIds: z.array(sourceIdSchema).min(1, "candidateにsource IDを1件以上指定してください"),
   })
   .catchall(jsonValueSchema);
 
@@ -52,11 +63,23 @@ const relationCandidateSchema = z
   })
   .catchall(jsonValueSchema);
 
+const sourceAuthorSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("identified"),
+    candidateId: opaqueIdSchema,
+    nodeId: opaqueIdSchema,
+  }),
+  z.strictObject({
+    status: z.literal("unavailable"),
+  }),
+]);
+
 const sourceSchema = z
   .strictObject({
     id: sourceIdSchema,
     kind: opaqueIdSchema,
     actorType: z.enum(["human", "bot", "system"]),
+    author: sourceAuthorSchema,
     createdAt: z.iso.datetime({
       offset: true,
       error: "タイムゾーンを含むISO 8601日時を指定してください",
@@ -66,7 +89,7 @@ const sourceSchema = z
 
 const codexAnalysisInputSchema = z
   .strictObject({
-    schemaVersion: z.literal("1"),
+    schemaVersion: z.literal("2"),
     now: z.iso.datetime({
       offset: true,
       error: "タイムゾーンを含むISO 8601日時を指定してください",
@@ -115,6 +138,45 @@ const codexAnalysisInputSchema = z
         });
       }
       sourceIds.add(source.id);
+    }
+
+    const waitingOnCandidates = new Map(
+      input.candidates.waitingOn.map((candidate) => [candidate.id, candidate]),
+    );
+    for (const [index, source] of input.sources.entries()) {
+      if (source.author.status !== "identified") {
+        continue;
+      }
+      if (source.actorType !== "human") {
+        context.addIssue({
+          code: "custom",
+          path: ["sources", index, "author"],
+          message: "identifiedなsource作者はhuman sourceに限ります",
+        });
+      }
+      const candidate = waitingOnCandidates.get(source.author.candidateId);
+      if (candidate == null) {
+        context.addIssue({
+          code: "custom",
+          path: ["sources", index, "author", "candidateId"],
+          message: "source作者に対応するwaitingOn候補がありません",
+        });
+        continue;
+      }
+      if (candidate.kind !== "user") {
+        context.addIssue({
+          code: "custom",
+          path: ["sources", index, "author", "candidateId"],
+          message: "source作者に対応する候補はuserでなければなりません",
+        });
+      }
+      if (!candidate.sourceIds.includes(source.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["sources", index, "author", "candidateId"],
+          message: "source作者候補のsource ID集合に対象sourceがありません",
+        });
+      }
     }
   });
 

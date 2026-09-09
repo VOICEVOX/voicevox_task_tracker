@@ -139,7 +139,7 @@
       {
         "itemNodeId": "nested-release-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "nested-release-issue",
@@ -149,7 +149,13 @@
             "authorCandidateId": "release-planner"
           },
           "candidates": {
-            "waitingOn": [{ "id": "fixture-maintainer" }],
+            "waitingOn": [
+              {
+                "id": "fixture-maintainer",
+                "kind": "user",
+                "sourceIds": ["body:release"]
+              }
+            ],
             "relations": [
               {
                 "id": "rel:checklist-release-core",
@@ -162,6 +168,7 @@
               "id": "body:release",
               "kind": "body",
               "actorType": "human",
+              "author": { "status": "unavailable" },
               "createdAt": "2026-06-01T00:00:00.000Z",
               "content": "- [ ] 中間作業\n  - [ ] 内側作業"
             }
@@ -170,7 +177,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "item": {
             "nodeId": "nested-release-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/501"
@@ -227,7 +234,7 @@
       {
         "itemNodeId": "nested-core-issue",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "nested-core-issue",
@@ -237,7 +244,13 @@
             "authorCandidateId": "release-worker-one"
           },
           "candidates": {
-            "waitingOn": [{ "id": "fixture-maintainer" }],
+            "waitingOn": [
+              {
+                "id": "fixture-maintainer",
+                "kind": "user",
+                "sourceIds": ["body:core-task"]
+              }
+            ],
             "relations": [
               {
                 "id": "rel:checklist-core-engine",
@@ -250,6 +263,7 @@
               "id": "body:core-task",
               "kind": "body",
               "actorType": "human",
+              "author": { "status": "unavailable" },
               "createdAt": "2026-06-02T00:00:00.000Z",
               "content": "- [ ] 内側作業"
             }
@@ -258,7 +272,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "item": {
             "nodeId": "nested-core-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/502"

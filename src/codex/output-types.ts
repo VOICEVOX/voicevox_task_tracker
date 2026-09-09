@@ -48,7 +48,7 @@ export type SchemaValidCodexImportance = Readonly<{
 
 /** repositoryのJSON Schemaに適合したCodex出力。 */
 export type SchemaValidCodexAnalysisOutput = Readonly<{
-  schemaVersion: "2";
+  schemaVersion: "3";
   item: Readonly<{
     nodeId: string;
     url: string;
@@ -92,7 +92,7 @@ export type ValidatedCodexRelation = Readonly<{
 
 /** reducerへ渡せる二段階検証済みのCodex出力。 */
 export type ValidatedCodexAnalysisOutput = Readonly<{
-  schemaVersion: "2";
+  schemaVersion: "3";
   item: Readonly<{
     nodeId: GitHubNodeId;
     url: GitHubItemUrl;

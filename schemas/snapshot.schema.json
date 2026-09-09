@@ -440,7 +440,8 @@
             "relation",
             "progress",
             "notification",
-            "uncertainty"
+            "uncertainty",
+            "self_commitment"
           ]
         },
         "summary": {

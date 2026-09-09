@@ -25,9 +25,14 @@ export type NativeRelationConstraint = Readonly<{
   verdict: RelationAssessmentVerdict;
 }>;
 
+type InputSource = CodexAnalysisInput["sources"][number];
+
 type KnownSource = Readonly<{
   id: SourceId;
   occurredAt: number;
+  kind: InputSource["kind"];
+  actorType: InputSource["actorType"];
+  author: InputSource["author"];
 }>;
 
 type TextField = Readonly<{
@@ -99,6 +104,9 @@ function createKnownSources(input: CodexAnalysisInput): ReadonlyMap<string, Know
       Object.freeze({
         id: createSourceId(source.id),
         occurredAt,
+        kind: source.kind,
+        actorType: source.actorType,
+        author: source.author,
       }),
     );
   }
@@ -243,6 +251,92 @@ function validateSourceReferences(
           reference.path,
           "source_time_out_of_range",
           "参照したsourceの時刻が入力の判定時刻より後です",
+        ),
+      );
+    }
+  }
+}
+
+function validateSelfCommitmentEvidence(
+  output: SchemaValidCodexAnalysisOutput,
+  knownSources: ReadonlyMap<string, KnownSource>,
+  issues: CodexOutputValidationIssue[],
+): void {
+  const selfCommitments = output.evidence.flatMap((evidence, index) =>
+    evidence.supports === "self_commitment" ? [{ evidence, index }] : [],
+  );
+  if (selfCommitments.length === 0) {
+    return;
+  }
+
+  const soleUserWaitingOn =
+    output.waitingOn.length === 1 && output.waitingOn[0]?.kind === "user"
+      ? output.waitingOn[0]
+      : undefined;
+  if (soleUserWaitingOn == null) {
+    for (const { index } of selfCommitments) {
+      issues.push(
+        createIssue(
+          `/evidence/${index.toString()}/supports`,
+          "self_commitment_waiting_on_ambiguous",
+          "self_commitmentにはuserのwaitingOnを1件だけ指定してください",
+        ),
+      );
+    }
+  }
+
+  for (const { evidence, index } of selfCommitments) {
+    const path = `/evidence/${index.toString()}`;
+    const source = knownSources.get(evidence.sourceId);
+    if (source == null) {
+      continue;
+    }
+    if (source.kind !== "comment") {
+      issues.push(
+        createIssue(
+          `${path}/sourceId`,
+          "self_commitment_source_not_comment",
+          "self_commitmentのsourceはコメントでなければなりません",
+        ),
+      );
+    }
+    if (source.actorType !== "human") {
+      issues.push(
+        createIssue(
+          `${path}/sourceId`,
+          "self_commitment_source_not_human",
+          "self_commitmentのsource作者はhumanでなければなりません",
+        ),
+      );
+    }
+    if (source.author.status !== "identified") {
+      issues.push(
+        createIssue(
+          `${path}/sourceId`,
+          "self_commitment_source_author_unavailable",
+          "self_commitmentのsource作者を識別できません",
+        ),
+      );
+      continue;
+    }
+    if (soleUserWaitingOn == null) {
+      continue;
+    }
+    if (soleUserWaitingOn.candidateId !== source.author.candidateId) {
+      issues.push(
+        createIssue(
+          `${path}/sourceId`,
+          "self_commitment_waiting_on_mismatch",
+          "self_commitmentのsource作者とuserのwaitingOn対象が一致しません",
+        ),
+      );
+    }
+    if (!soleUserWaitingOn.sourceIds.includes(evidence.sourceId)) {
+      issues.push(
+        createIssue(
+          `${path}/sourceId`,
+          "self_commitment_waiting_on_source_mismatch",
+          "self_commitmentのsourceがuserのwaitingOn根拠に含まれていません",
         ),
       );
     }
@@ -652,6 +746,7 @@ export function validateCodexAnalysisSemantics(
   validateRelationCandidates(output, validatedInput, issues);
   validateSourceIdUniqueness(output, issues);
   validateSourceReferences(output, validatedInput, knownSources, issues);
+  validateSelfCommitmentEvidence(output, knownSources, issues);
   validateUrls(output, validatedInput, issues);
   validateNativeRelationReferences(validatedInput, issues);
 

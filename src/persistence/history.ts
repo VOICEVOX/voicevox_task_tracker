@@ -139,7 +139,15 @@ const responsibilitySchema = z.strictObject({
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
 const evidenceSchema = z.strictObject({
   sourceId: identifierSchema,
-  supports: z.enum(["status", "waiting_on", "relation", "progress", "notification", "uncertainty"]),
+  supports: z.enum([
+    "status",
+    "waiting_on",
+    "relation",
+    "progress",
+    "notification",
+    "uncertainty",
+    "self_commitment",
+  ]),
   summary: z.string().max(1000),
 });
 const relationContradictionSchema = z.strictObject({

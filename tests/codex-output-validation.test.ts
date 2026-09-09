@@ -61,7 +61,7 @@ function createSourceIds(sourceId: SourceId): readonly [SourceId, ...SourceId[]]
 
 function createInput(): CodexAnalysisInput {
   return createCodexAnalysisInput({
-    schemaVersion: "1",
+    schemaVersion: "2",
     now: "2026-07-30T23:00:00Z",
     item: {
       nodeId: "I_example",
@@ -74,9 +74,13 @@ function createInput(): CodexAnalysisInput {
       waitingOn: [
         {
           id: "role:maintainer",
+          kind: "role",
+          sourceIds: ["body:current"],
         },
         {
           id: "item:blocker",
+          kind: "item",
+          sourceIds: ["native:dependency"],
         },
       ],
       relations: [
@@ -91,6 +95,7 @@ function createInput(): CodexAnalysisInput {
         id: "body:current",
         kind: "body",
         actorType: "human",
+        author: { status: "unavailable" },
         createdAt: "2026-07-20T00:00:00Z",
         text: "方針を決める必要がある",
       },
@@ -98,6 +103,7 @@ function createInput(): CodexAnalysisInput {
         id: "native:dependency",
         kind: "native_dependency",
         actorType: "system",
+        author: { status: "unavailable" },
         createdAt: "2026-07-21T00:00:00Z",
         targetState: "open",
       },
@@ -109,7 +115,7 @@ function createInput(): CodexAnalysisInput {
 
 function createOutput(confidence: number) {
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     item: {
       nodeId: "I_example",
       url: "https://github.com/VOICEVOX/example/issues/1",

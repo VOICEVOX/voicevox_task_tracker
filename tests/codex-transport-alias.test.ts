@@ -29,7 +29,7 @@ const runIdentity = Object.freeze({
 
 function createInput(): CodexAnalysisInput {
   return createCodexAnalysisInput({
-    schemaVersion: "1",
+    schemaVersion: "2",
     now: "2026-07-30T23:00:00Z",
     item: {
       nodeId: "I_transport",
@@ -42,10 +42,13 @@ function createInput(): CodexAnalysisInput {
       waitingOn: [
         {
           id: "role:maintainer",
+          kind: "role",
           sourceIds: ["body:current"],
         },
         {
           id: "author",
+          kind: "user",
+          sourceIds: ["comment:review"],
         },
       ],
       relations: [
@@ -64,6 +67,7 @@ function createInput(): CodexAnalysisInput {
         id: "body:current",
         kind: "body",
         actorType: "human",
+        author: { status: "unavailable" },
         createdAt: "2026-07-20T00:00:00Z",
         text: "body:current と rel:alpha は自由文として残す",
       },
@@ -71,6 +75,7 @@ function createInput(): CodexAnalysisInput {
         id: "comment:review",
         kind: "comment",
         actorType: "human",
+        author: { status: "unavailable" },
         createdAt: "2026-07-21T00:00:00Z",
         body: "comment:review と rel:beta は本文です",
       },
@@ -105,7 +110,7 @@ function createInput(): CodexAnalysisInput {
 
 function createMinimalInput(sourceId: string, relationId: string | undefined): CodexAnalysisInput {
   return createCodexAnalysisInput({
-    schemaVersion: "1",
+    schemaVersion: "2",
     now: "2026-07-30T23:00:00Z",
     item: {
       nodeId: "I_minimal",
@@ -114,7 +119,7 @@ function createMinimalInput(sourceId: string, relationId: string | undefined): C
       title: "最小入力",
     },
     candidates: {
-      waitingOn: [{ id: "role:maintainer" }],
+      waitingOn: [{ id: "role:maintainer", kind: "role", sourceIds: [sourceId] }],
       relations:
         relationId == null
           ? []
@@ -125,6 +130,7 @@ function createMinimalInput(sourceId: string, relationId: string | undefined): C
         id: sourceId,
         kind: "body",
         actorType: "human",
+        author: { status: "unavailable" },
         createdAt: "2026-07-20T00:00:00Z",
       },
     ],
@@ -138,7 +144,7 @@ function createOutput(input: CodexAnalysisInput) {
   assertNonNullable(firstSource, "Codex transport testのsourceがありません");
   const secondSource = input.sources.at(1) ?? firstSource;
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,

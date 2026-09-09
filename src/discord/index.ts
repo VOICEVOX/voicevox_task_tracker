@@ -1,5 +1,6 @@
 export {
   createNotificationCauses,
+  type NotificationCause,
   type NotificationCauseEvidence,
   type NotificationCauses,
   type NotificationDependencyCause,

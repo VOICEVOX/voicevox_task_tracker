@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "1",
+  "schemaVersion": "2",
   "now": "2026-07-30T23:00:00Z",
   "item": {
     "nodeId": "PR_example",
@@ -12,16 +12,24 @@
   "candidates": {
     "waitingOn": [
       {
-        "id": "role:maintainer"
+        "id": "role:maintainer",
+        "kind": "role",
+        "sourceIds": ["body:current"]
       },
       {
-        "id": "author"
+        "id": "author",
+        "kind": "user",
+        "sourceIds": ["body:current"]
       },
       {
-        "id": "team:VOICEVOX/reviewers"
+        "id": "team:VOICEVOX/reviewers",
+        "kind": "team",
+        "sourceIds": ["body:current"]
       },
       {
-        "id": "item:blocker"
+        "id": "item:blocker",
+        "kind": "item",
+        "sourceIds": ["github:native-dependency:45"]
       }
     ],
     "relations": [
@@ -36,6 +44,7 @@
       "id": "body:current",
       "kind": "body",
       "actorType": "human",
+      "author": { "status": "unavailable" },
       "createdAt": "2026-07-20T00:00:00Z",
       "text": "This PR waits for https://github.com/VOICEVOX/example_dep/issues/45"
     },
@@ -43,6 +52,7 @@
       "id": "github:native-dependency:45",
       "kind": "native_dependency",
       "actorType": "system",
+      "author": { "status": "unavailable" },
       "createdAt": "2026-07-20T00:00:01Z",
       "targetState": "open"
     },
@@ -50,6 +60,7 @@
       "id": "comment:bot:1",
       "kind": "comment",
       "actorType": "bot",
+      "author": { "status": "unavailable" },
       "createdAt": "2026-07-29T00:00:00Z",
       "text": "Preview updated"
     }

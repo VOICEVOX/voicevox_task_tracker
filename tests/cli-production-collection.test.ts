@@ -764,7 +764,7 @@ function createCodexOutput(
     throw new TypeError("Codex入力にsourceがありません");
   }
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,
@@ -5722,6 +5722,11 @@ describe("本番判定入力の接続", () => {
         id: commentSourceId,
         kind: "comment",
         actorType: "human",
+        author: {
+          status: "identified",
+          candidateId: "review-content",
+          nodeId: "U_review_content",
+        },
         createdAt: observedAt,
         content: "この条件は必要でしょうか",
       },
@@ -5731,6 +5736,9 @@ describe("本番判定入力の接続", () => {
         id: reviewSourceId,
         kind: "review",
         actorType: "human",
+        author: {
+          status: "unavailable",
+        },
         createdAt: observedAt,
         content: "レビュー全体の確認事項です",
       },
@@ -5740,6 +5748,9 @@ describe("本番判定入力の接続", () => {
         id: emptyReviewSourceId,
         kind: "review",
         actorType: "human",
+        author: {
+          status: "unavailable",
+        },
         createdAt: observedAt,
         content: "",
       },
@@ -5847,6 +5858,9 @@ describe("本番判定入力の接続", () => {
         id: reviewRequestSourceId,
         kind: "review_request",
         actorType: "system",
+        author: {
+          status: "unavailable",
+        },
         createdAt: requestedAt,
       },
     ]);
@@ -6098,6 +6112,9 @@ describe("本番判定入力の接続", () => {
         id: autoMergeSourceId,
         kind: "auto_merge_request",
         actorType: "human",
+        author: {
+          status: "unavailable",
+        },
         createdAt: autoMergeEnabledAt,
         mergeMethod: "squash",
       },
@@ -6284,7 +6301,7 @@ describe("本番判定入力の接続", () => {
       reasoningEffort: config.ai.execution.reasoningEffort,
       backendVersion: "codex-cli-0.145.0",
       promptVersion: config.ai.promptVersion,
-      schemaVersion: "2",
+      schemaVersion: "3",
       inputHash: cacheEntry.metadata.inputHash,
       outputHash: cacheEntry.metadata.outputHash,
       executedAt: FIRST_RUN_AT,

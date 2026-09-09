@@ -99,7 +99,7 @@
       {
         "itemNodeId": "author-acknowledgement-after-changes-requested-pr",
         "input": {
-          "schemaVersion": "1",
+          "schemaVersion": "2",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "author-acknowledgement-after-changes-requested-pr",
@@ -111,9 +111,24 @@
           },
           "candidates": {
             "waitingOn": [
-              { "id": "author" },
-              { "id": "fixture-author-two" },
-              { "id": "reviewer-two" }
+              {
+                "id": "author",
+                "kind": "role",
+                "sourceIds": [
+                  "golden_event:acknowledgement-changes-requested",
+                  "golden_event:author-acknowledgement"
+                ]
+              },
+              {
+                "id": "fixture-author-two",
+                "kind": "user",
+                "sourceIds": ["golden_event:author-acknowledgement"]
+              },
+              {
+                "id": "reviewer-two",
+                "kind": "user",
+                "sourceIds": ["golden_event:acknowledgement-changes-requested"]
+              }
             ],
             "relations": []
           },
@@ -122,6 +137,7 @@
               "id": "golden_event:acknowledgement-changes-requested",
               "kind": "review",
               "actorType": "human",
+              "author": { "status": "unavailable" },
               "createdAt": "2026-07-20T00:00:00.000Z",
               "content": "例外を置き換えるときに元のエラーをcauseへ設定してください。"
             },
@@ -129,6 +145,7 @@
               "id": "golden_event:author-acknowledgement",
               "kind": "comment",
               "actorType": "human",
+              "author": { "status": "unavailable" },
               "createdAt": "2026-07-31T12:00:00.000Z",
               "content": "承知しました。元のエラーをcauseへ設定するよう修正し、後ほどpushします。"
             }
@@ -149,7 +166,7 @@
           "priorAnalysis": null
         },
         "acceptedOutput": {
-          "schemaVersion": "2",
+          "schemaVersion": "3",
           "item": {
             "nodeId": "author-acknowledgement-after-changes-requested-pr",
             "url": "https://github.com/VOICEVOX/fixture-change/pull/204"

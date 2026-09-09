@@ -55,7 +55,7 @@ class HttpFixtureError extends Error {
 
 function createInputAt(id: string, body: string, now: string): CodexAnalysisInput {
   return createCodexAnalysisInput({
-    schemaVersion: "1",
+    schemaVersion: "2",
     now,
     item: {
       nodeId: id,
@@ -68,6 +68,8 @@ function createInputAt(id: string, body: string, now: string): CodexAnalysisInpu
       waitingOn: [
         {
           id: "role:maintainer",
+          kind: "role",
+          sourceIds: ["body:current"],
         },
       ],
       relations: [],
@@ -77,6 +79,7 @@ function createInputAt(id: string, body: string, now: string): CodexAnalysisInpu
         id: "body:current",
         kind: "body",
         actorType: "human",
+        author: { status: "unavailable" },
         createdAt: "2026-07-20T00:00:00Z",
         text: body,
       },
@@ -183,7 +186,7 @@ function createExecutorOutput(input: CodexAnalysisInput) {
   const source = input.sources.at(0);
   assertNonNullable(source, "Codex分析入力のsourceがありません");
   return {
-    schemaVersion: "2",
+    schemaVersion: "3",
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,

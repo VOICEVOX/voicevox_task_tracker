@@ -74,7 +74,15 @@ const externalNodeSchema = z.object({
 });
 const evidenceSchema = z.object({
   sourceId: z.string().min(1, "source IDは空にできません"),
-  supports: z.enum(["status", "waiting_on", "relation", "progress", "notification", "uncertainty"]),
+  supports: z.enum([
+    "status",
+    "waiting_on",
+    "relation",
+    "progress",
+    "notification",
+    "uncertainty",
+    "self_commitment",
+  ]),
   summary: z.string().trim().min(1, "根拠の要約は空にできません"),
 });
 const contradictionSchema = z.object({
