@@ -591,6 +591,41 @@ function reconcileStateSelections(
   return reconciled;
 }
 
+function reconcileUnavailableStateSelections(
+  selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
+  deterministicDecision: DeterministicCodexDecision,
+): ReadonlyMap<AiAnalysisElement, ElementResultSelection> {
+  const statusSelection = selections.get("status");
+  const waitingOnSelection = selections.get("waitingOn");
+  assertNonNullable(statusSelection, "status要素の選択結果がありません");
+  assertNonNullable(waitingOnSelection, "waitingOn要素の選択結果がありません");
+  const waitingOnResult =
+    waitingOnSelection.result == null
+      ? undefined
+      : createAiAnalysisMigrationElementResultSchema("waitingOn").parse(waitingOnSelection.result);
+  const shouldUseDeterministicState =
+    !isTerminalStatus(deterministicDecision.status) &&
+    statusSelection.application === "deterministic_fallback" &&
+    waitingOnSelection.application === "preserved" &&
+    waitingOnResult?.value.length === 0;
+  if (!shouldUseDeterministicState) {
+    return selections;
+  }
+
+  const reconciled = new Map(selections);
+  for (const element of STATE_ANALYSIS_ELEMENTS) {
+    reconciled.set(
+      element,
+      Object.freeze({
+        result: undefined,
+        classification: undefined,
+        application: "deterministic_fallback",
+      }),
+    );
+  }
+  return reconciled;
+}
+
 function stateSelectionCanBeApplied(
   stateSelections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[],
   deterministicStatePriority: boolean,
@@ -1064,11 +1099,15 @@ export function reduceCodexAnalysis(
       ),
     );
   }
-  const selections = reconcileStateSelections(
+  const reconciledSelections = reconcileStateSelections(
     generatedSelections,
     selectedElements,
     preservedElements,
   );
+  const selections =
+    attempt.status === "unavailable"
+      ? reconcileUnavailableStateSelections(reconciledSelections, deterministicDecision)
+      : reconciledSelections;
 
   if (attempt.status === "unavailable") {
     const unavailable = reduceUnavailableCodexAnalysis(
