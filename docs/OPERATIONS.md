@@ -68,6 +68,91 @@ preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論
 `tracker-state`は自動更新専用です。
 人間がsnapshot、履歴、AI cache、通知管理記録を直接編集すると履歴と通知抑制の整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
 
+## forkでPRのコードを動かし、試行環境ごとにstateを分ける
+
+PRのコードで実推論とstate更新を確認するときは、`Hiroshiba/voicevox_task_tracker`のActionsから`sandbox task tracking`を起動します。
+同じPRでも試行環境を複数作り、それぞれのstateで並行して実行できます。
+このworkflowはforkのデフォルトブランチである`main`から起動した場合だけ動きます。
+最初にsandbox用のworkflowと実行コードをforkの`main`へ反映し、Actionsを有効にします。
+実行対象の作業ブランチにも、この機能の実装を含めます。
+repository variableへ`GH_APP_ID`を、repository secretsへ`GH_APP_PRIVATE_KEY`と`CODEX_AUTH_JSON`を登録します。
+Codex認証ファイルは実行中だけrunnerの一時ディレクトリへ配置し、更新内容をsecretへ書き戻しません。
+Discord用secretと`CODEX_AUTH_SYNC_TOKEN`はsandbox workflowに渡しません。
+
+通常モードで新しい環境を作る例です。
+
+```console
+gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
+  -f operation=create -f source_ref=feature/example -f analysis_mode=normal
+```
+
+createでは`env-<workflow run ID>-<run attempt>`形式の環境IDを自動生成し、VOICEVOX本番repositoryの公開`tracker-state`の最新コミットから、forkに`sandbox-state/<環境ID>`ブランチを作成します。
+複製元のコミットをseedと呼びます。
+`state/sandbox-environment.json`へ環境ID、対象ブランチ、複製元のSHAを保存し、実推論より先にpushします。
+このmanifestは環境の存続中に更新しません。
+作業ブランチは実行開始時のコミットSHAへ固定し、run contextのartifactへコードとstateのSHA、run ID、attempt、分析モードを記録します。
+Pagesはdeployせず、生成したサイトとrun contextをActions artifactへ保存します。
+通知処理は`hold`で完了記録だけを保存するため、Discordへ送信しません。
+
+一つの項目を指定して実推論する場合は、`NODE_ID`を対象のGitHub node IDへ置き換え、AI判定要素をカンマ区切りで指定します。
+
+```console
+gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
+  -f operation=create -f source_ref=feature/example -f analysis_mode=forced \
+  -f forced_node_id=NODE_ID -f forced_elements=status,waitingOn
+```
+
+利用できる要素は`status`、`waitingOn`、`nextAction`、`relations`、`progress`、`importance`、`deadline`、`notification`です。
+forcedモードではnode IDを一つだけ指定し、要素の重複や空要素は受け付けません。
+生成不要と判定された要素や、指定外の判定を維持するための情報が不足する指定は拒否します。
+指定要素はcacheを再利用せず、すべての指定要素で実推論に成功しなければ実行を失敗にします。
+normalモードでは本番と同じ選別とcache再利用を行うため、実推論が0件でも成功します。
+
+保存したstateから実行を続ける場合は、manifestに記録された作業ブランチを指定します。
+作業ブランチを更新した後のcontinueでは更新後のSHAを固定しますが、別ブランチを指定すると停止します。
+解析に失敗した環境も同じ方法で再開できます。
+
+```console
+gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
+  -f operation=continue -f environment_id=env-123456789-1 \
+  -f source_ref=feature/example -f analysis_mode=normal
+```
+
+環境をseedからやり直す場合はresetを使います。
+resetは元の環境を読み取り、新しい環境IDとstateブランチを作ります。
+`reset_source=seed`は元環境のmanifestにあるseedへ戻し、`reset_source=latest`はVOICEVOX本番repositoryの最新`tracker-state`から開始します。
+
+```console
+gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
+  -f operation=reset -f environment_id=env-123456789-1 \
+  -f source_ref=feature/example -f reset_source=latest -f analysis_mode=normal
+```
+
+不要になった環境は環境IDを指定して廃棄します。
+削除時にリモートのheadが取得時の値から変わっていた場合は、競合として停止します。
+
+```console
+gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
+  -f operation=dispose -f environment_id=env-123456789-1
+```
+
+排他単位はforkリポジトリと書き込み先の環境です。
+createとresetは新しく作る環境、continueとdisposeは指定した環境への操作を一つずつ実行します。
+resetと元環境のcontinueやdisposeは並行して実行できます。
+resetは元環境のmanifestを取得してから、選択した複製元のSHAを固定して新環境を作ります。
+manifestの取得前に元環境が削除された場合は失敗します。
+異なる環境は並行して実行できます。
+`cancel-in-progress: false`でも、同じ排他groupの待機中runは後から来たrunに置き換わります。
+同じ環境で順番に実行したい場合は、前の実行が完了してから次を起動します。
+
+初回は異なる二つの作業ブランチでcreateを起動し、環境ID、stateブランチ、run contextのartifactが分かれていることを確認します。
+その後、それぞれの環境でcontinueを実行し、前回保存したstateが読み込まれることと、Pagesのartifactを確認します。
+
+```console
+gh run list --repo Hiroshiba/voicevox_task_tracker --workflow sandbox.yml --limit 2
+gh run view RUN_ID --repo Hiroshiba/voicevox_task_tracker
+```
+
 ## 性能profile
 
 OPS-004は通常のCIから分離したend-to-end性能profileで確認します。
