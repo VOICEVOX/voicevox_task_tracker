@@ -117,6 +117,11 @@ Codexが更新した`auth.json`もjob開始時のsecretとは異なるため、�
 書き戻し後はjobの最後に`codex-home`と指紋ファイルを削除します。
 Codex認証情報と`CODEX_AUTH_SYNC_TOKEN`を`config.yml`、branch、artifact、run logへ書きません。
 
+同じrepositoryの`collect-analyze`とsandbox jobは、共通の排他groupで認証の使用と書き戻しを一つずつ実行します。
+repository secretはworkflow runの受付時に読み込まれるため、待機中に別runが認証を更新しても、受付済みrunには反映されません。
+手動実行は、同じ認証を使う前のrunが完了してから起動します。
+この制約は日次workflowとsandbox workflowに共通です。
+
 repositoryのWorkflow permissionsは既定の読み取り専用にします。
 read and writeへ変更する必要はありません。
 全workflowはtop-levelの`permissions`を空にし、各jobで必要な権限だけを指定しています。
@@ -145,23 +150,20 @@ artifactを利用する後続jobは同じartifactを再検証してから利用�
 
 ### forkの試行用認証を登録する
 
-`Hiroshiba/voicevox_task_tracker`のSettingsからEnvironmentsを開き、`sandbox-codex`を作成します。
-repository variableへ`GH_APP_ID`を、repository secretsへ`GH_APP_PRIVATE_KEY`と`CODEX_AUTH_SYNC_TOKEN`を登録します。
-`CODEX_AUTH_JSON`は`sandbox-codex`のEnvironment secretだけに登録します。
+`Hiroshiba/voicevox_task_tracker`のrepository variableへ`GH_APP_ID`を登録します。
+本番と同じく、repository secretsへ`GH_APP_PRIVATE_KEY`、`CODEX_AUTH_JSON`、`CODEX_AUTH_SYNC_TOKEN`を登録します。
 
 同期用のfine-grained personal access tokenは、Resource ownerを`Hiroshiba`にし、対象repositoryを`Hiroshiba/voicevox_task_tracker`だけに絞ります。
-Repository permissionsには`Environments`の`Read and write`だけを与えます。
+Repository permissionsには`Secrets`の`Read and write`だけを与えます。
 
 ```console
-gh secret set CODEX_AUTH_JSON --repo Hiroshiba/voicevox_task_tracker --env sandbox-codex < "${CODEX_HOME:-$HOME/.codex}/auth.json"
+gh secret set CODEX_AUTH_JSON --repo Hiroshiba/voicevox_task_tracker < "${CODEX_HOME:-$HOME/.codex}/auth.json"
 gh secret set CODEX_AUTH_SYNC_TOKEN --repo Hiroshiba/voicevox_task_tracker
 ```
 
-Environment secretはjobの開始時に読み込まれます。
-sandbox jobを一つずつ実行することで、待機中のjobも直前のjobが保存した認証を利用できます。
-認証ファイルに変更があれば、試行処理が失敗した場合も同じEnvironmentへ書き戻します。
+認証ファイルに変更があれば、試行処理が失敗した場合も同じrepository secretへ書き戻します。
 書き戻しに失敗した場合はrunを失敗にし、一時ファイルは削除します。
-認証エラーから復旧するときは、再ログインで得た`auth.json`を同じEnvironmentへ登録します。
+認証エラーから復旧するときは、再ログインで得た`auth.json`を同じrepository secretへ登録します。
 同期用PATの有効期限は自動延長されないため、期限前に再発行して`CODEX_AUTH_SYNC_TOKEN`を更新します。
 
 ## マージゲートの設定
