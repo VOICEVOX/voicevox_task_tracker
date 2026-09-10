@@ -1,0 +1,188 @@
+name: sandbox task tracking
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: sandbox環境の操作
+        required: true
+        default: create
+        type: choice
+        options:
+          - create
+          - continue
+          - reset
+          - dispose
+      source_ref:
+        description: 推論対象にするHiroshiba forkの作業branch
+        required: false
+        type: string
+      environment_id:
+        description: continue、reset、disposeの対象environment ID
+        required: false
+        type: string
+      reset_source:
+        description: resetで使うVOICEVOX tracker-stateのseed
+        required: false
+        default: seed
+        type: choice
+        options:
+          - seed
+          - latest
+      analysis_mode:
+        description: AI分析モード
+        required: true
+        default: normal
+        type: choice
+        options:
+          - normal
+          - forced
+      forced_node_id:
+        description: forced modeで実推論するGitHub node ID
+        required: false
+        type: string
+      forced_elements:
+        description: forced modeで実推論する要素のカンマ区切り
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: >-
+    sandbox-${{ github.repository }}-${{ (inputs.operation == 'create' || inputs.operation == 'reset') && format('env-{0}-{1}', github.run_id, github.run_attempt) || inputs.environment_id }}
+  cancel-in-progress: false
+
+jobs:
+  sandbox:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - name: forkのコードを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.operation == 'dispose' && github.event.repository.default_branch || inputs.source_ref || 'main' }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: sandbox環境を準備
+        id: prepare
+        if: inputs.operation != 'dispose'
+        env:
+          SANDBOX_OPERATION: ${{ inputs.operation }}
+          SANDBOX_SOURCE_REF: ${{ inputs.source_ref }}
+          SANDBOX_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+          SANDBOX_RESET_SOURCE: ${{ inputs.reset_source }}
+          SANDBOX_ANALYSIS_MODE: ${{ inputs.analysis_mode }}
+          SANDBOX_FORCED_NODE_ID: ${{ inputs.forced_node_id }}
+          SANDBOX_FORCED_ELEMENTS: ${{ inputs.forced_elements }}
+          SANDBOX_CONTEXT_PATH: ${{ runner.temp }}/sandbox-context.json
+        run: .github/scripts/sandbox-lifecycle.sh prepare
+
+      - name: sandbox環境を廃棄
+        id: dispose
+        if: inputs.operation == 'dispose'
+        env:
+          SANDBOX_OPERATION: ${{ inputs.operation }}
+          SANDBOX_SOURCE_REF: ${{ inputs.source_ref }}
+          SANDBOX_ENVIRONMENT_ID: ${{ inputs.environment_id }}
+        run: .github/scripts/sandbox-lifecycle.sh dispose
+
+      - name: Node.jsを準備
+        if: inputs.operation != 'dispose'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+
+      - name: pnpmを準備
+        if: inputs.operation != 'dispose'
+        run: corepack enable
+
+      - name: 依存関係をインストール
+        if: inputs.operation != 'dispose'
+        run: pnpm install --frozen-lockfile
+
+      - name: Codex認証ファイルを配置
+        id: codex-auth-placement
+        if: inputs.operation != 'dispose'
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          if [[ -z "$CODEX_AUTH_JSON" ]]; then
+            echo "CODEX_AUTH_JSONが空です" >&2
+            exit 1
+          fi
+          mkdir -p "${{ runner.temp }}/codex-home"
+          chmod 700 "${{ runner.temp }}/codex-home"
+          printf '%s' "$CODEX_AUTH_JSON" > "${{ runner.temp }}/codex-home/auth.json"
+          chmod 600 "${{ runner.temp }}/codex-home/auth.json"
+          .github/scripts/mask-codex-auth-values.sh "${{ runner.temp }}/codex-home/auth.json"
+
+      - name: sandbox日次処理を実行
+        if: inputs.operation != 'dispose'
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          GH_APP_ID: ${{ vars.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          SANDBOX_CONTEXT_PATH: ${{ steps.prepare.outputs.context_path }}
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-sandbox.jsonl
+        run: |
+          pnpm build
+          pnpm tracker:run daily --sandbox-context "$SANDBOX_CONTEXT_PATH" --notification-action hold
+
+      - name: Pages用データをWebへ配置
+        if: inputs.operation != 'dispose'
+        run: |
+          mkdir -p web/public/data
+          cp -f artifacts/workflow/pages/summary.json web/public/data/summary.json
+          cp -f artifacts/workflow/pages/details.json web/public/data/details.json
+          cp -f artifacts/workflow/pages/notification-history.json web/public/data/notification-history.json
+
+      - name: Pagesをビルド
+        if: inputs.operation != 'dispose'
+        run: pnpm build:web
+
+      - name: sandbox stateの完了publishを確認
+        id: finalize
+        if: success() && inputs.operation != 'dispose'
+        env:
+          SANDBOX_OPERATION: ${{ inputs.operation }}
+          SANDBOX_ENVIRONMENT_ID: ${{ steps.prepare.outputs.environment_id }}
+        run: .github/scripts/sandbox-lifecycle.sh finalize
+
+      - name: run contextをartifactへ保存
+        if: always() && inputs.operation != 'dispose'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sandbox-context-${{ steps.prepare.outputs.environment_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sandbox-context.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: sandbox run reportをartifactへ保存
+        if: always() && inputs.operation != 'dispose'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sandbox-output-${{ steps.prepare.outputs.environment_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/run-reports/daily.json
+            artifacts/workflow/pages
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: sandbox Pages artifactを保存
+        if: success() && inputs.operation != 'dispose'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sandbox-pages-${{ steps.prepare.outputs.environment_id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/web
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Codex認証関連ファイルを削除
+        if: always() && inputs.operation != 'dispose'
+        run: rm -rf "${{ runner.temp }}/codex-home"

@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 
 import {
   assertValidStateDirectory,
+  assertValidStateBranch,
   assertValidStatePath,
   type StateBranchAdapter,
   type StateBranchCommitRequest,
@@ -12,6 +13,7 @@ import {
   type StateBranchHead,
   type StateBranchPublishRequest,
   type StateFileReadResult,
+  type StateRemoteUrls,
 } from "./branch-adapter.js";
 import {
   StateBranchCommitError,
@@ -20,7 +22,6 @@ import {
   StateConfigurationError,
 } from "./errors.js";
 
-const TRACKER_STATE_BRANCH = "tracker-state";
 const ZERO_OBJECT_ID = "0000000000000000000000000000000000000000";
 const OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
 const PUBLISH_MAX_ATTEMPTS = 3;
@@ -239,9 +240,7 @@ function parseGitBatchResult(
 }
 
 function validateBranch(branch: string): void {
-  if (branch !== TRACKER_STATE_BRANCH) {
-    throw new StateConfigurationError(`${TRACKER_STATE_BRANCH} branchだけを操作できます`);
-  }
+  assertValidStateBranch(branch);
 }
 
 function validateCommitRequest(request: StateBranchCommitRequest): void {
@@ -356,6 +355,27 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
     });
   }
 
+  async #readRemoteUrls(push: boolean): Promise<readonly string[]> {
+    const result = await this.#runGit({
+      arguments: push
+        ? ["remote", "get-url", "--push", "--all", "origin"]
+        : ["remote", "get-url", "--all", "origin"],
+      input: {
+        status: "none",
+      },
+      environment: this.#baseEnvironment,
+      acceptedExitCodes: new Set([0]),
+    });
+    const urls = decodeUtf8(result.stdout)
+      .split("\n")
+      .map((value) => value.trim())
+      .filter((value) => value.length !== 0);
+    if (urls.length === 0) {
+      throw new TypeError("origin URLがありません");
+    }
+    return Object.freeze(urls);
+  }
+
   async #resolveHead(branch: string): Promise<StateBranchHead> {
     validateBranch(branch);
     const result = await this.#runGit({
@@ -389,6 +409,37 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
           cause: error,
         }),
       });
+    }
+  }
+
+  /** checkout repositoryの現在のcommit SHAを取得する。 */
+  public async resolveRepositoryRevision(): Promise<string> {
+    try {
+      const result = await this.#runGit({
+        arguments: ["rev-parse", "--verify", "HEAD"],
+        input: {
+          status: "none",
+        },
+        environment: this.#baseEnvironment,
+        acceptedExitCodes: new Set([0]),
+      });
+      return parseObjectId(result.stdout);
+    } catch (error: unknown) {
+      throw new StateBranchReadError({ cause: error });
+    }
+  }
+
+  /** originのfetch先とpush先を取得する。 */
+  public async resolveOriginUrls(): Promise<StateRemoteUrls> {
+    try {
+      const fetchUrls = await this.#readRemoteUrls(false);
+      const configuredPushUrls = await this.#readRemoteUrls(true);
+      return Object.freeze({
+        fetchUrls,
+        pushUrls: configuredPushUrls,
+      });
+    } catch (error: unknown) {
+      throw new StateBranchReadError({ cause: error });
     }
   }
 

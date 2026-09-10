@@ -1,4 +1,5 @@
 export {
+  assertValidStateBranch,
   assertValidStatePath,
   joinStatePath,
   validateStatePersistenceConfiguration,
@@ -10,6 +11,7 @@ export {
   type StateFileReadResult,
   type StateFileUpdate,
   type StatePersistenceConfiguration,
+  type StateRemoteUrls,
 } from "./branch-adapter.js";
 export {
   hashCanonicalJson,

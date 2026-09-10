@@ -5,6 +5,7 @@ import {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
   CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
   CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  createAiAnalysisTarget,
   assessAnalysisImpact,
   createCodexEnvironment,
   createCodexAnalysisInput,
@@ -30,6 +31,7 @@ import {
   AI_ANALYSIS_ELEMENT_REVISIONS,
   AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
   type AiAnalysisCandidate,
+  type AiAnalysisTarget,
   type AnalysisImpactAssessment,
   type AnalysisImpactCurrentInputProjection,
   type AnalysisImpactDeclaration,
@@ -38,6 +40,8 @@ import {
   type AnalysisImpactVersion,
   type AnalysisElementReuseRecord,
   type AnalysisElementPlanning,
+  type AnalysisElementSelection,
+  type AnalysisElementSelectionCandidate,
   type AnalysisElementNecessityInput,
   type AiAnalysisRunFailure,
   type AiAnalysisRunIdentity,
@@ -240,9 +244,10 @@ import {
   createStateNotificationLedger,
   createStateRunReport,
   createStateSnapshot,
+  StateBranchConflictError,
   NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
   assertStatePublicSafety,
-  type StatePersistenceSession,
+  StatePersistenceSession,
   type PersistStateTransactionResult,
   type SnapshotAiState,
   type SnapshotAnalysisPlanFingerprint,
@@ -252,6 +257,7 @@ import {
   type SnapshotTrackedItem,
   type StateBranchAdapter,
   type StateNotificationLedger,
+  type StatePersistenceConfiguration,
   type StateRunReport,
   type StateHistoryRecord,
   type StateHistoryInputEvent,
@@ -272,6 +278,15 @@ import {
   type ResolveDiscordDeliveryCliCommand,
 } from "./command.js";
 import { type OnlineCliCommand } from "./daily-transaction.js";
+import {
+  assertSandboxManifestMatchesContext,
+  assertSandboxOrigin,
+  parseSandboxManifest,
+  sandboxBranchForEnvironment,
+  SANDBOX_MANIFEST_PATH,
+  type SandboxManifest,
+  type SandboxRunContext,
+} from "./sandbox-context.js";
 import {
   DailyTransactionRunner,
   type DailyTransactionDependencies,
@@ -339,7 +354,20 @@ type RuntimeCredentials = Readonly<{
 type RuntimeConfiguration = Readonly<{
   config: Config;
   credentials: RuntimeCredentials;
+  target: RuntimeExecutionTarget;
 }>;
+
+type RuntimeExecutionTarget =
+  | Readonly<{
+      kind: "production";
+      state: Config["state"];
+    }>
+  | Readonly<{
+      kind: "sandbox";
+      state: StatePersistenceConfiguration;
+      manifest: SandboxManifest;
+      context: SandboxRunContext;
+    }>;
 
 function createAiAnalysisRunIdentity(config: Config): AiAnalysisRunIdentity {
   return Object.freeze({
@@ -587,8 +615,9 @@ export type ProductionRuntimeAdapters = Readonly<{
   loadConfig: typeof loadConfig;
   openStateSession: (
     adapter: StateBranchAdapter,
-    configuration: Config["state"],
+    configuration: StatePersistenceConfiguration,
   ) => Promise<StatePersistenceSession>;
+  readSandboxContext?: (path: string) => Promise<SandboxRunContext>;
   discoverRepositoryInventory: typeof discoverRepositoryInventory;
   enumerateGitHubItemsByIdentifiers: typeof enumerateGitHubItemsByIdentifiers;
   enumerateOpenGitHubItems: typeof enumerateOpenGitHubItems;
@@ -695,6 +724,7 @@ function readRuntimeCredentials(
   environment: Readonly<NodeJS.ProcessEnv>,
   config: Config,
   command: OnlineCliCommand,
+  executionTargetKind: RuntimeExecutionTarget["kind"],
 ): RuntimeCredentials {
   requireEnvironmentVariables(environment, ["GH_APP_ID", "GH_APP_PRIVATE_KEY"]);
   let github: GitHubAppCredentials;
@@ -712,7 +742,7 @@ function readRuntimeCredentials(
   }
   const codex = readCodexCredentials(environment, config);
   const knownSecrets = [github.privateKey, ...codexKnownSecrets(codex)];
-  if (config.notifications.discord.enabled) {
+  if (config.notifications.discord.enabled && executionTargetKind === "production") {
     switch (command.kind) {
       case "daily":
       case "backfill":
@@ -750,6 +780,73 @@ function readRuntimeCredentials(
     github,
     codex,
     knownSecrets: Object.freeze(knownSecrets),
+  });
+}
+
+function parseSandboxManifestBytes(bytes: Uint8Array): SandboxManifest {
+  return parseSandboxManifest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+}
+
+async function resolveRuntimeTarget(
+  adapters: ProductionRuntimeAdapters,
+  config: Config,
+  command: OnlineCliCommand,
+): Promise<RuntimeExecutionTarget> {
+  const sandboxContextPath = command.kind === "daily" ? command.sandboxContextPath : undefined;
+  if (sandboxContextPath == null) {
+    return Object.freeze({
+      kind: "production",
+      state: config.state,
+    });
+  }
+  if (command.kind !== "daily") {
+    throw new TypeError("sandbox contextはdaily commandでだけ指定できます");
+  }
+  if (command.notificationAction !== "hold") {
+    throw new TypeError("sandbox実行のnotification-actionはholdにしてください");
+  }
+  const readSandboxContext = adapters.readSandboxContext;
+  if (readSandboxContext == null) {
+    throw new TypeError("sandbox contextの読み取りadapterがありません");
+  }
+  const context = await readSandboxContext(resolve(adapters.repositoryPath, sandboxContextPath));
+  const branch = sandboxBranchForEnvironment(context.environmentId);
+  const stateAdapter = adapters.createStateBranchAdapter();
+  const head = await stateAdapter.resolveHead(branch);
+  if (head.status === "missing") {
+    throw new StateBranchConflictError();
+  }
+  if (head.revision !== context.baseStateRevision) {
+    throw new StateBranchConflictError();
+  }
+  const manifestResult = await stateAdapter.readFile(head.revision, SANDBOX_MANIFEST_PATH);
+  if (manifestResult.status === "missing") {
+    throw new TypeError("sandbox environment manifestがありません");
+  }
+  const manifest = parseSandboxManifestBytes(manifestResult.bytes);
+  assertSandboxManifestMatchesContext(manifest, context);
+  assertNonNullable(
+    stateAdapter.resolveRepositoryRevision,
+    "checkout repositoryのcommit SHA取得adapterがありません",
+  );
+  const repositoryRevision = await stateAdapter.resolveRepositoryRevision();
+  if (repositoryRevision !== context.codeRevision) {
+    throw new TypeError("sandbox contextとcheckout repositoryのcommit SHAが一致しません");
+  }
+  assertNonNullable(stateAdapter.resolveOriginUrls, "origin URL取得adapterがありません");
+  const originUrls = await stateAdapter.resolveOriginUrls();
+  for (const originUrl of [...originUrls.fetchUrls, ...originUrls.pushUrls]) {
+    assertSandboxOrigin(originUrl);
+  }
+  const state = Object.freeze({
+    ...config.state,
+    branch,
+  }) satisfies StatePersistenceConfiguration;
+  return Object.freeze({
+    kind: "sandbox",
+    state,
+    manifest,
+    context,
   });
 }
 
@@ -3883,6 +3980,22 @@ function savedEvaluationRecordsForItem(
   return Object.freeze(records);
 }
 
+function savedEvaluationRecordForElement(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+  element: AiAnalysisElement,
+): AnalysisElementReuseRecord | undefined {
+  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  const evaluated = item?.aiAnalysis.elements[element];
+  if (evaluated == null) {
+    return undefined;
+  }
+  return Object.freeze({
+    result: createAiAnalysisMigrationElementResultSchema(element).parse(evaluated.result),
+    proof: aiAnalysisElementReuseProofSchema.parse(evaluated.evaluationProof),
+  });
+}
+
 function savedAdoptionRecordsForItem(
   state: RuntimeState,
   nodeId: GitHubNodeId,
@@ -4148,12 +4261,14 @@ function verifiedReuseProof(
 }
 
 function evaluationRecordsForAnalysis(
+  state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning,
   generations: AiAnalysisElementSourceGenerationMap,
   run: AiAnalysisRunResult | undefined,
   current: TrackedItemAiAnalysisCurrentAdoptedElements,
   migration: TrackedItemAiAnalysisMigrationElements,
+  target: AiAnalysisTarget | undefined,
 ): Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>> {
   const dependencyFingerprints = Object.freeze({
     status: planning.candidates.status.dependencyFingerprint,
@@ -4173,6 +4288,16 @@ function evaluationRecordsForAnalysis(
     if (generation == null) {
       continue;
     }
+    const candidate = planning.candidates[element];
+    const preserveForcedUnexecutedEvaluation =
+      isForcedUnexecutedElement(analysis, element, target) && candidate.necessity === "required";
+    if (generated[element] == null && preserveForcedUnexecutedEvaluation) {
+      const saved = savedEvaluationRecordForElement(state, analysis.item.nodeId, element);
+      if (saved != null) {
+        records[element] = saved;
+      }
+      continue;
+    }
     if (generated[element] != null) {
       const dependencyFingerprint = isStateAnalysisElement(element)
         ? finalStateDependencyFingerprint(analysis, current, migration)
@@ -4189,7 +4314,7 @@ function evaluationRecordsForAnalysis(
       });
       continue;
     }
-    const saved = planning.candidates[element].savedEvaluation;
+    const saved = candidate.savedEvaluation;
     records[element] =
       saved ??
       Object.freeze({
@@ -4271,6 +4396,152 @@ function verifiedCurrentAdoptedResultForElement(
   return currentAdoptedResultForElement(state, analysis, element);
 }
 
+function forcedAiAnalysisTarget(configuration: RuntimeConfiguration): AiAnalysisTarget | undefined {
+  if (
+    configuration.target.kind !== "sandbox" ||
+    configuration.target.context.analysisMode.kind !== "forced"
+  ) {
+    return undefined;
+  }
+  return createAiAnalysisTarget(configuration.target.context.analysisMode.target);
+}
+
+function isForcedUnexecutedElement(
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+  target: AiAnalysisTarget | undefined,
+): boolean {
+  return (
+    target != null && (target.nodeId !== analysis.item.nodeId || !target.elements.includes(element))
+  );
+}
+
+function currentSavedResultForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+): AiAnalysisElementMigrationResult | undefined {
+  return currentAdoptedResultForElement(state, analysis, element);
+}
+
+function currentSavedGenerationForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  element: AiAnalysisElement,
+): AiAnalysisElementSourceGeneration | undefined {
+  return currentAdoptedElementForElement(state, analysis, element)?.generation;
+}
+
+function forcedMigrationAdoptedElementForElement(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  element: AiAnalysisElement,
+  target: AiAnalysisTarget | undefined,
+): TrackedItemAiAnalysisMigrationAdoptedElement | undefined {
+  if (
+    !isForcedUnexecutedElement(analysis, element, target) ||
+    planning.candidates[element].necessity !== "required"
+  ) {
+    return undefined;
+  }
+  const adopted = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element];
+  return adopted?.origin === "migration" ? adopted : undefined;
+}
+
+function forcedMigrationReuseRecordsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  target: AiAnalysisTarget | undefined,
+): Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>> {
+  const records: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const adopted = forcedMigrationAdoptedElementForElement(
+      state,
+      analysis,
+      planning,
+      element,
+      target,
+    );
+    if (adopted == null) {
+      continue;
+    }
+    records[element] = Object.freeze({
+      result: createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result),
+      proof: aiAnalysisElementReuseProofSchema.parse(adopted.reuseProof),
+    });
+  }
+  return Object.freeze(records);
+}
+
+function preservedElementsForForcedTargetInput(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  target: AiAnalysisTarget,
+): CodexPreservedElements {
+  const selectedElements = new Set(target.elements);
+  const preservedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> =
+    {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    if (selectedElements.has(element)) {
+      continue;
+    }
+    const candidate = planning.candidates[element];
+    const result =
+      candidate.necessity === "not_required"
+        ? deterministicElementResult(analysis, element)
+        : (currentSavedResultForElement(state, analysis, element) ??
+          migrationAdoptedResultForElement(state, analysis, element) ??
+          deterministicElementResult(analysis, element));
+    if (result != null) {
+      preservedElements[element] = result;
+    }
+  }
+  return Object.freeze(preservedElements);
+}
+
+function preservedElementsForForcedReduction(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  target: AiAnalysisTarget,
+): CodexPreservedElements {
+  const preservedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> =
+    {};
+  const previousItem = previousSnapshot(state)?.items.find(
+    (candidate) => candidate.nodeId === analysis.item.nodeId,
+  );
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const candidate = planning.candidates[element];
+    if (candidate.necessity !== "required") {
+      continue;
+    }
+    let result: AiAnalysisElementMigrationResult | undefined;
+    const forcedMigration = forcedMigrationAdoptedElementForElement(
+      state,
+      analysis,
+      planning,
+      element,
+      target,
+    );
+    if (forcedMigration != null) {
+      result = createAiAnalysisMigrationElementResultSchema(element).parse(forcedMigration.result);
+    } else if (isForcedUnexecutedElement(analysis, element, target)) {
+      result = currentSavedResultForElement(state, analysis, element);
+    }
+    result ??= candidate.savedReuse?.result;
+    if (result == null && previousItem != null) {
+      result = adoptedResultForRetainedItem(previousItem, element);
+    }
+    if (result != null) {
+      preservedElements[element] = result;
+    }
+  }
+  return Object.freeze(preservedElements);
+}
+
 function migrationAdoptedResultForElement(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
@@ -4316,7 +4587,11 @@ function preservedElementsForSelection(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning,
+  target: AiAnalysisTarget | undefined,
 ): CodexPreservedElements {
+  if (target?.nodeId === analysis.item.nodeId) {
+    return preservedElementsForForcedTargetInput(state, analysis, planning, target);
+  }
   const preservedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> =
     {};
   for (const skipped of planning.selection.skipped) {
@@ -4451,6 +4726,62 @@ function necessityInputForAnalysis(
   });
 }
 
+function forcedAnalysisSelection(
+  planning: AnalysisElementPlanning,
+  target: AiAnalysisTarget,
+): AnalysisElementSelection {
+  const candidatesByElement = new Map(
+    AI_ANALYSIS_ELEMENTS.map((element) => [element, planning.candidates[element]]),
+  );
+  const selected = target.elements.map((element) => {
+    const candidate = candidatesByElement.get(element);
+    assertNonNullable(candidate, `指定したAI分析要素の候補がありません。対象: ${element}`);
+    if (candidate.necessity !== "required") {
+      throw new TypeError(`指定したAI分析対象の要素はrequiredではありません。対象: ${element}`);
+    }
+    return candidate;
+  });
+  const selectedSet = new Set(target.elements);
+  const skipped = AI_ANALYSIS_ELEMENTS.filter((element) => !selectedSet.has(element)).map(
+    (element) => {
+      const candidate = candidatesByElement.get(element);
+      assertNonNullable(candidate, `指定したAI分析要素の候補がありません。対象: ${element}`);
+      return Object.freeze({
+        candidate: Object.freeze({
+          ...candidate,
+          necessity: "not_required" as const,
+        }),
+        reason: "not_required" as const,
+      });
+    },
+  );
+  return Object.freeze({
+    selected: Object.freeze(selected),
+    skipped: Object.freeze(skipped),
+    shouldCallAi: true,
+  });
+}
+
+function forcedCandidateElements(
+  planning: AnalysisElementPlanning,
+  target: AiAnalysisTarget,
+): readonly AnalysisElementSelectionCandidate[] {
+  const selectedSet = new Set(target.elements);
+  return Object.freeze(
+    AI_ANALYSIS_ELEMENTS.map((element) => {
+      const candidate = planning.candidates[element];
+      const selected = selectedSet.has(element);
+      if (selected && candidate.necessity !== "required") {
+        throw new TypeError(`指定したAI分析対象の要素はrequiredではありません。対象: ${element}`);
+      }
+      return Object.freeze({
+        ...candidate,
+        necessity: selected ? ("required" as const) : ("not_required" as const),
+      });
+    }),
+  );
+}
+
 function createAiCandidates(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
@@ -4503,6 +4834,7 @@ function createAiCandidates(
   const previousAiAnalysisStatusByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item.aiAnalysis.status]),
   );
+  const target = forcedAiAnalysisTarget(configuration);
   const candidates: PreparedAiAnalysisCandidate[] = [];
   for (const analysis of deterministicAnalysis.items) {
     const previousObservedAt = previousSnapshot(state)?.items.find(
@@ -4587,13 +4919,21 @@ function createAiCandidates(
       savedEvaluations: planningEvaluations,
       savedReuses: planningReuses,
     });
-    elementPlanningByNodeId.set(analysis.item.nodeId, planning);
+    const targetForAnalysis = target?.nodeId === analysis.item.nodeId ? target : undefined;
+    const executionPlanning =
+      targetForAnalysis == null
+        ? planning
+        : Object.freeze({
+            ...planning,
+            selection: forcedAnalysisSelection(planning, targetForAnalysis),
+          });
+    elementPlanningByNodeId.set(analysis.item.nodeId, executionPlanning);
     const input = createCodexInput(
       configuration,
       collection.evaluatedAt,
       analysis,
-      planning.selection.selected.map((candidate) => candidate.element),
-      preservedElementsForSelection(state, analysis, planning),
+      executionPlanning.selection.selected.map((candidate) => candidate.element),
+      preservedElementsForSelection(state, analysis, executionPlanning, targetForAnalysis),
       previousObservedAt,
     );
     inputByNodeId.set(analysis.item.nodeId, input);
@@ -4638,7 +4978,10 @@ function createAiCandidates(
     const candidate = Object.freeze({
       id: analysis.item.nodeId,
       input,
-      elements: Object.freeze(AI_ANALYSIS_ELEMENTS.map((element) => planning.candidates[element])),
+      elements:
+        targetForAnalysis == null
+          ? Object.freeze(AI_ANALYSIS_ELEMENTS.map((element) => planning.candidates[element]))
+          : forcedCandidateElements(planning, targetForAnalysis),
       promptFingerprint: CODEX_PROMPT_FINGERPRINT,
       priority: Object.freeze({
         previouslyDeferred: previousAiAnalysisStatus === "deferred",
@@ -4886,6 +5229,7 @@ function setEvaluatedElement(
 function evaluatedElementsForGenerations(
   generations: AiAnalysisElementSourceGenerationMap,
   evaluations: Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>>,
+  missingEvaluationElements: ReadonlySet<AiAnalysisElement>,
 ): TrackedItemAiAnalysisCurrentElements {
   const evaluated: MutablePartial<TrackedItemAiAnalysisCurrentElements> = {};
   for (const element of AI_ANALYSIS_ELEMENTS) {
@@ -4894,6 +5238,9 @@ function evaluatedElementsForGenerations(
       continue;
     }
     const evaluation = evaluations[element];
+    if (evaluation == null && missingEvaluationElements.has(element)) {
+      continue;
+    }
     assertNonNullable(evaluation, `AI評価のresultと再利用証明がありません。対象: ${element}`);
     setEvaluatedElement(evaluated, element, generation, evaluation);
   }
@@ -4905,6 +5252,7 @@ function generationsForAnalysis(
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning | undefined,
   run: AiAnalysisRunResult | undefined,
+  target: AiAnalysisTarget | undefined,
 ): AiAnalysisElementSourceGenerationMap {
   const saved = savedGenerationsForItem(state, analysis.item.nodeId);
   if (planning == null) {
@@ -4918,6 +5266,12 @@ function generationsForAnalysis(
     }
     const generation = saved[element];
     if (generation == null) {
+      continue;
+    }
+    if (
+      isForcedUnexecutedElement(analysis, element, target) &&
+      planning.candidates[element].necessity === "not_required"
+    ) {
       continue;
     }
     preserved[element] = createAiAnalysisElementSourceGenerationSchema(element).parse(generation);
@@ -4937,6 +5291,7 @@ function adoptedGenerationForElement(
   run: AiAnalysisRunResult | undefined,
   reduction: CodexAnalysisReduction | undefined,
   consumerOutput: ConsumerCodexElementOutput | undefined,
+  target: AiAnalysisTarget | undefined,
 ): AiAnalysisElementSourceGeneration | undefined {
   const candidate = planning.candidates[element];
   if (candidate.necessity === "not_required") {
@@ -4957,6 +5312,9 @@ function adoptedGenerationForElement(
     assertNonNullable(generated, `採用されたAI生成結果がありません。対象: ${element}`);
     return createAiAnalysisElementGenerationSchema(element).parse(generated);
   }
+  if (isForcedUnexecutedElement(analysis, element, target)) {
+    return currentSavedGenerationForElement(state, analysis, element);
+  }
   const retained = currentAdoptedElementForElement(state, analysis, element);
   return retained == null
     ? undefined
@@ -4971,6 +5329,7 @@ function adoptedElementsForAnalysis(
   migration: TrackedItemAiAnalysisMigrationElements,
   reduction: CodexAnalysisReduction | undefined,
   consumerOutput: ConsumerCodexElementOutput | undefined,
+  target: AiAnalysisTarget | undefined,
 ): TrackedItemAiAnalysisCurrentAdoptedElements {
   const adoptedGenerations: Partial<Record<AiAnalysisElement, AiAnalysisElementSourceGeneration>> =
     {};
@@ -4984,6 +5343,7 @@ function adoptedElementsForAnalysis(
       run,
       reduction,
       consumerOutput,
+      target,
     );
     if (generation != null) {
       adoptedGenerations[element] =
@@ -5001,6 +5361,7 @@ function adoptedElementsForAnalysis(
       continue;
     }
     const retained = currentAdoptedElementForElement(state, analysis, element);
+    const candidate = planning.candidates[element];
     const savedReuse = planning.candidates[element].savedReuse;
     const generated = generatedElements[element];
     const application =
@@ -5016,14 +5377,23 @@ function adoptedElementsForAnalysis(
     const stateElement = isStateAnalysisElement(element);
     const generatedWasAccepted =
       application === "applied" || (!stateElement && generatedWasConsumed);
+    const preserveForcedUnexecutedElement =
+      isForcedUnexecutedElement(analysis, element, target) && candidate.necessity === "required";
     if (generatedWasAccepted) {
       generatedAcceptedElements.add(element);
     }
-    adoptedResults[element] = generatedWasAccepted
-      ? createAiAnalysisMigrationElementResultSchema(element).parse(generation.result)
-      : (savedReuse?.result ??
-        retained?.result ??
-        createAiAnalysisMigrationElementResultSchema(element).parse(generation.result));
+    const generatedResult = createAiAnalysisMigrationElementResultSchema(element).parse(
+      generation.result,
+    );
+    let adoptedResult: AiAnalysisElementMigrationResult;
+    if (generatedWasAccepted) {
+      adoptedResult = generatedResult;
+    } else if (preserveForcedUnexecutedElement) {
+      adoptedResult = retained?.result ?? savedReuse?.result ?? generatedResult;
+    } else {
+      adoptedResult = savedReuse?.result ?? retained?.result ?? generatedResult;
+    }
+    adoptedResults[element] = adoptedResult;
   }
   const finalResults = { ...adoptedResults };
   for (const element of ["status", "waitingOn", "nextAction"] as const) {
@@ -5043,19 +5413,30 @@ function adoptedElementsForAnalysis(
     }
     const retained = currentAdoptedElementForElement(state, analysis, element);
     const candidate = planning.candidates[element];
-    const proof = generatedAcceptedElements.has(element)
-      ? verifiedReuseProof(
-          element,
-          candidate.inputFingerprint,
-          isStateAnalysisElement(element)
-            ? finalStateDependencyFingerprint
-            : hashCanonicalJson({ kind: "independent" }),
-          "current_generation",
-          ["current_generation"],
-        )
-      : (candidate.savedReuse?.proof ??
+    const preserveForcedUnexecutedElement =
+      isForcedUnexecutedElement(analysis, element, target) && candidate.necessity === "required";
+    let proof: AiAnalysisElementReuseProof;
+    if (generatedAcceptedElements.has(element)) {
+      proof = verifiedReuseProof(
+        element,
+        candidate.inputFingerprint,
+        isStateAnalysisElement(element)
+          ? finalStateDependencyFingerprint
+          : hashCanonicalJson({ kind: "independent" }),
+        "current_generation",
+        ["current_generation"],
+      );
+    } else if (preserveForcedUnexecutedElement) {
+      proof =
         retained?.reuseProof ??
-        unknownReuseProof("source_input_unavailable"));
+        candidate.savedReuse?.proof ??
+        unknownReuseProof("source_input_unavailable");
+    } else {
+      proof =
+        candidate.savedReuse?.proof ??
+        retained?.reuseProof ??
+        unknownReuseProof("source_input_unavailable");
+    }
     const adoptedResult = adoptedResults[element];
     assertNonNullable(adoptedResult, `採用されたAI結果がありません。対象: ${element}`);
     setCurrentAdoptedElement(
@@ -5079,6 +5460,7 @@ function migratedElementsForAnalysis(
   run: AiAnalysisRunResult | undefined,
   reduction: CodexAnalysisReduction | undefined,
   consumerOutput: ConsumerCodexElementOutput | undefined,
+  target: AiAnalysisTarget | undefined,
 ): TrackedItemAiAnalysisMigrationElements {
   const saved = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId);
   const migrated: MutablePartial<TrackedItemAiAnalysisMigrationElements> = {};
@@ -5089,6 +5471,8 @@ function migratedElementsForAnalysis(
       continue;
     }
     const candidate = planning.candidates[element];
+    const preserveForcedUnexecutedElement =
+      isForcedUnexecutedElement(analysis, element, target) && candidate.necessity === "required";
     if (candidate.necessity === "not_required") {
       continue;
     }
@@ -5110,24 +5494,37 @@ function migratedElementsForAnalysis(
     if (generatedWasAccepted) {
       continue;
     }
-    if (
-      currentAdoptedGenerationForElement(
-        state,
-        analysis,
-        element,
-        candidate.inputFingerprint,
-        candidate.savedReuse,
-      ) != null
-    ) {
+    const currentAdopted = preserveForcedUnexecutedElement
+      ? currentSavedResultForElement(state, analysis, element)
+      : currentAdoptedGenerationForElement(
+          state,
+          analysis,
+          element,
+          candidate.inputFingerprint,
+          candidate.savedReuse,
+        );
+    if (currentAdopted != null) {
       continue;
     }
-    const savedReuse = planning.candidates[element].savedReuse;
-    const migrationReuse =
-      savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element]?.origin ===
-      "migration"
-        ? savedReuse
-        : undefined;
-    const result = migrationReuse?.result ?? savedResult.result;
+    const forcedMigration = forcedMigrationAdoptedElementForElement(
+      state,
+      analysis,
+      planning,
+      element,
+      target,
+    );
+    let result: AiAnalysisElementMigrationResult;
+    if (forcedMigration != null) {
+      result = createAiAnalysisMigrationElementResultSchema(element).parse(forcedMigration.result);
+    } else {
+      const savedReuse = planning.candidates[element].savedReuse;
+      const migrationReuse =
+        savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element]?.origin ===
+        "migration"
+          ? savedReuse
+          : undefined;
+      result = migrationReuse?.result ?? savedResult.result;
+    }
     switch (element) {
       case "status":
         migrated.status = createAiAnalysisMigrationElementResultSchema("status").parse(result);
@@ -5411,9 +5808,13 @@ function preservedElementsForAnalysisReduction(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
+  target: AiAnalysisTarget | undefined,
 ): CodexPreservedElements {
   const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
   assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${analysis.item.nodeId}`);
+  if (target != null) {
+    return preservedElementsForForcedReduction(state, analysis, planning, target);
+  }
   return preservedElementsForReduction(state, analysis, planning);
 }
 
@@ -5422,12 +5823,19 @@ function elementGenerationsByNodeId(
   analyses: readonly DeterministicItemAnalysis[],
   planningByNodeId: ReadonlyMap<GitHubNodeId, AnalysisElementPlanning>,
   run: AiAnalysisRunResult | undefined,
+  target: AiAnalysisTarget | undefined,
 ): ReadonlyMap<GitHubNodeId, AiAnalysisElementSourceGenerationMap> {
   const generations = new Map<GitHubNodeId, AiAnalysisElementSourceGenerationMap>();
   for (const analysis of analyses) {
     generations.set(
       analysis.item.nodeId,
-      generationsForAnalysis(state, analysis, planningByNodeId.get(analysis.item.nodeId), run),
+      generationsForAnalysis(
+        state,
+        analysis,
+        planningByNodeId.get(analysis.item.nodeId),
+        run,
+        target,
+      ),
     );
   }
   return generations;
@@ -5516,6 +5924,7 @@ async function analyzeCodex(
     deterministicAnalysis,
     identity,
   );
+  const target = forcedAiAnalysisTarget(configuration);
   const diagnostics: CodexDiagnosticsContext | undefined =
     adapters.diagnosticsRecorder == null
       ? undefined
@@ -5568,6 +5977,9 @@ async function analyzeCodex(
     );
   }
   if (!configuration.config.ai.enabled) {
+    if (target != null) {
+      throw new TypeError("forced sandbox実行にはAIを有効にしてください");
+    }
     const fallback = prepared.failures.length > 0;
     await recordCodexDiagnostic(diagnostics, "codex.analysis.summary", {
       phase: "summary",
@@ -5586,6 +5998,7 @@ async function analyzeCodex(
           deterministicAnalysis.items,
           prepared.elementPlanningByNodeId,
           undefined,
+          target,
         ),
       }),
       status: fallback ? "fallback" : "success",
@@ -5635,6 +6048,7 @@ async function analyzeCodex(
       identity,
       budget: configuration.config.ai.budget,
       maxConcurrentCalls: configuration.config.ai.execution.maxConcurrentCalls,
+      ...(target == null ? {} : { target }),
     },
     {
       cache: state.session.aiCache,
@@ -5663,6 +6077,20 @@ async function analyzeCodex(
   const run = Object.freeze({
     ...executedRun,
     failures: Object.freeze([...prepared.failures, ...executedRun.failures]),
+    skipped:
+      target == null
+        ? executedRun.skipped
+        : Object.freeze([
+            ...executedRun.skipped,
+            ...prepared.candidates
+              .filter((candidate) => candidate.id !== target.nodeId)
+              .map((candidate) =>
+                Object.freeze({
+                  candidateId: candidate.id,
+                  reason: "not_required" as const,
+                }),
+              ),
+          ]),
   }) satisfies AiAnalysisRunResult;
   await recordCodexDiagnostic(diagnostics, "codex.analysis.summary", {
     phase: "summary",
@@ -5682,6 +6110,7 @@ async function analyzeCodex(
         deterministicAnalysis.items,
         prepared.elementPlanningByNodeId,
         run,
+        target,
       ),
     }),
     status: fallback ? "fallback" : "success",
@@ -5742,8 +6171,33 @@ function currentAdoptedImportanceAssessment(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   resolvedResult: AiAnalysisElementMigrationResult | undefined,
+  planning: AnalysisElementPlanning,
+  target: AiAnalysisTarget | undefined,
 ): NaturalLanguageImportanceAssessmentState | undefined {
-  const adopted = resolvedResult ?? currentAdoptedResultForElement(state, analysis, "importance");
+  const forcedUnexecutedElement = isForcedUnexecutedElement(analysis, "importance", target);
+  if (forcedUnexecutedElement && planning.candidates.importance.necessity === "not_required") {
+    return undefined;
+  }
+  let adopted: AiAnalysisElementMigrationResult | undefined;
+  if (forcedUnexecutedElement) {
+    adopted = currentSavedResultForElement(state, analysis, "importance");
+    const forcedMigration = forcedMigrationAdoptedElementForElement(
+      state,
+      analysis,
+      planning,
+      "importance",
+      target,
+    );
+    if (adopted == null && forcedMigration != null) {
+      adopted = createAiAnalysisMigrationElementResultSchema("importance").parse(
+        forcedMigration.result,
+      );
+    }
+    adopted ??= resolvedResult;
+  } else {
+    adopted = resolvedResult;
+    adopted ??= currentAdoptedResultForElement(state, analysis, "importance");
+  }
   if (adopted == null) {
     const migrated = migrationAdoptedResultForElement(state, analysis, "importance");
     if (migrated == null) {
@@ -5774,8 +6228,33 @@ function currentAdoptedDeadlineAssessment(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   resolvedResult: AiAnalysisElementMigrationResult | undefined,
+  planning: AnalysisElementPlanning,
+  target: AiAnalysisTarget | undefined,
 ): NaturalLanguageDeadlineAssessmentState | undefined {
-  const adopted = resolvedResult ?? currentAdoptedResultForElement(state, analysis, "deadline");
+  const forcedUnexecutedElement = isForcedUnexecutedElement(analysis, "deadline", target);
+  if (forcedUnexecutedElement && planning.candidates.deadline.necessity === "not_required") {
+    return undefined;
+  }
+  let adopted: AiAnalysisElementMigrationResult | undefined;
+  if (forcedUnexecutedElement) {
+    adopted = currentSavedResultForElement(state, analysis, "deadline");
+    const forcedMigration = forcedMigrationAdoptedElementForElement(
+      state,
+      analysis,
+      planning,
+      "deadline",
+      target,
+    );
+    if (adopted == null && forcedMigration != null) {
+      adopted = createAiAnalysisMigrationElementResultSchema("deadline").parse(
+        forcedMigration.result,
+      );
+    }
+    adopted ??= resolvedResult;
+  } else {
+    adopted = resolvedResult;
+    adopted ??= currentAdoptedResultForElement(state, analysis, "deadline");
+  }
   if (adopted == null) {
     const migrated = migrationAdoptedResultForElement(state, analysis, "deadline");
     if (migrated == null) {
@@ -5845,6 +6324,7 @@ function reductionForAnalysis(
   if (run == null) {
     return undefined;
   }
+  const target = forcedAiAnalysisTarget(configuration);
   const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
   const result = run.results.find((candidate) => candidate.candidateId === analysis.item.nodeId);
   if (result != null) {
@@ -5859,7 +6339,7 @@ function reductionForAnalysis(
         output,
       },
       configuration.config.ai.confidence,
-      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis, target),
     );
   }
   const failure = run.failures.find((candidate) => candidate.candidateId === analysis.item.nodeId);
@@ -5889,7 +6369,7 @@ function reductionForAnalysis(
         errorType: failure.errorType,
       },
       configuration.config.ai.confidence,
-      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis, target),
     );
   }
   const deferred = run.deferred.find((candidate) => candidate.candidateId === analysis.item.nodeId);
@@ -5904,35 +6384,48 @@ function reductionForAnalysis(
         errorType: `CodexBudgetDeferred:${deferred.reason}`,
       },
       configuration.config.ai.confidence,
-      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
+      preservedElementsForAnalysisReduction(state, analysis, codexAnalysis, target),
     );
   }
   const skipped = run.skipped.find((candidate) => candidate.candidateId === analysis.item.nodeId);
-  if (skipped?.reason !== "up_to_date") {
+  const forcedUnexecutedItem = target != null && target.nodeId !== analysis.item.nodeId;
+  if (skipped?.reason !== "up_to_date" && !forcedUnexecutedItem) {
     return undefined;
   }
   assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
-  if (input.selectedElements.length !== 0) {
+  if (!forcedUnexecutedItem && input.selectedElements.length !== 0) {
     throw new TypeError(
       `up_to_date項目のCodex入力に選択要素があります。対象: ${analysis.item.nodeId}`,
     );
   }
-  const preservedElements = preservedElementsForAnalysisReduction(state, analysis, codexAnalysis);
+  const preservedElements = preservedElementsForAnalysisReduction(
+    state,
+    analysis,
+    codexAnalysis,
+    target,
+  );
   if (Object.keys(preservedElements).length === 0) {
     return undefined;
   }
+  const reductionInput = forcedUnexecutedItem
+    ? createCodexAnalysisInput({
+        ...input,
+        selectedElements: [],
+        lockedElements: {},
+      })
+    : input;
   const output = validateCodexAnalysisOutput(
     {
       schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
       item: {
-        nodeId: input.item.nodeId,
-        url: input.item.url,
+        nodeId: reductionInput.item.nodeId,
+        url: reductionInput.item.url,
       },
     },
-    input,
+    reductionInput,
   );
   return reduceCodexAnalysis(
-    input,
+    reductionInput,
     deterministicCodexDecision(analysis.decision),
     {
       status: "validated",
@@ -6085,19 +6578,44 @@ function codexOutputForConsumers(
       url: input.item.url,
     },
   };
+  const target = forcedAiAnalysisTarget(configuration);
   const outputElements: AiAnalysisElement[] = [];
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const candidate = planning.candidates[element];
     const raw = rawResults.get(element);
-    const adopted =
-      candidate.necessity === "required"
-        ? (candidate.savedReuse?.result ?? currentAdoptedResultForElement(state, analysis, element))
-        : undefined;
-    const migrated =
-      candidate.necessity === "required"
-        ? (candidate.savedReuse?.result ??
-          migrationAdoptedResultForElement(state, analysis, element))
-        : undefined;
+    const preserveForcedUnexecutedElement =
+      isForcedUnexecutedElement(analysis, element, target) && candidate.necessity === "required";
+    const forcedMigration = forcedMigrationAdoptedElementForElement(
+      state,
+      analysis,
+      planning,
+      element,
+      target,
+    );
+    let adopted: AiAnalysisElementMigrationResult | undefined;
+    if (candidate.necessity === "required") {
+      if (preserveForcedUnexecutedElement) {
+        adopted = currentSavedResultForElement(state, analysis, element);
+        if (adopted == null && forcedMigration == null) {
+          adopted = candidate.savedReuse?.result;
+        }
+      } else {
+        adopted = candidate.savedReuse?.result;
+        adopted ??= currentAdoptedResultForElement(state, analysis, element);
+      }
+    }
+    let migrated: AiAnalysisElementMigrationResult | undefined;
+    if (candidate.necessity === "required") {
+      if (forcedMigration != null) {
+        migrated = createAiAnalysisMigrationElementResultSchema(element).parse(
+          forcedMigration.result,
+        );
+      } else {
+        migrated =
+          candidate.savedReuse?.result ??
+          migrationAdoptedResultForElement(state, analysis, element);
+      }
+    }
     const stateElement =
       element === "status" || element === "waitingOn" || element === "nextAction";
     const result =
@@ -7307,6 +7825,7 @@ function trackedItemInputEvents(
 }
 
 function trackedItemAiAnalysis(
+  configuration: RuntimeConfiguration,
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
@@ -7318,6 +7837,7 @@ function trackedItemAiAnalysis(
   assertNonNullable(generations, `AI判定要素の保存結果がありません。対象: ${nodeId}`);
   const planning = codexAnalysis.elementPlanningByNodeId.get(nodeId);
   assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${nodeId}`);
+  const target = forcedAiAnalysisTarget(configuration);
   const run = codexAnalysis.run;
   const migratedElements = migratedElementsForAnalysis(
     state,
@@ -7326,6 +7846,7 @@ function trackedItemAiAnalysis(
     run,
     reduction,
     consumerOutput,
+    target,
   );
   const adoptedElements = adoptedElementsForAnalysis(
     state,
@@ -7335,16 +7856,35 @@ function trackedItemAiAnalysis(
     migratedElements,
     reduction,
     consumerOutput,
+    target,
   );
+  const generatedElements = generatedElementsForNode(codexAnalysis.run, nodeId);
+  const missingEvaluationElements = new Set<AiAnalysisElement>();
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    if (
+      generatedElements[element] == null &&
+      isForcedUnexecutedElement(analysis, element, target) &&
+      planning.candidates[element].necessity === "required" &&
+      savedEvaluationRecordForElement(state, nodeId, element) == null
+    ) {
+      missingEvaluationElements.add(element);
+    }
+  }
   const evaluationRecords = evaluationRecordsForAnalysis(
+    state,
     analysis,
     planning,
     generations,
     run,
     adoptedElements,
     migratedElements,
+    target,
   );
-  const elements = evaluatedElementsForGenerations(generations, evaluationRecords);
+  const elements = evaluatedElementsForGenerations(
+    generations,
+    evaluationRecords,
+    missingEvaluationElements,
+  );
   let status: TrackedItemAiAnalysis["status"];
   if (run == null) {
     status = "disabled";
@@ -7373,6 +7913,10 @@ function trackedItemAiAnalysis(
     }
   }
   if (Object.keys(migratedElements).length !== 0) {
+    const reuseRecords = Object.freeze({
+      ...adoptedRecordsForPlanning(planning),
+      ...forcedMigrationReuseRecordsForAnalysis(state, analysis, planning, target),
+    });
     return Object.freeze({
       origin: "migration",
       status,
@@ -7380,7 +7924,7 @@ function trackedItemAiAnalysis(
       adoptedElements: mixedAdoptedElementsForAnalysis(
         adoptedElements,
         migratedElements,
-        adoptedRecordsForPlanning(planning),
+        reuseRecords,
       ),
     });
   }
@@ -7393,6 +7937,7 @@ function trackedItemAiAnalysis(
 }
 
 function createTrackedItem(
+  configuration: RuntimeConfiguration,
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   decision: ReducedCodexDecision,
@@ -7434,7 +7979,14 @@ function createTrackedItem(
       analysis.item.type === "issue"
         ? "not_applicable"
         : aggregatePullRequestCheckState(analysis.item.mergeState),
-    aiAnalysis: trackedItemAiAnalysis(state, analysis, codexAnalysis, reduction, consumerOutput),
+    aiAnalysis: trackedItemAiAnalysis(
+      configuration,
+      state,
+      analysis,
+      codexAnalysis,
+      reduction,
+      consumerOutput,
+    ),
     inputEvents: trackedItemInputEvents(analysis),
     confidence: decision.confidence,
     evidence: decision.evidence,
@@ -7731,6 +8283,7 @@ function reduceAnalysisPass(
   graph: GraphResult | undefined,
 ): ReducedAnalysis {
   const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
+  const target = forcedAiAnalysisTarget(configuration);
   const currentItems: ReducedItemAnalysis[] = [];
   const items: PendingTrackedItem[] = [];
   const stalenessByNodeId = new Map<GitHubNodeId, TrackedItemStaleness>();
@@ -7759,7 +8312,7 @@ function reduceAnalysisPass(
       reduction ??
       reducePreservedCodexRelationsAndNotification(
         analysis.item.nodeId,
-        preservedElementsForAnalysisReduction(state, analysis, codexAnalysis),
+        preservedElementsForAnalysisReduction(state, analysis, codexAnalysis, target),
         configuration.config.ai.confidence,
       );
     const relationAssessmentsForAnalysis = relationNotificationReduction.relationAssessments;
@@ -7847,6 +8400,8 @@ function reduceAnalysisPass(
             state,
             analysis,
             planning.candidates.importance.savedReuse?.result,
+            planning,
+            target,
           ),
         ),
         deadlineAssessment: resolveDeadlineAssessment(
@@ -7855,6 +8410,8 @@ function reduceAnalysisPass(
             state,
             analysis,
             planning.candidates.deadline.savedReuse?.result,
+            planning,
+            target,
           ),
         ),
       }),
@@ -7862,6 +8419,7 @@ function reduceAnalysisPass(
     stalenessByNodeId.set(analysis.item.nodeId, trackedItemStaleness(staleness));
     items.push(
       createTrackedItem(
+        configuration,
         state,
         analysis,
         decision,
@@ -8995,6 +9553,9 @@ async function persistValidatedRun(
     repositoryInventory: inventory.inventory,
     knownSecrets: configuration.credentials.knownSecrets,
   });
+  if (configuration.target.kind === "sandbox") {
+    await state.session.publish();
+  }
   const historyRecords = await state.session.loadHistoryRecords();
   return Object.freeze({
     result,
@@ -11157,7 +11718,13 @@ function createDailyDependencies(
     validateConfiguration: async ({ invocation, configPath }) => {
       requireEnvironmentVariables(adapters.environment, ["GH_APP_ID", "GH_APP_PRIVATE_KEY"]);
       const config = await adapters.loadConfig(resolve(adapters.repositoryPath, configPath));
-      const credentials = readRuntimeCredentials(adapters.environment, config, invocation.command);
+      const target = await resolveRuntimeTarget(adapters, config, invocation.command);
+      const credentials = readRuntimeCredentials(
+        adapters.environment,
+        config,
+        invocation.command,
+        target.kind,
+      );
       if (credentials.codex.enabled) {
         await assertCodexAuthenticationAvailable(credentials.codex);
         await assertCodexCliAvailable(adapters, credentials.codex.environment);
@@ -11165,13 +11732,19 @@ function createDailyDependencies(
       return Object.freeze({
         config,
         credentials,
+        target,
       });
     },
     loadState: async ({ configuration }) => {
-      const session = await adapters.openStateSession(
-        adapters.createStateBranchAdapter(),
-        configuration.config.state,
-      );
+      const stateAdapter = adapters.createStateBranchAdapter();
+      const session =
+        configuration.target.kind === "sandbox"
+          ? await StatePersistenceSession.openAtRevision(
+              stateAdapter,
+              configuration.target.state,
+              configuration.target.context.baseStateRevision,
+            )
+          : await adapters.openStateSession(stateAdapter, configuration.target.state);
       const [snapshot, notificationLedger] = await Promise.all([
         session.loadSnapshot(),
         session.loadNotificationLedger(),
@@ -11384,24 +11957,48 @@ function createDailyDependencies(
         },
         configuration.credentials.knownSecrets,
       ),
-    sendOperationsAlert: ({ invocation, configuration, state, persisted, kind, retryAttempts }) =>
-      deliverOperationsAlert(
+    sendOperationsAlert: async ({
+      invocation,
+      configuration,
+      state,
+      persisted,
+      kind,
+      retryAttempts,
+    }) => {
+      if (configuration.target.kind === "sandbox") {
+        return Object.freeze({
+          value: Object.freeze({
+            delivery: Object.freeze({
+              status: "disabled",
+            }),
+            notificationEvents: Object.freeze([]),
+            notificationLedger:
+              persisted == null ? state.notificationLedger : persisted.notificationLedger,
+          }),
+          notificationCount: 0,
+          discordSentAt: null,
+        });
+      }
+      let persistedState = state;
+      if (persisted != null) {
+        persistedState = Object.freeze({
+          ...state,
+          notificationLedger: persisted.notificationLedger,
+        });
+      }
+      return deliverOperationsAlert(
         adapters,
         configuration.config,
         configuration.credentials.knownSecrets,
-        persisted == null
-          ? state
-          : Object.freeze({
-              ...state,
-              notificationLedger: persisted.notificationLedger,
-            }),
+        persistedState,
         {
           incidentId: `${invocation.runId}:${kind}`,
           kind,
           occurredAt: invocation.startedAt,
           retryAttempts,
         },
-      ),
+      );
+    },
     writeDryRunArtifact: (path, artifact) => adapters.writeJsonArtifact(path, artifact),
     writeCollectAnalyzeArtifact: (path, input) =>
       adapters.writeJsonArtifact(

@@ -1,13 +1,59 @@
+import { z } from "zod";
+
 import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
-import { AI_ANALYSIS_ELEMENT_SCHEMA_VERSION } from "./analysis-elements.js";
+import {
+  AI_ANALYSIS_ELEMENTS,
+  AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
+  aiAnalysisElementSchema,
+  type AiAnalysisElement,
+} from "./analysis-elements.js";
 import {
   selectAiAnalysisElements,
   type AiAnalysisElementSelection,
   type AiAnalysisElementSelectionCandidate,
 } from "./element-selection.js";
-import { type AiAnalysisElement } from "./analysis-elements.js";
 import { type CodexAnalysisInput } from "./input.js";
 import { type ReasoningEffort } from "../domain/index.js";
+
+const aiAnalysisTargetSchema = z
+  .strictObject({
+    nodeId: z
+      .string()
+      .min(1, "AI分析対象のnode IDは空にできません")
+      .regex(/^\S+$/u, "AI分析対象のnode IDに空白は使えません"),
+    elements: z
+      .array(aiAnalysisElementSchema)
+      .min(1, "AI分析対象の要素を1件以上指定してください")
+      .max(AI_ANALYSIS_ELEMENTS.length),
+  })
+  .superRefine((target, context) => {
+    if (new Set(target.elements).size !== target.elements.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["elements"],
+        message: "AI分析対象の要素が重複しています",
+      });
+    }
+  });
+
+/** 一つの項目について実推論するAI判定要素の指定。 */
+export type AiAnalysisTarget = Readonly<{
+  nodeId: string;
+  elements: readonly AiAnalysisElement[];
+}>;
+
+/** AI分析対象の指定schema。 */
+export { aiAnalysisTargetSchema };
+
+/** 未検証の値からAI分析対象の指定を生成する。 */
+export function createAiAnalysisTarget(value: unknown): AiAnalysisTarget {
+  const parsed = aiAnalysisTargetSchema.parse(value);
+  const elements = AI_ANALYSIS_ELEMENTS.filter((element) => parsed.elements.includes(element));
+  return Object.freeze({
+    nodeId: parsed.nodeId,
+    elements: Object.freeze(elements),
+  });
+}
 
 /** AI呼び出しの共通実行条件。要素revisionやprompt digestは含めない。 */
 export type AiAnalysisRunIdentity = Readonly<{
@@ -58,6 +104,12 @@ export type AiAnalysisSelection = Readonly<{
     candidate: PreparedAiAnalysisCandidate;
     reason: AiAnalysisSkipReason;
   }>[];
+}>;
+
+/** AI分析対象に対応する候補と要素別の実行候補。 */
+export type AiAnalysisTargetSelection = Readonly<{
+  candidate: PreparedAiAnalysisCandidate;
+  selectedElements: readonly AiAnalysisElementSelectionCandidate[];
 }>;
 
 function countUnicodeCharacters(value: string): number {
@@ -134,6 +186,47 @@ export function selectAiAnalysisCandidates(
   return Object.freeze({
     selected: Object.freeze(selected),
     skipped: Object.freeze(skipped.map((value) => Object.freeze(value))),
+  });
+}
+
+/** 指定した項目のrequiredな要素だけを実推論対象として選ぶ。 */
+export function selectAiAnalysisTarget(
+  candidates: readonly PreparedAiAnalysisCandidate[],
+  target: AiAnalysisTarget,
+): AiAnalysisTargetSelection {
+  const normalizedTarget = createAiAnalysisTarget(target);
+  const candidateIds = new Set<string>();
+  for (const candidate of candidates) {
+    if (candidateIds.has(candidate.id)) {
+      throw new TypeError(`Codex分析候補IDが重複しています。対象: ${candidate.id}`);
+    }
+    candidateIds.add(candidate.id);
+  }
+  const candidate = candidates.find((value) => value.id === normalizedTarget.nodeId);
+  if (candidate == null) {
+    throw new TypeError(`指定したAI分析対象の項目がありません。対象: ${normalizedTarget.nodeId}`);
+  }
+
+  const candidatesByElement = new Map<AiAnalysisElement, AiAnalysisElementSelectionCandidate>();
+  for (const elementCandidate of candidate.elements) {
+    if (candidatesByElement.has(elementCandidate.element)) {
+      throw new TypeError(`AI判定要素が重複しています。対象: ${elementCandidate.element}`);
+    }
+    candidatesByElement.set(elementCandidate.element, elementCandidate);
+  }
+  const selectedElements = normalizedTarget.elements.map((element) => {
+    const elementCandidate = candidatesByElement.get(element);
+    if (elementCandidate == null) {
+      throw new TypeError(`指定したAI分析対象の要素候補がありません。対象: ${element}`);
+    }
+    if (elementCandidate.necessity !== "required") {
+      throw new TypeError(`指定したAI分析対象の要素はrequiredではありません。対象: ${element}`);
+    }
+    return elementCandidate;
+  });
+  return Object.freeze({
+    candidate,
+    selectedElements: Object.freeze(selectedElements),
   });
 }
 

@@ -5,7 +5,10 @@ import {
   type AiAnalysisElementResult,
 } from "./analysis-elements.js";
 import {
+  createAiAnalysisTarget,
   selectAiAnalysisCandidates,
+  selectAiAnalysisTarget,
+  type AiAnalysisTarget,
   type AiAnalysisRunIdentity,
   type AiAnalysisSkipReason,
   type PreparedAiAnalysisCandidate,
@@ -59,6 +62,7 @@ export type AiAnalysisRunConfiguration = Readonly<{
   identity: AiAnalysisRunIdentity;
   budget: AiRunBudget;
   maxConcurrentCalls: number;
+  target?: AiAnalysisTarget;
 }>;
 
 /** AI分析前に実行するCodex認証preflight。 */
@@ -427,6 +431,7 @@ async function resolveCacheEntries(
   candidates: readonly PreparedAiAnalysisCandidate[],
   configuration: AiAnalysisRunConfiguration,
   cache: AiCacheStore,
+  target: AiAnalysisTarget | undefined,
 ): Promise<
   Readonly<{
     states: readonly CandidateCacheState[];
@@ -437,6 +442,10 @@ async function resolveCacheEntries(
     const cached: AiAnalysisRunElementResult[] = [];
     const misses: PreparedAiAnalysisCandidate["selectedElements"][number][] = [];
     for (const elementCandidate of candidate.selectedElements) {
+      if (target?.nodeId === candidate.id && target.elements.includes(elementCandidate.element)) {
+        misses.push(elementCandidate);
+        continue;
+      }
       const identity = createCacheIdentity(configuration.identity, elementCandidate);
       const cacheKey = createAiCacheKey(identity);
       const cachedValue = await cache.read(cacheKey);
@@ -466,6 +475,69 @@ async function resolveCacheEntries(
   return Object.freeze({
     states: Object.freeze(states),
   });
+}
+
+function sameSelectedElements(
+  candidate: PreparedAiAnalysisCandidate,
+  targetSelection: ReturnType<typeof selectAiAnalysisTarget>,
+): boolean {
+  if (candidate.selectedElements.length !== targetSelection.selectedElements.length) {
+    return false;
+  }
+  const selectedElementsMatch = candidate.selectedElements.every((candidateElement, index) => {
+    return candidateElement.element === targetSelection.selectedElements[index]?.element;
+  });
+  if (!selectedElementsMatch) {
+    return false;
+  }
+  if (candidate.input.selectedElements.length !== targetSelection.selectedElements.length) {
+    return false;
+  }
+  return candidate.input.selectedElements.every((element, index) => {
+    return element === targetSelection.selectedElements[index]?.element;
+  });
+}
+
+function selectCandidatesForRun(
+  candidates: readonly PreparedAiAnalysisCandidate[],
+  target: AiAnalysisTarget | undefined,
+): Readonly<{
+  selected: readonly PreparedAiAnalysisCandidate[];
+  skipped: readonly Readonly<{
+    candidate: PreparedAiAnalysisCandidate;
+    reason: AiAnalysisSkipReason;
+  }>[];
+}> {
+  if (target == null) {
+    return selectAiAnalysisCandidates(candidates);
+  }
+  const targetSelection = selectAiAnalysisTarget(candidates, target);
+  if (!sameSelectedElements(targetSelection.candidate, targetSelection)) {
+    throw new TypeError("指定したAI分析対象のselectedElementsが一致しません");
+  }
+  return Object.freeze({
+    selected: Object.freeze([targetSelection.candidate]),
+    skipped: Object.freeze([]),
+  });
+}
+
+function assertTargetWasExecuted(run: AiAnalysisRunResult, target: AiAnalysisTarget): void {
+  const result = run.results.find((candidate) => candidate.candidateId === target.nodeId);
+  if (result == null) {
+    const failure = run.failures.find((candidate) => candidate.candidateId === target.nodeId);
+    throw new TypeError(
+      `指定したAI分析対象の実推論結果がありません。対象: ${target.nodeId}`,
+      failure == null ? {} : { cause: failure },
+    );
+  }
+  for (const element of target.elements) {
+    const elementResult = result.elements.find((candidate) => candidate.element === element);
+    if (elementResult?.origin !== "executed") {
+      throw new TypeError(
+        `指定したAI分析対象の要素が実推論されていません。対象: ${target.nodeId} 要素: ${element}`,
+      );
+    }
+  }
 }
 
 async function executeCandidate(
@@ -603,8 +675,15 @@ export async function runAiAnalyses(
   configuration: AiAnalysisRunConfiguration,
   dependencies: AiAnalysisRunDependencies,
 ): Promise<AiAnalysisRunResult> {
-  const selection = selectAiAnalysisCandidates(candidates);
-  const resolved = await resolveCacheEntries(selection.selected, configuration, dependencies.cache);
+  const target =
+    configuration.target == null ? undefined : createAiAnalysisTarget(configuration.target);
+  const selection = selectCandidatesForRun(candidates, target);
+  const resolved = await resolveCacheEntries(
+    selection.selected,
+    configuration,
+    dependencies.cache,
+    target,
+  );
   const cachedOnlyResults = resolved.states
     .filter((state) => state.misses.length === 0)
     .map((state) => {
@@ -632,7 +711,7 @@ export async function runAiAnalyses(
     configuration,
     dependencies,
   );
-  return Object.freeze({
+  const result = Object.freeze({
     results: Object.freeze([...cachedOnlyResults, ...executed.results]),
     failures: executed.failures,
     skipped: Object.freeze(
@@ -653,4 +732,8 @@ export async function runAiAnalyses(
     ),
     usage: budgetPlan.usage,
   });
+  if (target != null) {
+    assertTargetWasExecuted(result, target);
+  }
+  return result;
 }
