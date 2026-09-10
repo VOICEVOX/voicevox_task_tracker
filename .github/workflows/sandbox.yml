@@ -60,6 +60,11 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
+    environment: sandbox-codex
+    concurrency:
+      group: voicevox-task-tracker-sandbox-codex-auth
+      cancel-in-progress: false
+      queue: max
     steps:
       - name: forkのコードを取得
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -107,19 +112,26 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Codex認証ファイルを配置
-        id: codex-auth-placement
+        id: codex_auth_placement
         if: inputs.operation != 'dispose'
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          CODEX_AUTH_SYNC_TOKEN_PRESENT: ${{ secrets.CODEX_AUTH_SYNC_TOKEN != '' }}
         run: |
           if [[ -z "$CODEX_AUTH_JSON" ]]; then
             echo "CODEX_AUTH_JSONが空です" >&2
+            exit 1
+          fi
+          if [[ "$CODEX_AUTH_SYNC_TOKEN_PRESENT" != "true" ]]; then
+            echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
             exit 1
           fi
           mkdir -p "${{ runner.temp }}/codex-home"
           chmod 700 "${{ runner.temp }}/codex-home"
           printf '%s' "$CODEX_AUTH_JSON" > "${{ runner.temp }}/codex-home/auth.json"
           chmod 600 "${{ runner.temp }}/codex-home/auth.json"
+          sha256sum "${{ runner.temp }}/codex-home/auth.json" > "${{ runner.temp }}/codex-auth-fingerprint"
+          chmod 600 "${{ runner.temp }}/codex-auth-fingerprint"
           .github/scripts/mask-codex-auth-values.sh "${{ runner.temp }}/codex-home/auth.json"
 
       - name: sandbox日次処理を実行
@@ -132,7 +144,7 @@ jobs:
           VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-sandbox.jsonl
         run: |
           pnpm build
-          pnpm tracker:run daily --sandbox-context "$SANDBOX_CONTEXT_PATH" --notification-action hold
+          pnpm tracker:run --sandbox-context "$SANDBOX_CONTEXT_PATH" --notification-action hold
 
       - name: Pages用データをWebへ配置
         if: inputs.operation != 'dispose'
@@ -183,6 +195,28 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: 更新されたCodex認証ファイルをsecretへ書き戻す
+        if: always() && steps.codex_auth_placement.outcome == 'success'
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          GH_TOKEN: ${{ secrets.CODEX_AUTH_SYNC_TOKEN }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
+            exit 1
+          fi
+          .github/scripts/mask-codex-auth-values.sh "$CODEX_HOME/auth.json"
+          if sha256sum --check --status "${{ runner.temp }}/codex-auth-fingerprint"; then
+            echo "Codex認証ファイルは更新されていません"
+            exit 0
+          fi
+          gh secret set CODEX_AUTH_JSON \
+            --repo "$GITHUB_REPOSITORY" \
+            --env sandbox-codex \
+            < "$CODEX_HOME/auth.json"
+
       - name: Codex認証関連ファイルを削除
         if: always() && inputs.operation != 'dispose'
-        run: rm -rf "${{ runner.temp }}/codex-home"
+        run: |
+          rm -rf "${{ runner.temp }}/codex-home"
+          rm -f "${{ runner.temp }}/codex-auth-fingerprint"

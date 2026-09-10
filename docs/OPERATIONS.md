@@ -71,13 +71,15 @@ preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論
 ## forkでPRのコードを動かし、試行環境ごとにstateを分ける
 
 PRのコードで実推論とstate更新を確認するときは、`Hiroshiba/voicevox_task_tracker`のActionsから`sandbox task tracking`を起動します。
-同じPRでも試行環境を複数作り、それぞれのstateで並行して実行できます。
+同じPRでも試行環境を複数作り、それぞれのstateで実行できます。
+Codex認証の更新を共有するため、試行jobは一つずつ実行します。
 このworkflowはforkのデフォルトブランチである`main`から起動した場合だけ動きます。
 最初にsandbox用のworkflowと実行コードをforkの`main`へ反映し、Actionsを有効にします。
 実行対象の作業ブランチにも、この機能の実装を含めます。
-repository variableへ`GH_APP_ID`を、repository secretsへ`GH_APP_PRIVATE_KEY`と`CODEX_AUTH_JSON`を登録します。
-Codex認証ファイルは実行中だけrunnerの一時ディレクトリへ配置し、更新内容をsecretへ書き戻しません。
-Discord用secretと`CODEX_AUTH_SYNC_TOKEN`はsandbox workflowに渡しません。
+[デプロイ手順](DEPLOYMENT.md#forkの試行用認証を登録する)に従い、GitHub Appの設定、`sandbox-codex` Environmentの`CODEX_AUTH_JSON`、認証更新用の`CODEX_AUTH_SYNC_TOKEN`を登録します。
+Codex認証ファイルは実行中だけrunnerの一時ディレクトリへ配置し、変更があれば同じEnvironmentへ書き戻します。
+同期用tokenは書き戻しstepだけへ渡します。
+Discord用secretはsandbox workflowに渡しません。
 
 通常モードで新しい環境を作る例です。
 
@@ -136,14 +138,17 @@ gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
   -f operation=dispose -f environment_id=env-123456789-1
 ```
 
-排他単位はforkリポジトリと書き込み先の環境です。
+state更新の排他単位はforkリポジトリと書き込み先の環境です。
 createとresetは新しく作る環境、continueとdisposeは指定した環境への操作を一つずつ実行します。
-resetと元環境のcontinueやdisposeは並行して実行できます。
 resetは元環境のmanifestを取得してから、選択した複製元のSHAを固定して新環境を作ります。
 manifestの取得前に元環境が削除された場合は失敗します。
-異なる環境は並行して実行できます。
-`cancel-in-progress: false`でも、同じ排他groupの待機中runは後から来たrunに置き換わります。
+`cancel-in-progress: false`でも、同じstate更新の排他groupの待機中runは後から来たrunに置き換わります。
 同じ環境で順番に実行したい場合は、前の実行が完了してから次を起動します。
+
+異なる環境も、認証を共有するjobの排他groupで一つずつ実行します。
+このgroupは`queue: max`で最大100件の待機jobを保持します。
+実行順は保証されませんが、各jobは開始時に最新のEnvironment secretを読み込みます。
+この排他はforkのsandbox job間に限り、別のrepositoryやローカルで同じ認証を使う処理には及びません。
 
 初回は異なる二つの作業ブランチでcreateを起動し、環境ID、stateブランチ、run contextのartifactが分かれていることを確認します。
 その後、それぞれの環境でcontinueを実行し、前回保存したstateが読み込まれることと、Pagesのartifactを確認します。

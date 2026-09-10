@@ -43,7 +43,8 @@ workflowでは`GH_APP_INSTALLATION_ID`を設定しません。
 
 ## Actionsの設定
 
-repositoryのSettingsからActions variableとActions secretを登録します。
+日次workflowには、repositoryのSettingsからActions variableとActions secretを登録します。
+forkのsandbox workflowには、[試行用認証の登録手順](#forkの試行用認証を登録する)を使います。
 
 | 名前                                                  | 種別     | 値                                                  |
 | ----------------------------------------------------- | -------- | --------------------------------------------------- |
@@ -141,6 +142,27 @@ artifactを利用する後続jobは同じartifactを再検証してから利用�
 平文のJSONLは暗号化処理の成否にかかわらず削除します。
 暗号化鍵を渡すのは暗号化stepだけです。
 詳細診断artifactの保持期間は7日で、公開可能なrun artifact、state、Pagesの入力には使いません。
+
+### forkの試行用認証を登録する
+
+`Hiroshiba/voicevox_task_tracker`のSettingsからEnvironmentsを開き、`sandbox-codex`を作成します。
+repository variableへ`GH_APP_ID`を、repository secretsへ`GH_APP_PRIVATE_KEY`と`CODEX_AUTH_SYNC_TOKEN`を登録します。
+`CODEX_AUTH_JSON`は`sandbox-codex`のEnvironment secretだけに登録します。
+
+同期用のfine-grained personal access tokenは、Resource ownerを`Hiroshiba`にし、対象repositoryを`Hiroshiba/voicevox_task_tracker`だけに絞ります。
+Repository permissionsには`Environments`の`Read and write`だけを与えます。
+
+```console
+gh secret set CODEX_AUTH_JSON --repo Hiroshiba/voicevox_task_tracker --env sandbox-codex < "${CODEX_HOME:-$HOME/.codex}/auth.json"
+gh secret set CODEX_AUTH_SYNC_TOKEN --repo Hiroshiba/voicevox_task_tracker
+```
+
+Environment secretはjobの開始時に読み込まれます。
+sandbox jobを一つずつ実行することで、待機中のjobも直前のjobが保存した認証を利用できます。
+認証ファイルに変更があれば、試行処理が失敗した場合も同じEnvironmentへ書き戻します。
+書き戻しに失敗した場合はrunを失敗にし、一時ファイルは削除します。
+認証エラーから復旧するときは、再ログインで得た`auth.json`を同じEnvironmentへ登録します。
+同期用PATの有効期限は自動延長されないため、期限前に再発行して`CODEX_AUTH_SYNC_TOKEN`を更新します。
 
 ## マージゲートの設定
 
