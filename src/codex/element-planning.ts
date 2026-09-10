@@ -2,9 +2,10 @@ import {
   AI_ANALYSIS_ELEMENTS,
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
-  type AnalysisElementGeneration,
   type AnalysisElementInputFingerprint,
   type AnalysisElementNecessity,
+  type AnalysisElementReuseRecord,
+  type AnalysisElementSourceGeneration,
 } from "./analysis-elements.js";
 import {
   selectAnalysisElements,
@@ -40,6 +41,9 @@ export type AnalysisElementNecessityInput = Readonly<{
   notification: Readonly<{
     aiIsConsumed: boolean;
   }>;
+  selfCommitment: Readonly<{
+    hasEligibleCandidate: boolean;
+  }>;
 }>;
 
 /** 要素別AI判定の必要性を導く入力、指紋、保存済み生成結果。 */
@@ -47,7 +51,11 @@ export type AnalysisElementPlanningInput = Readonly<{
   necessities: Readonly<Record<AnalysisElement, AnalysisElementNecessity>>;
   inputFingerprints: Readonly<Record<AnalysisElement, AnalysisElementInputFingerprint>>;
   executionFingerprints: Readonly<Record<AnalysisElement, AnalysisElementExecutionFingerprint>>;
-  savedGenerations: Readonly<Partial<Record<AnalysisElement, AnalysisElementGeneration>>>;
+  inputProjectionVersions: Readonly<Record<AnalysisElement, number>>;
+  dependencyFingerprints: Readonly<Record<AnalysisElement, AnalysisElementInputFingerprint>>;
+  savedGenerations: Readonly<Partial<Record<AnalysisElement, AnalysisElementSourceGeneration>>>;
+  savedEvaluations: Readonly<Partial<Record<AnalysisElement, AnalysisElementReuseRecord>>>;
+  savedReuses: Readonly<Partial<Record<AnalysisElement, AnalysisElementReuseRecord>>>;
 }>;
 
 /** 要素別AI判定の必要性と呼び出し対象をまとめた計画。 */
@@ -82,7 +90,7 @@ function validateElementMapKeys(values: object, context: string): void {
   }
 }
 
-/** 現在の確定判定と未解決候補から8要素ごとの必要性を算出する。 */
+/** 現在の確定判定と未解決候補から要素ごとの必要性を算出する。 */
 export function determineAnalysisElementNecessities(
   input: AnalysisElementNecessityInput,
 ): Readonly<Record<AnalysisElement, AnalysisElementNecessity>> {
@@ -97,6 +105,7 @@ export function determineAnalysisElementNecessities(
     ),
     deadline: required(input.deadline.normalAiAnalysisScope || input.deadline.currentlyAdopted),
     notification: required(input.notification.aiIsConsumed),
+    selfCommitment: required(input.selfCommitment.hasEligibleCandidate),
   });
 }
 
@@ -110,7 +119,19 @@ function candidateFor(
     necessity: input.necessities[element],
     inputFingerprint: input.inputFingerprints[element],
     executionFingerprint: input.executionFingerprints[element],
+    inputProjectionVersion: input.inputProjectionVersions[element],
+    dependencyFingerprint: input.dependencyFingerprints[element],
     ...(savedGeneration == null ? {} : { savedGeneration }),
+    ...(input.savedEvaluations[element] == null
+      ? {}
+      : {
+          savedEvaluation: input.savedEvaluations[element],
+        }),
+    ...(input.savedReuses[element] == null
+      ? {}
+      : {
+          savedReuse: input.savedReuses[element],
+        }),
   });
 }
 
@@ -119,6 +140,8 @@ export function planAnalysisElements(input: AnalysisElementPlanningInput): Analy
   validateElementMapKeys(input.necessities, "AI判定要素の必要性");
   validateElementMapKeys(input.inputFingerprints, "AI判定要素の入力fingerprint");
   validateElementMapKeys(input.executionFingerprints, "AI判定要素の実行条件fingerprint");
+  validateElementMapKeys(input.inputProjectionVersions, "AI判定要素の入力投影version");
+  validateElementMapKeys(input.dependencyFingerprints, "AI判定要素の依存fingerprint");
   const candidates = Object.freeze({
     status: candidateFor("status", input),
     waitingOn: candidateFor("waitingOn", input),
@@ -128,6 +151,7 @@ export function planAnalysisElements(input: AnalysisElementPlanningInput): Analy
     importance: candidateFor("importance", input),
     deadline: candidateFor("deadline", input),
     notification: candidateFor("notification", input),
+    selfCommitment: candidateFor("selfCommitment", input),
   }) satisfies AnalysisElementSelectionCandidates;
   return Object.freeze({
     necessities: input.necessities,

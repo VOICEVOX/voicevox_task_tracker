@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "13"
+      "const": "14"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -109,6 +109,85 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "aiAnalysisReuseProof": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reuseSchemaVersion",
+            "source",
+            "revision",
+            "inputProjectionVersion",
+            "inputFingerprint",
+            "dependencyFingerprint",
+            "compatibilityPath"
+          ],
+          "properties": {
+            "status": {
+              "const": "verified"
+            },
+            "reuseSchemaVersion": {
+              "const": "1"
+            },
+            "source": {
+              "enum": [
+                "current_generation",
+                "structural_migration",
+                "deterministic_update"
+              ]
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "inputProjectionVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "inputFingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "dependencyFingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "compatibilityPath": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reuseSchemaVersion", "reason"],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reuseSchemaVersion": {
+              "const": "1"
+            },
+            "reason": {
+              "enum": [
+                "legacy_migration",
+                "source_input_unavailable",
+                "source_contract_unavailable",
+                "dependency_input_unavailable",
+                "compatibility_route_missing",
+                "semantic_impact_unknown"
+              ]
+            }
+          }
+        }
+      ]
+    },
     "trackedItemAiAnalysis": {
       "oneOf": [
         {
@@ -133,7 +212,7 @@
               "$ref": "#/$defs/aiAnalysisElements"
             },
             "adoptedElements": {
-              "$ref": "#/$defs/aiAnalysisElements"
+              "$ref": "#/$defs/aiAnalysisCurrentAdoptedElements"
             }
           },
           "allOf": [
@@ -190,28 +269,134 @@
       "additionalProperties": false,
       "properties": {
         "status": {
-          "$ref": "#/$defs/aiAnalysisGenerationStatus"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "waitingOn": {
-          "$ref": "#/$defs/aiAnalysisGenerationWaitingOn"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "nextAction": {
-          "$ref": "#/$defs/aiAnalysisGenerationNextAction"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "relations": {
-          "$ref": "#/$defs/aiAnalysisGenerationRelations"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "progress": {
-          "$ref": "#/$defs/aiAnalysisGenerationProgress"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "importance": {
-          "$ref": "#/$defs/aiAnalysisGenerationImportance"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "deadline": {
-          "$ref": "#/$defs/aiAnalysisGenerationDeadline"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "notification": {
-          "$ref": "#/$defs/aiAnalysisGenerationNotification"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
+        },
+        "selfCommitment": {
+          "$ref": "#/$defs/aiAnalysisEvaluatedSelfCommitmentElement"
+        }
+      }
+    },
+    "aiAnalysisEvaluatedElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "result", "evaluationProof"],
+      "properties": {
+        "generation": {
+          "$ref": "#/$defs/aiAnalysisGeneration"
+        },
+        "result": {
+          "$ref": "#/$defs/aiAnalysisMigrationResult"
+        },
+        "evaluationProof": {
+          "$ref": "#/$defs/aiAnalysisReuseProof"
+        }
+      }
+    },
+    "aiAnalysisEvaluatedSelfCommitmentElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "result", "evaluationProof"],
+      "properties": {
+        "generation": {
+          "$ref": "#/$defs/aiAnalysisGenerationSelfCommitment"
+        },
+        "result": {
+          "$ref": "#/$defs/aiAnalysisMigrationResultSelfCommitment"
+        },
+        "evaluationProof": {
+          "$ref": "#/$defs/aiAnalysisReuseProof"
+        }
+      }
+    },
+    "aiAnalysisCurrentAdoptedElements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "waitingOn": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "nextAction": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "relations": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "progress": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "importance": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "deadline": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "notification": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "selfCommitment": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedSelfCommitmentElement"
+        }
+      }
+    },
+    "aiAnalysisCurrentAdoptedElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "generation", "result", "reuseProof"],
+      "properties": {
+        "origin": {
+          "const": "current"
+        },
+        "generation": {
+          "$ref": "#/$defs/aiAnalysisGeneration"
+        },
+        "result": {
+          "$ref": "#/$defs/aiAnalysisMigrationResult"
+        },
+        "reuseProof": {
+          "$ref": "#/$defs/aiAnalysisReuseProof"
+        }
+      }
+    },
+    "aiAnalysisCurrentAdoptedSelfCommitmentElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "generation", "result", "reuseProof"],
+      "properties": {
+        "origin": {
+          "const": "current"
+        },
+        "generation": {
+          "$ref": "#/$defs/aiAnalysisGenerationSelfCommitment"
+        },
+        "result": {
+          "$ref": "#/$defs/aiAnalysisMigrationResultSelfCommitment"
+        },
+        "reuseProof": {
+          "$ref": "#/$defs/aiAnalysisReuseProof"
         }
       }
     },
@@ -242,6 +427,9 @@
         },
         "notification": {
           "$ref": "#/$defs/aiAnalysisResultNotification"
+        },
+        "selfCommitment": {
+          "$ref": "#/$defs/aiAnalysisResultSelfCommitment"
         }
       }
     },
@@ -272,6 +460,9 @@
         },
         "notification": {
           "$ref": "#/$defs/aiAnalysisMigrationAdoptedElement"
+        },
+        "selfCommitment": {
+          "$ref": "#/$defs/aiAnalysisMigrationAdoptedSelfCommitmentElement"
         }
       }
     },
@@ -280,26 +471,74 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["origin", "generation"],
+          "required": ["origin", "generation", "result", "reuseProof"],
           "properties": {
             "origin": {
               "const": "current"
             },
             "generation": {
               "$ref": "#/$defs/aiAnalysisGeneration"
+            },
+            "result": {
+              "$ref": "#/$defs/aiAnalysisMigrationResult"
+            },
+            "reuseProof": {
+              "$ref": "#/$defs/aiAnalysisReuseProof"
             }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["origin", "result"],
+          "required": ["origin", "result", "reuseProof"],
           "properties": {
             "origin": {
               "const": "migration"
             },
             "result": {
               "$ref": "#/$defs/aiAnalysisMigrationResult"
+            },
+            "reuseProof": {
+              "$ref": "#/$defs/aiAnalysisReuseProof"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisMigrationAdoptedSelfCommitmentElement": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "generation", "result", "reuseProof"],
+          "properties": {
+            "origin": {
+              "const": "current"
+            },
+            "generation": {
+              "$ref": "#/$defs/aiAnalysisGenerationSelfCommitment"
+            },
+            "result": {
+              "$ref": "#/$defs/aiAnalysisMigrationResultSelfCommitment"
+            },
+            "reuseProof": {
+              "$ref": "#/$defs/aiAnalysisReuseProof"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["origin", "result", "reuseProof"],
+          "properties": {
+            "origin": {
+              "const": "migration"
+            },
+            "result": {
+              "$ref": "#/$defs/aiAnalysisMigrationResultSelfCommitment"
+            },
+            "reuseProof": {
+              "$ref": "#/$defs/aiAnalysisReuseProof"
             }
           }
         }
@@ -330,6 +569,12 @@
         },
         {
           "$ref": "#/$defs/aiAnalysisGenerationNotification"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationSelfCommitment"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6"
         }
       ]
     },
@@ -358,6 +603,9 @@
         },
         {
           "$ref": "#/$defs/aiAnalysisResultNotification"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisResultSelfCommitment"
         }
       ]
     },
@@ -386,6 +634,9 @@
         },
         {
           "$ref": "#/$defs/aiAnalysisMigrationResultNotification"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisMigrationResultSelfCommitment"
         }
       ]
     },
@@ -415,7 +666,7 @@
           "$ref": "#/$defs/identifier"
         },
         "schemaVersion": {
-          "const": "6"
+          "const": "7"
         },
         "revision": {
           "type": "integer",
@@ -477,6 +728,35 @@
         "evidence": {
           "type": "array",
           "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/aiAnalysisElementEvidence"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uncertainties": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        }
+      }
+    },
+    "aiAnalysisSelfCommitmentResultBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "evidence", "confidence", "uncertainties"],
+      "properties": {
+        "value": {},
+        "evidence": {
+          "type": "array",
+          "maxItems": 30,
           "items": {
             "$ref": "#/$defs/aiAnalysisElementEvidence"
           }
@@ -991,6 +1271,36 @@
         }
       ]
     },
+    "aiAnalysisResultSelfCommitment": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisSelfCommitmentResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/aiAnalysisSelfCommitmentValue"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisMigrationResultSelfCommitment": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisSelfCommitmentResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/aiAnalysisSelfCommitmentValue"
+            }
+          }
+        }
+      ]
+    },
     "aiAnalysisNotificationValue": {
       "type": "object",
       "additionalProperties": false,
@@ -1023,6 +1333,25 @@
         }
       }
     },
+    "aiAnalysisSelfCommitmentValue": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceId", "summary"],
+        "properties": {
+          "sourceId": {
+            "$ref": "#/$defs/identifier"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        }
+      }
+    },
     "aiAnalysisGenerationBase": {
       "type": "object",
       "additionalProperties": false,
@@ -1033,6 +1362,19 @@
         },
         "result": {
           "$ref": "#/$defs/aiAnalysisElementResultBase"
+        }
+      }
+    },
+    "aiAnalysisSelfCommitmentGenerationBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metadata", "result"],
+      "properties": {
+        "metadata": {
+          "$ref": "#/$defs/aiAnalysisElementMetadata"
+        },
+        "result": {
+          "$ref": "#/$defs/aiAnalysisSelfCommitmentResultBase"
         }
       }
     },
@@ -1153,6 +1495,231 @@
               "$ref": "#/$defs/aiAnalysisResultNotification"
             }
           }
+        }
+      ]
+    },
+    "aiAnalysisGenerationSelfCommitment": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisSelfCommitmentGenerationBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultSelfCommitment"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisElementMetadataV6": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "reasoningEffort",
+        "backendVersion",
+        "schemaVersion",
+        "revision",
+        "inputFingerprint",
+        "executionFingerprint",
+        "promptFingerprint",
+        "outputHash",
+        "generatedAt"
+      ],
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reasoningEffort": {
+          "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        },
+        "backendVersion": {
+          "$ref": "#/$defs/identifier"
+        },
+        "schemaVersion": {
+          "const": "6"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "inputFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "executionFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "promptFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "outputHash": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "generatedAt": {
+          "$ref": "#/$defs/dateTime"
+        }
+      }
+    },
+    "aiAnalysisGenerationV6Base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metadata", "result"],
+      "properties": {
+        "metadata": {
+          "$ref": "#/$defs/aiAnalysisElementMetadataV6"
+        },
+        "result": {
+          "$ref": "#/$defs/aiAnalysisElementResultBase"
+        }
+      }
+    },
+    "aiAnalysisGenerationV6Status": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultStatus"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGenerationV6WaitingOn": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultWaitingOn"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGenerationV6NextAction": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultNextAction"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGenerationV6Relations": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultRelations"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGenerationV6Progress": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultProgress"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGenerationV6Importance": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultImportance"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGenerationV6Deadline": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultDeadline"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGenerationV6Notification": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Base"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/aiAnalysisResultNotification"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisGenerationV6": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Status"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6WaitingOn"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6NextAction"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Relations"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Progress"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Importance"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Deadline"
+        },
+        {
+          "$ref": "#/$defs/aiAnalysisGenerationV6Notification"
         }
       ]
     },

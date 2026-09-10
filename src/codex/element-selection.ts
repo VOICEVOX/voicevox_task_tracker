@@ -1,12 +1,13 @@
 import {
   AI_ANALYSIS_ELEMENTS,
-  AI_ANALYSIS_ELEMENT_REVISIONS,
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
-  type AnalysisElementGeneration,
   type AnalysisElementInputFingerprint,
   type AnalysisElementNecessity,
+  type AnalysisElementReuseRecord,
+  type AnalysisElementSourceGeneration,
 } from "./analysis-elements.js";
+import { determineAnalysisElementReuse } from "./analysis-reuse.js";
 import { assertNonNullable } from "../util/assert-non-nullable.js";
 
 /** IssueまたはPull RequestについてAIへ渡す要素の選別候補。 */
@@ -15,10 +16,14 @@ export type AnalysisElementSelectionCandidate = Readonly<{
   necessity: AnalysisElementNecessity;
   inputFingerprint: AnalysisElementInputFingerprint;
   executionFingerprint: AnalysisElementExecutionFingerprint;
-  savedGeneration?: AnalysisElementGeneration;
+  savedGeneration?: AnalysisElementSourceGeneration;
+  inputProjectionVersion: number;
+  dependencyFingerprint: AnalysisElementInputFingerprint;
+  savedEvaluation?: AnalysisElementReuseRecord;
+  savedReuse?: AnalysisElementReuseRecord;
 }>;
 
-/** 8要素すべての必要性候補。 */
+/** 要素ごとの必要性候補。 */
 export type AnalysisElementSelectionCandidates = Readonly<
   Record<AnalysisElement, AnalysisElementSelectionCandidate>
 >;
@@ -65,20 +70,35 @@ function selectionReason(
     return "not_required";
   }
 
-  const generation = candidate.savedGeneration;
-  if (generation == null) {
-    return undefined;
+  const savedProofs = [candidate.savedEvaluation?.proof, candidate.savedReuse?.proof];
+  return savedProofs.some(
+    (savedProof) =>
+      savedProof != null &&
+      determineAnalysisElementReuse({
+        element: candidate.element,
+        inputFingerprint: candidate.inputFingerprint,
+        inputProjectionVersion: candidate.inputProjectionVersion,
+        dependencyFingerprint: candidate.dependencyFingerprint,
+        savedProof,
+      }) === "verified",
+  )
+    ? "up_to_date"
+    : undefined;
+}
+
+const STATE_ANALYSIS_ELEMENTS: ReadonlySet<AnalysisElement> = new Set([
+  "status",
+  "waitingOn",
+  "nextAction",
+]);
+
+function shouldSelectStateAnalysisGroup(candidates: AnalysisElementSelectionCandidates): boolean {
+  for (const element of STATE_ANALYSIS_ELEMENTS) {
+    if (selectionReason(candidates[element]) == null) {
+      return true;
+    }
   }
-  if (generation.metadata.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[candidate.element]) {
-    return undefined;
-  }
-  if (generation.metadata.inputFingerprint !== candidate.inputFingerprint) {
-    return undefined;
-  }
-  if (generation.metadata.executionFingerprint !== candidate.executionFingerprint) {
-    return undefined;
-  }
-  return "up_to_date";
+  return false;
 }
 
 /** AIが必要な要素だけをrevision、入力、実行条件、未完了状態から純粋に選別する。 */
@@ -86,6 +106,7 @@ export function selectAnalysisElements(
   candidates: AnalysisElementSelectionCandidates,
 ): AnalysisElementSelection {
   validateCandidates(candidates);
+  const shouldSelectStateGroup = shouldSelectStateAnalysisGroup(candidates);
   const selected: AnalysisElementSelectionCandidate[] = [];
   const skipped: {
     candidate: AnalysisElementSelectionCandidate;
@@ -95,7 +116,12 @@ export function selectAnalysisElements(
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const candidate = candidates[element];
     const reason = selectionReason(candidate);
-    if (reason == null) {
+    if (
+      reason == null ||
+      (shouldSelectStateGroup &&
+        candidate.necessity === "required" &&
+        STATE_ANALYSIS_ELEMENTS.has(element))
+    ) {
       selected.push(candidate);
     } else {
       skipped.push({ candidate, reason });
@@ -109,7 +135,7 @@ export function selectAnalysisElements(
   });
 }
 
-/** 8要素をすべて含む候補配列からAIが必要な要素だけを純粋に選別する。 */
+/** 要素をすべて含む候補配列からAIが必要な要素だけを純粋に選別する。 */
 export function selectAiAnalysisElements(
   candidates: readonly AnalysisElementSelectionCandidate[],
 ): AnalysisElementSelection {
@@ -131,6 +157,7 @@ export function selectAiAnalysisElements(
   const importance = candidatesByElement.get("importance");
   const deadline = candidatesByElement.get("deadline");
   const notification = candidatesByElement.get("notification");
+  const selfCommitment = candidatesByElement.get("selfCommitment");
   assertNonNullable(status, "AI判定要素の必要性候補がありません。対象: status");
   assertNonNullable(waitingOn, "AI判定要素の必要性候補がありません。対象: waitingOn");
   assertNonNullable(nextAction, "AI判定要素の必要性候補がありません。対象: nextAction");
@@ -139,6 +166,7 @@ export function selectAiAnalysisElements(
   assertNonNullable(importance, "AI判定要素の必要性候補がありません。対象: importance");
   assertNonNullable(deadline, "AI判定要素の必要性候補がありません。対象: deadline");
   assertNonNullable(notification, "AI判定要素の必要性候補がありません。対象: notification");
+  assertNonNullable(selfCommitment, "AI判定要素の必要性候補がありません。対象: selfCommitment");
   return selectAnalysisElements({
     status,
     waitingOn,
@@ -148,5 +176,6 @@ export function selectAiAnalysisElements(
     importance,
     deadline,
     notification,
+    selfCommitment,
   });
 }

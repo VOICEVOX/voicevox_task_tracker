@@ -7,15 +7,17 @@ import type { StalenessWaitClass } from "./staleness.js";
 import type {
   AiAnalysisElement,
   AiAnalysisElementMetadata,
-  AiAnalysisElementGeneration,
   AiAnalysisElementMigrationResult,
+  AiAnalysisElementReuseProof,
 } from "./ai-analysis-elements.js";
+import type { AiAnalysisElementSourceGeneration } from "./ai-analysis-source-generations.js";
 
 export type {
   AiAnalysisElement,
   AiAnalysisElementMetadata,
   AiAnalysisElementGeneration,
 } from "./ai-analysis-elements.js";
+export type { AiAnalysisElementSourceGeneration } from "./ai-analysis-source-generations.js";
 
 const opaqueIdSchema = z
   .string()
@@ -550,8 +552,32 @@ export type GitHubItemUrl = `https://github.com/${string}`;
 export type AiCacheEntryId = `sha256:${string}`;
 
 /** 追跡項目へ保存する要素別AI分析結果。 */
+export type TrackedItemAiAnalysisCurrentElement<
+  Element extends AiAnalysisElement = AiAnalysisElement,
+> = Readonly<{
+  generation: AiAnalysisElementSourceGeneration<Element>;
+  result: AiAnalysisElementMigrationResult<Element>;
+  evaluationProof: AiAnalysisElementReuseProof;
+}>;
+
+/** 追跡項目へ保存する要素別AI分析結果。 */
 export type TrackedItemAiAnalysisCurrentElements = Readonly<{
-  [Element in AiAnalysisElement]?: AiAnalysisElementGeneration<Element>;
+  [Element in AiAnalysisElement]?: TrackedItemAiAnalysisCurrentElement<Element>;
+}>;
+
+/** 採用済みの現在形式AI判定要素。 */
+export type TrackedItemAiAnalysisCurrentAdoptedElement<
+  Element extends AiAnalysisElement = AiAnalysisElement,
+> = Readonly<{
+  origin: "current";
+  result: AiAnalysisElementMigrationResult<Element>;
+  generation: AiAnalysisElementSourceGeneration<Element>;
+  reuseProof: AiAnalysisElementReuseProof;
+}>;
+
+/** 採用済みの現在形式AI判定要素一覧。 */
+export type TrackedItemAiAnalysisCurrentAdoptedElements = Readonly<{
+  [Element in AiAnalysisElement]?: TrackedItemAiAnalysisCurrentAdoptedElement<Element>;
 }>;
 
 export type TrackedItemAiAnalysisMigrationElements = Readonly<{
@@ -563,11 +589,14 @@ export type TrackedItemAiAnalysisMigrationAdoptedElement<
 > =
   | Readonly<{
       origin: "current";
-      generation: AiAnalysisElementGeneration<Element>;
+      generation: AiAnalysisElementSourceGeneration<Element>;
+      result: AiAnalysisElementMigrationResult<Element>;
+      reuseProof: AiAnalysisElementReuseProof;
     }>
   | Readonly<{
       origin: "migration";
       result: AiAnalysisElementMigrationResult<Element>;
+      reuseProof: AiAnalysisElementReuseProof;
     }>;
 
 export type TrackedItemAiAnalysisMigrationAdoptedElements = Readonly<{
@@ -583,7 +612,7 @@ export type TrackedItemAiAnalysis =
       origin: "current";
       status: TrackedItemAiAnalysisStatus;
       elements: TrackedItemAiAnalysisCurrentElements;
-      adoptedElements: TrackedItemAiAnalysisCurrentElements;
+      adoptedElements: TrackedItemAiAnalysisCurrentAdoptedElements;
     }>
   | Readonly<{
       origin: "migration";

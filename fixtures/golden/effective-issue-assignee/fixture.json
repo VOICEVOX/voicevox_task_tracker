@@ -240,7 +240,7 @@
       {
         "itemNodeId": "effective-single-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-single-issue",
@@ -351,10 +351,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "effective-single-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
@@ -566,7 +567,7 @@
         },
         "rejectedOutputs": [
           {
-            "schemaVersion": "6",
+            "schemaVersion": "7",
             "item": {
               "nodeId": "effective-single-issue",
               "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
@@ -693,7 +694,7 @@
             }
           },
           {
-            "schemaVersion": "6",
+            "schemaVersion": "7",
             "item": {
               "nodeId": "effective-single-issue",
               "url": "https://github.com/VOICEVOX/fixture-effective/issues/701"
@@ -824,7 +825,7 @@
       {
         "itemNodeId": "effective-joint-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-joint-issue",
@@ -934,10 +935,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "effective-joint-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/702"
@@ -1116,7 +1118,7 @@
       {
         "itemNodeId": "effective-partial-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-partial-issue",
@@ -1199,10 +1201,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "effective-partial-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/703"
@@ -1333,7 +1336,7 @@
       {
         "itemNodeId": "effective-conditional-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-conditional-issue",
@@ -1416,10 +1419,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "effective-conditional-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/704"
@@ -1550,7 +1554,7 @@
       {
         "itemNodeId": "effective-withdrawn-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-withdrawn-issue",
@@ -1633,10 +1637,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "effective-withdrawn-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/705"
@@ -1767,7 +1772,7 @@
       {
         "itemNodeId": "effective-source-mismatch-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-source-mismatch-issue",
@@ -1858,10 +1863,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "effective-source-mismatch-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/706"
@@ -1992,7 +1998,7 @@
       {
         "itemNodeId": "effective-formal-assignee-released-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-09-01T00:00:00.000Z",
           "item": {
             "nodeId": "effective-formal-assignee-released-issue",
@@ -2075,10 +2081,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "effective-formal-assignee-released-issue",
             "url": "https://github.com/VOICEVOX/fixture-effective/issues/707"

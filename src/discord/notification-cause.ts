@@ -885,6 +885,9 @@ function verifiedSelfCommitmentEvidence(
   if (input.previous.availability === "not_available") {
     return [];
   }
+  if (input.currentWaitingOn.length !== 1 || input.currentWaitingOn[0]?.kind !== "user") {
+    return [];
+  }
   const previousObservedAt = input.previous.value.observedAt;
   for (const evidence of cause.evidence) {
     const event = input.item.events.find((candidate) => candidate.sourceId === evidence.sourceId);
@@ -901,13 +904,6 @@ function verifiedSelfCommitmentEvidence(
   return cause.evidence;
 }
 
-function selfCommitmentEvidenceForWaitingOn(
-  waitingOn: WaitingOn,
-  evidence: readonly NotificationCauseEvidence[],
-): readonly NotificationCauseEvidence[] {
-  return evidence.filter((entry) => waitingOn.sourceIds.includes(entry.sourceId));
-}
-
 function selfCommitmentExplainsWaitingOn(
   input: CreateNotificationCausesInput,
   waitingOn: WaitingOn,
@@ -918,10 +914,7 @@ function selfCommitmentExplainsWaitingOn(
     return false;
   }
   const responsible = actorForWaitingOnEntry(input.item, waitingOn);
-  return (
-    responsible?.nodeId === cause.responsible.nodeId &&
-    selfCommitmentEvidenceForWaitingOn(waitingOn, evidence).length > 0
-  );
+  return responsible?.nodeId === cause.responsible.nodeId && evidence.length > 0;
 }
 
 function hasRelevantUnobservedHeadChange(input: CreateNotificationCausesInput): boolean {
@@ -1016,11 +1009,7 @@ function localResponsibilityCause(
   }
   const evidence = mergeEvidence([
     evidenceFromEvents(causeEvents) ?? [],
-    selfEvidence.filter((entry) =>
-      [...localDifference.added, ...localDifference.removed].some((waitingOn) =>
-        waitingOn.sourceIds.includes(entry.sourceId),
-      ),
-    ),
+    selfTransitionAdded.length > 0 ? selfEvidence : [],
   ]);
   if (evidence == null) {
     return Object.freeze({ status: "indeterminate" });

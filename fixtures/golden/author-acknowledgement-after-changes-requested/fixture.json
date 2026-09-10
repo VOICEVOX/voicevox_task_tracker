@@ -99,7 +99,7 @@
       {
         "itemNodeId": "author-acknowledgement-after-changes-requested-pr",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "author-acknowledgement-after-changes-requested-pr",
@@ -164,10 +164,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "author-acknowledgement-after-changes-requested-pr",
             "url": "https://github.com/VOICEVOX/fixture-change/pull/204"
