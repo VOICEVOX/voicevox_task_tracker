@@ -567,9 +567,51 @@ function createBlockersByNodeId(snapshot: StateSnapshot): ReadonlyMap<string, re
   );
 }
 
+function createDisplayReferencesByNodeId(snapshot: StateSnapshot): ReadonlyMap<string, string> {
+  const displayReferencesByNodeId = new Map<string, string>();
+  for (const item of snapshot.items) {
+    displayReferencesByNodeId.set(item.nodeId, item.displayReference);
+  }
+  for (const reference of snapshot.externalReferences) {
+    displayReferencesByNodeId.set(
+      reference.nodeId,
+      `${reference.repositoryFullName}#${reference.number.toString()}`,
+    );
+  }
+  return displayReferencesByNodeId;
+}
+
+function createPublicNextAction(
+  item: Pick<StateSnapshot["items"][number], "nextAction" | "waitingOn">,
+  displayReferencesByNodeId: ReadonlyMap<string, string>,
+): string {
+  const candidateIds = [
+    ...new Set(
+      item.waitingOn
+        .filter((waitingOn) => waitingOn.kind === "item")
+        .map((waitingOn) => waitingOn.candidateId),
+    ),
+  ].sort((left, right) => right.length - left.length || compareStrings(left, right));
+  let nextAction = item.nextAction;
+  for (const candidateId of candidateIds) {
+    if (!nextAction.includes(candidateId)) {
+      continue;
+    }
+    const displayReference = displayReferencesByNodeId.get(candidateId);
+    if (displayReference == null) {
+      throw new PublicDtoSemanticError(
+        `nextActionのwaitingOn項目 ${candidateId}をdisplayReferenceへ解決できません`,
+      );
+    }
+    nextAction = nextAction.split(candidateId).join(displayReference);
+  }
+  return nextAction;
+}
+
 function createCurrentImplementationsByIssueNodeId(
   snapshot: StateSnapshot,
   repositoriesById: ReadonlyMap<string, SnapshotRepository>,
+  displayReferencesByNodeId: ReadonlyMap<string, string>,
 ): ReadonlyMap<string, readonly PublicCurrentImplementation[]> {
   const itemsByNodeId = new Map<string, StateSnapshot["items"][number]>(
     snapshot.items.map((item) => [item.nodeId, item]),
@@ -628,7 +670,7 @@ function createCurrentImplementationsByIssueNodeId(
       title: implementation.title,
       status: implementation.status,
       waitingOn: implementation.waitingOn.map(createPublicWaitingOn),
-      nextAction: implementation.nextAction,
+      nextAction: createPublicNextAction(implementation, displayReferencesByNodeId),
     };
     if (implementations == null) {
       implementationsByIssueNodeId.set(
@@ -657,6 +699,7 @@ function createItemSummary(
   item: StateSnapshot["items"][number],
   repository: SnapshotRepository,
   currentImplementations: readonly PublicCurrentImplementation[],
+  displayReferencesByNodeId: ReadonlyMap<string, string>,
   blockerNodeIds: readonly string[],
   downstreamImpact: AnalyzeGraphResult["downstreamImpacts"][number],
   priorityWeight: number,
@@ -692,7 +735,7 @@ function createItemSummary(
     primaryWaitingOn: {
       ...item.primaryWaitingOn,
     },
-    nextAction: item.nextAction,
+    nextAction: createPublicNextAction(item, displayReferencesByNodeId),
     severity: item.severity,
     importance: {
       score: item.importance.score,
@@ -928,9 +971,11 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
   const repositoriesById = new Map(
     snapshot.repositories.map((repository) => [repository.id, repository]),
   );
+  const displayReferencesByNodeId = createDisplayReferencesByNodeId(snapshot);
   const currentImplementationsByIssueNodeId = createCurrentImplementationsByIssueNodeId(
     snapshot,
     repositoriesById,
+    displayReferencesByNodeId,
   );
   const blockersByNodeId = createBlockersByNodeId(snapshot);
   const resolveLabelEffects = createLabelEffectsResolver(input.options.labelRules);
@@ -946,6 +991,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       item,
       repository,
       currentImplementationsByIssueNodeId.get(item.nodeId) ?? Object.freeze([]),
+      displayReferencesByNodeId,
       blockersByNodeId.get(item.nodeId) ?? Object.freeze([]),
       impact,
       resolveLabelEffects(`${repository.owner}/${repository.name}`, item.labels).priorityWeight,
