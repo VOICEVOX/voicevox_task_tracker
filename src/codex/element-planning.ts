@@ -2,10 +2,10 @@ import {
   AI_ANALYSIS_ELEMENTS,
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
-  type AnalysisElementGeneration,
   type AnalysisElementInputFingerprint,
   type AnalysisElementNecessity,
   type AnalysisElementReuseRecord,
+  type AnalysisElementSourceGeneration,
 } from "./analysis-elements.js";
 import {
   selectAnalysisElements,
@@ -41,6 +41,9 @@ export type AnalysisElementNecessityInput = Readonly<{
   notification: Readonly<{
     aiIsConsumed: boolean;
   }>;
+  selfCommitment: Readonly<{
+    hasEligibleCandidate: boolean;
+  }>;
 }>;
 
 /** 要素別AI判定の必要性を導く入力、指紋、保存済み生成結果。 */
@@ -50,7 +53,7 @@ export type AnalysisElementPlanningInput = Readonly<{
   executionFingerprints: Readonly<Record<AnalysisElement, AnalysisElementExecutionFingerprint>>;
   inputProjectionVersions: Readonly<Record<AnalysisElement, number>>;
   dependencyFingerprints: Readonly<Record<AnalysisElement, AnalysisElementInputFingerprint>>;
-  savedGenerations: Readonly<Partial<Record<AnalysisElement, AnalysisElementGeneration>>>;
+  savedGenerations: Readonly<Partial<Record<AnalysisElement, AnalysisElementSourceGeneration>>>;
   savedEvaluations: Readonly<Partial<Record<AnalysisElement, AnalysisElementReuseRecord>>>;
   savedReuses: Readonly<Partial<Record<AnalysisElement, AnalysisElementReuseRecord>>>;
 }>;
@@ -87,7 +90,7 @@ function validateElementMapKeys(values: object, context: string): void {
   }
 }
 
-/** 現在の確定判定と未解決候補から8要素ごとの必要性を算出する。 */
+/** 現在の確定判定と未解決候補から要素ごとの必要性を算出する。 */
 export function determineAnalysisElementNecessities(
   input: AnalysisElementNecessityInput,
 ): Readonly<Record<AnalysisElement, AnalysisElementNecessity>> {
@@ -102,6 +105,7 @@ export function determineAnalysisElementNecessities(
     ),
     deadline: required(input.deadline.normalAiAnalysisScope || input.deadline.currentlyAdopted),
     notification: required(input.notification.aiIsConsumed),
+    selfCommitment: required(input.selfCommitment.hasEligibleCandidate),
   });
 }
 
@@ -147,6 +151,7 @@ export function planAnalysisElements(input: AnalysisElementPlanningInput): Analy
     importance: candidateFor("importance", input),
     deadline: candidateFor("deadline", input),
     notification: candidateFor("notification", input),
+    selfCommitment: candidateFor("selfCommitment", input),
   }) satisfies AnalysisElementSelectionCandidates;
   return Object.freeze({
     necessities: input.necessities,

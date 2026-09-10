@@ -171,7 +171,8 @@ Codexとgraphは要対応度のscoreとlevelを直接決めません。
 このままでは判定規則を変えても、GitHub側が動いていない項目の判定が古いまま残ります。
 
 そのため、項目ごとに判定規則fingerprintをsnapshotへ保存し、現在値と異なる項目を詳細取得の対象へ加えます。
-判定規則の比較では、項目種別に対応する決定論的規則versionと、必要なAI判定要素のrevision、入力依存、実行条件を区別します。
+判定規則の比較では、項目種別に対応する決定論的規則versionと、AI要素ごとの意味上のrevision、revisionごとの関連入力projection、実際の意味依存を区別します。
+各変更は項目と要素ごとに`unaffected`、`deterministic`、`interpretation_required`、`unknown`の影響を宣言します。複数revisionの変換は旧値から一つずつ現在値まで照合し、途中の対応を確認できない場合は`unknown`とします。新しい抽出は採用済みかどうかにかかわらず対象にし、取消だけは採用対象がない場合に限り再判定対象から除外できます。
 Issueの規則だけを変えた場合はIssueを再取得します。
 AIの規則変更は判定要素ごとに調べ、コードだけで確定できる判定や、影響しない保存結果を巻き込みません。
 詳細取得前に必要性を確定できない場合は情報を取得し、その後の要素選別でAI呼び出しの要否を決めます。
@@ -180,16 +181,22 @@ AIの規則変更は判定要素ごとに調べ、コードだけで確定でき
 再判定していない項目に現在値を書くと、古い判定のまま最新規則で判定済みと記録され、以後再判定されなくなります。
 検査するのは前回snapshotに判定結果を持つ項目だけです。追跡対象外の列挙項目には引き継ぐ判定がないため、毎回の再取得を避けます。
 
+影響が`unknown`でも前回の採用値はgraph、表示、通知へ残します。ただし、その値を最新またはlockedとは扱いません。
+
 前回の`aiAnalysis.status`が`failed`か`deferred`の項目も、GitHub側の変化と判定規則fingerprintにかかわらず詳細取得の対象へ加えます。
 AI分析の失敗と延期はGitHub側を動かさないため、この扱いがなければ縮退した判定が固着します。
 terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行します。
+正常に完了した低信頼または棄権の評価も完了結果として保持します。失敗や延期から新しい完了proofは作らず、現在の条件で未完了の要素を再試行します。
 
-AI判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨の8要素で選別します。
+AI判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨、selfCommitmentの9要素で選別します。
+入力schemaは5、出力schemaは7、snapshotは14とし、waitingOnのrevisionは3、selfCommitmentのrevisionは1、その他の要素のrevisionは1とします。selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
+selfCommitmentの候補は前回`observedAt`より後、今回の評価時刻以前の未編集human commentに限り、source authorとtimeline event actorが同じhumanであることを確認します。前回観測がない場合は追加推論を行いません。通知時は現在の`waitingOn`が単独のhuman userであり、そのactorと一致することを決定論的に確認し、他者、混在、不明、依存解消の原因は通知を残します。
+該当する申し出がない場合、selfCommitmentの値と根拠はともに空配列にし、正常に完了した評価として保持します。申し出がある場合は、値と根拠を同じ候補コメントのsource IDで結び付けます。
 各要素の必要性を既存の確定情報と利用箇所から判断し、必要な要素だけ保存済み結果と比較します。
 根拠、信頼度、不確実性は所有する判定にまとめ、生成したrevision、入力、実行条件、実行時刻を保持します。
 期限なしや通知を推奨しないという結果も、有効な分析結果として比較します。
 snapshotに有効な結果があればcache欠落だけで再生成しません。
-最新の完了結果と、現在採用している結果は別々に保存します。
+生成結果と生成時の情報は変更しません。正常に完了した評価は値と`evaluationProof`、現在採用している結果は値と`reuseProof`を組にして保存します。
 新しい結果が低信頼でも、保持する以前の値の根拠や生成元を失わないためです。
 
 一項目で必要になった要素は1回の呼び出しにまとめます。
@@ -198,6 +205,7 @@ AIへ渡す固定値の文脈と、保存する判定結果は分けます。
 固定値の文脈には値、信頼度、不確実性を含め、過去の根拠への参照は保存する判定結果に保持します。
 新しい判定の根拠は、その呼び出しの入力に含まれるGitHub情報で検証します。
 選択結果がすべて検証を通った場合だけまとめて保存し、失敗・延期した結果を適用済みのrevisionで記録しません。
+状態、待ち相手、次の行動を同時に再評価した結果の一部を採用できない場合は、依存する新しい判定も採用せず、以前の整合した組合せを保持します。
 既存のIssue・PR間グラフは確定関係や依存先の判断に使いますが、AI要素の必要性や入力依存は別に定義します。
 収集には判定計画の規則fingerprintを保存し、確定規則やAI規則が変わった項目を必要性の再評価へ届けます。
 判定要否を確認するための詳細取得が終わっていない項目は、計画済みとして記録しません。計画の完了とAI分析の成功は別に扱います。
@@ -332,13 +340,12 @@ Pages guardを含むPages stageのエラーでは、通常digestの代わりにD
 
 ## Codexの隔離
 
-本番経路は前回成功したCodex分析のfingerprintをsnapshotの収集項目へ保存し、次回の候補選別へ渡します。
-GitHubの確定情報で高信頼に解決した項目に加え、入力hash、隣接graph hash、実行identity hashが前回と一致する項目も除外します。
-未変更候補はcontent-addressed cacheの検証済み結果をreducerへ渡し、変更候補も同じ判定入力が保存済みならcacheから再利用します。
-どちらの場合もcache hitではCodex processを実行しません。
-判定規則version、model、reasoning effort、backend version、prompt version、schema version、入力hashからcache keyを作り、同一入力だけを再利用します。
-prompt versionを上げたrunでは実行identityと判定規則fingerprintが変わるため、全項目を再取得し、Codex候補のうち曖昧な項目を新しいプロンプトで再推論します。高信頼に決定できる項目はCodex推論を行いません。
-prompt versionを据え置いたrunでは、入力と実行identityが変わらない項目に検証済みcacheを再利用します。プロンプトの表記だけを変更してversionを据え置いた場合、cacheやsnapshotの既存出力は書き換えず、別要因で再分析した項目だけが新しい表記になります。
+本番経路は要素別の評価結果と採用結果をsnapshotへ保存し、次回の候補選別へ渡します。
+確定情報だけで判断できる要素と、有効な保存結果を再利用できる要素を除外し、推論が必要な要素が残った項目だけを呼び出し候補にします。
+呼び出し候補でも同じ実行条件の検証済み結果がcontent-addressed cacheにあれば再利用し、Codex processを実行しません。
+snapshotの評価結果と採用結果の再利用は、要素の意味上のrevision、revisionごとの関連入力projection hash、実際の意味依存の一致で決めます。model、reasoning effort、backend、schemaの変更だけでは再推論しません。これらの実行条件は生成時のprovenanceとして記録します。
+cacheは生成時のmodel、reasoning effort、backend、schema、対象要素のrevisionと入力hashで識別します。cache keyが変わっても、有効なsnapshotの結果があれば再推論しません。
+promptを変更するときは、要素の意味への影響を宣言します。意味が変わらない表記の修正は再評価を求めず、再評価しない要素の生成結果と採用結果を保持します。
 このcache再利用と重要度の前回判定利用は別の規則です。
 そのrunで利用できる重要度判定がない場合は、前回の判定を現在の決定論的な要因と組み合わせます。
 Codex入力の判定時刻は未来のsource参照を拒否するsemantic検証にだけ使い、時間依存の状態と停滞時間は決定論的処理で算出します。
@@ -397,7 +404,7 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 
 | 既定パス                            | 内容                                                                                                 |
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、trackingStartAtを含むschema version 13の最新snapshot |
+| `state/snapshot.json`               | 要対応度、期限日、AI状態、項目ごとのAI利用状況、trackingStartAtを含むschema version 14の最新snapshot |
 | `state/history/YYYY-MM-DD.jsonl`    | 前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                           |
 | `state/ai-cache/<sha256>.json`      | Codexのcontent-addressed cache                                                                       |
 | `state/notification-ledger.json`    | 予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                   |
@@ -414,13 +421,14 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 | `disabled`     | 設定でAI分析が無効だった                           |
 | `not_recorded` | 項目単位のAI利用状況が記録されていない             |
 
-要素ごとの生成結果と採用結果はsnapshotへ保存します。
+要素ごとの生成結果、正常に完了した評価、採用結果はsnapshotへ保存します。
 Pagesのsummaryとdetailsには全statusを公開し、生成元のcache keyは公開しません。
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、追加cache、通知候補選別後の通知管理記録を通常stateの最初のGit commitへまとめます。
 旧形式は入口で現行形式へ移行し、旧cacheの削除もsnapshot更新と同じcommitへ含めます。
 読み込みやCI検証だけでは本番へ保存せず、workflowによるpushまで完了してから移行済みとします。
-移行したAIの採用値は新しい生成結果と区別し、再推論の失敗・延期だけで消しません。
+移行したAIの採用値は新しい生成結果と区別し、旧generationのresult、metadata、outputHashを改変せず、再推論の失敗・延期だけで消しません。
+本人起因の通知抑制は新しいsignalからnotification keyまたは未送信候補を作る前だけに適用し、既存pendingとnotification ledgerへ今回の原因を転用しません。既存のpending、reserved、delivery_started、sent、acknowledgedは通常の有効性・送信・失効規則でだけ更新します。
 通知予約はrun開始時刻から24時間だけ有効です。
 予約期限はworkflow内の排他用leaseであり通知方針ではないため、設定項目にせず、4時間周期をまたぐ重複送信を抑える24時間へ固定します。
 送信開始前の期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。

@@ -11,6 +11,7 @@ import {
   aiAnalysisNotificationSchema,
   aiAnalysisProgressSchema,
   aiAnalysisRelationsSchema,
+  aiAnalysisSelfCommitmentSchema,
   aiAnalysisStatusSchema,
   aiAnalysisWaitingOnSchema,
   createAiAnalysisMigrationElementResultSchema,
@@ -60,6 +61,13 @@ const itemSchema = z
 const waitingOnCandidateSchema = z
   .strictObject({
     id: opaqueIdSchema,
+  })
+  .catchall(jsonValueSchema);
+
+const selfCommitmentCandidateSchema = z
+  .strictObject({
+    id: opaqueIdSchema,
+    sourceIds: z.array(sourceIdSchema).min(1),
   })
   .catchall(jsonValueSchema);
 
@@ -127,6 +135,7 @@ const codexLockedElementResultSchemas = {
   importance: createCodexLockedElementResultSchema(aiAnalysisImportanceSchema),
   deadline: createCodexLockedElementResultSchema(aiAnalysisDeadlineSchema),
   notification: createCodexLockedElementResultSchema(aiAnalysisNotificationSchema),
+  selfCommitment: createCodexLockedElementResultSchema(aiAnalysisSelfCommitmentSchema),
 };
 
 type CodexLockedElementResultByElement = {
@@ -221,6 +230,14 @@ export function projectCodexLockedElementResult(
         uncertainties: parsed.uncertainties,
       });
     }
+    case "selfCommitment": {
+      const parsed = createAiAnalysisMigrationElementResultSchema("selfCommitment").parse(result);
+      return codexLockedElementResultSchemas.selfCommitment.parse({
+        value: parsed.value,
+        confidence: parsed.confidence,
+        uncertainties: parsed.uncertainties,
+      });
+    }
     default:
       throw new UnreachableError(element);
   }
@@ -256,11 +273,12 @@ const lockedElementsSchema = z.strictObject({
   importance: codexLockedElementResultSchemas.importance.optional(),
   deadline: codexLockedElementResultSchemas.deadline.optional(),
   notification: codexLockedElementResultSchemas.notification.optional(),
+  selfCommitment: codexLockedElementResultSchemas.selfCommitment.optional(),
 });
 
 const codexAnalysisInputSchema = z
   .strictObject({
-    schemaVersion: z.literal("4"),
+    schemaVersion: z.literal("5"),
     now: z.iso.datetime({
       offset: true,
       error: "タイムゾーンを含むISO 8601日時を指定してください",
@@ -270,6 +288,7 @@ const codexAnalysisInputSchema = z
       waitingOn: z.array(waitingOnCandidateSchema),
       relations: z.array(relationCandidateSchema),
     }),
+    selfCommitmentCandidates: z.array(selfCommitmentCandidateSchema),
     sources: z.array(sourceSchema).min(1, "sourceを1件以上指定してください"),
     deterministicSignals: z.record(z.string(), jsonValueSchema),
     selectedElements: z.array(aiAnalysisElementSchema).max(AI_ANALYSIS_ELEMENTS.length),
@@ -331,6 +350,50 @@ const codexAnalysisInputSchema = z
       relationIds.add(candidate.id);
     }
 
+    const selfCommitmentIds = new Set<string>();
+    const selfCommitmentSourceIds = new Set<string>();
+    for (const [index, candidate] of input.selfCommitmentCandidates.entries()) {
+      if (selfCommitmentIds.has(candidate.id)) {
+        context.addIssue({
+          code: "custom",
+          path: ["selfCommitmentCandidates", index, "id"],
+          message: "selfCommitment candidate IDが重複しています",
+        });
+      }
+      selfCommitmentIds.add(candidate.id);
+      for (const [sourceIndex, sourceId] of candidate.sourceIds.entries()) {
+        if (selfCommitmentSourceIds.has(sourceId)) {
+          context.addIssue({
+            code: "custom",
+            path: ["selfCommitmentCandidates", index, "sourceIds", sourceIndex],
+            message: "selfCommitment候補のsource IDが重複しています",
+          });
+        }
+        selfCommitmentSourceIds.add(sourceId);
+        const source = input.sources.find((value) => value.id === sourceId);
+        if (source == null) {
+          context.addIssue({
+            code: "custom",
+            path: ["selfCommitmentCandidates", index, "sourceIds", sourceIndex],
+            message: "selfCommitment候補のsource IDに対応するsourceがありません",
+          });
+          continue;
+        }
+        if (
+          source.kind !== "comment" ||
+          source.actorType !== "human" ||
+          source.author.status !== "identified" ||
+          source.author.candidateId !== candidate.id
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["selfCommitmentCandidates", index, "sourceIds", sourceIndex],
+            message: "selfCommitment候補のsource authorが候補本人と一致しません",
+          });
+        }
+      }
+    }
+
     const sourceIds = new Set<string>();
     for (const [index, source] of input.sources.entries()) {
       if (sourceIds.has(source.id)) {
@@ -350,11 +413,14 @@ const codexAnalysisInputSchema = z
             message: "identified authorはhuman sourceにだけ指定できます",
           });
         }
-        if (!input.candidates.waitingOn.some((candidate) => candidate.id === author.candidateId)) {
+        if (
+          !input.candidates.waitingOn.some((candidate) => candidate.id === author.candidateId) &&
+          !input.selfCommitmentCandidates.some((candidate) => candidate.id === author.candidateId)
+        ) {
           context.addIssue({
             code: "custom",
             path: ["sources", index, "author", "candidateId"],
-            message: "source authorのcandidate IDがwaitingOn候補集合にありません",
+            message: "source authorのcandidate IDが候補集合にありません",
           });
         }
       }

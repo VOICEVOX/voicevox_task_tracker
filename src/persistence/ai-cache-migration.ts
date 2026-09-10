@@ -8,6 +8,10 @@ import {
   createAiAnalysisElementResultSchema,
 } from "../domain/ai-analysis-elements.js";
 import {
+  AI_ANALYSIS_ELEMENTS_V6,
+  createAiAnalysisElementGenerationSchemaV6,
+} from "../domain/ai-analysis-source-generations.js";
+import {
   createUtcIsoDateTime,
   REASONING_EFFORTS,
   type ReasoningEffort,
@@ -54,6 +58,7 @@ const currentAiCacheEnvelopeSchema = z.strictObject({
 const legacyCurrentAiCacheMetadataSchema = aiAnalysisElementMetadataSchema.extend({
   schemaVersion: z.literal("5"),
 });
+const aiAnalysisElementV6Schema = z.enum(AI_ANALYSIS_ELEMENTS_V6);
 const legacyCurrentAiCacheEvidenceSchema = z
   .array(aiAnalysisElementEvidenceSchema.omit({ supports: true }))
   .min(1)
@@ -87,8 +92,16 @@ export type LegacyAiCacheEntry = Readonly<{
 type ObsoleteAiCacheEntry = Readonly<{
   path: string;
   cacheKey: AiCacheKey;
-  schemaVersion: "5";
+  schemaVersion: "5" | "6";
 }>;
+
+type LegacyCurrentAiCacheMetadata = Omit<
+  z.output<typeof aiAnalysisElementMetadataSchema>,
+  "schemaVersion"
+> &
+  Readonly<{
+    schemaVersion: "5" | "6";
+  }>;
 
 /** AI cache移行へ渡す一つのstate file。 */
 export type AiCacheMigrationFile = Readonly<{
@@ -189,7 +202,7 @@ function parseLegacyAiCacheEntry(
 
 function legacyCurrentCacheKey(
   element: z.output<typeof aiAnalysisElementSchema>,
-  metadata: z.output<typeof legacyCurrentAiCacheMetadataSchema>,
+  metadata: LegacyCurrentAiCacheMetadata,
 ): AiCacheKey {
   return hashCanonicalJson({
     backendVersion: metadata.backendVersion,
@@ -207,14 +220,24 @@ function parseObsoleteAiCacheEntry(
   path: string,
   value: unknown,
   expectedCacheKey: AiCacheKey,
+  schemaVersion: "5" | "6",
 ): ObsoleteAiCacheEntry {
   const parsed = currentAiCacheEnvelopeSchema.parse(value);
-  const generationSchema = z.strictObject({
-    metadata: legacyCurrentAiCacheMetadataSchema,
-    result: createAiAnalysisElementResultSchema(parsed.element).extend({
-      evidence: legacyCurrentAiCacheEvidenceSchema,
-    }),
-  });
+  const generationSchema =
+    schemaVersion === "5"
+      ? (() => {
+          const element = aiAnalysisElementV6Schema.parse(parsed.element);
+          return z.strictObject({
+            metadata: legacyCurrentAiCacheMetadataSchema,
+            result: createAiAnalysisElementResultSchema(element).extend({
+              evidence: legacyCurrentAiCacheEvidenceSchema,
+            }),
+          });
+        })()
+      : (() => {
+          const element = aiAnalysisElementV6Schema.parse(parsed.element);
+          return createAiAnalysisElementGenerationSchemaV6(element);
+        })();
   const generation = generationSchema.parse(parsed.generation);
   if (parsed.cacheKey !== expectedCacheKey) {
     throw new TypeError("AI cacheのcache keyとファイル名が一致しません");
@@ -228,7 +251,7 @@ function parseObsoleteAiCacheEntry(
   return Object.freeze({
     path,
     cacheKey: parsed.cacheKey,
-    schemaVersion: "5",
+    schemaVersion,
   });
 }
 
@@ -266,11 +289,14 @@ function parseCacheFile(
         }),
       })
       .safeParse(currentEnvelope.data.generation);
-    if (generationMetadata.success && generationMetadata.data.metadata.schemaVersion === "5") {
-      return Object.freeze({
-        status: "obsolete",
-        entry: parseObsoleteAiCacheEntry(path, value, expectedCacheKey),
-      });
+    if (generationMetadata.success) {
+      const schemaVersion = generationMetadata.data.metadata.schemaVersion;
+      if (schemaVersion === "5" || schemaVersion === "6") {
+        return Object.freeze({
+          status: "obsolete",
+          entry: parseObsoleteAiCacheEntry(path, value, expectedCacheKey, schemaVersion),
+        });
+      }
     }
   }
   const entry = createAiCacheEntry(value);

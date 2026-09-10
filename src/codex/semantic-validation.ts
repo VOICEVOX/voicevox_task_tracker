@@ -180,6 +180,17 @@ function collectReferencedSourceIds(
   if (output.notification != null) {
     addResultEvidence(output.notification, "/notification", references);
   }
+  if (output.selfCommitment != null) {
+    addResultEvidence(output.selfCommitment, "/selfCommitment", references);
+    for (const [index, commitment] of output.selfCommitment.value.entries()) {
+      references.push(
+        Object.freeze({
+          path: `/selfCommitment/value/${index.toString()}/sourceId`,
+          sourceId: commitment.sourceId,
+        }),
+      );
+    }
+  }
   return Object.freeze(references);
 }
 
@@ -306,7 +317,7 @@ function validateNoSelfCommitmentEvidence(
         createIssue(
           `${path}/evidence/${index.toString()}/supports`,
           "self_commitment_wrong_element",
-          "self_commitmentの根拠はwaitingOn要素にだけ指定できます",
+          "self_commitmentの根拠はselfCommitment要素にだけ指定できます",
         ),
       );
     }
@@ -325,16 +336,84 @@ function validateSelfCommitmentEvidence(
   validateNoSelfCommitmentEvidence(output.importance, "/importance", issues);
   validateNoSelfCommitmentEvidence(output.deadline, "/deadline", issues);
   validateNoSelfCommitmentEvidence(output.notification, "/notification", issues);
+  validateNoSelfCommitmentEvidence(output.waitingOn, "/waitingOn", issues);
 
-  const waitingOn = output.waitingOn;
-  if (waitingOn == null) {
+  const selfCommitment = output.selfCommitment;
+  if (selfCommitment == null) {
     return;
   }
-  for (const [index, evidence] of waitingOn.evidence.entries()) {
+  const candidateSourceIds = new Set<string>();
+  for (const candidate of input.selfCommitmentCandidates) {
+    for (const sourceId of candidate.sourceIds) {
+      candidateSourceIds.add(sourceId);
+    }
+  }
+  const valueSourceIds = selfCommitment.value.map((value) => value.sourceId);
+  const evidenceSourceIds = selfCommitment.evidence.map((evidence) => evidence.sourceId);
+  validateUniqueSourceIds(valueSourceIds, "/selfCommitment/value", issues);
+  validateUniqueSourceIds(evidenceSourceIds, "/selfCommitment/evidence", issues);
+  const valueSourceIdSet = new Set(valueSourceIds);
+  const selfCommitmentEvidenceSourceIds = new Set<string>();
+  for (const [index, value] of selfCommitment.value.entries()) {
+    if (!candidateSourceIds.has(value.sourceId)) {
+      issues.push(
+        createIssue(
+          `/selfCommitment/value/${index.toString()}/sourceId`,
+          "unknown_self_commitment_candidate_source",
+          "selfCommitmentのsource IDが専用候補集合にありません",
+        ),
+      );
+    }
+  }
+  if (selfCommitment.value.length === 0 && selfCommitment.evidence.length !== 0) {
+    issues.push(
+      createIssue(
+        "/selfCommitment/evidence",
+        "self_commitment_evidence_without_value",
+        "selfCommitmentが空のときは根拠を指定できません",
+      ),
+    );
+  }
+  if (selfCommitment.value.length !== 0 && selfCommitment.evidence.length === 0) {
+    issues.push(
+      createIssue(
+        "/selfCommitment/evidence",
+        "self_commitment_evidence_required",
+        "selfCommitmentの各source IDにはself_commitment根拠が必要です",
+      ),
+    );
+  }
+  for (const [index, evidence] of selfCommitment.evidence.entries()) {
+    const evidencePath = `/selfCommitment/evidence/${index.toString()}`;
+    if (!candidateSourceIds.has(evidence.sourceId)) {
+      issues.push(
+        createIssue(
+          `${evidencePath}/sourceId`,
+          "unknown_self_commitment_candidate_source",
+          "selfCommitmentの根拠source IDが専用候補集合にありません",
+        ),
+      );
+    }
     if (evidence.supports !== "self_commitment") {
+      issues.push(
+        createIssue(
+          `${evidencePath}/supports`,
+          "self_commitment_support",
+          "selfCommitmentの根拠にはself_commitmentを指定してください",
+        ),
+      );
       continue;
     }
-    const evidencePath = `/waitingOn/evidence/${index.toString()}`;
+    selfCommitmentEvidenceSourceIds.add(evidence.sourceId);
+    if (!valueSourceIdSet.has(evidence.sourceId)) {
+      issues.push(
+        createIssue(
+          `${evidencePath}/sourceId`,
+          "self_commitment_evidence_without_value",
+          "selfCommitmentの根拠source IDが値にありません",
+        ),
+      );
+    }
     const source = input.sources.find((candidate) => candidate.id === evidence.sourceId);
     if (source == null) {
       continue;
@@ -365,46 +444,15 @@ function validateSelfCommitmentEvidence(
           "self_commitmentの根拠には識別済みのcomment authorが必要です",
         ),
       );
-      continue;
     }
-    if (waitingOn.value.length !== 1) {
+  }
+  for (const [index, value] of selfCommitment.value.entries()) {
+    if (!selfCommitmentEvidenceSourceIds.has(value.sourceId)) {
       issues.push(
         createIssue(
-          "/waitingOn/value",
-          "self_commitment_multiple_waiting_on",
-          "self_commitmentの根拠には唯一のwaitingOn候補が必要です",
-        ),
-      );
-      continue;
-    }
-    const [waitingCandidate] = waitingOn.value;
-    if (waitingCandidate == null) {
-      throw new TypeError("self_commitmentのwaitingOn候補がありません");
-    }
-    if (waitingCandidate.kind !== "user") {
-      issues.push(
-        createIssue(
-          "/waitingOn/value/0/kind",
-          "self_commitment_waiting_on_kind",
-          "self_commitmentの根拠にはuserのwaitingOn候補が必要です",
-        ),
-      );
-    }
-    if (waitingCandidate.candidateId !== source.author.candidateId) {
-      issues.push(
-        createIssue(
-          "/waitingOn/value/0/candidateId",
-          "self_commitment_author_mismatch",
-          "self_commitmentの根拠のauthorとwaitingOn候補が一致しません",
-        ),
-      );
-    }
-    if (!waitingCandidate.sourceIds.includes(evidence.sourceId)) {
-      issues.push(
-        createIssue(
-          "/waitingOn/value/0/sourceIds",
-          "self_commitment_source_unlinked",
-          "self_commitmentの根拠sourceがwaitingOn候補へ結び付いていません",
+          `/selfCommitment/value/${index.toString()}/sourceId`,
+          "self_commitment_evidence_required",
+          "selfCommitmentの各source IDにはself_commitment根拠が必要です",
         ),
       );
     }

@@ -139,7 +139,7 @@
       {
         "itemNodeId": "nested-release-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "nested-release-issue",
@@ -182,10 +182,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "nested-release-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/501"
@@ -324,7 +325,7 @@
       {
         "itemNodeId": "nested-core-issue",
         "input": {
-          "schemaVersion": "4",
+          "schemaVersion": "5",
           "now": "2026-08-01T00:00:00.000Z",
           "item": {
             "nodeId": "nested-core-issue",
@@ -367,10 +368,11 @@
             "deadline",
             "notification"
           ],
-          "lockedElements": {}
+          "lockedElements": {},
+          "selfCommitmentCandidates": []
         },
         "acceptedOutput": {
-          "schemaVersion": "6",
+          "schemaVersion": "7",
           "item": {
             "nodeId": "nested-core-issue",
             "url": "https://github.com/VOICEVOX/fixture-release/issues/502"

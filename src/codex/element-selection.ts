@@ -2,10 +2,10 @@ import {
   AI_ANALYSIS_ELEMENTS,
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
-  type AnalysisElementGeneration,
   type AnalysisElementInputFingerprint,
   type AnalysisElementNecessity,
   type AnalysisElementReuseRecord,
+  type AnalysisElementSourceGeneration,
 } from "./analysis-elements.js";
 import { determineAnalysisElementReuse } from "./analysis-reuse.js";
 import { assertNonNullable } from "../util/assert-non-nullable.js";
@@ -16,14 +16,14 @@ export type AnalysisElementSelectionCandidate = Readonly<{
   necessity: AnalysisElementNecessity;
   inputFingerprint: AnalysisElementInputFingerprint;
   executionFingerprint: AnalysisElementExecutionFingerprint;
-  savedGeneration?: AnalysisElementGeneration;
+  savedGeneration?: AnalysisElementSourceGeneration;
   inputProjectionVersion: number;
   dependencyFingerprint: AnalysisElementInputFingerprint;
   savedEvaluation?: AnalysisElementReuseRecord;
   savedReuse?: AnalysisElementReuseRecord;
 }>;
 
-/** 8要素すべての必要性候補。 */
+/** 要素ごとの必要性候補。 */
 export type AnalysisElementSelectionCandidates = Readonly<
   Record<AnalysisElement, AnalysisElementSelectionCandidate>
 >;
@@ -135,7 +135,7 @@ export function selectAnalysisElements(
   });
 }
 
-/** 8要素をすべて含む候補配列からAIが必要な要素だけを純粋に選別する。 */
+/** 要素をすべて含む候補配列からAIが必要な要素だけを純粋に選別する。 */
 export function selectAiAnalysisElements(
   candidates: readonly AnalysisElementSelectionCandidate[],
 ): AnalysisElementSelection {
@@ -157,6 +157,7 @@ export function selectAiAnalysisElements(
   const importance = candidatesByElement.get("importance");
   const deadline = candidatesByElement.get("deadline");
   const notification = candidatesByElement.get("notification");
+  const selfCommitment = candidatesByElement.get("selfCommitment");
   assertNonNullable(status, "AI判定要素の必要性候補がありません。対象: status");
   assertNonNullable(waitingOn, "AI判定要素の必要性候補がありません。対象: waitingOn");
   assertNonNullable(nextAction, "AI判定要素の必要性候補がありません。対象: nextAction");
@@ -165,6 +166,7 @@ export function selectAiAnalysisElements(
   assertNonNullable(importance, "AI判定要素の必要性候補がありません。対象: importance");
   assertNonNullable(deadline, "AI判定要素の必要性候補がありません。対象: deadline");
   assertNonNullable(notification, "AI判定要素の必要性候補がありません。対象: notification");
+  assertNonNullable(selfCommitment, "AI判定要素の必要性候補がありません。対象: selfCommitment");
   return selectAnalysisElements({
     status,
     waitingOn,
@@ -174,5 +176,6 @@ export function selectAiAnalysisElements(
     importance,
     deadline,
     notification,
+    selfCommitment,
   });
 }

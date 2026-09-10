@@ -290,6 +290,7 @@ export {
   aiAnalysisWaitingOnRoleSchema,
   aiAnalysisWaitingOnSchema,
   aiAnalysisReasoningEffortSchema,
+  aiAnalysisSelfCommitmentSchema,
   createAiAnalysisElementGeneration,
   createAiAnalysisElementGenerationSchema,
   createAiAnalysisElementResultSchema,
@@ -322,4 +323,14 @@ export {
   type AiAnalysisMigrationWaitingOnValue,
   type AiAnalysisDeadline,
   type AiAnalysisReasoningEffort,
+  type AiAnalysisSelfCommitment,
+  type AiAnalysisSelfCommitmentValue,
 } from "./ai-analysis-elements.js";
+export {
+  AI_ANALYSIS_ELEMENT_SCHEMA_VERSION_V6,
+  AI_ANALYSIS_ELEMENTS_V6,
+  createAiAnalysisElementGenerationSchemaV6,
+  createAiAnalysisElementSourceGenerationSchema,
+  type AiAnalysisElementGenerationV6,
+  type AiAnalysisElementSourceGeneration,
+} from "./ai-analysis-source-generations.js";

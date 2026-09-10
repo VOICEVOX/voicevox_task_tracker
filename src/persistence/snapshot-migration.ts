@@ -13,7 +13,6 @@ import {
   aiAnalysisElementReuseProofSchema,
   AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION,
   createAiAnalysisElementResultSchema,
-  createAiAnalysisElementGenerationSchema,
   createAiAnalysisMigrationElementResultSchema,
   createAiAnalysisElementValueSchema,
   type AiAnalysisElement,
@@ -24,6 +23,11 @@ import {
   type TrackedItemAiAnalysisCurrentElements,
   type TrackedItemAiAnalysisMigrationAdoptedElements,
 } from "../domain/index.js";
+import {
+  AI_ANALYSIS_ELEMENTS_V6,
+  createAiAnalysisElementGenerationSchemaV6,
+  type AiAnalysisElementGenerationV6,
+} from "../domain/ai-analysis-source-generations.js";
 import { type AiCacheKey } from "../codex/cache.js";
 import { type LegacyAiCacheEntry } from "./ai-cache-migration.js";
 import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
@@ -351,6 +355,20 @@ function parseLegacyElementMigrationResult(
   });
 }
 
+function parseV6ElementGeneration(
+  element: AiAnalysisElement,
+  value: unknown,
+): AiAnalysisElementGenerationV6 {
+  const elementResult = z.enum(AI_ANALYSIS_ELEMENTS_V6).safeParse(element);
+  if (!elementResult.success) {
+    throw new StateSnapshotSemanticError(
+      `旧AI分析要素にschema6では扱えない要素があります。対象: ${element}`,
+      { cause: elementResult.error },
+    );
+  }
+  return createAiAnalysisElementGenerationSchemaV6(elementResult.data).parse(value);
+}
+
 function parseMigrationElementResult(
   element: AiAnalysisElement,
   value: unknown,
@@ -359,7 +377,7 @@ function parseMigrationElementResult(
 ): AiAnalysisElementMigrationResult {
   if (origin === "current") {
     if (elementSchemaVersion === "6") {
-      const generation = createAiAnalysisElementGenerationSchema(element).parse(value);
+      const generation = parseV6ElementGeneration(element, value);
       return createAiAnalysisMigrationElementResultSchema(element).parse(generation.result);
     }
     return parseLegacyElementGenerationResult(element, value);
@@ -367,9 +385,7 @@ function parseMigrationElementResult(
   const adoptedElement = legacyAdoptedElementSchema.parse(value);
   if (adoptedElement.origin === "current") {
     if (elementSchemaVersion === "6") {
-      const generation = createAiAnalysisElementGenerationSchema(element).parse(
-        adoptedElement.generation,
-      );
+      const generation = parseV6ElementGeneration(element, adoptedElement.generation);
       return createAiAnalysisMigrationElementResultSchema(element).parse(generation.result);
     }
     return parseLegacyElementGenerationResult(element, adoptedElement.generation);
@@ -387,7 +403,7 @@ function setCurrentAdoptedElement(
 ): void {
   switch (element) {
     case "status": {
-      const generation = createAiAnalysisElementGenerationSchema("status").parse(generationValue);
+      const generation = createAiAnalysisElementGenerationSchemaV6("status").parse(generationValue);
       adopted.status = {
         origin: "current",
         generation,
@@ -398,7 +414,7 @@ function setCurrentAdoptedElement(
     }
     case "waitingOn": {
       const generation =
-        createAiAnalysisElementGenerationSchema("waitingOn").parse(generationValue);
+        createAiAnalysisElementGenerationSchemaV6("waitingOn").parse(generationValue);
       adopted.waitingOn = {
         origin: "current",
         generation,
@@ -409,7 +425,7 @@ function setCurrentAdoptedElement(
     }
     case "nextAction": {
       const generation =
-        createAiAnalysisElementGenerationSchema("nextAction").parse(generationValue);
+        createAiAnalysisElementGenerationSchemaV6("nextAction").parse(generationValue);
       adopted.nextAction = {
         origin: "current",
         generation,
@@ -420,7 +436,7 @@ function setCurrentAdoptedElement(
     }
     case "relations": {
       const generation =
-        createAiAnalysisElementGenerationSchema("relations").parse(generationValue);
+        createAiAnalysisElementGenerationSchemaV6("relations").parse(generationValue);
       adopted.relations = {
         origin: "current",
         generation,
@@ -430,7 +446,8 @@ function setCurrentAdoptedElement(
       return;
     }
     case "progress": {
-      const generation = createAiAnalysisElementGenerationSchema("progress").parse(generationValue);
+      const generation =
+        createAiAnalysisElementGenerationSchemaV6("progress").parse(generationValue);
       adopted.progress = {
         origin: "current",
         generation,
@@ -441,7 +458,7 @@ function setCurrentAdoptedElement(
     }
     case "importance": {
       const generation =
-        createAiAnalysisElementGenerationSchema("importance").parse(generationValue);
+        createAiAnalysisElementGenerationSchemaV6("importance").parse(generationValue);
       adopted.importance = {
         origin: "current",
         generation,
@@ -451,7 +468,8 @@ function setCurrentAdoptedElement(
       return;
     }
     case "deadline": {
-      const generation = createAiAnalysisElementGenerationSchema("deadline").parse(generationValue);
+      const generation =
+        createAiAnalysisElementGenerationSchemaV6("deadline").parse(generationValue);
       adopted.deadline = {
         origin: "current",
         generation,
@@ -462,7 +480,7 @@ function setCurrentAdoptedElement(
     }
     case "notification": {
       const generation =
-        createAiAnalysisElementGenerationSchema("notification").parse(generationValue);
+        createAiAnalysisElementGenerationSchemaV6("notification").parse(generationValue);
       adopted.notification = {
         origin: "current",
         generation,
@@ -473,6 +491,10 @@ function setCurrentAdoptedElement(
       };
       return;
     }
+    case "selfCommitment":
+      throw new StateSnapshotSemanticError(
+        "旧snapshotのAI分析要素にselfCommitmentは指定できません",
+      );
     default:
       throw new UnreachableError(element);
   }
@@ -569,6 +591,10 @@ function setMigratedAdoptedElement(
         reuseProof: legacyReuseProof(),
       };
       return;
+    case "selfCommitment":
+      throw new StateSnapshotSemanticError(
+        "旧snapshotのAI分析要素にselfCommitmentは指定できません",
+      );
     default:
       throw new UnreachableError(element);
   }
@@ -593,7 +619,13 @@ function parseAdoptedElements(
   return Object.freeze(adopted);
 }
 
-function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentElements {
+function parseCurrentElements(
+  elements: unknown,
+  elementSchemaVersion: "5" | "6",
+): TrackedItemAiAnalysisCurrentElements {
+  if (elementSchemaVersion !== "6") {
+    throw new StateSnapshotSemanticError("schema5のAI分析要素を現行評価要素へ移行できません");
+  }
   const entries = z.record(z.string(), z.unknown()).parse(elements);
   const evaluated: MutablePartial<TrackedItemAiAnalysisCurrentElements> = {};
   for (const [key, value] of Object.entries(entries)) {
@@ -606,7 +638,7 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
     const evaluationProof = legacyReuseProof();
     switch (elementResult.data) {
       case "status": {
-        const generation = createAiAnalysisElementGenerationSchema("status").parse(value);
+        const generation = createAiAnalysisElementGenerationSchemaV6("status").parse(value);
         evaluated.status = {
           generation,
           result: createAiAnalysisMigrationElementResultSchema("status").parse(generation.result),
@@ -615,7 +647,7 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
         break;
       }
       case "waitingOn": {
-        const generation = createAiAnalysisElementGenerationSchema("waitingOn").parse(value);
+        const generation = createAiAnalysisElementGenerationSchemaV6("waitingOn").parse(value);
         evaluated.waitingOn = {
           generation,
           result: createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
@@ -626,7 +658,7 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
         break;
       }
       case "nextAction": {
-        const generation = createAiAnalysisElementGenerationSchema("nextAction").parse(value);
+        const generation = createAiAnalysisElementGenerationSchemaV6("nextAction").parse(value);
         evaluated.nextAction = {
           generation,
           result: createAiAnalysisMigrationElementResultSchema("nextAction").parse(
@@ -637,7 +669,7 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
         break;
       }
       case "relations": {
-        const generation = createAiAnalysisElementGenerationSchema("relations").parse(value);
+        const generation = createAiAnalysisElementGenerationSchemaV6("relations").parse(value);
         evaluated.relations = {
           generation,
           result: createAiAnalysisMigrationElementResultSchema("relations").parse(
@@ -648,7 +680,7 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
         break;
       }
       case "progress": {
-        const generation = createAiAnalysisElementGenerationSchema("progress").parse(value);
+        const generation = createAiAnalysisElementGenerationSchemaV6("progress").parse(value);
         evaluated.progress = {
           generation,
           result: createAiAnalysisMigrationElementResultSchema("progress").parse(generation.result),
@@ -657,7 +689,7 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
         break;
       }
       case "importance": {
-        const generation = createAiAnalysisElementGenerationSchema("importance").parse(value);
+        const generation = createAiAnalysisElementGenerationSchemaV6("importance").parse(value);
         evaluated.importance = {
           generation,
           result: createAiAnalysisMigrationElementResultSchema("importance").parse(
@@ -668,7 +700,7 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
         break;
       }
       case "deadline": {
-        const generation = createAiAnalysisElementGenerationSchema("deadline").parse(value);
+        const generation = createAiAnalysisElementGenerationSchemaV6("deadline").parse(value);
         evaluated.deadline = {
           generation,
           result: createAiAnalysisMigrationElementResultSchema("deadline").parse(generation.result),
@@ -677,7 +709,7 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
         break;
       }
       case "notification": {
-        const generation = createAiAnalysisElementGenerationSchema("notification").parse(value);
+        const generation = createAiAnalysisElementGenerationSchemaV6("notification").parse(value);
         evaluated.notification = {
           generation,
           result: createAiAnalysisMigrationElementResultSchema("notification").parse(
@@ -687,6 +719,10 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
         };
         break;
       }
+      case "selfCommitment":
+        throw new StateSnapshotSemanticError(
+          "旧snapshotのAI分析要素にselfCommitmentは指定できません",
+        );
     }
   }
   return Object.freeze(evaluated);
@@ -713,7 +749,9 @@ function migrateAiAnalysis(
   return {
     origin: "migration",
     status: aiAnalysis.status,
-    elements: preserveElements ? parseCurrentElements(aiAnalysis.elements) : Object.freeze({}),
+    elements: preserveElements
+      ? parseCurrentElements(aiAnalysis.elements, elementSchemaVersion)
+      : Object.freeze({}),
     adoptedElements: parseAdoptedElements(
       aiAnalysis.adoptedElements,
       aiAnalysis.origin,
@@ -809,6 +847,10 @@ function createMigrationResult(
       return createAiAnalysisMigrationElementResultSchema("deadline").parse(common);
     case "notification":
       return createAiAnalysisMigrationElementResultSchema("notification").parse(common);
+    case "selfCommitment":
+      throw new StateSnapshotSemanticError(
+        "旧snapshotのAI分析要素にselfCommitmentは指定できません",
+      );
   }
 }
 

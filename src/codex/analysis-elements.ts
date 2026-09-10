@@ -28,6 +28,7 @@ export {
   aiAnalysisRelationsSchema,
   aiAnalysisReasoningEffortSchema,
   aiAnalysisStatusSchema,
+  aiAnalysisSelfCommitmentSchema,
   aiAnalysisWaitingOnKindSchema,
   aiAnalysisWaitingOnRoleSchema,
   aiAnalysisWaitingOnSchema,
@@ -37,6 +38,10 @@ export {
   createAiAnalysisElementValueSchema,
   createAiAnalysisMigrationElementResultSchema,
 } from "../domain/ai-analysis-elements.js";
+export type {
+  AiAnalysisElementSourceGeneration,
+  AiAnalysisElementSourceGeneration as AnalysisElementSourceGeneration,
+} from "../domain/ai-analysis-source-generations.js";
 export type {
   AiAnalysisElement,
   AiAnalysisElementEvidence,
@@ -65,6 +70,8 @@ export type {
   AiAnalysisWaitingOnRole,
   AiAnalysisWaitingOnValue,
   AiAnalysisMigrationWaitingOnValue,
+  AiAnalysisSelfCommitment,
+  AiAnalysisSelfCommitmentValue,
 } from "../domain/ai-analysis-elements.js";
 
 /** 要素別に保存したresultと、そのresultを再利用できる証明。 */
@@ -84,7 +91,6 @@ export {
   type AiAnalysisElement as AnalysisElement,
   type AiAnalysisElementEvidence as AnalysisElementEvidence,
   type AiAnalysisElementExecutionFingerprint as AnalysisElementExecutionFingerprint,
-  type AiAnalysisElementGeneration as AnalysisElementGeneration,
   type AiAnalysisElementInputFingerprint as AnalysisElementInputFingerprint,
   type AiAnalysisElementNecessity as AnalysisElementNecessity,
   type AiAnalysisElementResult as AnalysisElementResult,
@@ -101,6 +107,7 @@ export const AI_ANALYSIS_ELEMENT_REVISIONS = Object.freeze({
   importance: 1,
   deadline: 1,
   notification: 1,
+  selfCommitment: 1,
 } satisfies Readonly<Record<AiAnalysisElement, number>>);
 
 /** AI判定要素へ投影する意味入力のversion。 */
@@ -113,4 +120,5 @@ export const AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS = Object.freeze({
   importance: 1,
   deadline: 1,
   notification: 1,
+  selfCommitment: 1,
 } satisfies Readonly<Record<AiAnalysisElement, number>>);

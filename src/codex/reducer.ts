@@ -38,6 +38,7 @@ import {
   type AiAnalysisElement,
   type AiAnalysisElementGeneration,
 } from "../domain/ai-analysis-elements.js";
+import { type AiAnalysisElementSourceGeneration } from "../domain/ai-analysis-source-generations.js";
 import { type CodexAnalysisInput } from "./input.js";
 import { type CodexPreservedElements } from "./analysis-elements.js";
 import { type CodexElementOutput } from "./semantic-validation.js";
@@ -148,16 +149,21 @@ export type AiAnalysisElementGenerationMap = Readonly<
   Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>>
 >;
 
+/** 要素単位で保存する現行または旧形式のAI生成結果の集合。 */
+export type AiAnalysisElementSourceGenerationMap = Readonly<
+  Partial<Record<AiAnalysisElement, AiAnalysisElementSourceGeneration>>
+>;
+
 /** 要素別の実生成結果と保存済み結果を反映する入力。 */
 export type ReduceAiAnalysisElementsInput = Readonly<{
   selectedElements: readonly AiAnalysisElement[];
   generatedElements: AiAnalysisElementGenerationMap;
-  preservedElements: AiAnalysisElementGenerationMap;
+  preservedElements: AiAnalysisElementSourceGenerationMap;
 }>;
 
 /** 要素別AI生成結果を選択対象だけ更新し、選択外を保持した結果。 */
 export type AiAnalysisElementsReduction = Readonly<{
-  elements: AiAnalysisElementGenerationMap;
+  elements: AiAnalysisElementSourceGenerationMap;
   generatedElements: readonly AiAnalysisElement[];
   missingElements: readonly AiAnalysisElement[];
 }>;
@@ -421,6 +427,8 @@ function resultForElement(
       return source.deadline;
     case "notification":
       return source.notification;
+    case "selfCommitment":
+      return source.selfCommitment;
   }
 }
 
@@ -462,6 +470,8 @@ export function effectiveElementConfidence(
     case "importance":
     case "deadline":
     case "notification":
+      return result.confidence;
+    case "selfCommitment":
       return result.confidence;
   }
 }
@@ -1206,7 +1216,7 @@ export async function runCodexAnalysisWithFallback(
 }
 
 function validateElementGenerationMap(
-  values: AiAnalysisElementGenerationMap,
+  values: AiAnalysisElementSourceGenerationMap,
   context: string,
 ): void {
   const knownElements = new Set<string>(AI_ANALYSIS_ELEMENTS);
@@ -1240,7 +1250,7 @@ export function reduceAiAnalysisElements(
   validateElementGenerationMap(input.generatedElements, "実生成結果");
   validateElementGenerationMap(input.preservedElements, "保持する保存済み生成結果");
 
-  const elements: Partial<Record<AiAnalysisElement, AiAnalysisElementGeneration>> = {};
+  const elements: Partial<Record<AiAnalysisElement, AiAnalysisElementSourceGeneration>> = {};
   let generatedCount = 0;
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const generated = input.generatedElements[element];

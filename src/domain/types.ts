@@ -7,16 +7,17 @@ import type { StalenessWaitClass } from "./staleness.js";
 import type {
   AiAnalysisElement,
   AiAnalysisElementMetadata,
-  AiAnalysisElementGeneration,
   AiAnalysisElementMigrationResult,
   AiAnalysisElementReuseProof,
 } from "./ai-analysis-elements.js";
+import type { AiAnalysisElementSourceGeneration } from "./ai-analysis-source-generations.js";
 
 export type {
   AiAnalysisElement,
   AiAnalysisElementMetadata,
   AiAnalysisElementGeneration,
 } from "./ai-analysis-elements.js";
+export type { AiAnalysisElementSourceGeneration } from "./ai-analysis-source-generations.js";
 
 const opaqueIdSchema = z
   .string()
@@ -554,7 +555,7 @@ export type AiCacheEntryId = `sha256:${string}`;
 export type TrackedItemAiAnalysisCurrentElement<
   Element extends AiAnalysisElement = AiAnalysisElement,
 > = Readonly<{
-  generation: AiAnalysisElementGeneration<Element>;
+  generation: AiAnalysisElementSourceGeneration<Element>;
   result: AiAnalysisElementMigrationResult<Element>;
   evaluationProof: AiAnalysisElementReuseProof;
 }>;
@@ -570,7 +571,7 @@ export type TrackedItemAiAnalysisCurrentAdoptedElement<
 > = Readonly<{
   origin: "current";
   result: AiAnalysisElementMigrationResult<Element>;
-  generation: AiAnalysisElementGeneration<Element>;
+  generation: AiAnalysisElementSourceGeneration<Element>;
   reuseProof: AiAnalysisElementReuseProof;
 }>;
 
@@ -588,7 +589,7 @@ export type TrackedItemAiAnalysisMigrationAdoptedElement<
 > =
   | Readonly<{
       origin: "current";
-      generation: AiAnalysisElementGeneration<Element>;
+      generation: AiAnalysisElementSourceGeneration<Element>;
       result: AiAnalysisElementMigrationResult<Element>;
       reuseProof: AiAnalysisElementReuseProof;
     }>

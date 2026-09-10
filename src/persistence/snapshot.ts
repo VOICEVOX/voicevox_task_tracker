@@ -36,6 +36,12 @@ import {
   createAiAnalysisElementGenerationSchema,
   createAiAnalysisMigrationElementResultSchema,
 } from "../domain/ai-analysis-elements.js";
+import {
+  AI_ANALYSIS_ELEMENTS_V6,
+  createAiAnalysisElementGenerationSchemaV6,
+  createAiAnalysisElementSourceGenerationSchema,
+  type AiAnalysisElementV6,
+} from "../domain/ai-analysis-source-generations.js";
 import { type PublicRepositoryId, type Sha256Fingerprint } from "../github/index.js";
 
 type PublicSnapshotRepositoryFields = Repository &
@@ -212,16 +218,37 @@ const legacyElementMigrationEvidenceSchema = z
   .array(aiAnalysisElementEvidenceSchema.omit({ supports: true }))
   .min(1);
 
+type ElementSchemaVersion = "5" | "6" | "7" | "source";
+
+function parseLegacyElement(
+  element: z.output<typeof aiAnalysisElementSchema>,
+): AiAnalysisElementV6 {
+  const parsedElement = z.enum(AI_ANALYSIS_ELEMENTS_V6).safeParse(element);
+  if (!parsedElement.success) {
+    throw new TypeError(`旧形式に存在しないAI判定要素です。対象: ${element}`, {
+      cause: parsedElement.error,
+    });
+  }
+  return parsedElement.data;
+}
+
 function createElementGenerationSchemaForVersion(
   element: z.output<typeof aiAnalysisElementSchema>,
-  elementSchemaVersion: "5" | "6",
+  elementSchemaVersion: ElementSchemaVersion,
 ) {
-  if (elementSchemaVersion === "6") {
+  if (elementSchemaVersion === "source") {
+    return createAiAnalysisElementSourceGenerationSchema(element);
+  }
+  if (elementSchemaVersion === "7") {
     return createAiAnalysisElementGenerationSchema(element);
   }
+  if (elementSchemaVersion === "6") {
+    return createAiAnalysisElementGenerationSchemaV6(parseLegacyElement(element));
+  }
+  const parsedElement = parseLegacyElement(element);
   return z.strictObject({
     metadata: legacyElementMetadataSchema,
-    result: createAiAnalysisElementResultSchema(element).extend({
+    result: createAiAnalysisElementResultSchema(parsedElement).extend({
       evidence: legacyElementEvidenceSchema,
     }),
   });
@@ -229,14 +256,14 @@ function createElementGenerationSchemaForVersion(
 
 function createMigrationElementResultSchemaForVersion(
   element: z.output<typeof aiAnalysisElementSchema>,
-  elementSchemaVersion: "5" | "6",
+  elementSchemaVersion: ElementSchemaVersion,
 ) {
-  if (elementSchemaVersion === "6") {
-    return createAiAnalysisMigrationElementResultSchema(element);
+  if (elementSchemaVersion === "5") {
+    return createAiAnalysisMigrationElementResultSchema(parseLegacyElement(element)).extend({
+      evidence: legacyElementMigrationEvidenceSchema,
+    });
   }
-  return createAiAnalysisMigrationElementResultSchema(element).extend({
-    evidence: legacyElementMigrationEvidenceSchema,
-  });
+  return createAiAnalysisMigrationElementResultSchema(element);
 }
 
 function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "6"): object {
@@ -269,6 +296,19 @@ function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "
       importance: { $ref: "#/$defs/aiAnalysisGenerationImportance" },
       deadline: { $ref: "#/$defs/aiAnalysisGenerationDeadline" },
       notification: { $ref: "#/$defs/aiAnalysisGenerationNotification" },
+    },
+  };
+  const legacyAiAnalysisMigrationAdoptedElements = {
+    ...snapshotSchema.$defs.aiAnalysisMigrationAdoptedElements,
+    properties: {
+      status: { $ref: "#/$defs/aiAnalysisMigrationAdoptedElement" },
+      waitingOn: { $ref: "#/$defs/aiAnalysisMigrationAdoptedElement" },
+      nextAction: { $ref: "#/$defs/aiAnalysisMigrationAdoptedElement" },
+      relations: { $ref: "#/$defs/aiAnalysisMigrationAdoptedElement" },
+      progress: { $ref: "#/$defs/aiAnalysisMigrationAdoptedElement" },
+      importance: { $ref: "#/$defs/aiAnalysisMigrationAdoptedElement" },
+      deadline: { $ref: "#/$defs/aiAnalysisMigrationAdoptedElement" },
+      notification: { $ref: "#/$defs/aiAnalysisMigrationAdoptedElement" },
     },
   };
   const evidenceProperties = Object.fromEntries(
@@ -352,6 +392,10 @@ function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "
         version === SNAPSHOT_SCHEMA_VERSION_14
           ? snapshotSchema.$defs.aiAnalysisElements
           : legacyAiAnalysisElements,
+      aiAnalysisMigrationAdoptedElements:
+        version === SNAPSHOT_SCHEMA_VERSION_14
+          ? snapshotSchema.$defs.aiAnalysisMigrationAdoptedElements
+          : legacyAiAnalysisMigrationAdoptedElements,
       trackedItemAiAnalysis:
         version === SNAPSHOT_SCHEMA_VERSION_14
           ? trackedItemAiAnalysis
@@ -430,7 +474,7 @@ function assertUtcDateTime(value: string, description: string): void {
 function assertAiAnalysisElementMapSemantics(
   elements: unknown,
   description: string,
-  elementSchemaVersion: "5" | "6",
+  elementSchemaVersion: ElementSchemaVersion,
   elementsFormat: "legacy" | "current",
 ): void {
   const parsedElements = z.record(z.string(), z.unknown()).safeParse(elements);
@@ -495,7 +539,7 @@ function assertAiAnalysisElementMapSemantics(
 function assertAiAnalysisMigrationAdoptedMapSemantics(
   elements: unknown,
   description: string,
-  elementSchemaVersion: "5" | "6",
+  elementSchemaVersion: ElementSchemaVersion,
   requireReuseProof: boolean,
 ): void {
   const parsedElements = z.record(z.string(), z.unknown()).safeParse(elements);
@@ -599,7 +643,7 @@ function assertAiAnalysisMigrationAdoptedMapSemantics(
 function assertAiAnalysisCurrentAdoptedMapSemantics(
   elements: unknown,
   description: string,
-  elementSchemaVersion: "5" | "6",
+  elementSchemaVersion: ElementSchemaVersion,
 ): void {
   const parsedElements = z.record(z.string(), z.unknown()).safeParse(elements);
   if (!parsedElements.success) {
@@ -657,7 +701,7 @@ function assertAiAnalysisCurrentAdoptedMapSemantics(
 
 function assertAiAnalysisSemantics(
   aiAnalysis: TrackedItemAiAnalysis,
-  elementSchemaVersion: "5" | "6",
+  elementSchemaVersion: ElementSchemaVersion,
   adoptedElementsFormat: "legacy" | "current",
 ): void {
   if (aiAnalysis.origin === "current") {
@@ -724,7 +768,7 @@ function normalizeAccountActor(actor: GitHubAccountActor): GitHubAccountActor {
 
 function assertSnapshotSemantics(
   snapshot: StateSnapshotFields,
-  elementSchemaVersion: "5" | "6",
+  elementSchemaVersion: ElementSchemaVersion,
   adoptedElementsFormat: "legacy" | "current",
 ): void {
   assertUtcDateTime(snapshot.generatedAt, "generatedAt");
@@ -1104,7 +1148,7 @@ function parseStateSnapshotVersion14Value(value: unknown): StateSnapshot {
     const issueCount = validateSnapshotVersion14Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "6", "current");
+  assertSnapshotSemantics(value, "source", "current");
   return value;
 }
 

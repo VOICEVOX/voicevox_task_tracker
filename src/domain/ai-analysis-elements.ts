@@ -14,13 +14,14 @@ export const aiAnalysisElementSchema = z.enum([
   "importance",
   "deadline",
   "notification",
+  "selfCommitment",
 ]);
 
 /** AI分析要素の識別子一覧。 */
 export const AI_ANALYSIS_ELEMENTS = Object.freeze(aiAnalysisElementSchema.options);
 
 /** AI分析要素出力のschema version。 */
-export const AI_ANALYSIS_ELEMENT_SCHEMA_VERSION = "6";
+export const AI_ANALYSIS_ELEMENT_SCHEMA_VERSION = "7";
 
 /** AI分析要素の識別子。 */
 export type AiAnalysisElement = z.output<typeof aiAnalysisElementSchema>;
@@ -320,6 +321,23 @@ export const aiAnalysisNotificationSchema = notificationValueSchema;
 /** notification要素の値。 */
 export type AiAnalysisNotification = z.output<typeof aiAnalysisNotificationSchema>;
 
+const selfCommitmentValueSchema = z.strictObject({
+  sourceId: z
+    .string()
+    .min(1, "source IDは空にできません")
+    .regex(/^\S+$/u, "source IDに空白は使えません"),
+  summary: z.string().min(1, "selfCommitmentのsummaryは空にできません").max(240),
+});
+
+/** selfCommitment要素の値schema。 */
+export const aiAnalysisSelfCommitmentSchema = z.array(selfCommitmentValueSchema).max(30);
+
+/** selfCommitment要素の値。 */
+export type AiAnalysisSelfCommitment = z.output<typeof selfCommitmentValueSchema>;
+
+/** selfCommitment要素の値一覧。 */
+export type AiAnalysisSelfCommitmentValue = z.output<typeof aiAnalysisSelfCommitmentSchema>;
+
 const aiAnalysisElementValueSchemas = {
   status: aiAnalysisStatusSchema,
   waitingOn: aiAnalysisWaitingOnSchema,
@@ -329,6 +347,7 @@ const aiAnalysisElementValueSchemas = {
   importance: aiAnalysisImportanceSchema,
   deadline: aiAnalysisDeadlineSchema,
   notification: aiAnalysisNotificationSchema,
+  selfCommitment: aiAnalysisSelfCommitmentSchema,
 };
 
 /** 要素ごとの値schemaを取得する。 */
@@ -349,6 +368,9 @@ export type AiAnalysisElementValue<Element extends AiAnalysisElement = AiAnalysi
 const aiAnalysisElementResultEvidenceSchema = z
   .array(aiAnalysisElementEvidenceSchema)
   .min(1)
+  .max(30);
+const aiAnalysisSelfCommitmentResultEvidenceSchema = z
+  .array(aiAnalysisElementEvidenceSchema)
   .max(30);
 const aiAnalysisMigrationElementResultEvidenceSchema = z
   .array(aiAnalysisElementEvidenceSchema)
@@ -395,6 +417,10 @@ const aiAnalysisElementResultSchemas = {
   notification: createElementResultSchema(
     aiAnalysisNotificationSchema,
     aiAnalysisElementResultEvidenceSchema,
+  ),
+  selfCommitment: createElementResultSchema(
+    aiAnalysisSelfCommitmentSchema,
+    aiAnalysisSelfCommitmentResultEvidenceSchema,
   ),
 };
 
@@ -446,6 +472,10 @@ const aiAnalysisMigrationElementResultSchemas = {
     aiAnalysisNotificationSchema,
     aiAnalysisMigrationElementResultEvidenceSchema,
   ),
+  selfCommitment: createElementResultSchema(
+    aiAnalysisSelfCommitmentSchema,
+    aiAnalysisSelfCommitmentResultEvidenceSchema,
+  ),
 };
 
 /** 移行後のruntimeで利用する要素別result schemaを取得する。 */
@@ -476,6 +506,7 @@ export const aiAnalysisElementResultSchema = z.union([
   aiAnalysisElementResultSchemas.importance,
   aiAnalysisElementResultSchemas.deadline,
   aiAnalysisElementResultSchemas.notification,
+  aiAnalysisElementResultSchemas.selfCommitment,
 ]);
 
 const generationMetadataShape = {
@@ -543,6 +574,10 @@ const aiAnalysisElementGenerationSchemas = {
     metadata: aiAnalysisElementMetadataSchema,
     result: aiAnalysisElementResultSchemas.notification,
   }),
+  selfCommitment: z.strictObject({
+    metadata: aiAnalysisElementMetadataSchema,
+    result: aiAnalysisElementResultSchemas.selfCommitment,
+  }),
 };
 
 /** 要素ごとのgeneration schemaを取得する。 */
@@ -570,6 +605,7 @@ export const aiAnalysisElementGenerationSchema = z.union([
   aiAnalysisElementGenerationSchemas.importance,
   aiAnalysisElementGenerationSchemas.deadline,
   aiAnalysisElementGenerationSchemas.notification,
+  aiAnalysisElementGenerationSchemas.selfCommitment,
 ]);
 
 /** 未検証値から要素別AI判定の生成記録を作成する。 */

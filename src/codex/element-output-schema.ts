@@ -83,6 +83,12 @@ const elementResultProperties: CodexElementOutputJsonSchema = Object.freeze({
   },
 });
 
+const selfCommitmentEvidenceSchema: CodexElementOutputJsonSchema = Object.freeze({
+  type: "array",
+  maxItems: 30,
+  items: evidenceSchema,
+});
+
 const elementResultMetadataSchema: CodexElementOutputJsonSchema = Object.freeze({
   type: "object",
   additionalProperties: false,
@@ -189,6 +195,19 @@ function createElementResultSchema(
   });
 }
 
+function createSelfCommitmentResultSchema(
+  value: CodexElementOutputJsonSchema,
+): CodexElementOutputJsonSchema {
+  return Object.freeze({
+    ...elementResultMetadataSchema,
+    properties: {
+      ...elementResultProperties,
+      evidence: selfCommitmentEvidenceSchema,
+      value,
+    },
+  });
+}
+
 function createElementValueSchema(element: AnalysisElement): CodexElementOutputJsonSchema {
   switch (element) {
     case "status":
@@ -284,6 +303,28 @@ function createElementValueSchema(element: AnalysisElement): CodexElementOutputJ
           },
         },
       });
+    case "selfCommitment":
+      return Object.freeze({
+        type: "array",
+        maxItems: 30,
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["sourceId", "summary"],
+          properties: {
+            sourceId: {
+              type: "string",
+              minLength: 1,
+              pattern: "^\\S+$",
+            },
+            summary: {
+              type: "string",
+              minLength: 1,
+              maxLength: 240,
+            },
+          },
+        },
+      });
     default:
       throw new TypeError(`未知のAI判定要素です。対象: ${String(element)}`);
   }
@@ -333,7 +374,11 @@ export function createCodexElementOutputSchema(
     item: itemSchema,
   };
   for (const element of normalizedElements) {
-    properties[element] = createElementResultSchema(createElementValueSchema(element));
+    if (element === "selfCommitment") {
+      properties[element] = createSelfCommitmentResultSchema(createElementValueSchema(element));
+    } else {
+      properties[element] = createElementResultSchema(createElementValueSchema(element));
+    }
   }
   return Object.freeze({
     $schema: ELEMENT_OUTPUT_SCHEMA,
