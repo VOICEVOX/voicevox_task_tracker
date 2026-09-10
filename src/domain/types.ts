@@ -555,6 +555,7 @@ export type TrackedItemAiAnalysisCurrentElement<
   Element extends AiAnalysisElement = AiAnalysisElement,
 > = Readonly<{
   generation: AiAnalysisElementGeneration<Element>;
+  result: AiAnalysisElementMigrationResult<Element>;
   evaluationProof: AiAnalysisElementReuseProof;
 }>;
 

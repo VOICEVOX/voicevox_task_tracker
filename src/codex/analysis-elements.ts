@@ -1,9 +1,7 @@
-import { z } from "zod";
-
 import {
-  aiAnalysisElementRevisionSchema,
   type AiAnalysisElement,
   type AiAnalysisElementMigrationResult,
+  type AiAnalysisElementReuseProof,
 } from "../domain/ai-analysis-elements.js";
 
 export {
@@ -69,6 +67,13 @@ export type {
   AiAnalysisMigrationWaitingOnValue,
 } from "../domain/ai-analysis-elements.js";
 
+/** 要素別に保存したresultと、そのresultを再利用できる証明。 */
+export type AnalysisElementReuseRecord<Element extends AiAnalysisElement = AiAnalysisElement> =
+  Readonly<{
+    result: AiAnalysisElementMigrationResult<Element>;
+    proof: AiAnalysisElementReuseProof;
+  }>;
+
 /** 保存済みの要素別full result。 */
 export type CodexPreservedElements = Readonly<
   Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>>
@@ -89,7 +94,7 @@ export {
 /** AI判定要素の現在の規則revision。 */
 export const AI_ANALYSIS_ELEMENT_REVISIONS = Object.freeze({
   status: 1,
-  waitingOn: 2,
+  waitingOn: 3,
   nextAction: 1,
   relations: 1,
   progress: 1,
@@ -109,31 +114,3 @@ export const AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS = Object.freeze({
   deadline: 1,
   notification: 1,
 } satisfies Readonly<Record<AiAnalysisElement, number>>);
-
-/** 要素の意味に対する変更の影響。 */
-export const aiAnalysisElementImpactSchema = z.enum([
-  "unaffected",
-  "deterministic",
-  "interpretation_required",
-]);
-
-/** 要素の意味に対する変更の影響。 */
-export type AiAnalysisElementImpact = z.output<typeof aiAnalysisElementImpactSchema>;
-
-/** 要素別の意味変更を表す宣言。 */
-export type AiAnalysisElementImpactDeclaration = Readonly<{
-  changeId: string;
-  from: Readonly<{
-    revision: number;
-    inputProjectionVersion: number;
-  }>;
-  to: Readonly<{
-    revision: number;
-    inputProjectionVersion: number;
-  }>;
-  impact: AiAnalysisElementImpact;
-  compatibilityPath: readonly string[];
-}>;
-
-/** AI判定要素の規則revisionを表す型。 */
-export type AnalysisElementRevision = z.output<typeof aiAnalysisElementRevisionSchema>;

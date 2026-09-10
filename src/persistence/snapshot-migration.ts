@@ -605,54 +605,88 @@ function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentEl
     }
     const evaluationProof = legacyReuseProof();
     switch (elementResult.data) {
-      case "status":
+      case "status": {
+        const generation = createAiAnalysisElementGenerationSchema("status").parse(value);
         evaluated.status = {
-          generation: createAiAnalysisElementGenerationSchema("status").parse(value),
+          generation,
+          result: createAiAnalysisMigrationElementResultSchema("status").parse(generation.result),
           evaluationProof,
         };
         break;
-      case "waitingOn":
+      }
+      case "waitingOn": {
+        const generation = createAiAnalysisElementGenerationSchema("waitingOn").parse(value);
         evaluated.waitingOn = {
-          generation: createAiAnalysisElementGenerationSchema("waitingOn").parse(value),
+          generation,
+          result: createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
+            generation.result,
+          ),
           evaluationProof,
         };
         break;
-      case "nextAction":
+      }
+      case "nextAction": {
+        const generation = createAiAnalysisElementGenerationSchema("nextAction").parse(value);
         evaluated.nextAction = {
-          generation: createAiAnalysisElementGenerationSchema("nextAction").parse(value),
+          generation,
+          result: createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+            generation.result,
+          ),
           evaluationProof,
         };
         break;
-      case "relations":
+      }
+      case "relations": {
+        const generation = createAiAnalysisElementGenerationSchema("relations").parse(value);
         evaluated.relations = {
-          generation: createAiAnalysisElementGenerationSchema("relations").parse(value),
+          generation,
+          result: createAiAnalysisMigrationElementResultSchema("relations").parse(
+            generation.result,
+          ),
           evaluationProof,
         };
         break;
-      case "progress":
+      }
+      case "progress": {
+        const generation = createAiAnalysisElementGenerationSchema("progress").parse(value);
         evaluated.progress = {
-          generation: createAiAnalysisElementGenerationSchema("progress").parse(value),
+          generation,
+          result: createAiAnalysisMigrationElementResultSchema("progress").parse(generation.result),
           evaluationProof,
         };
         break;
-      case "importance":
+      }
+      case "importance": {
+        const generation = createAiAnalysisElementGenerationSchema("importance").parse(value);
         evaluated.importance = {
-          generation: createAiAnalysisElementGenerationSchema("importance").parse(value),
+          generation,
+          result: createAiAnalysisMigrationElementResultSchema("importance").parse(
+            generation.result,
+          ),
           evaluationProof,
         };
         break;
-      case "deadline":
+      }
+      case "deadline": {
+        const generation = createAiAnalysisElementGenerationSchema("deadline").parse(value);
         evaluated.deadline = {
-          generation: createAiAnalysisElementGenerationSchema("deadline").parse(value),
+          generation,
+          result: createAiAnalysisMigrationElementResultSchema("deadline").parse(generation.result),
           evaluationProof,
         };
         break;
-      case "notification":
+      }
+      case "notification": {
+        const generation = createAiAnalysisElementGenerationSchema("notification").parse(value);
         evaluated.notification = {
-          generation: createAiAnalysisElementGenerationSchema("notification").parse(value),
+          generation,
+          result: createAiAnalysisMigrationElementResultSchema("notification").parse(
+            generation.result,
+          ),
           evaluationProof,
         };
         break;
+      }
     }
   }
   return Object.freeze(evaluated);

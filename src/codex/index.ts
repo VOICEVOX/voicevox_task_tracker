@@ -141,7 +141,6 @@ export {
   aiAnalysisElementMetadataSchema,
   aiAnalysisElementNecessitySchema,
   aiAnalysisElementReuseProofSchema,
-  aiAnalysisElementImpactSchema,
   aiAnalysisElementRevisionSchema,
   aiAnalysisElementResultSchema,
   aiAnalysisElementSchema,
@@ -190,11 +189,22 @@ export {
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
   type AnalysisElementInputFingerprint,
+  type AnalysisElementReuseRecord,
   type AiAnalysisElementReuseProof,
-  type AiAnalysisElementImpact,
-  type AiAnalysisElementImpactDeclaration,
   type AnalysisElementNecessity,
 } from "./analysis-elements.js";
+export {
+  assessAnalysisImpact,
+  analysisImpactSchema,
+  type AnalysisImpact,
+  type AnalysisImpactAssessment,
+  type AnalysisImpactCurrentInputProjection,
+  type AnalysisImpactDecision,
+  type AnalysisImpactDeclaration,
+  type AnalysisImpactRecord,
+  type AnalysisImpactValue,
+  type AnalysisImpactVersion,
+} from "./analysis-impact.js";
 export { validateCodexAnalysisOutput } from "./output-validation.js";
 export {
   runCodexProcess,

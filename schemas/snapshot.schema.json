@@ -297,10 +297,13 @@
     "aiAnalysisEvaluatedElement": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["generation", "evaluationProof"],
+      "required": ["generation", "result", "evaluationProof"],
       "properties": {
         "generation": {
           "$ref": "#/$defs/aiAnalysisGeneration"
+        },
+        "result": {
+          "$ref": "#/$defs/aiAnalysisMigrationResult"
         },
         "evaluationProof": {
           "$ref": "#/$defs/aiAnalysisReuseProof"

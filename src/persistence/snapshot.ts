@@ -169,7 +169,7 @@ type StateSnapshotVersion14 = StateSnapshotFields &
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_14;
   }>;
 
-/** tracker-stateへ保存するschema version 13のcurrent snapshot。 */
+/** tracker-stateへ保存するschema version 14のcurrent snapshot。 */
 export type StateSnapshot = StateSnapshotVersion14;
 
 const snapshotSchemaVersionSchema = z.object({
@@ -451,6 +451,7 @@ function assertAiAnalysisElementMapSemantics(
         ? z
             .strictObject({
               generation: z.unknown(),
+              result: z.unknown(),
               evaluationProof: aiAnalysisElementReuseProofSchema,
             })
             .safeParse(value)
@@ -477,6 +478,16 @@ function assertAiAnalysisElementMapSemantics(
       hashCanonicalJson(generationResult.data.result) !== generationResult.data.metadata.outputHash
     ) {
       throw new StateSnapshotSemanticError(`${description}の出力hashが一致しません。対象: ${key}`);
+    }
+    if ("result" in evaluatedElement.data) {
+      const resultResult = createAiAnalysisMigrationElementResultSchema(
+        elementResult.data,
+      ).safeParse(evaluatedElement.data.result);
+      if (!resultResult.success) {
+        throw new StateSnapshotSemanticError(`${description}の評価結果が不正です。対象: ${key}`, {
+          cause: resultResult.error,
+        });
+      }
     }
   }
 }

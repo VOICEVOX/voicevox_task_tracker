@@ -5,6 +5,7 @@ import {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
   CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
   CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  assessAnalysisImpact,
   createCodexEnvironment,
   createCodexAnalysisInput,
   determineAnalysisElementNecessities,
@@ -29,6 +30,13 @@ import {
   AI_ANALYSIS_ELEMENT_REVISIONS,
   AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
   type AiAnalysisCandidate,
+  type AnalysisImpactAssessment,
+  type AnalysisImpactCurrentInputProjection,
+  type AnalysisImpactDeclaration,
+  type AnalysisImpactRecord,
+  type AnalysisImpactValue,
+  type AnalysisImpactVersion,
+  type AnalysisElementReuseRecord,
   type AnalysisElementPlanning,
   type AnalysisElementNecessityInput,
   type AiAnalysisRunFailure,
@@ -851,6 +859,17 @@ function previousCollectionItemsByNodeId(
   );
 }
 
+function hasCurrentAnalysisReuseProof(
+  element: AiAnalysisElement,
+  proof: AiAnalysisElementReuseProof,
+): boolean {
+  return (
+    proof.status === "verified" &&
+    proof.revision === AI_ANALYSIS_ELEMENT_REVISIONS[element] &&
+    proof.inputProjectionVersion === AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS[element]
+  );
+}
+
 function staleAiAnalysisElementsForLifecycle(
   item: SnapshotTrackedItem | undefined,
 ): readonly AiAnalysisElement[] {
@@ -863,11 +882,23 @@ function staleAiAnalysisElementsForLifecycle(
   return Object.freeze(
     AI_ANALYSIS_ELEMENTS.filter((element) => {
       const evaluated = item.aiAnalysis.elements[element];
-      if (evaluated == null) {
+      const adopted = item.aiAnalysis.adoptedElements[element];
+      if (evaluated == null && adopted == null) {
         return false;
       }
-      const generation = evaluated.generation;
-      return generation.metadata.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[element];
+      const evaluationIsCurrent =
+        evaluated != null &&
+        hasCurrentAnalysisReuseProof(
+          element,
+          aiAnalysisElementReuseProofSchema.parse(evaluated.evaluationProof),
+        );
+      const adoptionIsCurrent =
+        adopted != null &&
+        hasCurrentAnalysisReuseProof(
+          element,
+          aiAnalysisElementReuseProofSchema.parse(adopted.reuseProof),
+        );
+      return !evaluationIsCurrent && !adoptionIsCurrent;
     }),
   );
 }
@@ -877,14 +908,24 @@ function staleMigrationAiAnalysisElementsForLifecycle(
 ): readonly AiAnalysisElement[] {
   return Object.freeze(
     AI_ANALYSIS_ELEMENTS.filter((element) => {
+      const evaluated = aiAnalysis.elements[element];
       const adopted = aiAnalysis.adoptedElements[element];
-      if (adopted == null) {
+      if (evaluated == null && adopted == null) {
         return false;
       }
-      const proof = aiAnalysisElementReuseProofSchema.parse(adopted.reuseProof);
-      return (
-        proof.status !== "verified" || proof.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[element]
-      );
+      const evaluationIsCurrent =
+        evaluated != null &&
+        hasCurrentAnalysisReuseProof(
+          element,
+          aiAnalysisElementReuseProofSchema.parse(evaluated.evaluationProof),
+        );
+      const adoptionIsCurrent =
+        adopted != null &&
+        hasCurrentAnalysisReuseProof(
+          element,
+          aiAnalysisElementReuseProofSchema.parse(adopted.reuseProof),
+        );
+      return !evaluationIsCurrent && !adoptionIsCurrent;
     }),
   );
 }
@@ -3022,6 +3063,408 @@ type AnalysisElementDependencyFingerprintMap = Readonly<
   Record<AiAnalysisElement, AiAnalysisElementInputFingerprint>
 >;
 
+type AnalysisImpactResolutionMap = Readonly<
+  Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>
+>;
+
+type AnalysisImpactResolutions = Readonly<{
+  evaluation: AnalysisImpactResolutionMap;
+  adopted: AnalysisImpactResolutionMap;
+  decisions: readonly Readonly<{
+    element: AiAnalysisElement;
+    role: "adopted" | "evaluated";
+    decision: AnalysisImpactDecisionForDiagnostics;
+  }>[];
+}>;
+
+type AnalysisImpactDecisionForDiagnostics = Readonly<{
+  impact: "unaffected" | "deterministic" | "interpretation_required" | "unknown";
+  sourceVersion: AnalysisImpactVersion;
+  targetVersion: AnalysisImpactVersion;
+  compatibilityPath: readonly string[];
+  reason?: string;
+}>;
+
+type AnalysisImpactInputProjectionContext = Readonly<{
+  input: CodexAnalysisInput;
+  dependencyFingerprints: AnalysisElementDependencyFingerprintMap;
+}>;
+
+const WAITING_ON_ANALYSIS_IMPACT_DECLARATIONS: readonly AnalysisImpactDeclaration<
+  AiAnalysisElementMigrationResult,
+  CodexAnalysisInput
+>[] = Object.freeze([
+  Object.freeze({
+    element: "waitingOn",
+    changeId: "waitingOn-revision-2-to-3",
+    from: Object.freeze({ revision: 2, inputProjectionVersion: 1 }),
+    to: Object.freeze({ revision: 3, inputProjectionVersion: 1 }),
+    assess: (): AnalysisImpactAssessment<AiAnalysisElementMigrationResult> =>
+      Object.freeze({ impact: "unaffected" }),
+  }),
+]);
+
+const NO_ANALYSIS_IMPACT_DECLARATIONS: readonly AnalysisImpactDeclaration<
+  AiAnalysisElementMigrationResult,
+  CodexAnalysisInput
+>[] = Object.freeze([]);
+
+const ANALYSIS_IMPACT_DECLARATIONS: Readonly<
+  Record<
+    AiAnalysisElement,
+    readonly AnalysisImpactDeclaration<AiAnalysisElementMigrationResult, CodexAnalysisInput>[]
+  >
+> = Object.freeze({
+  status: NO_ANALYSIS_IMPACT_DECLARATIONS,
+  waitingOn: WAITING_ON_ANALYSIS_IMPACT_DECLARATIONS,
+  nextAction: NO_ANALYSIS_IMPACT_DECLARATIONS,
+  relations: NO_ANALYSIS_IMPACT_DECLARATIONS,
+  progress: NO_ANALYSIS_IMPACT_DECLARATIONS,
+  importance: NO_ANALYSIS_IMPACT_DECLARATIONS,
+  deadline: NO_ANALYSIS_IMPACT_DECLARATIONS,
+  notification: NO_ANALYSIS_IMPACT_DECLARATIONS,
+});
+
+function analysisImpactVersionsEqual(
+  left: AnalysisImpactVersion,
+  right: AnalysisImpactVersion,
+): boolean {
+  return (
+    left.revision === right.revision && left.inputProjectionVersion === right.inputProjectionVersion
+  );
+}
+
+function impactDeclarationsForElement(
+  element: AiAnalysisElement,
+  sourceVersion: AnalysisImpactVersion,
+  targetVersion: AnalysisImpactVersion,
+): readonly AnalysisImpactDeclaration<AiAnalysisElementMigrationResult, CodexAnalysisInput>[] {
+  const declarations = ANALYSIS_IMPACT_DECLARATIONS[element];
+  const path: AnalysisImpactDeclaration<AiAnalysisElementMigrationResult, CodexAnalysisInput>[] =
+    [];
+  const visited = new Set<string>();
+  let currentVersion = sourceVersion;
+  while (!analysisImpactVersionsEqual(currentVersion, targetVersion)) {
+    const versionKey = `${currentVersion.revision.toString()}:${currentVersion.inputProjectionVersion.toString()}`;
+    if (visited.has(versionKey)) {
+      return Object.freeze([]);
+    }
+    visited.add(versionKey);
+    const declaration = declarations.find((candidate) =>
+      analysisImpactVersionsEqual(candidate.from, currentVersion),
+    );
+    if (declaration == null) {
+      return Object.freeze([]);
+    }
+    path.push(declaration);
+    currentVersion = declaration.to;
+  }
+  return Object.freeze(path);
+}
+
+function analysisImpactTargetVersion(element: AiAnalysisElement): AnalysisImpactVersion {
+  return Object.freeze({
+    revision: AI_ANALYSIS_ELEMENT_REVISIONS[element],
+    inputProjectionVersion: AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS[element],
+  });
+}
+
+function analysisImpactSourceVersion(
+  element: AiAnalysisElement,
+  generation: AiAnalysisElementGeneration | undefined,
+  reuseProof: AiAnalysisElementReuseProof,
+): AnalysisImpactVersion | undefined {
+  if (reuseProof.status === "verified") {
+    return Object.freeze({
+      revision: reuseProof.revision,
+      inputProjectionVersion: reuseProof.inputProjectionVersion,
+    });
+  }
+  if (generation == null) {
+    return undefined;
+  }
+  return Object.freeze({
+    revision: generation.metadata.revision,
+    inputProjectionVersion: AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS[element],
+  });
+}
+
+type AnalysisImpactInputProjectionProjector = (
+  context: AnalysisImpactInputProjectionContext,
+) => AnalysisImpactCurrentInputProjection;
+
+function createAnalysisImpactInputProjectionProjector(
+  element: AiAnalysisElement,
+  inputProjectionVersion: number,
+): AnalysisImpactInputProjectionProjector {
+  return ({ input, dependencyFingerprints }) =>
+    Object.freeze({
+      inputProjectionVersion,
+      fingerprint: analysisImpactInputFingerprintV1(input, element),
+      dependencyFingerprint: dependencyFingerprints[element],
+    });
+}
+
+const ANALYSIS_IMPACT_INPUT_PROJECTORS: Readonly<
+  Record<AiAnalysisElement, Readonly<Record<number, AnalysisImpactInputProjectionProjector>>>
+> = Object.freeze({
+  status: Object.freeze({
+    1: createAnalysisImpactInputProjectionProjector("status", 1),
+  }),
+  waitingOn: Object.freeze({
+    1: createAnalysisImpactInputProjectionProjector("waitingOn", 1),
+  }),
+  nextAction: Object.freeze({
+    1: createAnalysisImpactInputProjectionProjector("nextAction", 1),
+  }),
+  relations: Object.freeze({
+    1: createAnalysisImpactInputProjectionProjector("relations", 1),
+  }),
+  progress: Object.freeze({
+    1: createAnalysisImpactInputProjectionProjector("progress", 1),
+  }),
+  importance: Object.freeze({
+    1: createAnalysisImpactInputProjectionProjector("importance", 1),
+  }),
+  deadline: Object.freeze({
+    1: createAnalysisImpactInputProjectionProjector("deadline", 1),
+  }),
+  notification: Object.freeze({
+    1: createAnalysisImpactInputProjectionProjector("notification", 1),
+  }),
+});
+
+function analysisImpactInputProjection(
+  element: AiAnalysisElement,
+  version: AnalysisImpactVersion,
+  input: CodexAnalysisInput,
+  dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
+): AnalysisImpactCurrentInputProjection | undefined {
+  return ANALYSIS_IMPACT_INPUT_PROJECTORS[element][version.inputProjectionVersion]?.(
+    Object.freeze({ input, dependencyFingerprints }),
+  );
+}
+
+function analysisImpactValue<Result>(
+  result: Result | undefined,
+  absentReason: "not_adopted" | "not_evaluated",
+): AnalysisImpactValue<Result> {
+  return result == null
+    ? Object.freeze({ status: "absent", reason: absentReason })
+    : Object.freeze({ status: "present", result });
+}
+
+function analysisImpactResolutionForRole(
+  element: AiAnalysisElement,
+  role: "adopted" | "evaluated",
+  generation: AiAnalysisElementGeneration | undefined,
+  roleRecord: AnalysisElementReuseRecord,
+  adoptedResult: AnalysisImpactValue<AiAnalysisElementMigrationResult>,
+  evaluatedResult: AnalysisImpactValue<AiAnalysisElementMigrationResult>,
+  relatedInput: CodexAnalysisInput,
+  dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
+): Readonly<{
+  resolution: AnalysisElementReuseRecord | undefined;
+  decision: AnalysisImpactDecisionForDiagnostics | undefined;
+}> {
+  const sourceVersion = analysisImpactSourceVersion(element, generation, roleRecord.proof);
+  if (sourceVersion == null) {
+    return Object.freeze({ resolution: undefined, decision: undefined });
+  }
+  const targetVersion = analysisImpactTargetVersion(element);
+  if (
+    sourceVersion.revision === targetVersion.revision &&
+    sourceVersion.inputProjectionVersion === targetVersion.inputProjectionVersion
+  ) {
+    return Object.freeze({ resolution: undefined, decision: undefined });
+  }
+  const currentSourceInputProjection = analysisImpactInputProjection(
+    element,
+    sourceVersion,
+    relatedInput,
+    dependencyFingerprints,
+  );
+  const currentTargetInputProjection = analysisImpactInputProjection(
+    element,
+    targetVersion,
+    relatedInput,
+    dependencyFingerprints,
+  );
+  if (currentSourceInputProjection == null || currentTargetInputProjection == null) {
+    return Object.freeze({
+      resolution: undefined,
+      decision: Object.freeze({
+        impact: "unknown",
+        sourceVersion,
+        targetVersion,
+        compatibilityPath: Object.freeze([]),
+        reason: "input_projection_unavailable",
+      }),
+    });
+  }
+  const record: AnalysisImpactRecord<AiAnalysisElementMigrationResult, CodexAnalysisInput> =
+    Object.freeze({
+      element,
+      role,
+      sourceVersion,
+      targetVersion,
+      adoptedResult,
+      evaluatedResult,
+      currentSourceInputProjection,
+      currentTargetInputProjection,
+      reuseProof: roleRecord.proof,
+      relatedInput,
+    });
+  const decision = assessAnalysisImpact(
+    record,
+    impactDeclarationsForElement(element, sourceVersion, targetVersion),
+  );
+  const diagnostic: AnalysisImpactDecisionForDiagnostics = Object.freeze({
+    impact: decision.impact,
+    sourceVersion: decision.sourceVersion,
+    targetVersion: decision.targetVersion,
+    compatibilityPath: decision.compatibilityPath,
+    ...(decision.impact === "unknown" ? { reason: decision.reason } : {}),
+  });
+  if (decision.result.status !== "present") {
+    return Object.freeze({ resolution: undefined, decision: diagnostic });
+  }
+  if (
+    decision.impact === "deterministic" &&
+    isStateAnalysisElement(element) &&
+    hashCanonicalJson(decision.result.result) !== hashCanonicalJson(roleRecord.result)
+  ) {
+    return Object.freeze({
+      resolution: undefined,
+      decision: Object.freeze({
+        ...diagnostic,
+        impact: "interpretation_required",
+      }),
+    });
+  }
+  const result = createAiAnalysisMigrationElementResultSchema(element).parse(
+    decision.result.result,
+  );
+  return Object.freeze({
+    resolution: Object.freeze({
+      result,
+      proof: verifiedReuseProof(
+        element,
+        currentTargetInputProjection.fingerprint,
+        currentTargetInputProjection.dependencyFingerprint,
+        "deterministic_update",
+        decision.compatibilityPath,
+      ),
+    }),
+    decision: diagnostic,
+  });
+}
+
+function analysisImpactProofsForItem(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  relatedInput: CodexAnalysisInput,
+  inputFingerprints: AnalysisElementInputFingerprintMap,
+  dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
+): AnalysisImpactResolutions {
+  const evaluation = savedEvaluationRecordsForItem(
+    state,
+    analysis.item.nodeId,
+    inputFingerprints,
+    dependencyFingerprints,
+  );
+  const adoptedRecords = savedAdoptionRecordsForItem(
+    state,
+    analysis.item.nodeId,
+    inputFingerprints,
+    dependencyFingerprints,
+  );
+  const evaluationWithImpact: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {
+    ...evaluation,
+  };
+  const adoptedWithImpact: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {
+    ...adoptedRecords,
+  };
+  const decisions: {
+    element: AiAnalysisElement;
+    role: "adopted" | "evaluated";
+    decision: AnalysisImpactDecisionForDiagnostics;
+  }[] = [];
+  const previousItem = previousSnapshot(state)?.items.find(
+    (candidate) => candidate.nodeId === analysis.item.nodeId,
+  );
+  if (previousItem == null) {
+    return Object.freeze({
+      evaluation: Object.freeze(evaluationWithImpact),
+      adopted: Object.freeze(adoptedWithImpact),
+      decisions: Object.freeze([]),
+    });
+  }
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const evaluated = evaluation[element];
+    const adopted = adoptedRecords[element];
+    const adoptedResult = analysisImpactValue(adopted?.result, "not_adopted");
+    const evaluatedResult = analysisImpactValue(evaluated?.result, "not_evaluated");
+    const evaluatedGeneration = previousItem.aiAnalysis.elements[element];
+    const adoptedElement = previousItem.aiAnalysis.adoptedElements[element];
+    const adoptedGeneration =
+      adoptedElement?.origin === "current"
+        ? createAiAnalysisElementGenerationSchema(element).parse(adoptedElement.generation)
+        : undefined;
+    const roles: readonly Readonly<{
+      role: "adopted" | "evaluated";
+      record: AnalysisElementReuseRecord | undefined;
+      generation: AiAnalysisElementGeneration | undefined;
+    }>[] = Object.freeze([
+      Object.freeze({
+        role: "evaluated",
+        record: evaluated,
+        generation:
+          evaluatedGeneration == null
+            ? undefined
+            : createAiAnalysisElementGenerationSchema(element).parse(
+                evaluatedGeneration.generation,
+              ),
+      }),
+      Object.freeze({ role: "adopted", record: adopted, generation: adoptedGeneration }),
+    ]);
+    for (const current of roles) {
+      if (current.record == null) {
+        continue;
+      }
+      const generation =
+        current.generation == null
+          ? undefined
+          : createAiAnalysisElementGenerationSchema(element).parse(current.generation);
+      const impact = analysisImpactResolutionForRole(
+        element,
+        current.role,
+        generation,
+        current.record,
+        adoptedResult,
+        evaluatedResult,
+        relatedInput,
+        dependencyFingerprints,
+      );
+      if (impact.decision != null) {
+        decisions.push({ element, role: current.role, decision: impact.decision });
+      }
+      if (impact.resolution != null) {
+        if (current.role === "evaluated") {
+          evaluationWithImpact[element] = impact.resolution;
+        } else {
+          adoptedWithImpact[element] = impact.resolution;
+        }
+      }
+    }
+  }
+  return Object.freeze({
+    evaluation: Object.freeze(evaluationWithImpact),
+    adopted: Object.freeze(adoptedWithImpact),
+    decisions: Object.freeze(decisions.map((value) => Object.freeze(value))),
+  });
+}
+
 function codexNaturalLanguageSources(input: CodexAnalysisInput): readonly object[] {
   return input.sources.filter(
     (source) => source.kind === "body" || source.kind === "comment" || source.kind === "review",
@@ -3057,7 +3500,10 @@ function deterministicSignalProjection(
   return Object.freeze(projection);
 }
 
-function elementInputFingerprints(input: CodexAnalysisInput): AnalysisElementInputFingerprintMap {
+function analysisImpactInputFingerprintV1(
+  input: CodexAnalysisInput,
+  element: AiAnalysisElement,
+): AiAnalysisElementInputFingerprint {
   const naturalLanguageSources = codexNaturalLanguageSources(input);
   const relationSources = [...codexRelationSources(input), ...naturalLanguageSources];
   const stateInput = {
@@ -3104,15 +3550,47 @@ function elementInputFingerprints(input: CodexAnalysisInput): AnalysisElementInp
       "uncertainties",
     ]),
   };
+  switch (element) {
+    case "status":
+    case "waitingOn":
+    case "nextAction":
+      return hashCanonicalJson(stateInput);
+    case "relations":
+      return hashCanonicalJson(relationInput);
+    case "progress":
+    case "importance":
+    case "deadline":
+      return hashCanonicalJson(textInput);
+    case "notification":
+      return hashCanonicalJson(notificationInput);
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+function elementInputFingerprints(
+  input: CodexAnalysisInput,
+  dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
+): AnalysisElementInputFingerprintMap {
+  const fingerprintFor = (element: AiAnalysisElement): AiAnalysisElementInputFingerprint => {
+    const projection = analysisImpactInputProjection(
+      element,
+      analysisImpactTargetVersion(element),
+      input,
+      dependencyFingerprints,
+    );
+    assertNonNullable(projection, `AI判定要素の入力投影がありません。対象: ${element}`);
+    return projection.fingerprint;
+  };
   return Object.freeze({
-    status: hashCanonicalJson(stateInput),
-    waitingOn: hashCanonicalJson(stateInput),
-    nextAction: hashCanonicalJson(stateInput),
-    relations: hashCanonicalJson(relationInput),
-    progress: hashCanonicalJson(textInput),
-    importance: hashCanonicalJson(textInput),
-    deadline: hashCanonicalJson(textInput),
-    notification: hashCanonicalJson(notificationInput),
+    status: fingerprintFor("status"),
+    waitingOn: fingerprintFor("waitingOn"),
+    nextAction: fingerprintFor("nextAction"),
+    relations: fingerprintFor("relations"),
+    progress: fingerprintFor("progress"),
+    importance: fingerprintFor("importance"),
+    deadline: fingerprintFor("deadline"),
+    notification: fingerprintFor("notification"),
   });
 }
 
@@ -3258,118 +3736,96 @@ function savedCurrentAdoptedElementsForItem(
   return Object.freeze(adopted);
 }
 
-function savedEvaluationProofsForItem(
+function savedEvaluationRecordsForItem(
   state: RuntimeState,
   nodeId: GitHubNodeId,
   inputFingerprints: AnalysisElementInputFingerprintMap,
   dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
-): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>>> {
-  const proofs: Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>> = {};
+): Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>> {
+  const records: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {};
   const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
   if (item == null) {
-    return Object.freeze(proofs);
+    return Object.freeze(records);
   }
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const evaluated = item.aiAnalysis.elements[element];
     if (evaluated == null) {
       continue;
     }
+    const result = createAiAnalysisMigrationElementResultSchema(element).parse(evaluated.result);
     const proof = aiAnalysisElementReuseProofSchema.parse(evaluated.evaluationProof);
+    let normalizedProof = proof;
     if (proof.status === "verified") {
-      proofs[element] = proof;
-      continue;
-    }
-    if (proof.reason !== "legacy_migration") {
-      proofs[element] = proof;
-      continue;
-    }
-    const generation = createAiAnalysisElementGenerationSchema(element).parse(evaluated.generation);
-    if (
-      generation.metadata.revision === AI_ANALYSIS_ELEMENT_REVISIONS[element] &&
-      generation.metadata.inputFingerprint === inputFingerprints[element]
-    ) {
-      if (isStateAnalysisElement(element)) {
-        proofs[element] = unknownReuseProof("dependency_input_unavailable");
-        continue;
-      }
-      proofs[element] = verifiedReuseProof(
-        element,
-        inputFingerprints[element],
-        dependencyFingerprints[element],
-        "structural_migration",
-        ["legacy_evaluation_generation_input_match"],
+      normalizedProof = proof;
+    } else if (proof.reason !== "legacy_migration") {
+      normalizedProof = proof;
+    } else {
+      const generation = createAiAnalysisElementGenerationSchema(element).parse(
+        evaluated.generation,
       );
-      continue;
+      if (
+        generation.metadata.revision === AI_ANALYSIS_ELEMENT_REVISIONS[element] &&
+        generation.metadata.inputFingerprint === inputFingerprints[element]
+      ) {
+        normalizedProof = isStateAnalysisElement(element)
+          ? unknownReuseProof("dependency_input_unavailable")
+          : verifiedReuseProof(
+              element,
+              inputFingerprints[element],
+              dependencyFingerprints[element],
+              "structural_migration",
+              ["legacy_evaluation_generation_input_match"],
+            );
+      }
     }
-    proofs[element] = proof;
+    records[element] = Object.freeze({ result, proof: normalizedProof });
   }
-  return Object.freeze(proofs);
+  return Object.freeze(records);
 }
 
-function savedReuseProofsForItem(
+function savedAdoptionRecordsForItem(
   state: RuntimeState,
   nodeId: GitHubNodeId,
   inputFingerprints: AnalysisElementInputFingerprintMap,
   dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
-): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>>> {
-  const proofs: Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>> = {};
+): Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>> {
+  const records: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {};
   const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
   if (item == null) {
-    return Object.freeze(proofs);
+    return Object.freeze(records);
   }
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const adopted = item.aiAnalysis.adoptedElements[element];
     if (adopted == null) {
       continue;
     }
+    const result = createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
     const proof = aiAnalysisElementReuseProofSchema.parse(adopted.reuseProof);
+    let normalizedProof = proof;
     if (proof.status === "verified") {
-      proofs[element] = proof;
-      continue;
-    }
-    if (adopted.origin !== "current" || proof.reason !== "legacy_migration") {
-      proofs[element] = proof;
-      continue;
-    }
-    const generation = createAiAnalysisElementGenerationSchema(element).parse(adopted.generation);
-    if (
-      generation.metadata.revision === AI_ANALYSIS_ELEMENT_REVISIONS[element] &&
-      generation.metadata.inputFingerprint === inputFingerprints[element]
-    ) {
-      if (isStateAnalysisElement(element)) {
-        proofs[element] = unknownReuseProof("dependency_input_unavailable");
-        continue;
+      normalizedProof = proof;
+    } else if (adopted.origin !== "current" || proof.reason !== "legacy_migration") {
+      normalizedProof = proof;
+    } else {
+      const generation = createAiAnalysisElementGenerationSchema(element).parse(adopted.generation);
+      if (
+        generation.metadata.revision === AI_ANALYSIS_ELEMENT_REVISIONS[element] &&
+        generation.metadata.inputFingerprint === inputFingerprints[element]
+      ) {
+        normalizedProof = isStateAnalysisElement(element)
+          ? unknownReuseProof("dependency_input_unavailable")
+          : verifiedReuseProof(
+              element,
+              inputFingerprints[element],
+              dependencyFingerprints[element],
+              "structural_migration",
+              ["legacy_current_generation_input_match"],
+            );
       }
-      proofs[element] = verifiedReuseProof(
-        element,
-        inputFingerprints[element],
-        dependencyFingerprints[element],
-        "structural_migration",
-        ["legacy_current_generation_input_match"],
-      );
-      continue;
     }
-    proofs[element] = proof;
+    records[element] = Object.freeze({ result, proof: normalizedProof });
   }
-  return Object.freeze(proofs);
-}
-
-function savedAdoptedReuseProofsForItem(
-  state: RuntimeState,
-  nodeId: GitHubNodeId,
-): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>>> {
-  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
-  if (item == null) {
-    return Object.freeze({});
-  }
-  const proofs: Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>> = {};
-  for (const element of AI_ANALYSIS_ELEMENTS) {
-    const adopted = item.aiAnalysis.adoptedElements[element];
-    if (adopted != null) {
-      proofs[element] = aiAnalysisElementReuseProofSchema.parse(adopted.reuseProof);
-    }
-  }
-  return Object.freeze(proofs);
+  return Object.freeze(records);
 }
 
 function savedMigrationAdoptedElementsForItem(
@@ -3466,10 +3922,7 @@ function dependencyResultForElement(
   const item = previousSnapshot(state)?.items.find(
     (candidate) => candidate.nodeId === analysis.item.nodeId,
   );
-  return (
-    (item == null ? undefined : adoptedResultForRetainedItem(item, element)) ??
-    deterministicElementResult(analysis, element)
-  );
+  return item == null ? undefined : adoptedResultForRetainedItem(item, element);
 }
 
 function isStateAnalysisElement(element: AiAnalysisElement): boolean {
@@ -3477,7 +3930,6 @@ function isStateAnalysisElement(element: AiAnalysisElement): boolean {
 }
 
 function stateDependencyFingerprintForResults(
-  state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   results: Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>>>,
 ): AiAnalysisElementInputFingerprint {
@@ -3486,7 +3938,7 @@ function stateDependencyFingerprintForResults(
       const savedResult = results[element];
       const result =
         savedResult == null
-          ? dependencyResultForElement(state, analysis, element)
+          ? deterministicElementResult(analysis, element)
           : createAiAnalysisMigrationElementResultSchema(element).parse(savedResult);
       return [
         element,
@@ -3507,22 +3959,18 @@ function stateDependencyFingerprintForResults(
 function stateDependencyFingerprint(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
-  current: AiAnalysisElementGenerationMap,
 ): AiAnalysisElementInputFingerprint {
   const results: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> = {};
   for (const element of ["status", "waitingOn", "nextAction"] as const) {
-    const generation = current[element];
-    if (generation != null) {
-      results[element] = createAiAnalysisMigrationElementResultSchema(element).parse(
-        generation.result,
-      );
+    const result = dependencyResultForElement(state, analysis, element);
+    if (result != null) {
+      results[element] = result;
     }
   }
-  return stateDependencyFingerprintForResults(state, analysis, results);
+  return stateDependencyFingerprintForResults(analysis, results);
 }
 
 function finalStateDependencyFingerprint(
-  state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   current: TrackedItemAiAnalysisCurrentAdoptedElements,
   migration: TrackedItemAiAnalysisMigrationElements,
@@ -3539,14 +3987,14 @@ function finalStateDependencyFingerprint(
       results[element] = migrationResult;
     }
   }
-  return stateDependencyFingerprintForResults(state, analysis, results);
+  return stateDependencyFingerprintForResults(analysis, results);
 }
 
 function elementDependencyFingerprints(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
 ): AnalysisElementDependencyFingerprintMap {
-  const stateFingerprint = stateDependencyFingerprint(state, analysis, Object.freeze({}));
+  const stateFingerprint = stateDependencyFingerprint(state, analysis);
   const independentFingerprint = hashCanonicalJson({ kind: "independent" });
   return Object.freeze({
     status: stateFingerprint,
@@ -3595,25 +4043,14 @@ function verifiedReuseProof(
   });
 }
 
-function evaluationProofsForAnalysis(
-  state: RuntimeState,
+function evaluationRecordsForAnalysis(
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning,
   generations: AiAnalysisElementGenerationMap,
   run: AiAnalysisRunResult | undefined,
   current: TrackedItemAiAnalysisCurrentAdoptedElements,
   migration: TrackedItemAiAnalysisMigrationElements,
-): Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>>> {
-  const inputFingerprints = Object.freeze({
-    status: planning.candidates.status.inputFingerprint,
-    waitingOn: planning.candidates.waitingOn.inputFingerprint,
-    nextAction: planning.candidates.nextAction.inputFingerprint,
-    relations: planning.candidates.relations.inputFingerprint,
-    progress: planning.candidates.progress.inputFingerprint,
-    importance: planning.candidates.importance.inputFingerprint,
-    deadline: planning.candidates.deadline.inputFingerprint,
-    notification: planning.candidates.notification.inputFingerprint,
-  });
+): Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>> {
   const dependencyFingerprints = Object.freeze({
     status: planning.candidates.status.dependencyFingerprint,
     waitingOn: planning.candidates.waitingOn.dependencyFingerprint,
@@ -3624,34 +4061,38 @@ function evaluationProofsForAnalysis(
     deadline: planning.candidates.deadline.dependencyFingerprint,
     notification: planning.candidates.notification.dependencyFingerprint,
   });
-  const saved = savedEvaluationProofsForItem(
-    state,
-    analysis.item.nodeId,
-    inputFingerprints,
-    dependencyFingerprints,
-  );
   const generated = generatedElementsForNode(run, analysis.item.nodeId);
-  const proofs: Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>> = {};
+  const records: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {};
   for (const element of AI_ANALYSIS_ELEMENTS) {
-    if (generations[element] == null) {
+    const generation = generations[element];
+    if (generation == null) {
       continue;
     }
     if (generated[element] != null) {
       const dependencyFingerprint = isStateAnalysisElement(element)
-        ? finalStateDependencyFingerprint(state, analysis, current, migration)
+        ? finalStateDependencyFingerprint(analysis, current, migration)
         : dependencyFingerprints[element];
-      proofs[element] = verifiedReuseProof(
-        element,
-        inputFingerprints[element],
-        dependencyFingerprint,
-        "current_generation",
-        ["current_evaluation"],
-      );
+      records[element] = Object.freeze({
+        result: createAiAnalysisMigrationElementResultSchema(element).parse(generation.result),
+        proof: verifiedReuseProof(
+          element,
+          planning.candidates[element].inputFingerprint,
+          dependencyFingerprint,
+          "current_generation",
+          ["current_evaluation"],
+        ),
+      });
       continue;
     }
-    proofs[element] = saved[element] ?? unknownReuseProof("source_input_unavailable");
+    const saved = planning.candidates[element].savedEvaluation;
+    records[element] =
+      saved ??
+      Object.freeze({
+        result: createAiAnalysisMigrationElementResultSchema(element).parse(generation.result),
+        proof: unknownReuseProof("source_input_unavailable"),
+      });
   }
-  return Object.freeze(proofs);
+  return Object.freeze(records);
 }
 
 function currentAdoptedGenerationForElement(
@@ -3659,6 +4100,7 @@ function currentAdoptedGenerationForElement(
   analysis: DeterministicItemAnalysis,
   element: AiAnalysisElement,
   inputFingerprint: AiAnalysisElementInputFingerprint,
+  savedRecord: AnalysisElementReuseRecord | undefined,
 ): AiAnalysisElementGeneration | undefined {
   const adopted = savedCurrentAdoptedElementsForItem(state, analysis.item.nodeId)[element];
   if (adopted == null) {
@@ -3671,7 +4113,7 @@ function currentAdoptedGenerationForElement(
       inputFingerprint,
       inputProjectionVersion: AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS[element],
       dependencyFingerprint,
-      savedProof: adopted.reuseProof,
+      savedProof: savedRecord?.proof ?? adopted.reuseProof,
     }) !== "verified"
   ) {
     return undefined;
@@ -3713,8 +4155,12 @@ function verifiedCurrentAdoptedResultForElement(
   analysis: DeterministicItemAnalysis,
   element: AiAnalysisElement,
   inputFingerprint: AiAnalysisElementInputFingerprint,
+  savedRecord: AnalysisElementReuseRecord | undefined,
 ): AiAnalysisElementMigrationResult | undefined {
-  if (currentAdoptedGenerationForElement(state, analysis, element, inputFingerprint) == null) {
+  if (
+    currentAdoptedGenerationForElement(state, analysis, element, inputFingerprint, savedRecord) ==
+    null
+  ) {
     return undefined;
   }
   return currentAdoptedResultForElement(state, analysis, element);
@@ -3737,6 +4183,7 @@ function verifiedMigrationAdoptedResultForElement(
   analysis: DeterministicItemAnalysis,
   element: AiAnalysisElement,
   inputFingerprint: AiAnalysisElementInputFingerprint,
+  savedRecord: AnalysisElementReuseRecord | undefined,
 ): AiAnalysisElementMigrationResult | undefined {
   const adopted = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element];
   if (adopted == null) {
@@ -3749,7 +4196,7 @@ function verifiedMigrationAdoptedResultForElement(
       inputFingerprint,
       inputProjectionVersion: AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS[element],
       dependencyFingerprint,
-      savedProof: adopted.reuseProof,
+      savedProof: savedRecord?.proof ?? adopted.reuseProof,
     }) !== "verified"
   ) {
     return undefined;
@@ -3769,20 +4216,36 @@ function preservedElementsForSelection(
     {};
   for (const skipped of planning.selection.skipped) {
     if (skipped.reason === "up_to_date") {
+      const savedReuse = skipped.candidate.savedReuse;
+      let reused: AiAnalysisElementMigrationResult | undefined;
+      if (
+        savedReuse != null &&
+        determineAnalysisElementReuse({
+          element: skipped.candidate.element,
+          inputFingerprint: skipped.candidate.inputFingerprint,
+          inputProjectionVersion: skipped.candidate.inputProjectionVersion,
+          dependencyFingerprint: skipped.candidate.dependencyFingerprint,
+          savedProof: savedReuse.proof,
+        }) === "verified"
+      ) {
+        reused = savedReuse.result;
+      }
       const adopted = verifiedCurrentAdoptedResultForElement(
         state,
         analysis,
         skipped.candidate.element,
         skipped.candidate.inputFingerprint,
+        savedReuse,
       );
       const migrated = verifiedMigrationAdoptedResultForElement(
         state,
         analysis,
         skipped.candidate.element,
         skipped.candidate.inputFingerprint,
+        savedReuse,
       );
       const deterministic = deterministicElementResult(analysis, skipped.candidate.element);
-      const result = adopted ?? migrated ?? deterministic;
+      const result = reused ?? adopted ?? migrated ?? deterministic;
       if (result != null) {
         preservedElements[skipped.candidate.element] = result;
       }
@@ -3892,6 +4355,12 @@ function createAiCandidates(
     candidateId: string;
     error: unknown;
   }>[];
+  analysisImpactDecisions: readonly Readonly<{
+    candidateId: string;
+    element: AiAnalysisElement;
+    role: "adopted" | "evaluated";
+    decision: AnalysisImpactDecisionForDiagnostics;
+  }>[];
   inputByNodeId: ReadonlyMap<GitHubNodeId, CodexAnalysisInput>;
   elementPlanningByNodeId: ReadonlyMap<GitHubNodeId, AnalysisElementPlanning>;
 }> {
@@ -3901,6 +4370,12 @@ function createAiCandidates(
   const inputValidationFailures: {
     candidateId: string;
     error: unknown;
+  }[] = [];
+  const analysisImpactDecisions: {
+    candidateId: string;
+    element: AiAnalysisElement;
+    role: "adopted" | "evaluated";
+    decision: AnalysisImpactDecisionForDiagnostics;
   }[] = [];
   const previousGraph = previousGraphSnapshot(state);
   const previousGraphAnalysis =
@@ -3941,20 +4416,45 @@ function createAiCandidates(
       continue;
     }
     const savedGenerations = savedGenerationsForItem(state, analysis.item.nodeId);
-    const inputFingerprints = elementInputFingerprints(baseInput);
     const dependencyFingerprints = elementDependencyFingerprints(state, analysis);
-    const savedEvaluationProofs = savedEvaluationProofsForItem(
+    const inputFingerprints = elementInputFingerprints(baseInput, dependencyFingerprints);
+    const savedEvaluations = savedEvaluationRecordsForItem(
       state,
       analysis.item.nodeId,
       inputFingerprints,
       dependencyFingerprints,
     );
-    const savedReuseProofs = savedReuseProofsForItem(
+    const savedReuses = savedAdoptionRecordsForItem(
       state,
       analysis.item.nodeId,
       inputFingerprints,
       dependencyFingerprints,
     );
+    const impactResolutions = analysisImpactProofsForItem(
+      state,
+      analysis,
+      baseInput,
+      inputFingerprints,
+      dependencyFingerprints,
+    );
+    const planningEvaluations = Object.freeze({
+      ...savedEvaluations,
+      ...impactResolutions.evaluation,
+    });
+    const planningReuses = Object.freeze({
+      ...savedReuses,
+      ...impactResolutions.adopted,
+    });
+    for (const impact of impactResolutions.decisions) {
+      analysisImpactDecisions.push(
+        Object.freeze({
+          candidateId: analysis.item.nodeId,
+          element: impact.element,
+          role: impact.role,
+          decision: impact.decision,
+        }),
+      );
+    }
     const necessities = determineAnalysisElementNecessities(
       necessityInputForAnalysis(state, analysis),
     );
@@ -3965,8 +4465,8 @@ function createAiCandidates(
       inputProjectionVersions: AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
       dependencyFingerprints,
       savedGenerations,
-      savedEvaluationProofs,
-      savedReuseProofs,
+      savedEvaluations: planningEvaluations,
+      savedReuses: planningReuses,
     });
     elementPlanningByNodeId.set(analysis.item.nodeId, planning);
     const input = createCodexInput(
@@ -4038,6 +4538,7 @@ function createAiCandidates(
     candidates: Object.freeze(candidates),
     failures: Object.freeze(failures),
     inputValidationFailures: Object.freeze(inputValidationFailures),
+    analysisImpactDecisions: Object.freeze(analysisImpactDecisions),
     inputByNodeId,
     elementPlanningByNodeId,
   });
@@ -4162,58 +4663,67 @@ function setEvaluatedElement(
   evaluated: MutablePartial<TrackedItemAiAnalysisCurrentElements>,
   element: AiAnalysisElement,
   generation: AiAnalysisElementGeneration,
-  evaluationProof: AiAnalysisElementReuseProof,
+  evaluation: AnalysisElementReuseRecord,
 ): void {
   const value: TrackedItemAiAnalysisCurrentElement = {
     generation,
-    evaluationProof,
+    result: createAiAnalysisMigrationElementResultSchema(element).parse(evaluation.result),
+    evaluationProof: aiAnalysisElementReuseProofSchema.parse(evaluation.proof),
   };
   switch (element) {
     case "status":
       evaluated.status = {
         generation: createAiAnalysisElementGenerationSchema("status").parse(value.generation),
+        result: createAiAnalysisMigrationElementResultSchema("status").parse(value.result),
         evaluationProof: aiAnalysisElementReuseProofSchema.parse(value.evaluationProof),
       };
       return;
     case "waitingOn":
       evaluated.waitingOn = {
         generation: createAiAnalysisElementGenerationSchema("waitingOn").parse(value.generation),
+        result: createAiAnalysisMigrationElementResultSchema("waitingOn").parse(value.result),
         evaluationProof: aiAnalysisElementReuseProofSchema.parse(value.evaluationProof),
       };
       return;
     case "nextAction":
       evaluated.nextAction = {
         generation: createAiAnalysisElementGenerationSchema("nextAction").parse(value.generation),
+        result: createAiAnalysisMigrationElementResultSchema("nextAction").parse(value.result),
         evaluationProof: aiAnalysisElementReuseProofSchema.parse(value.evaluationProof),
       };
       return;
     case "relations":
       evaluated.relations = {
         generation: createAiAnalysisElementGenerationSchema("relations").parse(value.generation),
+        result: createAiAnalysisMigrationElementResultSchema("relations").parse(value.result),
         evaluationProof: aiAnalysisElementReuseProofSchema.parse(value.evaluationProof),
       };
       return;
     case "progress":
       evaluated.progress = {
         generation: createAiAnalysisElementGenerationSchema("progress").parse(value.generation),
+        result: createAiAnalysisMigrationElementResultSchema("progress").parse(value.result),
         evaluationProof: aiAnalysisElementReuseProofSchema.parse(value.evaluationProof),
       };
       return;
     case "importance":
       evaluated.importance = {
         generation: createAiAnalysisElementGenerationSchema("importance").parse(value.generation),
+        result: createAiAnalysisMigrationElementResultSchema("importance").parse(value.result),
         evaluationProof: aiAnalysisElementReuseProofSchema.parse(value.evaluationProof),
       };
       return;
     case "deadline":
       evaluated.deadline = {
         generation: createAiAnalysisElementGenerationSchema("deadline").parse(value.generation),
+        result: createAiAnalysisMigrationElementResultSchema("deadline").parse(value.result),
         evaluationProof: aiAnalysisElementReuseProofSchema.parse(value.evaluationProof),
       };
       return;
     case "notification":
       evaluated.notification = {
         generation: createAiAnalysisElementGenerationSchema("notification").parse(value.generation),
+        result: createAiAnalysisMigrationElementResultSchema("notification").parse(value.result),
         evaluationProof: aiAnalysisElementReuseProofSchema.parse(value.evaluationProof),
       };
       return;
@@ -4224,7 +4734,7 @@ function setEvaluatedElement(
 
 function evaluatedElementsForGenerations(
   generations: AiAnalysisElementGenerationMap,
-  evaluationProofs: Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>>>,
+  evaluations: Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>>,
 ): TrackedItemAiAnalysisCurrentElements {
   const evaluated: MutablePartial<TrackedItemAiAnalysisCurrentElements> = {};
   for (const element of AI_ANALYSIS_ELEMENTS) {
@@ -4232,9 +4742,9 @@ function evaluatedElementsForGenerations(
     if (generation == null) {
       continue;
     }
-    const evaluationProof = evaluationProofs[element];
-    assertNonNullable(evaluationProof, `AI評価の再利用証明がありません。対象: ${element}`);
-    setEvaluatedElement(evaluated, element, generation, evaluationProof);
+    const evaluation = evaluations[element];
+    assertNonNullable(evaluation, `AI評価のresultと再利用証明がありません。対象: ${element}`);
+    setEvaluatedElement(evaluated, element, generation, evaluation);
   }
   return Object.freeze(evaluated);
 }
@@ -4339,6 +4849,7 @@ function adoptedElementsForAnalysis(
       continue;
     }
     const retained = currentAdoptedElementForElement(state, analysis, element);
+    const savedReuse = planning.candidates[element].savedReuse;
     const generated = generatedElements[element];
     const application =
       reduction?.ai.status === "available"
@@ -4358,7 +4869,8 @@ function adoptedElementsForAnalysis(
     }
     adoptedResults[element] = generatedWasAccepted
       ? createAiAnalysisMigrationElementResultSchema(element).parse(generation.result)
-      : (retained?.result ??
+      : (savedReuse?.result ??
+        retained?.result ??
         createAiAnalysisMigrationElementResultSchema(element).parse(generation.result));
   }
   const finalResults = { ...adoptedResults };
@@ -4368,7 +4880,6 @@ function adoptedElementsForAnalysis(
     }
   }
   const finalStateDependencyFingerprint = stateDependencyFingerprintForResults(
-    state,
     analysis,
     finalResults,
   );
@@ -4390,7 +4901,7 @@ function adoptedElementsForAnalysis(
           "current_generation",
           ["current_generation"],
         )
-      : (candidate.savedReuseProof ??
+      : (candidate.savedReuse?.proof ??
         retained?.reuseProof ??
         unknownReuseProof("source_input_unavailable"));
     const adoptedResult = adoptedResults[element];
@@ -4448,51 +4959,52 @@ function migratedElementsForAnalysis(
       continue;
     }
     if (
-      currentAdoptedGenerationForElement(state, analysis, element, candidate.inputFingerprint) !=
-      null
+      currentAdoptedGenerationForElement(
+        state,
+        analysis,
+        element,
+        candidate.inputFingerprint,
+        candidate.savedReuse,
+      ) != null
     ) {
       continue;
     }
+    const savedReuse = planning.candidates[element].savedReuse;
+    const migrationReuse =
+      savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[element]?.origin ===
+      "migration"
+        ? savedReuse
+        : undefined;
+    const result = migrationReuse?.result ?? savedResult.result;
     switch (element) {
       case "status":
-        migrated.status = createAiAnalysisMigrationElementResultSchema("status").parse(
-          savedResult.result,
-        );
+        migrated.status = createAiAnalysisMigrationElementResultSchema("status").parse(result);
         break;
       case "waitingOn":
-        migrated.waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
-          savedResult.result,
-        );
+        migrated.waitingOn =
+          createAiAnalysisMigrationElementResultSchema("waitingOn").parse(result);
         break;
       case "nextAction":
-        migrated.nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(
-          savedResult.result,
-        );
+        migrated.nextAction =
+          createAiAnalysisMigrationElementResultSchema("nextAction").parse(result);
         break;
       case "relations":
-        migrated.relations = createAiAnalysisMigrationElementResultSchema("relations").parse(
-          savedResult.result,
-        );
+        migrated.relations =
+          createAiAnalysisMigrationElementResultSchema("relations").parse(result);
         break;
       case "progress":
-        migrated.progress = createAiAnalysisMigrationElementResultSchema("progress").parse(
-          savedResult.result,
-        );
+        migrated.progress = createAiAnalysisMigrationElementResultSchema("progress").parse(result);
         break;
       case "importance":
-        migrated.importance = createAiAnalysisMigrationElementResultSchema("importance").parse(
-          savedResult.result,
-        );
+        migrated.importance =
+          createAiAnalysisMigrationElementResultSchema("importance").parse(result);
         break;
       case "deadline":
-        migrated.deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(
-          savedResult.result,
-        );
+        migrated.deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(result);
         break;
       case "notification":
-        migrated.notification = createAiAnalysisMigrationElementResultSchema("notification").parse(
-          savedResult.result,
-        );
+        migrated.notification =
+          createAiAnalysisMigrationElementResultSchema("notification").parse(result);
         break;
       default:
         throw new UnreachableError(element);
@@ -4504,7 +5016,7 @@ function migratedElementsForAnalysis(
 function mixedAdoptedElementsForAnalysis(
   current: TrackedItemAiAnalysisCurrentAdoptedElements,
   migration: TrackedItemAiAnalysisMigrationElements,
-  reuseProofs: Readonly<Partial<Record<AiAnalysisElement, AiAnalysisElementReuseProof>>>,
+  reuseRecords: Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>>,
 ): TrackedItemAiAnalysisMigrationAdoptedElements {
   let status: TrackedItemAiAnalysisMigrationAdoptedElement<"status"> | undefined;
   let waitingOn: TrackedItemAiAnalysisMigrationAdoptedElement<"waitingOn"> | undefined;
@@ -4522,8 +5034,10 @@ function mixedAdoptedElementsForAnalysis(
         } else if (migration.status != null) {
           status = {
             origin: "migration",
-            result: migration.status,
-            reuseProof: reuseProofs.status ?? unknownReuseProof("legacy_migration"),
+            result: createAiAnalysisMigrationElementResultSchema("status").parse(
+              reuseRecords.status?.result ?? migration.status,
+            ),
+            reuseProof: reuseRecords.status?.proof ?? unknownReuseProof("legacy_migration"),
           };
         }
         break;
@@ -4533,8 +5047,10 @@ function mixedAdoptedElementsForAnalysis(
         } else if (migration.waitingOn != null) {
           waitingOn = {
             origin: "migration",
-            result: migration.waitingOn,
-            reuseProof: reuseProofs.waitingOn ?? unknownReuseProof("legacy_migration"),
+            result: createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
+              reuseRecords.waitingOn?.result ?? migration.waitingOn,
+            ),
+            reuseProof: reuseRecords.waitingOn?.proof ?? unknownReuseProof("legacy_migration"),
           };
         }
         break;
@@ -4544,8 +5060,10 @@ function mixedAdoptedElementsForAnalysis(
         } else if (migration.nextAction != null) {
           nextAction = {
             origin: "migration",
-            result: migration.nextAction,
-            reuseProof: reuseProofs.nextAction ?? unknownReuseProof("legacy_migration"),
+            result: createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+              reuseRecords.nextAction?.result ?? migration.nextAction,
+            ),
+            reuseProof: reuseRecords.nextAction?.proof ?? unknownReuseProof("legacy_migration"),
           };
         }
         break;
@@ -4555,8 +5073,10 @@ function mixedAdoptedElementsForAnalysis(
         } else if (migration.relations != null) {
           relations = {
             origin: "migration",
-            result: migration.relations,
-            reuseProof: reuseProofs.relations ?? unknownReuseProof("legacy_migration"),
+            result: createAiAnalysisMigrationElementResultSchema("relations").parse(
+              reuseRecords.relations?.result ?? migration.relations,
+            ),
+            reuseProof: reuseRecords.relations?.proof ?? unknownReuseProof("legacy_migration"),
           };
         }
         break;
@@ -4566,8 +5086,10 @@ function mixedAdoptedElementsForAnalysis(
         } else if (migration.progress != null) {
           progress = {
             origin: "migration",
-            result: migration.progress,
-            reuseProof: reuseProofs.progress ?? unknownReuseProof("legacy_migration"),
+            result: createAiAnalysisMigrationElementResultSchema("progress").parse(
+              reuseRecords.progress?.result ?? migration.progress,
+            ),
+            reuseProof: reuseRecords.progress?.proof ?? unknownReuseProof("legacy_migration"),
           };
         }
         break;
@@ -4577,8 +5099,10 @@ function mixedAdoptedElementsForAnalysis(
         } else if (migration.importance != null) {
           importance = {
             origin: "migration",
-            result: migration.importance,
-            reuseProof: reuseProofs.importance ?? unknownReuseProof("legacy_migration"),
+            result: createAiAnalysisMigrationElementResultSchema("importance").parse(
+              reuseRecords.importance?.result ?? migration.importance,
+            ),
+            reuseProof: reuseRecords.importance?.proof ?? unknownReuseProof("legacy_migration"),
           };
         }
         break;
@@ -4588,8 +5112,10 @@ function mixedAdoptedElementsForAnalysis(
         } else if (migration.deadline != null) {
           deadline = {
             origin: "migration",
-            result: migration.deadline,
-            reuseProof: reuseProofs.deadline ?? unknownReuseProof("legacy_migration"),
+            result: createAiAnalysisMigrationElementResultSchema("deadline").parse(
+              reuseRecords.deadline?.result ?? migration.deadline,
+            ),
+            reuseProof: reuseRecords.deadline?.proof ?? unknownReuseProof("legacy_migration"),
           };
         }
         break;
@@ -4599,8 +5125,10 @@ function mixedAdoptedElementsForAnalysis(
         } else if (migration.notification != null) {
           notification = {
             origin: "migration",
-            result: migration.notification,
-            reuseProof: reuseProofs.notification ?? unknownReuseProof("legacy_migration"),
+            result: createAiAnalysisMigrationElementResultSchema("notification").parse(
+              reuseRecords.notification?.result ?? migration.notification,
+            ),
+            reuseProof: reuseRecords.notification?.proof ?? unknownReuseProof("legacy_migration"),
           };
         }
         break;
@@ -4620,6 +5148,19 @@ function mixedAdoptedElementsForAnalysis(
   });
 }
 
+function adoptedRecordsForPlanning(
+  planning: AnalysisElementPlanning,
+): Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>> {
+  const records: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const record = planning.candidates[element].savedReuse;
+    if (record != null) {
+      records[element] = record;
+    }
+  }
+  return Object.freeze(records);
+}
+
 function preservedElementsForReduction(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
@@ -4633,65 +5174,45 @@ function preservedElementsForReduction(
   let importance: AiAnalysisElementMigrationResult<"importance"> | undefined;
   let deadline: AiAnalysisElementMigrationResult<"deadline"> | undefined;
   let notification: AiAnalysisElementMigrationResult<"notification"> | undefined;
+  const previousItem = previousSnapshot(state)?.items.find(
+    (candidate) => candidate.nodeId === analysis.item.nodeId,
+  );
 
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const candidate = planning.candidates[element];
     if (candidate.necessity !== "required") {
       continue;
     }
-    const adopted = verifiedCurrentAdoptedResultForElement(
-      state,
-      analysis,
-      element,
-      candidate.inputFingerprint,
-    );
-    const migrated = verifiedMigrationAdoptedResultForElement(
-      state,
-      analysis,
-      element,
-      candidate.inputFingerprint,
-    );
-    if (adopted == null && migrated == null) {
+    const retained =
+      candidate.savedReuse?.result ??
+      (previousItem == null ? undefined : adoptedResultForRetainedItem(previousItem, element));
+    if (retained == null) {
       continue;
     }
     switch (element) {
       case "status":
-        status = createAiAnalysisMigrationElementResultSchema("status").parse(adopted ?? migrated);
+        status = createAiAnalysisMigrationElementResultSchema("status").parse(retained);
         break;
       case "waitingOn":
-        waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
-          adopted ?? migrated,
-        );
+        waitingOn = createAiAnalysisMigrationElementResultSchema("waitingOn").parse(retained);
         break;
       case "nextAction":
-        nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(
-          adopted ?? migrated,
-        );
+        nextAction = createAiAnalysisMigrationElementResultSchema("nextAction").parse(retained);
         break;
       case "relations":
-        relations = createAiAnalysisMigrationElementResultSchema("relations").parse(
-          adopted ?? migrated,
-        );
+        relations = createAiAnalysisMigrationElementResultSchema("relations").parse(retained);
         break;
       case "progress":
-        progress = createAiAnalysisMigrationElementResultSchema("progress").parse(
-          adopted ?? migrated,
-        );
+        progress = createAiAnalysisMigrationElementResultSchema("progress").parse(retained);
         break;
       case "importance":
-        importance = createAiAnalysisMigrationElementResultSchema("importance").parse(
-          adopted ?? migrated,
-        );
+        importance = createAiAnalysisMigrationElementResultSchema("importance").parse(retained);
         break;
       case "deadline":
-        deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(
-          adopted ?? migrated,
-        );
+        deadline = createAiAnalysisMigrationElementResultSchema("deadline").parse(retained);
         break;
       case "notification":
-        notification = createAiAnalysisMigrationElementResultSchema("notification").parse(
-          adopted ?? migrated,
-        );
+        notification = createAiAnalysisMigrationElementResultSchema("notification").parse(retained);
         break;
       default:
         throw new UnreachableError(element);
@@ -4826,6 +5347,33 @@ async function analyzeCodex(
           runId: invocation.runId,
           invocationId: `${invocation.runId}:codex`,
         });
+  for (const impact of prepared.analysisImpactDecisions) {
+    await recordCodexDiagnostic(
+      diagnostics == null
+        ? undefined
+        : Object.freeze({
+            ...diagnostics,
+            candidateId: impact.candidateId,
+          }),
+      "codex.analysis.impact",
+      {
+        phase: "analysis_impact",
+        element: impact.element,
+        role: impact.role,
+        sourceVersion: Object.freeze({
+          revision: impact.decision.sourceVersion.revision,
+          inputProjectionVersion: impact.decision.sourceVersion.inputProjectionVersion,
+        }),
+        targetVersion: Object.freeze({
+          revision: impact.decision.targetVersion.revision,
+          inputProjectionVersion: impact.decision.targetVersion.inputProjectionVersion,
+        }),
+        impact: impact.decision.impact,
+        compatibilityPath: Object.freeze([...impact.decision.compatibilityPath]),
+        ...(impact.decision.reason == null ? {} : { reason: impact.decision.reason }),
+      },
+    );
+  }
   for (const failure of prepared.inputValidationFailures) {
     await recordCodexDiagnostic(
       diagnostics == null
@@ -4844,6 +5392,13 @@ async function analyzeCodex(
   }
   if (!configuration.config.ai.enabled) {
     const fallback = prepared.failures.length > 0;
+    await recordCodexDiagnostic(diagnostics, "codex.analysis.summary", {
+      phase: "summary",
+      candidateItemCount: prepared.candidates.length,
+      aiCallCount: 0,
+      deferredItemCount: 0,
+      inputValidationFailureCount: prepared.inputValidationFailures.length,
+    });
     return Object.freeze({
       stage: Object.freeze({
         run: undefined,
@@ -4932,6 +5487,13 @@ async function analyzeCodex(
     ...executedRun,
     failures: Object.freeze([...prepared.failures, ...executedRun.failures]),
   }) satisfies AiAnalysisRunResult;
+  await recordCodexDiagnostic(diagnostics, "codex.analysis.summary", {
+    phase: "summary",
+    candidateItemCount: prepared.candidates.length,
+    aiCallCount: run.usage.calls,
+    deferredItemCount: run.deferred.length,
+    inputValidationFailureCount: prepared.inputValidationFailures.length,
+  });
   const fallback = run.failures.length > 0 || run.deferred.length > 0;
   return Object.freeze({
     stage: Object.freeze({
@@ -5002,8 +5564,9 @@ function unavailableDeadlineAssessment(): NaturalLanguageDeadlineAssessmentState
 function currentAdoptedImportanceAssessment(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
+  resolvedResult: AiAnalysisElementMigrationResult | undefined,
 ): NaturalLanguageImportanceAssessmentState | undefined {
-  const adopted = currentAdoptedResultForElement(state, analysis, "importance");
+  const adopted = resolvedResult ?? currentAdoptedResultForElement(state, analysis, "importance");
   if (adopted == null) {
     const migrated = migrationAdoptedResultForElement(state, analysis, "importance");
     if (migrated == null) {
@@ -5033,8 +5596,9 @@ function currentAdoptedImportanceAssessment(
 function currentAdoptedDeadlineAssessment(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
+  resolvedResult: AiAnalysisElementMigrationResult | undefined,
 ): NaturalLanguageDeadlineAssessmentState | undefined {
-  const adopted = currentAdoptedResultForElement(state, analysis, "deadline");
+  const adopted = resolvedResult ?? currentAdoptedResultForElement(state, analysis, "deadline");
   if (adopted == null) {
     const migrated = migrationAdoptedResultForElement(state, analysis, "deadline");
     if (migrated == null) {
@@ -5344,11 +5908,12 @@ function codexOutputForConsumers(
     const raw = rawResults.get(element);
     const adopted =
       candidate.necessity === "required"
-        ? currentAdoptedResultForElement(state, analysis, element)
+        ? (candidate.savedReuse?.result ?? currentAdoptedResultForElement(state, analysis, element))
         : undefined;
     const migrated =
       candidate.necessity === "required"
-        ? migrationAdoptedResultForElement(state, analysis, element)
+        ? (candidate.savedReuse?.result ??
+          migrationAdoptedResultForElement(state, analysis, element))
         : undefined;
     const stateElement =
       element === "status" || element === "waitingOn" || element === "nextAction";
@@ -6587,8 +7152,7 @@ function trackedItemAiAnalysis(
     reduction,
     consumerOutput,
   );
-  const evaluationProofs = evaluationProofsForAnalysis(
-    state,
+  const evaluationRecords = evaluationRecordsForAnalysis(
     analysis,
     planning,
     generations,
@@ -6596,7 +7160,7 @@ function trackedItemAiAnalysis(
     adoptedElements,
     migratedElements,
   );
-  const elements = evaluatedElementsForGenerations(generations, evaluationProofs);
+  const elements = evaluatedElementsForGenerations(generations, evaluationRecords);
   let status: TrackedItemAiAnalysis["status"];
   if (run == null) {
     status = "disabled";
@@ -6632,7 +7196,7 @@ function trackedItemAiAnalysis(
       adoptedElements: mixedAdoptedElementsForAnalysis(
         adoptedElements,
         migratedElements,
-        savedAdoptedReuseProofsForItem(state, nodeId),
+        adoptedRecordsForPlanning(planning),
       ),
     });
   }
@@ -7073,11 +7637,19 @@ function reduceAnalysisPass(
         staleness,
         importanceAssessment: resolveImportanceAssessment(
           reduction?.importanceAssessment,
-          currentAdoptedImportanceAssessment(state, analysis),
+          currentAdoptedImportanceAssessment(
+            state,
+            analysis,
+            planning.candidates.importance.savedReuse?.result,
+          ),
         ),
         deadlineAssessment: resolveDeadlineAssessment(
           reduction?.deadlineAssessment,
-          currentAdoptedDeadlineAssessment(state, analysis),
+          currentAdoptedDeadlineAssessment(
+            state,
+            analysis,
+            planning.candidates.deadline.savedReuse?.result,
+          ),
         ),
       }),
     );

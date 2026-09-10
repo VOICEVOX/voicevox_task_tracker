@@ -5,7 +5,7 @@ import {
   type AnalysisElementGeneration,
   type AnalysisElementInputFingerprint,
   type AnalysisElementNecessity,
-  type AiAnalysisElementReuseProof,
+  type AnalysisElementReuseRecord,
 } from "./analysis-elements.js";
 import { determineAnalysisElementReuse } from "./analysis-reuse.js";
 import { assertNonNullable } from "../util/assert-non-nullable.js";
@@ -19,8 +19,8 @@ export type AnalysisElementSelectionCandidate = Readonly<{
   savedGeneration?: AnalysisElementGeneration;
   inputProjectionVersion: number;
   dependencyFingerprint: AnalysisElementInputFingerprint;
-  savedEvaluationProof?: AiAnalysisElementReuseProof;
-  savedReuseProof?: AiAnalysisElementReuseProof;
+  savedEvaluation?: AnalysisElementReuseRecord;
+  savedReuse?: AnalysisElementReuseRecord;
 }>;
 
 /** 8要素すべての必要性候補。 */
@@ -70,7 +70,7 @@ function selectionReason(
     return "not_required";
   }
 
-  const savedProofs = [candidate.savedEvaluationProof, candidate.savedReuseProof];
+  const savedProofs = [candidate.savedEvaluation?.proof, candidate.savedReuse?.proof];
   return savedProofs.some(
     (savedProof) =>
       savedProof != null &&
@@ -86,11 +86,27 @@ function selectionReason(
     : undefined;
 }
 
+const STATE_ANALYSIS_ELEMENTS: ReadonlySet<AnalysisElement> = new Set([
+  "status",
+  "waitingOn",
+  "nextAction",
+]);
+
+function shouldSelectStateAnalysisGroup(candidates: AnalysisElementSelectionCandidates): boolean {
+  for (const element of STATE_ANALYSIS_ELEMENTS) {
+    if (selectionReason(candidates[element]) == null) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** AIが必要な要素だけをrevision、入力、実行条件、未完了状態から純粋に選別する。 */
 export function selectAnalysisElements(
   candidates: AnalysisElementSelectionCandidates,
 ): AnalysisElementSelection {
   validateCandidates(candidates);
+  const shouldSelectStateGroup = shouldSelectStateAnalysisGroup(candidates);
   const selected: AnalysisElementSelectionCandidate[] = [];
   const skipped: {
     candidate: AnalysisElementSelectionCandidate;
@@ -100,7 +116,12 @@ export function selectAnalysisElements(
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const candidate = candidates[element];
     const reason = selectionReason(candidate);
-    if (reason == null) {
+    if (
+      reason == null ||
+      (shouldSelectStateGroup &&
+        candidate.necessity === "required" &&
+        STATE_ANALYSIS_ELEMENTS.has(element))
+    ) {
       selected.push(candidate);
     } else {
       skipped.push({ candidate, reason });

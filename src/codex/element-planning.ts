@@ -5,7 +5,7 @@ import {
   type AnalysisElementGeneration,
   type AnalysisElementInputFingerprint,
   type AnalysisElementNecessity,
-  type AiAnalysisElementReuseProof,
+  type AnalysisElementReuseRecord,
 } from "./analysis-elements.js";
 import {
   selectAnalysisElements,
@@ -51,8 +51,8 @@ export type AnalysisElementPlanningInput = Readonly<{
   inputProjectionVersions: Readonly<Record<AnalysisElement, number>>;
   dependencyFingerprints: Readonly<Record<AnalysisElement, AnalysisElementInputFingerprint>>;
   savedGenerations: Readonly<Partial<Record<AnalysisElement, AnalysisElementGeneration>>>;
-  savedEvaluationProofs: Readonly<Partial<Record<AnalysisElement, AiAnalysisElementReuseProof>>>;
-  savedReuseProofs: Readonly<Partial<Record<AnalysisElement, AiAnalysisElementReuseProof>>>;
+  savedEvaluations: Readonly<Partial<Record<AnalysisElement, AnalysisElementReuseRecord>>>;
+  savedReuses: Readonly<Partial<Record<AnalysisElement, AnalysisElementReuseRecord>>>;
 }>;
 
 /** 要素別AI判定の必要性と呼び出し対象をまとめた計画。 */
@@ -118,12 +118,16 @@ function candidateFor(
     inputProjectionVersion: input.inputProjectionVersions[element],
     dependencyFingerprint: input.dependencyFingerprints[element],
     ...(savedGeneration == null ? {} : { savedGeneration }),
-    ...(input.savedEvaluationProofs[element] == null
+    ...(input.savedEvaluations[element] == null
       ? {}
-      : { savedEvaluationProof: input.savedEvaluationProofs[element] }),
-    ...(input.savedReuseProofs[element] == null
+      : {
+          savedEvaluation: input.savedEvaluations[element],
+        }),
+    ...(input.savedReuses[element] == null
       ? {}
-      : { savedReuseProof: input.savedReuseProofs[element] }),
+      : {
+          savedReuse: input.savedReuses[element],
+        }),
   });
 }
 
