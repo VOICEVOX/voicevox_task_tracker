@@ -1,8 +1,8 @@
 import { StateConfigurationError } from "./errors.js";
 
-const STATE_BRANCH = "tracker-state";
 const STATE_ROOT_DIRECTORY = "state";
 const STATE_PATH_PREFIX = "state/";
+const STATE_BRANCH_PATTERN = /^(?:tracker-state|sandbox-state\/env-[1-9][0-9]*-[1-9][0-9]*)$/u;
 
 /** 永続化が利用する設定のstate節。 */
 export type StatePersistenceConfiguration = Readonly<{
@@ -24,6 +24,12 @@ export type StateBranchHead =
       status: "present";
       revision: string;
     }>;
+
+/** state branch adapterが解決したoriginのfetch先とpush先。 */
+export type StateRemoteUrls = Readonly<{
+  fetchUrls: readonly string[];
+  pushUrls: readonly string[];
+}>;
 
 /** state branch内のファイル読み取り結果。 */
 export type StateFileReadResult =
@@ -66,6 +72,8 @@ export type StateBranchPublishRequest = Readonly<{
 /** Git操作と永続化ロジックを分離するbranch adapter境界。 */
 export type StateBranchAdapter = Readonly<{
   resolveHead: (branch: string) => Promise<StateBranchHead>;
+  resolveRepositoryRevision?: () => Promise<string>;
+  resolveOriginUrls?: () => Promise<StateRemoteUrls>;
   readFile: (revision: string, path: string) => Promise<StateFileReadResult>;
   readFiles: (
     revision: string,
@@ -75,6 +83,13 @@ export type StateBranchAdapter = Readonly<{
   commit: (request: StateBranchCommitRequest) => Promise<StateBranchCommitResult>;
   publish: (request: StateBranchPublishRequest) => Promise<void>;
 }>;
+
+/** stateを保存できるbranch名か検証する。 */
+export function assertValidStateBranch(branch: string): void {
+  if (!STATE_BRANCH_PATTERN.test(branch)) {
+    throw new StateConfigurationError("tracker-stateまたはsandbox-state配下のbranchが必要です");
+  }
+}
 
 /** state branch内で利用できる正規化済み相対パスか検証する。 */
 export function assertValidStatePath(path: string): void {
@@ -102,9 +117,7 @@ export function assertValidStateDirectory(path: string): void {
 export function validateStatePersistenceConfiguration(
   configuration: StatePersistenceConfiguration,
 ): void {
-  if (configuration.branch !== STATE_BRANCH) {
-    throw new StateConfigurationError(`${STATE_BRANCH} branchだけを使用できます`);
-  }
+  assertValidStateBranch(configuration.branch);
   if (!configuration.canonicalJson) {
     throw new StateConfigurationError("canonicalJsonを有効にしてください");
   }

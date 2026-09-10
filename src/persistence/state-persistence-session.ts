@@ -24,7 +24,12 @@ import {
   type StateFileUpdate,
   type StatePersistenceConfiguration,
 } from "./branch-adapter.js";
-import { StateFormatError, StateHistoryError, StateSnapshotSemanticError } from "./errors.js";
+import {
+  StateBranchConflictError,
+  StateFormatError,
+  StateHistoryError,
+  StateSnapshotSemanticError,
+} from "./errors.js";
 import {
   appendStateHistoryNotificationEvents,
   appendStateHistoryRecord,
@@ -302,6 +307,21 @@ export class StatePersistenceSession {
   ): Promise<StatePersistenceSession> {
     validateStatePersistenceConfiguration(configuration);
     const head = await adapter.resolveHead(configuration.branch);
+    const aiCacheMigrationPlan = await readAiCacheMigrationPlan(adapter, configuration, head);
+    return new StatePersistenceSession(adapter, configuration, head, aiCacheMigrationPlan);
+  }
+
+  /** 指定したbranch headと一致するstate sessionを開始する。 */
+  public static async openAtRevision(
+    adapter: StateBranchAdapter,
+    configuration: StatePersistenceConfiguration,
+    expectedRevision: string,
+  ): Promise<StatePersistenceSession> {
+    validateStatePersistenceConfiguration(configuration);
+    const head = await adapter.resolveHead(configuration.branch);
+    if (head.status !== "present" || head.revision !== expectedRevision) {
+      throw new StateBranchConflictError();
+    }
     const aiCacheMigrationPlan = await readAiCacheMigrationPlan(adapter, configuration, head);
     return new StatePersistenceSession(adapter, configuration, head, aiCacheMigrationPlan);
   }

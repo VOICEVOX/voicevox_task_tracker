@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
@@ -30,6 +31,7 @@ import {
   type ProductionTypes,
 } from "./production-runtime.js";
 import { verifyPersistentStateDirectory } from "./state-verification.js";
+import { parseSandboxContext } from "./sandbox-context.js";
 import { readWorkflowArtifactFile } from "./workflow-artifact.js";
 
 const DEFAULT_PAGES_OUTPUT_DIRECTORY = "artifacts/workflow/pages";
@@ -46,6 +48,7 @@ type ConcreteOperationName =
   | "readGoldenFixtures"
   | "readReplayFixture"
   | "readReplayState"
+  | "readSandboxContext"
   | "readWorkflowArtifact"
   | "verifyStateDirectory";
 
@@ -67,6 +70,8 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
     readReplayFixture: readReplayFixtureFile,
     readReplayState: readReplayStateFile,
     readGoldenFixtures: readGoldenFixtureFiles,
+    readSandboxContext: async (path) =>
+      parseSandboxContext(JSON.parse(await readFile(path, "utf8"))),
     readWorkflowArtifact: readWorkflowArtifactFile,
     verifyStateDirectory: verifyPersistentStateDirectory,
   });

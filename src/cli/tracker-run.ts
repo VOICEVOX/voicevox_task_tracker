@@ -32,6 +32,7 @@ type TrackerRunOptionName =
   | "--notification-action"
   | "--repository-filter"
   | "--report"
+  | "--sandbox-context"
   | "--scheduled-for";
 
 const trackerRunOptionsSchema = z.strictObject({
@@ -40,6 +41,7 @@ const trackerRunOptionsSchema = z.strictObject({
   "--notification-action": notificationActionSchema.optional(),
   "--repository-filter": z.string().min(1).optional(),
   "--report": z.string().min(1).optional(),
+  "--sandbox-context": z.string().min(1).optional(),
   "--scheduled-for": z.string().min(1).optional(),
 });
 
@@ -56,6 +58,7 @@ function parseTrackerRunOptions(args: readonly string[]): TrackerRunOptions {
       name !== "--notification-action" &&
       name !== "--repository-filter" &&
       name !== "--report" &&
+      name !== "--sandbox-context" &&
       name !== "--scheduled-for"
     ) {
       throw new CliUsageError(`未対応のtracker:run optionです。対象: ${name ?? ""}`, {});
@@ -130,6 +133,7 @@ export function createTrackerRunCliArguments(args: readonly string[]): readonly 
   appendOption(cliArguments, options, "--config", "--config");
   appendOption(cliArguments, options, "--notification-action", "--notification-action");
   appendOption(cliArguments, options, "--report", "--report");
+  appendOption(cliArguments, options, "--sandbox-context", "--sandbox-context");
   appendOption(cliArguments, options, "--scheduled-for", "--scheduled-for");
 
   const repositoryFilter = options["--repository-filter"];

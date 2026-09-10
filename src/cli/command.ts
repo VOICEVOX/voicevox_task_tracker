@@ -47,6 +47,7 @@ export type DailyCliCommand = OnlineCommandFields &
   NotificationActionCommandFields &
   Readonly<{
     kind: "daily";
+    sandboxContextPath: string | undefined;
   }>;
 
 /** 外部公開を行わない日次実行を表すCLI入力。 */
@@ -301,12 +302,19 @@ function parseOnlineFields(
 function parseDaily(args: readonly string[]): DailyCliCommand {
   const options = parseOptions(
     args,
-    new Set(["--config", "--notification-action", "--report", "--scheduled-for"]),
+    new Set([
+      "--config",
+      "--notification-action",
+      "--report",
+      "--sandbox-context",
+      "--scheduled-for",
+    ]),
   );
   return Object.freeze({
     kind: "daily",
     ...parseOnlineFields("daily", options),
     notificationAction: parseNotificationAction(options),
+    sandboxContextPath: optionalSingleOption(options, "--sandbox-context"),
   });
 }
 
@@ -737,7 +745,7 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
 export function formatCliUsage(): string {
   return [
     "使用方法:",
-    "  voicevox-task-tracker daily [--config PATH] [--notification-action send|hold|acknowledge-current] [--scheduled-for ISO] [--report PATH]",
+    "  voicevox-task-tracker daily [--config PATH] [--notification-action send|hold|acknowledge-current] [--sandbox-context PATH] [--scheduled-for ISO] [--report PATH]",
     "  voicevox-task-tracker dry-run [--config PATH] [--artifact PATH] [--report PATH]",
     "  voicevox-task-tracker backfill [--mode none|linked|all-open] [--notification-action send|hold|acknowledge-current] [--repository VOICEVOX/REPO]",
     "  voicevox-task-tracker collect-analyze [--mode none|linked|all-open] [--notification-action send|hold|acknowledge-current] [--scheduled-for ISO] [--artifact PATH]",

@@ -1,4 +1,5 @@
 import {
+  assertValidStateBranch,
   assertValidStateDirectory,
   assertValidStatePath,
   type StateBranchAdapter,
@@ -150,10 +151,8 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
     );
   }
 
-  public commit(request: StateBranchCommitRequest): Promise<StateBranchCommitResult> {
-    if (request.branch !== "tracker-state") {
-      return Promise.reject(new StateConfigurationError("tracker-state branchだけを更新できます"));
-    }
+  public async commit(request: StateBranchCommitRequest): Promise<StateBranchCommitResult> {
+    assertValidStateBranch(request.branch);
     if (request.updates.length === 0) {
       return Promise.reject(
         new StateBranchCommitError({
@@ -236,10 +235,8 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
   }
 
   /** メモリ上のstate branchを公開済みとして扱う。 */
-  public publish(request: StateBranchPublishRequest): Promise<void> {
-    if (request.branch !== "tracker-state") {
-      return Promise.reject(new StateConfigurationError("tracker-state branchだけを公開できます"));
-    }
+  public async publish(request: StateBranchPublishRequest): Promise<void> {
+    assertValidStateBranch(request.branch);
     if (!this.#commits.has(request.revision)) {
       return Promise.reject(
         new StateBranchReadError({

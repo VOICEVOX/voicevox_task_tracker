@@ -337,6 +337,9 @@ function createRunId(command: OnlineCliCommand, scheduledFor: UtcIsoDateTime): s
         configPath: command.configPath,
         notificationAction: command.notificationAction,
         scheduledFor,
+        ...(command.sandboxContextPath == null
+          ? {}
+          : { sandboxContextPath: command.sandboxContextPath }),
       };
       break;
     case "backfill":
