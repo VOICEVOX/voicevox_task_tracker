@@ -60,9 +60,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: write
-    environment: sandbox-codex
     concurrency:
-      group: voicevox-task-tracker-sandbox-codex-auth
+      group: voicevox-task-tracker-codex-auth
       cancel-in-progress: false
       queue: max
     steps:
@@ -212,7 +211,6 @@ jobs:
           fi
           gh secret set CODEX_AUTH_JSON \
             --repo "$GITHUB_REPOSITORY" \
-            --env sandbox-codex \
             < "$CODEX_HOME/auth.json"
 
       - name: Codex認証関連ファイルを削除

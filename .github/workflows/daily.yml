@@ -101,6 +101,10 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    concurrency:
+      group: voicevox-task-tracker-codex-auth
+      cancel-in-progress: false
+      queue: max
     steps:
       - name: ソースコードを取得
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
