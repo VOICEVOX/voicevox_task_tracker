@@ -9,11 +9,13 @@ import {
 export {
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
   AI_ANALYSIS_ELEMENTS,
+  AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION,
   aiAnalysisElementEvidenceSchema,
   aiAnalysisElementFingerprintSchema,
   aiAnalysisElementGenerationSchema,
   aiAnalysisElementMetadataSchema,
   aiAnalysisElementNecessitySchema,
+  aiAnalysisElementReuseProofSchema,
   aiAnalysisElementRevisionSchema,
   aiAnalysisElementResultSchema,
   aiAnalysisElementSchema,
@@ -43,6 +45,7 @@ export type {
   AiAnalysisElementExecutionFingerprint,
   AiAnalysisElementGeneration,
   AiAnalysisElementInputFingerprint,
+  AiAnalysisElementReuseProof,
   AiAnalysisElementMetadata,
   AiAnalysisElementMigrationResult,
   AiAnalysisElementNecessity,
@@ -94,6 +97,43 @@ export const AI_ANALYSIS_ELEMENT_REVISIONS = Object.freeze({
   deadline: 1,
   notification: 1,
 } satisfies Readonly<Record<AiAnalysisElement, number>>);
+
+/** AI判定要素へ投影する意味入力のversion。 */
+export const AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS = Object.freeze({
+  status: 1,
+  waitingOn: 1,
+  nextAction: 1,
+  relations: 1,
+  progress: 1,
+  importance: 1,
+  deadline: 1,
+  notification: 1,
+} satisfies Readonly<Record<AiAnalysisElement, number>>);
+
+/** 要素の意味に対する変更の影響。 */
+export const aiAnalysisElementImpactSchema = z.enum([
+  "unaffected",
+  "deterministic",
+  "interpretation_required",
+]);
+
+/** 要素の意味に対する変更の影響。 */
+export type AiAnalysisElementImpact = z.output<typeof aiAnalysisElementImpactSchema>;
+
+/** 要素別の意味変更を表す宣言。 */
+export type AiAnalysisElementImpactDeclaration = Readonly<{
+  changeId: string;
+  from: Readonly<{
+    revision: number;
+    inputProjectionVersion: number;
+  }>;
+  to: Readonly<{
+    revision: number;
+    inputProjectionVersion: number;
+  }>;
+  impact: AiAnalysisElementImpact;
+  compatibilityPath: readonly string[];
+}>;
 
 /** AI判定要素の規則revisionを表す型。 */
 export type AnalysisElementRevision = z.output<typeof aiAnalysisElementRevisionSchema>;

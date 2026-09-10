@@ -52,6 +52,11 @@ export {
   type AnalysisElementPlanningInput,
 } from "./element-planning.js";
 export {
+  determineAnalysisElementReuse,
+  type AnalysisElementReuseDecision,
+  type AnalysisElementReuseInput,
+} from "./analysis-reuse.js";
+export {
   estimateAiInputCost,
   planAiAnalysisBudget,
   planAiAnalysisBudgetWithPreflight,
@@ -128,11 +133,15 @@ export {
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
   AI_ANALYSIS_ELEMENTS,
   AI_ANALYSIS_ELEMENT_REVISIONS,
+  AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
+  AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION,
   aiAnalysisElementEvidenceSchema,
   analysisElementFingerprintSchema as aiAnalysisElementFingerprintSchema,
   aiAnalysisElementGenerationSchema,
   aiAnalysisElementMetadataSchema,
   aiAnalysisElementNecessitySchema,
+  aiAnalysisElementReuseProofSchema,
+  aiAnalysisElementImpactSchema,
   aiAnalysisElementRevisionSchema,
   aiAnalysisElementResultSchema,
   aiAnalysisElementSchema,
@@ -181,6 +190,9 @@ export {
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
   type AnalysisElementInputFingerprint,
+  type AiAnalysisElementReuseProof,
+  type AiAnalysisElementImpact,
+  type AiAnalysisElementImpactDeclaration,
   type AnalysisElementNecessity,
 } from "./analysis-elements.js";
 export { validateCodexAnalysisOutput } from "./output-validation.js";

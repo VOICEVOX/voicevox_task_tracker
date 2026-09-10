@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "13"
+      "const": "14"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -109,6 +109,85 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "aiAnalysisReuseProof": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reuseSchemaVersion",
+            "source",
+            "revision",
+            "inputProjectionVersion",
+            "inputFingerprint",
+            "dependencyFingerprint",
+            "compatibilityPath"
+          ],
+          "properties": {
+            "status": {
+              "const": "verified"
+            },
+            "reuseSchemaVersion": {
+              "const": "1"
+            },
+            "source": {
+              "enum": [
+                "current_generation",
+                "structural_migration",
+                "deterministic_update"
+              ]
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "inputProjectionVersion": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "inputFingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "dependencyFingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "compatibilityPath": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reuseSchemaVersion", "reason"],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reuseSchemaVersion": {
+              "const": "1"
+            },
+            "reason": {
+              "enum": [
+                "legacy_migration",
+                "source_input_unavailable",
+                "source_contract_unavailable",
+                "dependency_input_unavailable",
+                "compatibility_route_missing",
+                "semantic_impact_unknown"
+              ]
+            }
+          }
+        }
+      ]
+    },
     "trackedItemAiAnalysis": {
       "oneOf": [
         {
@@ -133,7 +212,7 @@
               "$ref": "#/$defs/aiAnalysisElements"
             },
             "adoptedElements": {
-              "$ref": "#/$defs/aiAnalysisElements"
+              "$ref": "#/$defs/aiAnalysisCurrentAdoptedElements"
             }
           },
           "allOf": [
@@ -190,28 +269,90 @@
       "additionalProperties": false,
       "properties": {
         "status": {
-          "$ref": "#/$defs/aiAnalysisGenerationStatus"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "waitingOn": {
-          "$ref": "#/$defs/aiAnalysisGenerationWaitingOn"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "nextAction": {
-          "$ref": "#/$defs/aiAnalysisGenerationNextAction"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "relations": {
-          "$ref": "#/$defs/aiAnalysisGenerationRelations"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "progress": {
-          "$ref": "#/$defs/aiAnalysisGenerationProgress"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "importance": {
-          "$ref": "#/$defs/aiAnalysisGenerationImportance"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "deadline": {
-          "$ref": "#/$defs/aiAnalysisGenerationDeadline"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
         },
         "notification": {
-          "$ref": "#/$defs/aiAnalysisGenerationNotification"
+          "$ref": "#/$defs/aiAnalysisEvaluatedElement"
+        }
+      }
+    },
+    "aiAnalysisEvaluatedElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["generation", "evaluationProof"],
+      "properties": {
+        "generation": {
+          "$ref": "#/$defs/aiAnalysisGeneration"
+        },
+        "evaluationProof": {
+          "$ref": "#/$defs/aiAnalysisReuseProof"
+        }
+      }
+    },
+    "aiAnalysisCurrentAdoptedElements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "waitingOn": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "nextAction": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "relations": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "progress": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "importance": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "deadline": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        },
+        "notification": {
+          "$ref": "#/$defs/aiAnalysisCurrentAdoptedElement"
+        }
+      }
+    },
+    "aiAnalysisCurrentAdoptedElement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin", "generation", "result", "reuseProof"],
+      "properties": {
+        "origin": {
+          "const": "current"
+        },
+        "generation": {
+          "$ref": "#/$defs/aiAnalysisGeneration"
+        },
+        "result": {
+          "$ref": "#/$defs/aiAnalysisMigrationResult"
+        },
+        "reuseProof": {
+          "$ref": "#/$defs/aiAnalysisReuseProof"
         }
       }
     },
@@ -280,26 +421,35 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["origin", "generation"],
+          "required": ["origin", "generation", "result", "reuseProof"],
           "properties": {
             "origin": {
               "const": "current"
             },
             "generation": {
               "$ref": "#/$defs/aiAnalysisGeneration"
+            },
+            "result": {
+              "$ref": "#/$defs/aiAnalysisMigrationResult"
+            },
+            "reuseProof": {
+              "$ref": "#/$defs/aiAnalysisReuseProof"
             }
           }
         },
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["origin", "result"],
+          "required": ["origin", "result", "reuseProof"],
           "properties": {
             "origin": {
               "const": "migration"
             },
             "result": {
               "$ref": "#/$defs/aiAnalysisMigrationResult"
+            },
+            "reuseProof": {
+              "$ref": "#/$defs/aiAnalysisReuseProof"
             }
           }
         }

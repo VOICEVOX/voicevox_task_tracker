@@ -51,6 +51,48 @@ export const aiAnalysisElementRevisionSchema = z
   .int()
   .positive("revisionは正の整数にしてください");
 
+/** 採用結果の再利用証明のschema version。 */
+export const AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION = "1";
+
+const aiAnalysisReuseProofSourceSchema = z.enum([
+  "current_generation",
+  "structural_migration",
+  "deterministic_update",
+]);
+
+const aiAnalysisReuseProofUnknownReasonSchema = z.enum([
+  "legacy_migration",
+  "source_input_unavailable",
+  "source_contract_unavailable",
+  "dependency_input_unavailable",
+  "compatibility_route_missing",
+  "semantic_impact_unknown",
+]);
+
+const aiAnalysisReuseProofSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("verified"),
+    reuseSchemaVersion: z.literal(AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION),
+    source: aiAnalysisReuseProofSourceSchema,
+    revision: aiAnalysisElementRevisionSchema,
+    inputProjectionVersion: aiAnalysisElementRevisionSchema,
+    inputFingerprint: aiAnalysisElementFingerprintSchema,
+    dependencyFingerprint: aiAnalysisElementFingerprintSchema,
+    compatibilityPath: z.array(z.string().min(1).max(160)).min(1),
+  }),
+  z.strictObject({
+    status: z.literal("unknown"),
+    reuseSchemaVersion: z.literal(AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION),
+    reason: aiAnalysisReuseProofUnknownReasonSchema,
+  }),
+]);
+
+/** 採用結果を現在の要素規則で再利用できるかを表す証明schema。 */
+export const aiAnalysisElementReuseProofSchema = aiAnalysisReuseProofSchema;
+
+/** 採用結果を現在の要素規則で再利用できるかを表す証明。 */
+export type AiAnalysisElementReuseProof = z.output<typeof aiAnalysisReuseProofSchema>;
+
 /** AI実行で指定するreasoning effort schema。 */
 export const aiAnalysisReasoningEffortSchema = z.enum([
   "none",

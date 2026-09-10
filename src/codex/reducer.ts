@@ -392,6 +392,12 @@ type ElementResultSelection = Readonly<{
   application: "applied" | "preserved" | "deterministic_fallback";
 }>;
 
+const STATE_ANALYSIS_ELEMENTS: readonly AiAnalysisElement[] = Object.freeze([
+  "status",
+  "waitingOn",
+  "nextAction",
+]);
+
 const relationCandidateIdSchema = z.templateLiteral(["rel:", z.string()]);
 
 function resultForElement(
@@ -521,6 +527,68 @@ function selectElementResult(
     classification,
     application: "applied",
   });
+}
+
+function isAcceptedStateSelection(selection: ElementResultSelection): boolean {
+  return (
+    selection.result != null &&
+    (selection.application === "applied" || selection.application === "preserved")
+  );
+}
+
+function reconcileStateSelections(
+  selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
+  selectedElements: ReadonlySet<string>,
+  preservedElements: CodexPreservedElements,
+): ReadonlyMap<AiAnalysisElement, ElementResultSelection> {
+  const selectedStateElements = STATE_ANALYSIS_ELEMENTS.filter((element) =>
+    selectedElements.has(element),
+  );
+  if (selectedStateElements.length < 2) {
+    return selections;
+  }
+
+  const selectedStateSelections = selectedStateElements.map((element) => {
+    const selection = selections.get(element);
+    assertNonNullable(selection, `${element}要素の選択結果がありません`);
+    return selection;
+  });
+  if (selectedStateSelections.every((selection) => selection.application === "applied")) {
+    return selections;
+  }
+
+  const preservedStateResults = new Map<
+    AiAnalysisElement,
+    AiAnalysisElementMigrationResult | undefined
+  >();
+  for (const element of selectedStateElements) {
+    preservedStateResults.set(element, resultForElement(preservedElements, element));
+  }
+  const reconciled = new Map(selections);
+  for (const [index, element] of selectedStateElements.entries()) {
+    const selection = selectedStateSelections[index];
+    assertNonNullable(selection, `${element}要素の選択結果がありません`);
+    const preserved = preservedStateResults.get(element);
+    reconciled.set(
+      element,
+      Object.freeze({
+        result: preserved,
+        classification: selection.classification,
+        application: preserved == null ? "deterministic_fallback" : "preserved",
+      }),
+    );
+  }
+  return reconciled;
+}
+
+function stateSelectionCanBeApplied(
+  stateSelections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[],
+  deterministicStatePriority: boolean,
+): boolean {
+  if (deterministicStatePriority) {
+    return false;
+  }
+  return stateSelections.some(([, selection]) => isAcceptedStateSelection(selection));
 }
 
 function createFallbackNotification(reasonSummary: string): ReducedCodexNotification {
@@ -748,11 +816,11 @@ function stateDisplayMode(
   if (deterministicStatePriority) {
     return "confirmed";
   }
+  if (!stateSelectionCanBeApplied(selections, deterministicStatePriority)) {
+    return "fallback";
+  }
   const stateClassifications = selections
-    .filter(
-      ([, selection]) =>
-        selection.application === "applied" || selection.application === "preserved",
-    )
+    .filter(([, selection]) => isAcceptedStateSelection(selection))
     .map(([element, selection]) =>
       classificationForSelection(element, selection, confidenceThresholds),
     )
@@ -808,29 +876,36 @@ function createStateDecision(
           nextActionSelection.result,
         );
 
-  const status = deterministicStatePriority ? deterministicDecision.status : statusResult?.value;
-  const waitingOn = deterministicStatePriority
-    ? deterministicDecision.waitingOn
-    : waitingOnResult?.value;
-  const nextAction = deterministicStatePriority
-    ? deterministicDecision.nextAction
-    : nextActionResult?.value;
-  const reducedStatus = status ?? deterministicDecision.status;
-  const reducedWaitingOn =
-    waitingOn == null ? deterministicDecision.waitingOn : copyWaitingOn(waitingOn);
-  const reducedNextAction = nextAction ?? deterministicDecision.nextAction;
-  validateStateValues(reducedStatus, reducedWaitingOn);
-
-  const aiStateApplied =
-    !deterministicStatePriority &&
-    [statusSelection, waitingOnSelection, nextActionSelection].some(
-      (selection) => selection.application === "applied" || selection.application === "preserved",
-    );
   const aiStateSelections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[] = [
     ["status", statusSelection],
     ["waitingOn", waitingOnSelection],
     ["nextAction", nextActionSelection],
   ];
+  const aiStateCanBeApplied = stateSelectionCanBeApplied(
+    aiStateSelections,
+    deterministicStatePriority,
+  );
+  const status =
+    aiStateCanBeApplied && isAcceptedStateSelection(statusSelection)
+      ? statusResult?.value
+      : deterministicDecision.status;
+  const waitingOn =
+    aiStateCanBeApplied && isAcceptedStateSelection(waitingOnSelection)
+      ? waitingOnResult?.value
+      : deterministicDecision.waitingOn;
+  const nextAction =
+    aiStateCanBeApplied && isAcceptedStateSelection(nextActionSelection)
+      ? nextActionResult?.value
+      : deterministicDecision.nextAction;
+  const candidateStatus = status ?? deterministicDecision.status;
+  const candidateWaitingOn =
+    waitingOn == null ? deterministicDecision.waitingOn : copyWaitingOn(waitingOn);
+  const aiStateApplied = aiStateCanBeApplied;
+  const reducedStatus = candidateStatus;
+  const reducedWaitingOn = candidateWaitingOn;
+  const reducedNextAction = nextAction ?? deterministicDecision.nextAction;
+  validateStateValues(reducedStatus, reducedWaitingOn);
+
   const resultEvidence: Evidence[] = [];
   for (const [element, selection] of aiStateSelections) {
     if (
@@ -844,7 +919,11 @@ function createStateDecision(
   }
   const evidence =
     aiStateApplied && resultEvidence.length > 0
-      ? Object.freeze(resultEvidence)
+      ? Object.freeze(
+          aiStateSelections.every(([, selection]) => isAcceptedStateSelection(selection))
+            ? resultEvidence
+            : [...deterministicDecision.evidence, ...resultEvidence],
+        )
       : deterministicDecision.evidence;
   const aiStateResultConfidences = aiStateSelections
     .filter(
@@ -861,7 +940,11 @@ function createStateDecision(
   const stateConfidence =
     aiStateResultConfidences.length === 0
       ? deterministicDecision.confidence
-      : Math.min(...aiStateResultConfidences);
+      : Math.min(
+          ...(aiStateSelections.every(([, selection]) => isAcceptedStateSelection(selection))
+            ? aiStateResultConfidences
+            : [deterministicDecision.confidence, ...aiStateResultConfidences]),
+        );
   const uncertainties = [...deterministicDecision.uncertainties];
   for (const [, selection] of aiStateSelections) {
     if (
@@ -958,9 +1041,9 @@ export function reduceCodexAnalysis(
   validateDecision(deterministicDecision);
   validatePreservedElementKeys(preservedElements);
   const selectedElements = new Set<string>(analysisInput.selectedElements);
-  const selections = new Map<AiAnalysisElement, ElementResultSelection>();
+  const generatedSelections = new Map<AiAnalysisElement, ElementResultSelection>();
   for (const element of AI_ANALYSIS_ELEMENTS) {
-    selections.set(
+    generatedSelections.set(
       element,
       selectElementResult(
         element,
@@ -971,6 +1054,11 @@ export function reduceCodexAnalysis(
       ),
     );
   }
+  const selections = reconcileStateSelections(
+    generatedSelections,
+    selectedElements,
+    preservedElements,
+  );
 
   if (attempt.status === "unavailable") {
     const unavailable = reduceUnavailableCodexAnalysis(

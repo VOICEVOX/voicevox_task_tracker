@@ -10,14 +10,20 @@ import {
   aiAnalysisWaitingOnSchema,
   aiAnalysisElementMetadataSchema,
   aiAnalysisElementSchema,
+  aiAnalysisElementReuseProofSchema,
+  AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION,
   createAiAnalysisElementResultSchema,
+  createAiAnalysisElementGenerationSchema,
   createAiAnalysisMigrationElementResultSchema,
   createAiAnalysisElementValueSchema,
   type AiAnalysisElement,
   type AiAnalysisElementMigrationResult,
   type AiAnalysisRelation,
 } from "../domain/ai-analysis-elements.js";
-import { type TrackedItemAiAnalysisMigrationAdoptedElements } from "../domain/index.js";
+import {
+  type TrackedItemAiAnalysisCurrentElements,
+  type TrackedItemAiAnalysisMigrationAdoptedElements,
+} from "../domain/index.js";
 import { type AiCacheKey } from "../codex/cache.js";
 import { type LegacyAiCacheEntry } from "./ai-cache-migration.js";
 import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
@@ -28,11 +34,20 @@ import {
   parseStateSnapshot,
   parseStateSnapshotVersion11,
   parseStateSnapshotVersion12,
+  parseStateSnapshotVersion13,
   type SnapshotAnalysisPlanFingerprint,
   type StateSnapshot,
 } from "./snapshot.js";
 
 const legacyStatusSchema = aiAnalysisStatusSchema;
+
+function legacyReuseProof() {
+  return aiAnalysisElementReuseProofSchema.parse({
+    status: "unknown",
+    reuseSchemaVersion: AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION,
+    reason: "legacy_migration",
+  });
+}
 const legacyWaitingOnSchema = z
   .array(
     z.strictObject({
@@ -340,15 +355,127 @@ function parseMigrationElementResult(
   element: AiAnalysisElement,
   value: unknown,
   origin: "current" | "migration",
+  elementSchemaVersion: "5" | "6",
 ): AiAnalysisElementMigrationResult {
   if (origin === "current") {
+    if (elementSchemaVersion === "6") {
+      const generation = createAiAnalysisElementGenerationSchema(element).parse(value);
+      return createAiAnalysisMigrationElementResultSchema(element).parse(generation.result);
+    }
     return parseLegacyElementGenerationResult(element, value);
   }
   const adoptedElement = legacyAdoptedElementSchema.parse(value);
   if (adoptedElement.origin === "current") {
+    if (elementSchemaVersion === "6") {
+      const generation = createAiAnalysisElementGenerationSchema(element).parse(
+        adoptedElement.generation,
+      );
+      return createAiAnalysisMigrationElementResultSchema(element).parse(generation.result);
+    }
     return parseLegacyElementGenerationResult(element, adoptedElement.generation);
   }
+  if (elementSchemaVersion === "6") {
+    return createAiAnalysisMigrationElementResultSchema(element).parse(adoptedElement.result);
+  }
   return parseLegacyElementMigrationResult(element, adoptedElement.result);
+}
+
+function setCurrentAdoptedElement(
+  adopted: MutablePartial<TrackedItemAiAnalysisMigrationAdoptedElements>,
+  element: AiAnalysisElement,
+  generationValue: unknown,
+): void {
+  switch (element) {
+    case "status": {
+      const generation = createAiAnalysisElementGenerationSchema("status").parse(generationValue);
+      adopted.status = {
+        origin: "current",
+        generation,
+        result: createAiAnalysisMigrationElementResultSchema("status").parse(generation.result),
+        reuseProof: legacyReuseProof(),
+      };
+      return;
+    }
+    case "waitingOn": {
+      const generation =
+        createAiAnalysisElementGenerationSchema("waitingOn").parse(generationValue);
+      adopted.waitingOn = {
+        origin: "current",
+        generation,
+        result: createAiAnalysisMigrationElementResultSchema("waitingOn").parse(generation.result),
+        reuseProof: legacyReuseProof(),
+      };
+      return;
+    }
+    case "nextAction": {
+      const generation =
+        createAiAnalysisElementGenerationSchema("nextAction").parse(generationValue);
+      adopted.nextAction = {
+        origin: "current",
+        generation,
+        result: createAiAnalysisMigrationElementResultSchema("nextAction").parse(generation.result),
+        reuseProof: legacyReuseProof(),
+      };
+      return;
+    }
+    case "relations": {
+      const generation =
+        createAiAnalysisElementGenerationSchema("relations").parse(generationValue);
+      adopted.relations = {
+        origin: "current",
+        generation,
+        result: createAiAnalysisMigrationElementResultSchema("relations").parse(generation.result),
+        reuseProof: legacyReuseProof(),
+      };
+      return;
+    }
+    case "progress": {
+      const generation = createAiAnalysisElementGenerationSchema("progress").parse(generationValue);
+      adopted.progress = {
+        origin: "current",
+        generation,
+        result: createAiAnalysisMigrationElementResultSchema("progress").parse(generation.result),
+        reuseProof: legacyReuseProof(),
+      };
+      return;
+    }
+    case "importance": {
+      const generation =
+        createAiAnalysisElementGenerationSchema("importance").parse(generationValue);
+      adopted.importance = {
+        origin: "current",
+        generation,
+        result: createAiAnalysisMigrationElementResultSchema("importance").parse(generation.result),
+        reuseProof: legacyReuseProof(),
+      };
+      return;
+    }
+    case "deadline": {
+      const generation = createAiAnalysisElementGenerationSchema("deadline").parse(generationValue);
+      adopted.deadline = {
+        origin: "current",
+        generation,
+        result: createAiAnalysisMigrationElementResultSchema("deadline").parse(generation.result),
+        reuseProof: legacyReuseProof(),
+      };
+      return;
+    }
+    case "notification": {
+      const generation =
+        createAiAnalysisElementGenerationSchema("notification").parse(generationValue);
+      adopted.notification = {
+        origin: "current",
+        generation,
+        result: createAiAnalysisMigrationElementResultSchema("notification").parse(
+          generation.result,
+        ),
+        reuseProof: legacyReuseProof(),
+      };
+      return;
+    }
+    default:
+      throw new UnreachableError(element);
+  }
 }
 
 function setMigratedAdoptedElement(
@@ -356,70 +483,90 @@ function setMigratedAdoptedElement(
   element: AiAnalysisElement,
   value: unknown,
   origin: "current" | "migration",
+  elementSchemaVersion: "5" | "6",
 ): void {
+  if (elementSchemaVersion === "6") {
+    if (origin === "current") {
+      setCurrentAdoptedElement(adopted, element, value);
+      return;
+    }
+    const adoptedElement = legacyAdoptedElementSchema.parse(value);
+    if (adoptedElement.origin === "current") {
+      setCurrentAdoptedElement(adopted, element, adoptedElement.generation);
+      return;
+    }
+  }
   switch (element) {
     case "status":
       adopted.status = {
         origin: "migration",
         result: createAiAnalysisMigrationElementResultSchema("status").parse(
-          parseMigrationElementResult("status", value, origin),
+          parseMigrationElementResult("status", value, origin, elementSchemaVersion),
         ),
+        reuseProof: legacyReuseProof(),
       };
       return;
     case "waitingOn":
       adopted.waitingOn = {
         origin: "migration",
         result: createAiAnalysisMigrationElementResultSchema("waitingOn").parse(
-          parseMigrationElementResult("waitingOn", value, origin),
+          parseMigrationElementResult("waitingOn", value, origin, elementSchemaVersion),
         ),
+        reuseProof: legacyReuseProof(),
       };
       return;
     case "nextAction":
       adopted.nextAction = {
         origin: "migration",
         result: createAiAnalysisMigrationElementResultSchema("nextAction").parse(
-          parseMigrationElementResult("nextAction", value, origin),
+          parseMigrationElementResult("nextAction", value, origin, elementSchemaVersion),
         ),
+        reuseProof: legacyReuseProof(),
       };
       return;
     case "relations":
       adopted.relations = {
         origin: "migration",
         result: createAiAnalysisMigrationElementResultSchema("relations").parse(
-          parseMigrationElementResult("relations", value, origin),
+          parseMigrationElementResult("relations", value, origin, elementSchemaVersion),
         ),
+        reuseProof: legacyReuseProof(),
       };
       return;
     case "progress":
       adopted.progress = {
         origin: "migration",
         result: createAiAnalysisMigrationElementResultSchema("progress").parse(
-          parseMigrationElementResult("progress", value, origin),
+          parseMigrationElementResult("progress", value, origin, elementSchemaVersion),
         ),
+        reuseProof: legacyReuseProof(),
       };
       return;
     case "importance":
       adopted.importance = {
         origin: "migration",
         result: createAiAnalysisMigrationElementResultSchema("importance").parse(
-          parseMigrationElementResult("importance", value, origin),
+          parseMigrationElementResult("importance", value, origin, elementSchemaVersion),
         ),
+        reuseProof: legacyReuseProof(),
       };
       return;
     case "deadline":
       adopted.deadline = {
         origin: "migration",
         result: createAiAnalysisMigrationElementResultSchema("deadline").parse(
-          parseMigrationElementResult("deadline", value, origin),
+          parseMigrationElementResult("deadline", value, origin, elementSchemaVersion),
         ),
+        reuseProof: legacyReuseProof(),
       };
       return;
     case "notification":
       adopted.notification = {
         origin: "migration",
         result: createAiAnalysisMigrationElementResultSchema("notification").parse(
-          parseMigrationElementResult("notification", value, origin),
+          parseMigrationElementResult("notification", value, origin, elementSchemaVersion),
         ),
+        reuseProof: legacyReuseProof(),
       };
       return;
     default:
@@ -430,6 +577,7 @@ function setMigratedAdoptedElement(
 function parseAdoptedElements(
   elements: unknown,
   origin: "current" | "migration",
+  elementSchemaVersion: "5" | "6",
 ): TrackedItemAiAnalysisMigrationAdoptedElements {
   const entries = z.record(z.string(), z.unknown()).parse(elements);
   const adopted: MutablePartial<TrackedItemAiAnalysisMigrationAdoptedElements> = {};
@@ -440,15 +588,84 @@ function parseAdoptedElements(
         cause: elementResult.error,
       });
     }
-    setMigratedAdoptedElement(adopted, elementResult.data, value, origin);
+    setMigratedAdoptedElement(adopted, elementResult.data, value, origin, elementSchemaVersion);
   }
   return Object.freeze(adopted);
 }
 
-function migrateAiAnalysis(value: unknown): {
+function parseCurrentElements(elements: unknown): TrackedItemAiAnalysisCurrentElements {
+  const entries = z.record(z.string(), z.unknown()).parse(elements);
+  const evaluated: MutablePartial<TrackedItemAiAnalysisCurrentElements> = {};
+  for (const [key, value] of Object.entries(entries)) {
+    const elementResult = aiAnalysisElementSchema.safeParse(key);
+    if (!elementResult.success) {
+      throw new StateSnapshotSemanticError(`AI評価要素が不正です。対象: ${key}`, {
+        cause: elementResult.error,
+      });
+    }
+    const evaluationProof = legacyReuseProof();
+    switch (elementResult.data) {
+      case "status":
+        evaluated.status = {
+          generation: createAiAnalysisElementGenerationSchema("status").parse(value),
+          evaluationProof,
+        };
+        break;
+      case "waitingOn":
+        evaluated.waitingOn = {
+          generation: createAiAnalysisElementGenerationSchema("waitingOn").parse(value),
+          evaluationProof,
+        };
+        break;
+      case "nextAction":
+        evaluated.nextAction = {
+          generation: createAiAnalysisElementGenerationSchema("nextAction").parse(value),
+          evaluationProof,
+        };
+        break;
+      case "relations":
+        evaluated.relations = {
+          generation: createAiAnalysisElementGenerationSchema("relations").parse(value),
+          evaluationProof,
+        };
+        break;
+      case "progress":
+        evaluated.progress = {
+          generation: createAiAnalysisElementGenerationSchema("progress").parse(value),
+          evaluationProof,
+        };
+        break;
+      case "importance":
+        evaluated.importance = {
+          generation: createAiAnalysisElementGenerationSchema("importance").parse(value),
+          evaluationProof,
+        };
+        break;
+      case "deadline":
+        evaluated.deadline = {
+          generation: createAiAnalysisElementGenerationSchema("deadline").parse(value),
+          evaluationProof,
+        };
+        break;
+      case "notification":
+        evaluated.notification = {
+          generation: createAiAnalysisElementGenerationSchema("notification").parse(value),
+          evaluationProof,
+        };
+        break;
+    }
+  }
+  return Object.freeze(evaluated);
+}
+
+function migrateAiAnalysis(
+  value: unknown,
+  preserveElements: boolean,
+  elementSchemaVersion: "5" | "6",
+): {
   origin: "migration";
   status: "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
-  elements: Readonly<Record<string, never>>;
+  elements: TrackedItemAiAnalysisCurrentElements;
   adoptedElements: TrackedItemAiAnalysisMigrationAdoptedElements;
 } {
   const aiAnalysis = z
@@ -462,8 +679,12 @@ function migrateAiAnalysis(value: unknown): {
   return {
     origin: "migration",
     status: aiAnalysis.status,
-    elements: {},
-    adoptedElements: parseAdoptedElements(aiAnalysis.adoptedElements, aiAnalysis.origin),
+    elements: preserveElements ? parseCurrentElements(aiAnalysis.elements) : Object.freeze({}),
+    adoptedElements: parseAdoptedElements(
+      aiAnalysis.adoptedElements,
+      aiAnalysis.origin,
+      elementSchemaVersion,
+    ),
   };
 }
 
@@ -738,6 +959,7 @@ function createLegacyAdoptedElements(
     adopted.importance = {
       origin: "migration",
       result: importance,
+      reuseProof: legacyReuseProof(),
     };
   }
   const deadline = createAssessmentResult(item, output, "deadline");
@@ -745,6 +967,7 @@ function createLegacyAdoptedElements(
     adopted.deadline = {
       origin: "migration",
       result: deadline,
+      reuseProof: legacyReuseProof(),
     };
   }
   if (output == null) {
@@ -764,6 +987,7 @@ function createLegacyAdoptedElements(
           output.uncertainties,
         ),
       ),
+      reuseProof: legacyReuseProof(),
     };
   }
   if (waitingOnMatched) {
@@ -778,6 +1002,7 @@ function createLegacyAdoptedElements(
           output.uncertainties,
         ),
       ),
+      reuseProof: legacyReuseProof(),
     };
   }
   if (statusMatched && waitingOnMatched) {
@@ -792,6 +1017,7 @@ function createLegacyAdoptedElements(
           output.uncertainties,
         ),
       ),
+      reuseProof: legacyReuseProof(),
     };
   }
   const adoptedRelations = adoptedRelationCandidates(item, output, legacyRelationsById);
@@ -807,6 +1033,7 @@ function createLegacyAdoptedElements(
           output.uncertainties,
         ),
       ),
+      reuseProof: legacyReuseProof(),
     };
   }
   if (item.severityContext.decisionBasis === "ai_only") {
@@ -822,6 +1049,7 @@ function createLegacyAdoptedElements(
           output.uncertainties,
         ),
       ),
+      reuseProof: legacyReuseProof(),
     };
   }
   return Object.freeze(adopted);
@@ -885,19 +1113,19 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion11(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "13",
+      schemaVersion: "14",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
           items: repository.items.map((item) => ({
             ...item,
-            aiAnalysis: migrateAiAnalysis(item.aiAnalysis),
+            aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
           })),
         })),
       },
       items: value.items.map((item) => ({
         ...item,
-        aiAnalysis: migrateAiAnalysis(item.aiAnalysis),
+        aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
       })),
     });
   } catch (error: unknown) {
@@ -910,19 +1138,44 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion12(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "13",
+      schemaVersion: "14",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
           items: repository.items.map((item) => ({
             ...item,
-            aiAnalysis: migrateAiAnalysis(item.aiAnalysis),
+            aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
           })),
         })),
       },
       items: value.items.map((item) => ({
         ...item,
-        aiAnalysis: migrateAiAnalysis(item.aiAnalysis),
+        aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
+      })),
+    });
+  } catch (error: unknown) {
+    throw migrationFormatError(error);
+  }
+}
+
+function migrateVersion13StateSnapshot(source: string): StateSnapshot {
+  try {
+    const value = parseStateSnapshotVersion13(source);
+    return createStateSnapshot({
+      ...value,
+      schemaVersion: "14",
+      collection: {
+        repositories: value.collection.repositories.map((repository) => ({
+          ...repository,
+          items: repository.items.map((item) => ({
+            ...item,
+            aiAnalysis: migrateAiAnalysis(item.aiAnalysis, true, "6"),
+          })),
+        })),
+      },
+      items: value.items.map((item) => ({
+        ...item,
+        aiAnalysis: migrateAiAnalysis(item.aiAnalysis, true, "6"),
       })),
     });
   } catch (error: unknown) {
@@ -961,7 +1214,7 @@ function migrateLegacyStateSnapshot(
       }),
     }));
     return createStateSnapshot({
-      schemaVersion: "13",
+      schemaVersion: "14",
       generatedAt: value.generatedAt,
       trackingStartAt: value.trackingStartAt,
       ai: value.ai,
@@ -996,6 +1249,8 @@ export function migrateStateSnapshot(
     case "12":
       return migrateVersion12StateSnapshot(source);
     case "13":
+      return migrateVersion13StateSnapshot(source);
+    case "14":
       return parseStateSnapshot(source);
     default:
       throw new StateFormatError("snapshot", {

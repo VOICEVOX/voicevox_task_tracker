@@ -5,6 +5,7 @@ import {
   type AnalysisElementGeneration,
   type AnalysisElementInputFingerprint,
   type AnalysisElementNecessity,
+  type AiAnalysisElementReuseProof,
 } from "./analysis-elements.js";
 import {
   selectAnalysisElements,
@@ -47,7 +48,11 @@ export type AnalysisElementPlanningInput = Readonly<{
   necessities: Readonly<Record<AnalysisElement, AnalysisElementNecessity>>;
   inputFingerprints: Readonly<Record<AnalysisElement, AnalysisElementInputFingerprint>>;
   executionFingerprints: Readonly<Record<AnalysisElement, AnalysisElementExecutionFingerprint>>;
+  inputProjectionVersions: Readonly<Record<AnalysisElement, number>>;
+  dependencyFingerprints: Readonly<Record<AnalysisElement, AnalysisElementInputFingerprint>>;
   savedGenerations: Readonly<Partial<Record<AnalysisElement, AnalysisElementGeneration>>>;
+  savedEvaluationProofs: Readonly<Partial<Record<AnalysisElement, AiAnalysisElementReuseProof>>>;
+  savedReuseProofs: Readonly<Partial<Record<AnalysisElement, AiAnalysisElementReuseProof>>>;
 }>;
 
 /** 要素別AI判定の必要性と呼び出し対象をまとめた計画。 */
@@ -110,7 +115,15 @@ function candidateFor(
     necessity: input.necessities[element],
     inputFingerprint: input.inputFingerprints[element],
     executionFingerprint: input.executionFingerprints[element],
+    inputProjectionVersion: input.inputProjectionVersions[element],
+    dependencyFingerprint: input.dependencyFingerprints[element],
     ...(savedGeneration == null ? {} : { savedGeneration }),
+    ...(input.savedEvaluationProofs[element] == null
+      ? {}
+      : { savedEvaluationProof: input.savedEvaluationProofs[element] }),
+    ...(input.savedReuseProofs[element] == null
+      ? {}
+      : { savedReuseProof: input.savedReuseProofs[element] }),
   });
 }
 
@@ -119,6 +132,8 @@ export function planAnalysisElements(input: AnalysisElementPlanningInput): Analy
   validateElementMapKeys(input.necessities, "AI判定要素の必要性");
   validateElementMapKeys(input.inputFingerprints, "AI判定要素の入力fingerprint");
   validateElementMapKeys(input.executionFingerprints, "AI判定要素の実行条件fingerprint");
+  validateElementMapKeys(input.inputProjectionVersions, "AI判定要素の入力投影version");
+  validateElementMapKeys(input.dependencyFingerprints, "AI判定要素の依存fingerprint");
   const candidates = Object.freeze({
     status: candidateFor("status", input),
     waitingOn: candidateFor("waitingOn", input),

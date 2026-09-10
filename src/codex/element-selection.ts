@@ -1,12 +1,13 @@
 import {
   AI_ANALYSIS_ELEMENTS,
-  AI_ANALYSIS_ELEMENT_REVISIONS,
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
   type AnalysisElementGeneration,
   type AnalysisElementInputFingerprint,
   type AnalysisElementNecessity,
+  type AiAnalysisElementReuseProof,
 } from "./analysis-elements.js";
+import { determineAnalysisElementReuse } from "./analysis-reuse.js";
 import { assertNonNullable } from "../util/assert-non-nullable.js";
 
 /** IssueまたはPull RequestについてAIへ渡す要素の選別候補。 */
@@ -16,6 +17,10 @@ export type AnalysisElementSelectionCandidate = Readonly<{
   inputFingerprint: AnalysisElementInputFingerprint;
   executionFingerprint: AnalysisElementExecutionFingerprint;
   savedGeneration?: AnalysisElementGeneration;
+  inputProjectionVersion: number;
+  dependencyFingerprint: AnalysisElementInputFingerprint;
+  savedEvaluationProof?: AiAnalysisElementReuseProof;
+  savedReuseProof?: AiAnalysisElementReuseProof;
 }>;
 
 /** 8要素すべての必要性候補。 */
@@ -65,20 +70,20 @@ function selectionReason(
     return "not_required";
   }
 
-  const generation = candidate.savedGeneration;
-  if (generation == null) {
-    return undefined;
-  }
-  if (generation.metadata.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[candidate.element]) {
-    return undefined;
-  }
-  if (generation.metadata.inputFingerprint !== candidate.inputFingerprint) {
-    return undefined;
-  }
-  if (generation.metadata.executionFingerprint !== candidate.executionFingerprint) {
-    return undefined;
-  }
-  return "up_to_date";
+  const savedProofs = [candidate.savedEvaluationProof, candidate.savedReuseProof];
+  return savedProofs.some(
+    (savedProof) =>
+      savedProof != null &&
+      determineAnalysisElementReuse({
+        element: candidate.element,
+        inputFingerprint: candidate.inputFingerprint,
+        inputProjectionVersion: candidate.inputProjectionVersion,
+        dependencyFingerprint: candidate.dependencyFingerprint,
+        savedProof,
+      }) === "verified",
+  )
+    ? "up_to_date"
+    : undefined;
 }
 
 /** AIが必要な要素だけをrevision、入力、実行条件、未完了状態から純粋に選別する。 */
