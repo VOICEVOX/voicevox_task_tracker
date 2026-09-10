@@ -591,24 +591,86 @@ function reconcileStateSelections(
   return reconciled;
 }
 
-function reconcileUnavailableStateSelections(
-  selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
+type StateDecisionValues = Readonly<{
+  aiStateCanBeApplied: boolean;
+  status: Status;
+  waitingOn: readonly WaitingOn[];
+  nextAction: string;
+}>;
+
+function stateDecisionValues(
   deterministicDecision: DeterministicCodexDecision,
-): ReadonlyMap<AiAnalysisElement, ElementResultSelection> {
+  selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
+  deterministicStatePriority: boolean,
+): StateDecisionValues {
   const statusSelection = selections.get("status");
   const waitingOnSelection = selections.get("waitingOn");
+  const nextActionSelection = selections.get("nextAction");
   assertNonNullable(statusSelection, "status要素の選択結果がありません");
   assertNonNullable(waitingOnSelection, "waitingOn要素の選択結果がありません");
+  assertNonNullable(nextActionSelection, "nextAction要素の選択結果がありません");
+
+  const statusResult =
+    statusSelection.result == null
+      ? undefined
+      : createAiAnalysisMigrationElementResultSchema("status").parse(statusSelection.result);
   const waitingOnResult =
     waitingOnSelection.result == null
       ? undefined
       : createAiAnalysisMigrationElementResultSchema("waitingOn").parse(waitingOnSelection.result);
-  const shouldUseDeterministicState =
-    !isTerminalStatus(deterministicDecision.status) &&
-    statusSelection.application === "deterministic_fallback" &&
-    waitingOnSelection.application === "preserved" &&
-    waitingOnResult?.value.length === 0;
-  if (!shouldUseDeterministicState) {
+  const nextActionResult =
+    nextActionSelection.result == null
+      ? undefined
+      : createAiAnalysisMigrationElementResultSchema("nextAction").parse(
+          nextActionSelection.result,
+        );
+  const stateSelections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[] = [
+    ["status", statusSelection],
+    ["waitingOn", waitingOnSelection],
+    ["nextAction", nextActionSelection],
+  ];
+  const aiStateCanBeApplied = stateSelectionCanBeApplied(
+    stateSelections,
+    deterministicStatePriority,
+  );
+  const status =
+    aiStateCanBeApplied && isAcceptedStateSelection(statusSelection)
+      ? statusResult?.value
+      : deterministicDecision.status;
+  const waitingOn =
+    aiStateCanBeApplied && isAcceptedStateSelection(waitingOnSelection)
+      ? waitingOnResult?.value
+      : deterministicDecision.waitingOn;
+  const nextAction =
+    aiStateCanBeApplied && isAcceptedStateSelection(nextActionSelection)
+      ? nextActionResult?.value
+      : deterministicDecision.nextAction;
+  return Object.freeze({
+    aiStateCanBeApplied,
+    status: status ?? deterministicDecision.status,
+    waitingOn: waitingOn == null ? deterministicDecision.waitingOn : copyWaitingOn(waitingOn),
+    nextAction: nextAction ?? deterministicDecision.nextAction,
+  });
+}
+
+function isValidStateValues(status: Status, waitingOn: readonly WaitingOn[]): boolean {
+  return (
+    !(isTerminalStatus(status) && waitingOn.length !== 0) &&
+    !(!isTerminalStatus(status) && waitingOn.length === 0)
+  );
+}
+
+function reconcileUnavailableStateSelections(
+  selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
+  deterministicDecision: DeterministicCodexDecision,
+  deterministicStatePriority: boolean,
+): ReadonlyMap<AiAnalysisElement, ElementResultSelection> {
+  const stateValues = stateDecisionValues(
+    deterministicDecision,
+    selections,
+    deterministicStatePriority,
+  );
+  if (isValidStateValues(stateValues.status, stateValues.waitingOn)) {
     return selections;
   }
 
@@ -885,12 +947,13 @@ function stateDisplayMode(
 }
 
 function validateStateValues(status: Status, waitingOn: readonly WaitingOn[]): void {
-  if (isTerminalStatus(status) && waitingOn.length !== 0) {
+  if (isValidStateValues(status, waitingOn)) {
+    return;
+  }
+  if (isTerminalStatus(status)) {
     throw new TypeError("統合後のterminal状態にwaitingOnを設定できません");
   }
-  if (!isTerminalStatus(status) && waitingOn.length === 0) {
-    throw new TypeError("統合後の継続中状態にはwaitingOnが1件以上必要です");
-  }
+  throw new TypeError("統合後の継続中状態にはwaitingOnが1件以上必要です");
 }
 
 function createStateDecision(
@@ -906,49 +969,21 @@ function createStateDecision(
   assertNonNullable(waitingOnSelection, "waitingOn要素の選択結果がありません");
   assertNonNullable(nextActionSelection, "nextAction要素の選択結果がありません");
 
-  const statusResult =
-    statusSelection.result == null
-      ? undefined
-      : createAiAnalysisMigrationElementResultSchema("status").parse(statusSelection.result);
-  const waitingOnResult =
-    waitingOnSelection.result == null
-      ? undefined
-      : createAiAnalysisMigrationElementResultSchema("waitingOn").parse(waitingOnSelection.result);
-  const nextActionResult =
-    nextActionSelection.result == null
-      ? undefined
-      : createAiAnalysisMigrationElementResultSchema("nextAction").parse(
-          nextActionSelection.result,
-        );
-
+  const stateValues = stateDecisionValues(
+    deterministicDecision,
+    selections,
+    deterministicStatePriority,
+  );
   const aiStateSelections: readonly (readonly [AiAnalysisElement, ElementResultSelection])[] = [
     ["status", statusSelection],
     ["waitingOn", waitingOnSelection],
     ["nextAction", nextActionSelection],
   ];
-  const aiStateCanBeApplied = stateSelectionCanBeApplied(
-    aiStateSelections,
-    deterministicStatePriority,
-  );
-  const status =
-    aiStateCanBeApplied && isAcceptedStateSelection(statusSelection)
-      ? statusResult?.value
-      : deterministicDecision.status;
-  const waitingOn =
-    aiStateCanBeApplied && isAcceptedStateSelection(waitingOnSelection)
-      ? waitingOnResult?.value
-      : deterministicDecision.waitingOn;
-  const nextAction =
-    aiStateCanBeApplied && isAcceptedStateSelection(nextActionSelection)
-      ? nextActionResult?.value
-      : deterministicDecision.nextAction;
-  const candidateStatus = status ?? deterministicDecision.status;
-  const candidateWaitingOn =
-    waitingOn == null ? deterministicDecision.waitingOn : copyWaitingOn(waitingOn);
+  const { aiStateCanBeApplied } = stateValues;
   const aiStateApplied = aiStateCanBeApplied;
-  const reducedStatus = candidateStatus;
-  const reducedWaitingOn = candidateWaitingOn;
-  const reducedNextAction = nextAction ?? deterministicDecision.nextAction;
+  const reducedStatus = stateValues.status;
+  const reducedWaitingOn = stateValues.waitingOn;
+  const reducedNextAction = stateValues.nextAction;
   validateStateValues(reducedStatus, reducedWaitingOn);
 
   const resultEvidence: Evidence[] = [];
@@ -1104,9 +1139,18 @@ export function reduceCodexAnalysis(
     selectedElements,
     preservedElements,
   );
+  const deterministicStatePriority =
+    deterministicDecision.determination === "determined" ||
+    listNativeRelationConstraints(analysisInput).some(
+      (constraint) => constraint.verdict === "current_is_blocked_by_target",
+    );
   const selections =
     attempt.status === "unavailable"
-      ? reconcileUnavailableStateSelections(reconciledSelections, deterministicDecision)
+      ? reconcileUnavailableStateSelections(
+          reconciledSelections,
+          deterministicDecision,
+          deterministicStatePriority,
+        )
       : reconciledSelections;
 
   if (attempt.status === "unavailable") {
@@ -1127,11 +1171,6 @@ export function reduceCodexAnalysis(
       relationSelection.result == null
         ? unavailable.relationCoverage
         : (Object.freeze({ status: "complete" }) satisfies CodexRelationCoverage);
-    const deterministicStatePriority =
-      deterministicDecision.determination === "determined" ||
-      listNativeRelationConstraints(analysisInput).some(
-        (constraint) => constraint.verdict === "current_is_blocked_by_target",
-      );
     const importanceSelection = selections.get("importance");
     const deadlineSelection = selections.get("deadline");
     const notificationSelection = selections.get("notification");
@@ -1173,11 +1212,6 @@ export function reduceCodexAnalysis(
     });
   }
 
-  const deterministicStatePriority =
-    deterministicDecision.determination === "determined" ||
-    listNativeRelationConstraints(analysisInput).some(
-      (constraint) => constraint.verdict === "current_is_blocked_by_target",
-    );
   const decision = createStateDecision(
     deterministicDecision,
     selections,
