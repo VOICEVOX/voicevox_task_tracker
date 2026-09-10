@@ -132,7 +132,7 @@ jobs:
           VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-sandbox.jsonl
         run: |
           pnpm build
-          pnpm tracker:run daily --sandbox-context "$SANDBOX_CONTEXT_PATH" --notification-action hold
+          pnpm tracker:run --sandbox-context "$SANDBOX_CONTEXT_PATH" --notification-action hold
 
       - name: Pages用データをWebへ配置
         if: inputs.operation != 'dispose'
