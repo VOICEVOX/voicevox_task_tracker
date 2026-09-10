@@ -26,14 +26,19 @@ export {
   type AiAnalysisRunResult,
 } from "./analysis-runner.js";
 export {
+  aiAnalysisTargetSchema,
+  createAiAnalysisTarget,
   prepareAiAnalysisCandidate,
   selectAiAnalysisCandidates,
+  selectAiAnalysisTarget,
   selectedAiAnalysisElements,
   type AiAnalysisCandidate,
   type AiAnalysisPriority,
   type AiAnalysisRunIdentity,
   type AiAnalysisSelection,
   type AiAnalysisSkipReason,
+  type AiAnalysisTarget,
+  type AiAnalysisTargetSelection,
   type PreparedAiAnalysisCandidate,
 } from "./analysis-selection.js";
 export {
