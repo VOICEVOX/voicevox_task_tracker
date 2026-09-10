@@ -57,6 +57,11 @@ export {
   type AnalysisElementPlanningInput,
 } from "./element-planning.js";
 export {
+  determineAnalysisElementReuse,
+  type AnalysisElementReuseDecision,
+  type AnalysisElementReuseInput,
+} from "./analysis-reuse.js";
+export {
   estimateAiInputCost,
   planAiAnalysisBudget,
   planAiAnalysisBudgetWithPreflight,
@@ -133,11 +138,14 @@ export {
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
   AI_ANALYSIS_ELEMENTS,
   AI_ANALYSIS_ELEMENT_REVISIONS,
+  AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
+  AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION,
   aiAnalysisElementEvidenceSchema,
   analysisElementFingerprintSchema as aiAnalysisElementFingerprintSchema,
   aiAnalysisElementGenerationSchema,
   aiAnalysisElementMetadataSchema,
   aiAnalysisElementNecessitySchema,
+  aiAnalysisElementReuseProofSchema,
   aiAnalysisElementRevisionSchema,
   aiAnalysisElementResultSchema,
   aiAnalysisElementSchema,
@@ -151,6 +159,7 @@ export {
   aiAnalysisRelationVerdictSchema,
   aiAnalysisRelationsSchema,
   aiAnalysisReasoningEffortSchema,
+  aiAnalysisSelfCommitmentSchema,
   aiAnalysisStatusSchema,
   aiAnalysisWaitingOnKindSchema,
   aiAnalysisWaitingOnRoleSchema,
@@ -162,6 +171,8 @@ export {
   createAiAnalysisMigrationElementResultSchema,
   type AiAnalysisElement,
   type AiAnalysisElementGeneration,
+  type AiAnalysisElementSourceGeneration,
+  type AnalysisElementSourceGeneration,
   type AiAnalysisElementMetadata,
   type AiAnalysisElementMigrationResult,
   type AiAnalysisElementResult,
@@ -176,6 +187,8 @@ export {
   type AiAnalysisRelations,
   type AiAnalysisRelationVerdict,
   type AiAnalysisReasoningEffort,
+  type AiAnalysisSelfCommitment,
+  type AiAnalysisSelfCommitmentValue,
   type AiAnalysisStatus,
   type AiAnalysisWaitingOn,
   type AiAnalysisWaitingOnKind,
@@ -186,8 +199,22 @@ export {
   type AnalysisElement,
   type AnalysisElementExecutionFingerprint,
   type AnalysisElementInputFingerprint,
+  type AnalysisElementReuseRecord,
+  type AiAnalysisElementReuseProof,
   type AnalysisElementNecessity,
 } from "./analysis-elements.js";
+export {
+  assessAnalysisImpact,
+  analysisImpactSchema,
+  type AnalysisImpact,
+  type AnalysisImpactAssessment,
+  type AnalysisImpactCurrentInputProjection,
+  type AnalysisImpactDecision,
+  type AnalysisImpactDeclaration,
+  type AnalysisImpactRecord,
+  type AnalysisImpactValue,
+  type AnalysisImpactVersion,
+} from "./analysis-impact.js";
 export { validateCodexAnalysisOutput } from "./output-validation.js";
 export {
   runCodexProcess,
@@ -210,6 +237,7 @@ export {
   type CodexRelationCoverage,
   type CodexUnavailableReason,
   type AiAnalysisElementGenerationMap,
+  type AiAnalysisElementSourceGenerationMap,
   type AiAnalysisElementsReduction,
   type DeterministicCodexDecision,
   type ReduceAiAnalysisElementsInput,

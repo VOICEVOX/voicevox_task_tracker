@@ -239,6 +239,8 @@ function resultForElement(
       return requiredResult(output.deadline, "検証済みCodex出力のdeadlineがありません");
     case "notification":
       return requiredResult(output.notification, "検証済みCodex出力のnotificationがありません");
+    case "selfCommitment":
+      return requiredResult(output.selfCommitment, "検証済みCodex出力のselfCommitmentがありません");
     default:
       throw new TypeError(`未知のAI判定要素です。対象: ${String(element)}`);
   }

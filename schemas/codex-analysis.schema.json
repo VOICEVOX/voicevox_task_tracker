@@ -8,7 +8,7 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "6"
+      "const": "7"
     },
     "item": {
       "$ref": "#/$defs/item"
@@ -36,6 +36,9 @@
     },
     "notification": {
       "$ref": "#/$defs/notificationResult"
+    },
+    "selfCommitment": {
+      "$ref": "#/$defs/selfCommitmentResult"
     }
   },
   "$defs": {
@@ -435,6 +438,71 @@
           "properties": {
             "value": {
               "$ref": "#/$defs/notification"
+            }
+          }
+        }
+      ]
+    },
+    "selfCommitmentValue": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceId", "summary"],
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^\\S+$"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        }
+      }
+    },
+    "selfCommitmentResultBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "evidence", "confidence", "uncertainties"],
+      "properties": {
+        "value": {},
+        "evidence": {
+          "type": "array",
+          "maxItems": 30,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "uncertainties": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        }
+      }
+    },
+    "selfCommitmentResult": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/selfCommitmentResultBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "value": {
+              "$ref": "#/$defs/selfCommitmentValue"
             }
           }
         }

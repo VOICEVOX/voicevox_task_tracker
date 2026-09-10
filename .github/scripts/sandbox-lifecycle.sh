@@ -12,7 +12,7 @@ readonly REVISION_PATTERN='^[0-9a-f]{40}$|^[0-9a-f]{64}$'
 readonly ENVIRONMENT_ID_PATTERN='^env-[1-9][0-9]*-[1-9][0-9]*$'
 readonly READ_RETRY_ATTEMPTS=3
 readonly READ_RETRY_DELAY_SECONDS=2
-readonly ANALYSIS_ELEMENTS_JSON='["status","waitingOn","nextAction","relations","progress","importance","deadline","notification"]'
+readonly ANALYSIS_ELEMENTS_JSON='["status","waitingOn","nextAction","relations","progress","importance","deadline","notification","selfCommitment"]'
 
 die() {
   echo "$1" >&2

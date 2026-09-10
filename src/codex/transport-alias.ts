@@ -305,6 +305,22 @@ function restoreCodexOutput(
       codec,
     );
   }
+  if (value.selfCommitment != null) {
+    const restoredSelfCommitment = restoreElementResultEvidence(
+      value.selfCommitment,
+      "/selfCommitment",
+      codec,
+    );
+    restoredSelfCommitment["value"] = value.selfCommitment.value.map((commitment, index) => ({
+      ...commitment,
+      sourceId: restoreSourceId(
+        commitment.sourceId,
+        `/selfCommitment/value/${index.toString()}/sourceId`,
+        codec,
+      ),
+    }));
+    restored["selfCommitment"] = restoredSelfCommitment;
+  }
   return restored;
 }
 

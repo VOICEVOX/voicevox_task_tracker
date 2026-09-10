@@ -102,7 +102,7 @@ gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
   -f forced_node_id=NODE_ID -f forced_elements=status,waitingOn
 ```
 
-利用できる要素は`status`、`waitingOn`、`nextAction`、`relations`、`progress`、`importance`、`deadline`、`notification`です。
+利用できる要素は`status`、`waitingOn`、`nextAction`、`relations`、`progress`、`importance`、`deadline`、`notification`、`selfCommitment`です。
 forcedモードではnode IDを一つだけ指定し、要素の重複や空要素は受け付けません。
 生成不要と判定された要素や、指定外の判定を維持するための情報が不足する指定は拒否します。
 指定要素はcacheを再利用せず、すべての指定要素で実推論に成功しなければ実行を失敗にします。

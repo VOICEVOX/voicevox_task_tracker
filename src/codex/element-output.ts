@@ -44,6 +44,7 @@ const codexElementOutputSchema = z.strictObject({
   importance: createAiAnalysisElementResultSchema("importance").optional(),
   deadline: createAiAnalysisElementResultSchema("deadline").optional(),
   notification: createAiAnalysisElementResultSchema("notification").optional(),
+  selfCommitment: createAiAnalysisElementResultSchema("selfCommitment").optional(),
 });
 
 /** JSON Schema検証を通った要素別Codex出力。 */
@@ -177,6 +178,8 @@ function getElementResult(
       return output.deadline;
     case "notification":
       return output.notification;
+    case "selfCommitment":
+      return output.selfCommitment;
     default:
       throw new TypeError("未知のAI判定要素です");
   }
@@ -273,6 +276,17 @@ function validateRelationsValue(
   }
 }
 
+function validateSelfCommitmentValue(
+  result: NonNullable<SchemaValidCodexElementOutput["selfCommitment"]>,
+  issues: CodexOutputValidationIssue[],
+): void {
+  validateUniqueIds(
+    result.value.map((value) => value.sourceId),
+    "/selfCommitment/value",
+    issues,
+  );
+}
+
 /** 選択要素の帰属情報と要素集合をsemantic検証する。 */
 export function validateCodexElementOutputSemantics(
   value: unknown,
@@ -287,6 +301,9 @@ export function validateCodexElementOutputSemantics(
   }
   if (normalizedElements.includes("relations") && output.relations != null) {
     validateRelationsValue(output.relations, issues);
+  }
+  if (normalizedElements.includes("selfCommitment") && output.selfCommitment != null) {
+    validateSelfCommitmentValue(output.selfCommitment, issues);
   }
   if (issues.length > 0) {
     throw new CodexOutputSemanticValidationError(issues);
