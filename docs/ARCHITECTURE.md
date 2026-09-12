@@ -81,9 +81,9 @@ snapshotは汎用AIの有効状態、利用可否、縮退状態をrun statusと
 `available`は検証済みのAI分析結果を1件以上利用できたことを表します。分析対象がなく失敗も延期もないrunも`available`です。
 `degraded`は失敗または延期が1件以上あることを表します。利用できた結果が1件もなければ`available`は`false`になります。
 PagesはこのAI状態を公開DTOへ変換し、run statusからAIの状態を推定しません。
-個人原因は原因ごとの評価状態を別に保存し、有効な採用値のない失敗・延期をrunの`fallback`へ反映します。正常に完了した`unknown`だけでは縮退にしません。
+個人原因は原因ごとの評価状態を別に保存します。列挙計画に`pending`がある場合や、有効な採用値のない失敗・延期がある場合は、個人原因の分析状態を`fallback`とし、runへ反映します。正常に完了した`unknown`だけでは縮退にしません。
 repository単位の収集は、再試行後も503で失敗し、同じrepositoryの前回値がある場合だけ前回値を`stale`として使います。
-この縮退はdiagnosticとstale件数を記録して後続処理を続け、run statusを変更しません。
+収集の縮退はdiagnosticとstale件数に記録して後続処理を続けます。run statusは、個人原因の列挙計画を含む後続の分析結果に従います。
 前回値がない503、503以外の例外、不完全な結果は`failure`となり、通常の後続stageを実行しません。
 反復を終えても端点を取得できなかった関係候補は追跡選定へ渡さず、除外した件数をdiagnosticへ記録します。
 GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。実質担当のPR根拠には、追跡中のPRに対するこの関係だけを使います。
@@ -248,7 +248,7 @@ JSONの構造検証に失敗したbatchは採用せず、構造検証後は原�
 関係AIと原因AIはcall数、入力量、見積費用のrun上限を共有し、後段は前段の使用量を引いた残予算から実行します。認証preflightは両段を通して必要なrunで1回だけ実行します。関係だけ成功した場合も採用済みrelationを保存し、原因の失敗・延期だけを再試行できます。関係入力が変わって前段が未確定なら、古い不適合relationで後段を実行せず`upstream_relation`で延期します。`pendingRelations`はこの判別とfingerprintに使い、AIへは送りません。
 個人原因のcall数はrunnerの`executedBatchCount`を使い、preflightを含めません。全体のcall数と見積入力は両段とpreflightの累積値を使います。
 初回は現在の収集結果にある責務と採用済み関係から有限個の原因を作り、意味評価が必要なものだけを選びます。列挙の完了とAI評価の成否は別に記録し、有効な採用値がなく必要性が残る未評価・失敗・延期は入力不変でも再試行します。以後は新しい原因と関連入力の変化も同じ規則で選びます。
-新しく収集できた項目は、今回の代表候補に現れない未終了の旧原因も最新入力で再評価します。たとえば同じPRがreview待ちに変わった場合も、継続中のmerge原因をそのreview待ちとして評価できます。staleの項目だけは原因と計画状態を前回値のまま保持します。
+runtimeの分析対象に含まれる項目は、今回の代表候補に現れない未終了の旧原因も最新入力で再評価します。たとえば同じPRがreview待ちに変わった場合も、継続中のmerge原因をそのreview待ちとして評価できます。それ以外の追跡項目は前回snapshotの原因・根拠・採用済み評価を保持し、open項目の`personalReminderCausePlanning`だけを`pending`にします。取得だけでは評価完了にせず、保持する採用値を`unknown`へ書き換えません。終了済み項目の計画状態は`pending`にせず、原因がなければ`excluded`へ更新して列挙対象から除外します。
 
 ## 停滞起点の決定論性
 
@@ -313,7 +313,7 @@ block中も独立した行動が継続して可能なら両起点を保持し、
 
 `src/pages`はsnapshotの各項目を公開DTO schema version 9の`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度、`currentResponses`を公開します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
-`currentResponses`は個人通知と同じ原因の採用値を正本とし、責任主体、行動、根拠、`actionable`・`waiting`・`unknown`を表示します。有効な`duplicate`と`not_required`は現在対応から除きます。採用値が現在入力と不一致なら実行可能とは表示せず、未評価、失敗、延期、入力不一致などの理由を持つ`unknown`にします。待機先や根拠の参照先が公開データ内で解決できることも検証します。
+`currentResponses`は個人通知と同じ原因の採用値を正本とし、責任主体、行動、根拠、`actionable`・`waiting`・`unknown`を表示します。再計画待ちは確認待ちとして扱い、以前の個人対応を現在対応の表示や人物別一覧へ出しません。有効な`duplicate`と`not_required`は現在対応から除きます。採用値が現在入力と不一致なら実行可能とは表示せず、未評価、失敗、延期、入力不一致などの理由を持つ`unknown`にします。待機先や根拠の参照先が公開データ内で解決できることも検証します。
 Issue向けの`PublicItemSummaryDto.currentImplementations`は、from nodeがfreshなopen Pull Request、to nodeがfreshなopen Issueであるactiveなnative `implements`関係から導出します。
 導出結果は公開DTOのsummaryとdetailsに同じ値として含め、snapshot、履歴、責務判定、停滞、通知へ伝播させません。
 関係するPull Requestが複数ある場合はすべて公開し、詳細には各PRの現在対応を示します。Pull Requestの状態や対応をIssue自身の状態へ変換しません。
@@ -446,7 +446,7 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 | `state/run-reports/YYYY-MM-DD.json`              | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                                |
 
 snapshot 15の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
-freshなopen項目の列挙が完了すれば原因0件でも`completed`にし、原因がないterminal項目だけを`excluded`にします。staleは前回値を維持します。入口では旧`planningVersion`も受け入れ、現在版との不一致を再計画の選定へ渡します。
+freshなopen項目の列挙が完了すれば原因0件でも`completed`にし、原因がないterminal項目だけを`excluded`にします。staleを含む分析対象外の項目は、前述の保持規則に従います。入口では旧`planningVersion`も受け入れ、現在版との不一致を再計画の選定へ渡します。
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
 
@@ -472,13 +472,13 @@ Pagesのsummaryとdetailsには全statusを公開し、生成元のcache keyは�
 送信開始前の期限内の予約は重複送信を抑え、期限切れの予約は次回の候補選別で抑制しません。
 通常digestのHTTP送信前に、メッセージ単位の識別子と開始時刻を持つ`delivery_started`を保存してpushします。送信開始済みの記録は期限では解除せず、同じnotification keyの自動再送を抑えます。明確なHTTP拒否を受けた場合は予約へ戻し、送信成功時は`sent`へ進めます。通信が途切れた場合やプロセスが停止した場合は、送信開始済みの記録を残します。
 `sent`と`acknowledged`のentryは同じnotification keyを期限なく通知対象から除外します。
-個人通知は原因の責務期間、責任主体の集合、行動、時計、停滞レベルと閾値からkeyを作ります。保存済みの従来のkeyを使えるのは、実行対象、理由、行動の種類、相手、実行可能性と停滞の起点、閾値が一致し、起点をイベント根拠から確認できる場合だけです。その場合は保存済み記録と同じ生成規則を使います。説明文、意味入力fingerprint、評価時刻、関連項目一覧だけではkeyを変えず、異なる実在原因が同じkeyへ衝突した場合はエラーにします。
+新規の個人通知は、現行の列挙計画が`completed`の項目からだけ選びます。個人通知は原因の責務期間、責任主体の集合、行動、時計、停滞レベルと閾値からkeyを作ります。保存済みの従来のkeyを使えるのは、実行対象、理由、行動の種類、相手、実行可能性と停滞の起点、閾値が一致し、起点をイベント根拠から確認できる場合だけです。その場合は保存済み記録と同じ生成規則を使います。説明文、意味入力fingerprint、評価時刻、関連項目一覧だけではkeyを変えず、異なる実在原因が同じkeyへ衝突した場合はエラーにします。
 個人通知の記録照合は同じkeyに限定し、進捗や待機解消で時計が変われば現在の閾値から選び直します。system通知のkeyは項目全体の`status`、`severity`、`waitingOn`、各種開始時刻から作ります。
 systemの時間系通知と待ち先不明の通知では、同じ項目・通知理由・停滞レベルについて、現在の待ち期間内に予約した記録も照合します。期間内の送信開始済み・送信済み・確認済み記録があれば除外し、予約中の記録は期限まで再送を抑えます。
 待ち期間は`statusSince`と`ownerSince`の新しい方から始まります。照合には`reservedAt`を使い、送信完了が次の待ち期間に遅れた記録を新しい期間の通知と取り違えないようにします。
 system通知は進捗で停滞起点だけが変わっても、同じ待ち期間の同じ停滞レベルを再送しません。新しい待ち期間や停滞レベルの上昇は再び選別対象とします。依存解消・循環検出などの非時間系通知は、それぞれのトリガーを使います。
-個人原因の未送信候補は、同じkeyなら検出時刻を保ち、現在の原因を再検証します。入力不一致や`waiting`・`unknown`は保留し、失敗・延期だけでは削除しません。時計の変化でkeyが変わる場合は候補と検出時刻を更新し、閾値未満なら古い候補を失効させます。責務の終了、`not_required`、`duplicate`、責任主体・行動・責務期間の交代でも旧候補を失効させます。
-送信段階は保存済みsnapshotと通知管理記録を読み、run IDと選別済み原因の内容を照合します。自分の予約を含む通知選別全体は再実行せず、GitHubの再収集も行いません。各メッセージの送信直前に原因、key、停滞レベル、予約時刻を検証し、同じstate headに対して`delivery_started`をatomic commitしてpushできた場合だけWebhookへ進みます。送信文面と履歴はこの検証済み文脈を共有します。
+個人原因の未送信候補は、列挙計画が`pending`なら保留し、`excluded`なら失効させ、`completed`の場合に現在の原因を再検証します。同じkeyなら検出時刻を保ちます。入力不一致や`waiting`・`unknown`は保留し、失敗・延期だけでは削除しません。時計の変化でkeyが変わる場合は候補と検出時刻を更新し、閾値未満なら古い候補を失効させます。責務の終了、`not_required`、`duplicate`、責任主体・行動・責務期間の交代でも旧候補を失効させます。
+送信段階は保存済みsnapshotと通知管理記録を読み、run IDと選別済み原因の内容を照合します。自分の予約を含む通知選別全体は再実行せず、GitHubの再収集も行いません。各メッセージの送信直前にも、個人通知は現行の列挙計画が`completed`であることを確認します。原因、key、停滞レベル、予約時刻を検証し、同じstate headに対して`delivery_started`をatomic commitしてpushできた場合だけWebhookへ進みます。system通知には個人原因の列挙計画を適用せず、各通知の条件で検証します。送信文面と履歴はこの検証済み文脈を共有します。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
 PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。

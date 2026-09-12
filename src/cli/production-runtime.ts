@@ -9197,6 +9197,11 @@ function notificationItem(
     causesForPersonalReminder,
     `通知対象 ${item.nodeId}の個人催促causeがありません`,
   );
+  const personalReminderCausePlanning = personalReminderAnalysis.planningByNodeId.get(item.nodeId);
+  assertNonNullable(
+    personalReminderCausePlanning,
+    `通知対象 ${item.nodeId}の個人催促cause planningがありません`,
+  );
   const personalReminderCauses = Object.freeze(
     causesForPersonalReminder.map((cause) => {
       const personalStaleness = personalReminderAnalysis.stalenessByCauseId.get(cause.causeId);
@@ -9249,6 +9254,7 @@ function notificationItem(
           }),
     causes,
     personalReminderCauses,
+    personalReminderCausePlanning,
     graph: Object.freeze({
       downstreamImpact,
       newlyUnblocked: graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId),
@@ -9990,7 +9996,9 @@ async function analyzePersonalReminders(
     thresholdsHours: configuration.config.staleness.thresholdsHours,
     resolveLabelEffects: createLabelEffectsResolver(normalizeLabelRules(configuration.config)),
   });
-  const freshNodeIds = new Set(collection.observedItems.map((item) => item.nodeId));
+  const runtimeNodeIds = new Set(
+    runtimeCollection.collection.items.map((item) => item.item.nodeId),
+  );
   const previousItemsByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
   );
@@ -10001,14 +10009,26 @@ async function analyzePersonalReminders(
     SnapshotTrackedItem["personalReminderCausePlanning"]
   >();
   for (const item of reduction.items) {
-    if (freshNodeIds.has(item.nodeId)) {
+    if (runtimeNodeIds.has(item.nodeId)) {
       continue;
     }
     const previous = previousItemsByNodeId.get(item.nodeId);
-    const causes = previous?.personalReminderCauses ?? item.personalReminderCauses;
+    assertNonNullable(
+      previous,
+      `個人催促runtime対象外の前回項目がありません。対象: ${item.nodeId}`,
+    );
+    const causes = previous.personalReminderCauses;
     causesByNodeId.set(item.nodeId, causes);
-    evidenceByNodeId.set(item.nodeId, previous?.evidence ?? item.evidence);
-    if (causes.length === 0 && item.state !== "open") {
+    evidenceByNodeId.set(item.nodeId, previous.evidence);
+    if (item.state === "open") {
+      planningByNodeId.set(
+        item.nodeId,
+        Object.freeze({
+          status: "pending",
+          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+        }),
+      );
+    } else if (causes.length === 0) {
       planningByNodeId.set(
         item.nodeId,
         Object.freeze({
@@ -10018,10 +10038,7 @@ async function analyzePersonalReminders(
         }),
       );
     } else {
-      planningByNodeId.set(
-        item.nodeId,
-        previous?.personalReminderCausePlanning ?? item.personalReminderCausePlanning,
-      );
+      planningByNodeId.set(item.nodeId, previous.personalReminderCausePlanning);
     }
   }
   for (const [nodeId, causes] of application.causesByNodeId) {
@@ -10101,7 +10118,12 @@ async function analyzePersonalReminders(
   const counts = personalReminderCauseAttemptCounts(causesByNodeId);
   const usage = run?.usage ?? initialUsage;
   const usageDelta = personalReminderUsageDelta(usage, initialUsage);
-  const status = counts.failed > 0 || counts.deferred > 0 ? "fallback" : "success";
+  const status =
+    counts.failed > 0 ||
+    counts.deferred > 0 ||
+    [...planningByNodeId.values()].some((planning) => planning.status === "pending")
+      ? "fallback"
+      : "success";
   await recordCodexDiagnostic(diagnostics, "codex.personal_reminder.summary", {
     phase: "summary",
     candidateCauseCount: candidates.length,
@@ -11246,6 +11268,7 @@ function snapshotPersonalReminderSelectionValidationItems(
           lastProgressAt: item.lastProgressAt,
         }),
         personalReminderCauses,
+        personalReminderCausePlanning: item.personalReminderCausePlanning,
       });
     }),
   );

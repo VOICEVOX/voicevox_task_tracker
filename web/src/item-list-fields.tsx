@@ -81,6 +81,7 @@ function CurrentResponseStatus({
         createPersonHref={createPersonHref}
         onSelectItem={onSelectItem}
         onSelectPerson={onSelectPerson}
+        planningStatus={row.item.personalReminderCausePlanningStatus}
         responses={responses}
         summary={summary}
         variant="compact"

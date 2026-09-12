@@ -2241,6 +2241,7 @@ function selectNotifications(
           return Object.freeze({ cause, staleness });
         }),
       ),
+      personalReminderCausePlanning: analysis.personalReminderCausePlanning,
       graph: Object.freeze({
         downstreamImpact: findDownstreamImpact(nodeId, graph.downstreamImpacts),
         newlyUnblocked: graph.newlyUnblockedNodeIds.includes(nodeId),

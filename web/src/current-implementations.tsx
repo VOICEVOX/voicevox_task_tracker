@@ -76,6 +76,7 @@ function CurrentImplementationRow({
           createPersonHref={createPersonHref}
           onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
+          planningStatus={implementationItem.personalReminderCausePlanningStatus}
           responses={implementationItem.currentResponses}
           summary={summary}
           variant="compact"
@@ -96,6 +97,7 @@ function CurrentImplementationRow({
         createPersonHref={createPersonHref}
         onSelectItem={onSelectItem}
         onSelectPerson={onSelectPerson}
+        planningStatus={implementationItem.personalReminderCausePlanningStatus}
         responses={implementationItem.currentResponses}
         summary={summary}
         variant="nested"

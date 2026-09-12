@@ -1,4 +1,5 @@
 import {
+  type PublicItemSummaryDto,
   type PublicPersonalReminderResponseDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
@@ -14,6 +15,8 @@ import { Pill } from "./ui.js";
 import { PersonLink, type PersonNavigation } from "./waiting-on-display.js";
 
 type CurrentResponse = PublicPersonalReminderResponseDto;
+type PersonalReminderCausePlanningStatus =
+  PublicItemSummaryDto["personalReminderCausePlanningStatus"];
 
 type CurrentResponsesProps = PersonNavigation &
   Readonly<{
@@ -21,6 +24,7 @@ type CurrentResponsesProps = PersonNavigation &
     onSelectItem: (nodeId: string) => void;
     summary: PublicSummaryDto;
     responses: readonly CurrentResponse[];
+    planningStatus: PersonalReminderCausePlanningStatus;
     variant: "compact" | "detail" | "nested";
   }>;
 
@@ -174,7 +178,8 @@ function CurrentResponseRow({
   response,
   summary,
   variant,
-}: Omit<CurrentResponsesProps, "item" | "responses"> & Readonly<{ response: CurrentResponse }>) {
+}: Omit<CurrentResponsesProps, "item" | "responses" | "planningStatus"> &
+  Readonly<{ response: CurrentResponse }>) {
   const status = (
     <Pill className="current-response-status" tone={responseTone(response)}>
       {currentResponseStatusLabel(response.status)}
@@ -240,12 +245,15 @@ export function CurrentResponses({
   onSelectItem,
   onSelectPerson,
   summary,
+  planningStatus,
   responses,
   variant,
 }: CurrentResponsesProps) {
   const list =
     responses.length === 0 ? (
-      <p class="m-0 text-sm text-text-muted">現在の対応はありません。</p>
+      <p class="m-0 text-sm text-text-muted">
+        {planningStatus === "pending" ? "現在の対応は確認待ちです。" : "現在の対応はありません。"}
+      </p>
     ) : (
       <ul class="current-responses-list m-0 grid list-none gap-3 p-0">
         {responses.map((response) => (

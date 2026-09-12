@@ -540,6 +540,7 @@ export function ItemDetailsContent({
         createPersonHref={createPersonHref}
         onSelectItem={onSelectItem}
         onSelectPerson={onSelectPerson}
+        planningStatus={item.personalReminderCausePlanningStatus}
         responses={item.currentResponses}
         summary={summary}
         variant="detail"

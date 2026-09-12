@@ -4,6 +4,7 @@ import {
   currentPersonalReminderAssessment,
   determineDeadlineLevel,
   isTerminalStatus,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   type Evidence,
   type LabelRule,
   type NaturalLanguageDeadlineAssessmentState,
@@ -87,6 +88,8 @@ type ResponsibilityHistoryValue = Extract<
 >["before"];
 type PublicWaitingOn = PublicItemSummaryDto["waitingOn"][number];
 type PublicCurrentImplementation = PublicItemSummaryDto["currentImplementations"][number];
+type PublicPersonalReminderCausePlanningStatus =
+  PublicItemSummaryDto["personalReminderCausePlanningStatus"];
 type PublicPersonalReminderResponse = PublicPersonalReminderResponseDto;
 type EvidenceSourceItem = Readonly<Pick<TrackedItem, "nodeId" | "url">>;
 type EvidenceBySourceId = ReadonlyMap<SourceId, readonly Evidence[]>;
@@ -612,12 +615,26 @@ function createPersonalReminderResponse(
   }
 }
 
+function personalReminderCausePlanningStatus(
+  item: StateSnapshot["items"][number],
+): PublicPersonalReminderCausePlanningStatus {
+  if (
+    item.personalReminderCausePlanning.planningVersion !== PERSONAL_REMINDER_CAUSE_PLANNING_VERSION
+  ) {
+    return "pending";
+  }
+  return item.personalReminderCausePlanning.status;
+}
+
 function createPersonalReminderResponses(
   item: StateSnapshot["items"][number],
   allSourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
   evidenceBySourceId: EvidenceBySourceId,
 ): readonly PublicPersonalReminderResponse[] {
+  if (personalReminderCausePlanningStatus(item) !== "completed") {
+    return Object.freeze([]);
+  }
   const responses: PublicPersonalReminderResponse[] = [];
   for (const cause of item.personalReminderCauses) {
     const response = createPersonalReminderResponse(
@@ -899,6 +916,7 @@ function createItemSummary(
   repository: SnapshotRepository,
   currentImplementations: readonly PublicCurrentImplementation[],
   currentResponses: readonly PublicPersonalReminderResponse[],
+  personalReminderCausePlanningStatus: PublicPersonalReminderCausePlanningStatus,
   displayReferencesByNodeId: ReadonlyMap<string, string>,
   blockerNodeIds: readonly string[],
   downstreamImpact: AnalyzeGraphResult["downstreamImpacts"][number],
@@ -960,6 +978,7 @@ function createItemSummary(
     },
     currentImplementations: [...currentImplementations],
     currentResponses: [...currentResponses],
+    personalReminderCausePlanningStatus,
   };
 }
 
@@ -1199,6 +1218,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       repository,
       currentImplementationsByIssueNodeId.get(item.nodeId) ?? Object.freeze([]),
       createPersonalReminderResponses(item, snapshot.items, sourceOwnersById, evidenceBySourceId),
+      personalReminderCausePlanningStatus(item),
       displayReferencesByNodeId,
       blockersByNodeId.get(item.nodeId) ?? Object.freeze([]),
       impact,

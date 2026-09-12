@@ -168,6 +168,11 @@ const publicPersonalReminderResponseSchema = z.discriminatedUnion("status", [
     reason: publicPersonalReminderUnknownReasonSchema,
   }),
 ]);
+const publicPersonalReminderCausePlanningStatusSchema = z.enum([
+  "pending",
+  "completed",
+  "excluded",
+]);
 const repositoryFreshnessSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("fresh"),
@@ -301,6 +306,7 @@ const publicItemSummarySchema = z.strictObject({
   downstreamImpact: downstreamImpactSchema,
   currentImplementations: z.array(publicCurrentImplementationSchema),
   currentResponses: z.array(publicPersonalReminderResponseSchema),
+  personalReminderCausePlanningStatus: publicPersonalReminderCausePlanningStatusSchema,
 });
 const itemTimestampsSchema = z.strictObject({
   createdAt: dateTimeSchema,
@@ -1076,6 +1082,21 @@ function assertPublicCurrentResponseIds(
   }
 }
 
+function assertPublicCurrentResponsesRequireCompletedPlanning(
+  items: readonly PublicItemSummaryDto[],
+): void {
+  for (const item of items) {
+    if (item.personalReminderCausePlanningStatus === "completed") {
+      continue;
+    }
+    if (item.currentResponses.length !== 0) {
+      throw new PublicDtoSemanticError(
+        `個人催促planningが完了していない項目に現在の対応があります。対象: ${item.nodeId}`,
+      );
+    }
+  }
+}
+
 function assertPublicDetailsCurrentResponseReferences(details: PublicDetailsDto): void {
   const graphNodeIds = new Set(details.graph.nodes.map((node) => node.nodeId));
   for (const item of details.items) {
@@ -1104,6 +1125,7 @@ export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
     });
   }
   assertPublicCurrentResponseIds(result.data.items);
+  assertPublicCurrentResponsesRequireCompletedPlanning(result.data.items);
   assertPublicSummaryWaitingOnReferences(result.data);
   assertPublicCurrentImplementations(result.data.items);
   return result.data;
@@ -1118,6 +1140,9 @@ export function createPublicDetailsDto(value: unknown): PublicDetailsDto {
     });
   }
   assertPublicCurrentResponseIds(result.data.items.map((item) => item.summary));
+  assertPublicCurrentResponsesRequireCompletedPlanning(
+    result.data.items.map((item) => item.summary),
+  );
   assertPublicDetailsCurrentResponseReferences(result.data);
   assertPublicCurrentImplementations(result.data.items.map((item) => item.summary));
   return result.data;

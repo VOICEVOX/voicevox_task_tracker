@@ -6,6 +6,7 @@ import {
   createUtcIsoDateTime,
   currentPersonalReminderAssessment,
   isTerminalStatus,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   personalReminderCauseSchema,
   type GitHubNodeId,
   type NotificationNonTimeReasonCode,
@@ -17,6 +18,7 @@ import {
   type PendingNotificationTarget,
   type PersonalReminderActionKind,
   type PersonalReminderCause,
+  type PersonalReminderCausePlanning,
   type PersonalReminderReasonCode,
   type PersonalReminderResponsible,
   type PersonalReminderStaleness,
@@ -141,6 +143,7 @@ export type DiscordNotificationItem = Readonly<{
   previous: DiscordNotificationPrevious;
   causes: NotificationCauses;
   personalReminderCauses: readonly DiscordPersonalReminderInput[];
+  personalReminderCausePlanning: PersonalReminderCausePlanning;
   graph: DiscordNotificationGraphContext;
 }>;
 
@@ -166,6 +169,7 @@ export type DiscordPersonalReminderSelectionValidationItem = Readonly<{
     | "lastProgressAt"
   >;
   personalReminderCauses: readonly DiscordPersonalReminderInput[];
+  personalReminderCausePlanning: PersonalReminderCausePlanning;
 }>;
 
 /** 個人催促通知の選別結果へ渡す原因の文脈。 */
@@ -1245,8 +1249,14 @@ function createPersonalReminderContext(
 }
 
 function createPersonalReminderSignals(
-  item: Pick<DiscordNotificationItem, "personalReminderCauses">,
+  item: Pick<DiscordNotificationItem, "personalReminderCauses" | "personalReminderCausePlanning">,
 ): readonly ReasonSignal[] {
+  if (
+    item.personalReminderCausePlanning.status !== "completed" ||
+    item.personalReminderCausePlanning.planningVersion !== PERSONAL_REMINDER_CAUSE_PLANNING_VERSION
+  ) {
+    return [];
+  }
   return item.personalReminderCauses.flatMap((input) => {
     if (input.staleness.status !== "eligible") {
       return [];
@@ -1986,6 +1996,16 @@ function migrateLegacyPersonalPending(
   ) {
     return pending;
   }
+  if (
+    item.personalReminderCausePlanning.planningVersion !==
+      PERSONAL_REMINDER_CAUSE_PLANNING_VERSION ||
+    item.personalReminderCausePlanning.status === "pending"
+  ) {
+    return pending;
+  }
+  if (item.personalReminderCausePlanning.status === "excluded") {
+    return undefined;
+  }
   const inputs = item.personalReminderCauses.filter((input) =>
     legacyPendingCauseMatchesBase(item, pending, input),
   );
@@ -2094,6 +2114,21 @@ function personalReminderPendingState(
   pending: PendingNotification,
   evaluatedTimestamp: number,
 ): PersonalReminderPendingState {
+  if (
+    item.personalReminderCausePlanning.planningVersion !== PERSONAL_REMINDER_CAUSE_PLANNING_VERSION
+  ) {
+    return "hold";
+  }
+  switch (item.personalReminderCausePlanning.status) {
+    case "pending":
+      return "hold";
+    case "excluded":
+      return "drop";
+    case "completed":
+      break;
+    default:
+      throw new UnreachableError(item.personalReminderCausePlanning);
+  }
   const input = personalReminderInputForPending(item, pending);
   if (input == null) {
     return item.repositoryFreshness === "stale" ? "hold" : "drop";
