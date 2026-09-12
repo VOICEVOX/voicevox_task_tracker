@@ -2063,25 +2063,21 @@ function waitingOptionsForCause(
   const options: PersonalReminderWaitingOption[] = [];
   const sources = new Map<SourceId, PersonalReminderRuntimeSource>();
   const missing = new Set<PersonalReminderMissingInput>();
-  if (currentSeed.origin !== "retained_without_draft") {
-    return Object.freeze({
-      options: Object.freeze([]),
-      sources: Object.freeze([]),
-      missing: Object.freeze([]),
-    });
-  }
   for (const candidate of currentSeeds) {
-    if (
-      candidate.origin !== "current_draft" ||
-      candidate.seed.causeId === seed.causeId ||
-      candidate.seed.action.kind === seed.action.kind
-    ) {
+    if (candidate.origin !== "current_draft" || candidate.seed.causeId === seed.causeId) {
       continue;
     }
     const matchingRelations = relationEdges.filter((relation) =>
       relationConnectsSeeds(relation, seed, candidate.seed),
     );
-    if (candidate.seed.itemNodeId !== seed.itemNodeId && matchingRelations.length === 0) {
+    if (candidate.seed.itemNodeId === seed.itemNodeId) {
+      if (
+        currentSeed.origin !== "retained_without_draft" ||
+        candidate.seed.action.kind === seed.action.kind
+      ) {
+        continue;
+      }
+    } else if (matchingRelations.length === 0) {
       continue;
     }
     const relationIds = matchingRelations.map((relation) => relation.id);
