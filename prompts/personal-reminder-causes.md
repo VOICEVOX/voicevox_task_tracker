@@ -24,6 +24,8 @@ PRの `merged` と `closed_unmerged` を区別し、mergeされずに閉じら�
 - `not_required`: 希望表明だけ、解決・撤回済み、以前の推定が現在の義務を表さないなど、義務がないと確認できる場合です。入力がcompleteで、`responsibility.authority` が `semantic` の原因に限ります。`resolution` または `obligation_candidate` の根拠から否定を確認できる場合だけ選んでください。
 - `unknown`: 入力不足、根拠の競合、意味の曖昧さによって判断できない場合です。理由は `incomplete_input`、`conflicting_evidence`、`ambiguous_meaning` のいずれかにしてください。未確認の義務を、義務がないという否定へ変換しないでください。
 
+明示的な変更要求があっても、authorの質問や反論、判断依頼によってreviewerの返答待ちになる場合があります。revision原因に同じ項目のreply待機optionが提示され、発言がreviewerに回答を求めている場合だけ、そのoptionを選んでください。了解、謝辞、進捗報告、対応予定の表明だけを理由にreply待ちへ変えないでください。本文を確認できず意味を確定できない場合は推測せず、入力の完全性に応じた `unknown` を返してください。
+
 `responsibility.authority` が `fixed` の義務は、正式assignee、GitHub上の依頼、担当者を決めるmaintainer規則などから確定しています。
 この原因に `not_required` を返してはいけません。
 関連する発言が希望表明に見えても、それだけで確定した義務を消さないでください。

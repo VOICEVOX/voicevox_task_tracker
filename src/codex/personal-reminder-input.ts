@@ -557,6 +557,9 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
   const pendingRelationEvidenceSourceIds = new Set(
     input.pendingRelations.flatMap((relation) => relation.evidenceSourceIds),
   );
+  const canUseMissingRelationEvidenceSource = (sourceId: SourceId): boolean =>
+    allowsMissingRelationEvidence &&
+    (relationEvidenceSourceIds.has(sourceId) || pendingRelationEvidenceSourceIds.has(sourceId));
   const causeNodeIds = causeScopeNodeIds(input.cause);
   for (const relation of input.relations) {
     const hasMissingEndpoint = !itemIds.has(relation.fromNodeId) || !itemIds.has(relation.toNodeId);
@@ -565,7 +568,7 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
     }
     validateUniqueStrings(relation.evidenceSourceIds, `relation ${relation.id}のsource ID`);
     for (const sourceId of relation.evidenceSourceIds) {
-      if (!sourceIds.has(sourceId)) {
+      if (!sourceIds.has(sourceId) && !canUseMissingRelationEvidenceSource(sourceId)) {
         throw new TypeError(`relation ${relation.id}の根拠sourceがありません。対象: ${sourceId}`);
       }
     }
@@ -599,7 +602,7 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
       `pending relation ${relation.candidateId}のsource ID`,
     );
     for (const sourceId of relation.evidenceSourceIds) {
-      if (!sourceIds.has(sourceId)) {
+      if (!sourceIds.has(sourceId) && !canUseMissingRelationEvidenceSource(sourceId)) {
         throw new TypeError(
           `pending relation ${relation.candidateId}の根拠sourceがありません。対象: ${sourceId}`,
         );
@@ -635,7 +638,7 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
       }
     }
     for (const sourceId of option.evidenceSourceIds) {
-      if (!sourceIds.has(sourceId)) {
+      if (!sourceIds.has(sourceId) && !canUseMissingRelationEvidenceSource(sourceId)) {
         throw new TypeError(`waiting option ${option.optionId}のsourceがありません`);
       }
     }
@@ -664,7 +667,7 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
       }
     }
     for (const sourceId of option.evidenceSourceIds) {
-      if (!sourceIds.has(sourceId)) {
+      if (!sourceIds.has(sourceId) && !canUseMissingRelationEvidenceSource(sourceId)) {
         throw new TypeError(`duplicate option ${option.canonicalCauseId}のsourceがありません`);
       }
     }
