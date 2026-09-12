@@ -17,6 +17,9 @@ import {
   type GitHubNodeId,
   type NaturalLanguageDeadlineAssessmentState,
   type NaturalLanguageImportanceAssessmentState,
+  currentPersonalReminderAssessment,
+  type PersonalReminderCause,
+  personalReminderCauseSchema,
   type Relation,
   type Repository,
   type Severity,
@@ -145,6 +148,7 @@ const SNAPSHOT_SCHEMA_VERSION_11 = "11";
 const SNAPSHOT_SCHEMA_VERSION_12 = "12";
 export const SNAPSHOT_SCHEMA_VERSION_13 = "13";
 export const SNAPSHOT_SCHEMA_VERSION_14 = "14";
+export const SNAPSHOT_SCHEMA_VERSION_15 = "15";
 
 type StateSnapshotFields = Readonly<{
   generatedAt: UtcIsoDateTime;
@@ -158,27 +162,41 @@ type StateSnapshotFields = Readonly<{
   run: SnapshotRun;
 }>;
 
-type StateSnapshotVersion11 = StateSnapshotFields &
+type LegacySnapshotTrackedItem = Omit<SnapshotTrackedItem, "personalReminderCauses">;
+type LegacyStateSnapshotFields = Omit<StateSnapshotFields, "items"> &
+  Readonly<{
+    items: readonly LegacySnapshotTrackedItem[];
+  }>;
+
+type StateSnapshotVersion11 = LegacyStateSnapshotFields &
   Readonly<{
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_11;
   }>;
-type StateSnapshotVersion12 = StateSnapshotFields &
+type StateSnapshotVersion12 = LegacyStateSnapshotFields &
   Readonly<{
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_12;
   }>;
-type StateSnapshotVersion13 = StateSnapshotFields &
+type StateSnapshotVersion13 = LegacyStateSnapshotFields &
   Readonly<{
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_13;
   }>;
-type StateSnapshotVersion14 = StateSnapshotFields &
+type StateSnapshotVersion14 = LegacyStateSnapshotFields &
   Readonly<{
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_14;
   }>;
 
-/** tracker-stateへ保存するschema version 14のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion14;
+type StateSnapshotVersion15 = StateSnapshotFields &
+  Readonly<{
+    schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_15;
+  }>;
+
+/** tracker-stateへ保存するschema version 15のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion15;
 
 const snapshotSchemaVersionSchema = z.object({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_15),
+});
+const snapshotSchemaVersion14Schema = z.object({
   schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_14),
 });
 const snapshotSchemaVersion13Schema = z.object({
@@ -266,7 +284,10 @@ function createMigrationElementResultSchemaForVersion(
   return createAiAnalysisMigrationElementResultSchema(element);
 }
 
-function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "6"): object {
+function snapshotSchemaForVersion(
+  version: string,
+  elementSchemaVersion: "5" | "6" | "source",
+): object {
   const schema = Object.fromEntries(
     Object.entries(snapshotSchema).filter(([key]) => key !== "$id"),
   );
@@ -279,12 +300,23 @@ function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "
   const migrationResultVariant = migrationAdoptedElement.oneOf.at(1);
   const trackedItemCurrentVariant = trackedItemAiAnalysis.oneOf.at(0);
   const trackedItemMigrationVariant = trackedItemAiAnalysis.oneOf.at(1);
+  const item = snapshotSchema.$defs.item;
   if (currentVariant == null || migrationResultVariant == null) {
     throw new TypeError("snapshot schemaの移行要素定義が不正です");
   }
   if (trackedItemCurrentVariant == null || trackedItemMigrationVariant == null) {
     throw new TypeError("snapshot schemaのAI分析定義が不正です");
   }
+  const versionedItem =
+    version === SNAPSHOT_SCHEMA_VERSION_15
+      ? item
+      : {
+          ...item,
+          required: item.required.filter((key) => key !== "personalReminderCauses"),
+          properties: Object.fromEntries(
+            Object.entries(item.properties).filter(([key]) => key !== "personalReminderCauses"),
+          ),
+        };
   const legacyAiAnalysisElements = {
     ...snapshotSchema.$defs.aiAnalysisElements,
     properties: {
@@ -349,7 +381,7 @@ function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "
     ),
   };
   const versionedMigrationAdoptedElement =
-    version === SNAPSHOT_SCHEMA_VERSION_14
+    version === SNAPSHOT_SCHEMA_VERSION_14 || version === SNAPSHOT_SCHEMA_VERSION_15
       ? migrationAdoptedElement
       : {
           ...migrationAdoptedElement,
@@ -383,21 +415,21 @@ function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "
         properties: {
           ...elementMetadata.properties,
           schemaVersion: {
-            const: elementSchemaVersion,
+            const: elementSchemaVersion === "source" ? "7" : elementSchemaVersion,
           },
         },
       },
       aiAnalysisMigrationAdoptedElement: versionedMigrationAdoptedElement,
       aiAnalysisElements:
-        version === SNAPSHOT_SCHEMA_VERSION_14
+        version === SNAPSHOT_SCHEMA_VERSION_14 || version === SNAPSHOT_SCHEMA_VERSION_15
           ? snapshotSchema.$defs.aiAnalysisElements
           : legacyAiAnalysisElements,
       aiAnalysisMigrationAdoptedElements:
-        version === SNAPSHOT_SCHEMA_VERSION_14
+        version === SNAPSHOT_SCHEMA_VERSION_14 || version === SNAPSHOT_SCHEMA_VERSION_15
           ? snapshotSchema.$defs.aiAnalysisMigrationAdoptedElements
           : legacyAiAnalysisMigrationAdoptedElements,
       trackedItemAiAnalysis:
-        version === SNAPSHOT_SCHEMA_VERSION_14
+        version === SNAPSHOT_SCHEMA_VERSION_14 || version === SNAPSHOT_SCHEMA_VERSION_15
           ? trackedItemAiAnalysis
           : {
               ...trackedItemAiAnalysis,
@@ -428,6 +460,7 @@ function snapshotSchemaForVersion(version: string, elementSchemaVersion: "5" | "
                 },
               ],
             },
+      item: versionedItem,
     },
     properties: {
       ...snapshotSchema.properties,
@@ -447,7 +480,10 @@ const validateSnapshotVersion12Schema = ajv.compile<StateSnapshotVersion12>(
 const validateSnapshotVersion13Schema = ajv.compile<StateSnapshotVersion13>(
   snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_13, "6"),
 );
-const validateSnapshotVersion14Schema = ajv.compile<StateSnapshotVersion14>(snapshotSchema);
+const validateSnapshotVersion14Schema = ajv.compile<StateSnapshotVersion14>(
+  snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_14, "source"),
+);
+const validateSnapshotVersion15Schema = ajv.compile<StateSnapshotVersion15>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -468,6 +504,104 @@ function assertUnique(values: readonly string[], description: string): void {
 function assertUtcDateTime(value: string, description: string): void {
   if (new Date(value).toISOString() !== value) {
     throw new StateSnapshotSemanticError(`${description}はUTCへ正規化してください`);
+  }
+}
+
+function assertPersonalReminderTimeBasis(
+  value: PersonalReminderCause["obligationSince"],
+  item: SnapshotTrackedItem,
+  description: string,
+): void {
+  assertUtcDateTime(value.at, description);
+  if (value.at < item.createdAt || value.at > item.observedAt) {
+    throw new StateSnapshotSemanticError(
+      `${description}はitemの作成時刻以後かつ観測時刻以前にしてください`,
+    );
+  }
+}
+
+function assertPersonalReminderCausesSemantics(
+  item: SnapshotTrackedItem,
+  causeIds: ReadonlySet<string>,
+): void {
+  assertUnique(
+    item.personalReminderCauses.map((cause) => cause.causeId),
+    "itemのpersonal reminder cause ID",
+  );
+  assertUnique(
+    item.personalReminderCauses.map((cause) => cause.responsibilityId),
+    "itemのpersonal reminder responsibility ID",
+  );
+  for (const cause of item.personalReminderCauses) {
+    const parsedCause = personalReminderCauseSchema.safeParse(cause);
+    if (!parsedCause.success) {
+      throw new StateSnapshotSemanticError("personal reminder causeが不正です", {
+        cause: parsedCause.error,
+      });
+    }
+    if (cause.itemNodeId !== item.nodeId) {
+      throw new StateSnapshotSemanticError(
+        "personal reminder causeのitemNodeIdが親itemと一致しません",
+      );
+    }
+    assertPersonalReminderTimeBasis(
+      cause.obligationSince,
+      item,
+      "personal reminder obligationSince",
+    );
+    if (cause.actionableClock.status === "observed") {
+      assertPersonalReminderTimeBasis(
+        cause.actionableClock.actionableSince,
+        item,
+        "personal reminder actionableSince",
+      );
+      assertPersonalReminderTimeBasis(
+        cause.actionableClock.stallSince,
+        item,
+        "personal reminder stallSince",
+      );
+    }
+    const assessment = currentPersonalReminderAssessment(cause);
+    if (assessment.status !== "available") {
+      continue;
+    }
+    if (
+      cause.currentInput.completeness.status === "incomplete" &&
+      (assessment.result.verdict !== "unknown" || assessment.result.reason !== "incomplete_input")
+    ) {
+      throw new StateSnapshotSemanticError(
+        "入力が不完全なpersonal reminder causeはincomplete_inputのunknownでなければなりません",
+      );
+    }
+    if (cause.actionableClock.status === "observed") {
+      if (cause.obligationSince.at > cause.actionableClock.actionableSince.at) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder actionableSinceはobligationSince以後にしてください",
+        );
+      }
+      if (cause.actionableClock.actionableSince.at > cause.actionableClock.stallSince.at) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder stallSinceはactionableSince以後にしてください",
+        );
+      }
+    }
+    if (assessment.result.verdict === "actionable" && cause.actionableClock.status !== "observed") {
+      throw new StateSnapshotSemanticError(
+        "actionableなpersonal reminder causeにはactionable clockが必要です",
+      );
+    }
+    if (assessment.result.verdict === "duplicate") {
+      if (assessment.result.canonicalCauseId === cause.causeId) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder causeが自分自身をduplicateの参照先にしています",
+        );
+      }
+      if (!causeIds.has(assessment.result.canonicalCauseId)) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder causeのduplicate参照先がsnapshotにありません",
+        );
+      }
+    }
   }
 }
 
@@ -767,7 +901,7 @@ function normalizeAccountActor(actor: GitHubAccountActor): GitHubAccountActor {
 }
 
 function assertSnapshotSemantics(
-  snapshot: StateSnapshotFields,
+  snapshot: StateSnapshotFields | LegacyStateSnapshotFields,
   elementSchemaVersion: ElementSchemaVersion,
   adoptedElementsFormat: "legacy" | "current",
 ): void {
@@ -793,6 +927,19 @@ function assertSnapshotSemantics(
   );
 
   const repositoryIds = new Set(snapshot.repositories.map((repository) => repository.id));
+  const personalReminderCauseIdValues = snapshot.items.flatMap((item) =>
+    "personalReminderCauses" in item
+      ? item.personalReminderCauses.map((cause) => cause.causeId)
+      : [],
+  );
+  assertUnique(personalReminderCauseIdValues, "personal reminder cause ID");
+  const personalReminderCauseIds = new Set(personalReminderCauseIdValues);
+  const personalReminderResponsibilityIdValues = snapshot.items.flatMap((item) =>
+    "personalReminderCauses" in item
+      ? item.personalReminderCauses.map((cause) => cause.responsibilityId)
+      : [],
+  );
+  assertUnique(personalReminderResponsibilityIdValues, "personal reminder responsibility ID");
   assertUnique(
     snapshot.collection.repositories.map((repository) => repository.repositoryId),
     "収集stateのrepository ID",
@@ -865,6 +1012,9 @@ function assertSnapshotSemantics(
       );
     }
     assertAiAnalysisSemantics(item.aiAnalysis, elementSchemaVersion, adoptedElementsFormat);
+    if ("personalReminderCauses" in item) {
+      assertPersonalReminderCausesSemantics(item, personalReminderCauseIds);
+    }
     if (isTerminalStatus(item.status) && item.waitingOn.length !== 0) {
       throw new StateSnapshotSemanticError("terminal itemにwaitingOnを保存できません");
     }
@@ -1059,6 +1209,11 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
                     ...item.latestEventActor,
                     actor: normalizeActor(item.latestEventActor.actor),
                   }),
+            personalReminderCauses: Object.freeze(
+              [...item.personalReminderCauses]
+                .sort((left, right) => compareStrings(left.causeId, right.causeId))
+                .map((cause) => Object.freeze({ ...cause })),
+            ),
             aiAnalysis: normalizeTrackedItemAiAnalysis(item.aiAnalysis),
             inputEvents: Object.freeze(
               [...item.inputEvents]
@@ -1142,8 +1297,8 @@ function parseStateSnapshotVersion13Value(value: unknown): StateSnapshotVersion1
   return value;
 }
 
-function parseStateSnapshotVersion14Value(value: unknown): StateSnapshot {
-  snapshotSchemaVersionSchema.parse(value);
+function parseStateSnapshotVersion14Value(value: unknown): StateSnapshotVersion14 {
+  snapshotSchemaVersion14Schema.parse(value);
   if (!validateSnapshotVersion14Schema(value)) {
     const issueCount = validateSnapshotVersion14Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
@@ -1152,17 +1307,27 @@ function parseStateSnapshotVersion14Value(value: unknown): StateSnapshot {
   return value;
 }
 
+function parseStateSnapshotVersion15Value(value: unknown): StateSnapshot {
+  snapshotSchemaVersionSchema.parse(value);
+  if (!validateSnapshotVersion15Schema(value)) {
+    const issueCount = validateSnapshotVersion15Schema.errors?.length ?? 1;
+    throw new StateSnapshotSchemaError(issueCount);
+  }
+  assertSnapshotSemantics(value, "source", "current");
+  return value;
+}
+
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
   const version = z.object({ schemaVersion: z.string() }).parse(value).schemaVersion;
-  if (version === SNAPSHOT_SCHEMA_VERSION_14) {
-    return parseStateSnapshotVersion14Value(value);
+  if (version === SNAPSHOT_SCHEMA_VERSION_15) {
+    return parseStateSnapshotVersion15Value(value);
   }
   throw new StateSnapshotSchemaError(1);
 }
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return normalizeSnapshot(parseStateSnapshotVersion14Value(value));
+  return normalizeSnapshot(parseStateSnapshotVersion15Value(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */
@@ -1282,6 +1447,38 @@ export function parseStateSnapshotVersion13(source: string): StateSnapshotVersio
 
   try {
     return parseStateSnapshotVersion13Value(value);
+  } catch (error: unknown) {
+    if (
+      error instanceof StateFormatError ||
+      error instanceof StateSnapshotSchemaError ||
+      error instanceof StateSnapshotSemanticError
+    ) {
+      throw error;
+    }
+    throw new StateFormatError("snapshot", {
+      cause: new TypeError("snapshot検証中に予期しないエラーが発生しました", {
+        cause: error,
+      }),
+    });
+  }
+}
+
+/** schema version 14のsnapshotを検証して読み取る。 */
+export function parseStateSnapshotVersion14(source: string): StateSnapshotVersion14 {
+  let value: unknown;
+  try {
+    const parseJson: (text: string) => unknown = JSON.parse;
+    value = parseJson(source);
+  } catch (error: unknown) {
+    throw new StateFormatError("snapshot", {
+      cause: new SyntaxError("JSON構文が不正です", {
+        cause: error,
+      }),
+    });
+  }
+
+  try {
+    return parseStateSnapshotVersion14Value(value);
   } catch (error: unknown) {
     if (
       error instanceof StateFormatError ||

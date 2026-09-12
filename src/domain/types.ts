@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { type Importance } from "./importance.js";
 import { notificationReasonSchema, type NotificationReason } from "./notification-reason.js";
+import { type PersonalReminderCause } from "./personal-reminder-causes.js";
 import { type SourceId } from "./source-id.js";
 import type { StalenessWaitClass } from "./staleness.js";
 import type {
@@ -691,6 +692,7 @@ type TrackedItemFields = Readonly<{
   reviewState: ReviewState;
   checkState: CheckState;
   aiAnalysis: TrackedItemAiAnalysis;
+  personalReminderCauses: readonly PersonalReminderCause[];
   inputEvents: readonly TrackedItemInputEvent[];
   confidence: number;
   evidence: readonly Evidence[];

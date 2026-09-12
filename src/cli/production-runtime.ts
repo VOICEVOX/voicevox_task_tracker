@@ -7979,6 +7979,7 @@ function createTrackedItem(
       analysis.item.type === "issue"
         ? "not_applicable"
         : aggregatePullRequestCheckState(analysis.item.mergeState),
+    personalReminderCauses: Object.freeze([]),
     aiAnalysis: trackedItemAiAnalysis(
       configuration,
       state,
@@ -9325,7 +9326,7 @@ function validateRunCompleteness(
   });
   const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
-    schemaVersion: "14",
+    schemaVersion: "15",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
