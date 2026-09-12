@@ -306,6 +306,7 @@ export {
   type OperationsAlertKind,
   type OperationsAlertLedgerEntry,
   type PendingNotification,
+  type PendingPersonalReminderTarget,
   type PendingNotificationTarget,
   type PrimaryWaitingOn,
   type Relation,
