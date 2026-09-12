@@ -9,6 +9,7 @@ import {
   type PersonalReminderEvidenceRole,
   type PersonalReminderEvidenceScope,
   type PersonalReminderPendingRelation,
+  type PersonalReminderTargetScope,
   type PersonalReminderWaitingOption,
 } from "../codex/personal-reminder-input.js";
 import { serializeCanonicalJson } from "../codex/canonical-json.js";
@@ -1439,14 +1440,34 @@ function candidateAffectsCause(
   return candidate.endpointNodeIds.some((nodeId) => scopeNodeIds.has(nodeId));
 }
 
-function seedScopeNodeIds(seed: PersonalReminderCauseSeed): ReadonlySet<GraphNodeId> {
-  const nodeIds = new Set<GraphNodeId>([seed.itemNodeId]);
-  if (seed.responsibility.scope.kind !== "item") {
-    for (const surface of seed.responsibility.scope.surfaces) {
+function scopeNodeIds(
+  itemNodeId: GraphNodeId,
+  scope: PersonalReminderTargetScope,
+): ReadonlySet<GraphNodeId> {
+  const nodeIds = new Set<GraphNodeId>([itemNodeId]);
+  if (scope.kind !== "item") {
+    for (const surface of scope.surfaces) {
       nodeIds.add(surface.nodeId);
     }
   }
   return nodeIds;
+}
+
+function seedScopeNodeIds(seed: PersonalReminderCauseSeed): ReadonlySet<GraphNodeId> {
+  return scopeNodeIds(seed.itemNodeId, seed.responsibility.scope);
+}
+
+function optionTargetScopeNodeIds(
+  option: Readonly<{
+    itemNodeId: GraphNodeId;
+    targetScope: PersonalReminderTargetScope;
+  }>,
+): ReadonlySet<GraphNodeId> {
+  return scopeNodeIds(option.itemNodeId, option.targetScope);
+}
+
+function targetScopeForSeed(seed: PersonalReminderCauseSeed): PersonalReminderTargetScope {
+  return seed.responsibility.scope;
 }
 
 function relationConnectsSeeds(
@@ -1809,7 +1830,9 @@ function createCauseSemanticInput(
     itemContextNodeIds.add(secondEndpoint);
   }
   for (const option of [...waitingOptions, ...duplicateOptions]) {
-    itemContextNodeIds.add(option.itemNodeId);
+    for (const nodeId of optionTargetScopeNodeIds(option)) {
+      itemContextNodeIds.add(nodeId);
+    }
   }
   for (const context of additionalItemContexts) {
     itemContextNodeIds.add(context.nodeId);
@@ -2343,6 +2366,7 @@ function authorReplyWaitingProjection(
     option: Object.freeze({
       optionId: `${seed.causeId}:waiting:author-reply`,
       itemNodeId: seed.itemNodeId,
+      targetScope: { kind: "item" } satisfies PersonalReminderTargetScope,
       action: Object.freeze({ kind: "reply", summary: "PR作者の質問や反論へ回答する" }),
       relationIds: [],
       evidenceSourceIds: [...evidenceSourceIds],
@@ -2404,6 +2428,7 @@ function waitingOptionsForCause(
     options.push({
       optionId: `${seed.causeId}:waiting:${candidate.seed.causeId}`,
       itemNodeId: candidate.seed.itemNodeId,
+      targetScope: targetScopeForSeed(candidate.seed),
       action: { kind: candidate.seed.action.kind, summary: candidate.seed.action.summary },
       relationIds,
       evidenceSourceIds: [...sourceIds],
@@ -2514,6 +2539,7 @@ function duplicateOptionsForCause(
     options.push({
       canonicalCauseId: candidate.seed.causeId,
       itemNodeId: candidate.seed.itemNodeId,
+      targetScope: targetScopeForSeed(candidate.seed),
       responsible: [...candidate.seed.responsible],
       action: { ...candidate.seed.action },
       relationIds,
@@ -2964,13 +2990,17 @@ export function planPersonalReminderCauses(
         globalSourcesById,
       );
       const optionSources = [...waitingProjection.sources, ...duplicateProjection.sources];
-      const additionalItemContexts = currentSeeds
-        .filter((value) =>
-          [...waitingProjection.options, ...duplicateProjection.options].some(
-            (option) => option.itemNodeId === value.seed.itemNodeId,
-          ),
-        )
-        .map((value) => value.item.itemContext);
+      const targetScopeNodeIds = new Set<GraphNodeId>();
+      for (const option of [...waitingProjection.options, ...duplicateProjection.options]) {
+        for (const nodeId of optionTargetScopeNodeIds(option)) {
+          targetScopeNodeIds.add(nodeId);
+        }
+      }
+      const additionalItemContexts = [...targetScopeNodeIds].sort(compareStrings).map((nodeId) => {
+        const itemContext = globalItemContextsByNodeId.get(nodeId);
+        assertNonNullable(itemContext, `target scopeのitem contextがありません。対象: ${nodeId}`);
+        return itemContext;
+      });
       const activityProjection = activityForCause(
         item,
         seed,

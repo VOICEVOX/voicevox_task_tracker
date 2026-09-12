@@ -237,8 +237,9 @@ AIのrevisionは意味上の判定規則を表し、プロンプトの共通本�
 意味入力は全件の構造と意味を検証し、AI送信時の容量判定と分けます。送信する`scopes`の上限は、`sources`と`sourceRefs`と同じ500件です。型、ID、一意性、参照先の閉包、意味の整合性の違反や、容量内のschema違反は例外にします。
 AIは各`causeId`について、`actionable`、`waiting`、`duplicate`、`not_required`、`unknown`のいずれかを返します。責任主体・行動・理由・時刻・閾値は変更させません。`actionable`には義務と実行可能性の双方の根拠が必要です。`fixed`の義務を`not_required`にはできず、情報不足は義務の否定に変換しません。
 待機先と重複先は提示したoptionだけを選べます。同じPRのmergeがreviewを待つような同一項目の別行動も待機先にできます。異なる項目を待つ場合は、その行動に効くrelationの根拠を必須にします。native blockの事実はgraphと項目状態へ残し、その依存中にも特定行動が可能かだけを評価します。`related_to`だけでは個人催促を抑止しません。
+optionの`targetScope`はrelationが接続する責務範囲で、`itemNodeId`は待機・表示の主項目です。relationは原因の責務範囲と`targetScope`の間を接続し、主項目への直接接続は必須にしません。候補は`current_draft`から作り、責務範囲全体の文脈と、`targetScope`の全nodeが入力の`items`に含まれることを保証します。未収集の端点は不完全な入力として扱います。保存する`waitingFor`と公開DTOが示す待機先は主項目です。
 
-意味入力のfingerprintは原因ごとの参照入力から作り、同じbatchの別原因や無関係な項目の変化では無効化しません。時間の経過、閾値到達、説明文だけの変更は再推論の理由にしません。
+意味入力のfingerprintは、原因の責務範囲とoptionの`targetScope`を含む原因ごとの参照入力から作り、同じbatchの別原因や無関係な項目の変化では無効化しません。AI送信用の入力にも同じ責務範囲を渡し、relationの接続と参照先を検証します。時間の経過、閾値到達、説明文だけの変更は再推論の理由にしません。
 JSONの構造検証に失敗したbatchは採用せず、構造検証後は原因ごとに意味検証して採用します。一つの原因の失敗で、他の原因の採用値とcacheを失いません。
 `currentInput`、`latestAttempt`、`adoptedAssessment`を分けて保存します。実行状態は`not_evaluated`、`completed`、`failed`、`deferred`で表し、正常な`unknown`も`completed`です。採用値の入力fingerprintと規則版が現在値へ一致する場合だけ表示と通知に使います。新しい実行が失敗・延期しても、この一致を満たす採用値は有効です。不一致の旧採用値は根拠を追跡するため保持し、現在対応は未確定にします。
 

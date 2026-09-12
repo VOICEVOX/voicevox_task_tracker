@@ -46,6 +46,7 @@ blockがあっても、指定されたレビューや計画などを並行して
 - 各原因で使えるのは、その原因のallowlistにあるrefとoptionだけです。同じ呼び出しに含まれる別原因のrefを借用せず、同じ参照を重複させないでください。
 - sourceに付けられた根拠のroleを守ってください。`obligation_candidate` は義務、`actionability` は実行可能性、`relation` は関係、`resolution` は解決・撤回の判断に使います。sourceが候補に含まれることだけでは、その判定を肯定する根拠になりません。
 - `actionable` には義務と現在の実行可能性の両方を支えるsourceを参照してください。
+- `waiting` と `duplicate` のoptionでは、`targetScope` がrelationの接続する責務範囲、`itemRef` が待機・表示の主項目を表します。relationの向きと効力は原因の責務範囲と `targetScope` の間で判断し、主項目へ直接接続していないという理由だけで候補を除外しないでください。
 - `waiting` と `duplicate` には選択したoptionのitem、relation、sourceをすべて参照してください。別項目との関係では、向きと両端の状態を確認してください。
 - 同じitemの別actionを待つ `waiting` optionは、`relationRefs` が空でも選べます。異なるitemを待つ場合は、その待機の根拠となるrelationが必要です。どちらの場合もsourceの根拠は必須で、optionの `sourceRefs` をすべて参照してください。
 - `conflicting_evidence` と `ambiguous_meaning` には、競合や曖昧さが分かる根拠を少なくとも一つ参照してください。`incomplete_input` で不足している根拠を補作してはいけません。

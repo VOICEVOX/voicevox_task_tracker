@@ -235,9 +235,15 @@ const evidenceScopeSchema = z.strictObject({
 /** 原因へ許可された根拠の役割。 */
 export type PersonalReminderEvidenceScope = z.output<typeof evidenceScopeSchema>;
 
+const personalReminderTargetScopeSchema = personalReminderResponsibilitySchema.shape.scope;
+
+/** 個人催促AIが候補原因へ引き継ぐ責務範囲。 */
+export type PersonalReminderTargetScope = z.output<typeof personalReminderTargetScopeSchema>;
+
 const waitingOptionSchema = z.strictObject({
   optionId: opaqueIdSchema,
   itemNodeId: graphNodeIdSchema,
+  targetScope: personalReminderTargetScopeSchema,
   action: z.strictObject({
     kind: personalReminderActionKindSchema,
     summary: z.string().min(1).max(300),
@@ -252,6 +258,7 @@ export type PersonalReminderWaitingOption = z.output<typeof waitingOptionSchema>
 const duplicateOptionSchema = z.strictObject({
   canonicalCauseId: personalReminderCauseIdSchema,
   itemNodeId: githubNodeIdSchema,
+  targetScope: personalReminderTargetScopeSchema,
   responsible: z.array(personalReminderResponsibleSchema).nonempty().max(20),
   action: z.strictObject({
     kind: personalReminderActionKindSchema,
@@ -291,6 +298,40 @@ export type PersonalReminderCauseSemanticInput = z.output<
   typeof personalReminderCauseSemanticInputSchema
 >;
 
+const personalReminderTargetScopeTransportSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("item"),
+  }),
+  z.strictObject({
+    kind: z.literal("execution_surfaces"),
+    surfaces: z
+      .array(
+        z.strictObject({
+          kind: z.enum(["issue", "pull_request"]),
+          itemRef: personalReminderItemRefSchema,
+        }),
+      )
+      .nonempty()
+      .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds),
+  }),
+  z.strictObject({
+    kind: z.literal("item_and_execution_surfaces"),
+    surfaces: z
+      .array(
+        z.strictObject({
+          kind: z.enum(["issue", "pull_request"]),
+          itemRef: personalReminderItemRefSchema,
+        }),
+      )
+      .nonempty()
+      .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds),
+  }),
+]);
+
+type PersonalReminderTargetScopeTransport = z.output<
+  typeof personalReminderTargetScopeTransportSchema
+>;
+
 const personalReminderAiCauseTransportInputSchema = z.strictObject({
   causeId: personalReminderCauseIdSchema,
   cause: personalReminderCauseSemanticSeedSchema,
@@ -320,6 +361,7 @@ const personalReminderAiCauseTransportInputSchema = z.strictObject({
       z.strictObject({
         optionId: opaqueIdSchema,
         itemRef: personalReminderItemRefSchema,
+        targetScope: personalReminderTargetScopeTransportSchema,
         action: z.strictObject({
           kind: personalReminderActionKindSchema,
           summary: z.string().min(1).max(300),
@@ -339,6 +381,7 @@ const personalReminderAiCauseTransportInputSchema = z.strictObject({
       z.strictObject({
         canonicalCauseId: personalReminderCauseIdSchema,
         itemRef: personalReminderItemRefSchema,
+        targetScope: personalReminderTargetScopeTransportSchema,
         responsible: z.array(personalReminderResponsibleSchema).nonempty().max(20),
         action: z.strictObject({
           kind: personalReminderActionKindSchema,
@@ -512,33 +555,54 @@ function responsibleKey(
   return `${value.kind}\u0000${value.candidateId.toLowerCase()}\u0000${value.role}`;
 }
 
-function causeScopeNodeIds(
-  cause: PersonalReminderCauseSemanticInput["cause"],
-): ReadonlySet<string> {
-  const nodeIds = new Set<string>([cause.itemNodeId]);
-  if (cause.responsibility.scope.kind !== "item") {
-    for (const surface of cause.responsibility.scope.surfaces) {
+function scopeNodeIds(
+  itemNodeId: GraphNodeId,
+  scope: PersonalReminderTargetScope,
+): ReadonlySet<GraphNodeId> {
+  const nodeIds = new Set<GraphNodeId>([itemNodeId]);
+  if (scope.kind !== "item") {
+    for (const surface of scope.surfaces) {
       nodeIds.add(surface.nodeId);
     }
   }
   return nodeIds;
 }
 
-function relationConnectsCauseAndTarget(
+function causeScopeNodeIds(
+  cause: PersonalReminderCauseSemanticInput["cause"],
+): ReadonlySet<GraphNodeId> {
+  return scopeNodeIds(cause.itemNodeId, cause.responsibility.scope);
+}
+
+function optionTargetScopeNodeIds(
+  option: Readonly<{
+    itemNodeId: GraphNodeId;
+    targetScope: PersonalReminderTargetScope;
+  }>,
+): ReadonlySet<GraphNodeId> {
+  return scopeNodeIds(option.itemNodeId, option.targetScope);
+}
+
+function relationConnectsCauseAndTargetScope(
   relation: PersonalReminderAiRelationContext,
   cause: PersonalReminderCauseSemanticInput["cause"],
-  targetNodeId: GraphNodeId,
+  targetScope: Readonly<{
+    itemNodeId: GraphNodeId;
+    targetScope: PersonalReminderTargetScope;
+  }>,
 ): boolean {
   const causeNodeIds = causeScopeNodeIds(cause);
+  const targetNodeIds = optionTargetScopeNodeIds(targetScope);
   return (
-    (causeNodeIds.has(relation.fromNodeId) && relation.toNodeId === targetNodeId) ||
-    (causeNodeIds.has(relation.toNodeId) && relation.fromNodeId === targetNodeId)
+    (causeNodeIds.has(relation.fromNodeId) && targetNodeIds.has(relation.toNodeId)) ||
+    (causeNodeIds.has(relation.toNodeId) && targetNodeIds.has(relation.fromNodeId))
   );
 }
 
 function validateOptionRelationIntegrity<Key extends string>(
   option: Readonly<{
     itemNodeId: GraphNodeId;
+    targetScope: PersonalReminderTargetScope;
     relationIds: readonly Key[];
   }>,
   cause: PersonalReminderCauseSemanticInput["cause"],
@@ -554,8 +618,41 @@ function validateOptionRelationIntegrity<Key extends string>(
     if (relation.type === "related_to") {
       throw new TypeError(`${label}にrelated_to relationは指定できません。対象: ${relationId}`);
     }
-    if (!relationConnectsCauseAndTarget(relation, cause, option.itemNodeId)) {
-      throw new TypeError(`${label}のrelationがcauseと待ち先のitemを接続していません`);
+    if (!relationConnectsCauseAndTargetScope(relation, cause, option)) {
+      throw new TypeError(`${label}のrelationがcauseと待ち先のscopeを接続していません`);
+    }
+  }
+}
+
+function validateOptionTargetScope(
+  option: Readonly<{
+    itemNodeId: GraphNodeId;
+    targetScope: PersonalReminderTargetScope;
+  }>,
+  itemByNodeId: ReadonlyMap<GraphNodeId, PersonalReminderAiItemContext>,
+  label: string,
+): void {
+  if (option.targetScope.kind !== "item") {
+    validateUniqueStrings(
+      option.targetScope.surfaces.map((value) => `${value.kind}\u0000${value.nodeId}`),
+      `${label}のexecution surface`,
+    );
+  }
+  for (const nodeId of optionTargetScopeNodeIds(option)) {
+    if (!itemByNodeId.has(nodeId)) {
+      throw new TypeError(`${label}のtarget scope item contextがありません。対象: ${nodeId}`);
+    }
+  }
+  if (option.targetScope.kind !== "item") {
+    for (const surface of option.targetScope.surfaces) {
+      const item = itemByNodeId.get(surface.nodeId);
+      assertNonNullable(item, `${label}のexecution surface item contextがありません`);
+      if (
+        (surface.kind === "issue" && item.type !== "issue") ||
+        (surface.kind === "pull_request" && item.type !== "pull_request")
+      ) {
+        throw new TypeError(`${label}のexecution surface種別がitem contextと一致しません`);
+      }
     }
   }
 }
@@ -564,6 +661,7 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
   const itemNodeIds = input.items.map((value) => value.nodeId);
   validateUniqueStrings(itemNodeIds, "item node ID");
   const itemIds = new Set(itemNodeIds);
+  const itemByNodeId = new Map(input.items.map((value) => [value.nodeId, value]));
   const relationIdValues = input.relations.map((value) => value.id);
   validateUniqueStrings(relationIdValues, "relation ID");
   const relationIds = new Set(relationIdValues);
@@ -685,6 +783,7 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
     if (!itemIds.has(option.itemNodeId)) {
       throw new TypeError(`waiting option ${option.optionId}のitemがありません`);
     }
+    validateOptionTargetScope(option, itemByNodeId, `waiting option ${option.optionId}`);
     validateUniqueStrings(option.relationIds, `waiting option ${option.optionId}のrelation ID`);
     validateUniqueStrings(option.evidenceSourceIds, `waiting option ${option.optionId}のsource ID`);
     for (const relationId of option.relationIds) {
@@ -708,6 +807,7 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
     if (!itemIds.has(option.itemNodeId)) {
       throw new TypeError(`duplicate option ${option.canonicalCauseId}のitemがありません`);
     }
+    validateOptionTargetScope(option, itemByNodeId, `duplicate option ${option.canonicalCauseId}`);
     validateUniqueStrings(
       option.relationIds,
       `duplicate option ${option.canonicalCauseId}のrelation ID`,
@@ -766,18 +866,18 @@ function canonicalResponsible(
   );
 }
 
+function canonicalScope(scope: PersonalReminderTargetScope): unknown {
+  if (scope.kind === "item") {
+    return scope;
+  }
+  return {
+    ...scope,
+    surfaces: uniqueSorted(scope.surfaces, (value) => `${value.kind}\u0000${value.nodeId}`),
+  };
+}
+
 function canonicalSemanticInput(input: PersonalReminderCauseSemanticInput): unknown {
   const responsibility = input.cause.responsibility;
-  const scope =
-    responsibility.scope.kind === "item"
-      ? responsibility.scope
-      : {
-          ...responsibility.scope,
-          surfaces: uniqueSorted(
-            responsibility.scope.surfaces,
-            (value) => `${value.kind}\u0000${value.nodeId}`,
-          ),
-        };
   const completeness =
     input.completeness.status === "complete"
       ? input.completeness
@@ -792,6 +892,7 @@ function canonicalSemanticInput(input: PersonalReminderCauseSemanticInput): unkn
   const waitingOptions = uniqueSorted(input.waitingOptions, (value) => value.optionId).map(
     (value) => ({
       ...value,
+      targetScope: canonicalScope(value.targetScope),
       relationIds: uniqueSorted(value.relationIds, (relationId) => relationId),
       evidenceSourceIds: uniqueSorted(value.evidenceSourceIds, (sourceId) => sourceId),
     }),
@@ -801,6 +902,7 @@ function canonicalSemanticInput(input: PersonalReminderCauseSemanticInput): unkn
     (value) => `${value.canonicalCauseId}\u0000${value.itemNodeId}`,
   ).map((value) => ({
     ...value,
+    targetScope: canonicalScope(value.targetScope),
     responsible: canonicalResponsible(value.responsible),
     relationIds: uniqueSorted(value.relationIds, (relationId) => relationId),
     evidenceSourceIds: uniqueSorted(value.evidenceSourceIds, (sourceId) => sourceId),
@@ -813,7 +915,7 @@ function canonicalSemanticInput(input: PersonalReminderCauseSemanticInput): unkn
       responsible: canonicalResponsible(input.cause.responsible),
       responsibility: {
         authority: responsibility.authority,
-        scope,
+        scope: canonicalScope(responsibility.scope),
       },
       action: {
         kind: input.cause.action.kind,
@@ -870,6 +972,62 @@ function cloneSemanticInput(
   return createPersonalReminderCauseSemanticInput(input);
 }
 
+function createTransportTargetScope(
+  scope: PersonalReminderTargetScope,
+  itemRefById: ReadonlyMap<GraphNodeId, PersonalReminderItemRef>,
+  label: string,
+): PersonalReminderTargetScopeTransport {
+  if (scope.kind === "item") {
+    return { kind: "item" };
+  }
+  const surfaces = uniqueSorted(
+    scope.surfaces,
+    (value) => `${value.kind}\u0000${value.nodeId}`,
+  ).map((surface) => {
+    const itemRef = itemRefById.get(surface.nodeId);
+    assertNonNullable(
+      itemRef,
+      `${label}のexecution surface item refがありません。対象: ${surface.nodeId}`,
+    );
+    return { kind: surface.kind, itemRef };
+  });
+  if (scope.kind === "execution_surfaces") {
+    return { kind: "execution_surfaces", surfaces };
+  }
+  return { kind: "item_and_execution_surfaces", surfaces };
+}
+
+function resolveTransportTargetScope(
+  scope: PersonalReminderTargetScopeTransport,
+  itemByRef: ReadonlyMap<PersonalReminderItemRef, PersonalReminderAiItemContext>,
+  causeItemRefs: ReadonlySet<PersonalReminderItemRef>,
+  label: string,
+): PersonalReminderTargetScope {
+  if (scope.kind === "item") {
+    return { kind: "item" };
+  }
+  const surfaces = scope.surfaces.map((surface) => {
+    if (!causeItemRefs.has(surface.itemRef)) {
+      throw new TypeError(
+        `${label}のexecution surface item refがcause allowlistにありません。対象: ${surface.itemRef}`,
+      );
+    }
+    const item = itemByRef.get(surface.itemRef);
+    assertNonNullable(item, `${label}のexecution surface item refがありません`);
+    if (
+      (surface.kind === "issue" && item.type !== "issue") ||
+      (surface.kind === "pull_request" && item.type !== "pull_request")
+    ) {
+      throw new TypeError(`${label}のexecution surface種別がitem contextと一致しません`);
+    }
+    return { kind: surface.kind, nodeId: githubNodeIdSchema.parse(item.nodeId) };
+  });
+  if (scope.kind === "execution_surfaces") {
+    return { kind: "execution_surfaces", surfaces };
+  }
+  return { kind: "item_and_execution_surfaces", surfaces };
+}
+
 function canonicalRelationContext(
   relation: PersonalReminderAiRelationContext,
 ): PersonalReminderAiRelationContext {
@@ -914,7 +1072,10 @@ function exceedsPersonalReminderAiTransportCapacity(
     for (const option of [...cause.waitingOptions, ...cause.duplicateOptions]) {
       if (
         option.relationRefs.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds ||
-        option.sourceRefs.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds
+        option.sourceRefs.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds ||
+        (option.targetScope.kind !== "item" &&
+          option.targetScope.surfaces.length >
+            PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds)
       ) {
         return true;
       }
@@ -1079,6 +1240,11 @@ function createTransportInput(
         return {
           optionId: option.optionId,
           itemRef,
+          targetScope: createTransportTargetScope(
+            option.targetScope,
+            itemRefById,
+            `waiting option ${option.optionId}`,
+          ),
           action: option.action,
           relationRefs: relationRefsForOption,
           sourceRefs: [firstSource, ...restSources],
@@ -1128,6 +1294,11 @@ function createTransportInput(
       return {
         canonicalCauseId: option.canonicalCauseId,
         itemRef,
+        targetScope: createTransportTargetScope(
+          option.targetScope,
+          itemRefById,
+          `duplicate option ${option.canonicalCauseId}`,
+        ),
         responsible: [firstResponsible, ...restResponsible],
         action: option.action,
         relationRefs: [firstRelation, ...restRelations],
@@ -1224,6 +1395,7 @@ function validateTransportInputIntegrity(input: PersonalReminderAiInput): void {
   const relationRefs = new Set(relationRefValues);
   const sourceRefs = new Set(sourceRefValues);
   const itemByRef = new Map(input.items.map((value) => [value.ref, value.item]));
+  const itemByNodeId = new Map(input.items.map((value) => [value.item.nodeId, value.item]));
   const relationByRef = new Map(input.relations.map((value) => [value.ref, value.relation]));
   const sourceByRef = new Map(input.sources.map((value) => [value.ref, value.source]));
   const itemNodeIdValues = input.items.map((value) => value.item.nodeId);
@@ -1343,6 +1515,7 @@ function validateTransportInputIntegrity(input: PersonalReminderAiInput): void {
     const validateOption = (
       option: Readonly<{
         itemRef: PersonalReminderItemRef;
+        targetScope: PersonalReminderTargetScope;
         relationRefs: readonly PersonalReminderRelationRef[];
         sourceRefs: readonly PersonalReminderSourceRef[];
       }>,
@@ -1367,9 +1540,18 @@ function validateTransportInputIntegrity(input: PersonalReminderAiInput): void {
       }
       const targetItem = itemByRef.get(option.itemRef);
       assertNonNullable(targetItem, `${label}のitem refがありません。対象: ${option.itemRef}`);
+      validateOptionTargetScope(
+        {
+          itemNodeId: targetItem.nodeId,
+          targetScope: option.targetScope,
+        },
+        itemByNodeId,
+        label,
+      );
       validateOptionRelationIntegrity(
         {
           itemNodeId: targetItem.nodeId,
+          targetScope: option.targetScope,
           relationIds: option.relationRefs,
         },
         cause.cause,
@@ -1378,7 +1560,18 @@ function validateTransportInputIntegrity(input: PersonalReminderAiInput): void {
       );
     };
     for (const option of cause.waitingOptions) {
-      validateOption(option, `waiting option ${option.optionId} of cause ${cause.causeId}`);
+      validateOption(
+        {
+          ...option,
+          targetScope: resolveTransportTargetScope(
+            option.targetScope,
+            itemByRef,
+            causeItemRefs,
+            `waiting option ${option.optionId} of cause ${cause.causeId}`,
+          ),
+        },
+        `waiting option ${option.optionId} of cause ${cause.causeId}`,
+      );
     }
     for (const option of cause.duplicateOptions) {
       validateUniqueStrings(
@@ -1386,7 +1579,15 @@ function validateTransportInputIntegrity(input: PersonalReminderAiInput): void {
         `duplicate option ${option.canonicalCauseId} of cause ${cause.causeId}の責任主体`,
       );
       validateOption(
-        option,
+        {
+          ...option,
+          targetScope: resolveTransportTargetScope(
+            option.targetScope,
+            itemByRef,
+            causeItemRefs,
+            `duplicate option ${option.canonicalCauseId} of cause ${cause.causeId}`,
+          ),
+        },
         `duplicate option ${option.canonicalCauseId} of cause ${cause.causeId}`,
       );
     }
