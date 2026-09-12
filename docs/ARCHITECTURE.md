@@ -295,8 +295,9 @@ AI判定を行わなかった項目では`lastProgressAt`が作成時刻のま�
 待ち先本人の活動を下限に加えることで、AI判定の有無によらず停滞時間が決まります。
 
 関係edgeが成立した時刻は、根拠となったsourceの発生時刻のうち最も古いものにします。
-同じcommitを複数のPull Requestが含む場合、commitのsource IDは共有される一方で、
-発生時刻はそれぞれのPull Request作成時刻を下限に補正されるため食い違います。
+Pull Requestのtimelineとheadにあるcommitは、Pull Requestとcommitの組で識別します。
+同じcommitでも別のPull Requestへの追加は、所属する項目や発生時刻が異なる根拠として扱います。
+レビューのcommit参照には、commit object自体を表すsource IDを使います。
 最も古い時刻はsourceの集合だけで決まるので、収集した項目の順番が変わっても同じ値になります。
 
 個人原因では、責務が発生した`obligationSince`、実行可能になった`actionableSince`、通知の計算に使う`stallSince`を分けます。
@@ -459,7 +460,7 @@ freshなopen項目の列挙が完了すれば原因0件でも`completed`にし�
 Pagesのsummaryとdetailsには全statusを公開し、生成元のcache keyは公開しません。
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、汎用AIと個人原因の追加cache、通知候補選別後の通知管理記録を通常stateの最初のGit commitへまとめます。個人原因の採用結果と実行状態を永続化できる前に外部通知へ進みません。
-旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 14から15への移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。汎用AIの採用値と現行cacheを保持します。旧AIの自由文から責務・時刻・意味結果を補填しません。
+旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 14から15への移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
 読み込みやCI検証だけでは本番へ保存せず、workflowによるpushまで完了してから移行済みとします。
 移行したAIの採用値は新しい生成結果と区別し、旧generationのresult、metadata、outputHashを改変せず、再推論の失敗・延期だけで消しません。
 本人起因の通知抑制は新しいsignalからnotification keyまたは未送信候補を作る前だけに適用し、既存pendingとnotification ledgerへ今回の原因を転用しません。既存のpending、reserved、delivery_started、sent、acknowledgedは通常の有効性・送信・失効規則でだけ更新します。

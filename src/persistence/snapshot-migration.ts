@@ -20,10 +20,14 @@ import {
   type AiAnalysisRelation,
 } from "../domain/ai-analysis-elements.js";
 import {
+  createGitHubNodeId,
   type TrackedItemAiAnalysisCurrentElements,
   type TrackedItemAiAnalysisMigrationAdoptedElements,
   PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   isTerminalStatus,
+  parseSourceId,
+  type GitHubNodeId,
+  type TrackedItemInputEvent,
   type PersonalReminderCausePlanning,
 } from "../domain/index.js";
 import {
@@ -36,6 +40,7 @@ import { type LegacyAiCacheEntry } from "./ai-cache-migration.js";
 import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
 import { StateFormatError, StateSnapshotSemanticError } from "./errors.js";
 import { UnreachableError } from "../util/index.js";
+import { buildPullRequestCommitSourceId } from "../github/production-source-id.js";
 import {
   createStateSnapshot,
   parseStateSnapshot,
@@ -1344,6 +1349,10 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
       schemaVersion: "15",
       items: value.items.map((item) => ({
         ...item,
+        inputEvents:
+          item.type === "pull_request"
+            ? migrateVersion14PullRequestInputEvents(item.nodeId, item.inputEvents)
+            : item.inputEvents,
         personalReminderCauses: [],
         personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
@@ -1351,6 +1360,25 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
   } catch (error: unknown) {
     throw migrationFormatError(error);
   }
+}
+
+function migrateVersion14PullRequestInputEvents(
+  pullRequestNodeId: GitHubNodeId,
+  inputEvents: readonly TrackedItemInputEvent[],
+): readonly TrackedItemInputEvent[] {
+  return inputEvents.map((event) => {
+    const source = parseSourceId(event.sourceId);
+    if (source.kind !== "github_commit") {
+      return event;
+    }
+    return {
+      ...event,
+      sourceId: buildPullRequestCommitSourceId(
+        pullRequestNodeId,
+        createGitHubNodeId(source.originalId),
+      ),
+    };
+  });
 }
 
 /** snapshotをschema versionに応じて現行形式へ変換する。 */

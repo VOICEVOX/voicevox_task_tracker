@@ -132,6 +132,7 @@ function resolveProductionEvidenceSourceUrl(
     case "github_team":
     case "github_item":
     case "github_commit":
+    case "github_pull_request_commit":
     case "github_timeline_event":
     case "github_label":
     case "github_inbound_cross_reference":
