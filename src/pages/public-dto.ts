@@ -6,6 +6,9 @@ import { isTerminalStatus } from "../domain/status.js";
 import { assertNonNullable } from "../util/index.js";
 import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 
+/** Pages公開DTOのschema version。 */
+export const PUBLIC_DTO_SCHEMA_VERSION = "9";
+
 const identifierSchema = z.string().min(1).max(512).regex(/^\S+$/u);
 const shortStringSchema = z.string().max(1000);
 const dateTimeSchema = z.iso
@@ -110,6 +113,60 @@ const publicEvidenceSchema = z.strictObject({
   summary: shortStringSchema,
   sourceUrl: githubUrlSchema,
 });
+const publicPersonalReminderResponsibleSchema = z.strictObject({
+  kind: z.enum(["user", "team", "role"]),
+  candidateId: identifierSchema,
+  role: z.enum([
+    "author",
+    "maintainer",
+    "reviewer",
+    "assignee",
+    "respondent",
+    "merge_decider",
+    "unknown",
+  ]),
+});
+const publicPersonalReminderActionSchema = z.strictObject({
+  kind: z.enum(["assessment", "owner", "decision", "review", "revision", "reply", "work", "merge"]),
+  summary: shortStringSchema,
+});
+const publicPersonalReminderUnknownReasonSchema = z.enum([
+  "input_mismatch",
+  "not_evaluated",
+  "failed",
+  "deferred",
+  "incomplete_input",
+  "conflicting_evidence",
+  "ambiguous_meaning",
+]);
+const publicPersonalReminderResponseSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    causeId: identifierSchema,
+    responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
+    action: publicPersonalReminderActionSchema,
+    evidence: z.array(publicEvidenceSchema).nonempty(),
+    status: z.literal("actionable"),
+  }),
+  z.strictObject({
+    causeId: identifierSchema,
+    responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
+    action: publicPersonalReminderActionSchema,
+    evidence: z.array(publicEvidenceSchema).nonempty(),
+    status: z.literal("waiting"),
+    waitingFor: z.strictObject({
+      itemNodeId: identifierSchema,
+      action: shortStringSchema,
+    }),
+  }),
+  z.strictObject({
+    causeId: identifierSchema,
+    responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
+    action: publicPersonalReminderActionSchema,
+    evidence: z.array(publicEvidenceSchema).nonempty(),
+    status: z.literal("unknown"),
+    reason: publicPersonalReminderUnknownReasonSchema,
+  }),
+]);
 const repositoryFreshnessSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("fresh"),
@@ -242,6 +299,7 @@ const publicItemSummarySchema = z.strictObject({
   blockerNodeIds: z.array(identifierSchema),
   downstreamImpact: downstreamImpactSchema,
   currentImplementations: z.array(publicCurrentImplementationSchema),
+  currentResponses: z.array(publicPersonalReminderResponseSchema),
 });
 const itemTimestampsSchema = z.strictObject({
   createdAt: dateTimeSchema,
@@ -418,7 +476,7 @@ const publicAiStateSchema = z.union([
   }),
 ]);
 const publicSummaryDtoSchema = z.strictObject({
-  schemaVersion: z.literal("8"),
+  schemaVersion: z.literal(PUBLIC_DTO_SCHEMA_VERSION),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
@@ -430,7 +488,7 @@ const publicSummaryDtoSchema = z.strictObject({
   graph: publicInitialGraphSchema,
 });
 const publicDetailsDtoSchema = z.strictObject({
-  schemaVersion: z.literal("8"),
+  schemaVersion: z.literal(PUBLIC_DTO_SCHEMA_VERSION),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   items: z.array(publicItemDetailsSchema),
@@ -531,10 +589,10 @@ const publicNotificationHistoryDtoSchema = z
     }
   });
 
-/** Web初期表示で共有するschema version 8の公開summary DTO。 */
+/** Web初期表示で共有するschema version 9の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 8の公開details DTO。 */
+/** Web詳細表示で共有するschema version 9の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */
@@ -542,6 +600,16 @@ export type PublicItemSummaryDto = z.output<typeof publicItemSummarySchema>;
 
 /** 公開details DTO内の項目。 */
 export type PublicItemDetailsDto = z.output<typeof publicItemDetailsSchema>;
+
+/** 個人催促の現在対応を表す公開DTO。 */
+export type PublicPersonalReminderResponseDto = z.output<
+  typeof publicPersonalReminderResponseSchema
+>;
+
+/** 個人催促の現在対応がunknownである理由。 */
+export type PublicPersonalReminderUnknownReason = z.output<
+  typeof publicPersonalReminderUnknownReasonSchema
+>;
 
 /** 公開DTO内のグラフnode。 */
 export type PublicGraphNodeDto = z.output<typeof publicGraphNodeSchema>;
@@ -825,6 +893,11 @@ function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void
         candidateIds.add(waitingOn.candidateId);
       }
     }
+    for (const response of item.currentResponses) {
+      if (response.status === "waiting") {
+        candidateIds.add(response.waitingFor.itemNodeId);
+      }
+    }
   }
   for (const candidateId of candidateIds) {
     if (summaryItemNodeIds.has(candidateId) || externalGraphNodeIds.has(candidateId)) {
@@ -836,6 +909,44 @@ function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void
   }
 }
 
+function assertPublicCurrentResponseIds(
+  items: readonly Readonly<{
+    nodeId: string;
+    currentResponses: readonly PublicPersonalReminderResponseDto[];
+  }>[],
+): void {
+  const causeIds = new Set<string>();
+  for (const item of items) {
+    for (const response of item.currentResponses) {
+      if (causeIds.has(response.causeId)) {
+        throw new PublicDtoSemanticError(
+          `personal reminder responseのcause IDが重複しています。対象: ${response.causeId}`,
+        );
+      }
+      causeIds.add(response.causeId);
+    }
+  }
+}
+
+function assertPublicDetailsCurrentResponseReferences(details: PublicDetailsDto): void {
+  const graphNodeIds = new Set(details.graph.nodes.map((node) => node.nodeId));
+  for (const item of details.items) {
+    graphNodeIds.add(item.summary.nodeId);
+  }
+  for (const item of details.items) {
+    for (const response of item.summary.currentResponses) {
+      if (response.status !== "waiting") {
+        continue;
+      }
+      if (!graphNodeIds.has(response.waitingFor.itemNodeId)) {
+        throw new PublicDtoSemanticError(
+          `waiting responseの項目 ${response.waitingFor.itemNodeId}をdetailsから解決できません`,
+        );
+      }
+    }
+  }
+}
+
 /** 未検証の値を共有公開summary DTOへ変換する。 */
 export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
   const result = publicSummaryDtoSchema.safeParse(value);
@@ -844,6 +955,7 @@ export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
       cause: result.error,
     });
   }
+  assertPublicCurrentResponseIds(result.data.items);
   assertPublicSummaryWaitingOnReferences(result.data);
   assertPublicCurrentImplementations(result.data.items);
   return result.data;
@@ -857,6 +969,8 @@ export function createPublicDetailsDto(value: unknown): PublicDetailsDto {
       cause: result.error,
     });
   }
+  assertPublicCurrentResponseIds(result.data.items.map((item) => item.summary));
+  assertPublicDetailsCurrentResponseReferences(result.data);
   assertPublicCurrentImplementations(result.data.items.map((item) => item.summary));
   return result.data;
 }
