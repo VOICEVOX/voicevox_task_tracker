@@ -9518,7 +9518,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "10",
+    schemaVersion: "11",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -9532,6 +9532,7 @@ function createCollectAnalyzeArtifact(
     notificationSelection: validated.notificationSelection,
     runMetadata: createRunMetadata(invocation, validated, metrics, diagnostics),
     aiCacheEntries: state.session.pendingAiCacheEntries(),
+    personalReminderAiCacheEntries: state.session.pendingPersonalReminderAiCacheEntries(),
     pagesUrl: pagesUrl(configuration.config),
     discordSettings: discordDeliverySettings(configuration.config),
   });
@@ -12043,6 +12044,9 @@ async function persistWorkflowState(
   );
   for (const entry of artifact.aiCacheEntries) {
     await session.aiCache.write(entry);
+  }
+  for (const entry of artifact.personalReminderAiCacheEntries) {
+    await session.personalReminderAiCache.write(entry);
   }
   await session.persist({
     snapshot: artifact.snapshot,

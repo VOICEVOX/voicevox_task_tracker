@@ -2,7 +2,12 @@ import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
-import { createAiCacheEntry, type AiCacheEntry } from "../codex/index.js";
+import {
+  createAiCacheEntry,
+  createPersonalReminderAiCacheEntry,
+  type AiCacheEntry,
+  type PersonalReminderAiCacheEntry,
+} from "../codex/index.js";
 import {
   createGitHubNodeId,
   createGitHubRepositoryId,
@@ -34,7 +39,7 @@ import { notificationActionSchema, type NotificationAction } from "./command.js"
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
-const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "10";
+const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "11";
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const dateTimeSchema = z.iso
   .datetime({
@@ -201,6 +206,7 @@ const workflowArtifactSchema = z.strictObject({
   notificationSelection: z.unknown(),
   runMetadata: runMetadataSchema,
   aiCacheEntries: z.array(z.unknown()),
+  personalReminderAiCacheEntries: z.array(z.unknown()),
   pagesUrl: z.url(),
   discordSettings: discordSettingsSchema,
 });
@@ -231,6 +237,7 @@ export type WorkflowArtifact = Readonly<{
   notificationSelection: DiscordNotificationSelection;
   runMetadata: WorkflowRunMetadata;
   aiCacheEntries: readonly AiCacheEntry[];
+  personalReminderAiCacheEntries: readonly PersonalReminderAiCacheEntry[];
   pagesUrl: string;
   discordSettings: DiscordDeliverySettings;
 }>;
@@ -302,6 +309,19 @@ function createAiCacheEntries(values: readonly unknown[]): readonly AiCacheEntry
   const cacheKeys = entries.map((entry) => entry.cacheKey);
   if (new Set(cacheKeys).size !== cacheKeys.length) {
     throw new TypeError("workflow artifactのAI cache keyが重複しています");
+  }
+  return Object.freeze(
+    [...entries].sort((left, right) => compareStrings(left.cacheKey, right.cacheKey)),
+  );
+}
+
+function createPersonalReminderAiCacheEntries(
+  values: readonly unknown[],
+): readonly PersonalReminderAiCacheEntry[] {
+  const entries = values.map((value) => createPersonalReminderAiCacheEntry(value));
+  const cacheKeys = entries.map((entry) => entry.cacheKey);
+  if (new Set(cacheKeys).size !== cacheKeys.length) {
+    throw new TypeError("workflow artifactの個人催促AI cache keyが重複しています");
   }
   return Object.freeze(
     [...entries].sort((left, right) => compareStrings(left.cacheKey, right.cacheKey)),
@@ -545,6 +565,9 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const notificationSelection = createNotificationSelection(result.data.notificationSelection);
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
   const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
+  const personalReminderAiCacheEntries = createPersonalReminderAiCacheEntries(
+    result.data.personalReminderAiCacheEntries,
+  );
   const artifact = Object.freeze({
     schemaVersion: WORKFLOW_ARTIFACT_SCHEMA_VERSION,
     kind: "validated_public_run",
@@ -556,6 +579,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     notificationSelection,
     runMetadata,
     aiCacheEntries,
+    personalReminderAiCacheEntries,
     pagesUrl: normalizePagesUrl(result.data.pagesUrl),
     discordSettings: Object.freeze({
       ...result.data.discordSettings,
@@ -617,6 +641,7 @@ export function assertWorkflowArtifactPublicSafety(
       artifact.notificationSelection,
       artifact.runMetadata,
       ...artifact.aiCacheEntries,
+      ...artifact.personalReminderAiCacheEntries,
       artifact.pagesUrl,
       artifact.discordSettings,
     ],

@@ -8,6 +8,13 @@ import {
   type AiCacheStore,
 } from "../codex/cache.js";
 import {
+  createPersonalReminderAiCacheEntry,
+  type PersonalReminderAiCacheEntry,
+  type PersonalReminderAiCacheKey,
+  type PersonalReminderAiCacheReadResult,
+  type PersonalReminderAiCacheStore,
+} from "../codex/personal-reminder-cache.js";
+import {
   createAiCacheMigrationPlan,
   type AiCacheMigrationFile,
   type AiCacheMigrationPlan,
@@ -200,10 +207,32 @@ function createAiCacheStateFormatError(error: unknown): StateFormatError {
   });
 }
 
+function createPersonalReminderAiCacheStateFormatError(error: unknown): StateFormatError {
+  if (error instanceof z.ZodError) {
+    return StateFormatError.fromZodError("personal reminder AI cache", error);
+  }
+  return new StateFormatError("personal reminder AI cache", {
+    cause: new TypeError("個人催促AI cache entryの検証に失敗しました", {
+      cause: error,
+    }),
+  });
+}
+
 function cachePath(configuration: StatePersistenceConfiguration, cacheKey: AiCacheKey): string {
   parseSha256Hash(cacheKey);
   return joinStatePath(
     configuration.aiCacheDirectory,
+    `${cacheKey.slice(CACHE_KEY_PREFIX.length)}.json`,
+  );
+}
+
+function personalReminderAiCachePath(
+  configuration: StatePersistenceConfiguration,
+  cacheKey: PersonalReminderAiCacheKey,
+): string {
+  parseSha256Hash(cacheKey);
+  return joinStatePath(
+    configuration.personalReminderAiCacheDirectory,
     `${cacheKey.slice(CACHE_KEY_PREFIX.length)}.json`,
   );
 }
@@ -276,10 +305,15 @@ export class StatePersistenceSession {
   readonly #configuration: StatePersistenceConfiguration;
   readonly #aiCacheMigrationPlan: AiCacheMigrationPlan;
   readonly #pendingAiCacheEntries = new Map<AiCacheKey, AiCacheEntry>();
+  readonly #pendingPersonalReminderAiCacheEntries = new Map<
+    PersonalReminderAiCacheKey,
+    PersonalReminderAiCacheEntry
+  >();
   #pendingAiCacheDeletionPaths: readonly string[];
   #head: StateBranchHead;
 
   public readonly aiCache: AiCacheStore;
+  public readonly personalReminderAiCache: PersonalReminderAiCacheStore;
 
   private constructor(
     adapter: StateBranchAdapter,
@@ -297,6 +331,10 @@ export class StatePersistenceSession {
     this.aiCache = Object.freeze({
       read: (cacheKey) => this.#readAiCache(cacheKey),
       write: (entry) => this.#bufferAiCache(entry),
+    });
+    this.personalReminderAiCache = Object.freeze({
+      read: (cacheKey) => this.#readPersonalReminderAiCache(cacheKey),
+      write: (entry) => this.#bufferPersonalReminderAiCache(entry),
     });
   }
 
@@ -406,6 +444,58 @@ export class StatePersistenceSession {
       return Promise.resolve();
     } catch (error: unknown) {
       return Promise.reject(createAiCacheStateFormatError(error));
+    }
+  }
+
+  async #readPersonalReminderAiCache(
+    cacheKey: PersonalReminderAiCacheKey,
+  ): Promise<PersonalReminderAiCacheReadResult> {
+    const pendingEntry = this.#pendingPersonalReminderAiCacheEntries.get(cacheKey);
+    if (pendingEntry != null) {
+      return Object.freeze({
+        status: "hit",
+        entry: pendingEntry,
+      });
+    }
+    const result = await this.#readFile(personalReminderAiCachePath(this.#configuration, cacheKey));
+    const source = decodeStateFile(result, "personal reminder AI cache");
+    if (source == null) {
+      return Object.freeze({
+        status: "miss",
+      });
+    }
+    let value: unknown;
+    try {
+      const parseJson: (text: string) => unknown = JSON.parse;
+      value = parseJson(source);
+    } catch (error: unknown) {
+      throw new StateFormatError("personal reminder AI cache", {
+        cause: new SyntaxError("JSON構文が不正です", {
+          cause: error,
+        }),
+      });
+    }
+    try {
+      const entry = createPersonalReminderAiCacheEntry(value);
+      if (entry.cacheKey !== cacheKey) {
+        throw new TypeError("cache keyがファイル名と一致しません");
+      }
+      return Object.freeze({
+        status: "hit",
+        entry,
+      });
+    } catch (error: unknown) {
+      throw createPersonalReminderAiCacheStateFormatError(error);
+    }
+  }
+
+  #bufferPersonalReminderAiCache(entry: PersonalReminderAiCacheEntry): Promise<void> {
+    try {
+      const validated = createPersonalReminderAiCacheEntry(entry);
+      this.#pendingPersonalReminderAiCacheEntries.set(validated.cacheKey, validated);
+      return Promise.resolve();
+    } catch (error: unknown) {
+      return Promise.reject(createPersonalReminderAiCacheStateFormatError(error));
     }
   }
 
@@ -521,6 +611,15 @@ export class StatePersistenceSession {
   public pendingAiCacheEntries(): readonly AiCacheEntry[] {
     return Object.freeze(
       [...this.#pendingAiCacheEntries.values()].sort((left, right) =>
+        compareStrings(left.cacheKey, right.cacheKey),
+      ),
+    );
+  }
+
+  /** 現在のprocessで検証済みとなった未永続化の個人催促AI cacheを返す。 */
+  public pendingPersonalReminderAiCacheEntries(): readonly PersonalReminderAiCacheEntry[] {
+    return Object.freeze(
+      [...this.#pendingPersonalReminderAiCacheEntries.values()].sort((left, right) =>
         compareStrings(left.cacheKey, right.cacheKey),
       ),
     );
@@ -862,6 +961,9 @@ export class StatePersistenceSession {
     const existingHistoryRecords =
       existingHistorySource == null ? [] : parseStateHistoryRecords(existingHistorySource);
     const pendingAiCacheEntries = [...this.#pendingAiCacheEntries.values()];
+    const pendingPersonalReminderAiCacheEntries = [
+      ...this.#pendingPersonalReminderAiCacheEntries.values(),
+    ];
 
     assertStatePublicSafety({
       snapshot,
@@ -870,6 +972,7 @@ export class StatePersistenceSession {
         ...existingHistoryRecords,
         historyRecord,
         ...pendingAiCacheEntries,
+        ...pendingPersonalReminderAiCacheEntries,
         notificationLedger,
       ],
       knownSecrets: input.knownSecrets,
@@ -893,6 +996,10 @@ export class StatePersistenceSession {
         path: cachePath(this.#configuration, entry.cacheKey),
         bytes: encodeStateFile(serializeCanonicalJsonLine(entry)),
       })),
+      ...pendingPersonalReminderAiCacheEntries.map((entry) => ({
+        path: personalReminderAiCachePath(this.#configuration, entry.cacheKey),
+        bytes: encodeStateFile(serializeCanonicalJsonLine(entry)),
+      })),
     ];
     updates.sort((left, right) => compareStrings(left.path, right.path));
 
@@ -910,6 +1017,7 @@ export class StatePersistenceSession {
     });
     this.#consumeAiCacheMigration();
     this.#pendingAiCacheEntries.clear();
+    this.#pendingPersonalReminderAiCacheEntries.clear();
     return Object.freeze({
       ...result,
       updatedPaths: Object.freeze(updates.map((update) => update.path)),
