@@ -52,6 +52,7 @@ export {
 } from "./errors.js";
 export {
   assertDiscordWebhookPayloadWithinLimits,
+  assertDiscordPersonalReminderSelectionMatchesItems,
   buildDiscordDigestPlan,
   buildDiscordOperationsAlertPlan,
   calculateDiscordPayloadSize,
