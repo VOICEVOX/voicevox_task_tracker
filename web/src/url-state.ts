@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import {
   createDefaultTableFilters,
-  waitingSubjectKey,
+  currentResponseSubjectKey,
   type TableFilterKey,
   type TableFilterOption,
   type TableFilterOptions,
@@ -48,6 +48,11 @@ const TABLE_FILTER_DEFINITIONS = [
     key: "waitingOn",
     parameterName: "waitingOn",
     validation: "substring",
+  },
+  {
+    key: "responseStatus",
+    parameterName: "response",
+    validation: "option",
   },
   {
     key: "stall",
@@ -514,7 +519,7 @@ function parsePersonQuery(
   const teamIds: string[] = [];
   const teamKeys = new Set<string>();
   const validTeamKeys = new Set(
-    validTeamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId })),
+    validTeamIds.map((teamId) => currentResponseSubjectKey({ kind: "team", teamId })),
   );
 
   switch (parsedTeams.status) {
@@ -529,7 +534,7 @@ function parsePersonQuery(
           sanitized = true;
           continue;
         }
-        const teamKey = waitingSubjectKey({ kind: "team", teamId });
+        const teamKey = currentResponseSubjectKey({ kind: "team", teamId });
         if (teamKeys.has(teamKey) || !validTeamKeys.has(teamKey)) {
           sanitized = true;
           continue;

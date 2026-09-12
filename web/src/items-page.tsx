@@ -12,7 +12,6 @@ import {
   filterAndSortTableRows,
   isTableSelectFilterKey,
   searchItemNodeIds,
-  selectPrimaryWaitingOnCandidate,
   type TableFilterOptions,
   type TableFilterKey,
   type ItemTableRow,
@@ -118,7 +117,11 @@ const TABLE_FILTERS: readonly TableFilterDefinition[] = [
   },
   {
     key: "waitingOn",
-    label: "待ち相手",
+    label: "現在の対応者",
+  },
+  {
+    key: "responseStatus",
+    label: "対応状態",
   },
   {
     key: "stall",
@@ -305,7 +308,7 @@ function ItemTable({
     onSelectItem,
     onSelectPerson,
     onSortChange: updateSort,
-    selectPrimaryWaitingOn: (row: ItemTableRow) => selectPrimaryWaitingOnCandidate(row.item),
+    selectPrimaryCurrentResponse: () => undefined,
     sort,
     summary,
   };

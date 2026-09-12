@@ -3,6 +3,7 @@ import {
   type PublicItemDetailsDto,
   type PublicItemSummaryDto,
   type PublicNotificationHistoryEntryDto,
+  type PublicPersonalReminderResponseDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { isTerminalStatus } from "../../src/domain/status.js";
@@ -14,10 +15,17 @@ type Status = PublicItemSummaryDto["status"];
 type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
 type DeadlineLevel = Extract<PublicItemSummaryDto["deadline"], { status: "available" }>["level"];
 type AiAnalysisStatus = PublicItemSummaryDto["aiAnalysis"]["status"];
+type CurrentResponseStatus = PublicPersonalReminderResponseDto["status"];
+type CurrentResponseUnknownReason = Extract<
+  PublicPersonalReminderResponseDto,
+  Readonly<{ status: "unknown" }>
+>["reason"];
+type CurrentResponseResponsible = PublicPersonalReminderResponseDto["responsible"][number];
+type CurrentResponseRole = CurrentResponseResponsible["role"];
 type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 type WaitingOnReference = Pick<WaitingOnCandidate, "candidateId" | "kind" | "role">;
 type NotificationWaitingOnReference = PublicNotificationHistoryEntryDto["waitingOn"][number];
-type WaitingOnRole = WaitingOnCandidate["role"];
+type WaitingOnRole = WaitingOnReference["role"];
 type PublicActor = Extract<
   PublicItemDetailsDto["latestEventActor"],
   Readonly<{ status: "present" }>
@@ -25,7 +33,14 @@ type PublicActor = Extract<
 
 /** 一覧表で絞り込みの対象にする項目。 */
 export type TableFilterKey =
-  "repository" | "type" | "status" | "importance" | "waitingOn" | "stall" | "aiAnalysis";
+  | "repository"
+  | "type"
+  | "status"
+  | "importance"
+  | "waitingOn"
+  | "responseStatus"
+  | "stall"
+  | "aiAnalysis";
 
 /** 一覧表で選択式の絞り込みにする列。 */
 export type TableSelectFilterKey = Exclude<TableFilterKey, "waitingOn">;
@@ -65,7 +80,7 @@ export type TableFilterOptions = Readonly<
 export type ItemTableRow = Readonly<{
   item: PublicItemSummaryDto;
   repositoryText: string;
-  waitingOnText: string;
+  currentResponseText: string;
   stallDurationMilliseconds: number;
 }>;
 
@@ -92,13 +107,13 @@ export type AiAnalysisNotice =
   | Readonly<{ kind: "skipped"; description: string }>
   | Readonly<{ kind: "outdated"; description: string }>;
 
-/** 特定できた待ち相手。 */
-export type WaitingSubject =
+/** 現在の対応者を表す人またはチーム。 */
+export type CurrentResponseSubject =
   Readonly<{ kind: "user"; login: string }> | Readonly<{ kind: "team"; teamId: string }>;
 
-/** 待ち相手ごとの集計行。 */
-export type WaitingSubjectRow = Readonly<{
-  subject: WaitingSubject;
+/** 現在の対応者ごとの集計行。 */
+export type CurrentResponseSubjectRow = Readonly<{
+  subject: CurrentResponseSubject;
   label: string;
   itemCount: number;
   longestStallDuration: string;
@@ -108,10 +123,10 @@ export type WaitingSubjectRow = Readonly<{
 export type WaitingOnDisplayPart =
   Readonly<{ kind: "text"; text: string }> | Readonly<{ kind: "login"; login: string }>;
 
-interface WaitingSubjectRowAccumulator {
-  subject: WaitingSubject;
+interface CurrentResponseSubjectRowAccumulator {
+  subject: CurrentResponseSubject;
   label: string;
-  itemCount: number;
+  itemNodeIds: Set<string>;
   longestStallSince: string;
 }
 
@@ -204,6 +219,22 @@ const AI_ANALYSIS_FILTER_OPTIONS = [
   },
 ] satisfies readonly TableFilterOption[];
 
+const CURRENT_RESPONSE_STATUS_LABELS = {
+  actionable: "対応可能",
+  waiting: "待機中",
+  unknown: "不明",
+} satisfies Readonly<Record<CurrentResponseStatus, string>>;
+
+const CURRENT_RESPONSE_UNKNOWN_REASON_LABELS = {
+  input_mismatch: "入力が一致しない",
+  not_evaluated: "未評価",
+  failed: "判定に失敗",
+  deferred: "判定を延期",
+  incomplete_input: "入力不足",
+  conflicting_evidence: "根拠が競合",
+  ambiguous_meaning: "意味が曖昧",
+} satisfies Readonly<Record<CurrentResponseUnknownReason, string>>;
+
 const dateTimeFormatters = new Map<string, Map<string, Intl.DateTimeFormat>>();
 const relativeTimeFormatters = new Map<string, Intl.RelativeTimeFormat>();
 
@@ -227,9 +258,25 @@ export function createDefaultTableFilters(): TableFilters {
     status: "",
     importance: "",
     waitingOn: "",
+    responseStatus: "",
     stall: "",
     aiAnalysis: "",
   };
+}
+
+/** 現在の対応状態の日本語表示名を返す。 */
+export function currentResponseStatusLabel(status: CurrentResponseStatus): string {
+  return CURRENT_RESPONSE_STATUS_LABELS[status];
+}
+
+/** 現在の対応がunknownである理由の日本語表示名を返す。 */
+export function currentResponseUnknownReasonLabel(reason: CurrentResponseUnknownReason): string {
+  return CURRENT_RESPONSE_UNKNOWN_REASON_LABELS[reason];
+}
+
+/** 個人催促の責任主体に付いた役割の日本語表示名を返す。 */
+export function currentResponseRoleLabel(role: CurrentResponseRole): string {
+  return ROLE_LABELS[role];
 }
 
 /** 列が選択式の絞り込み対象かを返す。 */
@@ -315,6 +362,7 @@ export function createTableFilterOptions(summary: PublicSummaryDto): TableFilter
   const typeValues = new Set<string>();
   const statusValues = new Set<string>();
   const importanceValues = new Set<string>();
+  const responseStatusValues = new Set<string>();
 
   for (const item of summary.items) {
     const repository = repositoriesById.get(item.repositoryId);
@@ -323,6 +371,9 @@ export function createTableFilterOptions(summary: PublicSummaryDto): TableFilter
     typeValues.add(item.type);
     statusValues.add(item.status);
     importanceValues.add(item.importance.level);
+    for (const response of item.currentResponses) {
+      responseStatusValues.add(response.status);
+    }
   }
 
   return {
@@ -335,6 +386,10 @@ export function createTableFilterOptions(summary: PublicSummaryDto): TableFilter
       ...createPresentTableFilterOptions(STATUS_LABELS, statusValues),
     ],
     importance: createPresentTableFilterOptions(IMPORTANCE_LEVEL_LABELS, importanceValues),
+    responseStatus: createPresentTableFilterOptions(
+      CURRENT_RESPONSE_STATUS_LABELS,
+      responseStatusValues,
+    ),
     stall: STALL_FILTER_DEFINITIONS.map(({ label, value }) => ({ label, value })),
     aiAnalysis: AI_ANALYSIS_FILTER_OPTIONS,
   };
@@ -573,30 +628,6 @@ function currentWaitingOnRoleParts(
   }
 }
 
-/** 待ち相手を大文字小文字を区別しないキーへ変換する。 */
-export function waitingSubjectKey(subject: WaitingSubject): string {
-  switch (subject.kind) {
-    case "user":
-      return `user:${subject.login.toLowerCase()}`;
-    case "team":
-      return `team:${subject.teamId.toLowerCase()}`;
-    default:
-      throw new UnreachableError(subject);
-  }
-}
-
-/** 待ち相手を画面表示用の日本語ラベルへ変換する。 */
-export function waitingSubjectLabel(subject: WaitingSubject): string {
-  switch (subject.kind) {
-    case "user":
-      return `@${subject.login}`;
-    case "team":
-      return `チーム ${subject.teamId}`;
-    default:
-      throw new UnreachableError(subject);
-  }
-}
-
 function historyWaitingOnRoleParts(
   role: WaitingOnRole,
   item: PublicItemSummaryDto,
@@ -672,64 +703,6 @@ export function notificationWaitingOnLabelParts(
   return joinWaitingOnParts(waitingOn.map(notificationWaitingOnCandidateLabelParts), "、");
 }
 
-/** waitingOn候補から特定できる待ち相手を返す。 */
-function resolveWaitingOnCandidateSubjects(
-  waitingOn: WaitingOnCandidate,
-  item: PublicItemSummaryDto,
-): readonly WaitingSubject[] {
-  switch (waitingOn.kind) {
-    case "user":
-      return [{ kind: "user", login: waitingOn.candidateId }];
-    case "team":
-      return [{ kind: "team", teamId: waitingOn.candidateId }];
-    case "role":
-      switch (waitingOn.role) {
-        case "author":
-          switch (item.author.status) {
-            case "identified":
-              return [{ kind: "user", login: item.author.actor.login }];
-            case "unavailable":
-              return [];
-            default:
-              throw new UnreachableError(item.author);
-          }
-        case "assignee":
-          return item.assignees.map((assignee) => ({ kind: "user", login: assignee.login }));
-        case "maintainer":
-        case "reviewer":
-        case "merge_decider":
-        case "ci":
-        case "dependency":
-        case "respondent":
-        case "unknown":
-          return [];
-        default:
-          throw new UnreachableError(waitingOn.role);
-      }
-    case "item":
-    case "automation":
-    case "unknown":
-      return [];
-    default:
-      throw new UnreachableError(waitingOn.kind);
-  }
-}
-
-/** 項目のwaitingOnから特定できる待ち相手を入力順で返す。 */
-export function resolveWaitingSubjects(item: PublicItemSummaryDto): readonly WaitingSubject[] {
-  const subjectKeys = new Set<string>();
-  return item.waitingOn
-    .flatMap((waitingOn) => resolveWaitingOnCandidateSubjects(waitingOn, item))
-    .filter((subject) => {
-      const key = waitingSubjectKey(subject);
-      if (subjectKeys.has(key)) {
-        return false;
-      }
-      subjectKeys.add(key);
-      return true;
-    });
-}
-
 /** confidenceを確定、推定、候補の表示へ変換する。 */
 export function confidencePresentation(
   confidence: number,
@@ -766,71 +739,6 @@ export function confidencePresentation(
   };
 }
 
-/** waitingOn配列を日本語の表示断片へ変換する。 */
-export function formatWaitingOnParts(
-  item: PublicItemSummaryDto,
-  summary: PublicSummaryDto,
-): readonly WaitingOnDisplayPart[] {
-  if (item.waitingOn.length === 0) {
-    if (
-      item.status !== "terminal_merged" &&
-      item.status !== "terminal_completed" &&
-      item.status !== "terminal_not_planned"
-    ) {
-      throw new TypeError(`非terminal項目 ${item.nodeId} にwaitingOnがありません`);
-    }
-    return [textWaitingOnPart("対応完了")];
-  }
-  return joinWaitingOnParts(
-    item.waitingOn.map((waitingOn) => formatWaitingOnCandidateParts(waitingOn, item, summary)),
-    "、",
-  );
-}
-
-/** waitingOn候補を確度区分付きの表示断片へ変換する。 */
-export function formatWaitingOnCandidateParts(
-  waitingOn: WaitingOnCandidate,
-  item: PublicItemSummaryDto,
-  summary: PublicSummaryDto,
-): readonly WaitingOnDisplayPart[] {
-  const presentation = confidencePresentation(waitingOn.confidence, summary.confidenceThresholds);
-  return presentation.fieldQualifier.length === 0
-    ? waitingOnLabelParts(waitingOn, item, summary)
-    : [
-        textWaitingOnPart(`${presentation.fieldQualifier}: `),
-        ...waitingOnLabelParts(waitingOn, item, summary),
-      ];
-}
-
-/** waitingOn配列を日本語の表示文字列へ変換する。 */
-export function formatWaitingOn(item: PublicItemSummaryDto, summary: PublicSummaryDto): string {
-  return waitingOnPartsText(formatWaitingOnParts(item, summary));
-}
-
-/** waitingOn候補を確度区分付きの表示文字列へ変換する。 */
-export function formatWaitingOnCandidate(
-  waitingOn: WaitingOnCandidate,
-  item: PublicItemSummaryDto,
-  summary: PublicSummaryDto,
-): string {
-  return waitingOnPartsText(formatWaitingOnCandidateParts(waitingOn, item, summary));
-}
-
-/** primaryWaitingOnが指す候補を返し、未選定なら先頭候補を返す。 */
-export function selectPrimaryWaitingOnCandidate(
-  item: PublicItemSummaryDto,
-): WaitingOnCandidate | undefined {
-  if (item.waitingOn.length === 0) {
-    return undefined;
-  }
-  if (item.primaryWaitingOn.index === "not_applicable") {
-    return item.waitingOn[0];
-  }
-  const waitingOn = item.waitingOn[item.primaryWaitingOn.index];
-  assertNonNullable(waitingOn, `項目 ${item.nodeId} のprimary waitingOnがありません`);
-  return waitingOn;
-}
-
 function compareStrings(left: string, right: string): number {
   if (left < right) {
     return -1;
@@ -841,42 +749,124 @@ function compareStrings(left: string, right: string): number {
   return 0;
 }
 
-/** 公開summaryから待ち相手のチーム識別子を昇順で集める。 */
-export function collectWaitingTeamIds(summary: PublicSummaryDto): readonly string[] {
+/** 現在の対応者を大文字小文字を区別しないキーへ変換する。 */
+export function currentResponseSubjectKey(subject: CurrentResponseSubject): string {
+  switch (subject.kind) {
+    case "user":
+      return `user:${subject.login.toLowerCase()}`;
+    case "team":
+      return `team:${subject.teamId.toLowerCase()}`;
+    default:
+      throw new UnreachableError(subject);
+  }
+}
+
+function currentResponseSubjectLabel(subject: CurrentResponseSubject): string {
+  switch (subject.kind) {
+    case "user":
+      return `@${subject.login}`;
+    case "team":
+      return `チーム ${subject.teamId}`;
+    default:
+      throw new UnreachableError(subject);
+  }
+}
+
+function currentResponseResponsibleLabel(responsible: CurrentResponseResponsible): string {
+  switch (responsible.kind) {
+    case "user":
+      return `@${responsible.candidateId} ${currentResponseRoleLabel(responsible.role)}`;
+    case "team":
+      return `チーム ${responsible.candidateId} ${currentResponseRoleLabel(responsible.role)}`;
+    case "role":
+      return `${currentResponseRoleLabel(responsible.role)} ${responsible.candidateId}`;
+  }
+}
+
+function formatCurrentResponseText(item: PublicItemSummaryDto): string {
+  return item.currentResponses
+    .flatMap((response) =>
+      response.responsible.map((responsible) => currentResponseResponsibleLabel(responsible)),
+    )
+    .join("\n");
+}
+
+function currentResponseSubjectFromResponsible(
+  responsible: CurrentResponseResponsible,
+): CurrentResponseSubject | undefined {
+  switch (responsible.kind) {
+    case "user":
+      return { kind: "user", login: responsible.candidateId };
+    case "team":
+      return { kind: "team", teamId: responsible.candidateId };
+    case "role":
+      return undefined;
+  }
+}
+
+/** 現在の対応者から、人物一覧へ表示する人とチームを重複なく返す。 */
+export function resolveCurrentResponseSubjects(
+  item: PublicItemSummaryDto,
+): readonly CurrentResponseSubject[] {
+  const subjects: CurrentResponseSubject[] = [];
+  const subjectKeys = new Set<string>();
+  for (const response of item.currentResponses) {
+    for (const responsible of response.responsible) {
+      const subject = currentResponseSubjectFromResponsible(responsible);
+      if (subject == null) {
+        continue;
+      }
+      const key = currentResponseSubjectKey(subject);
+      if (subjectKeys.has(key)) {
+        continue;
+      }
+      subjectKeys.add(key);
+      subjects.push(subject);
+    }
+  }
+  return subjects;
+}
+
+/** 公開summaryから現在の対応者のチーム識別子を昇順で集める。 */
+export function collectCurrentResponseTeamIds(summary: PublicSummaryDto): readonly string[] {
   const teamIds = new Map<string, string>();
   for (const item of summary.items) {
-    for (const subject of resolveWaitingSubjects(item)) {
-      if (subject.kind === "team") {
-        const key = waitingSubjectKey(subject);
-        if (!teamIds.has(key)) {
-          teamIds.set(key, subject.teamId);
-        }
+    for (const subject of resolveCurrentResponseSubjects(item)) {
+      if (subject.kind !== "team") {
+        continue;
+      }
+      const key = currentResponseSubjectKey(subject);
+      if (!teamIds.has(key)) {
+        teamIds.set(key, subject.teamId);
       }
     }
   }
   return [...teamIds.values()].sort(compareStrings);
 }
 
-/** 公開summaryから待ち相手ごとの集計行を作る。 */
-export function collectWaitingSubjectRows(
+/** 公開summaryから現在の対応者ごとの集計行を作る。 */
+export function collectCurrentResponseSubjectRows(
   summary: PublicSummaryDto,
   now: Date,
-): readonly WaitingSubjectRow[] {
-  const accumulators = new Map<string, WaitingSubjectRowAccumulator>();
+): readonly CurrentResponseSubjectRow[] {
+  const accumulators = new Map<string, CurrentResponseSubjectRowAccumulator>();
   for (const item of summary.items) {
-    for (const subject of resolveWaitingSubjects(item)) {
-      const key = waitingSubjectKey(subject);
+    for (const subject of resolveCurrentResponseSubjects(item)) {
+      const key = currentResponseSubjectKey(subject);
       const accumulator = accumulators.get(key);
       if (accumulator == null) {
         accumulators.set(key, {
           subject,
-          label: waitingSubjectLabel(subject),
-          itemCount: 1,
+          label: currentResponseSubjectLabel(subject),
+          itemNodeIds: new Set([item.nodeId]),
           longestStallSince: item.stallSince,
         });
         continue;
       }
-      accumulator.itemCount += 1;
+      if (accumulator.itemNodeIds.has(item.nodeId)) {
+        continue;
+      }
+      accumulator.itemNodeIds.add(item.nodeId);
       if (parseTimestamp(item.stallSince) < parseTimestamp(accumulator.longestStallSince)) {
         accumulator.longestStallSince = item.stallSince;
       }
@@ -887,7 +877,7 @@ export function collectWaitingSubjectRows(
     .map((accumulator) => ({
       subject: accumulator.subject,
       label: accumulator.label,
-      itemCount: accumulator.itemCount,
+      itemCount: accumulator.itemNodeIds.size,
       longestStallDuration: formatStallDuration(accumulator.longestStallSince, now),
     }))
     .sort((left, right) => {
@@ -896,46 +886,67 @@ export function collectWaitingSubjectRows(
     });
 }
 
-/** loginまたは所属teamに対応する先頭のwaitingOn候補を返す。 */
-export function selectWaitingSubjectPrimaryCandidate(
-  item: PublicItemSummaryDto,
+function currentResponseSubjectKeys(
   login: string,
   teamIds: readonly string[],
-): WaitingOnCandidate {
-  const subjectKeys = new Set([
-    waitingSubjectKey({ kind: "user", login }),
-    ...teamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId })),
+): ReadonlySet<string> {
+  return new Set([
+    currentResponseSubjectKey({ kind: "user", login }),
+    ...teamIds.map((teamId) => currentResponseSubjectKey({ kind: "team", teamId })),
   ]);
-  const waitingOn = item.waitingOn.find((candidate) =>
-    resolveWaitingOnCandidateSubjects(candidate, item).some((subject) =>
-      subjectKeys.has(waitingSubjectKey(subject)),
-    ),
-  );
-  assertNonNullable(waitingOn, `項目 ${item.nodeId} に選択中のwaitingOn候補がありません`);
-  return waitingOn;
 }
 
-/** loginまたは所属teamの対応を待っている項目のnode ID集合を返す。 */
-export function selectWaitingSubjectItemNodeIds(
+function responseResponsibleMatchesSubjects(
+  responsible: CurrentResponseResponsible,
+  subjectKeys: ReadonlySet<string>,
+): boolean {
+  if (responsible.kind === "user") {
+    return subjectKeys.has(
+      currentResponseSubjectKey({ kind: "user", login: responsible.candidateId }),
+    );
+  }
+  if (responsible.kind === "team") {
+    return subjectKeys.has(
+      currentResponseSubjectKey({ kind: "team", teamId: responsible.candidateId }),
+    );
+  }
+  return false;
+}
+
+/** loginまたは所属teamが現在の対応者に含まれる項目のnode ID集合を返す。 */
+export function selectCurrentResponseSubjectItemNodeIds(
   summary: PublicSummaryDto,
   login: string,
   teamIds: readonly string[],
 ): ReadonlySet<string> {
-  const subjectKeys = new Set([
-    waitingSubjectKey({ kind: "user", login }),
-    ...teamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId })),
-  ]);
+  const subjectKeys = currentResponseSubjectKeys(login, teamIds);
   return new Set(
     summary.items
       .filter((item) =>
-        item.waitingOn.some((waitingOn) =>
-          resolveWaitingOnCandidateSubjects(waitingOn, item).some((subject) =>
-            subjectKeys.has(waitingSubjectKey(subject)),
+        item.currentResponses.some((response) =>
+          response.responsible.some((responsible) =>
+            responseResponsibleMatchesSubjects(responsible, subjectKeys),
           ),
         ),
       )
       .map((item) => item.nodeId),
   );
+}
+
+/** loginまたは所属teamに対応する現在のresponseを返す。 */
+export function selectCurrentResponseSubjectPrimaryResponse(
+  item: PublicItemSummaryDto,
+  login: string,
+  teamIds: readonly string[],
+): PublicPersonalReminderResponseDto {
+  const subjectKeys = currentResponseSubjectKeys(login, teamIds);
+  const response = item.currentResponses.find((candidate) =>
+    candidate.responsible.some((responsible) =>
+      responseResponsibleMatchesSubjects(responsible, subjectKeys),
+    ),
+  );
+  assertNonNullable(response, `項目 ${item.nodeId} に選択中の現在の対応がありません`);
+  return response;
 }
 
 /** URLがhttps://github.com配下かを検証する。 */
@@ -979,7 +990,7 @@ export function createItemTableRows(summary: PublicSummaryDto, now: Date): reado
     return {
       item,
       repositoryText: repository.fullName,
-      waitingOnText: formatWaitingOn(item, summary),
+      currentResponseText: formatCurrentResponseText(item),
       stallDurationMilliseconds,
     };
   });
@@ -1057,6 +1068,16 @@ export function searchItemNodeIds(
             waitingOn.candidateId,
             waitingOn.reasonSummary,
           ]),
+          ...item.currentResponses.flatMap((response) => [
+            currentResponseStatusLabel(response.status),
+            response.action.summary,
+            ...response.responsible.flatMap((responsible) => [
+              responsible.candidateId,
+              currentResponseRoleLabel(responsible.role),
+            ]),
+            ...response.evidence.map((evidence) => evidence.summary),
+            ...(response.status === "waiting" ? [response.waitingFor.action] : []),
+          ]),
           ...(item.author.status === "identified" ? [item.author.actor.login] : []),
           ...(details.latestEventActor.status === "present"
             ? [actorSearchName(details.latestEventActor.actor)]
@@ -1084,7 +1105,9 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: st
     case "importance":
       return row.item.importance.level === value;
     case "waitingOn":
-      return normalizedSearchText(row.waitingOnText).includes(normalizedSearchText(value));
+      return normalizedSearchText(row.currentResponseText).includes(normalizedSearchText(value));
+    case "responseStatus":
+      return row.item.currentResponses.some((response) => response.status === value);
     case "stall": {
       const definition = STALL_FILTER_DEFINITIONS.find((candidate) => candidate.value === value);
       assertNonNullable(definition, `未対応の停滞時間の絞り込みです: ${value}`);
@@ -1197,6 +1220,7 @@ export function filterAndSortTableRows(
         key !== "status" &&
         key !== "importance" &&
         key !== "waitingOn" &&
+        key !== "responseStatus" &&
         key !== "stall" &&
         key !== "aiAnalysis"
       ) {

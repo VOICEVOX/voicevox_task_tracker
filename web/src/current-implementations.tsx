@@ -1,10 +1,11 @@
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
+import { CurrentResponses } from "./current-responses.js";
 import { GitHubIconButton } from "./github-icon-button.js";
 import { ItemDetailsLink } from "./item-details.js";
-import { formatWaitingOnCandidateParts, formatWaitingOnParts, statusLabel } from "./model.js";
+import { statusLabel } from "./model.js";
 import { Pill } from "./ui.js";
-import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
+import { type PersonNavigation } from "./waiting-on-display.js";
 
 type CurrentImplementation = PublicItemSummaryDto["currentImplementations"][number];
 
@@ -27,54 +28,6 @@ function findImplementationItem(
     throw new TypeError(`現在の実装 ${implementation.nodeId} がPull Requestではありません`);
   }
   return item;
-}
-
-function ImplementationWaitingOn({
-  createPersonHref,
-  implementation,
-  implementationItem,
-  onSelectPerson,
-  summary,
-}: PersonNavigation &
-  Readonly<{
-    implementation: CurrentImplementation;
-    implementationItem: PublicItemSummaryDto;
-    summary: PublicSummaryDto;
-  }>) {
-  if (implementation.waitingOn.length === 0) {
-    return (
-      <WaitingOnDisplay
-        createPersonHref={createPersonHref}
-        onSelectPerson={onSelectPerson}
-        parts={formatWaitingOnParts(implementationItem, summary)}
-        showAvatar={false}
-      />
-    );
-  }
-  return (
-    <ul class="current-implementation-waiting-on m-0 grid list-none gap-1 p-0">
-      {implementation.waitingOn.map((candidate, index) => (
-        <li
-          class="grid min-w-0 gap-0.5"
-          key={`${candidate.kind}:${candidate.role}:${candidate.candidateId}:${index.toString()}`}
-        >
-          <span class="wrap-anywhere">
-            <WaitingOnDisplay
-              createPersonHref={createPersonHref}
-              onSelectPerson={onSelectPerson}
-              parts={formatWaitingOnCandidateParts(candidate, implementationItem, summary)}
-              showAvatar={false}
-            />
-          </span>
-          {candidate.reasonSummary.length > 0 && (
-            <span class="text-xs leading-5 text-text-muted wrap-anywhere">
-              {candidate.reasonSummary}
-            </span>
-          )}
-        </li>
-      ))}
-    </ul>
-  );
 }
 
 type CurrentImplementationRowProps = PersonNavigation &
@@ -118,6 +71,15 @@ function CurrentImplementationRow({
           <GitHubIconButton href={implementation.url} />
           {status}
         </div>
+        <CurrentResponses
+          createItemHref={createItemHref}
+          createPersonHref={createPersonHref}
+          onSelectItem={onSelectItem}
+          onSelectPerson={onSelectPerson}
+          responses={implementationItem.currentResponses}
+          summary={summary}
+          variant="compact"
+        />
       </li>
     );
   }
@@ -129,24 +91,15 @@ function CurrentImplementationRow({
         {status}
       </div>
       <p class="mt-1 mb-0 text-text-primary wrap-anywhere">{implementation.title}</p>
-      <dl class="mt-3 mb-0 grid min-w-0 gap-3 sm:grid-cols-2">
-        <div class="min-w-0">
-          <dt class="text-xs font-bold text-text-muted">待ち相手</dt>
-          <dd class="mt-1 mb-0 min-w-0 wrap-anywhere">
-            <ImplementationWaitingOn
-              createPersonHref={createPersonHref}
-              implementation={implementation}
-              implementationItem={implementationItem}
-              onSelectPerson={onSelectPerson}
-              summary={summary}
-            />
-          </dd>
-        </div>
-        <div class="min-w-0">
-          <dt class="text-xs font-bold text-text-muted">次の行動</dt>
-          <dd class="mt-1 mb-0 text-text-primary wrap-anywhere">{implementation.nextAction}</dd>
-        </div>
-      </dl>
+      <CurrentResponses
+        createItemHref={createItemHref}
+        createPersonHref={createPersonHref}
+        onSelectItem={onSelectItem}
+        onSelectPerson={onSelectPerson}
+        responses={implementationItem.currentResponses}
+        summary={summary}
+        variant="nested"
+      />
     </li>
   );
 }
