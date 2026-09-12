@@ -10,6 +10,7 @@ export type StatePersistenceConfiguration = Readonly<{
   snapshotPath: string;
   historyDirectory: string;
   aiCacheDirectory: string;
+  personalReminderAiCacheDirectory: string;
   notificationLedgerPath: string;
   runReportsDirectory: string;
   canonicalJson: boolean;
@@ -125,6 +126,7 @@ export function validateStatePersistenceConfiguration(
     configuration.snapshotPath,
     configuration.historyDirectory,
     configuration.aiCacheDirectory,
+    configuration.personalReminderAiCacheDirectory,
     configuration.notificationLedgerPath,
     configuration.runReportsDirectory,
   ];

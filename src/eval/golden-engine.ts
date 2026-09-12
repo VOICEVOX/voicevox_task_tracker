@@ -23,13 +23,17 @@ import {
   createTrackedItemLatestEventActor,
   createUtcIsoDateTime,
   determineIssueState,
+  determineIssueLocalResponsibility,
+  determinePullRequestLocalResponsibility,
   determinePullRequestState,
   isTerminalStatus,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   parseSourceId,
   resolveWaitingOnAccountIdentifiers,
   type Actor,
   type BlockedParentContext,
   type BlockerRanking,
+  type Evidence,
   type FreshObservedGitHubIssue,
   type FreshObservedGitHubPullRequest,
   type GitHubAccountActor,
@@ -51,11 +55,23 @@ import {
   type SeverityThresholds,
   type SourceId,
   type StalenessResult,
+  type PersonalReminderCausePlanning,
+  type PersonalReminderCause,
+  type PersonalReminderStaleness,
   type TrackedItem,
   type UtcIsoDateTime,
   type WaitingOn,
 } from "../domain/index.js";
 import { selectDiscordNotifications, type DiscordNotificationItem } from "../discord/index.js";
+import {
+  applyPersonalReminderCauseOutcomes,
+  createPersonalReminderRuntimeContext,
+  planPersonalReminderCauses,
+  type PersonalReminderRuntimeCollectionCompleteness,
+  type PersonalReminderRuntimeGraph,
+  type PersonalReminderRuntimeItem,
+  type PersonalReminderRuntimeLocalDecision,
+} from "../cli/personal-reminder-runtime.js";
 import {
   analyzeGraph,
   reconcileGraph,
@@ -66,7 +82,12 @@ import {
   type RelationCandidateAssessment,
   type RelationCandidateId,
 } from "../graph/index.js";
-import { createPublicRepositoryAllowlist } from "../github/index.js";
+import {
+  createPublicRepositoryAllowlist,
+  type GitHubDetailActor,
+  type GitHubItemDetail,
+  type GitHubReviewRequestTarget,
+} from "../github/index.js";
 import {
   DEFAULT_INITIAL_GRAPH_NODE_LIMIT,
   generatePublicData,
@@ -148,6 +169,10 @@ type ItemAnalysis = Readonly<{
   deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
   notificationRecommendation: DiscordNotificationItem["notificationRecommendation"];
   staleness: StalenessResult;
+  personalReminderCauses: readonly PersonalReminderCause[];
+  personalReminderStaleness: ReadonlyMap<string, PersonalReminderStaleness>;
+  personalReminderEvidence: readonly Evidence[];
+  personalReminderCausePlanning: PersonalReminderCausePlanning;
 }>;
 
 /** golden fixture一件の出力とrun report用指標。 */
@@ -418,6 +443,566 @@ function createPullRequestObservation(
     }),
     events: Object.freeze(item.events.map((event) => createEvent(nodeId, event))),
     observedAt: createUtcIsoDateTime(item.observedAt),
+  });
+}
+
+type GoldenPersonalReminderBody = Readonly<{
+  sourceId: SourceId;
+  value: string;
+  observed: boolean;
+}>;
+
+type GoldenBodyEvent = Extract<GoldenItemInput["events"][number], { kind: "comment" | "review" }>;
+
+type GoldenCodexSource = CodexAnalysisInput["sources"][number];
+
+function goldenSourceContent(source: GoldenCodexSource): string | undefined {
+  if (!("content" in source)) {
+    return undefined;
+  }
+  const content = source["content"];
+  if (typeof content !== "string") {
+    throw new TypeError(`golden固定入力のsource contentが文字列ではありません。対象: ${source.id}`);
+  }
+  return content;
+}
+
+function goldenBodyContentForEvent(
+  event: GoldenBodyEvent,
+  sourcesById: ReadonlyMap<string, GoldenCodexSource>,
+): string | undefined {
+  const source = sourcesById.get(eventSourceId(event.id));
+  if (source == null) {
+    return event.bodyEmpty ? "" : undefined;
+  }
+  if (source.kind !== event.kind) {
+    throw new TypeError(`golden固定入力のsource kindがeventと一致しません。対象: ${source.id}`);
+  }
+  if (source.actorType !== event.actor.type) {
+    throw new TypeError(
+      `golden固定入力のsource actorTypeがeventと一致しません。対象: ${source.id}`,
+    );
+  }
+  if (source.createdAt !== createUtcIsoDateTime(event.occurredAt)) {
+    throw new TypeError(`golden固定入力のsource時刻がeventと一致しません。対象: ${source.id}`);
+  }
+  if ("bodyEmpty" in source) {
+    const bodyEmpty = source["bodyEmpty"];
+    if (typeof bodyEmpty !== "boolean") {
+      throw new TypeError(`golden固定入力のbodyEmptyがbooleanではありません。対象: ${source.id}`);
+    }
+    if (bodyEmpty !== event.bodyEmpty) {
+      throw new TypeError(`golden固定入力のbodyEmptyがeventと一致しません。対象: ${source.id}`);
+    }
+  }
+  const content = goldenSourceContent(source);
+  if (event.bodyEmpty) {
+    if (content != null && content.length !== 0) {
+      throw new TypeError(`空body eventに本文があります。対象: ${source.id}`);
+    }
+    return "";
+  }
+  if (content == null || content.length === 0) {
+    return undefined;
+  }
+  return content;
+}
+
+function createGoldenPersonalReminderBody(
+  analysis: PreparedGoldenFixedAiAnalysis | undefined,
+): GoldenPersonalReminderBody | undefined {
+  if (analysis == null) {
+    return undefined;
+  }
+  const bodySources = analysis.input.sources.filter((source) => source.kind === "body");
+  if (bodySources.length > 1) {
+    throw new TypeError(
+      `golden固定入力のbody sourceが重複しています。対象: ${analysis.itemNodeId}`,
+    );
+  }
+  const source = bodySources[0];
+  if (source == null) {
+    return undefined;
+  }
+  const content = goldenSourceContent(source);
+  const sourceParts = parseSourceId(source.id);
+  return Object.freeze({
+    sourceId: buildSourceId(sourceParts.kind, sourceParts.originalId),
+    value: content ?? "",
+    observed: content != null,
+  });
+}
+
+function createGoldenDetailActor(
+  actor: GoldenItemInput["events"][number]["actor"],
+  sourceId: SourceId,
+): GitHubDetailActor {
+  if (actor.type === "system") {
+    return Object.freeze({
+      status: "unavailable",
+      reason: "github_did_not_return_actor",
+    });
+  }
+  return Object.freeze({
+    status: "identified",
+    account: Object.freeze({
+      sourceId,
+      nodeId: createGitHubNodeId(actor.nodeId),
+      login: actor.login,
+      apiType: actor.type === "bot" ? "Bot" : "User",
+    }),
+  });
+}
+
+function createGoldenDetailMergeState(
+  observation: FreshObservedGitHubPullRequest,
+): Extract<GitHubItemDetail, { type: "pull_request" }>["mergeState"] {
+  const autoMerge = observation.mergeState.autoMerge;
+  if (autoMerge.status !== "not_enabled") {
+    throw new TypeError("golden fixtureのauto merge enabled actorは未対応です");
+  }
+  const checks =
+    observation.mergeState.checks.status === "not_configured"
+      ? observation.mergeState.checks
+      : Object.freeze({
+          ...observation.mergeState.checks,
+          contexts: Object.freeze([]),
+        });
+  return Object.freeze({
+    ...observation.mergeState,
+    autoMerge,
+    checks,
+  });
+}
+
+function createGoldenReviewRequestTarget(
+  request: Extract<GoldenItemInput, { type: "pull_request" }>["reviewRequests"][number],
+): GitHubReviewRequestTarget {
+  if (request.target.type === "user") {
+    return Object.freeze({
+      type: "user",
+      sourceId: buildSourceId("golden_review_target", request.id),
+      nodeId: createGitHubNodeId(request.target.actor.nodeId),
+      login: request.target.actor.login,
+      apiType: request.target.actor.type === "bot" ? "Bot" : "User",
+    });
+  }
+  return Object.freeze({
+    type: "team",
+    sourceId: buildSourceId("golden_team", request.target.nodeId),
+    nodeId: createGitHubNodeId(request.target.nodeId),
+    organizationLogin: ORGANIZATION,
+    slug: request.target.slug,
+    name: request.target.name,
+  });
+}
+
+function createGoldenPersonalReminderDetail(
+  item: GoldenItemInput,
+  repositoryId: GitHubItemDetail["repositoryId"],
+  repositoryName: string,
+  analysis: PreparedGoldenFixedAiAnalysis | undefined,
+  body: GoldenPersonalReminderBody | undefined,
+): GitHubItemDetail {
+  const sourcesById = new Map(analysis?.input.sources.map((source) => [source.id, source]));
+  const comments = item.events
+    .filter(
+      (event): event is Extract<(typeof item.events)[number], { kind: "comment" }> =>
+        event.kind === "comment",
+    )
+    .flatMap((event) => {
+      const body = goldenBodyContentForEvent(event, sourcesById);
+      if (body == null) {
+        return [];
+      }
+      return [
+        Object.freeze({
+          sourceId: eventSourceId(event.id),
+          nodeId: createGitHubNodeId(`comment-${event.id}`),
+          author: createGoldenDetailActor(event.actor, eventSourceId(event.id)),
+          body,
+          createdAt: createUtcIsoDateTime(event.occurredAt),
+          updatedAt: createUtcIsoDateTime(event.occurredAt),
+          url: itemUrl(repositoryName, item),
+        }),
+      ];
+    })
+    .map((comment, index) => Object.freeze({ ...comment, sequence: index + 1 }));
+  const observedAt = createUtcIsoDateTime(item.observedAt);
+  const common = Object.freeze({
+    sourceId: buildSourceId("golden_detail", item.nodeId),
+    nodeId: createGitHubNodeId(item.nodeId),
+    repositoryId,
+    number: item.number,
+    bodySourceId: body?.sourceId ?? buildSourceId("golden_body", item.nodeId),
+    body: body?.value ?? "",
+    comments: Object.freeze(comments),
+    timeline: Object.freeze([]),
+    inboundCrossReferences: Object.freeze([]),
+    observedAt,
+  });
+  if (item.type === "issue") {
+    return Object.freeze({
+      ...common,
+      type: "issue",
+      nativeDependencies: Object.freeze({
+        availability: "unavailable",
+        reason: "api_not_supported",
+      }),
+      nativeHierarchy: Object.freeze({
+        availability: "unavailable",
+        reason: "api_not_supported",
+      }),
+    });
+  }
+  const observation = createPullRequestObservation(item);
+  const reviews = item.events
+    .filter(
+      (event): event is Extract<(typeof item.events)[number], { kind: "review" }> =>
+        event.kind === "review",
+    )
+    .flatMap((event) => {
+      const body = goldenBodyContentForEvent(event, sourcesById);
+      if (body == null) {
+        return [];
+      }
+      return [
+        Object.freeze({
+          sourceId: eventSourceId(event.id),
+          nodeId: createGitHubNodeId(`review-${event.id}`),
+          state: event.state,
+          author: createGoldenDetailActor(event.actor, eventSourceId(event.id)),
+          commit: Object.freeze({
+            status: "available",
+            sourceId: buildSourceId("golden_commit", event.commitSha),
+            nodeId: createGitHubNodeId(`commit-${event.commitSha}`),
+            sha: event.commitSha,
+          }),
+          submittedAt: createUtcIsoDateTime(event.occurredAt),
+          body,
+          url: itemUrl(repositoryName, item),
+        }),
+      ];
+    })
+    .map((review, index) => Object.freeze({ ...review, sequence: index + 1 }));
+  return Object.freeze({
+    ...common,
+    type: "pull_request",
+    reviews: Object.freeze(reviews),
+    reviewThreads: Object.freeze([]),
+    reviewRequests: Object.freeze({
+      current: Object.freeze(
+        item.reviewRequests.map((request) => {
+          const observedRequest = observation.reviewRequests.find(
+            (value) => value.nodeId === createGitHubNodeId(`review-request-${request.id}`),
+          );
+          assertNonNullable(observedRequest, `review requestがありません。対象: ${request.id}`);
+          return Object.freeze({
+            sourceId: observedRequest.sourceId,
+            nodeId: observedRequest.nodeId,
+            target: createGoldenReviewRequestTarget(request),
+            requestedAt: observedRequest.requestedAt,
+          });
+        }),
+      ),
+      history: Object.freeze([]),
+    }),
+    nativeClosingIssues: Object.freeze([]),
+    headSha: observation.headSha,
+    headCommit: observation.headCommit,
+    mergeState: createGoldenDetailMergeState(observation),
+  });
+}
+
+function goldenPersonalReminderItem(
+  item: GoldenItemInput,
+  repositoryName: string,
+): PersonalReminderRuntimeItem {
+  const observed =
+    item.type === "issue" ? createIssueObservation(item) : createPullRequestObservation(item);
+  return Object.freeze({
+    ...observed,
+    url: itemUrl(repositoryName, item),
+    title: item.title,
+  });
+}
+
+function goldenPersonalReminderLocalDecision(
+  decision: IssueStateDecision | PullRequestStateDecision,
+): PersonalReminderRuntimeLocalDecision {
+  switch (decision.deterministicRulesVersion) {
+    case "issue-v14":
+      return Object.freeze({
+        itemType: "issue",
+        value: decision,
+      });
+    case "pull-request-v12":
+      return Object.freeze({
+        itemType: "pull_request",
+        value: decision,
+      });
+  }
+}
+
+function goldenPersonalReminderCollectionCompleteness(
+  localDecision: PersonalReminderRuntimeLocalDecision,
+  bodyObserved: boolean,
+): PersonalReminderRuntimeCollectionCompleteness {
+  const necessities = localDecision.value.aiAnalysisElementNecessities;
+  if (
+    bodyObserved ||
+    (necessities.status === "not_required" &&
+      necessities.waitingOn === "not_required" &&
+      necessities.nextAction === "not_required")
+  ) {
+    return Object.freeze({ status: "complete" });
+  }
+  const missing: readonly ["item_body"] = ["item_body"];
+  return Object.freeze({
+    status: "incomplete",
+    missing,
+  });
+}
+
+function goldenPersonalReminderCandidateRelation(
+  candidate: RelationCandidate,
+): PersonalReminderRuntimeGraph["candidateRelations"][number] {
+  let endpointNodeIds: readonly [GraphNodeId, GraphNodeId];
+  switch (candidate.relation.type) {
+    case "blocks":
+      endpointNodeIds = [candidate.relation.blocker.nodeId, candidate.relation.blocked.nodeId];
+      break;
+    case "parent_of":
+      endpointNodeIds = [candidate.relation.parent.nodeId, candidate.relation.subtask.nodeId];
+      break;
+    case "implements":
+      endpointNodeIds = [
+        candidate.relation.implementation.nodeId,
+        candidate.relation.target.nodeId,
+      ];
+      break;
+    case "unclassified":
+      endpointNodeIds = [
+        candidate.relation.referencing.nodeId,
+        candidate.relation.referenced.nodeId,
+      ];
+      break;
+  }
+  const sortedEndpoints = [...endpointNodeIds].sort(compareStrings);
+  const firstEndpoint = sortedEndpoints[0];
+  const secondEndpoint = sortedEndpoints[1];
+  assertNonNullable(firstEndpoint, `関係 ${candidate.id}のendpointがありません`);
+  assertNonNullable(secondEndpoint, `関係 ${candidate.id}のendpointがありません`);
+  if (firstEndpoint === secondEndpoint) {
+    throw new TypeError(`関係 ${candidate.id}のendpointが重複しています`);
+  }
+  const sourceIds = [...new Set(candidate.sourceIds)].sort(compareStrings);
+  const firstSourceId = sourceIds[0];
+  assertNonNullable(firstSourceId, `関係 ${candidate.id}のsourceがありません`);
+  const endpointTuple: readonly [GraphNodeId, GraphNodeId] = [firstEndpoint, secondEndpoint];
+  const sourceTuple: readonly [SourceId, ...SourceId[]] = [firstSourceId, ...sourceIds.slice(1)];
+  return Object.freeze({
+    candidateId: candidate.id,
+    endpointNodeIds: Object.freeze(endpointTuple),
+    evidenceSourceIds: Object.freeze(sourceTuple),
+  });
+}
+
+function goldenPersonalReminderRuntimeGraph(
+  input: StandardGoldenInput,
+  candidates: readonly RelationCandidate[],
+  reconciled: ReturnType<typeof reconcileGraph>,
+): PersonalReminderRuntimeGraph {
+  const endpointStates = new Map<GraphNodeId, "open" | "closed" | "merged" | "missing">();
+  for (const item of input.items) {
+    let endpointState: "open" | "closed" | "merged";
+    if (item.state === "open") {
+      endpointState = "open";
+    } else if (item.state === "merged") {
+      endpointState = "merged";
+    } else {
+      endpointState = "closed";
+    }
+    endpointStates.set(createGitHubNodeId(item.nodeId), endpointState);
+  }
+  const candidateRelations = Object.freeze(
+    candidates.map((candidate) => goldenPersonalReminderCandidateRelation(candidate)),
+  );
+  for (const candidate of candidateRelations) {
+    for (const nodeId of candidate.endpointNodeIds) {
+      if (!endpointStates.has(nodeId)) {
+        endpointStates.set(nodeId, "missing");
+      }
+    }
+  }
+  for (const edge of reconciled.edges) {
+    for (const nodeId of [edge.fromNodeId, edge.toNodeId]) {
+      if (!endpointStates.has(nodeId)) {
+        endpointStates.set(nodeId, "missing");
+      }
+    }
+  }
+  return Object.freeze({
+    activeRelations: Object.freeze(
+      reconciled.edges.filter(
+        (edge): edge is ReconciledGraphEdge & Readonly<{ active: true }> => edge.active,
+      ),
+    ),
+    candidateRelations,
+    candidateResolutions: Object.freeze(reconciled.candidateResolutions),
+    endpointStates,
+    externalReferences: Object.freeze([]),
+  });
+}
+
+type GoldenPersonalReminderAnalysis = Readonly<{
+  causesByNodeId: ReadonlyMap<GitHubNodeId, readonly PersonalReminderCause[]>;
+  evidenceByNodeId: ReadonlyMap<GitHubNodeId, readonly Evidence[]>;
+  stalenessByCauseId: ReadonlyMap<string, PersonalReminderStaleness>;
+  planningByNodeId: ReadonlyMap<GitHubNodeId, PersonalReminderCausePlanning>;
+}>;
+
+function createGoldenPersonalReminderAnalysis(
+  input: StandardGoldenInput,
+  repositories: ReadonlyMap<string, StandardGoldenInput["repositories"][number]>,
+  candidates: readonly RelationCandidate[],
+  reconciled: ReturnType<typeof reconcileGraph>,
+  localDecisionsByNodeId: ReadonlyMap<string, IssueStateDecision | PullRequestStateDecision>,
+  preparedAnalyses: readonly PreparedGoldenFixedAiAnalysis[],
+): GoldenPersonalReminderAnalysis {
+  const inventory = createInventory(input);
+  const publicRepositories = createPublicRepositoryAllowlist(inventory);
+  const preparedByNodeId = new Map(
+    preparedAnalyses.map((analysis) => [analysis.itemNodeId, analysis]),
+  );
+  const runtimeItems = new Map<
+    GraphNodeId,
+    Readonly<{
+      item: PersonalReminderRuntimeItem;
+      detail: GitHubItemDetail;
+      localDecision: PersonalReminderRuntimeLocalDecision;
+      bodyObserved: boolean;
+    }>
+  >();
+  for (const item of input.items) {
+    const repository = repositories.get(item.repositoryId);
+    assertNonNullable(repository, `項目 ${item.nodeId}のrepositoryがありません`);
+    const repositoryId = createGitHubRepositoryId(item.repositoryId);
+    if (!publicRepositories.has(repositoryId)) {
+      continue;
+    }
+    const publicRepository = publicRepositories.require(repositoryId);
+    const localDecision = localDecisionsByNodeId.get(item.nodeId);
+    assertNonNullable(localDecision, `項目 ${item.nodeId}のlocal decisionがありません`);
+    const itemNodeId = createGitHubNodeId(item.nodeId);
+    const preparedAnalysis = preparedByNodeId.get(item.nodeId);
+    const body = createGoldenPersonalReminderBody(preparedAnalysis);
+    runtimeItems.set(
+      itemNodeId,
+      Object.freeze({
+        item: goldenPersonalReminderItem(item, repository.name),
+        detail: createGoldenPersonalReminderDetail(
+          item,
+          publicRepository.id,
+          repository.name,
+          preparedAnalysis,
+          body,
+        ),
+        localDecision: goldenPersonalReminderLocalDecision(localDecision),
+        bodyObserved: body?.observed ?? false,
+      }),
+    );
+  }
+  const graph = goldenPersonalReminderRuntimeGraph(input, candidates, reconciled);
+  const collectionItems = [...runtimeItems.entries()].map(([nodeId, value]) => {
+    const relatedNodeIds = new Set<GraphNodeId>();
+    for (const edge of graph.activeRelations) {
+      if (edge.type === "related_to") {
+        continue;
+      }
+      if (edge.fromNodeId === nodeId) {
+        relatedNodeIds.add(edge.toNodeId);
+      }
+      if (edge.toNodeId === nodeId) {
+        relatedNodeIds.add(edge.fromNodeId);
+      }
+    }
+    const relatedContexts = [...relatedNodeIds].sort(compareStrings).flatMap((relatedNodeId) => {
+      const related = runtimeItems.get(relatedNodeId);
+      if (related == null) {
+        return [];
+      }
+      return [
+        Object.freeze({
+          item: related.item,
+          detail: related.detail,
+          localDecision: related.localDecision,
+        }),
+      ];
+    });
+    const item = input.items.find((candidate) => createGitHubNodeId(candidate.nodeId) === nodeId);
+    assertNonNullable(item, `runtime項目 ${nodeId}の入力がありません`);
+    const repository = repositories.get(item.repositoryId);
+    assertNonNullable(repository, `runtime項目 ${nodeId}のrepositoryがありません`);
+    return Object.freeze({
+      item: value.item,
+      detail: value.detail,
+      localDecision: value.localDecision,
+      relatedContexts: Object.freeze(relatedContexts),
+      completeness: goldenPersonalReminderCollectionCompleteness(
+        value.localDecision,
+        value.bodyObserved,
+      ),
+      repositoryFullName: `${ORGANIZATION}/${repository.name}`,
+      currentLabels: Object.freeze([...item.labels]),
+    });
+  });
+  const context = createPersonalReminderRuntimeContext({
+    evaluatedAt: createUtcIsoDateTime(input.evaluatedAt),
+    state: Object.freeze({
+      previousCausesByNodeId: new Map(),
+      previousEvidenceByNodeId: new Map(),
+    }),
+    collection: Object.freeze({
+      items: Object.freeze(collectionItems),
+      staleNodeIds: new Set<GitHubNodeId>(),
+    }),
+    graph,
+  });
+  const plan = planPersonalReminderCauses(context);
+  const applied = applyPersonalReminderCauseOutcomes({
+    plan,
+    outcomes: undefined,
+    evaluatedAt: createUtcIsoDateTime(input.evaluatedAt),
+    minimumAiConfidence: CONFIDENCE_THRESHOLDS.medium,
+    thresholdsHours: SEVERITY_THRESHOLDS,
+    resolveLabelEffects: createLabelEffectsResolver([]),
+  });
+  const emptyCauses: readonly PersonalReminderCause[] = Object.freeze([]);
+  const planningEntries: readonly (readonly [GitHubNodeId, PersonalReminderCausePlanning])[] =
+    input.items.map((item) => {
+      const nodeId = createGitHubNodeId(item.nodeId);
+      const causes = applied.causesByNodeId.get(nodeId) ?? emptyCauses;
+      if (item.state !== "open" && causes.length === 0) {
+        const planning: PersonalReminderCausePlanning = Object.freeze({
+          status: "excluded",
+          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+          reason: "terminal_without_cause",
+        });
+        return [nodeId, planning];
+      }
+      const planning: PersonalReminderCausePlanning = Object.freeze({
+        status: "completed",
+        planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+        observedAt: createUtcIsoDateTime(input.evaluatedAt),
+      });
+      return [nodeId, planning];
+    });
+  return Object.freeze({
+    causesByNodeId: applied.causesByNodeId,
+    evidenceByNodeId: applied.evidenceByNodeId,
+    stalenessByCauseId: applied.stalenessByCauseId,
+    planningByNodeId: new Map(planningEntries),
   });
 }
 
@@ -935,6 +1520,54 @@ function determineItemState(
   });
 }
 
+function determineItemLocalResponsibility(
+  item: GoldenItemInput,
+  input: StandardGoldenInput,
+  effectiveAssigneeCandidates: readonly IssueEffectiveAssigneeCandidate[],
+  effectiveAssigneeAssessment: IssueEffectiveAssigneeAssessment,
+): IssueStateDecision | PullRequestStateDecision {
+  const evaluatedAt = createUtcIsoDateTime(input.evaluatedAt);
+  if (item.type === "issue") {
+    const observation = createIssueObservation(item);
+    return determineIssueLocalResponsibility({
+      issue: observation,
+      explicitRequestCandidates: Object.freeze(
+        item.explicitRequestSourceIds.map((sourceId) =>
+          Object.freeze({
+            sourceId: buildSourceId("golden_ai_source", sourceId),
+            occurredAt: createUtcIsoDateTime(item.createdAt),
+          }),
+        ),
+      ),
+      explicitRequestAssessment: Object.freeze({
+        status: "not_assessed",
+      }),
+      effectiveAssigneeCandidates,
+      effectiveAssigneeAssessment,
+      maintainers: MAINTAINERS,
+      confidenceThresholds: CONFIDENCE_THRESHOLDS,
+      evaluatedAt,
+    });
+  }
+  return determinePullRequestLocalResponsibility({
+    pullRequest: createPullRequestObservation(item),
+    checkFailureAssessment: Object.freeze({
+      cause: "not_assessed",
+    }),
+    labelEffects: Object.freeze({
+      priorityWeight: item.priorityWeight,
+      severityLift: 0,
+      requiresMaintainerDecision: false,
+      maintainerDecisionLabelNames: Object.freeze([]),
+      suppressNotifications: false,
+      countsAsProgress: false,
+    }),
+    maintainers: MAINTAINERS,
+    confidenceThresholds: CONFIDENCE_THRESHOLDS,
+    evaluatedAt,
+  });
+}
+
 function deterministicCodexDecision(
   decision: IssueStateDecision | PullRequestStateDecision,
 ): DeterministicCodexDecision {
@@ -1258,9 +1891,29 @@ function itemDisplayReference(repositoryName: string, number: number): GitHubIte
   );
 }
 
+function createGoldenPersonalReminderCausePlanning(
+  status: TrackedItem["status"],
+): PersonalReminderCausePlanning {
+  if (isTerminalStatus(status)) {
+    return {
+      status: "excluded",
+      planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+      reason: "terminal_without_cause",
+    };
+  }
+  return {
+    status: "pending",
+    planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+  };
+}
+
 function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): TrackedItem {
   const item = analysis.input;
   const decision = analysis.decision;
+  const evidenceByIdentity = new Map<string, Evidence>();
+  for (const evidence of [...decision.evidence, ...analysis.personalReminderEvidence]) {
+    evidenceByIdentity.set(JSON.stringify(evidence), evidence);
+  }
   const commonFields = {
     nodeId: createGitHubNodeId(item.nodeId),
     type: item.type,
@@ -1306,6 +1959,8 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
     assignees: Object.freeze(item.assignees.map(createAccountActor)),
     reviewState: item.type === "issue" ? "not_applicable" : "unknown",
     checkState: item.type === "issue" ? "not_applicable" : "unknown",
+    personalReminderCauses: Object.freeze(analysis.personalReminderCauses),
+    personalReminderCausePlanning: analysis.personalReminderCausePlanning,
     aiAnalysis: Object.freeze({
       origin: "current",
       status: "not_required",
@@ -1321,7 +1976,7 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
       ),
     ),
     confidence: decision.confidence,
-    evidence: decision.evidence,
+    evidence: Object.freeze([...evidenceByIdentity.values()]),
     uncertainties: decision.uncertainties,
   } satisfies Omit<TrackedItem, "status" | "waitingOn">;
   if (isTerminalStatus(decision.status)) {
@@ -1363,7 +2018,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "14",
+    schemaVersion: "15",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -1576,6 +2231,17 @@ function selectNotifications(
         responsibility_changed: Object.freeze({ status: "indeterminate" }),
         newly_unblocked: Object.freeze({ status: "indeterminate" }),
       }),
+      personalReminderCauses: Object.freeze(
+        analysis.personalReminderCauses.map((cause) => {
+          const staleness = analysis.personalReminderStaleness.get(cause.causeId);
+          assertNonNullable(
+            staleness,
+            `個人催促causeのstalenessがありません。対象: ${cause.causeId}`,
+          );
+          return Object.freeze({ cause, staleness });
+        }),
+      ),
+      personalReminderCausePlanning: analysis.personalReminderCausePlanning,
       graph: Object.freeze({
         downstreamImpact: findDownstreamImpact(nodeId, graph.downstreamImpacts),
         newlyUnblocked: graph.newlyUnblockedNodeIds.includes(nodeId),
@@ -1657,6 +2323,34 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
     effectiveAssigneeCandidatesByNodeId,
     preparedAnalyses,
   );
+  const preparedByNodeId = new Map(
+    preparedAnalyses.map((analysis) => [analysis.itemNodeId, analysis]),
+  );
+  const localResponsibilityDecisions = new Map(
+    input.items.map((item) => {
+      const effectiveAssigneeCandidates = effectiveAssigneeCandidatesByNodeId.get(item.nodeId);
+      assertNonNullable(
+        effectiveAssigneeCandidates,
+        `項目 ${item.nodeId}の実質担当候補がありません`,
+      );
+      const fixedAnalysis = preparedByNodeId.get(item.nodeId);
+      const effectiveAssigneeAssessment = createEffectiveAssigneeAssessment(
+        item,
+        createUtcIsoDateTime(input.evaluatedAt),
+        effectiveAssigneeCandidates,
+        fixedAnalysis?.acceptedOutput,
+      );
+      return [
+        item.nodeId,
+        determineItemLocalResponsibility(
+          item,
+          input,
+          effectiveAssigneeCandidates,
+          effectiveAssigneeAssessment,
+        ),
+      ] satisfies readonly [string, IssueStateDecision | PullRequestStateDecision];
+    }),
+  );
   const reconciled = reconcileGraph({
     previousGraph: Object.freeze({
       edges: Object.freeze([]),
@@ -1687,12 +2381,43 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
           availability: "unavailable",
         }),
   });
+  const personalReminder = createGoldenPersonalReminderAnalysis(
+    input,
+    repositories,
+    candidates,
+    reconciled,
+    localResponsibilityDecisions,
+    preparedAnalyses,
+  );
   const analyses = Object.freeze(
     input.items.map((item) => {
       const deterministicDecision = fixedAi.reassessedDeterministicDecisions.get(item.nodeId);
       const decision = fixedAi.decisions.get(item.nodeId);
       const deadlineAssessment = fixedAi.deadlineAssessments.get(item.nodeId);
       const notificationRecommendation = fixedAi.notificationRecommendations.get(item.nodeId);
+      const personalReminderCauses =
+        personalReminder.causesByNodeId.get(createGitHubNodeId(item.nodeId)) ?? Object.freeze([]);
+      const personalReminderEvidence =
+        personalReminder.evidenceByNodeId.get(createGitHubNodeId(item.nodeId)) ?? Object.freeze([]);
+      const personalReminderStaleness = new Map(
+        personalReminderCauses.flatMap((cause) => {
+          const staleness = personalReminder.stalenessByCauseId.get(cause.causeId);
+          assertNonNullable(
+            staleness,
+            `個人催促causeのstalenessがありません。対象: ${cause.causeId}`,
+          );
+          return [
+            [cause.causeId, staleness] satisfies readonly [string, PersonalReminderStaleness],
+          ];
+        }),
+      );
+      const personalReminderCausePlanning = personalReminder.planningByNodeId.get(
+        createGitHubNodeId(item.nodeId),
+      );
+      assertNonNullable(
+        personalReminderCausePlanning,
+        `個人催促cause planningがありません。対象: ${item.nodeId}`,
+      );
       assertNonNullable(deterministicDecision, `項目 ${item.nodeId}の決定論的判定がありません`);
       assertNonNullable(decision, `項目 ${item.nodeId}の最終判定がありません`);
       assertNonNullable(deadlineAssessment, `項目 ${item.nodeId}の期限判定がありません`);
@@ -1707,6 +2432,10 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
         deadlineAssessment,
         notificationRecommendation,
         staleness: createStaleness(input, item, deterministicDecision, decision),
+        personalReminderCauses,
+        personalReminderStaleness,
+        personalReminderEvidence,
+        personalReminderCausePlanning,
       });
     }),
   );
@@ -1833,6 +2562,8 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         assignees: Object.freeze([]),
         reviewState: index % 2 === 0 ? "not_applicable" : "requested",
         checkState: index % 2 === 0 ? "not_applicable" : "pending",
+        personalReminderCauses: Object.freeze([]),
+        personalReminderCausePlanning: createGoldenPersonalReminderCausePlanning("in_progress"),
         aiAnalysis: Object.freeze({
           origin: "current",
           status: "disabled",
@@ -2052,7 +2783,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "14",
+    schemaVersion: "15",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

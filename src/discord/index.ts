@@ -6,6 +6,8 @@ export {
   type NotificationDependencyCause,
 } from "./notification-cause.js";
 export {
+  assertDiscordPersonalReminderSelectionMatchesSnapshot,
+  calculateDiscordNotificationCandidateSeverity,
   createAcknowledgedNotificationLedgerEntries,
   selectDiscordNotifications,
   type DiscordNotificationCandidate,
@@ -13,13 +15,17 @@ export {
   type DiscordNotificationDecisionBasis,
   type DiscordNotificationGraphContext,
   type DiscordNotificationItem,
+  type DiscordPersonalReminderSelectionValidationItem,
   type DiscordNotificationLatestChange,
   type DiscordNotificationPrevious,
   type DiscordNotificationPreviousState,
   type DiscordNotificationRecommendation,
   type DiscordNotificationReasonCode,
+  type DiscordNotificationReasonSource,
   type DiscordNotificationSelection,
   type DiscordNotificationSelectionSettings,
+  type DiscordPersonalReminderInput,
+  type DiscordPersonalReminderNotificationContext,
   type SelectDiscordNotificationsInput,
   type SelectedDiscordNotificationReason,
 } from "./notification-selection.js";
@@ -49,6 +55,7 @@ export {
 } from "./errors.js";
 export {
   assertDiscordWebhookPayloadWithinLimits,
+  assertDiscordPersonalReminderSelectionMatchesItems,
   buildDiscordDigestPlan,
   buildDiscordOperationsAlertPlan,
   calculateDiscordPayloadSize,

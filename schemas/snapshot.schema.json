@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "14"
+      "const": "15"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -2396,6 +2396,784 @@
         }
       ]
     },
+    "personalReminderTimeBasis": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "at", "sourceIds"],
+          "properties": {
+            "source": {
+              "const": "event"
+            },
+            "at": {
+              "$ref": "#/$defs/dateTime"
+            },
+            "sourceIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 30,
+              "items": {
+                "$ref": "#/$defs/identifier"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "at"],
+          "properties": {
+            "source": {
+              "const": "first_observation"
+            },
+            "at": {
+              "$ref": "#/$defs/dateTime"
+            }
+          }
+        }
+      ]
+    },
+    "personalReminderExecutionSurface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "nodeId"],
+      "properties": {
+        "kind": {
+          "enum": ["issue", "pull_request"]
+        },
+        "nodeId": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "personalReminderResponsibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "scope"],
+      "properties": {
+        "authority": {
+          "enum": ["fixed", "semantic"]
+        },
+        "scope": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": {
+                "kind": {
+                  "const": "item"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "surfaces"],
+              "properties": {
+                "kind": {
+                  "const": "execution_surfaces"
+                },
+                "surfaces": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "#/$defs/personalReminderExecutionSurface"
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "surfaces"],
+              "properties": {
+                "kind": {
+                  "const": "item_and_execution_surfaces"
+                },
+                "surfaces": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "$ref": "#/$defs/personalReminderExecutionSurface"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "personalReminderCauseAssessmentWaitingFor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["itemNodeId", "action"],
+      "properties": {
+        "itemNodeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "action": {
+          "$ref": "#/$defs/shortString"
+        }
+      }
+    },
+    "personalReminderLastConfirmedActionability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_observed"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "verdict"],
+          "properties": {
+            "status": {
+              "const": "confirmed"
+            },
+            "verdict": {
+              "const": "actionable"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "verdict", "waitingFor"],
+          "properties": {
+            "status": {
+              "const": "confirmed"
+            },
+            "verdict": {
+              "const": "waiting"
+            },
+            "waitingFor": {
+              "$ref": "#/$defs/personalReminderCauseAssessmentWaitingFor"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "verdict", "reason"],
+          "properties": {
+            "status": {
+              "const": "confirmed"
+            },
+            "verdict": {
+              "const": "not_actionable"
+            },
+            "reason": {
+              "enum": ["duplicate", "not_required"]
+            }
+          }
+        }
+      ]
+    },
+    "personalReminderAssessmentReferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeIds", "relationIds", "sourceIds", "reasonSummary"],
+      "properties": {
+        "nodeIds": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "relationIds": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "sourceIds": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "reasonSummary": {
+          "$ref": "#/$defs/shortString"
+        }
+      }
+    },
+    "personalReminderCauseAssessment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "references", "confidence"],
+          "properties": {
+            "verdict": {
+              "const": "actionable"
+            },
+            "references": {
+              "$ref": "#/$defs/personalReminderAssessmentReferences"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "waitingFor", "references", "confidence"],
+          "properties": {
+            "verdict": {
+              "const": "waiting"
+            },
+            "waitingFor": {
+              "$ref": "#/$defs/personalReminderCauseAssessmentWaitingFor"
+            },
+            "references": {
+              "$ref": "#/$defs/personalReminderAssessmentReferences"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "canonicalCauseId", "references", "confidence"],
+          "properties": {
+            "verdict": {
+              "const": "duplicate"
+            },
+            "canonicalCauseId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "references": {
+              "$ref": "#/$defs/personalReminderAssessmentReferences"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "references", "confidence"],
+          "properties": {
+            "verdict": {
+              "const": "not_required"
+            },
+            "references": {
+              "$ref": "#/$defs/personalReminderAssessmentReferences"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["verdict", "reason", "references", "confidence"],
+          "properties": {
+            "verdict": {
+              "const": "unknown"
+            },
+            "reason": {
+              "enum": ["incomplete_input", "conflicting_evidence", "ambiguous_meaning"]
+            },
+            "references": {
+              "$ref": "#/$defs/personalReminderAssessmentReferences"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      ]
+    },
+    "personalReminderAiGenerationMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "reasoningEffort",
+        "backendVersion",
+        "schemaVersion",
+        "revision",
+        "inputFingerprint",
+        "executionFingerprint",
+        "promptFingerprint",
+        "outputHash",
+        "generatedAt",
+        "rulesVersion",
+        "batchInputFingerprint"
+      ],
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reasoningEffort": {
+          "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        },
+        "backendVersion": {
+          "$ref": "#/$defs/identifier"
+        },
+        "schemaVersion": {
+          "const": "1"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "inputFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "executionFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "promptFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "outputHash": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "generatedAt": {
+          "$ref": "#/$defs/dateTime"
+        },
+        "rulesVersion": {
+          "$ref": "#/$defs/identifier"
+        },
+        "batchInputFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        }
+      }
+    },
+    "personalReminderEvaluationOrigin": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "rulesVersion"],
+          "properties": {
+            "kind": {
+              "const": "deterministic"
+            },
+            "rulesVersion": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "cacheEntryId", "metadata"],
+          "properties": {
+            "kind": {
+              "const": "ai"
+            },
+            "cacheEntryId": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "metadata": {
+              "$ref": "#/$defs/personalReminderAiGenerationMetadata"
+            }
+          }
+        }
+      ]
+    },
+    "personalReminderEvaluationAttempt": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_evaluated"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "inputFingerprint", "completedAt", "origin"],
+          "properties": {
+            "status": {
+              "const": "completed"
+            },
+            "inputFingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "completedAt": {
+              "$ref": "#/$defs/dateTime"
+            },
+            "origin": {
+              "$ref": "#/$defs/personalReminderEvaluationOrigin"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "inputFingerprint", "failedAt", "reason"],
+          "properties": {
+            "status": {
+              "const": "failed"
+            },
+            "inputFingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "failedAt": {
+              "$ref": "#/$defs/dateTime"
+            },
+            "reason": {
+              "$ref": "#/$defs/shortString"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "inputFingerprint", "deferredAt", "reason"],
+          "properties": {
+            "status": {
+              "const": "deferred"
+            },
+            "inputFingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "deferredAt": {
+              "$ref": "#/$defs/dateTime"
+            },
+            "reason": {
+              "enum": [
+                "upstream_relation",
+                "input_incomplete",
+                "item_input_character_limit",
+                "call_limit",
+                "total_input_character_limit",
+                "estimated_cost_limit"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "personalReminderAdoptedAssessment": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_available"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "inputFingerprint", "rulesVersion", "result", "origin"],
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "inputFingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "rulesVersion": {
+              "$ref": "#/$defs/identifier"
+            },
+            "result": {
+              "$ref": "#/$defs/personalReminderCauseAssessment"
+            },
+            "origin": {
+              "$ref": "#/$defs/personalReminderEvaluationOrigin"
+            }
+          }
+        }
+      ]
+    },
+    "personalReminderActionableClock": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_observed"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "actionableSince", "stallSince", "basis"],
+          "properties": {
+            "status": {
+              "const": "observed"
+            },
+            "actionableSince": {
+              "$ref": "#/$defs/personalReminderTimeBasis"
+            },
+            "stallSince": {
+              "$ref": "#/$defs/personalReminderTimeBasis"
+            },
+            "basis": {
+              "enum": ["obligation", "dependency_resolved", "first_observation"]
+            }
+          }
+        }
+      ]
+    },
+    "personalReminderCause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "causeId",
+        "responsibilityId",
+        "itemNodeId",
+        "reasonCode",
+        "responsible",
+        "responsibility",
+        "action",
+        "evidenceSourceIds",
+        "obligationSince",
+        "lastConfirmedActionability",
+        "currentInput",
+        "latestAttempt",
+        "adoptedAssessment",
+        "actionableClock"
+      ],
+      "properties": {
+        "causeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "responsibilityId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "itemNodeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reasonCode": {
+          "enum": [
+            "assessment_overdue",
+            "owner_overdue",
+            "decision_overdue",
+            "review_overdue",
+            "revision_overdue",
+            "reply_overdue",
+            "work_overdue",
+            "merge_overdue"
+          ]
+        },
+        "responsible": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "candidateId", "role"],
+            "properties": {
+              "kind": {
+                "enum": ["user", "team", "role"]
+              },
+              "candidateId": {
+                "$ref": "#/$defs/identifier"
+              },
+              "role": {
+                "enum": [
+                  "author",
+                  "maintainer",
+                  "reviewer",
+                  "assignee",
+                  "respondent",
+                  "merge_decider",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        },
+        "responsibility": {
+          "$ref": "#/$defs/personalReminderResponsibility"
+        },
+        "action": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "summary"],
+          "properties": {
+            "kind": {
+              "enum": [
+                "assessment",
+                "owner",
+                "decision",
+                "review",
+                "revision",
+                "reply",
+                "work",
+                "merge"
+              ]
+            },
+            "summary": {
+              "$ref": "#/$defs/shortString"
+            }
+          }
+        },
+        "evidenceSourceIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 30,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "obligationSince": {
+          "$ref": "#/$defs/personalReminderTimeBasis"
+        },
+        "lastConfirmedActionability": {
+          "$ref": "#/$defs/personalReminderLastConfirmedActionability"
+        },
+        "currentInput": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fingerprint", "rulesVersion", "completeness"],
+          "properties": {
+            "fingerprint": {
+              "$ref": "#/$defs/fingerprint"
+            },
+            "rulesVersion": {
+              "$ref": "#/$defs/identifier"
+            },
+            "completeness": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["status"],
+                  "properties": {
+                    "status": {
+                      "const": "complete"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["status", "missing"],
+                  "properties": {
+                    "status": {
+                      "const": "incomplete"
+                    },
+                    "missing": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 30,
+                      "items": {
+                        "enum": [
+                          "current_item",
+                          "item_body",
+                          "item_conversation",
+                          "item_timeline",
+                          "related_item",
+                          "related_conversation",
+                          "related_timeline",
+                          "relation_evidence",
+                          "review_state",
+                          "check_state",
+                          "resolution_events"
+                        ]
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "latestAttempt": {
+          "$ref": "#/$defs/personalReminderEvaluationAttempt"
+        },
+        "adoptedAssessment": {
+          "$ref": "#/$defs/personalReminderAdoptedAssessment"
+        },
+        "actionableClock": {
+          "$ref": "#/$defs/personalReminderActionableClock"
+        }
+      }
+    },
+    "personalReminderCausePlanning": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "planningVersion"],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "planningVersion": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "planningVersion", "observedAt"],
+          "properties": {
+            "status": {
+              "const": "completed"
+            },
+            "planningVersion": {
+              "$ref": "#/$defs/identifier"
+            },
+            "observedAt": {
+              "$ref": "#/$defs/dateTime"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "planningVersion", "reason"],
+          "properties": {
+            "status": {
+              "const": "excluded"
+            },
+            "planningVersion": {
+              "$ref": "#/$defs/identifier"
+            },
+            "reason": {
+              "const": "terminal_without_cause"
+            }
+          }
+        }
+      ]
+    },
     "item": {
       "type": "object",
       "additionalProperties": false,
@@ -2432,6 +3210,8 @@
         "reviewState",
         "checkState",
         "aiAnalysis",
+        "personalReminderCauses",
+        "personalReminderCausePlanning",
         "inputEvents",
         "confidence",
         "evidence",
@@ -2586,6 +3366,15 @@
         },
         "aiAnalysis": {
           "$ref": "#/$defs/trackedItemAiAnalysis"
+        },
+        "personalReminderCauses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/personalReminderCause"
+          }
+        },
+        "personalReminderCausePlanning": {
+          "$ref": "#/$defs/personalReminderCausePlanning"
         },
         "inputEvents": {
           "type": "array",

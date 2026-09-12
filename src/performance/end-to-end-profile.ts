@@ -8,7 +8,11 @@ import {
   type ProductionRuntimeAdapters,
 } from "../cli/production-runtime.js";
 import { type CliExecutionResult } from "../cli/index.js";
-import { type CodexAnalysisInput } from "../codex/index.js";
+import {
+  type CodexAnalysisInput,
+  type PersonalReminderAiInput,
+  type SchemaValidPersonalReminderAiOutput,
+} from "../codex/index.js";
 import { loadConfig, type Config } from "../config/index.js";
 import { type DiscordDigestDelivery } from "../discord/index.js";
 import {
@@ -548,6 +552,33 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
       );
     },
     executeCodexAnalysis: (input) => Promise.resolve(createCodexOutput(input)),
+    executeCodexPersonalReminderAnalysis: (input: PersonalReminderAiInput) =>
+      Promise.resolve<SchemaValidPersonalReminderAiOutput>({
+        schemaVersion: "1",
+        item: input.item,
+        causes: input.causes.map((cause) => {
+          const firstSourceRef = cause.sourceRefs[0];
+          if (firstSourceRef == null) {
+            throw new TypeError(
+              `性能profileの個人催促入力にsourceがありません。対象: ${cause.causeId}`,
+            );
+          }
+          return {
+            causeId: cause.causeId,
+            assessment: {
+              verdict: "unknown",
+              reason: "ambiguous_meaning",
+              references: {
+                itemRefs: cause.itemRefs,
+                relationRefs: cause.relationRefs,
+                sourceRefs: [firstSourceRef],
+                reasonSummary: "性能profileでは個人催促の意味を判定しません",
+              },
+              confidence: 1,
+            },
+          };
+        }),
+      }),
     executeCodexAuthenticationPreflight: () =>
       Promise.reject(new TypeError("性能profileではCodex認証preflightを実行しません")),
     readReplayFixture: () => Promise.reject(new TypeError("性能profileではreplayしません")),

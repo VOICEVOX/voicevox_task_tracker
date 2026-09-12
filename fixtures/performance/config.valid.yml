@@ -129,6 +129,7 @@ state:
   snapshotPath: state/snapshot.json
   historyDirectory: state/history
   aiCacheDirectory: state/ai-cache
+  personalReminderAiCacheDirectory: state/personal-reminder-ai-cache
   notificationLedgerPath: state/notification-ledger.json
   runReportsDirectory: state/run-reports
   canonicalJson: true

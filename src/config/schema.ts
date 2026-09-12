@@ -290,6 +290,7 @@ const stateSchema = z
     snapshotPath: stateJsonPathSchema,
     historyDirectory: statePathSchema,
     aiCacheDirectory: statePathSchema,
+    personalReminderAiCacheDirectory: statePathSchema,
     notificationLedgerPath: stateJsonPathSchema,
     runReportsDirectory: statePathSchema,
     canonicalJson: z.literal(true, {
@@ -301,6 +302,7 @@ const stateSchema = z
       ["snapshotPath", state.snapshotPath],
       ["historyDirectory", state.historyDirectory],
       ["aiCacheDirectory", state.aiCacheDirectory],
+      ["personalReminderAiCacheDirectory", state.personalReminderAiCacheDirectory],
       ["notificationLedgerPath", state.notificationLedgerPath],
       ["runReportsDirectory", state.runReportsDirectory],
     ];

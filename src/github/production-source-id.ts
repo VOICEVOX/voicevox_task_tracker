@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { buildSourceId, type SourceId } from "../domain/index.js";
+import { buildSourceId, type GitHubNodeId, type SourceId } from "../domain/index.js";
 
 const productionSourceIdKindSchema = z.enum([
   "github_actor",
@@ -9,6 +9,7 @@ const productionSourceIdKindSchema = z.enum([
   "github_item",
   "github_issue_comment",
   "github_commit",
+  "github_pull_request_commit",
   "github_timeline_event",
   "github_label",
   "github_inbound_cross_reference",
@@ -41,6 +42,17 @@ export function buildProductionSourceId(
   originalId: string,
 ): SourceId {
   return buildSourceId(kind, originalId);
+}
+
+/** Pull Request内で発生したcommitを指すsource IDを組み立てる。 */
+export function buildPullRequestCommitSourceId(
+  pullRequestNodeId: GitHubNodeId,
+  commitNodeId: GitHubNodeId,
+): SourceId {
+  return buildProductionSourceId(
+    "github_pull_request_commit",
+    `${pullRequestNodeId}:${commitNodeId}`,
+  );
 }
 
 /** source IDの種別が本番のGitHub収集で生成されるかを返す。 */

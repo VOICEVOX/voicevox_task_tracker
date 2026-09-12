@@ -6,6 +6,7 @@ import {
 } from "../../src/pages/public-dto.js";
 import { notificationReasonText } from "../../src/domain/notification-reason.js";
 import { UnreachableError } from "../../src/util/index.js";
+import { ResponseResponsible } from "./current-responses.js";
 import { ItemHeading, type ItemHeadingLink } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
 import { formatDateTime, notificationWaitingOnLabelParts } from "./model.js";
@@ -17,7 +18,7 @@ import {
 } from "./responsive-table-card-list.js";
 import { ActionButton } from "./ui.js";
 import { type PublicNotificationHistoryLoader } from "./notification-history-loader.js";
-import { WaitingOnDisplay } from "./waiting-on-display.js";
+import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
 
 type NotificationHistoryPageProps = Readonly<{
   createItemHref: (nodeId: string) => string;
@@ -31,6 +32,8 @@ type NotificationHistoryPageProps = Readonly<{
 }>;
 
 type NotificationHistoryRow = PublicNotificationHistoryDto["notifications"][number];
+type NotificationHistoryPersonalReminder = NotificationHistoryRow["personalReminders"][number];
+type NotificationHistoryReason = NotificationHistoryRow["reasons"][number];
 
 type NotificationHistoryState =
   | Readonly<{
@@ -70,19 +73,52 @@ function NotificationItem({
   return <ItemHeading item={item} link={link} metaAccessory={null} titleAccessory={null} />;
 }
 
+function notificationReasonKey(reason: NotificationHistoryReason): string {
+  switch (reason.threshold.status) {
+    case "recorded":
+      return `${reason.reasonCode}:recorded:${reason.threshold.hours.toString()}`;
+    case "not_reached":
+      return `${reason.reasonCode}:not_reached:${reason.threshold.elapsedHours.toString()}`;
+    case "not_recorded":
+      return `${reason.reasonCode}:not_recorded`;
+    case "not_applicable":
+      return `${reason.reasonCode}:not_applicable`;
+    default:
+      throw new UnreachableError(reason.threshold);
+  }
+}
+
+function notificationSystemReasons(
+  row: NotificationHistoryRow,
+): readonly NotificationHistoryReason[] {
+  const personalReasonKeys = row.personalReminders.map((reminder) =>
+    notificationReasonKey(reminder.reason),
+  );
+  return row.reasons.filter((reason) => {
+    const personalReasonIndex = personalReasonKeys.indexOf(notificationReasonKey(reason));
+    if (personalReasonIndex < 0) {
+      return true;
+    }
+    personalReasonKeys.splice(personalReasonIndex, 1);
+    return false;
+  });
+}
+
 function NotificationReasons({
   reasons,
 }: Readonly<{ reasons: NotificationHistoryRow["reasons"] }>) {
   return (
     <ul class="m-0 grid list-disc gap-1 pl-5">
-      {reasons.map((reason) => (
-        <li key={reason.reasonCode}>{notificationReasonText(reason)}</li>
+      {reasons.map((reason, index) => (
+        <li key={`${notificationReasonKey(reason)}:${index.toString()}`}>
+          {notificationReasonText(reason)}
+        </li>
       ))}
     </ul>
   );
 }
 
-function NotificationWaitingOn({
+function NotificationHistoricalWaitingOn({
   createPersonHref,
   onSelectPerson,
   waitingOn,
@@ -100,6 +136,147 @@ function NotificationWaitingOn({
         showAvatar={false}
       />
     </span>
+  );
+}
+
+function NotificationPersonalReminderResponsibleList({
+  createPersonHref,
+  onSelectPerson,
+  responsible,
+}: PersonNavigation &
+  Readonly<{
+    responsible: NotificationHistoryPersonalReminder["responsible"];
+  }>) {
+  return (
+    <span class="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
+      {responsible.map((candidate, index) => (
+        <span
+          class="inline-flex min-w-0 items-center gap-1.5"
+          key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}
+        >
+          {index > 0 && <span aria-hidden="true">、</span>}
+          <ResponseResponsible
+            createPersonHref={createPersonHref}
+            onSelectPerson={onSelectPerson}
+            responsible={candidate}
+          />
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function NotificationPersonalReminder({
+  createPersonHref,
+  locale,
+  onSelectPerson,
+  reminder,
+  summary,
+}: PersonNavigation &
+  Readonly<{
+    locale: string;
+    reminder: NotificationHistoryPersonalReminder;
+    summary: PublicSummaryDto;
+  }>) {
+  return (
+    <li class="grid min-w-0 gap-1 border-l-2 border-border-default pl-3">
+      <div class="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+        <strong class="text-xs text-text-muted">対応相手</strong>
+        <NotificationPersonalReminderResponsibleList
+          createPersonHref={createPersonHref}
+          onSelectPerson={onSelectPerson}
+          responsible={reminder.responsible}
+        />
+      </div>
+      <p class="m-0 min-w-0 wrap-anywhere text-sm text-text-primary">
+        <strong class="text-xs text-text-muted">次の行動</strong> {reminder.action.summary}
+      </p>
+      <p class="m-0 min-w-0 wrap-anywhere text-xs text-text-secondary">
+        <strong class="text-xs text-text-muted">停滞開始</strong>{" "}
+        <time
+          dateTime={reminder.stallSince.at}
+          title={formatDateTime(reminder.stallSince.at, summary.timezone, locale)}
+        >
+          {formatDateTime(reminder.stallSince.at, summary.timezone, locale)}
+        </time>
+      </p>
+    </li>
+  );
+}
+
+function NotificationPersonalReminders({
+  createPersonHref,
+  locale,
+  onSelectPerson,
+  reminders,
+  summary,
+}: PersonNavigation &
+  Readonly<{
+    locale: string;
+    reminders: readonly NotificationHistoryPersonalReminder[];
+    summary: PublicSummaryDto;
+  }>) {
+  return (
+    <div class="grid min-w-0 gap-2">
+      <strong class="text-xs text-text-muted">送信時の個人対応</strong>
+      <ul class="m-0 grid min-w-0 list-none gap-2 p-0">
+        {reminders.map((reminder) => (
+          <NotificationPersonalReminder
+            createPersonHref={createPersonHref}
+            key={reminder.notificationKey}
+            locale={locale}
+            onSelectPerson={onSelectPerson}
+            reminder={reminder}
+            summary={summary}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function NotificationWaitingOn({
+  createPersonHref,
+  locale,
+  onSelectPerson,
+  row,
+  summary,
+}: PersonNavigation &
+  Readonly<{
+    locale: string;
+    row: NotificationHistoryRow;
+    summary: PublicSummaryDto;
+  }>) {
+  if (row.personalReminders.length === 0) {
+    return (
+      <NotificationHistoricalWaitingOn
+        createPersonHref={createPersonHref}
+        onSelectPerson={onSelectPerson}
+        waitingOn={row.waitingOn}
+      />
+    );
+  }
+  const systemReasons = notificationSystemReasons(row);
+  return (
+    <div class="grid min-w-0 gap-3">
+      <NotificationPersonalReminders
+        createPersonHref={createPersonHref}
+        locale={locale}
+        onSelectPerson={onSelectPerson}
+        reminders={row.personalReminders}
+        summary={summary}
+      />
+      {systemReasons.length > 0 && (
+        <div class="grid min-w-0 gap-1 border-t border-border-subtle pt-2">
+          <strong class="text-xs text-text-muted">項目全体の待ち相手</strong>
+          <NotificationHistoricalWaitingOn
+            createPersonHref={createPersonHref}
+            onSelectPerson={onSelectPerson}
+            waitingOn={row.waitingOn}
+          />
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -178,8 +355,10 @@ function NotificationHistoryTable({
       renderCell: (row: NotificationHistoryRow) => (
         <NotificationWaitingOn
           createPersonHref={createPersonHref}
+          locale={locale}
           onSelectPerson={onSelectPerson}
-          waitingOn={row.waitingOn}
+          row={row}
+          summary={summary}
         />
       ),
       widthClassName: "w-[20%]",
@@ -214,8 +393,10 @@ function NotificationHistoryTable({
       renderValue: (row: NotificationHistoryRow) => (
         <NotificationWaitingOn
           createPersonHref={createPersonHref}
+          locale={locale}
           onSelectPerson={onSelectPerson}
-          waitingOn={row.waitingOn}
+          row={row}
+          summary={summary}
         />
       ),
       valueClassName: "text-text-primary",

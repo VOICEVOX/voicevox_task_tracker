@@ -34,7 +34,7 @@ import {
   REVIEW_THREAD_PAGE_QUERY,
   SUB_ISSUE_PAGE_QUERY,
 } from "./item-detail-queries.js";
-import { buildProductionSourceId } from "./production-source-id.js";
+import { buildProductionSourceId, buildPullRequestCommitSourceId } from "./production-source-id.js";
 import {
   type GitHubAutoMerge,
   type GitHubCheckContext,
@@ -998,7 +998,10 @@ async function collectTimelineNodes(
   return Object.freeze(nodes);
 }
 
-function normalizeCommit(commit: z.output<typeof commitSchema>): GitHubPullRequestCommit {
+function normalizeCommit(
+  pullRequestNodeId: GitHubNodeId,
+  commit: z.output<typeof commitSchema>,
+): GitHubPullRequestCommit {
   const nodeId = createGitHubNodeId(commit.id);
   const pushedAt: GitHubCommitPushedAt =
     commit.pushedDate == null
@@ -1011,7 +1014,7 @@ function normalizeCommit(commit: z.output<typeof commitSchema>): GitHubPullReque
           value: commit.pushedDate,
         });
   return Object.freeze({
-    sourceId: buildProductionSourceId("github_commit", nodeId),
+    sourceId: buildPullRequestCommitSourceId(pullRequestNodeId, nodeId),
     nodeId,
     sha: commit.oid,
     committedAt: commit.committedDate,
@@ -1059,7 +1062,11 @@ function normalizeSimpleTimelineEvent(
   });
 }
 
-function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubTimelineEvent {
+function normalizeTimelineNode(
+  node: RawTimelineNode,
+  sequence: number,
+  item: EnumeratedGitHubItem,
+): GitHubTimelineEvent {
   switch (node.__typename) {
     case "ClosedEvent":
       return normalizeSimpleTimelineEvent(
@@ -1234,12 +1241,17 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
     case "PullRequestCommit": {
       const event = parseGraphqlResponse(pullRequestCommitEventSchema, node, "PullRequestCommit");
       const nodeId = createGitHubNodeId(event.id);
+      if (item.type !== "pull_request") {
+        throw new GitHubResponseValidationError("Pull Request timeline event", {
+          cause: new TypeError("IssueのtimelineにPullRequestCommitがあります"),
+        });
+      }
       return Object.freeze({
         sourceId: buildProductionSourceId("github_timeline_event", nodeId),
         nodeId,
         sequence,
         kind: "commit_added",
-        commit: normalizeCommit(event.commit),
+        commit: normalizeCommit(item.nodeId, event.commit),
       });
     }
     case "AddedToMergeQueueEvent":
@@ -1273,8 +1285,11 @@ function normalizeTimelineNode(node: RawTimelineNode, sequence: number): GitHubT
   }
 }
 
-function normalizeTimeline(nodes: readonly RawTimelineNode[]): readonly GitHubTimelineEvent[] {
-  return Object.freeze(nodes.map(normalizeTimelineNode));
+function normalizeTimeline(
+  nodes: readonly RawTimelineNode[],
+  item: EnumeratedGitHubItem,
+): readonly GitHubTimelineEvent[] {
+  return Object.freeze(nodes.map((node, sequence) => normalizeTimelineNode(node, sequence, item)));
 }
 
 function collectInboundCrossReferences(
@@ -2287,7 +2302,7 @@ async function collectIssueDetail(
 ): Promise<GitHubItemDetail> {
   const commentNodes = await collectCommentNodes(item, issue.comments, options.graphql);
   const timelineNodes = await collectTimelineNodes(item, issue.timelineItems, options.graphql);
-  const timeline = normalizeTimeline(timelineNodes);
+  const timeline = normalizeTimeline(timelineNodes, item);
   return Object.freeze({
     sourceId: buildProductionSourceId("github_item_detail", item.nodeId),
     nodeId: item.nodeId,
@@ -2338,7 +2353,7 @@ async function collectPullRequestDetail(
     pullRequest.timelineItems,
     options.graphql,
   );
-  const timeline = normalizeTimeline(timelineNodes);
+  const timeline = normalizeTimeline(timelineNodes, item);
   return Object.freeze({
     sourceId: buildProductionSourceId("github_item_detail", item.nodeId),
     nodeId: item.nodeId,
@@ -2355,7 +2370,7 @@ async function collectPullRequestDetail(
     reviewRequests: normalizeReviewRequests(reviewRequestNodes, timeline),
     nativeClosingIssues: normalizeNativeClosingIssues(item, closingIssueNodes),
     headSha: pullRequest.headRefOid,
-    headCommit: normalizeCommit(headCommit),
+    headCommit: normalizeCommit(item.nodeId, headCommit),
     mergeState: await normalizePullRequestMergeState(pullRequest, headCommit, options.graphql),
     observedAt: options.observedAt,
   });

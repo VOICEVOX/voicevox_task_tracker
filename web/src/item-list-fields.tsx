@@ -1,12 +1,15 @@
-import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import {
+  type PublicItemSummaryDto,
+  type PublicPersonalReminderResponseDto,
+  type PublicSummaryDto,
+} from "../../src/pages/public-dto.js";
+import { CurrentResponses } from "./current-responses.js";
 import { CurrentImplementations } from "./current-implementations.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { DeadlineDisplay } from "./deadline-display.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import {
   formatStallDuration,
-  formatWaitingOnCandidateParts,
-  formatWaitingOnParts,
   statusLabel,
   type ItemSort,
   type ItemSortKey,
@@ -17,9 +20,7 @@ import {
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
 import { Pill } from "./ui.js";
-import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
-
-type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
+import { type PersonNavigation } from "./waiting-on-display.js";
 
 type ItemListFieldOptions = PersonNavigation &
   Readonly<{
@@ -27,7 +28,9 @@ type ItemListFieldOptions = PersonNavigation &
     now: Date;
     onSelectItem: (nodeId: string) => void;
     onSortChange: (key: ItemSortKey) => void;
-    selectPrimaryWaitingOn: (row: ItemTableRow) => WaitingOnCandidate | undefined;
+    selectPrimaryCurrentResponse: (
+      row: ItemTableRow,
+    ) => PublicPersonalReminderResponseDto | undefined;
     sort: ItemSort;
     summary: PublicSummaryDto;
   }>;
@@ -35,30 +38,30 @@ type ItemListFieldOptions = PersonNavigation &
 const NUMERIC_HEADER_CLASS_NAME =
   "text-center whitespace-nowrap [&>button]:w-full [&>button]:justify-center [&>button]:px-1";
 
-function orderWaitingOnCandidates(
+function orderCurrentResponses(
   item: PublicItemSummaryDto,
-  primaryWaitingOn: WaitingOnCandidate | undefined,
-): readonly WaitingOnCandidate[] {
-  if (primaryWaitingOn == null) {
-    return item.waitingOn;
+  primaryResponse: PublicPersonalReminderResponseDto | undefined,
+): readonly PublicPersonalReminderResponseDto[] {
+  if (primaryResponse == null) {
+    return item.currentResponses;
   }
-  const primaryWaitingOnIndex = item.waitingOn.indexOf(primaryWaitingOn);
-  if (primaryWaitingOnIndex < 0) {
-    throw new TypeError(`項目 ${item.nodeId} のprimary waitingOnが候補にありません`);
+  const primaryResponseIndex = item.currentResponses.indexOf(primaryResponse);
+  if (primaryResponseIndex < 0) {
+    throw new TypeError(`項目 ${item.nodeId} のprimary current responseが候補にありません`);
   }
   return [
-    primaryWaitingOn,
-    ...item.waitingOn.slice(0, primaryWaitingOnIndex),
-    ...item.waitingOn.slice(primaryWaitingOnIndex + 1),
+    primaryResponse,
+    ...item.currentResponses.slice(0, primaryResponseIndex),
+    ...item.currentResponses.slice(primaryResponseIndex + 1),
   ];
 }
 
-function WaitingOnStatus({
+function CurrentResponseStatus({
   createItemHref,
   createPersonHref,
   onSelectItem,
   onSelectPerson,
-  primaryWaitingOn,
+  primaryResponse,
   row,
   summary,
 }: Readonly<{
@@ -66,62 +69,23 @@ function WaitingOnStatus({
   createPersonHref: (login: string) => string;
   onSelectItem: (nodeId: string) => void;
   onSelectPerson: (login: string) => void;
-  primaryWaitingOn: WaitingOnCandidate | undefined;
+  primaryResponse: PublicPersonalReminderResponseDto | undefined;
   row: ItemTableRow;
   summary: PublicSummaryDto;
 }>) {
-  const waitingOnCandidates = orderWaitingOnCandidates(row.item, primaryWaitingOn);
+  const responses = orderCurrentResponses(row.item, primaryResponse);
   return (
     <div class="item-waiting-on-status grid min-w-0 gap-1">
-      {waitingOnCandidates.length === 0 ? (
-        <strong class="item-waiting-on-summary item-primary-waiting-on min-w-0 leading-5 font-semibold text-text-primary wrap-anywhere">
-          <WaitingOnDisplay
-            createPersonHref={createPersonHref}
-            onSelectPerson={onSelectPerson}
-            parts={formatWaitingOnParts(row.item, summary)}
-            showAvatar={true}
-          />
-        </strong>
-      ) : (
-        <ul class="item-waiting-on-list m-0 grid min-w-0 list-none gap-2 p-0">
-          {waitingOnCandidates.map((candidate, index) => {
-            const primary = primaryWaitingOn != null && index === 0;
-            const reason = candidate.reasonSummary;
-            const waitingOnDisplay = (
-              <WaitingOnDisplay
-                createPersonHref={createPersonHref}
-                onSelectPerson={onSelectPerson}
-                parts={formatWaitingOnCandidateParts(candidate, row.item, summary)}
-                showAvatar={true}
-              />
-            );
-            return (
-              <li
-                class="item-waiting-on-candidate grid min-w-0 gap-0.5"
-                key={`${candidate.kind}:${candidate.role}:${candidate.candidateId}:${index.toString()}`}
-              >
-                {primary ? (
-                  <strong class="item-waiting-on-candidate-label item-primary-waiting-on min-w-0 leading-5 font-semibold text-text-primary wrap-anywhere">
-                    {waitingOnDisplay}
-                  </strong>
-                ) : (
-                  <span class="item-waiting-on-candidate-label min-w-0 leading-5 wrap-anywhere">
-                    {waitingOnDisplay}
-                  </span>
-                )}
-                {reason != null && reason.length > 0 && (
-                  <span
-                    class="item-waiting-reason line-clamp-2 text-xs leading-5 text-text-muted wrap-anywhere"
-                    title={reason}
-                  >
-                    {reason}
-                  </span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      <CurrentResponses
+        createItemHref={createItemHref}
+        createPersonHref={createPersonHref}
+        onSelectItem={onSelectItem}
+        onSelectPerson={onSelectPerson}
+        planningStatus={row.item.personalReminderCausePlanningStatus}
+        responses={responses}
+        summary={summary}
+        variant="compact"
+      />
       <Pill className="item-waiting-status" tone="neutral">
         {statusLabel(row.item.status)}
       </Pill>
@@ -146,7 +110,7 @@ export function createItemTableColumns({
   onSelectItem,
   onSelectPerson,
   onSortChange,
-  selectPrimaryWaitingOn,
+  selectPrimaryCurrentResponse,
   sort,
   summary,
 }: ItemListFieldOptions): readonly ResponsiveTableColumn<ItemTableRow>[] {
@@ -173,15 +137,15 @@ export function createItemTableColumns({
       cellClassName: "min-w-0 wrap-anywhere",
       cellKind: "data",
       headerClassName: "whitespace-nowrap",
-      key: "waitingOnStatus",
-      label: "待ち相手と状態",
+      key: "currentResponseStatus",
+      label: "現在の対応と状態",
       renderCell: (row) => (
-        <WaitingOnStatus
+        <CurrentResponseStatus
           createItemHref={createItemHref}
           createPersonHref={createPersonHref}
           onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
-          primaryWaitingOn={selectPrimaryWaitingOn(row)}
+          primaryResponse={selectPrimaryCurrentResponse(row)}
           row={row}
           summary={summary}
         />
@@ -256,21 +220,21 @@ export function createItemCardFields({
   now,
   onSelectItem,
   onSelectPerson,
-  selectPrimaryWaitingOn,
+  selectPrimaryCurrentResponse,
   summary,
 }: ItemListFieldOptions): readonly ResponsiveCardField<ItemTableRow>[] {
   return [
     {
       className: "col-span-full border-b border-border-subtle pb-3",
-      key: "waitingOnStatus",
-      label: "待ち相手と状態",
+      key: "currentResponseStatus",
+      label: "現在の対応と状態",
       renderValue: (row) => (
-        <WaitingOnStatus
+        <CurrentResponseStatus
           createItemHref={createItemHref}
           createPersonHref={createPersonHref}
           onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
-          primaryWaitingOn={selectPrimaryWaitingOn(row)}
+          primaryResponse={selectPrimaryCurrentResponse(row)}
           row={row}
           summary={summary}
         />

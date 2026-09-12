@@ -1283,3 +1283,33 @@ export function determineIssueState(input: IssueStateMachineInput): IssueStateDe
 
   return createUnassignedDecision(input, context);
 }
+
+/** block適用前のIssueローカル責務を決定する。 */
+export function determineIssueLocalResponsibility(
+  input: Omit<IssueStateMachineInput, "blockers">,
+): IssueStateDecision {
+  return determineIssueState({ ...input, blockers: [] });
+}
+
+/** Issueの状態機械branchから個人催促責務のauthorityを判定する。 */
+export function determineIssuePersonalReminderResponsibilityAuthority(
+  input: Readonly<{
+    issue: FreshObservedGitHubIssue;
+    decision: IssueStateDecision;
+  }>,
+): "fixed" | "semantic" {
+  switch (input.decision.status) {
+    case "waiting_for_reply":
+    case "waiting_for_decision":
+      return "semantic";
+    case "waiting_for_work":
+      return input.issue.assignees.length === 0 ? "semantic" : "fixed";
+    case "waiting_for_assessment":
+    case "waiting_for_owner":
+      return "fixed";
+    default:
+      throw new TypeError(
+        `個人催促責務に対応するIssue state branchがありません。対象: ${input.decision.status}`,
+      );
+  }
+}

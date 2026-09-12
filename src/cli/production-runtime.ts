@@ -5,10 +5,12 @@ import {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
   CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
   CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  createEmptyAiBudgetUsage,
   createAiAnalysisTarget,
   assessAnalysisImpact,
   createCodexEnvironment,
   createCodexAnalysisInput,
+  createPersonalReminderCauseInputFingerprint,
   determineAnalysisElementNecessities,
   determineAnalysisElementReuse,
   estimateAiInputCost,
@@ -25,6 +27,7 @@ import {
   reduceCodexInputValidationFailure,
   reducePreservedCodexRelationsAndNotification,
   runAiAnalyses,
+  runPersonalReminderAiAnalyses,
   serializeCanonicalJson,
   validateCodexAnalysisOutput,
   validateCodexElementOutputSchema,
@@ -46,6 +49,10 @@ import {
   type AiAnalysisRunFailure,
   type AiAnalysisRunIdentity,
   type AiAnalysisRunResult,
+  type AiBudgetUsage,
+  type PersonalReminderAiRunResult,
+  type PersonalReminderAiEvaluationCandidate,
+  type PersonalReminderAiRunConfiguration,
   type AiAnalysisElementGenerationMap,
   type AiAnalysisElementSourceGenerationMap,
   type CodexAnalysisInput,
@@ -96,18 +103,25 @@ import {
   createLabelEffectsResolver,
   createTrackedItemLatestEventActor,
   createStalenessNotificationSeverityReason,
+  currentPersonalReminderAssessment,
+  personalReminderCauseSchema,
+  PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION,
   calculateStaleness,
+  calculatePersonalReminderStaleness,
   determineDeadlineLevel,
   recalculateStalenessSeverity,
   determineIssueState,
+  determineIssueLocalResponsibility,
   determineMeaningfulProgress,
   determinePullRequestState,
+  determinePullRequestLocalResponsibility,
   determineTerminalRetention,
   determineTrackedItemWork,
   isTerminalStatus,
   ISSUE_DETERMINISTIC_RULES_VERSION,
   parseSourceId,
   PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   resolvePullRequestCommitOccurredAt,
   resolveTrackingStartAt,
   resolveRepositoryMaintainers,
@@ -150,6 +164,9 @@ import {
   type DependencyResolutionProgress,
   type DeadlineLevel,
   type ExternalGhostNode,
+  type Evidence,
+  type PersonalReminderCause,
+  type PersonalReminderStaleness,
   type TrackedItem,
   type TrackedItemAiAnalysis,
   type TrackedItemAiAnalysisCurrentAdoptedElement,
@@ -168,6 +185,19 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
+  applyPersonalReminderCauseOutcomes,
+  createPersonalReminderRuntimeContext,
+  planPersonalReminderCauses,
+  type PersonalReminderRuntimeCollectedItem,
+  type PersonalReminderRuntimeGraph,
+  type PersonalReminderRuntimeLocalDecision,
+  type PersonalReminderRuntimeRelatedContext,
+  type PersonalReminderRuntimeState,
+  type PersonalReminderCauseRuntimePlanEntry,
+} from "./personal-reminder-runtime.js";
+import {
+  assertDiscordPersonalReminderSelectionMatchesSnapshot,
+  calculateDiscordNotificationCandidateSeverity,
   createAcknowledgedNotificationLedgerEntries,
   createNotificationCauses,
   selectDiscordNotifications,
@@ -181,6 +211,7 @@ import {
   type NotificationDependencyCause,
   type NotificationCauses,
   type DiscordNotificationSelection,
+  type DiscordPersonalReminderSelectionValidationItem,
   type DiscordOperationsIncident,
   type DiscordSecretProvider,
   type DiscordWebhookHttpClient,
@@ -245,7 +276,7 @@ import {
   createStateRunReport,
   createStateSnapshot,
   StateBranchConflictError,
-  NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+  NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
   assertStatePublicSafety,
   StatePersistenceSession,
   type PersistStateTransactionResult,
@@ -277,7 +308,10 @@ import {
   type ReportWorkflowCliCommand,
   type ResolveDiscordDeliveryCliCommand,
 } from "./command.js";
-import { type OnlineCliCommand } from "./daily-transaction.js";
+import {
+  type OnlineCliCommand,
+  type PersonalReminderAnalysisStageResult,
+} from "./daily-transaction.js";
 import {
   assertSandboxManifestMatchesContext,
   assertSandboxOrigin,
@@ -475,6 +509,7 @@ type DeterministicItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
   detail: GitHubItemDetail;
   decision: IssueStateDecision | PullRequestStateDecision;
+  localResponsibilityDecision: IssueStateDecision | PullRequestStateDecision;
   notificationClass: TrackingNotificationClass;
   notificationsSuppressedByLabel: boolean;
   relationCandidates: readonly RelationCandidate[];
@@ -498,6 +533,7 @@ type ReducedItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
   detail: GitHubItemDetail;
   decision: ReducedCodexDecision;
+  localResponsibilityDecision: IssueStateDecision | PullRequestStateDecision;
   selfCommitmentCause: NotificationCause;
   responsibilityBasis: IssueStateDecision["responsibilityBasis"];
   dependencyCause: NotificationDependencyCause;
@@ -548,6 +584,7 @@ type ReducedAnalysis = Readonly<{
 
 type GraphResult = Readonly<{
   edges: readonly ReconciledGraphEdge[];
+  candidateResolutions: ReconcileGraphResult["candidateResolutions"];
   externalReferences: readonly ExternalGhostNode[];
   analysis: AnalyzeGraphResult;
   previousAnalysis:
@@ -558,6 +595,17 @@ type GraphResult = Readonly<{
         availability: "available";
         value: AnalyzeGraphResult;
       }>;
+}>;
+
+type PersonalReminderAnalysis = Readonly<{
+  status: "success" | "fallback";
+  causesByNodeId: ReadonlyMap<GitHubNodeId, readonly PersonalReminderCause[]>;
+  evidenceByNodeId: ReadonlyMap<GitHubNodeId, readonly Evidence[]>;
+  stalenessByCauseId: ReadonlyMap<PersonalReminderCause["causeId"], PersonalReminderStaleness>;
+  planningByNodeId: ReadonlyMap<GitHubNodeId, SnapshotTrackedItem["personalReminderCausePlanning"]>;
+  run: PersonalReminderAiRunResult | undefined;
+  budgetUsage: AiBudgetUsage;
+  authenticationPreflightExecuted: boolean;
 }>;
 
 type ValidatedRun = Readonly<{
@@ -600,6 +648,7 @@ export type ProductionTypes = DailyTransactionTypeMap &
     codexAnalysis: CodexAnalysis;
     reduction: ReducedAnalysis;
     graph: GraphResult;
+    personalReminderAnalysis: PersonalReminderAnalysis;
     validated: ValidatedRun;
     persisted: PersistedRun;
     pages: PagesResult;
@@ -627,6 +676,11 @@ export type ProductionRuntimeAdapters = Readonly<{
     configuration: CodexAdapterConfiguration,
     dependencies: CodexAdapterDependencies,
   ) => Promise<unknown>;
+  executeCodexPersonalReminderAnalysis: (
+    input: import("../codex/personal-reminder-input.js").PersonalReminderAiInput,
+    configuration: CodexAdapterConfiguration,
+    dependencies: CodexAdapterDependencies,
+  ) => Promise<import("../codex/personal-reminder-output.js").SchemaValidPersonalReminderAiOutput>;
   executeCodexAuthenticationPreflight: (
     configuration: CodexAdapterConfiguration,
     dependencies: CodexAdapterDependencies,
@@ -2384,11 +2438,28 @@ function applyDeterministicAnalysis(
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt: collection.evaluatedAt,
       });
+      const localResponsibilityDecision = determineIssueLocalResponsibility({
+        issue: item,
+        explicitRequestCandidates: createIssueRequestCandidates(item, detail),
+        explicitRequestAssessment: {
+          status: "not_assessed",
+        },
+        effectiveAssigneeCandidates: effectiveAssigneeCandidates.map(
+          (candidate) => candidate.candidate,
+        ),
+        effectiveAssigneeAssessment: {
+          status: "not_assessed",
+        },
+        maintainers,
+        confidenceThresholds: configuration.config.ai.confidence,
+        evaluatedAt: collection.evaluatedAt,
+      });
       items.push(
         Object.freeze({
           item,
           detail,
           decision,
+          localResponsibilityDecision,
           notificationClass,
           notificationsSuppressedByLabel,
           relationCandidates,
@@ -2410,11 +2481,22 @@ function applyDeterministicAnalysis(
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt: collection.evaluatedAt,
       });
+      const localResponsibilityDecision = determinePullRequestLocalResponsibility({
+        pullRequest: item,
+        checkFailureAssessment: {
+          cause: "not_assessed",
+        },
+        labelEffects,
+        maintainers,
+        confidenceThresholds: configuration.config.ai.confidence,
+        evaluatedAt: collection.evaluatedAt,
+      });
       items.push(
         Object.freeze({
           item,
           detail,
           decision,
+          localResponsibilityDecision,
           notificationClass,
           notificationsSuppressedByLabel,
           relationCandidates,
@@ -6047,6 +6129,7 @@ async function analyzeCodex(
     {
       identity,
       budget: configuration.config.ai.budget,
+      initialUsage: createEmptyAiBudgetUsage(),
       maxConcurrentCalls: configuration.config.ai.execution.maxConcurrentCalls,
       ...(target == null ? {} : { target }),
     },
@@ -7106,26 +7189,40 @@ function reassessDeterministicAnalysis(
       ? createNativeBlockers(analysis.item, analysis.relationCandidates)
       : graphBlockers(state, deterministicAnalysis, graph, analysis.item);
   if (analysis.item.type === "issue" && analysis.detail.type === "issue") {
+    const explicitRequestAssessmentValue = explicitRequestAssessment(
+      analysis.item,
+      analysis.detail,
+      output,
+    );
+    const effectiveAssigneeAssessmentValue = createEffectiveAssigneeAssessment(
+      configuration,
+      evaluatedAt,
+      analysis,
+      output,
+    );
     return Object.freeze({
       ...analysis,
       decision: determineIssueState({
         issue: analysis.item,
         blockers,
         explicitRequestCandidates: createIssueRequestCandidates(analysis.item, analysis.detail),
-        explicitRequestAssessment: explicitRequestAssessment(
-          analysis.item,
-          analysis.detail,
-          output,
-        ),
+        explicitRequestAssessment: explicitRequestAssessmentValue,
         effectiveAssigneeCandidates: analysis.effectiveAssigneeCandidates.map(
           (candidate) => candidate.candidate,
         ),
-        effectiveAssigneeAssessment: createEffectiveAssigneeAssessment(
-          configuration,
-          evaluatedAt,
-          analysis,
-          output,
+        effectiveAssigneeAssessment: effectiveAssigneeAssessmentValue,
+        maintainers,
+        confidenceThresholds: configuration.config.ai.confidence,
+        evaluatedAt,
+      }),
+      localResponsibilityDecision: determineIssueLocalResponsibility({
+        issue: analysis.item,
+        explicitRequestCandidates: createIssueRequestCandidates(analysis.item, analysis.detail),
+        explicitRequestAssessment: explicitRequestAssessmentValue,
+        effectiveAssigneeCandidates: analysis.effectiveAssigneeCandidates.map(
+          (candidate) => candidate.candidate,
         ),
+        effectiveAssigneeAssessment: effectiveAssigneeAssessmentValue,
         maintainers,
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt,
@@ -7136,13 +7233,23 @@ function reassessDeterministicAnalysis(
     const resolveLabelEffects = createLabelEffectsResolver(
       normalizeLabelRules(configuration.config),
     );
+    const checkFailureAssessmentValue = checkFailureAssessment(analysis.detail, output);
+    const labelEffects = resolveLabelEffects(repositoryFullName(repository), analysis.item.labels);
     return Object.freeze({
       ...analysis,
       decision: determinePullRequestState({
         pullRequest: analysis.item,
         blockers,
-        checkFailureAssessment: checkFailureAssessment(analysis.detail, output),
-        labelEffects: resolveLabelEffects(repositoryFullName(repository), analysis.item.labels),
+        checkFailureAssessment: checkFailureAssessmentValue,
+        labelEffects,
+        maintainers,
+        confidenceThresholds: configuration.config.ai.confidence,
+        evaluatedAt,
+      }),
+      localResponsibilityDecision: determinePullRequestLocalResponsibility({
+        pullRequest: analysis.item,
+        checkFailureAssessment: checkFailureAssessmentValue,
+        labelEffects,
         maintainers,
         confidenceThresholds: configuration.config.ai.confidence,
         evaluatedAt,
@@ -7979,6 +8086,17 @@ function createTrackedItem(
       analysis.item.type === "issue"
         ? "not_applicable"
         : aggregatePullRequestCheckState(analysis.item.mergeState),
+    personalReminderCauses: Object.freeze([]),
+    personalReminderCausePlanning: isTerminalStatus(decision.status)
+      ? Object.freeze({
+          status: "excluded",
+          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+          reason: "terminal_without_cause",
+        })
+      : Object.freeze({
+          status: "pending",
+          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+        }),
     aiAnalysis: trackedItemAiAnalysis(
       configuration,
       state,
@@ -8380,6 +8498,7 @@ function reduceAnalysisPass(
         item: analysis.item,
         detail: analysis.detail,
         decision,
+        localResponsibilityDecision: analysis.localResponsibilityDecision,
         selfCommitmentCause,
         responsibilityBasis: basis.responsibilityBasis,
         dependencyCause: dependencyResolution.cause,
@@ -8754,6 +8873,7 @@ function reconcileCurrentGraph(
   });
   return Object.freeze({
     edges,
+    candidateResolutions: reconciled.candidateResolutions,
     externalReferences,
     analysis,
     previousAnalysis:
@@ -9004,6 +9124,7 @@ function notificationItem(
   item: PendingTrackedItem,
   staleness: TrackedItemStaleness,
   analysisState: NotificationAnalysisState,
+  personalReminderAnalysis: PersonalReminderAnalysis,
   retainedNotificationRecommendation:
     DiscordNotificationItem["notificationRecommendation"] | undefined,
   repositoryFreshness: DiscordNotificationItem["repositoryFreshness"],
@@ -9071,6 +9192,26 @@ function notificationItem(
           responsibility_changed: Object.freeze({ status: "indeterminate" }),
           newly_unblocked: Object.freeze({ status: "indeterminate" }),
         });
+  const causesForPersonalReminder = personalReminderAnalysis.causesByNodeId.get(item.nodeId);
+  assertNonNullable(
+    causesForPersonalReminder,
+    `通知対象 ${item.nodeId}の個人催促causeがありません`,
+  );
+  const personalReminderCausePlanning = personalReminderAnalysis.planningByNodeId.get(item.nodeId);
+  assertNonNullable(
+    personalReminderCausePlanning,
+    `通知対象 ${item.nodeId}の個人催促cause planningがありません`,
+  );
+  const personalReminderCauses = Object.freeze(
+    causesForPersonalReminder.map((cause) => {
+      const personalStaleness = personalReminderAnalysis.stalenessByCauseId.get(cause.causeId);
+      assertNonNullable(
+        personalStaleness,
+        `個人催促causeのstalenessがありません。対象: ${cause.causeId}`,
+      );
+      return Object.freeze({ cause, staleness: personalStaleness });
+    }),
+  );
   return Object.freeze({
     nodeId: item.nodeId,
     createdAt: item.createdAt,
@@ -9112,6 +9253,8 @@ function notificationItem(
             }),
           }),
     causes,
+    personalReminderCauses,
+    personalReminderCausePlanning,
     graph: Object.freeze({
       downstreamImpact,
       newlyUnblocked: graph.analysis.newlyUnblockedNodeIds.includes(item.nodeId),
@@ -9129,6 +9272,7 @@ function notificationItems(
   collection: CollectedItems,
   reduction: ReducedAnalysis,
   graph: GraphResult,
+  personalReminderAnalysis: PersonalReminderAnalysis,
 ): readonly DiscordNotificationItem[] {
   const staleRepositoryIds = new Set<GitHubRepositoryId>(
     collection.repositoryResults
@@ -9170,6 +9314,7 @@ function notificationItems(
                 availability: "available",
                 value: current,
               }),
+          personalReminderAnalysis,
           reduction.retainedNotificationRecommendations.get(item.nodeId),
           repositoryFreshness,
         ),
@@ -9197,7 +9342,7 @@ function mergeNotificationLedger(
     entries.set(entry.notificationKey, entry);
   }
   return createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
     entries: [...entries.values()],
     operationsAlerts: state.notificationLedger.operationsAlerts,
     pendingNotifications,
@@ -9286,6 +9431,734 @@ function createTrackedItemWithImportance(
   });
 }
 
+function personalReminderRuntimeLocalDecision(
+  analysis: Readonly<{
+    item: FreshObservedGitHubItem;
+    localResponsibilityDecision: IssueStateDecision | PullRequestStateDecision;
+  }>,
+): PersonalReminderRuntimeLocalDecision {
+  const decision = analysis.localResponsibilityDecision;
+  if (decision.deterministicRulesVersion === ISSUE_DETERMINISTIC_RULES_VERSION) {
+    if (analysis.item.type !== "issue") {
+      throw new TypeError(`Issueのlocal decision種別が一致しません。対象: ${analysis.item.nodeId}`);
+    }
+    return Object.freeze({ itemType: "issue", value: decision });
+  }
+  if (analysis.item.type !== "pull_request") {
+    throw new TypeError(
+      `Pull Requestのlocal decision種別が一致しません。対象: ${analysis.item.nodeId}`,
+    );
+  }
+  return Object.freeze({ itemType: "pull_request", value: decision });
+}
+
+function personalReminderRuntimeItem(
+  collection: CollectedItems,
+  item: FreshObservedGitHubItem,
+): PersonalReminderRuntimeCollectedItem["item"] {
+  const enumerated = collection.enumeratedItems.find(
+    (candidate) => candidate.nodeId === item.nodeId,
+  );
+  assertNonNullable(enumerated, `個人催促対象の列挙値がありません。対象: ${item.nodeId}`);
+  return Object.freeze({
+    ...item,
+    url: enumerated.url,
+    title: enumerated.title,
+  });
+}
+
+function personalReminderRuntimeEndpointState(
+  item: Readonly<{
+    type: FreshObservedGitHubItem["type"];
+    state: "open" | "closed" | "merged";
+    events: readonly NormalizedEvent[];
+  }>,
+): "open" | "closed" | "merged" {
+  if (item.state === "open") {
+    return "open";
+  }
+  if (
+    item.type === "pull_request" &&
+    item.events.some((event) => event.kind === "state" && event.state === "merged")
+  ) {
+    return "merged";
+  }
+  return "closed";
+}
+
+function personalReminderRuntimeCandidateRelation(
+  candidate: RelationCandidate,
+): PersonalReminderRuntimeGraph["candidateRelations"][number] {
+  const [firstNode, secondNode] = relationNodes(candidate.relation);
+  if (firstNode.nodeId === secondNode.nodeId) {
+    throw new TypeError(`個人催促relation候補のendpointが同一です。対象: ${candidate.id}`);
+  }
+  const endpointNodeIds = [firstNode.nodeId, secondNode.nodeId].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const firstEndpoint = endpointNodeIds[0];
+  const secondEndpoint = endpointNodeIds[1];
+  assertNonNullable(
+    firstEndpoint,
+    `個人催促relation候補のendpointがありません。対象: ${candidate.id}`,
+  );
+  assertNonNullable(
+    secondEndpoint,
+    `個人催促relation候補のendpointがありません。対象: ${candidate.id}`,
+  );
+  const normalizedSourceIds = [...new Set(candidate.sourceIds)].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const firstSourceId = normalizedSourceIds[0];
+  assertNonNullable(
+    firstSourceId,
+    `個人催促relation候補のsourceがありません。対象: ${candidate.id}`,
+  );
+  const endpointTuple: readonly [GraphNodeId, GraphNodeId] = [firstEndpoint, secondEndpoint];
+  const sourceTuple: readonly [SourceId, ...SourceId[]] = [
+    firstSourceId,
+    ...normalizedSourceIds.slice(1),
+  ];
+  return Object.freeze({
+    candidateId: candidate.id,
+    endpointNodeIds: Object.freeze(endpointTuple),
+    evidenceSourceIds: Object.freeze(sourceTuple),
+  });
+}
+
+function personalReminderRuntimeGraph(
+  state: RuntimeState,
+  collection: CollectedItems,
+  reduction: ReducedAnalysis,
+  graph: GraphResult,
+): PersonalReminderRuntimeGraph {
+  const endpointStates = new Map<GraphNodeId, "open" | "closed" | "merged" | "missing">();
+  for (const item of previousSnapshot(state)?.items ?? []) {
+    endpointStates.set(
+      item.nodeId,
+      item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed",
+    );
+  }
+  for (const reference of graph.externalReferences) {
+    endpointStates.set(reference.nodeId, reference.state);
+  }
+  for (const item of collection.observedItems) {
+    endpointStates.set(item.nodeId, personalReminderRuntimeEndpointState(item));
+  }
+  for (const item of reduction.items) {
+    endpointStates.set(
+      item.nodeId,
+      item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed",
+    );
+  }
+  const candidateRelations = graphCandidateRelations(collection.relationCandidates);
+  for (const candidate of candidateRelations) {
+    for (const endpointNodeId of candidate.endpointNodeIds) {
+      if (!endpointStates.has(endpointNodeId)) {
+        endpointStates.set(endpointNodeId, "missing");
+      }
+    }
+  }
+  for (const edge of graph.edges) {
+    for (const endpointNodeId of [edge.fromNodeId, edge.toNodeId]) {
+      if (!endpointStates.has(endpointNodeId)) {
+        endpointStates.set(endpointNodeId, "missing");
+      }
+    }
+  }
+  return Object.freeze({
+    activeRelations: Object.freeze(
+      graph.edges.filter(
+        (edge): edge is ReconciledGraphEdge & Readonly<{ active: true }> => edge.active,
+      ),
+    ),
+    candidateRelations,
+    candidateResolutions: Object.freeze(graph.candidateResolutions),
+    endpointStates,
+    externalReferences: Object.freeze(
+      graph.externalReferences.map((reference) =>
+        Object.freeze({
+          nodeId: reference.nodeId,
+          url: reference.url,
+          title: reference.title,
+          state: reference.state,
+        }),
+      ),
+    ),
+  });
+}
+
+function graphCandidateRelations(
+  candidates: readonly RelationCandidate[],
+): readonly PersonalReminderRuntimeGraph["candidateRelations"][number][] {
+  return Object.freeze(
+    candidates.map((candidate) => personalReminderRuntimeCandidateRelation(candidate)),
+  );
+}
+
+type PersonalReminderRelatedContextProjection = Readonly<{
+  contexts: readonly PersonalReminderRuntimeRelatedContext[];
+}>;
+
+function personalReminderRelatedContexts(
+  analysis: Readonly<{
+    item: FreshObservedGitHubItem;
+    localResponsibilityDecision: IssueStateDecision | PullRequestStateDecision;
+  }>,
+  collection: CollectedItems,
+  graph: GraphResult,
+  analysesByNodeId: ReadonlyMap<
+    GitHubNodeId,
+    Readonly<{
+      item: FreshObservedGitHubItem;
+      localResponsibilityDecision: IssueStateDecision | PullRequestStateDecision;
+    }>
+  >,
+  detailsByNodeId: ReadonlyMap<GitHubNodeId, GitHubItemDetail>,
+): PersonalReminderRelatedContextProjection {
+  const relatedNodeIds = new Set<GitHubNodeId>();
+  const isGitHubNode = (nodeId: GraphNodeId): nodeId is GitHubNodeId =>
+    !graph.externalReferences.some((reference) => reference.nodeId === nodeId);
+  for (const edge of graph.edges) {
+    if (!edge.active || edge.type === "related_to") {
+      continue;
+    }
+    if (edge.fromNodeId === analysis.item.nodeId) {
+      if (!isGitHubNode(edge.toNodeId)) {
+        continue;
+      }
+      const relatedItem =
+        analysesByNodeId.get(edge.toNodeId)?.item ??
+        collection.observedItems.find((item) => item.nodeId === edge.toNodeId);
+      if (relatedItem != null) {
+        relatedNodeIds.add(relatedItem.nodeId);
+      }
+    }
+    if (edge.toNodeId === analysis.item.nodeId) {
+      if (!isGitHubNode(edge.fromNodeId)) {
+        continue;
+      }
+      const relatedItem =
+        analysesByNodeId.get(edge.fromNodeId)?.item ??
+        collection.observedItems.find((item) => item.nodeId === edge.fromNodeId);
+      if (relatedItem != null) {
+        relatedNodeIds.add(relatedItem.nodeId);
+      }
+    }
+  }
+  const contexts: PersonalReminderRuntimeRelatedContext[] = [];
+  for (const nodeId of [...relatedNodeIds].sort()) {
+    const relatedAnalysis = analysesByNodeId.get(nodeId);
+    const detail = detailsByNodeId.get(nodeId);
+    const relatedItem =
+      relatedAnalysis?.item ?? collection.observedItems.find((item) => item.nodeId === nodeId);
+    if (detail == null || relatedItem == null) {
+      continue;
+    }
+    contexts.push(
+      Object.freeze({
+        item: personalReminderRuntimeItem(collection, relatedItem),
+        detail,
+        localDecision:
+          relatedAnalysis == null
+            ? undefined
+            : personalReminderRuntimeLocalDecision(relatedAnalysis),
+      }),
+    );
+  }
+  return Object.freeze({
+    contexts: Object.freeze(contexts),
+  });
+}
+
+function personalReminderRuntimeCollection(
+  collection: CollectedItems,
+  deterministicAnalysis: DeterministicAnalysis,
+  reduction: ReducedAnalysis,
+  graph: GraphResult,
+): Readonly<{
+  collection: Readonly<{
+    items: readonly PersonalReminderRuntimeCollectedItem[];
+    staleNodeIds: ReadonlySet<GitHubNodeId>;
+  }>;
+  analyses: ReadonlyMap<GitHubNodeId, ReducedItemAnalysis>;
+}> {
+  const analysesByNodeId = new Map(
+    reduction.currentItems.map((analysis) => [analysis.item.nodeId, analysis]),
+  );
+  const detailsByNodeId = new Map(collection.details.map((detail) => [detail.nodeId, detail]));
+  const staleNodeIds = new Set(collection.staleItems.map((item) => item.nodeId));
+  const items: PersonalReminderRuntimeCollectedItem[] = [];
+  for (const analysis of deterministicAnalysis.items) {
+    const currentAnalysis = analysesByNodeId.get(analysis.item.nodeId);
+    assertNonNullable(
+      currentAnalysis,
+      `個人催促対象のgeneric採用後分析がありません。対象: ${analysis.item.nodeId}`,
+    );
+    const detail = detailsByNodeId.get(analysis.item.nodeId);
+    assertNonNullable(detail, `個人催促対象の詳細がありません。対象: ${analysis.item.nodeId}`);
+    if (detail.type !== analysis.item.type) {
+      throw new TypeError(`個人催促対象の詳細種別が一致しません。対象: ${analysis.item.nodeId}`);
+    }
+    const relatedProjection = personalReminderRelatedContexts(
+      currentAnalysis,
+      collection,
+      graph,
+      analysesByNodeId,
+      detailsByNodeId,
+    );
+    items.push(
+      Object.freeze({
+        item: personalReminderRuntimeItem(collection, analysis.item),
+        detail,
+        localDecision: personalReminderRuntimeLocalDecision(currentAnalysis),
+        relatedContexts: relatedProjection.contexts,
+        completeness: Object.freeze({ status: "complete" }),
+        repositoryFullName: repositoryFullName(
+          findRepository(deterministicAnalysis.inventory, analysis.item.repositoryId),
+        ),
+        currentLabels: analysis.item.labels,
+      }),
+    );
+  }
+  return Object.freeze({
+    collection: Object.freeze({
+      items: Object.freeze(items),
+      staleNodeIds,
+    }),
+    analyses: analysesByNodeId,
+  });
+}
+
+function personalReminderPreviousState(state: RuntimeState): PersonalReminderRuntimeState {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null) {
+    return Object.freeze({
+      previousCausesByNodeId: new Map(),
+      previousEvidenceByNodeId: new Map(),
+    });
+  }
+  return Object.freeze({
+    previousCausesByNodeId: new Map(
+      snapshot.items.map((item) => [
+        item.nodeId,
+        Object.freeze({ observedAt: item.observedAt, causes: item.personalReminderCauses }),
+      ]),
+    ),
+    previousEvidenceByNodeId: new Map(snapshot.items.map((item) => [item.nodeId, item.evidence])),
+  });
+}
+
+function personalReminderPlaceholderCause(
+  entry: PersonalReminderCauseRuntimePlanEntry,
+): PersonalReminderCause {
+  const inputFingerprint = createPersonalReminderCauseInputFingerprint(entry.semanticInput);
+  return personalReminderCauseSchema.parse({
+    ...entry.seed,
+    currentInput: {
+      fingerprint: inputFingerprint,
+      rulesVersion: PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION,
+      completeness: entry.semanticInput.completeness,
+    },
+    latestAttempt: { status: "not_evaluated" },
+    adoptedAssessment: { status: "not_available" },
+    actionableClock: { status: "not_observed" },
+  });
+}
+
+function hasCurrentPersonalReminderAssessment(
+  cause: PersonalReminderCause | undefined,
+  inputFingerprint: string,
+): boolean {
+  if (cause == null) {
+    return false;
+  }
+  return (
+    cause.currentInput.fingerprint === inputFingerprint &&
+    cause.currentInput.rulesVersion === PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION &&
+    currentPersonalReminderAssessment(cause).status === "available"
+  );
+}
+
+function personalReminderAiCandidate(
+  entry: PersonalReminderCauseRuntimePlanEntry,
+  graph: GraphResult,
+): PersonalReminderAiEvaluationCandidate | undefined {
+  const inputFingerprint = createPersonalReminderCauseInputFingerprint(entry.semanticInput);
+  if (entry.semanticInput.completeness.status === "complete") {
+    if (entry.deterministicAssessment != null) {
+      return undefined;
+    }
+    if (hasCurrentPersonalReminderAssessment(entry.previousCause, inputFingerprint)) {
+      return undefined;
+    }
+  }
+  const downstreamImpact = graph.analysis.downstreamImpacts.find(
+    (impact) => impact.nodeId === entry.seed.itemNodeId,
+  );
+  const previousAttempt = entry.previousCause?.latestAttempt.status;
+  return Object.freeze({
+    cause: entry.previousCause ?? personalReminderPlaceholderCause(entry),
+    input: entry.semanticInput,
+    inputFingerprint,
+    priority: Object.freeze({
+      previouslyDeferred: previousAttempt === "deferred",
+      severityCandidate: true,
+      ownerUnknown: entry.seed.responsible.some((responsible) => responsible.kind === "role"),
+      changedBlocker:
+        entry.semanticInput.relations.length !== 0 ||
+        entry.semanticInput.pendingRelations.length !== 0,
+      downstreamImpact:
+        downstreamImpact == null
+          ? Object.freeze({ openNodeCount: 0, repositoryCount: 0 })
+          : Object.freeze({
+              openNodeCount: downstreamImpact.openNodeCount,
+              repositoryCount: downstreamImpact.repositoryCount,
+            }),
+    }),
+  });
+}
+
+function personalReminderAssessmentReuseCount(
+  plan: ReturnType<typeof planPersonalReminderCauses>,
+): number {
+  return plan.entries.filter((entry) => {
+    if (entry.previousCause == null || entry.deterministicAssessment != null) {
+      return false;
+    }
+    const inputFingerprint = createPersonalReminderCauseInputFingerprint(entry.semanticInput);
+    return hasCurrentPersonalReminderAssessment(entry.previousCause, inputFingerprint);
+  }).length;
+}
+
+function personalReminderCauseAttemptCounts(
+  causesByNodeId: ReadonlyMap<GitHubNodeId, readonly PersonalReminderCause[]>,
+): Readonly<{
+  unknown: number;
+  failed: number;
+  deferred: number;
+  notEvaluated: number;
+}> {
+  const causes = [...causesByNodeId.values()].flat();
+  return Object.freeze({
+    unknown: causes.filter((cause) => {
+      const assessment = currentPersonalReminderAssessment(cause);
+      return assessment.status === "available" && assessment.result.verdict === "unknown";
+    }).length,
+    failed: causes.filter(
+      (cause) =>
+        currentPersonalReminderAssessment(cause).status !== "available" &&
+        cause.latestAttempt.status === "failed",
+    ).length,
+    deferred: causes.filter(
+      (cause) =>
+        currentPersonalReminderAssessment(cause).status !== "available" &&
+        cause.latestAttempt.status === "deferred",
+    ).length,
+    notEvaluated: causes.filter(
+      (cause) =>
+        currentPersonalReminderAssessment(cause).status !== "available" &&
+        cause.latestAttempt.status === "not_evaluated",
+    ).length,
+  });
+}
+
+function personalReminderUsageDelta(
+  usage: AiBudgetUsage,
+  initialUsage: AiBudgetUsage,
+): AiBudgetUsage {
+  if (
+    usage.calls < initialUsage.calls ||
+    usage.inputCharacters < initialUsage.inputCharacters ||
+    usage.estimatedCostUsd < initialUsage.estimatedCostUsd
+  ) {
+    throw new TypeError("個人催促AIの累積使用量が初期使用量を下回っています");
+  }
+  return Object.freeze({
+    calls: usage.calls - initialUsage.calls,
+    inputCharacters: usage.inputCharacters - initialUsage.inputCharacters,
+    estimatedCostUsd: usage.estimatedCostUsd - initialUsage.estimatedCostUsd,
+  });
+}
+
+async function analyzePersonalReminders(
+  adapters: ProductionRuntimeAdapters,
+  invocation: DailyRunInvocation,
+  configuration: RuntimeConfiguration,
+  state: RuntimeState,
+  collection: CollectedItems,
+  deterministicAnalysis: DeterministicAnalysis,
+  codexAnalysis: CodexAnalysis,
+  reduction: ReducedAnalysis,
+  graph: GraphResult,
+): Promise<PersonalReminderAnalysisStageResult<PersonalReminderAnalysis>> {
+  const runtimeCollection = personalReminderRuntimeCollection(
+    collection,
+    deterministicAnalysis,
+    reduction,
+    graph,
+  );
+  const runtimeGraph = personalReminderRuntimeGraph(state, collection, reduction, graph);
+  const context = createPersonalReminderRuntimeContext({
+    evaluatedAt: collection.evaluatedAt,
+    state: personalReminderPreviousState(state),
+    collection: runtimeCollection.collection,
+    graph: runtimeGraph,
+  });
+  const plan = planPersonalReminderCauses(context);
+  const candidates = Object.freeze(
+    plan.entries.flatMap((entry) => {
+      const candidate = personalReminderAiCandidate(entry, graph);
+      return candidate == null ? [] : [candidate];
+    }),
+  );
+  const initialUsage = codexAnalysis.run?.usage ?? createEmptyAiBudgetUsage();
+  const diagnostics: CodexDiagnosticsContext | undefined =
+    adapters.diagnosticsRecorder == null
+      ? undefined
+      : Object.freeze({
+          recorder: adapters.diagnosticsRecorder,
+          runId: invocation.runId,
+          invocationId: `${invocation.runId}:personal-reminder`,
+        });
+  const forcedTarget = forcedAiAnalysisTarget(configuration);
+  let run: PersonalReminderAiRunResult | undefined;
+  if (configuration.config.ai.enabled && forcedTarget == null) {
+    const codexCredentials = configuration.credentials.codex;
+    if (!codexCredentials.enabled) {
+      throw new TypeError("AIが有効ですがCodex認証情報がありません");
+    }
+    const codexConfiguration = createCodexAdapterConfiguration(configuration.config);
+    const codexDependencies = createCodexAdapterDependencies(
+      adapters,
+      codexCredentials,
+      diagnostics,
+    );
+    const preflightInputCost =
+      codexCredentials.authentication === "auth-json"
+        ? estimateAiInputCost(
+            CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
+            configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
+          )
+        : undefined;
+    const preflightDiagnostics = createCodexPreflightDiagnostics(diagnostics, invocation);
+    const preflight =
+      codexAnalysis.run?.authenticationPreflightExecuted === true || preflightInputCost == null
+        ? undefined
+        : Object.freeze({
+            inputCharacters: CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
+            estimatedCostUsd: preflightInputCost.estimatedCostUsd,
+            execute: () =>
+              adapters.executeCodexAuthenticationPreflight(
+                codexConfiguration,
+                Object.freeze({
+                  ...codexDependencies,
+                  ...(preflightDiagnostics == null
+                    ? {}
+                    : {
+                        diagnostics: preflightDiagnostics,
+                      }),
+                }),
+              ),
+          });
+    run = await runPersonalReminderAiAnalyses(
+      candidates,
+      {
+        model: configuration.config.ai.model,
+        reasoningEffort: configuration.config.ai.execution.reasoningEffort,
+        backendVersion: CODEX_BACKEND_VERSION,
+        budget: configuration.config.ai.budget,
+        initialUsage,
+        maxConcurrentCalls: configuration.config.ai.execution.maxConcurrentCalls,
+        minimumConfidence: configuration.config.ai.confidence.high,
+        inputCostUsdPerMillionTokens:
+          configuration.config.ai.budget.estimatedInputCostUsdPerMillionTokens,
+      } satisfies PersonalReminderAiRunConfiguration,
+      {
+        cache: state.session.personalReminderAiCache,
+        ...(preflight == null ? {} : { preflight }),
+        ...(diagnostics == null ? {} : { diagnostics }),
+        execute: (input) =>
+          adapters.executeCodexPersonalReminderAnalysis(
+            input,
+            codexConfiguration,
+            codexDependencies,
+          ),
+        executedAt: () => collection.evaluatedAt,
+      },
+    );
+  }
+  const application = applyPersonalReminderCauseOutcomes({
+    plan,
+    outcomes: run,
+    evaluatedAt: collection.evaluatedAt,
+    minimumAiConfidence: configuration.config.ai.confidence.medium,
+    thresholdsHours: configuration.config.staleness.thresholdsHours,
+    resolveLabelEffects: createLabelEffectsResolver(normalizeLabelRules(configuration.config)),
+  });
+  const runtimeNodeIds = new Set(
+    runtimeCollection.collection.items.map((item) => item.item.nodeId),
+  );
+  const previousItemsByNodeId = new Map(
+    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
+  );
+  const causesByNodeId = new Map<GitHubNodeId, readonly PersonalReminderCause[]>();
+  const evidenceByNodeId = new Map<GitHubNodeId, readonly Evidence[]>();
+  const planningByNodeId = new Map<
+    GitHubNodeId,
+    SnapshotTrackedItem["personalReminderCausePlanning"]
+  >();
+  for (const item of reduction.items) {
+    if (runtimeNodeIds.has(item.nodeId)) {
+      continue;
+    }
+    const previous = previousItemsByNodeId.get(item.nodeId);
+    assertNonNullable(
+      previous,
+      `個人催促runtime対象外の前回項目がありません。対象: ${item.nodeId}`,
+    );
+    const causes = previous.personalReminderCauses;
+    causesByNodeId.set(item.nodeId, causes);
+    evidenceByNodeId.set(item.nodeId, previous.evidence);
+    if (item.state === "open") {
+      planningByNodeId.set(
+        item.nodeId,
+        Object.freeze({
+          status: "pending",
+          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+        }),
+      );
+    } else if (causes.length === 0) {
+      planningByNodeId.set(
+        item.nodeId,
+        Object.freeze({
+          status: "excluded",
+          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+          reason: "terminal_without_cause",
+        }),
+      );
+    } else {
+      planningByNodeId.set(item.nodeId, previous.personalReminderCausePlanning);
+    }
+  }
+  for (const [nodeId, causes] of application.causesByNodeId) {
+    causesByNodeId.set(nodeId, causes);
+  }
+  for (const [nodeId, evidence] of application.evidenceByNodeId) {
+    evidenceByNodeId.set(nodeId, evidence);
+  }
+  for (const item of runtimeCollection.collection.items) {
+    const causes = causesByNodeId.get(item.item.nodeId);
+    if (causes == null) {
+      causesByNodeId.set(item.item.nodeId, Object.freeze([]));
+    }
+    if (!evidenceByNodeId.has(item.item.nodeId)) {
+      evidenceByNodeId.set(item.item.nodeId, Object.freeze([]));
+    }
+    const plannedCauses = causesByNodeId.get(item.item.nodeId);
+    assertNonNullable(
+      plannedCauses,
+      `個人催促causeの計画結果がありません。対象: ${item.item.nodeId}`,
+    );
+    let planning: SnapshotTrackedItem["personalReminderCausePlanning"];
+    if (item.completeness.status === "incomplete") {
+      planning = Object.freeze({
+        status: "pending",
+        planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+      });
+    } else if (plannedCauses.length === 0 && item.item.state !== "open") {
+      planning = Object.freeze({
+        status: "excluded",
+        planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+        reason: "terminal_without_cause",
+      });
+    } else {
+      planning = Object.freeze({
+        status: "completed",
+        planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+        observedAt: collection.evaluatedAt,
+      });
+    }
+    planningByNodeId.set(item.item.nodeId, planning);
+  }
+  const stalenessByCauseId = new Map(application.stalenessByCauseId);
+  const observedItemsByNodeId = new Map(
+    collection.observedItems.map((item) => [item.nodeId, item]),
+  );
+  const reductionItemsByNodeId = new Map(reduction.items.map((item) => [item.nodeId, item]));
+  const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
+  for (const [nodeId, causes] of causesByNodeId) {
+    const observedItem = observedItemsByNodeId.get(nodeId);
+    const previousItem = previousItemsByNodeId.get(nodeId);
+    const reductionItem = reductionItemsByNodeId.get(nodeId);
+    assertNonNullable(reductionItem, `個人催促causeの追跡項目がありません。対象: ${nodeId}`);
+    const repositoryId =
+      observedItem?.repositoryId ?? previousItem?.repositoryId ?? reductionItem.repositoryId;
+    assertNonNullable(repositoryId, `個人催促causeのrepository IDがありません。対象: ${nodeId}`);
+    const repository = findRepository(deterministicAnalysis.inventory, repositoryId);
+    const labels = observedItem?.labels ?? previousItem?.labels ?? reductionItem.labels;
+    for (const cause of causes) {
+      if (stalenessByCauseId.has(cause.causeId)) {
+        continue;
+      }
+      stalenessByCauseId.set(
+        cause.causeId,
+        calculatePersonalReminderStaleness({
+          cause,
+          evaluatedAt: collection.evaluatedAt,
+          minimumAiConfidence: configuration.config.ai.confidence.medium,
+          repositoryFullName: repositoryFullName(repository),
+          currentLabels: labels,
+          resolveLabelEffects,
+          thresholdsHours: configuration.config.staleness.thresholdsHours,
+        }),
+      );
+    }
+  }
+  const counts = personalReminderCauseAttemptCounts(causesByNodeId);
+  const usage = run?.usage ?? initialUsage;
+  const usageDelta = personalReminderUsageDelta(usage, initialUsage);
+  const status =
+    counts.failed > 0 ||
+    counts.deferred > 0 ||
+    [...planningByNodeId.values()].some((planning) => planning.status === "pending")
+      ? "fallback"
+      : "success";
+  await recordCodexDiagnostic(diagnostics, "codex.personal_reminder.summary", {
+    phase: "summary",
+    candidateCauseCount: candidates.length,
+    aiCallCount: usageDelta.calls,
+    cacheHitCauseCount: run?.cacheHitCauseCount ?? 0,
+  });
+  return Object.freeze({
+    status,
+    value: Object.freeze({
+      status,
+      causesByNodeId,
+      evidenceByNodeId,
+      planningByNodeId,
+      stalenessByCauseId,
+      run,
+      budgetUsage: usage,
+      authenticationPreflightExecuted: run?.authenticationPreflightExecuted ?? false,
+    }),
+    aiCallCount: usage.calls,
+    estimatedInputTokens: Math.ceil(usage.inputCharacters / 4),
+    personalReminderCauseCount: [...causesByNodeId.values()].reduce(
+      (count, causes) => count + causes.length,
+      0,
+    ),
+    personalReminderAiCallCount: run?.executedBatchCount ?? 0,
+    personalReminderAiCacheHitCount: run?.cacheHitCauseCount ?? 0,
+    personalReminderAssessmentReuseCount: personalReminderAssessmentReuseCount(plan),
+    personalReminderUnknownCount: counts.unknown,
+    personalReminderFailedCount: counts.failed,
+    personalReminderDeferredCount: counts.deferred,
+    personalReminderNotEvaluatedCount: counts.notEvaluated,
+    diagnostics: Object.freeze([]),
+  });
+}
+
 function validateRunCompleteness(
   invocation: DailyRunInvocation,
   configuration: RuntimeConfiguration,
@@ -9295,6 +10168,7 @@ function validateRunCompleteness(
   codexAnalysis: CodexAnalysis,
   reduction: ReducedAnalysis,
   graph: GraphResult,
+  personalReminderAnalysis: PersonalReminderAnalysis,
 ): ValidatedRun {
   const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
   const currentAnalysisByNodeId = new Map(
@@ -9307,7 +10181,7 @@ function validateRunCompleteness(
   const items = reduction.items.map((item) => {
     const currentAnalysis = currentAnalysisByNodeId.get(item.nodeId);
     const previousItem = previousSnapshotItemByNodeId.get(item.nodeId);
-    return createTrackedItemWithImportance(
+    const trackedItem = createTrackedItemWithImportance(
       configuration,
       inventory,
       graph,
@@ -9322,10 +10196,26 @@ function validateRunCompleteness(
         undefined,
       ),
     );
+    const causes = personalReminderAnalysis.causesByNodeId.get(item.nodeId);
+    assertNonNullable(causes, `個人催促causeがありません。対象: ${item.nodeId}`);
+    const personalEvidence = personalReminderAnalysis.evidenceByNodeId.get(item.nodeId);
+    assertNonNullable(personalEvidence, `個人催促evidenceがありません。対象: ${item.nodeId}`);
+    const planning = personalReminderAnalysis.planningByNodeId.get(item.nodeId);
+    assertNonNullable(planning, `個人催促cause planningがありません。対象: ${item.nodeId}`);
+    const evidenceByIdentity = new Map<string, Evidence>();
+    for (const evidence of [...trackedItem.evidence, ...personalEvidence]) {
+      evidenceByIdentity.set(serializeCanonicalJson(evidence), evidence);
+    }
+    return Object.freeze({
+      ...trackedItem,
+      personalReminderCauses: causes,
+      personalReminderCausePlanning: planning,
+      evidence: Object.freeze([...evidenceByIdentity.values()]),
+    });
   });
   const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
-    schemaVersion: "14",
+    schemaVersion: "15",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
@@ -9366,13 +10256,24 @@ function validateRunCompleteness(
     relations: graph.edges.map(toStateRelation),
     run: {
       id: invocation.runId,
-      status: reduction.runStatus,
+      status:
+        reduction.runStatus === "fallback" || personalReminderAnalysis.status === "fallback"
+          ? "fallback"
+          : "success",
       complete: true,
     },
   });
   const notificationInput = {
     evaluatedAt: collection.evaluatedAt,
-    items: notificationItems(configuration, state, inventory, collection, reduction, graph),
+    items: notificationItems(
+      configuration,
+      state,
+      inventory,
+      collection,
+      reduction,
+      graph,
+      personalReminderAnalysis,
+    ),
     ledger: notificationLedgerEntries(state, reduction.items),
     pendingNotifications: state.notificationLedger.pendingNotifications,
     settings: {
@@ -9446,6 +10347,14 @@ function persistedMetrics(
     aiCacheHitCount: metrics.aiCacheHitCount,
     aiRetainedResultCount: metrics.aiRetainedResultCount,
     estimatedInputTokens: metrics.estimatedInputTokens,
+    personalReminderCauseCount: metrics.personalReminderCauseCount,
+    personalReminderAiCallCount: metrics.personalReminderAiCallCount,
+    personalReminderAiCacheHitCount: metrics.personalReminderAiCacheHitCount,
+    personalReminderAssessmentReuseCount: metrics.personalReminderAssessmentReuseCount,
+    personalReminderUnknownCount: metrics.personalReminderUnknownCount,
+    personalReminderFailedCount: metrics.personalReminderFailedCount,
+    personalReminderDeferredCount: metrics.personalReminderDeferredCount,
+    personalReminderNotEvaluatedCount: metrics.personalReminderNotEvaluatedCount,
     githubApiRemaining: metrics.githubApiRemaining,
     staleRepositoryCount: validated.snapshot.repositories.filter(
       (repository) => repository.freshness === "stale",
@@ -9475,7 +10384,7 @@ function createPersistedRunReport(
   finishedAt: UtcIsoDateTime,
 ): StateRunReport {
   return createStateRunReport({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId: snapshot.run.id,
     date: metadata.startedAt.slice(0, 10),
     status: snapshot.run.status,
@@ -9515,7 +10424,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "10",
+    schemaVersion: "12",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -9529,6 +10438,7 @@ function createCollectAnalyzeArtifact(
     notificationSelection: validated.notificationSelection,
     runMetadata: createRunMetadata(invocation, validated, metrics, diagnostics),
     aiCacheEntries: state.session.pendingAiCacheEntries(),
+    personalReminderAiCacheEntries: state.session.pendingPersonalReminderAiCacheEntries(),
     pagesUrl: pagesUrl(configuration.config),
     discordSettings: discordDeliverySettings(configuration.config),
   });
@@ -9809,7 +10719,7 @@ function createNotificationHistoryEventsForMessage(
     const reasonsByKey = new Map<string, (typeof candidate.reasons)[number]>();
     let sentAt: UtcIsoDateTime | undefined;
     for (const entry of itemEntries) {
-      if (entry.itemNodeId !== candidate.itemNodeId || entry.severity !== candidate.severity) {
+      if (entry.itemNodeId !== candidate.itemNodeId) {
         throw new TypeError("Discord送信結果と通知候補のitemまたはseverityが一致しません");
       }
       const candidateReason = candidateReasonsByKey.get(entry.notificationKey);
@@ -9820,6 +10730,9 @@ function createNotificationHistoryEventsForMessage(
         throw new TypeError("Discord送信結果の通知理由が重複しています");
       }
       assertNonNullable(candidateReason, "Discord送信結果の通知理由を取得できません");
+      if (entry.severity !== candidateReason.severity) {
+        throw new TypeError("Discord送信結果と通知理由のseverityが一致しません");
+      }
       reasonsByKey.set(entry.notificationKey, candidateReason);
       if (sentAt == null) {
         sentAt = entry.sentAt;
@@ -9827,19 +10740,41 @@ function createNotificationHistoryEventsForMessage(
         throw new TypeError("同じDiscord messageの通知送信時刻が一致しません");
       }
     }
-    if (reasonsByKey.size !== candidateReasonsByKey.size) {
-      throw new TypeError("Discord送信結果の通知理由数が候補と一致しません");
+    if (reasonsByKey.size === 0) {
+      throw new TypeError("Discord送信結果の通知理由がありません");
     }
-    const reasons = candidate.reasons.map((reason) => {
-      const selectedReason = reasonsByKey.get(reason.notificationKey);
-      if (selectedReason == null) {
-        throw new TypeError("Discord送信結果の通知理由順序を候補から解決できません");
-      }
-      return createNotificationReason(selectedReason.reasonCode, selectedReason.threshold);
-    });
+    const sentReasons = candidate.reasons.filter((reason) =>
+      reasonsByKey.has(reason.notificationKey),
+    );
+    const reasons = sentReasons.map((reason) =>
+      createNotificationReason(reason.reasonCode, reason.threshold),
+    );
     const item = context.itemByNodeId.get(itemNodeId);
     assertNonNullable(item, "通知送信eventの対象itemがsnapshotにありません");
     assertNonNullable(sentAt, "Discord送信eventの送信時刻がありません");
+    const personalReminders = sentReasons.flatMap((reason) => {
+      if (reason.source.kind !== "personal_reminder") {
+        return [];
+      }
+      if (reason.severity === "none") {
+        throw new TypeError("個人催促通知理由のseverityがnoneです");
+      }
+      const context = reason.source.context;
+      return [
+        Object.freeze({
+          notificationKey: reason.notificationKey,
+          causeId: context.causeId,
+          responsibilityId: context.responsibilityId,
+          responsible: [...context.responsible],
+          action: context.action,
+          reason: createNotificationReason(reason.reasonCode, reason.threshold),
+          obligationSince: context.obligationSince,
+          actionableSince: context.actionableSince,
+          stallSince: context.stallSince,
+          severity: reason.severity,
+        }),
+      ];
+    });
     candidateMessageIds.set(itemNodeId, discordMessageId);
     events.push({
       kind: "notification_sent",
@@ -9858,7 +10793,8 @@ function createNotificationHistoryEventsForMessage(
       url: item.url,
       waitingOn: createNotificationWaitingOn(item, snapshot),
       reasons,
-      severity: candidate.severity,
+      personalReminders,
+      severity: calculateDiscordNotificationCandidateSeverity(sentReasons),
       sentAt,
     });
   }
@@ -9975,10 +10911,12 @@ function filterNotificationSelectionForLedger(
     if (reasons.length === 0) {
       return [];
     }
+    const nonEmptyReasons = nonEmptyNotificationReasons(reasons, candidate.itemNodeId);
     return [
       Object.freeze({
         ...candidate,
-        reasons: nonEmptyNotificationReasons(reasons, candidate.itemNodeId),
+        reasons: nonEmptyReasons,
+        severity: calculateDiscordNotificationCandidateSeverity(nonEmptyReasons),
       }),
     ];
   });
@@ -10081,7 +11019,8 @@ function assertNotificationDeliveryBatch(
       !notificationLedgerEntryIdentityMatches(entry, reservation) ||
       entry.itemNodeId !== candidateEntry.candidate.itemNodeId ||
       entry.reasonCode !== candidateEntry.reason.reasonCode ||
-      entry.severity !== candidateEntry.candidate.severity
+      entry.severity !== candidateEntry.reason.severity ||
+      reservation.severity !== candidateEntry.reason.severity
     ) {
       throw new TypeError("Discord送信結果と通知候補またはledger予約が一致しません");
     }
@@ -10197,7 +11136,7 @@ function createNotificationLedgerFromMaps(
   pendingNotifications: readonly PendingNotification[],
 ): StateNotificationLedger {
   return createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
     entries: [...entriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
     pendingNotifications,
@@ -10272,8 +11211,72 @@ function latestSentAtForSelection(
   return latestSentAt;
 }
 
+function snapshotPersonalReminderSelectionValidationItems(
+  snapshot: StateSnapshot,
+  config: Config,
+): readonly DiscordPersonalReminderSelectionValidationItem[] {
+  const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(config));
+  const repositoriesById = new Map(
+    snapshot.repositories.map((repository) => [repository.id, repository]),
+  );
+  if (repositoriesById.size !== snapshot.repositories.length) {
+    throw new TypeError("送信直前検証対象のsnapshot repository IDが重複しています");
+  }
+  return Object.freeze(
+    snapshot.items.map((item) => {
+      const repository = repositoriesById.get(item.repositoryId);
+      assertNonNullable(repository, `${item.nodeId}のsnapshot repositoryがありません`);
+      const repositoryName = `${repository.owner}/${repository.name}`;
+      const staleness = recalculateStalenessSeverity({
+        evaluatedAt: snapshot.generatedAt,
+        stallSince: item.stallSince,
+        confidence: item.confidence,
+        minimumAiConfidence: config.ai.confidence.medium,
+        repositoryFullName: repositoryName,
+        currentLabels: item.labels,
+        resolveLabelEffects,
+        thresholdsHours: config.staleness.thresholdsHours,
+        severityContext: item.severityContext,
+      });
+      const personalReminderCauses = Object.freeze(
+        item.personalReminderCauses.map((cause) =>
+          Object.freeze({
+            cause,
+            staleness: calculatePersonalReminderStaleness({
+              cause,
+              evaluatedAt: snapshot.generatedAt,
+              minimumAiConfidence: config.ai.confidence.medium,
+              repositoryFullName: repositoryName,
+              currentLabels: item.labels,
+              resolveLabelEffects,
+              thresholdsHours: config.staleness.thresholdsHours,
+            }),
+          }),
+        ),
+      );
+      return Object.freeze({
+        nodeId: item.nodeId,
+        current: Object.freeze({
+          status: item.status,
+          waitingOn: item.waitingOn,
+          severity: staleness.severity,
+          severityReason: staleness.severityReason,
+          waitClass: staleness.waitClass,
+          statusSince: item.statusSince,
+          ownerSince: item.ownerSince,
+          stallSince: item.stallSince,
+          lastProgressAt: item.lastProgressAt,
+        }),
+        personalReminderCauses,
+        personalReminderCausePlanning: item.personalReminderCausePlanning,
+      });
+    }),
+  );
+}
+
 async function deliverDiscord(
   adapters: ProductionRuntimeAdapters,
+  config: Config,
   settings: DiscordDeliverySettings,
   state: RuntimeState,
   repositoryInventory: readonly Repository[],
@@ -10321,6 +11324,12 @@ async function deliverDiscord(
     validated.notificationSelection,
     notificationEntriesByKey,
   );
+  if (notificationSelection.action === "create_digest") {
+    assertDiscordPersonalReminderSelectionMatchesSnapshot(
+      notificationSelection,
+      snapshotPersonalReminderSelectionValidationItems(snapshot, config),
+    );
+  }
   const notificationHistoryContext = createNotificationHistoryContext(
     snapshot,
     notificationSelection,
@@ -10433,10 +11442,7 @@ async function deliverDiscord(
       },
     },
   });
-  const sentAt = latestSentAtForSelection(
-    validated.notificationSelection,
-    notificationEntriesByKey,
-  );
+  const sentAt = latestSentAtForSelection(notificationSelection, notificationEntriesByKey);
   assertNotificationDeliveryLedgerConsistency(delivery, sentNotificationEntries);
   const returnedNotificationEvents = createNotificationHistoryEvents(
     snapshot,
@@ -10462,7 +11468,7 @@ async function deliverDiscord(
     notificationEvents: Object.freeze(notificationEvents),
     notificationLedger,
     notificationCount: notificationCountForSelection(
-      validated.notificationSelection,
+      notificationSelection,
       notificationEntriesByKey,
     ),
     discordSentAt: sentAt,
@@ -10598,7 +11604,7 @@ async function deliverOperationsAlert(
     });
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
     entries: [...notificationEntriesByKey.values()],
     operationsAlerts: [...operationsAlertsByKey.values()],
     pendingNotifications: currentNotificationLedger.pendingNotifications,
@@ -10647,6 +11653,46 @@ function previousRepositoryValues(state: RuntimeState): ReadonlyMap<
   );
 }
 
+function personalReminderDetailNodeIdsForCollection(
+  state: RuntimeState,
+  enumeratedItems: readonly EnumeratedGitHubItem[],
+  aiEnabled: boolean,
+): ReadonlySet<GitHubNodeId> {
+  const previousItemsByNodeId = new Map(
+    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
+  );
+  const nodeIds = new Set<GitHubNodeId>();
+  for (const item of enumeratedItems) {
+    const previous = previousItemsByNodeId.get(item.nodeId);
+    if (previous == null) {
+      continue;
+    }
+    if (
+      previous.personalReminderCausePlanning.status === "pending" ||
+      previous.personalReminderCausePlanning.planningVersion !==
+        PERSONAL_REMINDER_CAUSE_PLANNING_VERSION
+    ) {
+      if (item.state === "open") {
+        nodeIds.add(item.nodeId);
+      }
+    }
+    if (previous.personalReminderCauses.length !== 0) {
+      if (item.state !== "open") {
+        nodeIds.add(item.nodeId);
+      }
+      if (aiEnabled) {
+        for (const cause of previous.personalReminderCauses) {
+          if (currentPersonalReminderAssessment(cause).status !== "available") {
+            nodeIds.add(item.nodeId);
+            break;
+          }
+        }
+      }
+    }
+  }
+  return nodeIds;
+}
+
 async function collectFreshRepositoryItemObservations(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -10677,9 +11723,15 @@ async function collectFreshRepositoryItemObservations(
       [...adjacentNodeIds].filter((nodeId) => currentNodeIds.has(nodeId)),
     ),
   });
+  const personalReminderDetailNodeIds = personalReminderDetailNodeIdsForCollection(
+    state,
+    enumeratedItems,
+    configuration.config.ai.enabled,
+  );
   const detailNodeIds = new Set([
     ...plan.detailItemNodeIds,
     ...requiredTrackingDetailNodeIds(invocation, configuration, state, repository, enumeratedItems),
+    ...personalReminderDetailNodeIds,
   ]);
   const detailItems = enumeratedItems.filter((item) => detailNodeIds.has(item.nodeId));
   const detailTargets = Object.freeze(detailItems.map((item) => Object.freeze({ item })));
@@ -11850,6 +12902,27 @@ function createDailyDependencies(
         }),
       );
     },
+    analyzePersonalReminders: ({
+      invocation,
+      configuration,
+      state,
+      collection,
+      deterministicAnalysis,
+      codexAnalysis,
+      reduction,
+      graph,
+    }) =>
+      analyzePersonalReminders(
+        adapters,
+        invocation,
+        configuration,
+        state,
+        collection,
+        deterministicAnalysis,
+        codexAnalysis,
+        reduction,
+        graph,
+      ),
     validateCompleteness: ({
       invocation,
       configuration,
@@ -11859,6 +12932,7 @@ function createDailyDependencies(
       codexAnalysis,
       reduction,
       graph,
+      personalReminderAnalysis,
     }) =>
       Promise.resolve(
         Object.freeze({
@@ -11872,6 +12946,7 @@ function createDailyDependencies(
             codexAnalysis,
             reduction,
             graph,
+            personalReminderAnalysis,
           ),
           diagnostics: Object.freeze([]),
         }),
@@ -11917,6 +12992,7 @@ function createDailyDependencies(
       }
       const result = await deliverDiscord(
         adapters,
+        configuration.config,
         discordDeliverySettings(configuration.config),
         state,
         repositoryInventory.inventory,
@@ -12041,6 +13117,9 @@ async function persistWorkflowState(
   for (const entry of artifact.aiCacheEntries) {
     await session.aiCache.write(entry);
   }
+  for (const entry of artifact.personalReminderAiCacheEntries) {
+    await session.personalReminderAiCache.write(entry);
+  }
   await session.persist({
     snapshot: artifact.snapshot,
     historyInputEvents: artifact.historyInputEvents,
@@ -12145,6 +13224,7 @@ async function notifyWorkflowDiscord(
     : Object.freeze([]);
   const result = await deliverDiscord(
     adapters,
+    config,
     artifact.discordSettings,
     state,
     workflowArtifactRepositoryInventory(artifact),
@@ -12268,7 +13348,7 @@ async function resolveDiscordDelivery(
     );
   }
   const notificationLedger = createStateNotificationLedger({
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_7,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
     entries: nextEntries,
     operationsAlerts: currentLedger.operationsAlerts,
     pendingNotifications,
@@ -12327,6 +13407,14 @@ function emptyOfflineMetrics(): OfflineAnalysisMetrics {
     aiCacheHitCount: 0,
     aiRetainedResultCount: 0,
     estimatedInputTokens: 0,
+    personalReminderCauseCount: 0,
+    personalReminderAiCallCount: 0,
+    personalReminderAiCacheHitCount: 0,
+    personalReminderAssessmentReuseCount: 0,
+    personalReminderUnknownCount: 0,
+    personalReminderFailedCount: 0,
+    personalReminderDeferredCount: 0,
+    personalReminderNotEvaluatedCount: 0,
     staleRepositoryCount: 0,
   });
 }
@@ -12355,7 +13443,10 @@ function createOfflineRunner(adapters: ProductionRuntimeAdapters): OfflineRunRun
             Object.freeze({
               status: "success",
               output: analysis.output,
-              metrics: analysis.metrics,
+              metrics: Object.freeze({
+                ...emptyOfflineMetrics(),
+                ...analysis.metrics,
+              }),
               diagnostics: analysis.diagnostics,
             }),
           );

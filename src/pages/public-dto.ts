@@ -2,9 +2,13 @@ import { z } from "zod";
 
 import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
 import { notificationReasonSchema } from "../domain/notification-reason.js";
+import { personalReminderTimeBasisSchema } from "../domain/personal-reminder-causes.js";
 import { isTerminalStatus } from "../domain/status.js";
-import { assertNonNullable } from "../util/index.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
+
+/** Pages公開DTOのschema version。 */
+export const PUBLIC_DTO_SCHEMA_VERSION = "9";
 
 const identifierSchema = z.string().min(1).max(512).regex(/^\S+$/u);
 const shortStringSchema = z.string().max(1000);
@@ -110,6 +114,65 @@ const publicEvidenceSchema = z.strictObject({
   summary: shortStringSchema,
   sourceUrl: githubUrlSchema,
 });
+const publicPersonalReminderResponsibleSchema = z.strictObject({
+  kind: z.enum(["user", "team", "role"]),
+  candidateId: identifierSchema,
+  role: z.enum([
+    "author",
+    "maintainer",
+    "reviewer",
+    "assignee",
+    "respondent",
+    "merge_decider",
+    "unknown",
+  ]),
+});
+const publicPersonalReminderActionSchema = z.strictObject({
+  kind: z.enum(["assessment", "owner", "decision", "review", "revision", "reply", "work", "merge"]),
+  summary: shortStringSchema,
+});
+const publicPersonalReminderUnknownReasonSchema = z.enum([
+  "input_mismatch",
+  "not_evaluated",
+  "failed",
+  "deferred",
+  "incomplete_input",
+  "conflicting_evidence",
+  "ambiguous_meaning",
+]);
+const publicPersonalReminderResponseSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    causeId: identifierSchema,
+    responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
+    action: publicPersonalReminderActionSchema,
+    evidence: z.array(publicEvidenceSchema).nonempty(),
+    status: z.literal("actionable"),
+  }),
+  z.strictObject({
+    causeId: identifierSchema,
+    responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
+    action: publicPersonalReminderActionSchema,
+    evidence: z.array(publicEvidenceSchema).nonempty(),
+    status: z.literal("waiting"),
+    waitingFor: z.strictObject({
+      itemNodeId: identifierSchema,
+      action: shortStringSchema,
+    }),
+  }),
+  z.strictObject({
+    causeId: identifierSchema,
+    responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
+    action: publicPersonalReminderActionSchema,
+    evidence: z.array(publicEvidenceSchema).nonempty(),
+    status: z.literal("unknown"),
+    reason: publicPersonalReminderUnknownReasonSchema,
+  }),
+]);
+const publicPersonalReminderCausePlanningStatusSchema = z.enum([
+  "pending",
+  "completed",
+  "excluded",
+]);
 const repositoryFreshnessSchema = z.discriminatedUnion("status", [
   z.strictObject({
     status: z.literal("fresh"),
@@ -242,6 +305,8 @@ const publicItemSummarySchema = z.strictObject({
   blockerNodeIds: z.array(identifierSchema),
   downstreamImpact: downstreamImpactSchema,
   currentImplementations: z.array(publicCurrentImplementationSchema),
+  currentResponses: z.array(publicPersonalReminderResponseSchema),
+  personalReminderCausePlanningStatus: publicPersonalReminderCausePlanningStatusSchema,
 });
 const itemTimestampsSchema = z.strictObject({
   createdAt: dateTimeSchema,
@@ -418,7 +483,7 @@ const publicAiStateSchema = z.union([
   }),
 ]);
 const publicSummaryDtoSchema = z.strictObject({
-  schemaVersion: z.literal("8"),
+  schemaVersion: z.literal(PUBLIC_DTO_SCHEMA_VERSION),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   observedAt: dateTimeSchema,
@@ -430,7 +495,7 @@ const publicSummaryDtoSchema = z.strictObject({
   graph: publicInitialGraphSchema,
 });
 const publicDetailsDtoSchema = z.strictObject({
-  schemaVersion: z.literal("8"),
+  schemaVersion: z.literal(PUBLIC_DTO_SCHEMA_VERSION),
   runId: identifierSchema,
   generatedAt: dateTimeSchema,
   items: z.array(publicItemDetailsSchema),
@@ -478,21 +543,163 @@ const publicNotificationHistoryWaitingOnSchema = z.discriminatedUnion("kind", [
     role: waitingOnSchema.shape.role,
   }),
 ]);
+function publicNotificationReasonKey(reason: z.output<typeof notificationReasonSchema>): string {
+  switch (reason.threshold.status) {
+    case "recorded":
+      return `${reason.reasonCode}:recorded:${reason.threshold.hours.toString()}`;
+    case "not_reached":
+      return `${reason.reasonCode}:not_reached:${reason.threshold.elapsedHours.toString()}`;
+    case "not_recorded":
+      return `${reason.reasonCode}:not_recorded`;
+    case "not_applicable":
+      return `${reason.reasonCode}:not_applicable`;
+  }
+}
+
+function publicPersonalReminderActionForReason(
+  reasonCode: z.output<typeof notificationReasonSchema>["reasonCode"],
+): PublicPersonalReminderResponseDto["action"]["kind"] | undefined {
+  switch (reasonCode) {
+    case "assessment_overdue":
+      return "assessment";
+    case "owner_overdue":
+      return "owner";
+    case "decision_overdue":
+      return "decision";
+    case "review_overdue":
+      return "review";
+    case "revision_overdue":
+      return "revision";
+    case "reply_overdue":
+      return "reply";
+    case "work_overdue":
+      return "work";
+    case "merge_overdue":
+      return "merge";
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "newly_unblocked":
+    case "dependency_cycle":
+    case "responsibility_changed":
+    case "automation_stuck":
+      return undefined;
+    default:
+      throw new UnreachableError(reasonCode);
+  }
+}
+
+const publicNotificationHistoryPersonalReminderSchema = z
+  .strictObject({
+    notificationKey: identifierSchema,
+    causeId: identifierSchema,
+    responsibilityId: identifierSchema,
+    responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
+    action: publicPersonalReminderActionSchema,
+    reason: notificationReasonSchema,
+    obligationSince: personalReminderTimeBasisSchema,
+    actionableSince: personalReminderTimeBasisSchema,
+    stallSince: personalReminderTimeBasisSchema,
+    severity: z.enum(["watch", "urgent", "critical"]),
+  })
+  .superRefine((personalReminder, context) => {
+    const expectedAction = publicPersonalReminderActionForReason(
+      personalReminder.reason.reasonCode,
+    );
+    if (expectedAction == null) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason", "reasonCode"],
+        message: "個人催促の通知理由コードが対応する時間系理由ではありません",
+      });
+    } else if (personalReminder.action.kind !== expectedAction) {
+      context.addIssue({
+        code: "custom",
+        path: ["action", "kind"],
+        message: "個人催促の通知理由コードと行動種別が一致しません",
+      });
+    }
+    if (personalReminder.reason.threshold.status !== "recorded") {
+      context.addIssue({
+        code: "custom",
+        path: ["reason", "threshold"],
+        message: "個人催促の通知理由には到達済みの基準時間が必要です",
+      });
+    }
+  });
 const publicNotificationHistoryEntrySchema = z
   .strictObject({
     item: publicNotificationHistoryItemSchema,
     waitingOn: z.array(publicNotificationHistoryWaitingOnSchema).min(1),
     reasons: z.array(notificationReasonSchema).min(1),
+    personalReminders: z.array(publicNotificationHistoryPersonalReminderSchema),
     sentAt: dateTimeSchema,
   })
   .superRefine((entry, context) => {
-    const reasonCodes = entry.reasons.map((reason) => reason.reasonCode);
-    if (new Set(reasonCodes).size !== reasonCodes.length) {
+    const notificationKeys = entry.personalReminders.map(
+      (personalReminder) => personalReminder.notificationKey,
+    );
+    if (new Set(notificationKeys).size !== notificationKeys.length) {
       context.addIssue({
         code: "custom",
-        path: ["reasons"],
-        message: "通知理由コードが重複しています",
+        path: ["personalReminders"],
+        message: "個人催促のnotification keyが重複しています",
       });
+    }
+    const eventReasonCounts = new Map<string, number>();
+    const eventReasonCodeCounts = new Map<string, number>();
+    for (const reason of entry.reasons) {
+      const key = publicNotificationReasonKey(reason);
+      eventReasonCounts.set(key, (eventReasonCounts.get(key) ?? 0) + 1);
+      eventReasonCodeCounts.set(
+        reason.reasonCode,
+        (eventReasonCodeCounts.get(reason.reasonCode) ?? 0) + 1,
+      );
+    }
+    const personalReasonCodeCounts = new Map<string, number>();
+    for (const personalReminder of entry.personalReminders) {
+      const key = publicNotificationReasonKey(personalReminder.reason);
+      const personalReasonCount = entry.personalReminders.filter(
+        (candidate) => publicNotificationReasonKey(candidate.reason) === key,
+      ).length;
+      if (personalReasonCount > (eventReasonCounts.get(key) ?? 0)) {
+        context.addIssue({
+          code: "custom",
+          path: ["personalReminders"],
+          message: "個人催促の通知理由がeventの通知理由に含まれていません",
+        });
+      }
+      personalReasonCodeCounts.set(
+        personalReminder.reason.reasonCode,
+        (personalReasonCodeCounts.get(personalReminder.reason.reasonCode) ?? 0) + 1,
+      );
+      const obligationAt = Date.parse(personalReminder.obligationSince.at);
+      const actionableAt = Date.parse(personalReminder.actionableSince.at);
+      const stallAt = Date.parse(personalReminder.stallSince.at);
+      const sentAt = Date.parse(entry.sentAt);
+      if (
+        !Number.isFinite(obligationAt) ||
+        !Number.isFinite(actionableAt) ||
+        !Number.isFinite(stallAt) ||
+        !Number.isFinite(sentAt) ||
+        obligationAt > actionableAt ||
+        actionableAt > stallAt ||
+        stallAt > sentAt
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["personalReminders"],
+          message: "個人催促の時計は義務、実行可能、停滞、送信の順序にしてください",
+        });
+      }
+    }
+    for (const [reasonCode, count] of eventReasonCodeCounts) {
+      if (count - (personalReasonCodeCounts.get(reasonCode) ?? 0) > 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["reasons"],
+          message: "system通知理由コードが重複しています",
+        });
+      }
     }
     for (const [index, reason] of entry.reasons.entries()) {
       if (reason.threshold.status === "not_recorded") {
@@ -506,7 +713,7 @@ const publicNotificationHistoryEntrySchema = z
   });
 const publicNotificationHistoryDtoSchema = z
   .strictObject({
-    schemaVersion: z.literal("4"),
+    schemaVersion: z.literal("5"),
     runId: identifierSchema,
     generatedAt: dateTimeSchema,
     notifications: z.array(publicNotificationHistoryEntrySchema),
@@ -531,10 +738,10 @@ const publicNotificationHistoryDtoSchema = z
     }
   });
 
-/** Web初期表示で共有するschema version 8の公開summary DTO。 */
+/** Web初期表示で共有するschema version 9の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 8の公開details DTO。 */
+/** Web詳細表示で共有するschema version 9の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */
@@ -542,6 +749,16 @@ export type PublicItemSummaryDto = z.output<typeof publicItemSummarySchema>;
 
 /** 公開details DTO内の項目。 */
 export type PublicItemDetailsDto = z.output<typeof publicItemDetailsSchema>;
+
+/** 個人催促の現在対応を表す公開DTO。 */
+export type PublicPersonalReminderResponseDto = z.output<
+  typeof publicPersonalReminderResponseSchema
+>;
+
+/** 個人催促の現在対応がunknownである理由。 */
+export type PublicPersonalReminderUnknownReason = z.output<
+  typeof publicPersonalReminderUnknownReasonSchema
+>;
 
 /** 公開DTO内のグラフnode。 */
 export type PublicGraphNodeDto = z.output<typeof publicGraphNodeSchema>;
@@ -558,6 +775,11 @@ export type PublicNotificationHistoryDto = z.output<typeof publicNotificationHis
 /** 通知履歴の公開entry。 */
 export type PublicNotificationHistoryEntryDto = z.output<
   typeof publicNotificationHistoryEntrySchema
+>;
+
+/** 公開通知履歴へ保存する個人催促context。 */
+export type PublicNotificationHistoryPersonalReminderDto = z.output<
+  typeof publicNotificationHistoryPersonalReminderSchema
 >;
 
 /** 通知履歴entryを送信時刻降順と表示情報で比較する。 */
@@ -825,6 +1047,11 @@ function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void
         candidateIds.add(waitingOn.candidateId);
       }
     }
+    for (const response of item.currentResponses) {
+      if (response.status === "waiting") {
+        candidateIds.add(response.waitingFor.itemNodeId);
+      }
+    }
   }
   for (const candidateId of candidateIds) {
     if (summaryItemNodeIds.has(candidateId) || externalGraphNodeIds.has(candidateId)) {
@@ -836,6 +1063,59 @@ function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void
   }
 }
 
+function assertPublicCurrentResponseIds(
+  items: readonly Readonly<{
+    nodeId: string;
+    currentResponses: readonly PublicPersonalReminderResponseDto[];
+  }>[],
+): void {
+  const causeIds = new Set<string>();
+  for (const item of items) {
+    for (const response of item.currentResponses) {
+      if (causeIds.has(response.causeId)) {
+        throw new PublicDtoSemanticError(
+          `personal reminder responseのcause IDが重複しています。対象: ${response.causeId}`,
+        );
+      }
+      causeIds.add(response.causeId);
+    }
+  }
+}
+
+function assertPublicCurrentResponsesRequireCompletedPlanning(
+  items: readonly PublicItemSummaryDto[],
+): void {
+  for (const item of items) {
+    if (item.personalReminderCausePlanningStatus === "completed") {
+      continue;
+    }
+    if (item.currentResponses.length !== 0) {
+      throw new PublicDtoSemanticError(
+        `個人催促planningが完了していない項目に現在の対応があります。対象: ${item.nodeId}`,
+      );
+    }
+  }
+}
+
+function assertPublicDetailsCurrentResponseReferences(details: PublicDetailsDto): void {
+  const graphNodeIds = new Set(details.graph.nodes.map((node) => node.nodeId));
+  for (const item of details.items) {
+    graphNodeIds.add(item.summary.nodeId);
+  }
+  for (const item of details.items) {
+    for (const response of item.summary.currentResponses) {
+      if (response.status !== "waiting") {
+        continue;
+      }
+      if (!graphNodeIds.has(response.waitingFor.itemNodeId)) {
+        throw new PublicDtoSemanticError(
+          `waiting responseの項目 ${response.waitingFor.itemNodeId}をdetailsから解決できません`,
+        );
+      }
+    }
+  }
+}
+
 /** 未検証の値を共有公開summary DTOへ変換する。 */
 export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
   const result = publicSummaryDtoSchema.safeParse(value);
@@ -844,6 +1124,8 @@ export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
       cause: result.error,
     });
   }
+  assertPublicCurrentResponseIds(result.data.items);
+  assertPublicCurrentResponsesRequireCompletedPlanning(result.data.items);
   assertPublicSummaryWaitingOnReferences(result.data);
   assertPublicCurrentImplementations(result.data.items);
   return result.data;
@@ -857,6 +1139,11 @@ export function createPublicDetailsDto(value: unknown): PublicDetailsDto {
       cause: result.error,
     });
   }
+  assertPublicCurrentResponseIds(result.data.items.map((item) => item.summary));
+  assertPublicCurrentResponsesRequireCompletedPlanning(
+    result.data.items.map((item) => item.summary),
+  );
+  assertPublicDetailsCurrentResponseReferences(result.data);
   assertPublicCurrentImplementations(result.data.items.map((item) => item.summary));
   return result.data;
 }

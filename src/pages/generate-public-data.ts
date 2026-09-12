@@ -1,13 +1,17 @@
 import {
   createLabelEffectsResolver,
   createUtcIsoDateTime,
+  currentPersonalReminderAssessment,
   determineDeadlineLevel,
   isTerminalStatus,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   type Evidence,
   type LabelRule,
+  type NaturalLanguageDeadlineAssessmentState,
+  type PersonalReminderCause,
   type Relation,
   type TrackedItem,
-  type NaturalLanguageDeadlineAssessmentState,
+  type SourceId,
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import {
@@ -38,12 +42,15 @@ import {
   createPublicNotificationHistoryDto,
   comparePublicNotificationHistoryEntries,
   createPublicSummaryDto,
+  PUBLIC_DTO_SCHEMA_VERSION,
   type PublicDetailsDto,
   type PublicGraphEdgeDto,
   type PublicGraphNodeDto,
   type PublicItemHistoryEventDto,
   type PublicNotificationHistoryDto,
   type PublicItemSummaryDto,
+  type PublicPersonalReminderResponseDto,
+  type PublicPersonalReminderUnknownReason,
   type PublicSummaryDto,
 } from "./public-dto.js";
 import { assertPagesPublicSafety, type PagesPublicSafetyInput } from "./public-safety.js";
@@ -81,7 +88,11 @@ type ResponsibilityHistoryValue = Extract<
 >["before"];
 type PublicWaitingOn = PublicItemSummaryDto["waitingOn"][number];
 type PublicCurrentImplementation = PublicItemSummaryDto["currentImplementations"][number];
+type PublicPersonalReminderCausePlanningStatus =
+  PublicItemSummaryDto["personalReminderCausePlanningStatus"];
+type PublicPersonalReminderResponse = PublicPersonalReminderResponseDto;
 type EvidenceSourceItem = Readonly<Pick<TrackedItem, "nodeId" | "url">>;
+type EvidenceBySourceId = ReadonlyMap<SourceId, readonly Evidence[]>;
 
 type PublicHistory = Readonly<{
   itemEventsByNodeId: ReadonlyMap<string, readonly PublicItemHistoryEventDto[]>;
@@ -361,13 +372,16 @@ function createPublicNotificationHistory(
         },
         waitingOn: event.waitingOn.values.map((waitingOn) => ({ ...waitingOn })),
         reasons: [...event.reasons],
+        personalReminders: event.personalReminders.map((personalReminder) => ({
+          ...personalReminder,
+        })),
         sentAt: event.sentAt,
       });
     }
   }
   notifications.sort(comparePublicNotificationHistoryEntries);
   return createPublicNotificationHistoryDto({
-    schemaVersion: "4",
+    schemaVersion: "5",
     runId,
     generatedAt,
     notifications,
@@ -434,6 +448,208 @@ function createPublicEvidence(
 ): PublicDetailsDto["items"][number]["evidence"] {
   return evidence.map((entry) =>
     createPublicEvidenceEntry(entry, currentSourceItem, allSourceItems, sourceOwnersById),
+  );
+}
+
+function createEvidenceBySourceId(snapshot: StateSnapshot): EvidenceBySourceId {
+  const evidenceBySourceId = new Map<SourceId, Evidence[]>();
+  for (const evidence of [
+    ...snapshot.items.flatMap((item) => item.evidence),
+    ...snapshot.relations.flatMap((relation) => relation.evidence),
+  ]) {
+    const existing = evidenceBySourceId.get(evidence.sourceId);
+    if (existing == null) {
+      evidenceBySourceId.set(evidence.sourceId, [evidence]);
+      continue;
+    }
+    existing.push(evidence);
+  }
+  return new Map(
+    [...evidenceBySourceId.entries()].map(([sourceId, evidence]) => [
+      sourceId,
+      Object.freeze([...evidence]),
+    ]),
+  );
+}
+
+function createPersonalReminderResponseEvidence(
+  sourceIds: readonly SourceId[],
+  assessmentReferences:
+    | Readonly<{
+        sourceIds: readonly SourceId[];
+        reasonSummary: string;
+      }>
+    | undefined,
+  currentSourceItem: StateSnapshot["items"][number],
+  allSourceItems: readonly EvidenceSourceItem[],
+  sourceOwnersById: EvidenceSourceUrlMap,
+  evidenceBySourceId: EvidenceBySourceId,
+): PublicPersonalReminderResponse["evidence"] {
+  const uniqueSourceIds = [...new Set(sourceIds)].sort(compareStrings);
+  return uniqueSourceIds.map((sourceId) => {
+    if (assessmentReferences?.sourceIds.includes(sourceId) === true) {
+      const sourceEvidence = evidenceBySourceId.get(sourceId);
+      if (sourceEvidence == null || sourceEvidence.length === 0) {
+        throw new PublicDtoSemanticError(
+          `personal reminder causeのassessment evidence sourceを公開根拠へ解決できません。対象: ${sourceId}`,
+        );
+      }
+      return createPublicEvidenceEntry(
+        {
+          sourceId,
+          supports: "notification",
+          summary: assessmentReferences.reasonSummary,
+        },
+        currentSourceItem,
+        allSourceItems,
+        sourceOwnersById,
+      );
+    }
+    const currentEvidence = currentSourceItem.evidence.find(
+      (evidence) => evidence.sourceId === sourceId,
+    );
+    const fallbackEvidence = evidenceBySourceId.get(sourceId)?.[0];
+    const evidence = currentEvidence ?? fallbackEvidence;
+    if (evidence == null) {
+      throw new PublicDtoSemanticError(
+        `personal reminder causeのevidence sourceを公開根拠へ解決できません。対象: ${sourceId}`,
+      );
+    }
+    return createPublicEvidenceEntry(evidence, currentSourceItem, allSourceItems, sourceOwnersById);
+  });
+}
+
+function personalReminderUnknownReason(
+  cause: PersonalReminderCause,
+): PublicPersonalReminderUnknownReason {
+  switch (cause.latestAttempt.status) {
+    case "not_evaluated":
+      return "not_evaluated";
+    case "failed":
+      return "failed";
+    case "deferred":
+      return "deferred";
+    case "completed":
+      return "input_mismatch";
+  }
+}
+
+function createPersonalReminderResponseBase(
+  cause: PersonalReminderCause,
+  evidence: PublicPersonalReminderResponse["evidence"],
+): Omit<PublicPersonalReminderResponse, "status" | "waitingFor" | "reason"> {
+  return {
+    causeId: cause.causeId,
+    responsible: cause.responsible.map((responsible) => ({
+      kind: responsible.kind,
+      candidateId: responsible.candidateId,
+      role: responsible.role,
+    })),
+    action: {
+      kind: cause.action.kind,
+      summary: cause.action.summary,
+    },
+    evidence,
+  };
+}
+
+function createPersonalReminderResponse(
+  cause: PersonalReminderCause,
+  currentSourceItem: StateSnapshot["items"][number],
+  allSourceItems: readonly EvidenceSourceItem[],
+  sourceOwnersById: EvidenceSourceUrlMap,
+  evidenceBySourceId: EvidenceBySourceId,
+): PublicPersonalReminderResponse | undefined {
+  const assessment = currentPersonalReminderAssessment(cause);
+  if (assessment.status === "available") {
+    if (assessment.result.verdict === "duplicate" || assessment.result.verdict === "not_required") {
+      return undefined;
+    }
+  }
+  const assessmentReferences =
+    assessment.status === "available" &&
+    assessment.result.verdict !== "duplicate" &&
+    assessment.result.verdict !== "not_required"
+      ? assessment.result.references
+      : undefined;
+  const evidence = createPersonalReminderResponseEvidence(
+    [...cause.evidenceSourceIds, ...(assessmentReferences?.sourceIds ?? [])],
+    assessmentReferences,
+    currentSourceItem,
+    allSourceItems,
+    sourceOwnersById,
+    evidenceBySourceId,
+  );
+  const base = createPersonalReminderResponseBase(cause, evidence);
+  if (assessment.status !== "available") {
+    return {
+      ...base,
+      status: "unknown",
+      reason: personalReminderUnknownReason(cause),
+    };
+  }
+  switch (assessment.result.verdict) {
+    case "actionable":
+      return {
+        ...base,
+        status: "actionable",
+      };
+    case "waiting":
+      return {
+        ...base,
+        status: "waiting",
+        waitingFor: {
+          itemNodeId: assessment.result.waitingFor.itemNodeId,
+          action: assessment.result.waitingFor.action,
+        },
+      };
+    case "unknown":
+      return {
+        ...base,
+        status: "unknown",
+        reason: assessment.result.reason,
+      };
+    case "duplicate":
+    case "not_required":
+      return undefined;
+  }
+}
+
+function personalReminderCausePlanningStatus(
+  item: StateSnapshot["items"][number],
+): PublicPersonalReminderCausePlanningStatus {
+  if (
+    item.personalReminderCausePlanning.planningVersion !== PERSONAL_REMINDER_CAUSE_PLANNING_VERSION
+  ) {
+    return "pending";
+  }
+  return item.personalReminderCausePlanning.status;
+}
+
+function createPersonalReminderResponses(
+  item: StateSnapshot["items"][number],
+  allSourceItems: readonly EvidenceSourceItem[],
+  sourceOwnersById: EvidenceSourceUrlMap,
+  evidenceBySourceId: EvidenceBySourceId,
+): readonly PublicPersonalReminderResponse[] {
+  if (personalReminderCausePlanningStatus(item) !== "completed") {
+    return Object.freeze([]);
+  }
+  const responses: PublicPersonalReminderResponse[] = [];
+  for (const cause of item.personalReminderCauses) {
+    const response = createPersonalReminderResponse(
+      cause,
+      item,
+      allSourceItems,
+      sourceOwnersById,
+      evidenceBySourceId,
+    );
+    if (response != null) {
+      responses.push(response);
+    }
+  }
+  return Object.freeze(
+    responses.sort((left, right) => compareStrings(left.causeId, right.causeId)),
   );
 }
 
@@ -699,6 +915,8 @@ function createItemSummary(
   item: StateSnapshot["items"][number],
   repository: SnapshotRepository,
   currentImplementations: readonly PublicCurrentImplementation[],
+  currentResponses: readonly PublicPersonalReminderResponse[],
+  personalReminderCausePlanningStatus: PublicPersonalReminderCausePlanningStatus,
   displayReferencesByNodeId: ReadonlyMap<string, string>,
   blockerNodeIds: readonly string[],
   downstreamImpact: AnalyzeGraphResult["downstreamImpacts"][number],
@@ -759,6 +977,8 @@ function createItemSummary(
       ...downstreamImpact,
     },
     currentImplementations: [...currentImplementations],
+    currentResponses: [...currentResponses],
+    personalReminderCausePlanningStatus,
   };
 }
 
@@ -844,6 +1064,11 @@ function requiredInitialGraphNodes(
     for (const waitingOn of waitingOnValues) {
       if (waitingOn.kind === "item") {
         waitingOnItemCandidateIds.add(waitingOn.candidateId);
+      }
+    }
+    for (const response of item.currentResponses) {
+      if (response.status === "waiting") {
+        waitingOnItemCandidateIds.add(response.waitingFor.itemNodeId);
       }
     }
   }
@@ -967,6 +1192,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       })),
     ),
   );
+  const evidenceBySourceId = createEvidenceBySourceId(snapshot);
   const graph = createPublicGraph(snapshot);
   const repositoriesById = new Map(
     snapshot.repositories.map((repository) => [repository.id, repository]),
@@ -991,6 +1217,8 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       item,
       repository,
       currentImplementationsByIssueNodeId.get(item.nodeId) ?? Object.freeze([]),
+      createPersonalReminderResponses(item, snapshot.items, sourceOwnersById, evidenceBySourceId),
+      personalReminderCausePlanningStatus(item),
       displayReferencesByNodeId,
       blockersByNodeId.get(item.nodeId) ?? Object.freeze([]),
       impact,
@@ -1008,7 +1236,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     },
   }));
   const summary = createPublicSummaryDto({
-    schemaVersion: "8",
+    schemaVersion: PUBLIC_DTO_SCHEMA_VERSION,
     runId: snapshot.run.id,
     generatedAt,
     observedAt: latestRepositoryObservedAt(snapshot.repositories),
@@ -1024,7 +1252,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     graph: createInitialGraph(graph, itemSummaries, input.options.maxInitialGraphNodes),
   });
   const details = createPublicDetailsDto({
-    schemaVersion: "8",
+    schemaVersion: PUBLIC_DTO_SCHEMA_VERSION,
     runId: snapshot.run.id,
     generatedAt,
     items: snapshot.items.map((item, index) => {

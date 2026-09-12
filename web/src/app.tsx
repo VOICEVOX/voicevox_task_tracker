@@ -10,7 +10,7 @@ import { ItemsPage } from "./items-page.js";
 import { LogicGuidePage } from "./logic-guide-page.js";
 import { StatusGuidePage } from "./status-guide-page.js";
 import {
-  collectWaitingTeamIds,
+  collectCurrentResponseTeamIds,
   createTableFilterOptions,
   formatDateTime,
   formatRelativeTime,
@@ -18,7 +18,7 @@ import {
   type ItemSort,
   type ItemSortKey,
   type TableFilterKey,
-  waitingSubjectKey,
+  currentResponseSubjectKey,
 } from "./model.js";
 import { PeoplePage } from "./people-page.js";
 import { PersonPage } from "./person-page.js";
@@ -197,9 +197,10 @@ export function App({
     () => new Set(summary.items.map((item) => item.nodeId)),
     [summary.items],
   );
-  const validTeamIds = useMemo(() => collectWaitingTeamIds(summary), [summary]);
+  const validTeamIds = useMemo(() => collectCurrentResponseTeamIds(summary), [summary]);
   const validTeamKeys = useMemo(
-    () => new Set(validTeamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId }))),
+    () =>
+      new Set(validTeamIds.map((teamId) => currentResponseSubjectKey({ kind: "team", teamId }))),
     [validTeamIds],
   );
   const tableFilterOptions = useMemo(() => createTableFilterOptions(summary), [summary]);
@@ -360,7 +361,7 @@ export function App({
 
   function filterValidViewerTeamIds(teamIds: readonly string[]): readonly string[] {
     return teamIds.filter((teamId) =>
-      validTeamKeys.has(waitingSubjectKey({ kind: "team", teamId })),
+      validTeamKeys.has(currentResponseSubjectKey({ kind: "team", teamId })),
     );
   }
 

@@ -8,13 +8,13 @@ import { createItemCardFields, createItemTableColumns } from "./item-list-fields
 import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
 import {
-  collectWaitingTeamIds,
   createDefaultTableFilters,
   createItemTableRows,
   filterAndSortTableRows,
-  selectWaitingSubjectItemNodeIds,
-  selectWaitingSubjectPrimaryCandidate,
-  waitingSubjectKey,
+  collectCurrentResponseTeamIds,
+  currentResponseSubjectKey,
+  selectCurrentResponseSubjectItemNodeIds,
+  selectCurrentResponseSubjectPrimaryResponse,
   type ItemSort,
   type ItemSortKey,
   type ItemTableRow,
@@ -62,7 +62,7 @@ function itemRowPresentation(row: ItemTableRow): ResponsiveListRowPresentation {
   };
 }
 
-/** 指定したGitHubアカウントの対応を待っている項目を表示する。 */
+/** 指定したGitHubアカウントが現在対応する項目を表示する。 */
 export function PersonPage({
   createItemHref,
   createPersonHref,
@@ -81,13 +81,14 @@ export function PersonPage({
   summary,
   viewerIdentityAvailable,
 }: PersonPageProps) {
-  const teamOptions = useMemo(() => collectWaitingTeamIds(summary), [summary]);
+  const teamOptions = useMemo(() => collectCurrentResponseTeamIds(summary), [summary]);
   const selectedTeamKeys = useMemo(
-    () => new Set(selectedTeamIds.map((teamId) => waitingSubjectKey({ kind: "team", teamId }))),
+    () =>
+      new Set(selectedTeamIds.map((teamId) => currentResponseSubjectKey({ kind: "team", teamId }))),
     [selectedTeamIds],
   );
   const selectedNodeIds = useMemo(
-    () => selectWaitingSubjectItemNodeIds(summary, login, selectedTeamIds),
+    () => selectCurrentResponseSubjectItemNodeIds(summary, login, selectedTeamIds),
     [login, selectedTeamIds, summary],
   );
   const rows = useMemo(
@@ -101,14 +102,16 @@ export function PersonPage({
   );
   function changeTeam(teamId: string, selected: boolean): void {
     const nextTeamKeys = new Set(selectedTeamKeys);
-    const teamKey = waitingSubjectKey({ kind: "team", teamId });
+    const teamKey = currentResponseSubjectKey({ kind: "team", teamId });
     if (selected) {
       nextTeamKeys.add(teamKey);
     } else {
       nextTeamKeys.delete(teamKey);
     }
     onTeamIdsChange(
-      teamOptions.filter((teamId) => nextTeamKeys.has(waitingSubjectKey({ kind: "team", teamId }))),
+      teamOptions.filter((teamId) =>
+        nextTeamKeys.has(currentResponseSubjectKey({ kind: "team", teamId })),
+      ),
     );
   }
   const itemListFieldOptions = {
@@ -118,8 +121,8 @@ export function PersonPage({
     onSelectItem,
     onSelectPerson,
     onSortChange,
-    selectPrimaryWaitingOn: (row: ItemTableRow) =>
-      selectWaitingSubjectPrimaryCandidate(row.item, login, selectedTeamIds),
+    selectPrimaryCurrentResponse: (row: ItemTableRow) =>
+      selectCurrentResponseSubjectPrimaryResponse(row.item, login, selectedTeamIds),
     sort,
     summary,
   };
@@ -140,7 +143,7 @@ export function PersonPage({
             src={createGitHubAvatarUrl(login)}
             width={40}
           />
-          <span class="min-w-0 leading-snug wrap-anywhere">@{login} を待っている項目</span>
+          <span class="min-w-0 leading-snug wrap-anywhere">@{login} が現在対応する項目</span>
         </span>
       }
       headingId="person-page-heading"
@@ -186,14 +189,14 @@ export function PersonPage({
           {teamOptions.map((teamId) => (
             <label
               class="flex min-h-11 flex-[1_1_18rem] cursor-pointer items-start gap-2 rounded-xl border border-border-default bg-surface-card px-3 py-2"
-              key={waitingSubjectKey({ kind: "team", teamId })}
+              key={currentResponseSubjectKey({ kind: "team", teamId })}
             >
               <input
                 class="mt-1 size-4 shrink-0 accent-action-border"
                 type="checkbox"
                 name="person-team"
                 value={teamId}
-                checked={selectedTeamKeys.has(waitingSubjectKey({ kind: "team", teamId }))}
+                checked={selectedTeamKeys.has(currentResponseSubjectKey({ kind: "team", teamId }))}
                 onChange={(event) => {
                   changeTeam(teamId, event.currentTarget.checked);
                 }}
@@ -215,19 +218,19 @@ export function PersonPage({
       {rows.length === 0 ? (
         <ContentState
           className="empty-state"
-          message={`@${login} を待っている項目はありません。`}
+          message={`@${login} が現在対応する項目はありません。`}
           status="empty"
         />
       ) : (
         <ResponsiveTableCardList
           breakpoint="lg"
-          cardAriaLabel="待っている項目一覧"
+          cardAriaLabel="現在対応する項目一覧"
           cardFields={cardFields}
           cardListClassName=""
           columns={tableColumns}
           getRowPresentation={itemRowPresentation}
           rows={rows}
-          tableCaption={`@${login} を待っている項目の一覧`}
+          tableCaption={`@${login} が現在対応する項目の一覧`}
           tableClassName="items-table person-items-table"
           renderCardHeading={(row) => (
             <ItemListHeading

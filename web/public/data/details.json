@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "8",
+  "schemaVersion": "9",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "items": [
@@ -68,6 +68,29 @@
           "repositoryCount": 1
         },
         "currentImplementations": [],
+        "currentResponses": [
+          {
+            "causeId": "sample-cause-editor-101-merge",
+            "responsible": [
+              {
+                "kind": "user",
+                "candidateId": "sample-maintainer",
+                "role": "merge_decider"
+              }
+            ],
+            "action": {
+              "kind": "merge",
+              "summary": "内容を確認してマージする"
+            },
+            "evidence": [
+              {
+                "summary": "必要なレビューとcheckが完了し、マージできます",
+                "sourceUrl": "https://github.com/VOICEVOX/sample-editor/pull/101"
+              }
+            ],
+            "status": "actionable"
+          }
+        ],
         "deadline": {
           "status": "available",
           "date": "2026-08-31",
@@ -182,6 +205,7 @@
           "repositoryCount": 3
         },
         "currentImplementations": [],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -310,6 +334,7 @@
             "nextAction": "メンテナーが内容を確認してマージする"
           }
         ],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -417,6 +442,33 @@
           "repositoryCount": 0
         },
         "currentImplementations": [],
+        "currentResponses": [
+          {
+            "causeId": "sample-cause-engine-204-work",
+            "responsible": [
+              {
+                "kind": "user",
+                "candidateId": "sample-implementer",
+                "role": "assignee"
+              }
+            ],
+            "action": {
+              "kind": "work",
+              "summary": "配布処理を実装する"
+            },
+            "evidence": [
+              {
+                "summary": "担当者には配布処理の実装義務があります",
+                "sourceUrl": "https://github.com/VOICEVOX/sample-engine/issues/204"
+              }
+            ],
+            "status": "waiting",
+            "waitingFor": {
+              "itemNodeId": "sample-item-editor-103",
+              "action": "方針を決める"
+            }
+          }
+        ],
         "deadline": {
           "status": "not_available"
         }
@@ -560,6 +612,7 @@
           "repositoryCount": 2
         },
         "currentImplementations": [],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -662,6 +715,7 @@
           "repositoryCount": 0
         },
         "currentImplementations": [],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -749,6 +803,7 @@
           "repositoryCount": 0
         },
         "currentImplementations": [],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -836,6 +891,7 @@
           "repositoryCount": 0
         },
         "currentImplementations": [],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -933,6 +989,7 @@
           "repositoryCount": 0
         },
         "currentImplementations": [],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -1026,6 +1083,7 @@
           "repositoryCount": 0
         },
         "currentImplementations": [],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -1113,6 +1171,7 @@
           "repositoryCount": 0
         },
         "currentImplementations": [],
+        "currentResponses": [],
         "deadline": {
           "status": "not_available"
         }
@@ -1204,6 +1263,30 @@
           "repositoryCount": 0
         },
         "currentImplementations": [],
+        "currentResponses": [
+          {
+            "causeId": "sample-cause-workflow-407-assessment",
+            "responsible": [
+              {
+                "kind": "role",
+                "candidateId": "maintainer",
+                "role": "maintainer"
+              }
+            ],
+            "action": {
+              "kind": "assessment",
+              "summary": "次の対応者を確認する"
+            },
+            "evidence": [
+              {
+                "summary": "次の対応者を判断できる情報が不足しています",
+                "sourceUrl": "https://github.com/example/sample-workflow/pull/407"
+              }
+            ],
+            "status": "unknown",
+            "reason": "incomplete_input"
+          }
+        ],
         "deadline": {
           "status": "not_available"
         }

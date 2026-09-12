@@ -20,8 +20,15 @@ import {
   type AiAnalysisRelation,
 } from "../domain/ai-analysis-elements.js";
 import {
+  createGitHubNodeId,
   type TrackedItemAiAnalysisCurrentElements,
   type TrackedItemAiAnalysisMigrationAdoptedElements,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+  isTerminalStatus,
+  parseSourceId,
+  type GitHubNodeId,
+  type TrackedItemInputEvent,
+  type PersonalReminderCausePlanning,
 } from "../domain/index.js";
 import {
   AI_ANALYSIS_ELEMENTS_V6,
@@ -33,12 +40,14 @@ import { type LegacyAiCacheEntry } from "./ai-cache-migration.js";
 import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
 import { StateFormatError, StateSnapshotSemanticError } from "./errors.js";
 import { UnreachableError } from "../util/index.js";
+import { buildPullRequestCommitSourceId } from "../github/production-source-id.js";
 import {
   createStateSnapshot,
   parseStateSnapshot,
   parseStateSnapshotVersion11,
   parseStateSnapshotVersion12,
   parseStateSnapshotVersion13,
+  parseStateSnapshotVersion14,
   type SnapshotAnalysisPlanFingerprint,
   type StateSnapshot,
 } from "./snapshot.js";
@@ -1154,6 +1163,24 @@ function migrateTrackedItem(
       elements: {},
       adoptedElements: createLegacyAdoptedElements(item, output, legacyRelationsById),
     },
+    personalReminderCauses: [],
+    personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+  };
+}
+
+function migratedPersonalReminderCausePlanning(
+  status: LegacyTrackedItem["status"],
+): PersonalReminderCausePlanning {
+  if (isTerminalStatus(status)) {
+    return {
+      status: "excluded",
+      planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+      reason: "terminal_without_cause",
+    };
+  }
+  return {
+    status: "pending",
+    planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   };
 }
 
@@ -1189,7 +1216,7 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion11(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "14",
+      schemaVersion: "15",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1202,6 +1229,8 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
       items: value.items.map((item) => ({
         ...item,
         aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
+        personalReminderCauses: [],
+        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
     });
   } catch (error: unknown) {
@@ -1214,7 +1243,7 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion12(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "14",
+      schemaVersion: "15",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1227,6 +1256,8 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
       items: value.items.map((item) => ({
         ...item,
         aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
+        personalReminderCauses: [],
+        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
     });
   } catch (error: unknown) {
@@ -1239,7 +1270,7 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion13(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "14",
+      schemaVersion: "15",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1252,6 +1283,8 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
       items: value.items.map((item) => ({
         ...item,
         aiAnalysis: migrateAiAnalysis(item.aiAnalysis, true, "6"),
+        personalReminderCauses: [],
+        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
     });
   } catch (error: unknown) {
@@ -1290,7 +1323,7 @@ function migrateLegacyStateSnapshot(
       }),
     }));
     return createStateSnapshot({
-      schemaVersion: "14",
+      schemaVersion: "15",
       generatedAt: value.generatedAt,
       trackingStartAt: value.trackingStartAt,
       ai: value.ai,
@@ -1306,6 +1339,46 @@ function migrateLegacyStateSnapshot(
   } catch (error: unknown) {
     throw migrationFormatError(error);
   }
+}
+
+function migrateVersion14StateSnapshot(source: string): StateSnapshot {
+  try {
+    const value = parseStateSnapshotVersion14(source);
+    return createStateSnapshot({
+      ...value,
+      schemaVersion: "15",
+      items: value.items.map((item) => ({
+        ...item,
+        inputEvents:
+          item.type === "pull_request"
+            ? migrateVersion14PullRequestInputEvents(item.nodeId, item.inputEvents)
+            : item.inputEvents,
+        personalReminderCauses: [],
+        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+      })),
+    });
+  } catch (error: unknown) {
+    throw migrationFormatError(error);
+  }
+}
+
+function migrateVersion14PullRequestInputEvents(
+  pullRequestNodeId: GitHubNodeId,
+  inputEvents: readonly TrackedItemInputEvent[],
+): readonly TrackedItemInputEvent[] {
+  return inputEvents.map((event) => {
+    const source = parseSourceId(event.sourceId);
+    if (source.kind !== "github_commit") {
+      return event;
+    }
+    return {
+      ...event,
+      sourceId: buildPullRequestCommitSourceId(
+        pullRequestNodeId,
+        createGitHubNodeId(source.originalId),
+      ),
+    };
+  });
 }
 
 /** snapshotをschema versionに応じて現行形式へ変換する。 */
@@ -1327,6 +1400,8 @@ export function migrateStateSnapshot(
     case "13":
       return migrateVersion13StateSnapshot(source);
     case "14":
+      return migrateVersion14StateSnapshot(source);
+    case "15":
       return parseStateSnapshot(source);
     default:
       throw new StateFormatError("snapshot", {

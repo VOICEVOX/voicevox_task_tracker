@@ -10,6 +10,7 @@ import {
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { CurrentImplementations } from "./current-implementations.js";
+import { CurrentResponses } from "./current-responses.js";
 import { DeadlineDisplay } from "./deadline-display.js";
 import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
 import { GitHubIconButton } from "./github-icon-button.js";
@@ -23,12 +24,11 @@ import {
   formatStallDuration,
   statusLabel,
   waitingOnHistoryLabel,
-  waitingOnLabelParts,
   type ConfidencePresentation,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
 import { ActionButton, Pill } from "./ui.js";
-import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
+import { type PersonNavigation } from "./waiting-on-display.js";
 
 type ItemDetailsLinkProps = Readonly<{
   children: ComponentChildren;
@@ -57,7 +57,6 @@ type ResponsibilityHistoryValue = Extract<
   Readonly<{ kind: "responsibility_changed" }>
 >["before"];
 
-type WaitingOnCandidate = PublicItemDetailsDto["summary"]["waitingOn"][number];
 type ImportanceFactor = PublicItemDetailsDto["importanceFactors"][number];
 
 type ImportanceFactorSource = Readonly<{
@@ -93,7 +92,6 @@ const IMPORTANCE_FACTOR_LABELS = {
 } satisfies Readonly<Record<ImportanceFactor["kind"], string>>;
 
 const HISTORY_PREVIEW_LIMIT = 5;
-const WAITING_ON_LIST_CLASS_NAME = "waiting-on-list m-0 grid list-none gap-3 p-0";
 const CONFIDENCE_LEVEL_CLASS_NAMES = {
   confirmed: "border-state-success-border bg-state-success-background text-state-success-text",
   high_estimate: "border-state-info-border bg-state-info-background text-state-info-text",
@@ -334,204 +332,6 @@ function RelatedItemReference({
   );
 }
 
-function WaitingOnCandidateReference({
-  candidate,
-  createItemHref,
-  createPersonHref,
-  graphNodesByNodeId,
-  item,
-  itemsByNodeId,
-  onSelectItem,
-  onSelectPerson,
-  summary,
-}: PersonNavigation &
-  Readonly<{
-    candidate: WaitingOnCandidate;
-    createItemHref: (nodeId: string) => string;
-    graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
-    item: PublicItemDetailsDto["summary"];
-    itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
-    onSelectItem: (nodeId: string) => void;
-    summary: PublicSummaryDto;
-  }>) {
-  if (candidate.kind === "item") {
-    return (
-      <RelatedItemReference
-        createItemHref={createItemHref}
-        graphNodesByNodeId={graphNodesByNodeId}
-        itemsByNodeId={itemsByNodeId}
-        nodeId={candidate.candidateId}
-        onSelectItem={onSelectItem}
-      />
-    );
-  }
-  return (
-    <WaitingOnDisplay
-      createPersonHref={createPersonHref}
-      onSelectPerson={onSelectPerson}
-      parts={waitingOnLabelParts(candidate, item, summary)}
-      showAvatar={false}
-    />
-  );
-}
-
-function WaitingOnCandidateItem({
-  candidate,
-  candidateIndex,
-  createItemHref,
-  createPersonHref,
-  graphNodesByNodeId,
-  item,
-  itemsByNodeId,
-  onSelectItem,
-  onSelectPerson,
-  primaryBlockerNodeId,
-  summary,
-}: PersonNavigation &
-  Readonly<{
-    candidate: WaitingOnCandidate;
-    candidateIndex: number;
-    createItemHref: (nodeId: string) => string;
-    graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
-    item: PublicItemDetailsDto["summary"];
-    itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
-    onSelectItem: (nodeId: string) => void;
-    primaryBlockerNodeId: string | undefined;
-    summary: PublicSummaryDto;
-  }>) {
-  const candidatePresentation = confidencePresentation(
-    candidate.confidence,
-    summary.confidenceThresholds,
-  );
-  return (
-    <li class="min-w-0 border-l-2 border-border-default pl-3">
-      <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <strong class="min-w-0 wrap-anywhere">
-          <WaitingOnCandidateReference
-            candidate={candidate}
-            createItemHref={createItemHref}
-            createPersonHref={createPersonHref}
-            graphNodesByNodeId={graphNodesByNodeId}
-            item={item}
-            itemsByNodeId={itemsByNodeId}
-            onSelectItem={onSelectItem}
-            onSelectPerson={onSelectPerson}
-            summary={summary}
-          />
-        </strong>
-        {primaryBlockerNodeId === candidate.candidateId &&
-          item.primaryWaitingOn.index === candidateIndex && (
-            <Pill className="primary-blocker-badge" tone="danger">
-              主要ブロッカー
-            </Pill>
-          )}
-        <small class="waiting-on-confidence text-xs font-bold text-text-muted whitespace-nowrap">
-          確度区分: {candidatePresentation.label}
-        </small>
-      </div>
-      <p class="mt-1 mb-0 text-sm text-text-secondary">{candidate.reasonSummary}</p>
-    </li>
-  );
-}
-
-function WaitingOnCandidates({
-  createItemHref,
-  createPersonHref,
-  graphNodesByNodeId,
-  item,
-  itemsByNodeId,
-  onSelectItem,
-  onSelectPerson,
-  primaryBlockerNodeId,
-  summary,
-}: PersonNavigation &
-  Readonly<{
-    createItemHref: (nodeId: string) => string;
-    graphNodesByNodeId: ReadonlyMap<string, PublicGraphNodeDto>;
-    item: PublicItemDetailsDto["summary"];
-    itemsByNodeId: ReadonlyMap<string, PublicItemDetailsDto["summary"]>;
-    onSelectItem: (nodeId: string) => void;
-    primaryBlockerNodeId: string | undefined;
-    summary: PublicSummaryDto;
-  }>) {
-  if (item.waitingOn.length === 0) {
-    throw new TypeError(`項目 ${item.nodeId}のwaitingOn候補がありません`);
-  }
-  const candidates = item.waitingOn.map((candidate, index) => ({ candidate, index }));
-  if (candidates.length < 4) {
-    return (
-      <ul class={WAITING_ON_LIST_CLASS_NAME}>
-        {candidates.map(({ candidate, index }) => (
-          <WaitingOnCandidateItem
-            key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}
-            candidate={candidate}
-            candidateIndex={index}
-            createItemHref={createItemHref}
-            createPersonHref={createPersonHref}
-            graphNodesByNodeId={graphNodesByNodeId}
-            item={item}
-            itemsByNodeId={itemsByNodeId}
-            onSelectItem={onSelectItem}
-            onSelectPerson={onSelectPerson}
-            primaryBlockerNodeId={primaryBlockerNodeId}
-            summary={summary}
-          />
-        ))}
-      </ul>
-    );
-  }
-
-  const primaryIndex =
-    item.primaryWaitingOn.index === "not_applicable" ? 0 : item.primaryWaitingOn.index;
-  const primaryCandidate = candidates[primaryIndex] ?? candidates[0];
-  assertNonNullable(primaryCandidate, `項目 ${item.nodeId}の主候補がありません`);
-  const otherCandidates = candidates.filter(({ index }) => index !== primaryCandidate.index);
-  return (
-    <>
-      <ul class={`${WAITING_ON_LIST_CLASS_NAME} primary-waiting-on-list`}>
-        <WaitingOnCandidateItem
-          candidate={primaryCandidate.candidate}
-          candidateIndex={primaryCandidate.index}
-          createItemHref={createItemHref}
-          createPersonHref={createPersonHref}
-          graphNodesByNodeId={graphNodesByNodeId}
-          item={item}
-          itemsByNodeId={itemsByNodeId}
-          onSelectItem={onSelectItem}
-          onSelectPerson={onSelectPerson}
-          primaryBlockerNodeId={primaryBlockerNodeId}
-          summary={summary}
-        />
-      </ul>
-      <details class="other-waiting-on-candidates mt-3">
-        <summary class="min-h-11 cursor-pointer py-2 text-sm font-bold text-text-secondary marker:text-text-muted">
-          {"その他の候補"}
-          <span class="font-mono tabular-nums">{otherCandidates.length.toLocaleString()}</span>
-          {"件を表示"}
-        </summary>
-        <ul class={`${WAITING_ON_LIST_CLASS_NAME} mt-3`}>
-          {otherCandidates.map(({ candidate, index }) => (
-            <WaitingOnCandidateItem
-              key={`${candidate.kind}:${candidate.candidateId}:${candidate.role}`}
-              candidate={candidate}
-              candidateIndex={index}
-              createItemHref={createItemHref}
-              createPersonHref={createPersonHref}
-              graphNodesByNodeId={graphNodesByNodeId}
-              item={item}
-              itemsByNodeId={itemsByNodeId}
-              onSelectItem={onSelectItem}
-              onSelectPerson={onSelectPerson}
-              primaryBlockerNodeId={primaryBlockerNodeId}
-              summary={summary}
-            />
-          ))}
-        </ul>
-      </details>
-    </>
-  );
-}
-
 function hasItemDependencies(view: ItemGraphView): boolean {
   return view.sourceEdges.length > 0 || view.omittedSourceNodeCount > 0;
 }
@@ -574,16 +374,6 @@ export function ItemDetailsContent({
     }
     primaryBlockerNodeId = primaryWaitingOn.candidateId;
   }
-  const waitingOnBlockerNodeIds = new Set(
-    item.waitingOn.flatMap((candidate) =>
-      candidate.kind === "item" && item.blockerNodeIds.includes(candidate.candidateId)
-        ? [candidate.candidateId]
-        : [],
-    ),
-  );
-  const additionalBlockerNodeIds = item.blockerNodeIds.filter(
-    (nodeId) => !waitingOnBlockerNodeIds.has(nodeId),
-  );
   useEffect(() => {
     heading.current?.focus({ focusVisible: showHeadingFocusRing });
   }, [item.nodeId, showHeadingFocusRing]);
@@ -644,7 +434,7 @@ export function ItemDetailsContent({
             id="current-action-heading"
             class="m-0 font-display text-base leading-snug font-semibold"
           >
-            現在の状況と次の行動
+            現在の状況
           </h4>
         </div>
         <dl class="current-state-grid m-0 grid grid-cols-[repeat(auto-fit,minmax(9rem,1fr))] gap-x-4 gap-y-3 lg:col-span-2">
@@ -717,51 +507,20 @@ export function ItemDetailsContent({
           )}
         </dl>
 
-        <div class="current-responsibility min-w-0">
-          <h5 id="item-waiting-on-heading" class="mt-0 mb-3 font-display text-base font-bold">
-            {decisionFieldLabel("待ち相手", presentation)}
-          </h5>
-          {item.waitingOn.length === 0 ? (
-            <p class="m-0">対応完了</p>
-          ) : (
-            <WaitingOnCandidates
-              createItemHref={createItemHref}
-              createPersonHref={createPersonHref}
-              graphNodesByNodeId={graphNodesByNodeId}
-              item={item}
-              itemsByNodeId={itemsByNodeId}
-              onSelectItem={onSelectItem}
-              onSelectPerson={onSelectPerson}
-              primaryBlockerNodeId={primaryBlockerNodeId}
-              summary={summary}
-            />
-          )}
-        </div>
-
-        <div class="next-action-card min-w-0 border-l-2 border-state-info-border pl-3">
-          <h5 class="mt-0 mb-3 font-display text-base font-bold">
-            {decisionFieldLabel("次の行動", presentation)}
-          </h5>
-          <p
-            class={
-              presentation.level === "uncertain"
-                ? "uncertain-value m-0 rounded-xl border-2 border-dashed border-state-danger-border bg-state-danger-background p-3 text-lg font-bold text-text-primary"
-                : "m-0 text-lg font-bold text-text-primary"
-            }
-          >
-            {item.nextAction}
-          </p>
-        </div>
-
-        {additionalBlockerNodeIds.length > 0 && (
-          <div class="additional-blockers min-w-0 lg:col-span-2">
-            <h5 class="mt-0 mb-3 font-display text-base font-bold">その他のブロッカー</h5>
+        {item.blockerNodeIds.length > 0 && (
+          <div class="blockers min-w-0 lg:col-span-2">
+            <h5 class="mt-0 mb-3 font-display text-base font-bold">ブロッカー</h5>
             <ul class="blocker-list m-0 grid list-none gap-2 p-0">
-              {additionalBlockerNodeIds.map((nodeId) => (
+              {item.blockerNodeIds.map((nodeId) => (
                 <li
-                  class="min-w-0 border-l-4 border-state-danger-border py-1 pl-3 wrap-anywhere"
+                  class="flex min-w-0 flex-wrap items-center gap-2 border-l-4 border-state-danger-border py-1 pl-3 wrap-anywhere"
                   key={nodeId}
                 >
+                  {nodeId === primaryBlockerNodeId && (
+                    <Pill className="primary-blocker-badge" tone="danger">
+                      主要
+                    </Pill>
+                  )}
                   <RelatedItemReference
                     createItemHref={createItemHref}
                     graphNodesByNodeId={graphNodesByNodeId}
@@ -775,6 +534,17 @@ export function ItemDetailsContent({
           </div>
         )}
       </section>
+
+      <CurrentResponses
+        createItemHref={createItemHref}
+        createPersonHref={createPersonHref}
+        onSelectItem={onSelectItem}
+        onSelectPerson={onSelectPerson}
+        planningStatus={item.personalReminderCausePlanningStatus}
+        responses={item.currentResponses}
+        summary={summary}
+        variant="detail"
+      />
 
       <CurrentImplementations
         createItemHref={createItemHref}

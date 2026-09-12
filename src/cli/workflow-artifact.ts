@@ -2,18 +2,29 @@ import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
-import { createAiCacheEntry, type AiCacheEntry } from "../codex/index.js";
+import {
+  createAiCacheEntry,
+  createPersonalReminderAiCacheEntry,
+  type AiCacheEntry,
+  type PersonalReminderAiCacheEntry,
+} from "../codex/index.js";
 import {
   createGitHubNodeId,
   createGitHubRepositoryId,
   createUtcIsoDateTime,
   notificationReasonSchema,
+  personalReminderActionKindSchema,
+  personalReminderCauseIdSchema,
+  personalReminderResponsibleSchema,
+  personalReminderResponsibilityIdSchema,
+  personalReminderTimeBasisSchema,
   pendingNotificationSchema,
   type PendingNotification,
   type NotificationReason,
   type Repository,
 } from "../domain/index.js";
 import {
+  calculateDiscordNotificationCandidateSeverity,
   type DiscordDeliverySettings,
   type DiscordNotificationSelection,
 } from "../discord/index.js";
@@ -34,7 +45,7 @@ import { notificationActionSchema, type NotificationAction } from "./command.js"
 import { CliWorkflowArtifactError } from "./errors.js";
 
 const actionsSecretNameSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u);
-const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "10";
+const WORKFLOW_ARTIFACT_SCHEMA_VERSION = "12";
 const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const dateTimeSchema = z.iso
   .datetime({
@@ -72,11 +83,33 @@ const notificationReasonCodeSchema = z.enum([
   "merge_overdue",
   "automation_stuck",
 ]);
+const selectedReasonSourceSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("system"),
+  }),
+  z.strictObject({
+    kind: z.literal("personal_reminder"),
+    context: z.strictObject({
+      causeId: personalReminderCauseIdSchema,
+      responsibilityId: personalReminderResponsibilityIdSchema,
+      responsible: z.array(personalReminderResponsibleSchema).nonempty().max(20),
+      action: z.strictObject({
+        kind: personalReminderActionKindSchema,
+        summary: z.string().min(1).max(300),
+      }),
+      obligationSince: personalReminderTimeBasisSchema,
+      actionableSince: personalReminderTimeBasisSchema,
+      stallSince: personalReminderTimeBasisSchema,
+    }),
+  }),
+]);
 const selectedReasonSchema = z
   .strictObject({
     notificationKey: z.string().min(1).max(1000),
     reasonCode: notificationReasonCodeSchema,
     threshold: z.unknown(),
+    severity: severitySchema,
+    source: selectedReasonSourceSchema,
   })
   .transform((selectedReason, context) => {
     const reasonResult = notificationReasonSchema.safeParse({
@@ -96,6 +129,8 @@ const selectedReasonSchema = z
     return {
       ...reasonResult.data,
       notificationKey: selectedReason.notificationKey,
+      severity: selectedReason.severity,
+      source: selectedReason.source,
     };
   });
 const notificationCandidateSchema = z.strictObject({
@@ -161,6 +196,14 @@ const runMetadataMetricsSchema = z.strictObject({
   aiCacheHitCount: nonNegativeIntegerSchema,
   aiRetainedResultCount: nonNegativeIntegerSchema,
   estimatedInputTokens: nonNegativeIntegerSchema,
+  personalReminderCauseCount: nonNegativeIntegerSchema,
+  personalReminderAiCallCount: nonNegativeIntegerSchema,
+  personalReminderAiCacheHitCount: nonNegativeIntegerSchema,
+  personalReminderAssessmentReuseCount: nonNegativeIntegerSchema,
+  personalReminderUnknownCount: nonNegativeIntegerSchema,
+  personalReminderFailedCount: nonNegativeIntegerSchema,
+  personalReminderDeferredCount: nonNegativeIntegerSchema,
+  personalReminderNotEvaluatedCount: nonNegativeIntegerSchema,
   githubApiRemaining: nonNegativeIntegerSchema,
   staleRepositoryCount: nonNegativeIntegerSchema,
   scheduleDelayMilliseconds: nonNegativeIntegerSchema,
@@ -201,6 +244,7 @@ const workflowArtifactSchema = z.strictObject({
   notificationSelection: z.unknown(),
   runMetadata: runMetadataSchema,
   aiCacheEntries: z.array(z.unknown()),
+  personalReminderAiCacheEntries: z.array(z.unknown()),
   pagesUrl: z.url(),
   discordSettings: discordSettingsSchema,
 });
@@ -231,6 +275,7 @@ export type WorkflowArtifact = Readonly<{
   notificationSelection: DiscordNotificationSelection;
   runMetadata: WorkflowRunMetadata;
   aiCacheEntries: readonly AiCacheEntry[];
+  personalReminderAiCacheEntries: readonly PersonalReminderAiCacheEntry[];
   pagesUrl: string;
   discordSettings: DiscordDeliverySettings;
 }>;
@@ -302,6 +347,19 @@ function createAiCacheEntries(values: readonly unknown[]): readonly AiCacheEntry
   const cacheKeys = entries.map((entry) => entry.cacheKey);
   if (new Set(cacheKeys).size !== cacheKeys.length) {
     throw new TypeError("workflow artifactのAI cache keyが重複しています");
+  }
+  return Object.freeze(
+    [...entries].sort((left, right) => compareStrings(left.cacheKey, right.cacheKey)),
+  );
+}
+
+function createPersonalReminderAiCacheEntries(
+  values: readonly unknown[],
+): readonly PersonalReminderAiCacheEntry[] {
+  const entries = values.map((value) => createPersonalReminderAiCacheEntry(value));
+  const cacheKeys = entries.map((entry) => entry.cacheKey);
+  if (new Set(cacheKeys).size !== cacheKeys.length) {
+    throw new TypeError("workflow artifactの個人催促AI cache keyが重複しています");
   }
   return Object.freeze(
     [...entries].sort((left, right) => compareStrings(left.cacheKey, right.cacheKey)),
@@ -454,6 +512,9 @@ function assertNotificationSelectionConsistency(
     if (candidate.downstreamImpact.nodeId !== candidate.itemNodeId) {
       throw new TypeError("workflow artifactの通知候補内で項目が一致しません");
     }
+    if (candidate.severity !== calculateDiscordNotificationCandidateSeverity(candidate.reasons)) {
+      throw new TypeError("workflow artifactの通知候補severityが理由と一致しません");
+    }
     for (const reason of candidate.reasons) {
       reasonKeys.push(reason.notificationKey);
       const reservation = reservations.get(reason.notificationKey);
@@ -463,7 +524,7 @@ function assertNotificationSelectionConsistency(
       if (
         reservation.itemNodeId !== candidate.itemNodeId ||
         reservation.reasonCode !== reason.reasonCode ||
-        reservation.severity !== candidate.severity
+        reservation.severity !== reason.severity
       ) {
         throw new TypeError("workflow artifactの通知候補と予約が一致しません");
       }
@@ -545,6 +606,9 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
   const notificationSelection = createNotificationSelection(result.data.notificationSelection);
   const runMetadata = createWorkflowRunMetadata(result.data.runMetadata);
   const aiCacheEntries = createAiCacheEntries(result.data.aiCacheEntries);
+  const personalReminderAiCacheEntries = createPersonalReminderAiCacheEntries(
+    result.data.personalReminderAiCacheEntries,
+  );
   const artifact = Object.freeze({
     schemaVersion: WORKFLOW_ARTIFACT_SCHEMA_VERSION,
     kind: "validated_public_run",
@@ -556,6 +620,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     notificationSelection,
     runMetadata,
     aiCacheEntries,
+    personalReminderAiCacheEntries,
     pagesUrl: normalizePagesUrl(result.data.pagesUrl),
     discordSettings: Object.freeze({
       ...result.data.discordSettings,
@@ -617,6 +682,7 @@ export function assertWorkflowArtifactPublicSafety(
       artifact.notificationSelection,
       artifact.runMetadata,
       ...artifact.aiCacheEntries,
+      ...artifact.personalReminderAiCacheEntries,
       artifact.pagesUrl,
       artifact.discordSettings,
     ],

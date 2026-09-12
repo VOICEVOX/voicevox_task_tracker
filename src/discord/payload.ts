@@ -4,12 +4,20 @@ import { DiscordPayloadError } from "./errors.js";
 import {
   type DiscordNotificationCandidate,
   type DiscordNotificationReasonCode,
+  type DiscordPersonalReminderNotificationContext,
+  type SelectedDiscordNotificationReason,
 } from "./notification-selection.js";
 import {
+  currentPersonalReminderAssessment,
+  personalReminderCauseSchema,
   type GitHubNodeId,
   type NotificationLedgerEntry,
   notificationReasonText,
   type OperationsAlertKind,
+  type PersonalReminderActionKind,
+  type PersonalReminderCause,
+  type PersonalReminderResponsible,
+  type PersonalReminderTimeBasis,
   type TrackedItem,
   type UtcIsoDateTime,
   type WaitingOn,
@@ -126,6 +134,8 @@ type WaitingOnText = Readonly<{
   mentionedUserIds: readonly string[];
 }>;
 
+type WaitingOnReference = Readonly<Pick<WaitingOn, "kind" | "candidateId" | "role">>;
+
 type DigestFieldDraft = Readonly<{
   category: DiscordDigestCategory;
   field: DiscordEmbedField;
@@ -133,6 +143,17 @@ type DigestFieldDraft = Readonly<{
   notificationKeys: readonly string[];
   mentionedUserIds: readonly string[];
 }>;
+
+type PersonalReminderSelectedReason = SelectedDiscordNotificationReason &
+  Readonly<{
+    source: Extract<SelectedDiscordNotificationReason["source"], { kind: "personal_reminder" }>;
+  }>;
+
+function isPersonalReminderSelectedReason(
+  reason: SelectedDiscordNotificationReason,
+): reason is PersonalReminderSelectedReason {
+  return reason.source.kind === "personal_reminder";
+}
 
 interface MutableEmbedDraft {
   category: DiscordDigestCategory;
@@ -350,7 +371,7 @@ function createMentionLookup(settings: DiscordMentionSettings): ReadonlyMap<stri
 }
 
 function renderWaitingOn(
-  waitingOn: WaitingOn,
+  waitingOn: WaitingOnReference,
   itemReferences: ReadonlyMap<string, string>,
   mentionLookup: ReadonlyMap<string, string>,
   mentionsEnabled: boolean,
@@ -453,6 +474,183 @@ function formatWaitingOn(
   });
 }
 
+function formatPersonalReminderResponsible(
+  responsibleValues: readonly PersonalReminderResponsible[],
+  mentionLookup: ReadonlyMap<string, string>,
+  mentionsEnabled: boolean,
+): WaitingOnText {
+  if (responsibleValues.length === 0) {
+    throw new DiscordPayloadError("個人催促の対応相手は1件以上必要です");
+  }
+  const rendered = responsibleValues.map((responsible) =>
+    renderWaitingOn(responsible, new Map(), mentionLookup, mentionsEnabled),
+  );
+  const labels = rendered.map((value) => normalizeInlineText(value.text, "個人催促の対応相手"));
+  const text = labels.join("、");
+  if (characterCount(text) > WAITING_ON_MAX_CHARACTERS) {
+    throw new DiscordPayloadError("個人催促の対応相手が表示上限を超えています");
+  }
+  return Object.freeze({
+    text,
+    mentionedUserIds: Object.freeze(
+      [
+        ...new Set(
+          rendered.flatMap((value) =>
+            value.mentionedUserId == null ? [] : [value.mentionedUserId],
+          ),
+        ),
+      ].sort(),
+    ),
+  });
+}
+
+function normalizedPersonalReminderResponsibleSignature(
+  responsible: readonly PersonalReminderResponsible[],
+): string {
+  return JSON.stringify(
+    responsible
+      .map((value): readonly [string, string, string] => [
+        value.kind,
+        value.candidateId.toLowerCase(),
+        value.role,
+      ])
+      .sort(),
+  );
+}
+
+function personalReminderTimeBasisSignature(basis: PersonalReminderTimeBasis): string {
+  if (basis.source === "event") {
+    return JSON.stringify([basis.source, basis.at, basis.sourceIds]);
+  }
+  return JSON.stringify([basis.source, basis.at]);
+}
+
+function throwInvalidPersonalReminderCause(item: TrackedItem, cause: unknown): never {
+  const error = new DiscordPayloadError(`${item.displayReference}の個人催促causeが不正です`);
+  error.cause = cause;
+  throw error;
+}
+
+function assertPersonalReminderReasonMatchesCause(
+  item: TrackedItem,
+  reason: PersonalReminderSelectedReason,
+  cause: PersonalReminderCause,
+): void {
+  const context: DiscordPersonalReminderNotificationContext = reason.source.context;
+  if (cause.itemNodeId !== item.nodeId) {
+    throw new DiscordPayloadError(
+      `${item.displayReference}の個人催促causeが別の項目を参照しています`,
+    );
+  }
+  if (cause.reasonCode !== reason.reasonCode) {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促reason codeが一致しません`);
+  }
+  if (cause.responsibilityId !== context.responsibilityId) {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促責務IDが一致しません`);
+  }
+  if (
+    normalizedPersonalReminderResponsibleSignature(cause.responsible) !==
+    normalizedPersonalReminderResponsibleSignature(context.responsible)
+  ) {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促対応相手が一致しません`);
+  }
+  if (
+    cause.action.kind !== context.action.kind ||
+    cause.action.summary !== context.action.summary
+  ) {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促行動が一致しません`);
+  }
+  if (
+    personalReminderTimeBasisSignature(cause.obligationSince) !==
+    personalReminderTimeBasisSignature(context.obligationSince)
+  ) {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促義務時刻が一致しません`);
+  }
+  if (cause.actionableClock.status !== "observed") {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促時計が観測済みではありません`);
+  }
+  if (
+    personalReminderTimeBasisSignature(cause.actionableClock.actionableSince) !==
+    personalReminderTimeBasisSignature(context.actionableSince)
+  ) {
+    throw new DiscordPayloadError(
+      `${item.displayReference}の個人催促actionableSinceが一致しません`,
+    );
+  }
+  if (
+    personalReminderTimeBasisSignature(cause.actionableClock.stallSince) !==
+    personalReminderTimeBasisSignature(context.stallSince)
+  ) {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促stallSinceが一致しません`);
+  }
+  const assessment = currentPersonalReminderAssessment(cause);
+  if (assessment.status !== "available" || assessment.result.verdict !== "actionable") {
+    throw new DiscordPayloadError(
+      `${item.displayReference}の個人催促判定がactionableではありません`,
+    );
+  }
+  if (reason.threshold.status !== "recorded" || reason.severity === "none") {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促severity根拠が不正です`);
+  }
+  if (!Number.isFinite(reason.threshold.hours) || reason.threshold.hours < 0) {
+    throw new DiscordPayloadError(`${item.displayReference}の個人催促severity閾値が不正です`);
+  }
+}
+
+/** 選別済み個人催促理由と送信用項目のcauseが一致することを検証する。 */
+export function assertDiscordPersonalReminderSelectionMatchesItems(
+  candidates: readonly DiscordNotificationCandidate[],
+  items: readonly TrackedItem[],
+): void {
+  const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
+  if (itemsByNodeId.size !== items.length) {
+    throw new DiscordPayloadError("個人催促検証対象の追跡項目node IDが重複しています");
+  }
+  const notificationKeys = new Set<string>();
+  for (const candidate of candidates) {
+    const item = itemsByNodeId.get(candidate.itemNodeId);
+    if (item == null) {
+      throw new DiscordPayloadError(`通知候補 ${candidate.itemNodeId}の追跡項目がありません`);
+    }
+    const causesById = new Map<PersonalReminderCause["causeId"], PersonalReminderCause>();
+    for (const cause of item.personalReminderCauses) {
+      const parsedCause = personalReminderCauseSchema.safeParse(cause);
+      if (!parsedCause.success) {
+        throwInvalidPersonalReminderCause(item, parsedCause.error);
+      }
+      if (causesById.has(parsedCause.data.causeId)) {
+        throw new DiscordPayloadError(`${item.displayReference}の個人催促cause IDが重複しています`);
+      }
+      causesById.set(parsedCause.data.causeId, parsedCause.data);
+    }
+    const selectedCauseIds = new Set<PersonalReminderCause["causeId"]>();
+    for (const reason of candidate.reasons) {
+      if (reason.notificationKey.length === 0) {
+        throw new DiscordPayloadError(`${item.displayReference}のnotification keyが空です`);
+      }
+      if (notificationKeys.has(reason.notificationKey)) {
+        throw new DiscordPayloadError("通知候補のnotification keyが重複しています");
+      }
+      notificationKeys.add(reason.notificationKey);
+      if (!isPersonalReminderSelectedReason(reason)) {
+        continue;
+      }
+      const causeId = reason.source.context.causeId;
+      if (selectedCauseIds.has(causeId)) {
+        throw new DiscordPayloadError(
+          `${item.displayReference}の個人催促causeが重複選択されています`,
+        );
+      }
+      selectedCauseIds.add(causeId);
+      const cause = causesById.get(causeId);
+      if (cause == null) {
+        throw new DiscordPayloadError(`${item.displayReference}の個人催促causeが見つかりません`);
+      }
+      assertPersonalReminderReasonMatchesCause(item, reason, cause);
+    }
+  }
+}
+
 function createFieldName(item: TrackedItem): string {
   const reference = normalizeInlineText(item.displayReference, "表示用参照");
   if (characterCount(reference) > DISCORD_SAFE_LIMITS.fieldNameCharacters) {
@@ -465,6 +663,69 @@ function createReasonLines(candidate: DiscordNotificationCandidate): readonly st
   return Object.freeze(
     candidate.reasons.map((reason) => `理由: ${notificationReasonText(reason)}`),
   );
+}
+
+function createSystemReasonLines(
+  reasons: readonly SelectedDiscordNotificationReason[],
+): readonly string[] {
+  return Object.freeze(
+    reasons
+      .filter((reason) => reason.source.kind === "system")
+      .map((reason) => `理由: ${notificationReasonText(reason)}`),
+  );
+}
+
+function personalReminderWaitingFor(actionKind: PersonalReminderActionKind): string {
+  switch (actionKind) {
+    case "assessment":
+      return "内容確認";
+    case "owner":
+      return "作業担当の決定";
+    case "decision":
+      return "方針判断";
+    case "review":
+      return "依頼されたレビューへの対応";
+    case "revision":
+      return "指摘や失敗内容への対応";
+    case "reply":
+      return "返答";
+    case "work":
+      return "作業着手または再開";
+    case "merge":
+      return "マージ条件確認";
+  }
+}
+
+function createPersonalReminderReasonLine(
+  reason: PersonalReminderSelectedReason,
+  generatedTimestamp: number,
+  mentionLookup: ReadonlyMap<string, string>,
+  mentionsEnabled: boolean,
+): Readonly<{
+  text: string;
+  mentionedUserIds: readonly string[];
+}> {
+  const context = reason.source.context;
+  if (reason.threshold.status !== "recorded") {
+    throw new DiscordPayloadError("個人催促理由のseverity閾値が記録されていません");
+  }
+  const stallTimestamp = parseTimestamp(context.stallSince.at, "個人催促のstallSince");
+  const responsible = formatPersonalReminderResponsible(
+    context.responsible,
+    mentionLookup,
+    mentionsEnabled,
+  );
+  const actionSummary = normalizeInlineText(context.action.summary, "個人催促の行動");
+  return Object.freeze({
+    text: [
+      `待ち相手: ${responsible.text}`,
+      `待っていること: ${personalReminderWaitingFor(context.action.kind)}`,
+      `次の行動: ${actionSummary}`,
+      `停滞時間: ${formatElapsedTime(stallTimestamp, generatedTimestamp)}、${formatJst(stallTimestamp)}から`,
+      `理由: ${notificationReasonText(reason)}、基準時間: ${reason.threshold.hours.toString()}時間`,
+    ].join("\n"),
+    mentionedUserIds: responsible.mentionedUserIds,
+  });
 }
 
 type NotificationGuidance = Readonly<{
@@ -623,9 +884,9 @@ function createStatusGuidance(item: TrackedItem): NotificationGuidance {
 }
 
 function createReasonGuidance(
-  candidate: DiscordNotificationCandidate,
+  reasons: readonly SelectedDiscordNotificationReason[],
 ): NotificationGuidance | undefined {
-  for (const reason of candidate.reasons) {
+  for (const reason of reasons) {
     switch (reason.reasonCode) {
       case "dependency_cycle":
         return {
@@ -664,11 +925,11 @@ function createReasonGuidance(
 }
 
 function createNotificationGuidance(
-  candidate: DiscordNotificationCandidate,
+  reasons: readonly SelectedDiscordNotificationReason[],
   item: TrackedItem,
 ): NotificationGuidance {
   const statusGuidance = createStatusGuidance(item);
-  return createReasonGuidance(candidate) ?? statusGuidance;
+  return createReasonGuidance(reasons) ?? statusGuidance;
 }
 
 function createFieldDraft(
@@ -687,22 +948,64 @@ function createFieldDraft(
     throw new DiscordPayloadError("通知候補のdownstream impactが別の項目を参照しています");
   }
   validateGitHubUrl(item.url);
-  const stallTimestamp = parseTimestamp(item.stallSince, `${item.displayReference}のstallSince`);
-  const waitingOn = formatWaitingOn(item.waitingOn, itemReferences, mentionLookup, mentionsEnabled);
-  const reasonLines = createReasonLines(candidate);
-  const guidance = createNotificationGuidance(candidate, item);
   const publicItemUrl = createPublicItemUrl(pagesUrl, item);
   const firstReason = candidate.reasons[0];
   assertNonNullable(firstReason, `${candidate.itemNodeId}の通知理由を取得できませんでした`);
-  const fixedLines = [
-    `待ち相手: ${waitingOn.text}`,
-    `待っていること: ${guidance.waitingFor}`,
-    `次の行動: ${guidance.nextAction}`,
-    `停滞時間: ${formatElapsedTime(stallTimestamp, generatedTimestamp)}、${formatJst(stallTimestamp)}から`,
-    ...reasonLines,
-    `公開ページ: ${publicItemUrl}`,
-    `GitHub: ${item.url}`,
-  ];
+  const personalReasons = candidate.reasons.filter(isPersonalReminderSelectedReason);
+  let fixedLines: readonly string[];
+  let mentionedUserIds: readonly string[];
+  if (personalReasons.length > 0) {
+    const personalReasonLines = personalReasons.map((reason) =>
+      createPersonalReminderReasonLine(reason, generatedTimestamp, mentionLookup, mentionsEnabled),
+    );
+    const lines = personalReasonLines.map((line) => line.text);
+    const personalMentionedUserIds = personalReasonLines.flatMap((line) => line.mentionedUserIds);
+    const systemReasons = candidate.reasons.filter((reason) => reason.source.kind === "system");
+    const allMentionedUserIds = [...personalMentionedUserIds];
+    if (systemReasons.length > 0) {
+      const systemWaitingOn = formatWaitingOn(
+        item.waitingOn,
+        itemReferences,
+        mentionLookup,
+        mentionsEnabled,
+      );
+      const systemStallTimestamp = parseTimestamp(
+        item.stallSince,
+        `${item.displayReference}のstallSince`,
+      );
+      const guidance = createNotificationGuidance(systemReasons, item);
+      lines.push(
+        `項目全体の待ち相手: ${systemWaitingOn.text}`,
+        `待っていること: ${guidance.waitingFor}`,
+        `次の行動: ${guidance.nextAction}`,
+        `停滞時間: ${formatElapsedTime(systemStallTimestamp, generatedTimestamp)}、${formatJst(systemStallTimestamp)}から`,
+        ...createSystemReasonLines(systemReasons),
+      );
+      allMentionedUserIds.push(...systemWaitingOn.mentionedUserIds);
+    }
+    fixedLines = Object.freeze([...lines, `公開ページ: ${publicItemUrl}`, `GitHub: ${item.url}`]);
+    mentionedUserIds = Object.freeze([...new Set(allMentionedUserIds)].sort());
+  } else {
+    const stallTimestamp = parseTimestamp(item.stallSince, `${item.displayReference}のstallSince`);
+    const waitingOn = formatWaitingOn(
+      item.waitingOn,
+      itemReferences,
+      mentionLookup,
+      mentionsEnabled,
+    );
+    const reasonLines = createReasonLines(candidate);
+    const guidance = createNotificationGuidance(candidate.reasons, item);
+    fixedLines = Object.freeze([
+      `待ち相手: ${waitingOn.text}`,
+      `待っていること: ${guidance.waitingFor}`,
+      `次の行動: ${guidance.nextAction}`,
+      `停滞時間: ${formatElapsedTime(stallTimestamp, generatedTimestamp)}、${formatJst(stallTimestamp)}から`,
+      ...reasonLines,
+      `公開ページ: ${publicItemUrl}`,
+      `GitHub: ${item.url}`,
+    ]);
+    mentionedUserIds = waitingOn.mentionedUserIds;
+  }
   const titlePrefix = "タイトル: ";
   const maximumTitleCharacters =
     DISCORD_SAFE_LIMITS.fieldValueCharacters -
@@ -729,7 +1032,7 @@ function createFieldDraft(
     }),
     itemNodeId: item.nodeId,
     notificationKeys: Object.freeze(candidate.reasons.map((reason) => reason.notificationKey)),
-    mentionedUserIds: waitingOn.mentionedUserIds,
+    mentionedUserIds,
   });
 }
 
@@ -747,6 +1050,7 @@ function validateDigestInputs(input: BuildDiscordDigestPlanInput): Readonly<{
   if (new Set(candidateNodeIds).size !== candidateNodeIds.length) {
     throw new DiscordPayloadError("通知候補のnode IDが重複しています");
   }
+  assertDiscordPersonalReminderSelectionMatchesItems(input.candidates, input.items);
 
   const reservationsByKey = new Map(
     input.ledgerReservations.map((reservation) => [reservation.notificationKey, reservation]),
@@ -765,7 +1069,7 @@ function validateDigestInputs(input: BuildDiscordDigestPlanInput): Readonly<{
         reservation?.status !== "reserved" ||
         reservation.itemNodeId !== candidate.itemNodeId ||
         reservation.reasonCode !== reason.reasonCode ||
-        reservation.severity !== candidate.severity
+        reservation.severity !== reason.severity
       ) {
         throw new DiscordPayloadError("通知候補とledger予約が一致しません");
       }

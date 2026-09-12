@@ -531,7 +531,8 @@ function isAuthorAfterChangesRequested(
   );
 }
 
-function determineWaitClass(
+/** 状態判定とイベントから停滞の待機分類を決定する。 */
+export function determineStalenessWaitClass(
   decision: StateDecisionForStaleness,
   events: readonly NormalizedEvent[],
 ): StalenessWaitClass {
@@ -773,7 +774,7 @@ export function calculateStaleness(input: CalculateStalenessInput): StalenessRes
     owner: elapsedHours(transitionTimes.ownerSince, input.evaluatedAt),
     stall: elapsedHours(transitionTimes.stallSince, input.evaluatedAt),
   });
-  const waitClass = determineWaitClass(input.currentDecision, input.events);
+  const waitClass = determineStalenessWaitClass(input.currentDecision, input.events);
   const severityContext = createSeverityContext(input, waitClass);
   const severity = determineSeverity(input, severityContext, elapsed.stall);
 

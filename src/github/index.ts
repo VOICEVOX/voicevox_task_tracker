@@ -94,6 +94,7 @@ export {
 } from "./item-normalization.js";
 export {
   PRODUCTION_SOURCE_ID_KINDS,
+  buildPullRequestCommitSourceId,
   buildProductionSourceId,
   isProductionSourceIdKind,
   type ProductionSourceIdKind,

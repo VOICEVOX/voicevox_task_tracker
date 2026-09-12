@@ -7,8 +7,12 @@ import { type StateSnapshot } from "./snapshot.js";
 import {
   createNotificationReason,
   notificationReasonSchema,
+  personalReminderActionKindSchema,
+  personalReminderResponsibleSchema,
+  personalReminderTimeBasisSchema,
   type Repository,
 } from "../domain/index.js";
+import { UnreachableError } from "../util/index.js";
 
 const STATE_HISTORY_SCHEMA_VERSION_1 = "1";
 export const STATE_HISTORY_SCHEMA_VERSION_2 = "2";
@@ -16,6 +20,7 @@ export const STATE_HISTORY_SCHEMA_VERSION_3 = "3";
 export const STATE_HISTORY_SCHEMA_VERSION_4 = "4";
 export const STATE_HISTORY_SCHEMA_VERSION_5 = "5";
 export const STATE_HISTORY_SCHEMA_VERSION_6 = "6";
+export const STATE_HISTORY_SCHEMA_VERSION_7 = "7";
 
 const historySchemaVersionSchema = z.object({
   schemaVersion: z.string().min(1),
@@ -408,7 +413,7 @@ const notificationSentEventVersion4Schema = notificationSentEventLegacyFieldsSch
       });
     }
   });
-const notificationSentEventSchema = notificationSentEventCommonFieldsSchema
+const notificationSentEventVersion6Schema = notificationSentEventCommonFieldsSchema
   .extend({
     waitingOn: notificationWaitingOnRecordSchema,
     reasons: z.array(notificationReasonSchema).min(1),
@@ -423,6 +428,191 @@ const notificationSentEventSchema = notificationSentEventCommonFieldsSchema
       });
     }
   });
+const notificationSentPersonalReminderSchema = z
+  .strictObject({
+    notificationKey: identifierSchema,
+    causeId: identifierSchema,
+    responsibilityId: identifierSchema,
+    responsible: z.array(personalReminderResponsibleSchema).nonempty().max(20),
+    action: z.strictObject({
+      kind: personalReminderActionKindSchema,
+      summary: z.string().min(1).max(300),
+    }),
+    reason: notificationReasonSchema,
+    obligationSince: personalReminderTimeBasisSchema,
+    actionableSince: personalReminderTimeBasisSchema,
+    stallSince: personalReminderTimeBasisSchema,
+    severity: z.enum(["watch", "urgent", "critical"]),
+  })
+  .superRefine((personalReminder, context) => {
+    const reasonCode = personalReminder.reason.reasonCode;
+    const expectedAction = (() => {
+      switch (reasonCode) {
+        case "assessment_overdue":
+          return "assessment";
+        case "owner_overdue":
+          return "owner";
+        case "decision_overdue":
+          return "decision";
+        case "review_overdue":
+          return "review";
+        case "revision_overdue":
+          return "revision";
+        case "reply_overdue":
+          return "reply";
+        case "work_overdue":
+          return "work";
+        case "merge_overdue":
+          return "merge";
+        case "owner_unknown":
+        case "blocker_overdue":
+        case "newly_unblocked":
+        case "dependency_cycle":
+        case "responsibility_changed":
+        case "automation_stuck":
+          return undefined;
+        default:
+          throw new UnreachableError(reasonCode);
+      }
+    })();
+    if (expectedAction == null) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason", "reasonCode"],
+        message: "個人催促の通知理由コードが対応する時間系理由ではありません",
+      });
+    } else if (personalReminder.action.kind !== expectedAction) {
+      context.addIssue({
+        code: "custom",
+        path: ["action", "kind"],
+        message: "個人催促の通知理由コードと行動種別が一致しません",
+      });
+    }
+    if (personalReminder.reason.threshold.status !== "recorded") {
+      context.addIssue({
+        code: "custom",
+        path: ["reason", "threshold"],
+        message: "個人催促の通知理由には到達済みの基準時間が必要です",
+      });
+    }
+  });
+
+function notificationReasonKey(reason: z.output<typeof notificationReasonSchema>): string {
+  switch (reason.threshold.status) {
+    case "recorded":
+      return `${reason.reasonCode}:recorded:${reason.threshold.hours.toString()}`;
+    case "not_reached":
+      return `${reason.reasonCode}:not_reached:${reason.threshold.elapsedHours.toString()}`;
+    case "not_recorded":
+      return `${reason.reasonCode}:not_recorded`;
+    case "not_applicable":
+      return `${reason.reasonCode}:not_applicable`;
+  }
+}
+
+function assertNotificationPersonalReminderClock(
+  personalReminder: z.output<typeof notificationSentPersonalReminderSchema>,
+  sentAt: string,
+  context: z.RefinementCtx,
+): void {
+  const obligationAt = Date.parse(personalReminder.obligationSince.at);
+  const actionableAt = Date.parse(personalReminder.actionableSince.at);
+  const stallAt = Date.parse(personalReminder.stallSince.at);
+  const sentTimestamp = Date.parse(sentAt);
+  if (
+    !Number.isFinite(obligationAt) ||
+    !Number.isFinite(actionableAt) ||
+    !Number.isFinite(stallAt) ||
+    !Number.isFinite(sentTimestamp) ||
+    obligationAt > actionableAt ||
+    actionableAt > stallAt ||
+    stallAt > sentTimestamp
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["obligationSince"],
+      message: "個人催促の時計は義務、実行可能、停滞、送信の順序にしてください",
+    });
+  }
+}
+
+const notificationSentEventSchema = notificationSentEventCommonFieldsSchema
+  .extend({
+    waitingOn: notificationWaitingOnRecordSchema,
+    reasons: z.array(notificationReasonSchema).min(1),
+    personalReminders: z.array(notificationSentPersonalReminderSchema),
+  })
+  .superRefine((event, context) => {
+    const notificationKeys = event.personalReminders.map(
+      (personalReminder) => personalReminder.notificationKey,
+    );
+    if (new Set(notificationKeys).size !== notificationKeys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["personalReminders"],
+        message: "個人催促のnotification keyが重複しています",
+      });
+    }
+    const eventReasonCounts = new Map<string, number>();
+    const eventReasonCodeCounts = new Map<string, number>();
+    for (const reason of event.reasons) {
+      const key = notificationReasonKey(reason);
+      eventReasonCounts.set(key, (eventReasonCounts.get(key) ?? 0) + 1);
+      eventReasonCodeCounts.set(
+        reason.reasonCode,
+        (eventReasonCodeCounts.get(reason.reasonCode) ?? 0) + 1,
+      );
+    }
+    const personalReasonCounts = new Map<string, number>();
+    const personalReasonCodeCounts = new Map<string, number>();
+    for (const personalReminder of event.personalReminders) {
+      const key = notificationReasonKey(personalReminder.reason);
+      const count = (personalReasonCounts.get(key) ?? 0) + 1;
+      personalReasonCounts.set(key, count);
+      personalReasonCodeCounts.set(
+        personalReminder.reason.reasonCode,
+        (personalReasonCodeCounts.get(personalReminder.reason.reasonCode) ?? 0) + 1,
+      );
+      if (count > (eventReasonCounts.get(key) ?? 0)) {
+        context.addIssue({
+          code: "custom",
+          path: ["personalReminders"],
+          message: "個人催促の通知理由がeventの通知理由に含まれていません",
+        });
+      }
+      assertNotificationPersonalReminderClock(personalReminder, event.sentAt, context);
+    }
+    for (const [reasonCode, count] of eventReasonCodeCounts) {
+      const personalCount = personalReasonCodeCounts.get(reasonCode) ?? 0;
+      if (count - personalCount > 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["reasons"],
+          message: "system通知理由コードが重複しています",
+        });
+      }
+    }
+  });
+const historyEventVersion6Schema = z.discriminatedUnion("kind", [
+  stateHistoryStateEventSchema.options[0],
+  stateHistoryStateEventSchema.options[1],
+  stateHistoryStateEventSchema.options[2],
+  stateHistoryStateEventSchema.options[3],
+  stateHistoryStateEventSchema.options[4],
+  stateHistoryStateEventSchema.options[5],
+  stateHistoryStateEventSchema.options[6],
+  notificationSentEventVersion6Schema,
+]);
+const historyEventVersion7Schema = z.discriminatedUnion("kind", [
+  stateHistoryStateEventSchema.options[0],
+  stateHistoryStateEventSchema.options[1],
+  stateHistoryStateEventSchema.options[2],
+  stateHistoryStateEventSchema.options[3],
+  stateHistoryStateEventSchema.options[4],
+  stateHistoryStateEventSchema.options[5],
+  stateHistoryStateEventSchema.options[6],
+  notificationSentEventSchema,
+]);
 const notificationSentEventVersion5Schema = notificationSentEventCommonFieldsSchema
   .extend({
     waitingOn: notificationWaitingOnRecordSchema,
@@ -438,16 +628,6 @@ const notificationSentEventVersion5Schema = notificationSentEventCommonFieldsSch
       });
     }
   });
-const historyEventSchema = z.discriminatedUnion("kind", [
-  stateHistoryStateEventSchema.options[0],
-  stateHistoryStateEventSchema.options[1],
-  stateHistoryStateEventSchema.options[2],
-  stateHistoryStateEventSchema.options[3],
-  stateHistoryStateEventSchema.options[4],
-  stateHistoryStateEventSchema.options[5],
-  stateHistoryStateEventSchema.options[6],
-  notificationSentEventSchema,
-]);
 const historyEventVersion5Schema = z.discriminatedUnion("kind", [
   stateHistoryStateEventSchema.options[0],
   stateHistoryStateEventSchema.options[1],
@@ -584,7 +764,26 @@ const historyRecordVersion6Schema = z
     runId: identifierSchema,
     recordedAt: dateTimeSchema,
     inputEvents: inputEventsSchema,
-    events: z.array(historyEventSchema),
+    events: z.array(historyEventVersion6Schema),
+  })
+  .superRefine((record, context) => {
+    const keys = record.events.map(historyEventKey);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["events"],
+        message: "同じ対象と分類のeventが重複しています",
+      });
+    }
+  });
+const historyRecordVersion7Schema = z
+  .strictObject({
+    schemaVersion: z.literal(STATE_HISTORY_SCHEMA_VERSION_7),
+    date: dateSchema,
+    runId: identifierSchema,
+    recordedAt: dateTimeSchema,
+    inputEvents: inputEventsSchema,
+    events: z.array(historyEventVersion7Schema),
   })
   .superRefine((record, context) => {
     const keys = record.events.map(historyEventKey);
@@ -604,10 +803,15 @@ export type StateHistoryResponsibility = z.output<typeof responsibilitySchema>;
 export type StateHistoryEdge = z.output<typeof edgeSchema>;
 
 /** 日次履歴の一つの変更event。 */
-export type StateHistoryEvent = z.output<typeof historyEventSchema>;
+export type StateHistoryEvent = z.output<typeof historyEventVersion7Schema>;
 
 /** Discord通知送信を保存する履歴event。 */
 export type StateHistoryNotificationEvent = z.output<typeof notificationSentEventSchema>;
+
+/** Discord通知送信時の個人催促context。 */
+export type StateHistoryNotificationPersonalReminder = z.output<
+  typeof notificationSentPersonalReminderSchema
+>;
 
 /** 日次履歴へ保存する一つの正規化入力イベント。 */
 export type StateHistoryInputEvent = z.output<typeof inputEventSchema>;
@@ -651,14 +855,16 @@ type StateHistoryRecordVersion3 = z.output<typeof historyRecordVersion3Schema>;
 type StateHistoryRecordVersion4 = z.output<typeof historyRecordVersion4Schema>;
 type StateHistoryRecordVersion5 = z.output<typeof historyRecordVersion5Schema>;
 type StateHistoryRecordVersion6 = z.output<typeof historyRecordVersion6Schema>;
+type StateHistoryRecordVersion7 = z.output<typeof historyRecordVersion7Schema>;
 type StateHistoryEventVersion3 = z.output<typeof historyEventVersion3Schema>;
 type StateHistoryEventVersion4 = z.output<typeof historyEventVersion4Schema>;
 type StateHistoryEventVersion5 = z.output<typeof historyEventVersion5Schema>;
+type StateHistoryEventVersion6 = z.output<typeof historyEventVersion6Schema>;
 type StateHistoryNotificationEventVersion4 = z.output<typeof notificationSentEventVersion4Schema>;
 type StateHistoryRecordVersionParser = (value: unknown) => StateHistoryRecord;
 
-/** 一つの完全runが生成したschema version 6の日次履歴record。 */
-export type StateHistoryRecord = StateHistoryRecordVersion6;
+/** 一つの完全runが生成したschema version 7の日次履歴record。 */
+export type StateHistoryRecord = StateHistoryRecordVersion7;
 
 /** 履歴を指定時点まで再生した責務・edge・severity状態。 */
 export type ReplayedStateHistory = Readonly<{
@@ -742,7 +948,8 @@ function historyEventKey(
     | StateHistoryEvent
     | StateHistoryEventVersion3
     | StateHistoryEventVersion4
-    | StateHistoryEventVersion5,
+    | StateHistoryEventVersion5
+    | StateHistoryEventVersion6,
 ): string {
   switch (event.kind) {
     case "responsibility_set":
@@ -1083,7 +1290,7 @@ function migrateNotificationReasonCode(
 
 function migrateNotificationSentEventVersion4(
   event: StateHistoryNotificationEventVersion4,
-): z.output<typeof notificationSentEventSchema> {
+): z.output<typeof notificationSentEventVersion6Schema> {
   const { reasonCodes, ...fields } = event;
   return {
     ...fields,
@@ -1130,6 +1337,31 @@ function parseStateHistoryRecordVersion6(value: unknown): StateHistoryRecordVers
 }
 
 function migrateStateHistoryRecordVersion6(record: StateHistoryRecordVersion6): StateHistoryRecord {
+  return migrateStateHistoryRecordVersion7(
+    parseStateHistoryRecordVersion7({
+      ...record,
+      schemaVersion: STATE_HISTORY_SCHEMA_VERSION_7,
+      events: record.events.map((event) =>
+        event.kind === "notification_sent"
+          ? {
+              ...event,
+              personalReminders: [],
+            }
+          : event,
+      ),
+    }),
+  );
+}
+
+function parseStateHistoryRecordVersion7(value: unknown): StateHistoryRecordVersion7 {
+  const result = historyRecordVersion7Schema.safeParse(value);
+  if (!result.success) {
+    throw StateFormatError.fromZodError("state history", result.error);
+  }
+  return result.data;
+}
+
+function migrateStateHistoryRecordVersion7(record: StateHistoryRecordVersion7): StateHistoryRecord {
   return Object.freeze(record);
 }
 
@@ -1184,6 +1416,13 @@ const stateHistoryRecordVersionParsers: ReadonlyMap<string, StateHistoryRecordVe
         migrateStateHistoryRecordVersion6,
       ),
     ],
+    [
+      STATE_HISTORY_SCHEMA_VERSION_7,
+      createStateHistoryRecordVersionParser(
+        parseStateHistoryRecordVersion7,
+        migrateStateHistoryRecordVersion7,
+      ),
+    ],
   ]);
 
 function parseVersionedStateHistoryRecord(value: unknown): StateHistoryRecord {
@@ -1201,7 +1440,7 @@ function parseVersionedStateHistoryRecord(value: unknown): StateHistoryRecord {
 }
 
 function validateHistoryRecord(value: unknown): StateHistoryRecord {
-  return migrateStateHistoryRecordVersion6(parseStateHistoryRecordVersion6(value));
+  return migrateStateHistoryRecordVersion7(parseStateHistoryRecordVersion7(value));
 }
 
 /** previous snapshotからcurrent snapshotへの日次履歴recordを生成する。 */
@@ -1230,7 +1469,7 @@ export function createStateHistoryRecord(
   ].sort((left, right) => compareStrings(historyEventKey(left), historyEventKey(right)));
 
   return validateHistoryRecord({
-    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_6,
+    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_7,
     date,
     runId: currentSnapshot.run.id,
     recordedAt: currentSnapshot.generatedAt,
@@ -1275,7 +1514,7 @@ export function appendStateHistoryNotificationEvents(
   }
   const updatedRecord = validateHistoryRecord({
     ...targetRecord,
-    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_6,
+    schemaVersion: STATE_HISTORY_SCHEMA_VERSION_7,
     events: [...targetRecord.events, ...validatedEvents].sort((left, right) =>
       compareStrings(historyEventKey(left), historyEventKey(right)),
     ),

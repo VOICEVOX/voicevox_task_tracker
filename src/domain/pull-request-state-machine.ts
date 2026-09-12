@@ -836,6 +836,53 @@ function getEffectiveReviews(events: readonly ReviewEvent[]): readonly ReviewEve
   return Object.freeze([...reviewsByActor.values()].sort(compareEvents));
 }
 
+function previousChangesRequestedForHead(
+  effectiveReviews: readonly ReviewEvent[],
+  pullRequest: FreshObservedGitHubPullRequest,
+  headBasis: PullRequestTransitionBasis,
+  previousBasis: PullRequestTransitionBasis,
+): readonly ReviewEvent[] {
+  return Object.freeze(
+    effectiveReviews.filter(
+      (review) =>
+        review.state === "changes_requested" &&
+        !isReviewForCurrentHead(review, pullRequest, headBasis) &&
+        review.occurredAt < headBasis.occurredAt &&
+        review.occurredAt <= previousBasis.occurredAt,
+    ),
+  );
+}
+
+function reviewerCommentedReviewsAfterHead(
+  pullRequest: FreshObservedGitHubPullRequest,
+  reviewerNodeIds: ReadonlySet<GitHubNodeId>,
+  headBasis: PullRequestTransitionBasis,
+): readonly ReviewEvent[] {
+  return Object.freeze(
+    getHumanReviewEvents(pullRequest).filter(
+      (review) =>
+        review.state === "commented" &&
+        review.occurredAt > headBasis.occurredAt &&
+        reviewerNodeIds.has(review.actor.nodeId),
+    ),
+  );
+}
+
+function reviewerCommentsAfterHead(
+  pullRequest: FreshObservedGitHubPullRequest,
+  reviewerNodeIds: ReadonlySet<GitHubNodeId>,
+  headBasis: PullRequestTransitionBasis,
+): readonly HumanCommentEvent[] {
+  return Object.freeze(
+    getHumanCommentEvents(pullRequest).filter(
+      (comment) =>
+        !comment.bodyEmpty &&
+        comment.occurredAt > headBasis.occurredAt &&
+        reviewerNodeIds.has(comment.actor.nodeId),
+    ),
+  );
+}
+
 function isReviewForCurrentHead(
   review: ReviewEvent,
   pullRequest: FreshObservedGitHubPullRequest,
@@ -1182,11 +1229,11 @@ function createRereviewDecision(
   headBasis: PullRequestTransitionBasis,
   reviewRequests: readonly ResolvedReviewRequest[],
 ): PullRequestStateDecision | undefined {
-  const previousChangesRequested = effectiveReviews.filter(
-    (review) =>
-      review.state === "changes_requested" &&
-      !isReviewForCurrentHead(review, input.pullRequest, headBasis) &&
-      review.occurredAt < headBasis.occurredAt,
+  const previousChangesRequested = previousChangesRequestedForHead(
+    effectiveReviews,
+    input.pullRequest,
+    headBasis,
+    headBasis,
   );
   if (previousChangesRequested.length === 0) {
     return undefined;
@@ -1195,11 +1242,10 @@ function createRereviewDecision(
   const previousReviewerNodeIds = new Set(
     previousChangesRequested.map((review) => review.actor.nodeId),
   );
-  const commentedAfterPush = getHumanReviewEvents(input.pullRequest).filter(
-    (review) =>
-      review.state === "commented" &&
-      review.occurredAt > headBasis.occurredAt &&
-      previousReviewerNodeIds.has(review.actor.nodeId),
+  const commentedAfterPush = reviewerCommentedReviewsAfterHead(
+    input.pullRequest,
+    previousReviewerNodeIds,
+    headBasis,
   );
   if (commentedAfterPush.length > 0) {
     addUncertainty(
@@ -1225,11 +1271,10 @@ function createRereviewDecision(
                 : [],
             ),
           );
-    const commentsAfterPush = getHumanCommentEvents(input.pullRequest).filter(
-      (comment) =>
-        !comment.bodyEmpty &&
-        comment.occurredAt > headBasis.occurredAt &&
-        waitingReviewerNodeIds.has(comment.actor.nodeId),
+    const commentsAfterPush = reviewerCommentsAfterHead(
+      input.pullRequest,
+      waitingReviewerNodeIds,
+      headBasis,
     );
     if (commentsAfterPush.length > 0) {
       addUncertainty(
@@ -1448,6 +1493,34 @@ function createDraftDecision(
     statusBasis: basis,
     responsibilityBasis: basis,
   });
+}
+
+/** 既存のreview判定規則からrevision責務の解消を判定する。 */
+export function isPullRequestRevisionResponsibilityResolved(
+  input: Readonly<{
+    pullRequest: FreshObservedGitHubPullRequest;
+    previousResponsibilityBasis: PullRequestTransitionBasis;
+  }>,
+): boolean {
+  const headBasis = getHeadBasis(input.pullRequest);
+  if (headBasis.occurredAt <= input.previousResponsibilityBasis.occurredAt) {
+    return false;
+  }
+  const effectiveReviews = getEffectiveReviews(getHumanReviewEvents(input.pullRequest));
+  const previousChangesRequested = previousChangesRequestedForHead(
+    effectiveReviews,
+    input.pullRequest,
+    headBasis,
+    input.previousResponsibilityBasis,
+  );
+  if (previousChangesRequested.length === 0) {
+    return true;
+  }
+  const reviewerNodeIds = new Set(previousChangesRequested.map((review) => review.actor.nodeId));
+  if (reviewerCommentedReviewsAfterHead(input.pullRequest, reviewerNodeIds, headBasis).length > 0) {
+    return false;
+  }
+  return reviewerCommentsAfterHead(input.pullRequest, reviewerNodeIds, headBasis).length === 0;
 }
 
 function addAmbiguousHumanCommentUncertainty(
@@ -1913,4 +1986,32 @@ export function determinePullRequestState(
 
   addMergeStateUncertainty(input, context);
   return createOwnerDecision(input, context);
+}
+
+/** block適用前のPull Requestローカル責務を決定する。 */
+export function determinePullRequestLocalResponsibility(
+  input: Omit<PullRequestStateMachineInput, "blockers">,
+): PullRequestStateDecision {
+  return determinePullRequestState({ ...input, blockers: [] });
+}
+
+/** Pull Requestの状態機械branchから個人催促責務のauthorityを判定する。 */
+export function determinePullRequestPersonalReminderResponsibilityAuthority(
+  decision: PullRequestStateDecision,
+): "fixed" {
+  switch (decision.status) {
+    case "waiting_for_unblock":
+    case "waiting_for_automation":
+    case "waiting_for_revision":
+    case "waiting_for_review":
+    case "waiting_for_decision":
+    case "waiting_for_owner":
+    case "waiting_for_merge":
+    case "in_progress":
+      return "fixed";
+    default:
+      throw new TypeError(
+        `個人催促責務に対応するPull Request state branchがありません。対象: ${decision.status}`,
+      );
+  }
 }

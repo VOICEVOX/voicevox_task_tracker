@@ -58,20 +58,7 @@
       "provenance": "checklist"
     }
   ],
-  "notifications": [
-    {
-      "itemNodeId": "nested-core-issue",
-      "reasonCodes": ["assessment_overdue"]
-    },
-    {
-      "itemNodeId": "nested-engine-issue",
-      "reasonCodes": ["assessment_overdue"]
-    },
-    {
-      "itemNodeId": "nested-release-issue",
-      "reasonCodes": ["assessment_overdue"]
-    }
-  ],
+  "notifications": [],
   "publication": {
     "status": "published"
   },

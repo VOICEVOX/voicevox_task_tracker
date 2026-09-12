@@ -15,6 +15,7 @@ export {
   type PublicDtoGenerationOptions,
 } from "./generate-public-data.js";
 export {
+  PUBLIC_DTO_SCHEMA_VERSION,
   createPublicDetailsDto,
   createPublicNotificationHistoryDto,
   createPublicSummaryDto,
@@ -27,6 +28,9 @@ export {
   type PublicItemSummaryDto,
   type PublicNotificationHistoryDto,
   type PublicNotificationHistoryEntryDto,
+  type PublicNotificationHistoryPersonalReminderDto,
+  type PublicPersonalReminderResponseDto,
+  type PublicPersonalReminderUnknownReason,
   type PublicSummaryDto,
 } from "./public-dto.js";
 export {

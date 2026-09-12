@@ -2,6 +2,13 @@ import { z } from "zod";
 
 import { type Importance } from "./importance.js";
 import { notificationReasonSchema, type NotificationReason } from "./notification-reason.js";
+import type {
+  PersonalReminderCause,
+  PersonalReminderCauseId,
+  PersonalReminderCausePlanning,
+  PersonalReminderResponsibilityId,
+  PersonalReminderTimeBasis,
+} from "./personal-reminder-causes.js";
 import { type SourceId } from "./source-id.js";
 import type { StalenessWaitClass } from "./staleness.js";
 import type {
@@ -360,6 +367,15 @@ export type WaitingOn = Readonly<{
 /** 通知候補に保存する待ち相手の参照。 */
 type PendingNotificationWaitingOn = Pick<WaitingOn, "kind" | "candidateId" | "role">;
 
+/** 個人催促原因を対象にした送信待ち通知の対象状態。 */
+export type PendingPersonalReminderTarget = Readonly<{
+  kind: "personal_reminder";
+  causeId: PersonalReminderCauseId;
+  responsibilityId: PersonalReminderResponsibilityId;
+  actionableSince: PersonalReminderTimeBasis;
+  stallSince: PersonalReminderTimeBasis;
+}>;
+
 /** 通知候補の判定対象。 */
 export type PendingNotificationTarget =
   | Readonly<{
@@ -379,7 +395,8 @@ export type PendingNotificationTarget =
       waitClass: StalenessWaitClass;
       waitingOn: readonly PendingNotificationWaitingOn[];
       lastProgressAt: UtcIsoDateTime;
-    }>;
+    }>
+  | PendingPersonalReminderTarget;
 
 /** 送信待ち通知の判定結果と公開可能な対象状態。 */
 export type PendingNotification = Readonly<{
@@ -436,6 +453,35 @@ const pendingNotificationWaitClassSchema = z.enum([
   "blockedParent",
   "notApplicable",
 ]);
+const pendingPersonalReminderCauseIdSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^\S+$/u)
+  .brand<"PersonalReminderCauseId">();
+const pendingPersonalReminderResponsibilityIdSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .regex(/^\S+$/u)
+  .brand<"PersonalReminderResponsibilityId">();
+const pendingPersonalReminderSourceIdSchema = z
+  .string()
+  .min(3)
+  .max(512)
+  .regex(/^\S+$/u)
+  .brand<"SourceId">();
+const pendingPersonalReminderTimeBasisSchema = z.discriminatedUnion("source", [
+  z.strictObject({
+    source: z.literal("event"),
+    at: utcIsoDateTimeSchema,
+    sourceIds: z.array(pendingPersonalReminderSourceIdSchema).nonempty().max(30),
+  }),
+  z.strictObject({
+    source: z.literal("first_observation"),
+    at: utcIsoDateTimeSchema,
+  }),
+]);
 const pendingNotificationTargetSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("responsibility"),
@@ -455,7 +501,37 @@ const pendingNotificationTargetSchema = z.discriminatedUnion("kind", [
     waitingOn: z.array(pendingNotificationWaitingOnSchema).min(1),
     lastProgressAt: utcIsoDateTimeSchema,
   }),
+  z.strictObject({
+    kind: z.literal("personal_reminder"),
+    causeId: pendingPersonalReminderCauseIdSchema,
+    responsibilityId: pendingPersonalReminderResponsibilityIdSchema,
+    actionableSince: pendingPersonalReminderTimeBasisSchema,
+    stallSince: pendingPersonalReminderTimeBasisSchema,
+  }),
 ]);
+
+function isPersonalReminderReasonCode(
+  reasonCode: Exclude<NotificationReason["reasonCode"], "none">,
+): boolean {
+  switch (reasonCode) {
+    case "assessment_overdue":
+    case "owner_overdue":
+    case "decision_overdue":
+    case "review_overdue":
+    case "revision_overdue":
+    case "reply_overdue":
+    case "work_overdue":
+    case "merge_overdue":
+      return true;
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "newly_unblocked":
+    case "dependency_cycle":
+    case "responsibility_changed":
+    case "automation_stuck":
+      return false;
+  }
+}
 
 function pendingNotificationTargetKind(
   reasonCode: Exclude<NotificationReason["reasonCode"], "none">,
@@ -494,7 +570,11 @@ export const pendingNotificationSchema = z
   })
   .superRefine((notification, context) => {
     if (
-      notification.target.kind !== pendingNotificationTargetKind(notification.reason.reasonCode)
+      notification.target.kind !== pendingNotificationTargetKind(notification.reason.reasonCode) &&
+      !(
+        notification.target.kind === "personal_reminder" &&
+        isPersonalReminderReasonCode(notification.reason.reasonCode)
+      )
     ) {
       context.addIssue({
         code: "custom",
@@ -691,6 +771,8 @@ type TrackedItemFields = Readonly<{
   reviewState: ReviewState;
   checkState: CheckState;
   aiAnalysis: TrackedItemAiAnalysis;
+  personalReminderCauses: readonly PersonalReminderCause[];
+  personalReminderCausePlanning: PersonalReminderCausePlanning;
   inputEvents: readonly TrackedItemInputEvent[];
   confidence: number;
   evidence: readonly Evidence[];
