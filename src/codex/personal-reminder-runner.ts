@@ -128,6 +128,11 @@ type PreparedBatchState = Readonly<{
   misses: readonly MissCandidate[];
 }>;
 
+type PreparedBatchPlan = Readonly<{
+  states: readonly PreparedBatchState[];
+  overCapacityMisses: readonly MissCandidate[];
+}>;
+
 type BatchExecutionOutcome = Readonly<{
   outcomes: ReadonlyMap<PersonalReminderCauseId, PersonalReminderAiCauseRunOutcome>;
 }>;
@@ -294,7 +299,7 @@ function mergePriority(priorities: readonly AiAnalysisPriority[]): AiAnalysisPri
 function createPreparedBatchStates(
   misses: readonly MissCandidate[],
   configuration: PersonalReminderAiRunConfiguration,
-): readonly PreparedBatchState[] {
+): PreparedBatchPlan {
   const grouped = new Map<GitHubNodeId, MissCandidate[]>();
   for (const miss of misses) {
     const itemNodeId = miss.candidate.cause.itemNodeId;
@@ -303,6 +308,7 @@ function createPreparedBatchStates(
     grouped.set(itemNodeId, group);
   }
   const states: PreparedBatchState[] = [];
+  const overCapacityMisses: MissCandidate[] = [];
   for (const [itemNodeId, group] of [...grouped.entries()].sort((left, right) =>
     compareStrings(left[0], right[0]),
   )) {
@@ -319,7 +325,12 @@ function createPreparedBatchStates(
       PersonalReminderCauseSemanticInput,
       ...PersonalReminderCauseSemanticInput[],
     ] = [firstInput, ...restInputs];
-    const batch = preparePersonalReminderAiBatch(batchInputs);
+    const preparation = preparePersonalReminderAiBatch(batchInputs);
+    if (preparation.status === "over_capacity") {
+      overCapacityMisses.push(...sortedGroup);
+      continue;
+    }
+    const batch = preparation.batch;
     const priorities = sortedGroup.map((value) => value.candidate.priority);
     const estimatedCost = estimateAiInputCost(
       batch.normalizedInput,
@@ -350,7 +361,10 @@ function createPreparedBatchStates(
       }),
     );
   }
-  return Object.freeze(states);
+  return Object.freeze({
+    states: Object.freeze(states),
+    overCapacityMisses: Object.freeze(overCapacityMisses),
+  });
 }
 
 function causeFailureOutcomes(
@@ -630,8 +644,8 @@ export async function runPersonalReminderAiAnalyses(
   validateConfiguration(configuration);
   validateCandidates(candidates);
   const resolved = await resolveCache(candidates, configuration, dependencies.cache);
-  const batchStates = createPreparedBatchStates(resolved.misses, configuration);
-  const budgetCandidates = batchStates.map((state) => state.budgetCandidate);
+  const preparedBatches = createPreparedBatchStates(resolved.misses, configuration);
+  const budgetCandidates = preparedBatches.states.map((state) => state.budgetCandidate);
   const budgetPlan =
     dependencies.preflight == null
       ? planAiAnalysisBudget(budgetCandidates, configuration.budget, configuration.initialUsage)
@@ -651,8 +665,17 @@ export async function runPersonalReminderAiAnalyses(
   for (const [causeId, outcome] of resolved.outcomes) {
     addOutcome(outcomes, causeId, outcome);
   }
+  for (const miss of preparedBatches.overCapacityMisses) {
+    addOutcome(
+      outcomes,
+      miss.candidate.cause.causeId,
+      Object.freeze({ status: "deferred", reason: "input_cardinality_limit" }),
+    );
+  }
   for (const deferred of budgetPlan.deferred) {
-    const state = batchStates.find((value) => value.budgetCandidate.id === deferred.candidate.id);
+    const state = preparedBatches.states.find(
+      (value) => value.budgetCandidate.id === deferred.candidate.id,
+    );
     assertNonNullable(
       state,
       `個人催促AIの延期batch stateがありません。対象: ${deferred.candidate.id}`,
@@ -666,7 +689,7 @@ export async function runPersonalReminderAiAnalyses(
     }
   }
   const executedOutcomes = await executeSelectedBatches(
-    batchStates,
+    preparedBatches.states,
     budgetPlan.selected,
     configuration,
     dependencies,

@@ -383,6 +383,7 @@ export type PersonalReminderCauseAssessment = z.output<
 export const personalReminderDeferredReasonSchema = z.enum([
   "upstream_relation",
   "input_incomplete",
+  "input_cardinality_limit",
   "item_input_character_limit",
   "call_limit",
   "total_input_character_limit",

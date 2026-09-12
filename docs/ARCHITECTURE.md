@@ -234,6 +234,7 @@ AIのrevisionは意味上の判定規則を表し、プロンプトの共通本�
 
 原因ごとにAIの必要性を選び、同じ項目で必要な原因を1回の呼び出しにまとめます。確定した義務で、関係による実行可能性・必要性・重複の解釈も不要なら決定論的に判定します。
 専用の入力・出力schemaは1とし、`prompts/personal-reminder-causes.md`で判定を指示します。項目、active relation、その根拠の本文・会話・timeline、review・check・draft・merge状態、解決・撤回、収集完全性を、ローカル参照と原因別allowlistで渡します。GitHubの文章は非信頼データとし、旧AIの自由文や通知推薦を肯定根拠に使いません。
+意味入力は全件の構造と意味を検証し、AI送信時の容量判定と分けます。送信する`scopes`の上限は、`sources`と`sourceRefs`と同じ500件です。型、ID、一意性、参照先の閉包、意味の整合性の違反や、容量内のschema違反は例外にします。
 AIは各`causeId`について、`actionable`、`waiting`、`duplicate`、`not_required`、`unknown`のいずれかを返します。責任主体・行動・理由・時刻・閾値は変更させません。`actionable`には義務と実行可能性の双方の根拠が必要です。`fixed`の義務を`not_required`にはできず、情報不足は義務の否定に変換しません。
 待機先と重複先は提示したoptionだけを選べます。同じPRのmergeがreviewを待つような同一項目の別行動も待機先にできます。異なる項目を待つ場合は、その行動に効くrelationの根拠を必須にします。native blockの事実はgraphと項目状態へ残し、その依存中にも特定行動が可能かだけを評価します。`related_to`だけでは個人催促を抑止しません。
 
@@ -242,6 +243,7 @@ JSONの構造検証に失敗したbatchは採用せず、構造検証後は原�
 `currentInput`、`latestAttempt`、`adoptedAssessment`を分けて保存します。実行状態は`not_evaluated`、`completed`、`failed`、`deferred`で表し、正常な`unknown`も`completed`です。採用値の入力fingerprintと規則版が現在値へ一致する場合だけ表示と通知に使います。新しい実行が失敗・延期しても、この一致を満たす採用値は有効です。不一致の旧採用値は根拠を追跡するため保持し、現在対応は未確定にします。
 
 再利用は有効なsnapshotの採用値、専用cache、新しい呼び出しの順で判断します。正常な`unknown`は同一入力で再利用し、必要性が残る未評価・失敗・延期は入力不変でも再試行します。
+不完全な入力はcache照合前に保留します。cache miss後、既知のcollection容量上限を超えた入力だけを`input_cardinality_limit`で延期し、他の原因やbatchは継続します。容量超過で`complete`を変更せず、内容の切断やbatch分割もしません。送信容量を超えていても、cache hitと決定論的判定は利用できます。
 関係AIと原因AIはcall数、入力量、見積費用のrun上限を共有し、後段は前段の使用量を引いた残予算から実行します。認証preflightは両段を通して必要なrunで1回だけ実行します。関係だけ成功した場合も採用済みrelationを保存し、原因の失敗・延期だけを再試行できます。関係入力が変わって前段が未確定なら、古い不適合relationで後段を実行せず`upstream_relation`で延期します。`pendingRelations`はこの判別とfingerprintに使い、AIへは送りません。
 個人原因のcall数はrunnerの`executedBatchCount`を使い、preflightを含めません。全体のcall数と見積入力は両段とpreflightの累積値を使います。
 初回は現在の収集結果にある責務と採用済み関係から有限個の原因を作り、意味評価が必要なものだけを選びます。列挙の完了とAI評価の成否は別に記録し、有効な採用値がなく必要性が残る未評価・失敗・延期は入力不変でも再試行します。以後は新しい原因と関連入力の変化も同じ規則で選びます。

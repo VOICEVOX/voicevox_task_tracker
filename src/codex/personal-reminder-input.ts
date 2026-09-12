@@ -164,7 +164,7 @@ const personalReminderAiRelationContextSchema = z.strictObject({
   provenance: relationProvenanceSchema,
   confidence: z.number().min(0).max(1),
   authoritative: z.boolean(),
-  evidenceSourceIds: z.array(sourceIdSchema).nonempty().max(30),
+  evidenceSourceIds: z.array(sourceIdSchema).nonempty(),
 });
 
 /** 個人催促AIへ渡す関係。 */
@@ -177,7 +177,7 @@ const personalReminderPendingRelationSchema = z.strictObject({
   endpointNodeIds: pendingRelationEndpointNodeIdsSchema,
   status: z.enum(["pending", "stale"]),
   reason: pendingRelationReasonSchema,
-  evidenceSourceIds: z.array(sourceIdSchema).nonempty().max(30),
+  evidenceSourceIds: z.array(sourceIdSchema).nonempty(),
 });
 
 /** 未確定relationの意味概要。AIへは送らずdeferred判定へ使う。 */
@@ -242,8 +242,8 @@ const waitingOptionSchema = z.strictObject({
     kind: personalReminderActionKindSchema,
     summary: z.string().min(1).max(300),
   }),
-  relationIds: z.array(opaqueIdSchema).max(30),
-  evidenceSourceIds: z.array(sourceIdSchema).nonempty().max(30),
+  relationIds: z.array(opaqueIdSchema),
+  evidenceSourceIds: z.array(sourceIdSchema).nonempty(),
 });
 
 /** 個人催促AIが選べる待機先。 */
@@ -257,23 +257,33 @@ const duplicateOptionSchema = z.strictObject({
     kind: personalReminderActionKindSchema,
     summary: z.string().min(1).max(300),
   }),
-  relationIds: z.array(opaqueIdSchema).nonempty().max(30),
-  evidenceSourceIds: z.array(sourceIdSchema).nonempty().max(30),
+  relationIds: z.array(opaqueIdSchema).nonempty(),
+  evidenceSourceIds: z.array(sourceIdSchema).nonempty(),
 });
 
 /** 個人催促AIが選べる重複原因候補。 */
 export type PersonalReminderDuplicateOption = z.output<typeof duplicateOptionSchema>;
 
+const PERSONAL_REMINDER_AI_TRANSPORT_LIMITS = Object.freeze({
+  causes: 100,
+  items: 200,
+  relations: 500,
+  sources: 500,
+  nestedReferenceIds: 30,
+  waitingOptions: 20,
+  duplicateOptions: 20,
+});
+
 const personalReminderCauseSemanticInputSchema = z.strictObject({
   cause: personalReminderCauseSemanticSeedSchema,
   completeness: personalReminderInputCompletenessSchema,
-  items: z.array(personalReminderAiItemContextSchema).nonempty().max(200),
-  relations: z.array(personalReminderAiRelationContextSchema).max(500),
-  pendingRelations: z.array(personalReminderPendingRelationSchema).max(500),
-  sources: z.array(personalReminderAiSourceContextSchema).nonempty().max(500),
-  evidenceScopes: z.array(evidenceScopeSchema).nonempty().max(100),
-  waitingOptions: z.array(waitingOptionSchema).max(20),
-  duplicateOptions: z.array(duplicateOptionSchema).max(20),
+  items: z.array(personalReminderAiItemContextSchema).nonempty(),
+  relations: z.array(personalReminderAiRelationContextSchema),
+  pendingRelations: z.array(personalReminderPendingRelationSchema),
+  sources: z.array(personalReminderAiSourceContextSchema).nonempty(),
+  evidenceScopes: z.array(evidenceScopeSchema).nonempty(),
+  waitingOptions: z.array(waitingOptionSchema),
+  duplicateOptions: z.array(duplicateOptionSchema),
 });
 
 /** 個人催促原因単位の意味入力。 */
@@ -285,9 +295,17 @@ const personalReminderAiCauseTransportInputSchema = z.strictObject({
   causeId: personalReminderCauseIdSchema,
   cause: personalReminderCauseSemanticSeedSchema,
   completeness: personalReminderInputCompletenessSchema,
-  itemRefs: z.array(personalReminderItemRefSchema).nonempty().max(200),
-  relationRefs: z.array(personalReminderRelationRefSchema).max(500),
-  sourceRefs: z.array(personalReminderSourceRefSchema).nonempty().max(500),
+  itemRefs: z
+    .array(personalReminderItemRefSchema)
+    .nonempty()
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.items),
+  relationRefs: z
+    .array(personalReminderRelationRefSchema)
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.relations),
+  sourceRefs: z
+    .array(personalReminderSourceRefSchema)
+    .nonempty()
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.sources),
   evidenceScopes: z
     .array(
       z.strictObject({
@@ -296,7 +314,7 @@ const personalReminderAiCauseTransportInputSchema = z.strictObject({
       }),
     )
     .nonempty()
-    .max(100),
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.sources),
   waitingOptions: z
     .array(
       z.strictObject({
@@ -306,11 +324,16 @@ const personalReminderAiCauseTransportInputSchema = z.strictObject({
           kind: personalReminderActionKindSchema,
           summary: z.string().min(1).max(300),
         }),
-        relationRefs: z.array(personalReminderRelationRefSchema).max(30),
-        sourceRefs: z.array(personalReminderSourceRefSchema).nonempty().max(30),
+        relationRefs: z
+          .array(personalReminderRelationRefSchema)
+          .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds),
+        sourceRefs: z
+          .array(personalReminderSourceRefSchema)
+          .nonempty()
+          .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds),
       }),
     )
-    .max(20),
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.waitingOptions),
   duplicateOptions: z
     .array(
       z.strictObject({
@@ -321,11 +344,17 @@ const personalReminderAiCauseTransportInputSchema = z.strictObject({
           kind: personalReminderActionKindSchema,
           summary: z.string().min(1).max(300),
         }),
-        relationRefs: z.array(personalReminderRelationRefSchema).nonempty().max(30),
-        sourceRefs: z.array(personalReminderSourceRefSchema).nonempty().max(30),
+        relationRefs: z
+          .array(personalReminderRelationRefSchema)
+          .nonempty()
+          .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds),
+        sourceRefs: z
+          .array(personalReminderSourceRefSchema)
+          .nonempty()
+          .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds),
       }),
     )
-    .max(20),
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.duplicateOptions),
 });
 
 const personalReminderAiTransportItemSchema = z.strictObject({
@@ -335,7 +364,12 @@ const personalReminderAiTransportItemSchema = z.strictObject({
 
 const personalReminderAiTransportRelationSchema = z.strictObject({
   ref: personalReminderRelationRefSchema,
-  relation: personalReminderAiRelationContextSchema,
+  relation: personalReminderAiRelationContextSchema.extend({
+    evidenceSourceIds: z
+      .array(sourceIdSchema)
+      .nonempty()
+      .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds),
+  }),
 });
 
 const personalReminderAiTransportSourceSchema = z.strictObject({
@@ -349,10 +383,21 @@ const personalReminderAiInputSchema = z.strictObject({
     nodeId: githubNodeIdSchema,
     url: itemUrlSchema,
   }),
-  causes: z.array(personalReminderAiCauseTransportInputSchema).nonempty().max(100),
-  items: z.array(personalReminderAiTransportItemSchema).nonempty().max(200),
-  relations: z.array(personalReminderAiTransportRelationSchema).max(500),
-  sources: z.array(personalReminderAiTransportSourceSchema).nonempty().max(500),
+  causes: z
+    .array(personalReminderAiCauseTransportInputSchema)
+    .nonempty()
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.causes),
+  items: z
+    .array(personalReminderAiTransportItemSchema)
+    .nonempty()
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.items),
+  relations: z
+    .array(personalReminderAiTransportRelationSchema)
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.relations),
+  sources: z
+    .array(personalReminderAiTransportSourceSchema)
+    .nonempty()
+    .max(PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.sources),
 });
 
 /** 個人催促AIへ渡すlocal ref形式の入力。 */
@@ -381,6 +426,16 @@ export type PreparedPersonalReminderAiBatch = Readonly<{
   refs: PersonalReminderCanonicalRefs;
   causeInputs: ReadonlyMap<PersonalReminderCauseId, PreparedPersonalReminderCauseInput>;
 }>;
+
+/** 個人催促AI batchの準備結果。 */
+export type PersonalReminderAiBatchPreparation =
+  | Readonly<{
+      status: "prepared";
+      batch: PreparedPersonalReminderAiBatch;
+    }>
+  | Readonly<{
+      status: "over_capacity";
+    }>;
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -824,12 +879,65 @@ function canonicalRelationContext(
   });
 }
 
-function createTransportInput(inputs: readonly PersonalReminderCauseSemanticInput[]): Readonly<{
-  input: PersonalReminderAiInput;
-  refs: PersonalReminderCanonicalRefs;
-  causeInputs: ReadonlyMap<PersonalReminderCauseId, PreparedPersonalReminderCauseInput>;
-  itemNodeId: GitHubNodeId;
-}> {
+function exceedsPersonalReminderAiTransportCapacity(
+  causes: readonly z.input<typeof personalReminderAiCauseTransportInputSchema>[],
+  relations: readonly PersonalReminderAiRelationContext[],
+  itemCount: number,
+  sourceCount: number,
+): boolean {
+  if (
+    causes.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.causes ||
+    itemCount > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.items ||
+    relations.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.relations ||
+    sourceCount > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.sources
+  ) {
+    return true;
+  }
+  for (const relation of relations) {
+    if (
+      relation.evidenceSourceIds.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds
+    ) {
+      return true;
+    }
+  }
+  for (const cause of causes) {
+    if (
+      cause.itemRefs.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.items ||
+      cause.relationRefs.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.relations ||
+      cause.sourceRefs.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.sources ||
+      cause.evidenceScopes.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.sources ||
+      cause.waitingOptions.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.waitingOptions ||
+      cause.duplicateOptions.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.duplicateOptions
+    ) {
+      return true;
+    }
+    for (const option of [...cause.waitingOptions, ...cause.duplicateOptions]) {
+      if (
+        option.relationRefs.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds ||
+        option.sourceRefs.length > PERSONAL_REMINDER_AI_TRANSPORT_LIMITS.nestedReferenceIds
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+type PersonalReminderTransportInputPreparation =
+  | Readonly<{
+      status: "prepared";
+      input: PersonalReminderAiInput;
+      refs: PersonalReminderCanonicalRefs;
+      causeInputs: ReadonlyMap<PersonalReminderCauseId, PreparedPersonalReminderCauseInput>;
+      itemNodeId: GitHubNodeId;
+    }>
+  | Readonly<{
+      status: "over_capacity";
+    }>;
+
+function createTransportInput(
+  inputs: readonly PersonalReminderCauseSemanticInput[],
+): PersonalReminderTransportInputPreparation {
   const itemById = new Map<GraphNodeId, PersonalReminderAiItemContext>();
   const relationById = new Map<string, PersonalReminderAiRelationContext>();
   const sourceById = new Map<SourceId, PersonalReminderAiSourceContext>();
@@ -1054,6 +1162,19 @@ function createTransportInput(inputs: readonly PersonalReminderCauseSemanticInpu
     );
   }
 
+  if (
+    exceedsPersonalReminderAiTransportCapacity(
+      transportCauses,
+      relations,
+      items.length,
+      sources.length,
+    )
+  ) {
+    return Object.freeze({
+      status: "over_capacity",
+    });
+  }
+
   const transportInput = personalReminderAiInputSchema.parse({
     schemaVersion: PERSONAL_REMINDER_AI_INPUT_SCHEMA_VERSION,
     item: {
@@ -1084,6 +1205,7 @@ function createTransportInput(inputs: readonly PersonalReminderCauseSemanticInpu
     ),
   });
   return Object.freeze({
+    status: "prepared",
     input: transportInput,
     refs,
     causeInputs,
@@ -1337,7 +1459,7 @@ export function planPersonalReminderCauseEvaluation(
 /** 同じitemの原因入力を一つの専用AI batchへまとめる。 */
 export function preparePersonalReminderAiBatch(
   inputs: readonly [PersonalReminderCauseSemanticInput, ...PersonalReminderCauseSemanticInput[]],
-): PreparedPersonalReminderAiBatch {
+): PersonalReminderAiBatchPreparation {
   if (inputs.length === 0) {
     throw new TypeError("個人催促AI batchの原因がありません");
   }
@@ -1345,16 +1467,22 @@ export function preparePersonalReminderAiBatch(
     .map((value) => createPersonalReminderCauseSemanticInput(value))
     .sort((left, right) => compareStrings(left.cause.causeId, right.cause.causeId));
   const transport = createTransportInput(normalizedInputs);
+  if (transport.status === "over_capacity") {
+    return transport;
+  }
   const normalizedInput = serializePersonalReminderAiInput(transport.input);
   const batchInputFingerprint = hashCanonicalJson(transport.input);
   return Object.freeze({
-    id: `personal-reminder-batch:${batchInputFingerprint}`,
-    itemNodeId: transport.itemNodeId,
-    input: transport.input,
-    normalizedInput,
-    inputCharacters: countUnicodeCharacters(normalizedInput),
-    batchInputFingerprint,
-    refs: transport.refs,
-    causeInputs: transport.causeInputs,
+    status: "prepared",
+    batch: Object.freeze({
+      id: `personal-reminder-batch:${batchInputFingerprint}`,
+      itemNodeId: transport.itemNodeId,
+      input: transport.input,
+      normalizedInput,
+      inputCharacters: countUnicodeCharacters(normalizedInput),
+      batchInputFingerprint,
+      refs: transport.refs,
+      causeInputs: transport.causeInputs,
+    }),
   });
 }

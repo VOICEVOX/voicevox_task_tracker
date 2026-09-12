@@ -35,6 +35,7 @@ export {
   type PersonalReminderRelationRef,
   type PersonalReminderSourceRef,
   type PersonalReminderWaitingOption,
+  type PersonalReminderAiBatchPreparation,
   type PreparedPersonalReminderAiBatch,
   type PreparedPersonalReminderCauseInput,
 } from "./personal-reminder-input.js";
