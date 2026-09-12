@@ -62,9 +62,11 @@ export {
   type AnalysisElementReuseInput,
 } from "./analysis-reuse.js";
 export {
+  createEmptyAiBudgetUsage,
   estimateAiInputCost,
   planAiAnalysisBudget,
   planAiAnalysisBudgetWithPreflight,
+  type AiBudgetCandidate,
   type AiInputCostEstimate,
   type AiPreflightBudget,
   type AiAnalysisDeferReason,

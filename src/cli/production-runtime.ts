@@ -5,6 +5,7 @@ import {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
   CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
   CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  createEmptyAiBudgetUsage,
   createAiAnalysisTarget,
   assessAnalysisImpact,
   createCodexEnvironment,
@@ -6047,6 +6048,7 @@ async function analyzeCodex(
     {
       identity,
       budget: configuration.config.ai.budget,
+      initialUsage: createEmptyAiBudgetUsage(),
       maxConcurrentCalls: configuration.config.ai.execution.maxConcurrentCalls,
       ...(target == null ? {} : { target }),
     },

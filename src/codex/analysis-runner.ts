@@ -17,6 +17,7 @@ import {
   planAiAnalysisBudget,
   planAiAnalysisBudgetWithPreflight,
   type AiAnalysisDeferReason,
+  type AiBudgetUsage,
   type AiPreflightBudget,
   type AiRunBudget,
 } from "./budget.js";
@@ -61,6 +62,7 @@ const CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT = 5;
 export type AiAnalysisRunConfiguration = Readonly<{
   identity: AiAnalysisRunIdentity;
   budget: AiRunBudget;
+  initialUsage: AiBudgetUsage;
   maxConcurrentCalls: number;
   target?: AiAnalysisTarget;
 }>;
@@ -123,11 +125,8 @@ export type AiAnalysisRunResult = Readonly<{
     candidateId: string;
     reason: AiAnalysisDeferReason;
   }>[];
-  usage: Readonly<{
-    calls: number;
-    inputCharacters: number;
-    estimatedCostUsd: number;
-  }>;
+  usage: AiBudgetUsage;
+  authenticationPreflightExecuted: boolean;
 }>;
 
 type CandidateCacheState = Readonly<{
@@ -695,13 +694,17 @@ export async function runAiAnalyses(
     .map((state) => createExecutionInput(state));
   const budgetPlan =
     dependencies.preflight == null
-      ? planAiAnalysisBudget(executionCandidates, configuration.budget)
+      ? planAiAnalysisBudget(executionCandidates, configuration.budget, configuration.initialUsage)
       : planAiAnalysisBudgetWithPreflight(
           executionCandidates,
           configuration.budget,
+          configuration.initialUsage,
           dependencies.preflight,
         );
-  if (dependencies.preflight != null && budgetPlan.selected.length > 0) {
+  const authenticationPreflightExecuted =
+    dependencies.preflight != null && budgetPlan.selected.length > 0;
+  if (authenticationPreflightExecuted) {
+    assertNonNullable(dependencies.preflight, "認証preflightがありません");
     await dependencies.preflight.execute();
   }
   const executed = await executeSelectedCandidates(
@@ -731,6 +734,7 @@ export async function runAiAnalyses(
       ),
     ),
     usage: budgetPlan.usage,
+    authenticationPreflightExecuted,
   });
   if (target != null) {
     assertTargetWasExecuted(result, target);
