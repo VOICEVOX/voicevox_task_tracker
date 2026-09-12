@@ -3214,6 +3214,21 @@ function createCauseEvidence(
   for (const evidence of entry.sourceEvidence) {
     evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
   }
+  const existingSourceIds = new Set(entry.sourceEvidence.map((evidence) => evidence.sourceId));
+  for (const sourceId of entry.seed.evidenceSourceIds) {
+    if (
+      existingSourceIds.has(sourceId) ||
+      !entry.semanticInput.sources.some((source) => source.sourceId === sourceId)
+    ) {
+      continue;
+    }
+    const evidence = Object.freeze({
+      sourceId,
+      supports: "waiting_on",
+      summary: `担当する対応: ${entry.seed.action.summary}`,
+    });
+    evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
+  }
   if (assessment.status === "available") {
     for (const sourceId of assessment.result.references.sourceIds) {
       if (!entry.semanticInput.sources.some((source) => source.sourceId === sourceId)) {
