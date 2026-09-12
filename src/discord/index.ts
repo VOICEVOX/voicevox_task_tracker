@@ -18,8 +18,11 @@ export {
   type DiscordNotificationPreviousState,
   type DiscordNotificationRecommendation,
   type DiscordNotificationReasonCode,
+  type DiscordNotificationReasonSource,
   type DiscordNotificationSelection,
   type DiscordNotificationSelectionSettings,
+  type DiscordPersonalReminderInput,
+  type DiscordPersonalReminderNotificationContext,
   type SelectDiscordNotificationsInput,
   type SelectedDiscordNotificationReason,
 } from "./notification-selection.js";

@@ -4,7 +4,9 @@ import {
   compareSeverity,
   createNotificationReason,
   createUtcIsoDateTime,
+  currentPersonalReminderAssessment,
   isTerminalStatus,
+  personalReminderCauseSchema,
   type GitHubNodeId,
   type NotificationNonTimeReasonCode,
   type NotificationReason,
@@ -13,6 +15,12 @@ import {
   type NotificationReasonCode,
   type PendingNotification,
   type PendingNotificationTarget,
+  type PersonalReminderActionKind,
+  type PersonalReminderCause,
+  type PersonalReminderReasonCode,
+  type PersonalReminderResponsible,
+  type PersonalReminderStaleness,
+  type PersonalReminderTimeBasis,
   type Severity,
   type StalenessNotificationSeverityReason,
   type StalenessWaitClass,
@@ -132,8 +140,39 @@ export type DiscordNotificationItem = Readonly<{
   current: DiscordNotificationCurrentState;
   previous: DiscordNotificationPrevious;
   causes: NotificationCauses;
+  personalReminderCauses: readonly DiscordPersonalReminderInput[];
   graph: DiscordNotificationGraphContext;
 }>;
+
+/** 個人催促原因と現在のstaleness判定。 */
+export type DiscordPersonalReminderInput = Readonly<{
+  cause: PersonalReminderCause;
+  staleness: PersonalReminderStaleness;
+}>;
+
+/** 個人催促通知の選別結果へ渡す原因の文脈。 */
+export type DiscordPersonalReminderNotificationContext = Readonly<{
+  causeId: PersonalReminderCause["causeId"];
+  responsibilityId: PersonalReminderCause["responsibilityId"];
+  responsible: readonly PersonalReminderResponsible[];
+  action: Readonly<{
+    kind: PersonalReminderActionKind;
+    summary: string;
+  }>;
+  obligationSince: PersonalReminderTimeBasis;
+  actionableSince: PersonalReminderTimeBasis;
+  stallSince: PersonalReminderTimeBasis;
+}>;
+
+/** 選別した通知理由のsystemまたは個人催促由来。 */
+export type DiscordNotificationReasonSource =
+  | Readonly<{
+      kind: "system";
+    }>
+  | Readonly<{
+      kind: "personal_reminder";
+      context: DiscordPersonalReminderNotificationContext;
+    }>;
 
 /** 設定から渡す通知上限、noise閾値。 */
 export type DiscordNotificationSelectionSettings = Readonly<{
@@ -155,6 +194,8 @@ export type SelectDiscordNotificationsInput = Readonly<{
 export type SelectedDiscordNotificationReason = NotificationReason &
   Readonly<{
     notificationKey: string;
+    severity: Severity;
+    source: DiscordNotificationReasonSource;
   }>;
 
 /** digestへ1件として渡す通知候補。 */
@@ -201,6 +242,8 @@ type ReasonSignal = Readonly<{
   stateDiscriminator: string;
   highPriorityEligible: boolean;
   target: PendingNotificationTarget;
+  severity: Severity;
+  source: DiscordNotificationReasonSource;
 }>;
 
 type EligibleReason = Readonly<{
@@ -213,6 +256,10 @@ type CandidateDraft = Readonly<{
   item: DiscordNotificationItem;
   reasons: readonly [EligibleReason, ...EligibleReason[]];
 }>;
+
+function systemReasonSource(): DiscordNotificationReasonSource {
+  return Object.freeze({ kind: "system" });
+}
 
 function parseTimestamp(value: UtcIsoDateTime, context: string): number {
   const timestamp = Date.parse(value);
@@ -243,11 +290,7 @@ function waitingOnKeySignature(waitingOnValues: readonly WaitingOn[]): string {
 }
 
 function waitingOnComparisonSignature(waitingOnValues: readonly WaitingOnReference[]): string {
-  return JSON.stringify(
-    waitingOnValues
-      .map((waitingOn) => JSON.stringify([waitingOn.kind, waitingOn.candidateId, waitingOn.role]))
-      .sort(compareStrings),
-  );
+  return JSON.stringify(normalizedResponsibilityForComparison(waitingOnValues));
 }
 
 function pendingWaitingOnValues(
@@ -503,6 +546,128 @@ function validateNotificationCauses(item: DiscordNotificationItem): void {
   }
 }
 
+function validatePersonalReminderTimeBasis(
+  basis: PersonalReminderTimeBasis,
+  evaluatedTimestamp: number,
+  context: string,
+): void {
+  if (parseTimestamp(basis.at, context) > evaluatedTimestamp) {
+    throw new RangeError(`${context}は判定時刻以前にしてください`);
+  }
+  if (basis.source === "event" && basis.sourceIds.length === 0) {
+    throw new TypeError(`${context}のsource IDは空にできません`);
+  }
+}
+
+function samePersonalReminderTimeBasis(
+  left: PersonalReminderTimeBasis,
+  right: PersonalReminderTimeBasis,
+): boolean {
+  if (left.source !== right.source || left.at !== right.at) {
+    return false;
+  }
+  if (left.source === "first_observation" || right.source === "first_observation") {
+    return left.source === right.source;
+  }
+  return true;
+}
+
+function validatePersonalReminderInputs(
+  item: DiscordNotificationItem,
+  evaluatedTimestamp: number,
+): void {
+  const causeIds = new Set<string>();
+  for (const personalInput of item.personalReminderCauses) {
+    const { cause, staleness } = personalInput;
+    personalReminderCauseSchema.parse(cause);
+    if (cause.itemNodeId !== item.nodeId) {
+      throw new TypeError(`${item.nodeId}の個人催促原因が別の項目を参照しています`);
+    }
+    if (causeIds.has(cause.causeId)) {
+      throw new TypeError(`${item.nodeId}の個人催促原因IDが重複しています`);
+    }
+    causeIds.add(cause.causeId);
+    if (cause.action.kind !== personalReminderActionKindForReason(cause.reasonCode)) {
+      throw new TypeError(`${item.nodeId}の個人催促原因と行動種別が一致しません`);
+    }
+    const responsibleSignatures = cause.responsible.map((responsible) =>
+      JSON.stringify([responsible.kind, responsible.candidateId, responsible.role]),
+    );
+    if (new Set(responsibleSignatures).size !== responsibleSignatures.length) {
+      throw new TypeError(`${item.nodeId}の個人催促責任主体が重複しています`);
+    }
+    if (staleness.waitClass !== waitClassForTimeReasonCode(cause.reasonCode)) {
+      throw new TypeError(`${item.nodeId}の個人催促stalenessと理由のwait classが一致しません`);
+    }
+    validatePersonalReminderTimeBasis(
+      cause.obligationSince,
+      evaluatedTimestamp,
+      `${item.nodeId}の個人催促obligationSince`,
+    );
+    if (cause.actionableClock.status === "observed") {
+      validatePersonalReminderTimeBasis(
+        cause.actionableClock.actionableSince,
+        evaluatedTimestamp,
+        `${item.nodeId}の個人催促actionableSince`,
+      );
+      validatePersonalReminderTimeBasis(
+        cause.actionableClock.stallSince,
+        evaluatedTimestamp,
+        `${item.nodeId}の個人催促stallSince`,
+      );
+    }
+    if (staleness.status !== "eligible") {
+      continue;
+    }
+    const assessment = currentPersonalReminderAssessment(cause);
+    if (assessment.status !== "available" || assessment.result.verdict !== "actionable") {
+      throw new TypeError(`${item.nodeId}の通知可能な個人催促原因にactionable判定がありません`);
+    }
+    if (cause.actionableClock.status !== "observed") {
+      throw new TypeError(`${item.nodeId}の通知可能な個人催促原因に時計がありません`);
+    }
+    if (
+      !samePersonalReminderTimeBasis(
+        staleness.actionableSince,
+        cause.actionableClock.actionableSince,
+      ) ||
+      !samePersonalReminderTimeBasis(staleness.stallSince, cause.actionableClock.stallSince)
+    ) {
+      throw new TypeError(`${item.nodeId}の個人催促stalenessと時計が一致しません`);
+    }
+    if (staleness.severityReason.waitClass !== staleness.waitClass) {
+      throw new TypeError(`${item.nodeId}の個人催促severityとwait classが一致しません`);
+    }
+    if (
+      staleness.severityReason.elapsedHours !==
+      hoursBetween(staleness.stallSince.at, evaluatedTimestamp)
+    ) {
+      throw new TypeError(`${item.nodeId}の個人催促severity経過時間がstallSinceから再現できません`);
+    }
+    if (staleness.severityReason.crossedThreshold.status === "reached") {
+      if (staleness.severity === "none") {
+        throw new TypeError(`${item.nodeId}の到達severityがnoneです`);
+      }
+      if (
+        staleness.severityReason.elapsedHours <
+        staleness.severityReason.crossedThreshold.thresholdHours
+      ) {
+        throw new TypeError(`${item.nodeId}の個人催促severity経過時間が閾値を下回っています`);
+      }
+    } else {
+      if (staleness.severity !== "none") {
+        throw new TypeError(`${item.nodeId}の未到達severityがnoneではありません`);
+      }
+      if (
+        staleness.severityReason.elapsedHours >=
+        staleness.severityReason.crossedThreshold.nextThresholdHours
+      ) {
+        throw new TypeError(`${item.nodeId}の個人催促severity経過時間が次の閾値以上です`);
+      }
+    }
+  }
+}
+
 function validateLedger(
   ledger: readonly NotificationLedgerEntry[],
   evaluatedTimestamp: number,
@@ -565,6 +730,21 @@ function validatePendingNotifications(
     if (pending.target.kind === "cycle" && pending.target.cycleId.length === 0) {
       throw new TypeError("送信待ち通知のcycle IDは空にできません");
     }
+    if (pending.target.kind === "personal_reminder") {
+      if (!isPersonalReminderReasonCode(pending.reason.reasonCode)) {
+        throw new TypeError("個人催促pendingには個人催促理由を指定してください");
+      }
+      validatePersonalReminderTimeBasis(
+        pending.target.actionableSince,
+        evaluatedTimestamp,
+        "送信待ち通知のactionableSince",
+      );
+      validatePersonalReminderTimeBasis(
+        pending.target.stallSince,
+        evaluatedTimestamp,
+        "送信待ち通知のstallSince",
+      );
+    }
   }
 }
 
@@ -597,6 +777,7 @@ function validateInput(input: SelectDiscordNotificationsInput): number {
     }
     validateNotificationRecommendation(item);
     validateNotificationCauses(item);
+    validatePersonalReminderInputs(item, evaluatedTimestamp);
     validateCurrentState(item, evaluatedTimestamp);
     validatePreviousState(item, evaluatedTimestamp);
     validateGraphContext(item);
@@ -655,6 +836,46 @@ const TIME_REASON_WAIT_CLASS = {
   merge_overdue: "merge",
   automation_stuck: "automation",
 } satisfies Readonly<Record<NotificationTimeReasonCode, WaitClass>>;
+
+const PERSONAL_REMINDER_REASON_CODES = [
+  "assessment_overdue",
+  "owner_overdue",
+  "decision_overdue",
+  "review_overdue",
+  "revision_overdue",
+  "reply_overdue",
+  "work_overdue",
+  "merge_overdue",
+] as const satisfies readonly PersonalReminderReasonCode[];
+
+function isPersonalReminderReasonCode(
+  reasonCode: DiscordNotificationReasonCode,
+): reasonCode is PersonalReminderReasonCode {
+  return PERSONAL_REMINDER_REASON_CODES.some((candidate) => candidate === reasonCode);
+}
+
+function personalReminderActionKindForReason(
+  reasonCode: PersonalReminderReasonCode,
+): PersonalReminderActionKind {
+  switch (reasonCode) {
+    case "assessment_overdue":
+      return "assessment";
+    case "owner_overdue":
+      return "owner";
+    case "decision_overdue":
+      return "decision";
+    case "review_overdue":
+      return "review";
+    case "revision_overdue":
+      return "revision";
+    case "reply_overdue":
+      return "reply";
+    case "work_overdue":
+      return "work";
+    case "merge_overdue":
+      return "merge";
+  }
+}
 
 function isNotificationTimeReasonCodeKey(value: string): value is NotificationTimeReasonCode {
   return Object.hasOwn(TIME_REASON_WAIT_CLASS, value);
@@ -836,7 +1057,11 @@ function createOverdueSignals(
   }
   const signals: ReasonSignal[] = [];
   const reasonCode = overdueReasonCode(item.current.status, item.current.waitClass);
-  if (reasonCode != null && isStateReasonAllowed(item, reasonCode, settings.minimumAiConfidence)) {
+  if (
+    reasonCode != null &&
+    !isPersonalReminderReasonCode(reasonCode) &&
+    isStateReasonAllowed(item, reasonCode, settings.minimumAiConfidence)
+  ) {
     const reason = isTimeNotificationReasonCode(reasonCode)
       ? notificationReasonForSelection({
           item,
@@ -850,6 +1075,8 @@ function createOverdueSignals(
         stateDiscriminator: item.current.waitClass,
         highPriorityEligible: true,
         target: pendingTargetForReason(item, reasonCode, undefined),
+        severity: item.current.severity,
+        source: systemReasonSource(),
       });
     }
   }
@@ -868,6 +1095,8 @@ function createOverdueSignals(
       stateDiscriminator: JSON.stringify([impact.openNodeCount, impact.repositoryCount]),
       highPriorityEligible: true,
       target: pendingTargetForReason(item, "blocker_overdue", undefined),
+      severity: item.current.severity,
+      source: systemReasonSource(),
     });
   }
   return signals;
@@ -893,6 +1122,8 @@ function createNewlyUnblockedSignal(item: DiscordNotificationItem): ReasonSignal
     stateDiscriminator: item.current.statusSince,
     highPriorityEligible: true,
     target: pendingTargetForReason(item, "newly_unblocked", undefined),
+    severity: item.current.severity,
+    source: systemReasonSource(),
   };
 }
 
@@ -924,6 +1155,8 @@ function createResponsibilityChangedSignal(
     stateDiscriminator: item.current.ownerSince,
     highPriorityEligible: true,
     target: pendingTargetForReason(item, "responsibility_changed", undefined),
+    severity: item.current.severity,
+    source: systemReasonSource(),
   };
 }
 
@@ -939,6 +1172,9 @@ function createRecommendationSignal(item: DiscordNotificationItem): ReasonSignal
     throw new TypeError(`${item.nodeId}のCodex通知提案にreason codeがありません`);
   }
   if (isTimeNotificationReasonCode(recommendation.reasonCode)) {
+    if (isPersonalReminderReasonCode(recommendation.reasonCode)) {
+      return undefined;
+    }
     const deterministicReasonCode = overdueReasonCode(item.current.status, item.current.waitClass);
     if (deterministicReasonCode !== recommendation.reasonCode) {
       return undefined;
@@ -962,7 +1198,78 @@ function createRecommendationSignal(item: DiscordNotificationItem): ReasonSignal
     stateDiscriminator: JSON.stringify([item.nodeId, "codex_recommendation"]),
     highPriorityEligible: recommendation.highPriorityEligible,
     target: pendingTargetForReason(item, recommendation.reasonCode, undefined),
+    severity: item.current.severity,
+    source: systemReasonSource(),
   };
+}
+
+function createPersonalReminderContext(
+  input: DiscordPersonalReminderInput,
+): DiscordPersonalReminderNotificationContext {
+  const { cause, staleness } = input;
+  if (staleness.status !== "eligible" || cause.actionableClock.status !== "observed") {
+    throw new TypeError(`${cause.causeId}の個人催促通知文脈を生成できません`);
+  }
+  return Object.freeze({
+    causeId: cause.causeId,
+    responsibilityId: cause.responsibilityId,
+    responsible: Object.freeze(
+      cause.responsible.map((responsible) => Object.freeze({ ...responsible })),
+    ),
+    action: Object.freeze({
+      kind: cause.action.kind,
+      summary: cause.action.summary,
+    }),
+    obligationSince: Object.freeze({ ...cause.obligationSince }),
+    actionableSince: Object.freeze({ ...staleness.actionableSince }),
+    stallSince: Object.freeze({ ...staleness.stallSince }),
+  });
+}
+
+function createPersonalReminderSignals(item: DiscordNotificationItem): readonly ReasonSignal[] {
+  return item.personalReminderCauses.flatMap((input) => {
+    if (input.staleness.status !== "eligible") {
+      return [];
+    }
+    const assessment = currentPersonalReminderAssessment(input.cause);
+    if (assessment.status !== "available" || assessment.result.verdict !== "actionable") {
+      throw new TypeError(`${input.cause.causeId}の個人催促判定がactionableではありません`);
+    }
+    if (
+      input.staleness.severity === "none" ||
+      input.staleness.severityReason.crossedThreshold.status !== "reached"
+    ) {
+      return [];
+    }
+    const reason = createNotificationReason(input.cause.reasonCode, {
+      status: "recorded",
+      hours: input.staleness.severityReason.crossedThreshold.thresholdHours,
+    });
+    const context = createPersonalReminderContext(input);
+    return [
+      Object.freeze({
+        reason,
+        stateDiscriminator: JSON.stringify([
+          input.cause.causeId,
+          input.cause.responsibilityId,
+          input.staleness.waitClass,
+        ]),
+        highPriorityEligible: true,
+        target: Object.freeze({
+          kind: "personal_reminder",
+          causeId: input.cause.causeId,
+          responsibilityId: input.cause.responsibilityId,
+          actionableSince: Object.freeze({ ...input.staleness.actionableSince }),
+          stallSince: Object.freeze({ ...input.staleness.stallSince }),
+        }),
+        severity: input.staleness.severity,
+        source: Object.freeze({
+          kind: "personal_reminder",
+          context,
+        }),
+      }),
+    ];
+  });
 }
 
 function listNewDependencyCycleIds(item: DiscordNotificationItem): readonly DependencyCycleId[] {
@@ -1087,6 +1394,8 @@ function createSignals(
       ]),
       highPriorityEligible: true,
       target: pendingTargetForReason(item, "dependency_cycle", cycleId),
+      severity: item.current.severity,
+      source: systemReasonSource(),
     });
   }
   const recommendation = createRecommendationSignal(item);
@@ -1096,6 +1405,7 @@ function createSignals(
   ) {
     signals.push(recommendation);
   }
+  signals.push(...createPersonalReminderSignals(item));
   return signals;
 }
 
@@ -1149,8 +1459,179 @@ function notificationState(item: DiscordNotificationItem, signal: ReasonSignal):
   ]);
 }
 
+function personalReminderResponsibleSignature(
+  responsible: readonly PersonalReminderResponsible[],
+): string {
+  return JSON.stringify(normalizedResponsibilityForComparison(responsible));
+}
+
+function normalizedResponsibilityForComparison(
+  responsible: readonly WaitingOnReference[],
+): readonly (readonly [string, string, string])[] {
+  return Object.freeze(
+    responsible
+      .map((value): readonly [string, string, string] => [
+        value.kind,
+        value.candidateId.toLowerCase(),
+        value.role,
+      ])
+      .sort((left, right) => compareStrings(JSON.stringify(left), JSON.stringify(right))),
+  );
+}
+
+function personalReminderScopeIncludesItem(cause: PersonalReminderCause): boolean {
+  switch (cause.responsibility.scope.kind) {
+    case "item":
+      return true;
+    case "execution_surfaces":
+      return false;
+    case "item_and_execution_surfaces":
+      return true;
+  }
+}
+
+function responsibilityPeriodStart(item: DiscordNotificationItem): UtcIsoDateTime {
+  const statusSinceTimestamp = parseTimestamp(
+    item.current.statusSince,
+    `${item.nodeId}のstatusSince`,
+  );
+  const ownerSinceTimestamp = parseTimestamp(item.current.ownerSince, `${item.nodeId}のownerSince`);
+  return statusSinceTimestamp >= ownerSinceTimestamp
+    ? item.current.statusSince
+    : item.current.ownerSince;
+}
+
+function legacySystemSignalForPersonalReason(
+  item: DiscordNotificationItem,
+  reasonCode: PersonalReminderReasonCode,
+): ReasonSignal | undefined {
+  if (overdueReasonCode(item.current.status, item.current.waitClass) !== reasonCode) {
+    return undefined;
+  }
+  const reason = notificationReasonForSelection({
+    item,
+    reasonCode,
+    source: "codex",
+  });
+  if (reason == null) {
+    return undefined;
+  }
+  return Object.freeze({
+    reason,
+    stateDiscriminator: item.current.waitClass,
+    highPriorityEligible: true,
+    target: pendingTargetForReason(item, reasonCode, undefined),
+    severity: item.current.severity,
+    source: systemReasonSource(),
+  });
+}
+
+function legacyOverdueSignalForPersonalReminder(
+  item: DiscordNotificationItem,
+  signal: ReasonSignal,
+): ReasonSignal | undefined {
+  if (signal.source.kind !== "personal_reminder") {
+    return undefined;
+  }
+  const reasonCode = signal.reason.reasonCode;
+  if (!isPersonalReminderReasonCode(reasonCode)) {
+    throw new TypeError(`個人催促通知理由 ${reasonCode}が時間系理由ではありません`);
+  }
+  return legacySystemSignalForPersonalReason(item, reasonCode);
+}
+
+function canReuseLegacyPersonalReminderKey(
+  item: DiscordNotificationItem,
+  signal: ReasonSignal,
+  legacySignal: ReasonSignal,
+): boolean {
+  if (signal.source.kind !== "personal_reminder") {
+    return false;
+  }
+  const context = signal.source.context;
+  const input = item.personalReminderCauses.find(
+    (candidate) => candidate.cause.causeId === context.causeId,
+  );
+  if (input?.cause.itemNodeId !== item.nodeId) {
+    return false;
+  }
+  const { cause, staleness } = input;
+  if (
+    !personalReminderScopeIncludesItem(cause) ||
+    cause.action.kind !== personalReminderActionKindForReason(cause.reasonCode) ||
+    staleness.waitClass !== waitClassForTimeReasonCode(cause.reasonCode) ||
+    staleness.waitClass !== item.current.waitClass ||
+    signal.reason.reasonCode !== cause.reasonCode ||
+    signal.severity !== item.current.severity ||
+    signal.reason.threshold.status !== "recorded" ||
+    legacySignal.reason.threshold.status !== "recorded" ||
+    signal.reason.threshold.hours !== legacySignal.reason.threshold.hours
+  ) {
+    return false;
+  }
+  if (
+    personalReminderResponsibleSignature(cause.responsible) !==
+    waitingOnComparisonSignature(item.current.waitingOn)
+  ) {
+    return false;
+  }
+  if (
+    context.actionableSince.source !== "event" ||
+    context.stallSince.source !== "event" ||
+    context.actionableSince.at !== responsibilityPeriodStart(item) ||
+    context.stallSince.at !== item.current.stallSince
+  ) {
+    return false;
+  }
+  if (cause.actionableClock.status !== "observed") {
+    return false;
+  }
+  return (
+    cause.actionableClock.actionableSince.source === "event" &&
+    cause.actionableClock.stallSince.source === "event" &&
+    cause.actionableClock.actionableSince.at === context.actionableSince.at &&
+    cause.actionableClock.stallSince.at === context.stallSince.at
+  );
+}
+
+function personalReminderNotificationState(
+  item: DiscordNotificationItem,
+  signal: ReasonSignal,
+): string {
+  if (signal.source.kind !== "personal_reminder") {
+    throw new TypeError("個人催促通知のidentityにsystem理由を指定できません");
+  }
+  if (signal.reason.threshold.status !== "recorded") {
+    throw new TypeError("個人催促通知のseverity閾値が未記録です");
+  }
+  const context = signal.source.context;
+  return JSON.stringify([
+    "personal-reminder-v1",
+    item.nodeId,
+    signal.reason.reasonCode,
+    context.causeId,
+    context.responsibilityId,
+    normalizedResponsibilityForComparison(context.responsible),
+    context.action.kind,
+    context.actionableSince.at,
+    context.stallSince.at,
+    signal.severity,
+    signal.reason.threshold.hours,
+  ]);
+}
+
 function createNotificationKey(item: DiscordNotificationItem, signal: ReasonSignal): string {
-  const stateHash = createHash("sha256").update(notificationState(item, signal)).digest("hex");
+  if (signal.source.kind === "personal_reminder") {
+    const legacySignal = legacyOverdueSignalForPersonalReminder(item, signal);
+    if (legacySignal != null && canReuseLegacyPersonalReminderKey(item, signal, legacySignal)) {
+      return createNotificationKey(item, legacySignal);
+    }
+  }
+  const state =
+    signal.source.kind === "personal_reminder"
+      ? personalReminderNotificationState(item, signal)
+      : notificationState(item, signal);
+  const stateHash = createHash("sha256").update(state).digest("hex");
   return `discord-notification:v1:${signal.reason.reasonCode}:${stateHash}`;
 }
 
@@ -1172,6 +1653,9 @@ function isEligibleAgainstLedger(
       return false;
     }
   }
+  if (reason.source.kind === "personal_reminder") {
+    return true;
+  }
   if (
     !isTimeNotificationReasonCode(reason.reason.reasonCode) &&
     reason.reason.reasonCode !== "owner_unknown"
@@ -1188,7 +1672,7 @@ function isEligibleAgainstLedger(
     if (
       entry.itemNodeId !== item.nodeId ||
       entry.reasonCode !== reason.reason.reasonCode ||
-      entry.severity !== item.current.severity ||
+      entry.severity !== reason.severity ||
       parseTimestamp(entry.reservedAt, "ledgerの予約時刻") < periodStartTimestamp
     ) {
       return false;
@@ -1275,10 +1759,17 @@ function createCurrentCandidateDrafts(
       evaluatedTimestamp,
       input.settings,
     );
-    const eligibleReasons = signals
-      .filter((signal) => !isReasonSuppressedByCause(item, signal.reason.reasonCode))
-      .map((signal) => {
-        const notificationKey = createNotificationKey(item, signal);
+    const signalEntries = signals.map((signal) => {
+      const notificationKey = createNotificationKey(item, signal);
+      return Object.freeze({ signal, notificationKey });
+    });
+    const notificationKeys = signalEntries.map((entry) => entry.notificationKey);
+    if (new Set(notificationKeys).size !== notificationKeys.length) {
+      throw new TypeError(`${item.nodeId}の通知理由でnotificationKeyが衝突しています`);
+    }
+    const eligibleReasons = signalEntries
+      .filter((entry) => !isReasonSuppressedByCause(item, entry.signal.reason.reasonCode))
+      .map(({ signal, notificationKey }) => {
         return {
           signal,
           notificationKey,
@@ -1323,16 +1814,250 @@ function pendingReplacementKey(pending: PendingNotification): string {
   if (pending.target.kind === "cycle") {
     return JSON.stringify([pending.itemNodeId, pending.reason.reasonCode, pending.target.cycleId]);
   }
+  if (pending.target.kind === "personal_reminder") {
+    return JSON.stringify([pending.itemNodeId, pending.reason.reasonCode, pending.target.causeId]);
+  }
   return JSON.stringify([pending.itemNodeId, pending.reason.reasonCode]);
 }
 
-function pendingReasonSignal(pending: PendingNotification): ReasonSignal {
+function legacyPendingEpisodeMatchesCurrent(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+): boolean {
+  if (pending.target.kind !== "overdue") {
+    return false;
+  }
+  return (
+    pending.itemNodeId === item.nodeId &&
+    pending.target.status === item.current.status &&
+    pending.target.waitClass === item.current.waitClass &&
+    pending.target.lastProgressAt === item.current.lastProgressAt &&
+    waitingOnComparisonSignature(item.current.waitingOn) ===
+      waitingOnComparisonSignature(pending.target.waitingOn)
+  );
+}
+
+function legacyPendingCauseMatchesBase(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+  input: DiscordPersonalReminderInput,
+): boolean {
+  if (
+    pending.target.kind !== "overdue" ||
+    !legacyPendingEpisodeMatchesCurrent(item, pending) ||
+    !isPersonalReminderReasonCode(pending.reason.reasonCode) ||
+    input.cause.itemNodeId !== item.nodeId ||
+    input.cause.reasonCode !== pending.reason.reasonCode ||
+    input.cause.action.kind !== personalReminderActionKindForReason(input.cause.reasonCode) ||
+    !personalReminderScopeIncludesItem(input.cause)
+  ) {
+    return false;
+  }
+  return (
+    personalReminderResponsibleSignature(input.cause.responsible) ===
+    waitingOnComparisonSignature(pending.target.waitingOn)
+  );
+}
+
+function legacyPendingMatchesPersonalReminderCause(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+  input: DiscordPersonalReminderInput,
+): boolean {
+  if (!legacyPendingCauseMatchesBase(item, pending, input)) {
+    return false;
+  }
+  const reasonCode = pending.reason.reasonCode;
+  if (!isPersonalReminderReasonCode(reasonCode)) {
+    throw new TypeError(`旧個人催促pendingの理由 ${reasonCode}が不正です`);
+  }
+  const legacySignal = legacySystemSignalForPersonalReason(item, reasonCode);
+  if (legacySignal == null || input.cause.actionableClock.status !== "observed") {
+    return false;
+  }
+  if (
+    input.cause.actionableClock.actionableSince.source !== "event" ||
+    input.cause.actionableClock.stallSince.source !== "event" ||
+    input.cause.actionableClock.actionableSince.at !== responsibilityPeriodStart(item) ||
+    input.cause.actionableClock.stallSince.at !== item.current.stallSince
+  ) {
+    return false;
+  }
+  return pending.notificationKey === createNotificationKey(item, legacySignal);
+}
+
+function migrateLegacyPersonalPending(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+): PendingNotification | undefined {
+  if (
+    pending.target.kind !== "overdue" ||
+    !isPersonalReminderReasonCode(pending.reason.reasonCode)
+  ) {
+    return pending;
+  }
+  const inputs = item.personalReminderCauses.filter((input) =>
+    legacyPendingCauseMatchesBase(item, pending, input),
+  );
+  const exactInputs = inputs.filter((input) =>
+    legacyPendingMatchesPersonalReminderCause(item, pending, input),
+  );
+  if (exactInputs.length > 1) {
+    throw new TypeError(`${item.nodeId}の旧個人催促pendingが複数原因へ一致します`);
+  }
+  const exactInput = exactInputs[0];
+  if (exactInput != null) {
+    if (exactInput.cause.actionableClock.status !== "observed") {
+      throw new TypeError(`${item.nodeId}の旧個人催促pendingに時計がありません`);
+    }
+    return Object.freeze({
+      ...pending,
+      target: Object.freeze({
+        kind: "personal_reminder",
+        causeId: exactInput.cause.causeId,
+        responsibilityId: exactInput.cause.responsibilityId,
+        actionableSince: Object.freeze({ ...exactInput.cause.actionableClock.actionableSince }),
+        stallSince: Object.freeze({ ...exactInput.cause.actionableClock.stallSince }),
+      }),
+    });
+  }
+  if (inputs.length > 0 || item.repositoryFreshness === "stale") {
+    return pending;
+  }
+  return undefined;
+}
+
+function pendingReasonSignal(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+  currentReason: EligibleReason | undefined,
+): ReasonSignal {
+  if (currentReason != null) {
+    return currentReason.signal;
+  }
+  if (pending.target.kind === "personal_reminder") {
+    const target = pending.target;
+    const currentInput = item.personalReminderCauses.find(
+      (input) => input.cause.causeId === target.causeId,
+    );
+    if (currentInput?.staleness.status !== "eligible") {
+      throw new TypeError(`${pending.itemNodeId}の個人催促送信待ち通知を復元できません`);
+    }
+    const currentSignal = createPersonalReminderSignals(item).find(
+      (signal) =>
+        signal.source.kind === "personal_reminder" &&
+        signal.source.context.causeId === target.causeId,
+    );
+    if (currentSignal == null) {
+      throw new TypeError(`${pending.itemNodeId}の個人催促送信待ち通知理由がありません`);
+    }
+    return currentSignal;
+  }
   return Object.freeze({
     reason: pending.reason,
     stateDiscriminator: pending.notificationKey,
     highPriorityEligible: pending.highPriorityEligible,
     target: pending.target,
+    severity: item.current.severity,
+    source: systemReasonSource(),
   });
+}
+
+function personalReminderInputForPending(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+): DiscordPersonalReminderInput | undefined {
+  if (pending.target.kind !== "personal_reminder") {
+    return undefined;
+  }
+  const target = pending.target;
+  return item.personalReminderCauses.find(
+    (input) =>
+      input.cause.causeId === target.causeId &&
+      input.cause.responsibilityId === target.responsibilityId,
+  );
+}
+
+function personalReminderPendingClockMatchesCurrent(
+  input: DiscordPersonalReminderInput,
+  pending: PendingNotification,
+): boolean {
+  if (pending.target.kind !== "personal_reminder") {
+    return false;
+  }
+  if (input.cause.actionableClock.status !== "observed") {
+    return false;
+  }
+  return (
+    samePersonalReminderTimeBasis(
+      input.cause.actionableClock.actionableSince,
+      pending.target.actionableSince,
+    ) &&
+    samePersonalReminderTimeBasis(input.cause.actionableClock.stallSince, pending.target.stallSince)
+  );
+}
+
+type PersonalReminderPendingState = "send" | "hold" | "drop";
+
+function personalReminderPendingState(
+  item: DiscordNotificationItem,
+  pending: PendingNotification,
+  evaluatedTimestamp: number,
+): PersonalReminderPendingState {
+  const input = personalReminderInputForPending(item, pending);
+  if (input == null) {
+    return item.repositoryFreshness === "stale" ? "hold" : "drop";
+  }
+  if (input.cause.reasonCode !== pending.reason.reasonCode) {
+    return "drop";
+  }
+  const assessment = currentPersonalReminderAssessment(input.cause);
+  if (assessment.status !== "available") {
+    return "hold";
+  }
+  switch (assessment.result.verdict) {
+    case "duplicate":
+    case "not_required":
+      return "drop";
+    case "waiting":
+    case "unknown":
+      return "hold";
+    case "actionable":
+      break;
+  }
+  if (input.cause.actionableClock.status !== "observed") {
+    return "hold";
+  }
+  if (!personalReminderPendingClockMatchesCurrent(input, pending)) {
+    return "drop";
+  }
+  if (input.staleness.status !== "eligible") {
+    return "hold";
+  }
+  if (
+    input.staleness.severity === "none" ||
+    input.staleness.severityReason.crossedThreshold.status !== "reached"
+  ) {
+    return "drop";
+  }
+  const currentSignal = createPersonalReminderSignals(item).find(
+    (signal) =>
+      signal.source.kind === "personal_reminder" &&
+      signal.source.context.causeId === input.cause.causeId,
+  );
+  if (currentSignal == null) {
+    throw new TypeError(`${item.nodeId}の個人催促送信待ち通知理由がありません`);
+  }
+  if (createNotificationKey(item, currentSignal) !== pending.notificationKey) {
+    return "drop";
+  }
+  if (
+    parseTimestamp(input.staleness.stallSince.at, `${item.nodeId}の個人催促stallSince`) >
+    evaluatedTimestamp
+  ) {
+    throw new RangeError(`${item.nodeId}の個人催促stallSinceは判定時刻以前にしてください`);
+  }
+  return "send";
 }
 
 function pendingReasonMatchesCurrent(
@@ -1342,6 +2067,9 @@ function pendingReasonMatchesCurrent(
   settings: DiscordNotificationSelectionSettings,
 ): boolean {
   const reasonCode = pending.reason.reasonCode;
+  if (pending.target.kind === "personal_reminder") {
+    return personalReminderPendingState(item, pending, evaluatedTimestamp) === "send";
+  }
   switch (pending.target.kind) {
     case "responsibility":
       return (
@@ -1413,6 +2141,17 @@ function pendingNotificationDisposition(
   if (item.repositoryFreshness === "stale") {
     return "hold";
   }
+  if (pending.target.kind === "personal_reminder") {
+    const personalState = personalReminderPendingState(item, pending, evaluatedTimestamp);
+    if (personalState !== "send") {
+      return personalState;
+    }
+  } else if (
+    pending.target.kind === "overdue" &&
+    isPersonalReminderReasonCode(pending.reason.reasonCode)
+  ) {
+    return "hold";
+  }
   if (!pendingReasonMatchesCurrent(item, pending, evaluatedTimestamp, settings)) {
     return "drop";
   }
@@ -1434,8 +2173,21 @@ function mergePendingNotifications(
   evaluatedTimestamp: number,
 ): readonly PendingNotification[] {
   const pendingByReplacementKey = new Map<string, PendingNotification>();
+  const itemsByNodeId = new Map(input.items.map((item) => [item.nodeId, item]));
   for (const pending of input.pendingNotifications) {
-    pendingByReplacementKey.set(pendingReplacementKey(pending), pending);
+    const item = itemsByNodeId.get(pending.itemNodeId);
+    const migrated = item == null ? pending : migrateLegacyPersonalPending(item, pending);
+    if (migrated == null) {
+      continue;
+    }
+    const replacementKey = pendingReplacementKey(migrated);
+    if (
+      migrated.target.kind === "personal_reminder" &&
+      pendingByReplacementKey.has(replacementKey)
+    ) {
+      throw new TypeError(`${migrated.itemNodeId}の個人催促pendingがcause単位で重複しています`);
+    }
+    pendingByReplacementKey.set(replacementKey, migrated);
   }
   for (const draft of currentDrafts) {
     for (const reason of draft.reasons) {
@@ -1451,7 +2203,6 @@ function mergePendingNotifications(
     }
   }
 
-  const itemsByNodeId = new Map(input.items.map((item) => [item.nodeId, item]));
   const currentNotificationKeys = new Set(
     currentDrafts.flatMap((draft) => draft.reasons.map((reason) => reason.notificationKey)),
   );
@@ -1499,18 +2250,28 @@ function createPendingSelectionState(
   const currentNotificationKeys = new Set(
     currentDrafts.flatMap((draft) => draft.reasons.map((reason) => reason.notificationKey)),
   );
+  const currentReasonsByKey = new Map(
+    currentDrafts.flatMap((draft) =>
+      draft.reasons.map((reason) => [reason.notificationKey, reason] as const),
+    ),
+  );
   const reasonsByNodeId = new Map<GitHubNodeId, EligibleReason[]>();
 
   for (const pending of pendingNotifications) {
     const item = itemsByNodeId.get(pending.itemNodeId);
     assertNonNullable(item, `送信待ち通知の対象項目がありません。対象: ${pending.itemNodeId}`);
     if (
-      (!currentNotificationKeys.has(pending.notificationKey) &&
-        pendingNotificationDisposition(item, pending, evaluatedTimestamp, input.settings) !==
-          "send") ||
+      !currentNotificationKeys.has(pending.notificationKey) &&
+      pendingNotificationDisposition(item, pending, evaluatedTimestamp, input.settings) !== "send"
+    ) {
+      continue;
+    }
+    const currentReason = currentReasonsByKey.get(pending.notificationKey);
+    const reasonSignal = pendingReasonSignal(item, pending, currentReason);
+    if (
       !isEligibleAgainstLedger(
         item,
-        pendingReasonSignal(pending),
+        reasonSignal,
         pending.notificationKey,
         ledgerByKey,
         input.ledger,
@@ -1521,7 +2282,7 @@ function createPendingSelectionState(
     }
     const reasons = reasonsByNodeId.get(item.nodeId);
     const eligibleReason = Object.freeze({
-      signal: pendingReasonSignal(pending),
+      signal: reasonSignal,
       notificationKey: pending.notificationKey,
       pendingNotification: pending,
     });
@@ -1553,13 +2314,14 @@ function candidateTier(draft: CandidateDraft): number {
   if (!draft.reasons.some((reason) => reason.signal.highPriorityEligible)) {
     return 1;
   }
-  if (draft.item.current.severity === "critical") {
+  const severity = candidateSeverity(draft);
+  if (severity === "critical") {
     return 7;
   }
   if (draft.reasons.some((reason) => reason.signal.reason.reasonCode === "dependency_cycle")) {
     return 6;
   }
-  if (draft.item.current.severity === "urgent") {
+  if (severity === "urgent") {
     return 5;
   }
   if (draft.reasons.some((reason) => reason.signal.reason.reasonCode === "newly_unblocked")) {
@@ -1570,10 +2332,67 @@ function candidateTier(draft: CandidateDraft): number {
   ) {
     return 3;
   }
-  if (draft.item.current.severity === "watch") {
+  if (severity === "watch") {
     return 2;
   }
   return 1;
+}
+
+function candidateSeverity(draft: CandidateDraft): Severity {
+  let severity: Severity = "none";
+  for (const reason of draft.reasons) {
+    if (compareSeverity(reason.signal.severity, severity) > 0) {
+      severity = reason.signal.severity;
+    }
+  }
+  return severity;
+}
+
+function candidateStallSince(draft: CandidateDraft, evaluatedTimestamp: number): number {
+  const stallTimestamps = draft.reasons.map((reason) => {
+    if (reason.signal.source.kind === "personal_reminder") {
+      return parseTimestamp(
+        reason.signal.source.context.stallSince.at,
+        `${draft.item.nodeId}の個人催促stallSince`,
+      );
+    }
+    return parseTimestamp(draft.item.current.stallSince, `${draft.item.nodeId}のstallSince`);
+  });
+  return evaluatedTimestamp - Math.min(...stallTimestamps);
+}
+
+function compareCandidateMetrics(
+  left: CandidateDraft,
+  right: CandidateDraft,
+  evaluatedTimestamp: number,
+): -1 | 0 | 1 {
+  const severityDifference =
+    severityRank(candidateSeverity(right)) - severityRank(candidateSeverity(left));
+  if (severityDifference !== 0) {
+    return severityDifference < 0 ? -1 : 1;
+  }
+  const repositoryDifference =
+    right.item.graph.downstreamImpact.repositoryCount -
+    left.item.graph.downstreamImpact.repositoryCount;
+  if (repositoryDifference !== 0) {
+    return repositoryDifference < 0 ? -1 : 1;
+  }
+  const nodeDifference =
+    right.item.graph.downstreamImpact.openNodeCount -
+    left.item.graph.downstreamImpact.openNodeCount;
+  if (nodeDifference !== 0) {
+    return nodeDifference < 0 ? -1 : 1;
+  }
+  const weightDifference = right.item.priorityWeight - left.item.priorityWeight;
+  if (weightDifference !== 0) {
+    return weightDifference < 0 ? -1 : 1;
+  }
+  const stallDifference =
+    candidateStallSince(right, evaluatedTimestamp) - candidateStallSince(left, evaluatedTimestamp);
+  if (stallDifference !== 0) {
+    return stallDifference < 0 ? -1 : 1;
+  }
+  return compareStrings(left.item.nodeId, right.item.nodeId);
 }
 
 function compareCandidateDrafts(
@@ -1585,7 +2404,7 @@ function compareCandidateDrafts(
   if (tierDifference !== 0) {
     return tierDifference < 0 ? -1 : 1;
   }
-  const metricComparison = compareItemMetrics(left.item, right.item, evaluatedTimestamp);
+  const metricComparison = compareCandidateMetrics(left, right, evaluatedTimestamp);
   if (metricComparison !== 0) {
     return metricComparison;
   }
@@ -1596,7 +2415,11 @@ function compareCandidateDrafts(
 
 function selectedReason(reason: EligibleReason): SelectedDiscordNotificationReason {
   const signalReason = reason.signal.reason;
-  const selectionFields = { notificationKey: reason.notificationKey };
+  const selectionFields = {
+    notificationKey: reason.notificationKey,
+    severity: reason.signal.severity,
+    source: reason.signal.source,
+  };
   if (isTimeNotificationReasonCode(signalReason.reasonCode)) {
     if (signalReason.threshold.status === "recorded") {
       return Object.freeze({
@@ -1647,7 +2470,7 @@ function createCandidate(draft: CandidateDraft): DiscordNotificationCandidate {
   return Object.freeze({
     itemNodeId: draft.item.nodeId,
     reasons: nonEmptyReasons,
-    severity: draft.item.current.severity,
+    severity: candidateSeverity(draft),
     downstreamImpact: Object.freeze({
       ...draft.item.graph.downstreamImpact,
     }),
@@ -1664,7 +2487,7 @@ function createLedgerReservation(
     notificationKey: reason.notificationKey,
     itemNodeId: candidate.itemNodeId,
     reasonCode: reason.reasonCode,
-    severity: candidate.severity,
+    severity: reason.severity,
     reservedAt: evaluatedAt,
     expiresAt: reservationExpiresAt(evaluatedAt),
     status: "reserved",
@@ -1732,7 +2555,7 @@ function createAcknowledgedLedgerEntry(
     notificationKey: reason.notificationKey,
     itemNodeId: candidate.itemNodeId,
     reasonCode: reason.reasonCode,
-    severity: candidate.severity,
+    severity: reason.severity,
     reservedAt: evaluatedAt,
     status: "acknowledged",
     acknowledgedAt: evaluatedAt,
