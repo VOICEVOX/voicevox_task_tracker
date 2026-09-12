@@ -68,6 +68,15 @@ export {
   type PersonalReminderAiCacheReuseDecision,
   type PersonalReminderAiCacheStore,
 } from "./personal-reminder-cache.js";
+export {
+  runPersonalReminderAiAnalyses,
+  type PersonalReminderAiCauseRunOutcome,
+  type PersonalReminderAiEvaluationCandidate,
+  type PersonalReminderAiRunConfiguration,
+  type PersonalReminderAiRunDependencies,
+  type PersonalReminderAiRunResult,
+  type PreparedPersonalReminderAiBudgetCandidate,
+} from "./personal-reminder-runner.js";
 export { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 export {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
