@@ -6,6 +6,8 @@ export {
   type NotificationDependencyCause,
 } from "./notification-cause.js";
 export {
+  assertDiscordPersonalReminderSelectionMatchesSnapshot,
+  calculateDiscordNotificationCandidateSeverity,
   createAcknowledgedNotificationLedgerEntries,
   selectDiscordNotifications,
   type DiscordNotificationCandidate,
@@ -13,6 +15,7 @@ export {
   type DiscordNotificationDecisionBasis,
   type DiscordNotificationGraphContext,
   type DiscordNotificationItem,
+  type DiscordPersonalReminderSelectionValidationItem,
   type DiscordNotificationLatestChange,
   type DiscordNotificationPrevious,
   type DiscordNotificationPreviousState,

@@ -150,6 +150,24 @@ export type DiscordPersonalReminderInput = Readonly<{
   staleness: PersonalReminderStaleness;
 }>;
 
+/** 送信直前にsnapshotから再計算した個人催促選別入力。 */
+export type DiscordPersonalReminderSelectionValidationItem = Readonly<{
+  nodeId: GitHubNodeId;
+  current: Pick<
+    DiscordNotificationCurrentState,
+    | "status"
+    | "waitingOn"
+    | "severity"
+    | "severityReason"
+    | "waitClass"
+    | "statusSince"
+    | "ownerSince"
+    | "stallSince"
+    | "lastProgressAt"
+  >;
+  personalReminderCauses: readonly DiscordPersonalReminderInput[];
+}>;
+
 /** 個人催促通知の選別結果へ渡す原因の文脈。 */
 export type DiscordPersonalReminderNotificationContext = Readonly<{
   causeId: PersonalReminderCause["causeId"];
@@ -308,7 +326,7 @@ function pendingWaitingOnValues(
 }
 
 function pendingTargetForReason(
-  item: DiscordNotificationItem,
+  item: Pick<DiscordNotificationItem, "nodeId" | "current">,
   reasonCode: DiscordNotificationReasonCode,
   cycleId: DependencyCycleId | undefined,
 ): PendingNotificationTarget {
@@ -920,7 +938,7 @@ function isTimeNotificationReasonCode(
 
 type NotificationReasonSelectionInput =
   | Readonly<{
-      item: DiscordNotificationItem;
+      item: Pick<DiscordNotificationItem, "nodeId" | "current">;
       reasonCode: NotificationTimeReasonCode;
       source: "deterministic" | "codex";
     }>
@@ -1226,7 +1244,9 @@ function createPersonalReminderContext(
   });
 }
 
-function createPersonalReminderSignals(item: DiscordNotificationItem): readonly ReasonSignal[] {
+function createPersonalReminderSignals(
+  item: Pick<DiscordNotificationItem, "personalReminderCauses">,
+): readonly ReasonSignal[] {
   return item.personalReminderCauses.flatMap((input) => {
     if (input.staleness.status !== "eligible") {
       return [];
@@ -1442,7 +1462,10 @@ function isReasonSuppressedByCause(
   }
 }
 
-function notificationState(item: DiscordNotificationItem, signal: ReasonSignal): string {
+function notificationState(
+  item: Pick<DiscordNotificationItem, "nodeId" | "current">,
+  signal: ReasonSignal,
+): string {
   if (signal.reason.reasonCode === "dependency_cycle") {
     return JSON.stringify([signal.reason.reasonCode, signal.stateDiscriminator]);
   }
@@ -1490,7 +1513,9 @@ function personalReminderScopeIncludesItem(cause: PersonalReminderCause): boolea
   }
 }
 
-function responsibilityPeriodStart(item: DiscordNotificationItem): UtcIsoDateTime {
+function responsibilityPeriodStart(
+  item: Pick<DiscordNotificationItem, "nodeId" | "current">,
+): UtcIsoDateTime {
   const statusSinceTimestamp = parseTimestamp(
     item.current.statusSince,
     `${item.nodeId}のstatusSince`,
@@ -1502,7 +1527,7 @@ function responsibilityPeriodStart(item: DiscordNotificationItem): UtcIsoDateTim
 }
 
 function legacySystemSignalForPersonalReason(
-  item: DiscordNotificationItem,
+  item: Pick<DiscordNotificationItem, "nodeId" | "current">,
   reasonCode: PersonalReminderReasonCode,
 ): ReasonSignal | undefined {
   if (overdueReasonCode(item.current.status, item.current.waitClass) !== reasonCode) {
@@ -1527,7 +1552,7 @@ function legacySystemSignalForPersonalReason(
 }
 
 function legacyOverdueSignalForPersonalReminder(
-  item: DiscordNotificationItem,
+  item: Pick<DiscordNotificationItem, "nodeId" | "current">,
   signal: ReasonSignal,
 ): ReasonSignal | undefined {
   if (signal.source.kind !== "personal_reminder") {
@@ -1541,7 +1566,7 @@ function legacyOverdueSignalForPersonalReminder(
 }
 
 function canReuseLegacyPersonalReminderKey(
-  item: DiscordNotificationItem,
+  item: Pick<DiscordNotificationItem, "nodeId" | "current" | "personalReminderCauses">,
   signal: ReasonSignal,
   legacySignal: ReasonSignal,
 ): boolean {
@@ -1595,7 +1620,7 @@ function canReuseLegacyPersonalReminderKey(
 }
 
 function personalReminderNotificationState(
-  item: DiscordNotificationItem,
+  item: Pick<DiscordNotificationItem, "nodeId">,
   signal: ReasonSignal,
 ): string {
   if (signal.source.kind !== "personal_reminder") {
@@ -1620,7 +1645,10 @@ function personalReminderNotificationState(
   ]);
 }
 
-function createNotificationKey(item: DiscordNotificationItem, signal: ReasonSignal): string {
+function createNotificationKey(
+  item: Pick<DiscordNotificationItem, "nodeId" | "current" | "personalReminderCauses">,
+  signal: ReasonSignal,
+): string {
   if (signal.source.kind === "personal_reminder") {
     const legacySignal = legacyOverdueSignalForPersonalReminder(item, signal);
     if (legacySignal != null && canReuseLegacyPersonalReminderKey(item, signal, legacySignal)) {
@@ -1633,6 +1661,68 @@ function createNotificationKey(item: DiscordNotificationItem, signal: ReasonSign
       : notificationState(item, signal);
   const stateHash = createHash("sha256").update(state).digest("hex");
   return `discord-notification:v1:${signal.reason.reasonCode}:${stateHash}`;
+}
+
+function assertSelectedReasonMatchesSignal(
+  item: Pick<DiscordNotificationItem, "nodeId">,
+  selectedReason: SelectedDiscordNotificationReason,
+  expected: ReasonSignal,
+): void {
+  if (
+    selectedReason.reasonCode !== expected.reason.reasonCode ||
+    JSON.stringify(selectedReason.threshold) !== JSON.stringify(expected.reason.threshold) ||
+    selectedReason.severity !== expected.severity ||
+    JSON.stringify(selectedReason.source) !== JSON.stringify(expected.source)
+  ) {
+    throw new TypeError(`${item.nodeId}の通知理由が現在の判定結果と一致しません`);
+  }
+}
+
+/** snapshotと現設定から再計算した個人催促理由を選択結果へ突合する。 */
+export function assertDiscordPersonalReminderSelectionMatchesSnapshot(
+  selection: DiscordNotificationSelection,
+  items: readonly DiscordPersonalReminderSelectionValidationItem[],
+): void {
+  if (selection.action === "skip_digest") {
+    return;
+  }
+  const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
+  if (itemsByNodeId.size !== items.length) {
+    throw new TypeError("送信直前の個人催促検証対象node IDが重複しています");
+  }
+  for (const candidate of selection.candidates) {
+    if (!candidate.reasons.some((reason) => reason.source.kind === "personal_reminder")) {
+      continue;
+    }
+    const item = itemsByNodeId.get(candidate.itemNodeId);
+    assertNonNullable(item, `${candidate.itemNodeId}の送信直前検証対象がありません`);
+    const signalsByCauseId = new Map<string, ReasonSignal>();
+    for (const signal of createPersonalReminderSignals(item)) {
+      if (signal.source.kind !== "personal_reminder") {
+        throw new TypeError("個人催促検証結果にsystem理由があります");
+      }
+      const causeId = signal.source.context.causeId;
+      if (signalsByCauseId.has(causeId)) {
+        throw new TypeError(`${causeId}の個人催促通知理由が重複しています`);
+      }
+      signalsByCauseId.set(causeId, signal);
+    }
+    for (const selectedReason of candidate.reasons) {
+      if (selectedReason.source.kind !== "personal_reminder") {
+        continue;
+      }
+      const expected = signalsByCauseId.get(selectedReason.source.context.causeId);
+      assertNonNullable(
+        expected,
+        `${selectedReason.source.context.causeId}の個人催促判定結果が現在のsnapshotにありません`,
+      );
+      const expectedKey = createNotificationKey(item, expected);
+      if (selectedReason.notificationKey !== expectedKey) {
+        throw new TypeError(`${candidate.itemNodeId}の個人催促notification keyが一致しません`);
+      }
+      assertSelectedReasonMatchesSignal(item, selectedReason, expected);
+    }
+  }
 }
 
 function isEligibleAgainstLedger(
@@ -2348,6 +2438,21 @@ function candidateSeverity(draft: CandidateDraft): Severity {
   return severity;
 }
 
+/** 選択済み理由の集合からdigest候補の代表severityを再計算する。 */
+export function calculateDiscordNotificationCandidateSeverity(
+  reasons: readonly SelectedDiscordNotificationReason[],
+): Severity {
+  const first = reasons[0];
+  assertNonNullable(first, "通知候補の理由がありません");
+  let severity: Severity = "none";
+  for (const reason of reasons) {
+    if (compareSeverity(reason.severity, severity) > 0) {
+      severity = reason.severity;
+    }
+  }
+  return severity;
+}
+
 function candidateStallSince(draft: CandidateDraft, evaluatedTimestamp: number): number {
   const stallTimestamps = draft.reasons.map((reason) => {
     if (reason.signal.source.kind === "personal_reminder") {
@@ -2470,7 +2575,7 @@ function createCandidate(draft: CandidateDraft): DiscordNotificationCandidate {
   return Object.freeze({
     itemNodeId: draft.item.nodeId,
     reasons: nonEmptyReasons,
-    severity: candidateSeverity(draft),
+    severity: calculateDiscordNotificationCandidateSeverity(nonEmptyReasons),
     downstreamImpact: Object.freeze({
       ...draft.item.graph.downstreamImpact,
     }),
