@@ -37,7 +37,8 @@ function responseTone(response: CurrentResponse): "danger" | "info" | "success" 
   }
 }
 
-function ResponseResponsible({
+/** 現在の対応者を表示する。 */
+export function ResponseResponsible({
   createPersonHref,
   onSelectPerson,
   responsible,
@@ -52,7 +53,7 @@ function ResponseResponsible({
           createPersonHref={createPersonHref}
           login={responsible.candidateId}
           onSelectPerson={onSelectPerson}
-          showAvatar={false}
+          showAvatar={true}
         />
       );
     case "team":

@@ -1,6 +1,196 @@
 {
   "generatedAt": "2026-07-31T00:05:00.000Z",
-  "notifications": [],
+  "notifications": [
+    {
+      "item": {
+        "nodeId": "sample-item-editor-101",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-editor",
+        "displayReference": "VOICEVOX/sample-editor#101",
+        "number": 101,
+        "title": "サンプル辞書更新をマージする",
+        "url": "https://github.com/VOICEVOX/sample-editor/pull/101"
+      },
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "sample-history-maintainer",
+          "role": "merge_decider"
+        },
+        {
+          "kind": "team",
+          "candidateId": "sample-release-team",
+          "role": "maintainer"
+        }
+      ],
+      "reasons": [
+        {
+          "reasonCode": "merge_overdue",
+          "threshold": {
+            "status": "recorded",
+            "hours": 48
+          }
+        },
+        {
+          "reasonCode": "review_overdue",
+          "threshold": {
+            "status": "recorded",
+            "hours": 24
+          }
+        },
+        {
+          "reasonCode": "blocker_overdue",
+          "threshold": {
+            "status": "not_applicable"
+          }
+        }
+      ],
+      "personalReminders": [
+        {
+          "notificationKey": "sample-history-101-merge",
+          "causeId": "sample-history-cause-101-merge",
+          "responsibilityId": "sample-history-responsibility-101-merge",
+          "responsible": [
+            {
+              "kind": "user",
+              "candidateId": "sample-history-maintainer",
+              "role": "merge_decider"
+            },
+            {
+              "kind": "team",
+              "candidateId": "sample-release-team",
+              "role": "maintainer"
+            }
+          ],
+          "action": {
+            "kind": "merge",
+            "summary": "マージ条件を確認して取り込む"
+          },
+          "reason": {
+            "reasonCode": "merge_overdue",
+            "threshold": {
+              "status": "recorded",
+              "hours": 48
+            }
+          },
+          "obligationSince": {
+            "source": "event",
+            "at": "2026-07-25T00:00:00.000Z",
+            "sourceIds": ["history-101-merge-obligation"]
+          },
+          "actionableSince": {
+            "source": "event",
+            "at": "2026-07-25T00:00:00.000Z",
+            "sourceIds": ["history-101-merge-actionable"]
+          },
+          "stallSince": {
+            "source": "event",
+            "at": "2026-07-27T00:00:00.000Z",
+            "sourceIds": ["history-101-merge-stall"]
+          },
+          "severity": "watch"
+        },
+        {
+          "notificationKey": "sample-history-101-review",
+          "causeId": "sample-history-cause-101-review",
+          "responsibilityId": "sample-history-responsibility-101-review",
+          "responsible": [
+            {
+              "kind": "user",
+              "candidateId": "sample-history-reviewer",
+              "role": "reviewer"
+            }
+          ],
+          "action": {
+            "kind": "review",
+            "summary": "変更内容を確認してレビューする"
+          },
+          "reason": {
+            "reasonCode": "review_overdue",
+            "threshold": {
+              "status": "recorded",
+              "hours": 24
+            }
+          },
+          "obligationSince": {
+            "source": "event",
+            "at": "2026-07-26T00:00:00.000Z",
+            "sourceIds": ["history-101-review-obligation"]
+          },
+          "actionableSince": {
+            "source": "event",
+            "at": "2026-07-26T00:00:00.000Z",
+            "sourceIds": ["history-101-review-actionable"]
+          },
+          "stallSince": {
+            "source": "event",
+            "at": "2026-07-28T00:00:00.000Z",
+            "sourceIds": ["history-101-review-stall"]
+          },
+          "severity": "urgent"
+        }
+      ],
+      "sentAt": "2026-07-30T12:00:00.000Z"
+    },
+    {
+      "item": {
+        "nodeId": "sample-item-engine-204",
+        "type": "issue",
+        "repositoryId": "sample-repository-engine",
+        "displayReference": "VOICEVOX/sample-engine#204",
+        "number": 204,
+        "title": "サンプル配布処理を実装する",
+        "url": "https://github.com/VOICEVOX/sample-engine/issues/204"
+      },
+      "waitingOn": [
+        {
+          "kind": "user",
+          "candidateId": "sample-history-implementer",
+          "role": "assignee"
+        }
+      ],
+      "reasons": [
+        {
+          "reasonCode": "work_overdue",
+          "threshold": {
+            "status": "recorded",
+            "hours": 24
+          }
+        }
+      ],
+      "personalReminders": [],
+      "sentAt": "2026-07-29T12:00:00.000Z"
+    },
+    {
+      "item": {
+        "nodeId": "sample-item-workflow-407",
+        "type": "pull_request",
+        "repositoryId": "sample-repository-workflow",
+        "displayReference": "example/sample-workflow#407",
+        "number": 407,
+        "title": "サンプル待ち先を調査する",
+        "url": "https://github.com/example/sample-workflow/pull/407"
+      },
+      "waitingOn": [
+        {
+          "kind": "role",
+          "candidateId": "maintainer",
+          "role": "maintainer"
+        }
+      ],
+      "reasons": [
+        {
+          "reasonCode": "assessment_overdue",
+          "threshold": {
+            "status": "recorded",
+            "hours": 24
+          }
+        }
+      ],
+      "personalReminders": [],
+      "sentAt": "2026-07-28T12:00:00.000Z"
+    }
+  ],
   "runId": "sample-run-2026-07-31",
-  "schemaVersion": "4"
+  "schemaVersion": "5"
 }
