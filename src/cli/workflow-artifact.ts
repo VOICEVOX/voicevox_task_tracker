@@ -13,12 +13,18 @@ import {
   createGitHubRepositoryId,
   createUtcIsoDateTime,
   notificationReasonSchema,
+  personalReminderActionKindSchema,
+  personalReminderCauseIdSchema,
+  personalReminderResponsibleSchema,
+  personalReminderResponsibilityIdSchema,
+  personalReminderTimeBasisSchema,
   pendingNotificationSchema,
   type PendingNotification,
   type NotificationReason,
   type Repository,
 } from "../domain/index.js";
 import {
+  calculateDiscordNotificationCandidateSeverity,
   type DiscordDeliverySettings,
   type DiscordNotificationSelection,
 } from "../discord/index.js";
@@ -77,11 +83,33 @@ const notificationReasonCodeSchema = z.enum([
   "merge_overdue",
   "automation_stuck",
 ]);
+const selectedReasonSourceSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("system"),
+  }),
+  z.strictObject({
+    kind: z.literal("personal_reminder"),
+    context: z.strictObject({
+      causeId: personalReminderCauseIdSchema,
+      responsibilityId: personalReminderResponsibilityIdSchema,
+      responsible: z.array(personalReminderResponsibleSchema).nonempty().max(20),
+      action: z.strictObject({
+        kind: personalReminderActionKindSchema,
+        summary: z.string().min(1).max(300),
+      }),
+      obligationSince: personalReminderTimeBasisSchema,
+      actionableSince: personalReminderTimeBasisSchema,
+      stallSince: personalReminderTimeBasisSchema,
+    }),
+  }),
+]);
 const selectedReasonSchema = z
   .strictObject({
     notificationKey: z.string().min(1).max(1000),
     reasonCode: notificationReasonCodeSchema,
     threshold: z.unknown(),
+    severity: severitySchema,
+    source: selectedReasonSourceSchema,
   })
   .transform((selectedReason, context) => {
     const reasonResult = notificationReasonSchema.safeParse({
@@ -101,6 +129,8 @@ const selectedReasonSchema = z
     return {
       ...reasonResult.data,
       notificationKey: selectedReason.notificationKey,
+      severity: selectedReason.severity,
+      source: selectedReason.source,
     };
   });
 const notificationCandidateSchema = z.strictObject({
@@ -166,6 +196,14 @@ const runMetadataMetricsSchema = z.strictObject({
   aiCacheHitCount: nonNegativeIntegerSchema,
   aiRetainedResultCount: nonNegativeIntegerSchema,
   estimatedInputTokens: nonNegativeIntegerSchema,
+  personalReminderCauseCount: nonNegativeIntegerSchema,
+  personalReminderAiCallCount: nonNegativeIntegerSchema,
+  personalReminderAiCacheHitCount: nonNegativeIntegerSchema,
+  personalReminderAssessmentReuseCount: nonNegativeIntegerSchema,
+  personalReminderUnknownCount: nonNegativeIntegerSchema,
+  personalReminderFailedCount: nonNegativeIntegerSchema,
+  personalReminderDeferredCount: nonNegativeIntegerSchema,
+  personalReminderNotEvaluatedCount: nonNegativeIntegerSchema,
   githubApiRemaining: nonNegativeIntegerSchema,
   staleRepositoryCount: nonNegativeIntegerSchema,
   scheduleDelayMilliseconds: nonNegativeIntegerSchema,
@@ -474,6 +512,9 @@ function assertNotificationSelectionConsistency(
     if (candidate.downstreamImpact.nodeId !== candidate.itemNodeId) {
       throw new TypeError("workflow artifactの通知候補内で項目が一致しません");
     }
+    if (candidate.severity !== calculateDiscordNotificationCandidateSeverity(candidate.reasons)) {
+      throw new TypeError("workflow artifactの通知候補severityが理由と一致しません");
+    }
     for (const reason of candidate.reasons) {
       reasonKeys.push(reason.notificationKey);
       const reservation = reservations.get(reason.notificationKey);
@@ -483,7 +524,7 @@ function assertNotificationSelectionConsistency(
       if (
         reservation.itemNodeId !== candidate.itemNodeId ||
         reservation.reasonCode !== reason.reasonCode ||
-        reservation.severity !== candidate.severity
+        reservation.severity !== reason.severity
       ) {
         throw new TypeError("workflow artifactの通知候補と予約が一致しません");
       }

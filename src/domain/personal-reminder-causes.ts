@@ -31,6 +31,9 @@ export const PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION = "personal-reminder-ass
 /** 個人催促AI promptのversion。 */
 export const PERSONAL_REMINDER_AI_PROMPT_VERSION = "1";
 
+/** 個人催促原因の列挙計画version。 */
+export const PERSONAL_REMINDER_CAUSE_PLANNING_VERSION = "personal-reminder-planning-v1";
+
 const opaqueIdSchema = z
   .string()
   .min(1, "IDは空にできません")
@@ -82,6 +85,27 @@ export type PersonalReminderCauseId = z.output<typeof personalReminderCauseIdSch
 export type PersonalReminderResponsibilityId = z.output<
   typeof personalReminderResponsibilityIdSchema
 >;
+
+/** 個人催促原因の列挙計画状態。 */
+export const personalReminderCausePlanningSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("pending"),
+    planningVersion: opaqueIdSchema,
+  }),
+  z.strictObject({
+    status: z.literal("completed"),
+    planningVersion: opaqueIdSchema,
+    observedAt: utcIsoDateTimeSchema,
+  }),
+  z.strictObject({
+    status: z.literal("excluded"),
+    planningVersion: opaqueIdSchema,
+    reason: z.literal("terminal_without_cause"),
+  }),
+]);
+
+/** 個人催促原因の列挙計画状態。 */
+export type PersonalReminderCausePlanning = z.output<typeof personalReminderCausePlanningSchema>;
 
 /** 個人催促原因が対応する実行面。 */
 export const personalReminderExecutionSurfaceSchema = z.strictObject({
@@ -358,6 +382,7 @@ export type PersonalReminderCauseAssessment = z.output<
 /** 個人催促原因の延期理由。 */
 export const personalReminderDeferredReasonSchema = z.enum([
   "upstream_relation",
+  "input_incomplete",
   "item_input_character_limit",
   "call_limit",
   "total_input_character_limit",
@@ -531,7 +556,8 @@ export function currentPersonalReminderAssessment(
   }
   if (
     cause.adoptedAssessment.inputFingerprint !== cause.currentInput.fingerprint ||
-    cause.adoptedAssessment.rulesVersion !== cause.currentInput.rulesVersion
+    cause.adoptedAssessment.rulesVersion !== cause.currentInput.rulesVersion ||
+    cause.currentInput.rulesVersion !== PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION
   ) {
     return Object.freeze({ status: "not_available" });
   }

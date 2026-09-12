@@ -2868,6 +2868,7 @@
             "reason": {
               "enum": [
                 "upstream_relation",
+                "input_incomplete",
                 "item_input_character_limit",
                 "call_limit",
                 "total_input_character_limit",
@@ -3124,6 +3125,55 @@
         }
       }
     },
+    "personalReminderCausePlanning": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "planningVersion"],
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "planningVersion": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "planningVersion", "observedAt"],
+          "properties": {
+            "status": {
+              "const": "completed"
+            },
+            "planningVersion": {
+              "$ref": "#/$defs/identifier"
+            },
+            "observedAt": {
+              "$ref": "#/$defs/dateTime"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "planningVersion", "reason"],
+          "properties": {
+            "status": {
+              "const": "excluded"
+            },
+            "planningVersion": {
+              "$ref": "#/$defs/identifier"
+            },
+            "reason": {
+              "const": "terminal_without_cause"
+            }
+          }
+        }
+      ]
+    },
     "item": {
       "type": "object",
       "additionalProperties": false,
@@ -3161,6 +3211,7 @@
         "checkState",
         "aiAnalysis",
         "personalReminderCauses",
+        "personalReminderCausePlanning",
         "inputEvents",
         "confidence",
         "evidence",
@@ -3321,6 +3372,9 @@
           "items": {
             "$ref": "#/$defs/personalReminderCause"
           }
+        },
+        "personalReminderCausePlanning": {
+          "$ref": "#/$defs/personalReminderCausePlanning"
         },
         "inputEvents": {
           "type": "array",

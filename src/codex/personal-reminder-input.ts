@@ -82,9 +82,9 @@ const relationTypeSchema = z.enum([
   "duplicates",
 ]);
 
-const pendingRelationTypeSchema = z.enum(["blocks", "parent_of", "implements", "duplicates"]);
-
 const pendingRelationReasonSchema = z.enum(["assessment_missing", "confidence_below_threshold"]);
+
+const pendingRelationEndpointNodeIdsSchema = z.tuple([graphNodeIdSchema, graphNodeIdSchema]);
 
 const relationProvenanceSchema = z.enum([
   "native",
@@ -174,9 +174,7 @@ export type PersonalReminderAiRelationContext = z.output<
 
 const personalReminderPendingRelationSchema = z.strictObject({
   candidateId: opaqueIdSchema,
-  fromNodeId: graphNodeIdSchema,
-  toNodeId: graphNodeIdSchema,
-  type: pendingRelationTypeSchema,
+  endpointNodeIds: pendingRelationEndpointNodeIdsSchema,
   status: z.enum(["pending", "stale"]),
   reason: pendingRelationReasonSchema,
   evidenceSourceIds: z.array(sourceIdSchema).nonempty().max(30),
@@ -408,6 +406,20 @@ function uniqueSorted<T>(values: readonly T[], key: (value: T) => string): T[] {
   return result;
 }
 
+function canonicalEndpointNodeIds(
+  endpointNodeIds: readonly [GraphNodeId, GraphNodeId],
+  label: string,
+): [GraphNodeId, GraphNodeId] {
+  const [first, second] = endpointNodeIds;
+  if (first === second) {
+    throw new TypeError(`${label}のendpointが同一です。対象: ${first}`);
+  }
+  if (first < second) {
+    return [first, second];
+  }
+  return [second, first];
+}
+
 function countUnicodeCharacters(value: string): number {
   let count = 0;
   for (const character of value) {
@@ -521,6 +533,12 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
     input.cause.responsible.map((value) => responsibleKey(value)),
     "cause responsible actor",
   );
+  const allowsMissingRelatedItem =
+    input.completeness.status === "incomplete" &&
+    input.completeness.missing.includes("related_item");
+  const allowsMissingRelationEvidence =
+    input.completeness.status === "incomplete" &&
+    input.completeness.missing.includes("relation_evidence");
   if (input.cause.responsibility.scope.kind !== "item") {
     validateUniqueStrings(
       input.cause.responsibility.scope.surfaces.map(
@@ -533,8 +551,16 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
     throw new TypeError("原因のitem node IDがitem contextにありません");
   }
   const relationById = new Map(input.relations.map((relation) => [relation.id, relation]));
+  const relationEvidenceSourceIds = new Set(
+    input.relations.flatMap((relation) => relation.evidenceSourceIds),
+  );
+  const pendingRelationEvidenceSourceIds = new Set(
+    input.pendingRelations.flatMap((relation) => relation.evidenceSourceIds),
+  );
+  const causeNodeIds = causeScopeNodeIds(input.cause);
   for (const relation of input.relations) {
-    if (!itemIds.has(relation.fromNodeId) || !itemIds.has(relation.toNodeId)) {
+    const hasMissingEndpoint = !itemIds.has(relation.fromNodeId) || !itemIds.has(relation.toNodeId);
+    if (hasMissingEndpoint && !allowsMissingRelatedItem) {
       throw new TypeError(`relation ${relation.id}の端点がitem contextにありません`);
     }
     validateUniqueStrings(relation.evidenceSourceIds, `relation ${relation.id}のsource ID`);
@@ -544,11 +570,26 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
       }
     }
   }
-  if (input.pendingRelations.length !== 0 && input.completeness.status !== "incomplete") {
-    throw new TypeError("pending relationを含む入力はincompleteにしてください");
+  if (
+    input.pendingRelations.length !== 0 &&
+    (input.completeness.status !== "incomplete" || !allowsMissingRelationEvidence)
+  ) {
+    throw new TypeError(
+      "pending relationを含む入力にはrelation_evidence不足を含むincompleteが必要です",
+    );
   }
   for (const relation of input.pendingRelations) {
-    if (!itemIds.has(relation.fromNodeId) || !itemIds.has(relation.toNodeId)) {
+    const [firstEndpoint, secondEndpoint] = canonicalEndpointNodeIds(
+      relation.endpointNodeIds,
+      `pending relation ${relation.candidateId}`,
+    );
+    if (!causeNodeIds.has(firstEndpoint) && !causeNodeIds.has(secondEndpoint)) {
+      throw new TypeError(
+        `pending relation ${relation.candidateId}がcause scopeに接続していません`,
+      );
+    }
+    const hasMissingEndpoint = !itemIds.has(firstEndpoint) || !itemIds.has(secondEndpoint);
+    if (hasMissingEndpoint && (!allowsMissingRelatedItem || !allowsMissingRelationEvidence)) {
       throw new TypeError(
         `pending relation ${relation.candidateId}の端点がitem contextにありません`,
       );
@@ -567,7 +608,12 @@ function validateSemanticInputIntegrity(input: PersonalReminderCauseSemanticInpu
   }
   for (const source of input.sources) {
     if (!itemIds.has(source.itemNodeId)) {
-      throw new TypeError(`source ${source.sourceId}のitem node IDがitem contextにありません`);
+      const isRelationEvidence =
+        relationEvidenceSourceIds.has(source.sourceId) ||
+        pendingRelationEvidenceSourceIds.has(source.sourceId);
+      if (!allowsMissingRelatedItem || !isRelationEvidence) {
+        throw new TypeError(`source ${source.sourceId}のitem node IDがitem contextにありません`);
+      }
     }
   }
   for (const scope of input.evidenceScopes) {
@@ -636,8 +682,18 @@ export function createPersonalReminderCauseSemanticInput(
   value: unknown,
 ): PersonalReminderCauseSemanticInput {
   const parsed = personalReminderCauseSemanticInputSchema.parse(value);
-  validateSemanticInputIntegrity(parsed);
-  return parsed;
+  const normalized: PersonalReminderCauseSemanticInput = {
+    ...parsed,
+    pendingRelations: parsed.pendingRelations.map((relation) => ({
+      ...relation,
+      endpointNodeIds: canonicalEndpointNodeIds(
+        relation.endpointNodeIds,
+        `pending relation ${relation.candidateId}`,
+      ),
+    })),
+  };
+  validateSemanticInputIntegrity(normalized);
+  return normalized;
 }
 
 function canonicalResponsible(
@@ -711,9 +767,10 @@ function canonicalSemanticInput(input: PersonalReminderCauseSemanticInput): unkn
     pendingRelations: uniqueSorted(input.pendingRelations, (value) => value.candidateId).map(
       (value) => ({
         candidateId: value.candidateId,
-        fromNodeId: value.fromNodeId,
-        toNodeId: value.toNodeId,
-        type: value.type,
+        endpointNodeIds: canonicalEndpointNodeIds(
+          value.endpointNodeIds,
+          `pending relation ${value.candidateId}`,
+        ),
         status: value.status,
         reason: value.reason,
         evidenceSourceIds: uniqueSorted(value.evidenceSourceIds, (sourceId) => sourceId),
@@ -776,8 +833,8 @@ function createTransportInput(inputs: readonly PersonalReminderCauseSemanticInpu
   const rootItemNodeId = inputs[0]?.cause.itemNodeId;
   assertNonNullable(rootItemNodeId, "個人催促AIの原因がありません");
   for (const input of inputs) {
-    if (input.pendingRelations.length !== 0) {
-      throw new TypeError("未確定relationを含む入力はAI batchへ送れません");
+    if (input.completeness.status !== "complete" || input.pendingRelations.length !== 0) {
+      throw new TypeError("不完全または未確定relationを含む入力はAI batchへ送れません");
     }
     if (input.cause.itemNodeId !== rootItemNodeId) {
       throw new TypeError("同じitemの原因だけを個人催促AI batchへまとめてください");
@@ -1082,6 +1139,9 @@ function validateTransportInputIntegrity(input: PersonalReminderAiInput): void {
   }
   const causeIds = new Set<string>();
   for (const cause of input.causes) {
+    if (cause.completeness.status !== "complete") {
+      throw new TypeError(`不完全なcauseをtransportへ含められません。対象: ${cause.causeId}`);
+    }
     if (causeIds.has(cause.causeId)) {
       throw new TypeError(`transport inputのcause IDが重複しています。対象: ${cause.causeId}`);
     }

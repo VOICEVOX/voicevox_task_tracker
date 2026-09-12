@@ -25,6 +25,7 @@ import {
   determineIssueState,
   determinePullRequestState,
   isTerminalStatus,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   parseSourceId,
   resolveWaitingOnAccountIdentifiers,
   type Actor,
@@ -51,6 +52,7 @@ import {
   type SeverityThresholds,
   type SourceId,
   type StalenessResult,
+  type PersonalReminderCausePlanning,
   type TrackedItem,
   type UtcIsoDateTime,
   type WaitingOn,
@@ -1258,6 +1260,22 @@ function itemDisplayReference(repositoryName: string, number: number): GitHubIte
   );
 }
 
+function createGoldenPersonalReminderCausePlanning(
+  status: TrackedItem["status"],
+): PersonalReminderCausePlanning {
+  if (isTerminalStatus(status)) {
+    return {
+      status: "excluded",
+      planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+      reason: "terminal_without_cause",
+    };
+  }
+  return {
+    status: "pending",
+    planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+  };
+}
+
 function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): TrackedItem {
   const item = analysis.input;
   const decision = analysis.decision;
@@ -1307,6 +1325,7 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
     reviewState: item.type === "issue" ? "not_applicable" : "unknown",
     checkState: item.type === "issue" ? "not_applicable" : "unknown",
     personalReminderCauses: Object.freeze([]),
+    personalReminderCausePlanning: createGoldenPersonalReminderCausePlanning(decision.status),
     aiAnalysis: Object.freeze({
       origin: "current",
       status: "not_required",
@@ -1577,6 +1596,7 @@ function selectNotifications(
         responsibility_changed: Object.freeze({ status: "indeterminate" }),
         newly_unblocked: Object.freeze({ status: "indeterminate" }),
       }),
+      personalReminderCauses: Object.freeze([]),
       graph: Object.freeze({
         downstreamImpact: findDownstreamImpact(nodeId, graph.downstreamImpacts),
         newlyUnblocked: graph.newlyUnblockedNodeIds.includes(nodeId),
@@ -1835,6 +1855,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         reviewState: index % 2 === 0 ? "not_applicable" : "requested",
         checkState: index % 2 === 0 ? "not_applicable" : "pending",
         personalReminderCauses: Object.freeze([]),
+        personalReminderCausePlanning: createGoldenPersonalReminderCausePlanning("in_progress"),
         aiAnalysis: Object.freeze({
           origin: "current",
           status: "disabled",

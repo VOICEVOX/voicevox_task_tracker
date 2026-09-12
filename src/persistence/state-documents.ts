@@ -81,6 +81,14 @@ const runMetricsSchema = z.strictObject({
   aiCacheHitCount: nonNegativeIntegerSchema,
   aiRetainedResultCount: nonNegativeIntegerSchema,
   estimatedInputTokens: nonNegativeIntegerSchema,
+  personalReminderCauseCount: nonNegativeIntegerSchema,
+  personalReminderAiCallCount: nonNegativeIntegerSchema,
+  personalReminderAiCacheHitCount: nonNegativeIntegerSchema,
+  personalReminderAssessmentReuseCount: nonNegativeIntegerSchema,
+  personalReminderUnknownCount: nonNegativeIntegerSchema,
+  personalReminderFailedCount: nonNegativeIntegerSchema,
+  personalReminderDeferredCount: nonNegativeIntegerSchema,
+  personalReminderNotEvaluatedCount: nonNegativeIntegerSchema,
   githubApiRemaining: nonNegativeIntegerSchema,
   staleRepositoryCount: nonNegativeIntegerSchema,
   notificationCount: nonNegativeIntegerSchema,
@@ -89,7 +97,7 @@ const runMetricsSchema = z.strictObject({
 });
 const runReportSchema = z
   .strictObject({
-    schemaVersion: z.literal("1"),
+    schemaVersion: z.literal("2"),
     runId: nonEmptyStringSchema,
     date: dateSchema,
     status: z.enum(["success", "fallback"]),

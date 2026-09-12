@@ -5,6 +5,7 @@ import { notificationReasonSchema, type NotificationReason } from "./notificatio
 import type {
   PersonalReminderCause,
   PersonalReminderCauseId,
+  PersonalReminderCausePlanning,
   PersonalReminderResponsibilityId,
   PersonalReminderTimeBasis,
 } from "./personal-reminder-causes.js";
@@ -771,6 +772,7 @@ type TrackedItemFields = Readonly<{
   checkState: CheckState;
   aiAnalysis: TrackedItemAiAnalysis;
   personalReminderCauses: readonly PersonalReminderCause[];
+  personalReminderCausePlanning: PersonalReminderCausePlanning;
   inputEvents: readonly TrackedItemInputEvent[];
   confidence: number;
   evidence: readonly Evidence[];

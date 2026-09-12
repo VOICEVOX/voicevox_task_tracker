@@ -36,6 +36,7 @@ export {
   PERSONAL_REMINDER_AI_PROMPT_VERSION,
   PERSONAL_REMINDER_AI_REVISION,
   PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   currentPersonalReminderAssessment,
   personalReminderActionKindSchema,
   personalReminderActionableClockSchema,
@@ -44,6 +45,7 @@ export {
   personalReminderCauseAssessmentSchema,
   personalReminderCauseAssessmentWaitingForSchema,
   personalReminderCauseIdSchema,
+  personalReminderCausePlanningSchema,
   personalReminderCauseSchema,
   personalReminderCauseSeedSchema,
   personalReminderDeferredReasonSchema,
@@ -69,6 +71,7 @@ export {
   type PersonalReminderCauseAssessment,
   type PersonalReminderCauseAssessmentWaitingFor,
   type PersonalReminderCauseId,
+  type PersonalReminderCausePlanning,
   type PersonalReminderCauseSeed,
   type PersonalReminderDeferredReason,
   type PersonalReminderEvaluationAttempt,
@@ -142,6 +145,7 @@ export {
 export {
   determineIssueState,
   determineIssueLocalResponsibility,
+  determineIssuePersonalReminderResponsibilityAuthority,
   ISSUE_DETERMINISTIC_RULES_VERSION,
   type IssueBlocker,
   type IssueEffectiveAssigneeAssessment,
@@ -162,6 +166,8 @@ export {
 export {
   determinePullRequestState,
   determinePullRequestLocalResponsibility,
+  determinePullRequestPersonalReminderResponsibilityAuthority,
+  isPullRequestRevisionResponsibilityResolved,
   PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
   type PullRequestBlocker,
   type PullRequestCheckFailureAssessment,
@@ -172,11 +178,17 @@ export {
 } from "./pull-request-state-machine.js";
 export {
   createPersonalReminderCauseDraft,
+  determineStructurallyEndedPersonalReminderCauses,
   reconcilePersonalReminderCauseSeeds,
+  relationAffectsPersonalReminderCause,
   type PersonalReminderCauseDraft,
   type PersonalReminderCauseDraftUnavailable,
   type PersonalReminderCauseDraftUnavailableReason,
   type PersonalReminderCauseSeedReconciliation,
+  type PersonalReminderItem,
+  type PersonalReminderLocalDecision,
+  type PersonalReminderReviewRequestTarget,
+  type PersonalReminderStructuralEndInput,
   type PreviousPersonalReminderCauses,
 } from "./personal-reminder-planning.js";
 export {

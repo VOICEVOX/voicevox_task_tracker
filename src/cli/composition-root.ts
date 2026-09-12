@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
   executeCodexAnalysis,
   executeCodexAuthenticationPreflight,
+  executeCodexPersonalReminderAnalysis,
   runCodexProcess,
 } from "../codex/index.js";
 import { loadConfig } from "../config/index.js";
@@ -43,6 +44,7 @@ type ConcreteOperationName =
   | "enumerateOpenGitHubItems"
   | "executeCodexAuthenticationPreflight"
   | "executeCodexAnalysis"
+  | "executeCodexPersonalReminderAnalysis"
   | "loadConfig"
   | "openStateSession"
   | "readGoldenFixtures"
@@ -67,6 +69,7 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
     executeCodexAuthenticationPreflight,
     collectGitHubItemDetails,
     executeCodexAnalysis,
+    executeCodexPersonalReminderAnalysis,
     readReplayFixture: readReplayFixtureFile,
     readReplayState: readReplayStateFile,
     readGoldenFixtures: readGoldenFixtureFiles,

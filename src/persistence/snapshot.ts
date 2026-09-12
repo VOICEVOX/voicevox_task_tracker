@@ -25,6 +25,7 @@ import {
   type CurrentPersonalReminderAssessment,
   type PersonalReminderCause,
   personalReminderCauseSchema,
+  personalReminderCausePlanningSchema,
   type Relation,
   type Repository,
   type Severity,
@@ -167,7 +168,10 @@ type StateSnapshotFields = Readonly<{
   run: SnapshotRun;
 }>;
 
-type LegacySnapshotTrackedItem = Omit<SnapshotTrackedItem, "personalReminderCauses">;
+type LegacySnapshotTrackedItem = Omit<
+  SnapshotTrackedItem,
+  "personalReminderCauses" | "personalReminderCausePlanning"
+>;
 type LegacyStateSnapshotFields = Omit<StateSnapshotFields, "items"> &
   Readonly<{
     items: readonly LegacySnapshotTrackedItem[];
@@ -317,9 +321,14 @@ function snapshotSchemaForVersion(
       ? item
       : {
           ...item,
-          required: item.required.filter((key) => key !== "personalReminderCauses"),
+          required: item.required.filter(
+            (key) => key !== "personalReminderCauses" && key !== "personalReminderCausePlanning",
+          ),
           properties: Object.fromEntries(
-            Object.entries(item.properties).filter(([key]) => key !== "personalReminderCauses"),
+            Object.entries(item.properties).filter(
+              ([key]) =>
+                key !== "personalReminderCauses" && key !== "personalReminderCausePlanning",
+            ),
           ),
         };
   const legacyAiAnalysisElements = {
@@ -739,6 +748,34 @@ function assertPersonalReminderCausesSemantics(
   }
 }
 
+function assertPersonalReminderCausePlanningSemantics(item: SnapshotTrackedItem): void {
+  const parsedPlanning = personalReminderCausePlanningSchema.safeParse(
+    item.personalReminderCausePlanning,
+  );
+  if (!parsedPlanning.success) {
+    throw new StateSnapshotSemanticError("personal reminder causeのplanningが不正です", {
+      cause: parsedPlanning.error,
+    });
+  }
+  if (parsedPlanning.data.status === "completed") {
+    assertUtcDateTime(parsedPlanning.data.observedAt, "personal reminder planningの観測時刻");
+    if (parsedPlanning.data.observedAt > item.observedAt) {
+      throw new StateSnapshotSemanticError(
+        "personal reminder planningの観測時刻はitemの観測時刻以前にしてください",
+      );
+    }
+    return;
+  }
+  if (
+    parsedPlanning.data.status === "excluded" &&
+    (!isTerminalStatus(item.status) || item.personalReminderCauses.length !== 0)
+  ) {
+    throw new StateSnapshotSemanticError(
+      "causeがある、または継続中のitemをpersonal reminder planningから除外できません",
+    );
+  }
+}
+
 function assertAiAnalysisElementMapSemantics(
   elements: unknown,
   description: string,
@@ -1148,6 +1185,7 @@ function assertSnapshotSemantics(
     assertAiAnalysisSemantics(item.aiAnalysis, elementSchemaVersion, adoptedElementsFormat);
     if ("personalReminderCauses" in item) {
       assertPersonalReminderCausesSemantics(item, personalReminderCauseIds);
+      assertPersonalReminderCausePlanningSemantics(item);
     }
     if (isTerminalStatus(item.status) && item.waitingOn.length !== 0) {
       throw new StateSnapshotSemanticError("terminal itemにwaitingOnを保存できません");

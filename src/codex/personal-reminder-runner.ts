@@ -234,10 +234,16 @@ async function resolveCache(
   const outcomes = new Map<PersonalReminderCauseId, PersonalReminderAiCauseRunOutcome>();
   const misses: MissCandidate[] = [];
   for (const candidate of candidates) {
-    if (candidate.input.pendingRelations.length !== 0) {
+    if (candidate.input.completeness.status === "incomplete") {
       outcomes.set(
         candidate.cause.causeId,
-        Object.freeze({ status: "deferred", reason: "upstream_relation" }),
+        Object.freeze({
+          status: "deferred",
+          reason:
+            candidate.input.pendingRelations.length !== 0
+              ? "upstream_relation"
+              : "input_incomplete",
+        }),
       );
       continue;
     }

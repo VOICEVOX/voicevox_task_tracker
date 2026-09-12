@@ -22,6 +22,9 @@ import {
 import {
   type TrackedItemAiAnalysisCurrentElements,
   type TrackedItemAiAnalysisMigrationAdoptedElements,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+  isTerminalStatus,
+  type PersonalReminderCausePlanning,
 } from "../domain/index.js";
 import {
   AI_ANALYSIS_ELEMENTS_V6,
@@ -1156,6 +1159,23 @@ function migrateTrackedItem(
       adoptedElements: createLegacyAdoptedElements(item, output, legacyRelationsById),
     },
     personalReminderCauses: [],
+    personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+  };
+}
+
+function migratedPersonalReminderCausePlanning(
+  status: LegacyTrackedItem["status"],
+): PersonalReminderCausePlanning {
+  if (isTerminalStatus(status)) {
+    return {
+      status: "excluded",
+      planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+      reason: "terminal_without_cause",
+    };
+  }
+  return {
+    status: "pending",
+    planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   };
 }
 
@@ -1205,6 +1225,7 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
         ...item,
         aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
         personalReminderCauses: [],
+        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
     });
   } catch (error: unknown) {
@@ -1231,6 +1252,7 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
         ...item,
         aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
         personalReminderCauses: [],
+        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
     });
   } catch (error: unknown) {
@@ -1257,6 +1279,7 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
         ...item,
         aiAnalysis: migrateAiAnalysis(item.aiAnalysis, true, "6"),
         personalReminderCauses: [],
+        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
     });
   } catch (error: unknown) {
@@ -1322,6 +1345,7 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
       items: value.items.map((item) => ({
         ...item,
         personalReminderCauses: [],
+        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
     });
   } catch (error: unknown) {

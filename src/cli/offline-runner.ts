@@ -53,6 +53,14 @@ export type OfflineAnalysisMetrics = Readonly<{
   aiCacheHitCount: number;
   aiRetainedResultCount: number;
   estimatedInputTokens: number;
+  personalReminderCauseCount: number;
+  personalReminderAiCallCount: number;
+  personalReminderAiCacheHitCount: number;
+  personalReminderAssessmentReuseCount: number;
+  personalReminderUnknownCount: number;
+  personalReminderFailedCount: number;
+  personalReminderDeferredCount: number;
+  personalReminderNotEvaluatedCount: number;
   staleRepositoryCount: number;
 }>;
 
@@ -346,6 +354,21 @@ function addMetrics(
     aiCacheHitCount: left.aiCacheHitCount + right.aiCacheHitCount,
     aiRetainedResultCount: left.aiRetainedResultCount + right.aiRetainedResultCount,
     estimatedInputTokens: left.estimatedInputTokens + right.estimatedInputTokens,
+    personalReminderCauseCount: left.personalReminderCauseCount + right.personalReminderCauseCount,
+    personalReminderAiCallCount:
+      left.personalReminderAiCallCount + right.personalReminderAiCallCount,
+    personalReminderAiCacheHitCount:
+      left.personalReminderAiCacheHitCount + right.personalReminderAiCacheHitCount,
+    personalReminderAssessmentReuseCount:
+      left.personalReminderAssessmentReuseCount + right.personalReminderAssessmentReuseCount,
+    personalReminderUnknownCount:
+      left.personalReminderUnknownCount + right.personalReminderUnknownCount,
+    personalReminderFailedCount:
+      left.personalReminderFailedCount + right.personalReminderFailedCount,
+    personalReminderDeferredCount:
+      left.personalReminderDeferredCount + right.personalReminderDeferredCount,
+    personalReminderNotEvaluatedCount:
+      left.personalReminderNotEvaluatedCount + right.personalReminderNotEvaluatedCount,
     staleRepositoryCount: left.staleRepositoryCount + right.staleRepositoryCount,
   };
   validateOfflineMetrics(aggregate);
@@ -362,6 +385,14 @@ function emptyOfflineMetrics(): OfflineAnalysisMetrics {
     aiCacheHitCount: 0,
     aiRetainedResultCount: 0,
     estimatedInputTokens: 0,
+    personalReminderCauseCount: 0,
+    personalReminderAiCallCount: 0,
+    personalReminderAiCacheHitCount: 0,
+    personalReminderAssessmentReuseCount: 0,
+    personalReminderUnknownCount: 0,
+    personalReminderFailedCount: 0,
+    personalReminderDeferredCount: 0,
+    personalReminderNotEvaluatedCount: 0,
     staleRepositoryCount: 0,
   });
 }
@@ -375,7 +406,7 @@ function createCompletedReport(
   analysis: OfflineAnalysisResult,
 ): RunReport {
   return createRunReport({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId,
     command: command.kind,
     status: analysis.status,
@@ -399,7 +430,7 @@ function createFailureReport(
   diagnostic: string,
 ): RunReport {
   return createRunReport({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId,
     command: command.kind,
     status: "failure",

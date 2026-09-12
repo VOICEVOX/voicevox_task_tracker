@@ -36,6 +36,7 @@ export type DailyTransactionTypeMap = Readonly<{
   codexAnalysis: unknown;
   reduction: unknown;
   graph: unknown;
+  personalReminderAnalysis: unknown;
   validated: unknown;
   persisted: unknown;
   pages: unknown;
@@ -82,6 +83,23 @@ export type CodexAnalysisStageResult<Value> = Readonly<{
 export type GraphAnalysisStageResult<Value> = Readonly<{
   value: Value;
   activeEdgeCount: number;
+}>;
+
+/** 個人催促原因解析段階の値、縮退状態、累積AI指標。 */
+export type PersonalReminderAnalysisStageResult<Value> = Readonly<{
+  status: "success" | "fallback";
+  value: Value;
+  aiCallCount: number;
+  estimatedInputTokens: number;
+  personalReminderCauseCount: number;
+  personalReminderAiCallCount: number;
+  personalReminderAiCacheHitCount: number;
+  personalReminderAssessmentReuseCount: number;
+  personalReminderUnknownCount: number;
+  personalReminderFailedCount: number;
+  personalReminderDeferredCount: number;
+  personalReminderNotEvaluatedCount: number;
+  diagnostics: readonly string[];
 }>;
 
 /** 公開前検証が完全性を満たしたかを表す。 */
@@ -177,6 +195,18 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       reduction: Types["reduction"];
     }>,
   ) => Promise<GraphAnalysisStageResult<Types["graph"]>>;
+  analyzePersonalReminders: (
+    input: Readonly<{
+      invocation: DailyRunInvocation;
+      configuration: Types["configuration"];
+      state: Types["state"];
+      collection: Types["collection"];
+      deterministicAnalysis: Types["deterministicAnalysis"];
+      codexAnalysis: Types["codexAnalysis"];
+      reduction: Types["reduction"];
+      graph: Types["graph"];
+    }>,
+  ) => Promise<PersonalReminderAnalysisStageResult<Types["personalReminderAnalysis"]>>;
   validateCompleteness: (
     input: Readonly<{
       invocation: DailyRunInvocation;
@@ -187,6 +217,7 @@ export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> 
       codexAnalysis: Types["codexAnalysis"];
       reduction: Types["reduction"];
       graph: Types["graph"];
+      personalReminderAnalysis: Types["personalReminderAnalysis"];
     }>,
   ) => Promise<CompletenessValidationResult<Types["validated"]>>;
   persistState: (
@@ -431,7 +462,7 @@ function completedReport(
   finishedAt: UtcIsoDateTime,
 ): RunReport {
   return createRunReport({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId: invocation.runId,
     command: invocation.command.kind,
     status,
@@ -456,7 +487,7 @@ function failureReport(
   finishedAt: UtcIsoDateTime,
 ): RunReport {
   return createRunReport({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId: invocation.runId,
     command: invocation.command.kind,
     status: "failure",
@@ -640,7 +671,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         aiRetainedResultCount: codexAnalysis.aiRetainedResultCount,
         estimatedInputTokens: codexAnalysis.estimatedInputTokens,
       });
-      const runStatus = codexAnalysis.status;
+      let runStatus = codexAnalysis.status;
 
       stage = "reducer";
       const reduction = await this.#dependencies.reduceAnalysis({
@@ -663,6 +694,36 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         activeEdgeCount: graph.activeEdgeCount,
       });
 
+      stage = "personal_reminder_analysis";
+      const personalReminderAnalysis = await this.#dependencies.analyzePersonalReminders({
+        invocation,
+        configuration,
+        state,
+        collection: collection.value,
+        deterministicAnalysis,
+        codexAnalysis: codexAnalysis.value,
+        reduction,
+        graph: graph.value,
+      });
+      diagnostics.push(...personalReminderAnalysis.diagnostics);
+      metrics = updateMetrics(metrics, {
+        aiCallCount: personalReminderAnalysis.aiCallCount,
+        estimatedInputTokens: personalReminderAnalysis.estimatedInputTokens,
+        personalReminderCauseCount: personalReminderAnalysis.personalReminderCauseCount,
+        personalReminderAiCallCount: personalReminderAnalysis.personalReminderAiCallCount,
+        personalReminderAiCacheHitCount: personalReminderAnalysis.personalReminderAiCacheHitCount,
+        personalReminderAssessmentReuseCount:
+          personalReminderAnalysis.personalReminderAssessmentReuseCount,
+        personalReminderUnknownCount: personalReminderAnalysis.personalReminderUnknownCount,
+        personalReminderFailedCount: personalReminderAnalysis.personalReminderFailedCount,
+        personalReminderDeferredCount: personalReminderAnalysis.personalReminderDeferredCount,
+        personalReminderNotEvaluatedCount:
+          personalReminderAnalysis.personalReminderNotEvaluatedCount,
+      });
+      if (personalReminderAnalysis.status === "fallback") {
+        runStatus = "fallback";
+      }
+
       stage = "completeness_validation";
       const validation = await this.#dependencies.validateCompleteness({
         invocation,
@@ -673,6 +734,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         codexAnalysis: codexAnalysis.value,
         reduction,
         graph: graph.value,
+        personalReminderAnalysis: personalReminderAnalysis.value,
       });
       diagnostics.push(...validation.diagnostics);
 
