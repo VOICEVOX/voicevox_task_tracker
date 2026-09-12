@@ -3,11 +3,71 @@ export {
   createCodexEnvironment,
   executeCodexAuthenticationPreflight,
   executeCodexAnalysis,
+  executeCodexPersonalReminderAnalysis,
   getCodexEnvironmentVariableAllowlist,
   type CodexAdapterConfiguration,
   type CodexAdapterDependencies,
   type CodexAuthentication,
 } from "./adapter.js";
+export {
+  createPersonalReminderCauseSemanticInput,
+  createPersonalReminderAiInput,
+  createPersonalReminderCauseInputFingerprint,
+  personalReminderEvidenceRoleSchema,
+  personalReminderItemRefSchema,
+  personalReminderRelationRefSchema,
+  personalReminderSourceRefSchema,
+  planPersonalReminderCauseEvaluation,
+  preparePersonalReminderAiBatch,
+  serializePersonalReminderAiInput,
+  type PersonalReminderAiInput,
+  type PersonalReminderAiItemContext,
+  type PersonalReminderAiRelationContext,
+  type PersonalReminderAiSourceContext,
+  type PersonalReminderCauseSemanticInput,
+  type PersonalReminderCauseSemanticSeed,
+  type PersonalReminderCanonicalRefs,
+  type PersonalReminderDuplicateOption,
+  type PersonalReminderEvidenceRole,
+  type PersonalReminderEvidenceScope,
+  type PersonalReminderItemRef,
+  type PersonalReminderPendingRelation,
+  type PersonalReminderRelationRef,
+  type PersonalReminderSourceRef,
+  type PersonalReminderWaitingOption,
+  type PreparedPersonalReminderAiBatch,
+  type PreparedPersonalReminderCauseInput,
+} from "./personal-reminder-input.js";
+export {
+  PERSONAL_REMINDER_AI_OUTPUT_SCHEMA_ID,
+  PERSONAL_REMINDER_AI_OUTPUT_SCHEMA_VERSION,
+  createPersonalReminderAiOutputSchema,
+  type PersonalReminderAiOutputJsonSchema,
+} from "./personal-reminder-output-schema.js";
+export {
+  validatePersonalReminderAiOutput,
+  validatePersonalReminderAiOutputSchema,
+  type PersonalReminderRawAssessment,
+  type PersonalReminderRawReferences,
+  type SchemaValidPersonalReminderAiOutput,
+} from "./personal-reminder-output.js";
+export {
+  validatePersonalReminderCauseSemantics,
+  type PersonalReminderCauseSemanticIssue,
+  type PersonalReminderCauseSemanticValidation,
+} from "./personal-reminder-semantic-validation.js";
+export {
+  createPersonalReminderAiCacheEntry,
+  createPersonalReminderAiCacheKey,
+  createPersonalReminderAiExecutionFingerprint,
+  determinePersonalReminderAiCacheReuse,
+  type PersonalReminderAiCacheEntry,
+  type PersonalReminderAiCacheIdentity,
+  type PersonalReminderAiCacheKey,
+  type PersonalReminderAiCacheReadResult,
+  type PersonalReminderAiCacheReuseDecision,
+  type PersonalReminderAiCacheStore,
+} from "./personal-reminder-cache.js";
 export { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
 export {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,

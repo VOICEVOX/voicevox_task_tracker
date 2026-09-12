@@ -13,6 +13,24 @@ import {
 } from "./types.js";
 import { type NotificationTimeReasonCode } from "./notification-reason.js";
 
+/** 個人催促AI入力のschema version。 */
+export const PERSONAL_REMINDER_AI_INPUT_SCHEMA_VERSION = "1";
+
+/** 個人催促AI出力のschema version。 */
+export const PERSONAL_REMINDER_AI_OUTPUT_SCHEMA_VERSION = "1";
+
+/** 個人催促AI generationのschema version。 */
+export const PERSONAL_REMINDER_AI_GENERATION_SCHEMA_VERSION = "1";
+
+/** 個人催促AIのrevision。 */
+export const PERSONAL_REMINDER_AI_REVISION = 1;
+
+/** 個人催促意味判定の規則version。 */
+export const PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION = "personal-reminder-assessment-v1";
+
+/** 個人催促AI promptのversion。 */
+export const PERSONAL_REMINDER_AI_PROMPT_VERSION = "1";
+
 const opaqueIdSchema = z
   .string()
   .min(1, "IDは空にできません")
@@ -261,7 +279,19 @@ export type PersonalReminderAssessmentReferences = z.output<
 >;
 
 /** 個人催促原因の意味判定で不足している入力。 */
-export const personalReminderMissingInputSchema = z.string().min(1).max(120);
+export const personalReminderMissingInputSchema = z.enum([
+  "current_item",
+  "item_body",
+  "item_conversation",
+  "item_timeline",
+  "related_item",
+  "related_conversation",
+  "related_timeline",
+  "relation_evidence",
+  "review_state",
+  "check_state",
+  "resolution_events",
+]);
 
 /** 個人催促原因の意味判定で不足している入力。 */
 export type PersonalReminderMissingInput = z.output<typeof personalReminderMissingInputSchema>;
@@ -337,6 +367,28 @@ export const personalReminderDeferredReasonSchema = z.enum([
 /** 個人催促原因の延期理由。 */
 export type PersonalReminderDeferredReason = z.output<typeof personalReminderDeferredReasonSchema>;
 
+export const personalReminderAiGenerationMetadataSchema = aiAnalysisElementMetadataSchema
+  .omit({ schemaVersion: true })
+  .extend({
+    schemaVersion: z.literal(PERSONAL_REMINDER_AI_GENERATION_SCHEMA_VERSION),
+    rulesVersion: opaqueIdSchema,
+    batchInputFingerprint: aiAnalysisElementFingerprintSchema,
+  });
+
+/** 個人催促AIの専用generation metadata。 */
+export type PersonalReminderAiGenerationMetadata = z.output<
+  typeof personalReminderAiGenerationMetadataSchema
+>;
+
+/** 個人催促AIのgeneration。 */
+export const personalReminderAiGenerationSchema = z.strictObject({
+  metadata: personalReminderAiGenerationMetadataSchema,
+  result: personalReminderCauseAssessmentSchema,
+});
+
+/** 個人催促AIのgeneration。 */
+export type PersonalReminderAiGeneration = z.output<typeof personalReminderAiGenerationSchema>;
+
 /** 個人催促原因の評価を生成した経路。 */
 export const personalReminderEvaluationOriginSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -346,7 +398,7 @@ export const personalReminderEvaluationOriginSchema = z.discriminatedUnion("kind
   z.strictObject({
     kind: z.literal("ai"),
     cacheEntryId: aiCacheEntryIdSchema,
-    metadata: aiAnalysisElementMetadataSchema,
+    metadata: personalReminderAiGenerationMetadataSchema,
   }),
 ]);
 

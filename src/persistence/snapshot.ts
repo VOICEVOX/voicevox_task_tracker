@@ -2,7 +2,11 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 
 import snapshotSchema from "../../schemas/snapshot.schema.json" with { type: "json" };
-import { hashCanonicalJson, serializeCanonicalJsonLine } from "./canonical-json.js";
+import {
+  hashCanonicalJson,
+  serializeCanonicalJson,
+  serializeCanonicalJsonLine,
+} from "./canonical-json.js";
 import {
   StateFormatError,
   StateSnapshotSchemaError,
@@ -605,6 +609,65 @@ function assertPersonalReminderCausesSemantics(
       );
     }
     assertPersonalReminderResponsibilitySemantics(cause);
+    if (cause.latestAttempt.status === "completed" && cause.latestAttempt.origin.kind === "ai") {
+      if (
+        cause.latestAttempt.origin.metadata.inputFingerprint !==
+        cause.latestAttempt.inputFingerprint
+      ) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder AIのlatest attemptとmetadataのinput fingerprintが一致しません",
+        );
+      }
+    }
+    if (
+      cause.adoptedAssessment.status === "available" &&
+      cause.adoptedAssessment.origin.kind === "ai"
+    ) {
+      if (
+        cause.adoptedAssessment.origin.metadata.inputFingerprint !==
+        cause.adoptedAssessment.inputFingerprint
+      ) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder AIの採用結果とmetadataのinput fingerprintが一致しません",
+        );
+      }
+      if (
+        cause.adoptedAssessment.origin.metadata.rulesVersion !==
+        cause.adoptedAssessment.rulesVersion
+      ) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder AIの採用結果とmetadataのrules versionが一致しません",
+        );
+      }
+      if (
+        hashCanonicalJson(cause.adoptedAssessment.result) !==
+        cause.adoptedAssessment.origin.metadata.outputHash
+      ) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder AIの採用結果とmetadataのoutput hashが一致しません",
+        );
+      }
+    }
+    if (
+      cause.latestAttempt.status === "completed" &&
+      cause.latestAttempt.origin.kind === "ai" &&
+      cause.adoptedAssessment.status === "available"
+    ) {
+      if (cause.adoptedAssessment.origin.kind !== "ai") {
+        throw new StateSnapshotSemanticError(
+          "personal reminder AIのlatest attemptと採用結果のoriginが一致しません",
+        );
+      }
+      if (
+        cause.latestAttempt.origin.cacheEntryId !== cause.adoptedAssessment.origin.cacheEntryId ||
+        serializeCanonicalJson(cause.latestAttempt.origin.metadata) !==
+          serializeCanonicalJson(cause.adoptedAssessment.origin.metadata)
+      ) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder AIのlatest attemptと採用結果のmetadataが一致しません",
+        );
+      }
+    }
     assertPersonalReminderTimeBasis(
       cause.obligationSince,
       item,

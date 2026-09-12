@@ -2711,6 +2711,63 @@
         }
       ]
     },
+    "personalReminderAiGenerationMetadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "reasoningEffort",
+        "backendVersion",
+        "schemaVersion",
+        "revision",
+        "inputFingerprint",
+        "executionFingerprint",
+        "promptFingerprint",
+        "outputHash",
+        "generatedAt",
+        "rulesVersion",
+        "batchInputFingerprint"
+      ],
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reasoningEffort": {
+          "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        },
+        "backendVersion": {
+          "$ref": "#/$defs/identifier"
+        },
+        "schemaVersion": {
+          "const": "1"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "inputFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "executionFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "promptFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "outputHash": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "generatedAt": {
+          "$ref": "#/$defs/dateTime"
+        },
+        "rulesVersion": {
+          "$ref": "#/$defs/identifier"
+        },
+        "batchInputFingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        }
+      }
+    },
     "personalReminderEvaluationOrigin": {
       "oneOf": [
         {
@@ -2738,7 +2795,7 @@
               "$ref": "#/$defs/fingerprint"
             },
             "metadata": {
-              "$ref": "#/$defs/aiAnalysisElementMetadata"
+              "$ref": "#/$defs/personalReminderAiGenerationMetadata"
             }
           }
         }
@@ -3035,7 +3092,19 @@
                       "minItems": 1,
                       "maxItems": 30,
                       "items": {
-                        "$ref": "#/$defs/shortString"
+                        "enum": [
+                          "current_item",
+                          "item_body",
+                          "item_conversation",
+                          "item_timeline",
+                          "related_item",
+                          "related_conversation",
+                          "related_timeline",
+                          "relation_evidence",
+                          "review_state",
+                          "check_state",
+                          "resolution_events"
+                        ]
                       }
                     }
                   }

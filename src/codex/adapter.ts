@@ -22,7 +22,20 @@ import {
   createCodexAnalysisInput,
   serializeCodexAnalysisInput,
 } from "./input.js";
+import {
+  createPersonalReminderAiInput,
+  type PersonalReminderAiInput,
+} from "./personal-reminder-input.js";
 import { createCodexElementOutputSchema } from "./element-output-schema.js";
+import {
+  createPersonalReminderAiOutputSchema,
+  type PersonalReminderAiOutputJsonSchema,
+} from "./personal-reminder-output-schema.js";
+import {
+  validatePersonalReminderAiOutput,
+  type SchemaValidPersonalReminderAiOutput,
+} from "./personal-reminder-output.js";
+import { serializeCanonicalJson } from "./canonical-json.js";
 import {
   type CodexApiErrorDiagnostic,
   type CodexProcessRequest,
@@ -39,6 +52,11 @@ const CODEX_COMMAND = "codex";
 const CODEX_TEMPORARY_DIRECTORY_PREFIX = "voicevox-task-tracker-codex-";
 const SYSTEM_PROMPT_URL = new URL("../../prompts/codex-system.md", import.meta.url);
 const OUTPUT_SCHEMA_FILE_NAME = "codex-element-output.schema.json";
+const PERSONAL_REMINDER_SYSTEM_PROMPT_URL = new URL(
+  "../../prompts/personal-reminder-causes.md",
+  import.meta.url,
+);
+const PERSONAL_REMINDER_OUTPUT_SCHEMA_FILE_NAME = "personal-reminder-output.schema.json";
 const OUTPUT_LAST_MESSAGE_FILE_NAME = "last-message.json";
 const MAX_TIMEOUT_SECONDS = Math.floor(Number.MAX_SAFE_INTEGER / 1000);
 const TEMPORARY_PROCESS_ERROR_CODES = new Set([
@@ -145,28 +163,40 @@ export function createCodexEnvironment(
   return Object.freeze(environment);
 }
 
-async function readFixedSystemPrompt(): Promise<string> {
+async function readFixedPrompt(promptUrl: URL, resource: string): Promise<string> {
   try {
-    return await readFile(fileURLToPath(SYSTEM_PROMPT_URL), "utf8");
+    return await readFile(fileURLToPath(promptUrl), "utf8");
   } catch (error: unknown) {
-    throw new CodexResourceError("prompts/codex-system.md", { cause: error });
+    throw new CodexResourceError(resource, { cause: error });
   }
+}
+
+async function readFixedSystemPrompt(): Promise<string> {
+  return readFixedPrompt(SYSTEM_PROMPT_URL, "prompts/codex-system.md");
+}
+
+async function readFixedPersonalReminderPrompt(): Promise<string> {
+  return readFixedPrompt(
+    PERSONAL_REMINDER_SYSTEM_PROMPT_URL,
+    "prompts/personal-reminder-causes.md",
+  );
 }
 
 async function writeOutputSchema(
   workingDirectory: string,
-  selectedElements: CodexAnalysisInput["selectedElements"],
+  schema: Readonly<Record<string, unknown>>,
+  fileName: string,
+  resource: string,
 ): Promise<string> {
-  const outputSchemaPath = join(workingDirectory, OUTPUT_SCHEMA_FILE_NAME);
+  const outputSchemaPath = join(workingDirectory, fileName);
   try {
-    const schema = createCodexElementOutputSchema(selectedElements);
     await writeFile(outputSchemaPath, `${JSON.stringify(schema)}\n`, {
       encoding: "utf8",
       flag: "wx",
     });
     return outputSchemaPath;
   } catch (error: unknown) {
-    throw new CodexResourceError("要素別Codex出力schema", { cause: error });
+    throw new CodexResourceError(resource, { cause: error });
   }
 }
 
@@ -562,7 +592,9 @@ async function executeAttempt(
   dependencies: CodexAdapterDependencies,
   systemPrompt: string,
   inputJson: string,
-  selectedElements: CodexAnalysisInput["selectedElements"],
+  outputSchema: Readonly<Record<string, unknown>>,
+  outputSchemaFileName: string,
+  outputSchemaResource: string,
   attempts: number,
 ): Promise<unknown> {
   const diagnostics = dependencies.diagnostics;
@@ -593,7 +625,12 @@ async function executeAttempt(
   };
   try {
     workingDirectory = await createTemporaryWorkspace();
-    const outputSchemaPath = await writeOutputSchema(workingDirectory, selectedElements);
+    const outputSchemaPath = await writeOutputSchema(
+      workingDirectory,
+      outputSchema,
+      outputSchemaFileName,
+      outputSchemaResource,
+    );
     request = createProcessRequest(
       configuration,
       dependencies,
@@ -1035,6 +1072,44 @@ async function waitBeforeRetry(
   }
 }
 
+type CodexExecutionInput = Readonly<{
+  configuration: CodexAdapterConfiguration;
+  dependencies: CodexAdapterDependencies;
+  systemPrompt: string;
+  inputJson: string;
+  outputSchema: Readonly<Record<string, unknown>>;
+  outputSchemaFileName: string;
+  outputSchemaResource: string;
+}>;
+
+async function executeWithRetries(input: CodexExecutionInput): Promise<unknown> {
+  for (let attempts = 1; ; attempts += 1) {
+    try {
+      return await executeAttempt(
+        input.configuration,
+        input.dependencies,
+        input.systemPrompt,
+        input.inputJson,
+        input.outputSchema,
+        input.outputSchemaFileName,
+        input.outputSchemaResource,
+        attempts,
+      );
+    } catch (error: unknown) {
+      if (!(error instanceof CodexAttemptError)) {
+        throw error;
+      }
+      if (
+        !isTemporaryAttemptError(error) ||
+        attempts === input.configuration.execution.maxAttempts
+      ) {
+        throw error;
+      }
+      await waitBeforeRetry(attempts, input.configuration, input.dependencies);
+    }
+  }
+}
+
 async function executeRawCodexAnalysis(
   input: CodexAnalysisInput,
   configurationValue: CodexAdapterConfiguration,
@@ -1044,27 +1119,36 @@ async function executeRawCodexAnalysis(
   const validatedInput = createCodexAnalysisInput(input);
   const inputJson = serializeCodexAnalysisInput(validatedInput);
   const systemPrompt = await readFixedSystemPrompt();
+  const outputSchema = createCodexElementOutputSchema(validatedInput.selectedElements);
+  return executeWithRetries({
+    configuration,
+    dependencies,
+    systemPrompt,
+    inputJson,
+    outputSchema,
+    outputSchemaFileName: OUTPUT_SCHEMA_FILE_NAME,
+    outputSchemaResource: "要素別Codex出力schema",
+  });
+}
 
-  for (let attempts = 1; ; attempts += 1) {
-    try {
-      return await executeAttempt(
-        configuration,
-        dependencies,
-        systemPrompt,
-        inputJson,
-        validatedInput.selectedElements,
-        attempts,
-      );
-    } catch (error: unknown) {
-      if (!(error instanceof CodexAttemptError)) {
-        throw error;
-      }
-      if (!isTemporaryAttemptError(error) || attempts === configuration.execution.maxAttempts) {
-        throw error;
-      }
-      await waitBeforeRetry(attempts, configuration, dependencies);
-    }
-  }
+async function executeRawPersonalReminderAnalysis(
+  input: PersonalReminderAiInput,
+  configurationValue: CodexAdapterConfiguration,
+  dependencies: CodexAdapterDependencies,
+): Promise<unknown> {
+  const configuration = parseCodexAdapterConfiguration(configurationValue);
+  const inputJson = `${serializeCanonicalJson(input)}\n`;
+  const systemPrompt = await readFixedPersonalReminderPrompt();
+  const outputSchema: PersonalReminderAiOutputJsonSchema = createPersonalReminderAiOutputSchema();
+  return executeWithRetries({
+    configuration,
+    dependencies,
+    systemPrompt,
+    inputJson,
+    outputSchema,
+    outputSchemaFileName: PERSONAL_REMINDER_OUTPUT_SCHEMA_FILE_NAME,
+    outputSchemaResource: "個人催促AI出力schema",
+  });
 }
 
 /** Codex認証を空の一時directoryでpreflightし、実行失敗を呼び出し側へ伝播する。 */
@@ -1099,4 +1183,19 @@ export async function executeCodexAnalysis(
   return executeCodexAnalysisWithTransportAliases(input, (transportInput) =>
     executeRawCodexAnalysis(transportInput, configurationValue, dependencies),
   );
+}
+
+/** 個人催促AIを隔離実行し、専用schemaで検証した出力を返す。 */
+export async function executeCodexPersonalReminderAnalysis(
+  input: PersonalReminderAiInput,
+  configurationValue: CodexAdapterConfiguration,
+  dependencies: CodexAdapterDependencies,
+): Promise<SchemaValidPersonalReminderAiOutput> {
+  const validatedInput = createPersonalReminderAiInput(input);
+  const output = await executeRawPersonalReminderAnalysis(
+    validatedInput,
+    configurationValue,
+    dependencies,
+  );
+  return validatePersonalReminderAiOutput(output, validatedInput.item);
 }
