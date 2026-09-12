@@ -28,6 +28,7 @@ export {
   type PublicItemSummaryDto,
   type PublicNotificationHistoryDto,
   type PublicNotificationHistoryEntryDto,
+  type PublicNotificationHistoryPersonalReminderDto,
   type PublicPersonalReminderResponseDto,
   type PublicPersonalReminderUnknownReason,
   type PublicSummaryDto,

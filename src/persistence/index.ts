@@ -61,6 +61,7 @@ export {
   type StateHistoryEvent,
   type StateHistoryInputEvent,
   type StateHistoryNotificationEvent,
+  type StateHistoryNotificationPersonalReminder,
   type StateHistoryRecord,
   type StateHistoryResponsibility,
   type StateHistoryValue,

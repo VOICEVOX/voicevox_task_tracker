@@ -2,8 +2,9 @@ import { z } from "zod";
 
 import { IMPORTANCE_FACTOR_KINDS } from "../domain/importance.js";
 import { notificationReasonSchema } from "../domain/notification-reason.js";
+import { personalReminderTimeBasisSchema } from "../domain/personal-reminder-causes.js";
 import { isTerminalStatus } from "../domain/status.js";
-import { assertNonNullable } from "../util/index.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 
 /** Pages公開DTOのschema version。 */
@@ -536,21 +537,163 @@ const publicNotificationHistoryWaitingOnSchema = z.discriminatedUnion("kind", [
     role: waitingOnSchema.shape.role,
   }),
 ]);
+function publicNotificationReasonKey(reason: z.output<typeof notificationReasonSchema>): string {
+  switch (reason.threshold.status) {
+    case "recorded":
+      return `${reason.reasonCode}:recorded:${reason.threshold.hours.toString()}`;
+    case "not_reached":
+      return `${reason.reasonCode}:not_reached:${reason.threshold.elapsedHours.toString()}`;
+    case "not_recorded":
+      return `${reason.reasonCode}:not_recorded`;
+    case "not_applicable":
+      return `${reason.reasonCode}:not_applicable`;
+  }
+}
+
+function publicPersonalReminderActionForReason(
+  reasonCode: z.output<typeof notificationReasonSchema>["reasonCode"],
+): PublicPersonalReminderResponseDto["action"]["kind"] | undefined {
+  switch (reasonCode) {
+    case "assessment_overdue":
+      return "assessment";
+    case "owner_overdue":
+      return "owner";
+    case "decision_overdue":
+      return "decision";
+    case "review_overdue":
+      return "review";
+    case "revision_overdue":
+      return "revision";
+    case "reply_overdue":
+      return "reply";
+    case "work_overdue":
+      return "work";
+    case "merge_overdue":
+      return "merge";
+    case "owner_unknown":
+    case "blocker_overdue":
+    case "newly_unblocked":
+    case "dependency_cycle":
+    case "responsibility_changed":
+    case "automation_stuck":
+      return undefined;
+    default:
+      throw new UnreachableError(reasonCode);
+  }
+}
+
+const publicNotificationHistoryPersonalReminderSchema = z
+  .strictObject({
+    notificationKey: identifierSchema,
+    causeId: identifierSchema,
+    responsibilityId: identifierSchema,
+    responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
+    action: publicPersonalReminderActionSchema,
+    reason: notificationReasonSchema,
+    obligationSince: personalReminderTimeBasisSchema,
+    actionableSince: personalReminderTimeBasisSchema,
+    stallSince: personalReminderTimeBasisSchema,
+    severity: z.enum(["watch", "urgent", "critical"]),
+  })
+  .superRefine((personalReminder, context) => {
+    const expectedAction = publicPersonalReminderActionForReason(
+      personalReminder.reason.reasonCode,
+    );
+    if (expectedAction == null) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason", "reasonCode"],
+        message: "個人催促の通知理由コードが対応する時間系理由ではありません",
+      });
+    } else if (personalReminder.action.kind !== expectedAction) {
+      context.addIssue({
+        code: "custom",
+        path: ["action", "kind"],
+        message: "個人催促の通知理由コードと行動種別が一致しません",
+      });
+    }
+    if (personalReminder.reason.threshold.status !== "recorded") {
+      context.addIssue({
+        code: "custom",
+        path: ["reason", "threshold"],
+        message: "個人催促の通知理由には到達済みの基準時間が必要です",
+      });
+    }
+  });
 const publicNotificationHistoryEntrySchema = z
   .strictObject({
     item: publicNotificationHistoryItemSchema,
     waitingOn: z.array(publicNotificationHistoryWaitingOnSchema).min(1),
     reasons: z.array(notificationReasonSchema).min(1),
+    personalReminders: z.array(publicNotificationHistoryPersonalReminderSchema),
     sentAt: dateTimeSchema,
   })
   .superRefine((entry, context) => {
-    const reasonCodes = entry.reasons.map((reason) => reason.reasonCode);
-    if (new Set(reasonCodes).size !== reasonCodes.length) {
+    const notificationKeys = entry.personalReminders.map(
+      (personalReminder) => personalReminder.notificationKey,
+    );
+    if (new Set(notificationKeys).size !== notificationKeys.length) {
       context.addIssue({
         code: "custom",
-        path: ["reasons"],
-        message: "通知理由コードが重複しています",
+        path: ["personalReminders"],
+        message: "個人催促のnotification keyが重複しています",
       });
+    }
+    const eventReasonCounts = new Map<string, number>();
+    const eventReasonCodeCounts = new Map<string, number>();
+    for (const reason of entry.reasons) {
+      const key = publicNotificationReasonKey(reason);
+      eventReasonCounts.set(key, (eventReasonCounts.get(key) ?? 0) + 1);
+      eventReasonCodeCounts.set(
+        reason.reasonCode,
+        (eventReasonCodeCounts.get(reason.reasonCode) ?? 0) + 1,
+      );
+    }
+    const personalReasonCodeCounts = new Map<string, number>();
+    for (const personalReminder of entry.personalReminders) {
+      const key = publicNotificationReasonKey(personalReminder.reason);
+      const personalReasonCount = entry.personalReminders.filter(
+        (candidate) => publicNotificationReasonKey(candidate.reason) === key,
+      ).length;
+      if (personalReasonCount > (eventReasonCounts.get(key) ?? 0)) {
+        context.addIssue({
+          code: "custom",
+          path: ["personalReminders"],
+          message: "個人催促の通知理由がeventの通知理由に含まれていません",
+        });
+      }
+      personalReasonCodeCounts.set(
+        personalReminder.reason.reasonCode,
+        (personalReasonCodeCounts.get(personalReminder.reason.reasonCode) ?? 0) + 1,
+      );
+      const obligationAt = Date.parse(personalReminder.obligationSince.at);
+      const actionableAt = Date.parse(personalReminder.actionableSince.at);
+      const stallAt = Date.parse(personalReminder.stallSince.at);
+      const sentAt = Date.parse(entry.sentAt);
+      if (
+        !Number.isFinite(obligationAt) ||
+        !Number.isFinite(actionableAt) ||
+        !Number.isFinite(stallAt) ||
+        !Number.isFinite(sentAt) ||
+        obligationAt > actionableAt ||
+        actionableAt > stallAt ||
+        stallAt > sentAt
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["personalReminders"],
+          message: "個人催促の時計は義務、実行可能、停滞、送信の順序にしてください",
+        });
+      }
+    }
+    for (const [reasonCode, count] of eventReasonCodeCounts) {
+      if (count - (personalReasonCodeCounts.get(reasonCode) ?? 0) > 1) {
+        context.addIssue({
+          code: "custom",
+          path: ["reasons"],
+          message: "system通知理由コードが重複しています",
+        });
+      }
     }
     for (const [index, reason] of entry.reasons.entries()) {
       if (reason.threshold.status === "not_recorded") {
@@ -564,7 +707,7 @@ const publicNotificationHistoryEntrySchema = z
   });
 const publicNotificationHistoryDtoSchema = z
   .strictObject({
-    schemaVersion: z.literal("4"),
+    schemaVersion: z.literal("5"),
     runId: identifierSchema,
     generatedAt: dateTimeSchema,
     notifications: z.array(publicNotificationHistoryEntrySchema),
@@ -626,6 +769,11 @@ export type PublicNotificationHistoryDto = z.output<typeof publicNotificationHis
 /** 通知履歴の公開entry。 */
 export type PublicNotificationHistoryEntryDto = z.output<
   typeof publicNotificationHistoryEntrySchema
+>;
+
+/** 公開通知履歴へ保存する個人催促context。 */
+export type PublicNotificationHistoryPersonalReminderDto = z.output<
+  typeof publicNotificationHistoryPersonalReminderSchema
 >;
 
 /** 通知履歴entryを送信時刻降順と表示情報で比較する。 */

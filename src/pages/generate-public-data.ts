@@ -369,13 +369,16 @@ function createPublicNotificationHistory(
         },
         waitingOn: event.waitingOn.values.map((waitingOn) => ({ ...waitingOn })),
         reasons: [...event.reasons],
+        personalReminders: event.personalReminders.map((personalReminder) => ({
+          ...personalReminder,
+        })),
         sentAt: event.sentAt,
       });
     }
   }
   notifications.sort(comparePublicNotificationHistoryEntries);
   return createPublicNotificationHistoryDto({
-    schemaVersion: "4",
+    schemaVersion: "5",
     runId,
     generatedAt,
     notifications,
