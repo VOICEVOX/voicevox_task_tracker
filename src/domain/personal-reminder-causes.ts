@@ -65,6 +65,61 @@ export type PersonalReminderResponsibilityId = z.output<
   typeof personalReminderResponsibilityIdSchema
 >;
 
+/** 個人催促原因が対応する実行面。 */
+export const personalReminderExecutionSurfaceSchema = z.strictObject({
+  kind: z.enum(["issue", "pull_request"]),
+  nodeId: githubNodeIdSchema,
+});
+
+/** 個人催促原因が対応する実行面。 */
+export type PersonalReminderExecutionSurface = Readonly<{
+  kind: "issue" | "pull_request";
+  nodeId: GitHubNodeId;
+}>;
+
+const personalReminderResponsibilityScopeSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("item"),
+  }),
+  z.strictObject({
+    kind: z.literal("execution_surfaces"),
+    surfaces: z.array(personalReminderExecutionSurfaceSchema).nonempty(),
+  }),
+  z.strictObject({
+    kind: z.literal("item_and_execution_surfaces"),
+    surfaces: z.array(personalReminderExecutionSurfaceSchema).nonempty(),
+  }),
+]);
+
+/** 個人催促原因の責務由来と実行面の範囲。 */
+export const personalReminderResponsibilitySchema = z.strictObject({
+  authority: z.enum(["fixed", "semantic"]),
+  scope: personalReminderResponsibilityScopeSchema,
+});
+
+/** 個人催促原因の責務由来と実行面の範囲。 */
+export type PersonalReminderResponsibility = Readonly<{
+  authority: "fixed" | "semantic";
+  scope:
+    | Readonly<{
+        kind: "item";
+      }>
+    | Readonly<{
+        kind: "execution_surfaces";
+        surfaces: readonly [
+          PersonalReminderExecutionSurface,
+          ...PersonalReminderExecutionSurface[],
+        ];
+      }>
+    | Readonly<{
+        kind: "item_and_execution_surfaces";
+        surfaces: readonly [
+          PersonalReminderExecutionSurface,
+          ...PersonalReminderExecutionSurface[],
+        ];
+      }>;
+}>;
+
 /** 個人催促の対象となる行動種別。 */
 export const personalReminderActionKindSchema = z.enum([
   "assessment",
@@ -132,6 +187,46 @@ export const personalReminderTimeBasisSchema = z.discriminatedUnion("source", [
 /** 義務や実行可能性の時刻を特定する根拠。 */
 export type PersonalReminderTimeBasis = z.output<typeof personalReminderTimeBasisSchema>;
 
+const personalReminderAssessmentWaitingForSchema = z.strictObject({
+  itemNodeId: graphNodeIdSchema,
+  action: z.string().min(1).max(300),
+});
+
+/** 個人催促原因の待機先。 */
+export const personalReminderCauseAssessmentWaitingForSchema =
+  personalReminderAssessmentWaitingForSchema;
+
+/** 個人催促原因の待機先。 */
+export type PersonalReminderCauseAssessmentWaitingFor = z.output<
+  typeof personalReminderCauseAssessmentWaitingForSchema
+>;
+
+/** 個人催促原因へ最後に採用した実行可能性。 */
+export const personalReminderLastConfirmedActionabilitySchema = z.union([
+  z.strictObject({
+    status: z.literal("not_observed"),
+  }),
+  z.strictObject({
+    status: z.literal("confirmed"),
+    verdict: z.literal("actionable"),
+  }),
+  z.strictObject({
+    status: z.literal("confirmed"),
+    verdict: z.literal("waiting"),
+    waitingFor: personalReminderCauseAssessmentWaitingForSchema,
+  }),
+  z.strictObject({
+    status: z.literal("confirmed"),
+    verdict: z.literal("not_actionable"),
+    reason: z.enum(["duplicate", "not_required"]),
+  }),
+]);
+
+/** 個人催促原因へ最後に採用した実行可能性。 */
+export type PersonalReminderLastConfirmedActionability = z.output<
+  typeof personalReminderLastConfirmedActionabilitySchema
+>;
+
 /** 個人催促原因の初期識別情報。 */
 export const personalReminderCauseSeedSchema = z.strictObject({
   causeId: personalReminderCauseIdSchema,
@@ -139,12 +234,14 @@ export const personalReminderCauseSeedSchema = z.strictObject({
   itemNodeId: githubNodeIdSchema,
   reasonCode: personalReminderReasonCodeSchema,
   responsible: z.array(personalReminderResponsibleSchema).nonempty().max(20),
+  responsibility: personalReminderResponsibilitySchema,
   action: z.strictObject({
     kind: personalReminderActionKindSchema,
     summary: z.string().min(1).max(300),
   }),
   evidenceSourceIds: z.array(sourceIdSchema).nonempty().max(30),
   obligationSince: personalReminderTimeBasisSchema,
+  lastConfirmedActionability: personalReminderLastConfirmedActionabilitySchema,
 });
 
 /** 個人催促原因の初期識別情報。 */
@@ -200,10 +297,7 @@ export const personalReminderCauseAssessmentSchema = z.discriminatedUnion("verdi
   }),
   z.strictObject({
     verdict: z.literal("waiting"),
-    waitingFor: z.strictObject({
-      itemNodeId: graphNodeIdSchema,
-      action: z.string().min(1).max(300),
-    }),
+    waitingFor: personalReminderCauseAssessmentWaitingForSchema,
     references: personalReminderAssessmentReferencesSchema,
     confidence: z.number().min(0).max(1),
   }),

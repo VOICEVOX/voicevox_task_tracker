@@ -18,6 +18,7 @@ import {
   type NaturalLanguageDeadlineAssessmentState,
   type NaturalLanguageImportanceAssessmentState,
   currentPersonalReminderAssessment,
+  type CurrentPersonalReminderAssessment,
   type PersonalReminderCause,
   personalReminderCauseSchema,
   type Relation,
@@ -520,6 +521,65 @@ function assertPersonalReminderTimeBasis(
   }
 }
 
+function assertPersonalReminderResponsibilitySemantics(cause: PersonalReminderCause): void {
+  if (cause.responsibility.authority === "fixed" && cause.responsibility.scope.kind !== "item") {
+    throw new StateSnapshotSemanticError(
+      "fixedなpersonal reminder責務はitem scopeでなければなりません",
+    );
+  }
+  if (cause.responsibility.scope.kind === "item") {
+    return;
+  }
+  const surfaceKeys = cause.responsibility.scope.surfaces.map(
+    (surface) => `${surface.kind}:${surface.nodeId}`,
+  );
+  assertUnique(surfaceKeys, "personal reminder execution surface");
+}
+
+function assertPersonalReminderLastConfirmedActionability(
+  cause: PersonalReminderCause,
+  assessment: CurrentPersonalReminderAssessment,
+): void {
+  if (assessment.status !== "available") {
+    return;
+  }
+  if (assessment.result.verdict === "unknown") {
+    return;
+  }
+  const last = cause.lastConfirmedActionability;
+  if (assessment.result.verdict === "actionable") {
+    if (last.status !== "confirmed" || last.verdict !== "actionable") {
+      throw new StateSnapshotSemanticError(
+        "有効なactionable判定がlastConfirmedActionabilityへ反映されていません",
+      );
+    }
+    return;
+  }
+  if (assessment.result.verdict === "waiting") {
+    if (
+      last.status !== "confirmed" ||
+      last.verdict !== "waiting" ||
+      last.waitingFor.itemNodeId !== assessment.result.waitingFor.itemNodeId ||
+      last.waitingFor.action !== assessment.result.waitingFor.action
+    ) {
+      throw new StateSnapshotSemanticError(
+        "有効なwaiting判定がlastConfirmedActionabilityへ反映されていません",
+      );
+    }
+    return;
+  }
+  if (last.status !== "confirmed" || last.verdict !== "not_actionable") {
+    throw new StateSnapshotSemanticError(
+      "有効なnot actionable判定がlastConfirmedActionabilityへ反映されていません",
+    );
+  }
+  if (last.reason !== assessment.result.verdict) {
+    throw new StateSnapshotSemanticError(
+      "lastConfirmedActionabilityのnot actionable理由が一致しません",
+    );
+  }
+}
+
 function assertPersonalReminderCausesSemantics(
   item: SnapshotTrackedItem,
   causeIds: ReadonlySet<string>,
@@ -544,6 +604,7 @@ function assertPersonalReminderCausesSemantics(
         "personal reminder causeのitemNodeIdが親itemと一致しません",
       );
     }
+    assertPersonalReminderResponsibilitySemantics(cause);
     assertPersonalReminderTimeBasis(
       cause.obligationSince,
       item,
@@ -562,6 +623,16 @@ function assertPersonalReminderCausesSemantics(
       );
     }
     const assessment = currentPersonalReminderAssessment(cause);
+    if (
+      assessment.status === "available" &&
+      cause.responsibility.authority === "fixed" &&
+      assessment.result.verdict === "not_required"
+    ) {
+      throw new StateSnapshotSemanticError(
+        "fixedなpersonal reminder責務はnot_requiredへ変更できません",
+      );
+    }
+    assertPersonalReminderLastConfirmedActionability(cause, assessment);
     if (assessment.status !== "available") {
       continue;
     }

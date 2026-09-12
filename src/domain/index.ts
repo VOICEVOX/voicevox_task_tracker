@@ -36,16 +36,20 @@ export {
   personalReminderAdoptedAssessmentSchema,
   personalReminderAssessmentReferencesSchema,
   personalReminderCauseAssessmentSchema,
+  personalReminderCauseAssessmentWaitingForSchema,
   personalReminderCauseIdSchema,
   personalReminderCauseSchema,
   personalReminderCauseSeedSchema,
   personalReminderDeferredReasonSchema,
   personalReminderEvaluationAttemptSchema,
   personalReminderEvaluationOriginSchema,
+  personalReminderExecutionSurfaceSchema,
   personalReminderInputCompletenessSchema,
+  personalReminderLastConfirmedActionabilitySchema,
   personalReminderMissingInputSchema,
   personalReminderReasonCodeSchema,
   personalReminderResponsibleSchema,
+  personalReminderResponsibilitySchema,
   personalReminderResponsibilityIdSchema,
   personalReminderTimeBasisSchema,
   type CurrentPersonalReminderAssessment,
@@ -55,15 +59,19 @@ export {
   type PersonalReminderAssessmentReferences,
   type PersonalReminderCause,
   type PersonalReminderCauseAssessment,
+  type PersonalReminderCauseAssessmentWaitingFor,
   type PersonalReminderCauseId,
   type PersonalReminderCauseSeed,
   type PersonalReminderDeferredReason,
   type PersonalReminderEvaluationAttempt,
   type PersonalReminderEvaluationOrigin,
+  type PersonalReminderExecutionSurface,
   type PersonalReminderInputCompleteness,
+  type PersonalReminderLastConfirmedActionability,
   type PersonalReminderMissingInput,
   type PersonalReminderReasonCode,
   type PersonalReminderResponsible,
+  type PersonalReminderResponsibility,
   type PersonalReminderResponsibilityId,
   type PersonalReminderTimeBasis,
 } from "./personal-reminder-causes.js";
@@ -123,6 +131,7 @@ export {
 } from "./meaningful-progress.js";
 export {
   determineIssueState,
+  determineIssueLocalResponsibility,
   ISSUE_DETERMINISTIC_RULES_VERSION,
   type IssueBlocker,
   type IssueEffectiveAssigneeAssessment,
@@ -142,6 +151,7 @@ export {
 } from "./pull-request-aggregate-state.js";
 export {
   determinePullRequestState,
+  determinePullRequestLocalResponsibility,
   PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
   type PullRequestBlocker,
   type PullRequestCheckFailureAssessment,
@@ -150,6 +160,23 @@ export {
   type PullRequestStateMachineInput,
   type PullRequestTransitionBasis,
 } from "./pull-request-state-machine.js";
+export {
+  createPersonalReminderCauseDraft,
+  reconcilePersonalReminderCauseSeeds,
+  type PersonalReminderCauseDraft,
+  type PersonalReminderCauseDraftUnavailable,
+  type PersonalReminderCauseDraftUnavailableReason,
+  type PersonalReminderCauseSeedReconciliation,
+  type PreviousPersonalReminderCauses,
+} from "./personal-reminder-planning.js";
+export {
+  calculatePersonalReminderStaleness,
+  updatePersonalReminderActionableClock,
+  updatePersonalReminderLastConfirmedActionability,
+  type PersonalReminderStaleness,
+  type PersonalReminderStalenessIneligibleReason,
+  type PreviousPersonalReminderClockState,
+} from "./personal-reminder-staleness.js";
 export {
   compareSeverity,
   determineDirectSeverity,
@@ -164,6 +191,7 @@ export { buildSourceId, parseSourceId, type SourceId, type SourceIdParts } from 
 export {
   calculateStaleness,
   createStalenessNotificationSeverityReason,
+  determineStalenessWaitClass,
   recalculateStalenessSeverity,
   type BlockedParentContext,
   type BlockedParentSeverityReason,

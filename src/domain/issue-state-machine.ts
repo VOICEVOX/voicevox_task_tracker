@@ -1283,3 +1283,10 @@ export function determineIssueState(input: IssueStateMachineInput): IssueStateDe
 
   return createUnassignedDecision(input, context);
 }
+
+/** block適用前のIssueローカル責務を決定する。 */
+export function determineIssueLocalResponsibility(
+  input: Omit<IssueStateMachineInput, "blockers">,
+): IssueStateDecision {
+  return determineIssueState({ ...input, blockers: [] });
+}

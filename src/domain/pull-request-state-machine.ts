@@ -1914,3 +1914,10 @@ export function determinePullRequestState(
   addMergeStateUncertainty(input, context);
   return createOwnerDecision(input, context);
 }
+
+/** block適用前のPull Requestローカル責務を決定する。 */
+export function determinePullRequestLocalResponsibility(
+  input: Omit<PullRequestStateMachineInput, "blockers">,
+): PullRequestStateDecision {
+  return determinePullRequestState({ ...input, blockers: [] });
+}
