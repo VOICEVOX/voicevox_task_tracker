@@ -438,14 +438,14 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 
 | 既定パス                                         | 内容                                                                                                                 |
 | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `state/snapshot.json`                            | 要対応度、期限日、AI状態、項目ごとのAI利用状況、trackingStartAt、個人催促の原因を含むschema version 15の最新snapshot |
+| `state/snapshot.json`                            | 要対応度、期限日、AI状態、項目ごとのAI利用状況、trackingStartAt、個人催促の原因を含むschema version 16の最新snapshot |
 | `state/history/YYYY-MM-DD.jsonl`                 | schema version 7。前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                         |
 | `state/ai-cache/<sha256>.json`                   | 汎用AIのcontent-addressed cache                                                                                      |
 | `state/personal-reminder-ai-cache/<sha256>.json` | 個人原因ごとの意味評価cache。`state.personalReminderAiCacheDirectory`で配置先を指定する                              |
 | `state/notification-ledger.json`                 | schema version 8。予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                 |
 | `state/run-reports/YYYY-MM-DD.json`              | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                                |
 
-snapshot 15の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
+snapshot 16の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
 freshなopen項目の列挙が完了すれば原因0件でも`completed`にし、原因がないterminal項目だけを`excluded`にします。staleを含む分析対象外の項目は、前述の保持規則に従います。入口では旧`planningVersion`も受け入れ、現在版との不一致を再計画の選定へ渡します。
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
@@ -463,7 +463,7 @@ freshなopen項目の列挙が完了すれば原因0件でも`completed`にし�
 Pagesのsummaryとdetailsには全statusを公開し、生成元のcache keyは公開しません。
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、汎用AIと個人原因の追加cache、通知候補選別後の通知管理記録を通常stateの最初のGit commitへまとめます。個人原因の採用結果と実行状態を永続化できる前に外部通知へ進みません。
-旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 14から15への移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
+旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 11から15を16へ移行します。snapshot 14以前の移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
 読み込みやCI検証だけでは本番へ保存せず、workflowによるpushまで完了してから移行済みとします。
 移行したAIの採用値は新しい生成結果と区別し、旧generationのresult、metadata、outputHashを改変せず、再推論の失敗・延期だけで消しません。
 本人起因の通知抑制は新しいsignalからnotification keyまたは未送信候補を作る前だけに適用し、既存pendingとnotification ledgerへ今回の原因を転用しません。既存のpending、reserved、delivery_started、sent、acknowledgedは通常の有効性・送信・失効規則でだけ更新します。
