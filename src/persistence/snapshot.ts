@@ -155,6 +155,7 @@ const SNAPSHOT_SCHEMA_VERSION_12 = "12";
 export const SNAPSHOT_SCHEMA_VERSION_13 = "13";
 export const SNAPSHOT_SCHEMA_VERSION_14 = "14";
 export const SNAPSHOT_SCHEMA_VERSION_15 = "15";
+export const SNAPSHOT_SCHEMA_VERSION_16 = "16";
 
 type StateSnapshotFields = Readonly<{
   generatedAt: UtcIsoDateTime;
@@ -199,10 +200,18 @@ type StateSnapshotVersion15 = StateSnapshotFields &
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_15;
   }>;
 
-/** tracker-stateへ保存するschema version 15のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion15;
+type StateSnapshotVersion16 = StateSnapshotFields &
+  Readonly<{
+    schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_16;
+  }>;
 
-const snapshotSchemaVersionSchema = z.object({
+/** tracker-stateへ保存するschema version 16のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion16;
+
+const snapshotSchemaVersion16Schema = z.object({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_16),
+});
+const snapshotSchemaVersion15Schema = z.object({
   schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_15),
 });
 const snapshotSchemaVersion14Schema = z.object({
@@ -310,14 +319,19 @@ function snapshotSchemaForVersion(
   const trackedItemCurrentVariant = trackedItemAiAnalysis.oneOf.at(0);
   const trackedItemMigrationVariant = trackedItemAiAnalysis.oneOf.at(1);
   const item = snapshotSchema.$defs.item;
+  const personalReminderEvaluationAttempt = snapshotSchema.$defs.personalReminderEvaluationAttempt;
+  const personalReminderDeferredVariant = personalReminderEvaluationAttempt.oneOf.at(3);
   if (currentVariant == null || migrationResultVariant == null) {
     throw new TypeError("snapshot schemaの移行要素定義が不正です");
   }
   if (trackedItemCurrentVariant == null || trackedItemMigrationVariant == null) {
     throw new TypeError("snapshot schemaのAI分析定義が不正です");
   }
+  if (personalReminderDeferredVariant == null) {
+    throw new TypeError("snapshot schemaのpersonal reminder評価定義が不正です");
+  }
   const versionedItem =
-    version === SNAPSHOT_SCHEMA_VERSION_15
+    version === SNAPSHOT_SCHEMA_VERSION_15 || version === SNAPSHOT_SCHEMA_VERSION_16
       ? item
       : {
           ...item,
@@ -395,7 +409,9 @@ function snapshotSchemaForVersion(
     ),
   };
   const versionedMigrationAdoptedElement =
-    version === SNAPSHOT_SCHEMA_VERSION_14 || version === SNAPSHOT_SCHEMA_VERSION_15
+    version === SNAPSHOT_SCHEMA_VERSION_14 ||
+    version === SNAPSHOT_SCHEMA_VERSION_15 ||
+    version === SNAPSHOT_SCHEMA_VERSION_16
       ? migrationAdoptedElement
       : {
           ...migrationAdoptedElement,
@@ -414,11 +430,38 @@ function snapshotSchemaForVersion(
               : legacyMigrationResultVariant,
           ],
         };
+  const versionedPersonalReminderEvaluationAttempt =
+    version === SNAPSHOT_SCHEMA_VERSION_15
+      ? {
+          ...personalReminderEvaluationAttempt,
+          oneOf: [
+            ...personalReminderEvaluationAttempt.oneOf.slice(0, 3),
+            {
+              ...personalReminderDeferredVariant,
+              properties: {
+                ...personalReminderDeferredVariant.properties,
+                reason: {
+                  enum: [
+                    "upstream_relation",
+                    "input_incomplete",
+                    "item_input_character_limit",
+                    "call_limit",
+                    "total_input_character_limit",
+                    "estimated_cost_limit",
+                  ],
+                },
+              },
+            },
+            ...personalReminderEvaluationAttempt.oneOf.slice(4),
+          ],
+        }
+      : personalReminderEvaluationAttempt;
   return {
     ...schema,
     $defs: {
       ...snapshotSchema.$defs,
       evidence: versionedEvidence,
+      personalReminderEvaluationAttempt: versionedPersonalReminderEvaluationAttempt,
       aiAnalysisElementEvidence: {
         ...elementEvidence,
         required: evidenceRequired,
@@ -435,15 +478,21 @@ function snapshotSchemaForVersion(
       },
       aiAnalysisMigrationAdoptedElement: versionedMigrationAdoptedElement,
       aiAnalysisElements:
-        version === SNAPSHOT_SCHEMA_VERSION_14 || version === SNAPSHOT_SCHEMA_VERSION_15
+        version === SNAPSHOT_SCHEMA_VERSION_14 ||
+        version === SNAPSHOT_SCHEMA_VERSION_15 ||
+        version === SNAPSHOT_SCHEMA_VERSION_16
           ? snapshotSchema.$defs.aiAnalysisElements
           : legacyAiAnalysisElements,
       aiAnalysisMigrationAdoptedElements:
-        version === SNAPSHOT_SCHEMA_VERSION_14 || version === SNAPSHOT_SCHEMA_VERSION_15
+        version === SNAPSHOT_SCHEMA_VERSION_14 ||
+        version === SNAPSHOT_SCHEMA_VERSION_15 ||
+        version === SNAPSHOT_SCHEMA_VERSION_16
           ? snapshotSchema.$defs.aiAnalysisMigrationAdoptedElements
           : legacyAiAnalysisMigrationAdoptedElements,
       trackedItemAiAnalysis:
-        version === SNAPSHOT_SCHEMA_VERSION_14 || version === SNAPSHOT_SCHEMA_VERSION_15
+        version === SNAPSHOT_SCHEMA_VERSION_14 ||
+        version === SNAPSHOT_SCHEMA_VERSION_15 ||
+        version === SNAPSHOT_SCHEMA_VERSION_16
           ? trackedItemAiAnalysis
           : {
               ...trackedItemAiAnalysis,
@@ -497,7 +546,10 @@ const validateSnapshotVersion13Schema = ajv.compile<StateSnapshotVersion13>(
 const validateSnapshotVersion14Schema = ajv.compile<StateSnapshotVersion14>(
   snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_14, "source"),
 );
-const validateSnapshotVersion15Schema = ajv.compile<StateSnapshotVersion15>(snapshotSchema);
+const validateSnapshotVersion15Schema = ajv.compile<StateSnapshotVersion15>(
+  snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_15, "source"),
+);
+const validateSnapshotVersion16Schema = ajv.compile<StateSnapshotVersion16>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -1479,8 +1531,8 @@ function parseStateSnapshotVersion14Value(value: unknown): StateSnapshotVersion1
   return value;
 }
 
-function parseStateSnapshotVersion15Value(value: unknown): StateSnapshot {
-  snapshotSchemaVersionSchema.parse(value);
+function parseStateSnapshotVersion15Value(value: unknown): StateSnapshotVersion15 {
+  snapshotSchemaVersion15Schema.parse(value);
   if (!validateSnapshotVersion15Schema(value)) {
     const issueCount = validateSnapshotVersion15Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
@@ -1489,17 +1541,27 @@ function parseStateSnapshotVersion15Value(value: unknown): StateSnapshot {
   return value;
 }
 
+function parseStateSnapshotVersion16Value(value: unknown): StateSnapshot {
+  snapshotSchemaVersion16Schema.parse(value);
+  if (!validateSnapshotVersion16Schema(value)) {
+    const issueCount = validateSnapshotVersion16Schema.errors?.length ?? 1;
+    throw new StateSnapshotSchemaError(issueCount);
+  }
+  assertSnapshotSemantics(value, "source", "current");
+  return value;
+}
+
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
   const version = z.object({ schemaVersion: z.string() }).parse(value).schemaVersion;
-  if (version === SNAPSHOT_SCHEMA_VERSION_15) {
-    return parseStateSnapshotVersion15Value(value);
+  if (version === SNAPSHOT_SCHEMA_VERSION_16) {
+    return parseStateSnapshotVersion16Value(value);
   }
   throw new StateSnapshotSchemaError(1);
 }
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return normalizeSnapshot(parseStateSnapshotVersion15Value(value));
+  return normalizeSnapshot(parseStateSnapshotVersion16Value(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */
@@ -1651,6 +1713,38 @@ export function parseStateSnapshotVersion14(source: string): StateSnapshotVersio
 
   try {
     return parseStateSnapshotVersion14Value(value);
+  } catch (error: unknown) {
+    if (
+      error instanceof StateFormatError ||
+      error instanceof StateSnapshotSchemaError ||
+      error instanceof StateSnapshotSemanticError
+    ) {
+      throw error;
+    }
+    throw new StateFormatError("snapshot", {
+      cause: new TypeError("snapshot検証中に予期しないエラーが発生しました", {
+        cause: error,
+      }),
+    });
+  }
+}
+
+/** schema version 15のsnapshotを検証して読み取る。 */
+export function parseStateSnapshotVersion15(source: string): StateSnapshotVersion15 {
+  let value: unknown;
+  try {
+    const parseJson: (text: string) => unknown = JSON.parse;
+    value = parseJson(source);
+  } catch (error: unknown) {
+    throw new StateFormatError("snapshot", {
+      cause: new SyntaxError("JSON構文が不正です", {
+        cause: error,
+      }),
+    });
+  }
+
+  try {
+    return parseStateSnapshotVersion15Value(value);
   } catch (error: unknown) {
     if (
       error instanceof StateFormatError ||

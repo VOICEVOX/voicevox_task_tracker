@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "15"
+      "const": "16"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -2869,6 +2869,7 @@
               "enum": [
                 "upstream_relation",
                 "input_incomplete",
+                "input_cardinality_limit",
                 "item_input_character_limit",
                 "call_limit",
                 "total_input_character_limit",

@@ -48,6 +48,7 @@ import {
   parseStateSnapshotVersion12,
   parseStateSnapshotVersion13,
   parseStateSnapshotVersion14,
+  parseStateSnapshotVersion15,
   type SnapshotAnalysisPlanFingerprint,
   type StateSnapshot,
 } from "./snapshot.js";
@@ -1216,7 +1217,7 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion11(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "15",
+      schemaVersion: "16",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1243,7 +1244,7 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion12(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "15",
+      schemaVersion: "16",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1270,7 +1271,7 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion13(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "15",
+      schemaVersion: "16",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1323,7 +1324,7 @@ function migrateLegacyStateSnapshot(
       }),
     }));
     return createStateSnapshot({
-      schemaVersion: "15",
+      schemaVersion: "16",
       generatedAt: value.generatedAt,
       trackingStartAt: value.trackingStartAt,
       ai: value.ai,
@@ -1346,7 +1347,7 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion14(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "15",
+      schemaVersion: "16",
       items: value.items.map((item) => ({
         ...item,
         inputEvents:
@@ -1356,6 +1357,18 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
         personalReminderCauses: [],
         personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
+    });
+  } catch (error: unknown) {
+    throw migrationFormatError(error);
+  }
+}
+
+function migrateVersion15StateSnapshot(source: string): StateSnapshot {
+  try {
+    const value = parseStateSnapshotVersion15(source);
+    return createStateSnapshot({
+      ...value,
+      schemaVersion: "16",
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
@@ -1402,6 +1415,8 @@ export function migrateStateSnapshot(
     case "14":
       return migrateVersion14StateSnapshot(source);
     case "15":
+      return migrateVersion15StateSnapshot(source);
+    case "16":
       return parseStateSnapshot(source);
     default:
       throw new StateFormatError("snapshot", {
