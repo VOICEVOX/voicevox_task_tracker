@@ -1491,6 +1491,37 @@ function normalizeTrackedItemAiAnalysis(aiAnalysis: TrackedItemAiAnalysis): Trac
   });
 }
 
+function assertPersonalReminderEvidenceClosure(snapshot: StateSnapshot): void {
+  const evidenceSourceIds = new Set([
+    ...snapshot.items.flatMap((item) => item.evidence.map((evidence) => evidence.sourceId)),
+    ...snapshot.relations.flatMap((relation) =>
+      relation.evidence.map((evidence) => evidence.sourceId),
+    ),
+  ]);
+  for (const item of snapshot.items) {
+    for (const cause of item.personalReminderCauses) {
+      for (const sourceId of cause.evidenceSourceIds) {
+        if (!evidenceSourceIds.has(sourceId)) {
+          throw new StateSnapshotSemanticError(
+            `personal reminder causeのevidence sourceをsnapshotのevidenceへ解決できません。item: ${item.nodeId} cause: ${cause.causeId} source: ${sourceId}`,
+          );
+        }
+      }
+      const assessment = currentPersonalReminderAssessment(cause);
+      if (assessment.status !== "available") {
+        continue;
+      }
+      for (const sourceId of assessment.result.references.sourceIds) {
+        if (!evidenceSourceIds.has(sourceId)) {
+          throw new StateSnapshotSemanticError(
+            `personal reminder assessmentのevidence sourceをsnapshotのevidenceへ解決できません。item: ${item.nodeId} cause: ${cause.causeId} source: ${sourceId}`,
+          );
+        }
+      }
+    }
+  }
+}
+
 function parseStateSnapshotVersion11Value(value: unknown): StateSnapshotVersion11 {
   snapshotSchemaVersion11Schema.parse(value);
   if (!validateSnapshotVersion11Schema(value)) {
@@ -1561,7 +1592,9 @@ function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return normalizeSnapshot(parseStateSnapshotVersion16Value(value));
+  const snapshot = normalizeSnapshot(parseStateSnapshotVersion16Value(value));
+  assertPersonalReminderEvidenceClosure(snapshot);
+  return snapshot;
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */

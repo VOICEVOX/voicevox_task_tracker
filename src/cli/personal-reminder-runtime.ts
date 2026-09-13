@@ -2854,6 +2854,41 @@ function createGlobalItemContextIndex(
   return itemContextsByNodeId;
 }
 
+function createCauseSourceEvidence(
+  item: PersonalReminderRuntimeContextItem,
+  globalSourcesById: ReadonlyMap<SourceId, PersonalReminderRuntimeSource>,
+  seed: PersonalReminderCauseSeed,
+): readonly Evidence[] {
+  const evidenceByIdentity = new Map<string, Evidence>();
+  const existingSourceIds = new Set<SourceId>();
+  for (const evidence of item.seedEvidence) {
+    evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
+    existingSourceIds.add(evidence.sourceId);
+  }
+  for (const sourceId of seed.evidenceSourceIds) {
+    if (!globalSourcesById.has(sourceId)) {
+      throw new TypeError(
+        `個人催促causeのsource evidenceに必要なruntime sourceがありません。item: ${item.item.nodeId} cause: ${seed.causeId} source: ${sourceId}`,
+      );
+    }
+    if (existingSourceIds.has(sourceId)) {
+      continue;
+    }
+    const evidence: Evidence = Object.freeze({
+      sourceId,
+      supports: "waiting_on",
+      summary: `担当する対応: ${seed.action.summary}`,
+    });
+    evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
+    existingSourceIds.add(sourceId);
+  }
+  return Object.freeze(
+    [...evidenceByIdentity.values()].sort((left, right) =>
+      compareStrings(evidenceIdentity(left), evidenceIdentity(right)),
+    ),
+  );
+}
+
 /** fresh itemのcause候補をgraphと前回causeへreconcileする。 */
 export function planPersonalReminderCauses(
   context: PersonalReminderRuntimeContext,
@@ -3015,6 +3050,7 @@ export function planPersonalReminderCauses(
         ...activityProjection.missing,
         ...relationMissing,
       ];
+      const sourceEvidence = createCauseSourceEvidence(item, globalSourcesById, seed);
       const semanticInput = createCauseSemanticInput(
         item,
         globalSources,
@@ -3044,7 +3080,7 @@ export function planPersonalReminderCauses(
             currentSeed.origin,
           ),
           previousCause: currentSeed.previousCause,
-          sourceEvidence: Object.freeze([...item.seedEvidence]),
+          sourceEvidence,
           activity: activityProjection.activity,
           repositoryFullName: item.repositoryFullName,
           currentLabels: item.currentLabels,
@@ -3242,21 +3278,6 @@ function createCauseEvidence(
 ): readonly Evidence[] {
   const evidenceByIdentity = new Map<string, Evidence>();
   for (const evidence of entry.sourceEvidence) {
-    evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
-  }
-  const existingSourceIds = new Set(entry.sourceEvidence.map((evidence) => evidence.sourceId));
-  for (const sourceId of entry.seed.evidenceSourceIds) {
-    if (
-      existingSourceIds.has(sourceId) ||
-      !entry.semanticInput.sources.some((source) => source.sourceId === sourceId)
-    ) {
-      continue;
-    }
-    const evidence = Object.freeze({
-      sourceId,
-      supports: "waiting_on",
-      summary: `担当する対応: ${entry.seed.action.summary}`,
-    });
     evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
   }
   if (assessment.status === "available") {
