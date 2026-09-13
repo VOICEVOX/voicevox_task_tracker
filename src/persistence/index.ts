@@ -73,6 +73,7 @@ export {
   type StatePublicSafetyInput,
 } from "./public-safety.js";
 export {
+  assertPersonalReminderEvidenceClosure,
   createStateSnapshot,
   parseStateSnapshot,
   serializeStateSnapshot,

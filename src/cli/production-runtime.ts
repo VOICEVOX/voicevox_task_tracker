@@ -275,6 +275,7 @@ import {
   createStateNotificationLedger,
   createStateRunReport,
   createStateSnapshot,
+  assertPersonalReminderEvidenceClosure,
   StateBranchConflictError,
   NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
   assertStatePublicSafety,
@@ -9899,11 +9900,16 @@ async function analyzePersonalReminders(
     graph,
   );
   const runtimeGraph = personalReminderRuntimeGraph(state, collection, reduction, graph);
+  const snapshotEvidenceSourceIds = new Set<SourceId>([
+    ...reduction.items.flatMap((item) => item.evidence.map((evidence) => evidence.sourceId)),
+    ...graph.edges.flatMap((edge) => edge.evidence.map((evidence) => evidence.sourceId)),
+  ]);
   const context = createPersonalReminderRuntimeContext({
     evaluatedAt: collection.evaluatedAt,
     state: personalReminderPreviousState(state),
     collection: runtimeCollection.collection,
     graph: runtimeGraph,
+    snapshotEvidenceSourceIds,
   });
   const plan = planPersonalReminderCauses(context);
   const candidates = Object.freeze(
@@ -10263,6 +10269,7 @@ function validateRunCompleteness(
       complete: true,
     },
   });
+  assertPersonalReminderEvidenceClosure(snapshot);
   const notificationInput = {
     evaluatedAt: collection.evaluatedAt,
     items: notificationItems(

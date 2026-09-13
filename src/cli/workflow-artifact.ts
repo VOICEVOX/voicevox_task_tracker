@@ -31,6 +31,7 @@ import {
 import { createPublicRepositoryAllowlist } from "../github/index.js";
 import {
   assertStatePublicSafety,
+  assertPersonalReminderEvidenceClosure,
   createStateHistoryInputEvents,
   createStateNotificationLedger,
   createStateSnapshot,
@@ -601,6 +602,7 @@ export function createWorkflowArtifact(value: unknown): WorkflowArtifact {
     });
   }
   const snapshot = createStateSnapshot(result.data.snapshot);
+  assertPersonalReminderEvidenceClosure(snapshot);
   const historyInputEvents = createStateHistoryInputEvents(result.data.historyInputEvents);
   const notificationLedger = createStateNotificationLedger(result.data.notificationLedger);
   const notificationSelection = createNotificationSelection(result.data.notificationSelection);

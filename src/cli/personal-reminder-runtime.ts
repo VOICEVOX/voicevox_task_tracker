@@ -207,6 +207,7 @@ export type PersonalReminderRuntimeContext = Readonly<{
   state: PersonalReminderRuntimeState;
   items: readonly PersonalReminderRuntimeContextItem[];
   graph: PersonalReminderRuntimeGraph;
+  snapshotEvidenceSourceIds: ReadonlySet<SourceId>;
 }>;
 
 type PersonalReminderRuntimeContextItem = Omit<
@@ -1289,6 +1290,7 @@ export function createPersonalReminderRuntimeContext(
     state: PersonalReminderRuntimeState;
     collection: PersonalReminderRuntimeCollection;
     graph: PersonalReminderRuntimeGraph;
+    snapshotEvidenceSourceIds: ReadonlySet<SourceId>;
   }>,
 ): PersonalReminderRuntimeContext {
   const items: PersonalReminderRuntimeContextItem[] = [];
@@ -1389,6 +1391,7 @@ export function createPersonalReminderRuntimeContext(
     state: input.state,
     items: Object.freeze(items),
     graph: input.graph,
+    snapshotEvidenceSourceIds: input.snapshotEvidenceSourceIds,
   });
 }
 
@@ -2857,22 +2860,25 @@ function createGlobalItemContextIndex(
 function createCauseSourceEvidence(
   item: PersonalReminderRuntimeContextItem,
   globalSourcesById: ReadonlyMap<SourceId, PersonalReminderRuntimeSource>,
+  semanticInput: PersonalReminderCauseSemanticInput,
+  snapshotEvidenceSourceIds: ReadonlySet<SourceId>,
   seed: PersonalReminderCauseSeed,
 ): readonly Evidence[] {
   const evidenceByIdentity = new Map<string, Evidence>();
-  const existingSourceIds = new Set<SourceId>();
+  const existingSourceIds = new Set<SourceId>([...snapshotEvidenceSourceIds]);
   for (const evidence of item.seedEvidence) {
     evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
     existingSourceIds.add(evidence.sourceId);
   }
-  for (const sourceId of seed.evidenceSourceIds) {
-    if (!globalSourcesById.has(sourceId)) {
+  const semanticSourceIds = new Set(semanticInput.sources.map((source) => source.sourceId));
+  for (const sourceId of [...new Set(seed.evidenceSourceIds)].sort(compareStrings)) {
+    if (existingSourceIds.has(sourceId)) {
+      continue;
+    }
+    if (!globalSourcesById.has(sourceId) && !semanticSourceIds.has(sourceId)) {
       throw new TypeError(
         `個人催促causeのsource evidenceに必要なruntime sourceがありません。item: ${item.item.nodeId} cause: ${seed.causeId} source: ${sourceId}`,
       );
-    }
-    if (existingSourceIds.has(sourceId)) {
-      continue;
     }
     const evidence: Evidence = Object.freeze({
       sourceId,
@@ -3050,7 +3056,6 @@ export function planPersonalReminderCauses(
         ...activityProjection.missing,
         ...relationMissing,
       ];
-      const sourceEvidence = createCauseSourceEvidence(item, globalSourcesById, seed);
       const semanticInput = createCauseSemanticInput(
         item,
         globalSources,
@@ -3065,6 +3070,13 @@ export function planPersonalReminderCauses(
         optionSources,
         additionalItemContexts,
         additionalMissing,
+      );
+      const sourceEvidence = createCauseSourceEvidence(
+        item,
+        globalSourcesById,
+        semanticInput,
+        context.snapshotEvidenceSourceIds,
+        seed,
       );
       if (pendingRelations.length !== 0) {
         pendingCauseIds.add(seed.causeId);

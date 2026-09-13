@@ -50,7 +50,12 @@ import {
   type StateHistoryRecord,
 } from "./history.js";
 import { assertStatePublicSafety, assertStateValuesPublicSafety } from "./public-safety.js";
-import { createStateSnapshot, serializeStateSnapshot, type StateSnapshot } from "./snapshot.js";
+import {
+  assertPersonalReminderEvidenceClosure,
+  createStateSnapshot,
+  serializeStateSnapshot,
+  type StateSnapshot,
+} from "./snapshot.js";
 import {
   createEmptyStateNotificationLedger,
   createStateNotificationLedger,
@@ -778,6 +783,7 @@ export class StatePersistenceSession {
       });
     }
     const snapshot = createStateSnapshot(input.snapshot);
+    assertPersonalReminderEvidenceClosure(snapshot);
     const notificationEvents = input.notificationEvents.map((event) => ({
       ...event,
       reasons: [...event.reasons],
@@ -846,6 +852,7 @@ export class StatePersistenceSession {
       });
     }
     const snapshot = createStateSnapshot(input.snapshot);
+    assertPersonalReminderEvidenceClosure(snapshot);
     const notificationEvents = input.notificationEvents.map((event) => ({
       ...event,
       reasons: [...event.reasons],
@@ -943,6 +950,7 @@ export class StatePersistenceSession {
     input: PersistStateTransactionInput,
   ): Promise<PersistStateTransactionResult> {
     const snapshot = createStateSnapshot(input.snapshot);
+    assertPersonalReminderEvidenceClosure(snapshot);
     const notificationLedger = createStateNotificationLedger(input.notificationLedger);
     const runDate = snapshot.generatedAt.slice(0, 10);
 

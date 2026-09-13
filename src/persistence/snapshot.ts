@@ -1491,7 +1491,8 @@ function normalizeTrackedItemAiAnalysis(aiAnalysis: TrackedItemAiAnalysis): Trac
   });
 }
 
-function assertPersonalReminderEvidenceClosure(snapshot: StateSnapshot): void {
+/** personal reminderの根拠参照がsnapshot内で閉じていることを検証する。 */
+export function assertPersonalReminderEvidenceClosure(snapshot: StateSnapshot): void {
   const evidenceSourceIds = new Set([
     ...snapshot.items.flatMap((item) => item.evidence.map((evidence) => evidence.sourceId)),
     ...snapshot.relations.flatMap((relation) =>
@@ -1592,9 +1593,7 @@ function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  const snapshot = normalizeSnapshot(parseStateSnapshotVersion16Value(value));
-  assertPersonalReminderEvidenceClosure(snapshot);
-  return snapshot;
+  return normalizeSnapshot(parseStateSnapshotVersion16Value(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */

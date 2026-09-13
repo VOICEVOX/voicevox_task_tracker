@@ -868,6 +868,7 @@ function createGoldenPersonalReminderAnalysis(
   candidates: readonly RelationCandidate[],
   reconciled: ReturnType<typeof reconcileGraph>,
   localDecisionsByNodeId: ReadonlyMap<string, IssueStateDecision | PullRequestStateDecision>,
+  genericDecisionsByNodeId: ReadonlyMap<string, ReducedCodexDecision>,
   preparedAnalyses: readonly PreparedGoldenFixedAiAnalysis[],
 ): GoldenPersonalReminderAnalysis {
   const inventory = createInventory(input);
@@ -914,6 +915,12 @@ function createGoldenPersonalReminderAnalysis(
     );
   }
   const graph = goldenPersonalReminderRuntimeGraph(input, candidates, reconciled);
+  const snapshotEvidenceSourceIds = new Set<SourceId>([
+    ...[...genericDecisionsByNodeId.values()].flatMap((decision) =>
+      decision.evidence.map((evidence) => evidence.sourceId),
+    ),
+    ...reconciled.edges.flatMap((edge) => edge.evidence.map((evidence) => evidence.sourceId)),
+  ]);
   const collectionItems = [...runtimeItems.entries()].map(([nodeId, value]) => {
     const relatedNodeIds = new Set<GraphNodeId>();
     for (const edge of graph.activeRelations) {
@@ -968,6 +975,7 @@ function createGoldenPersonalReminderAnalysis(
       staleNodeIds: new Set<GitHubNodeId>(),
     }),
     graph,
+    snapshotEvidenceSourceIds,
   });
   const plan = planPersonalReminderCauses(context);
   const applied = applyPersonalReminderCauseOutcomes({
@@ -2387,6 +2395,7 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
     candidates,
     reconciled,
     localResponsibilityDecisions,
+    fixedAi.decisions,
     preparedAnalyses,
   );
   const analyses = Object.freeze(
