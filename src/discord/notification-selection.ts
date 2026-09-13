@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import {
   compareSeverity,
@@ -1680,9 +1681,9 @@ function assertSelectedReasonMatchesSignal(
 ): void {
   if (
     selectedReason.reasonCode !== expected.reason.reasonCode ||
-    JSON.stringify(selectedReason.threshold) !== JSON.stringify(expected.reason.threshold) ||
+    !isDeepStrictEqual(selectedReason.threshold, expected.reason.threshold) ||
     selectedReason.severity !== expected.severity ||
-    JSON.stringify(selectedReason.source) !== JSON.stringify(expected.source)
+    !isDeepStrictEqual(selectedReason.source, expected.source)
   ) {
     throw new TypeError(`${item.nodeId}の通知理由が現在の判定結果と一致しません`);
   }
