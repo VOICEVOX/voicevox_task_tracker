@@ -275,7 +275,7 @@ export function CurrentResponses({
     return (
       <section
         aria-labelledby="current-responses-heading"
-        class="current-responses-detail grid min-w-0 gap-3 border-t border-border-subtle pt-5 lg:col-span-2"
+        class="current-responses-detail grid min-w-0 gap-3 border-t border-border-subtle pt-5"
       >
         <h4
           id="current-responses-heading"
