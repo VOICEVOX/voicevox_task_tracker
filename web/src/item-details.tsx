@@ -538,6 +538,7 @@ export function ItemDetailsContent({
       <CurrentResponses
         createItemHref={createItemHref}
         createPersonHref={createPersonHref}
+        item={item}
         onSelectItem={onSelectItem}
         onSelectPerson={onSelectPerson}
         planningStatus={item.personalReminderCausePlanningStatus}

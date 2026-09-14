@@ -74,6 +74,7 @@ function CurrentImplementationRow({
         <CurrentResponses
           createItemHref={createItemHref}
           createPersonHref={createPersonHref}
+          item={implementationItem}
           onSelectItem={onSelectItem}
           onSelectPerson={onSelectPerson}
           planningStatus={implementationItem.personalReminderCausePlanningStatus}
@@ -95,6 +96,7 @@ function CurrentImplementationRow({
       <CurrentResponses
         createItemHref={createItemHref}
         createPersonHref={createPersonHref}
+        item={implementationItem}
         onSelectItem={onSelectItem}
         onSelectPerson={onSelectPerson}
         planningStatus={implementationItem.personalReminderCausePlanningStatus}

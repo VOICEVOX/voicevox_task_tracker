@@ -26,6 +26,20 @@ type WaitingOnCandidate = PublicItemSummaryDto["waitingOn"][number];
 type WaitingOnReference = Pick<WaitingOnCandidate, "candidateId" | "kind" | "role">;
 type NotificationWaitingOnReference = PublicNotificationHistoryEntryDto["waitingOn"][number];
 type WaitingOnRole = WaitingOnReference["role"];
+type CurrentRoleResolution =
+  | Readonly<{
+      kind: "accounts";
+      logins: readonly string[];
+    }>
+  | Readonly<{
+      kind: "deleted_account";
+    }>
+  | Readonly<{
+      kind: "unassigned";
+    }>
+  | Readonly<{
+      kind: "unresolved";
+    }>;
 type PublicActor = Extract<
   PublicItemDetailsDto["latestEventActor"],
   Readonly<{ status: "present" }>
@@ -586,34 +600,42 @@ function waitingOnKindParts(
   }
 }
 
-function currentWaitingOnRoleParts(
+function resolveCurrentRole(
   role: WaitingOnRole,
   item: PublicItemSummaryDto,
-): readonly WaitingOnDisplayPart[] {
+): CurrentRoleResolution {
   switch (role) {
     case "author":
       switch (item.author.status) {
         case "identified":
-          return [
-            textWaitingOnPart(`${waitingOnRoleName(role)} `),
-            loginWaitingOnPart(item.author.actor.login),
-          ];
+          return { kind: "accounts", logins: [item.author.actor.login] };
         case "unavailable":
-          return [textWaitingOnPart(`${waitingOnRoleName(role)} アカウント削除済み`)];
+          return { kind: "deleted_account" };
         default:
           throw new UnreachableError(item.author);
       }
     case "assignee":
       if (item.assignees.length === 0) {
-        return [textWaitingOnPart(`${waitingOnRoleName(role)} 未割り当て`)];
+        return { kind: "unassigned" };
       }
-      return [
-        textWaitingOnPart(`${waitingOnRoleName(role)} `),
-        ...joinWaitingOnParts(
-          item.assignees.map((assignee) => [loginWaitingOnPart(assignee.login)]),
-          "、",
-        ),
-      ];
+      return { kind: "accounts", logins: item.assignees.map((assignee) => assignee.login) };
+    case "maintainer":
+    case "reviewer":
+    case "merge_decider":
+    case "ci":
+    case "dependency":
+    case "respondent":
+    case "unknown":
+      return { kind: "unresolved" };
+    default:
+      throw new UnreachableError(role);
+  }
+}
+
+function unresolvedCurrentWaitingOnRoleParts(
+  role: Exclude<WaitingOnRole, "author" | "assignee">,
+): readonly WaitingOnDisplayPart[] {
+  switch (role) {
     case "maintainer":
     case "reviewer":
     case "merge_decider":
@@ -625,6 +647,34 @@ function currentWaitingOnRoleParts(
       return [textWaitingOnPart(waitingOnRoleName(role))];
     default:
       throw new UnreachableError(role);
+  }
+}
+
+function currentWaitingOnRoleParts(
+  role: WaitingOnRole,
+  item: PublicItemSummaryDto,
+): readonly WaitingOnDisplayPart[] {
+  const resolution = resolveCurrentRole(role, item);
+  switch (resolution.kind) {
+    case "accounts":
+      return [
+        textWaitingOnPart(`${waitingOnRoleName(role)} `),
+        ...joinWaitingOnParts(
+          resolution.logins.map((login) => [loginWaitingOnPart(login)]),
+          "、",
+        ),
+      ];
+    case "deleted_account":
+      return [textWaitingOnPart(`${waitingOnRoleName(role)} アカウント削除済み`)];
+    case "unassigned":
+      return [textWaitingOnPart(`${waitingOnRoleName(role)} 未割り当て`)];
+    case "unresolved":
+      if (role === "author" || role === "assignee") {
+        throw new TypeError(`waitingOnの未解決roleが不正です: ${role}`);
+      }
+      return unresolvedCurrentWaitingOnRoleParts(role);
+    default:
+      throw new UnreachableError(resolution);
   }
 }
 
@@ -772,21 +822,48 @@ function currentResponseSubjectLabel(subject: CurrentResponseSubject): string {
   }
 }
 
-function currentResponseResponsibleLabel(responsible: CurrentResponseResponsible): string {
-  switch (responsible.kind) {
+function currentResponseRoleDisplayLabel(
+  role: CurrentResponseRole,
+  item: PublicItemSummaryDto,
+): string {
+  const roleName = currentResponseRoleLabel(role);
+  const resolution = resolveCurrentRole(role, item);
+  switch (resolution.kind) {
+    case "accounts":
+      return `${roleName} ${resolution.logins.map((login) => `@${login}`).join("、")}`;
+    case "deleted_account":
+      return `${roleName} アカウント削除済み`;
+    case "unassigned":
+      return `${roleName} 未割り当て`;
+    case "unresolved":
+      return `${roleName}の役割`;
+    default:
+      throw new UnreachableError(resolution);
+  }
+}
+
+/** 現在の対応者を項目の確定情報を含む表示文字列へ変換する。 */
+export function currentResponseResponsibleLabel(
+  responsible: CurrentResponseResponsible,
+  item: PublicItemSummaryDto,
+): string {
+  const responsibleKind = responsible.kind;
+  switch (responsibleKind) {
     case "user":
       return `@${responsible.candidateId} ${currentResponseRoleLabel(responsible.role)}`;
     case "team":
       return `チーム ${responsible.candidateId} ${currentResponseRoleLabel(responsible.role)}`;
     case "role":
-      return `${currentResponseRoleLabel(responsible.role)} ${responsible.candidateId}`;
+      return currentResponseRoleDisplayLabel(responsible.role, item);
+    default:
+      throw new UnreachableError(responsibleKind);
   }
 }
 
 function formatCurrentResponseText(item: PublicItemSummaryDto): string {
   return item.currentResponses
     .flatMap((response) =>
-      response.responsible.map((responsible) => currentResponseResponsibleLabel(responsible)),
+      response.responsible.map((responsible) => currentResponseResponsibleLabel(responsible, item)),
     )
     .join("\n");
 }
@@ -1072,8 +1149,8 @@ export function searchItemNodeIds(
             currentResponseStatusLabel(response.status),
             response.action.summary,
             ...response.responsible.flatMap((responsible) => [
+              currentResponseResponsibleLabel(responsible, item),
               responsible.candidateId,
-              currentResponseRoleLabel(responsible.role),
             ]),
             ...response.evidence.map((evidence) => evidence.summary),
             ...(response.status === "waiting" ? [response.waitingFor.action] : []),

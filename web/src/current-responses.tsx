@@ -6,6 +6,7 @@ import {
 import { UnreachableError, assertNonNullable } from "../../src/util/index.js";
 import { ItemDetailsLink } from "./item-details.js";
 import {
+  currentResponseResponsibleLabel,
   currentResponseRoleLabel,
   currentResponseStatusLabel,
   currentResponseUnknownReasonLabel,
@@ -21,6 +22,7 @@ type PersonalReminderCausePlanningStatus =
 type CurrentResponsesProps = PersonNavigation &
   Readonly<{
     createItemHref: (nodeId: string) => string;
+    item: PublicItemSummaryDto;
     onSelectItem: (nodeId: string) => void;
     summary: PublicSummaryDto;
     responses: readonly CurrentResponse[];
@@ -38,6 +40,34 @@ function responseTone(response: CurrentResponse): "danger" | "info" | "success" 
       return "danger";
     default:
       throw new UnreachableError(response);
+  }
+}
+
+function CurrentResponseResponsible({
+  createPersonHref,
+  item,
+  onSelectPerson,
+  responsible,
+}: PersonNavigation &
+  Readonly<{
+    item: PublicItemSummaryDto;
+    responsible: CurrentResponse["responsible"][number];
+  }>) {
+  const responsibleKind = responsible.kind;
+  switch (responsibleKind) {
+    case "user":
+    case "team":
+      return (
+        <ResponseResponsible
+          createPersonHref={createPersonHref}
+          onSelectPerson={onSelectPerson}
+          responsible={responsible}
+        />
+      );
+    case "role":
+      return <span>{currentResponseResponsibleLabel(responsible, item)}</span>;
+    default:
+      throw new UnreachableError(responsibleKind);
   }
 }
 
@@ -71,10 +101,12 @@ export function ResponseResponsible({
 
 function ResponseResponsibleList({
   createPersonHref,
+  item,
   onSelectPerson,
   response,
 }: PersonNavigation &
   Readonly<{
+    item: PublicItemSummaryDto;
     response: CurrentResponse;
   }>) {
   return (
@@ -85,8 +117,9 @@ function ResponseResponsibleList({
           key={`${responsible.kind}:${responsible.candidateId}:${responsible.role}`}
         >
           {index > 0 && <span aria-hidden="true">、</span>}
-          <ResponseResponsible
+          <CurrentResponseResponsible
             createPersonHref={createPersonHref}
+            item={item}
             onSelectPerson={onSelectPerson}
             responsible={responsible}
           />
@@ -173,12 +206,13 @@ function CurrentResponseEvidence({ response }: Readonly<{ response: CurrentRespo
 function CurrentResponseRow({
   createItemHref,
   createPersonHref,
+  item,
   onSelectItem,
   onSelectPerson,
   response,
   summary,
   variant,
-}: Omit<CurrentResponsesProps, "item" | "responses" | "planningStatus"> &
+}: Omit<CurrentResponsesProps, "responses" | "planningStatus"> &
   Readonly<{ response: CurrentResponse }>) {
   const status = (
     <Pill className="current-response-status" tone={responseTone(response)}>
@@ -188,6 +222,7 @@ function CurrentResponseRow({
   const responsible = (
     <ResponseResponsibleList
       createPersonHref={createPersonHref}
+      item={item}
       onSelectPerson={onSelectPerson}
       response={response}
     />
@@ -242,6 +277,7 @@ function CurrentResponseRow({
 export function CurrentResponses({
   createItemHref,
   createPersonHref,
+  item,
   onSelectItem,
   onSelectPerson,
   summary,
@@ -261,6 +297,7 @@ export function CurrentResponses({
             key={response.causeId}
             createItemHref={createItemHref}
             createPersonHref={createPersonHref}
+            item={item}
             onSelectItem={onSelectItem}
             onSelectPerson={onSelectPerson}
             response={response}
