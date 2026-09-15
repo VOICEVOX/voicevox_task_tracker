@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "16"
+      "const": "17"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -193,7 +193,7 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["origin", "status", "elements", "adoptedElements"],
+          "required": ["origin", "status", "elements", "adoptedElements", "applications"],
           "properties": {
             "origin": {
               "const": "current"
@@ -213,6 +213,9 @@
             },
             "adoptedElements": {
               "$ref": "#/$defs/aiAnalysisCurrentAdoptedElements"
+            },
+            "applications": {
+              "$ref": "#/$defs/aiAnalysisElementApplications"
             }
           },
           "allOf": [
@@ -239,7 +242,7 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["origin", "status", "elements", "adoptedElements"],
+          "required": ["origin", "status", "elements", "adoptedElements", "applications"],
           "properties": {
             "origin": {
               "const": "migration"
@@ -259,10 +262,153 @@
             },
             "adoptedElements": {
               "$ref": "#/$defs/aiAnalysisMigrationAdoptedElements"
+            },
+            "applications": {
+              "$ref": "#/$defs/aiAnalysisElementApplications"
             }
           }
         }
       ]
+    },
+    "aiAnalysisElementApplication": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_required"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "origin"],
+          "properties": {
+            "status": {
+              "const": "current_ai"
+            },
+            "origin": {
+              "enum": ["executed", "cache", "verified_reuse"]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "deterministic_fallback"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {
+              "const": "retained_ai"
+            },
+            "reason": {
+              "enum": [
+                "failed",
+                "deferred",
+                "current_evaluation_not_adopted",
+                "proof_unknown"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {
+              "const": "unavailable"
+            },
+            "reason": {
+              "enum": [
+                "failed",
+                "deferred",
+                "current_evaluation_not_adopted",
+                "proof_unknown"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "disabled"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "enum": ["migration", "not_recorded", "proof_unknown"]
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisElementApplications": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "waitingOn",
+        "nextAction",
+        "relations",
+        "progress",
+        "importance",
+        "deadline",
+        "notification",
+        "selfCommitment"
+      ],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        },
+        "waitingOn": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        },
+        "nextAction": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        },
+        "relations": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        },
+        "progress": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        },
+        "importance": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        },
+        "deadline": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        },
+        "notification": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        },
+        "selfCommitment": {
+          "$ref": "#/$defs/aiAnalysisElementApplication"
+        }
+      }
     },
     "aiAnalysisElements": {
       "type": "object",

@@ -69,11 +69,13 @@ import {
 import {
   AI_ANALYSIS_ELEMENTS,
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
+  aiAnalysisElementApplicationsSchema,
   aiAnalysisElementReuseProofSchema,
   createAiAnalysisElementGenerationSchema,
   createAiAnalysisElementResultSchema,
   createAiAnalysisMigrationElementResultSchema,
   type AiAnalysisElement,
+  type AiAnalysisElementApplication,
   type AiAnalysisElementEvidence,
   type AiAnalysisElementMigrationResult,
   type AiAnalysisElementExecutionFingerprint,
@@ -169,6 +171,7 @@ import {
   type PersonalReminderStaleness,
   type TrackedItem,
   type TrackedItemAiAnalysis,
+  type TrackedItemAiAnalysisApplications,
   type TrackedItemAiAnalysisCurrentAdoptedElement,
   type TrackedItemAiAnalysisCurrentAdoptedElements,
   type TrackedItemAiAnalysisCurrentElement,
@@ -1122,6 +1125,19 @@ function createSnapshotCollectionItem(
   item: EnumeratedGitHubItem,
   analysisPlanFingerprint: SnapshotAnalysisPlanFingerprint,
 ): SnapshotCollectionItem {
+  const applications = Object.freeze(
+    aiAnalysisElementApplicationsSchema.parse(
+      Object.fromEntries(
+        AI_ANALYSIS_ELEMENTS.map((element) => [
+          element,
+          Object.freeze({
+            status: "unknown",
+            reason: "not_recorded",
+          }),
+        ]),
+      ),
+    ),
+  );
   if (item.state === "open") {
     return Object.freeze({
       freshness: "fresh",
@@ -1134,6 +1150,7 @@ function createSnapshotCollectionItem(
         status: "not_recorded",
         elements: Object.freeze({}),
         adoptedElements: Object.freeze({}),
+        applications,
       }),
       observedAt: item.observedAt,
       state: "open",
@@ -1151,6 +1168,7 @@ function createSnapshotCollectionItem(
       status: "not_recorded",
       elements: Object.freeze({}),
       adoptedElements: Object.freeze({}),
+      applications,
     }),
     observedAt: item.observedAt,
     state: "closed",
@@ -7932,6 +7950,192 @@ function trackedItemInputEvents(
   );
 }
 
+type AiAnalysisElementApplicationReason = Extract<
+  AiAnalysisElementApplication,
+  { status: "retained_ai" }
+>["reason"];
+
+function sameAiAnalysisElementResult(
+  left: AiAnalysisElementMigrationResult | undefined,
+  right: AiAnalysisElementMigrationResult | undefined,
+): boolean {
+  return left != null && right != null && hashCanonicalJson(left) === hashCanonicalJson(right);
+}
+
+function aiAnalysisElementApplicationReason(
+  run: AiAnalysisRunResult | undefined,
+  nodeId: GitHubNodeId,
+  generated: AiAnalysisElementSourceGeneration | undefined,
+): AiAnalysisElementApplicationReason {
+  if (run?.failures.some((failure) => failure.candidateId === nodeId)) {
+    return "failed";
+  }
+  if (run?.deferred.some((deferred) => deferred.candidateId === nodeId)) {
+    return "deferred";
+  }
+  if (generated != null) {
+    return "current_evaluation_not_adopted";
+  }
+  return "proof_unknown";
+}
+
+function aiAnalysisElementApplicationForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
+  element: AiAnalysisElement,
+): AiAnalysisElementApplication {
+  const candidate = planning.candidates[element];
+  if (candidate.necessity === "not_required") {
+    return Object.freeze({
+      status: "not_required",
+    });
+  }
+
+  const generated = generatedElementsForNode(run, analysis.item.nodeId)[element];
+  const consumerResult =
+    consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
+  const reductionApplication =
+    reduction?.ai.status === "available" ? reduction.ai.elements[element]?.application : undefined;
+  const stateElement = isStateAnalysisElement(element);
+  const deterministicFallback =
+    stateElement &&
+    (reduction == null ||
+      reduction.decision.origin === "deterministic" ||
+      reductionApplication === "deterministic_fallback");
+  if (deterministicFallback) {
+    return Object.freeze({
+      status: "deterministic_fallback",
+    });
+  }
+
+  const generatedWasConsumed = sameAiAnalysisElementResult(
+    consumerResult,
+    generated?.result == null
+      ? undefined
+      : createAiAnalysisMigrationElementResultSchema(element).parse(generated.result),
+  );
+  const generatedWasApplied =
+    generated != null &&
+    (reductionApplication === "applied" || (!stateElement && generatedWasConsumed));
+  if (generatedWasApplied) {
+    const runResult = run?.results.find((result) => result.candidateId === analysis.item.nodeId);
+    const runElement = runResult?.elements.find((result) => result.element === element);
+    assertNonNullable(runElement, `適用されたAI生成要素の実行記録がありません。対象: ${element}`);
+    return Object.freeze({
+      status: "current_ai",
+      origin: runElement.origin,
+    });
+  }
+
+  const verifiedSavedReuse = candidate.savedReuse;
+  const savedReuseIsVerified =
+    verifiedSavedReuse != null &&
+    determineAnalysisElementReuse({
+      element,
+      inputFingerprint: candidate.inputFingerprint,
+      inputProjectionVersion: candidate.inputProjectionVersion,
+      dependencyFingerprint: candidate.dependencyFingerprint,
+      savedProof: verifiedSavedReuse.proof,
+    }) === "verified" &&
+    sameAiAnalysisElementResult(consumerResult, verifiedSavedReuse.result);
+  const verifiedCurrent = verifiedCurrentAdoptedResultForElement(
+    state,
+    analysis,
+    element,
+    candidate.inputFingerprint,
+    candidate.savedReuse,
+  );
+  const verifiedMigration = verifiedMigrationAdoptedResultForElement(
+    state,
+    analysis,
+    element,
+    candidate.inputFingerprint,
+    candidate.savedReuse,
+  );
+  if (
+    savedReuseIsVerified ||
+    sameAiAnalysisElementResult(consumerResult, verifiedCurrent) ||
+    sameAiAnalysisElementResult(consumerResult, verifiedMigration)
+  ) {
+    return Object.freeze({
+      status: "current_ai",
+      origin: "verified_reuse",
+    });
+  }
+
+  const currentAdopted = currentAdoptedElementForElement(state, analysis, element);
+  const migrationAdopted = savedMigrationAdoptedElementsForItem(state, analysis.item.nodeId)[
+    element
+  ];
+  const currentResult = currentAdopted?.result;
+  const migrationResult =
+    migrationAdopted?.origin === "migration" ? migrationAdopted.result : undefined;
+  if (sameAiAnalysisElementResult(consumerResult, currentResult)) {
+    return Object.freeze({
+      status: "retained_ai",
+      reason: aiAnalysisElementApplicationReason(run, analysis.item.nodeId, generated),
+    });
+  }
+  if (sameAiAnalysisElementResult(consumerResult, migrationResult)) {
+    return Object.freeze({
+      status: "unknown",
+      reason: "migration",
+    });
+  }
+
+  const deterministicResult = deterministicElementResult(analysis, element);
+  if (sameAiAnalysisElementResult(consumerResult, deterministicResult)) {
+    return Object.freeze({
+      status: "deterministic_fallback",
+    });
+  }
+  if (consumerResult == null) {
+    if (run == null) {
+      return Object.freeze({
+        status: "disabled",
+      });
+    }
+    return Object.freeze({
+      status: "unavailable",
+      reason: aiAnalysisElementApplicationReason(run, analysis.item.nodeId, generated),
+    });
+  }
+  if (
+    candidate.savedReuse != null &&
+    sameAiAnalysisElementResult(consumerResult, candidate.savedReuse.result)
+  ) {
+    throw new TypeError(`AI採用元の現行形式を特定できません。対象: ${element}`);
+  }
+  throw new TypeError(`AI判定要素の最終適用元を特定できません。対象: ${element}`);
+}
+
+function aiAnalysisElementApplicationsForAnalysis(
+  state: RuntimeState,
+  analysis: DeterministicItemAnalysis,
+  planning: AnalysisElementPlanning,
+  run: AiAnalysisRunResult | undefined,
+  reduction: CodexAnalysisReduction | undefined,
+  consumerOutput: ConsumerCodexElementOutput | undefined,
+): TrackedItemAiAnalysisApplications {
+  const applications: Partial<Record<AiAnalysisElement, AiAnalysisElementApplication>> = {};
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    applications[element] = aiAnalysisElementApplicationForAnalysis(
+      state,
+      analysis,
+      planning,
+      run,
+      reduction,
+      consumerOutput,
+      element,
+    );
+  }
+  return Object.freeze(aiAnalysisElementApplicationsSchema.parse(applications));
+}
+
 function trackedItemAiAnalysis(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
@@ -7993,6 +8197,14 @@ function trackedItemAiAnalysis(
     evaluationRecords,
     missingEvaluationElements,
   );
+  const applications = aiAnalysisElementApplicationsForAnalysis(
+    state,
+    analysis,
+    planning,
+    run,
+    reduction,
+    consumerOutput,
+  );
   let status: TrackedItemAiAnalysis["status"];
   if (run == null) {
     status = "disabled";
@@ -8034,6 +8246,7 @@ function trackedItemAiAnalysis(
         migratedElements,
         reuseRecords,
       ),
+      applications,
     });
   }
   return Object.freeze({
@@ -8041,6 +8254,7 @@ function trackedItemAiAnalysis(
     status,
     elements,
     adoptedElements,
+    applications,
   });
 }
 
@@ -10221,7 +10435,7 @@ function validateRunCompleteness(
   });
   const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
-    schemaVersion: "16",
+    schemaVersion: "17",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),

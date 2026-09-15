@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   aiAnalysisElementEvidenceSchema,
+  aiAnalysisElementApplicationsSchema,
   aiAnalysisImportanceSchema,
   aiAnalysisNextActionSchema,
   aiAnalysisNotificationSchema,
@@ -16,11 +17,13 @@ import {
   createAiAnalysisMigrationElementResultSchema,
   createAiAnalysisElementValueSchema,
   type AiAnalysisElement,
+  type AiAnalysisElementApplications,
   type AiAnalysisElementMigrationResult,
   type AiAnalysisRelation,
 } from "../domain/ai-analysis-elements.js";
 import {
   createGitHubNodeId,
+  AI_ANALYSIS_ELEMENTS,
   type TrackedItemAiAnalysisCurrentElements,
   type TrackedItemAiAnalysisMigrationAdoptedElements,
   PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
@@ -49,6 +52,7 @@ import {
   parseStateSnapshotVersion13,
   parseStateSnapshotVersion14,
   parseStateSnapshotVersion15,
+  parseStateSnapshotVersion16,
   type SnapshotAnalysisPlanFingerprint,
   type StateSnapshot,
 } from "./snapshot.js";
@@ -61,6 +65,22 @@ function legacyReuseProof() {
     reuseSchemaVersion: AI_ANALYSIS_REUSE_PROOF_SCHEMA_VERSION,
     reason: "legacy_migration",
   });
+}
+
+function migratedAiAnalysisElementApplications(): AiAnalysisElementApplications {
+  return Object.freeze(
+    aiAnalysisElementApplicationsSchema.parse(
+      Object.fromEntries(
+        AI_ANALYSIS_ELEMENTS.map((element) => [
+          element,
+          Object.freeze({
+            status: "unknown",
+            reason: "migration",
+          }),
+        ]),
+      ),
+    ),
+  );
 }
 const legacyWaitingOnSchema = z
   .array(
@@ -747,6 +767,7 @@ function migrateAiAnalysis(
   status: "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
   elements: TrackedItemAiAnalysisCurrentElements;
   adoptedElements: TrackedItemAiAnalysisMigrationAdoptedElements;
+  applications: AiAnalysisElementApplications;
 } {
   const aiAnalysis = z
     .object({
@@ -767,6 +788,7 @@ function migrateAiAnalysis(
       aiAnalysis.origin,
       elementSchemaVersion,
     ),
+    applications: migratedAiAnalysisElementApplications(),
   };
 }
 
@@ -1163,6 +1185,7 @@ function migrateTrackedItem(
       status: item.aiAnalysis.status,
       elements: {},
       adoptedElements: createLegacyAdoptedElements(item, output, legacyRelationsById),
+      applications: migratedAiAnalysisElementApplications(),
     },
     personalReminderCauses: [],
     personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
@@ -1190,12 +1213,14 @@ function migrationCollectionAiAnalysis(): Readonly<{
   status: "not_recorded";
   elements: Readonly<Record<string, never>>;
   adoptedElements: Readonly<Record<string, never>>;
+  applications: AiAnalysisElementApplications;
 }> {
   return {
     origin: "migration",
     status: "not_recorded",
     elements: {},
     adoptedElements: {},
+    applications: migratedAiAnalysisElementApplications(),
   };
 }
 
@@ -1217,7 +1242,7 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion11(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "16",
+      schemaVersion: "17",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1244,7 +1269,7 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion12(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "16",
+      schemaVersion: "17",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1271,7 +1296,7 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion13(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "16",
+      schemaVersion: "17",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1324,7 +1349,7 @@ function migrateLegacyStateSnapshot(
       }),
     }));
     return createStateSnapshot({
-      schemaVersion: "16",
+      schemaVersion: "17",
       generatedAt: value.generatedAt,
       trackingStartAt: value.trackingStartAt,
       ai: value.ai,
@@ -1342,18 +1367,65 @@ function migrateLegacyStateSnapshot(
   }
 }
 
+function migrateVersion16StateSnapshot(source: string): StateSnapshot {
+  try {
+    const value = parseStateSnapshotVersion16(source);
+    return createStateSnapshot({
+      ...value,
+      schemaVersion: "17",
+      collection: {
+        repositories: value.collection.repositories.map((repository) => ({
+          ...repository,
+          items: repository.items.map((item) => ({
+            ...item,
+            aiAnalysis: {
+              ...item.aiAnalysis,
+              applications: migratedAiAnalysisElementApplications(),
+            },
+          })),
+        })),
+      },
+      items: value.items.map((item) => ({
+        ...item,
+        aiAnalysis: {
+          ...item.aiAnalysis,
+          applications: migratedAiAnalysisElementApplications(),
+        },
+      })),
+    });
+  } catch (error: unknown) {
+    throw migrationFormatError(error);
+  }
+}
+
 function migrateVersion14StateSnapshot(source: string): StateSnapshot {
   try {
     const value = parseStateSnapshotVersion14(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "16",
+      schemaVersion: "17",
+      collection: {
+        repositories: value.collection.repositories.map((repository) => ({
+          ...repository,
+          items: repository.items.map((item) => ({
+            ...item,
+            aiAnalysis: {
+              ...item.aiAnalysis,
+              applications: migratedAiAnalysisElementApplications(),
+            },
+          })),
+        })),
+      },
       items: value.items.map((item) => ({
         ...item,
         inputEvents:
           item.type === "pull_request"
             ? migrateVersion14PullRequestInputEvents(item.nodeId, item.inputEvents)
             : item.inputEvents,
+        aiAnalysis: {
+          ...item.aiAnalysis,
+          applications: migratedAiAnalysisElementApplications(),
+        },
         personalReminderCauses: [],
         personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
       })),
@@ -1368,7 +1440,26 @@ function migrateVersion15StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion15(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "16",
+      schemaVersion: "17",
+      collection: {
+        repositories: value.collection.repositories.map((repository) => ({
+          ...repository,
+          items: repository.items.map((item) => ({
+            ...item,
+            aiAnalysis: {
+              ...item.aiAnalysis,
+              applications: migratedAiAnalysisElementApplications(),
+            },
+          })),
+        })),
+      },
+      items: value.items.map((item) => ({
+        ...item,
+        aiAnalysis: {
+          ...item.aiAnalysis,
+          applications: migratedAiAnalysisElementApplications(),
+        },
+      })),
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
@@ -1417,6 +1508,8 @@ export function migrateStateSnapshot(
     case "15":
       return migrateVersion15StateSnapshot(source);
     case "16":
+      return migrateVersion16StateSnapshot(source);
+    case "17":
       return parseStateSnapshot(source);
     default:
       throw new StateFormatError("snapshot", {

@@ -39,6 +39,7 @@ import {
 import {
   aiAnalysisElementSchema,
   aiAnalysisElementEvidenceSchema,
+  aiAnalysisElementApplicationsSchema,
   aiAnalysisElementMetadataSchema,
   aiAnalysisElementReuseProofSchema,
   createAiAnalysisElementResultSchema,
@@ -156,6 +157,7 @@ export const SNAPSHOT_SCHEMA_VERSION_13 = "13";
 export const SNAPSHOT_SCHEMA_VERSION_14 = "14";
 export const SNAPSHOT_SCHEMA_VERSION_15 = "15";
 export const SNAPSHOT_SCHEMA_VERSION_16 = "16";
+export const SNAPSHOT_SCHEMA_VERSION_17 = "17";
 
 type StateSnapshotFields = Readonly<{
   generatedAt: UtcIsoDateTime;
@@ -169,13 +171,68 @@ type StateSnapshotFields = Readonly<{
   run: SnapshotRun;
 }>;
 
+type LegacyTrackedItemAiAnalysis =
+  | Omit<Extract<TrackedItemAiAnalysis, { origin: "current" }>, "applications">
+  | Omit<Extract<TrackedItemAiAnalysis, { origin: "migration" }>, "applications">;
+
+type SnapshotTrackedItemPersonalReminderFields = Pick<
+  SnapshotTrackedItem,
+  | "nodeId"
+  | "status"
+  | "createdAt"
+  | "observedAt"
+  | "personalReminderCauses"
+  | "personalReminderCausePlanning"
+>;
+
 type LegacySnapshotTrackedItem = Omit<
   SnapshotTrackedItem,
-  "personalReminderCauses" | "personalReminderCausePlanning"
->;
-type LegacyStateSnapshotFields = Omit<StateSnapshotFields, "items"> &
+  "personalReminderCauses" | "personalReminderCausePlanning" | "aiAnalysis"
+> &
   Readonly<{
+    aiAnalysis: LegacyTrackedItemAiAnalysis;
+  }>;
+type LegacySnapshotTrackedItemWithPersonalReminder = Omit<SnapshotTrackedItem, "aiAnalysis"> &
+  Readonly<{
+    aiAnalysis: LegacyTrackedItemAiAnalysis;
+  }>;
+type LegacySnapshotCollectionItem = Omit<
+  SnapshotCollectionItem,
+  "aiAnalysis" | "state" | "terminalAt"
+> &
+  Readonly<{
+    aiAnalysis: LegacyTrackedItemAiAnalysis;
+  }> &
+  (
+    | Readonly<{
+        state: "open";
+        terminalAt: null;
+      }>
+    | Readonly<{
+        state: "closed";
+        terminalAt: UtcIsoDateTime;
+      }>
+  );
+type LegacySnapshotCollectionRepository = Omit<SnapshotCollectionRepository, "items"> &
+  Readonly<{
+    items: readonly LegacySnapshotCollectionItem[];
+  }>;
+type LegacySnapshotCollectionState = Omit<SnapshotCollectionState, "repositories"> &
+  Readonly<{
+    repositories: readonly LegacySnapshotCollectionRepository[];
+  }>;
+type LegacyStateSnapshotFields = Omit<StateSnapshotFields, "collection" | "items"> &
+  Readonly<{
+    collection: LegacySnapshotCollectionState;
     items: readonly LegacySnapshotTrackedItem[];
+  }>;
+type LegacyStateSnapshotFieldsWithPersonalReminder = Omit<
+  StateSnapshotFields,
+  "collection" | "items"
+> &
+  Readonly<{
+    collection: LegacySnapshotCollectionState;
+    items: readonly LegacySnapshotTrackedItemWithPersonalReminder[];
   }>;
 
 type StateSnapshotVersion11 = LegacyStateSnapshotFields &
@@ -195,18 +252,27 @@ type StateSnapshotVersion14 = LegacyStateSnapshotFields &
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_14;
   }>;
 
-type StateSnapshotVersion15 = StateSnapshotFields &
+type StateSnapshotVersion15 = LegacyStateSnapshotFieldsWithPersonalReminder &
   Readonly<{
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_15;
   }>;
 
-type StateSnapshotVersion16 = StateSnapshotFields &
+type StateSnapshotVersion16 = LegacyStateSnapshotFieldsWithPersonalReminder &
   Readonly<{
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_16;
   }>;
 
-/** tracker-stateへ保存するschema version 16のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion16;
+type StateSnapshotVersion17 = StateSnapshotFields &
+  Readonly<{
+    schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_17;
+  }>;
+
+/** tracker-stateへ保存するschema version 17のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion17;
+
+const snapshotSchemaVersion17Schema = z.object({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_17),
+});
 
 const snapshotSchemaVersion16Schema = z.object({
   schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_16),
@@ -330,8 +396,35 @@ function snapshotSchemaForVersion(
   if (personalReminderDeferredVariant == null) {
     throw new TypeError("snapshot schemaのpersonal reminder評価定義が不正です");
   }
+  const trackedItemCurrentVariantWithoutApplications = {
+    ...trackedItemCurrentVariant,
+    required: trackedItemCurrentVariant.required.filter((key) => key !== "applications"),
+    properties: Object.fromEntries(
+      Object.entries(trackedItemCurrentVariant.properties).filter(
+        ([key]) => key !== "applications",
+      ),
+    ),
+  };
+  const trackedItemMigrationVariantWithoutApplications = {
+    ...trackedItemMigrationVariant,
+    required: trackedItemMigrationVariant.required.filter((key) => key !== "applications"),
+    properties: Object.fromEntries(
+      Object.entries(trackedItemMigrationVariant.properties).filter(
+        ([key]) => key !== "applications",
+      ),
+    ),
+  };
+  const trackedItemAiAnalysisWithoutApplications = {
+    ...trackedItemAiAnalysis,
+    oneOf: [
+      trackedItemCurrentVariantWithoutApplications,
+      trackedItemMigrationVariantWithoutApplications,
+    ],
+  };
   const versionedItem =
-    version === SNAPSHOT_SCHEMA_VERSION_15 || version === SNAPSHOT_SCHEMA_VERSION_16
+    version === SNAPSHOT_SCHEMA_VERSION_15 ||
+    version === SNAPSHOT_SCHEMA_VERSION_16 ||
+    version === SNAPSHOT_SCHEMA_VERSION_17
       ? item
       : {
           ...item,
@@ -411,7 +504,8 @@ function snapshotSchemaForVersion(
   const versionedMigrationAdoptedElement =
     version === SNAPSHOT_SCHEMA_VERSION_14 ||
     version === SNAPSHOT_SCHEMA_VERSION_15 ||
-    version === SNAPSHOT_SCHEMA_VERSION_16
+    version === SNAPSHOT_SCHEMA_VERSION_16 ||
+    version === SNAPSHOT_SCHEMA_VERSION_17
       ? migrationAdoptedElement
       : {
           ...migrationAdoptedElement,
@@ -456,6 +550,46 @@ function snapshotSchemaForVersion(
           ],
         }
       : personalReminderEvaluationAttempt;
+  let versionedTrackedItemAiAnalysis: object;
+  if (version === SNAPSHOT_SCHEMA_VERSION_17) {
+    versionedTrackedItemAiAnalysis = trackedItemAiAnalysis;
+  } else if (
+    version === SNAPSHOT_SCHEMA_VERSION_14 ||
+    version === SNAPSHOT_SCHEMA_VERSION_15 ||
+    version === SNAPSHOT_SCHEMA_VERSION_16
+  ) {
+    versionedTrackedItemAiAnalysis = trackedItemAiAnalysisWithoutApplications;
+  } else {
+    versionedTrackedItemAiAnalysis = {
+      ...trackedItemAiAnalysis,
+      oneOf: [
+        {
+          ...trackedItemCurrentVariantWithoutApplications,
+          properties: {
+            ...trackedItemCurrentVariantWithoutApplications.properties,
+            elements: {
+              $ref: "#/$defs/aiAnalysisElements",
+            },
+            adoptedElements: {
+              $ref: "#/$defs/aiAnalysisElements",
+            },
+          },
+        },
+        {
+          ...trackedItemMigrationVariantWithoutApplications,
+          properties: {
+            ...trackedItemMigrationVariantWithoutApplications.properties,
+            elements: {
+              $ref: "#/$defs/aiAnalysisElements",
+            },
+            adoptedElements: {
+              $ref: "#/$defs/aiAnalysisMigrationAdoptedElements",
+            },
+          },
+        },
+      ],
+    };
+  }
   return {
     ...schema,
     $defs: {
@@ -480,49 +614,18 @@ function snapshotSchemaForVersion(
       aiAnalysisElements:
         version === SNAPSHOT_SCHEMA_VERSION_14 ||
         version === SNAPSHOT_SCHEMA_VERSION_15 ||
-        version === SNAPSHOT_SCHEMA_VERSION_16
+        version === SNAPSHOT_SCHEMA_VERSION_16 ||
+        version === SNAPSHOT_SCHEMA_VERSION_17
           ? snapshotSchema.$defs.aiAnalysisElements
           : legacyAiAnalysisElements,
       aiAnalysisMigrationAdoptedElements:
         version === SNAPSHOT_SCHEMA_VERSION_14 ||
         version === SNAPSHOT_SCHEMA_VERSION_15 ||
-        version === SNAPSHOT_SCHEMA_VERSION_16
+        version === SNAPSHOT_SCHEMA_VERSION_16 ||
+        version === SNAPSHOT_SCHEMA_VERSION_17
           ? snapshotSchema.$defs.aiAnalysisMigrationAdoptedElements
           : legacyAiAnalysisMigrationAdoptedElements,
-      trackedItemAiAnalysis:
-        version === SNAPSHOT_SCHEMA_VERSION_14 ||
-        version === SNAPSHOT_SCHEMA_VERSION_15 ||
-        version === SNAPSHOT_SCHEMA_VERSION_16
-          ? trackedItemAiAnalysis
-          : {
-              ...trackedItemAiAnalysis,
-              oneOf: [
-                {
-                  ...trackedItemCurrentVariant,
-                  properties: {
-                    ...trackedItemCurrentVariant.properties,
-                    elements: {
-                      $ref: "#/$defs/aiAnalysisElements",
-                    },
-                    adoptedElements: {
-                      $ref: "#/$defs/aiAnalysisElements",
-                    },
-                  },
-                },
-                {
-                  ...trackedItemMigrationVariant,
-                  properties: {
-                    ...trackedItemMigrationVariant.properties,
-                    elements: {
-                      $ref: "#/$defs/aiAnalysisElements",
-                    },
-                    adoptedElements: {
-                      $ref: "#/$defs/aiAnalysisMigrationAdoptedElements",
-                    },
-                  },
-                },
-              ],
-            },
+      trackedItemAiAnalysis: versionedTrackedItemAiAnalysis,
       item: versionedItem,
     },
     properties: {
@@ -549,7 +652,10 @@ const validateSnapshotVersion14Schema = ajv.compile<StateSnapshotVersion14>(
 const validateSnapshotVersion15Schema = ajv.compile<StateSnapshotVersion15>(
   snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_15, "source"),
 );
-const validateSnapshotVersion16Schema = ajv.compile<StateSnapshotVersion16>(snapshotSchema);
+const validateSnapshotVersion16Schema = ajv.compile<StateSnapshotVersion16>(
+  snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_16, "source"),
+);
+const validateSnapshotVersion17Schema = ajv.compile<StateSnapshotVersion17>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -575,7 +681,7 @@ function assertUtcDateTime(value: string, description: string): void {
 
 function assertPersonalReminderTimeBasis(
   value: PersonalReminderCause["obligationSince"],
-  item: SnapshotTrackedItem,
+  item: SnapshotTrackedItemPersonalReminderFields,
   description: string,
 ): void {
   assertUtcDateTime(value.at, description);
@@ -646,7 +752,7 @@ function assertPersonalReminderLastConfirmedActionability(
 }
 
 function assertPersonalReminderCausesSemantics(
-  item: SnapshotTrackedItem,
+  item: SnapshotTrackedItemPersonalReminderFields,
   causeIds: ReadonlySet<string>,
 ): void {
   assertUnique(
@@ -800,7 +906,9 @@ function assertPersonalReminderCausesSemantics(
   }
 }
 
-function assertPersonalReminderCausePlanningSemantics(item: SnapshotTrackedItem): void {
+function assertPersonalReminderCausePlanningSemantics(
+  item: SnapshotTrackedItemPersonalReminderFields,
+): void {
   const parsedPlanning = personalReminderCausePlanningSchema.safeParse(
     item.personalReminderCausePlanning,
   );
@@ -1056,11 +1164,30 @@ function assertAiAnalysisCurrentAdoptedMapSemantics(
   }
 }
 
+function assertAiAnalysisElementApplicationsSemantics(
+  applications: unknown,
+  description: string,
+): void {
+  const parsedApplications = aiAnalysisElementApplicationsSchema.safeParse(applications);
+  if (!parsedApplications.success) {
+    throw new StateSnapshotSemanticError(`${description}が不正です`, {
+      cause: parsedApplications.error,
+    });
+  }
+}
+
 function assertAiAnalysisSemantics(
-  aiAnalysis: TrackedItemAiAnalysis,
+  aiAnalysis: TrackedItemAiAnalysis | LegacyTrackedItemAiAnalysis,
   elementSchemaVersion: ElementSchemaVersion,
   adoptedElementsFormat: "legacy" | "current",
+  requireApplications: boolean,
 ): void {
+  if (requireApplications) {
+    if (!("applications" in aiAnalysis)) {
+      throw new StateSnapshotSemanticError("AI適用元がありません");
+    }
+    assertAiAnalysisElementApplicationsSemantics(aiAnalysis.applications, "AI適用元");
+  }
   if (aiAnalysis.origin === "current") {
     if (aiAnalysis.status === "used" && Object.keys(aiAnalysis.elements).length === 0) {
       throw new StateSnapshotSemanticError("AI分析がusedなのに生成記録がありません");
@@ -1124,9 +1251,11 @@ function normalizeAccountActor(actor: GitHubAccountActor): GitHubAccountActor {
 }
 
 function assertSnapshotSemantics(
-  snapshot: StateSnapshotFields | LegacyStateSnapshotFields,
+  snapshot:
+    StateSnapshotFields | LegacyStateSnapshotFields | LegacyStateSnapshotFieldsWithPersonalReminder,
   elementSchemaVersion: ElementSchemaVersion,
   adoptedElementsFormat: "legacy" | "current",
+  requireApplications: boolean,
 ): void {
   assertUtcDateTime(snapshot.generatedAt, "generatedAt");
   if (snapshot.trackingStartAt.status === "fixed") {
@@ -1194,7 +1323,12 @@ function assertSnapshotSemantics(
         );
       }
       assertUtcDateTime(item.observedAt, "収集stateのitem観測時刻");
-      assertAiAnalysisSemantics(item.aiAnalysis, elementSchemaVersion, adoptedElementsFormat);
+      assertAiAnalysisSemantics(
+        item.aiAnalysis,
+        elementSchemaVersion,
+        adoptedElementsFormat,
+        requireApplications,
+      );
       if (item.observedAt > collectionRepository.successfulAt) {
         throw new StateSnapshotSemanticError(
           "収集stateのitem観測時刻はrepository成功時刻以前にしてください",
@@ -1234,7 +1368,12 @@ function assertSnapshotSemantics(
         "itemのrepositoryIdがsnapshotのrepository一覧にありません",
       );
     }
-    assertAiAnalysisSemantics(item.aiAnalysis, elementSchemaVersion, adoptedElementsFormat);
+    assertAiAnalysisSemantics(
+      item.aiAnalysis,
+      elementSchemaVersion,
+      adoptedElementsFormat,
+      requireApplications,
+    );
     if ("personalReminderCauses" in item) {
       assertPersonalReminderCausesSemantics(item, personalReminderCauseIds);
       assertPersonalReminderCausePlanningSemantics(item);
@@ -1469,6 +1608,9 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
 }
 
 function normalizeTrackedItemAiAnalysis(aiAnalysis: TrackedItemAiAnalysis): TrackedItemAiAnalysis {
+  const applications = Object.freeze(
+    aiAnalysisElementApplicationsSchema.parse(aiAnalysis.applications),
+  );
   if (aiAnalysis.origin === "current") {
     return Object.freeze({
       ...aiAnalysis,
@@ -1478,6 +1620,7 @@ function normalizeTrackedItemAiAnalysis(aiAnalysis: TrackedItemAiAnalysis): Trac
       adoptedElements: Object.freeze({
         ...aiAnalysis.adoptedElements,
       }),
+      applications,
     });
   }
   return Object.freeze({
@@ -1488,6 +1631,7 @@ function normalizeTrackedItemAiAnalysis(aiAnalysis: TrackedItemAiAnalysis): Trac
     adoptedElements: Object.freeze({
       ...aiAnalysis.adoptedElements,
     }),
+    applications,
   });
 }
 
@@ -1529,7 +1673,7 @@ function parseStateSnapshotVersion11Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion11Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "5", "legacy");
+  assertSnapshotSemantics(value, "5", "legacy", false);
   return value;
 }
 
@@ -1539,7 +1683,7 @@ function parseStateSnapshotVersion12Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion12Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "5", "legacy");
+  assertSnapshotSemantics(value, "5", "legacy", false);
   return value;
 }
 
@@ -1549,7 +1693,7 @@ function parseStateSnapshotVersion13Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion13Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "6", "legacy");
+  assertSnapshotSemantics(value, "6", "legacy", false);
   return value;
 }
 
@@ -1559,7 +1703,7 @@ function parseStateSnapshotVersion14Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion14Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "source", "current");
+  assertSnapshotSemantics(value, "source", "current", false);
   return value;
 }
 
@@ -1569,31 +1713,41 @@ function parseStateSnapshotVersion15Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion15Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "source", "current");
+  assertSnapshotSemantics(value, "source", "current", false);
   return value;
 }
 
-function parseStateSnapshotVersion16Value(value: unknown): StateSnapshot {
+function parseStateSnapshotVersion16Value(value: unknown): StateSnapshotVersion16 {
   snapshotSchemaVersion16Schema.parse(value);
   if (!validateSnapshotVersion16Schema(value)) {
     const issueCount = validateSnapshotVersion16Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "source", "current");
+  assertSnapshotSemantics(value, "source", "current", false);
+  return value;
+}
+
+function parseStateSnapshotVersion17Value(value: unknown): StateSnapshotVersion17 {
+  snapshotSchemaVersion17Schema.parse(value);
+  if (!validateSnapshotVersion17Schema(value)) {
+    const issueCount = validateSnapshotVersion17Schema.errors?.length ?? 1;
+    throw new StateSnapshotSchemaError(issueCount);
+  }
+  assertSnapshotSemantics(value, "source", "current", true);
   return value;
 }
 
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
   const version = z.object({ schemaVersion: z.string() }).parse(value).schemaVersion;
-  if (version === SNAPSHOT_SCHEMA_VERSION_16) {
-    return parseStateSnapshotVersion16Value(value);
+  if (version === SNAPSHOT_SCHEMA_VERSION_17) {
+    return normalizeSnapshot(parseStateSnapshotVersion17Value(value));
   }
   throw new StateSnapshotSchemaError(1);
 }
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return normalizeSnapshot(parseStateSnapshotVersion16Value(value));
+  return normalizeSnapshot(parseStateSnapshotVersion17Value(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */
@@ -1777,6 +1931,38 @@ export function parseStateSnapshotVersion15(source: string): StateSnapshotVersio
 
   try {
     return parseStateSnapshotVersion15Value(value);
+  } catch (error: unknown) {
+    if (
+      error instanceof StateFormatError ||
+      error instanceof StateSnapshotSchemaError ||
+      error instanceof StateSnapshotSemanticError
+    ) {
+      throw error;
+    }
+    throw new StateFormatError("snapshot", {
+      cause: new TypeError("snapshot検証中に予期しないエラーが発生しました", {
+        cause: error,
+      }),
+    });
+  }
+}
+
+/** schema version 16のsnapshotを検証して読み取る。 */
+export function parseStateSnapshotVersion16(source: string): StateSnapshotVersion16 {
+  let value: unknown;
+  try {
+    const parseJson: (text: string) => unknown = JSON.parse;
+    value = parseJson(source);
+  } catch (error: unknown) {
+    throw new StateFormatError("snapshot", {
+      cause: new SyntaxError("JSON構文が不正です", {
+        cause: error,
+      }),
+    });
+  }
+
+  try {
+    return parseStateSnapshotVersion16Value(value);
   } catch (error: unknown) {
     if (
       error instanceof StateFormatError ||

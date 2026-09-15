@@ -35,6 +35,67 @@ export const aiAnalysisElementNecessitySchema = z.enum(["required", "not_require
 /** AI分析要素の必要性。 */
 export type AiAnalysisElementNecessity = z.output<typeof aiAnalysisElementNecessitySchema>;
 
+const aiAnalysisElementApplicationReasonSchema = z.enum([
+  "failed",
+  "deferred",
+  "current_evaluation_not_adopted",
+  "proof_unknown",
+]);
+
+const aiAnalysisElementUnknownApplicationReasonSchema = z.enum([
+  "migration",
+  "not_recorded",
+  "proof_unknown",
+]);
+
+/** AI分析要素の最終適用元schema。 */
+export const aiAnalysisElementApplicationSchema = z.discriminatedUnion("status", [
+  z.strictObject({
+    status: z.literal("not_required"),
+  }),
+  z.strictObject({
+    status: z.literal("current_ai"),
+    origin: z.enum(["executed", "cache", "verified_reuse"]),
+  }),
+  z.strictObject({
+    status: z.literal("deterministic_fallback"),
+  }),
+  z.strictObject({
+    status: z.literal("retained_ai"),
+    reason: aiAnalysisElementApplicationReasonSchema,
+  }),
+  z.strictObject({
+    status: z.literal("unavailable"),
+    reason: aiAnalysisElementApplicationReasonSchema,
+  }),
+  z.strictObject({
+    status: z.literal("disabled"),
+  }),
+  z.strictObject({
+    status: z.literal("unknown"),
+    reason: aiAnalysisElementUnknownApplicationReasonSchema,
+  }),
+]);
+
+/** AI分析要素の最終適用元。 */
+export type AiAnalysisElementApplication = z.output<typeof aiAnalysisElementApplicationSchema>;
+
+/** AI分析要素ごとの最終適用元map schema。 */
+export const aiAnalysisElementApplicationsSchema = z.strictObject({
+  status: aiAnalysisElementApplicationSchema,
+  waitingOn: aiAnalysisElementApplicationSchema,
+  nextAction: aiAnalysisElementApplicationSchema,
+  relations: aiAnalysisElementApplicationSchema,
+  progress: aiAnalysisElementApplicationSchema,
+  importance: aiAnalysisElementApplicationSchema,
+  deadline: aiAnalysisElementApplicationSchema,
+  notification: aiAnalysisElementApplicationSchema,
+  selfCommitment: aiAnalysisElementApplicationSchema,
+});
+
+/** AI分析要素ごとの最終適用元map。 */
+export type AiAnalysisElementApplications = z.output<typeof aiAnalysisElementApplicationsSchema>;
+
 /** AI分析要素のfingerprintを検証するschema。 */
 export const aiAnalysisElementFingerprintSchema = z
   .string()

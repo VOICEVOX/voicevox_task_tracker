@@ -13,6 +13,10 @@ import {
   type ReducedCodexDecision,
 } from "../codex/index.js";
 import {
+  AI_ANALYSIS_ELEMENTS,
+  aiAnalysisElementApplicationsSchema,
+} from "../domain/ai-analysis-elements.js";
+import {
   buildSourceId,
   calculateStaleness,
   createStalenessNotificationSeverityReason,
@@ -59,6 +63,7 @@ import {
   type PersonalReminderCause,
   type PersonalReminderStaleness,
   type TrackedItem,
+  type TrackedItemAiAnalysisApplications,
   type UtcIsoDateTime,
   type WaitingOn,
 } from "../domain/index.js";
@@ -1915,6 +1920,16 @@ function createGoldenPersonalReminderCausePlanning(
   };
 }
 
+function createGoldenAiAnalysisApplications(
+  status: "not_required" | "disabled",
+): TrackedItemAiAnalysisApplications {
+  return Object.freeze(
+    aiAnalysisElementApplicationsSchema.parse(
+      Object.fromEntries(AI_ANALYSIS_ELEMENTS.map((element) => [element, { status }])),
+    ),
+  );
+}
+
 function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): TrackedItem {
   const item = analysis.input;
   const decision = analysis.decision;
@@ -1974,6 +1989,7 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
       status: "not_required",
       elements: Object.freeze({}),
       adoptedElements: Object.freeze({}),
+      applications: createGoldenAiAnalysisApplications("not_required"),
     }),
     inputEvents: Object.freeze(
       item.events.map((event) =>
@@ -2026,7 +2042,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "16",
+    schemaVersion: "17",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -2578,6 +2594,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
           status: "disabled",
           elements: Object.freeze({}),
           adoptedElements: Object.freeze({}),
+          applications: createGoldenAiAnalysisApplications("disabled"),
         }),
         inputEvents: Object.freeze([]),
         confidence: 1,
@@ -2792,7 +2809,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "16",
+    schemaVersion: "17",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

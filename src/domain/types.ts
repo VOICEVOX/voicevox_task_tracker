@@ -13,6 +13,7 @@ import { type SourceId } from "./source-id.js";
 import type { StalenessWaitClass } from "./staleness.js";
 import type {
   AiAnalysisElement,
+  AiAnalysisElementApplications,
   AiAnalysisElementMetadata,
   AiAnalysisElementMigrationResult,
   AiAnalysisElementReuseProof,
@@ -686,6 +687,9 @@ export type TrackedItemAiAnalysisMigrationAdoptedElements = Readonly<{
 type TrackedItemAiAnalysisStatus =
   "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
 
+/** 追跡項目へ保存するAI判定要素ごとの最終適用元。 */
+export type TrackedItemAiAnalysisApplications = AiAnalysisElementApplications;
+
 /** 追跡項目へ保存する要素別AI分析結果と生成元。 */
 export type TrackedItemAiAnalysis =
   | Readonly<{
@@ -693,12 +697,14 @@ export type TrackedItemAiAnalysis =
       status: TrackedItemAiAnalysisStatus;
       elements: TrackedItemAiAnalysisCurrentElements;
       adoptedElements: TrackedItemAiAnalysisCurrentAdoptedElements;
+      applications: TrackedItemAiAnalysisApplications;
     }>
   | Readonly<{
       origin: "migration";
       status: TrackedItemAiAnalysisStatus;
       elements: TrackedItemAiAnalysisCurrentElements;
       adoptedElements: TrackedItemAiAnalysisMigrationAdoptedElements;
+      applications: TrackedItemAiAnalysisApplications;
     }>;
 
 export type TrackedItemInputEvent = Readonly<{
