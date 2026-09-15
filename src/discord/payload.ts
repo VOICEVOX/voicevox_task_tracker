@@ -903,11 +903,6 @@ function createReasonGuidance(
           waitingFor: "依存解消後の再開",
           nextAction: "依存が解消した項目を確認し、作業を再開してください。",
         };
-      case "responsibility_changed":
-        return {
-          waitingFor: "新しい待ち相手への引き継ぎ",
-          nextAction: "新しい待ち相手を確認し、次の対応を決めてください。",
-        };
       case "assessment_overdue":
       case "owner_overdue":
       case "decision_overdue":
@@ -918,6 +913,7 @@ function createReasonGuidance(
       case "merge_overdue":
       case "automation_stuck":
       case "work_overdue":
+      case "responsibility_changed":
         continue;
     }
   }
