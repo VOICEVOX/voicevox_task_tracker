@@ -85,6 +85,8 @@ PagesはこのAI状態を公開DTOへ変換し、run statusからAIの状態を�
 repository単位の収集は、再試行後も503で失敗し、同じrepositoryの前回値がある場合だけ前回値を`stale`として使います。
 収集の縮退はdiagnosticとstale件数に記録して後続処理を続けます。run statusは、個人原因の列挙計画を含む後続の分析結果に従います。
 前回値がない503、503以外の例外、不完全な結果は`failure`となり、通常の後続stageを実行しません。
+同じGitHub項目への関係参照で、取得時点の違いにより`state`だけが競合した場合は、競合項目と参照元の詳細を限定回数再取得し、収集結果全体の整合性を検証し直します。
+識別情報など`state`以外も競合する場合や、再取得後も競合が残る場合は、保存、Pages生成、通常通知へ進まず停止します。
 反復を終えても端点を取得できなかった関係候補は追跡選定へ渡さず、除外した件数をdiagnosticへ記録します。
 GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。実質担当のPR根拠には、追跡中のPRに対するこの関係だけを使います。
 本文のclosing keywordだけから得た`implements`候補は推定のままとし、実質担当の根拠には使いません。
