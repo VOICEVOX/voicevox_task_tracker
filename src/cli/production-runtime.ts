@@ -10,6 +10,7 @@ import {
   assessAnalysisImpact,
   createCodexEnvironment,
   createCodexAnalysisInput,
+  CodexOutputValidationError,
   createPersonalReminderCauseInputFingerprint,
   determineAnalysisElementNecessities,
   determineAnalysisElementReuse,
@@ -4796,14 +4797,58 @@ function verifiedMigrationAdoptedResultForElement(
   return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
 }
 
+function preservedElementsWithCompatibleRelations(
+  preservedElements: CodexPreservedElements,
+  input: CodexAnalysisInput | undefined,
+): CodexPreservedElements {
+  const relations = preservedElements.relations;
+  if (relations == null) {
+    return preservedElements;
+  }
+  if (input != null) {
+    const relationValidationInput = createCodexAnalysisInput({
+      ...input,
+      selectedElements: ["relations"],
+      lockedElements: {},
+    });
+    try {
+      validateCodexAnalysisOutput(
+        {
+          schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+          item: {
+            nodeId: relationValidationInput.item.nodeId,
+            url: relationValidationInput.item.url,
+          },
+          relations,
+        },
+        relationValidationInput,
+      );
+      return preservedElements;
+    } catch (error: unknown) {
+      if (!(error instanceof CodexOutputValidationError)) {
+        throw error;
+      }
+    }
+  }
+  const compatibleElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> = {
+    ...preservedElements,
+  };
+  delete compatibleElements.relations;
+  return Object.freeze(compatibleElements);
+}
+
 function preservedElementsForSelection(
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   planning: AnalysisElementPlanning,
   target: AiAnalysisTarget | undefined,
+  input: CodexAnalysisInput,
 ): CodexPreservedElements {
   if (target?.nodeId === analysis.item.nodeId) {
-    return preservedElementsForForcedTargetInput(state, analysis, planning, target);
+    return preservedElementsWithCompatibleRelations(
+      preservedElementsForForcedTargetInput(state, analysis, planning, target),
+      input,
+    );
   }
   const preservedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> =
     {};
@@ -4849,7 +4894,7 @@ function preservedElementsForSelection(
       preservedElements[skipped.candidate.element] = deterministic;
     }
   }
-  return Object.freeze(preservedElements);
+  return preservedElementsWithCompatibleRelations(Object.freeze(preservedElements), input);
 }
 
 function necessityInputForAnalysis(
@@ -5134,7 +5179,13 @@ function createAiCandidates(
       collection.evaluatedAt,
       analysis,
       executionPlanning.selection.selected.map((candidate) => candidate.element),
-      preservedElementsForSelection(state, analysis, executionPlanning, targetForAnalysis),
+      preservedElementsForSelection(
+        state,
+        analysis,
+        executionPlanning,
+        targetForAnalysis,
+        baseInput,
+      ),
       previousObservedAt,
     );
     inputByNodeId.set(analysis.item.nodeId, input);
@@ -6072,10 +6123,12 @@ function preservedElementsForAnalysisReduction(
 ): CodexPreservedElements {
   const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
   assertNonNullable(planning, `AI判定要素の計画がありません。対象: ${analysis.item.nodeId}`);
-  if (target != null) {
-    return preservedElementsForForcedReduction(state, analysis, planning, target);
-  }
-  return preservedElementsForReduction(state, analysis, planning);
+  const preservedElements =
+    target == null
+      ? preservedElementsForReduction(state, analysis, planning)
+      : preservedElementsForForcedReduction(state, analysis, planning, target);
+  const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
+  return preservedElementsWithCompatibleRelations(preservedElements, input);
 }
 
 function elementGenerationsByNodeId(
@@ -6675,7 +6728,11 @@ function reductionForAnalysis(
         selectedElements: [],
         lockedElements: {},
       })
-    : input;
+    : createCodexAnalysisInput({
+        ...input,
+        selectedElements: [],
+        lockedElements: projectCodexLockedElements(preservedElements),
+      });
   const output = validateCodexAnalysisOutput(
     {
       schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
@@ -10516,7 +10573,10 @@ function reduceAnalysisPass(
           resolveLabelEffects,
         ),
       );
-      const preservedElements = preservedElementsForRetainedItem(previousItem);
+      const preservedElements = preservedElementsWithCompatibleRelations(
+        preservedElementsForRetainedItem(previousItem),
+        undefined,
+      );
       const preservedReduction = reducePreservedCodexRelationsAndNotification(
         previousItem.nodeId,
         preservedElements,

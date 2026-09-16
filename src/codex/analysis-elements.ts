@@ -102,7 +102,7 @@ export const AI_ANALYSIS_ELEMENT_REVISIONS = Object.freeze({
   status: 1,
   waitingOn: 3,
   nextAction: 1,
-  relations: 1,
+  relations: 2,
   progress: 1,
   importance: 1,
   deadline: 1,
