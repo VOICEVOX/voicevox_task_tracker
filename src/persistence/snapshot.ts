@@ -4294,6 +4294,7 @@ function assertSnapshotSemantics(
   elementSchemaVersion: ElementSchemaVersion,
   adoptedElementsFormat: "legacy" | "current",
   requireApplications: boolean,
+  requireImplementsEndpointTypes: boolean,
 ): void {
   assertUtcDateTime(snapshot.generatedAt, "generatedAt");
   if (snapshot.trackingStartAt.status === "fixed") {
@@ -4564,7 +4565,9 @@ function assertSnapshotSemantics(
     if (!graphNodeIds.has(relation.fromNodeId) || !graphNodeIds.has(relation.toNodeId)) {
       throw new StateSnapshotSemanticError("relationがsnapshotにないnodeを参照しています");
     }
-    assertImplementsRelationEndpointTypes(relation, itemsByNodeId, externalReferencesByNodeId);
+    if (requireImplementsEndpointTypes) {
+      assertImplementsRelationEndpointTypes(relation, itemsByNodeId, externalReferencesByNodeId);
+    }
     assertUtcDateTime(relation.firstSeenAt, "relation firstSeenAt");
     assertUtcDateTime(relation.lastConfirmedAt, "relation lastConfirmedAt");
     if ("aiDependency" in relation) {
@@ -4984,7 +4987,7 @@ function parseStateSnapshotVersion11Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion11Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "5", "legacy", false);
+  assertSnapshotSemantics(value, "5", "legacy", false, false);
   return value;
 }
 
@@ -4994,7 +4997,7 @@ function parseStateSnapshotVersion12Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion12Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "5", "legacy", false);
+  assertSnapshotSemantics(value, "5", "legacy", false, false);
   return value;
 }
 
@@ -5004,7 +5007,7 @@ function parseStateSnapshotVersion13Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion13Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "6", "legacy", false);
+  assertSnapshotSemantics(value, "6", "legacy", false, false);
   return value;
 }
 
@@ -5014,7 +5017,7 @@ function parseStateSnapshotVersion14Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion14Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "source", "current", false);
+  assertSnapshotSemantics(value, "source", "current", false, false);
   return value;
 }
 
@@ -5024,7 +5027,7 @@ function parseStateSnapshotVersion15Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion15Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "source", "current", false);
+  assertSnapshotSemantics(value, "source", "current", false, false);
   return value;
 }
 
@@ -5034,7 +5037,7 @@ function parseStateSnapshotVersion16Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion16Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "source", "current", false);
+  assertSnapshotSemantics(value, "source", "current", false, false);
   return value;
 }
 
@@ -5044,7 +5047,7 @@ function parseStateSnapshotVersion17Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion17Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "source", "current", true);
+  assertSnapshotSemantics(value, "source", "current", true, false);
   return value;
 }
 
@@ -5054,7 +5057,7 @@ function parseStateSnapshotVersion18Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion18Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
-  assertSnapshotSemantics(value, "source", "current", true);
+  assertSnapshotSemantics(value, "source", "current", true, true);
   return value;
 }
 

@@ -40,6 +40,7 @@ import {
   type GitHubNodeId,
   type AiAnalysisDependency,
   type RelationProvenance,
+  type RelationType,
   type TrackedItemInputEvent,
   type PersonalReminderCausePlanning,
   type PersonalReminderCause,
@@ -78,6 +79,104 @@ function migratedRelationAiDependency(provenance: RelationProvenance): AiAnalysi
     return Object.freeze({ status: "not_dependent" });
   }
   return migratedAiAnalysisDependency();
+}
+
+const legacyMigrationItemEndpointSchema = z.object({
+  nodeId: z.string().min(1),
+  type: z.enum(["issue", "pull_request"]),
+});
+
+const legacyMigrationExternalEndpointSchema = z.object({
+  nodeId: z.string().min(1),
+  url: z.string().min(1),
+});
+
+type LegacyMigratableRelation = Readonly<{
+  fromNodeId: string;
+  toNodeId: string;
+  type: RelationType;
+  provenance: RelationProvenance;
+}>;
+
+type MigratedLegacyRelation<RelationValue extends LegacyMigratableRelation> = Readonly<
+  Omit<RelationValue, "type" | "aiDependency"> & {
+    type: RelationType;
+    aiDependency: AiAnalysisDependency;
+  }
+>;
+
+function legacyExternalReferenceItemType(urlValue: string): "issue" | "pull_request" | undefined {
+  let url: URL;
+  try {
+    url = new URL(urlValue);
+  } catch {
+    return undefined;
+  }
+  const pathSegments = url.pathname.split("/").filter((segment) => segment.length !== 0);
+  const itemPathKind = pathSegments[2];
+  const itemNumber = pathSegments[3];
+  if (
+    url.hostname !== "github.com" ||
+    pathSegments.length < 4 ||
+    itemNumber == null ||
+    !/^[1-9][0-9]*$/u.test(itemNumber)
+  ) {
+    return undefined;
+  }
+  if (itemPathKind === "issues") {
+    return "issue";
+  }
+  if (itemPathKind === "pull") {
+    return "pull_request";
+  }
+  return undefined;
+}
+
+function legacyMigrationNodeTypes(
+  items: readonly unknown[],
+  externalReferences: readonly unknown[],
+): ReadonlyMap<string, "issue" | "pull_request"> {
+  const nodeTypes = new Map<string, "issue" | "pull_request">();
+  for (const value of items) {
+    const item = legacyMigrationItemEndpointSchema.safeParse(value);
+    if (item.success) {
+      nodeTypes.set(item.data.nodeId, item.data.type);
+    }
+  }
+  for (const value of externalReferences) {
+    const reference = legacyMigrationExternalEndpointSchema.safeParse(value);
+    if (!reference.success || nodeTypes.has(reference.data.nodeId)) {
+      continue;
+    }
+    const itemType = legacyExternalReferenceItemType(reference.data.url);
+    if (itemType != null) {
+      nodeTypes.set(reference.data.nodeId, itemType);
+    }
+  }
+  return nodeTypes;
+}
+
+function migrateLegacyRelations<RelationValue extends LegacyMigratableRelation>(
+  relations: readonly RelationValue[],
+  items: readonly unknown[],
+  externalReferences: readonly unknown[],
+): readonly MigratedLegacyRelation<RelationValue>[] {
+  const nodeTypes = legacyMigrationNodeTypes(items, externalReferences);
+  return Object.freeze(
+    relations.map((relation) => {
+      const type =
+        relation.type === "implements" &&
+        (nodeTypes.get(relation.fromNodeId) !== "pull_request" ||
+          nodeTypes.get(relation.toNodeId) !== "issue")
+          ? "related_to"
+          : relation.type;
+      return Object.freeze({
+        ...relation,
+        type,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
+      });
+    }),
+  );
 }
 
 function legacyReuseProof() {
@@ -1372,10 +1471,7 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
           personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
         };
       }),
-      relations: value.relations.map((relation) => ({
-        ...relation,
-        aiDependency: migratedRelationAiDependency(relation.provenance),
-      })),
+      relations: migrateLegacyRelations(value.relations, value.items, value.externalReferences),
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
@@ -1410,10 +1506,7 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
           personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
         };
       }),
-      relations: value.relations.map((relation) => ({
-        ...relation,
-        aiDependency: migratedRelationAiDependency(relation.provenance),
-      })),
+      relations: migrateLegacyRelations(value.relations, value.items, value.externalReferences),
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
@@ -1448,10 +1541,7 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
           personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
         };
       }),
-      relations: value.relations.map((relation) => ({
-        ...relation,
-        aiDependency: migratedRelationAiDependency(relation.provenance),
-      })),
+      relations: migrateLegacyRelations(value.relations, value.items, value.externalReferences),
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
@@ -1499,10 +1589,7 @@ function migrateLegacyStateSnapshot(
       repositories: value.repositories,
       items: migratedItems,
       externalReferences: value.externalReferences,
-      relations: value.relations.map((relation) => ({
-        ...relation,
-        aiDependency: migratedRelationAiDependency(relation.provenance),
-      })),
+      relations: migrateLegacyRelations(value.relations, value.items, value.externalReferences),
       run: value.run,
     });
   } catch (error: unknown) {
@@ -1546,10 +1633,7 @@ function migrateVersion16StateSnapshot(source: string): StateSnapshot {
           ),
         };
       }),
-      relations: value.relations.map((relation) => ({
-        ...relation,
-        aiDependency: migratedRelationAiDependency(relation.provenance),
-      })),
+      relations: migrateLegacyRelations(value.relations, value.items, value.externalReferences),
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
@@ -1573,10 +1657,7 @@ function migrateVersion17StateSnapshot(source: string): StateSnapshot {
           item.personalReminderCausePlanning,
         ),
       })),
-      relations: value.relations.map((relation) => ({
-        ...relation,
-        aiDependency: migratedRelationAiDependency(relation.provenance),
-      })),
+      relations: migrateLegacyRelations(value.relations, value.items, value.externalReferences),
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
@@ -1621,10 +1702,7 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
           ),
         };
       }),
-      relations: value.relations.map((relation) => ({
-        ...relation,
-        aiDependency: migratedRelationAiDependency(relation.provenance),
-      })),
+      relations: migrateLegacyRelations(value.relations, value.items, value.externalReferences),
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
@@ -1667,10 +1745,7 @@ function migrateVersion15StateSnapshot(source: string): StateSnapshot {
           ),
         };
       }),
-      relations: value.relations.map((relation) => ({
-        ...relation,
-        aiDependency: migratedRelationAiDependency(relation.provenance),
-      })),
+      relations: migrateLegacyRelations(value.relations, value.items, value.externalReferences),
     });
   } catch (error: unknown) {
     throw migrationFormatError(error);
