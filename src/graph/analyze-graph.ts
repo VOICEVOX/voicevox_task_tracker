@@ -2,11 +2,24 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
-import { type Evidence, type GraphNodeId } from "../domain/index.js";
-import { assertNonNullable } from "../util/index.js";
+import {
+  aiAnalysisDependencySchema,
+  aiAnalysisDependencyForRelation,
+  aiAnalysisDependencyForRelationCandidate,
+  combineAiAnalysisDependencies,
+  type AiAnalysisDependency,
+  type Evidence,
+  type GraphNodeId,
+  type UtcIsoDateTime,
+} from "../domain/index.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import {
   type AnalyzeGraphInput,
+  type AnalyzeGraphAiDependenciesInput,
+  type AnalyzeGraphAiDependenciesResult,
   type AnalyzeGraphResult,
+  type BlockerNodeAiDependency,
+  type BlockerSetAiDependency,
   type ConnectedComponent,
   type ConnectedComponentId,
   type DependencyCycle,
@@ -15,11 +28,16 @@ import {
   type GraphAnalysisNode,
   type GraphAnalysisSnapshot,
   type GraphRepositoryKey,
+  type NegativeBlockerAiDependency,
   type ReclassificationReason,
   type ReclassificationTarget,
+  type RelationSetAiDependency,
   type TrackedGraphAnalysisNode,
 } from "./analyze-graph-types.js";
-import { type ReconciledGraphEdge } from "./reconcile-graph-types.js";
+import {
+  type ReconciledGraphEdge,
+  type RelationCandidateDecisionProof,
+} from "./reconcile-graph-types.js";
 
 type ActiveGraphEdge = ReconciledGraphEdge & Readonly<{ active: true }>;
 
@@ -49,6 +67,40 @@ type Reachability = Readonly<{
   repositoryIndexByKey: ReadonlyMap<GraphRepositoryKey, number>;
 }>;
 
+type BlocksArc = Readonly<{
+  fromNodeId: GraphNodeId;
+  toNodeId: GraphNodeId;
+}>;
+
+type ImpactAnalysis = Readonly<{
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>;
+  edges: readonly BlocksArc[];
+  graph: DirectedGraph;
+  stronglyConnected: StronglyConnectedGraph;
+  reachability: Reachability;
+  impacts: readonly DownstreamImpact[];
+}>;
+
+type ImpactTraversal = Readonly<{
+  graph: DirectedGraph;
+  stronglyConnected: StronglyConnectedGraph;
+}>;
+
+type ImpactContributor = Readonly<{
+  fromNodeId: GraphNodeId;
+  toNodeId: GraphNodeId;
+  dependency: AiAnalysisDependency;
+}>;
+
+type PotentialBlocksArc = BlocksArc &
+  Readonly<{
+    candidateId: RelationCandidateDecisionProof["candidateId"];
+    dependency: AiAnalysisDependency;
+    affectsPresence: boolean;
+    firstSeenAt:
+      Readonly<{ status: "known"; value: UtcIsoDateTime }> | Readonly<{ status: "unknown" }>;
+  }>;
+
 const nodeIdSchema = z.string().min(1, "node IDは空にできません").regex(/^\S+$/u, {
   error: "node IDに空白は使えません",
 });
@@ -64,6 +116,13 @@ const trackedNodeSchema = z.object({
   repositoryId: repositoryIdentitySchema,
   state: z.enum(["open", "closed", "merged"]),
   directNotification: z.literal("eligible"),
+});
+const candidateOnlyNodeSchema = z.object({
+  kind: z.enum(["issue", "pull_request"]),
+  nodeId: nodeIdSchema,
+  repositoryId: repositoryIdentitySchema,
+  state: z.enum(["open", "closed", "merged"]),
+  directNotification: z.literal("not_eligible"),
 });
 const externalNodeSchema = z.object({
   kind: z.literal("external_reference"),
@@ -85,6 +144,7 @@ const evidenceSchema = z.object({
   ]),
   summary: z.string().trim().min(1, "根拠の要約は空にできません"),
 });
+const aiDependencySchema = aiAnalysisDependencySchema;
 const contradictionSchema = z.object({
   verdict: z.enum([
     "current_is_blocked_by_target",
@@ -116,10 +176,54 @@ const graphEdgeSchema = z.object({
   evidence: z.array(evidenceSchema),
   authoritative: z.boolean(),
   contradictions: z.array(contradictionSchema),
+  aiDependency: aiDependencySchema,
   active: z.boolean(),
 });
+const canonicalRelationSchema = z.strictObject({
+  fromNodeId: nodeIdSchema,
+  toNodeId: nodeIdSchema,
+  type: z.enum(["blocks", "parent_of", "implements", "related_to", "duplicates"]),
+});
+const relationCandidateResolutionSchema = z.union([
+  z.strictObject({
+    candidateId: z.string().min(1),
+    status: z.literal("active"),
+    edgeId: z.string().min(1),
+  }),
+  z.strictObject({
+    candidateId: z.string().min(1),
+    status: z.literal("pending"),
+    reason: z.literal("assessment_missing"),
+  }),
+  z.strictObject({
+    candidateId: z.string().min(1),
+    status: z.literal("pending"),
+    reason: z.literal("confidence_below_threshold"),
+    confidence: z.number().min(0).max(1),
+  }),
+  z.strictObject({
+    candidateId: z.string().min(1),
+    status: z.literal("rejected"),
+    reason: z.literal("verdict_none"),
+    confidence: z.number().min(0).max(1),
+  }),
+  z.strictObject({
+    candidateId: z.string().min(1),
+    status: z.literal("rejected"),
+    reason: z.literal("blocker_not_open"),
+    confidence: z.number().min(0).max(1),
+  }),
+]);
+const candidateDecisionProofSchema = z.strictObject({
+  candidateId: z.string().min(1),
+  endpointNodeIds: z.tuple([nodeIdSchema, nodeIdSchema]),
+  authority: z.enum(["authoritative", "inferred"]),
+  resolution: relationCandidateResolutionSchema,
+  dependency: aiAnalysisDependencySchema,
+  canonicalRelation: canonicalRelationSchema.optional(),
+});
 const snapshotSchema = z.object({
-  nodes: z.array(z.discriminatedUnion("kind", [trackedNodeSchema, externalNodeSchema])),
+  nodes: z.array(z.union([trackedNodeSchema, candidateOnlyNodeSchema, externalNodeSchema])),
   edges: z.array(graphEdgeSchema),
 });
 const analyzeGraphInputSchema = z.object({
@@ -207,7 +311,7 @@ function isOpenNode(node: GraphAnalysisNode): boolean {
 }
 
 function isTrackedNode(node: GraphAnalysisNode): node is TrackedGraphAnalysisNode {
-  return node.kind !== "external_reference";
+  return node.directNotification === "eligible";
 }
 
 function isActiveEdge(edge: ReconciledGraphEdge): edge is ActiveGraphEdge {
@@ -296,7 +400,7 @@ function freezeAdjacency(
 
 function createDirectedBlocksGraph(
   nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
-  edges: readonly ActiveGraphEdge[],
+  edges: readonly BlocksArc[],
 ): DirectedGraph {
   const nodeIds = Object.freeze(
     [...nodesById.values()]
@@ -758,6 +862,1156 @@ function createDownstreamImpacts(
   return Object.freeze(impacts);
 }
 
+function createImpactAnalysis(
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
+  edges: readonly BlocksArc[],
+): ImpactAnalysis {
+  const graph = createDirectedBlocksGraph(nodesById, edges);
+  const stronglyConnected = stronglyConnectedComponents(graph);
+  const reachability = createReachability(graph, stronglyConnected, nodesById);
+  return Object.freeze({
+    nodesById,
+    edges,
+    graph,
+    stronglyConnected,
+    reachability,
+    impacts: createDownstreamImpacts(nodesById, stronglyConnected, reachability),
+  });
+}
+
+function createImpactTraversal(
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
+  edges: readonly BlocksArc[],
+): ImpactTraversal {
+  const graph = createDirectedBlocksGraph(nodesById, edges);
+  return Object.freeze({
+    graph,
+    stronglyConnected: stronglyConnectedComponents(graph),
+  });
+}
+
+function downstreamImpactAiDependency(
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
+  edges: readonly ActiveGraphEdge[],
+  fullDependencyReachability: Readonly<{
+    graph: DirectedGraph;
+    stronglyConnected: StronglyConnectedGraph;
+    reachability: Reachability;
+  }>,
+): readonly Readonly<{ nodeId: GraphNodeId; dependency: AiAnalysisDependency }>[] {
+  const normalizedEdges = normalizePositiveSupportArcs(edges);
+  const unknownEdges = normalizedEdges.filter((edge) => edge.aiDependency.status === "unknown");
+  const unverifiedEdges = normalizedEdges.filter(
+    (edge) => edge.aiDependency.status === "unverified",
+  );
+  const currentEdges = normalizedEdges.filter((edge) => edge.aiDependency.status === "current");
+  const withoutUnknown =
+    unknownEdges.length === 0
+      ? fullDependencyReachability
+      : createImpactTraversal(
+          nodesById,
+          normalizedEdges.filter((edge) => edge.aiDependency.status !== "unknown"),
+        );
+  const clean =
+    unknownEdges.length === 0 && unverifiedEdges.length === 0
+      ? fullDependencyReachability
+      : createImpactTraversal(
+          nodesById,
+          normalizedEdges.filter(
+            (edge) =>
+              edge.aiDependency.status === "not_dependent" ||
+              edge.aiDependency.status === "current",
+          ),
+        );
+  const native =
+    unknownEdges.length === 0 && unverifiedEdges.length === 0 && currentEdges.length === 0
+      ? fullDependencyReachability
+      : createImpactTraversal(
+          nodesById,
+          normalizedEdges.filter((edge) => edge.aiDependency.status === "not_dependent"),
+        );
+
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency[]>();
+  const allOpenNodeIds = new Set(fullDependencyReachability.graph.nodeIds);
+  const recordContributors = (
+    candidateEdges: readonly ActiveGraphEdge[],
+    reduced: ImpactTraversal,
+  ): void => {
+    recordImpactContributors(
+      fullDependencyReachability,
+      reduced,
+      candidateEdges.map((edge) =>
+        Object.freeze({
+          fromNodeId: edge.fromNodeId,
+          toNodeId: edge.toNodeId,
+          dependency: edge.aiDependency,
+        }),
+      ),
+      allOpenNodeIds,
+      dependenciesByNodeId,
+    );
+  };
+  recordContributors(unknownEdges, withoutUnknown);
+  recordContributors(unverifiedEdges, clean);
+  recordContributors(currentEdges, native);
+
+  return Object.freeze(
+    [...nodesById.keys()].sort(compareStrings).map((nodeId) => {
+      const dependencies = dependenciesByNodeId.get(nodeId);
+      return Object.freeze({
+        nodeId,
+        dependency:
+          dependencies == null
+            ? Object.freeze({ status: "not_dependent" })
+            : combineAiAnalysisDependencies(dependencies),
+      });
+    }),
+  );
+}
+
+function aiDependencySignature(dependency: AiAnalysisDependency): string {
+  const producers =
+    dependency.status === "not_dependent"
+      ? undefined
+      : dependency.producers
+          ?.map((producer) => {
+            if (producer.kind === "item_element") {
+              return [producer.kind, producer.nodeId, producer.element];
+            }
+            if (producer.kind === "relation_candidate") {
+              return [
+                producer.kind,
+                producer.candidateId,
+                producer.endpointNodeIds[0],
+                producer.endpointNodeIds[1],
+                producer.producer.nodeId,
+                producer.producer.element,
+              ];
+            }
+            return [
+              producer.kind,
+              producer.relationId,
+              producer.producer.nodeId,
+              producer.producer.element,
+            ];
+          })
+          .sort((left, right) => compareStrings(JSON.stringify(left), JSON.stringify(right)));
+  return JSON.stringify({
+    status: dependency.status,
+    ...(dependency.status === "unknown" ? { reason: dependency.reason } : {}),
+    ...(producers == null ? {} : { producers }),
+  });
+}
+
+function validateCandidateDecisionProofs(
+  current: IndexedSnapshot,
+  proofs: readonly RelationCandidateDecisionProof[],
+): readonly RelationCandidateDecisionProof[] {
+  const normalized = [...proofs].sort((left, right) =>
+    compareStrings(left.candidateId, right.candidateId),
+  );
+  const seenCandidateIds = new Set<string>();
+  for (const proof of normalized) {
+    const validation = candidateDecisionProofSchema.safeParse(proof);
+    if (!validation.success) {
+      throw new TypeError(`関係候補 ${proof.candidateId}の判定proofが不正です`, {
+        cause: validation.error,
+      });
+    }
+    if (seenCandidateIds.has(proof.candidateId)) {
+      throw new TypeError(`関係候補 ${proof.candidateId}の判定proofが重複しています`);
+    }
+    seenCandidateIds.add(proof.candidateId);
+    const [firstEndpoint, secondEndpoint] = proof.endpointNodeIds;
+    if (firstEndpoint === secondEndpoint) {
+      throw new TypeError(`関係候補 ${proof.candidateId}は同じendpointを指定できません`);
+    }
+    if (proof.resolution.candidateId !== proof.candidateId) {
+      throw new TypeError(`関係候補 ${proof.candidateId}の判定proof IDが不整合です`);
+    }
+    if (proof.authority === "authoritative") {
+      if (proof.dependency.status !== "not_dependent") {
+        throw new TypeError(
+          `authoritative relation ${proof.candidateId}のAI依存はnot_dependentでなければなりません`,
+        );
+      }
+      if (proof.resolution.status !== "active") {
+        throw new TypeError(
+          `authoritative relation ${proof.candidateId}はactiveでなければなりません`,
+        );
+      }
+    } else {
+      if (proof.dependency.status === "not_dependent") {
+        throw new TypeError(`推定relation ${proof.candidateId}のAI依存はnot_dependentにできません`);
+      }
+      const producers = proof.dependency.producers;
+      if (producers == null) {
+        const producerlessNotRecorded =
+          proof.resolution.status !== "active" &&
+          proof.dependency.status === "unknown" &&
+          proof.dependency.reason === "not_recorded";
+        if (!producerlessNotRecorded) {
+          throw new TypeError(`推定relation ${proof.candidateId}のAI依存producerがありません`);
+        }
+      } else {
+        const endpointNodeIds = new Set(proof.endpointNodeIds);
+        for (const producer of producers) {
+          if (producer.kind !== "item_element" || producer.element !== "relations") {
+            throw new TypeError(`推定relation ${proof.candidateId}のAI依存producerが不正です`);
+          }
+          if (!endpointNodeIds.has(producer.nodeId)) {
+            throw new TypeError(
+              `推定relation ${proof.candidateId}のAI依存producerがendpointではありません`,
+            );
+          }
+        }
+      }
+    }
+    if (proof.resolution.status === "active") {
+      if (proof.resolution.edgeId !== proof.candidateId) {
+        throw new TypeError(`active relation ${proof.candidateId}のedge IDが不整合です`);
+      }
+      const canonicalRelation = proof.canonicalRelation;
+      if (canonicalRelation == null) {
+        throw new TypeError(`active relation ${proof.candidateId}のcanonical relationがありません`);
+      }
+      const endpointNodeIds = new Set(proof.endpointNodeIds);
+      if (
+        canonicalRelation.fromNodeId === canonicalRelation.toNodeId ||
+        !endpointNodeIds.has(canonicalRelation.fromNodeId) ||
+        !endpointNodeIds.has(canonicalRelation.toNodeId)
+      ) {
+        throw new TypeError(`関係候補 ${proof.candidateId}のcanonical relation endpointが不正です`);
+      }
+      const edge = current.edgesById.get(proof.candidateId);
+      if (edge?.active !== true) {
+        throw new TypeError(
+          `active relation ${proof.candidateId}に対応するcurrent edgeがありません`,
+        );
+      }
+      if (
+        edge.fromNodeId !== canonicalRelation.fromNodeId ||
+        edge.toNodeId !== canonicalRelation.toNodeId ||
+        edge.type !== canonicalRelation.type
+      ) {
+        throw new TypeError(
+          `active relation ${proof.candidateId}のcanonical relationがcurrent edgeと不一致です`,
+        );
+      }
+      const expectedAuthoritative = proof.authority === "authoritative";
+      if (edge.authoritative !== expectedAuthoritative) {
+        throw new TypeError(
+          `active relation ${proof.candidateId}のauthorityがcurrent edgeと不一致です`,
+        );
+      }
+      if (expectedAuthoritative && edge.provenance !== "native") {
+        throw new TypeError(`authoritative relation ${proof.candidateId}のprovenanceが不正です`);
+      }
+      if (!expectedAuthoritative && edge.provenance === "native") {
+        throw new TypeError(`inferred relation ${proof.candidateId}のprovenanceが不正です`);
+      }
+      const expectedDependency = expectedAuthoritative
+        ? Object.freeze({ status: "not_dependent" })
+        : aiAnalysisDependencyForRelation(proof.candidateId, proof.dependency);
+      if (aiDependencySignature(edge.aiDependency) !== aiDependencySignature(expectedDependency)) {
+        throw new TypeError(
+          `active relation ${proof.candidateId}のAI依存がcurrent edgeと不一致です`,
+        );
+      }
+    } else if (proof.canonicalRelation != null) {
+      throw new TypeError(`未採用relation ${proof.candidateId}にcanonical relationがあります`);
+    } else if (current.edgesById.get(proof.candidateId)?.active === true) {
+      throw new TypeError(`未採用relation ${proof.candidateId}にactiveなcurrent edgeがあります`);
+    }
+    for (const endpointNodeId of proof.endpointNodeIds) {
+      if (!current.nodesById.has(endpointNodeId)) {
+        throw new TypeError(
+          `関係候補 ${proof.candidateId}のendpoint ${endpointNodeId}がcurrent graphにありません`,
+        );
+      }
+    }
+  }
+  return Object.freeze(normalized);
+}
+
+function createPublicValueSensitivityIndex(
+  current: IndexedSnapshot,
+  candidateProofSnapshot: IndexedSnapshot,
+): IndexedSnapshot {
+  const nodes = [
+    ...current.nodesById.values(),
+    ...[...candidateProofSnapshot.nodesById.values()]
+      .filter((node) => node.kind === "external_reference" && !current.nodesById.has(node.nodeId))
+      .sort((left, right) => compareStrings(left.nodeId, right.nodeId)),
+  ];
+  const nodeIds = new Set(nodes.map((node) => node.nodeId));
+  const edgesById = new Map(current.edgesById);
+  for (const edge of candidateProofSnapshot.edgesById.values()) {
+    if (!edgesById.has(edge.id) && nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId)) {
+      edgesById.set(edge.id, edge);
+    }
+  }
+  return indexSnapshot(
+    Object.freeze({
+      nodes: Object.freeze(nodes),
+      edges: Object.freeze([...edgesById.values()]),
+    }),
+    "公開値感度snapshot",
+  );
+}
+
+function blocksArcKey(arc: BlocksArc): string {
+  return JSON.stringify(["blocks", arc.fromNodeId, arc.toNodeId]);
+}
+
+function normalizePositiveSupportArcs(
+  edges: readonly ActiveGraphEdge[],
+): readonly ActiveGraphEdge[] {
+  const supportsByArc = new Map<string, ActiveGraphEdge[]>();
+  for (const edge of [...edges].sort(compareGraphEdges)) {
+    const key = blocksArcKey(edge);
+    const supports = supportsByArc.get(key);
+    if (supports == null) {
+      supportsByArc.set(key, [edge]);
+      continue;
+    }
+    supports.push(edge);
+  }
+  const normalized: ActiveGraphEdge[] = [];
+  for (const supports of supportsByArc.values()) {
+    const firstSupport = supports[0];
+    assertNonNullable(firstSupport, "positive supportがありません");
+    let preferredPriority = dependencyStatusPriority(firstSupport.aiDependency.status);
+    for (const support of supports.slice(1)) {
+      const priority = dependencyStatusPriority(support.aiDependency.status);
+      if (priority < preferredPriority) {
+        preferredPriority = priority;
+      }
+    }
+    const preferredSupports = supports.filter(
+      (support) => dependencyStatusPriority(support.aiDependency.status) === preferredPriority,
+    );
+    const representative = preferredSupports[0];
+    assertNonNullable(representative, "positive supportの最良supportがありません");
+    normalized.push(
+      Object.freeze({
+        ...representative,
+        aiDependency: combineAiAnalysisDependencies(
+          preferredSupports.map((support) => support.aiDependency),
+        ),
+      }),
+    );
+  }
+  return Object.freeze(normalized.sort(compareGraphEdges));
+}
+
+function uniqueBlocksArcs(arcs: readonly BlocksArc[]): readonly BlocksArc[] {
+  return Object.freeze(
+    [...new Map(arcs.map((arc) => [blocksArcKey(arc), arc])).values()].sort((left, right) =>
+      compareStrings(blocksArcKey(left), blocksArcKey(right)),
+    ),
+  );
+}
+
+function potentialBlocksArcs(
+  current: IndexedSnapshot,
+  proofs: readonly RelationCandidateDecisionProof[],
+): readonly PotentialBlocksArc[] {
+  const existingArcKeys = new Set(
+    current.effectiveBlocksEdges.map((edge) =>
+      blocksArcKey({ fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId }),
+    ),
+  );
+  const arcs: PotentialBlocksArc[] = [];
+  for (const proof of proofs) {
+    if (proof.authority !== "inferred") {
+      continue;
+    }
+    if (proof.resolution.status === "rejected" && proof.resolution.reason === "blocker_not_open") {
+      continue;
+    }
+    const [firstEndpoint, secondEndpoint] = proof.endpointNodeIds;
+    const firstNode = current.nodesById.get(firstEndpoint);
+    const secondNode = current.nodesById.get(secondEndpoint);
+    if (
+      firstNode == null ||
+      secondNode == null ||
+      !isOpenNode(firstNode) ||
+      !isOpenNode(secondNode)
+    ) {
+      continue;
+    }
+    const possibleArcs: readonly BlocksArc[] = Object.freeze([
+      Object.freeze({ fromNodeId: firstEndpoint, toNodeId: secondEndpoint }),
+      Object.freeze({ fromNodeId: secondEndpoint, toNodeId: firstEndpoint }),
+    ]);
+    const persistedEdge = current.edgesById.get(proof.candidateId);
+    if (
+      persistedEdge != null &&
+      !(
+        (persistedEdge.fromNodeId === firstEndpoint && persistedEdge.toNodeId === secondEndpoint) ||
+        (persistedEdge.fromNodeId === secondEndpoint && persistedEdge.toNodeId === firstEndpoint)
+      )
+    ) {
+      throw new TypeError(`関係候補 ${proof.candidateId}のendpointがcurrent edgeと一致しません`);
+    }
+    if (persistedEdge?.provenance === "native") {
+      throw new TypeError(`関係候補 ${proof.candidateId}がnative edge IDと衝突しています`);
+    }
+    const firstSeenAt =
+      persistedEdge == null
+        ? Object.freeze({ status: "unknown" })
+        : Object.freeze({ status: "known", value: persistedEdge.firstSeenAt });
+    for (const arc of possibleArcs) {
+      const canonicalRelation = proof.canonicalRelation;
+      if (
+        canonicalRelation?.type === "blocks" &&
+        canonicalRelation.fromNodeId === arc.fromNodeId &&
+        canonicalRelation.toNodeId === arc.toNodeId
+      ) {
+        continue;
+      }
+      arcs.push(
+        Object.freeze({
+          ...arc,
+          candidateId: proof.candidateId,
+          affectsPresence: !existingArcKeys.has(blocksArcKey(arc)),
+          firstSeenAt,
+          dependency: aiAnalysisDependencyForRelationCandidate(
+            proof.candidateId,
+            proof.endpointNodeIds,
+            proof.dependency,
+          ),
+        }),
+      );
+    }
+  }
+  return Object.freeze(
+    arcs.sort((left, right) => {
+      const candidateOrder = compareStrings(left.candidateId, right.candidateId);
+      if (candidateOrder !== 0) {
+        return candidateOrder;
+      }
+      return compareStrings(blocksArcKey(left), blocksArcKey(right));
+    }),
+  );
+}
+
+function appendDependency(
+  dependenciesByNodeId: Map<GraphNodeId, AiAnalysisDependency[]>,
+  nodeId: GraphNodeId,
+  dependency: AiAnalysisDependency,
+): void {
+  const dependencies = dependenciesByNodeId.get(nodeId);
+  if (dependencies == null) {
+    dependenciesByNodeId.set(nodeId, [dependency]);
+    return;
+  }
+  dependencies.push(dependency);
+}
+
+function interactionNodeIds(
+  cumulativeNodeIds: ReadonlySet<GraphNodeId>,
+  lowerFamilyNodeIds: readonly ReadonlySet<GraphNodeId>[],
+): ReadonlySet<GraphNodeId> {
+  return new Set(
+    [...cumulativeNodeIds].filter((nodeId) =>
+      lowerFamilyNodeIds.every((nodeIds) => !nodeIds.has(nodeId)),
+    ),
+  );
+}
+
+function crossFamilyInteractionNodeIds(
+  cumulativeNodeIds: ReadonlySet<GraphNodeId>,
+  familyNodeIds: readonly ReadonlySet<GraphNodeId>[],
+): ReadonlySet<GraphNodeId> {
+  if (familyNodeIds.length < 2) {
+    throw new TypeError("AI依存のfamilyが2つ未満です");
+  }
+  return new Set(
+    [...cumulativeNodeIds].filter((nodeId) =>
+      familyNodeIds.every((nodeIds) => !nodeIds.has(nodeId)),
+    ),
+  );
+}
+
+function propagatedContributorIndexes(
+  traversal: ImpactTraversal,
+  contributors: readonly Readonly<{
+    fromNodeId: GraphNodeId;
+    toNodeId: GraphNodeId;
+  }>[],
+  endpoint: "from" | "to",
+): readonly ReadonlySet<number>[] {
+  const contributorIndexesByComponent = traversal.stronglyConnected.components.map(
+    () => new Set<number>(),
+  );
+  contributors.forEach((contributor, contributorIndex) => {
+    const nodeId = endpoint === "from" ? contributor.fromNodeId : contributor.toNodeId;
+    const componentIndex = traversal.stronglyConnected.componentIndexByNodeId.get(nodeId);
+    assertNonNullable(
+      componentIndex,
+      `contributor ${contributorIndex.toString()}の${endpoint} componentがありません`,
+    );
+    const contributorIndexes = contributorIndexesByComponent[componentIndex];
+    assertNonNullable(
+      contributorIndexes,
+      `強連結成分 ${componentIndex.toString()}のcontributor一覧がありません`,
+    );
+    contributorIndexes.add(contributorIndex);
+  });
+  const outgoing = condensationOutgoing(traversal.graph, traversal.stronglyConnected);
+  const incomingDraft = outgoing.map(() => new Set<number>());
+  outgoing.forEach((targets, fromComponentIndex) => {
+    for (const target of targets) {
+      const incoming = incomingDraft[target];
+      assertNonNullable(incoming, `強連結成分 ${target.toString()}の入辺一覧がありません`);
+      incoming.add(fromComponentIndex);
+    }
+  });
+  const order = topologicalOrder(outgoing);
+  for (let orderIndex = order.length - 1; orderIndex >= 0; orderIndex -= 1) {
+    const componentIndex = order[orderIndex];
+    assertNonNullable(componentIndex, "逆トポロジカル順序の強連結成分がありません");
+    const contributorIndexes = contributorIndexesByComponent[componentIndex];
+    const predecessors = incomingDraft[componentIndex];
+    assertNonNullable(
+      contributorIndexes,
+      `強連結成分 ${componentIndex.toString()}のcontributor一覧がありません`,
+    );
+    assertNonNullable(predecessors, `強連結成分 ${componentIndex.toString()}の入辺がありません`);
+    for (const predecessor of predecessors) {
+      const predecessorContributorIndexes = contributorIndexesByComponent[predecessor];
+      assertNonNullable(
+        predecessorContributorIndexes,
+        `強連結成分 ${predecessor.toString()}のcontributor一覧がありません`,
+      );
+      for (const contributorIndex of contributorIndexes) {
+        predecessorContributorIndexes.add(contributorIndex);
+      }
+    }
+  }
+  return contributorIndexesByComponent;
+}
+
+function recordImpactContributors(
+  traversal: ImpactTraversal,
+  exclusion: ImpactTraversal,
+  contributors: readonly ImpactContributor[],
+  changedNodeIds: ReadonlySet<GraphNodeId>,
+  dependenciesByNodeId: Map<GraphNodeId, AiAnalysisDependency[]>,
+): ReadonlySet<GraphNodeId> {
+  const contributingNodeIds = new Set<GraphNodeId>();
+  if (contributors.length === 0 || changedNodeIds.size === 0) {
+    return contributingNodeIds;
+  }
+  const contributingIndexesByComponent = propagatedContributorIndexes(
+    traversal,
+    contributors,
+    "from",
+  );
+  const excludedIndexesByComponent = propagatedContributorIndexes(exclusion, contributors, "to");
+  for (const nodeId of changedNodeIds) {
+    const contributingComponentIndex =
+      traversal.stronglyConnected.componentIndexByNodeId.get(nodeId);
+    const excludedComponentIndex = exclusion.stronglyConnected.componentIndexByNodeId.get(nodeId);
+    assertNonNullable(contributingComponentIndex, `node ${nodeId}の到達componentがありません`);
+    assertNonNullable(excludedComponentIndex, `node ${nodeId}の除外componentがありません`);
+    const contributorIndexes = contributingIndexesByComponent[contributingComponentIndex];
+    const excludedIndexes = excludedIndexesByComponent[excludedComponentIndex];
+    assertNonNullable(contributorIndexes, `node ${nodeId}のcontributor一覧がありません`);
+    assertNonNullable(excludedIndexes, `node ${nodeId}の除外contributor一覧がありません`);
+    for (const contributorIndex of contributorIndexes) {
+      if (!excludedIndexes.has(contributorIndex)) {
+        const contributor: ImpactContributor | undefined = contributors[contributorIndex];
+        assertNonNullable(contributor, `contributor ${contributorIndex.toString()}がありません`);
+        contributingNodeIds.add(nodeId);
+        appendDependency(dependenciesByNodeId, nodeId, contributor.dependency);
+      }
+    }
+  }
+  return contributingNodeIds;
+}
+
+function recordPositiveImpactContributors(
+  base: ImpactAnalysis,
+  reduced: ImpactTraversal,
+  edges: readonly ActiveGraphEdge[],
+  changedNodeIds: ReadonlySet<GraphNodeId>,
+  dependenciesByNodeId: Map<GraphNodeId, AiAnalysisDependency[]>,
+): ReadonlySet<GraphNodeId> {
+  return recordImpactContributors(
+    base,
+    reduced,
+    edges.map((edge) => Object.freeze({ ...edge, dependency: edge.aiDependency })),
+    changedNodeIds,
+    dependenciesByNodeId,
+  );
+}
+
+function recordNegativeImpactContributors(
+  base: ImpactAnalysis,
+  added: ImpactTraversal,
+  arcs: readonly PotentialBlocksArc[],
+  changedNodeIds: ReadonlySet<GraphNodeId>,
+  dependenciesByNodeId: Map<GraphNodeId, AiAnalysisDependency[]>,
+): ReadonlySet<GraphNodeId> {
+  return recordImpactContributors(added, base, arcs, changedNodeIds, dependenciesByNodeId);
+}
+
+type ImpactContributorAnalysis = Readonly<{
+  nodeIds: ReadonlySet<GraphNodeId>;
+  dependenciesByNodeId: ReadonlyMap<GraphNodeId, readonly AiAnalysisDependency[]>;
+}>;
+
+function analyzePositiveImpactContributors(
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
+  base: ImpactAnalysis,
+  retainedEdges: readonly ActiveGraphEdge[],
+  removedEdges: readonly ActiveGraphEdge[],
+): ImpactContributorAnalysis {
+  if (removedEdges.length === 0) {
+    return Object.freeze({
+      nodeIds: new Set<GraphNodeId>(),
+      dependenciesByNodeId: new Map<GraphNodeId, readonly AiAnalysisDependency[]>(),
+    });
+  }
+  const reduced = createImpactTraversal(nodesById, retainedEdges);
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency[]>();
+  const nodeIds = recordPositiveImpactContributors(
+    base,
+    reduced,
+    removedEdges,
+    new Set(base.graph.nodeIds),
+    dependenciesByNodeId,
+  );
+  return Object.freeze({ nodeIds, dependenciesByNodeId });
+}
+
+function analyzeNegativeImpactContributors(
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
+  base: ImpactAnalysis,
+  positiveEdges: readonly ActiveGraphEdge[],
+  arcs: readonly PotentialBlocksArc[],
+): ImpactContributorAnalysis {
+  if (arcs.length === 0) {
+    return Object.freeze({
+      nodeIds: new Set<GraphNodeId>(),
+      dependenciesByNodeId: new Map<GraphNodeId, readonly AiAnalysisDependency[]>(),
+    });
+  }
+  const traversal = createImpactTraversal(nodesById, uniqueBlocksArcs([...positiveEdges, ...arcs]));
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency[]>();
+  const nodeIds = recordNegativeImpactContributors(
+    base,
+    traversal,
+    arcs,
+    new Set(base.graph.nodeIds),
+    dependenciesByNodeId,
+  );
+  return Object.freeze({ nodeIds, dependenciesByNodeId });
+}
+
+function mergeImpactContributorAnalysis(
+  target: Map<GraphNodeId, AiAnalysisDependency[]>,
+  source: ImpactContributorAnalysis,
+  selectedNodeIds: ReadonlySet<GraphNodeId>,
+): void {
+  for (const nodeId of selectedNodeIds) {
+    const dependencies = source.dependenciesByNodeId.get(nodeId);
+    assertNonNullable(dependencies, `node ${nodeId}のdownstream impact contributorがありません`);
+    for (const dependency of dependencies) {
+      appendDependency(target, nodeId, dependency);
+    }
+  }
+}
+
+function dependencyStatusPriority(status: AiAnalysisDependency["status"]): number {
+  switch (status) {
+    case "not_dependent":
+      return 0;
+    case "current":
+      return 1;
+    case "unverified":
+      return 2;
+    case "unknown":
+      return 3;
+    default:
+      throw new UnreachableError(status);
+  }
+}
+
+function preferIndependentAiDependencies(
+  dependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  if (dependencies.length === 0) {
+    throw new TypeError("AI依存の選択対象がありません");
+  }
+  const preferredPriority = Math.min(
+    ...dependencies.map((dependency) => dependencyStatusPriority(dependency.status)),
+  );
+  return combineAiAnalysisDependencies(
+    dependencies.filter(
+      (dependency) => dependencyStatusPriority(dependency.status) === preferredPriority,
+    ),
+  );
+}
+
+function blocksArcDependencies(
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
+  edges: readonly ActiveGraphEdge[],
+  potentialArcs: readonly PotentialBlocksArc[],
+): Readonly<{
+  blockerSetAiDependencies: readonly BlockerSetAiDependency[];
+  blockerNodeAiDependencies: readonly BlockerNodeAiDependency[];
+  negativeBlockerAiDependencies: readonly NegativeBlockerAiDependency[];
+}> {
+  const supportsByArc = new Map<
+    string,
+    Readonly<{ arc: BlocksArc; supports: ActiveGraphEdge[] }>
+  >();
+  for (const edge of edges) {
+    const arc = Object.freeze({ fromNodeId: edge.fromNodeId, toNodeId: edge.toNodeId });
+    const key = blocksArcKey(arc);
+    const group = supportsByArc.get(key);
+    if (group == null) {
+      supportsByArc.set(key, Object.freeze({ arc, supports: [edge] }));
+      continue;
+    }
+    group.supports.push(edge);
+  }
+  const candidatesByArc = new Map<
+    string,
+    Readonly<{ arc: BlocksArc; candidates: PotentialBlocksArc[] }>
+  >();
+  for (const arc of potentialArcs) {
+    const key = blocksArcKey(arc);
+    const group = candidatesByArc.get(key);
+    if (group == null) {
+      candidatesByArc.set(key, Object.freeze({ arc, candidates: [arc] }));
+      continue;
+    }
+    group.candidates.push(arc);
+  }
+  const supportsByBlockedNodeId = new Map<
+    GraphNodeId,
+    Readonly<{ arc: BlocksArc; supports: ActiveGraphEdge[] }>[]
+  >();
+  for (const group of supportsByArc.values()) {
+    const groups = supportsByBlockedNodeId.get(group.arc.toNodeId);
+    if (groups == null) {
+      supportsByBlockedNodeId.set(group.arc.toNodeId, [group]);
+      continue;
+    }
+    groups.push(group);
+  }
+  const negativeByBlockedNodeId = new Map<
+    GraphNodeId,
+    Readonly<{ arc: BlocksArc; candidates: PotentialBlocksArc[] }>[]
+  >();
+  for (const group of candidatesByArc.values()) {
+    if (supportsByArc.has(blocksArcKey(group.arc))) {
+      continue;
+    }
+    const presenceCandidates = group.candidates.filter((candidate) => candidate.affectsPresence);
+    if (presenceCandidates.length === 0) {
+      continue;
+    }
+    const presenceGroup = Object.freeze({ arc: group.arc, candidates: presenceCandidates });
+    const groups = negativeByBlockedNodeId.get(group.arc.toNodeId);
+    if (groups == null) {
+      negativeByBlockedNodeId.set(group.arc.toNodeId, [presenceGroup]);
+      continue;
+    }
+    groups.push(presenceGroup);
+  }
+  const blockedNodeIds = new Set<GraphNodeId>(nodesById.keys());
+  const blockerSetAiDependencies: BlockerSetAiDependency[] = [];
+  const blockerNodeAiDependencies: BlockerNodeAiDependency[] = [];
+  const negativeBlockerAiDependencies: NegativeBlockerAiDependency[] = [];
+  for (const nodeId of [...blockedNodeIds].sort(compareStrings)) {
+    const presenceDependencies: AiAnalysisDependency[] = [];
+    for (const group of supportsByBlockedNodeId.get(nodeId) ?? []) {
+      const potentialSupports = candidatesByArc.get(blocksArcKey(group.arc))?.candidates ?? [];
+      const presence = preferIndependentAiDependencies(
+        group.supports.map((support) => support.aiDependency),
+      );
+      presenceDependencies.push(presence);
+      const maximumConfidence = Math.max(...group.supports.map((support) => support.confidence));
+      const maximumConfidenceDependency = preferIndependentAiDependencies(
+        group.supports
+          .filter((support) => support.confidence === maximumConfidence)
+          .map((support) => support.aiDependency),
+      );
+      const confidenceDependencies = [maximumConfidenceDependency];
+      const hasHardMaximumConfidence = group.supports.some(
+        (support) => support.confidence === 1 && support.aiDependency.status === "not_dependent",
+      );
+      if (!hasHardMaximumConfidence) {
+        confidenceDependencies.push(
+          ...group.supports
+            .filter(
+              (support) =>
+                support.confidence < maximumConfidence &&
+                (support.aiDependency.status === "unverified" ||
+                  support.aiDependency.status === "unknown"),
+            )
+            .map((support) => support.aiDependency),
+          ...potentialSupports.map((support) => support.dependency),
+        );
+      }
+      const confidence = combineAiAnalysisDependencies(confidenceDependencies);
+      const sourceIds = combineAiAnalysisDependencies(
+        group.supports
+          .map((support) => support.aiDependency)
+          .concat(potentialSupports.map((support) => support.dependency)),
+      );
+      const nativeSupports = group.supports.filter((support) => support.provenance === "native");
+      const firstSupport = group.supports[0];
+      assertNonNullable(firstSupport, `blocker ${group.arc.fromNodeId}のsupportがありません`);
+      const earliestFirstSeenAt = group.supports.reduce(
+        (earliest, support) => (support.firstSeenAt < earliest ? support.firstSeenAt : earliest),
+        firstSupport.firstSeenAt,
+      );
+      const currentBecameBlockingAt = preferIndependentAiDependencies(
+        (nativeSupports.length === 0
+          ? group.supports.filter((support) => support.firstSeenAt === earliestFirstSeenAt)
+          : nativeSupports
+        ).map((support) => support.aiDependency),
+      );
+      const becameBlockingAtPotentialDependencies =
+        nativeSupports.length === 0
+          ? potentialSupports
+              .filter(
+                (support) =>
+                  support.firstSeenAt.status === "unknown" ||
+                  support.firstSeenAt.value < earliestFirstSeenAt,
+              )
+              .map((support) => support.dependency)
+          : [];
+      const becameBlockingAt = combineAiAnalysisDependencies([
+        currentBecameBlockingAt,
+        ...becameBlockingAtPotentialDependencies,
+      ]);
+      blockerNodeAiDependencies.push(
+        Object.freeze({
+          blockedNodeId: nodeId,
+          blockerNodeId: group.arc.fromNodeId,
+          presence,
+          confidence,
+          sourceIds,
+          becameBlockingAt,
+        }),
+      );
+    }
+    const negativeDependencies: AiAnalysisDependency[] = [];
+    for (const group of negativeByBlockedNodeId.get(nodeId) ?? []) {
+      negativeDependencies.push(
+        combineAiAnalysisDependencies(group.candidates.map((arc) => arc.dependency)),
+      );
+    }
+    const negativeDependency =
+      negativeDependencies.length === 0
+        ? Object.freeze({ status: "not_dependent" })
+        : combineAiAnalysisDependencies(negativeDependencies);
+    presenceDependencies.push(negativeDependency);
+    const dependency = combineAiAnalysisDependencies(presenceDependencies);
+    blockerSetAiDependencies.push(Object.freeze({ nodeId, dependency }));
+    negativeBlockerAiDependencies.push(Object.freeze({ nodeId, dependency: negativeDependency }));
+  }
+  blockerSetAiDependencies.sort((left, right) => compareStrings(left.nodeId, right.nodeId));
+  blockerNodeAiDependencies.sort((left, right) => {
+    const blockedOrder = compareStrings(left.blockedNodeId, right.blockedNodeId);
+    if (blockedOrder !== 0) {
+      return blockedOrder;
+    }
+    return compareStrings(left.blockerNodeId, right.blockerNodeId);
+  });
+  negativeBlockerAiDependencies.sort((left, right) => compareStrings(left.nodeId, right.nodeId));
+  return Object.freeze({
+    blockerSetAiDependencies: Object.freeze(blockerSetAiDependencies),
+    blockerNodeAiDependencies: Object.freeze(blockerNodeAiDependencies),
+    negativeBlockerAiDependencies: Object.freeze(negativeBlockerAiDependencies),
+  });
+}
+
+function relationKey(
+  relation: Readonly<{
+    fromNodeId: GraphNodeId;
+    toNodeId: GraphNodeId;
+    type: ReconciledGraphEdge["type"];
+  }>,
+): string {
+  return JSON.stringify([relation.type, relation.fromNodeId, relation.toNodeId]);
+}
+
+function relationSetAiDependencies(
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
+  activeEdges: readonly ActiveGraphEdge[],
+  proofs: readonly RelationCandidateDecisionProof[],
+): readonly RelationSetAiDependency[] {
+  const proofByCandidateId = new Map(proofs.map((proof) => [proof.candidateId, proof]));
+  const supportsByRelation = new Map<
+    string,
+    Readonly<{
+      endpointNodeIds: readonly [GraphNodeId, GraphNodeId];
+      dependencies: AiAnalysisDependency[];
+    }>
+  >();
+  const candidateDependencies: Readonly<{
+    endpointNodeIds: readonly [GraphNodeId, GraphNodeId];
+    dependency: AiAnalysisDependency;
+  }>[] = proofs
+    .filter((proof) => proof.authority === "inferred")
+    .map((proof) =>
+      Object.freeze({
+        endpointNodeIds: proof.endpointNodeIds,
+        dependency: aiAnalysisDependencyForRelationCandidate(
+          proof.candidateId,
+          proof.endpointNodeIds,
+          proof.dependency,
+        ),
+      }),
+    );
+  for (const proof of proofs) {
+    if (proof.resolution.status !== "active") {
+      continue;
+    }
+    const canonicalRelation = proof.canonicalRelation;
+    assertNonNullable(
+      canonicalRelation,
+      `active relation ${proof.candidateId}のcanonical relationがありません`,
+    );
+    const key = relationKey(canonicalRelation);
+    const dependency = aiAnalysisDependencyForRelationCandidate(
+      proof.candidateId,
+      proof.endpointNodeIds,
+      proof.dependency,
+    );
+    const existing = supportsByRelation.get(key);
+    if (existing == null) {
+      supportsByRelation.set(
+        key,
+        Object.freeze({ endpointNodeIds: proof.endpointNodeIds, dependencies: [dependency] }),
+      );
+    } else {
+      existing.dependencies.push(dependency);
+    }
+  }
+  for (const edge of activeEdges) {
+    if (proofByCandidateId.has(edge.id)) {
+      continue;
+    }
+    const key = relationKey(edge);
+    const endpointNodeIds: readonly [GraphNodeId, GraphNodeId] = [edge.fromNodeId, edge.toNodeId];
+    const existing = supportsByRelation.get(key);
+    if (existing == null) {
+      supportsByRelation.set(
+        key,
+        Object.freeze({ endpointNodeIds, dependencies: [edge.aiDependency] }),
+      );
+    } else {
+      existing.dependencies.push(edge.aiDependency);
+    }
+  }
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency[]>();
+  for (const support of supportsByRelation.values()) {
+    const dependency = preferIndependentAiDependencies(support.dependencies);
+    for (const endpointNodeId of support.endpointNodeIds) {
+      appendDependency(dependenciesByNodeId, endpointNodeId, dependency);
+    }
+  }
+  for (const candidate of candidateDependencies) {
+    for (const endpointNodeId of candidate.endpointNodeIds) {
+      appendDependency(dependenciesByNodeId, endpointNodeId, candidate.dependency);
+    }
+  }
+  return Object.freeze(
+    [...nodesById.keys()].sort(compareStrings).map((nodeId) => {
+      const dependencies = dependenciesByNodeId.get(nodeId);
+      return Object.freeze({
+        nodeId,
+        dependency:
+          dependencies == null
+            ? Object.freeze({ status: "not_dependent" })
+            : combineAiAnalysisDependencies(dependencies),
+      });
+    }),
+  );
+}
+
+function downstreamImpactAiDependenciesWithCandidates(
+  nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
+  base: ImpactAnalysis,
+  positiveEdges: readonly ActiveGraphEdge[],
+  potentialArcs: readonly PotentialBlocksArc[],
+): readonly Readonly<{ nodeId: GraphNodeId; dependency: AiAnalysisDependency }>[] {
+  const negativeArcs = potentialArcs.filter((arc) => arc.affectsPresence);
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency[]>();
+  const unknownPositiveEdges = positiveEdges.filter(
+    (edge) => edge.aiDependency.status === "unknown",
+  );
+  const unverifiedPositiveEdges = positiveEdges.filter(
+    (edge) => edge.aiDependency.status === "unverified",
+  );
+  const currentPositiveEdges = positiveEdges.filter(
+    (edge) => edge.aiDependency.status === "current",
+  );
+  const unknownNegativeArcs = negativeArcs.filter((arc) => arc.dependency.status === "unknown");
+  const unverifiedNegativeArcs = negativeArcs.filter(
+    (arc) => arc.dependency.status === "unverified",
+  );
+  const currentNegativeArcs = negativeArcs.filter((arc) => arc.dependency.status === "current");
+
+  const unknownRemoval = analyzePositiveImpactContributors(
+    nodesById,
+    base,
+    positiveEdges.filter((edge) => edge.aiDependency.status !== "unknown"),
+    unknownPositiveEdges,
+  );
+  const unverifiedRemoval = analyzePositiveImpactContributors(
+    nodesById,
+    base,
+    positiveEdges.filter((edge) => edge.aiDependency.status !== "unverified"),
+    unverifiedPositiveEdges,
+  );
+  const unknownUnverifiedRemoval = analyzePositiveImpactContributors(
+    nodesById,
+    base,
+    positiveEdges.filter(
+      (edge) => edge.aiDependency.status !== "unknown" && edge.aiDependency.status !== "unverified",
+    ),
+    [...unknownPositiveEdges, ...unverifiedPositiveEdges],
+  );
+  const currentRemoval = analyzePositiveImpactContributors(
+    nodesById,
+    base,
+    positiveEdges.filter((edge) => edge.aiDependency.status !== "current"),
+    currentPositiveEdges,
+  );
+  const allAiRemoval = analyzePositiveImpactContributors(
+    nodesById,
+    base,
+    positiveEdges.filter((edge) => edge.aiDependency.status === "not_dependent"),
+    [...unknownPositiveEdges, ...unverifiedPositiveEdges, ...currentPositiveEdges],
+  );
+  const unknownAddition = analyzeNegativeImpactContributors(
+    nodesById,
+    base,
+    positiveEdges,
+    unknownNegativeArcs,
+  );
+  const unverifiedAddition = analyzeNegativeImpactContributors(
+    nodesById,
+    base,
+    positiveEdges,
+    unverifiedNegativeArcs,
+  );
+  const unknownUnverifiedAddition = analyzeNegativeImpactContributors(
+    nodesById,
+    base,
+    positiveEdges,
+    [...unknownNegativeArcs, ...unverifiedNegativeArcs],
+  );
+  const currentAddition = analyzeNegativeImpactContributors(
+    nodesById,
+    base,
+    positiveEdges,
+    currentNegativeArcs,
+  );
+  const allAiAddition = analyzeNegativeImpactContributors(
+    nodesById,
+    base,
+    positiveEdges,
+    negativeArcs,
+  );
+
+  const changedByUnknownRemoval = unknownRemoval.nodeIds;
+  const changedByUnverifiedRemoval = unverifiedRemoval.nodeIds;
+  const changedByUnknownUnverifiedRemoval = unknownUnverifiedRemoval.nodeIds;
+  const changedByCurrentRemoval = currentRemoval.nodeIds;
+  const changedByAllAiRemoval = allAiRemoval.nodeIds;
+  const changedByUnknownAddition = unknownAddition.nodeIds;
+  const changedByUnverifiedAddition = unverifiedAddition.nodeIds;
+  const changedByUnknownUnverifiedAddition = unknownUnverifiedAddition.nodeIds;
+  const changedByCurrentAddition = currentAddition.nodeIds;
+  const changedByAllAiAddition = allAiAddition.nodeIds;
+
+  mergeImpactContributorAnalysis(dependenciesByNodeId, unknownRemoval, changedByUnknownRemoval);
+  mergeImpactContributorAnalysis(
+    dependenciesByNodeId,
+    unverifiedRemoval,
+    changedByUnverifiedRemoval,
+  );
+  mergeImpactContributorAnalysis(dependenciesByNodeId, currentRemoval, changedByCurrentRemoval);
+  mergeImpactContributorAnalysis(dependenciesByNodeId, unknownAddition, changedByUnknownAddition);
+  mergeImpactContributorAnalysis(
+    dependenciesByNodeId,
+    unverifiedAddition,
+    changedByUnverifiedAddition,
+  );
+  mergeImpactContributorAnalysis(dependenciesByNodeId, currentAddition, changedByCurrentAddition);
+
+  const unknownUnverifiedRemovalInteractionNodeIds = interactionNodeIds(
+    changedByUnknownUnverifiedRemoval,
+    [changedByUnknownRemoval, changedByUnverifiedRemoval],
+  );
+  const unknownUnverifiedAdditionInteractionNodeIds = interactionNodeIds(
+    changedByUnknownUnverifiedAddition,
+    [changedByUnknownAddition, changedByUnverifiedAddition],
+  );
+  mergeImpactContributorAnalysis(
+    dependenciesByNodeId,
+    unknownUnverifiedRemoval,
+    unknownUnverifiedRemovalInteractionNodeIds,
+  );
+  mergeImpactContributorAnalysis(
+    dependenciesByNodeId,
+    unknownUnverifiedAddition,
+    unknownUnverifiedAdditionInteractionNodeIds,
+  );
+
+  const allAiRemovalUnknownFamilyNodeIds = new Set<GraphNodeId>([
+    ...changedByUnknownRemoval,
+    ...changedByUnverifiedRemoval,
+    ...changedByUnknownUnverifiedRemoval,
+  ]);
+  const allAiRemovalInteractionNodeIds = crossFamilyInteractionNodeIds(changedByAllAiRemoval, [
+    allAiRemovalUnknownFamilyNodeIds,
+    changedByCurrentRemoval,
+  ]);
+  const allAiAdditionUnknownFamilyNodeIds = new Set<GraphNodeId>([
+    ...changedByUnknownAddition,
+    ...changedByUnverifiedAddition,
+    ...changedByUnknownUnverifiedAddition,
+  ]);
+  const allAiAdditionInteractionNodeIds = crossFamilyInteractionNodeIds(changedByAllAiAddition, [
+    allAiAdditionUnknownFamilyNodeIds,
+    changedByCurrentAddition,
+  ]);
+  mergeImpactContributorAnalysis(
+    dependenciesByNodeId,
+    allAiRemoval,
+    allAiRemovalInteractionNodeIds,
+  );
+  mergeImpactContributorAnalysis(
+    dependenciesByNodeId,
+    allAiAddition,
+    allAiAdditionInteractionNodeIds,
+  );
+
+  return Object.freeze(
+    [...nodesById.keys()].sort(compareStrings).map((nodeId) => {
+      const dependencies = dependenciesByNodeId.get(nodeId);
+      const dependency =
+        dependencies == null
+          ? Object.freeze({ status: "not_dependent" })
+          : combineAiAnalysisDependencies(dependencies);
+      return Object.freeze({ nodeId, dependency });
+    }),
+  );
+}
+
 function createConnectedComponents(
   nodesById: ReadonlyMap<GraphNodeId, GraphAnalysisNode>,
   activeEdges: readonly ActiveGraphEdge[],
@@ -1078,8 +2332,78 @@ export function analyzeGraph(input: AnalyzeGraphInput): AnalyzeGraphResult {
       dependencyCycles,
     ),
     downstreamImpacts: createDownstreamImpacts(current.nodesById, stronglyConnected, reachability),
+    downstreamImpactAiDependencies: downstreamImpactAiDependency(
+      current.nodesById,
+      current.effectiveBlocksEdges,
+      Object.freeze({
+        graph: directedBlocksGraph,
+        stronglyConnected,
+        reachability,
+      }),
+    ),
     connectedComponents: createConnectedComponents(current.nodesById, current.activeEdges),
     reclassificationTargets: reclassification.targets,
     newlyUnblockedNodeIds: reclassification.newlyUnblockedNodeIds,
+  });
+}
+
+/** 関係候補の不在proofを含むgraphからAI依存を算出する。 */
+export function analyzeGraphAiDependencies(
+  input: AnalyzeGraphAiDependenciesInput,
+): AnalyzeGraphAiDependenciesResult {
+  const result = analyzeGraph({
+    current: input.current,
+    previous: input.previous,
+  });
+  const current = indexSnapshot(input.current, "現在snapshot");
+  const candidateProofSnapshot = indexSnapshot(input.candidateProofSnapshot, "関係候補snapshot");
+  const proofs = validateCandidateDecisionProofs(
+    candidateProofSnapshot,
+    input.candidateDecisionProofs,
+  );
+  const valueSensitivity = createPublicValueSensitivityIndex(current, candidateProofSnapshot);
+  const valueProofs = proofs.filter((proof) =>
+    proof.endpointNodeIds.every((nodeId) => valueSensitivity.nodesById.has(nodeId)),
+  );
+  const positiveSupportArcs = normalizePositiveSupportArcs(valueSensitivity.effectiveBlocksEdges);
+  const base = createImpactAnalysis(valueSensitivity.nodesById, positiveSupportArcs);
+  const potentialArcs = potentialBlocksArcs(valueSensitivity, proofs);
+  const blockerDependencies = blocksArcDependencies(
+    valueSensitivity.nodesById,
+    valueSensitivity.effectiveBlocksEdges,
+    potentialArcs,
+  );
+  return Object.freeze({
+    ...result,
+    downstreamImpactAiDependencies: Object.freeze(
+      downstreamImpactAiDependenciesWithCandidates(
+        valueSensitivity.nodesById,
+        base,
+        positiveSupportArcs,
+        potentialArcs,
+      ).filter((entry) => current.nodesById.has(entry.nodeId)),
+    ),
+    blockerSetAiDependencies: Object.freeze(
+      blockerDependencies.blockerSetAiDependencies.filter((entry) =>
+        current.nodesById.has(entry.nodeId),
+      ),
+    ),
+    blockerNodeAiDependencies: Object.freeze(
+      blockerDependencies.blockerNodeAiDependencies.filter((entry) =>
+        current.nodesById.has(entry.blockedNodeId),
+      ),
+    ),
+    negativeBlockerAiDependencies: Object.freeze(
+      blockerDependencies.negativeBlockerAiDependencies.filter((entry) =>
+        current.nodesById.has(entry.nodeId),
+      ),
+    ),
+    relationSetAiDependencies: Object.freeze(
+      relationSetAiDependencies(
+        valueSensitivity.nodesById,
+        valueSensitivity.activeEdges,
+        valueProofs,
+      ).filter((entry) => current.nodesById.has(entry.nodeId)),
+    ),
   });
 }

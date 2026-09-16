@@ -1,9 +1,15 @@
 import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
 import { assertNonNullable } from "../../src/util/index.js";
+import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { CurrentResponses } from "./current-responses.js";
 import { GitHubIconButton } from "./github-icon-button.js";
 import { ItemDetailsLink } from "./item-details.js";
-import { statusLabel } from "./model.js";
+import {
+  aiUnverifiedValueLabel,
+  currentResponsesUnverifiedDescription,
+  hasAiUnverifiedValue,
+  statusLabel,
+} from "./model.js";
 import { Pill } from "./ui.js";
 import { type PersonNavigation } from "./waiting-on-display.js";
 
@@ -49,6 +55,7 @@ function CurrentImplementationRow({
   variant,
 }: CurrentImplementationRowProps) {
   const implementationItem = findImplementationItem(implementation, summary);
+  const statusUnverified = hasAiUnverifiedValue(implementationItem.aiAnalysis, "status");
   const reference = (
     <ItemDetailsLink
       href={createItemHref(implementation.nodeId)}
@@ -59,10 +66,21 @@ function CurrentImplementationRow({
     </ItemDetailsLink>
   );
   const status = (
-    <Pill className="current-implementation-status" tone="neutral">
-      {statusLabel(implementation.status)}
-    </Pill>
+    <>
+      <Pill className="current-implementation-status" tone="neutral">
+        {statusLabel(implementation.status)}
+      </Pill>
+      {statusUnverified && (
+        <AiUnverifiedMark
+          description={`現在入力に対して${aiUnverifiedValueLabel("status")}が未検証です。`}
+        />
+      )}
+    </>
   );
+  const collectionUnverified =
+    variant !== "compact" &&
+    implementationItem.personalReminderCausePlanningStatus === "completed" &&
+    implementationItem.currentResponsesUnverified;
   if (variant === "compact") {
     return (
       <li class="current-implementation-compact-item min-w-0">
@@ -89,6 +107,9 @@ function CurrentImplementationRow({
     <li class="current-implementation-detail-item min-w-0 border-l-2 border-border-default pl-3">
       <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
         <strong class="min-w-0 wrap-anywhere">{reference}</strong>
+        {collectionUnverified && (
+          <AiUnverifiedMark description={currentResponsesUnverifiedDescription()} />
+        )}
         <GitHubIconButton href={implementation.url} />
         {status}
       </div>

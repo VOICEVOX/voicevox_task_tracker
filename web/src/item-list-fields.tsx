@@ -3,13 +3,16 @@ import {
   type PublicPersonalReminderResponseDto,
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
+import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { CurrentResponses } from "./current-responses.js";
 import { CurrentImplementations } from "./current-implementations.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { DeadlineDisplay } from "./deadline-display.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import {
+  aiUnverifiedValueLabel,
   formatStallDuration,
+  hasAiUnverifiedValue,
   statusLabel,
   type ItemSort,
   type ItemSortKey,
@@ -37,6 +40,25 @@ type ItemListFieldOptions = PersonNavigation &
 
 const NUMERIC_HEADER_CLASS_NAME =
   "text-center whitespace-nowrap [&>button]:w-full [&>button]:justify-center [&>button]:px-1";
+
+type ListUnverifiedValue = "status" | "attention" | "importance" | "deadline" | "staleness";
+
+function ListUnverifiedMark({
+  item,
+  value,
+}: Readonly<{
+  item: PublicItemSummaryDto;
+  value: ListUnverifiedValue;
+}>) {
+  if (!hasAiUnverifiedValue(item.aiAnalysis, value)) {
+    return null;
+  }
+  return (
+    <AiUnverifiedMark
+      description={`現在入力に対して${aiUnverifiedValueLabel(value)}が未検証です。`}
+    />
+  );
+}
 
 function orderCurrentResponses(
   item: PublicItemSummaryDto,
@@ -87,9 +109,12 @@ function CurrentResponseStatus({
         summary={summary}
         variant="compact"
       />
-      <Pill className="item-waiting-status" tone="neutral">
-        {statusLabel(row.item.status)}
-      </Pill>
+      <span class="inline-flex items-center gap-1">
+        <Pill className="item-waiting-status" tone="neutral">
+          {statusLabel(row.item.status)}
+        </Pill>
+        <ListUnverifiedMark item={row.item} value="status" />
+      </span>
       <CurrentImplementations
         createItemHref={createItemHref}
         createPersonHref={createPersonHref}
@@ -163,7 +188,12 @@ export function createItemTableColumns({
       onSort: () => {
         onSortChange("attention");
       },
-      renderCell: (row) => <AttentionBadge attention={row.item.attention} presentation="score" />,
+      renderCell: (row) => (
+        <span class="inline-flex items-center gap-1">
+          <AttentionBadge attention={row.item.attention} presentation="score" />
+          <ListUnverifiedMark item={row.item} value="attention" />
+        </span>
+      ),
       widthClassName: "w-[10.5%]",
     },
     {
@@ -177,7 +207,10 @@ export function createItemTableColumns({
         onSortChange("importance");
       },
       renderCell: (row) => (
-        <ImportanceBadge importance={row.item.importance} presentation="score" />
+        <span class="inline-flex items-center gap-1">
+          <ImportanceBadge importance={row.item.importance} presentation="score" />
+          <ListUnverifiedMark item={row.item} value="importance" />
+        </span>
       ),
       widthClassName: "w-[9%]",
     },
@@ -191,7 +224,12 @@ export function createItemTableColumns({
       onSort: () => {
         onSortChange("deadline");
       },
-      renderCell: (row) => <DeadlineDisplay dateClassName="text-xs" deadline={row.item.deadline} />,
+      renderCell: (row) => (
+        <span class="inline-flex min-w-0 items-center gap-1">
+          <DeadlineDisplay dateClassName="text-xs" deadline={row.item.deadline} />
+          <ListUnverifiedMark item={row.item} value="deadline" />
+        </span>
+      ),
       widthClassName: "w-[14%]",
     },
     {
@@ -205,9 +243,12 @@ export function createItemTableColumns({
         onSortChange("stall");
       },
       renderCell: (row) => (
-        <strong class="font-mono tabular-nums">
-          {formatStallDuration(row.item.stallSince, now)}
-        </strong>
+        <span class="inline-flex items-center gap-1">
+          <strong class="font-mono tabular-nums">
+            {formatStallDuration(row.item.stallSince, now)}
+          </strong>
+          <ListUnverifiedMark item={row.item} value="staleness" />
+        </span>
       ),
       widthClassName: "w-[10.5%]",
     },
@@ -246,7 +287,12 @@ export function createItemCardFields({
       className: "",
       key: "attention",
       label: "要対応度",
-      renderValue: (row) => <AttentionBadge attention={row.item.attention} presentation="score" />,
+      renderValue: (row) => (
+        <span class="inline-flex items-center gap-1">
+          <AttentionBadge attention={row.item.attention} presentation="score" />
+          <ListUnverifiedMark item={row.item} value="attention" />
+        </span>
+      ),
       valueClassName: "font-mono text-text-primary tabular-nums",
     },
     {
@@ -254,7 +300,10 @@ export function createItemCardFields({
       key: "importance",
       label: "重要度",
       renderValue: (row) => (
-        <ImportanceBadge importance={row.item.importance} presentation="score" />
+        <span class="inline-flex items-center gap-1">
+          <ImportanceBadge importance={row.item.importance} presentation="score" />
+          <ListUnverifiedMark item={row.item} value="importance" />
+        </span>
       ),
       valueClassName: "font-mono text-text-primary tabular-nums",
     },
@@ -263,7 +312,10 @@ export function createItemCardFields({
       key: "deadline",
       label: "期限",
       renderValue: (row) => (
-        <DeadlineDisplay dateClassName="text-xs" deadline={row.item.deadline} />
+        <span class="inline-flex min-w-0 items-center gap-1">
+          <DeadlineDisplay dateClassName="text-xs" deadline={row.item.deadline} />
+          <ListUnverifiedMark item={row.item} value="deadline" />
+        </span>
       ),
       valueClassName: "text-text-primary",
     },
@@ -271,7 +323,12 @@ export function createItemCardFields({
       className: "",
       key: "stall",
       label: "停滞時間",
-      renderValue: (row) => formatStallDuration(row.item.stallSince, now),
+      renderValue: (row) => (
+        <span class="inline-flex items-center gap-1">
+          {formatStallDuration(row.item.stallSince, now)}
+          <ListUnverifiedMark item={row.item} value="staleness" />
+        </span>
+      ),
       valueClassName: "font-mono font-semibold text-text-primary tabular-nums",
     },
   ];

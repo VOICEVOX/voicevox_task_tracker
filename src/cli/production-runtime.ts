@@ -69,6 +69,7 @@ import {
 import {
   AI_ANALYSIS_ELEMENTS,
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
+  aiAnalysisElementApplicationUsesAiValue,
   aiAnalysisElementApplicationsSchema,
   aiAnalysisElementReuseProofSchema,
   createAiAnalysisElementGenerationSchema,
@@ -83,10 +84,24 @@ import {
   type AiAnalysisElementInputFingerprint,
   type AiAnalysisElementReuseProof,
 } from "../domain/ai-analysis-elements.js";
+import type {
+  AiAnalysisDependency,
+  AiAnalysisDependencyProducer,
+  TrackedItemAiDependencies,
+} from "../domain/ai-analysis-dependencies.js";
+import {
+  AI_ANALYSIS_DEPENDENCY_ELEMENTS,
+  aiAnalysisDependencyForApplication,
+  aiAnalysisDependencyForMissingRelationCandidateAssessment,
+  aiAnalysisDependencyForRelation,
+  combineAiAnalysisDependencies,
+  normalizeAiAnalysisDependency,
+} from "../domain/ai-analysis-dependencies.js";
 import {
   createAiAnalysisElementSourceGenerationSchema,
   type AiAnalysisElementSourceGeneration,
 } from "../domain/ai-analysis-source-generations.js";
+import { isExcludedFromProgressAndHumanActivity } from "../domain/meaningful-progress.js";
 import { type CodexDiagnosticsContext } from "../codex/index.js";
 import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { type Config, type loadConfig } from "../config/index.js";
@@ -144,6 +159,7 @@ import {
   type IssueExplicitRequestTarget,
   type IssueStateDecision,
   type BlockedParentContext,
+  type BlockerDecisionTrace,
   type BlockerRanking,
   type NormalizedEvent,
   type OrganizationTrackingCandidate,
@@ -160,6 +176,7 @@ import {
   type StalenessNotificationSeverityReason,
   type StalenessWaitClass,
   type StalenessResult,
+  type TrackedItemState,
   type NaturalLanguageDeadlineAssessmentState,
   type NaturalLanguageImportanceAssessmentState,
   type NaturalLanguageProgressAssessment,
@@ -192,6 +209,7 @@ import {
   createPersonalReminderRuntimeContext,
   planPersonalReminderCauses,
   type PersonalReminderRuntimeCollectedItem,
+  type PersonalReminderRuntimeCandidateEndpointItem,
   type PersonalReminderRuntimeGraph,
   type PersonalReminderRuntimeLocalDecision,
   type PersonalReminderRuntimeRelatedContext,
@@ -250,21 +268,29 @@ import {
 } from "../github/index.js";
 import {
   analyzeGraph,
-  extractRelationCandidates,
-  normalizeRelationCandidates,
+  analyzeGraphAiDependencies,
+  extractRelationCandidatesForItems,
   planRelationExpansion,
   reconcileGraph,
   type AnalyzeGraphResult,
+  type BlockerNodeAiDependency,
+  type BlockerSetAiDependency,
+  type NegativeBlockerAiDependency,
+  type RelationSetAiDependency,
   type CandidateRelation,
   type PublicGitHubRelationItem,
   type ReconciledGraphEdge,
   type GraphAnalysisNode,
   type GraphAnalysisSnapshot,
+  type OrganizationRelationCandidateNode,
   type ReconcileGraphResult,
   type RelationCandidate,
   type RelationCandidateAssessment,
+  type RelationCandidateDecisionProof,
   type RelationCandidateNode,
   type RelationCandidateId,
+  type RelationCandidateResolution,
+  type RelationExtractionItem,
 } from "../graph/index.js";
 import {
   generatePublicData,
@@ -449,6 +475,7 @@ type FreshRepositoryItemCollection = Readonly<{
   observedItems: readonly FreshObservedGitHubItem[];
   changedNodeIds: readonly GitHubNodeId[];
   analysisPlanChangedNodeIds: readonly GitHubNodeId[];
+  personalReminderReplanNodeIds: ReadonlySet<GitHubNodeId>;
 }>;
 
 type FreshRepositoryRuntimeCollection = FreshRepositoryItemCollection &
@@ -462,6 +489,7 @@ type FreshRuntimeCollectionAggregate = Readonly<{
   observedItems: readonly FreshObservedGitHubItem[];
   changedNodeIds: ReadonlySet<GitHubNodeId>;
   analysisPlanChangedNodeIds: ReadonlySet<GitHubNodeId>;
+  personalReminderReplanNodeIds: ReadonlySet<GitHubNodeId>;
 }>;
 
 type RelationExpandedRuntimeCollection = FreshRuntimeCollectionAggregate &
@@ -505,9 +533,11 @@ type EffectiveAssigneeCandidateContext = Readonly<{
   sourceContexts: readonly EffectiveAssigneeSourceContext[];
 }>;
 
-type EffectiveAssigneeCollectionContext = Readonly<
-  Pick<CollectedItems, "observedItems" | "details" | "trackedNodeIds">
->;
+type EffectiveAssigneeCollectionContext = Readonly<{
+  observedItemsByNodeId: ReadonlyMap<GitHubNodeId, FreshObservedGitHubItem>;
+  detailsByNodeId: ReadonlyMap<GitHubNodeId, GitHubItemDetail>;
+  trackedNodeIds: ReadonlySet<GitHubNodeId>;
+}>;
 
 type DeterministicItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
@@ -519,6 +549,8 @@ type DeterministicItemAnalysis = Readonly<{
   relationCandidates: readonly RelationCandidate[];
   effectiveAssigneeCandidates: readonly EffectiveAssigneeCandidateContext[];
 }>;
+
+const EMPTY_RELATION_CANDIDATES = Object.freeze([] satisfies RelationCandidate[]);
 
 type DeterministicAnalysis = Readonly<{
   items: readonly DeterministicItemAnalysis[];
@@ -536,9 +568,13 @@ type CodexAnalysis = Readonly<{
 type ReducedItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
   detail: GitHubItemDetail;
+  effectiveAssigneeCandidates: readonly EffectiveAssigneeCandidateContext[];
   decision: ReducedCodexDecision;
+  blockerValueAiDependencies: BlockerValueAiDependencies;
   localResponsibilityDecision: IssueStateDecision | PullRequestStateDecision;
+  aiAnalysisApplications: TrackedItemAiAnalysisApplications;
   selfCommitmentCause: NotificationCause;
+  statusBasis: IssueStateDecision["statusBasis"];
   responsibilityBasis: IssueStateDecision["responsibilityBasis"];
   dependencyCause: NotificationDependencyCause;
   notificationRecommendation: DiscordNotificationItem["notificationRecommendation"];
@@ -562,6 +598,8 @@ type TrackedItemStaleness = Readonly<{
   elapsedHours: number;
   severity: Severity;
   severityReason: StalenessNotificationSeverityReason;
+  criticalSuppressed: boolean;
+  criticalRequested: boolean;
   waitClass: StalenessWaitClass;
   severityContext: StalenessSeverityContext;
 }>;
@@ -588,9 +626,17 @@ type ReducedAnalysis = Readonly<{
 
 type GraphResult = Readonly<{
   edges: readonly ReconciledGraphEdge[];
+  relationCandidateAiDependencies: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>;
   candidateResolutions: ReconcileGraphResult["candidateResolutions"];
+  candidateDecisionProofs: ReconcileGraphResult["candidateDecisionProofs"];
   externalReferences: readonly ExternalGhostNode[];
+  openNodeIds: ReadonlySet<GraphNodeId>;
   analysis: AnalyzeGraphResult;
+  downstreamImpactAiDependencies: AnalyzeGraphResult["downstreamImpactAiDependencies"];
+  blockerSetAiDependencies: readonly BlockerSetAiDependency[];
+  blockerNodeAiDependencies: readonly BlockerNodeAiDependency[];
+  negativeBlockerAiDependencies: readonly NegativeBlockerAiDependency[];
+  relationSetAiDependencies: readonly RelationSetAiDependency[];
   previousAnalysis:
     | Readonly<{
         availability: "unavailable";
@@ -998,6 +1044,40 @@ function previousSnapshot(state: RuntimeState): StateSnapshot | undefined {
   return state.snapshot.status === "available" ? state.snapshot.snapshot : undefined;
 }
 
+const previousTrackedItemsBySnapshot = new WeakMap<
+  StateSnapshot,
+  ReadonlyMap<GitHubNodeId, SnapshotTrackedItem>
+>();
+
+function previousTrackedItemsByNodeId(
+  state: RuntimeState,
+): ReadonlyMap<GitHubNodeId, SnapshotTrackedItem> {
+  const snapshot = previousSnapshot(state);
+  if (snapshot == null) {
+    return new Map();
+  }
+  const cached = previousTrackedItemsBySnapshot.get(snapshot);
+  if (cached != null) {
+    return cached;
+  }
+  const itemsByNodeId = new Map<GitHubNodeId, SnapshotTrackedItem>();
+  for (const item of snapshot.items) {
+    if (itemsByNodeId.has(item.nodeId)) {
+      throw new TypeError(`前回snapshotの追跡項目が重複しています。対象: ${item.nodeId}`);
+    }
+    itemsByNodeId.set(item.nodeId, item);
+  }
+  previousTrackedItemsBySnapshot.set(snapshot, itemsByNodeId);
+  return itemsByNodeId;
+}
+
+function previousTrackedItem(
+  state: RuntimeState,
+  nodeId: GitHubNodeId,
+): SnapshotTrackedItem | undefined {
+  return previousTrackedItemsByNodeId(state).get(nodeId);
+}
+
 function normalizeTrackingIdentifier(identifier: string): string {
   if (identifier.includes("://") && identifier.endsWith("/")) {
     return identifier.slice(0, -1);
@@ -1038,8 +1118,24 @@ function hasCurrentAnalysisReuseProof(
 function staleAiAnalysisElementsForLifecycle(
   item: SnapshotTrackedItem | undefined,
 ): readonly AiAnalysisElement[] {
-  if (item == null || item.aiAnalysis.status === "not_required") {
+  if (item == null) {
     return Object.freeze([]);
+  }
+  const hasUnresolvedAiDependency = AI_ANALYSIS_DEPENDENCY_ELEMENTS.some(
+    (element) => item.aiDependencies[element].status === "unknown",
+  );
+  if (item.aiAnalysis.status === "not_required" && !hasUnresolvedAiDependency) {
+    return Object.freeze([]);
+  }
+  if (hasUnresolvedAiDependency) {
+    const staleElements = AI_ANALYSIS_ELEMENTS.filter((element) => {
+      const evaluated = item.aiAnalysis.elements[element];
+      const adopted = item.aiAnalysis.adoptedElements[element];
+      return evaluated != null || adopted != null;
+    });
+    return Object.freeze(
+      staleElements.includes("status") ? staleElements : ["status", ...staleElements],
+    );
   }
   if (item.aiAnalysis.origin === "migration") {
     return staleMigrationAiAnalysisElementsForLifecycle(item.aiAnalysis);
@@ -1394,12 +1490,6 @@ function findRepository(
   return inventory.allowlist.require(repositoryId);
 }
 
-function findDetail(collection: CollectedItems, nodeId: GitHubNodeId): GitHubItemDetail {
-  const detail = collection.details.find((candidate) => candidate.nodeId === nodeId);
-  assertNonNullable(detail, `GitHub詳細取得結果がありません。対象: ${nodeId}`);
-  return detail;
-}
-
 function createPublicRelationItem(
   item: EnumeratedGitHubItem,
   repository: PublicRepository,
@@ -1427,43 +1517,40 @@ function extractAllRelationCandidates(
     createPublicRelationItem(item, allowlist.require(item.repositoryId)),
   );
   const itemByNodeId = new Map(knownItems.map((item) => [item.nodeId, item]));
-  const candidates: RelationCandidate[] = [];
-  for (const detail of details) {
+  const extractionItems = details.map((detail) => {
     const item = itemByNodeId.get(detail.nodeId);
     assertNonNullable(item, `関係候補抽出対象がありません。対象: ${detail.nodeId}`);
-    candidates.push(
-      ...extractRelationCandidates({
-        organization: config.organization,
-        item: {
-          ...item,
-          body: {
-            sourceId: detail.bodySourceId,
-            markdown: detail.body,
-          },
-          comments: detail.comments.map((comment) => ({
-            sourceId: comment.sourceId,
-            markdown: comment.body,
-          })),
-          crossReferences: detail.inboundCrossReferences.map((reference) => ({
-            sourceId: reference.eventSourceId,
-            sourceItem: reference.sourceItem,
-            willCloseTarget: reference.willCloseTarget,
-          })),
-          nativeDependencies:
-            detail.type === "issue" && detail.nativeDependencies.availability === "available"
-              ? detail.nativeDependencies.relations
-              : [],
-          nativeHierarchy:
-            detail.type === "issue" && detail.nativeHierarchy.availability === "available"
-              ? detail.nativeHierarchy.relations
-              : [],
-          nativeClosingIssues: detail.type === "pull_request" ? detail.nativeClosingIssues : [],
-        },
-        knownItems,
-      }),
-    );
-  }
-  return normalizeRelationCandidates(candidates);
+    return Object.freeze({
+      ...item,
+      body: {
+        sourceId: detail.bodySourceId,
+        markdown: detail.body,
+      },
+      comments: detail.comments.map((comment) => ({
+        sourceId: comment.sourceId,
+        markdown: comment.body,
+      })),
+      crossReferences: detail.inboundCrossReferences.map((reference) => ({
+        sourceId: reference.eventSourceId,
+        sourceItem: reference.sourceItem,
+        willCloseTarget: reference.willCloseTarget,
+      })),
+      nativeDependencies:
+        detail.type === "issue" && detail.nativeDependencies.availability === "available"
+          ? detail.nativeDependencies.relations
+          : [],
+      nativeHierarchy:
+        detail.type === "issue" && detail.nativeHierarchy.availability === "available"
+          ? detail.nativeHierarchy.relations
+          : [],
+      nativeClosingIssues: detail.type === "pull_request" ? detail.nativeClosingIssues : [],
+    }) satisfies RelationExtractionItem;
+  });
+  return extractRelationCandidatesForItems({
+    organization: config.organization,
+    items: extractionItems,
+    knownItems,
+  });
 }
 
 function relationNodes(
@@ -1917,14 +2004,33 @@ function relationExpansionTrackingState(tracking: RuntimeTrackingSelection): Rea
   });
 }
 
-function candidatesForNode(
-  nodeId: GitHubNodeId,
+function indexRelationCandidatesByNodeId(
   candidates: readonly RelationCandidate[],
-): readonly RelationCandidate[] {
-  return Object.freeze(
-    candidates.filter((candidate) =>
-      relationNodes(candidate.relation).some((node) => node.nodeId === nodeId),
-    ),
+): ReadonlyMap<GraphNodeId, readonly RelationCandidate[]> {
+  const candidatesByNodeId = new Map<GraphNodeId, RelationCandidate[]>();
+  for (const candidate of candidates) {
+    const [firstNode, secondNode] = relationNodes(candidate.relation);
+    const firstCandidates = candidatesByNodeId.get(firstNode.nodeId);
+    if (firstCandidates == null) {
+      candidatesByNodeId.set(firstNode.nodeId, [candidate]);
+    } else {
+      firstCandidates.push(candidate);
+    }
+    if (secondNode.nodeId === firstNode.nodeId) {
+      continue;
+    }
+    const secondCandidates = candidatesByNodeId.get(secondNode.nodeId);
+    if (secondCandidates == null) {
+      candidatesByNodeId.set(secondNode.nodeId, [candidate]);
+    } else {
+      secondCandidates.push(candidate);
+    }
+  }
+  return new Map(
+    [...candidatesByNodeId].map(([nodeId, nodeCandidates]) => [
+      nodeId,
+      Object.freeze(nodeCandidates),
+    ]),
   );
 }
 
@@ -2116,12 +2222,6 @@ function createEffectiveAssigneeCandidateContexts(
     item,
     detail,
   }) satisfies EffectiveAssigneeSourceContext;
-  const observedItemsByNodeId = new Map(
-    collection.observedItems.map((observedItem) => [observedItem.nodeId, observedItem]),
-  );
-  const detailsByNodeId = new Map(
-    collection.details.map((itemDetail) => [itemDetail.nodeId, itemDetail]),
-  );
   const candidatesById = new Map<string, EffectiveAssigneeCandidateAccumulator>();
   const lastUnassignedAt = latestEffectiveAssigneeUnassignmentAt(detail);
 
@@ -2216,7 +2316,7 @@ function createEffectiveAssigneeCandidateContexts(
     if (!collection.trackedNodeIds.has(implementation.nodeId)) {
       continue;
     }
-    const relatedItem = observedItemsByNodeId.get(implementation.nodeId);
+    const relatedItem = collection.observedItemsByNodeId.get(implementation.nodeId);
     if (relatedItem == null) {
       continue;
     }
@@ -2231,7 +2331,7 @@ function createEffectiveAssigneeCandidateContexts(
         `実装関係のPull Request状態が一致しません。対象: ${implementation.nodeId}`,
       );
     }
-    const relatedDetail = detailsByNodeId.get(implementation.nodeId);
+    const relatedDetail = collection.detailsByNodeId.get(implementation.nodeId);
     if (relatedDetail == null) {
       continue;
     }
@@ -2414,6 +2514,16 @@ function applyDeterministicAnalysis(
   collection: CollectedItems,
 ): DeterministicAnalysis {
   const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
+  const observedItemsByNodeId = new Map(
+    collection.observedItems.map((item) => [item.nodeId, item]),
+  );
+  const detailsByNodeId = new Map(collection.details.map((detail) => [detail.nodeId, detail]));
+  const relationCandidatesByNodeId = indexRelationCandidatesByNodeId(collection.relationCandidates);
+  const effectiveAssigneeCollectionContext = Object.freeze({
+    observedItemsByNodeId,
+    detailsByNodeId,
+    trackedNodeIds: collection.trackedNodeIds,
+  }) satisfies EffectiveAssigneeCollectionContext;
   const items: DeterministicItemAnalysis[] = [];
   for (const item of collection.observedItems) {
     if (!collection.analysisNodeIds.has(item.nodeId)) {
@@ -2424,18 +2534,20 @@ function applyDeterministicAnalysis(
       configuration.config.maintainers,
       repositoryFullName(repository),
     );
-    const detail = findDetail(collection, item.nodeId);
+    const detail = detailsByNodeId.get(item.nodeId);
+    assertNonNullable(detail, `GitHub詳細取得結果がありません。対象: ${item.nodeId}`);
     const notificationClass = collection.trackingNotificationClassByNodeId.get(item.nodeId);
     assertNonNullable(notificationClass, `追跡項目の通知分類がありません。対象: ${item.nodeId}`);
     const notificationsSuppressedByLabel = resolveLabelEffects(
       repositoryFullName(repository),
       item.labels,
     ).suppressNotifications;
-    const relationCandidates = candidatesForNode(item.nodeId, collection.relationCandidates);
+    const relationCandidates =
+      relationCandidatesByNodeId.get(item.nodeId) ?? EMPTY_RELATION_CANDIDATES;
     const blockers = createNativeBlockers(item, relationCandidates);
     if (item.type === "issue" && detail.type === "issue") {
       const effectiveAssigneeCandidates = createEffectiveAssigneeCandidateContexts(
-        collection,
+        effectiveAssigneeCollectionContext,
         item,
         detail,
         relationCandidates,
@@ -2664,6 +2776,12 @@ function relationAssessmentOwnerNodeId(candidate: RelationCandidate): GraphNodeI
     case "unclassified":
       return candidate.relation.referencing.nodeId;
   }
+}
+
+function isOrganizationRelationCandidateNode(
+  node: RelationCandidateNode,
+): node is OrganizationRelationCandidateNode {
+  return node.scope === "organization";
 }
 
 function selectRelationAssessmentCandidates(
@@ -3656,9 +3774,7 @@ function analysisImpactProofsForItem(
     role: "adopted" | "evaluated";
     decision: AnalysisImpactDecisionForDiagnostics;
   }[] = [];
-  const previousItem = previousSnapshot(state)?.items.find(
-    (candidate) => candidate.nodeId === analysis.item.nodeId,
-  );
+  const previousItem = previousTrackedItem(state, analysis.item.nodeId);
   if (previousItem == null) {
     return Object.freeze({
       evaluation: Object.freeze(evaluationWithImpact),
@@ -3895,7 +4011,7 @@ function savedGenerationsForItem(
   state: RuntimeState,
   nodeId: GitHubNodeId,
 ): AiAnalysisElementSourceGenerationMap {
-  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  const item = previousTrackedItem(state, nodeId);
   if (item == null) {
     return Object.freeze({});
   }
@@ -4016,7 +4132,7 @@ function savedCurrentAdoptedElementsForItem(
   state: RuntimeState,
   nodeId: GitHubNodeId,
 ): TrackedItemAiAnalysisCurrentAdoptedElements {
-  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  const item = previousTrackedItem(state, nodeId);
   if (item == null) {
     return Object.freeze({});
   }
@@ -4041,7 +4157,7 @@ function savedEvaluationRecordsForItem(
   dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
 ): Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>> {
   const records: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {};
-  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  const item = previousTrackedItem(state, nodeId);
   if (item == null) {
     return Object.freeze(records);
   }
@@ -4086,7 +4202,7 @@ function savedEvaluationRecordForElement(
   nodeId: GitHubNodeId,
   element: AiAnalysisElement,
 ): AnalysisElementReuseRecord | undefined {
-  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  const item = previousTrackedItem(state, nodeId);
   const evaluated = item?.aiAnalysis.elements[element];
   if (evaluated == null) {
     return undefined;
@@ -4104,7 +4220,7 @@ function savedAdoptionRecordsForItem(
   dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
 ): Readonly<Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>>> {
   const records: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {};
-  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  const item = previousTrackedItem(state, nodeId);
   if (item == null) {
     return Object.freeze(records);
   }
@@ -4148,7 +4264,7 @@ function savedMigrationAdoptedElementsForItem(
   state: RuntimeState,
   nodeId: GitHubNodeId,
 ): TrackedItemAiAnalysisMigrationAdoptedElements {
-  const item = previousSnapshot(state)?.items.find((candidate) => candidate.nodeId === nodeId);
+  const item = previousTrackedItem(state, nodeId);
   if (item?.aiAnalysis.origin !== "migration") {
     return Object.freeze({});
   }
@@ -4236,9 +4352,7 @@ function dependencyResultForElement(
   analysis: DeterministicItemAnalysis,
   element: AiAnalysisElement,
 ): AiAnalysisElementMigrationResult | undefined {
-  const item = previousSnapshot(state)?.items.find(
-    (candidate) => candidate.nodeId === analysis.item.nodeId,
-  );
+  const item = previousTrackedItem(state, analysis.item.nodeId);
   return item == null ? undefined : adoptedResultForRetainedItem(item, element);
 }
 
@@ -4611,9 +4725,7 @@ function preservedElementsForForcedReduction(
 ): CodexPreservedElements {
   const preservedElements: Partial<Record<AiAnalysisElement, AiAnalysisElementMigrationResult>> =
     {};
-  const previousItem = previousSnapshot(state)?.items.find(
-    (candidate) => candidate.nodeId === analysis.item.nodeId,
-  );
+  const previousItem = previousTrackedItem(state, analysis.item.nodeId);
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const candidate = planning.candidates[element];
     if (candidate.necessity !== "required") {
@@ -4790,9 +4902,7 @@ function necessityInputForAnalysis(
     analysis.effectiveAssigneeCandidates.length !== 0 ||
     hasHumanProgressCandidate ||
     !allRelationCandidatesAuthoritative;
-  const previousItem = previousSnapshot(state)?.items.find(
-    (candidate) => candidate.nodeId === analysis.item.nodeId,
-  );
+  const previousItem = previousTrackedItem(state, analysis.item.nodeId);
   return Object.freeze({
     state: Object.freeze({
       status: Object.freeze({
@@ -4918,19 +5028,11 @@ function createAiCandidates(
     role: "adopted" | "evaluated";
     decision: AnalysisImpactDecisionForDiagnostics;
   }[] = [];
-  const previousGraph = previousGraphSnapshot(state);
-  const previousGraphAnalysis =
-    previousGraph == null
-      ? undefined
-      : analyzeGraph({
-          current: previousGraph,
-          previous: {
-            availability: "unavailable",
-          },
-        });
-  const previousImpactByNodeId = new Map(
-    (previousGraphAnalysis?.downstreamImpacts ?? []).map((impact) => [impact.nodeId, impact]),
-  );
+  const previousGraph = previousGraphIndex(state);
+  const previousImpactByNodeId =
+    previousGraph.availability === "available"
+      ? previousGraph.downstreamImpactByNodeId
+      : new Map<GraphNodeId, AnalyzeGraphResult["downstreamImpacts"][number]>();
   const previousRelations = previousSnapshot(state)?.relations ?? [];
   const previousAiAnalysisStatusByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item.aiAnalysis.status]),
@@ -4938,9 +5040,7 @@ function createAiCandidates(
   const target = forcedAiAnalysisTarget(configuration);
   const candidates: PreparedAiAnalysisCandidate[] = [];
   for (const analysis of deterministicAnalysis.items) {
-    const previousObservedAt = previousSnapshot(state)?.items.find(
-      (candidate) => candidate.nodeId === analysis.item.nodeId,
-    )?.observedAt;
+    const previousObservedAt = previousTrackedItem(state, analysis.item.nodeId)?.observedAt;
     let baseInput: CodexAnalysisInput;
     try {
       baseInput = createCodexInput(
@@ -5120,6 +5220,24 @@ function codexFallbackDiagnostic(failure: AiAnalysisRunFailure): string {
 
 type AiAnalysisRunElement = AiAnalysisRunResult["results"][number]["elements"][number];
 
+type AiAnalysisRunIndex = Readonly<{
+  resultByNodeId: ReadonlyMap<string, AiAnalysisRunResult["results"][number]>;
+  failureByNodeId: ReadonlyMap<string, AiAnalysisRunResult["failures"][number]>;
+  deferredByNodeId: ReadonlyMap<string, AiAnalysisRunResult["deferred"][number]>;
+  skippedByNodeId: ReadonlyMap<string, AiAnalysisRunResult["skipped"][number]>;
+  generatedElementsByNodeId: ReadonlyMap<string, AiAnalysisElementGenerationMap>;
+}>;
+
+const EMPTY_AI_ANALYSIS_ELEMENT_GENERATIONS = Object.freeze({});
+const EMPTY_AI_ANALYSIS_RUN_INDEX: AiAnalysisRunIndex = Object.freeze({
+  resultByNodeId: new Map(),
+  failureByNodeId: new Map(),
+  deferredByNodeId: new Map(),
+  skippedByNodeId: new Map(),
+  generatedElementsByNodeId: new Map(),
+});
+const aiAnalysisRunIndexByRun = new WeakMap<AiAnalysisRunResult, AiAnalysisRunIndex>();
+
 type MutablePartial<Value> = {
   -readonly [Key in keyof Value]?: Value[Key];
 };
@@ -5157,6 +5275,54 @@ function generationMapForRunElements(
     generations[element] = generation;
   }
   return Object.freeze(generations);
+}
+
+function aiAnalysisRunIndex(run: AiAnalysisRunResult | undefined): AiAnalysisRunIndex {
+  if (run == null) {
+    return EMPTY_AI_ANALYSIS_RUN_INDEX;
+  }
+  const cached = aiAnalysisRunIndexByRun.get(run);
+  if (cached != null) {
+    return cached;
+  }
+  const resultByNodeId = new Map<string, AiAnalysisRunResult["results"][number]>();
+  const failureByNodeId = new Map<string, AiAnalysisRunResult["failures"][number]>();
+  const deferredByNodeId = new Map<string, AiAnalysisRunResult["deferred"][number]>();
+  const skippedByNodeId = new Map<string, AiAnalysisRunResult["skipped"][number]>();
+  const generatedElementsByNodeId = new Map<string, AiAnalysisElementGenerationMap>();
+  for (const result of run.results) {
+    if (!resultByNodeId.has(result.candidateId)) {
+      resultByNodeId.set(result.candidateId, result);
+      generatedElementsByNodeId.set(
+        result.candidateId,
+        generationMapForRunElements(result.elements),
+      );
+    }
+  }
+  for (const failure of run.failures) {
+    if (!failureByNodeId.has(failure.candidateId)) {
+      failureByNodeId.set(failure.candidateId, failure);
+    }
+  }
+  for (const deferred of run.deferred) {
+    if (!deferredByNodeId.has(deferred.candidateId)) {
+      deferredByNodeId.set(deferred.candidateId, deferred);
+    }
+  }
+  for (const skipped of run.skipped) {
+    if (!skippedByNodeId.has(skipped.candidateId)) {
+      skippedByNodeId.set(skipped.candidateId, skipped);
+    }
+  }
+  const index: AiAnalysisRunIndex = Object.freeze({
+    resultByNodeId,
+    failureByNodeId,
+    deferredByNodeId,
+    skippedByNodeId,
+    generatedElementsByNodeId,
+  });
+  aiAnalysisRunIndexByRun.set(run, index);
+  return index;
 }
 
 function trackedAiAnalysisElementsForGenerations(
@@ -5227,8 +5393,10 @@ function generatedElementsForNode(
   run: AiAnalysisRunResult | undefined,
   nodeId: GitHubNodeId,
 ): AiAnalysisElementGenerationMap {
-  const result = run?.results.find((candidate) => candidate.candidateId === nodeId);
-  return result == null ? Object.freeze({}) : generationMapForRunElements(result.elements);
+  return (
+    aiAnalysisRunIndex(run).generatedElementsByNodeId.get(nodeId) ??
+    EMPTY_AI_ANALYSIS_ELEMENT_GENERATIONS
+  );
 }
 
 function setEvaluatedElement(
@@ -5399,8 +5567,7 @@ function adoptedGenerationForElement(
     return undefined;
   }
   const generated = generatedElementsForNode(run, analysis.item.nodeId)[element];
-  const application =
-    reduction?.ai.status === "available" ? reduction.ai.elements[element]?.application : undefined;
+  const application = reduction?.ai.elements[element]?.application;
   const consumerResult =
     consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
   const generatedWasConsumed =
@@ -5465,10 +5632,7 @@ function adoptedElementsForAnalysis(
     const candidate = planning.candidates[element];
     const savedReuse = planning.candidates[element].savedReuse;
     const generated = generatedElements[element];
-    const application =
-      reduction?.ai.status === "available"
-        ? reduction.ai.elements[element]?.application
-        : undefined;
+    const application = reduction?.ai.elements[element]?.application;
     const consumerResult =
       consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
     const generatedWasConsumed =
@@ -5577,10 +5741,7 @@ function migratedElementsForAnalysis(
     if (candidate.necessity === "not_required") {
       continue;
     }
-    const application =
-      reduction?.ai.status === "available"
-        ? reduction.ai.elements[element]?.application
-        : undefined;
+    const application = reduction?.ai.elements[element]?.application;
     const consumerResult =
       consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
     const generatedResult = generated[element];
@@ -5844,9 +6005,7 @@ function preservedElementsForReduction(
   let deadline: AiAnalysisElementMigrationResult<"deadline"> | undefined;
   let notification: AiAnalysisElementMigrationResult<"notification"> | undefined;
   let selfCommitment: AiAnalysisElementMigrationResult<"selfCommitment"> | undefined;
-  const previousItem = previousSnapshot(state)?.items.find(
-    (candidate) => candidate.nodeId === analysis.item.nodeId,
-  );
+  const previousItem = previousTrackedItem(state, analysis.item.nodeId);
 
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const candidate = planning.candidates[element];
@@ -6426,9 +6585,10 @@ function reductionForAnalysis(
   if (run == null) {
     return undefined;
   }
+  const runIndex = aiAnalysisRunIndex(run);
   const target = forcedAiAnalysisTarget(configuration);
   const input = codexAnalysis.inputByNodeId.get(analysis.item.nodeId);
-  const result = run.results.find((candidate) => candidate.candidateId === analysis.item.nodeId);
+  const result = runIndex.resultByNodeId.get(analysis.item.nodeId);
   if (result != null) {
     assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
     const output = codexOutputForAnalysis(analysis, codexAnalysis);
@@ -6444,7 +6604,7 @@ function reductionForAnalysis(
       preservedElementsForAnalysisReduction(state, analysis, codexAnalysis, target),
     );
   }
-  const failure = run.failures.find((candidate) => candidate.candidateId === analysis.item.nodeId);
+  const failure = runIndex.failureByNodeId.get(analysis.item.nodeId);
   if (failure != null) {
     if (input == null) {
       if (failure.reason !== "input_validation_failed") {
@@ -6474,7 +6634,7 @@ function reductionForAnalysis(
       preservedElementsForAnalysisReduction(state, analysis, codexAnalysis, target),
     );
   }
-  const deferred = run.deferred.find((candidate) => candidate.candidateId === analysis.item.nodeId);
+  const deferred = runIndex.deferredByNodeId.get(analysis.item.nodeId);
   if (deferred != null) {
     assertNonNullable(input, `Codex入力がありません。対象: ${analysis.item.nodeId}`);
     return reduceCodexAnalysis(
@@ -6489,7 +6649,7 @@ function reductionForAnalysis(
       preservedElementsForAnalysisReduction(state, analysis, codexAnalysis, target),
     );
   }
-  const skipped = run.skipped.find((candidate) => candidate.candidateId === analysis.item.nodeId);
+  const skipped = runIndex.skippedByNodeId.get(analysis.item.nodeId);
   const forcedUnexecutedItem = target != null && target.nodeId !== analysis.item.nodeId;
   if (skipped?.reason !== "up_to_date" && !forcedUnexecutedItem) {
     return undefined;
@@ -6542,9 +6702,7 @@ function codexOutputForAnalysis(
   analysis: DeterministicItemAnalysis,
   codexAnalysis: CodexAnalysis,
 ): SchemaValidCodexElementOutput | undefined {
-  const result = codexAnalysis.run?.results.find(
-    (candidate) => candidate.candidateId === analysis.item.nodeId,
-  );
+  const result = aiAnalysisRunIndex(codexAnalysis.run).resultByNodeId.get(analysis.item.nodeId);
   if (result == null) {
     return undefined;
   }
@@ -6681,10 +6839,14 @@ function codexOutputForConsumers(
     },
   };
   const target = forcedAiAnalysisTarget(configuration);
-  const outputElements: AiAnalysisElement[] = [];
+  const outputElements = new Set<AiAnalysisElement>();
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const candidate = planning.candidates[element];
     const raw = rawResults.get(element);
+    const stateElement = isStateAnalysisElement(element);
+    if (codexAnalysis.run == null && stateElement) {
+      continue;
+    }
     const preserveForcedUnexecutedElement =
       isForcedUnexecutedElement(analysis, element, target) && candidate.necessity === "required";
     const forcedMigration = forcedMigrationAdoptedElementForElement(
@@ -6718,8 +6880,6 @@ function codexOutputForConsumers(
           migrationAdoptedResultForElement(state, analysis, element);
       }
     }
-    const stateElement =
-      element === "status" || element === "waitingOn" || element === "nextAction";
     const result =
       (raw != null &&
       effectiveElementConfidence(element, raw) >= configuration.config.ai.confidence.medium &&
@@ -6729,10 +6889,23 @@ function codexOutputForConsumers(
         : (adopted ?? migrated)) ?? undefined;
     if (result != null) {
       setConsumerCodexElementResult(output, element, result);
-      outputElements.push(element);
+      outputElements.add(element);
     }
   }
-  if (outputElements.length === 0) {
+  const status = output.status?.value ?? analysis.decision.status;
+  const waitingOn = output.waitingOn?.value ?? analysis.decision.waitingOn;
+  const stateValuesAreConsistent = isTerminalStatus(status)
+    ? waitingOn.length === 0
+    : waitingOn.length !== 0;
+  if (!stateValuesAreConsistent) {
+    delete output.status;
+    delete output.waitingOn;
+    delete output.nextAction;
+    for (const element of stateElementNames) {
+      outputElements.delete(element);
+    }
+  }
+  if (outputElements.size === 0) {
     return undefined;
   }
   return Object.freeze({
@@ -7107,40 +7280,57 @@ function naturalLanguageProgressAssessments(
   );
 }
 
-function graphNodeState(
+type GraphBlockerIndex = Readonly<{
+  blockingEdgesByTargetNodeId: ReadonlyMap<GraphNodeId, readonly ReconciledGraphEdge[]>;
+  stateByNodeId: ReadonlyMap<GraphNodeId, TrackedItem["state"]>;
+}>;
+
+function createGraphBlockerIndex(
   state: RuntimeState,
   deterministicAnalysis: DeterministicAnalysis,
   graph: GraphResult,
-  nodeId: GraphNodeId,
-): TrackedItem["state"] {
-  const currentItem = deterministicAnalysis.items.find(
-    (analysis) => analysis.item.nodeId === nodeId,
-  )?.item;
-  if (currentItem != null) {
-    return currentItem.state;
+): GraphBlockerIndex {
+  const stateByNodeId = new Map<GraphNodeId, TrackedItem["state"]>();
+  for (const item of previousTrackedItemsByNodeId(state).values()) {
+    stateByNodeId.set(item.nodeId, item.state);
   }
-  const externalReference = graph.externalReferences.find(
-    (reference) => reference.nodeId === nodeId,
+  for (let index = graph.externalReferences.length - 1; index >= 0; index -= 1) {
+    const reference = graph.externalReferences[index];
+    assertNonNullable(reference, `外部参照index ${index.toString()}がありません`);
+    stateByNodeId.set(reference.nodeId, reference.state);
+  }
+  for (let index = deterministicAnalysis.items.length - 1; index >= 0; index -= 1) {
+    const analysis = deterministicAnalysis.items[index];
+    assertNonNullable(analysis, `決定論的分析index ${index.toString()}がありません`);
+    stateByNodeId.set(analysis.item.nodeId, analysis.item.state);
+  }
+  const mutableBlockingEdgesByTargetNodeId = new Map<GraphNodeId, ReconciledGraphEdge[]>();
+  for (const edge of graph.edges) {
+    if (!edge.active || edge.type !== "blocks") {
+      continue;
+    }
+    const edges = mutableBlockingEdgesByTargetNodeId.get(edge.toNodeId) ?? [];
+    edges.push(edge);
+    mutableBlockingEdgesByTargetNodeId.set(edge.toNodeId, edges);
+  }
+  const blockingEdgesByTargetNodeId = new Map<GraphNodeId, readonly ReconciledGraphEdge[]>(
+    [...mutableBlockingEdgesByTargetNodeId].map(([nodeId, edges]) => [
+      nodeId,
+      Object.freeze(edges),
+    ]),
   );
-  if (externalReference != null) {
-    return externalReference.state;
-  }
-  const previousItem = previousSnapshot(state)?.items.find((item) => item.nodeId === nodeId);
-  assertNonNullable(previousItem, `blocker ${nodeId}の状態がありません`);
-  return previousItem.state;
+  return Object.freeze({
+    blockingEdgesByTargetNodeId,
+    stateByNodeId,
+  });
 }
 
 function graphBlockers(
-  state: RuntimeState,
-  deterministicAnalysis: DeterministicAnalysis,
-  graph: GraphResult,
+  index: GraphBlockerIndex,
   item: FreshObservedGitHubItem,
 ): readonly IssueBlocker[] {
   const blockersByCandidateId = new Map<GraphNodeId, IssueBlocker>();
-  for (const edge of graph.edges) {
-    if (!edge.active || edge.type !== "blocks" || edge.toNodeId !== item.nodeId) {
-      continue;
-    }
+  for (const edge of index.blockingEdgesByTargetNodeId.get(item.nodeId) ?? []) {
     const edgeSourceIds = nonEmptySourceIds(
       edge.evidence.map((evidence) => evidence.sourceId),
       `blocker edge ${edge.id}`,
@@ -7148,11 +7338,13 @@ function graphBlockers(
     const edgeBecameBlockingAt = edge.provenance === "native" ? item.createdAt : edge.firstSeenAt;
     const existing = blockersByCandidateId.get(edge.fromNodeId);
     if (existing == null) {
+      const blockerState = index.stateByNodeId.get(edge.fromNodeId);
+      assertNonNullable(blockerState, `blocker ${edge.fromNodeId}の状態がありません`);
       blockersByCandidateId.set(
         edge.fromNodeId,
         Object.freeze({
           candidateId: edge.fromNodeId,
-          state: graphNodeState(state, deterministicAnalysis, graph, edge.fromNodeId),
+          state: blockerState,
           authority: edge.authoritative ? "authoritative" : "inferred",
           confidence: edge.confidence,
           sourceIds: edgeSourceIds,
@@ -7191,12 +7383,10 @@ function graphBlockers(
 function reassessDeterministicAnalysis(
   evaluatedAt: UtcIsoDateTime,
   configuration: RuntimeConfiguration,
-  state: RuntimeState,
   inventory: RepositoryInventory,
-  deterministicAnalysis: DeterministicAnalysis,
   analysis: DeterministicItemAnalysis,
   output: ConsumerCodexElementOutput | undefined,
-  graph: GraphResult | undefined,
+  graphBlockerIndex: GraphBlockerIndex | undefined,
 ): DeterministicItemAnalysis {
   const repository = findRepository(inventory, analysis.item.repositoryId);
   const maintainers = resolveRepositoryMaintainers(
@@ -7204,9 +7394,9 @@ function reassessDeterministicAnalysis(
     repositoryFullName(repository),
   );
   const blockers =
-    graph == null
+    graphBlockerIndex == null
       ? createNativeBlockers(analysis.item, analysis.relationCandidates)
-      : graphBlockers(state, deterministicAnalysis, graph, analysis.item);
+      : graphBlockers(graphBlockerIndex, analysis.item);
   if (analysis.item.type === "issue" && analysis.detail.type === "issue") {
     const explicitRequestAssessmentValue = explicitRequestAssessment(
       analysis.item,
@@ -7309,96 +7499,243 @@ function enumeratedTerminalAt(item: EnumeratedGitHubItem | undefined): UtcIsoDat
   return terminal == null ? undefined : terminal.occurredAt;
 }
 
-function previousBlockerEdges(
+type ActiveRelation = Relation & Readonly<{ active: true }>;
+
+type PreviousBlockerEdgesByTargetNodeId = ReadonlyMap<
+  GraphNodeId,
+  ReadonlyMap<GraphNodeId, readonly ActiveRelation[]>
+>;
+
+function previousBlockerEdgesByTargetNodeId(
   state: RuntimeState,
-  nodeId: GitHubNodeId,
-): ReadonlyMap<GraphNodeId, readonly (Relation & Readonly<{ active: true }>)[]> {
+): PreviousBlockerEdgesByTargetNodeId {
   const snapshot = previousSnapshot(state);
-  assertNonNullable(snapshot, `newly unblocked項目 ${nodeId}の前回snapshotがありません`);
+  assertNonNullable(snapshot, "newly unblocked項目の前回snapshotがありません");
   const previousStateByNodeId = new Map<GraphNodeId, TrackedItem["state"]>([
-    ...snapshot.items.map((item) => [item.nodeId, item.state] as const),
-    ...snapshot.externalReferences.map((item) => [item.nodeId, item.state] as const),
+    ...snapshot.items.map((item): [GraphNodeId, TrackedItem["state"]] => [item.nodeId, item.state]),
+    ...snapshot.externalReferences.map((item): [GraphNodeId, TrackedItem["state"]] => [
+      item.nodeId,
+      item.state,
+    ]),
   ]);
-  const edgesByBlockerNodeId = new Map<GraphNodeId, (Relation & Readonly<{ active: true }>)[]>();
+  const edgesByTargetNodeId = new Map<GraphNodeId, Map<GraphNodeId, ActiveRelation[]>>();
   for (const edge of snapshot.relations) {
     if (
       !edge.active ||
       edge.type !== "blocks" ||
-      edge.toNodeId !== nodeId ||
       previousStateByNodeId.get(edge.fromNodeId) !== "open"
     ) {
+      continue;
+    }
+    const edgesByBlockerNodeId = edgesByTargetNodeId.get(edge.toNodeId);
+    if (edgesByBlockerNodeId == null) {
+      edgesByTargetNodeId.set(edge.toNodeId, new Map([[edge.fromNodeId, [edge]]]));
       continue;
     }
     const edges = edgesByBlockerNodeId.get(edge.fromNodeId);
     if (edges == null) {
       edgesByBlockerNodeId.set(edge.fromNodeId, [edge]);
-    } else {
-      edges.push(edge);
+      continue;
+    }
+    edges.push(edge);
+  }
+  return edgesByTargetNodeId;
+}
+
+type RelationProgressEvent = Extract<NormalizedEvent, { kind: "relation" }>;
+
+type DependencyResolutionIndexes = Readonly<{
+  previousBlockerEdgesByTargetNodeId: PreviousBlockerEdgesByTargetNodeId;
+  previousObservedAtByNodeId: ReadonlyMap<GitHubNodeId, UtcIsoDateTime>;
+  enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>;
+  observedItemsByNodeId: ReadonlyMap<GraphNodeId, FreshObservedGitHubItem>;
+  relationEventsByKey: ReadonlyMap<string, readonly RelationProgressEvent[]>;
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>;
+  relationRemovalEventsByKey: ReadonlyMap<string, RelationProgressEvent>;
+  editedRelationSourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>;
+  candidatesById: ReadonlyMap<string, RelationCandidate>;
+  relationCandidateAiDependencies: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>;
+  assessmentsById: ReadonlyMap<string, RelationCandidateAssessment>;
+  currentEdgesById: ReadonlyMap<string, ReconciledGraphEdge>;
+}>;
+
+function relationProgressKey(
+  relationType: Relation["type"],
+  provenance: Relation["provenance"],
+  fromNodeId: GraphNodeId,
+  toNodeId: GraphNodeId,
+): string {
+  return JSON.stringify([relationType, provenance, fromNodeId, toNodeId]);
+}
+
+function relationMeaningKey(
+  relationType: Relation["type"],
+  fromNodeId: GraphNodeId,
+  toNodeId: GraphNodeId,
+): string {
+  return JSON.stringify([relationType, fromNodeId, toNodeId]);
+}
+
+function relationProgressEventKey(event: RelationProgressEvent): string {
+  if (event.target.type !== "node") {
+    throw new TypeError(
+      `relation progress eventのtargetがnodeではありません。対象: ${event.sourceId}`,
+    );
+  }
+  const fromNodeId = event.direction === "from_item" ? event.itemNodeId : event.target.nodeId;
+  const toNodeId = event.direction === "from_item" ? event.target.nodeId : event.itemNodeId;
+  return relationProgressKey(event.relationType, event.provenance, fromNodeId, toNodeId);
+}
+
+type DependencyResolutionStaticIndexes = Omit<DependencyResolutionIndexes, "assessmentsById">;
+
+function createDependencyResolutionStaticIndexes(
+  state: RuntimeState,
+  collection: CollectedItems,
+  graph: GraphResult,
+): DependencyResolutionStaticIndexes {
+  const previousSnapshotValue = previousSnapshot(state);
+  assertNonNullable(previousSnapshotValue, "newly unblocked項目の前回snapshotがありません");
+  const previousObservedAtByNodeId = new Map<GitHubNodeId, UtcIsoDateTime>(
+    previousSnapshotValue.items.map((item): [GitHubNodeId, UtcIsoDateTime] => [
+      item.nodeId,
+      item.observedAt,
+    ]),
+  );
+  const enumeratedItemsByNodeId = new Map<GraphNodeId, EnumeratedGitHubItem>();
+  for (const item of collection.enumeratedItems) {
+    if (enumeratedItemsByNodeId.has(item.nodeId)) {
+      throw new TypeError(`enumerated item ${item.nodeId}が重複しています`);
+    }
+    enumeratedItemsByNodeId.set(item.nodeId, item);
+  }
+  const observedItemsByNodeId = new Map<GraphNodeId, FreshObservedGitHubItem>();
+  for (const item of collection.observedItems) {
+    if (observedItemsByNodeId.has(item.nodeId)) {
+      throw new TypeError(`observed item ${item.nodeId}が重複しています`);
+    }
+    observedItemsByNodeId.set(item.nodeId, item);
+  }
+  const relationEventsByKey = new Map<string, RelationProgressEvent[]>();
+  const relationRemovalEventsByKey = new Map<string, RelationProgressEvent>();
+  for (const item of collection.observedItems) {
+    for (const event of item.events) {
+      if (event.kind !== "relation" || event.target.type !== "node") {
+        continue;
+      }
+      const key = relationProgressEventKey(event);
+      const relationEvents = relationEventsByKey.get(key);
+      if (relationEvents == null) {
+        relationEventsByKey.set(key, [event]);
+      } else {
+        relationEvents.push(event);
+      }
+      const existing = relationRemovalEventsByKey.get(key);
+      if (
+        existing == null ||
+        event.occurredAt > existing.occurredAt ||
+        (event.occurredAt === existing.occurredAt && event.sourceId > existing.sourceId)
+      ) {
+        relationRemovalEventsByKey.set(key, event);
+      }
     }
   }
-  return edgesByBlockerNodeId;
+  const editedRelationSourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
+  for (const detail of collection.details) {
+    for (const comment of detail.comments) {
+      if (comment.updatedAt === comment.createdAt) {
+        continue;
+      }
+      const existing = editedRelationSourceOccurredAtById.get(comment.sourceId);
+      if (existing == null || comment.updatedAt > existing) {
+        editedRelationSourceOccurredAtById.set(comment.sourceId, comment.updatedAt);
+      }
+    }
+  }
+  const candidatesById = new Map<string, RelationCandidate>();
+  for (const candidate of collection.relationCandidates) {
+    if (candidatesById.has(candidate.id)) {
+      throw new TypeError(`関係候補 ${candidate.id}が重複しています`);
+    }
+    candidatesById.set(candidate.id, candidate);
+  }
+  const currentEdgesById = new Map<string, ReconciledGraphEdge>();
+  for (const edge of graph.edges) {
+    if (currentEdgesById.has(edge.id)) {
+      throw new TypeError(`graph edge ${edge.id}が重複しています`);
+    }
+    currentEdgesById.set(edge.id, edge);
+  }
+  return Object.freeze({
+    previousBlockerEdgesByTargetNodeId: previousBlockerEdgesByTargetNodeId(state),
+    previousObservedAtByNodeId,
+    enumeratedItemsByNodeId,
+    observedItemsByNodeId,
+    relationEventsByKey,
+    sourceOccurredAtById: createDependencySourceOccurredAtById(collection),
+    relationRemovalEventsByKey,
+    editedRelationSourceOccurredAtById,
+    candidatesById,
+    relationCandidateAiDependencies: graph.relationCandidateAiDependencies,
+    currentEdgesById,
+  });
+}
+
+function createDependencyResolutionIndexes(
+  staticIndexes: DependencyResolutionStaticIndexes,
+  relationAssessments: readonly RelationCandidateAssessment[],
+): DependencyResolutionIndexes {
+  const assessmentsById = new Map<string, RelationCandidateAssessment>();
+  for (const assessment of relationAssessments) {
+    if (assessmentsById.has(assessment.candidateId)) {
+      throw new TypeError(`関係候補 ${assessment.candidateId}のAI判定が重複しています`);
+    }
+    assessmentsById.set(assessment.candidateId, assessment);
+  }
+  return Object.freeze({
+    ...staticIndexes,
+    assessmentsById,
+  });
 }
 
 function latestRelationEventForProgress(
-  collection: CollectedItems,
+  indexes: DependencyResolutionIndexes,
   edge: Relation,
-): Extract<NormalizedEvent, { kind: "relation" }> | undefined {
-  const matchingEvents = collection.observedItems
-    .flatMap((item) => item.events)
-    .filter(
-      (event): event is Extract<NormalizedEvent, { kind: "relation" }> =>
-        event.kind === "relation" &&
-        event.target.type === "node" &&
-        event.relationType === edge.type &&
-        event.provenance === edge.provenance &&
-        event.occurredAt >= edge.firstSeenAt &&
-        (event.direction === "from_item"
-          ? event.itemNodeId === edge.fromNodeId && event.target.nodeId === edge.toNodeId
-          : event.itemNodeId === edge.toNodeId && event.target.nodeId === edge.fromNodeId),
-    )
-    .sort((left, right) => {
-      if (left.occurredAt !== right.occurredAt) {
-        return left.occurredAt.localeCompare(right.occurredAt);
-      }
-      return left.sourceId.localeCompare(right.sourceId);
-    });
-  const latestEvent = matchingEvents.at(-1);
-  if (latestEvent?.action !== "removed") {
+): RelationProgressEvent | undefined {
+  const event = indexes.relationRemovalEventsByKey.get(
+    relationProgressKey(edge.type, edge.provenance, edge.fromNodeId, edge.toNodeId),
+  );
+  if (event == null || event.occurredAt < edge.firstSeenAt || event.action !== "removed") {
     return undefined;
   }
-  return latestEvent;
-}
-
-function relationRemovalEventOccurredAts(
-  collection: CollectedItems,
-  edge: Relation,
-): readonly UtcIsoDateTime[] {
-  const event = latestRelationEventForProgress(collection, edge);
-  return event == null ? Object.freeze([]) : Object.freeze([event.occurredAt]);
+  return event;
 }
 
 function editedRelationSourceOccurredAts(
-  collection: CollectedItems,
+  indexes: DependencyResolutionIndexes,
   edge: Relation,
 ): readonly UtcIsoDateTime[] {
-  const evidenceSourceIds = new Set(edge.evidence.map((evidence) => evidence.sourceId));
   return Object.freeze(
-    collection.details.flatMap((detail) =>
-      detail.comments.flatMap((comment) =>
-        evidenceSourceIds.has(comment.sourceId) && comment.updatedAt !== comment.createdAt
-          ? [comment.updatedAt]
-          : [],
-      ),
-    ),
+    edge.evidence.flatMap((evidence) => {
+      const occurredAt = indexes.editedRelationSourceOccurredAtById.get(evidence.sourceId);
+      return occurredAt == null ? [] : [occurredAt];
+    }),
   );
 }
 
 function createDependencySourceOccurredAtById(
   collection: CollectedItems,
 ): ReadonlyMap<SourceId, UtcIsoDateTime> {
+  const detailsByNodeId = new Map<GitHubNodeId, GitHubItemDetail>();
+  for (const detail of collection.details) {
+    if (detailsByNodeId.has(detail.nodeId)) {
+      throw new TypeError(`依存解消sourceの詳細が重複しています。対象: ${detail.nodeId}`);
+    }
+    detailsByNodeId.set(detail.nodeId, detail);
+  }
   const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
   for (const item of collection.observedItems) {
-    const detail = collection.details.find((candidate) => candidate.nodeId === item.nodeId);
+    const detail = detailsByNodeId.get(item.nodeId);
     assertNonNullable(detail, `依存解消sourceの詳細がありません。対象: ${item.nodeId}`);
     for (const [sourceId, occurredAt] of createCodexSourceOccurredAtById(item, detail)) {
       const existingOccurredAt = sourceOccurredAtById.get(sourceId);
@@ -7423,31 +7760,27 @@ function resolvedSourceOccurredAts(
 }
 
 function relationResolutionOccurredAt(
-  collection: CollectedItems,
-  graph: GraphResult,
-  relationAssessments: readonly RelationCandidateAssessment[],
+  indexes: DependencyResolutionIndexes,
   sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
   edge: Relation & Readonly<{ active: true }>,
 ): UtcIsoDateTime {
-  const removalEventOccurredAts = relationRemovalEventOccurredAts(collection, edge);
-  if (removalEventOccurredAts.length > 0) {
-    return latestUtcIsoDateTime(removalEventOccurredAts, `relation ${edge.id}の削除イベント`);
+  const removalEvent = latestRelationEventForProgress(indexes, edge);
+  if (removalEvent != null) {
+    return removalEvent.occurredAt;
   }
-  const currentCandidate = collection.relationCandidates.find(
-    (candidate) => candidate.id === edge.id,
-  );
+  const currentCandidate = indexes.candidatesById.get(edge.id);
   if (currentCandidate == null) {
-    const editedSourceOccurredAts = editedRelationSourceOccurredAts(collection, edge);
+    const editedSourceOccurredAts = editedRelationSourceOccurredAts(indexes, edge);
     return editedSourceOccurredAts.length === 0
       ? edge.firstSeenAt
       : latestUtcIsoDateTime(editedSourceOccurredAts, `relation ${edge.id}の根拠編集`);
   }
-  const currentEdge = graph.edges.find((candidate) => candidate.id === edge.id);
+  const currentEdge = indexes.currentEdgesById.get(edge.id);
   const currentEdgeOccurredAts = resolvedSourceOccurredAts(
     currentEdge?.evidence.map((evidence) => evidence.sourceId) ?? [],
     sourceOccurredAtById,
   );
-  const assessment = relationAssessments.find((candidate) => candidate.candidateId === edge.id);
+  const assessment = indexes.assessmentsById.get(edge.id);
   const assessmentOccurredAts = resolvedSourceOccurredAts(
     assessment?.sourceIds ?? [],
     sourceOccurredAtById,
@@ -7485,8 +7818,6 @@ function notificationCauseEvidenceForEvent(
     actor: humanActor,
   });
 }
-
-type NotificationRelationEvent = Extract<NormalizedEvent, { kind: "relation" }>;
 
 type RelationCauseResolution =
   | Readonly<{
@@ -7527,6 +7858,7 @@ function nonEmptyNotificationCauseEvidence(
 function terminalCauseForBlocker(
   collection: CollectedItems,
   enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  observedItemsByNodeId: ReadonlyMap<GraphNodeId, FreshObservedGitHubItem>,
   blockerNodeId: GraphNodeId,
   previousObservedAt: UtcIsoDateTime,
 ): DependencyBlockerCause | undefined {
@@ -7537,7 +7869,7 @@ function terminalCauseForBlocker(
   if (terminal.occurredAt <= previousObservedAt || terminal.occurredAt > collection.evaluatedAt) {
     return Object.freeze({ status: "indeterminate" });
   }
-  const observed = collection.observedItems.find((item) => item.nodeId === blockerNodeId);
+  const observed = observedItemsByNodeId.get(blockerNodeId);
   if (observed == null) {
     return Object.freeze({ status: "indeterminate" });
   }
@@ -7567,14 +7899,17 @@ function terminalCauseForBlocker(
 
 function relationCauseForEdge(
   collection: CollectedItems,
+  relationEventsByKey: ReadonlyMap<string, readonly RelationProgressEvent[]>,
   edge: Relation,
   previousObservedAt: UtcIsoDateTime,
 ): RelationCauseResolution {
-  const matchingEvents: NotificationRelationEvent[] = collection.observedItems
-    .flatMap((item) => item.events)
+  const matchingEvents = (
+    relationEventsByKey.get(
+      relationProgressKey(edge.type, edge.provenance, edge.fromNodeId, edge.toNodeId),
+    ) ?? []
+  )
     .filter(
-      (event): event is NotificationRelationEvent =>
-        event.kind === "relation" &&
+      (event) =>
         event.target.type === "node" &&
         event.relationType === edge.type &&
         event.provenance === edge.provenance &&
@@ -7626,6 +7961,8 @@ function relationCauseForEdge(
 function dependencyCauseForBlocker(
   collection: CollectedItems,
   enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  observedItemsByNodeId: ReadonlyMap<GraphNodeId, FreshObservedGitHubItem>,
+  relationEventsByKey: ReadonlyMap<string, readonly RelationProgressEvent[]>,
   blockerNodeId: GraphNodeId,
   edges: readonly (Relation & Readonly<{ active: true }>)[],
   previousObservedAt: UtcIsoDateTime,
@@ -7633,6 +7970,7 @@ function dependencyCauseForBlocker(
   const terminalCause = terminalCauseForBlocker(
     collection,
     enumeratedItemsByNodeId,
+    observedItemsByNodeId,
     blockerNodeId,
     previousObservedAt,
   );
@@ -7642,7 +7980,12 @@ function dependencyCauseForBlocker(
   const relationEvidence: NotificationCauseEvidence[] = [];
   let allRelationsRemoved = true;
   for (const edge of edges) {
-    const relationCause = relationCauseForEdge(collection, edge, previousObservedAt);
+    const relationCause = relationCauseForEdge(
+      collection,
+      relationEventsByKey,
+      edge,
+      previousObservedAt,
+    );
     if (relationCause.status === "indeterminate") {
       return Object.freeze({ status: "indeterminate" });
     }
@@ -7665,21 +8008,11 @@ function dependencyCauseForBlocker(
   return Object.freeze({ status: "complete", evidence: completeEvidence });
 }
 
-function previousDependencyObservedAt(
-  state: RuntimeState,
-  nodeId: GitHubNodeId,
-): UtcIsoDateTime | undefined {
-  const snapshot = previousSnapshot(state);
-  if (snapshot == null) {
-    return undefined;
-  }
-  const item = snapshot.items.find((candidate) => candidate.nodeId === nodeId);
-  return item == null ? undefined : item.observedAt;
-}
-
 function dependencyCauseForBlockers(
   collection: CollectedItems,
   enumeratedItemsByNodeId: ReadonlyMap<GraphNodeId, EnumeratedGitHubItem>,
+  observedItemsByNodeId: ReadonlyMap<GraphNodeId, FreshObservedGitHubItem>,
+  relationEventsByKey: ReadonlyMap<string, readonly RelationProgressEvent[]>,
   edgesByBlockerNodeId: ReadonlyMap<
     GraphNodeId,
     readonly (Relation & Readonly<{ active: true }>)[]
@@ -7691,6 +8024,8 @@ function dependencyCauseForBlockers(
     const blockerCause = dependencyCauseForBlocker(
       collection,
       enumeratedItemsByNodeId,
+      observedItemsByNodeId,
+      relationEventsByKey,
       blockerNodeId,
       edges,
       previousObservedAt,
@@ -7710,10 +8045,86 @@ function dependencyCauseForBlockers(
   });
 }
 
+function dependencyResolutionSupport(
+  indexes: DependencyResolutionIndexes,
+  edge: Relation & Readonly<{ active: true }>,
+  occurredAt: UtcIsoDateTime,
+): AiAnalysisDependency {
+  const resolutionDependencies: AiAnalysisDependency[] = [];
+  resolutionDependencies.push(edge.aiDependency);
+  const removalEvent = latestRelationEventForProgress(indexes, edge);
+  if (removalEvent?.occurredAt === occurredAt) {
+    resolutionDependencies.push(notDependentAiDependency());
+  }
+  const currentCandidate = indexes.candidatesById.get(edge.id);
+  if (currentCandidate != null) {
+    const candidateDependency = indexes.relationCandidateAiDependencies.get(currentCandidate.id);
+    assertNonNullable(candidateDependency, `関係候補 ${currentCandidate.id}のAI依存がありません`);
+    resolutionDependencies.push(aiAnalysisDependencyForRelation(edge.id, candidateDependency));
+  } else {
+    const currentEdge = indexes.currentEdgesById.get(edge.id);
+    if (currentEdge != null) {
+      resolutionDependencies.push(currentEdge.aiDependency);
+    }
+  }
+  return combineAiAnalysisDependencies(resolutionDependencies);
+}
+
+type DependencyResolutionRelationGroup = Readonly<{
+  occurredAt: UtcIsoDateTime;
+  edges: readonly (Relation & Readonly<{ active: true }>)[];
+  supportDependency: AiAnalysisDependency;
+  dependency: AiAnalysisDependency;
+}>;
+
+function relationResolutionGroups(
+  edges: readonly (Relation & Readonly<{ active: true }>)[],
+): readonly (readonly (Relation & Readonly<{ active: true }>)[])[] {
+  const groups = new Map<string, (Relation & Readonly<{ active: true }>)[]>();
+  for (const edge of edges) {
+    const key = relationMeaningKey(edge.type, edge.fromNodeId, edge.toNodeId);
+    const group = groups.get(key);
+    if (group == null) {
+      groups.set(key, [edge]);
+    } else {
+      group.push(edge);
+    }
+  }
+  return Object.freeze([...groups.values()].map((group) => Object.freeze(group)));
+}
+
+function dependencyResolutionRelationGroup(
+  indexes: DependencyResolutionIndexes,
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+  edges: readonly (Relation & Readonly<{ active: true }>)[],
+): DependencyResolutionRelationGroup {
+  const supportDependency = preferIndependentAiDependency(edges.map((edge) => edge.aiDependency));
+  const occurredAts = edges.map((edge) =>
+    relationResolutionOccurredAt(indexes, sourceOccurredAtById, edge),
+  );
+  const occurredAt = latestUtcIsoDateTime(occurredAts, "関係supportの解消");
+  const dependencies = edges.map((edge) =>
+    dependencyResolutionSupport(
+      indexes,
+      edge,
+      relationResolutionOccurredAt(indexes, sourceOccurredAtById, edge),
+    ),
+  );
+  if (dependencies.length === 0) {
+    throw new TypeError("関係supportの解消依存がありません");
+  }
+  return Object.freeze({
+    occurredAt,
+    edges: Object.freeze(edges),
+    supportDependency,
+    dependency: combineAiAnalysisDependencies(dependencies),
+  });
+}
+
 function dependencyResolutions(
-  state: RuntimeState,
   collection: CollectedItems,
   graph: GraphResult | undefined,
+  staticIndexes: DependencyResolutionStaticIndexes | undefined,
   relationAssessments: readonly RelationCandidateAssessment[],
   analysis: DeterministicItemAnalysis,
 ): DependencyResolutionResult {
@@ -7723,53 +8134,80 @@ function dependencyResolutions(
       cause: Object.freeze({ status: "not_applicable" }),
     });
   }
-  const edgesByBlockerNodeId = previousBlockerEdges(state, analysis.item.nodeId);
+  assertNonNullable(staticIndexes, "newly unblocked項目の依存解消indexがありません");
+  const edgesByBlockerNodeId = staticIndexes.previousBlockerEdgesByTargetNodeId.get(
+    analysis.item.nodeId,
+  );
+  assertNonNullable(
+    edgesByBlockerNodeId,
+    `newly unblocked項目 ${analysis.item.nodeId}の前回blockerがありません`,
+  );
   if (edgesByBlockerNodeId.size === 0) {
     throw new TypeError(`newly unblocked項目 ${analysis.item.nodeId}の前回blockerがありません`);
   }
-  const previousObservedAt = previousDependencyObservedAt(state, analysis.item.nodeId);
-  const enumeratedItemsByNodeId = new Map<GraphNodeId, EnumeratedGitHubItem>(
-    collection.enumeratedItems.map((item) => [item.nodeId, item]),
-  );
+  const previousObservedAt = staticIndexes.previousObservedAtByNodeId.get(analysis.item.nodeId);
+  const enumeratedItemsByNodeId = staticIndexes.enumeratedItemsByNodeId;
   const cause: NotificationDependencyCause =
     previousObservedAt == null
       ? Object.freeze({ status: "indeterminate" })
       : dependencyCauseForBlockers(
           collection,
           enumeratedItemsByNodeId,
+          staticIndexes.observedItemsByNodeId,
+          staticIndexes.relationEventsByKey,
           edgesByBlockerNodeId,
           previousObservedAt,
         );
-  const sourceOccurredAtById = createDependencySourceOccurredAtById(collection);
-  const blockerResolutionOccurredAts = [...edgesByBlockerNodeId].map(([blockerNodeId, edges]) => {
+  const sourceOccurredAtById = staticIndexes.sourceOccurredAtById;
+  const indexes = createDependencyResolutionIndexes(staticIndexes, relationAssessments);
+  const blockerResolutions = [...edgesByBlockerNodeId].map(([blockerNodeId, edges]) => {
     const terminalAt = enumeratedTerminalAt(enumeratedItemsByNodeId.get(blockerNodeId));
-    if (terminalAt != null) {
-      return terminalAt;
-    }
-    return latestUtcIsoDateTime(
-      edges.map((edge) =>
-        relationResolutionOccurredAt(
-          collection,
-          graph,
-          relationAssessments,
-          sourceOccurredAtById,
-          edge,
-        ),
-      ),
-      `blocker ${blockerNodeId}の関係解消`,
+    const groups = relationResolutionGroups(edges).map((group) =>
+      dependencyResolutionRelationGroup(indexes, sourceOccurredAtById, group),
     );
+    const occurredAt =
+      terminalAt ??
+      latestUtcIsoDateTime(
+        groups.map((group) => group.occurredAt),
+        `blocker ${blockerNodeId}の関係解消`,
+      );
+    const selectedGroups = groups.filter((group) => group.occurredAt === occurredAt);
+    const selectedEdges = terminalAt == null ? selectedGroups.flatMap((group) => group.edges) : [];
+    const dependencies =
+      terminalAt != null
+        ? groups.map((group) =>
+            combineSelectedAiDependencies([group.supportDependency, notDependentAiDependency()]),
+          )
+        : groups.map((group) => group.dependency);
+    if (dependencies.length === 0) {
+      throw new TypeError(`blocker ${blockerNodeId}の関係解消依存がありません`);
+    }
+    return Object.freeze({
+      blockerNodeId,
+      occurredAt,
+      edges: Object.freeze(selectedEdges),
+      dependencies: Object.freeze([combineAiAnalysisDependencies(dependencies)]),
+    });
   });
+  const resolutionOccurredAt = latestUtcIsoDateTime(
+    [analysis.item.createdAt, ...blockerResolutions.map((resolution) => resolution.occurredAt)],
+    `newly unblocked項目 ${analysis.item.nodeId}`,
+  );
+  const resolutionDependencies = blockerResolutions.flatMap(
+    (resolution) => resolution.dependencies,
+  );
+  if (resolutionDependencies.length === 0) {
+    throw new TypeError(`newly unblocked項目 ${analysis.item.nodeId}の依存解消根拠がありません`);
+  }
   const sourceIds = [...edgesByBlockerNodeId.values()]
     .flat()
     .flatMap((edge) => edge.evidence.map((evidence) => evidence.sourceId));
   return Object.freeze({
     progress: Object.freeze([
       Object.freeze({
-        occurredAt: latestUtcIsoDateTime(
-          [analysis.item.createdAt, ...blockerResolutionOccurredAts],
-          `newly unblocked項目 ${analysis.item.nodeId}`,
-        ),
+        occurredAt: resolutionOccurredAt,
         sourceIds: nonEmptySourceIds(sourceIds, `newly unblocked項目 ${analysis.item.nodeId}`),
+        aiDependency: combineAiAnalysisDependencies(resolutionDependencies),
       }),
     ]),
     cause,
@@ -7779,19 +8217,37 @@ function dependencyResolutions(
 function primaryWaitingOnForDecision(
   deterministicDecision: IssueStateDecision | PullRequestStateDecision,
   decision: ReducedCodexDecision,
+  application: AiAnalysisElementApplication,
 ): PrimaryWaitingOn {
-  if (decision.origin === "deterministic") {
+  if (!aiAnalysisElementApplicationUsesAiValue(application)) {
     return deterministicDecision.primaryWaitingOn;
   }
+  const selectionSource = (() => {
+    switch (application.status) {
+      case "current_ai":
+        return "現在の入力で検証したAI判定";
+      case "retained_ai":
+        return "保持しているAI判定";
+      case "unknown":
+        return "適用元を確認できないAI判定";
+      case "not_required":
+      case "deterministic_fallback":
+      case "unavailable":
+      case "disabled":
+        throw new TypeError("AIを適用していないwaitingOnからAI向けのprimaryを作成できません");
+      default:
+        throw new UnreachableError(application);
+    }
+  })();
   if (decision.waitingOn.length === 0) {
     return Object.freeze({
       index: "not_applicable",
-      selectionReason: "Codex判定に待ち相手がないためprimaryはありません",
+      selectionReason: `${selectionSource}に待ち相手がないためprimaryはありません`,
     });
   }
   return Object.freeze({
     index: 0,
-    selectionReason: "Codexが返した待ち相手の優先順でprimaryを選定しました",
+    selectionReason: `${selectionSource}が返した待ち相手の優先順でprimaryを選定しました`,
   });
 }
 
@@ -7812,18 +8268,7 @@ function transitionBasisForDecision(
     ...decision.evidence.map((evidence) => evidence.sourceId),
     ...decision.waitingOn.flatMap((waitingOn) => waitingOn.sourceIds),
   ];
-  const sourceOccurredAtById = new Map(
-    createCodexSourceOccurredAtById(analysis.item, analysis.detail),
-  );
-  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
-    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
-      addCodexSourceOccurredAtForContext(
-        sourceOccurredAtById,
-        sourceContext.item,
-        sourceContext.detail,
-      );
-    }
-  }
+  const sourceOccurredAtById = sourceOccurredAtByIdForAnalysis(analysis);
   const resolvedOccurredAts = [...new Set(sourceIds)].flatMap((sourceId) => {
     const occurredAt = sourceOccurredAtById.get(sourceId);
     return occurredAt == null ? [] : [occurredAt];
@@ -7849,12 +8294,31 @@ function transitionBasisForDecision(
   });
 }
 
+function sourceOccurredAtByIdForAnalysis(
+  analysis: Readonly<
+    Pick<DeterministicItemAnalysis, "item" | "detail" | "effectiveAssigneeCandidates">
+  >,
+): ReadonlyMap<SourceId, UtcIsoDateTime> {
+  const sourceOccurredAtById = new Map(
+    createCodexSourceOccurredAtById(analysis.item, analysis.detail),
+  );
+  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
+    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
+      addCodexSourceOccurredAtForContext(
+        sourceOccurredAtById,
+        sourceContext.item,
+        sourceContext.detail,
+      );
+    }
+  }
+  return sourceOccurredAtById;
+}
+
 function previousStalenessState(
   state: RuntimeState,
   nodeId: GitHubNodeId,
 ): Parameters<typeof calculateStaleness>[0]["previousState"] {
-  const snapshot = previousSnapshot(state);
-  const previous = snapshot?.items.find((item) => item.nodeId === nodeId);
+  const previous = previousTrackedItem(state, nodeId);
   if (previous == null) {
     return Object.freeze({
       availability: "not_available",
@@ -7950,6 +8414,1024 @@ function trackedItemInputEvents(
   );
 }
 
+function notDependentAiDependency(): AiAnalysisDependency {
+  return Object.freeze({ status: "not_dependent" });
+}
+
+function unrecordedAiDependency(): AiAnalysisDependency {
+  return Object.freeze({
+    status: "unknown",
+    reason: "not_recorded",
+  });
+}
+
+function aiDependencyForElementApplication(
+  nodeId: GitHubNodeId,
+  applications: TrackedItemAiAnalysisApplications,
+  element: AiAnalysisElement,
+): AiAnalysisDependency {
+  const application = applications[element];
+  assertNonNullable(application, `AI適用元がありません。対象: ${nodeId} element: ${element}`);
+  return aiAnalysisDependencyForApplication(nodeId, element, application);
+}
+
+function combineSelectedAiDependencies(
+  dependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  if (dependencies.length === 0) {
+    return notDependentAiDependency();
+  }
+  return combineAiAnalysisDependencies(dependencies);
+}
+
+function aiDependencyIndependencePriority(dependency: AiAnalysisDependency): number {
+  switch (dependency.status) {
+    case "not_dependent":
+      return 0;
+    case "current":
+      return 1;
+    case "unverified":
+      return 2;
+    case "unknown":
+      return 3;
+    default:
+      throw new UnreachableError(dependency);
+  }
+}
+
+function preferIndependentAiDependency(
+  dependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  if (dependencies.length === 0) {
+    return notDependentAiDependency();
+  }
+  const preferredPriority = Math.min(...dependencies.map(aiDependencyIndependencePriority));
+  const preferred = dependencies.filter(
+    (dependency) => aiDependencyIndependencePriority(dependency) === preferredPriority,
+  );
+  return combineSelectedAiDependencies(preferred);
+}
+
+function preferredAiDependencies(
+  dependencies: readonly AiAnalysisDependency[],
+  count: number,
+): readonly AiAnalysisDependency[] {
+  if (count < 0 || !Number.isInteger(count)) {
+    throw new TypeError("選択するAI依存数は0以上の整数でなければなりません");
+  }
+  if (count > dependencies.length) {
+    throw new TypeError("選択するAI依存数が候補数を超えています");
+  }
+  return Object.freeze(
+    dependencies
+      .map((dependency, index) => Object.freeze({ dependency, index }))
+      .sort((left, right) => {
+        const priorityOrder =
+          aiDependencyIndependencePriority(left.dependency) -
+          aiDependencyIndependencePriority(right.dependency);
+        return priorityOrder === 0 ? left.index - right.index : priorityOrder;
+      })
+      .slice(0, count)
+      .map((entry) => entry.dependency),
+  );
+}
+
+function downstreamImpactAiDependenciesByNodeId(
+  graph: GraphResult,
+): ReadonlyMap<GraphNodeId, AiAnalysisDependency> {
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency>();
+  for (const entry of graph.downstreamImpactAiDependencies) {
+    if (dependenciesByNodeId.has(entry.nodeId)) {
+      throw new TypeError(`downstream impact AI依存が重複しています。対象: ${entry.nodeId}`);
+    }
+    dependenciesByNodeId.set(entry.nodeId, entry.dependency);
+  }
+  return dependenciesByNodeId;
+}
+
+function downstreamImpactsByNodeId(
+  graph: GraphResult,
+): ReadonlyMap<GraphNodeId, AnalyzeGraphResult["downstreamImpacts"][number]> {
+  const impactsByNodeId = new Map<GraphNodeId, AnalyzeGraphResult["downstreamImpacts"][number]>();
+  for (const impact of graph.analysis.downstreamImpacts) {
+    if (impactsByNodeId.has(impact.nodeId)) {
+      throw new TypeError(`downstream impactが重複しています。対象: ${impact.nodeId}`);
+    }
+    impactsByNodeId.set(impact.nodeId, impact);
+  }
+  return impactsByNodeId;
+}
+
+function blockersAiDependenciesByNodeId(
+  graph: GraphResult,
+): ReadonlyMap<GraphNodeId, AiAnalysisDependency> {
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency>();
+  for (const entry of graph.blockerSetAiDependencies) {
+    if (dependenciesByNodeId.has(entry.nodeId)) {
+      throw new TypeError(`blocker AI依存のnodeが重複しています。対象: ${entry.nodeId}`);
+    }
+    dependenciesByNodeId.set(entry.nodeId, entry.dependency);
+  }
+  return dependenciesByNodeId;
+}
+
+type BlockerNodeAiDependenciesByBlockedNodeId = ReadonlyMap<
+  GraphNodeId,
+  ReadonlyMap<string, BlockerNodeAiDependency>
+>;
+
+function blockerNodeAiDependenciesByBlockedNodeId(
+  graph: GraphResult,
+): BlockerNodeAiDependenciesByBlockedNodeId {
+  const dependenciesByBlockedNodeId = new Map<GraphNodeId, Map<string, BlockerNodeAiDependency>>();
+  for (const entry of graph.blockerNodeAiDependencies) {
+    const dependenciesByBlockerNodeId = dependenciesByBlockedNodeId.get(entry.blockedNodeId);
+    if (dependenciesByBlockerNodeId == null) {
+      dependenciesByBlockedNodeId.set(entry.blockedNodeId, new Map([[entry.blockerNodeId, entry]]));
+      continue;
+    }
+    if (dependenciesByBlockerNodeId.has(entry.blockerNodeId)) {
+      throw new TypeError(
+        `blocker node AI依存が重複しています。対象: ${entry.blockedNodeId} blocker: ${entry.blockerNodeId}`,
+      );
+    }
+    dependenciesByBlockerNodeId.set(entry.blockerNodeId, entry);
+  }
+  return dependenciesByBlockedNodeId;
+}
+
+function graphAiDependenciesByNodeId(
+  entries: readonly Readonly<{
+    nodeId: GraphNodeId;
+    dependency: AiAnalysisDependency;
+  }>[],
+  description: string,
+): ReadonlyMap<GraphNodeId, AiAnalysisDependency> {
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency>();
+  for (const entry of entries) {
+    if (dependenciesByNodeId.has(entry.nodeId)) {
+      throw new TypeError(`${description}が重複しています。対象: ${entry.nodeId}`);
+    }
+    dependenciesByNodeId.set(entry.nodeId, entry.dependency);
+  }
+  return dependenciesByNodeId;
+}
+
+type BlockerValueAiDependencies = Readonly<{
+  stateSupport: "conditional" | "authoritative_blocker";
+  status: AiAnalysisDependency;
+  waitingOn: AiAnalysisDependency;
+  primaryWaitingOn: AiAnalysisDependency;
+  nextAction: AiAnalysisDependency;
+  confidence: AiAnalysisDependency;
+  evidence: AiAnalysisDependency;
+  uncertainties: AiAnalysisDependency;
+  transitionBasis: AiAnalysisDependency;
+}>;
+
+function notDependentBlockerValueAiDependencies(): BlockerValueAiDependencies {
+  const dependency = notDependentAiDependency();
+  return Object.freeze({
+    stateSupport: "conditional",
+    status: dependency,
+    waitingOn: dependency,
+    primaryWaitingOn: dependency,
+    nextAction: dependency,
+    confidence: dependency,
+    evidence: dependency,
+    uncertainties: dependency,
+    transitionBasis: dependency,
+  });
+}
+
+function unknownBlockerValueAiDependencies(): BlockerValueAiDependencies {
+  return Object.freeze({
+    stateSupport: "conditional",
+    status: unrecordedAiDependency(),
+    waitingOn: unrecordedAiDependency(),
+    primaryWaitingOn: unrecordedAiDependency(),
+    nextAction: unrecordedAiDependency(),
+    confidence: unrecordedAiDependency(),
+    evidence: unrecordedAiDependency(),
+    uncertainties: unrecordedAiDependency(),
+    transitionBasis: unrecordedAiDependency(),
+  });
+}
+
+function blockerNodeAiDependencyForTrace(
+  dependenciesByBlockedNodeId: BlockerNodeAiDependenciesByBlockedNodeId,
+  blockedNodeId: GraphNodeId,
+  blockerNodeId: string,
+): BlockerNodeAiDependency {
+  const dependenciesByBlockerNodeId = dependenciesByBlockedNodeId.get(blockedNodeId);
+  assertNonNullable(
+    dependenciesByBlockerNodeId,
+    `blocker node AI依存indexがありません。対象: ${blockedNodeId}`,
+  );
+  const dependency = dependenciesByBlockerNodeId.get(blockerNodeId);
+  assertNonNullable(
+    dependency,
+    `blocker node AI依存がありません。対象: ${blockedNodeId} blocker: ${blockerNodeId}`,
+  );
+  return dependency;
+}
+
+function combineBlockerPrimitiveDependencies(
+  dependency: BlockerNodeAiDependency,
+  primitives: readonly (keyof Pick<
+    BlockerNodeAiDependency,
+    "presence" | "confidence" | "sourceIds" | "becameBlockingAt"
+  >)[],
+): AiAnalysisDependency {
+  return combineSelectedAiDependencies(primitives.map((primitive) => dependency[primitive]));
+}
+
+function blockerValueAiDependencies(
+  nodeId: GraphNodeId,
+  trace: BlockerDecisionTrace,
+  dependenciesByBlockedNodeId: BlockerNodeAiDependenciesByBlockedNodeId,
+  negativeDependenciesByNodeId: ReadonlyMap<GraphNodeId, AiAnalysisDependency>,
+): BlockerValueAiDependencies {
+  if (trace.status === "not_evaluated") {
+    return notDependentBlockerValueAiDependencies();
+  }
+  const negativeDependency = graphAiDependencyForNode(
+    negativeDependenciesByNodeId,
+    nodeId,
+    "negative blocker",
+  );
+  const uncertainDependencies = trace.uncertainBlockerIds.map((blockerNodeId) =>
+    blockerNodeAiDependencyForTrace(dependenciesByBlockedNodeId, nodeId, blockerNodeId),
+  );
+  const uncertainConditions = uncertainDependencies.map((dependency) =>
+    combineBlockerPrimitiveDependencies(dependency, ["presence", "confidence"]),
+  );
+  const uncertainEvidence = uncertainDependencies.map((dependency) =>
+    combineBlockerPrimitiveDependencies(dependency, ["presence", "confidence", "sourceIds"]),
+  );
+  if (trace.result === "fallthrough") {
+    const stateDependency = combineSelectedAiDependencies([
+      ...uncertainConditions,
+      negativeDependency,
+    ]);
+    const evidenceDependency = combineSelectedAiDependencies([
+      ...uncertainEvidence,
+      negativeDependency,
+    ]);
+    return Object.freeze({
+      stateSupport: "conditional",
+      status: stateDependency,
+      waitingOn: stateDependency,
+      primaryWaitingOn: stateDependency,
+      nextAction: stateDependency,
+      confidence: stateDependency,
+      evidence: evidenceDependency,
+      uncertainties: stateDependency,
+      transitionBasis: stateDependency,
+    });
+  }
+
+  const confirmedDependencies = trace.confirmedBlockers.map((blocker) =>
+    Object.freeze({
+      ...blocker,
+      dependency: blockerNodeAiDependencyForTrace(
+        dependenciesByBlockedNodeId,
+        nodeId,
+        blocker.candidateId,
+      ),
+    }),
+  );
+  const primaryBlocker = confirmedDependencies.find(
+    (blocker) => blocker.candidateId === trace.primaryBlockerId,
+  );
+  assertNonNullable(primaryBlocker, `primary blockerのAI依存がありません。対象: ${nodeId}`);
+  const confirmedConditions = confirmedDependencies.map((blocker) =>
+    combineBlockerPrimitiveDependencies(blocker.dependency, ["presence", "confidence"]),
+  );
+  const confirmedEvidence = confirmedDependencies.map((blocker) =>
+    combineBlockerPrimitiveDependencies(blocker.dependency, [
+      "presence",
+      "confidence",
+      "sourceIds",
+    ]),
+  );
+  const confirmedWaitingOn = confirmedDependencies.map((blocker) =>
+    combineBlockerPrimitiveDependencies(blocker.dependency, [
+      "presence",
+      "confidence",
+      "sourceIds",
+      "becameBlockingAt",
+    ]),
+  );
+  const selectionConditions = [
+    ...confirmedDependencies.map((blocker) =>
+      combineBlockerPrimitiveDependencies(blocker.dependency, [
+        "presence",
+        "confidence",
+        "becameBlockingAt",
+      ]),
+    ),
+    ...uncertainDependencies.map((dependency) =>
+      combineBlockerPrimitiveDependencies(dependency, [
+        "presence",
+        "confidence",
+        "becameBlockingAt",
+      ]),
+    ),
+    negativeDependency,
+  ];
+  const primarySelectionDependency =
+    primaryBlocker.authority === "authoritative"
+      ? notDependentAiDependency()
+      : combineSelectedAiDependencies(selectionConditions);
+  const authoritativeConfirmedDependencies = confirmedDependencies.filter(
+    (blocker) => blocker.authority === "authoritative",
+  );
+  const inferredConfirmedConditions = confirmedDependencies.flatMap((blocker) =>
+    blocker.authority === "inferred"
+      ? [combineBlockerPrimitiveDependencies(blocker.dependency, ["presence", "confidence"])]
+      : [],
+  );
+  const requiredInferredBlockersForMultiplicity = Math.max(
+    0,
+    2 - authoritativeConfirmedDependencies.length,
+  );
+  const multiplicityDependency =
+    confirmedDependencies.length === 1
+      ? combineSelectedAiDependencies([...uncertainConditions, negativeDependency])
+      : combineSelectedAiDependencies(
+          preferredAiDependencies(
+            inferredConfirmedConditions,
+            requiredInferredBlockersForMultiplicity,
+          ),
+        );
+  const primaryWaitingOnDependency = combineSelectedAiDependencies([
+    primarySelectionDependency,
+    multiplicityDependency,
+  ]);
+  const confidenceConditions =
+    primaryBlocker.authority === "authoritative"
+      ? confirmedDependencies
+          .filter(
+            (blocker) =>
+              blocker.candidateId !== primaryBlocker.candidateId &&
+              blocker.authority === "inferred",
+          )
+          .map((blocker) =>
+            combineBlockerPrimitiveDependencies(blocker.dependency, ["presence", "confidence"]),
+          )
+          .concat(uncertainConditions, [negativeDependency])
+      : selectionConditions;
+  return Object.freeze({
+    stateSupport:
+      primaryBlocker.authority === "authoritative" ? "authoritative_blocker" : "conditional",
+    status: preferIndependentAiDependency(confirmedConditions),
+    waitingOn: combineSelectedAiDependencies([
+      ...confirmedWaitingOn,
+      ...uncertainConditions,
+      negativeDependency,
+    ]),
+    primaryWaitingOn: primaryWaitingOnDependency,
+    nextAction: primarySelectionDependency,
+    confidence: combineSelectedAiDependencies([
+      primaryBlocker.dependency.confidence,
+      ...confidenceConditions,
+    ]),
+    evidence: combineSelectedAiDependencies([
+      ...confirmedEvidence,
+      ...uncertainEvidence,
+      negativeDependency,
+    ]),
+    uncertainties: combineSelectedAiDependencies([
+      ...confirmedConditions,
+      ...uncertainConditions,
+      negativeDependency,
+    ]),
+    transitionBasis: combineSelectedAiDependencies([
+      primarySelectionDependency,
+      primaryBlocker.dependency.becameBlockingAt,
+    ]),
+  });
+}
+
+function graphAiDependencyForNode(
+  dependenciesByNodeId: ReadonlyMap<GraphNodeId, AiAnalysisDependency> | undefined,
+  nodeId: GraphNodeId,
+  description: string,
+): AiAnalysisDependency {
+  assertNonNullable(dependenciesByNodeId, `${description}のAI依存indexがありません`);
+  const dependency = dependenciesByNodeId.get(nodeId);
+  assertNonNullable(dependency, `${description}のAI依存がありません。対象: ${nodeId}`);
+  return dependency;
+}
+
+function graphMapValue<T>(
+  valuesByNodeId: ReadonlyMap<GraphNodeId, T>,
+  nodeId: GraphNodeId,
+  description: string,
+): T {
+  const value = valuesByNodeId.get(nodeId);
+  assertNonNullable(value, `${description}がありません。対象: ${nodeId}`);
+  return value;
+}
+
+function stateDependenciesForWaitClass(
+  decision: Readonly<Pick<ReducedCodexDecision, "status" | "waitingOn" | "evidence">>,
+  waitClass: StalenessWaitClass,
+  dependencies: Readonly<{
+    status: AiAnalysisDependency;
+    waitingOn: AiAnalysisDependency;
+    evidence: AiAnalysisDependency;
+  }>,
+): readonly AiAnalysisDependency[] {
+  if (waitClass === "notApplicable" || waitClass === "blockedParent") {
+    return Object.freeze([dependencies.status]);
+  }
+  const primaryWaitingOn = decision.waitingOn[0];
+  assertNonNullable(primaryWaitingOn, "継続中状態のprimary waitingOnがありません");
+  const precedingConditions = [dependencies.status, dependencies.waitingOn];
+  const withPrecedingConditions = (route: AiAnalysisDependency): AiAnalysisDependency =>
+    combineSelectedAiDependencies([...precedingConditions, route]);
+  switch (waitClass) {
+    case "owner":
+      if (primaryWaitingOn.kind === "unknown" || primaryWaitingOn.role === "unknown") {
+        return Object.freeze([withPrecedingConditions(dependencies.waitingOn)]);
+      }
+      if (decision.status === "waiting_for_owner" || decision.status === "unknown") {
+        return Object.freeze([withPrecedingConditions(dependencies.status)]);
+      }
+      throw new TypeError(`wait class ${waitClass}の成立経路がありません`);
+    case "automation": {
+      const routes: AiAnalysisDependency[] = [];
+      if (decision.status === "waiting_for_automation") {
+        routes.push(dependencies.status);
+      }
+      if (primaryWaitingOn.kind === "automation") {
+        routes.push(dependencies.waitingOn);
+      }
+      if (routes.length === 0) {
+        throw new TypeError(`wait class ${waitClass}の成立経路がありません`);
+      }
+      return Object.freeze([withPrecedingConditions(preferIndependentAiDependency(routes))]);
+    }
+    case "review": {
+      const routes: AiAnalysisDependency[] = [];
+      if (decision.status === "waiting_for_review") {
+        routes.push(dependencies.status);
+      }
+      if (primaryWaitingOn.role === "reviewer") {
+        routes.push(dependencies.waitingOn);
+      }
+      if (routes.length === 0) {
+        throw new TypeError(`wait class ${waitClass}の成立経路がありません`);
+      }
+      return Object.freeze([withPrecedingConditions(preferIndependentAiDependency(routes))]);
+    }
+    case "assessment":
+    case "decision":
+    case "merge":
+    case "reply":
+      return Object.freeze([withPrecedingConditions(dependencies.status)]);
+    case "revision": {
+      if (decision.status !== "waiting_for_revision") {
+        throw new TypeError(`wait class ${waitClass}とstatusの組み合わせが不正です`);
+      }
+      const revisionConditionDependencies = [
+        dependencies.status,
+        dependencies.waitingOn,
+        dependencies.evidence,
+      ];
+      return Object.freeze([
+        combineSelectedAiDependencies([...precedingConditions, ...revisionConditionDependencies]),
+      ]);
+    }
+    case "work":
+      if (decision.status === "waiting_for_revision") {
+        const revisionConditionDependencies = [
+          dependencies.status,
+          dependencies.waitingOn,
+          dependencies.evidence,
+        ];
+        return Object.freeze([
+          combineSelectedAiDependencies([...precedingConditions, ...revisionConditionDependencies]),
+        ]);
+      }
+      if (decision.status === "waiting_for_work" || decision.status === "in_progress") {
+        return Object.freeze([withPrecedingConditions(dependencies.status)]);
+      }
+      throw new TypeError(`wait class ${waitClass}とstatusの組み合わせが不正です`);
+    default:
+      throw new UnreachableError(waitClass);
+  }
+}
+
+function latestEventTime(
+  events: readonly NormalizedEvent[],
+  predicate: (event: NormalizedEvent) => boolean,
+): UtcIsoDateTime | undefined {
+  let latest: UtcIsoDateTime | undefined;
+  for (const event of events) {
+    if (!predicate(event)) {
+      continue;
+    }
+    if (latest == null || event.occurredAt > latest) {
+      latest = event.occurredAt;
+    }
+  }
+  return latest;
+}
+
+type ReducedWaitingOn = readonly ReducedCodexDecision["waitingOn"][number][];
+
+function sameWaitingOnEntities(left: ReducedWaitingOn, right: ReducedWaitingOn): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((waitingOn, index) => {
+    const other = right[index];
+    assertNonNullable(other, "比較対象のwaitingOnがありません");
+    return (
+      waitingOn.kind === other.kind &&
+      waitingOn.candidateId === other.candidateId &&
+      waitingOn.role === other.role
+    );
+  });
+}
+
+function lastResponsibleHumanActivityAt(
+  item: FreshObservedGitHubItem,
+  waitingOn: ReducedWaitingOn,
+): UtcIsoDateTime | undefined {
+  const accountIdentifiers = resolveWaitingOnAccountIdentifiers(waitingOn);
+  return latestEventTime(
+    item.events,
+    (event) =>
+      !isExcludedFromProgressAndHumanActivity(event) &&
+      event.actor.type === "human" &&
+      (accountIdentifiers.has(event.actor.login) || accountIdentifiers.has(event.actor.nodeId)),
+  );
+}
+
+function lastHumanReviewAt(item: FreshObservedGitHubItem): UtcIsoDateTime | undefined {
+  return latestEventTime(
+    item.events,
+    (event) => event.kind === "review" && event.actor.type === "human",
+  );
+}
+
+function isPullRequestReviewWait(
+  item: FreshObservedGitHubItem,
+  decision: Readonly<Pick<ReducedCodexDecision, "status">>,
+): boolean {
+  return (
+    item.type === "pull_request" &&
+    (decision.status === "waiting_for_owner" || decision.status === "waiting_for_review")
+  );
+}
+
+type AiDependencyTimeCandidate = Readonly<{
+  occurredAt: UtcIsoDateTime;
+  dependency: AiAnalysisDependency;
+}>;
+
+function transitionBasisAiDependency(
+  item: FreshObservedGitHubItem,
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+  decision: ReducedCodexDecision,
+  basis: Readonly<{
+    occurredAt: UtcIsoDateTime;
+    sourceIds: readonly SourceId[];
+  }>,
+  itemDependencies: TrackedItemAiDependencies,
+  deterministicDependency: AiAnalysisDependency,
+): AiAnalysisDependency {
+  if (decision.origin === "deterministic") {
+    return deterministicDependency;
+  }
+  const evidenceSourceIds = new Set<string>(decision.evidence.map((evidence) => evidence.sourceId));
+  const waitingOnSourceIds = new Set<string>(
+    decision.waitingOn.flatMap((waitingOn) => waitingOn.sourceIds),
+  );
+  const sourceIdsAtBasis = basis.sourceIds.filter(
+    (sourceId) => sourceOccurredAtById.get(sourceId) === basis.occurredAt,
+  );
+  const dependencies: AiAnalysisDependency[] = [];
+  if (basis.occurredAt === item.createdAt) {
+    dependencies.push(notDependentAiDependency());
+  }
+  if (sourceIdsAtBasis.some((sourceId) => evidenceSourceIds.has(sourceId))) {
+    dependencies.push(itemDependencies.evidence);
+  }
+  if (sourceIdsAtBasis.some((sourceId) => waitingOnSourceIds.has(sourceId))) {
+    dependencies.push(itemDependencies.waitingOn);
+  }
+  return dependencies.length === 0
+    ? unrecordedAiDependency()
+    : preferIndependentAiDependency(dependencies);
+}
+
+function candidateAiDependency(
+  dependency: AiAnalysisDependency,
+  conditionDependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  return combineSelectedAiDependencies([dependency, ...conditionDependencies]);
+}
+
+const STATE_AI_ANALYSIS_ELEMENTS: readonly ["status", "waitingOn", "nextAction"] = Object.freeze([
+  "status",
+  "waitingOn",
+  "nextAction",
+]);
+
+function stallSinceAiDependency(
+  item: FreshObservedGitHubItem,
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+  decision: ReducedCodexDecision,
+  staleness: StalenessResult,
+  itemDependencies: TrackedItemAiDependencies,
+  previousItem: SnapshotTrackedItem | undefined,
+  statusBasis: Readonly<{
+    occurredAt: UtcIsoDateTime;
+    sourceIds: readonly SourceId[];
+  }>,
+  responsibilityBasis: Readonly<{
+    occurredAt: UtcIsoDateTime;
+    sourceIds: readonly SourceId[];
+  }>,
+  deterministicTransitionDependency: AiAnalysisDependency,
+): AiAnalysisDependency {
+  const stateDependencies = {
+    status: itemDependencies.status,
+    waitingOn: itemDependencies.waitingOn,
+    evidence: itemDependencies.evidence,
+  };
+  const statusTransitionDependency = transitionBasisAiDependency(
+    item,
+    sourceOccurredAtById,
+    decision,
+    statusBasis,
+    itemDependencies,
+    deterministicTransitionDependency,
+  );
+  const responsibilityTransitionDependency = transitionBasisAiDependency(
+    item,
+    sourceOccurredAtById,
+    decision,
+    responsibilityBasis,
+    itemDependencies,
+    deterministicTransitionDependency,
+  );
+  const statusBasisDependency = candidateAiDependency(statusTransitionDependency, [
+    stateDependencies.status,
+  ]);
+  const responsibilityBasisDependency = candidateAiDependency(responsibilityTransitionDependency, [
+    stateDependencies.waitingOn,
+  ]);
+  const candidates: AiDependencyTimeCandidate[] = [];
+  const add = (
+    occurredAt: UtcIsoDateTime,
+    dependency: AiAnalysisDependency,
+    conditionDependencies: readonly AiAnalysisDependency[],
+  ): void => {
+    candidates.push(
+      Object.freeze({
+        occurredAt,
+        dependency: candidateAiDependency(dependency, conditionDependencies),
+      }),
+    );
+  };
+  const reviewWait = isPullRequestReviewWait(item, decision);
+  const previousStatusChanged = previousItem != null && previousItem.status !== decision.status;
+  const previousResponsibilityChanged =
+    previousItem != null && !sameWaitingOnEntities(previousItem.waitingOn, decision.waitingOn);
+  const reviewWaitConditions = item.type === "pull_request" ? [stateDependencies.status] : [];
+  const previousStateComparisonConditions =
+    previousItem == null
+      ? []
+      : [
+          stateDependencies.status,
+          previousItem.aiDependencies.status,
+          stateDependencies.waitingOn,
+          previousItem.aiDependencies.waitingOn,
+        ];
+  if (previousItem == null) {
+    add(staleness.statusSince, statusBasisDependency, reviewWaitConditions);
+    add(responsibilityBasis.occurredAt, responsibilityBasisDependency, reviewWaitConditions);
+  } else if (previousStatusChanged && previousResponsibilityChanged) {
+    add(staleness.statusSince, statusBasisDependency, [
+      ...previousStateComparisonConditions,
+      ...reviewWaitConditions,
+    ]);
+    add(responsibilityBasis.occurredAt, responsibilityBasisDependency, [
+      ...previousStateComparisonConditions,
+      ...reviewWaitConditions,
+    ]);
+  } else if (previousStatusChanged) {
+    add(staleness.statusSince, statusBasisDependency, [
+      ...previousStateComparisonConditions,
+      ...reviewWaitConditions,
+    ]);
+  } else if (previousResponsibilityChanged) {
+    add(responsibilityBasis.occurredAt, responsibilityBasisDependency, [
+      ...previousStateComparisonConditions,
+      ...reviewWaitConditions,
+    ]);
+  }
+
+  if (!reviewWait) {
+    const progressConditions = item.type === "pull_request" ? [stateDependencies.status] : [];
+    add(staleness.lastProgressAt, itemDependencies.lastProgressAt, progressConditions);
+  }
+  const responsibleActivityAt = lastResponsibleHumanActivityAt(item, decision.waitingOn);
+  if (responsibleActivityAt != null) {
+    add(responsibleActivityAt, notDependentAiDependency(), [stateDependencies.waitingOn]);
+  }
+  const humanReviewAt = lastHumanReviewAt(item);
+  if (reviewWait && humanReviewAt != null) {
+    add(humanReviewAt, notDependentAiDependency(), reviewWaitConditions);
+  }
+
+  if (
+    previousItem != null &&
+    (reviewWait || (!previousStatusChanged && !previousResponsibilityChanged))
+  ) {
+    const previousStallConditions = reviewWait
+      ? reviewWaitConditions
+      : previousStateComparisonConditions;
+    add(previousItem.stallSince, previousItem.aiDependencies.stallSince, previousStallConditions);
+  }
+
+  if (
+    previousItem != null &&
+    item.type === "pull_request" &&
+    decision.status === "waiting_for_review"
+  ) {
+    const basisSourceIds = new Set(responsibilityBasis.sourceIds);
+    const explicitReviewRequestAt = latestEventTime(
+      item.events,
+      (event) =>
+        event.kind === "review_request" &&
+        event.action === "added" &&
+        basisSourceIds.has(event.sourceId) &&
+        event.occurredAt === staleness.ownerSince &&
+        event.occurredAt > previousItem.ownerSince,
+    );
+    if (explicitReviewRequestAt != null) {
+      add(explicitReviewRequestAt, notDependentAiDependency(), [
+        stateDependencies.status,
+        responsibilityTransitionDependency,
+        previousItem.aiDependencies.status,
+        previousItem.aiDependencies.waitingOn,
+      ]);
+    }
+  }
+
+  const selectedCandidates = candidates.filter(
+    (candidate) => candidate.occurredAt === staleness.stallSince,
+  );
+  if (selectedCandidates.length === 0) {
+    throw new TypeError(`stallSinceのAI依存候補がありません。対象: ${item.nodeId}`);
+  }
+  return preferIndependentAiDependency(selectedCandidates.map((candidate) => candidate.dependency));
+}
+
+function severityAiDependency(
+  decision: Readonly<
+    Pick<ReducedCodexDecision, "status" | "waitingOn" | "confidence" | "evidence">
+  >,
+  staleness: Readonly<Pick<StalenessResult, "waitClass">>,
+  criticalRequested: boolean,
+  itemDependencies: TrackedItemAiDependencies,
+): AiAnalysisDependency {
+  if (staleness.waitClass === "notApplicable" || staleness.waitClass === "blockedParent") {
+    return itemDependencies.status;
+  }
+  const stateDependencies = stateDependenciesForWaitClass(
+    decision,
+    staleness.waitClass,
+    itemDependencies,
+  );
+  const dependencies = [itemDependencies.stallSince, ...stateDependencies];
+  if (criticalRequested) {
+    dependencies.push(itemDependencies.confidence);
+  }
+  return combineSelectedAiDependencies(dependencies);
+}
+
+function criticalSeverityWasRequested(reason: StalenessResult["severityReason"]): boolean {
+  if (reason.kind !== "elapsed_threshold") {
+    return false;
+  }
+  return (
+    reason.baseSeverity === "critical" ||
+    (reason.baseSeverity === "urgent" && reason.labelLiftRequested === 1)
+  );
+}
+
+function attentionAiDependency(
+  decision: Readonly<Pick<ReducedCodexDecision, "status" | "waitingOn" | "evidence">>,
+  staleness: Readonly<Pick<StalenessResult, "waitClass">>,
+  importance: TrackedItemWithImportanceAssessment["importance"],
+  deadlineLevel: DeadlineLevel,
+  itemDependencies: TrackedItemAiDependencies,
+): AiAnalysisDependency {
+  if (staleness.waitClass === "notApplicable" || staleness.waitClass === "blockedParent") {
+    return itemDependencies.status;
+  }
+  const dependencies: AiAnalysisDependency[] = [
+    itemDependencies.importance,
+    itemDependencies.deadlineLevel,
+  ];
+  const stateDependencies = stateDependenciesForWaitClass(
+    decision,
+    staleness.waitClass,
+    itemDependencies,
+  );
+  if (importance.score !== 0) {
+    dependencies.push(...stateDependencies);
+    dependencies.push(itemDependencies.stallSince);
+  }
+  if (deadlineLevel !== "none") {
+    dependencies.push(...stateDependencies);
+  }
+  return combineSelectedAiDependencies(dependencies);
+}
+
+function stateAiDependencies(
+  nodeId: GitHubNodeId,
+  applications: TrackedItemAiAnalysisApplications,
+  blockerDependencies: BlockerValueAiDependencies,
+): Readonly<{
+  status: AiAnalysisDependency;
+  waitingOn: AiAnalysisDependency;
+  primaryWaitingOn: AiAnalysisDependency;
+  nextAction: AiAnalysisDependency;
+}> {
+  const stateApplicationDependency = (
+    element: "status" | "waitingOn" | "nextAction",
+  ): AiAnalysisDependency => aiDependencyForElementApplication(nodeId, applications, element);
+  const stateValueDependency = (
+    element: "status" | "waitingOn" | "nextAction",
+    blockerDependency: AiAnalysisDependency,
+  ): AiAnalysisDependency => {
+    const application = applications[element];
+    const dependency = stateApplicationDependency(element);
+    if (aiAnalysisElementApplicationUsesAiValue(application)) {
+      return dependency;
+    }
+    if (
+      blockerDependencies.stateSupport === "authoritative_blocker" &&
+      (element === "status" || element === "nextAction")
+    ) {
+      return blockerDependency;
+    }
+    return combineSelectedAiDependencies([dependency, blockerDependency]);
+  };
+  const waitingOn = stateValueDependency("waitingOn", blockerDependencies.waitingOn);
+  const primaryWaitingOn = (() => {
+    if (aiAnalysisElementApplicationUsesAiValue(applications.waitingOn)) {
+      return stateApplicationDependency("waitingOn");
+    }
+    if (blockerDependencies.stateSupport === "authoritative_blocker") {
+      return blockerDependencies.primaryWaitingOn;
+    }
+    return combineSelectedAiDependencies([
+      stateApplicationDependency("waitingOn"),
+      blockerDependencies.primaryWaitingOn,
+    ]);
+  })();
+  return Object.freeze({
+    status: stateValueDependency("status", blockerDependencies.status),
+    waitingOn,
+    primaryWaitingOn,
+    nextAction: stateValueDependency("nextAction", blockerDependencies.nextAction),
+  });
+}
+
+function confidenceAiDependency(
+  nodeId: GitHubNodeId,
+  applications: TrackedItemAiAnalysisApplications,
+  blockerDependencies: BlockerValueAiDependencies,
+): AiAnalysisDependency {
+  if (blockerDependencies.stateSupport === "authoritative_blocker") {
+    return blockerDependencies.confidence;
+  }
+  const dependencies: AiAnalysisDependency[] = [];
+  const allStateValuesUseAi = STATE_AI_ANALYSIS_ELEMENTS.every((element) =>
+    aiAnalysisElementApplicationUsesAiValue(applications[element]),
+  );
+  if (!allStateValuesUseAi) {
+    dependencies.push(blockerDependencies.confidence);
+  }
+  for (const element of STATE_AI_ANALYSIS_ELEMENTS) {
+    if (
+      !aiAnalysisElementApplicationUsesAiValue(applications[element]) &&
+      applications[element].status !== "unavailable"
+    ) {
+      continue;
+    }
+    dependencies.push(aiDependencyForElementApplication(nodeId, applications, element));
+  }
+  return combineSelectedAiDependencies(dependencies);
+}
+
+function evidenceAiDependency(
+  nodeId: GitHubNodeId,
+  decision: ReducedCodexDecision,
+  deterministicDecision: IssueStateDecision | PullRequestStateDecision,
+  applications: TrackedItemAiAnalysisApplications,
+  blockerDependencies: BlockerValueAiDependencies,
+): AiAnalysisDependency {
+  if (blockerDependencies.stateSupport === "authoritative_blocker") {
+    return blockerDependencies.evidence;
+  }
+  const dependencies: AiAnalysisDependency[] = [];
+  for (const element of STATE_AI_ANALYSIS_ELEMENTS) {
+    if (
+      aiAnalysisElementApplicationUsesAiValue(applications[element]) ||
+      applications[element].status === "unavailable"
+    ) {
+      dependencies.push(aiDependencyForElementApplication(nodeId, applications, element));
+    }
+  }
+  const deterministicEvidence = new Set(
+    deterministicDecision.evidence.map((evidence) => serializeCanonicalJson(evidence)),
+  );
+  if (
+    decision.evidence.some((evidence) =>
+      deterministicEvidence.has(serializeCanonicalJson(evidence)),
+    )
+  ) {
+    dependencies.push(blockerDependencies.evidence);
+  }
+  return combineSelectedAiDependencies(dependencies);
+}
+
+function uncertaintiesAiDependency(
+  nodeId: GitHubNodeId,
+  applications: TrackedItemAiAnalysisApplications,
+  blockerDependency: AiAnalysisDependency,
+): AiAnalysisDependency {
+  return combineSelectedAiDependencies([
+    ...STATE_AI_ANALYSIS_ELEMENTS.map((element) =>
+      aiDependencyForElementApplication(nodeId, applications, element),
+    ),
+    blockerDependency,
+  ]);
+}
+
+function lastProgressAiDependency(
+  nodeId: GitHubNodeId,
+  createdAt: UtcIsoDateTime,
+  applications: TrackedItemAiAnalysisApplications,
+  staleness: StalenessResult,
+  previousItem: SnapshotTrackedItem | undefined,
+): AiAnalysisDependency {
+  const deterministicAtLatest = staleness.meaningfulProgress.some(
+    (progress) =>
+      progress.occurredAt === staleness.lastProgressAt &&
+      progress.determination === "deterministic" &&
+      (progress.kind !== "dependency_resolved" || progress.aiDependency.status === "not_dependent"),
+  );
+  const currentProgressDependency = staleness.meaningfulProgress.some(
+    (progress) =>
+      progress.occurredAt === staleness.lastProgressAt && progress.determination === "ai",
+  )
+    ? aiDependencyForElementApplication(nodeId, applications, "progress")
+    : undefined;
+  const previousProgressDependency =
+    previousItem?.lastProgressAt === staleness.lastProgressAt
+      ? previousItem.aiDependencies.lastProgressAt
+      : undefined;
+  const selectedDependencies = [
+    ...(createdAt === staleness.lastProgressAt ? [notDependentAiDependency()] : []),
+    ...staleness.meaningfulProgress.flatMap((progress) => {
+      if (
+        progress.occurredAt !== staleness.lastProgressAt ||
+        progress.kind !== "dependency_resolved"
+      ) {
+        return [];
+      }
+      return [progress.aiDependency];
+    }),
+    ...(deterministicAtLatest ? [notDependentAiDependency()] : []),
+    ...(currentProgressDependency == null ? [] : [currentProgressDependency]),
+    ...(previousProgressDependency == null ? [] : [previousProgressDependency]),
+  ];
+  const selectedDependency = preferIndependentAiDependency(
+    selectedDependencies.length === 0 ? [notDependentAiDependency()] : selectedDependencies,
+  );
+  const hasNewerNaturalLanguageCandidate = staleness.naturalLanguageProgressCandidates.some(
+    (candidate) => candidate.occurredAt > staleness.lastProgressAt,
+  );
+  return combineSelectedAiDependencies([
+    selectedDependency,
+    ...(hasNewerNaturalLanguageCandidate
+      ? [aiDependencyForElementApplication(nodeId, applications, "progress")]
+      : []),
+  ]);
+}
+
 type AiAnalysisElementApplicationReason = Extract<
   AiAnalysisElementApplication,
   { status: "retained_ai" }
@@ -7967,10 +9449,11 @@ function aiAnalysisElementApplicationReason(
   nodeId: GitHubNodeId,
   generated: AiAnalysisElementSourceGeneration | undefined,
 ): AiAnalysisElementApplicationReason {
-  if (run?.failures.some((failure) => failure.candidateId === nodeId)) {
+  const runIndex = aiAnalysisRunIndex(run);
+  if (runIndex.failureByNodeId.has(nodeId)) {
     return "failed";
   }
-  if (run?.deferred.some((deferred) => deferred.candidateId === nodeId)) {
+  if (runIndex.deferredByNodeId.has(nodeId)) {
     return "deferred";
   }
   if (generated != null) {
@@ -7998,15 +9481,51 @@ function aiAnalysisElementApplicationForAnalysis(
   const generated = generatedElementsForNode(run, analysis.item.nodeId)[element];
   const consumerResult =
     consumerOutput == null ? undefined : codexElementResult(consumerOutput, element);
-  const reductionApplication =
-    reduction?.ai.status === "available" ? reduction.ai.elements[element]?.application : undefined;
+  const reductionApplication = reduction?.ai.elements[element]?.application;
   const stateElement = isStateAnalysisElement(element);
-  const deterministicFallback =
-    stateElement &&
-    (reduction == null ||
-      reduction.decision.origin === "deterministic" ||
-      reductionApplication === "deterministic_fallback");
-  if (deterministicFallback) {
+  if (stateElement && run == null) {
+    return Object.freeze({
+      status: "disabled",
+    });
+  }
+  if (stateElement) {
+    switch (reductionApplication) {
+      case "applied":
+        break;
+      case "preserved":
+        if (reduction?.decision.origin !== "codex") {
+          throw new TypeError(`保持AI判定が最終stateへ寄与していません。対象: ${element}`);
+        }
+        assertNonNullable(consumerResult, `保持AI判定の最終値がありません。対象: ${element}`);
+        break;
+      case "deterministic_fallback":
+        if (reduction?.ai.status === "unavailable") {
+          return Object.freeze({
+            status: "unavailable",
+            reason: aiAnalysisElementApplicationReason(run, analysis.item.nodeId, generated),
+          });
+        }
+        return Object.freeze({
+          status: "deterministic_fallback",
+        });
+      case undefined:
+        if (
+          reduction?.ai.status === "unavailable" ||
+          (reduction == null && generated == null && consumerResult == null)
+        ) {
+          return Object.freeze({
+            status: "unavailable",
+            reason: aiAnalysisElementApplicationReason(run, analysis.item.nodeId, generated),
+          });
+        }
+        return Object.freeze({
+          status: "deterministic_fallback",
+        });
+      default:
+        throw new UnreachableError(reductionApplication);
+    }
+  }
+  if (reductionApplication === "deterministic_fallback") {
     return Object.freeze({
       status: "deterministic_fallback",
     });
@@ -8019,10 +9538,10 @@ function aiAnalysisElementApplicationForAnalysis(
       : createAiAnalysisMigrationElementResultSchema(element).parse(generated.result),
   );
   const generatedWasApplied =
-    generated != null &&
-    (reductionApplication === "applied" || (!stateElement && generatedWasConsumed));
+    reductionApplication === "applied" || (!stateElement && generatedWasConsumed);
   if (generatedWasApplied) {
-    const runResult = run?.results.find((result) => result.candidateId === analysis.item.nodeId);
+    assertNonNullable(generated, `適用されたAI生成要素がありません。対象: ${element}`);
+    const runResult = aiAnalysisRunIndex(run).resultByNodeId.get(analysis.item.nodeId);
     const runElement = runResult?.elements.find((result) => result.element === element);
     assertNonNullable(runElement, `適用されたAI生成要素の実行記録がありません。対象: ${element}`);
     return Object.freeze({
@@ -8209,25 +9728,22 @@ function trackedItemAiAnalysis(
   if (run == null) {
     status = "disabled";
   } else {
-    const result = run.results.find((candidate) => candidate.candidateId === nodeId);
+    const runIndex = aiAnalysisRunIndex(run);
+    const result = runIndex.resultByNodeId.get(nodeId);
     if (result != null) {
       status = "used";
     } else {
-      const failure = run.failures.find((candidate) => candidate.candidateId === nodeId);
+      const failure = runIndex.failureByNodeId.get(nodeId);
       if (failure != null) {
         status = "failed";
       } else {
-        const deferred = run.deferred.find((candidate) => candidate.candidateId === nodeId);
+        const deferred = runIndex.deferredByNodeId.get(nodeId);
         if (deferred != null) {
           status = "deferred";
         } else {
-          const skipped = run.skipped.find((candidate) => candidate.candidateId === nodeId);
+          const skipped = runIndex.skippedByNodeId.get(nodeId);
           assertNonNullable(skipped, `Codex分析候補の分類がありません。対象: ${nodeId}`);
-          const hasNotRequiredElement = planning.selection.skipped.some(
-            (element) => element.reason === "not_required",
-          );
-          status =
-            hasNotRequiredElement || skipped.reason === "not_required" ? "not_required" : "used";
+          status = skipped.reason === "not_required" ? "not_required" : "used";
         }
       }
     }
@@ -8258,17 +9774,108 @@ function trackedItemAiAnalysis(
   });
 }
 
+function trackedItemAiDependenciesForAnalysis(
+  state: RuntimeState,
+  item: FreshObservedGitHubItem,
+  nodeId: GitHubNodeId,
+  decision: ReducedCodexDecision,
+  deterministicDecision: IssueStateDecision | PullRequestStateDecision,
+  staleness: StalenessResult,
+  statusBasis: IssueStateDecision["statusBasis"],
+  responsibilityBasis: IssueStateDecision["responsibilityBasis"],
+  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
+  aiAnalysis: TrackedItemAiAnalysis,
+  downstreamImpactDependency: AiAnalysisDependency | undefined,
+  blockersDependency: AiAnalysisDependency | undefined,
+  blockerValueDependencies: BlockerValueAiDependencies | undefined,
+  relationSetDependency: AiAnalysisDependency | undefined,
+): TrackedItemAiDependencies {
+  const applications = aiAnalysis.applications;
+  const resolvedBlockerValueDependencies =
+    blockerValueDependencies ?? unknownBlockerValueAiDependencies();
+  const stateDependencies = stateAiDependencies(
+    nodeId,
+    applications,
+    resolvedBlockerValueDependencies,
+  );
+  const previousItem = previousTrackedItem(state, nodeId);
+  const resolvedDownstreamImpactDependency = downstreamImpactDependency ?? unrecordedAiDependency();
+  const resolvedBlockersDependency = blockersDependency ?? unrecordedAiDependency();
+  const resolvedRelationSetDependency = relationSetDependency ?? unrecordedAiDependency();
+  const baseDependencies = {
+    status: stateDependencies.status,
+    waitingOn: stateDependencies.waitingOn,
+    primaryWaitingOn: stateDependencies.primaryWaitingOn,
+    nextAction: stateDependencies.nextAction,
+    confidence: confidenceAiDependency(nodeId, applications, resolvedBlockerValueDependencies),
+    evidence: evidenceAiDependency(
+      nodeId,
+      decision,
+      deterministicDecision,
+      applications,
+      resolvedBlockerValueDependencies,
+    ),
+    uncertainties: uncertaintiesAiDependency(
+      nodeId,
+      applications,
+      resolvedBlockerValueDependencies.uncertainties,
+    ),
+    deadline: aiDependencyForElementApplication(nodeId, applications, "deadline"),
+    deadlineLevel: aiDependencyForElementApplication(nodeId, applications, "deadline"),
+    lastProgressAt: lastProgressAiDependency(
+      nodeId,
+      item.createdAt,
+      applications,
+      staleness,
+      previousItem,
+    ),
+    stallSince: notDependentAiDependency(),
+    severity: notDependentAiDependency(),
+    downstreamImpact: resolvedDownstreamImpactDependency,
+    importance: aiDependencyForElementApplication(nodeId, applications, "importance"),
+    attention: notDependentAiDependency(),
+    blockers: resolvedBlockersDependency,
+    relationSet: resolvedRelationSetDependency,
+  } satisfies TrackedItemAiDependencies;
+  const stallSince = stallSinceAiDependency(
+    item,
+    sourceOccurredAtById,
+    decision,
+    staleness,
+    baseDependencies,
+    previousItem,
+    statusBasis,
+    responsibilityBasis,
+    resolvedBlockerValueDependencies.transitionBasis,
+  );
+  const dependenciesWithStallSince = Object.freeze({
+    ...baseDependencies,
+    stallSince,
+  });
+  return Object.freeze({
+    ...dependenciesWithStallSince,
+    severity: severityAiDependency(
+      decision,
+      staleness,
+      criticalSeverityWasRequested(staleness.severityReason),
+      dependenciesWithStallSince,
+    ),
+  });
+}
+
 function createTrackedItem(
-  configuration: RuntimeConfiguration,
   state: RuntimeState,
   analysis: DeterministicItemAnalysis,
   decision: ReducedCodexDecision,
   primaryWaitingOn: PrimaryWaitingOn,
   staleness: StalenessResult,
-  codexAnalysis: CodexAnalysis,
-  reduction: CodexAnalysisReduction | undefined,
-  consumerOutput: ConsumerCodexElementOutput | undefined,
+  aiAnalysis: TrackedItemAiAnalysis,
+  downstreamImpactDependency: AiAnalysisDependency | undefined,
+  blockersDependency: AiAnalysisDependency | undefined,
+  blockerValueDependencies: BlockerValueAiDependencies | undefined,
+  relationSetDependency: AiAnalysisDependency | undefined,
 ): PendingTrackedItem {
+  const transitionBasis = transitionBasisForDecision(analysis, decision);
   const commonFields = {
     nodeId: analysis.item.nodeId,
     type: analysis.item.type,
@@ -8312,13 +9919,22 @@ function createTrackedItem(
           status: "pending",
           planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
         }),
-    aiAnalysis: trackedItemAiAnalysis(
-      configuration,
+    aiAnalysis,
+    aiDependencies: trackedItemAiDependenciesForAnalysis(
       state,
-      analysis,
-      codexAnalysis,
-      reduction,
-      consumerOutput,
+      analysis.item,
+      analysis.item.nodeId,
+      decision,
+      analysis.decision,
+      staleness,
+      transitionBasis.statusBasis,
+      transitionBasis.responsibilityBasis,
+      sourceOccurredAtByIdForAnalysis(analysis),
+      aiAnalysis,
+      downstreamImpactDependency,
+      blockersDependency,
+      blockerValueDependencies,
+      relationSetDependency,
     ),
     inputEvents: trackedItemInputEvents(analysis),
     confidence: decision.confidence,
@@ -8339,10 +9955,39 @@ function createTrackedItem(
   });
 }
 
-function blockedParentContext(
+type BlockedParentIndex = Readonly<{
+  previousSeverityByNodeId: ReadonlyMap<string, Severity>;
+  downstreamImpactByNodeId: ReadonlyMap<string, number>;
+}>;
+
+function createBlockedParentIndex(
   state: RuntimeState,
-  decision: ReducedCodexDecision,
   graph: GraphResult | undefined,
+): BlockedParentIndex {
+  const previousSeverityByNodeId = new Map<string, Severity>(
+    [...previousTrackedItemsByNodeId(state).values()].map((item) => [item.nodeId, item.severity]),
+  );
+  let downstreamImpacts: AnalyzeGraphResult["downstreamImpacts"];
+  if (graph != null) {
+    downstreamImpacts = graph.analysis.downstreamImpacts;
+  } else {
+    const previousGraph = previousGraphIndex(state);
+    downstreamImpacts =
+      previousGraph.availability === "available"
+        ? previousGraph.analysis.downstreamImpacts
+        : Object.freeze([]);
+  }
+  return Object.freeze({
+    previousSeverityByNodeId,
+    downstreamImpactByNodeId: new Map(
+      downstreamImpacts.map((impact) => [impact.nodeId, impact.openNodeCount]),
+    ),
+  });
+}
+
+function blockedParentContext(
+  decision: ReducedCodexDecision,
+  index: BlockedParentIndex,
 ): BlockedParentContext {
   if (decision.status !== "waiting_for_unblock") {
     return Object.freeze({
@@ -8351,30 +9996,11 @@ function blockedParentContext(
   }
   const firstWaitingOn = decision.waitingOn[0];
   assertNonNullable(firstWaitingOn, "blocked項目にwaitingOnがありません");
-  const previousSeverityByNodeId = new Map<string, Severity>(
-    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item.severity]),
-  );
-  const previousGraph = previousGraphSnapshot(state);
-  const previousImpact =
-    previousGraph == null
-      ? Object.freeze([])
-      : analyzeGraph({
-          current: previousGraph,
-          previous: {
-            availability: "unavailable",
-          },
-        }).downstreamImpacts;
-  const downstreamImpactByNodeId = new Map<string, number>(
-    (graph?.analysis.downstreamImpacts ?? previousImpact).map((impact) => [
-      impact.nodeId,
-      impact.openNodeCount,
-    ]),
-  );
   const createRanking = (waitingOn: ReducedCodexDecision["waitingOn"][number]): BlockerRanking =>
     Object.freeze({
       candidateId: waitingOn.candidateId,
-      severity: previousSeverityByNodeId.get(waitingOn.candidateId) ?? "none",
-      downstreamImpact: downstreamImpactByNodeId.get(waitingOn.candidateId) ?? 0,
+      severity: index.previousSeverityByNodeId.get(waitingOn.candidateId) ?? "none",
+      downstreamImpact: index.downstreamImpactByNodeId.get(waitingOn.candidateId) ?? 0,
     });
   const blockers: [BlockerRanking, ...BlockerRanking[]] = [
     createRanking(firstWaitingOn),
@@ -8391,6 +10017,10 @@ function trackedItemStaleness(staleness: StalenessResult): TrackedItemStaleness 
     elapsedHours: staleness.elapsedHours.stall,
     severity: staleness.severity,
     severityReason: createStalenessNotificationSeverityReason(staleness.severityReason),
+    criticalSuppressed:
+      staleness.severityReason.kind === "elapsed_threshold" &&
+      staleness.severityReason.criticalSuppressed,
+    criticalRequested: criticalSeverityWasRequested(staleness.severityReason),
     waitClass: staleness.waitClass,
     severityContext: staleness.severityContext,
   });
@@ -8415,10 +10045,31 @@ function recalculateTrackedItemStaleness(
     thresholdsHours: configuration.config.staleness.thresholdsHours,
     severityContext: item.severityContext,
   });
+  const highConfidenceSeverity =
+    recalculated.severityReason.kind === "elapsed_threshold"
+      ? recalculateStalenessSeverity({
+          evaluatedAt,
+          stallSince: item.stallSince,
+          confidence: 1,
+          minimumAiConfidence: configuration.config.ai.confidence.medium,
+          repositoryFullName: repositoryFullName(repository),
+          currentLabels: item.labels,
+          resolveLabelEffects,
+          thresholdsHours: configuration.config.staleness.thresholdsHours,
+          severityContext: item.severityContext,
+        }).severity
+      : recalculated.severity;
   return Object.freeze({
     elapsedHours: recalculated.elapsedHours,
     severity: recalculated.severity,
     severityReason: recalculated.severityReason,
+    criticalSuppressed:
+      recalculated.severityReason.kind === "elapsed_threshold" &&
+      recalculated.severity === "urgent" &&
+      highConfidenceSeverity === "critical",
+    criticalRequested:
+      recalculated.severity === "critical" ||
+      (recalculated.severity === "urgent" && highConfidenceSeverity === "critical"),
     waitClass: recalculated.waitClass,
     severityContext: recalculated.severityContext,
   });
@@ -8617,6 +10268,27 @@ function reduceAnalysisPass(
 ): ReducedAnalysis {
   const resolveLabelEffects = createLabelEffectsResolver(normalizeLabelRules(configuration.config));
   const target = forcedAiAnalysisTarget(configuration);
+  const downstreamImpactDependenciesByNodeId =
+    graph == null ? undefined : downstreamImpactAiDependenciesByNodeId(graph);
+  const blockersDependenciesByNodeId =
+    graph == null ? undefined : blockersAiDependenciesByNodeId(graph);
+  const blockerNodeDependenciesByBlockedNodeId =
+    graph == null ? undefined : blockerNodeAiDependenciesByBlockedNodeId(graph);
+  const negativeBlockerDependenciesByNodeId =
+    graph == null
+      ? undefined
+      : graphAiDependenciesByNodeId(graph.negativeBlockerAiDependencies, "negative blocker AI依存");
+  const relationSetDependenciesByNodeId =
+    graph == null
+      ? undefined
+      : graphAiDependenciesByNodeId(graph.relationSetAiDependencies, "relation集合AI依存");
+  const dependencyResolutionStaticIndexes =
+    graph == null || graph.analysis.newlyUnblockedNodeIds.length === 0
+      ? undefined
+      : createDependencyResolutionStaticIndexes(state, collection, graph);
+  const graphBlockerIndex =
+    graph == null ? undefined : createGraphBlockerIndex(state, deterministicAnalysis, graph);
+  const blockedParentIndex = createBlockedParentIndex(state, graph);
   const currentItems: ReducedItemAnalysis[] = [];
   const items: PendingTrackedItem[] = [];
   const stalenessByNodeId = new Map<GitHubNodeId, TrackedItemStaleness>();
@@ -8631,12 +10303,10 @@ function reduceAnalysisPass(
     const analysis = reassessDeterministicAnalysis(
       collection.evaluatedAt,
       configuration,
-      state,
       inventory,
-      deterministicAnalysis,
       originalAnalysis,
       output,
-      graph,
+      graphBlockerIndex,
     );
     const reduction = reductionForAnalysis(configuration, state, analysis, codexAnalysis);
     const planning = codexAnalysis.elementPlanningByNodeId.get(analysis.item.nodeId);
@@ -8651,23 +10321,33 @@ function reduceAnalysisPass(
     const relationAssessmentsForAnalysis = relationNotificationReduction.relationAssessments;
     const notificationRecommendation = relationNotificationReduction.notification;
     const decision = reduction?.decision ?? reducedDeterministicDecision(analysis.decision);
-    const primaryWaitingOn = primaryWaitingOnForDecision(analysis.decision, decision);
     if (reduction?.ai.status === "unavailable") {
       runStatus = "fallback";
     }
     relationAssessments.push(...relationAssessmentsForAnalysis);
     const basis = transitionBasisForDecision(analysis, decision);
     const repository = findRepository(inventory, analysis.item.repositoryId);
-    const dependencyResolution = dependencyResolutions(
+    const aiAnalysis = trackedItemAiAnalysis(
+      configuration,
       state,
+      analysis,
+      codexAnalysis,
+      reduction,
+      output,
+    );
+    const primaryWaitingOn = primaryWaitingOnForDecision(
+      analysis.decision,
+      decision,
+      aiAnalysis.applications.waitingOn,
+    );
+    const dependencyResolution = dependencyResolutions(
       collection,
       graph,
+      dependencyResolutionStaticIndexes,
       relationAssessmentsForAnalysis,
       analysis,
     );
-    const previousItem = previousSnapshot(state)?.items.find(
-      (item) => item.nodeId === analysis.item.nodeId,
-    );
+    const previousItem = previousTrackedItem(state, analysis.item.nodeId);
     const selfCommitmentCause = createSelfCommitmentCause({
       analysis,
       selfCommitmentResult: output?.selfCommitment,
@@ -8706,15 +10386,58 @@ function reduceAnalysisPass(
       currentLabels: analysis.item.labels,
       resolveLabelEffects,
       thresholdsHours: configuration.config.staleness.thresholdsHours,
-      blockedParentContext: blockedParentContext(state, decision, graph),
+      blockedParentContext: blockedParentContext(decision, blockedParentIndex),
     });
+    const downstreamImpactDependency =
+      graph == null
+        ? undefined
+        : graphAiDependencyForNode(
+            downstreamImpactDependenciesByNodeId,
+            analysis.item.nodeId,
+            "downstream impact",
+          );
+    const blockersDependency =
+      graph == null
+        ? undefined
+        : graphAiDependencyForNode(blockersDependenciesByNodeId, analysis.item.nodeId, "blocker");
+    let blockerValueDependencies: BlockerValueAiDependencies;
+    if (graph == null) {
+      blockerValueDependencies = unknownBlockerValueAiDependencies();
+    } else {
+      assertNonNullable(
+        blockerNodeDependenciesByBlockedNodeId,
+        "blocker node AI依存indexがありません",
+      );
+      assertNonNullable(
+        negativeBlockerDependenciesByNodeId,
+        "negative blocker AI依存indexがありません",
+      );
+      blockerValueDependencies = blockerValueAiDependencies(
+        analysis.item.nodeId,
+        analysis.decision.blockerDecisionTrace,
+        blockerNodeDependenciesByBlockedNodeId,
+        negativeBlockerDependenciesByNodeId,
+      );
+    }
+    const relationSetDependency =
+      graph == null
+        ? undefined
+        : graphAiDependencyForNode(
+            relationSetDependenciesByNodeId,
+            analysis.item.nodeId,
+            "relation集合",
+          );
     currentItems.push(
       Object.freeze({
         item: analysis.item,
         detail: analysis.detail,
+        effectiveAssigneeCandidates: analysis.effectiveAssigneeCandidates,
         decision,
+        blockerValueAiDependencies: blockerValueDependencies,
         localResponsibilityDecision: analysis.localResponsibilityDecision,
+        aiAnalysisApplications: aiAnalysis.applications,
         selfCommitmentCause,
+        statusBasis: basis.statusBasis,
         responsibilityBasis: basis.responsibilityBasis,
         dependencyCause: dependencyResolution.cause,
         notificationRecommendation:
@@ -8753,15 +10476,16 @@ function reduceAnalysisPass(
     stalenessByNodeId.set(analysis.item.nodeId, trackedItemStaleness(staleness));
     items.push(
       createTrackedItem(
-        configuration,
         state,
         analysis,
         decision,
         primaryWaitingOn,
         staleness,
-        codexAnalysis,
-        reduction,
-        output,
+        aiAnalysis,
+        downstreamImpactDependency,
+        blockersDependency,
+        blockerValueDependencies,
+        relationSetDependency,
       ),
     );
   }
@@ -8867,6 +10591,26 @@ function graphAnalysisNode(item: PendingTrackedItem): GraphAnalysisNode {
   });
 }
 
+function graphAnalysisStateForEnumeratedItem(item: EnumeratedGitHubItem): TrackedItemState {
+  if (item.state === "open") {
+    return "open";
+  }
+  if (item.type === "pull_request" && item.mergeStatus === "merged") {
+    return "merged";
+  }
+  return "closed";
+}
+
+function candidateOnlyGraphAnalysisNode(item: EnumeratedGitHubItem): GraphAnalysisNode {
+  return Object.freeze({
+    kind: item.type,
+    nodeId: item.nodeId,
+    repositoryId: item.repositoryId,
+    state: graphAnalysisStateForEnumeratedItem(item),
+    directNotification: "not_eligible",
+  });
+}
+
 function externalGraphAnalysisNode(reference: ExternalGhostNode): GraphAnalysisNode {
   return Object.freeze({
     kind: reference.kind,
@@ -8907,6 +10651,7 @@ function previousGraphEdge(relation: Relation): ReconciledGraphEdge {
     evidence: relation.evidence,
     authoritative: relation.provenance === "native",
     contradictions: restoredRelationContradictions(relation),
+    aiDependency: relation.aiDependency,
     firstSeenAt: relation.firstSeenAt,
     lastConfirmedAt: relation.lastConfirmedAt,
   };
@@ -8937,25 +10682,291 @@ function previousGraphSnapshot(state: RuntimeState): GraphAnalysisSnapshot | und
   });
 }
 
+type AvailablePreviousGraphIndex = Readonly<{
+  availability: "available";
+  snapshot: GraphAnalysisSnapshot;
+  analysis: AnalyzeGraphResult;
+  downstreamImpactByNodeId: ReadonlyMap<
+    GraphNodeId,
+    AnalyzeGraphResult["downstreamImpacts"][number]
+  >;
+}>;
+
+type PreviousGraphIndex =
+  | Readonly<{
+      availability: "unavailable";
+    }>
+  | AvailablePreviousGraphIndex;
+
+const UNAVAILABLE_PREVIOUS_GRAPH_INDEX: PreviousGraphIndex = Object.freeze({
+  availability: "unavailable",
+});
+const previousGraphIndexBySnapshot = new WeakMap<StateSnapshot, AvailablePreviousGraphIndex>();
+
+function previousGraphIndex(state: RuntimeState): PreviousGraphIndex {
+  const stateSnapshot = previousSnapshot(state);
+  if (stateSnapshot == null) {
+    return UNAVAILABLE_PREVIOUS_GRAPH_INDEX;
+  }
+  const cached = previousGraphIndexBySnapshot.get(stateSnapshot);
+  if (cached != null) {
+    return cached;
+  }
+  const snapshot = previousGraphSnapshot(state);
+  assertNonNullable(snapshot, "前回snapshotからgraphを復元できませんでした");
+  const analysis = analyzeGraph({
+    current: snapshot,
+    previous: {
+      availability: "unavailable",
+    },
+  });
+  const index: AvailablePreviousGraphIndex = Object.freeze({
+    availability: "available",
+    snapshot,
+    analysis,
+    downstreamImpactByNodeId: new Map(
+      analysis.downstreamImpacts.map((impact) => [impact.nodeId, impact]),
+    ),
+  });
+  previousGraphIndexBySnapshot.set(stateSnapshot, index);
+  return index;
+}
+
+function preservedRelationSourceProducers(
+  edge: ReconciledGraphEdge,
+): readonly AiAnalysisDependencyProducer[] | undefined {
+  if (edge.aiDependency.status === "not_dependent") {
+    throw new TypeError(`推定edge ${edge.id}のAI依存がありません`);
+  }
+  const producers = edge.aiDependency.producers;
+  if (producers == null) {
+    return undefined;
+  }
+  return Object.freeze(
+    producers.map((producer) => {
+      if (
+        producer.kind !== "relation" ||
+        producer.relationId !== edge.id ||
+        producer.producer.element !== "relations"
+      ) {
+        throw new TypeError(`推定edge ${edge.id}の保存済みproducerが不正です`);
+      }
+      return Object.freeze({
+        kind: "item_element",
+        nodeId: producer.producer.nodeId,
+        element: "relations",
+      }) satisfies AiAnalysisDependencyProducer;
+    }),
+  );
+}
+
+function downgradedPreservedRelationDependency(
+  edge: ReconciledGraphEdge,
+  currentDependency: AiAnalysisDependency | undefined,
+  fallbackProducer: AiAnalysisDependencyProducer | undefined,
+): AiAnalysisDependency | undefined {
+  if (
+    currentDependency?.status === "unknown" &&
+    (currentDependency.reason === "proof_unknown" || currentDependency.reason === "migration") &&
+    currentDependency.producers != null
+  ) {
+    return currentDependency;
+  }
+  const currentProducers =
+    currentDependency != null && currentDependency.status !== "not_dependent"
+      ? currentDependency.producers
+      : undefined;
+  const producers =
+    currentProducers ??
+    preservedRelationSourceProducers(edge) ??
+    (fallbackProducer == null ? undefined : Object.freeze([fallbackProducer]));
+  if (producers == null) {
+    return undefined;
+  }
+  const reason =
+    currentDependency?.status === "unknown" && currentDependency.reason === "migration"
+      ? "migration"
+      : "proof_unknown";
+  return normalizeAiAnalysisDependency({
+    status: "unknown",
+    reason,
+    producers,
+  });
+}
+
+function activeProofForPreservedEdge(
+  proof: RelationCandidateDecisionProof,
+  edge: ReconciledGraphEdge,
+  dependency: AiAnalysisDependency,
+): RelationCandidateDecisionProof {
+  return Object.freeze({
+    candidateId: proof.candidateId,
+    endpointNodeIds: proof.endpointNodeIds,
+    authority: proof.authority,
+    resolution: Object.freeze({
+      candidateId: proof.candidateId,
+      status: "active",
+      edgeId: proof.candidateId,
+    }),
+    dependency,
+    canonicalRelation: Object.freeze({
+      type: edge.type,
+      fromNodeId: edge.fromNodeId,
+      toNodeId: edge.toNodeId,
+    }),
+  });
+}
+
+function pendingProofForPreservedInactiveEdge(
+  proof: RelationCandidateDecisionProof,
+  dependency: AiAnalysisDependency,
+): RelationCandidateDecisionProof {
+  return Object.freeze({
+    candidateId: proof.candidateId,
+    endpointNodeIds: proof.endpointNodeIds,
+    authority: proof.authority,
+    resolution: Object.freeze({
+      candidateId: proof.candidateId,
+      status: "pending",
+      reason: "assessment_missing",
+    }),
+    dependency,
+  });
+}
+
 function preserveStaleGraphEdges(
   collection: CollectedItems,
   previousEdges: readonly ReconciledGraphEdge[],
   reconciledEdges: readonly ReconciledGraphEdge[],
-): readonly ReconciledGraphEdge[] {
+  candidates: readonly RelationCandidate[],
+  candidateDecisionProofs: readonly RelationCandidateDecisionProof[],
+): Readonly<{
+  edges: readonly ReconciledGraphEdge[];
+  relationCandidateAiDependencies: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>;
+  candidateResolutions: readonly RelationCandidateResolution[];
+  candidateDecisionProofs: readonly RelationCandidateDecisionProof[];
+}> {
   const staleNodeIds = new Set<string>(collection.staleItems.map((item) => item.nodeId));
   const preservedEdges = new Map(
     previousEdges
       .filter((edge) => staleNodeIds.has(edge.fromNodeId) || staleNodeIds.has(edge.toNodeId))
       .map((edge) => [edge.id, edge]),
   );
-  const result = reconciledEdges.map((edge) => preservedEdges.get(edge.id) ?? edge);
+  const proofsByCandidateId = new Map(
+    candidateDecisionProofs.map((proof) => [proof.candidateId, proof]),
+  );
+  const candidatesById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  const preservedSourceDependencies = new Map<RelationCandidateId, AiAnalysisDependency>();
+  const result = reconciledEdges.map((edge) => {
+    const preserved = preservedEdges.get(edge.id);
+    if (preserved == null) {
+      return edge;
+    }
+    if (preserved.provenance === "native") {
+      return !preserved.active && edge.active ? edge : preserved;
+    }
+    const proof = proofsByCandidateId.get(preserved.id);
+    const candidate = candidatesById.get(preserved.id);
+    const candidateNodes: readonly RelationCandidateNode[] =
+      candidate == null ? Object.freeze([]) : relationNodes(candidate.relation);
+    const assessmentOwnerNodeId =
+      candidate == null ? undefined : relationAssessmentOwnerNodeId(candidate);
+    const assessmentOwner =
+      candidate == null
+        ? undefined
+        : candidateNodes.find((node) => node.nodeId === assessmentOwnerNodeId);
+    if (candidate != null) {
+      assertNonNullable(assessmentOwner, `関係候補 ${candidate.id}のAI判定owner nodeがありません`);
+    }
+    const organizationCandidateNodes = candidateNodes.filter(isOrganizationRelationCandidateNode);
+    const fallbackProducerNode =
+      organizationCandidateNodes.find((node) => node.nodeId === assessmentOwnerNodeId) ??
+      organizationCandidateNodes[0];
+    if (candidate != null) {
+      assertNonNullable(
+        fallbackProducerNode,
+        `関係候補 ${candidate.id}のOrganization側nodeがありません`,
+      );
+    }
+    const fallbackProducer =
+      fallbackProducerNode == null
+        ? undefined
+        : Object.freeze({
+            kind: "item_element",
+            nodeId: fallbackProducerNode.nodeId,
+            element: "relations",
+          } satisfies AiAnalysisDependencyProducer);
+    if (!preserved.active) {
+      if (!edge.active) {
+        return preserved;
+      }
+      const sourceDependency = downgradedPreservedRelationDependency(
+        preserved,
+        proof?.dependency,
+        fallbackProducer,
+      );
+      if (sourceDependency == null) {
+        return preserved;
+      }
+      preservedSourceDependencies.set(preserved.id, sourceDependency);
+      return Object.freeze({
+        ...preserved,
+        aiDependency: aiAnalysisDependencyForRelation(preserved.id, sourceDependency),
+      });
+    }
+    const sourceDependency = downgradedPreservedRelationDependency(
+      preserved,
+      proof?.dependency,
+      fallbackProducer,
+    );
+    if (sourceDependency == null) {
+      return preserved;
+    }
+    preservedSourceDependencies.set(preserved.id, sourceDependency);
+    return Object.freeze({
+      ...preserved,
+      aiDependency: aiAnalysisDependencyForRelation(preserved.id, sourceDependency),
+    });
+  });
   const resultIds = new Set(result.map((edge) => edge.id));
   for (const edgeId of preservedEdges.keys()) {
     if (!resultIds.has(edgeId)) {
       throw new TypeError(`stale repositoryの前回edgeがありません。対象: ${edgeId}`);
     }
   }
-  return Object.freeze(result);
+  const normalizedCandidateDecisionProofs = candidateDecisionProofs.map((proof) => {
+    const preserved = preservedEdges.get(proof.candidateId);
+    if (preserved == null || preserved.provenance === "native") {
+      return proof;
+    }
+    if (!preserved.active) {
+      if (proof.resolution.status !== "active") {
+        return proof;
+      }
+      const sourceDependency = preservedSourceDependencies.get(proof.candidateId);
+      assertNonNullable(
+        sourceDependency,
+        `inactive stale edgeの降格済みAI依存がありません。対象: ${proof.candidateId}`,
+      );
+      return pendingProofForPreservedInactiveEdge(proof, sourceDependency);
+    }
+    const sourceDependency = preservedSourceDependencies.get(proof.candidateId);
+    assertNonNullable(
+      sourceDependency,
+      `active stale edgeの降格済みAI依存がありません。対象: ${proof.candidateId}`,
+    );
+    return activeProofForPreservedEdge(proof, preserved, sourceDependency);
+  });
+  return Object.freeze({
+    edges: Object.freeze(result),
+    relationCandidateAiDependencies: new Map(
+      normalizedCandidateDecisionProofs.map((proof) => [proof.candidateId, proof.dependency]),
+    ),
+    candidateResolutions: Object.freeze(
+      normalizedCandidateDecisionProofs.map((proof) => proof.resolution),
+    ),
+    candidateDecisionProofs: Object.freeze(normalizedCandidateDecisionProofs),
+  });
 }
 
 function retainGraphEdgesForAvailableNodes(
@@ -8997,21 +11008,93 @@ function createEarliestRelationSourceOccurredAtById(
   return sourceOccurredAtById;
 }
 
+function relationAiDependenciesForCandidates(
+  candidates: readonly RelationCandidate[],
+  items: readonly PendingTrackedItem[],
+  assessments: readonly RelationCandidateAssessment[],
+): ReadonlyMap<RelationCandidateId, AiAnalysisDependency> {
+  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+  const candidatesById = new Map<RelationCandidateId, RelationCandidate>();
+  for (const candidate of candidates) {
+    if (candidatesById.has(candidate.id)) {
+      throw new TypeError(`関係候補IDが重複しています。対象: ${candidate.id}`);
+    }
+    candidatesById.set(candidate.id, candidate);
+  }
+  const itemsByNodeId = new Map<GraphNodeId, PendingTrackedItem>();
+  for (const item of items) {
+    if (itemsByNodeId.has(item.nodeId)) {
+      throw new TypeError(`関係候補の生成元itemが重複しています。対象: ${item.nodeId}`);
+    }
+    itemsByNodeId.set(item.nodeId, item);
+  }
+  const assessmentsByCandidateId = new Map<RelationCandidateId, RelationCandidateAssessment>();
+  for (const assessment of assessments) {
+    if (!candidateIds.has(assessment.candidateId)) {
+      continue;
+    }
+    if (assessmentsByCandidateId.has(assessment.candidateId)) {
+      throw new TypeError(`関係候補 ${assessment.candidateId}のAI依存が重複しています`);
+    }
+    const candidate = candidatesById.get(assessment.candidateId);
+    assertNonNullable(candidate, `関係候補 ${assessment.candidateId}がありません`);
+    const ownerNodeId = relationAssessmentOwnerNodeId(candidate);
+    if (assessment.currentNodeId !== ownerNodeId) {
+      throw new TypeError(
+        `関係候補 ${assessment.candidateId}のAI判定ownerが一致しません。対象: ${ownerNodeId}`,
+      );
+    }
+    assessmentsByCandidateId.set(assessment.candidateId, assessment);
+  }
+  const dependencies = new Map<RelationCandidateId, AiAnalysisDependency>();
+  for (const candidate of candidates) {
+    if (candidate.provenance === "native") {
+      dependencies.set(candidate.id, Object.freeze({ status: "not_dependent" }));
+      continue;
+    }
+    const ownerNodeId = relationAssessmentOwnerNodeId(candidate);
+    const owner = itemsByNodeId.get(ownerNodeId);
+    if (owner == null) {
+      const ownerNode = relationNodes(candidate.relation).find(
+        (node) => node.nodeId === ownerNodeId,
+      );
+      assertNonNullable(ownerNode, `関係候補 ${candidate.id}のowner nodeがありません`);
+      dependencies.set(candidate.id, Object.freeze({ status: "unknown", reason: "not_recorded" }));
+      continue;
+    }
+    const assessment = assessmentsByCandidateId.get(candidate.id);
+    if (assessment == null) {
+      dependencies.set(
+        candidate.id,
+        aiAnalysisDependencyForMissingRelationCandidateAssessment(
+          owner.nodeId,
+          owner.aiAnalysis.applications.relations,
+        ),
+      );
+      continue;
+    }
+    dependencies.set(
+      candidate.id,
+      aiDependencyForElementApplication(owner.nodeId, owner.aiAnalysis.applications, "relations"),
+    );
+  }
+  return dependencies;
+}
+
 function reconcileCurrentGraph(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
   collection: CollectedItems,
   reduction: ReducedAnalysis,
 ): GraphResult {
-  const previous = previousGraphSnapshot(state);
-  const nodeIds = new Set(reduction.items.map((item) => item.nodeId));
-  const candidates = collection.relationCandidates.filter((candidate) => {
-    const nodes = relationNodes(candidate.relation);
-    return (
-      nodes.some((node) => node.scope === "organization" && nodeIds.has(node.nodeId)) &&
-      nodes.every((node) => node.scope === "external_public" || nodeIds.has(node.nodeId))
-    );
-  });
+  const previousIndex = previousGraphIndex(state);
+  const previous = previousIndex.availability === "available" ? previousIndex.snapshot : undefined;
+  const candidates = collection.relationCandidates;
+  const relationAiDependencies = relationAiDependenciesForCandidates(
+    candidates,
+    reduction.items,
+    reduction.relationAssessments,
+  );
   const candidateIds = new Set(candidates.map((candidate) => candidate.id));
   const reconciled: ReconcileGraphResult = reconcileGraph({
     previousGraph: {
@@ -9022,40 +11105,90 @@ function reconcileCurrentGraph(
     assessments: reduction.relationAssessments.filter((assessment) =>
       candidateIds.has(assessment.candidateId),
     ),
+    relationAiDependencies: new Map(
+      candidates.map((candidate) => {
+        const dependency = relationAiDependencies.get(candidate.id);
+        assertNonNullable(dependency, `関係候補 ${candidate.id}のAI依存がありません`);
+        return [candidate.id, dependency];
+      }),
+    ),
     sourceOccurredAtById: createEarliestRelationSourceOccurredAtById(collection.observedItems),
     minimumInferredConfidence: configuration.config.ai.confidence.medium,
     reconciledAt: collection.evaluatedAt,
   });
-  const reconciledEdges = preserveStaleGraphEdges(
+  const preservedGraph = preserveStaleGraphEdges(
     collection,
     previous?.edges ?? [],
     reconciled.edges,
+    candidates,
+    reconciled.candidateDecisionProofs,
   );
-  const externalReferencesByNodeId = new Map(
-    [
-      ...(previousSnapshot(state)?.externalReferences ?? []),
-      ...collection.externalReferences,
-      ...candidates.flatMap((candidate) =>
-        relationNodes(candidate.relation).flatMap((node) =>
-          node.scope === "external_public"
-            ? [
-                Object.freeze({
-                  kind: "external_reference",
-                  nodeId: node.nodeId,
-                  repositoryFullName: `${node.repositoryOwner}/${node.repositoryName}`,
-                  number: node.number,
-                  url: node.url,
-                  title: `${node.repositoryOwner}/${node.repositoryName}#${node.number.toString()}`,
-                  state: node.state,
-                  recursiveTracking: "not_allowed",
-                  directNotification: "not_eligible",
-                } satisfies ExternalGhostNode),
-              ]
-            : [],
-        ),
-      ),
-    ].map((reference) => [reference.nodeId, reference]),
+  const reconciledEdges = preservedGraph.edges;
+  const reductionItemsByNodeId = new Map<GitHubNodeId, PendingTrackedItem>();
+  for (const item of reduction.items) {
+    if (reductionItemsByNodeId.has(item.nodeId)) {
+      throw new TypeError(`関係候補endpointのreduction itemが重複しています。対象: ${item.nodeId}`);
+    }
+    reductionItemsByNodeId.set(item.nodeId, item);
+  }
+  const enumeratedItemsByNodeId = new Map<GitHubNodeId, EnumeratedGitHubItem>();
+  for (const item of collection.enumeratedItems) {
+    if (enumeratedItemsByNodeId.has(item.nodeId)) {
+      throw new TypeError(`関係候補endpointの列挙項目が重複しています。対象: ${item.nodeId}`);
+    }
+    enumeratedItemsByNodeId.set(item.nodeId, item);
+  }
+  const externalReferencesByNodeId = new Map<GraphNodeId, ExternalGhostNode>();
+  const candidateExternalReferences = candidates.flatMap((candidate) =>
+    relationNodes(candidate.relation).flatMap((node) =>
+      node.scope === "external_public"
+        ? [
+            Object.freeze({
+              kind: "external_reference",
+              nodeId: node.nodeId,
+              repositoryFullName: `${node.repositoryOwner}/${node.repositoryName}`,
+              number: node.number,
+              url: node.url,
+              title: `${node.repositoryOwner}/${node.repositoryName}#${node.number.toString()}`,
+              state: node.state,
+              recursiveTracking: "not_allowed",
+              directNotification: "not_eligible",
+            } satisfies ExternalGhostNode),
+          ]
+        : [],
+    ),
   );
+  for (const reference of [
+    ...(previousSnapshot(state)?.externalReferences ?? []),
+    ...collection.externalReferences,
+    ...candidateExternalReferences,
+  ]) {
+    externalReferencesByNodeId.set(reference.nodeId, reference);
+  }
+  for (const candidate of candidates) {
+    for (const node of relationNodes(candidate.relation)) {
+      if (node.scope === "external_public") {
+        if (!externalReferencesByNodeId.has(node.nodeId)) {
+          throw new TypeError(`関係候補の外部参照nodeがありません。対象: ${node.nodeId}`);
+        }
+        continue;
+      }
+      const reductionItem = reductionItemsByNodeId.get(node.nodeId);
+      if (reductionItem != null) {
+        if (reductionItem.type !== node.kind) {
+          throw new TypeError(`関係候補endpointのitem種別が一致しません。対象: ${node.nodeId}`);
+        }
+        continue;
+      }
+      const enumeratedItem = enumeratedItemsByNodeId.get(node.nodeId);
+      if (enumeratedItem == null) {
+        throw new TypeError(`関係候補endpointの列挙項目がありません。対象: ${node.nodeId}`);
+      }
+      if (enumeratedItem.type !== node.kind) {
+        throw new TypeError(`関係候補endpointの列挙項目種別が一致しません。対象: ${node.nodeId}`);
+      }
+    }
+  }
   const availableNodeIds = new Set<string>([
     ...reduction.items.map((item) => item.nodeId),
     ...externalReferencesByNodeId.keys(),
@@ -9071,6 +11204,42 @@ function reconcileCurrentGraph(
     ...reduction.items.map(graphAnalysisNode),
     ...externalReferences.map(externalGraphAnalysisNode),
   ];
+  const candidateOnlyNodesByNodeId = new Map<GraphNodeId, GraphAnalysisNode>();
+  for (const candidate of candidates) {
+    for (const node of relationNodes(candidate.relation)) {
+      if (node.scope !== "organization" || reductionItemsByNodeId.has(node.nodeId)) {
+        continue;
+      }
+      const enumeratedItem = enumeratedItemsByNodeId.get(node.nodeId);
+      assertNonNullable(
+        enumeratedItem,
+        `関係候補endpointの列挙項目がありません。対象: ${node.nodeId}`,
+      );
+      if (enumeratedItem.type !== node.kind) {
+        throw new TypeError(`関係候補endpointの列挙項目種別が一致しません。対象: ${node.nodeId}`);
+      }
+      const candidateNode = candidateOnlyGraphAnalysisNode(enumeratedItem);
+      const existing = candidateOnlyNodesByNodeId.get(candidateNode.nodeId);
+      if (existing != null && JSON.stringify(existing) !== JSON.stringify(candidateNode)) {
+        throw new TypeError(`関係候補endpointの列挙項目が一致しません。対象: ${node.nodeId}`);
+      }
+      candidateOnlyNodesByNodeId.set(candidateNode.nodeId, candidateNode);
+    }
+  }
+  const aiGraphNodes = [
+    ...reduction.items.map(graphAnalysisNode),
+    ...[...candidateOnlyNodesByNodeId.values()].sort((left, right) =>
+      left.nodeId.localeCompare(right.nodeId),
+    ),
+    ...[...externalReferencesByNodeId.values()]
+      .sort((left, right) => left.nodeId.localeCompare(right.nodeId))
+      .map(externalGraphAnalysisNode),
+  ];
+  const aiGraphNodeIds = new Set(aiGraphNodes.map((node) => node.nodeId));
+  const aiEdges = retainGraphEdgesForAvailableNodes(reconciledEdges, aiGraphNodeIds);
+  const openNodeIds = new Set<GraphNodeId>(
+    graphNodes.filter((node) => node.state === "open").map((node) => node.nodeId),
+  );
   const analysis = analyzeGraph({
     current: {
       nodes: graphNodes,
@@ -9086,24 +11255,47 @@ function reconcileCurrentGraph(
             snapshot: previous,
           },
   });
+  const aiAnalysis = analyzeGraphAiDependencies({
+    current: {
+      nodes: graphNodes,
+      edges,
+    },
+    candidateProofSnapshot: {
+      nodes: aiGraphNodes,
+      edges: aiEdges,
+    },
+    previous:
+      previous == null
+        ? {
+            availability: "unavailable",
+          }
+        : {
+            availability: "available",
+            snapshot: previous,
+          },
+    candidateDecisionProofs: preservedGraph.candidateDecisionProofs,
+  });
   return Object.freeze({
     edges,
-    candidateResolutions: reconciled.candidateResolutions,
+    relationCandidateAiDependencies: preservedGraph.relationCandidateAiDependencies,
+    candidateResolutions: preservedGraph.candidateResolutions,
+    candidateDecisionProofs: preservedGraph.candidateDecisionProofs,
     externalReferences,
+    openNodeIds,
     analysis,
+    downstreamImpactAiDependencies: aiAnalysis.downstreamImpactAiDependencies,
+    blockerSetAiDependencies: aiAnalysis.blockerSetAiDependencies,
+    blockerNodeAiDependencies: aiAnalysis.blockerNodeAiDependencies,
+    negativeBlockerAiDependencies: aiAnalysis.negativeBlockerAiDependencies,
+    relationSetAiDependencies: aiAnalysis.relationSetAiDependencies,
     previousAnalysis:
-      previous == null
+      previousIndex.availability === "unavailable"
         ? Object.freeze({
             availability: "unavailable",
           })
         : Object.freeze({
             availability: "available",
-            value: analyzeGraph({
-              current: previous,
-              previous: {
-                availability: "unavailable",
-              },
-            }),
+            value: previousIndex.analysis,
           }),
   });
 }
@@ -9125,6 +11317,7 @@ function toStateRelation(edge: ReconciledGraphEdge): Relation {
         }),
       ),
     ),
+    aiDependency: edge.aiDependency,
     firstSeenAt: edge.firstSeenAt,
     lastConfirmedAt: edge.lastConfirmedAt,
   };
@@ -9345,9 +11538,7 @@ function notificationItem(
   repositoryFreshness: DiscordNotificationItem["repositoryFreshness"],
 ): DiscordNotificationItem {
   const repository = findRepository(inventory, item.repositoryId);
-  const previous = previousSnapshot(state)?.items.find(
-    (candidate) => candidate.nodeId === item.nodeId,
-  );
+  const previous = previousTrackedItem(state, item.nodeId);
   const downstreamImpact = graph.analysis.downstreamImpacts.find(
     (impact) => impact.nodeId === item.nodeId,
   );
@@ -9612,20 +11803,14 @@ function stateHistoryInputEvents(reduction: ReducedAnalysis): readonly StateHist
 function createTrackedItemWithImportance(
   configuration: RuntimeConfiguration,
   inventory: RepositoryInventory,
-  graph: GraphResult,
   resolveLabelEffects: ReturnType<typeof createLabelEffectsResolver>,
   item: PendingTrackedItem,
+  downstreamImpact: AnalyzeGraphResult["downstreamImpacts"][number],
+  downstreamImpactDependency: AiAnalysisDependency,
   naturalLanguageAssessment: NaturalLanguageImportanceAssessmentState,
   deadlineAssessment: NaturalLanguageDeadlineAssessmentState,
 ): TrackedItemWithImportanceAssessment {
   const repository = findRepository(inventory, item.repositoryId);
-  const downstreamImpact = graph.analysis.downstreamImpacts.find(
-    (impact) => impact.nodeId === item.nodeId,
-  );
-  assertNonNullable(
-    downstreamImpact,
-    `重要度計算対象 ${item.nodeId}のdownstream impactがありません`,
-  );
   const labelEffects = resolveLabelEffects(repositoryFullName(repository), item.labels);
   const deterministicImportance = calculateImportance({
     priorityWeight: labelEffects.priorityWeight,
@@ -9633,16 +11818,96 @@ function createTrackedItemWithImportance(
     weights: configuration.config.importance.weights,
     levels: configuration.config.importance.levels,
   });
+  const importance = combineImportance({
+    deterministic: deterministicImportance,
+    naturalLanguageAssessment,
+    weights: configuration.config.importance.weights,
+    levels: configuration.config.importance.levels,
+  });
+  const naturalLanguageCanAffectImportance =
+    configuration.config.importance.weights.significantFeature > 0 ||
+    configuration.config.importance.weights.futureRisk > 0;
+  const downstreamImpactCanAffectImportance =
+    configuration.config.importance.weights.downstreamImpactMax > 0 &&
+    (configuration.config.importance.weights.blockedItem > 0 ||
+      configuration.config.importance.weights.blockedRepository > 0);
+  const importanceDependencies = [
+    ...(naturalLanguageCanAffectImportance
+      ? [aiDependencyForElementApplication(item.nodeId, item.aiAnalysis.applications, "importance")]
+      : []),
+    ...(downstreamImpactCanAffectImportance ? [downstreamImpactDependency] : []),
+  ];
   return Object.freeze({
     ...item,
     importanceAssessment: naturalLanguageAssessment,
     deadlineAssessment,
-    importance: combineImportance({
-      deterministic: deterministicImportance,
-      naturalLanguageAssessment,
-      weights: configuration.config.importance.weights,
-      levels: configuration.config.importance.levels,
+    importance,
+    aiDependencies: Object.freeze({
+      ...item.aiDependencies,
+      importance: combineSelectedAiDependencies(importanceDependencies),
     }),
+  });
+}
+
+function finalizedTrackedItemAiDependencies(
+  item: TrackedItemWithImportanceAssessment,
+  currentAnalysis: ReducedItemAnalysis | undefined,
+  previousItem: SnapshotTrackedItem | undefined,
+  downstreamImpactDependency: AiAnalysisDependency,
+  blockersDependency: AiAnalysisDependency,
+  relationSetDependency: AiAnalysisDependency,
+  deadlineLevel: DeadlineLevel,
+  staleness: TrackedItemStaleness,
+): TrackedItemAiDependencies {
+  const dependencies = Object.freeze({
+    ...item.aiDependencies,
+    downstreamImpact: downstreamImpactDependency,
+    blockers: blockersDependency,
+    relationSet: relationSetDependency,
+  });
+  if (currentAnalysis == null) {
+    return Object.freeze({
+      ...dependencies,
+      severity: severityAiDependency(item, staleness, staleness.criticalRequested, dependencies),
+      attention: attentionAiDependency(
+        item,
+        staleness,
+        item.importance,
+        deadlineLevel,
+        dependencies,
+      ),
+    });
+  }
+  const stallSince = stallSinceAiDependency(
+    currentAnalysis.item,
+    sourceOccurredAtByIdForAnalysis(currentAnalysis),
+    currentAnalysis.decision,
+    currentAnalysis.staleness,
+    dependencies,
+    previousItem,
+    currentAnalysis.statusBasis,
+    currentAnalysis.responsibilityBasis,
+    currentAnalysis.blockerValueAiDependencies.transitionBasis,
+  );
+  const withStallSince = Object.freeze({
+    ...dependencies,
+    stallSince,
+  });
+  return Object.freeze({
+    ...withStallSince,
+    severity: severityAiDependency(
+      currentAnalysis.decision,
+      currentAnalysis.staleness,
+      criticalSeverityWasRequested(currentAnalysis.staleness.severityReason),
+      withStallSince,
+    ),
+    attention: attentionAiDependency(
+      currentAnalysis.decision,
+      currentAnalysis.staleness,
+      item.importance,
+      deadlineLevel,
+      withStallSince,
+    ),
   });
 }
 
@@ -9703,6 +11968,9 @@ function personalReminderRuntimeEndpointState(
 
 function personalReminderRuntimeCandidateRelation(
   candidate: RelationCandidate,
+  aiDependenciesByCandidateId: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
+  proof: RelationCandidateDecisionProof,
+  resolution: RelationCandidateResolution,
 ): PersonalReminderRuntimeGraph["candidateRelations"][number] {
   const [firstNode, secondNode] = relationNodes(candidate.relation);
   if (firstNode.nodeId === secondNode.nodeId) {
@@ -9734,10 +12002,49 @@ function personalReminderRuntimeCandidateRelation(
     firstSourceId,
     ...normalizedSourceIds.slice(1),
   ];
+  const aiDependency = aiDependenciesByCandidateId.get(candidate.id);
+  assertNonNullable(
+    aiDependency,
+    `個人催促relation候補のAI依存がありません。対象: ${candidate.id}`,
+  );
+  if (proof.candidateId !== candidate.id || resolution.candidateId !== candidate.id) {
+    throw new TypeError(`個人催促relation候補のproof IDが一致しません。対象: ${candidate.id}`);
+  }
+  if (proof.authority !== candidate.authority) {
+    throw new TypeError(
+      `個人催促relation候補のproof authorityが一致しません。対象: ${candidate.id}`,
+    );
+  }
+  if (
+    proof.endpointNodeIds[0] !== firstNode.nodeId ||
+    proof.endpointNodeIds[1] !== secondNode.nodeId
+  ) {
+    throw new TypeError(
+      `個人催促relation候補のproof endpointが一致しません。対象: ${candidate.id}`,
+    );
+  }
+  if (proof.resolution.status !== resolution.status) {
+    throw new TypeError(`個人催促relation候補のresolutionが一致しません。対象: ${candidate.id}`);
+  }
+  if (serializeCanonicalJson(proof.resolution) !== serializeCanonicalJson(resolution)) {
+    throw new TypeError(
+      `個人催促relation候補のresolution内容が一致しません。対象: ${candidate.id}`,
+    );
+  }
+  if (serializeCanonicalJson(proof.dependency) !== serializeCanonicalJson(aiDependency)) {
+    throw new TypeError(`個人催促relation候補のproof AI依存が一致しません。対象: ${candidate.id}`);
+  }
   return Object.freeze({
     candidateId: candidate.id,
     endpointNodeIds: Object.freeze(endpointTuple),
+    ownerNodeId: relationAssessmentOwnerNodeId(candidate),
+    relationType: candidate.relation.type,
+    authority: candidate.authority,
+    provenance: candidate.provenance,
+    resolution,
+    ...(proof.canonicalRelation == null ? {} : { canonicalRelation: proof.canonicalRelation }),
     evidenceSourceIds: Object.freeze(sourceTuple),
+    aiDependency,
   });
 }
 
@@ -9766,7 +12073,17 @@ function personalReminderRuntimeGraph(
       item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed",
     );
   }
-  const candidateRelations = graphCandidateRelations(collection.relationCandidates);
+  const candidateEndpointItemsByNodeId = personalReminderCandidateEndpointItems(
+    state,
+    collection,
+    reduction,
+  );
+  const candidateRelations = graphCandidateRelations(
+    collection.relationCandidates,
+    graph.relationCandidateAiDependencies,
+    graph.candidateDecisionProofs,
+    graph.candidateResolutions,
+  );
   for (const candidate of candidateRelations) {
     for (const endpointNodeId of candidate.endpointNodeIds) {
       if (!endpointStates.has(endpointNodeId)) {
@@ -9790,6 +12107,7 @@ function personalReminderRuntimeGraph(
     candidateRelations,
     candidateResolutions: Object.freeze(graph.candidateResolutions),
     endpointStates,
+    candidateEndpointItemsByNodeId,
     externalReferences: Object.freeze(
       graph.externalReferences.map((reference) =>
         Object.freeze({
@@ -9803,11 +12121,100 @@ function personalReminderRuntimeGraph(
   });
 }
 
+function personalReminderCandidateEndpointItem(
+  item: Pick<TrackedItem, "nodeId" | "type" | "state" | "author">,
+): PersonalReminderRuntimeCandidateEndpointItem {
+  return Object.freeze({
+    nodeId: item.nodeId,
+    type: item.type,
+    state: item.state,
+    author:
+      item.author.status === "identified"
+        ? Object.freeze({
+            status: "identified",
+            type: item.author.actor.type,
+            login: item.author.actor.login,
+          })
+        : Object.freeze({ status: "unavailable" }),
+  });
+}
+
+function personalReminderCandidateEndpointItems(
+  state: RuntimeState,
+  collection: CollectedItems,
+  reduction: ReducedAnalysis,
+): ReadonlyMap<GraphNodeId, PersonalReminderRuntimeCandidateEndpointItem> {
+  const itemsByNodeId = new Map<GraphNodeId, PersonalReminderRuntimeCandidateEndpointItem>();
+  for (const item of previousSnapshot(state)?.items ?? []) {
+    itemsByNodeId.set(item.nodeId, personalReminderCandidateEndpointItem(item));
+  }
+  for (const item of collection.observedItems) {
+    itemsByNodeId.set(item.nodeId, personalReminderCandidateEndpointItem(item));
+  }
+  for (const item of reduction.items) {
+    itemsByNodeId.set(item.nodeId, personalReminderCandidateEndpointItem(item));
+  }
+  return itemsByNodeId;
+}
+
 function graphCandidateRelations(
   candidates: readonly RelationCandidate[],
+  aiDependenciesByCandidateId: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
+  proofs: readonly RelationCandidateDecisionProof[],
+  resolutions: readonly RelationCandidateResolution[],
 ): readonly PersonalReminderRuntimeGraph["candidateRelations"][number][] {
+  const proofsByCandidateId = new Map<RelationCandidateId, RelationCandidateDecisionProof>();
+  for (const proof of proofs) {
+    if (proofsByCandidateId.has(proof.candidateId)) {
+      throw new TypeError(
+        `個人催促relation候補のproof IDが重複しています。対象: ${proof.candidateId}`,
+      );
+    }
+    proofsByCandidateId.set(proof.candidateId, proof);
+  }
+  const resolutionsByCandidateId = new Map<RelationCandidateId, RelationCandidateResolution>();
+  for (const resolution of resolutions) {
+    if (resolutionsByCandidateId.has(resolution.candidateId)) {
+      throw new TypeError(
+        `個人催促relation候補のresolution IDが重複しています。対象: ${resolution.candidateId}`,
+      );
+    }
+    resolutionsByCandidateId.set(resolution.candidateId, resolution);
+  }
+  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+  for (const candidateId of candidateIds) {
+    if (!proofsByCandidateId.has(candidateId) || !resolutionsByCandidateId.has(candidateId)) {
+      throw new TypeError(
+        `個人催促relation候補のproofまたはresolutionがありません。対象: ${candidateId}`,
+      );
+    }
+  }
+  for (const candidateId of proofsByCandidateId.keys()) {
+    if (!candidateIds.has(candidateId)) {
+      throw new TypeError(`個人催促relation候補のproof対象がありません。対象: ${candidateId}`);
+    }
+  }
+  for (const candidateId of resolutionsByCandidateId.keys()) {
+    if (!candidateIds.has(candidateId)) {
+      throw new TypeError(`個人催促relation候補のresolution対象がありません。対象: ${candidateId}`);
+    }
+  }
   return Object.freeze(
-    candidates.map((candidate) => personalReminderRuntimeCandidateRelation(candidate)),
+    candidates.map((candidate) => {
+      const proof = proofsByCandidateId.get(candidate.id);
+      const resolution = resolutionsByCandidateId.get(candidate.id);
+      assertNonNullable(proof, `個人催促relation候補のproofがありません。対象: ${candidate.id}`);
+      assertNonNullable(
+        resolution,
+        `個人催促relation候補のresolutionがありません。対象: ${candidate.id}`,
+      );
+      return personalReminderRuntimeCandidateRelation(
+        candidate,
+        aiDependenciesByCandidateId,
+        proof,
+        resolution,
+      );
+    }),
   );
 }
 
@@ -9927,6 +12334,7 @@ function personalReminderRuntimeCollection(
         item: personalReminderRuntimeItem(collection, analysis.item),
         detail,
         localDecision: personalReminderRuntimeLocalDecision(currentAnalysis),
+        aiAnalysisApplications: currentAnalysis.aiAnalysisApplications,
         relatedContexts: relatedProjection.contexts,
         completeness: Object.freeze({ status: "complete" }),
         repositoryFullName: repositoryFullName(
@@ -9974,6 +12382,7 @@ function personalReminderPlaceholderCause(
       fingerprint: inputFingerprint,
       rulesVersion: PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION,
       completeness: entry.semanticInput.completeness,
+      aiDependency: entry.currentInputAiDependency,
     },
     latestAttempt: { status: "not_evaluated" },
     adoptedAssessment: { status: "not_available" },
@@ -10293,10 +12702,22 @@ async function analyzePersonalReminders(
         reason: "terminal_without_cause",
       });
     } else {
+      const causeSetAiDependency = plan.causeSetAiDependencyByNodeId.get(item.item.nodeId);
+      assertNonNullable(
+        causeSetAiDependency,
+        `個人催促cause集合のAI依存がありません。対象: ${item.item.nodeId}`,
+      );
+      const causeSetSubjectChanges = plan.causeSetSubjectChangesByNodeId.get(item.item.nodeId);
+      assertNonNullable(
+        causeSetSubjectChanges,
+        `個人催促cause集合の主体変化範囲がありません。対象: ${item.item.nodeId}`,
+      );
       planning = Object.freeze({
         status: "completed",
         planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
         observedAt: collection.evaluatedAt,
+        causeSetAiDependency,
+        causeSetSubjectChanges,
       });
     }
     planningByNodeId.set(item.item.nodeId, planning);
@@ -10398,15 +12819,43 @@ function validateRunCompleteness(
   const previousSnapshotItemByNodeId = new Map(
     previousSnapshotItems.map((item) => [item.nodeId, item]),
   );
+  const downstreamImpactByNodeId = downstreamImpactsByNodeId(graph);
+  const downstreamImpactDependenciesByNodeId = downstreamImpactAiDependenciesByNodeId(graph);
+  const blockersDependenciesByNodeId = blockersAiDependenciesByNodeId(graph);
+  const relationSetDependenciesByNodeId = graphAiDependenciesByNodeId(
+    graph.relationSetAiDependencies,
+    "relation集合AI依存",
+  );
   const items = reduction.items.map((item) => {
     const currentAnalysis = currentAnalysisByNodeId.get(item.nodeId);
     const previousItem = previousSnapshotItemByNodeId.get(item.nodeId);
+    const downstreamImpact = graphMapValue(
+      downstreamImpactByNodeId,
+      item.nodeId,
+      `重要度計算対象 ${item.nodeId}のdownstream impact`,
+    );
+    const downstreamImpactDependency = graphAiDependencyForNode(
+      downstreamImpactDependenciesByNodeId,
+      item.nodeId,
+      "downstream impact",
+    );
+    const blockersDependency = graphAiDependencyForNode(
+      blockersDependenciesByNodeId,
+      item.nodeId,
+      "blocker",
+    );
+    const relationSetDependency = graphAiDependencyForNode(
+      relationSetDependenciesByNodeId,
+      item.nodeId,
+      "relation集合",
+    );
     const trackedItem = createTrackedItemWithImportance(
       configuration,
       inventory,
-      graph,
       resolveLabelEffects,
       item,
+      downstreamImpact,
+      downstreamImpactDependency,
       resolveImportanceAssessment(
         currentAnalysis?.importanceAssessment ?? previousItem?.importanceAssessment,
         undefined,
@@ -10415,6 +12864,23 @@ function validateRunCompleteness(
         currentAnalysis?.deadlineAssessment ?? previousItem?.deadlineAssessment,
         undefined,
       ),
+    );
+    const staleness = reduction.stalenessByNodeId.get(item.nodeId);
+    assertNonNullable(staleness, `追跡項目 ${item.nodeId}のseverity再計算結果がありません`);
+    const deadlineLevel = deadlineLevelForAssessment(
+      trackedItem.deadlineAssessment,
+      collection.evaluatedAt,
+      configuration.config.staleness.timezone,
+    );
+    const aiDependencies = finalizedTrackedItemAiDependencies(
+      trackedItem,
+      currentAnalysis,
+      previousItem,
+      downstreamImpactDependency,
+      blockersDependency,
+      relationSetDependency,
+      deadlineLevel,
+      staleness,
     );
     const causes = personalReminderAnalysis.causesByNodeId.get(item.nodeId);
     assertNonNullable(causes, `個人催促causeがありません。対象: ${item.nodeId}`);
@@ -10428,6 +12894,7 @@ function validateRunCompleteness(
     }
     return Object.freeze({
       ...trackedItem,
+      aiDependencies,
       personalReminderCauses: causes,
       personalReminderCausePlanning: planning,
       evidence: Object.freeze([...evidenceByIdentity.values()]),
@@ -10435,7 +12902,7 @@ function validateRunCompleteness(
   });
   const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
-    schemaVersion: "17",
+    schemaVersion: "18",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),
@@ -11914,6 +14381,33 @@ function personalReminderDetailNodeIdsForCollection(
   return nodeIds;
 }
 
+function personalReminderReplanNodeIdsForCollection(
+  state: RuntimeState,
+  enumeratedItems: readonly EnumeratedGitHubItem[],
+): ReadonlySet<GitHubNodeId> {
+  const previousItemsByNodeId = new Map(
+    (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
+  );
+  const nodeIds = new Set<GitHubNodeId>();
+  for (const item of enumeratedItems) {
+    if (item.state !== "open") {
+      continue;
+    }
+    const previous = previousItemsByNodeId.get(item.nodeId);
+    if (previous == null) {
+      continue;
+    }
+    if (
+      previous.personalReminderCausePlanning.status === "pending" ||
+      previous.personalReminderCausePlanning.planningVersion !==
+        PERSONAL_REMINDER_CAUSE_PLANNING_VERSION
+    ) {
+      nodeIds.add(item.nodeId);
+    }
+  }
+  return nodeIds;
+}
+
 async function collectFreshRepositoryItemObservations(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -11949,6 +14443,10 @@ async function collectFreshRepositoryItemObservations(
     enumeratedItems,
     configuration.config.ai.enabled,
   );
+  const personalReminderReplanNodeIds = personalReminderReplanNodeIdsForCollection(
+    state,
+    enumeratedItems,
+  );
   const detailNodeIds = new Set([
     ...plan.detailItemNodeIds,
     ...requiredTrackingDetailNodeIds(invocation, configuration, state, repository, enumeratedItems),
@@ -11978,6 +14476,7 @@ async function collectFreshRepositoryItemObservations(
     observedItems,
     changedNodeIds: plan.changedItemNodeIds,
     analysisPlanChangedNodeIds: plan.analysisPlanChangedItemNodeIds,
+    personalReminderReplanNodeIds,
   });
 }
 
@@ -12114,6 +14613,10 @@ async function collectAdditionalRelationItems(
     ...current.analysisPlanChangedNodeIds,
     ...additions.analysisPlanChangedNodeIds,
   ]);
+  const personalReminderReplanNodeIds = new Set([
+    ...current.personalReminderReplanNodeIds,
+    ...additions.personalReminderReplanNodeIds,
+  ]);
   return Object.freeze({
     state: createSnapshotCollectionRepository(
       repository,
@@ -12125,6 +14628,7 @@ async function collectAdditionalRelationItems(
     observedItems: mergedObservedItems,
     changedNodeIds: Object.freeze([...changedNodeIds]),
     analysisPlanChangedNodeIds: Object.freeze([...analysisPlanChangedNodeIds]),
+    personalReminderReplanNodeIds,
   });
 }
 
@@ -12137,6 +14641,7 @@ function aggregateFreshRepositoryCollections(
   const observedItems: FreshObservedGitHubItem[] = [];
   const changedNodeIds = new Set<GitHubNodeId>();
   const analysisPlanChangedNodeIds = new Set<GitHubNodeId>();
+  const personalReminderReplanNodeIds = new Set<GitHubNodeId>();
   for (const repository of allowlist.repositories) {
     const collection = freshCollectionsByRepositoryId.get(repository.id);
     if (collection == null) {
@@ -12151,6 +14656,9 @@ function aggregateFreshRepositoryCollections(
     for (const nodeId of collection.analysisPlanChangedNodeIds) {
       analysisPlanChangedNodeIds.add(nodeId);
     }
+    for (const nodeId of collection.personalReminderReplanNodeIds) {
+      personalReminderReplanNodeIds.add(nodeId);
+    }
   }
   return Object.freeze({
     enumeratedItems: deduplicateByStableId(enumeratedItems, (item) => item.nodeId),
@@ -12158,6 +14666,7 @@ function aggregateFreshRepositoryCollections(
     observedItems: deduplicateByStableId(observedItems, (item) => item.nodeId),
     changedNodeIds,
     analysisPlanChangedNodeIds,
+    personalReminderReplanNodeIds,
   });
 }
 
@@ -12869,6 +15378,9 @@ async function collectProductionItems(
   const changedNodeIds = expanded.changedNodeIds;
   const relationCandidates = expanded.relationCandidates;
   const tracking = expanded.tracking;
+  const observedItemsByNodeId = new Map(uniqueObservedItems.map((item) => [item.nodeId, item]));
+  const detailsByNodeId = new Map(uniqueDetails.map((detail) => [detail.nodeId, detail]));
+  const relationCandidatesByNodeId = indexRelationCandidatesByNodeId(relationCandidates);
   const trackedNodeIds = new Set(
     tracking.result.trackedItems.map((selected) => selected.item.nodeId),
   );
@@ -12899,6 +15411,11 @@ async function collectProductionItems(
       analysisNodeIds.add(nodeId);
     }
   }
+  for (const nodeId of expanded.personalReminderReplanNodeIds) {
+    if (trackedNodeIds.has(nodeId) && observedNodeIds.has(nodeId)) {
+      analysisNodeIds.add(nodeId);
+    }
+  }
   const effectiveAssigneeRelationChangeTargets = effectiveAssigneeRelationChangeTargetNodeIds(
     state,
     uniqueObservedItems,
@@ -12920,11 +15437,12 @@ async function collectProductionItems(
     if (work.codexAnalysis.action === "analyze") {
       continue;
     }
-    const item = uniqueObservedItems.find((candidate) => candidate.nodeId === nodeId);
+    const item = observedItemsByNodeId.get(nodeId);
     if (item?.type !== "issue" || item.state !== "open" || item.assignees.length !== 0) {
       continue;
     }
-    const issueRelationCandidates = candidatesForNode(item.nodeId, relationCandidates);
+    const issueRelationCandidates =
+      relationCandidatesByNodeId.get(item.nodeId) ?? EMPTY_RELATION_CANDIDATES;
     const hasAnalyzedImplementation = issueRelationCandidates.some((candidate) => {
       if (candidate.relation.type !== "implements") {
         return false;
@@ -12952,7 +15470,7 @@ async function collectProductionItems(
     if (!hasAnalyzedImplementation && !hasChangedImplementationRelation) {
       continue;
     }
-    const detail = uniqueDetails.find((candidate) => candidate.nodeId === item.nodeId);
+    const detail = detailsByNodeId.get(item.nodeId);
     assertNonNullable(detail, `実質担当候補抽出対象の詳細がありません。対象: ${item.nodeId}`);
     if (detail.type !== "issue") {
       throw new TypeError(`Issueの詳細種別が一致しません。対象: ${item.nodeId}`);

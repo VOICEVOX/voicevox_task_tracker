@@ -18,7 +18,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "17"
+      "const": "18"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -2981,13 +2981,16 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "inputFingerprint", "failedAt", "reason"],
+          "required": ["status", "inputFingerprint", "rulesVersion", "failedAt", "reason"],
           "properties": {
             "status": {
               "const": "failed"
             },
             "inputFingerprint": {
               "$ref": "#/$defs/fingerprint"
+            },
+            "rulesVersion": {
+              "$ref": "#/$defs/identifier"
             },
             "failedAt": {
               "$ref": "#/$defs/dateTime"
@@ -3000,13 +3003,16 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "inputFingerprint", "deferredAt", "reason"],
+          "required": ["status", "inputFingerprint", "rulesVersion", "deferredAt", "reason"],
           "properties": {
             "status": {
               "const": "deferred"
             },
             "inputFingerprint": {
               "$ref": "#/$defs/fingerprint"
+            },
+            "rulesVersion": {
+              "$ref": "#/$defs/identifier"
             },
             "deferredAt": {
               "$ref": "#/$defs/dateTime"
@@ -3095,6 +3101,25 @@
         }
       ]
     },
+    "personalReminderCauseAiDependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["presence", "responsible", "action", "evidence"],
+      "properties": {
+        "presence": {
+          "$ref": "#/$defs/aiAnalysisDependency"
+        },
+        "responsible": {
+          "$ref": "#/$defs/aiAnalysisDependency"
+        },
+        "action": {
+          "$ref": "#/$defs/aiAnalysisDependency"
+        },
+        "evidence": {
+          "$ref": "#/$defs/aiAnalysisDependency"
+        }
+      }
+    },
     "personalReminderCause": {
       "type": "object",
       "additionalProperties": false,
@@ -3109,6 +3134,7 @@
         "evidenceSourceIds",
         "obligationSince",
         "lastConfirmedActionability",
+        "aiDependencies",
         "currentInput",
         "latestAttempt",
         "adoptedAssessment",
@@ -3204,10 +3230,13 @@
         "lastConfirmedActionability": {
           "$ref": "#/$defs/personalReminderLastConfirmedActionability"
         },
+        "aiDependencies": {
+          "$ref": "#/$defs/personalReminderCauseAiDependencies"
+        },
         "currentInput": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["fingerprint", "rulesVersion", "completeness"],
+          "required": ["fingerprint", "rulesVersion", "completeness", "aiDependency"],
           "properties": {
             "fingerprint": {
               "$ref": "#/$defs/fingerprint"
@@ -3258,6 +3287,9 @@
                   }
                 }
               ]
+            },
+            "aiDependency": {
+              "$ref": "#/$defs/aiAnalysisDependency"
             }
           }
         },
@@ -3290,7 +3322,13 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "planningVersion", "observedAt"],
+          "required": [
+            "status",
+            "planningVersion",
+            "observedAt",
+            "causeSetAiDependency",
+            "causeSetSubjectChanges"
+          ],
           "properties": {
             "status": {
               "const": "completed"
@@ -3300,6 +3338,12 @@
             },
             "observedAt": {
               "$ref": "#/$defs/dateTime"
+            },
+            "causeSetAiDependency": {
+              "$ref": "#/$defs/aiAnalysisDependency"
+            },
+            "causeSetSubjectChanges": {
+              "$ref": "#/$defs/personalReminderCauseSetSubjectChanges"
             }
           }
         },
@@ -3320,6 +3364,289 @@
           }
         }
       ]
+    },
+    "personalReminderSubject": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "candidateId"],
+          "properties": {
+            "kind": {
+              "const": "user"
+            },
+            "candidateId": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "candidateId"],
+          "properties": {
+            "kind": {
+              "const": "team"
+            },
+            "candidateId": {
+              "$ref": "#/$defs/identifier"
+            }
+          }
+        }
+      ]
+    },
+    "personalReminderCauseSetSubjectChanges": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scope", "addableSubjects", "removableSubjects"],
+          "properties": {
+            "scope": {
+              "const": "bounded"
+            },
+            "addableSubjects": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/personalReminderSubject"
+              }
+            },
+            "removableSubjects": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/personalReminderSubject"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["scope"],
+          "properties": {
+            "scope": {
+              "const": "unbounded"
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisDependencyProducer": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "nodeId", "element"],
+          "properties": {
+            "kind": {
+              "const": "item_element"
+            },
+            "nodeId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "element": {
+              "enum": [
+                "status",
+                "waitingOn",
+                "nextAction",
+                "relations",
+                "progress",
+                "importance",
+                "deadline",
+                "notification",
+                "selfCommitment"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "relationId", "producer"],
+          "properties": {
+            "kind": {
+              "const": "relation"
+            },
+            "relationId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "producer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["nodeId", "element"],
+              "properties": {
+                "nodeId": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "element": {
+                  "enum": [
+                    "status",
+                    "waitingOn",
+                    "nextAction",
+                    "relations",
+                    "progress",
+                    "importance",
+                    "deadline",
+                    "notification",
+                    "selfCommitment"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "candidateId", "endpointNodeIds", "producer"],
+          "properties": {
+            "kind": {
+              "const": "relation_candidate"
+            },
+            "candidateId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "endpointNodeIds": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/identifier"
+              }
+            },
+            "producer": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["nodeId", "element"],
+              "properties": {
+                "nodeId": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "element": {
+                  "const": "relations"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisDependency": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_dependent"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "producers"],
+          "properties": {
+            "status": {
+              "enum": ["current", "unverified"]
+            },
+            "producers": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/aiAnalysisDependencyProducer"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "enum": ["migration", "not_recorded"]
+            },
+            "producers": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/aiAnalysisDependencyProducer"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason", "producers"],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "const": "proof_unknown"
+            },
+            "producers": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/aiAnalysisDependencyProducer"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "aiAnalysisDependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "waitingOn",
+        "nextAction",
+        "primaryWaitingOn",
+        "confidence",
+        "evidence",
+        "uncertainties",
+        "deadline",
+        "deadlineLevel",
+        "lastProgressAt",
+        "stallSince",
+        "severity",
+        "downstreamImpact",
+        "importance",
+        "attention",
+        "blockers",
+        "relationSet"
+      ],
+      "properties": {
+        "status": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "waitingOn": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "nextAction": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "primaryWaitingOn": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "confidence": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "evidence": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "uncertainties": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "deadline": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "deadlineLevel": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "lastProgressAt": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "stallSince": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "severity": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "downstreamImpact": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "importance": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "attention": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "blockers": {"$ref": "#/$defs/aiAnalysisDependency"},
+        "relationSet": {"$ref": "#/$defs/aiAnalysisDependency"}
+      }
     },
     "item": {
       "type": "object",
@@ -3357,6 +3684,7 @@
         "reviewState",
         "checkState",
         "aiAnalysis",
+        "aiDependencies",
         "personalReminderCauses",
         "personalReminderCausePlanning",
         "inputEvents",
@@ -3511,9 +3839,12 @@
             "unknown"
           ]
         },
-        "aiAnalysis": {
-          "$ref": "#/$defs/trackedItemAiAnalysis"
-        },
+    "aiAnalysis": {
+      "$ref": "#/$defs/trackedItemAiAnalysis"
+    },
+    "aiDependencies": {
+      "$ref": "#/$defs/aiAnalysisDependencies"
+    },
         "personalReminderCauses": {
           "type": "array",
           "items": {
@@ -3632,6 +3963,7 @@
         "confidence",
         "evidence",
         "contradictions",
+        "aiDependency",
         "active",
         "firstSeenAt",
         "lastConfirmedAt"
@@ -3675,6 +4007,9 @@
           "items": {
             "$ref": "#/$defs/relationContradiction"
           }
+        },
+        "aiDependency": {
+          "$ref": "#/$defs/aiAnalysisDependency"
         },
         "active": {
           "type": "boolean"

@@ -513,17 +513,35 @@ function validateRelationCandidates(
   requireComplete: boolean,
   issues: CodexOutputValidationIssue[],
 ): void {
-  const candidateIds = new Set(input.candidates.relations.map((candidate) => candidate.id));
+  const candidatesById = new Map(
+    input.candidates.relations.map((candidate) => [candidate.id, candidate]),
+  );
+  const candidateIds = new Set(candidatesById.keys());
   const verdictCounts = new Map<string, number>();
 
   for (const [index, relation] of values.entries()) {
     const relationPath = `${path}/value/${index.toString()}/candidateId`;
-    if (!candidateIds.has(relation.candidateId)) {
+    const candidate = candidatesById.get(relation.candidateId);
+    if (candidate == null) {
       issues.push(
         createIssue(
           relationPath,
           "unknown_relation_candidate",
           "入力のrelation候補集合にない対象を参照しています",
+        ),
+      );
+    }
+    if (
+      candidate != null &&
+      relation.verdict === "current_implements_target" &&
+      (input.item.type !== "pull_request" ||
+        relationCandidateTargetItemType(candidate.targetUrl) !== "issue")
+    ) {
+      issues.push(
+        createIssue(
+          `${path}/value/${index.toString()}/verdict`,
+          "invalid_implements_direction",
+          "implements判定はPull RequestからIssueへ向けてください",
         ),
       );
     }
@@ -553,6 +571,18 @@ function validateRelationCandidates(
       );
     }
   }
+}
+
+function relationCandidateTargetItemType(value: string): "issue" | "pull_request" {
+  const pathSegments = new URL(value).pathname.split("/");
+  const itemType = pathSegments[3];
+  if (itemType === "issues") {
+    return "issue";
+  }
+  if (itemType === "pull") {
+    return "pull_request";
+  }
+  throw new TypeError("relation候補のtarget URLから項目種別を取得できません");
 }
 
 function normalizedUrl(value: string): string | null {

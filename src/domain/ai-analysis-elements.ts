@@ -80,6 +80,23 @@ export const aiAnalysisElementApplicationSchema = z.discriminatedUnion("status",
 /** AI分析要素の最終適用元。 */
 export type AiAnalysisElementApplication = z.output<typeof aiAnalysisElementApplicationSchema>;
 
+/** AI分析要素の適用元がAI値を使うかを返す。 */
+export function aiAnalysisElementApplicationUsesAiValue(
+  application: AiAnalysisElementApplication,
+): boolean {
+  switch (application.status) {
+    case "current_ai":
+    case "retained_ai":
+    case "unknown":
+      return true;
+    case "not_required":
+    case "deterministic_fallback":
+    case "unavailable":
+    case "disabled":
+      return false;
+  }
+}
+
 /** AI分析要素ごとの最終適用元map schema。 */
 export const aiAnalysisElementApplicationsSchema = z.strictObject({
   status: aiAnalysisElementApplicationSchema,

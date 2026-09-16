@@ -2,6 +2,10 @@ import { z } from "zod";
 
 import { type AiAnalysisElementInputFingerprint } from "../domain/ai-analysis-elements.js";
 import {
+  combineAiAnalysisDependencies,
+  type AiAnalysisDependency,
+} from "../domain/ai-analysis-dependencies.js";
+import {
   PERSONAL_REMINDER_AI_INPUT_SCHEMA_VERSION,
   PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION,
   personalReminderActionKindSchema,
@@ -11,6 +15,7 @@ import {
   personalReminderResponsibleSchema,
   personalReminderResponsibilitySchema,
   type PersonalReminderCause,
+  type PersonalReminderCauseAiDependencies,
   type PersonalReminderCauseAssessment,
   type PersonalReminderCauseId,
   type PersonalReminderInputCompleteness,
@@ -297,6 +302,20 @@ const personalReminderCauseSemanticInputSchema = z.strictObject({
 export type PersonalReminderCauseSemanticInput = z.output<
   typeof personalReminderCauseSemanticInputSchema
 >;
+
+/** 個人催促原因のseedと意味入力へ実際に含めた要素のAI依存を合成する。 */
+export function combinePersonalReminderCauseInputAiDependency(
+  seedDependencies: PersonalReminderCauseAiDependencies,
+  semanticDependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  return combineAiAnalysisDependencies([
+    seedDependencies.presence,
+    seedDependencies.responsible,
+    seedDependencies.action,
+    seedDependencies.evidence,
+    ...semanticDependencies,
+  ]);
+}
 
 const personalReminderTargetScopeTransportSchema = z.discriminatedUnion("kind", [
   z.strictObject({
@@ -919,6 +938,7 @@ function canonicalSemanticInput(input: PersonalReminderCauseSemanticInput): unkn
       },
       action: {
         kind: input.cause.action.kind,
+        summary: input.cause.action.summary,
       },
     },
     completeness,

@@ -19,6 +19,10 @@ import type {
   AiAnalysisElementReuseProof,
 } from "./ai-analysis-elements.js";
 import type { AiAnalysisElementSourceGeneration } from "./ai-analysis-source-generations.js";
+import type {
+  TrackedItemAiDependencies,
+  AiAnalysisDependency,
+} from "./ai-analysis-dependencies.js";
 
 export type {
   AiAnalysisElement,
@@ -596,6 +600,27 @@ export type PrimaryWaitingOn =
       selectionReason: string;
     }>;
 
+/** 状態機械がblocker判定で実際に評価した候補と選択結果。 */
+export type BlockerDecisionTrace =
+  | Readonly<{
+      status: "not_evaluated";
+    }>
+  | Readonly<{
+      status: "evaluated";
+      result: "fallthrough";
+      uncertainBlockerIds: readonly string[];
+    }>
+  | Readonly<{
+      status: "evaluated";
+      result: "blocked";
+      confirmedBlockers: readonly Readonly<{
+        candidateId: string;
+        authority: "authoritative" | "inferred";
+      }>[];
+      uncertainBlockerIds: readonly string[];
+      primaryBlockerId: string;
+    }>;
+
 /** リポジトリの公開範囲。 */
 export type RepositoryVisibility = "public" | "private" | "internal";
 
@@ -777,6 +802,7 @@ type TrackedItemFields = Readonly<{
   reviewState: ReviewState;
   checkState: CheckState;
   aiAnalysis: TrackedItemAiAnalysis;
+  aiDependencies: TrackedItemAiDependencies;
   personalReminderCauses: readonly PersonalReminderCause[];
   personalReminderCausePlanning: PersonalReminderCausePlanning;
   inputEvents: readonly TrackedItemInputEvent[];
@@ -809,6 +835,7 @@ type RelationFields = Readonly<{
   contradictions: readonly RelationContradictionSummary[];
   firstSeenAt: UtcIsoDateTime;
   lastConfirmedAt: UtcIsoDateTime;
+  aiDependency: AiAnalysisDependency;
 }>;
 
 /** blocksではfromNodeIdをblocker、toNodeIdをblocked itemとするRelation。 */

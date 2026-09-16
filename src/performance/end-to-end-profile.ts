@@ -9,6 +9,7 @@ import {
 } from "../cli/production-runtime.js";
 import { type CliExecutionResult } from "../cli/index.js";
 import {
+  CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
   type CodexAnalysisInput,
   type PersonalReminderAiInput,
   type SchemaValidPersonalReminderAiOutput,
@@ -388,72 +389,115 @@ function createProfileDetail(
 }
 
 function createCodexOutput(input: CodexAnalysisInput): unknown {
-  const source = input.sources.find(
-    (candidate) => candidate.kind === "comment" && candidate.actorType === "human",
-  );
+  const source =
+    input.sources.find(
+      (candidate) => candidate.kind === "comment" && candidate.actorType === "human",
+    ) ?? input.sources[0];
   assertNonNullable(
     source,
-    `性能profileのCodex入力にhuman commentがありません。対象: ${input.item.nodeId}`,
+    `性能profileのCodex入力にsourceがありません。対象: ${input.item.nodeId}`,
   );
   const authorCandidateId = input.item.authorCandidateId;
   assertNonNullable(
     authorCandidateId,
     `性能profileのCodex入力に作者候補IDがありません。対象: ${input.item.nodeId}`,
   );
-  return {
-    schemaVersion: "4",
+  const selectedElements = new Set(input.selectedElements);
+  const evidence = Object.freeze([
+    Object.freeze({
+      sourceId: source.id,
+      supports: "element",
+      summary: "human commentを要素判定の根拠にしました",
+    }),
+  ]);
+  const result = (value: unknown): object =>
+    Object.freeze({
+      value,
+      evidence,
+      confidence: 0.95,
+      uncertainties: Object.freeze([]),
+    });
+  return Object.freeze({
+    schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
     item: {
       nodeId: input.item.nodeId,
       url: input.item.url,
     },
-    status: "waiting_for_work",
-    waitingOn: [
-      {
-        kind: "user",
-        candidateId: authorCandidateId,
-        role: "assignee",
-        reasonSummary: "モック分析では作成者を次の担当候補として扱います",
-        sourceIds: [source.id],
-        confidence: 0.95,
-      },
-    ],
-    nextAction: "担当者が項目を確認する",
-    relations: input.candidates.relations.map((candidate) => ({
-      candidateId: candidate.id,
-      verdict: "related",
-      reasonSummary: "性能profileでは曖昧な関係を関連として扱います",
-      sourceIds: [source.id],
-      confidence: 0.95,
-    })),
-    progress: {
-      latestMeaningfulSourceId: source.id,
-      reasonSummary: "human commentを意味のある進捗として扱います",
-      confidence: 0.95,
-    },
-    importance: {
-      significantFeature: false,
-      futureRisk: false,
-      rationale: "性能profileでは重要度の自然言語要因を設定しません",
-    },
-    deadline: {
-      date: null,
-      rationale: "性能profileでは期限日を設定しません",
-    },
-    evidence: [
-      {
-        sourceId: source.id,
-        supports: "status",
-        summary: "human commentを状態判定の根拠にしました",
-      },
-    ],
-    confidence: 0.95,
-    uncertainties: [],
-    notification: {
-      recommended: false,
-      reasonCode: "none",
-      reasonSummary: "性能profileでは通知を推奨しません",
-    },
-  };
+    ...(selectedElements.has("status") ? { status: result("waiting_for_work") } : {}),
+    ...(selectedElements.has("waitingOn")
+      ? {
+          waitingOn: result([
+            {
+              kind: "user",
+              candidateId: authorCandidateId,
+              role: "assignee",
+              reasonSummary: "モック分析では作成者を次の担当候補として扱います",
+              sourceIds: [source.id],
+              confidence: 0.95,
+            },
+          ]),
+        }
+      : {}),
+    ...(selectedElements.has("nextAction") ? { nextAction: result("担当者が項目を確認する") } : {}),
+    ...(selectedElements.has("relations")
+      ? {
+          relations: result(
+            input.candidates.relations.map((candidate) => ({
+              candidateId: candidate.id,
+              verdict: "related",
+              reasonSummary: "性能profileでは曖昧な関係を関連として扱います",
+              sourceIds: [source.id],
+              confidence: 0.95,
+            })),
+          ),
+        }
+      : {}),
+    ...(selectedElements.has("progress")
+      ? {
+          progress: result({
+            latestMeaningfulSourceId: source.id,
+            reasonSummary: "human commentを意味のある進捗として扱います",
+            confidence: 0.95,
+          }),
+        }
+      : {}),
+    ...(selectedElements.has("importance")
+      ? {
+          importance: result({
+            significantFeature: false,
+            futureRisk: false,
+            rationale: "性能profileでは重要度の自然言語要因を設定しません",
+          }),
+        }
+      : {}),
+    ...(selectedElements.has("deadline")
+      ? {
+          deadline: result({
+            date: null,
+            rationale: "性能profileでは期限日を設定しません",
+          }),
+        }
+      : {}),
+    ...(selectedElements.has("notification")
+      ? {
+          notification: result({
+            recommended: false,
+            reasonCode: "none",
+            reasonSummary: "性能profileでは通知を推奨しません",
+          }),
+        }
+      : {}),
+    ...(selectedElements.has("selfCommitment")
+      ? {
+          selfCommitment: Object.freeze({
+            value: Object.freeze([]),
+            evidence: Object.freeze([]),
+            confidence: 0.95,
+            uncertainties: Object.freeze([]),
+          }),
+        }
+      : {}),
+  });
 }
 
 async function createPerformanceConfig(repositoryPath: string): Promise<Config> {

@@ -1,4 +1,5 @@
 import {
+  type AiAnalysisDependency,
   type Evidence,
   type GraphNodeId,
   type Relation,
@@ -29,6 +30,13 @@ export type RelationContradiction = RelationContradictionSummary &
   }>;
 
 type RelationWithoutContradictions<T> = T extends Relation ? Omit<T, "contradictions"> : never;
+
+/** 候補をreconcileしたcanonical relation。 */
+export type CanonicalRelation = Readonly<{
+  fromNodeId: GraphNodeId;
+  toNodeId: GraphNodeId;
+  type: Relation["type"];
+}>;
 
 /** 候補IDを維持しauthoritative情報と矛盾を加えたgraph edge。 */
 export type ReconciledGraphEdge = RelationWithoutContradictions<Relation> &
@@ -135,11 +143,22 @@ export type RelationCandidateResolution =
   | PendingRelationCandidateResolution
   | RejectedRelationCandidateResolution;
 
+/** 候補の判定結果と最終値のAI依存を結び付ける非永続化proof。 */
+export type RelationCandidateDecisionProof = Readonly<{
+  candidateId: RelationCandidateId;
+  endpointNodeIds: readonly [GraphNodeId, GraphNodeId];
+  authority: RelationCandidate["authority"];
+  resolution: RelationCandidateResolution;
+  dependency: AiAnalysisDependency;
+  canonicalRelation?: CanonicalRelation;
+}>;
+
 /** 前回graphと今回の候補をreconcileする入力。 */
 export type ReconcileGraphInput = Readonly<{
   previousGraph: ReconciledGraphState;
   candidates: readonly RelationCandidate[];
   assessments: readonly RelationCandidateAssessment[];
+  relationAiDependencies: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>;
   sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>;
   minimumInferredConfidence: number;
   reconciledAt: UtcIsoDateTime;
@@ -151,5 +170,6 @@ export type ReconcileGraphResult = ReconciledGraphState &
     activeEdges: readonly (ReconciledGraphEdge & Readonly<{ active: true }>)[];
     emittedHistoryEvents: readonly GraphEdgeHistoryEvent[];
     candidateResolutions: readonly RelationCandidateResolution[];
+    candidateDecisionProofs: readonly RelationCandidateDecisionProof[];
     blockedBy: readonly BlockedByEntry[];
   }>;

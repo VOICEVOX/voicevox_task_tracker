@@ -1,4 +1,4 @@
-import { type VNode } from "preact";
+import { type ComponentChildren, type VNode } from "preact";
 import { useEffect, useState } from "preact/hooks";
 
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
@@ -60,6 +60,7 @@ const GRAPH_NODE_TEXT_LINE_HEIGHT = 20;
 const GRAPH_NODE_TEXT_HORIZONTAL_PADDING = 16;
 
 type GraphNodeRow = "icon" | "reference" | "title" | "metrics" | "frontier";
+type TrackedGraphViewNode = Extract<GraphViewNode, Readonly<{ kind: "issue" | "pull_request" }>>;
 
 function graphNodeShapeClassName(node: GraphViewNode, linked: boolean): string {
   const strokeClassName = node.central
@@ -258,7 +259,7 @@ function FittedGraphNodeText({
   y,
 }: Readonly<{
   className: string;
-  value: string;
+  value: ComponentChildren;
   width: number;
   x: number;
   y: number;
@@ -276,6 +277,50 @@ function FittedGraphNodeText({
   );
 }
 
+function GraphNodeMetrics({
+  node,
+  width,
+  x,
+  y,
+}: Readonly<{
+  node: TrackedGraphViewNode;
+  width: number;
+  x: number;
+  y: number;
+}>): VNode {
+  return (
+    <foreignObject
+      class="pointer-events-none"
+      x={x - width / 2}
+      y={y - GRAPH_NODE_TEXT_LINE_HEIGHT / 2}
+      width={width}
+      height={GRAPH_NODE_TEXT_LINE_HEIGHT}
+    >
+      <div class="graph-node-metrics flex h-full min-w-0 items-center justify-center gap-1 text-center text-text-primary text-graph-label leading-5 font-mono font-semibold tabular-nums">
+        <span class="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+          {`停滞${Math.floor(node.stallDays).toString()}日`}
+        </span>
+        {node.stalenessUnverified && (
+          <span class="shrink-0 text-xs text-state-warning-text" aria-hidden="true">
+            ⚠
+          </span>
+        )}
+        <span class="shrink-0" aria-hidden="true">
+          ・
+        </span>
+        <span class="min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
+          {`影響${node.impactOpenNodeCount.toString()}件`}
+        </span>
+        {node.downstreamImpactUnverified && (
+          <span class="shrink-0 text-xs text-state-warning-text" aria-hidden="true">
+            ⚠
+          </span>
+        )}
+      </div>
+    </foreignObject>
+  );
+}
+
 function GraphSvgNode({
   navigation,
   nodeLayout,
@@ -285,18 +330,28 @@ function GraphSvgNode({
 }>) {
   const { node, x, y } = nodeLayout;
   const linked = !node.central && (node.kind === "issue" || node.kind === "pull_request");
+  const frontierUnverified = node.kind !== "external_reference" && node.frontierUnverified;
   const ariaLabelParts = [graphNodeKindLabel(node.kind), node.fullReference, node.title];
   if (node.central) {
     ariaLabelParts.push("中心項目");
   }
   if (node.frontier) {
     ariaLabelParts.push("着手可能な項目");
+    if (frontierUnverified) {
+      ariaLabelParts.push("着手可能の判定は現在の入力で未検証");
+    }
   }
   if (node.kind !== "external_reference") {
     ariaLabelParts.push(
       `停滞日数${Math.floor(node.stallDays).toString()}日`,
       `影響するopen項目${node.impactOpenNodeCount.toString()}件`,
     );
+    if (node.stalenessUnverified) {
+      ariaLabelParts.push("停滞日数は現在の入力で未検証");
+    }
+    if (node.downstreamImpactUnverified) {
+      ariaLabelParts.push("影響するopen項目は現在の入力で未検証");
+    }
   }
   const ariaLabel = ariaLabelParts.join("、");
   const rows = graphNodeRows(node);
@@ -339,9 +394,8 @@ function GraphSvgNode({
         y={y + titleOffset}
       />
       {node.kind !== "external_reference" && (
-        <FittedGraphNodeText
-          className="graph-node-metrics font-mono font-semibold tabular-nums"
-          value={`停滞${Math.floor(node.stallDays).toString()}日・影響${node.impactOpenNodeCount.toString()}件`}
+        <GraphNodeMetrics
+          node={node}
           width={graphNodeTextWidth(node, graphNodeRowOffset("metrics", rows))}
           x={x}
           y={y + graphNodeRowOffset("metrics", rows)}
@@ -354,6 +408,11 @@ function GraphSvgNode({
           y={y + graphNodeRowOffset("frontier", rows)}
         >
           ▶ 着手可能
+          {frontierUnverified && (
+            <tspan class="text-xs" aria-hidden="true">
+              {" ⚠"}
+            </tspan>
+          )}
         </text>
       )}
     </g>
@@ -435,6 +494,12 @@ function GraphSvg({
                   <GraphLegendEdgeSample authoritative={false} />
                   <span>推定関係</span>
                 </li>
+                <li class="flex items-center gap-2">
+                  <span class="text-state-warning-text" aria-hidden="true">
+                    ⚠
+                  </span>
+                  <span>警告記号: 現在の入力で未検証</span>
+                </li>
               </ul>
             </dd>
           </div>
@@ -497,8 +562,11 @@ function GraphSvg({
                   data-edge-id={edge.id}
                   data-edge-type={edge.type}
                   data-authority={edge.authoritative ? "authoritative" : "inferred"}
+                  data-currentness={edge.aiCurrentness}
                   role="group"
-                  aria-label={`${edge.typeLabel}、${authorityLabel}`}
+                  aria-label={`${edge.typeLabel}、${authorityLabel}${
+                    edge.aiCurrentness === "unverified" ? "、現在の入力で未検証" : ""
+                  }`}
                 >
                   <path
                     class={graphEdgePathClassName(edge.authoritative)}
@@ -509,6 +577,11 @@ function GraphSvg({
                   />
                   <text class={GRAPH_EDGE_TEXT_CLASS_NAME} x={labelPoint.x} y={labelPoint.y}>
                     {edge.typeLabel}
+                    {edge.aiCurrentness === "unverified" && (
+                      <tspan class="text-xs" aria-hidden="true">
+                        {" ⚠"}
+                      </tspan>
+                    )}
                   </text>
                 </g>
               );

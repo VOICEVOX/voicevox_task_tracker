@@ -8,6 +8,7 @@ import { type AiAnalysisElementNecessity } from "./ai-analysis-elements.js";
 import {
   type Evidence,
   type EvidenceSupport,
+  type BlockerDecisionTrace,
   type GitHubAccountActor,
   type NormalizedEvent,
   type PrimaryWaitingOn,
@@ -107,6 +108,18 @@ export type IssueEffectiveAssigneeAssessment =
       sourceIds: readonly [SourceId, ...SourceId[]];
     }>;
 
+/** Issueのローカル責務判定で実際に参照した外部assessment。 */
+export type IssueResponsibilityAssessmentTrace = Readonly<
+  | Readonly<{
+      kind: "explicit_request";
+      assessment: IssueExplicitRequestAssessment;
+    }>
+  | Readonly<{
+      kind: "effective_assignee";
+      assessment: IssueEffectiveAssigneeAssessment;
+    }>
+>;
+
 /** Issue状態機械へ渡す設定解決済み入力。 */
 export type IssueStateMachineInput = Readonly<{
   issue: FreshObservedGitHubIssue;
@@ -155,6 +168,8 @@ export type IssueStateDecision = Readonly<{
   uncertainties: readonly string[];
   statusBasis: IssueTransitionBasis;
   responsibilityBasis: IssueTransitionBasis;
+  assessmentTrace: readonly IssueResponsibilityAssessmentTrace[];
+  blockerDecisionTrace: BlockerDecisionTrace;
 }>;
 
 type DecisionDraft = Readonly<{
@@ -173,6 +188,8 @@ interface DecisionContext {
   evidence: Evidence[];
   confidenceCap: number;
   uncertainStateElements: Set<"status" | "waitingOn" | "nextAction">;
+  assessmentTrace: IssueResponsibilityAssessmentTrace[];
+  blockerDecisionTrace: BlockerDecisionTrace;
 }
 
 type ResolvedAssignee = Readonly<{
@@ -621,6 +638,13 @@ function addUncertainty(
   }
 }
 
+function addAssessmentTrace(
+  context: DecisionContext,
+  trace: IssueResponsibilityAssessmentTrace,
+): void {
+  context.assessmentTrace.push(Object.freeze(trace));
+}
+
 function finalizeDecision(
   input: IssueStateMachineInput,
   context: DecisionContext,
@@ -674,6 +698,8 @@ function finalizeDecision(
     uncertainties,
     statusBasis: draft.statusBasis,
     responsibilityBasis: draft.responsibilityBasis,
+    assessmentTrace: Object.freeze([...context.assessmentTrace]),
+    blockerDecisionTrace: context.blockerDecisionTrace,
   });
 }
 
@@ -811,11 +837,30 @@ function createBlockedDecision(
     );
   }
   if (confirmedBlockers.length === 0) {
+    context.blockerDecisionTrace = Object.freeze({
+      status: "evaluated",
+      result: "fallthrough",
+      uncertainBlockerIds: Object.freeze(uncertainBlockers.map((blocker) => blocker.candidateId)),
+    });
     return undefined;
   }
 
   const primaryBlocker = confirmedBlockers[0];
   assertNonNullable(primaryBlocker, "primary blockerを選定できませんでした");
+  context.blockerDecisionTrace = Object.freeze({
+    status: "evaluated",
+    result: "blocked",
+    confirmedBlockers: Object.freeze(
+      confirmedBlockers.map((blocker) =>
+        Object.freeze({
+          candidateId: blocker.candidateId,
+          authority: blocker.authority,
+        }),
+      ),
+    ),
+    uncertainBlockerIds: Object.freeze(uncertainBlockers.map((blocker) => blocker.candidateId)),
+    primaryBlockerId: primaryBlocker.candidateId,
+  });
   const waitingOn = confirmedBlockers.map((blocker) =>
     createWaitingOn({
       kind: "item",
@@ -893,6 +938,10 @@ function createExplicitRequestDecision(
   }
 
   const assessment = input.explicitRequestAssessment;
+  addAssessmentTrace(context, {
+    kind: "explicit_request",
+    assessment,
+  });
   if (assessment.status === "not_assessed") {
     addUncertainty(
       context,
@@ -1090,6 +1139,12 @@ function createEffectiveAssigneeDecision(
   }
 
   const assessment = input.effectiveAssigneeAssessment;
+  if (input.effectiveAssigneeCandidates.length !== 0) {
+    addAssessmentTrace(context, {
+      kind: "effective_assignee",
+      assessment,
+    });
+  }
   if (assessment.status !== "assessed" || assessment.verdict !== "effective_assignee") {
     return undefined;
   }
@@ -1254,6 +1309,8 @@ export function determineIssueState(input: IssueStateMachineInput): IssueStateDe
     evidence: [],
     confidenceCap: 1,
     uncertainStateElements: new Set(),
+    assessmentTrace: [],
+    blockerDecisionTrace: Object.freeze({ status: "not_evaluated" }),
   };
 
   const terminalDecision = createTerminalDecision(input, context);

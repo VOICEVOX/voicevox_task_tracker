@@ -13,6 +13,7 @@ import { type AiAnalysisElementNecessity } from "./ai-analysis-elements.js";
 import {
   type Evidence,
   type EvidenceSupport,
+  type BlockerDecisionTrace,
   type GitHubAccountActor,
   type GitHubNodeId,
   type NormalizedEvent,
@@ -48,6 +49,12 @@ export type PullRequestCheckFailureAssessment =
       confidence: number;
       sourceIds: readonly [SourceId, ...SourceId[]];
     }>;
+
+/** Pull Requestのローカル責務判定で実際に参照した外部assessment。 */
+export type PullRequestResponsibilityAssessmentTrace = Readonly<{
+  kind: "check_failure";
+  assessment: PullRequestCheckFailureAssessment;
+}>;
 
 /** Pull Request状態機械へ渡す設定解決済み入力。 */
 export type PullRequestStateMachineInput = Readonly<{
@@ -95,6 +102,8 @@ export type PullRequestStateDecision = Readonly<{
   uncertainties: readonly string[];
   statusBasis: PullRequestTransitionBasis;
   responsibilityBasis: PullRequestTransitionBasis;
+  assessmentTrace: readonly PullRequestResponsibilityAssessmentTrace[];
+  blockerDecisionTrace: BlockerDecisionTrace;
 }>;
 
 type DecisionDraft = Readonly<{
@@ -113,6 +122,8 @@ interface DecisionContext {
   evidence: Evidence[];
   confidenceCap: number;
   uncertainStateElements: Set<"status" | "waitingOn" | "nextAction">;
+  assessmentTrace: PullRequestResponsibilityAssessmentTrace[];
+  blockerDecisionTrace: BlockerDecisionTrace;
 }
 
 type ReviewEvent = Extract<NormalizedEvent, { kind: "review" }> & {
@@ -311,6 +322,13 @@ function addUncertainty(
   }
 }
 
+function addAssessmentTrace(
+  context: DecisionContext,
+  trace: PullRequestResponsibilityAssessmentTrace,
+): void {
+  context.assessmentTrace.push(Object.freeze(trace));
+}
+
 function isTerminalStatus(status: Status): boolean {
   return (
     status === "terminal_merged" ||
@@ -372,6 +390,8 @@ function finalizeDecision(
     uncertainties,
     statusBasis: draft.statusBasis,
     responsibilityBasis: draft.responsibilityBasis,
+    assessmentTrace: Object.freeze([...context.assessmentTrace]),
+    blockerDecisionTrace: context.blockerDecisionTrace,
   });
 }
 
@@ -630,11 +650,30 @@ function createBlockedDecision(
     );
   }
   if (confirmedBlockers.length === 0) {
+    context.blockerDecisionTrace = Object.freeze({
+      status: "evaluated",
+      result: "fallthrough",
+      uncertainBlockerIds: Object.freeze(uncertainBlockers.map((blocker) => blocker.candidateId)),
+    });
     return undefined;
   }
 
   const primaryBlocker = confirmedBlockers[0];
   assertNonNullable(primaryBlocker, "primary blockerを選定できませんでした");
+  context.blockerDecisionTrace = Object.freeze({
+    status: "evaluated",
+    result: "blocked",
+    confirmedBlockers: Object.freeze(
+      confirmedBlockers.map((blocker) =>
+        Object.freeze({
+          candidateId: blocker.candidateId,
+          authority: blocker.authority,
+        }),
+      ),
+    ),
+    uncertainBlockerIds: Object.freeze(uncertainBlockers.map((blocker) => blocker.candidateId)),
+    primaryBlockerId: primaryBlocker.candidateId,
+  });
   const waitingOn = confirmedBlockers.map((blocker) =>
     createWaitingOn({
       kind: "item",
@@ -1645,6 +1684,10 @@ function analyzeCheckFailure(
         input.confidenceThresholds.medium,
         ["status", "waitingOn", "nextAction"],
       );
+      addAssessmentTrace(context, {
+        kind: "check_failure",
+        assessment,
+      });
       return Object.freeze({
         authorAction: "not_applicable",
       });
@@ -1658,6 +1701,10 @@ function analyzeCheckFailure(
         input.confidenceThresholds.medium,
         ["status", "waitingOn", "nextAction"],
       );
+      addAssessmentTrace(context, {
+        kind: "check_failure",
+        assessment,
+      });
       return Object.freeze({
         authorAction: "not_applicable",
       });
@@ -1671,6 +1718,10 @@ function analyzeCheckFailure(
         input.confidenceThresholds.medium,
         ["status", "waitingOn", "nextAction"],
       );
+      addAssessmentTrace(context, {
+        kind: "check_failure",
+        assessment,
+      });
       return Object.freeze({
         authorAction: "not_applicable",
       });
@@ -1683,6 +1734,10 @@ function analyzeCheckFailure(
         input.confidenceThresholds.medium,
         ["status", "waitingOn", "nextAction"],
       );
+      addAssessmentTrace(context, {
+        kind: "check_failure",
+        assessment,
+      });
       return Object.freeze({
         authorAction: "not_applicable",
       });
@@ -1698,6 +1753,10 @@ function createCheckFailureDecision(
   if (analysis.authorAction === "not_applicable") {
     return undefined;
   }
+  addAssessmentTrace(context, {
+    kind: "check_failure",
+    assessment: input.checkFailureAssessment,
+  });
   const checks = input.pullRequest.mergeState.checks;
   if (checks.status !== "configured") {
     throw new TypeError("required checksが未設定のため失敗時刻を解決できません");
@@ -1900,6 +1959,8 @@ export function determinePullRequestState(
     evidence: [],
     confidenceCap: 1,
     uncertainStateElements: new Set(),
+    assessmentTrace: [],
+    blockerDecisionTrace: Object.freeze({ status: "not_evaluated" }),
   };
 
   const terminalDecision = createTerminalDecision(input, context);

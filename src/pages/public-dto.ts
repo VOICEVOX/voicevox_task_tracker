@@ -8,7 +8,7 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { PublicDtoSemanticError, PublicDtoValidationError } from "./errors.js";
 
 /** Pages公開DTOのschema version。 */
-export const PUBLIC_DTO_SCHEMA_VERSION = "9";
+export const PUBLIC_DTO_SCHEMA_VERSION = "10";
 
 const identifierSchema = z.string().min(1).max(512).regex(/^\S+$/u);
 const shortStringSchema = z.string().max(1000);
@@ -127,10 +127,37 @@ const publicPersonalReminderResponsibleSchema = z.strictObject({
     "unknown",
   ]),
 });
+const publicCurrentResponseSubjectSchema = z.discriminatedUnion("kind", [
+  z.strictObject({
+    kind: z.literal("user"),
+    candidateId: identifierSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("team"),
+    candidateId: identifierSchema,
+  }),
+]);
+const publicCurrentResponseSubjectChangesSchema = z.discriminatedUnion("scope", [
+  z.strictObject({
+    scope: z.literal("bounded"),
+    addableSubjects: z.array(publicCurrentResponseSubjectSchema),
+    removableSubjects: z.array(publicCurrentResponseSubjectSchema),
+  }),
+  z.strictObject({
+    scope: z.literal("unbounded"),
+  }),
+]);
 const publicPersonalReminderActionSchema = z.strictObject({
   kind: z.enum(["assessment", "owner", "decision", "review", "revision", "reply", "work", "merge"]),
   summary: shortStringSchema,
 });
+const publicPersonalReminderUnverifiedValueSchema = z.enum([
+  "status",
+  "responsible",
+  "action",
+  "evidence",
+  "waitingFor",
+]);
 const publicPersonalReminderUnknownReasonSchema = z.enum([
   "input_mismatch",
   "not_evaluated",
@@ -146,6 +173,8 @@ const publicPersonalReminderResponseSchema = z.discriminatedUnion("status", [
     responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
     action: publicPersonalReminderActionSchema,
     evidence: z.array(publicEvidenceSchema).nonempty(),
+    unverifiedValues: z.array(publicPersonalReminderUnverifiedValueSchema).max(5),
+    subjectMembershipUnverified: z.boolean(),
     status: z.literal("actionable"),
   }),
   z.strictObject({
@@ -153,6 +182,8 @@ const publicPersonalReminderResponseSchema = z.discriminatedUnion("status", [
     responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
     action: publicPersonalReminderActionSchema,
     evidence: z.array(publicEvidenceSchema).nonempty(),
+    unverifiedValues: z.array(publicPersonalReminderUnverifiedValueSchema).max(5),
+    subjectMembershipUnverified: z.boolean(),
     status: z.literal("waiting"),
     waitingFor: z.strictObject({
       itemNodeId: identifierSchema,
@@ -164,6 +195,8 @@ const publicPersonalReminderResponseSchema = z.discriminatedUnion("status", [
     responsible: z.array(publicPersonalReminderResponsibleSchema).nonempty().max(20),
     action: publicPersonalReminderActionSchema,
     evidence: z.array(publicEvidenceSchema).nonempty(),
+    unverifiedValues: z.array(publicPersonalReminderUnverifiedValueSchema).max(5),
+    subjectMembershipUnverified: z.boolean(),
     status: z.literal("unknown"),
     reason: publicPersonalReminderUnknownReasonSchema,
   }),
@@ -263,7 +296,28 @@ const publicDeadlineDetailsSchema = z.discriminatedUnion("status", [
     }),
 ]);
 const publicItemAiAnalysisSchema = z.strictObject({
-  status: z.enum(["used", "failed", "deferred", "not_required", "disabled", "not_recorded"]),
+  runStatus: z.enum(["used", "failed", "deferred", "not_required", "disabled", "not_recorded"]),
+  omission: z.enum(["none", "partial", "all"]),
+  unverifiedValues: z
+    .array(
+      z.enum([
+        "status",
+        "waitingOn",
+        "primaryWaitingOn",
+        "nextAction",
+        "confidence",
+        "evidence",
+        "uncertainties",
+        "deadline",
+        "staleness",
+        "downstreamImpact",
+        "importance",
+        "attention",
+        "blockers",
+        "relations",
+      ]),
+    )
+    .max(14),
 });
 const publicCurrentImplementationSchema = z.strictObject({
   nodeId: identifierSchema,
@@ -306,6 +360,8 @@ const publicItemSummarySchema = z.strictObject({
   downstreamImpact: downstreamImpactSchema,
   currentImplementations: z.array(publicCurrentImplementationSchema),
   currentResponses: z.array(publicPersonalReminderResponseSchema),
+  currentResponsesUnverified: z.boolean(),
+  currentResponseSubjectChanges: publicCurrentResponseSubjectChangesSchema,
   personalReminderCausePlanningStatus: publicPersonalReminderCausePlanningStatusSchema,
 });
 const itemTimestampsSchema = z.strictObject({
@@ -358,6 +414,7 @@ const publicItemHistoryEventSchema = z.strictObject({
 });
 const publicItemDetailsSchema = z.strictObject({
   summary: publicItemSummarySchema,
+  unverifiedBlockerNodeIds: z.array(identifierSchema),
   deadline: publicDeadlineDetailsSchema,
   importanceFactors: z.array(importanceFactorSchema),
   timestamps: itemTimestampsSchema,
@@ -422,6 +479,7 @@ const publicGraphEdgeFieldsSchema = z.strictObject({
     "ai_inference",
   ]),
   confidence: z.number().min(0).max(1),
+  aiCurrentness: z.enum(["not_dependent", "current", "unverified"]),
 });
 const publicGraphEdgeSchema = z.discriminatedUnion("active", [
   publicGraphEdgeFieldsSchema.extend({
@@ -738,10 +796,20 @@ const publicNotificationHistoryDtoSchema = z
     }
   });
 
-/** Web初期表示で共有するschema version 9の公開summary DTO。 */
+function compareStrings(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
+}
+
+/** Web初期表示で共有するschema version 10の公開summary DTO。 */
 export type PublicSummaryDto = z.output<typeof publicSummaryDtoSchema>;
 
-/** Web詳細表示で共有するschema version 9の公開details DTO。 */
+/** Web詳細表示で共有するschema version 10の公開details DTO。 */
 export type PublicDetailsDto = z.output<typeof publicDetailsDtoSchema>;
 
 /** 公開summary DTO内の項目。 */
@@ -758,6 +826,14 @@ export type PublicPersonalReminderResponseDto = z.output<
 /** 個人催促の現在対応がunknownである理由。 */
 export type PublicPersonalReminderUnknownReason = z.output<
   typeof publicPersonalReminderUnknownReasonSchema
+>;
+
+/** 現在対応の人物集計へ影響し得る主体。 */
+export type PublicCurrentResponseSubjectDto = z.output<typeof publicCurrentResponseSubjectSchema>;
+
+/** 現在対応の人物集計へ影響し得る主体の変化。 */
+export type PublicCurrentResponseSubjectChangesDto = z.output<
+  typeof publicCurrentResponseSubjectChangesSchema
 >;
 
 /** 公開DTO内のグラフnode。 */
@@ -949,6 +1025,290 @@ function comparePublicCurrentImplementations(
   return 0;
 }
 
+const publicPersonalReminderUnverifiedValueOrder: readonly PublicPersonalReminderResponseDto["unverifiedValues"][number][] =
+  ["status", "responsible", "action", "evidence", "waitingFor"];
+
+function assertPublicPersonalReminderResponses(
+  itemNodeId: string,
+  responses: readonly PublicPersonalReminderResponseDto[],
+): void {
+  for (const response of responses) {
+    if (new Set(response.unverifiedValues).size !== response.unverifiedValues.length) {
+      throw new PublicDtoSemanticError(
+        `item ${itemNodeId}のpersonal reminder response ${response.causeId}のAI未検証値が重複しています`,
+      );
+    }
+    let previousValue: PublicPersonalReminderResponseDto["unverifiedValues"][number] | undefined;
+    for (const value of response.unverifiedValues) {
+      if (previousValue != null) {
+        const previousOrder = publicPersonalReminderUnverifiedValueOrder.indexOf(previousValue);
+        const currentOrder = publicPersonalReminderUnverifiedValueOrder.indexOf(value);
+        if (previousOrder >= currentOrder) {
+          throw new PublicDtoSemanticError(
+            `item ${itemNodeId}のpersonal reminder response ${response.causeId}のAI未検証値が固定順ではありません`,
+          );
+        }
+      }
+      previousValue = value;
+    }
+    if (response.status !== "waiting" && response.unverifiedValues.includes("waitingFor")) {
+      throw new PublicDtoSemanticError(
+        `item ${itemNodeId}のwaitingでないpersonal reminder responseにwaitingForのAI未検証値があります`,
+      );
+    }
+    if (
+      response.unverifiedValues.includes("waitingFor") &&
+      !response.unverifiedValues.includes("status")
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${itemNodeId}のpersonal reminder responseでwaitingForのAI未検証値にstatusが伴っていません`,
+      );
+    }
+    if (
+      response.unverifiedValues.includes("responsible") &&
+      response.responsible.some((responsible) => responsible.kind !== "role") &&
+      !response.subjectMembershipUnverified
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${itemNodeId}のpersonal reminder responseでresponsibleのAI未検証値にsubject membershipの未検証が伴っていません`,
+      );
+    }
+  }
+}
+
+function publicCurrentResponseSubjectKey(subject: PublicCurrentResponseSubjectDto): string {
+  return `${subject.kind}\u0000${subject.candidateId.toLowerCase()}`;
+}
+
+function assertPublicCurrentResponseSubjects(
+  itemNodeId: string,
+  description: string,
+  subjects: readonly PublicCurrentResponseSubjectDto[],
+): void {
+  const keys = subjects.map(publicCurrentResponseSubjectKey);
+  if (new Set(keys).size !== keys.length) {
+    throw new PublicDtoSemanticError(`item ${itemNodeId}の${description}が重複しています`);
+  }
+  let previousKey: string | undefined;
+  for (const key of keys) {
+    if (previousKey != null && compareStrings(previousKey, key) > 0) {
+      throw new PublicDtoSemanticError(
+        `item ${itemNodeId}の${description}が決定論的な順序になっていません`,
+      );
+    }
+    previousKey = key;
+  }
+}
+
+function assertPublicCurrentResponseSubjectChanges(item: PublicItemSummaryDto): void {
+  const changes = item.currentResponseSubjectChanges;
+  if (changes.scope === "unbounded") {
+    return;
+  }
+  assertPublicCurrentResponseSubjects(
+    item.nodeId,
+    "追加可能な現在対応主体",
+    changes.addableSubjects,
+  );
+  assertPublicCurrentResponseSubjects(
+    item.nodeId,
+    "削除可能な現在対応主体",
+    changes.removableSubjects,
+  );
+}
+
+const publicUnverifiedValueOrder: readonly PublicItemSummaryDto["aiAnalysis"]["unverifiedValues"][number][] =
+  [
+    "status",
+    "waitingOn",
+    "primaryWaitingOn",
+    "nextAction",
+    "confidence",
+    "evidence",
+    "uncertainties",
+    "deadline",
+    "staleness",
+    "downstreamImpact",
+    "importance",
+    "attention",
+    "blockers",
+    "relations",
+  ];
+
+function assertPublicUnverifiedValues(
+  itemNodeId: string,
+  values: readonly PublicItemSummaryDto["aiAnalysis"]["unverifiedValues"][number][],
+): void {
+  if (new Set(values).size !== values.length) {
+    throw new PublicDtoSemanticError(`item ${itemNodeId}のAI未検証値が重複しています`);
+  }
+  let previousValue: PublicItemSummaryDto["aiAnalysis"]["unverifiedValues"][number] | undefined;
+  for (const value of values) {
+    if (previousValue != null) {
+      const previousOrder = publicUnverifiedValueOrder.indexOf(previousValue);
+      const currentOrder = publicUnverifiedValueOrder.indexOf(value);
+      if (previousOrder >= currentOrder) {
+        throw new PublicDtoSemanticError(`item ${itemNodeId}のAI未検証値が固定順ではありません`);
+      }
+    }
+    previousValue = value;
+  }
+}
+
+function assertPublicUniqueSortedIds(ids: readonly string[], description: string): void {
+  if (new Set(ids).size !== ids.length) {
+    throw new PublicDtoSemanticError(`${description}が重複しています`);
+  }
+  let previousId: string | undefined;
+  for (const id of ids) {
+    if (previousId != null && compareStrings(previousId, id) > 0) {
+      throw new PublicDtoSemanticError(`${description}が決定論的な順序になっていません`);
+    }
+    previousId = id;
+  }
+}
+
+function assertPublicItemSummarySemantics(item: PublicItemSummaryDto): void {
+  assertPublicUnverifiedValues(item.nodeId, item.aiAnalysis.unverifiedValues);
+  assertPublicUniqueSortedIds(item.blockerNodeIds, `item ${item.nodeId}のblocker node ID`);
+  assertPublicPersonalReminderResponses(item.nodeId, item.currentResponses);
+  assertPublicCurrentResponseSubjectChanges(item);
+}
+
+function assertPublicNativeGraphEdgeCurrentness(edges: readonly PublicGraphEdgeDto[]): void {
+  for (const edge of edges) {
+    if (edge.provenance === "native" && edge.aiCurrentness !== "not_dependent") {
+      throw new PublicDtoSemanticError(
+        `native graph edge ${edge.id}のAI現在性はnot_dependentでなければなりません`,
+      );
+    }
+  }
+}
+
+function assertPublicUnverifiedRelationSemantics(details: PublicDetailsDto): void {
+  const itemsByNodeId = new Map(details.items.map((item) => [item.summary.nodeId, item.summary]));
+  const activeSupportsByMeaning = new Map<string, PublicGraphEdgeDto[]>();
+  for (const edge of details.graph.edges) {
+    if (!edge.active) {
+      continue;
+    }
+    const meaningKey = JSON.stringify([edge.type, edge.fromNodeId, edge.toNodeId]);
+    const supports = activeSupportsByMeaning.get(meaningKey);
+    if (supports == null) {
+      activeSupportsByMeaning.set(meaningKey, [edge]);
+    } else {
+      supports.push(edge);
+    }
+  }
+  for (const supports of activeSupportsByMeaning.values()) {
+    if (supports.some((edge) => edge.aiCurrentness !== "unverified")) {
+      continue;
+    }
+    const firstSupport = supports[0];
+    assertNonNullable(firstSupport, "active relation supportがありません");
+    for (const nodeId of [firstSupport.fromNodeId, firstSupport.toNodeId]) {
+      const item = itemsByNodeId.get(nodeId);
+      if (item == null) {
+        continue;
+      }
+      if (!item.aiAnalysis.unverifiedValues.includes("relations")) {
+        throw new PublicDtoSemanticError(
+          `AI未検証supportだけを持つactive relation ${firstSupport.id}の項目 ${nodeId}にAI未検証値relationsがありません`,
+        );
+      }
+    }
+  }
+}
+
+function assertPublicUnverifiedBlockerSemantics(details: PublicDetailsDto): void {
+  const graphNodeStates = new Map<string, PublicGraphNodeDto["state"]>();
+  for (const node of details.graph.nodes) {
+    if (graphNodeStates.has(node.nodeId)) {
+      throw new PublicDtoSemanticError(`details graphのnode ID ${node.nodeId}が重複しています`);
+    }
+    graphNodeStates.set(node.nodeId, node.state);
+  }
+  for (const item of details.items) {
+    assertPublicItemSummarySemantics(item.summary);
+    assertPublicUniqueSortedIds(
+      item.unverifiedBlockerNodeIds,
+      `item ${item.summary.nodeId}のunverified blocker node ID`,
+    );
+    const supportsByMeaning = new Map<string, PublicGraphEdgeDto[]>();
+    for (const edge of details.graph.edges) {
+      if (
+        !edge.active ||
+        edge.type !== "blocks" ||
+        edge.toNodeId !== item.summary.nodeId ||
+        item.summary.state !== "open" ||
+        graphNodeStates.get(edge.fromNodeId) !== "open" ||
+        graphNodeStates.get(edge.toNodeId) !== "open"
+      ) {
+        continue;
+      }
+      const meaningKey = JSON.stringify([edge.type, edge.fromNodeId, edge.toNodeId]);
+      const existing = supportsByMeaning.get(meaningKey);
+      if (existing == null) {
+        supportsByMeaning.set(meaningKey, [edge]);
+      } else {
+        existing.push(edge);
+      }
+    }
+    const expectedBlockerNodeIds = new Set<string>();
+    const expectedUnverifiedBlockerNodeIds = new Set<string>();
+    for (const meaningSupports of supportsByMeaning.values()) {
+      const firstSupport = meaningSupports[0];
+      assertNonNullable(firstSupport, "blocks supportがありません");
+      expectedBlockerNodeIds.add(firstSupport.fromNodeId);
+      let allUnverified = true;
+      for (const support of meaningSupports) {
+        if (support.aiCurrentness !== "unverified") {
+          allUnverified = false;
+        }
+      }
+      if (allUnverified) {
+        expectedUnverifiedBlockerNodeIds.add(firstSupport.fromNodeId);
+      }
+    }
+    const expectedBlockerNodeIdValues = [...expectedBlockerNodeIds].sort(compareStrings);
+    if (
+      expectedBlockerNodeIdValues.length !== item.summary.blockerNodeIds.length ||
+      expectedBlockerNodeIdValues.some(
+        (nodeId, index) => nodeId !== item.summary.blockerNodeIds[index],
+      )
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}のblocker node IDがactive/open blocks supportから導出した集合と一致しません`,
+      );
+    }
+    const expectedUnverifiedBlockerNodeIdValues = [...expectedUnverifiedBlockerNodeIds].sort(
+      compareStrings,
+    );
+    if (
+      expectedUnverifiedBlockerNodeIdValues.length !== item.unverifiedBlockerNodeIds.length ||
+      expectedUnverifiedBlockerNodeIdValues.some(
+        (nodeId, index) => nodeId !== item.unverifiedBlockerNodeIds[index],
+      )
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}のunverified blocker node IDがactive/open blocks supportから導出した集合と一致しません`,
+      );
+    }
+    for (const blockerNodeId of item.unverifiedBlockerNodeIds) {
+      if (!item.summary.blockerNodeIds.includes(blockerNodeId)) {
+        throw new PublicDtoSemanticError(
+          `item ${item.summary.nodeId}のunverified blocker node IDがblocker node IDの部分集合ではありません`,
+        );
+      }
+      if (!item.summary.aiAnalysis.unverifiedValues.includes("blockers")) {
+        throw new PublicDtoSemanticError(
+          `item ${item.summary.nodeId}のunverified blocker node IDに対応するAI未検証値blockersがありません`,
+        );
+      }
+    }
+  }
+}
+
 function assertPublicCurrentImplementations(items: readonly PublicItemSummaryDto[]): void {
   const summaryItemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   for (const item of items) {
@@ -1071,13 +1431,20 @@ function assertPublicCurrentResponseIds(
 ): void {
   const causeIds = new Set<string>();
   for (const item of items) {
+    let previousCauseId: string | undefined;
     for (const response of item.currentResponses) {
       if (causeIds.has(response.causeId)) {
         throw new PublicDtoSemanticError(
           `personal reminder responseのcause IDが重複しています。対象: ${response.causeId}`,
         );
       }
+      if (previousCauseId != null && compareStrings(previousCauseId, response.causeId) > 0) {
+        throw new PublicDtoSemanticError(
+          `item ${item.nodeId}のpersonal reminder responseがcause ID順ではありません`,
+        );
+      }
       causeIds.add(response.causeId);
+      previousCauseId = response.causeId;
     }
   }
 }
@@ -1089,9 +1456,23 @@ function assertPublicCurrentResponsesRequireCompletedPlanning(
     if (item.personalReminderCausePlanningStatus === "completed") {
       continue;
     }
+    if (item.currentResponsesUnverified) {
+      throw new PublicDtoSemanticError(
+        `個人催促planningが完了していない項目に現在の対応の未検証フラグがあります。対象: ${item.nodeId}`,
+      );
+    }
     if (item.currentResponses.length !== 0) {
       throw new PublicDtoSemanticError(
         `個人催促planningが完了していない項目に現在の対応があります。対象: ${item.nodeId}`,
+      );
+    }
+    if (
+      item.currentResponseSubjectChanges.scope !== "bounded" ||
+      item.currentResponseSubjectChanges.addableSubjects.length !== 0 ||
+      item.currentResponseSubjectChanges.removableSubjects.length !== 0
+    ) {
+      throw new PublicDtoSemanticError(
+        `個人催促planningが完了していない項目に現在対応主体の変化があります。対象: ${item.nodeId}`,
       );
     }
   }
@@ -1124,6 +1505,9 @@ export function createPublicSummaryDto(value: unknown): PublicSummaryDto {
       cause: result.error,
     });
   }
+  for (const item of result.data.items) {
+    assertPublicItemSummarySemantics(item);
+  }
   assertPublicCurrentResponseIds(result.data.items);
   assertPublicCurrentResponsesRequireCompletedPlanning(result.data.items);
   assertPublicSummaryWaitingOnReferences(result.data);
@@ -1139,6 +1523,9 @@ export function createPublicDetailsDto(value: unknown): PublicDetailsDto {
       cause: result.error,
     });
   }
+  assertPublicNativeGraphEdgeCurrentness(result.data.graph.edges);
+  assertPublicUnverifiedRelationSemantics(result.data);
+  assertPublicUnverifiedBlockerSemantics(result.data);
   assertPublicCurrentResponseIds(result.data.items.map((item) => item.summary));
   assertPublicCurrentResponsesRequireCompletedPlanning(
     result.data.items.map((item) => item.summary),

@@ -19,6 +19,7 @@ import {
   type ClosingKeywordRelationCandidate,
   type CrossReferenceRelationCandidate,
   type ExplicitTextRelationCandidate,
+  type ExtractRelationCandidatesBatchInput,
   type ExtractRelationCandidatesInput,
   type ExternalRelationCandidateNode,
   type NativeRelationCandidate,
@@ -26,6 +27,7 @@ import {
   type PublicGitHubRelationItem,
   type RelationCandidate,
   type RelationCandidateNode,
+  type RelationExtractionItem,
   type RelationTextSource,
 } from "./relation-candidate-types.js";
 
@@ -58,8 +60,8 @@ type MarkdownReference = Readonly<{
 }>;
 
 type ReferenceIndex = Readonly<{
-  byAlias: ReadonlyMap<string, PublicGitHubRelationItem>;
-  byNodeId: ReadonlyMap<GitHubNodeId, PublicGitHubRelationItem>;
+  findByAlias: (key: string) => PublicGitHubRelationItem | undefined;
+  findByNodeId: (nodeId: GitHubNodeId) => PublicGitHubRelationItem | undefined;
 }>;
 
 type CandidateTemplate =
@@ -68,6 +70,10 @@ type CandidateTemplate =
   | Omit<ClosingKeywordRelationCandidate, "sourceIds">
   | Omit<ChecklistRelationCandidate, "sourceIds">
   | Omit<CrossReferenceRelationCandidate, "sourceIds">;
+
+function relationCandidateNodeItemType(node: RelationCandidateNode): "issue" | "pull_request" {
+  return node.scope === "organization" ? node.kind : node.githubItemType;
+}
 
 function parseCanonicalGitHubItemUrl(value: string): ParsedGitHubItemUrl | null {
   const match = CANONICAL_GITHUB_ITEM_URL_PATTERN.exec(value);
@@ -190,32 +196,39 @@ function findRelationReferenceMismatches(
   return Object.freeze(mismatches);
 }
 
-function createReferenceIndex(input: ExtractRelationCandidatesInput): ReferenceIndex {
+function createReferenceIndex(
+  items: readonly PublicGitHubRelationItem[],
+  fallback: ReferenceIndex | undefined,
+  firstItemPrecedesFallback: boolean,
+): ReferenceIndex {
   const byAlias = new Map<string, PublicGitHubRelationItem>();
   const byNodeId = new Map<GitHubNodeId, PublicGitHubRelationItem>();
-  const embeddedItems = [
-    ...input.item.nativeDependencies.map((source) => source.relatedItem),
-    ...input.item.nativeHierarchy.map((source) => source.relatedItem),
-    ...input.item.nativeClosingIssues.map((source) => source.relatedItem),
-    ...input.item.crossReferences.map((source) => source.sourceItem),
-  ];
-  const items = [input.item, ...input.knownItems, ...embeddedItems];
 
-  for (const item of items) {
+  for (const [itemIndex, item] of items.entries()) {
     validatePublicItem(item);
-    const existingByNodeId = byNodeId.get(item.nodeId);
+    const localByNodeId = byNodeId.get(item.nodeId);
+    const existingByNodeId = localByNodeId ?? fallback?.findByNodeId(item.nodeId);
     if (existingByNodeId != null && !samePublicItem(existingByNodeId, item)) {
+      const [existing, incoming] =
+        itemIndex === 0 && firstItemPrecedesFallback && localByNodeId == null
+          ? [item, existingByNodeId]
+          : [existingByNodeId, item];
       throw new RelationReferenceConflictError(
         "node_id",
-        findRelationReferenceMismatches(existingByNodeId, item),
+        findRelationReferenceMismatches(existing, incoming),
       );
     }
     const key = aliasKey(item.repositoryOwner, item.repositoryName, item.number);
-    const existingByAlias = byAlias.get(key);
+    const localByAlias = byAlias.get(key);
+    const existingByAlias = localByAlias ?? fallback?.findByAlias(key);
     if (existingByAlias != null && existingByAlias.nodeId !== item.nodeId) {
+      const [existing, incoming] =
+        itemIndex === 0 && firstItemPrecedesFallback && localByAlias == null
+          ? [item, existingByAlias]
+          : [existingByAlias, item];
       throw new RelationReferenceConflictError(
         "repository_number",
-        findRelationReferenceMismatches(existingByAlias, item),
+        findRelationReferenceMismatches(existing, incoming),
       );
     }
     byNodeId.set(item.nodeId, item);
@@ -223,9 +236,20 @@ function createReferenceIndex(input: ExtractRelationCandidatesInput): ReferenceI
   }
 
   return Object.freeze({
-    byAlias,
-    byNodeId,
+    findByAlias: (key: string): PublicGitHubRelationItem | undefined =>
+      byAlias.get(key) ?? fallback?.findByAlias(key),
+    findByNodeId: (nodeId: GitHubNodeId): PublicGitHubRelationItem | undefined =>
+      byNodeId.get(nodeId) ?? fallback?.findByNodeId(nodeId),
   });
+}
+
+function embeddedReferenceItems(item: RelationExtractionItem): readonly PublicGitHubRelationItem[] {
+  return Object.freeze([
+    ...item.nativeDependencies.map((source) => source.relatedItem),
+    ...item.nativeHierarchy.map((source) => source.relatedItem),
+    ...item.nativeClosingIssues.map((source) => source.relatedItem),
+    ...item.crossReferences.map((source) => source.sourceItem),
+  ]);
 }
 
 function createOrganizationNode(item: PublicGitHubRelationItem): OrganizationRelationCandidateNode {
@@ -289,7 +313,7 @@ function resolveReferenceItem(
   index: ReferenceIndex,
   organization: string,
 ): RelationCandidateNode | null {
-  const item = index.byAlias.get(
+  const item = index.findByAlias(
     aliasKey(reference.repositoryOwner, reference.repositoryName, reference.number),
   );
   if (item == null || (reference.itemType != null && item.type !== reference.itemType)) {
@@ -303,7 +327,7 @@ function resolveNodeId(
   index: ReferenceIndex,
   organization: string,
 ): RelationCandidateNode | null {
-  const item = index.byNodeId.get(nodeId);
+  const item = index.findByNodeId(nodeId);
   return item == null ? null : resolveCandidateNode(item, organization);
 }
 
@@ -635,6 +659,9 @@ function addNativeCandidates(
     throw new TypeError("Issueにnative closing対象は指定できません");
   }
   for (const source of input.item.nativeClosingIssues) {
+    if (source.relatedItem.type !== "issue") {
+      throw new TypeError("native closing対象はIssueでなければなりません");
+    }
     const relatedNode = resolveNodeId(source.relatedItem.nodeId, index, input.organization);
     if (relatedNode == null || isSameNode(currentNode, relatedNode)) {
       continue;
@@ -655,6 +682,12 @@ function addCrossReferenceCandidates(
   candidates: CandidateAccumulator,
 ): void {
   for (const source of input.item.crossReferences) {
+    if (
+      source.willCloseTarget &&
+      (input.item.type !== "issue" || source.sourceItem.type !== "pull_request")
+    ) {
+      throw new TypeError("willCloseTargetはPull RequestからIssueへの参照でなければなりません");
+    }
     const sourceNode = resolveNodeId(source.sourceItem.nodeId, index, input.organization);
     if (sourceNode == null || isSameNode(currentNode, sourceNode)) {
       continue;
@@ -727,7 +760,11 @@ function addTextCandidates(
       if (referencedNode == null || isSameNode(currentNode, referencedNode)) {
         continue;
       }
-      if (isClosingReference(value, reference)) {
+      if (
+        isClosingReference(value, reference) &&
+        relationCandidateNodeItemType(currentNode) === "pull_request" &&
+        relationCandidateNodeItemType(referencedNode) === "issue"
+      ) {
         const relation = Object.freeze({
           type: "implements",
           implementation: currentNode,
@@ -843,12 +880,11 @@ function addChecklistCandidates(
   }
 }
 
-/** 公開GitHub項目の各sourceから決定論的な関係候補を抽出する。 */
-export function extractRelationCandidates(
+function extractRelationCandidatesWithIndex(
   input: ExtractRelationCandidatesInput,
+  index: ReferenceIndex,
 ): readonly RelationCandidate[] {
   const currentNode = createCurrentNode(input);
-  const index = createReferenceIndex(input);
   const candidates = new CandidateAccumulator();
 
   addNativeCandidates(input, currentNode, index, candidates);
@@ -869,4 +905,38 @@ export function extractRelationCandidates(
   }
 
   return candidates.values();
+}
+
+/** 公開GitHub項目の各sourceから決定論的な関係候補を抽出する。 */
+export function extractRelationCandidates(
+  input: ExtractRelationCandidatesInput,
+): readonly RelationCandidate[] {
+  const index = createReferenceIndex(
+    [input.item, ...input.knownItems, ...embeddedReferenceItems(input.item)],
+    undefined,
+    false,
+  );
+  return extractRelationCandidatesWithIndex(input, index);
+}
+
+/** 複数の公開GitHub項目から決定論的な関係候補をまとめて抽出する。 */
+export function extractRelationCandidatesForItems(
+  input: ExtractRelationCandidatesBatchInput,
+): readonly RelationCandidate[] {
+  const sharedIndex = createReferenceIndex(input.knownItems, undefined, false);
+  const candidates: RelationCandidate[] = [];
+  for (const item of input.items) {
+    const scopedInput = Object.freeze({
+      organization: input.organization,
+      item,
+      knownItems: input.knownItems,
+    }) satisfies ExtractRelationCandidatesInput;
+    const scopedIndex = createReferenceIndex(
+      [item, ...embeddedReferenceItems(item)],
+      sharedIndex,
+      true,
+    );
+    candidates.push(...extractRelationCandidatesWithIndex(scopedInput, scopedIndex));
+  }
+  return normalizeRelationCandidates(candidates);
 }

@@ -1,10 +1,10 @@
 import { type ComponentChildren } from "preact";
 
 import { UnreachableError } from "../../src/util/index.js";
-import { AiAnalysisNoticeIcon } from "./ai-analysis-notice-icon.js";
+import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { GitHubIconButton } from "./github-icon-button.js";
 import { ItemDetailsLink } from "./item-details.js";
-import { aiAnalysisNotice, type ItemTableRow } from "./model.js";
+import { itemAiNoticeAriaLabel, itemAiUnverifiedDescription, type ItemTableRow } from "./model.js";
 import { Pill } from "./ui.js";
 
 type ItemHeadingItem = Readonly<{
@@ -111,6 +111,7 @@ export function ItemListHeading({
   row,
   showFreshnessBadge,
 }: ItemListHeadingProps) {
+  const aiUnverifiedDescription = itemAiUnverifiedDescription(row.item);
   return (
     <ItemHeading
       item={row.item}
@@ -127,7 +128,12 @@ export function ItemListHeading({
         ) : null
       }
       titleAccessory={
-        <AiAnalysisNoticeIcon notice={aiAnalysisNotice(row.item.aiAnalysis.status)} />
+        aiUnverifiedDescription == null ? null : (
+          <AiUnverifiedMark
+            ariaLabel={itemAiNoticeAriaLabel(row.item)}
+            description={aiUnverifiedDescription}
+          />
+        )
       }
     />
   );

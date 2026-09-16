@@ -70,6 +70,13 @@ export type ExtractRelationCandidatesInput = Readonly<{
   knownItems: readonly PublicGitHubRelationItem[];
 }>;
 
+/** 複数項目の関係候補抽出に必要な対象項目と解決済み公開項目。 */
+export type ExtractRelationCandidatesBatchInput = Readonly<{
+  organization: string;
+  items: readonly RelationExtractionItem[];
+  knownItems: readonly PublicGitHubRelationItem[];
+}>;
+
 type RelationCandidateNodeFields = Readonly<{
   repositoryOwner: string;
   repositoryName: string;

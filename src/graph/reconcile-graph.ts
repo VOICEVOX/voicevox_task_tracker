@@ -1,10 +1,12 @@
 import {
   createUtcIsoDateTime,
+  aiAnalysisDependencyForRelation,
+  aiAnalysisDependencySchema,
+  type AiAnalysisDependency,
   type Evidence,
   type EvidenceSupport,
   type GraphNodeId,
   type RelationProvenance,
-  type RelationType,
   type SourceId,
   type UtcIsoDateTime,
 } from "../domain/index.js";
@@ -18,21 +20,17 @@ import {
 import { normalizeRelationCandidates } from "./normalize-relation-candidates.js";
 import {
   type BlockedByEntry,
+  type CanonicalRelation,
   type GraphEdgeChangedField,
   type GraphEdgeHistoryEvent,
   type ReconcileGraphInput,
   type ReconcileGraphResult,
   type ReconciledGraphEdge,
   type RelationCandidateAssessment,
+  type RelationCandidateDecisionProof,
   type RelationCandidateResolution,
   type RelationContradiction,
 } from "./reconcile-graph-types.js";
-
-type CanonicalRelation = Readonly<{
-  fromNodeId: GraphNodeId;
-  toNodeId: GraphNodeId;
-  type: RelationType;
-}>;
 
 type GraphEdgeDraft = CanonicalRelation &
   Readonly<{
@@ -42,12 +40,15 @@ type GraphEdgeDraft = CanonicalRelation &
     evidence: readonly Evidence[];
     authoritative: boolean;
     contradictions: readonly RelationContradiction[];
+    aiDependency: AiAnalysisDependency;
     firstSeenAt: UtcIsoDateTime;
   }>;
 
 type CandidateResolutionResult = Readonly<{
   edgeDraft: GraphEdgeDraft | null;
   resolution: RelationCandidateResolution;
+  dependency: AiAnalysisDependency;
+  canonicalRelation?: CanonicalRelation;
 }>;
 
 function compareStrings(left: string, right: string): -1 | 0 | 1 {
@@ -135,6 +136,47 @@ function relationNodes(
   }
 }
 
+function relationCandidateOwnerNodeId(candidate: RelationCandidate): GraphNodeId {
+  switch (candidate.relation.type) {
+    case "blocks":
+      return candidate.relation.blocked.nodeId;
+    case "parent_of":
+      return candidate.relation.parent.nodeId;
+    case "implements":
+      return candidate.relation.implementation.nodeId;
+    case "unclassified":
+      return candidate.relation.referencing.nodeId;
+  }
+}
+
+function relationCandidateNodeItemType(node: RelationCandidateNode): "issue" | "pull_request" {
+  return node.scope === "organization" ? node.kind : node.githubItemType;
+}
+
+function validateImplementsEndpointTypes(
+  implementation: RelationCandidateNode,
+  target: RelationCandidateNode,
+  context: string,
+): void {
+  if (
+    relationCandidateNodeItemType(implementation) !== "pull_request" ||
+    relationCandidateNodeItemType(target) !== "issue"
+  ) {
+    throw new TypeError(`${context}はPull RequestからIssueへ向けてください`);
+  }
+}
+
+function validateCandidateRelationEndpointTypes(candidate: RelationCandidate): void {
+  if (candidate.relation.type !== "implements") {
+    return;
+  }
+  validateImplementsEndpointTypes(
+    candidate.relation.implementation,
+    candidate.relation.target,
+    `implements候補 ${candidate.id}`,
+  );
+}
+
 function canonicalCandidateRelation(relation: CandidateRelation): CanonicalRelation {
   switch (relation.type) {
     case "blocks":
@@ -206,6 +248,40 @@ function validateAssessments(
   }
 
   return assessmentsByCandidateId;
+}
+
+function validateRelationAiDependencies(
+  candidates: readonly RelationCandidate[],
+  dependencies: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
+): void {
+  const candidatesById = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  for (const [candidateId, dependency] of dependencies) {
+    const candidate = candidatesById.get(candidateId);
+    if (candidate == null) {
+      throw new TypeError(`存在しない関係候補 ${candidateId}のAI依存が指定されています`);
+    }
+    const parsed = aiAnalysisDependencySchema.safeParse(dependency);
+    if (!parsed.success) {
+      throw new TypeError(`関係候補 ${candidateId}のAI依存が不正です`, {
+        cause: parsed.error,
+      });
+    }
+    if (candidate.authority === "authoritative" && dependency.status !== "not_dependent") {
+      throw new TypeError(
+        `authoritative relation ${candidateId}のAI依存はnot_dependentでなければなりません`,
+      );
+    }
+  }
+  for (const candidate of candidates) {
+    if (candidate.authority !== "inferred") {
+      continue;
+    }
+    const dependency = dependencies.get(candidate.id);
+    if (dependency == null) {
+      throw new TypeError(`推定relation ${candidate.id}のAI依存がありません`);
+    }
+    validateInferredRelationAiDependency(candidate, dependency, true);
+  }
 }
 
 function canonicalAssessmentRelation(
@@ -384,14 +460,115 @@ function candidateNodeById(
   throw new TypeError(`関係候補 ${candidate.id}にnode ${nodeId}が含まれていません`);
 }
 
+function validateCanonicalRelationEndpointTypes(
+  candidate: RelationCandidate,
+  relation: CanonicalRelation,
+): void {
+  if (relation.type !== "implements") {
+    return;
+  }
+  validateImplementsEndpointTypes(
+    candidateNodeById(candidate, relation.fromNodeId),
+    candidateNodeById(candidate, relation.toNodeId),
+    `implements判定 ${candidate.id}`,
+  );
+}
+
+function validateInferredRelationAiDependency(
+  candidate: RelationCandidate,
+  dependency: AiAnalysisDependency,
+  allowProducerlessNotRecorded: boolean,
+): void {
+  if (dependency.status === "not_dependent") {
+    throw new TypeError(`推定relation ${candidate.id}のAI依存はnot_dependentにできません`);
+  }
+  const producers = dependency.producers;
+  if (producers == null) {
+    if (
+      allowProducerlessNotRecorded &&
+      dependency.status === "unknown" &&
+      dependency.reason === "not_recorded"
+    ) {
+      return;
+    }
+    throw new TypeError(`推定relation ${candidate.id}のAI依存producerがありません`);
+  }
+  const endpointNodeIds = new Set(relationNodes(candidate.relation).map((node) => node.nodeId));
+  const ownerNodeId = relationCandidateOwnerNodeId(candidate);
+  for (const producer of producers) {
+    if (producer.kind !== "item_element" || producer.element !== "relations") {
+      throw new TypeError(`推定relation ${candidate.id}のAI依存producer elementが不正です`);
+    }
+    if (!endpointNodeIds.has(producer.nodeId)) {
+      throw new TypeError(
+        `推定relation ${candidate.id}のAI依存producer nodeがendpointではありません`,
+      );
+    }
+    if (producer.nodeId !== ownerNodeId) {
+      throw new TypeError(`推定relation ${candidate.id}のAI依存producer nodeがownerではありません`);
+    }
+  }
+}
+
+function validatePreviousEdgeCandidateIdentity(
+  candidate: RelationCandidate,
+  previousEdge: ReconciledGraphEdge,
+): void {
+  const endpointNodeIds = new Set(relationNodes(candidate.relation).map((node) => node.nodeId));
+  if (
+    !endpointNodeIds.has(previousEdge.fromNodeId) ||
+    !endpointNodeIds.has(previousEdge.toNodeId)
+  ) {
+    throw new TypeError(`関係候補 ${candidate.id}のendpointが前回edgeと一致しません`);
+  }
+  if (candidate.authority === "authoritative" || previousEdge.provenance === "native") {
+    if (candidate.authority !== "authoritative" || previousEdge.provenance !== "native") {
+      throw new TypeError(`関係候補 ${candidate.id}がnative edge IDと衝突しています`);
+    }
+    const relation = canonicalCandidateRelation(candidate.relation);
+    if (
+      previousEdge.fromNodeId !== relation.fromNodeId ||
+      previousEdge.toNodeId !== relation.toNodeId ||
+      previousEdge.type !== relation.type
+    ) {
+      throw new TypeError(`native relation ${candidate.id}の内容が前回edgeと一致しません`);
+    }
+    return;
+  }
+  const dependency = previousEdge.aiDependency;
+  if (
+    dependency.status === "unknown" &&
+    dependency.reason === "migration" &&
+    dependency.producers == null
+  ) {
+    return;
+  }
+  if (dependency.status === "not_dependent" || dependency.producers == null) {
+    throw new TypeError(`前回の推定edge ${candidate.id}にowner producerがありません`);
+  }
+  const ownerNodeId = relationCandidateOwnerNodeId(candidate);
+  if (
+    dependency.producers.some(
+      (producer) =>
+        producer.kind !== "relation" ||
+        producer.relationId !== candidate.id ||
+        producer.producer.nodeId !== ownerNodeId,
+    )
+  ) {
+    throw new TypeError(`関係候補 ${candidate.id}のownerが前回edgeと一致しません`);
+  }
+}
+
 function resolveCandidate(
   candidate: RelationCandidate,
   assessment: RelationCandidateAssessment | undefined,
   sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
   minimumInferredConfidence: number,
+  relationAiDependencies: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
 ): CandidateResolutionResult {
   if (candidate.authority === "authoritative") {
     const relation = canonicalCandidateRelation(candidate.relation);
+    validateCanonicalRelationEndpointTypes(candidate, relation);
     const contradictions = createContradiction(candidate, assessment);
     const evidence = normalizeEvidence([
       ...createCandidateEvidence(candidate),
@@ -406,6 +583,7 @@ function resolveCandidate(
         evidence,
         authoritative: true,
         contradictions,
+        aiDependency: Object.freeze({ status: "not_dependent" }),
         firstSeenAt: resolveCandidateFirstSeenAt(candidate, sourceOccurredAtById),
       }),
       resolution: Object.freeze({
@@ -413,8 +591,14 @@ function resolveCandidate(
         status: "active",
         edgeId: candidate.id,
       }),
+      dependency: Object.freeze({ status: "not_dependent" }),
+      canonicalRelation: relation,
     });
   }
+
+  const sourceAiDependency = relationAiDependencies.get(candidate.id);
+  assertNonNullable(sourceAiDependency, `推定relation ${candidate.id}のAI依存がありません`);
+  validateInferredRelationAiDependency(candidate, sourceAiDependency, true);
 
   if (assessment == null) {
     return Object.freeze({
@@ -424,6 +608,7 @@ function resolveCandidate(
         status: "pending",
         reason: "assessment_missing",
       }),
+      dependency: sourceAiDependency,
     });
   }
   if (assessment.confidence < minimumInferredConfidence) {
@@ -435,6 +620,7 @@ function resolveCandidate(
         reason: "confidence_below_threshold",
         confidence: assessment.confidence,
       }),
+      dependency: sourceAiDependency,
     });
   }
 
@@ -448,8 +634,10 @@ function resolveCandidate(
         reason: "verdict_none",
         confidence: assessment.confidence,
       }),
+      dependency: sourceAiDependency,
     });
   }
+  validateCanonicalRelationEndpointTypes(candidate, relation);
   if (
     relation.type === "blocks" &&
     candidateNodeById(candidate, relation.fromNodeId).state !== "open"
@@ -462,8 +650,12 @@ function resolveCandidate(
         reason: "blocker_not_open",
         confidence: assessment.confidence,
       }),
+      dependency: sourceAiDependency,
     });
   }
+
+  validateInferredRelationAiDependency(candidate, sourceAiDependency, false);
+  const aiDependency = aiAnalysisDependencyForRelation(candidate.id, sourceAiDependency);
 
   return Object.freeze({
     edgeDraft: Object.freeze({
@@ -474,6 +666,7 @@ function resolveCandidate(
       evidence: createInferredEvidence(candidate, assessment),
       authoritative: false,
       contradictions: Object.freeze([]),
+      aiDependency,
       firstSeenAt: resolveCandidateFirstSeenAt(candidate, sourceOccurredAtById),
     }),
     resolution: Object.freeze({
@@ -481,6 +674,8 @@ function resolveCandidate(
       status: "active",
       edgeId: candidate.id,
     }),
+    dependency: sourceAiDependency,
+    canonicalRelation: relation,
   });
 }
 
@@ -504,6 +699,27 @@ function validatePreviousEdge(edge: ReconciledGraphEdge, reconciledAt: UtcIsoDat
     throw new RangeError(`reconcile時刻がedge ${edge.id}の最終確認時刻より前です`);
   }
   normalizeEvidence(edge.evidence);
+  const aiDependencyResult = aiAnalysisDependencySchema.safeParse(edge.aiDependency);
+  if (!aiDependencyResult.success) {
+    throw new TypeError(`前回graphのedge ${edge.id}のAI依存が不正です`, {
+      cause: aiDependencyResult.error,
+    });
+  }
+  if (edge.provenance === "native" && edge.aiDependency.status !== "not_dependent") {
+    throw new TypeError(`native edge ${edge.id}のAI依存はnot_dependentでなければなりません`);
+  }
+  if (edge.provenance !== "native" && edge.aiDependency.status === "not_dependent") {
+    throw new TypeError(`inferred edge ${edge.id}のAI依存はnot_dependentにできません`);
+  }
+  if (
+    edge.active &&
+    edge.provenance !== "native" &&
+    edge.aiDependency.status !== "not_dependent" &&
+    edge.aiDependency.producers == null &&
+    !(edge.aiDependency.status === "unknown" && edge.aiDependency.reason === "migration")
+  ) {
+    throw new TypeError(`active inferred edge ${edge.id}のAI依存producerがありません`);
+  }
   for (const contradiction of edge.contradictions) {
     validateConfidence(contradiction.confidence, `前回graphのedge ${edge.id}の矛盾confidence`);
     normalizeEvidence(contradiction.evidence);
@@ -566,6 +782,7 @@ function createActiveEdge(
     evidence: draft.evidence,
     authoritative: draft.authoritative,
     contradictions: draft.contradictions,
+    aiDependency: draft.aiDependency,
     firstSeenAt,
     lastConfirmedAt,
     active: true,
@@ -586,6 +803,7 @@ function createInactiveEdge(
     evidence: edge.evidence,
     authoritative: edge.authoritative,
     contradictions: edge.contradictions,
+    aiDependency: edge.aiDependency,
     firstSeenAt: edge.firstSeenAt,
     lastConfirmedAt: edge.lastConfirmedAt,
     active: false,
@@ -741,6 +959,33 @@ function reconcileEdges(
   });
 }
 
+function candidateEndpointNodeIds(
+  candidate: RelationCandidate,
+): readonly [GraphNodeId, GraphNodeId] {
+  const [firstNode, secondNode] = relationNodes(candidate.relation);
+  return Object.freeze([firstNode.nodeId, secondNode.nodeId]);
+}
+
+function candidateDecisionProof(
+  candidate: RelationCandidate,
+  result: CandidateResolutionResult,
+): RelationCandidateDecisionProof {
+  const proof = {
+    candidateId: candidate.id,
+    endpointNodeIds: candidateEndpointNodeIds(candidate),
+    authority: candidate.authority,
+    resolution: result.resolution,
+    dependency: result.dependency,
+  };
+  if (result.canonicalRelation == null) {
+    return Object.freeze(proof);
+  }
+  return Object.freeze({
+    ...proof,
+    canonicalRelation: result.canonicalRelation,
+  });
+}
+
 /** activeなblocks edgeから項目ごとのblockedByを導出する。 */
 export function deriveBlockedBy(edges: readonly ReconciledGraphEdge[]): readonly BlockedByEntry[] {
   const blockersByBlockedNodeId = new Map<GraphNodeId, Set<GraphNodeId>>();
@@ -776,20 +1021,33 @@ export function reconcileGraph(input: ReconcileGraphInput): ReconcileGraphResult
   validateSourceOccurredAtById(input.sourceOccurredAtById, input.reconciledAt);
 
   const candidates = normalizeRelationCandidates(input.candidates);
+  for (const candidate of candidates) {
+    validateCandidateRelationEndpointTypes(candidate);
+  }
   const assessmentsByCandidateId = validateAssessments(candidates, input.assessments);
+  validateRelationAiDependencies(candidates, input.relationAiDependencies);
   const previousEdges = indexPreviousEdges(input.previousGraph.edges, input.reconciledAt);
   validatePreviousHistoryEvents(input.previousGraph.historyEvents, input.reconciledAt);
+  for (const candidate of candidates) {
+    const previousEdge = previousEdges.get(candidate.id);
+    if (previousEdge != null) {
+      validatePreviousEdgeCandidateIdentity(candidate, previousEdge);
+    }
+  }
 
   const edgeDrafts = new Map<RelationCandidateId, GraphEdgeDraft>();
   const candidateResolutions: RelationCandidateResolution[] = [];
+  const candidateDecisionProofs: RelationCandidateDecisionProof[] = [];
   for (const candidate of candidates) {
     const result = resolveCandidate(
       candidate,
       assessmentsByCandidateId.get(candidate.id),
       input.sourceOccurredAtById,
       input.minimumInferredConfidence,
+      input.relationAiDependencies,
     );
     candidateResolutions.push(result.resolution);
+    candidateDecisionProofs.push(candidateDecisionProof(candidate, result));
     if (result.edgeDraft != null) {
       edgeDrafts.set(candidate.id, result.edgeDraft);
     }
@@ -809,6 +1067,7 @@ export function reconcileGraph(input: ReconcileGraphInput): ReconcileGraphResult
     historyEvents,
     emittedHistoryEvents,
     candidateResolutions: Object.freeze(candidateResolutions),
+    candidateDecisionProofs: Object.freeze(candidateDecisionProofs),
     blockedBy: deriveBlockedBy(activeEdges),
   });
 }

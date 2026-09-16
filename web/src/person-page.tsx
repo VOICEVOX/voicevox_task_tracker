@@ -1,6 +1,7 @@
 import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { createGitHubAvatarUrl } from "./github-avatar.js";
 import { GitHubProfileLink } from "./github-icon-button.js";
@@ -13,6 +14,8 @@ import {
   filterAndSortTableRows,
   collectCurrentResponseTeamIds,
   currentResponseSubjectKey,
+  hasCurrentResponseSubjectItemsUnverified,
+  hasCurrentResponseTeamOptionsUnverified,
   selectCurrentResponseSubjectItemNodeIds,
   selectCurrentResponseSubjectPrimaryResponse,
   type ItemSort,
@@ -91,6 +94,14 @@ export function PersonPage({
     () => selectCurrentResponseSubjectItemNodeIds(summary, login, selectedTeamIds),
     [login, selectedTeamIds, summary],
   );
+  const subjectListingUnverified = useMemo(
+    () => hasCurrentResponseSubjectItemsUnverified(summary, login, selectedTeamIds),
+    [login, selectedTeamIds, summary],
+  );
+  const teamOptionsUnverified = useMemo(
+    () => hasCurrentResponseTeamOptionsUnverified(summary),
+    [summary],
+  );
   const rows = useMemo(
     () =>
       filterAndSortTableRows(
@@ -144,6 +155,9 @@ export function PersonPage({
             width={40}
           />
           <span class="min-w-0 leading-snug wrap-anywhere">@{login} が現在対応する項目</span>
+          {subjectListingUnverified && (
+            <AiUnverifiedMark description="現在入力に対して、この人物または選択中の所属チームが対応する項目一覧は未検証で、表示項目が増減する可能性があります。" />
+          )}
         </span>
       }
       headingId="person-page-heading"
@@ -183,9 +197,19 @@ export function PersonPage({
           </p>
         )}
       </div>
-      {teamOptions.length > 0 && (
+      {(teamOptions.length > 0 || teamOptionsUnverified) && (
         <fieldset class="person-team-selection mb-4 flex flex-wrap gap-2 rounded-2xl border border-border-default bg-surface-sunken px-3 pt-2 pb-3 text-text-secondary">
-          <legend class="px-1 font-bold">所属チーム</legend>
+          <legend class="px-1 font-bold">
+            <span class="inline-flex items-center gap-1">
+              所属チーム
+              {teamOptionsUnverified && (
+                <AiUnverifiedMark description="現在入力に対して、所属チームの選択肢は未検証で、表示するチームが増減する可能性があります。" />
+              )}
+            </span>
+          </legend>
+          {teamOptions.length === 0 && (
+            <p class="m-0 text-sm text-text-muted">表示できる所属チームはありません。</p>
+          )}
           {teamOptions.map((teamId) => (
             <label
               class="flex min-h-11 flex-[1_1_18rem] cursor-pointer items-start gap-2 rounded-xl border border-border-default bg-surface-card px-3 py-2"

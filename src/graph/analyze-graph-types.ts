@@ -1,11 +1,15 @@
 import {
+  type AiAnalysisDependency,
   type ExternalReferenceNodeId,
   type GitHubNodeId,
   type GitHubRepositoryId,
   type GraphNodeId,
   type TrackedItemState,
 } from "../domain/index.js";
-import { type ReconciledGraphEdge } from "./reconcile-graph-types.js";
+import {
+  type ReconciledGraphEdge,
+  type RelationCandidateDecisionProof,
+} from "./reconcile-graph-types.js";
 
 /** 追跡対象のIssueまたはPull Requestをグラフ解析へ渡すためのnode。 */
 export type TrackedGraphAnalysisNode = Readonly<{
@@ -14,6 +18,15 @@ export type TrackedGraphAnalysisNode = Readonly<{
   repositoryId: GitHubRepositoryId;
   state: TrackedItemState;
   directNotification: "eligible";
+}>;
+
+/** 関係候補のendpointだけをグラフ解析へ渡すOrganization内node。 */
+export type CandidateOnlyGraphAnalysisNode = Readonly<{
+  kind: "issue" | "pull_request";
+  nodeId: GitHubNodeId;
+  repositoryId: GitHubRepositoryId;
+  state: TrackedItemState;
+  directNotification: "not_eligible";
 }>;
 
 /** Organization外の依存先をグラフ解析へ渡すための通知非対象node。 */
@@ -25,8 +38,9 @@ export type ExternalGraphAnalysisNode = Readonly<{
   directNotification: "not_eligible";
 }>;
 
-/** グラフ解析で扱う追跡対象または外部参照node。 */
-export type GraphAnalysisNode = TrackedGraphAnalysisNode | ExternalGraphAnalysisNode;
+/** グラフ解析で扱う追跡対象、候補endpoint、または外部参照node。 */
+export type GraphAnalysisNode =
+  TrackedGraphAnalysisNode | CandidateOnlyGraphAnalysisNode | ExternalGraphAnalysisNode;
 
 /** 1回分の確定graphとnode state。 */
 export type GraphAnalysisSnapshot = Readonly<{
@@ -50,6 +64,13 @@ export type AnalyzeGraphInput = Readonly<{
   current: GraphAnalysisSnapshot;
   previous: UnavailablePreviousGraphAnalysisSnapshot | AvailablePreviousGraphAnalysisSnapshot;
 }>;
+
+/** 関係候補の不在proofを含む現在値と比較元。 */
+export type AnalyzeGraphAiDependenciesInput = AnalyzeGraphInput &
+  Readonly<{
+    candidateProofSnapshot: GraphAnalysisSnapshot;
+    candidateDecisionProofs: readonly RelationCandidateDecisionProof[];
+  }>;
 
 /** cycle node集合から決定論的に作るID。 */
 export type DependencyCycleId = `dependency-cycle:${string}`;
@@ -75,6 +96,34 @@ export type DownstreamImpact = Readonly<{
   repositoryCount: number;
 }>;
 
+/** 項目のblocker集合へ寄与するAI依存。 */
+export type BlockerSetAiDependency = Readonly<{
+  nodeId: GraphNodeId;
+  dependency: AiAnalysisDependency;
+}>;
+
+/** 実在するblocker nodeへ寄与するAI依存。 */
+export type BlockerNodeAiDependency = Readonly<{
+  blockedNodeId: GraphNodeId;
+  blockerNodeId: GraphNodeId;
+  presence: AiAnalysisDependency;
+  confidence: AiAnalysisDependency;
+  sourceIds: AiAnalysisDependency;
+  becameBlockingAt: AiAnalysisDependency;
+}>;
+
+/** 存在しないblocker候補へ寄与するAI依存。 */
+export type NegativeBlockerAiDependency = Readonly<{
+  nodeId: GraphNodeId;
+  dependency: AiAnalysisDependency;
+}>;
+
+/** 項目へ接続する関係集合へ寄与するAI依存。 */
+export type RelationSetAiDependency = Readonly<{
+  nodeId: GraphNodeId;
+  dependency: AiAnalysisDependency;
+}>;
+
 /** active edgeを無向化して得る表示単位。 */
 export type ConnectedComponent = Readonly<{
   id: ConnectedComponentId;
@@ -98,7 +147,20 @@ export type AnalyzeGraphResult = Readonly<{
   dependencyCycles: readonly DependencyCycle[];
   actionableFrontier: readonly GitHubNodeId[];
   downstreamImpacts: readonly DownstreamImpact[];
+  downstreamImpactAiDependencies: readonly Readonly<{
+    nodeId: GraphNodeId;
+    dependency: AiAnalysisDependency;
+  }>[];
   connectedComponents: readonly ConnectedComponent[];
   reclassificationTargets: readonly ReclassificationTarget[];
   newlyUnblockedNodeIds: readonly GitHubNodeId[];
 }>;
+
+/** 関係候補の不在proofを含めてAI依存を解析した結果。 */
+export type AnalyzeGraphAiDependenciesResult = AnalyzeGraphResult &
+  Readonly<{
+    blockerSetAiDependencies: readonly BlockerSetAiDependency[];
+    blockerNodeAiDependencies: readonly BlockerNodeAiDependency[];
+    negativeBlockerAiDependencies: readonly NegativeBlockerAiDependency[];
+    relationSetAiDependencies: readonly RelationSetAiDependency[];
+  }>;

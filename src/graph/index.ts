@@ -1,12 +1,17 @@
-export { analyzeGraph } from "./analyze-graph.js";
+export { analyzeGraph, analyzeGraphAiDependencies } from "./analyze-graph.js";
 export { RelationReferenceConflictError } from "./errors.js";
-export { extractRelationCandidates } from "./extract-relation-candidates.js";
+export {
+  extractRelationCandidates,
+  extractRelationCandidatesForItems,
+} from "./extract-relation-candidates.js";
 export { normalizeRelationCandidates } from "./normalize-relation-candidates.js";
 export { deriveBlockedBy, reconcileGraph } from "./reconcile-graph.js";
 export { buildRelationCandidateId } from "./relation-candidate-id.js";
 export { planRelationExpansion } from "./relation-expansion.js";
 export {
   type AnalyzeGraphInput,
+  type AnalyzeGraphAiDependenciesInput,
+  type AnalyzeGraphAiDependenciesResult,
   type AnalyzeGraphResult,
   type AvailablePreviousGraphAnalysisSnapshot,
   type ConnectedComponent,
@@ -14,6 +19,11 @@ export {
   type DependencyCycle,
   type DependencyCycleId,
   type DownstreamImpact,
+  type BlockerNodeAiDependency,
+  type BlockerSetAiDependency,
+  type NegativeBlockerAiDependency,
+  type RelationSetAiDependency,
+  type CandidateOnlyGraphAnalysisNode,
   type ExternalGraphAnalysisNode,
   type GraphAnalysisNode,
   type GraphAnalysisSnapshot,
@@ -39,6 +49,7 @@ export {
   type RejectedRelationCandidateResolution,
   type RelationAssessmentVerdict,
   type RelationCandidateAssessment,
+  type RelationCandidateDecisionProof,
   type RelationCandidateResolution,
   type RelationContradiction,
 } from "./reconcile-graph-types.js";
@@ -54,6 +65,7 @@ export {
   type CrossReferenceSource,
   type ExplicitTextRelationCandidate,
   type ExternalRelationCandidateNode,
+  type ExtractRelationCandidatesBatchInput,
   type ExtractRelationCandidatesInput,
   type NativeClosingIssueSource,
   type NativeDependencySource,

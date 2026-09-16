@@ -24,14 +24,25 @@ import {
 import {
   createGitHubNodeId,
   AI_ANALYSIS_ELEMENTS,
+  aiAnalysisDependencyForApplication,
+  migratedAiAnalysisDependency,
+  migratedPersonalReminderCauseAiDependencies,
+  migratedTrackedItemAiDependencies,
+  PERSONAL_REMINDER_ASSESSMENT_MIGRATION_RULES_VERSION,
+  personalReminderCausePlanningSchema,
+  personalReminderCauseSchema,
+  personalReminderEvaluationAttemptSchema,
   type TrackedItemAiAnalysisCurrentElements,
   type TrackedItemAiAnalysisMigrationAdoptedElements,
-  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+  type TrackedItemAiDependencies,
   isTerminalStatus,
   parseSourceId,
   type GitHubNodeId,
+  type AiAnalysisDependency,
+  type RelationProvenance,
   type TrackedItemInputEvent,
   type PersonalReminderCausePlanning,
+  type PersonalReminderCause,
 } from "../domain/index.js";
 import {
   AI_ANALYSIS_ELEMENTS_V6,
@@ -53,11 +64,21 @@ import {
   parseStateSnapshotVersion14,
   parseStateSnapshotVersion15,
   parseStateSnapshotVersion16,
+  parseStateSnapshotVersion17,
+  type LegacyPersonalReminderCause,
+  type LegacyPersonalReminderCausePlanning,
   type SnapshotAnalysisPlanFingerprint,
   type StateSnapshot,
 } from "./snapshot.js";
 
 const legacyStatusSchema = aiAnalysisStatusSchema;
+
+function migratedRelationAiDependency(provenance: RelationProvenance): AiAnalysisDependency {
+  if (provenance === "native") {
+    return Object.freeze({ status: "not_dependent" });
+  }
+  return migratedAiAnalysisDependency();
+}
 
 function legacyReuseProof() {
   return aiAnalysisElementReuseProofSchema.parse({
@@ -81,6 +102,30 @@ function migratedAiAnalysisElementApplications(): AiAnalysisElementApplications 
       ),
     ),
   );
+}
+
+function migratedTrackedItemAiDependenciesForApplications(
+  nodeId: GitHubNodeId,
+  applications: AiAnalysisElementApplications,
+): TrackedItemAiDependencies {
+  const migrated = migratedTrackedItemAiDependencies();
+  const status = aiAnalysisDependencyForApplication(nodeId, "status", applications.status);
+  const waitingOn = aiAnalysisDependencyForApplication(nodeId, "waitingOn", applications.waitingOn);
+  const nextAction = aiAnalysisDependencyForApplication(
+    nodeId,
+    "nextAction",
+    applications.nextAction,
+  );
+  const deadline = aiAnalysisDependencyForApplication(nodeId, "deadline", applications.deadline);
+  return Object.freeze({
+    ...migrated,
+    status,
+    waitingOn,
+    primaryWaitingOn: waitingOn,
+    nextAction,
+    deadline,
+    deadlineLevel: deadline,
+  });
 }
 const legacyWaitingOnSchema = z
   .array(
@@ -1178,6 +1223,7 @@ function migrateTrackedItem(
     }
     output = parseLegacyOutput(cacheEntry, item);
   }
+  const applications = migratedAiAnalysisElementApplications();
   return {
     ...item,
     aiAnalysis: {
@@ -1185,12 +1231,73 @@ function migrateTrackedItem(
       status: item.aiAnalysis.status,
       elements: {},
       adoptedElements: createLegacyAdoptedElements(item, output, legacyRelationsById),
-      applications: migratedAiAnalysisElementApplications(),
+      applications,
     },
+    aiDependencies: migratedTrackedItemAiDependenciesForApplications(
+      createGitHubNodeId(item.nodeId),
+      applications,
+    ),
     personalReminderCauses: [],
     personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
   };
 }
+
+function migratePersonalReminderCause(cause: LegacyPersonalReminderCause): PersonalReminderCause {
+  return personalReminderCauseSchema.parse({
+    ...cause,
+    aiDependencies: migratedPersonalReminderCauseAiDependencies(),
+    currentInput: {
+      ...cause.currentInput,
+      aiDependency: migratedAiAnalysisDependency(),
+    },
+    latestAttempt: migratePersonalReminderEvaluationAttempt(cause.latestAttempt),
+  });
+}
+
+function migratePersonalReminderEvaluationAttempt(
+  attempt: LegacyPersonalReminderCause["latestAttempt"],
+): PersonalReminderCause["latestAttempt"] {
+  switch (attempt.status) {
+    case "not_evaluated":
+    case "completed":
+      return attempt;
+    case "failed":
+      return personalReminderEvaluationAttemptSchema.parse({
+        ...attempt,
+        rulesVersion: PERSONAL_REMINDER_ASSESSMENT_MIGRATION_RULES_VERSION,
+      });
+    case "deferred":
+      return personalReminderEvaluationAttemptSchema.parse({
+        ...attempt,
+        rulesVersion: PERSONAL_REMINDER_ASSESSMENT_MIGRATION_RULES_VERSION,
+      });
+    default:
+      throw new UnreachableError(attempt);
+  }
+}
+
+function migratePersonalReminderCauses(
+  causes: readonly LegacyPersonalReminderCause[],
+): readonly PersonalReminderCause[] {
+  return causes.map(migratePersonalReminderCause);
+}
+
+function migratePersonalReminderCausePlanning(
+  planning: LegacyPersonalReminderCausePlanning,
+): PersonalReminderCausePlanning {
+  if (planning.status !== "completed") {
+    return planning;
+  }
+  return personalReminderCausePlanningSchema.parse({
+    ...planning,
+    causeSetAiDependency: migratedAiAnalysisDependency(),
+    causeSetSubjectChanges: {
+      scope: "unbounded",
+    },
+  });
+}
+
+const LEGACY_PERSONAL_REMINDER_CAUSE_PLANNING_VERSION = "personal-reminder-planning-v1";
 
 function migratedPersonalReminderCausePlanning(
   status: LegacyTrackedItem["status"],
@@ -1198,13 +1305,13 @@ function migratedPersonalReminderCausePlanning(
   if (isTerminalStatus(status)) {
     return {
       status: "excluded",
-      planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+      planningVersion: LEGACY_PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
       reason: "terminal_without_cause",
     };
   }
   return {
     status: "pending",
-    planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+    planningVersion: LEGACY_PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   };
 }
 
@@ -1242,7 +1349,7 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion11(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "17",
+      schemaVersion: "18",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1252,11 +1359,22 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
           })),
         })),
       },
-      items: value.items.map((item) => ({
-        ...item,
-        aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
-        personalReminderCauses: [],
-        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+      items: value.items.map((item) => {
+        const aiAnalysis = migrateAiAnalysis(item.aiAnalysis, false, "5");
+        return {
+          ...item,
+          aiAnalysis,
+          aiDependencies: migratedTrackedItemAiDependenciesForApplications(
+            item.nodeId,
+            aiAnalysis.applications,
+          ),
+          personalReminderCauses: [],
+          personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+        };
+      }),
+      relations: value.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
       })),
     });
   } catch (error: unknown) {
@@ -1269,7 +1387,7 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion12(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "17",
+      schemaVersion: "18",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1279,11 +1397,22 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
           })),
         })),
       },
-      items: value.items.map((item) => ({
-        ...item,
-        aiAnalysis: migrateAiAnalysis(item.aiAnalysis, false, "5"),
-        personalReminderCauses: [],
-        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+      items: value.items.map((item) => {
+        const aiAnalysis = migrateAiAnalysis(item.aiAnalysis, false, "5");
+        return {
+          ...item,
+          aiAnalysis,
+          aiDependencies: migratedTrackedItemAiDependenciesForApplications(
+            item.nodeId,
+            aiAnalysis.applications,
+          ),
+          personalReminderCauses: [],
+          personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+        };
+      }),
+      relations: value.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
       })),
     });
   } catch (error: unknown) {
@@ -1296,7 +1425,7 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion13(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "17",
+      schemaVersion: "18",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1306,11 +1435,22 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
           })),
         })),
       },
-      items: value.items.map((item) => ({
-        ...item,
-        aiAnalysis: migrateAiAnalysis(item.aiAnalysis, true, "6"),
-        personalReminderCauses: [],
-        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+      items: value.items.map((item) => {
+        const aiAnalysis = migrateAiAnalysis(item.aiAnalysis, true, "6");
+        return {
+          ...item,
+          aiAnalysis,
+          aiDependencies: migratedTrackedItemAiDependenciesForApplications(
+            item.nodeId,
+            aiAnalysis.applications,
+          ),
+          personalReminderCauses: [],
+          personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+        };
+      }),
+      relations: value.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
       })),
     });
   } catch (error: unknown) {
@@ -1349,7 +1489,7 @@ function migrateLegacyStateSnapshot(
       }),
     }));
     return createStateSnapshot({
-      schemaVersion: "17",
+      schemaVersion: "18",
       generatedAt: value.generatedAt,
       trackingStartAt: value.trackingStartAt,
       ai: value.ai,
@@ -1359,7 +1499,10 @@ function migrateLegacyStateSnapshot(
       repositories: value.repositories,
       items: migratedItems,
       externalReferences: value.externalReferences,
-      relations: value.relations,
+      relations: value.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
+      })),
       run: value.run,
     });
   } catch (error: unknown) {
@@ -1372,7 +1515,7 @@ function migrateVersion16StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion16(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "17",
+      schemaVersion: "18",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1385,12 +1528,54 @@ function migrateVersion16StateSnapshot(source: string): StateSnapshot {
           })),
         })),
       },
+      items: value.items.map((item) => {
+        const applications = migratedAiAnalysisElementApplications();
+        return {
+          ...item,
+          aiAnalysis: {
+            ...item.aiAnalysis,
+            applications,
+          },
+          aiDependencies: migratedTrackedItemAiDependenciesForApplications(
+            item.nodeId,
+            applications,
+          ),
+          personalReminderCauses: migratePersonalReminderCauses(item.personalReminderCauses),
+          personalReminderCausePlanning: migratePersonalReminderCausePlanning(
+            item.personalReminderCausePlanning,
+          ),
+        };
+      }),
+      relations: value.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
+      })),
+    });
+  } catch (error: unknown) {
+    throw migrationFormatError(error);
+  }
+}
+
+function migrateVersion17StateSnapshot(source: string): StateSnapshot {
+  try {
+    const value = parseStateSnapshotVersion17(source);
+    return createStateSnapshot({
+      ...value,
+      schemaVersion: "18",
       items: value.items.map((item) => ({
         ...item,
-        aiAnalysis: {
-          ...item.aiAnalysis,
-          applications: migratedAiAnalysisElementApplications(),
-        },
+        aiDependencies: migratedTrackedItemAiDependenciesForApplications(
+          item.nodeId,
+          item.aiAnalysis.applications,
+        ),
+        personalReminderCauses: migratePersonalReminderCauses(item.personalReminderCauses),
+        personalReminderCausePlanning: migratePersonalReminderCausePlanning(
+          item.personalReminderCausePlanning,
+        ),
+      })),
+      relations: value.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
       })),
     });
   } catch (error: unknown) {
@@ -1403,7 +1588,7 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion14(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "17",
+      schemaVersion: "18",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1416,18 +1601,29 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
           })),
         })),
       },
-      items: value.items.map((item) => ({
-        ...item,
-        inputEvents:
-          item.type === "pull_request"
-            ? migrateVersion14PullRequestInputEvents(item.nodeId, item.inputEvents)
-            : item.inputEvents,
-        aiAnalysis: {
-          ...item.aiAnalysis,
-          applications: migratedAiAnalysisElementApplications(),
-        },
-        personalReminderCauses: [],
-        personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+      items: value.items.map((item) => {
+        const applications = migratedAiAnalysisElementApplications();
+        return {
+          ...item,
+          inputEvents:
+            item.type === "pull_request"
+              ? migrateVersion14PullRequestInputEvents(item.nodeId, item.inputEvents)
+              : item.inputEvents,
+          aiAnalysis: {
+            ...item.aiAnalysis,
+            applications,
+          },
+          personalReminderCauses: [],
+          personalReminderCausePlanning: migratedPersonalReminderCausePlanning(item.status),
+          aiDependencies: migratedTrackedItemAiDependenciesForApplications(
+            item.nodeId,
+            applications,
+          ),
+        };
+      }),
+      relations: value.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
       })),
     });
   } catch (error: unknown) {
@@ -1440,7 +1636,7 @@ function migrateVersion15StateSnapshot(source: string): StateSnapshot {
     const value = parseStateSnapshotVersion15(source);
     return createStateSnapshot({
       ...value,
-      schemaVersion: "17",
+      schemaVersion: "18",
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
           ...repository,
@@ -1453,12 +1649,27 @@ function migrateVersion15StateSnapshot(source: string): StateSnapshot {
           })),
         })),
       },
-      items: value.items.map((item) => ({
-        ...item,
-        aiAnalysis: {
-          ...item.aiAnalysis,
-          applications: migratedAiAnalysisElementApplications(),
-        },
+      items: value.items.map((item) => {
+        const applications = migratedAiAnalysisElementApplications();
+        return {
+          ...item,
+          aiAnalysis: {
+            ...item.aiAnalysis,
+            applications,
+          },
+          aiDependencies: migratedTrackedItemAiDependenciesForApplications(
+            item.nodeId,
+            applications,
+          ),
+          personalReminderCauses: migratePersonalReminderCauses(item.personalReminderCauses),
+          personalReminderCausePlanning: migratePersonalReminderCausePlanning(
+            item.personalReminderCausePlanning,
+          ),
+        };
+      }),
+      relations: value.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migratedRelationAiDependency(relation.provenance),
       })),
     });
   } catch (error: unknown) {
@@ -1495,6 +1706,8 @@ export function migrateStateSnapshot(
     throw StateFormatError.fromZodError("snapshot", versionResult.error);
   }
   switch (versionResult.data.schemaVersion) {
+    case "18":
+      return parseStateSnapshot(source);
     case "10":
       return migrateLegacyStateSnapshot(source, legacyEntriesByCacheKey);
     case "11":
@@ -1510,7 +1723,7 @@ export function migrateStateSnapshot(
     case "16":
       return migrateVersion16StateSnapshot(source);
     case "17":
-      return parseStateSnapshot(source);
+      return migrateVersion17StateSnapshot(source);
     default:
       throw new StateFormatError("snapshot", {
         cause: new TypeError("snapshotのschemaVersionは未対応です"),

@@ -14,7 +14,8 @@ type ItemType = PublicItemSummaryDto["type"];
 type Status = PublicItemSummaryDto["status"];
 type ImportanceLevel = PublicItemSummaryDto["importance"]["level"];
 type DeadlineLevel = Extract<PublicItemSummaryDto["deadline"], { status: "available" }>["level"];
-type AiAnalysisStatus = PublicItemSummaryDto["aiAnalysis"]["status"];
+type AiUnverifiedValue = PublicItemSummaryDto["aiAnalysis"]["unverifiedValues"][number];
+type CurrentResponseUnverifiedValue = PublicPersonalReminderResponseDto["unverifiedValues"][number];
 type CurrentResponseStatus = PublicPersonalReminderResponseDto["status"];
 type CurrentResponseUnknownReason = Extract<
   PublicPersonalReminderResponseDto,
@@ -115,12 +116,6 @@ export type ConfidencePresentation = Readonly<{
   fieldQualifier: "" | "推定" | "候補";
 }>;
 
-/** AI推定の利用状況について一覧や詳細へ出す注記。 */
-export type AiAnalysisNotice =
-  | Readonly<{ kind: "none" }>
-  | Readonly<{ kind: "skipped"; description: string }>
-  | Readonly<{ kind: "outdated"; description: string }>;
-
 /** 現在の対応者を表す人またはチーム。 */
 export type CurrentResponseSubject =
   Readonly<{ kind: "user"; login: string }> | Readonly<{ kind: "team"; teamId: string }>;
@@ -130,19 +125,14 @@ export type CurrentResponseSubjectRow = Readonly<{
   subject: CurrentResponseSubject;
   label: string;
   itemCount: number;
+  itemCountUnverified: boolean;
   longestStallDuration: string;
+  longestStallUnverified: boolean;
 }>;
 
 /** 待ち相手表示を構成する文字列またはGitHub login。 */
 export type WaitingOnDisplayPart =
   Readonly<{ kind: "text"; text: string }> | Readonly<{ kind: "login"; login: string }>;
-
-interface CurrentResponseSubjectRowAccumulator {
-  subject: CurrentResponseSubject;
-  label: string;
-  itemNodeIds: Set<string>;
-  longestStallSince: string;
-}
 
 const STATUS_LABELS = {
   waiting_for_assessment: "内容確認待ち",
@@ -224,12 +214,16 @@ const STALL_FILTER_DEFINITIONS = [
 
 const AI_ANALYSIS_FILTER_OPTIONS = [
   {
-    label: "AI推定が最新でない",
-    value: "outdated",
+    label: "未検証値・分析失敗・未実行",
+    value: "unverified",
   },
   {
-    label: "AI推定を省略",
-    value: "skipped",
+    label: "AI推定が一部不要",
+    value: "partial",
+  },
+  {
+    label: "AI推定がすべて不要",
+    value: "all",
   },
 ] satisfies readonly TableFilterOption[];
 
@@ -243,7 +237,7 @@ const CURRENT_RESPONSE_UNKNOWN_REASON_LABELS = {
   input_mismatch: "入力が一致しない",
   not_evaluated: "未評価",
   failed: "判定に失敗",
-  deferred: "判定を延期",
+  deferred: "今回はAI判定を実行していません",
   incomplete_input: "入力不足",
   conflicting_evidence: "根拠が競合",
   ambiguous_meaning: "意味が曖昧",
@@ -298,34 +292,140 @@ export function isTableSelectFilterKey(key: TableFilterKey): key is TableSelectF
   return key !== "waitingOn";
 }
 
-/** AI推定の利用状況から表示する注記を返す。 */
-export function aiAnalysisNotice(status: AiAnalysisStatus): AiAnalysisNotice {
-  switch (status) {
+const AI_UNVERIFIED_VALUE_LABELS = {
+  status: "現在の状態",
+  waitingOn: "待ち相手",
+  primaryWaitingOn: "主要な待ち相手",
+  nextAction: "次の行動",
+  confidence: "判定の確度",
+  evidence: "状態と次の行動の根拠",
+  uncertainties: "不確実な点",
+  deadline: "期限",
+  staleness: "停滞時間",
+  downstreamImpact: "影響",
+  importance: "重要度",
+  attention: "要対応度",
+  blockers: "ブロッカー",
+  relations: "依存関係",
+} satisfies Readonly<Record<AiUnverifiedValue, string>>;
+
+const CURRENT_RESPONSE_UNVERIFIED_VALUE_LABELS = {
+  status: "現在の対応の状態",
+  responsible: "現在の対応者",
+  action: "現在の対応内容",
+  evidence: "現在の対応の根拠",
+  waitingFor: "待機先",
+} satisfies Readonly<Record<CurrentResponseUnverifiedValue, string>>;
+
+/** AI未検証値の日本語表示名を返す。 */
+export function aiUnverifiedValueLabel(value: AiUnverifiedValue): string {
+  return AI_UNVERIFIED_VALUE_LABELS[value];
+}
+
+/** 現在の対応のAI未検証値の日本語表示名を返す。 */
+export function currentResponseUnverifiedValueLabel(value: CurrentResponseUnverifiedValue): string {
+  return CURRENT_RESPONSE_UNVERIFIED_VALUE_LABELS[value];
+}
+
+/** 現在の対応全体がAI未検証であることの説明文を返す。 */
+export function currentResponsesUnverifiedDescription(): string {
+  return "現在対応の件数・構成は現在入力で未検証で、表示内容が増減する可能性があります。";
+}
+
+/** 表示中の対応者を現在の対応者として数えるかがAI未検証であることの説明文を返す。 */
+export function currentResponseSubjectCountUnverifiedDescription(): string {
+  return "現在入力に対して、表示中の対応者を現在の対応者として数えるかが未検証で、対応中の項目数が増減する可能性があります。";
+}
+
+/** 現在の対応者一覧に未検証の対応者判定があることの説明文を返す。 */
+export function currentResponseSubjectsUnverifiedDescription(): string {
+  return "現在の対応者一覧は現在入力で未検証で、表示する人物やチームが増減する可能性があります。";
+}
+
+function itemAiAnalysisRunUnverifiedDescription(
+  runStatus: PublicItemSummaryDto["aiAnalysis"]["runStatus"],
+): string | undefined {
+  switch (runStatus) {
+    case "failed":
+      return "今回のAI分析に失敗しました。";
+    case "deferred":
+      return "予算上限により今回はAI分析を実行していません。";
     case "used":
+    case "not_required":
     case "disabled":
     case "not_recorded":
-      return { kind: "none" };
-    case "not_required":
-      return {
-        kind: "skipped",
-        description:
-          "確定ルールだけで判定できたため、AI推定を省いています。期限日の抽出はAIが行い、切迫度は期限日から決定論的に算出します。",
-      };
-    case "failed":
-      return {
-        kind: "outdated",
-        description:
-          "AI推定に失敗したため、状態、待ち相手、重要度、期限日の抽出、停滞に最新のAI推定を反映できていません。期限の切迫度は期限日から決定論的に算出します。",
-      };
-    case "deferred":
-      return {
-        kind: "outdated",
-        description:
-          "AI推定を今回実行しなかったため、状態、待ち相手、重要度、期限日の抽出、停滞に最新のAI推定を反映できていません。期限の切迫度は期限日から決定論的に算出します。",
-      };
+      return undefined;
     default:
-      throw new UnreachableError(status);
+      throw new UnreachableError(runStatus);
   }
+}
+
+function itemAiUnverifiedValueLabels(item: PublicItemSummaryDto): readonly string[] {
+  const labels = new Set(
+    item.aiAnalysis.unverifiedValues.map((value) => aiUnverifiedValueLabel(value)),
+  );
+  if (item.currentResponsesUnverified) {
+    labels.add("現在の対応の集合");
+  }
+  for (const response of item.currentResponses) {
+    for (const value of response.unverifiedValues) {
+      labels.add(currentResponseUnverifiedValueLabel(value));
+    }
+    if (response.subjectMembershipUnverified) {
+      labels.add("現在の対応者として数える対象");
+    }
+  }
+  return [...labels];
+}
+
+/** 項目に残るAI未検証値を一覧行向けに説明する。 */
+export function itemAiUnverifiedDescription(item: PublicItemSummaryDto): string | undefined {
+  const runDescription = itemAiAnalysisRunUnverifiedDescription(item.aiAnalysis.runStatus);
+  const valueLabels = itemAiUnverifiedValueLabels(item);
+  if (runDescription == null && valueLabels.length === 0) {
+    return undefined;
+  }
+  let description = valueLabels.length > 0 ? "現在入力で未検証のAI推定があります。" : "";
+  if (runDescription != null) {
+    description += runDescription;
+  }
+  if (valueLabels.length > 0) {
+    description += `未検証の値: ${valueLabels.join("、")}。`;
+  }
+  return description;
+}
+
+/** 項目一覧のAI注意マークを読み上げる文言を返す。 */
+export function itemAiNoticeAriaLabel(item: PublicItemSummaryDto): string {
+  if (itemAiUnverifiedValueLabels(item).length > 0) {
+    return "現在入力で未検証";
+  }
+  switch (item.aiAnalysis.runStatus) {
+    case "failed":
+      return "今回のAI分析に失敗";
+    case "deferred":
+      return "今回はAI分析を実行していません";
+    case "used":
+    case "not_required":
+    case "disabled":
+    case "not_recorded":
+      throw new TypeError("AI注意マークの読み上げ対象がありません");
+    default:
+      throw new UnreachableError(item.aiAnalysis.runStatus);
+  }
+}
+
+/** 項目のAI推定または現在の対応に未検証値があるかを返す。 */
+export function hasItemAiUnverifiedValue(item: PublicItemSummaryDto): boolean {
+  return itemAiUnverifiedDescription(item) != null;
+}
+
+/** 指定した表示値がAI未検証かを返す。 */
+export function hasAiUnverifiedValue(
+  aiAnalysis: PublicItemSummaryDto["aiAnalysis"],
+  value: AiUnverifiedValue,
+): boolean {
+  return aiAnalysis.unverifiedValues.includes(value);
 }
 
 /** statusの日本語表示名を返す。 */
@@ -881,6 +981,93 @@ function currentResponseSubjectFromResponsible(
   }
 }
 
+type CurrentResponseSubjectMembership =
+  "verified" | "unverified_displayed" | "unverified_missing" | "absent";
+
+type CurrentResponseSubjectSupport = Readonly<{
+  subject: CurrentResponseSubject;
+  verified: boolean;
+}>;
+
+interface CurrentResponseSubjectRowAccumulator {
+  subject: CurrentResponseSubject;
+  label: string;
+  itemCount: number;
+  hasUnverifiedDisplayedMembership: boolean;
+  currentItemNodeIds: Set<string>;
+  longestStallSince: string;
+  longestMembershipVerified: boolean;
+  stalenessUnverified: boolean;
+}
+
+type PotentialCurrentResponseSubjectItem = Readonly<{
+  nodeId: string;
+  stallTimestamp: number;
+  stalenessUnverified: boolean;
+}>;
+
+type CurrentResponseSubjectChange = Extract<
+  PublicItemSummaryDto["currentResponseSubjectChanges"],
+  Readonly<{ scope: "bounded" }>
+>["addableSubjects"][number];
+
+function currentResponseSubjectFromChange(
+  subject: CurrentResponseSubjectChange,
+): CurrentResponseSubject {
+  switch (subject.kind) {
+    case "user":
+      return { kind: "user", login: subject.candidateId };
+    case "team":
+      return { kind: "team", teamId: subject.candidateId };
+    default:
+      throw new UnreachableError(subject);
+  }
+}
+
+function currentResponseSubjectChangeMatches(
+  subject: CurrentResponseSubjectChange,
+  subjectKeys: ReadonlySet<string>,
+): boolean {
+  return subjectKeys.has(currentResponseSubjectKey(currentResponseSubjectFromChange(subject)));
+}
+
+function currentResponseSubjectCanBeAdded(
+  item: PublicItemSummaryDto,
+  subjectKeys: ReadonlySet<string>,
+): boolean {
+  const changes = item.currentResponseSubjectChanges;
+  if (changes.scope === "unbounded") {
+    return true;
+  }
+  return changes.addableSubjects.some((subject) =>
+    currentResponseSubjectChangeMatches(subject, subjectKeys),
+  );
+}
+
+function currentResponseSubjectMembershipFor(
+  item: PublicItemSummaryDto,
+  subjectKeys: ReadonlySet<string>,
+): CurrentResponseSubjectMembership {
+  let unverifiedDisplayed = false;
+  for (const response of item.currentResponses) {
+    if (
+      !response.responsible.some((responsible) =>
+        responseResponsibleMatchesSubjects(responsible, subjectKeys),
+      )
+    ) {
+      continue;
+    }
+    if (!response.subjectMembershipUnverified) {
+      return "verified";
+    }
+    unverifiedDisplayed = true;
+  }
+  if (unverifiedDisplayed) {
+    return "unverified_displayed";
+  }
+  return currentResponseSubjectCanBeAdded(item, subjectKeys) ? "unverified_missing" : "absent";
+}
+
 /** 現在の対応者から、人物一覧へ表示する人とチームを重複なく返す。 */
 export function resolveCurrentResponseSubjects(
   item: PublicItemSummaryDto,
@@ -921,42 +1108,198 @@ export function collectCurrentResponseTeamIds(summary: PublicSummaryDto): readon
   return [...teamIds.values()].sort(compareStrings);
 }
 
+function hasCurrentResponseSubjectSetUnverified(
+  summary: PublicSummaryDto,
+  kind: CurrentResponseSubject["kind"] | undefined,
+): boolean {
+  const globalSupports = new Map<string, CurrentResponseSubjectSupport>();
+  for (const item of summary.items) {
+    if (item.currentResponseSubjectChanges.scope === "unbounded") {
+      return true;
+    }
+    const itemSupports = currentResponseSubjectSupportsForItem(item);
+    for (const [key, support] of itemSupports) {
+      const previous = globalSupports.get(key);
+      globalSupports.set(key, {
+        subject: support.subject,
+        verified: (previous?.verified ?? false) || support.verified,
+      });
+    }
+  }
+  for (const support of globalSupports.values()) {
+    if ((kind == null || support.subject.kind === kind) && !support.verified) {
+      return true;
+    }
+  }
+  for (const item of summary.items) {
+    if (item.currentResponseSubjectChanges.scope === "unbounded") {
+      throw new TypeError("現在対応主体のunboundedな変化を集約後に処理できません");
+    }
+    for (const subjectChange of item.currentResponseSubjectChanges.addableSubjects) {
+      const subject = currentResponseSubjectFromChange(subjectChange);
+      if (kind != null && subject.kind !== kind) {
+        continue;
+      }
+      if (!globalSupports.get(currentResponseSubjectKey(subject))?.verified) {
+        return true;
+      }
+    }
+    for (const subjectChange of item.currentResponseSubjectChanges.removableSubjects) {
+      const subject = currentResponseSubjectFromChange(subjectChange);
+      if (kind != null && subject.kind !== kind) {
+        continue;
+      }
+      const support = globalSupports.get(currentResponseSubjectKey(subject));
+      if (support != null && !support.verified) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function addPotentialCurrentResponseSubjectItem(
+  itemsBySubjectKey: Map<string, PotentialCurrentResponseSubjectItem[]>,
+  subject: CurrentResponseSubject,
+  item: PotentialCurrentResponseSubjectItem,
+): void {
+  const key = currentResponseSubjectKey(subject);
+  const items = itemsBySubjectKey.get(key);
+  if (items == null) {
+    itemsBySubjectKey.set(key, [item]);
+    return;
+  }
+  if (!items.some((candidate) => candidate.nodeId === item.nodeId)) {
+    items.push(item);
+  }
+}
+
+function potentialCurrentResponseSubjectItem(
+  item: PublicItemSummaryDto,
+): PotentialCurrentResponseSubjectItem {
+  return {
+    nodeId: item.nodeId,
+    stallTimestamp: parseTimestamp(item.stallSince),
+    stalenessUnverified: item.aiAnalysis.unverifiedValues.includes("staleness"),
+  };
+}
+
+function currentResponseSubjectSupportsForItem(
+  item: PublicItemSummaryDto,
+): ReadonlyMap<string, CurrentResponseSubjectSupport> {
+  const supports = new Map<string, CurrentResponseSubjectSupport>();
+  for (const response of item.currentResponses) {
+    for (const responsible of response.responsible) {
+      const subject = currentResponseSubjectFromResponsible(responsible);
+      if (subject == null) {
+        continue;
+      }
+      const key = currentResponseSubjectKey(subject);
+      const previous = supports.get(key);
+      supports.set(key, {
+        subject,
+        verified: (previous?.verified ?? false) || !response.subjectMembershipUnverified,
+      });
+    }
+  }
+  return supports;
+}
+
+/** 現在の対応者一覧に現在入力で未検証の人物またはチームがあるかを返す。 */
+export function hasCurrentResponseSubjectListingUnverified(summary: PublicSummaryDto): boolean {
+  return hasCurrentResponseSubjectSetUnverified(summary, undefined);
+}
+
+/** 所属チームの選択肢に現在入力で未検証のチームがあるかを返す。 */
+export function hasCurrentResponseTeamOptionsUnverified(summary: PublicSummaryDto): boolean {
+  return hasCurrentResponseSubjectSetUnverified(summary, "team");
+}
+
 /** 公開summaryから現在の対応者ごとの集計行を作る。 */
 export function collectCurrentResponseSubjectRows(
   summary: PublicSummaryDto,
   now: Date,
 ): readonly CurrentResponseSubjectRow[] {
   const accumulators = new Map<string, CurrentResponseSubjectRowAccumulator>();
+  const addableItemsBySubjectKey = new Map<string, PotentialCurrentResponseSubjectItem[]>();
+  const unboundedItems: PotentialCurrentResponseSubjectItem[] = [];
   for (const item of summary.items) {
-    for (const subject of resolveCurrentResponseSubjects(item)) {
-      const key = currentResponseSubjectKey(subject);
+    const potentialItem = potentialCurrentResponseSubjectItem(item);
+    const changes = item.currentResponseSubjectChanges;
+    if (changes.scope === "unbounded") {
+      unboundedItems.push(potentialItem);
+    } else {
+      for (const subjectChange of changes.addableSubjects) {
+        addPotentialCurrentResponseSubjectItem(
+          addableItemsBySubjectKey,
+          currentResponseSubjectFromChange(subjectChange),
+          potentialItem,
+        );
+      }
+    }
+    const itemSupports = currentResponseSubjectSupportsForItem(item);
+    for (const [key, support] of itemSupports) {
+      const membershipVerified = support.verified;
+      const stalenessUnverified = item.aiAnalysis.unverifiedValues.includes("staleness");
       const accumulator = accumulators.get(key);
       if (accumulator == null) {
         accumulators.set(key, {
-          subject,
-          label: currentResponseSubjectLabel(subject),
-          itemNodeIds: new Set([item.nodeId]),
+          subject: support.subject,
+          label: currentResponseSubjectLabel(support.subject),
+          itemCount: 1,
+          hasUnverifiedDisplayedMembership: !membershipVerified,
+          currentItemNodeIds: new Set([item.nodeId]),
           longestStallSince: item.stallSince,
+          longestMembershipVerified: membershipVerified,
+          stalenessUnverified,
         });
         continue;
       }
-      if (accumulator.itemNodeIds.has(item.nodeId)) {
-        continue;
-      }
-      accumulator.itemNodeIds.add(item.nodeId);
-      if (parseTimestamp(item.stallSince) < parseTimestamp(accumulator.longestStallSince)) {
+      accumulator.itemCount += 1;
+      accumulator.hasUnverifiedDisplayedMembership ||= !membershipVerified;
+      accumulator.currentItemNodeIds.add(item.nodeId);
+      accumulator.stalenessUnverified ||= stalenessUnverified;
+      const stallTimestamp = parseTimestamp(item.stallSince);
+      const longestTimestamp = parseTimestamp(accumulator.longestStallSince);
+      if (stallTimestamp < longestTimestamp) {
         accumulator.longestStallSince = item.stallSince;
+        accumulator.longestMembershipVerified = membershipVerified;
+      } else if (stallTimestamp === longestTimestamp) {
+        accumulator.longestMembershipVerified ||= membershipVerified;
       }
     }
   }
 
   return [...accumulators.values()]
-    .map((accumulator) => ({
-      subject: accumulator.subject,
-      label: accumulator.label,
-      itemCount: accumulator.itemNodeIds.size,
-      longestStallDuration: formatStallDuration(accumulator.longestStallSince, now),
-    }))
+    .map((accumulator) => {
+      const addableItems = new Map<string, PotentialCurrentResponseSubjectItem>();
+      for (const item of unboundedItems) {
+        if (!accumulator.currentItemNodeIds.has(item.nodeId)) {
+          addableItems.set(item.nodeId, item);
+        }
+      }
+      const subjectKey = currentResponseSubjectKey(accumulator.subject);
+      for (const item of addableItemsBySubjectKey.get(subjectKey) ?? []) {
+        if (!accumulator.currentItemNodeIds.has(item.nodeId)) {
+          addableItems.set(item.nodeId, item);
+        }
+      }
+      const longestTimestamp = parseTimestamp(accumulator.longestStallSince);
+      const addableMembershipCanChangeLongest = [...addableItems.values()].some(
+        (item) => item.stalenessUnverified || item.stallTimestamp < longestTimestamp,
+      );
+      return {
+        subject: accumulator.subject,
+        label: accumulator.label,
+        itemCount: accumulator.itemCount,
+        itemCountUnverified: addableItems.size > 0 || accumulator.hasUnverifiedDisplayedMembership,
+        longestStallDuration: formatStallDuration(accumulator.longestStallSince, now),
+        longestStallUnverified:
+          addableMembershipCanChangeLongest ||
+          !accumulator.longestMembershipVerified ||
+          accumulator.stalenessUnverified,
+      };
+    })
     .sort((left, right) => {
       const itemCountOrder = right.itemCount - left.itemCount;
       return itemCountOrder === 0 ? compareStrings(left.label, right.label) : itemCountOrder;
@@ -990,6 +1333,26 @@ function responseResponsibleMatchesSubjects(
   return false;
 }
 
+function currentResponseSelectedSubjectMembership(
+  item: PublicItemSummaryDto,
+  subjectKeys: ReadonlySet<string>,
+): CurrentResponseSubjectMembership {
+  return currentResponseSubjectMembershipFor(item, subjectKeys);
+}
+
+/** loginまたは所属teamの項目集合が現在入力で未検証かを返す。 */
+export function hasCurrentResponseSubjectItemsUnverified(
+  summary: PublicSummaryDto,
+  login: string,
+  teamIds: readonly string[],
+): boolean {
+  const subjectKeys = currentResponseSubjectKeys(login, teamIds);
+  return summary.items.some((item) => {
+    const membership = currentResponseSelectedSubjectMembership(item, subjectKeys);
+    return membership === "unverified_displayed" || membership === "unverified_missing";
+  });
+}
+
 /** loginまたは所属teamが現在の対応者に含まれる項目のnode ID集合を返す。 */
 export function selectCurrentResponseSubjectItemNodeIds(
   summary: PublicSummaryDto,
@@ -1017,11 +1380,14 @@ export function selectCurrentResponseSubjectPrimaryResponse(
   teamIds: readonly string[],
 ): PublicPersonalReminderResponseDto {
   const subjectKeys = currentResponseSubjectKeys(login, teamIds);
-  const response = item.currentResponses.find((candidate) =>
+  const matchingResponses = item.currentResponses.filter((candidate) =>
     candidate.responsible.some((responsible) =>
       responseResponsibleMatchesSubjects(responsible, subjectKeys),
     ),
   );
+  const response =
+    matchingResponses.find((candidate) => !candidate.subjectMembershipUnverified) ??
+    matchingResponses[0];
   assertNonNullable(response, `項目 ${item.nodeId} に選択中の現在の対応がありません`);
   return response;
 }
@@ -1191,10 +1557,16 @@ function rowMatchesTableFilter(row: ItemTableRow, key: TableFilterKey, value: st
       return row.stallDurationMilliseconds >= definition.thresholdMilliseconds;
     }
     case "aiAnalysis":
-      if (value !== "outdated" && value !== "skipped") {
-        throw new TypeError(`未対応のAI利用状況の絞り込みです: ${value}`);
+      if (value === "unverified") {
+        return hasItemAiUnverifiedValue(row.item);
       }
-      return aiAnalysisNotice(row.item.aiAnalysis.status).kind === value;
+      if (value === "partial") {
+        return row.item.aiAnalysis.omission === "partial";
+      }
+      if (value === "all") {
+        return row.item.aiAnalysis.omission === "all";
+      }
+      throw new TypeError(`未対応のAI利用状況の絞り込みです: ${value}`);
     default:
       throw new UnreachableError(key);
   }

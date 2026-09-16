@@ -191,12 +191,13 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 正常に完了した低信頼または棄権の評価も完了結果として保持します。失敗や延期から新しい完了proofは作らず、現在の条件で未完了の要素を再試行します。
 
 汎用AIの判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨、selfCommitmentの9要素で選別します。
-入力schemaは5、出力schemaは7、snapshotは15とし、waitingOnのrevisionは3、selfCommitmentのrevisionは1、その他の要素のrevisionは1とします。selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
+入力schemaは5、出力schemaは7、snapshotは18とし、waitingOnのrevisionは3、selfCommitmentのrevisionは1、その他の要素のrevisionは1とします。selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
 selfCommitmentの候補は前回`observedAt`より後、今回の評価時刻以前の未編集human commentに限り、source authorとtimeline event actorが同じhumanであることを確認します。前回観測がない場合は追加推論を行いません。通知時は現在の`waitingOn`が単独のhuman userであり、そのactorと一致することを決定論的に確認し、他者、混在、不明、依存解消の原因は通知を残します。
 該当する申し出がない場合、selfCommitmentの値と根拠はともに空配列にし、正常に完了した評価として保持します。申し出がある場合は、値と根拠を同じ候補コメントのsource IDで結び付けます。
 各要素の必要性を既存の確定情報と利用箇所から判断し、必要な要素だけ保存済み結果と比較します。
 根拠、信頼度、不確実性は所有する判定にまとめ、生成したrevision、入力、実行条件、実行時刻を保持します。
 期限なしや通知を推奨しないという結果も、有効な分析結果として比較します。
+relation候補を否定した結果、意味のある進捗ではないという結果、重要度要因に該当しないという結果も、反対の判定なら最終値が変わる間はAI依存のproofに含めます。
 snapshotに有効な結果があればcache欠落だけで再生成しません。
 生成結果と生成時の情報は変更しません。正常に完了した評価は値と`evaluationProof`、現在採用している結果は値と`reuseProof`を組にして保存します。
 新しい結果が低信頼でも、保持する以前の値の根拠や生成元を失わないためです。
@@ -311,8 +312,14 @@ block中も独立した行動が継続して可能なら両起点を保持し、
 
 ## 公開DTOとWeb UI
 
-`src/pages`はsnapshotの各項目を公開DTO schema version 9の`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度、`currentResponses`を公開します。
+`src/pages`はsnapshotの各項目を公開DTO schema version 10の`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度、`currentResponses`を公開します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
+各項目の`aiAnalysis`は、項目単位のAI実行状態を表す`runStatus`、判定要素の一部または全部を決定論的に不要としたかを表す`omission`、現在入力で未検証の表示値を列挙する`aiAnalysis.unverifiedValues`を分けて公開します。
+`runStatus`が成功でも保持したAI結果に依存する値は未検証になり得ます。反対に、確定規則だけで決まった表示値は、別の判定要素の失敗や延期だけを理由に未検証にしません。
+期限の切迫度のようにAIが抽出した値から決定論的に導出する値は、抽出値に寄与したAI producerの現在性を引き継ぎます。
+`currentResponses`は、原因ごとの値を`currentResponses[].unverifiedValues`、表示中の責任主体を人物集計へ含めるかを`currentResponses[].subjectMembershipUnverified`、対応の集合そのものが増減し得るかを`currentResponsesUnverified`として別々に公開します。
+`currentResponseSubjectChanges`は、人物集計へ追加され得るuserとteamを`addableSubjects`、削除され得るuserとteamを`removableSubjects`として公開します。変化する主体を特定できない場合だけ`unbounded`とします。roleだけの現在対応が増減しても人物集計は変わらないため、責任主体が検証済みなら`bounded`の空配列にします。責任主体自体が未検証ならkindを特定できないため`unbounded`とします。
+公開DTOには内部のproducerを含めず、実行状態、不要判定、未検証の表示値へ縮約します。
 `currentResponses`は個人通知と同じ原因の採用値を正本とし、責任主体、行動、根拠、`actionable`・`waiting`・`unknown`を表示します。再計画待ちは確認待ちとして扱い、以前の個人対応を現在対応の表示や人物別一覧へ出しません。有効な`duplicate`と`not_required`は現在対応から除きます。採用値が現在入力と不一致なら実行可能とは表示せず、未評価、失敗、延期、入力不一致などの理由を持つ`unknown`にします。待機先や根拠の参照先が公開データ内で解決できることも検証します。
 Issue向けの`PublicItemSummaryDto.currentImplementations`は、from nodeがfreshなopen Pull Request、to nodeがfreshなopen Issueであるactiveなnative `implements`関係から導出します。
 導出結果は公開DTOのsummaryとdetailsに同じ値として含め、snapshot、履歴、責務判定、停滞、通知へ伝播させません。
@@ -343,9 +350,10 @@ repository、種別、項目状態、重要度、現在対応の責任主体と�
 人ページのGitHubプロフィールリンクは、GitHub URLの検証と外部リンクの安全属性を共通部品へ委ねます。
 人物ごとの表示、絞り込み、担当者一覧の集計は`currentResponses`の責任主体にそろえ、`waitingOn`を代用しません。同じuserやteamが同じ項目に複数の原因を持っていても項目数は1件と数えます。担当者一覧は「現在の対応者一覧」とし、項目全体の時計を使う数値は「項目の最長停滞時間」と示します。
 所属teamの選択肢は、公開summaryの`currentResponses`に現れるteam識別子から作り、閲覧者が自身の所属を選びます。teamを個人へ展開しません。
-`failed`と`deferred`は項目一覧へ警告アイコンを表示し、項目詳細でも警告として表示します。
-`not_required`は警告アイコンを表示せず、項目詳細では警告ではない情報として区別します。
-項目一覧のAI利用状況は、AI推定が最新でない項目とAI推定を省いた項目を別々に絞り込みます。
+項目一覧は、現在入力で未検証の表示値や現在対応を持つ項目と、`runStatus`が`failed`または`deferred`の項目へ行単位の警告マークを表示します。
+項目詳細は未検証の値のそばにも警告マークを表示し、項目単位の処理状態だけでは警告箇所を決めません。
+判定要素が決定論的に不要だったことは警告にせず、`omission`の`partial`と`all`を情報として区別します。
+項目一覧のAI利用状況は、未検証、AI推定が一部不要、AI推定がすべて不要を別々に絞り込みます。
 Web UIは停滞レベルを表示、絞り込み、並び替え、依存グラフのnode選定に使いません。
 
 公開summaryの依存グラフは要対応度を最初の優先順位として初期nodeを選びます。
@@ -436,16 +444,16 @@ Codex出力はJSON Schema検証の後にsemantic validationを通します。
 `main`にはsource、設定、schema、prompt、Web UI、fixture、文書を置きます。
 日次stateはorphan branchの`tracker-state`へcanonical JSONとして保存し、外部databaseは使いません。
 
-| 既定パス                                         | 内容                                                                                                                 |
-| ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `state/snapshot.json`                            | 要対応度、期限日、AI状態、項目ごとのAI利用状況、trackingStartAt、個人催促の原因を含むschema version 16の最新snapshot |
-| `state/history/YYYY-MM-DD.jsonl`                 | schema version 7。前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                         |
-| `state/ai-cache/<sha256>.json`                   | 汎用AIのcontent-addressed cache                                                                                      |
-| `state/personal-reminder-ai-cache/<sha256>.json` | 個人原因ごとの意味評価cache。`state.personalReminderAiCacheDirectory`で配置先を指定する                              |
-| `state/notification-ledger.json`                 | schema version 8。予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                 |
-| `state/run-reports/YYYY-MM-DD.json`              | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                                |
+| 既定パス                                         | 内容                                                                                                                         |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `state/snapshot.json`                            | 要対応度、期限日、AI状態、AI要素の適用元、値別のAI依存、trackingStartAt、個人催促の原因を含むschema version 18の最新snapshot |
+| `state/history/YYYY-MM-DD.jsonl`                 | schema version 7。前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                                 |
+| `state/ai-cache/<sha256>.json`                   | 汎用AIのcontent-addressed cache                                                                                              |
+| `state/personal-reminder-ai-cache/<sha256>.json` | 個人原因ごとの意味評価cache。`state.personalReminderAiCacheDirectory`で配置先を指定する                                      |
+| `state/notification-ledger.json`                 | schema version 8。予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                         |
+| `state/run-reports/YYYY-MM-DD.json`              | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                                        |
 
-snapshot 16の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
+snapshot 18の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
 freshなopen項目の列挙が完了すれば原因0件でも`completed`にし、原因がないterminal項目だけを`excluded`にします。staleを含む分析対象外の項目は、前述の保持規則に従います。入口では旧`planningVersion`も受け入れ、現在版との不一致を再計画の選定へ渡します。
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
@@ -459,11 +467,12 @@ freshなopen項目の列挙が完了すれば原因0件でも`completed`にし�
 | `disabled`     | 設定でAI分析が無効だった                           |
 | `not_recorded` | 項目単位のAI利用状況が記録されていない             |
 
-要素ごとの生成結果、正常に完了した評価、採用結果はsnapshotへ保存します。
-Pagesのsummaryとdetailsには全statusを公開し、生成元のcache keyは公開しません。
+要素ごとの生成結果、正常に完了した評価、採用結果に加え、`aiAnalysis.applications`へ各AI要素の最終適用元を保存します。
+追跡項目の`aiDependencies`は、状態、待ち相手、期限、重要度、要対応度、blocker、関係集合などの最終値ごとに、AI非依存、現在入力で検証済み、未検証、proof不明を区別します。producerを識別できる依存は寄与したproducerを保持し、旧形式から識別できない依存はproducerを推測せずproof不明として保持します。関係と個人原因もそれぞれのAI依存を保存します。
+Pagesのsummaryとdetailsは`aiAnalysis.status`を`runStatus`として公開し、生成元のcache keyと内部producerは公開しません。
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、汎用AIと個人原因の追加cache、通知候補選別後の通知管理記録を通常stateの最初のGit commitへまとめます。個人原因の採用結果と実行状態を永続化できる前に外部通知へ進みません。
-旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 11から15を16へ移行します。snapshot 14以前の移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
+旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 11から17を18へ移行します。snapshot 14以前の移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
 読み込みやCI検証だけでは本番へ保存せず、workflowによるpushまで完了してから移行済みとします。
 移行したAIの採用値は新しい生成結果と区別し、旧generationのresult、metadata、outputHashを改変せず、再推論の失敗・延期だけで消しません。
 本人起因の通知抑制は新しいsignalからnotification keyまたは未送信候補を作る前だけに適用し、既存pendingとnotification ledgerへ今回の原因を転用しません。既存のpending、reserved、delivery_started、sent、acknowledgedは通常の有効性・送信・失効規則でだけ更新します。

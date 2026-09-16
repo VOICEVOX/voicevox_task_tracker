@@ -249,6 +249,27 @@ GitHubのassigneeは確定情報として保持します。未アサインIssue�
 `unknown`は判断に必要な情報の不足や競合を表し、AIの実行失敗とは区別します。正常に評価した`unknown`は同じ入力で再利用するため、再実行を繰り返すだけでは変わりません。`failed`と`deferred`は必要性が残れば次回runで再試行します。有効な採用値が現在入力と一致する場合は、直近の実行失敗だけでその判定を消しません。
 正式な依頼や担当決定などの規則による義務は、AIから義務なしに変更しません。通知を止めるために無関係なassigneeやstatusを変更せず、依頼の解決・撤回・引継ぎ、実際に待っている工程を正本へ反映します。
 
+### AI表示を三つの軸で読み分ける
+
+AIの実行状態、判定要素が決定論的に不要だったか、表示値が現在入力で検証済みかは別の情報です。
+
+| 公開DTO                                          | 読み方                                                                                                                                                                                                                                                    |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `runStatus`                                      | その項目で今回行ったAI分析の処理結果です。`failed`は失敗、`deferred`は予算上限による未実行を表します                                                                                                                                                      |
+| `omission`                                       | 9個のAI判定要素のうち、確定規則だけで決まるためAI推定を不要とした範囲です。`partial`は一部、`all`は全部を表します                                                                                                                                         |
+| `aiAnalysis.unverifiedValues`                    | 項目の最終表示値のうち、現在入力でAI依存が検証済みと証明できない値です                                                                                                                                                                                    |
+| `currentResponses[].unverifiedValues`            | 一つの現在対応について、責任主体、行動、実行可能性、待機先、根拠のどの値が現在入力で未検証かを示します                                                                                                                                                    |
+| `currentResponses[].subjectMembershipUnverified` | その対応の責任主体を現在の対応者として数えるかが未検証であることを示します。同じ項目で同じ主体を示す別の対応が一つでも検証済みなら、その主体の項目への所属は確定します                                                                                    |
+| `currentResponsesUnverified`                     | 現在対応の件数や構成が現在入力で未検証で、表示内容が増減する可能性があることを示します                                                                                                                                                                    |
+| `currentResponseSubjectChanges`                  | 人物集計へ追加または削除され得るuserとteamを示します。`bounded`では対象を`addableSubjects`と`removableSubjects`へ列挙し、特定できない場合は`unbounded`にします。roleだけの増減は人物集計を変えないため、責任主体が検証済みなら`bounded`の空配列になります |
+
+`not_required`はAI判定が不要だったことを表し、失敗や延期ではありません。確定規則だけで決まった値には警告マークが付きません。
+`failed`または`deferred`の項目と、未検証の表示値や現在対応を持つ項目には一覧行の警告マークが付きます。詳細では、未検証の値のそばにある警告マークから説明を確認できます。一覧の`ai=unverified`はこれらの項目をまとめて絞り込みます。`ai=partial`は一部要素がAI不要、`ai=all`は全要素がAI不要の項目を絞り込みます。
+
+現在の対応に表示される「今回はAI判定を実行していません」は、今回の意味評価を実行しなかった`deferred`を表します。原因にはAI予算の上限だけでなく、上流relationの未確定、入力の不完全、入力件数や文字数の上限があります。GitHub上の方針判断を延期した意味でも、AIが判断したうえで結論を先送りした意味でもありません。
+
+期限日はCodexが本文やコメントから抽出し、期限の切迫度は期限日と現在日から決定論的に計算します。この場合、切迫度の計算にAIを使わなくても、期限日が現在入力で未検証なら切迫度も同じAI producerに依存するため警告マークが付きます。
+
 抽象的なmaintainer、reviewer、merge_deciderの責務は、`config.yml`でrepositoryごとに設定したメンテナ全員へ展開されます。
 担当者を変える場合は`maintainers.defaults`か`maintainers.repositories`のGitHubユーザー名一覧を更新します。
 GitHubのteam review requestと本文やコメントの`@organization/team`はteamへの待ちとして残ります。
@@ -424,7 +445,7 @@ AI判定の更新内容を確認してから通知したい場合は、手動実
 2. 実行中・待機中のrunと手動のstate操作を確認し、更新と送信の完了を待ちます。受信結果が不明な`delivery_started`は消さず、既存の送信結果確認手順で扱います。
 3. 稼働中のコードと`tracker-state`のコミットIDを復旧用に記録します。そのstateに対して`verify-state`を再実行し、成功後にPRをマージします。
 4. マージしたコードのCI成功を確認して日次workflowを有効に戻します。停止用変数は維持し、初回を`hold`で手動実行します。
-5. GitHubへ反映されたstateで、snapshotが現行形式になり、追跡開始時刻・追跡対象・履歴・通知管理記録を引き継いでいることを確認します。snapshot 15への移行では汎用AIの現行cacheと採用値を維持し、個人原因のcacheは`state.personalReminderAiCacheDirectory`へ分けます。
+5. GitHubへ反映されたstateで、snapshotが現行形式になり、追跡開始時刻・追跡対象・履歴・通知管理記録を引き継いでいることを確認します。snapshot 18への移行では汎用AIの現行cacheと採用値を維持し、AI要素の適用元と値別のAI依存を追加します。移行前の情報だけで現在性を証明せず、proof不明として再検証へ渡します。個人原因のcacheは`state.personalReminderAiCacheDirectory`へ分けます。
 6. 必要なAI再推論の結果と通知候補を確認してから、前節の手順で通常送信と定期実行を再開します。
 
 snapshot 14の読み込み時は個人原因を空配列として移行し、列挙計画`personalReminderCausePlanning`をopen項目では`pending`、原因がないterminal項目では`excluded`にします。旧AIの文章から個人義務や時刻を補填しません。初回は現在の収集結果から原因を組み立て、open項目の列挙が完了すれば0件でも`completed`と観測時刻を保存します。stale項目は前回値を維持します。
@@ -577,10 +598,10 @@ Actions上でCodexの認証エラーが起きた場合は、まず過去の`coll
 [デプロイ手順](DEPLOYMENT.md)のコマンドで、新しい`auth.json`を`CODEX_AUTH_JSON`の初期値として登録します。
 
 `fallback`はAI分析に失敗または延期した項目を決定論的判定と利用可能な前回結果へ縮退した完全runです。個人原因も、有効な採用値がない失敗・延期が残る場合に含まれます。
-汎用AIの対象は項目一覧を`AI推定が最新でない`で絞り込み、各行の警告アイコンと詳細の注記で特定します。run reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から原因を追います。
+汎用AIの対象は項目一覧を`未検証値・分析失敗・未実行`で絞り込み、各行の警告マークと詳細の局所的な警告マークで特定します。この絞り込みには未検証の表示値や現在対応に加え、`runStatus`が`failed`または`deferred`の項目も含まれます。run reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から原因を追います。
 個人原因は現在対応の`unknown`とrun reportの専用件数を確認し、正常な未確定判定か実行失敗・延期かを区別します。未確定の原因には個人催促を送らず、項目全体の判定とsystem通知はそれぞれの規則で確認します。
 `metrics.aiCacheHitCount`が0でも`metrics.aiRetainedResultCount`が1以上なら、未変更項目のAI結果はAI分析対象へ入れず保持されています。
-対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。
+`failed`または`deferred`の対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。それ以外の未検証値は、詳細の警告説明と保存済みの適用元を照合します。
 `failure`が`state_persistence`より前ならstateは更新されません。
 `pages`か`discord`で失敗した場合はstate commit後の可能性があるため、snapshotのrun IDとPagesの生成時刻を比較し、両者が同じrunか確認します。
 初回Pages deployに失敗した場合は最後に成功したPagesを基準にし、Discordを送信しません。通知後の`publish-notification-history`に失敗した場合も最後に成功したPagesを基準にし、通知自体は重複送信しません。

@@ -31,6 +31,9 @@ export type GraphViewNode =
   | (GraphViewNodeFields &
       Readonly<{
         kind: "issue" | "pull_request";
+        frontierUnverified: boolean;
+        stalenessUnverified: boolean;
+        downstreamImpactUnverified: boolean;
         stallDays: number;
         impactOpenNodeCount: number;
         impactRepositoryCount: number;
@@ -48,6 +51,7 @@ export type GraphViewEdge = Readonly<{
   type: RelationType;
   typeLabel: string;
   authoritative: boolean;
+  aiCurrentness: PublicGraphEdgeDto["aiCurrentness"];
 }>;
 
 /** 項目の部分グラフに表示するnodeとedge。 */
@@ -143,6 +147,10 @@ function createTrackedGraphNode(
     title: item.title,
     central: centralNodeIds.has(node.nodeId),
     frontier: frontierNodeIds.has(node.nodeId),
+    frontierUnverified:
+      frontierNodeIds.has(node.nodeId) && item.aiAnalysis.unverifiedValues.includes("blockers"),
+    stalenessUnverified: item.aiAnalysis.unverifiedValues.includes("staleness"),
+    downstreamImpactUnverified: item.aiAnalysis.unverifiedValues.includes("downstreamImpact"),
     stallDays,
     impactOpenNodeCount: item.downstreamImpact.openNodeCount,
     impactRepositoryCount: item.downstreamImpact.repositoryCount,
@@ -178,7 +186,60 @@ function createEdgeView(edge: PublicGraphEdgeDto): GraphViewEdge {
     type: edge.type,
     typeLabel: relationTypeLabel(edge.type),
     authoritative,
+    aiCurrentness: edge.aiCurrentness,
   };
+}
+
+function graphEdgeMeaningKey(
+  edge: Readonly<Pick<GraphViewEdge, "fromNodeId" | "toNodeId" | "type">>,
+): string {
+  return JSON.stringify([edge.type, edge.fromNodeId, edge.toNodeId]);
+}
+
+function canonicalGraphEdgeId(edge: GraphViewEdge): string {
+  return ["relation", edge.type, edge.fromNodeId, edge.toNodeId]
+    .map((part) => encodeURIComponent(part))
+    .join(":");
+}
+
+function combinedGraphEdgeCurrentness(
+  supports: readonly GraphViewEdge[],
+): GraphViewEdge["aiCurrentness"] {
+  if (supports.some((support) => support.aiCurrentness === "not_dependent")) {
+    return "not_dependent";
+  }
+  if (supports.some((support) => support.aiCurrentness === "current")) {
+    return "current";
+  }
+  return "unverified";
+}
+
+function collapseGraphEdgeSupports(edges: readonly GraphViewEdge[]): readonly GraphViewEdge[] {
+  const supportsByMeaning = new Map<string, GraphViewEdge[]>();
+  for (const edge of edges) {
+    const key = graphEdgeMeaningKey(edge);
+    const supports = supportsByMeaning.get(key);
+    if (supports == null) {
+      supportsByMeaning.set(key, [edge]);
+    } else {
+      supports.push(edge);
+    }
+  }
+  return [...supportsByMeaning.entries()]
+    .sort(([left], [right]) => compareStrings(left, right))
+    .map(([, supports]) => {
+      const firstSupport = supports[0];
+      assertNonNullable(firstSupport, "依存関係supportがありません");
+      return {
+        id: canonicalGraphEdgeId(firstSupport),
+        fromNodeId: firstSupport.fromNodeId,
+        toNodeId: firstSupport.toNodeId,
+        type: firstSupport.type,
+        typeLabel: relationTypeLabel(firstSupport.type),
+        authoritative: supports.some((support) => support.authoritative),
+        aiCurrentness: combinedGraphEdgeCurrentness(supports),
+      };
+    });
 }
 
 function graphNodeAttentionScore(
@@ -329,10 +390,11 @@ export function createItemGraphView(
       (edge) => representedNodeIds.has(edge.fromNodeId) && representedNodeIds.has(edge.toNodeId),
     )
     .map(createEdgeView);
+  const displayEdges = collapseGraphEdgeSupports(sourceEdges);
 
   return {
     displayNodes,
-    displayEdges: sourceEdges,
+    displayEdges,
     sourceEdges,
     representedSourceNodeCount: representedNodeIds.size,
     omittedSourceNodeCount: nodeIds.length - representedNodeIds.size,

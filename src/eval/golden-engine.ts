@@ -4,8 +4,12 @@ import { z } from "zod";
 
 import {
   CodexOutputValidationError,
+  AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
+  AI_ANALYSIS_ELEMENT_REVISIONS,
   createCodexAnalysisInput,
+  hashCanonicalJson,
   reduceCodexAnalysis,
+  serializeCanonicalJson,
   validateCodexAnalysisOutput,
   type CodexAnalysisInput,
   type CodexElementOutput,
@@ -13,12 +17,20 @@ import {
   type ReducedCodexDecision,
 } from "../codex/index.js";
 import {
+  AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
   AI_ANALYSIS_ELEMENTS,
   aiAnalysisElementApplicationsSchema,
+  aiAnalysisElementReuseProofSchema,
+  createAiAnalysisElementGenerationSchema,
+  createAiAnalysisMigrationElementResultSchema,
 } from "../domain/ai-analysis-elements.js";
 import {
   buildSourceId,
   calculateStaleness,
+  aiAnalysisElementApplicationUsesAiValue,
+  aiAnalysisDependencyForApplication,
+  combineAiAnalysisDependencies,
+  type AiAnalysisDependency,
   createStalenessNotificationSeverityReason,
   createExternalReferenceNodeId,
   createGitHubNodeId,
@@ -35,7 +47,11 @@ import {
   parseSourceId,
   resolveWaitingOnAccountIdentifiers,
   type Actor,
+  type AiAnalysisElement,
+  type AiAnalysisElementApplication,
+  type AiAnalysisElementMigrationResult,
   type BlockedParentContext,
+  type BlockerDecisionTrace,
   type BlockerRanking,
   type Evidence,
   type FreshObservedGitHubIssue,
@@ -63,7 +79,12 @@ import {
   type PersonalReminderCause,
   type PersonalReminderStaleness,
   type TrackedItem,
+  type TrackedItemAiDependencies,
   type TrackedItemAiAnalysisApplications,
+  type TrackedItemAiAnalysisCurrentAdoptedElement,
+  type TrackedItemAiAnalysisCurrentAdoptedElements,
+  type TrackedItemAiAnalysisCurrentElement,
+  type TrackedItemAiAnalysisCurrentElements,
   type UtcIsoDateTime,
   type WaitingOn,
 } from "../domain/index.js";
@@ -73,19 +94,26 @@ import {
   createPersonalReminderRuntimeContext,
   planPersonalReminderCauses,
   type PersonalReminderRuntimeCollectionCompleteness,
+  type PersonalReminderRuntimeCandidateEndpointItem,
   type PersonalReminderRuntimeGraph,
   type PersonalReminderRuntimeItem,
   type PersonalReminderRuntimeLocalDecision,
 } from "../cli/personal-reminder-runtime.js";
 import {
   analyzeGraph,
+  analyzeGraphAiDependencies,
+  normalizeRelationCandidates,
   reconcileGraph,
+  type AnalyzeGraphInput,
+  type BlockerNodeAiDependency,
   type GraphAnalysisNode,
   type OrganizationRelationCandidateNode,
   type ReconciledGraphEdge,
   type RelationCandidate,
   type RelationCandidateAssessment,
+  type RelationCandidateDecisionProof,
   type RelationCandidateId,
+  type RelationCandidateResolution,
 } from "../graph/index.js";
 import {
   createPublicRepositoryAllowlist,
@@ -107,7 +135,7 @@ import {
   StatePublicSafetyError,
   type StateSnapshot,
 } from "../persistence/index.js";
-import { assertNonNullable } from "../util/index.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import {
   goldenEvalInputSchema,
   goldenEvalOutputSchema,
@@ -171,6 +199,9 @@ type ItemAnalysis = Readonly<{
   input: GoldenItemInput;
   deterministicDecision: IssueStateDecision | PullRequestStateDecision;
   decision: ReducedCodexDecision;
+  fixedAiAnalysis: PreparedGoldenFixedAiAnalysis | undefined;
+  aiAnalysisApplications: TrackedItemAiAnalysisApplications;
+  aiDependencies: TrackedItemAiDependencies;
   deadlineAssessment: NaturalLanguageDeadlineAssessmentState;
   notificationRecommendation: DiscordNotificationItem["notificationRecommendation"];
   staleness: StalenessResult;
@@ -769,54 +800,218 @@ function goldenPersonalReminderCollectionCompleteness(
   });
 }
 
-function goldenPersonalReminderCandidateRelation(
+function goldenRelationEndpointNodeIds(
   candidate: RelationCandidate,
-): PersonalReminderRuntimeGraph["candidateRelations"][number] {
-  let endpointNodeIds: readonly [GraphNodeId, GraphNodeId];
+): readonly [GraphNodeId, GraphNodeId] {
   switch (candidate.relation.type) {
     case "blocks":
-      endpointNodeIds = [candidate.relation.blocker.nodeId, candidate.relation.blocked.nodeId];
-      break;
+      return Object.freeze([candidate.relation.blocker.nodeId, candidate.relation.blocked.nodeId]);
     case "parent_of":
-      endpointNodeIds = [candidate.relation.parent.nodeId, candidate.relation.subtask.nodeId];
-      break;
+      return Object.freeze([candidate.relation.parent.nodeId, candidate.relation.subtask.nodeId]);
     case "implements":
-      endpointNodeIds = [
+      return Object.freeze([
         candidate.relation.implementation.nodeId,
         candidate.relation.target.nodeId,
-      ];
-      break;
+      ]);
     case "unclassified":
-      endpointNodeIds = [
+      return Object.freeze([
         candidate.relation.referencing.nodeId,
         candidate.relation.referenced.nodeId,
-      ];
-      break;
+      ]);
   }
-  const sortedEndpoints = [...endpointNodeIds].sort(compareStrings);
-  const firstEndpoint = sortedEndpoints[0];
-  const secondEndpoint = sortedEndpoints[1];
-  assertNonNullable(firstEndpoint, `関係 ${candidate.id}のendpointがありません`);
-  assertNonNullable(secondEndpoint, `関係 ${candidate.id}のendpointがありません`);
-  if (firstEndpoint === secondEndpoint) {
-    throw new TypeError(`関係 ${candidate.id}のendpointが重複しています`);
+}
+
+function goldenRelationAssessmentOwnerNodeId(candidate: RelationCandidate): GraphNodeId {
+  switch (candidate.relation.type) {
+    case "blocks":
+      return candidate.relation.blocked.nodeId;
+    case "parent_of":
+      return candidate.relation.parent.nodeId;
+    case "implements":
+      return candidate.relation.implementation.nodeId;
+    case "unclassified":
+      return candidate.relation.referencing.nodeId;
   }
+}
+
+function goldenPersonalReminderCandidateRelation(
+  candidate: RelationCandidate,
+  aiDependenciesByCandidateId: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
+  proof: RelationCandidateDecisionProof,
+  resolution: RelationCandidateResolution,
+): PersonalReminderRuntimeGraph["candidateRelations"][number] {
+  const [firstNode, secondNode] = goldenRelationEndpointNodeIds(candidate);
+  if (firstNode === secondNode) {
+    throw new TypeError(`個人催促relation候補のendpointが同一です。対象: ${candidate.id}`);
+  }
+  const endpointNodeIds = [firstNode, secondNode].sort(compareStrings);
+  const firstEndpoint = endpointNodeIds[0];
+  const secondEndpoint = endpointNodeIds[1];
+  assertNonNullable(
+    firstEndpoint,
+    `個人催促relation候補のendpointがありません。対象: ${candidate.id}`,
+  );
+  assertNonNullable(
+    secondEndpoint,
+    `個人催促relation候補のendpointがありません。対象: ${candidate.id}`,
+  );
   const sourceIds = [...new Set(candidate.sourceIds)].sort(compareStrings);
   const firstSourceId = sourceIds[0];
-  assertNonNullable(firstSourceId, `関係 ${candidate.id}のsourceがありません`);
+  assertNonNullable(
+    firstSourceId,
+    `個人催促relation候補のsourceがありません。対象: ${candidate.id}`,
+  );
   const endpointTuple: readonly [GraphNodeId, GraphNodeId] = [firstEndpoint, secondEndpoint];
   const sourceTuple: readonly [SourceId, ...SourceId[]] = [firstSourceId, ...sourceIds.slice(1)];
+  const aiDependency = aiDependenciesByCandidateId.get(candidate.id);
+  assertNonNullable(
+    aiDependency,
+    `個人催促relation候補のAI依存がありません。対象: ${candidate.id}`,
+  );
+  if (proof.candidateId !== candidate.id || resolution.candidateId !== candidate.id) {
+    throw new TypeError(`個人催促relation候補のproof IDが一致しません。対象: ${candidate.id}`);
+  }
+  if (proof.authority !== candidate.authority) {
+    throw new TypeError(
+      `個人催促relation候補のproof authorityが一致しません。対象: ${candidate.id}`,
+    );
+  }
+  if (proof.endpointNodeIds[0] !== firstNode || proof.endpointNodeIds[1] !== secondNode) {
+    throw new TypeError(
+      `個人催促relation候補のproof endpointが一致しません。対象: ${candidate.id}`,
+    );
+  }
+  if (proof.resolution.status !== resolution.status) {
+    throw new TypeError(`個人催促relation候補のresolutionが一致しません。対象: ${candidate.id}`);
+  }
+  if (serializeCanonicalJson(proof.resolution) !== serializeCanonicalJson(resolution)) {
+    throw new TypeError(
+      `個人催促relation候補のresolution内容が一致しません。対象: ${candidate.id}`,
+    );
+  }
+  if (serializeCanonicalJson(proof.dependency) !== serializeCanonicalJson(aiDependency)) {
+    throw new TypeError(`個人催促relation候補のproof AI依存が一致しません。対象: ${candidate.id}`);
+  }
   return Object.freeze({
     candidateId: candidate.id,
     endpointNodeIds: Object.freeze(endpointTuple),
+    ownerNodeId: goldenRelationAssessmentOwnerNodeId(candidate),
+    relationType: candidate.relation.type,
+    authority: candidate.authority,
+    provenance: candidate.provenance,
+    resolution,
+    ...(proof.canonicalRelation == null ? {} : { canonicalRelation: proof.canonicalRelation }),
     evidenceSourceIds: Object.freeze(sourceTuple),
+    aiDependency,
   });
+}
+
+function goldenPersonalReminderCandidateRelations(
+  candidates: readonly RelationCandidate[],
+  aiDependenciesByCandidateId: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
+  proofs: readonly RelationCandidateDecisionProof[],
+  resolutions: readonly RelationCandidateResolution[],
+): readonly PersonalReminderRuntimeGraph["candidateRelations"][number][] {
+  const proofsByCandidateId = new Map<RelationCandidateId, RelationCandidateDecisionProof>();
+  for (const proof of proofs) {
+    if (proofsByCandidateId.has(proof.candidateId)) {
+      throw new TypeError(
+        `個人催促relation候補のproof IDが重複しています。対象: ${proof.candidateId}`,
+      );
+    }
+    proofsByCandidateId.set(proof.candidateId, proof);
+  }
+  const resolutionsByCandidateId = new Map<RelationCandidateId, RelationCandidateResolution>();
+  for (const resolution of resolutions) {
+    if (resolutionsByCandidateId.has(resolution.candidateId)) {
+      throw new TypeError(
+        `個人催促relation候補のresolution IDが重複しています。対象: ${resolution.candidateId}`,
+      );
+    }
+    resolutionsByCandidateId.set(resolution.candidateId, resolution);
+  }
+  const candidateIds = new Set<RelationCandidateId>();
+  for (const candidate of candidates) {
+    if (candidateIds.has(candidate.id)) {
+      throw new TypeError(`個人催促relation候補のIDが重複しています。対象: ${candidate.id}`);
+    }
+    candidateIds.add(candidate.id);
+    if (!proofsByCandidateId.has(candidate.id) || !resolutionsByCandidateId.has(candidate.id)) {
+      throw new TypeError(
+        `個人催促relation候補のproofまたはresolutionがありません。対象: ${candidate.id}`,
+      );
+    }
+  }
+  for (const candidateId of proofsByCandidateId.keys()) {
+    if (!candidateIds.has(candidateId)) {
+      throw new TypeError(`個人催促relation候補のproof対象がありません。対象: ${candidateId}`);
+    }
+  }
+  for (const candidateId of resolutionsByCandidateId.keys()) {
+    if (!candidateIds.has(candidateId)) {
+      throw new TypeError(`個人催促relation候補のresolution対象がありません。対象: ${candidateId}`);
+    }
+  }
+  return Object.freeze(
+    candidates.map((candidate) => {
+      const proof = proofsByCandidateId.get(candidate.id);
+      const resolution = resolutionsByCandidateId.get(candidate.id);
+      assertNonNullable(proof, `個人催促relation候補のproofがありません。対象: ${candidate.id}`);
+      assertNonNullable(
+        resolution,
+        `個人催促relation候補のresolutionがありません。対象: ${candidate.id}`,
+      );
+      return goldenPersonalReminderCandidateRelation(
+        candidate,
+        aiDependenciesByCandidateId,
+        proof,
+        resolution,
+      );
+    }),
+  );
+}
+
+function goldenPersonalReminderCandidateEndpointItems(
+  input: StandardGoldenInput,
+  candidates: readonly RelationCandidate[],
+): ReadonlyMap<GraphNodeId, PersonalReminderRuntimeCandidateEndpointItem> {
+  const endpointItems = new Map<GraphNodeId, PersonalReminderRuntimeCandidateEndpointItem>();
+  for (const item of input.items) {
+    const nodeId = createGitHubNodeId(item.nodeId);
+    if (endpointItems.has(nodeId)) {
+      throw new TypeError(`個人催促relation候補endpoint itemが重複しています。対象: ${nodeId}`);
+    }
+    endpointItems.set(
+      nodeId,
+      Object.freeze({
+        nodeId,
+        type: item.type,
+        state: item.state,
+        author: Object.freeze({
+          status: "identified",
+          type: item.author.type,
+          login: item.author.login,
+        }),
+      }),
+    );
+  }
+  for (const candidate of candidates) {
+    for (const nodeId of goldenRelationEndpointNodeIds(candidate)) {
+      if (!endpointItems.has(nodeId)) {
+        throw new TypeError(
+          `個人催促relation候補endpoint itemがありません。対象: ${candidate.id} node: ${nodeId}`,
+        );
+      }
+    }
+  }
+  return endpointItems;
 }
 
 function goldenPersonalReminderRuntimeGraph(
   input: StandardGoldenInput,
   candidates: readonly RelationCandidate[],
   reconciled: ReturnType<typeof reconcileGraph>,
+  relationAiDependencies: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
 ): PersonalReminderRuntimeGraph {
   const endpointStates = new Map<GraphNodeId, "open" | "closed" | "merged" | "missing">();
   for (const item of input.items) {
@@ -830,8 +1025,15 @@ function goldenPersonalReminderRuntimeGraph(
     }
     endpointStates.set(createGitHubNodeId(item.nodeId), endpointState);
   }
-  const candidateRelations = Object.freeze(
-    candidates.map((candidate) => goldenPersonalReminderCandidateRelation(candidate)),
+  const candidateRelations = goldenPersonalReminderCandidateRelations(
+    candidates,
+    relationAiDependencies,
+    reconciled.candidateDecisionProofs,
+    reconciled.candidateResolutions,
+  );
+  const candidateEndpointItemsByNodeId = goldenPersonalReminderCandidateEndpointItems(
+    input,
+    candidates,
   );
   for (const candidate of candidateRelations) {
     for (const nodeId of candidate.endpointNodeIds) {
@@ -856,6 +1058,7 @@ function goldenPersonalReminderRuntimeGraph(
     candidateRelations,
     candidateResolutions: Object.freeze(reconciled.candidateResolutions),
     endpointStates,
+    candidateEndpointItemsByNodeId,
     externalReferences: Object.freeze([]),
   });
 }
@@ -875,6 +1078,8 @@ function createGoldenPersonalReminderAnalysis(
   localDecisionsByNodeId: ReadonlyMap<string, IssueStateDecision | PullRequestStateDecision>,
   genericDecisionsByNodeId: ReadonlyMap<string, ReducedCodexDecision>,
   preparedAnalyses: readonly PreparedGoldenFixedAiAnalysis[],
+  applicationsByNodeId: ReadonlyMap<string, TrackedItemAiAnalysisApplications>,
+  relationAiDependencies: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
 ): GoldenPersonalReminderAnalysis {
   const inventory = createInventory(input);
   const publicRepositories = createPublicRepositoryAllowlist(inventory);
@@ -887,6 +1092,7 @@ function createGoldenPersonalReminderAnalysis(
       item: PersonalReminderRuntimeItem;
       detail: GitHubItemDetail;
       localDecision: PersonalReminderRuntimeLocalDecision;
+      aiAnalysisApplications: TrackedItemAiAnalysisApplications;
       bodyObserved: boolean;
     }>
   >();
@@ -901,6 +1107,8 @@ function createGoldenPersonalReminderAnalysis(
     const localDecision = localDecisionsByNodeId.get(item.nodeId);
     assertNonNullable(localDecision, `項目 ${item.nodeId}のlocal decisionがありません`);
     const itemNodeId = createGitHubNodeId(item.nodeId);
+    const aiAnalysisApplications = applicationsByNodeId.get(item.nodeId);
+    assertNonNullable(aiAnalysisApplications, `項目 ${item.nodeId}のAI適用元がありません`);
     const preparedAnalysis = preparedByNodeId.get(item.nodeId);
     const body = createGoldenPersonalReminderBody(preparedAnalysis);
     runtimeItems.set(
@@ -915,11 +1123,17 @@ function createGoldenPersonalReminderAnalysis(
           body,
         ),
         localDecision: goldenPersonalReminderLocalDecision(localDecision),
+        aiAnalysisApplications,
         bodyObserved: body?.observed ?? false,
       }),
     );
   }
-  const graph = goldenPersonalReminderRuntimeGraph(input, candidates, reconciled);
+  const graph = goldenPersonalReminderRuntimeGraph(
+    input,
+    candidates,
+    reconciled,
+    relationAiDependencies,
+  );
   const snapshotEvidenceSourceIds = new Set<SourceId>([
     ...[...genericDecisionsByNodeId.values()].flatMap((decision) =>
       decision.evidence.map((evidence) => evidence.sourceId),
@@ -960,6 +1174,7 @@ function createGoldenPersonalReminderAnalysis(
       item: value.item,
       detail: value.detail,
       localDecision: value.localDecision,
+      aiAnalysisApplications: value.aiAnalysisApplications,
       relatedContexts: Object.freeze(relatedContexts),
       completeness: goldenPersonalReminderCollectionCompleteness(
         value.localDecision,
@@ -991,12 +1206,34 @@ function createGoldenPersonalReminderAnalysis(
     thresholdsHours: SEVERITY_THRESHOLDS,
     resolveLabelEffects: createLabelEffectsResolver([]),
   });
-  const emptyCauses: readonly PersonalReminderCause[] = Object.freeze([]);
+  const causesByNodeId = new Map(applied.causesByNodeId);
   const planningEntries: readonly (readonly [GitHubNodeId, PersonalReminderCausePlanning])[] =
     input.items.map((item) => {
       const nodeId = createGitHubNodeId(item.nodeId);
-      const causes = applied.causesByNodeId.get(nodeId) ?? emptyCauses;
-      if (item.state !== "open" && causes.length === 0) {
+      const collectionItem = collectionItems.find((value) => value.item.nodeId === nodeId);
+      if (collectionItem == null) {
+        const planning: PersonalReminderCausePlanning =
+          item.state === "open"
+            ? {
+                status: "pending",
+                planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+              }
+            : {
+                status: "excluded",
+                planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+                reason: "terminal_without_cause",
+              };
+        return [nodeId, planning];
+      }
+      if (collectionItem.completeness.status === "incomplete") {
+        const planning: PersonalReminderCausePlanning = Object.freeze({
+          status: "pending",
+          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+        });
+        return [nodeId, planning];
+      }
+      const hasPlannedCause = plan.entries.some((entry) => entry.seed.itemNodeId === nodeId);
+      if (item.state !== "open" && !hasPlannedCause) {
         const planning: PersonalReminderCausePlanning = Object.freeze({
           status: "excluded",
           planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
@@ -1004,15 +1241,27 @@ function createGoldenPersonalReminderAnalysis(
         });
         return [nodeId, planning];
       }
+      const causeSetAiDependency = plan.causeSetAiDependencyByNodeId.get(nodeId);
+      assertNonNullable(
+        causeSetAiDependency,
+        `個人催促cause集合のAI依存がありません。対象: ${nodeId}`,
+      );
+      const causeSetSubjectChanges = plan.causeSetSubjectChangesByNodeId.get(nodeId);
+      assertNonNullable(
+        causeSetSubjectChanges,
+        `個人催促cause集合の主体変化範囲がありません。対象: ${nodeId}`,
+      );
       const planning: PersonalReminderCausePlanning = Object.freeze({
         status: "completed",
         planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
         observedAt: createUtcIsoDateTime(input.evaluatedAt),
+        causeSetAiDependency,
+        causeSetSubjectChanges,
       });
       return [nodeId, planning];
     });
   return Object.freeze({
-    causesByNodeId: applied.causesByNodeId,
+    causesByNodeId,
     evidenceByNodeId: applied.evidenceByNodeId,
     stalenessByCauseId: applied.stalenessByCauseId,
     planningByNodeId: new Map(planningEntries),
@@ -1183,6 +1432,7 @@ function createRelationCandidate(
 function createRelationSourceOccurredAtById(
   input: StandardGoldenInput,
   items: ReadonlyMap<string, GoldenItemInput>,
+  candidates: readonly RelationCandidate[],
 ): ReadonlyMap<SourceId, UtcIsoDateTime> {
   const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
   for (const relation of input.relations) {
@@ -1191,12 +1441,79 @@ function createRelationSourceOccurredAtById(
     const sourceId = buildSourceId("golden_relation", relation.sourceId);
     const occurredAt = createUtcIsoDateTime(currentItem.createdAt);
     const existingOccurredAt = sourceOccurredAtById.get(sourceId);
-    if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
-      throw new TypeError(`同じgolden関係source IDに異なる発生時刻があります。対象: ${sourceId}`);
+    if (existingOccurredAt == null || occurredAt < existingOccurredAt) {
+      sourceOccurredAtById.set(sourceId, occurredAt);
     }
-    sourceOccurredAtById.set(sourceId, occurredAt);
+  }
+  for (const candidate of candidates) {
+    for (const sourceId of candidate.sourceIds) {
+      if (!sourceOccurredAtById.has(sourceId)) {
+        throw new TypeError(
+          `関係候補 ${candidate.id}のsource ${sourceId}に対応する発生時刻がありません`,
+        );
+      }
+    }
   }
   return sourceOccurredAtById;
+}
+
+function createFixedRelationAiDependencies(
+  candidates: readonly RelationCandidate[],
+  items: ReadonlyMap<string, GoldenItemInput>,
+  assessments: readonly RelationCandidateAssessment[],
+  applicationsByNodeId: ReadonlyMap<string, TrackedItemAiAnalysisApplications>,
+): ReadonlyMap<RelationCandidateId, AiAnalysisDependency> {
+  const candidatesById = new Map<RelationCandidateId, RelationCandidate>();
+  for (const candidate of candidates) {
+    if (candidatesById.has(candidate.id)) {
+      throw new TypeError(`関係候補IDが重複しています。対象: ${candidate.id}`);
+    }
+    candidatesById.set(candidate.id, candidate);
+  }
+  const assessmentsByCandidateId = new Map<RelationCandidateId, RelationCandidateAssessment>();
+  for (const assessment of assessments) {
+    const candidate = candidatesById.get(assessment.candidateId);
+    assertNonNullable(candidate, `関係候補 ${assessment.candidateId}がありません`);
+    if (assessmentsByCandidateId.has(assessment.candidateId)) {
+      throw new TypeError(`関係候補 ${assessment.candidateId}のAI依存が重複しています`);
+    }
+    const ownerNodeId = goldenRelationAssessmentOwnerNodeId(candidate);
+    if (assessment.currentNodeId !== ownerNodeId) {
+      throw new TypeError(
+        `関係候補 ${assessment.candidateId}のAI判定ownerが一致しません。対象: ${ownerNodeId}`,
+      );
+    }
+    assessmentsByCandidateId.set(assessment.candidateId, assessment);
+  }
+  const dependencies = new Map<RelationCandidateId, AiAnalysisDependency>();
+  for (const candidate of candidates) {
+    if (candidate.provenance === "native") {
+      dependencies.set(candidate.id, GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY);
+      continue;
+    }
+    const ownerNodeId = goldenRelationAssessmentOwnerNodeId(candidate);
+    const owner = items.get(ownerNodeId);
+    assertNonNullable(owner, `関係候補 ${candidate.id}のtracked owner itemがありません`);
+    const ownerGitHubNodeId = createGitHubNodeId(owner.nodeId);
+    const assessment = assessmentsByCandidateId.get(candidate.id);
+    if (assessment == null) {
+      dependencies.set(
+        candidate.id,
+        aiAnalysisDependencyForApplication(ownerGitHubNodeId, "relations", {
+          status: "unknown",
+          reason: "proof_unknown",
+        }),
+      );
+      continue;
+    }
+    const applications = applicationsByNodeId.get(owner.nodeId);
+    assertNonNullable(applications, `関係候補 ${candidate.id}のcurrent itemのAI適用元がありません`);
+    dependencies.set(
+      candidate.id,
+      aiAnalysisDependencyForApplication(ownerGitHubNodeId, "relations", applications.relations),
+    );
+  }
+  return dependencies;
 }
 
 function createNativeBlockers(
@@ -1609,6 +1926,54 @@ function deterministicReducedDecision(
   });
 }
 
+function createFixedAiAnalysisApplications(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  reduction: ReturnType<typeof reduceCodexAnalysis>,
+): TrackedItemAiAnalysisApplications {
+  if (reduction.ai.status !== "available") {
+    throw new TypeError(`固定AI判定 ${analysis.itemNodeId}が利用不可になりました`);
+  }
+  const reductionElements = reduction.ai.elements;
+  const selectedElements = new Set<AiAnalysisElement>(analysis.input.selectedElements);
+  const applicationFor = (element: AiAnalysisElement): AiAnalysisElementApplication => {
+    if (!selectedElements.has(element)) {
+      return Object.freeze({
+        status: "not_required",
+      });
+    }
+    const reductionElement = reductionElements[element];
+    assertNonNullable(reductionElement, `固定AI判定 ${analysis.itemNodeId}の適用元がありません`);
+    switch (reductionElement.application) {
+      case "applied":
+        return Object.freeze({
+          status: "current_ai",
+          origin: "executed",
+        });
+      case "deterministic_fallback":
+        return Object.freeze({
+          status: "deterministic_fallback",
+        });
+      case "preserved":
+        throw new TypeError(
+          `固定AI判定 ${analysis.itemNodeId}でpreservedの適用元は指定できません。対象: ${element}`,
+        );
+      default:
+        throw new UnreachableError(reductionElement.application);
+    }
+  };
+  return Object.freeze({
+    status: applicationFor("status"),
+    waitingOn: applicationFor("waitingOn"),
+    nextAction: applicationFor("nextAction"),
+    relations: applicationFor("relations"),
+    progress: applicationFor("progress"),
+    importance: applicationFor("importance"),
+    deadline: applicationFor("deadline"),
+    notification: applicationFor("notification"),
+    selfCommitment: applicationFor("selfCommitment"),
+  });
+}
+
 function applyFixedAiAnalyses(
   input: StandardGoldenInput,
   items: ReadonlyMap<string, GoldenItemInput>,
@@ -1629,6 +1994,7 @@ function applyFixedAiAnalyses(
     string,
     DiscordNotificationItem["notificationRecommendation"]
   >;
+  applicationsByNodeId: ReadonlyMap<string, TrackedItemAiAnalysisApplications>;
   relationAssessments: readonly RelationCandidateAssessment[];
   acceptedOutputCount: number;
   rejectedOutputCount: number;
@@ -1640,6 +2006,9 @@ function applyFixedAiAnalyses(
     string,
     DiscordNotificationItem["notificationRecommendation"]
   >();
+  const applicationsByNodeId = new Map<string, TrackedItemAiAnalysisApplications>(
+    input.items.map((item) => [item.nodeId, createGoldenAiAnalysisApplications("not_required")]),
+  );
   for (const [nodeId, decision] of deterministicDecisions) {
     decisions.set(nodeId, deterministicReducedDecision(decision));
     deadlineAssessments.set(nodeId, Object.freeze({ status: "not_available" }));
@@ -1699,6 +2068,10 @@ function applyFixedAiAnalyses(
       CONFIDENCE_THRESHOLDS,
       Object.freeze({}),
     );
+    applicationsByNodeId.set(
+      analysis.itemNodeId,
+      createFixedAiAnalysisApplications(analysis, reduction),
+    );
     decisions.set(analysis.itemNodeId, reduction.decision);
     deadlineAssessments.set(analysis.itemNodeId, reduction.deadlineAssessment);
     notificationRecommendations.set(
@@ -1715,6 +2088,7 @@ function applyFixedAiAnalyses(
     reassessedDeterministicDecisions,
     deadlineAssessments,
     notificationRecommendations,
+    applicationsByNodeId,
     relationAssessments: Object.freeze(relationAssessments),
     acceptedOutputCount: preparedAnalyses.length,
     rejectedOutputCount,
@@ -1884,6 +2258,7 @@ function toStateRelation(edge: ReconciledGraphEdge): Relation {
     ),
     firstSeenAt: edge.firstSeenAt,
     lastConfirmedAt: edge.lastConfirmedAt,
+    aiDependency: edge.aiDependency,
   };
   if (edge.active) {
     return Object.freeze({
@@ -1930,9 +2305,1047 @@ function createGoldenAiAnalysisApplications(
   );
 }
 
+const GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY = Object.freeze({
+  status: "not_dependent",
+}) satisfies AiAnalysisDependency;
+
+function createGoldenNotDependentAiDependencies(): TrackedItemAiDependencies {
+  return Object.freeze({
+    status: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    waitingOn: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    nextAction: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    primaryWaitingOn: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    confidence: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    evidence: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    uncertainties: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    deadline: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    deadlineLevel: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    lastProgressAt: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    stallSince: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    severity: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    downstreamImpact: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    importance: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    attention: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    blockers: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    relationSet: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+  });
+}
+
+function goldenAiDependencyForApplication(
+  nodeId: GitHubNodeId,
+  applications: TrackedItemAiAnalysisApplications,
+  element: AiAnalysisElement,
+): AiAnalysisDependency {
+  const application = applications[element];
+  assertNonNullable(application, `AI適用元がありません。対象: ${nodeId} element: ${element}`);
+  return aiAnalysisDependencyForApplication(nodeId, element, application);
+}
+
+function goldenCodexElementResult(
+  output: CodexElementOutput,
+  element: AiAnalysisElement,
+): AiAnalysisElementMigrationResult | undefined {
+  switch (element) {
+    case "status":
+      return output.status;
+    case "waitingOn":
+      return output.waitingOn;
+    case "nextAction":
+      return output.nextAction;
+    case "relations":
+      return output.relations;
+    case "progress":
+      return output.progress;
+    case "importance":
+      return output.importance;
+    case "deadline":
+      return output.deadline;
+    case "notification":
+      return output.notification;
+    case "selfCommitment":
+      return output.selfCommitment;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+const GOLDEN_STATE_AI_ANALYSIS_ELEMENTS: readonly AiAnalysisElement[] = Object.freeze([
+  "status",
+  "waitingOn",
+  "nextAction",
+]);
+
+function combineGoldenAiDependencies(
+  dependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  if (dependencies.length === 0) {
+    return GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY;
+  }
+  return combineAiAnalysisDependencies(dependencies);
+}
+
+function goldenAiDependencyIndependencePriority(dependency: AiAnalysisDependency): number {
+  switch (dependency.status) {
+    case "not_dependent":
+      return 0;
+    case "current":
+      return 1;
+    case "unverified":
+      return 2;
+    case "unknown":
+      return 3;
+    default:
+      throw new UnreachableError(dependency);
+  }
+}
+
+function goldenCandidateAiDependency(
+  dependency: AiAnalysisDependency,
+  conditionDependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  return combineGoldenAiDependencies([dependency, ...conditionDependencies]);
+}
+
+function preferGoldenAiDependency(
+  dependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  if (dependencies.length === 0) {
+    return GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY;
+  }
+  const minimumPriority = Math.min(...dependencies.map(goldenAiDependencyIndependencePriority));
+  return combineGoldenAiDependencies(
+    dependencies.filter(
+      (dependency) => goldenAiDependencyIndependencePriority(dependency) === minimumPriority,
+    ),
+  );
+}
+
+function preferredGoldenAiDependencies(
+  dependencies: readonly AiAnalysisDependency[],
+  count: number,
+): readonly AiAnalysisDependency[] {
+  if (count < 0 || !Number.isInteger(count)) {
+    throw new TypeError("選択するAI依存数は0以上の整数でなければなりません");
+  }
+  if (count > dependencies.length) {
+    throw new TypeError("選択するAI依存数が候補数を超えています");
+  }
+  return Object.freeze(
+    dependencies
+      .map((dependency, index) => Object.freeze({ dependency, index }))
+      .sort((left, right) => {
+        const priorityOrder =
+          goldenAiDependencyIndependencePriority(left.dependency) -
+          goldenAiDependencyIndependencePriority(right.dependency);
+        return priorityOrder === 0 ? left.index - right.index : priorityOrder;
+      })
+      .slice(0, count)
+      .map((entry) => entry.dependency),
+  );
+}
+
+type GoldenBlockerValueAiDependencies = Readonly<{
+  stateSupport: "conditional" | "authoritative_blocker";
+  status: AiAnalysisDependency;
+  waitingOn: AiAnalysisDependency;
+  primaryWaitingOn: AiAnalysisDependency;
+  nextAction: AiAnalysisDependency;
+  confidence: AiAnalysisDependency;
+  evidence: AiAnalysisDependency;
+  uncertainties: AiAnalysisDependency;
+}>;
+
+type GoldenBlockerDependencyContext = Readonly<{
+  dependenciesByBlockedNodeId: ReadonlyMap<
+    GraphNodeId,
+    ReadonlyMap<string, BlockerNodeAiDependency>
+  >;
+  negativeDependenciesByNodeId: ReadonlyMap<GraphNodeId, AiAnalysisDependency>;
+}>;
+
+function createGoldenBlockerDependencyContext(
+  graph: ReturnType<typeof analyzeGraphAiDependencies>,
+): GoldenBlockerDependencyContext {
+  const dependenciesByBlockedNodeId = new Map<GraphNodeId, Map<string, BlockerNodeAiDependency>>();
+  for (const dependency of graph.blockerNodeAiDependencies) {
+    const dependenciesByBlockerNodeId = dependenciesByBlockedNodeId.get(dependency.blockedNodeId);
+    if (dependenciesByBlockerNodeId == null) {
+      dependenciesByBlockedNodeId.set(
+        dependency.blockedNodeId,
+        new Map([[dependency.blockerNodeId, dependency]]),
+      );
+      continue;
+    }
+    if (dependenciesByBlockerNodeId.has(dependency.blockerNodeId)) {
+      throw new TypeError(
+        `blocker node AI依存が重複しています。対象: ${dependency.blockedNodeId} blocker: ${dependency.blockerNodeId}`,
+      );
+    }
+    dependenciesByBlockerNodeId.set(dependency.blockerNodeId, dependency);
+  }
+  const negativeDependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency>();
+  for (const entry of graph.negativeBlockerAiDependencies) {
+    if (negativeDependenciesByNodeId.has(entry.nodeId)) {
+      throw new TypeError(`negative blocker AI依存が重複しています。対象: ${entry.nodeId}`);
+    }
+    negativeDependenciesByNodeId.set(entry.nodeId, entry.dependency);
+  }
+  return Object.freeze({
+    dependenciesByBlockedNodeId,
+    negativeDependenciesByNodeId,
+  });
+}
+
+function goldenNotDependentBlockerValueAiDependencies(): GoldenBlockerValueAiDependencies {
+  return Object.freeze({
+    stateSupport: "conditional",
+    status: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    waitingOn: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    primaryWaitingOn: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    nextAction: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    confidence: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    evidence: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    uncertainties: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+  });
+}
+
+function goldenGraphAiDependencyForNode(
+  dependenciesByNodeId: ReadonlyMap<GraphNodeId, AiAnalysisDependency>,
+  nodeId: GraphNodeId,
+  description: string,
+): AiAnalysisDependency {
+  const dependency = dependenciesByNodeId.get(nodeId);
+  assertNonNullable(dependency, `${description}のAI依存がありません。対象: ${nodeId}`);
+  return dependency;
+}
+
+function goldenBlockerNodeAiDependencyForTrace(
+  context: GoldenBlockerDependencyContext,
+  blockedNodeId: GraphNodeId,
+  blockerNodeId: string,
+): BlockerNodeAiDependency {
+  const dependenciesByBlockerNodeId = context.dependenciesByBlockedNodeId.get(blockedNodeId);
+  assertNonNullable(
+    dependenciesByBlockerNodeId,
+    `blocker node AI依存indexがありません。対象: ${blockedNodeId}`,
+  );
+  const dependency = dependenciesByBlockerNodeId.get(blockerNodeId);
+  assertNonNullable(
+    dependency,
+    `blocker node AI依存がありません。対象: ${blockedNodeId} blocker: ${blockerNodeId}`,
+  );
+  return dependency;
+}
+
+function combineGoldenBlockerPrimitiveDependencies(
+  dependency: BlockerNodeAiDependency,
+  primitives: readonly (keyof Pick<
+    BlockerNodeAiDependency,
+    "presence" | "confidence" | "sourceIds" | "becameBlockingAt"
+  >)[],
+): AiAnalysisDependency {
+  return combineGoldenAiDependencies(primitives.map((primitive) => dependency[primitive]));
+}
+
+function goldenBlockerValueAiDependencies(
+  nodeId: GraphNodeId,
+  trace: BlockerDecisionTrace,
+  context: GoldenBlockerDependencyContext,
+): GoldenBlockerValueAiDependencies {
+  if (trace.status === "not_evaluated") {
+    return goldenNotDependentBlockerValueAiDependencies();
+  }
+  const negativeDependency = goldenGraphAiDependencyForNode(
+    context.negativeDependenciesByNodeId,
+    nodeId,
+    "negative blocker",
+  );
+  const uncertainDependencies = trace.uncertainBlockerIds.map((blockerNodeId) =>
+    goldenBlockerNodeAiDependencyForTrace(context, nodeId, blockerNodeId),
+  );
+  const uncertainConditions = uncertainDependencies.map((dependency) =>
+    combineGoldenBlockerPrimitiveDependencies(dependency, ["presence", "confidence"]),
+  );
+  const uncertainEvidence = uncertainDependencies.map((dependency) =>
+    combineGoldenBlockerPrimitiveDependencies(dependency, ["presence", "confidence", "sourceIds"]),
+  );
+  if (trace.result === "fallthrough") {
+    const stateDependency = combineGoldenAiDependencies([
+      ...uncertainConditions,
+      negativeDependency,
+    ]);
+    return Object.freeze({
+      stateSupport: "conditional",
+      status: stateDependency,
+      waitingOn: stateDependency,
+      primaryWaitingOn: stateDependency,
+      nextAction: stateDependency,
+      confidence: stateDependency,
+      evidence: combineGoldenAiDependencies([...uncertainEvidence, negativeDependency]),
+      uncertainties: stateDependency,
+    });
+  }
+
+  const confirmedDependencies = trace.confirmedBlockers.map((blocker) =>
+    Object.freeze({
+      ...blocker,
+      dependency: goldenBlockerNodeAiDependencyForTrace(context, nodeId, blocker.candidateId),
+    }),
+  );
+  const primaryBlocker = confirmedDependencies.find(
+    (blocker) => blocker.candidateId === trace.primaryBlockerId,
+  );
+  assertNonNullable(primaryBlocker, `primary blockerのAI依存がありません。対象: ${nodeId}`);
+  const confirmedConditions = confirmedDependencies.map((blocker) =>
+    combineGoldenBlockerPrimitiveDependencies(blocker.dependency, ["presence", "confidence"]),
+  );
+  const confirmedEvidence = confirmedDependencies.map((blocker) =>
+    combineGoldenBlockerPrimitiveDependencies(blocker.dependency, [
+      "presence",
+      "confidence",
+      "sourceIds",
+    ]),
+  );
+  const confirmedWaitingOn = confirmedDependencies.map((blocker) =>
+    combineGoldenBlockerPrimitiveDependencies(blocker.dependency, [
+      "presence",
+      "confidence",
+      "sourceIds",
+      "becameBlockingAt",
+    ]),
+  );
+  const selectionConditions = [
+    ...confirmedDependencies.map((blocker) =>
+      combineGoldenBlockerPrimitiveDependencies(blocker.dependency, [
+        "presence",
+        "confidence",
+        "becameBlockingAt",
+      ]),
+    ),
+    ...uncertainDependencies.map((dependency) =>
+      combineGoldenBlockerPrimitiveDependencies(dependency, [
+        "presence",
+        "confidence",
+        "becameBlockingAt",
+      ]),
+    ),
+    negativeDependency,
+  ];
+  const primarySelectionDependency =
+    primaryBlocker.authority === "authoritative"
+      ? GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY
+      : combineGoldenAiDependencies(selectionConditions);
+  const authoritativeConfirmedCount = confirmedDependencies.filter(
+    (blocker) => blocker.authority === "authoritative",
+  ).length;
+  const inferredConfirmedConditions = confirmedDependencies.flatMap((blocker) =>
+    blocker.authority === "inferred"
+      ? [combineGoldenBlockerPrimitiveDependencies(blocker.dependency, ["presence", "confidence"])]
+      : [],
+  );
+  const multiplicityDependency =
+    confirmedDependencies.length === 1
+      ? combineGoldenAiDependencies([...uncertainConditions, negativeDependency])
+      : combineGoldenAiDependencies(
+          preferredGoldenAiDependencies(
+            inferredConfirmedConditions,
+            Math.max(0, 2 - authoritativeConfirmedCount),
+          ),
+        );
+  const confidenceConditions =
+    primaryBlocker.authority === "authoritative"
+      ? confirmedDependencies
+          .filter(
+            (blocker) =>
+              blocker.candidateId !== primaryBlocker.candidateId &&
+              blocker.authority === "inferred",
+          )
+          .map((blocker) =>
+            combineGoldenBlockerPrimitiveDependencies(blocker.dependency, [
+              "presence",
+              "confidence",
+            ]),
+          )
+          .concat(uncertainConditions, [negativeDependency])
+      : selectionConditions;
+  return Object.freeze({
+    stateSupport:
+      primaryBlocker.authority === "authoritative" ? "authoritative_blocker" : "conditional",
+    status: preferGoldenAiDependency(confirmedConditions),
+    waitingOn: combineGoldenAiDependencies([
+      ...confirmedWaitingOn,
+      ...uncertainConditions,
+      negativeDependency,
+    ]),
+    primaryWaitingOn: combineGoldenAiDependencies([
+      primarySelectionDependency,
+      multiplicityDependency,
+    ]),
+    nextAction: primarySelectionDependency,
+    confidence: combineGoldenAiDependencies([
+      primaryBlocker.dependency.confidence,
+      ...confidenceConditions,
+    ]),
+    evidence: combineGoldenAiDependencies([
+      ...confirmedEvidence,
+      ...uncertainEvidence,
+      negativeDependency,
+    ]),
+    uncertainties: combineGoldenAiDependencies([
+      ...confirmedConditions,
+      ...uncertainConditions,
+      negativeDependency,
+    ]),
+  });
+}
+
+function goldenStateAiDependencies(
+  nodeId: GitHubNodeId,
+  applications: TrackedItemAiAnalysisApplications,
+  blockerDependencies: GoldenBlockerValueAiDependencies,
+): Readonly<{
+  status: AiAnalysisDependency;
+  waitingOn: AiAnalysisDependency;
+  primaryWaitingOn: AiAnalysisDependency;
+  nextAction: AiAnalysisDependency;
+}> {
+  const applicationDependency = (
+    element: "status" | "waitingOn" | "nextAction",
+  ): AiAnalysisDependency => goldenAiDependencyForApplication(nodeId, applications, element);
+  const stateValueDependency = (
+    element: "status" | "waitingOn" | "nextAction",
+    blockerDependency: AiAnalysisDependency,
+  ): AiAnalysisDependency => {
+    if (aiAnalysisElementApplicationUsesAiValue(applications[element])) {
+      return applicationDependency(element);
+    }
+    if (
+      blockerDependencies.stateSupport === "authoritative_blocker" &&
+      (element === "status" || element === "nextAction")
+    ) {
+      return blockerDependency;
+    }
+    return combineGoldenAiDependencies([applicationDependency(element), blockerDependency]);
+  };
+  return Object.freeze({
+    status: stateValueDependency("status", blockerDependencies.status),
+    waitingOn: stateValueDependency("waitingOn", blockerDependencies.waitingOn),
+    primaryWaitingOn: aiAnalysisElementApplicationUsesAiValue(applications.waitingOn)
+      ? applicationDependency("waitingOn")
+      : blockerDependencies.stateSupport === "authoritative_blocker"
+        ? blockerDependencies.primaryWaitingOn
+        : combineGoldenAiDependencies([
+            applicationDependency("waitingOn"),
+            blockerDependencies.primaryWaitingOn,
+          ]),
+    nextAction: stateValueDependency("nextAction", blockerDependencies.nextAction),
+  });
+}
+
+function goldenConfidenceAiDependency(
+  nodeId: GitHubNodeId,
+  applications: TrackedItemAiAnalysisApplications,
+  blockerDependencies: GoldenBlockerValueAiDependencies,
+): AiAnalysisDependency {
+  if (blockerDependencies.stateSupport === "authoritative_blocker") {
+    return blockerDependencies.confidence;
+  }
+  const dependencies: AiAnalysisDependency[] = [];
+  const allStateValuesUseAi = GOLDEN_STATE_AI_ANALYSIS_ELEMENTS.every((element) =>
+    aiAnalysisElementApplicationUsesAiValue(applications[element]),
+  );
+  if (!allStateValuesUseAi) {
+    dependencies.push(blockerDependencies.confidence);
+  }
+  for (const element of GOLDEN_STATE_AI_ANALYSIS_ELEMENTS) {
+    if (
+      !aiAnalysisElementApplicationUsesAiValue(applications[element]) &&
+      applications[element].status !== "unavailable"
+    ) {
+      continue;
+    }
+    dependencies.push(goldenAiDependencyForApplication(nodeId, applications, element));
+  }
+  return combineGoldenAiDependencies(dependencies);
+}
+
+function goldenEvidenceAiDependency(
+  nodeId: GitHubNodeId,
+  decision: ReducedCodexDecision,
+  deterministicDecision: IssueStateDecision | PullRequestStateDecision,
+  applications: TrackedItemAiAnalysisApplications,
+  blockerDependencies: GoldenBlockerValueAiDependencies,
+): AiAnalysisDependency {
+  if (blockerDependencies.stateSupport === "authoritative_blocker") {
+    return blockerDependencies.evidence;
+  }
+  const dependencies: AiAnalysisDependency[] = [];
+  for (const element of GOLDEN_STATE_AI_ANALYSIS_ELEMENTS) {
+    if (
+      aiAnalysisElementApplicationUsesAiValue(applications[element]) ||
+      applications[element].status === "unavailable"
+    ) {
+      dependencies.push(goldenAiDependencyForApplication(nodeId, applications, element));
+    }
+  }
+  const deterministicEvidence = new Set(
+    deterministicDecision.evidence.map((evidence) => serializeCanonicalJson(evidence)),
+  );
+  if (
+    decision.evidence.some((evidence) =>
+      deterministicEvidence.has(serializeCanonicalJson(evidence)),
+    )
+  ) {
+    dependencies.push(blockerDependencies.evidence);
+  }
+  return combineGoldenAiDependencies(dependencies);
+}
+
+function goldenUncertaintiesAiDependency(
+  nodeId: GitHubNodeId,
+  applications: TrackedItemAiAnalysisApplications,
+  blockerDependency: AiAnalysisDependency,
+): AiAnalysisDependency {
+  return combineGoldenAiDependencies([
+    ...GOLDEN_STATE_AI_ANALYSIS_ELEMENTS.map((element) =>
+      goldenAiDependencyForApplication(nodeId, applications, element),
+    ),
+    blockerDependency,
+  ]);
+}
+
+function goldenLastProgressAiDependency(
+  item: GoldenItemInput,
+  staleness: StalenessResult,
+  applications: TrackedItemAiAnalysisApplications,
+): AiAnalysisDependency {
+  const latestProgress = staleness.meaningfulProgress.filter(
+    (progress) => progress.occurredAt === staleness.lastProgressAt,
+  );
+  const dependencies = latestProgress.flatMap((progress) => {
+    if (progress.kind === "dependency_resolved") {
+      return [progress.aiDependency];
+    }
+    if (progress.determination === "ai") {
+      return [
+        goldenAiDependencyForApplication(createGitHubNodeId(item.nodeId), applications, "progress"),
+      ];
+    }
+    return [GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY];
+  });
+  if (
+    staleness.lastProgressAt === createUtcIsoDateTime(item.createdAt) ||
+    (item.previousState.availability === "available" &&
+      staleness.lastProgressAt === createUtcIsoDateTime(item.previousState.lastProgressAt))
+  ) {
+    dependencies.push(GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY);
+  }
+  if (dependencies.length > 0) {
+    return preferGoldenAiDependency(dependencies);
+  }
+  return GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY;
+}
+
+function goldenLastResponsibleHumanActivityAt(
+  item: GoldenItemInput,
+  waitingOn: readonly WaitingOn[],
+): UtcIsoDateTime | undefined {
+  const accountIdentifiers = resolveWaitingOnAccountIdentifiers(waitingOn);
+  let latest: UtcIsoDateTime | undefined;
+  for (const event of item.events) {
+    if (event.actor.type !== "human") {
+      continue;
+    }
+    if (!accountIdentifiers.has(event.actor.login) && !accountIdentifiers.has(event.actor.nodeId)) {
+      continue;
+    }
+    const occurredAt = createUtcIsoDateTime(event.occurredAt);
+    if (latest == null || occurredAt > latest) {
+      latest = occurredAt;
+    }
+  }
+  return latest;
+}
+
+function goldenLastHumanReviewAt(item: GoldenItemInput): UtcIsoDateTime | undefined {
+  let latest: UtcIsoDateTime | undefined;
+  for (const event of item.events) {
+    if (event.kind !== "review" || event.actor.type !== "human") {
+      continue;
+    }
+    const occurredAt = createUtcIsoDateTime(event.occurredAt);
+    if (latest == null || occurredAt > latest) {
+      latest = occurredAt;
+    }
+  }
+  return latest;
+}
+
+type GoldenAiDependencyTimeCandidate = Readonly<{
+  occurredAt: UtcIsoDateTime;
+  dependency: AiAnalysisDependency;
+}>;
+
+function goldenStallSinceAiDependency(
+  input: StandardGoldenInput,
+  item: GoldenItemInput,
+  deterministicDecision: IssueStateDecision | PullRequestStateDecision,
+  decision: ReducedCodexDecision,
+  staleness: StalenessResult,
+  itemDependencies: Readonly<{
+    status: AiAnalysisDependency;
+    waitingOn: AiAnalysisDependency;
+    lastProgressAt: AiAnalysisDependency;
+  }>,
+): AiAnalysisDependency {
+  const nodeId = createGitHubNodeId(item.nodeId);
+  const evaluatedAt = createUtcIsoDateTime(input.evaluatedAt);
+  const basis = transitionBasis(evaluatedAt, deterministicDecision, decision);
+  const candidates: GoldenAiDependencyTimeCandidate[] = [];
+  const add = (occurredAt: UtcIsoDateTime, dependency: AiAnalysisDependency): void => {
+    candidates.push(Object.freeze({ occurredAt, dependency }));
+  };
+  const previous = item.previousState.availability === "available" ? item.previousState : undefined;
+  if (previous == null) {
+    add(basis.statusBasis.occurredAt, itemDependencies.status);
+    add(basis.responsibilityBasis.occurredAt, itemDependencies.waitingOn);
+  } else {
+    const previousStatusSince = createUtcIsoDateTime(previous.statusSince);
+    const previousOwnerSince = createUtcIsoDateTime(previous.ownerSince);
+    const statusChanged = staleness.statusSince !== previousStatusSince;
+    const ownerChanged = staleness.ownerSince !== previousOwnerSince;
+    add(previousStatusSince, GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY);
+    add(previousOwnerSince, GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY);
+    if (ownerChanged) {
+      const ownerTransitionDependencies = statusChanged
+        ? [itemDependencies.status, itemDependencies.waitingOn]
+        : [itemDependencies.waitingOn];
+      add(staleness.ownerSince, combineGoldenAiDependencies(ownerTransitionDependencies));
+    }
+  }
+
+  const lastResponsibleHumanActivityAt = goldenLastResponsibleHumanActivityAt(
+    item,
+    decision.waitingOn,
+  );
+  const responsibleActivityDependency = goldenCandidateAiDependency(
+    GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    [itemDependencies.waitingOn],
+  );
+  const reviewWait =
+    item.type === "pull_request" &&
+    (decision.status === "waiting_for_owner" || decision.status === "waiting_for_review");
+  const lastHumanReviewAt = goldenLastHumanReviewAt(item);
+  if (reviewWait) {
+    if (lastResponsibleHumanActivityAt != null) {
+      add(lastResponsibleHumanActivityAt, responsibleActivityDependency);
+    }
+    if (lastHumanReviewAt != null) {
+      add(
+        lastHumanReviewAt,
+        goldenCandidateAiDependency(GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY, [itemDependencies.status]),
+      );
+    }
+    if (previous != null) {
+      add(createUtcIsoDateTime(previous.stallSince), GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY);
+    }
+  } else {
+    add(staleness.lastProgressAt, itemDependencies.lastProgressAt);
+    if (lastResponsibleHumanActivityAt != null) {
+      add(lastResponsibleHumanActivityAt, responsibleActivityDependency);
+    }
+    if (previous != null && staleness.ownerSince === createUtcIsoDateTime(previous.ownerSince)) {
+      add(createUtcIsoDateTime(previous.stallSince), GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY);
+    }
+  }
+
+  const selectedCandidates = candidates.filter(
+    (candidate) => candidate.occurredAt === staleness.stallSince,
+  );
+  if (selectedCandidates.length === 0) {
+    throw new TypeError(`stallSinceのAI依存候補がありません。対象: ${nodeId}`);
+  }
+  return preferGoldenAiDependency(selectedCandidates.map((candidate) => candidate.dependency));
+}
+
+function goldenStateDependenciesForWaitClass(
+  decision: Readonly<Pick<ReducedCodexDecision, "status" | "waitingOn">>,
+  waitClass: StalenessResult["waitClass"],
+  dependencies: Readonly<{
+    status: AiAnalysisDependency;
+    waitingOn: AiAnalysisDependency;
+    evidence: AiAnalysisDependency;
+  }>,
+): readonly AiAnalysisDependency[] {
+  if (waitClass === "notApplicable" || waitClass === "blockedParent") {
+    return Object.freeze([]);
+  }
+  const primaryWaitingOn = decision.waitingOn[0];
+  assertNonNullable(primaryWaitingOn, "継続中状態のprimary waitingOnがありません");
+  const routes: AiAnalysisDependency[] = [];
+  switch (waitClass) {
+    case "owner":
+      if (decision.status === "waiting_for_owner" || decision.status === "unknown") {
+        routes.push(dependencies.status);
+      }
+      if (primaryWaitingOn.kind === "unknown" || primaryWaitingOn.role === "unknown") {
+        routes.push(dependencies.waitingOn);
+      }
+      break;
+    case "automation":
+      if (decision.status === "waiting_for_automation") {
+        routes.push(dependencies.status);
+      }
+      if (primaryWaitingOn.kind === "automation") {
+        routes.push(dependencies.waitingOn);
+      }
+      break;
+    case "review":
+      if (decision.status === "waiting_for_review") {
+        routes.push(dependencies.status);
+      }
+      if (primaryWaitingOn.role === "reviewer") {
+        routes.push(dependencies.waitingOn);
+      }
+      break;
+    case "assessment":
+    case "decision":
+    case "merge":
+    case "reply":
+      routes.push(dependencies.status);
+      break;
+    case "revision":
+      routes.push(dependencies.status);
+      if (decision.status === "waiting_for_revision") {
+        routes.push(dependencies.waitingOn, dependencies.evidence);
+      }
+      break;
+    case "work":
+      routes.push(dependencies.status);
+      break;
+    default:
+      throw new UnreachableError(waitClass);
+  }
+  if (routes.length === 0) {
+    throw new TypeError(`wait class ${waitClass}の成立経路がありません`);
+  }
+  return Object.freeze([preferGoldenAiDependency(routes)]);
+}
+
+function goldenCriticalSeverityWasRequested(reason: StalenessResult["severityReason"]): boolean {
+  if (reason.kind !== "elapsed_threshold") {
+    return false;
+  }
+  return (
+    reason.baseSeverity === "critical" ||
+    (reason.baseSeverity === "urgent" && reason.labelLiftRequested === 1)
+  );
+}
+
+function goldenSeverityAiDependency(
+  decision: ReducedCodexDecision,
+  staleness: StalenessResult,
+  itemDependencies: TrackedItemAiDependencies,
+): AiAnalysisDependency {
+  if (staleness.waitClass === "notApplicable" || staleness.waitClass === "blockedParent") {
+    return itemDependencies.status;
+  }
+  const stateDependencies = goldenStateDependenciesForWaitClass(
+    decision,
+    staleness.waitClass,
+    itemDependencies,
+  );
+  const dependencies = [itemDependencies.stallSince, ...stateDependencies];
+  if (goldenCriticalSeverityWasRequested(staleness.severityReason)) {
+    dependencies.push(itemDependencies.confidence);
+  }
+  return combineGoldenAiDependencies(dependencies);
+}
+
+function goldenBlockersAiDependency(
+  nodeId: GitHubNodeId,
+  graph: ReturnType<typeof analyzeGraphAiDependencies>,
+): AiAnalysisDependency {
+  const blocker = graph.blockerSetAiDependencies.find((candidate) => candidate.nodeId === nodeId);
+  assertNonNullable(blocker, `項目 ${nodeId}のblocker集合AI依存がありません`);
+  return blocker.dependency;
+}
+
+function goldenDownstreamImpactAiDependency(
+  nodeId: GraphNodeId,
+  graph: ReturnType<typeof analyzeGraphAiDependencies>,
+): AiAnalysisDependency {
+  const impact = graph.downstreamImpactAiDependencies.find(
+    (candidate) => candidate.nodeId === nodeId,
+  );
+  assertNonNullable(impact, `項目 ${nodeId}のdownstream impact AI依存がありません`);
+  return impact.dependency;
+}
+
+function goldenRelationSetAiDependency(
+  nodeId: GraphNodeId,
+  graph: ReturnType<typeof analyzeGraphAiDependencies>,
+): AiAnalysisDependency {
+  const relationSet = graph.relationSetAiDependencies.find(
+    (candidate) => candidate.nodeId === nodeId,
+  );
+  assertNonNullable(relationSet, `項目 ${nodeId}のrelation set AI依存がありません`);
+  return relationSet.dependency;
+}
+
+function createGoldenTrackedItemAiDependencies(
+  input: StandardGoldenInput,
+  item: GoldenItemInput,
+  deterministicDecision: IssueStateDecision | PullRequestStateDecision,
+  decision: ReducedCodexDecision,
+  staleness: StalenessResult,
+  applications: TrackedItemAiAnalysisApplications,
+  graph: ReturnType<typeof analyzeGraphAiDependencies>,
+  blockerDependencyContext: GoldenBlockerDependencyContext,
+): TrackedItemAiDependencies {
+  const nodeId = createGitHubNodeId(item.nodeId);
+  const blockerDependencies = goldenBlockerValueAiDependencies(
+    nodeId,
+    deterministicDecision.blockerDecisionTrace,
+    blockerDependencyContext,
+  );
+  const stateDependencies = goldenStateAiDependencies(nodeId, applications, blockerDependencies);
+  const deadlineDependency = goldenAiDependencyForApplication(nodeId, applications, "deadline");
+  const baseDependencies = {
+    status: stateDependencies.status,
+    waitingOn: stateDependencies.waitingOn,
+    nextAction: stateDependencies.nextAction,
+    primaryWaitingOn: stateDependencies.primaryWaitingOn,
+    confidence: goldenConfidenceAiDependency(nodeId, applications, blockerDependencies),
+    evidence: goldenEvidenceAiDependency(
+      nodeId,
+      decision,
+      deterministicDecision,
+      applications,
+      blockerDependencies,
+    ),
+    uncertainties: goldenUncertaintiesAiDependency(
+      nodeId,
+      applications,
+      blockerDependencies.uncertainties,
+    ),
+    deadline: deadlineDependency,
+    deadlineLevel: deadlineDependency,
+    lastProgressAt: goldenLastProgressAiDependency(item, staleness, applications),
+    stallSince: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    severity: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    downstreamImpact: goldenDownstreamImpactAiDependency(nodeId, graph),
+    importance: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    attention: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
+    blockers: goldenBlockersAiDependency(nodeId, graph),
+    relationSet: goldenRelationSetAiDependency(nodeId, graph),
+  } satisfies TrackedItemAiDependencies;
+  const stallSince = goldenStallSinceAiDependency(
+    input,
+    item,
+    deterministicDecision,
+    decision,
+    staleness,
+    baseDependencies,
+  );
+  const dependenciesWithStallSince = Object.freeze({
+    ...baseDependencies,
+    stallSince,
+  });
+  return Object.freeze({
+    ...dependenciesWithStallSince,
+    severity: goldenSeverityAiDependency(decision, staleness, dependenciesWithStallSince),
+  });
+}
+
+type MutableGoldenAiAnalysisCurrentElements = {
+  -readonly [
+    Element in keyof TrackedItemAiAnalysisCurrentElements
+  ]?: TrackedItemAiAnalysisCurrentElements[Element];
+};
+
+type MutableGoldenAiAnalysisCurrentAdoptedElements = {
+  -readonly [
+    Element in keyof TrackedItemAiAnalysisCurrentAdoptedElements
+  ]?: TrackedItemAiAnalysisCurrentAdoptedElements[Element];
+};
+
+type GoldenCurrentAiAnalysisRecord<Element extends AiAnalysisElement = AiAnalysisElement> =
+  Readonly<{
+    evaluated: TrackedItemAiAnalysisCurrentElement<Element>;
+    adopted: TrackedItemAiAnalysisCurrentAdoptedElement<Element>;
+  }>;
+
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "status",
+): GoldenCurrentAiAnalysisRecord<"status">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "waitingOn",
+): GoldenCurrentAiAnalysisRecord<"waitingOn">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "nextAction",
+): GoldenCurrentAiAnalysisRecord<"nextAction">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "relations",
+): GoldenCurrentAiAnalysisRecord<"relations">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "progress",
+): GoldenCurrentAiAnalysisRecord<"progress">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "importance",
+): GoldenCurrentAiAnalysisRecord<"importance">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "deadline",
+): GoldenCurrentAiAnalysisRecord<"deadline">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "notification",
+): GoldenCurrentAiAnalysisRecord<"notification">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: "selfCommitment",
+): GoldenCurrentAiAnalysisRecord<"selfCommitment">;
+function goldenCurrentAiAnalysisRecord(
+  analysis: PreparedGoldenFixedAiAnalysis,
+  element: AiAnalysisElement,
+): GoldenCurrentAiAnalysisRecord {
+  const rawResult = goldenCodexElementResult(analysis.acceptedOutput, element);
+  assertNonNullable(rawResult, `固定AI判定 ${analysis.itemNodeId}の${element}がありません`);
+  const result = createAiAnalysisMigrationElementResultSchema(element).parse(rawResult);
+  const inputFingerprint = hashCanonicalJson({
+    element,
+    input: analysis.input,
+  });
+  const dependencyFingerprint = hashCanonicalJson({ kind: "golden_eval", element });
+  const proof = aiAnalysisElementReuseProofSchema.parse({
+    status: "verified",
+    reuseSchemaVersion: "1",
+    source: "current_generation",
+    revision: AI_ANALYSIS_ELEMENT_REVISIONS[element],
+    inputProjectionVersion: AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS[element],
+    inputFingerprint,
+    dependencyFingerprint,
+    compatibilityPath: ["current_generation"],
+  });
+  const generation = createAiAnalysisElementGenerationSchema(element).parse({
+    metadata: {
+      model: "golden-eval",
+      reasoningEffort: "none",
+      backendVersion: "golden-eval",
+      schemaVersion: AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
+      revision: AI_ANALYSIS_ELEMENT_REVISIONS[element],
+      inputFingerprint,
+      executionFingerprint: hashCanonicalJson({ kind: "golden_eval_execution", element }),
+      promptFingerprint: hashCanonicalJson({ kind: "golden_eval_prompt", element }),
+      outputHash: hashCanonicalJson(result),
+      generatedAt: analysis.input.now,
+    },
+    result,
+  });
+  return Object.freeze({
+    evaluated: Object.freeze({ generation, result, evaluationProof: proof }),
+    adopted: Object.freeze({ origin: "current", generation, result, reuseProof: proof }),
+  });
+}
+
+function goldenCurrentAiAnalysisRecords(
+  analysis: PreparedGoldenFixedAiAnalysis | undefined,
+  applications: TrackedItemAiAnalysisApplications,
+): Readonly<{
+  elements: TrackedItemAiAnalysisCurrentElements;
+  adoptedElements: TrackedItemAiAnalysisCurrentAdoptedElements;
+}> {
+  const elements: MutableGoldenAiAnalysisCurrentElements = {};
+  const adoptedElements: MutableGoldenAiAnalysisCurrentAdoptedElements = {};
+  if (analysis == null) {
+    return Object.freeze({
+      elements: Object.freeze(elements),
+      adoptedElements: Object.freeze(adoptedElements),
+    });
+  }
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    if (applications[element].status !== "current_ai") {
+      continue;
+    }
+    switch (element) {
+      case "status": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.status = record.evaluated;
+        adoptedElements.status = record.adopted;
+        break;
+      }
+      case "waitingOn": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.waitingOn = record.evaluated;
+        adoptedElements.waitingOn = record.adopted;
+        break;
+      }
+      case "nextAction": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.nextAction = record.evaluated;
+        adoptedElements.nextAction = record.adopted;
+        break;
+      }
+      case "relations": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.relations = record.evaluated;
+        adoptedElements.relations = record.adopted;
+        break;
+      }
+      case "progress": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.progress = record.evaluated;
+        adoptedElements.progress = record.adopted;
+        break;
+      }
+      case "importance": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.importance = record.evaluated;
+        adoptedElements.importance = record.adopted;
+        break;
+      }
+      case "deadline": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.deadline = record.evaluated;
+        adoptedElements.deadline = record.adopted;
+        break;
+      }
+      case "notification": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.notification = record.evaluated;
+        adoptedElements.notification = record.adopted;
+        break;
+      }
+      case "selfCommitment": {
+        const record = goldenCurrentAiAnalysisRecord(analysis, element);
+        elements.selfCommitment = record.evaluated;
+        adoptedElements.selfCommitment = record.adopted;
+        break;
+      }
+      default:
+        throw new UnreachableError(element);
+    }
+  }
+  return Object.freeze({
+    elements: Object.freeze(elements),
+    adoptedElements: Object.freeze(adoptedElements),
+  });
+}
+
 function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): TrackedItem {
   const item = analysis.input;
   const decision = analysis.decision;
+  const aiAnalysisRecords = goldenCurrentAiAnalysisRecords(
+    analysis.fixedAiAnalysis,
+    analysis.aiAnalysisApplications,
+  );
   const evidenceByIdentity = new Map<string, Evidence>();
   for (const evidence of [...decision.evidence, ...analysis.personalReminderEvidence]) {
     evidenceByIdentity.set(JSON.stringify(evidence), evidence);
@@ -1986,11 +3399,12 @@ function createTrackedItem(repositoryName: string, analysis: ItemAnalysis): Trac
     personalReminderCausePlanning: analysis.personalReminderCausePlanning,
     aiAnalysis: Object.freeze({
       origin: "current",
-      status: "not_required",
-      elements: Object.freeze({}),
-      adoptedElements: Object.freeze({}),
-      applications: createGoldenAiAnalysisApplications("not_required"),
+      status: analysis.fixedAiAnalysis == null ? "not_required" : "used",
+      elements: aiAnalysisRecords.elements,
+      adoptedElements: aiAnalysisRecords.adoptedElements,
+      applications: analysis.aiAnalysisApplications,
     }),
+    aiDependencies: analysis.aiDependencies,
     inputEvents: Object.freeze(
       item.events.map((event) =>
         Object.freeze({
@@ -2042,7 +3456,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "17",
+    schemaVersion: "18",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -2313,8 +3727,8 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
       throw new TypeError(`項目 ${item.nodeId}のrepositoryがありません`);
     }
   }
-  const candidates = input.relations.map((relation) =>
-    createRelationCandidate(relation, items, repositories),
+  const candidates = normalizeRelationCandidates(
+    input.relations.map((relation) => createRelationCandidate(relation, items, repositories)),
   );
   const preparedAnalyses = prepareFixedAiAnalyses(input);
   const effectiveAssigneeCandidatesByNodeId = createEffectiveAssigneeCandidateMap(
@@ -2375,36 +3789,56 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
       ] satisfies readonly [string, IssueStateDecision | PullRequestStateDecision];
     }),
   );
+  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
+  const relationAssessments = fixedAi.relationAssessments.filter((assessment) =>
+    candidateIds.has(assessment.candidateId),
+  );
+  const relationAiDependencies = createFixedRelationAiDependencies(
+    candidates,
+    items,
+    relationAssessments,
+    fixedAi.applicationsByNodeId,
+  );
   const reconciled = reconcileGraph({
     previousGraph: Object.freeze({
       edges: Object.freeze([]),
       historyEvents: Object.freeze([]),
     }),
     candidates,
-    assessments: fixedAi.relationAssessments,
-    sourceOccurredAtById: createRelationSourceOccurredAtById(input, items),
+    assessments: relationAssessments,
+    relationAiDependencies,
+    sourceOccurredAtById: createRelationSourceOccurredAtById(input, items, candidates),
     minimumInferredConfidence: CONFIDENCE_THRESHOLDS.medium,
     reconciledAt: createUtcIsoDateTime(input.evaluatedAt),
   });
   const nodes = graphNodes(input);
   const previousGraphAvailable = Object.keys(input.previousNodeStates).length > 0;
-  const graph = analyzeGraph({
-    current: Object.freeze({
-      nodes,
-      edges: reconciled.edges,
-    }),
-    previous: previousGraphAvailable
-      ? Object.freeze({
-          availability: "available",
-          snapshot: Object.freeze({
-            nodes: previousGraphNodes(input, nodes),
-            edges: reconciled.edges,
-          }),
-        })
-      : Object.freeze({
-          availability: "unavailable",
-        }),
+  const currentGraph: AnalyzeGraphInput["current"] = Object.freeze({
+    nodes,
+    edges: reconciled.edges,
   });
+  const previousGraph: AnalyzeGraphInput["previous"] = previousGraphAvailable
+    ? Object.freeze({
+        availability: "available",
+        snapshot: Object.freeze({
+          nodes: previousGraphNodes(input, nodes),
+          edges: reconciled.edges,
+        }),
+      })
+    : Object.freeze({
+        availability: "unavailable",
+      });
+  const graph = analyzeGraph({
+    current: currentGraph,
+    previous: previousGraph,
+  });
+  const graphAi = analyzeGraphAiDependencies({
+    current: currentGraph,
+    candidateProofSnapshot: currentGraph,
+    previous: previousGraph,
+    candidateDecisionProofs: reconciled.candidateDecisionProofs,
+  });
+  const blockerDependencyContext = createGoldenBlockerDependencyContext(graphAi);
   const personalReminder = createGoldenPersonalReminderAnalysis(
     input,
     repositories,
@@ -2413,13 +3847,17 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
     localResponsibilityDecisions,
     fixedAi.decisions,
     preparedAnalyses,
+    fixedAi.applicationsByNodeId,
+    relationAiDependencies,
   );
   const analyses = Object.freeze(
     input.items.map((item) => {
       const deterministicDecision = fixedAi.reassessedDeterministicDecisions.get(item.nodeId);
       const decision = fixedAi.decisions.get(item.nodeId);
+      const aiAnalysisApplications = fixedAi.applicationsByNodeId.get(item.nodeId);
       const deadlineAssessment = fixedAi.deadlineAssessments.get(item.nodeId);
       const notificationRecommendation = fixedAi.notificationRecommendations.get(item.nodeId);
+      const preparedAnalysis = preparedByNodeId.get(item.nodeId);
       const personalReminderCauses =
         personalReminder.causesByNodeId.get(createGitHubNodeId(item.nodeId)) ?? Object.freeze([]);
       const personalReminderEvidence =
@@ -2445,18 +3883,32 @@ function analyzeStandardFixture(input: StandardGoldenInput): GoldenFixtureAnalys
       );
       assertNonNullable(deterministicDecision, `項目 ${item.nodeId}の決定論的判定がありません`);
       assertNonNullable(decision, `項目 ${item.nodeId}の最終判定がありません`);
+      assertNonNullable(aiAnalysisApplications, `項目 ${item.nodeId}のAI適用元がありません`);
       assertNonNullable(deadlineAssessment, `項目 ${item.nodeId}の期限判定がありません`);
       assertNonNullable(
         notificationRecommendation,
         `項目 ${item.nodeId}のCodex通知提案がありません`,
       );
+      const staleness = createStaleness(input, item, deterministicDecision, decision);
       return Object.freeze({
         input: item,
         deterministicDecision,
         decision,
+        fixedAiAnalysis: preparedAnalysis,
+        aiAnalysisApplications,
+        aiDependencies: createGoldenTrackedItemAiDependencies(
+          input,
+          item,
+          deterministicDecision,
+          decision,
+          staleness,
+          aiAnalysisApplications,
+          graphAi,
+          blockerDependencyContext,
+        ),
         deadlineAssessment,
         notificationRecommendation,
-        staleness: createStaleness(input, item, deterministicDecision, decision),
+        staleness,
         personalReminderCauses,
         personalReminderStaleness,
         personalReminderEvidence,
@@ -2596,6 +4048,7 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
           adoptedElements: Object.freeze({}),
           applications: createGoldenAiAnalysisApplications("disabled"),
         }),
+        aiDependencies: createGoldenNotDependentAiDependencies(),
         inputEvents: Object.freeze([]),
         confidence: 1,
         evidence: Object.freeze([
@@ -2644,6 +4097,7 @@ function createLargeEdges(
         ]),
         authoritative: true,
         contradictions: Object.freeze([]),
+        aiDependency: GOLDEN_NOT_DEPENDENT_AI_DEPENDENCY,
         active: true,
         firstSeenAt: evaluatedAt,
         lastConfirmedAt: evaluatedAt,
@@ -2809,7 +4263,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "17",
+    schemaVersion: "18",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

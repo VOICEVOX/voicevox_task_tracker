@@ -1,10 +1,13 @@
 import { useMemo } from "preact/hooks";
 
 import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { ContentState, PageSection } from "./layout.js";
 import {
   collectCurrentResponseSubjectRows,
+  currentResponseSubjectsUnverifiedDescription,
   currentResponseSubjectKey,
+  hasCurrentResponseSubjectListingUnverified,
   resolveCurrentResponseSubjects,
 } from "./model.js";
 import {
@@ -92,6 +95,10 @@ export function PeoplePage({
   viewerLogin,
 }: PeoplePageProps) {
   const rows = useMemo(() => collectCurrentResponseSubjectRows(summary, now), [now, summary]);
+  const subjectListingUnverified = useMemo(
+    () => hasCurrentResponseSubjectListingUnverified(summary),
+    [summary],
+  );
   const unidentifiedItemCount = useMemo(
     () =>
       summary.items.filter(
@@ -125,7 +132,14 @@ export function PeoplePage({
       headerClassName: "text-right",
       key: "itemCount",
       label: "対応中の項目数",
-      renderCell: (row: CurrentResponseSubjectRow) => row.itemCount.toLocaleString(locale),
+      renderCell: (row: CurrentResponseSubjectRow) => (
+        <span class="inline-flex items-center gap-1">
+          {row.itemCount.toLocaleString(locale)}
+          {row.itemCountUnverified && (
+            <AiUnverifiedMark description="現在入力に対して、この対応者が対応中の項目数は未検証で、表示件数が増減する可能性があります。" />
+          )}
+        </span>
+      ),
       widthClassName: "w-[26%]",
     },
     {
@@ -135,7 +149,14 @@ export function PeoplePage({
       headerClassName: "whitespace-nowrap",
       key: "longestStallDuration",
       label: "項目の最長停滞時間",
-      renderCell: (row: CurrentResponseSubjectRow) => row.longestStallDuration,
+      renderCell: (row: CurrentResponseSubjectRow) => (
+        <span class="inline-flex items-center gap-1">
+          {row.longestStallDuration}
+          {row.longestStallUnverified && (
+            <AiUnverifiedMark description="現在入力に対して、対応者ごとの項目の最長停滞時間が未検証です。" />
+          )}
+        </span>
+      ),
       widthClassName: "w-[22%]",
     },
   ] satisfies readonly ResponsiveTableColumn<CurrentResponseSubjectRow>[];
@@ -144,20 +165,45 @@ export function PeoplePage({
       className: "",
       key: "itemCount",
       label: "対応中の項目数",
-      renderValue: (row: CurrentResponseSubjectRow) => row.itemCount.toLocaleString(locale),
+      renderValue: (row: CurrentResponseSubjectRow) => (
+        <span class="inline-flex items-center gap-1">
+          {row.itemCount.toLocaleString(locale)}
+          {row.itemCountUnverified && (
+            <AiUnverifiedMark description="現在入力に対して、この対応者が対応中の項目数は未検証で、表示件数が増減する可能性があります。" />
+          )}
+        </span>
+      ),
       valueClassName: "font-mono font-semibold text-text-primary tabular-nums",
     },
     {
       className: "",
       key: "longestStallDuration",
       label: "項目の最長停滞時間",
-      renderValue: (row: CurrentResponseSubjectRow) => row.longestStallDuration,
+      renderValue: (row: CurrentResponseSubjectRow) => (
+        <span class="inline-flex items-center gap-1">
+          {row.longestStallDuration}
+          {row.longestStallUnverified && (
+            <AiUnverifiedMark description="現在入力に対して、対応者ごとの項目の最長停滞時間が未検証です。" />
+          )}
+        </span>
+      ),
       valueClassName: "font-mono font-semibold text-text-primary tabular-nums",
     },
   ] satisfies readonly ResponsiveCardField<CurrentResponseSubjectRow>[];
 
   return (
-    <PageSection className="people-page" heading="現在の対応者一覧" headingId="people-page-heading">
+    <PageSection
+      className="people-page"
+      heading={
+        <span class="flex max-w-full min-w-0 items-center gap-2">
+          <span class="min-w-0 wrap-anywhere">現在の対応者一覧</span>
+          {subjectListingUnverified && (
+            <AiUnverifiedMark description={currentResponseSubjectsUnverifiedDescription()} />
+          )}
+        </span>
+      }
+      headingId="people-page-heading"
+    >
       {rows.length === 0 ? (
         <ContentState
           className="empty-state"

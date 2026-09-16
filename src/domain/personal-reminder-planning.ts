@@ -9,6 +9,7 @@ import {
   personalReminderResponsibilityIdSchema,
   personalReminderTimeBasisSchema,
   type PersonalReminderCause,
+  type PersonalReminderCauseAiDependencies,
   type PersonalReminderCauseId,
   type PersonalReminderCauseSeed,
   type PersonalReminderExecutionSurface,
@@ -18,6 +19,12 @@ import {
   type PersonalReminderResponsibilityId,
   type PersonalReminderTimeBasis,
 } from "./personal-reminder-causes.js";
+import {
+  aiAnalysisDependencyForApplication,
+  combineAiAnalysisDependencies,
+  type AiAnalysisDependency,
+} from "./ai-analysis-dependencies.js";
+import { type AiAnalysisElement } from "./ai-analysis-elements.js";
 import {
   type FreshObservedGitHubIssue,
   type FreshObservedGitHubPullRequest,
@@ -36,6 +43,7 @@ import {
   type GraphNodeId,
   type NormalizedEvent,
   type Relation,
+  type TrackedItemAiAnalysisApplications,
   type UtcIsoDateTime,
 } from "./types.js";
 import { assertNonNullable, UnreachableError } from "../util/index.js";
@@ -57,6 +65,7 @@ export type PersonalReminderCauseDraft = Readonly<{
   evidenceSourceIds: readonly [SourceId, ...SourceId[]];
   responsibilityBasis: PersonalReminderResponsibilityBasis;
   responsibility: PersonalReminderResponsibility;
+  aiDependencies: PersonalReminderCauseAiDependencies;
 }>;
 
 /** 個人催促原因の候補を作れない理由。 */
@@ -222,6 +231,46 @@ function sourceIdsFromDecision(
     .filter((evidence) => evidence.supports === "status" || evidence.supports === "waiting_on")
     .map((evidence) => evidence.sourceId);
   return createBoundedSourceIds(requiredSourceIds, currentEvidenceSourceIds);
+}
+
+function assessmentTraceDependency(
+  itemNodeId: GitHubNodeId,
+  element: AiAnalysisElement,
+  decision: PersonalReminderLocalDecision,
+  applications: TrackedItemAiAnalysisApplications,
+): AiAnalysisDependency {
+  const usesElement = decision.assessmentTrace.some((trace) => {
+    if (trace.kind === "explicit_request") {
+      return element === "waitingOn";
+    }
+    return element === "status" || element === "waitingOn";
+  });
+  if (!usesElement) {
+    return Object.freeze({ status: "not_dependent" });
+  }
+  return aiAnalysisDependencyForApplication(itemNodeId, element, applications[element]);
+}
+
+/** state machineの判定から個人催促表示フィールドのAI依存を作る。 */
+export function personalReminderCauseAiDependenciesForDecision(
+  itemNodeId: GitHubNodeId,
+  decision: PersonalReminderLocalDecision,
+  applications: TrackedItemAiAnalysisApplications,
+): PersonalReminderCauseAiDependencies {
+  const status = assessmentTraceDependency(itemNodeId, "status", decision, applications);
+  const waitingOn = assessmentTraceDependency(itemNodeId, "waitingOn", decision, applications);
+  const nextAction = assessmentTraceDependency(itemNodeId, "nextAction", decision, applications);
+  const presence = combineAiAnalysisDependencies([status, waitingOn]);
+  const responsible = decision.assessmentTrace.some((trace) => trace.kind !== "explicit_request")
+    ? combineAiAnalysisDependencies([status, waitingOn])
+    : waitingOn;
+  const action = combineAiAnalysisDependencies([status, waitingOn, nextAction]);
+  return Object.freeze({
+    presence,
+    responsible,
+    action,
+    evidence: combineAiAnalysisDependencies([presence, responsible]),
+  });
 }
 
 function createUnavailable(
@@ -582,6 +631,7 @@ function createSeed(
     evidenceSourceIds: draft.evidenceSourceIds,
     obligationSince,
     lastConfirmedActionability,
+    aiDependencies: draft.aiDependencies,
   });
 }
 
@@ -597,6 +647,7 @@ function seedFromCause(cause: PersonalReminderCause): PersonalReminderCauseSeed 
     evidenceSourceIds: cause.evidenceSourceIds,
     obligationSince: cause.obligationSince,
     lastConfirmedActionability: cause.lastConfirmedActionability,
+    aiDependencies: cause.aiDependencies,
   });
 }
 
@@ -605,6 +656,7 @@ export function createPersonalReminderCauseDraft(
   item: PersonalReminderItem,
   localDecision: PersonalReminderLocalDecision,
   responsibility: PersonalReminderResponsibility,
+  applications: TrackedItemAiAnalysisApplications,
 ): PersonalReminderCauseDraft | PersonalReminderCauseDraftUnavailable {
   const waitClass = determineStalenessWaitClass(localDecision, item.events);
   if (waitClass === "notApplicable") {
@@ -642,6 +694,11 @@ export function createPersonalReminderCauseDraft(
     evidenceSourceIds: sourceIdsFromDecision(item, localDecision),
     responsibilityBasis: Object.freeze({ ...localDecision.responsibilityBasis }),
     responsibility: normalizeResponsibility(responsibility),
+    aiDependencies: personalReminderCauseAiDependenciesForDecision(
+      item.nodeId,
+      localDecision,
+      applications,
+    ),
   });
 }
 

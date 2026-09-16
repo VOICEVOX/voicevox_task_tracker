@@ -8,6 +8,7 @@ import {
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
+import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { CurrentImplementations } from "./current-implementations.js";
 import { CurrentResponses } from "./current-responses.js";
@@ -17,11 +18,12 @@ import { GitHubIconButton } from "./github-icon-button.js";
 import { type ItemGraphView } from "./graph-model.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import {
-  aiAnalysisNotice,
+  aiUnverifiedValueLabel,
   confidencePresentation,
   formatDateTime,
   formatRelativeTime,
   formatStallDuration,
+  hasAiUnverifiedValue,
   statusLabel,
   waitingOnHistoryLabel,
   type ConfidencePresentation,
@@ -58,6 +60,7 @@ type ResponsibilityHistoryValue = Extract<
 >["before"];
 
 type ImportanceFactor = PublicItemDetailsDto["importanceFactors"][number];
+type AiUnverifiedValue = PublicItemDetailsDto["summary"]["aiAnalysis"]["unverifiedValues"][number];
 
 type ImportanceFactorSource = Readonly<{
   kind: "deterministic" | "codex";
@@ -102,6 +105,56 @@ const DISCLOSURE_SUMMARY_CLASS_NAME =
   "grid min-h-12 cursor-pointer list-none grid-cols-[0.75rem_minmax(0,1fr)] items-start gap-x-2 py-3 text-text-secondary marker:content-none before:mt-0.5 before:text-text-muted before:content-['▸'] group-open:before:content-['▾'] [&::-webkit-details-marker]:hidden";
 const DISCLOSURE_HEADING_CLASS_NAME =
   "m-0 flex min-w-0 items-baseline justify-between gap-x-4 gap-y-1 font-display text-base font-bold max-narrow:flex-col";
+
+function aiAnalysisOmissionDescription(
+  omission: PublicItemDetailsDto["summary"]["aiAnalysis"]["omission"],
+): string | undefined {
+  switch (omission) {
+    case "none":
+      return undefined;
+    case "partial":
+      return "今回の判定要素の一部は、AI推定が不要でした。";
+    case "all":
+      return "今回の判定要素はすべて、AI推定が不要でした。";
+    default:
+      throw new UnreachableError(omission);
+  }
+}
+
+function aiAnalysisProcessingNotice(
+  aiAnalysis: PublicItemDetailsDto["summary"]["aiAnalysis"],
+): string | undefined {
+  switch (aiAnalysis.runStatus) {
+    case "failed":
+      return "今回のAI分析に失敗しました。";
+    case "deferred":
+      return "予算上限により今回はAI分析を実行していません。";
+    case "used":
+    case "not_required":
+    case "disabled":
+    case "not_recorded":
+      return undefined;
+    default:
+      throw new UnreachableError(aiAnalysis.runStatus);
+  }
+}
+
+function DetailUnverifiedMark({
+  item,
+  value,
+}: Readonly<{
+  item: PublicItemDetailsDto["summary"];
+  value: AiUnverifiedValue;
+}>) {
+  if (!hasAiUnverifiedValue(item.aiAnalysis, value)) {
+    return null;
+  }
+  return (
+    <AiUnverifiedMark
+      description={`現在入力に対して${aiUnverifiedValueLabel(value)}が未検証です。`}
+    />
+  );
+}
 
 /** 項目詳細pageへ遷移し、通常のリンク操作も維持する。 */
 export function ItemDetailsLink({ children, href, nodeId, onSelect }: ItemDetailsLinkProps) {
@@ -333,7 +386,7 @@ function RelatedItemReference({
 }
 
 function hasItemDependencies(view: ItemGraphView): boolean {
-  return view.sourceEdges.length > 0 || view.omittedSourceNodeCount > 0;
+  return view.displayEdges.length > 0 || view.omittedSourceNodeCount > 0;
 }
 
 /** 選択した項目の判定根拠と変更履歴を表示する。 */
@@ -355,7 +408,8 @@ export function ItemDetailsContent({
   const item = details.summary;
   const heading = useRef<HTMLHeadingElement>(null);
   const presentation = confidencePresentation(item.confidence, summary.confidenceThresholds);
-  const aiNotice = aiAnalysisNotice(item.aiAnalysis.status);
+  const omissionDescription = aiAnalysisOmissionDescription(item.aiAnalysis.omission);
+  const processingNotice = aiAnalysisProcessingNotice(item.aiAnalysis);
   const itemsByNodeId = new Map(
     summary.items.map((summaryItem) => [summaryItem.nodeId, summaryItem]),
   );
@@ -412,16 +466,20 @@ export function ItemDetailsContent({
         </div>
       </div>
 
-      {aiNotice.kind !== "none" && (
+      {omissionDescription != null && (
         <p
-          class={`ai-analysis-notice m-0 rounded-xl border-l-4 px-4 py-3 text-sm leading-5 ${
-            aiNotice.kind === "outdated"
-              ? "ai-analysis-notice-outdated border-state-warning-border bg-state-warning-background text-state-warning-text"
-              : "ai-analysis-notice-skipped border-state-info-border bg-state-info-background text-state-info-text"
-          }`}
+          class="ai-analysis-notice ai-analysis-notice-omission m-0 rounded-xl border-l-4 border-state-info-border bg-state-info-background px-4 py-3 text-sm leading-5 text-state-info-text"
           role="status"
         >
-          {aiNotice.description}
+          {omissionDescription}
+        </p>
+      )}
+      {processingNotice != null && (
+        <p
+          class="ai-analysis-notice ai-analysis-notice-processing-warning m-0 rounded-xl border-l-4 border-state-warning-border bg-state-warning-background px-4 py-3 text-sm leading-5 text-state-warning-text"
+          role="status"
+        >
+          {processingNotice}
         </p>
       )}
 
@@ -442,30 +500,40 @@ export function ItemDetailsContent({
             <dt class="text-xs font-bold text-text-muted">
               {decisionFieldLabel("現在の状態", presentation)}
             </dt>
-            <dd class="mt-1 mb-0 grid justify-items-start gap-1">
+            <dd class="mt-1 mb-0 flex flex-wrap items-center gap-1">
               <Pill className="current-status-badge" tone="neutral">
                 {statusLabel(item.status)}
               </Pill>
+              <DetailUnverifiedMark item={item} value="status" />
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">要対応度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <AttentionBadge attention={item.attention} presentation="level_and_score" />
+              <div class="flex flex-wrap items-center gap-1">
+                <AttentionBadge attention={item.attention} presentation="level_and_score" />
+                <DetailUnverifiedMark item={item} value="attention" />
+              </div>
               <span class="text-xs text-text-muted">重要度・期限の切迫度・鮮度から決まる値</span>
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">重要度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <ImportanceBadge importance={item.importance} presentation="level_and_score" />
+              <div class="flex flex-wrap items-center gap-1">
+                <ImportanceBadge importance={item.importance} presentation="level_and_score" />
+                <DetailUnverifiedMark item={item} value="importance" />
+              </div>
               <span class="text-xs text-text-muted">項目自体の重要さ</span>
             </dd>
           </div>
           <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">期限の切迫度</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <DeadlineDisplay dateClassName="text-sm" deadline={details.deadline} />
+              <div class="flex min-w-0 flex-wrap items-center gap-1">
+                <DeadlineDisplay dateClassName="text-sm" deadline={details.deadline} />
+                <DetailUnverifiedMark item={item} value="deadline" />
+              </div>
               {details.deadline.status === "available" && (
                 <span class="text-xs text-text-muted">{details.deadline.rationale}</span>
               )}
@@ -474,14 +542,17 @@ export function ItemDetailsContent({
           <div class="min-w-0 border-l-2 border-border-default pl-3">
             <dt class="text-xs font-bold text-text-muted">停滞時間</dt>
             <dd class="mt-1 mb-0 grid justify-items-start gap-1">
-              <strong class="font-mono text-lg text-text-primary tabular-nums">
-                <time
-                  dateTime={item.stallSince}
-                  title={formatDateTime(item.stallSince, summary.timezone, locale)}
-                >
-                  {formatStallDuration(item.stallSince, now)}
-                </time>
-              </strong>
+              <div class="flex flex-wrap items-center gap-1">
+                <strong class="font-mono text-lg text-text-primary tabular-nums">
+                  <time
+                    dateTime={item.stallSince}
+                    title={formatDateTime(item.stallSince, summary.timezone, locale)}
+                  >
+                    {formatStallDuration(item.stallSince, now)}
+                  </time>
+                </strong>
+                <DetailUnverifiedMark item={item} value="staleness" />
+              </div>
               <span class="text-xs text-text-muted">停滞開始からの経過</span>
             </dd>
           </div>
@@ -507,30 +578,43 @@ export function ItemDetailsContent({
           )}
         </dl>
 
-        {item.blockerNodeIds.length > 0 && (
+        {(item.blockerNodeIds.length > 0 || hasAiUnverifiedValue(item.aiAnalysis, "blockers")) && (
           <div class="blockers min-w-0 lg:col-span-2">
-            <h5 class="mt-0 mb-3 font-display text-base font-bold">ブロッカー</h5>
-            <ul class="blocker-list m-0 grid list-none gap-2 p-0">
-              {item.blockerNodeIds.map((nodeId) => (
-                <li
-                  class="flex min-w-0 flex-wrap items-center gap-2 border-l-4 border-state-danger-border py-1 pl-3 wrap-anywhere"
-                  key={nodeId}
-                >
-                  {nodeId === primaryBlockerNodeId && (
-                    <Pill className="primary-blocker-badge" tone="danger">
-                      主要
-                    </Pill>
-                  )}
-                  <RelatedItemReference
-                    createItemHref={createItemHref}
-                    graphNodesByNodeId={graphNodesByNodeId}
-                    itemsByNodeId={itemsByNodeId}
-                    nodeId={nodeId}
-                    onSelectItem={onSelectItem}
-                  />
-                </li>
-              ))}
-            </ul>
+            <h5 class="mt-0 mb-3 flex flex-wrap items-center gap-1 font-display text-base font-bold">
+              <span>ブロッカー</span>
+              <DetailUnverifiedMark item={item} value="blockers" />
+            </h5>
+            {item.blockerNodeIds.length === 0 ? (
+              <p class="m-0 text-sm text-text-muted">ブロッカーはありません。</p>
+            ) : (
+              <ul class="blocker-list m-0 grid list-none gap-2 p-0">
+                {item.blockerNodeIds.map((nodeId) => (
+                  <li
+                    class="flex min-w-0 flex-wrap items-center gap-2 border-l-4 border-state-danger-border py-1 pl-3 wrap-anywhere"
+                    key={nodeId}
+                  >
+                    {nodeId === primaryBlockerNodeId && (
+                      <span class="inline-flex items-center gap-1">
+                        <Pill className="primary-blocker-badge" tone="danger">
+                          主要
+                        </Pill>
+                        <DetailUnverifiedMark item={item} value="primaryWaitingOn" />
+                      </span>
+                    )}
+                    <RelatedItemReference
+                      createItemHref={createItemHref}
+                      graphNodesByNodeId={graphNodesByNodeId}
+                      itemsByNodeId={itemsByNodeId}
+                      nodeId={nodeId}
+                      onSelectItem={onSelectItem}
+                    />
+                    {details.unverifiedBlockerNodeIds.includes(nodeId) && (
+                      <DetailUnverifiedMark item={item} value="blockers" />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         )}
       </section>
@@ -557,44 +641,65 @@ export function ItemDetailsContent({
         variant="detail"
       />
 
-      {hasItemDependencies(dependencyGraphView) && (
+      {(hasItemDependencies(dependencyGraphView) ||
+        hasAiUnverifiedValue(item.aiAnalysis, "relations")) && (
         <section
           aria-labelledby="item-dependency-graph-heading"
           class="item-dependency-graph grid min-w-0 gap-3 border-t border-border-subtle pt-5"
         >
           <h4
             id="item-dependency-graph-heading"
-            class="item-dependency-graph-heading m-0 font-display text-base leading-snug font-semibold"
+            class="item-dependency-graph-heading m-0 flex flex-wrap items-center gap-1 font-display text-base leading-snug font-semibold"
           >
-            依存関係
+            <span>依存関係</span>
+            <DetailUnverifiedMark item={item} value="relations" />
           </h4>
-          <p class="graph-selection-summary m-0 text-sm text-text-secondary" aria-live="polite">
-            {"この項目と現在有効な依存関係で直接つながる項目だけを、中心項目を含めて"}
-            <span class="font-mono tabular-nums">
-              {dependencyGraphView.representedSourceNodeCount.toLocaleString(locale)}
-            </span>
-            {"件表示します。"}
-            {dependencyGraphView.omittedSourceNodeCount > 0 && (
-              <>
-                {"表示上限外の隣接項目が"}
-                <span class="font-mono tabular-nums">
-                  {dependencyGraphView.omittedSourceNodeCount.toLocaleString(locale)}
+          {hasItemDependencies(dependencyGraphView) ? (
+            <>
+              <p
+                class="graph-selection-summary m-0 flex flex-wrap items-center gap-1 text-sm text-text-secondary"
+                aria-live="polite"
+              >
+                <span>
+                  {"現在有効な依存関係を"}
+                  <span class="font-mono tabular-nums">
+                    {dependencyGraphView.displayEdges.length.toLocaleString(locale)}
+                  </span>
+                  {"件表示します。この項目と直接つながる項目は、中心項目を含めて"}
+                  <span class="font-mono tabular-nums">
+                    {dependencyGraphView.representedSourceNodeCount.toLocaleString(locale)}
+                  </span>
+                  {"件表示します。"}
+                  {dependencyGraphView.omittedSourceNodeCount > 0 && (
+                    <>
+                      {"表示上限外の隣接項目が"}
+                      <span class="font-mono tabular-nums">
+                        {dependencyGraphView.omittedSourceNodeCount.toLocaleString(locale)}
+                      </span>
+                      {"件あります。"}
+                    </>
+                  )}
                 </span>
-                {"件あります。"}
-              </>
-            )}
-          </p>
-          <DependencyGraphDiagram
-            description={`${item.displayReference}を中心項目として示します。`}
-            idPrefix="item-dependency-graph"
-            navigation={{
-              status: "item_details",
-              createItemHref,
-              onSelectItem,
-            }}
-            title={`${item.displayReference}を中心にした依存グラフ`}
-            view={dependencyGraphView}
-          />
+                <DetailUnverifiedMark item={item} value="relations" />
+              </p>
+              <DependencyGraphDiagram
+                description={`${item.displayReference}を中心項目として示します。`}
+                idPrefix="item-dependency-graph"
+                navigation={{
+                  status: "item_details",
+                  createItemHref,
+                  onSelectItem,
+                }}
+                title={`${item.displayReference}を中心にした依存グラフ`}
+                view={dependencyGraphView}
+              />
+            </>
+          ) : (
+            <p class="m-0 flex flex-wrap items-center gap-1 text-sm text-text-muted">
+              <span>現在有効な依存関係はありません。</span>
+              <DetailUnverifiedMark item={item} value="relations" />
+            </p>
+          )}
         </section>
       )}
 
@@ -608,26 +713,44 @@ export function ItemDetailsContent({
           </h4>
         </summary>
         <div class="detail-disclosure-content grid gap-4 pb-4">
-          <ConfidenceDisplay presentation={presentation} />
-          {details.uncertainties.length > 0 && (
+          <div class="flex min-w-0 flex-wrap items-start gap-1">
+            <ConfidenceDisplay presentation={presentation} />
+            <DetailUnverifiedMark item={item} value="confidence" />
+          </div>
+          {(details.uncertainties.length > 0 ||
+            hasAiUnverifiedValue(item.aiAnalysis, "uncertainties")) && (
             <div class="uncertainty-list rounded-xl border border-state-danger-border bg-state-danger-background p-3 text-state-danger-text">
-              <h5 class="m-0 font-display font-bold">不確実な点</h5>
-              <ul class="mt-2 mb-0 list-disc pl-6">
-                {details.uncertainties.map((uncertainty) => (
-                  <li key={uncertainty}>{uncertainty}</li>
-                ))}
-              </ul>
+              <h5 class="m-0 flex flex-wrap items-center gap-1 font-display font-bold">
+                <span>不確実な点</span>
+                <DetailUnverifiedMark item={item} value="uncertainties" />
+              </h5>
+              {details.uncertainties.length === 0 ? (
+                <p class="mt-2 mb-0">現在記録されている不確実な点はありません。</p>
+              ) : (
+                <ul class="mt-2 mb-0 list-disc pl-6">
+                  {details.uncertainties.map((uncertainty) => (
+                    <li key={uncertainty}>{uncertainty}</li>
+                  ))}
+                </ul>
+              )}
             </div>
           )}
           {primaryBlockerNodeId != null && (
             <div class="primary-selection-reason rounded-xl border-l-4 border-border-strong bg-surface-sunken px-3 py-2">
-              <h5 class="mt-0 mb-2 font-display text-base font-bold">主要ブロッカーの選定理由</h5>
+              <h5 class="mt-0 mb-2 flex flex-wrap items-center gap-1 font-display text-base font-bold">
+                <span>主要ブロッカーの選定理由</span>
+                <DetailUnverifiedMark item={item} value="primaryWaitingOn" />
+              </h5>
               <p class="m-0">{item.primaryWaitingOn.selectionReason}</p>
             </div>
           )}
           <section class="importance-evidence" aria-labelledby="importance-evidence-heading">
-            <h5 id="importance-evidence-heading" class="mt-0 mb-3 font-display text-base font-bold">
-              重要度の加点内訳
+            <h5
+              id="importance-evidence-heading"
+              class="mt-0 mb-3 flex flex-wrap items-center gap-1 font-display text-base font-bold"
+            >
+              <span>重要度の加点内訳</span>
+              <DetailUnverifiedMark item={item} value="importance" />
             </h5>
             {details.importanceFactors.length === 0 ? (
               <p class="m-0 text-sm text-text-muted">重要度の加点要因はありません。</p>
@@ -657,8 +780,12 @@ export function ItemDetailsContent({
             )}
           </section>
           <section class="decision-evidence" aria-labelledby="decision-evidence-heading">
-            <h5 id="decision-evidence-heading" class="mt-0 mb-3 font-display text-base font-bold">
-              状態と次の行動の根拠
+            <h5
+              id="decision-evidence-heading"
+              class="mt-0 mb-3 flex flex-wrap items-center gap-1 font-display text-base font-bold"
+            >
+              <span>状態と次の行動の根拠</span>
+              <DetailUnverifiedMark item={item} value="evidence" />
             </h5>
             {details.evidence.length === 0 ? (
               <p class="m-0">公開できる判定根拠はありません。</p>

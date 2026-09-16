@@ -1,12 +1,17 @@
 import { type LabelEffectsResolver } from "./label-resolution.js";
 import { type SourceId } from "./source-id.js";
 import { type NormalizedEvent, type UtcIsoDateTime } from "./types.js";
+import {
+  aiAnalysisDependencySchema,
+  type AiAnalysisDependency,
+} from "./ai-analysis-dependencies.js";
 import { assertNonNullable, UnreachableError } from "../util/index.js";
 
 /** 依存グラフから渡す確定済みの依存解消。 */
 export type DependencyResolutionProgress = Readonly<{
   occurredAt: UtcIsoDateTime;
   sourceIds: readonly [SourceId, ...SourceId[]];
+  aiDependency: AiAnalysisDependency;
 }>;
 
 /** 自然言語を含む進捗候補への検証済み判定。 */
@@ -24,20 +29,27 @@ export type NaturalLanguageProgressCandidate = Readonly<{
   occurredAt: UtcIsoDateTime;
 }>;
 
-/** lastProgressAtへ反映した意味のある進捗。 */
-export type MeaningfulProgress = Readonly<{
-  kind:
-    | "push"
-    | "human_review"
-    | "state_change"
-    | "dependency_resolved"
-    | "configured_label"
-    | "natural_language";
+type MeaningfulProgressBase = Readonly<{
   occurredAt: UtcIsoDateTime;
   sourceIds: readonly [SourceId, ...SourceId[]];
   determination: "deterministic" | "ai";
   confidence: number;
 }>;
+
+/** lastProgressAtへ反映した意味のある進捗。 */
+export type MeaningfulProgress =
+  | (MeaningfulProgressBase &
+      Readonly<{
+        kind: "dependency_resolved";
+        aiDependency: AiAnalysisDependency;
+      }>)
+  | (MeaningfulProgressBase &
+      Readonly<{
+        kind: Exclude<
+          "push" | "human_review" | "state_change" | "configured_label" | "natural_language",
+          "dependency_resolved"
+        >;
+      }>);
 
 /** 前回までに確定した活動時刻。 */
 export type PreviousActivityState =
@@ -103,7 +115,7 @@ function createSourceIds(sourceIds: readonly SourceId[]): readonly [SourceId, ..
 }
 
 function createProgress(
-  kind: MeaningfulProgress["kind"],
+  kind: Exclude<MeaningfulProgress["kind"], "dependency_resolved">,
   occurredAt: UtcIsoDateTime,
   sourceIds: readonly SourceId[],
   determination: MeaningfulProgress["determination"],
@@ -115,6 +127,21 @@ function createProgress(
     sourceIds: createSourceIds(sourceIds),
     determination,
     confidence,
+  });
+}
+
+function createDependencyResolvedProgress(
+  occurredAt: UtcIsoDateTime,
+  sourceIds: readonly SourceId[],
+  aiDependency: AiAnalysisDependency,
+): MeaningfulProgress {
+  return Object.freeze({
+    kind: "dependency_resolved",
+    occurredAt,
+    sourceIds: createSourceIds(sourceIds),
+    determination: "deterministic",
+    confidence: 1,
+    aiDependency,
   });
 }
 
@@ -190,6 +217,12 @@ function validateInput(input: MeaningfulProgressInput): void {
     const occurredAt = parseTimestamp(resolution.occurredAt, "依存解消時刻");
     if (occurredAt < createdAt || occurredAt > evaluatedAt) {
       throw new RangeError("依存解消時刻は項目作成時刻以後かつ判定時刻以前にしてください");
+    }
+    const dependencyResult = aiAnalysisDependencySchema.safeParse(resolution.aiDependency);
+    if (!dependencyResult.success) {
+      throw new TypeError("依存解消のAI依存が不正です", {
+        cause: dependencyResult.error,
+      });
     }
   }
 
@@ -311,12 +344,10 @@ function classifyDeterministicEvent(
       return createProgress("state_change", event.occurredAt, [event.sourceId], "deterministic", 1);
     case "relation":
       return event.relationType === "blocks" && event.action === "removed"
-        ? createProgress(
-            "dependency_resolved",
+        ? createDependencyResolvedProgress(
             event.occurredAt,
             [event.sourceId],
-            "deterministic",
-            1,
+            Object.freeze({ status: "not_dependent" }),
           )
         : undefined;
     case "label":
@@ -362,12 +393,10 @@ export function determineMeaningfulProgress(
 
   for (const resolution of input.dependencyResolutions) {
     progress.push(
-      createProgress(
-        "dependency_resolved",
+      createDependencyResolvedProgress(
         resolution.occurredAt,
         resolution.sourceIds,
-        "deterministic",
-        1,
+        resolution.aiDependency,
       ),
     );
   }

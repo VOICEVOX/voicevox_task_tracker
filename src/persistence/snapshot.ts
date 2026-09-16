@@ -19,11 +19,15 @@ import {
   type ExternalGhostNode,
   type GitHubAccountActor,
   type GitHubNodeId,
+  type GraphNodeId,
   type NaturalLanguageDeadlineAssessmentState,
   type NaturalLanguageImportanceAssessmentState,
   currentPersonalReminderAssessment,
   type CurrentPersonalReminderAssessment,
   type PersonalReminderCause,
+  type PersonalReminderCausePlanning,
+  type PersonalReminderEvaluationAttempt,
+  personalReminderCauseAiDependenciesSchema,
   personalReminderCauseSchema,
   personalReminderCausePlanningSchema,
   type Relation,
@@ -32,12 +36,19 @@ import {
   type StalenessSeverityContext,
   type TrackingStartAtState,
   type TrackedItem,
+  type TrackedItemAiDependencies,
+  type AiAnalysisDependency,
+  type AiAnalysisDependencyElement,
+  type AiAnalysisDependencyProducer,
   type TrackedItemAiAnalysis,
   type UtcIsoDateTime,
   validateDeadlineDate,
 } from "../domain/index.js";
 import {
+  AI_ANALYSIS_ELEMENTS,
   aiAnalysisElementSchema,
+  aiAnalysisElementApplicationUsesAiValue,
+  type AiAnalysisElement,
   aiAnalysisElementEvidenceSchema,
   aiAnalysisElementApplicationsSchema,
   aiAnalysisElementMetadataSchema,
@@ -47,12 +58,37 @@ import {
   createAiAnalysisMigrationElementResultSchema,
 } from "../domain/ai-analysis-elements.js";
 import {
+  aiAnalysisDependencyForApplication,
+  aiAnalysisDependencyForMissingRelationCandidateAssessment,
+  aiAnalysisDependencyForRelation,
+  aiAnalysisDependencyForRelationCandidate,
+  aiAnalysisDependencySchema,
+  AI_ANALYSIS_DEPENDENCY_ELEMENTS,
+  combineAiAnalysisDependencies,
+  normalizeAiAnalysisDependency,
+  trackedItemAiDependenciesSchema,
+} from "../domain/ai-analysis-dependencies.js";
+import {
+  analyzeGraph,
+  analyzeGraphAiDependencies,
+  type BlockerNodeAiDependency,
+  type GraphAnalysisNode,
+  type ReconciledGraphEdge,
+  type RelationCandidateDecisionProof,
+  type RelationCandidateId,
+} from "../graph/index.js";
+import {
   AI_ANALYSIS_ELEMENTS_V6,
   createAiAnalysisElementGenerationSchemaV6,
   createAiAnalysisElementSourceGenerationSchema,
   type AiAnalysisElementV6,
 } from "../domain/ai-analysis-source-generations.js";
+import {
+  AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
+  AI_ANALYSIS_ELEMENT_REVISIONS,
+} from "../codex/analysis-elements.js";
 import { type PublicRepositoryId, type Sha256Fingerprint } from "../github/index.js";
+import { UnreachableError } from "../util/index.js";
 
 type PublicSnapshotRepositoryFields = Repository &
   Readonly<{
@@ -158,6 +194,7 @@ export const SNAPSHOT_SCHEMA_VERSION_14 = "14";
 export const SNAPSHOT_SCHEMA_VERSION_15 = "15";
 export const SNAPSHOT_SCHEMA_VERSION_16 = "16";
 export const SNAPSHOT_SCHEMA_VERSION_17 = "17";
+export const SNAPSHOT_SCHEMA_VERSION_18 = "18";
 
 type StateSnapshotFields = Readonly<{
   generatedAt: UtcIsoDateTime;
@@ -171,31 +208,114 @@ type StateSnapshotFields = Readonly<{
   run: SnapshotRun;
 }>;
 
+type LegacySnapshotTrackedItemWithoutAiDependencies = Omit<SnapshotTrackedItem, "aiDependencies">;
+type LegacyRelationWithoutAiDependency = Omit<Relation, "aiDependency">;
+type LegacyStateSnapshotFieldsWithoutAiDependencies = Omit<
+  StateSnapshotFields,
+  "items" | "relations"
+> &
+  Readonly<{
+    items: readonly LegacySnapshotTrackedItemWithoutAiDependencies[];
+    relations: readonly LegacyRelationWithoutAiDependency[];
+  }>;
+
 type LegacyTrackedItemAiAnalysis =
-  | Omit<Extract<TrackedItemAiAnalysis, { origin: "current" }>, "applications">
-  | Omit<Extract<TrackedItemAiAnalysis, { origin: "migration" }>, "applications">;
+  | (Omit<Extract<TrackedItemAiAnalysis, { origin: "current" }>, "applications"> &
+      Readonly<{
+        applications?: never;
+      }>)
+  | (Omit<Extract<TrackedItemAiAnalysis, { origin: "migration" }>, "applications"> &
+      Readonly<{
+        applications?: never;
+      }>);
 
-type SnapshotTrackedItemPersonalReminderFields = Pick<
+/** AI依存が保存される前のpersonal reminder causeのcurrent input。 */
+export type LegacyPersonalReminderCauseCurrentInput = Omit<
+  PersonalReminderCause["currentInput"],
+  "aiDependency"
+> &
+  Readonly<{
+    aiDependency?: never;
+  }>;
+
+type LegacyPersonalReminderEvaluationAttempt =
+  | Extract<PersonalReminderEvaluationAttempt, { status: "not_evaluated" }>
+  | Extract<PersonalReminderEvaluationAttempt, { status: "completed" }>
+  | Omit<Extract<PersonalReminderEvaluationAttempt, { status: "failed" }>, "rulesVersion">
+  | Omit<Extract<PersonalReminderEvaluationAttempt, { status: "deferred" }>, "rulesVersion">;
+
+/** AI依存が保存される前のpersonal reminder cause。 */
+export type LegacyPersonalReminderCause = Omit<
+  PersonalReminderCause,
+  "aiDependencies" | "currentInput" | "latestAttempt"
+> &
+  Readonly<{
+    aiDependencies?: never;
+    currentInput: LegacyPersonalReminderCauseCurrentInput;
+    latestAttempt: LegacyPersonalReminderEvaluationAttempt;
+  }>;
+
+/** AI依存が保存される前のcompletedなpersonal reminder cause planning。 */
+export type LegacyPersonalReminderCausePlanningCompleted = Omit<
+  Extract<PersonalReminderCausePlanning, { status: "completed" }>,
+  "causeSetAiDependency" | "causeSetSubjectChanges"
+> &
+  Readonly<{
+    causeSetAiDependency?: never;
+    causeSetSubjectChanges?: never;
+  }>;
+
+/** AI依存が保存される前のpersonal reminder cause planning。 */
+export type LegacyPersonalReminderCausePlanning =
+  | Extract<PersonalReminderCausePlanning, { status: "pending" }>
+  | LegacyPersonalReminderCausePlanningCompleted
+  | Extract<PersonalReminderCausePlanning, { status: "excluded" }>;
+
+type SnapshotTrackedItemPersonalReminderCommonFields = Pick<
   SnapshotTrackedItem,
-  | "nodeId"
-  | "status"
-  | "createdAt"
-  | "observedAt"
-  | "personalReminderCauses"
-  | "personalReminderCausePlanning"
+  "nodeId" | "status" | "createdAt" | "observedAt"
 >;
-
+type SnapshotTrackedItemPersonalReminderFields =
+  | (SnapshotTrackedItemPersonalReminderCommonFields &
+      Readonly<{
+        personalReminderCauses: readonly PersonalReminderCause[];
+        personalReminderCausePlanning: PersonalReminderCausePlanning;
+      }>)
+  | (SnapshotTrackedItemPersonalReminderCommonFields &
+      Readonly<{
+        personalReminderCauses: readonly LegacyPersonalReminderCause[];
+        personalReminderCausePlanning: LegacyPersonalReminderCausePlanning;
+      }>);
 type LegacySnapshotTrackedItem = Omit<
   SnapshotTrackedItem,
-  "personalReminderCauses" | "personalReminderCausePlanning" | "aiAnalysis"
+  "personalReminderCauses" | "personalReminderCausePlanning" | "aiAnalysis" | "aiDependencies"
 > &
   Readonly<{
     aiAnalysis: LegacyTrackedItemAiAnalysis;
   }>;
-type LegacySnapshotTrackedItemWithPersonalReminder = Omit<SnapshotTrackedItem, "aiAnalysis"> &
+type LegacySnapshotTrackedItemWithPersonalReminder = Omit<
+  SnapshotTrackedItem,
+  "aiAnalysis" | "aiDependencies" | "personalReminderCauses" | "personalReminderCausePlanning"
+> &
   Readonly<{
     aiAnalysis: LegacyTrackedItemAiAnalysis;
+    personalReminderCauses: readonly LegacyPersonalReminderCause[];
+    personalReminderCausePlanning: LegacyPersonalReminderCausePlanning;
   }>;
+type LegacySnapshotTrackedItemWithPersonalReminderVersion17 = Omit<
+  SnapshotTrackedItem,
+  "aiDependencies" | "personalReminderCauses" | "personalReminderCausePlanning"
+> &
+  Readonly<{
+    personalReminderCauses: readonly LegacyPersonalReminderCause[];
+    personalReminderCausePlanning: LegacyPersonalReminderCausePlanning;
+  }>;
+type SnapshotItemForRelationValidation =
+  | SnapshotTrackedItem
+  | LegacySnapshotTrackedItemWithoutAiDependencies
+  | LegacySnapshotTrackedItem
+  | LegacySnapshotTrackedItemWithPersonalReminder
+  | LegacySnapshotTrackedItemWithPersonalReminderVersion17;
 type LegacySnapshotCollectionItem = Omit<
   SnapshotCollectionItem,
   "aiAnalysis" | "state" | "terminalAt"
@@ -221,18 +341,28 @@ type LegacySnapshotCollectionState = Omit<SnapshotCollectionState, "repositories
   Readonly<{
     repositories: readonly LegacySnapshotCollectionRepository[];
   }>;
-type LegacyStateSnapshotFields = Omit<StateSnapshotFields, "collection" | "items"> &
+type LegacyStateSnapshotFields = Omit<
+  LegacyStateSnapshotFieldsWithoutAiDependencies,
+  "collection" | "items"
+> &
   Readonly<{
     collection: LegacySnapshotCollectionState;
     items: readonly LegacySnapshotTrackedItem[];
   }>;
 type LegacyStateSnapshotFieldsWithPersonalReminder = Omit<
-  StateSnapshotFields,
+  LegacyStateSnapshotFieldsWithoutAiDependencies,
   "collection" | "items"
 > &
   Readonly<{
     collection: LegacySnapshotCollectionState;
     items: readonly LegacySnapshotTrackedItemWithPersonalReminder[];
+  }>;
+type LegacyStateSnapshotFieldsWithPersonalReminderVersion17 = Omit<
+  LegacyStateSnapshotFieldsWithoutAiDependencies,
+  "items"
+> &
+  Readonly<{
+    items: readonly LegacySnapshotTrackedItemWithPersonalReminderVersion17[];
   }>;
 
 type StateSnapshotVersion11 = LegacyStateSnapshotFields &
@@ -262,16 +392,24 @@ type StateSnapshotVersion16 = LegacyStateSnapshotFieldsWithPersonalReminder &
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_16;
   }>;
 
-type StateSnapshotVersion17 = StateSnapshotFields &
+type StateSnapshotVersion17 = LegacyStateSnapshotFieldsWithPersonalReminderVersion17 &
   Readonly<{
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_17;
   }>;
 
-/** tracker-stateへ保存するschema version 17のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion17;
+type StateSnapshotVersion18 = StateSnapshotFields &
+  Readonly<{
+    schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_18;
+  }>;
+
+/** tracker-stateへ保存するschema version 18のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotVersion18;
 
 const snapshotSchemaVersion17Schema = z.object({
   schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_17),
+});
+const snapshotSchemaVersion18Schema = z.object({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_18),
 });
 
 const snapshotSchemaVersion16Schema = z.object({
@@ -385,7 +523,11 @@ function snapshotSchemaForVersion(
   const trackedItemCurrentVariant = trackedItemAiAnalysis.oneOf.at(0);
   const trackedItemMigrationVariant = trackedItemAiAnalysis.oneOf.at(1);
   const item = snapshotSchema.$defs.item;
+  const relation = snapshotSchema.$defs.relation;
+  const personalReminderCause = snapshotSchema.$defs.personalReminderCause;
+  const personalReminderCausePlanning = snapshotSchema.$defs.personalReminderCausePlanning;
   const personalReminderEvaluationAttempt = snapshotSchema.$defs.personalReminderEvaluationAttempt;
+  const personalReminderFailedVariant = personalReminderEvaluationAttempt.oneOf.at(2);
   const personalReminderDeferredVariant = personalReminderEvaluationAttempt.oneOf.at(3);
   if (currentVariant == null || migrationResultVariant == null) {
     throw new TypeError("snapshot schemaの移行要素定義が不正です");
@@ -393,9 +535,50 @@ function snapshotSchemaForVersion(
   if (trackedItemCurrentVariant == null || trackedItemMigrationVariant == null) {
     throw new TypeError("snapshot schemaのAI分析定義が不正です");
   }
-  if (personalReminderDeferredVariant == null) {
+  if (personalReminderFailedVariant == null || personalReminderDeferredVariant == null) {
     throw new TypeError("snapshot schemaのpersonal reminder評価定義が不正です");
   }
+  const legacyPersonalReminderCause = {
+    ...personalReminderCause,
+    required: personalReminderCause.required.filter((key) => key !== "aiDependencies"),
+    properties: {
+      ...Object.fromEntries(
+        Object.entries(personalReminderCause.properties).filter(
+          ([key]) => key !== "aiDependencies" && key !== "currentInput",
+        ),
+      ),
+      currentInput: {
+        ...personalReminderCause.properties.currentInput,
+        required: personalReminderCause.properties.currentInput.required.filter(
+          (key) => key !== "aiDependency",
+        ),
+        properties: Object.fromEntries(
+          Object.entries(personalReminderCause.properties.currentInput.properties).filter(
+            ([key]) => key !== "aiDependency",
+          ),
+        ),
+      },
+    },
+  };
+  const legacyPersonalReminderCausePlanning = {
+    ...personalReminderCausePlanning,
+    oneOf: personalReminderCausePlanning.oneOf.map((variant) => {
+      if (variant.properties.status.const !== "completed") {
+        return variant;
+      }
+      return {
+        ...variant,
+        required: variant.required.filter(
+          (key) => key !== "causeSetAiDependency" && key !== "causeSetSubjectChanges",
+        ),
+        properties: Object.fromEntries(
+          Object.entries(variant.properties).filter(
+            ([key]) => key !== "causeSetAiDependency" && key !== "causeSetSubjectChanges",
+          ),
+        ),
+      };
+    }),
+  };
   const trackedItemCurrentVariantWithoutApplications = {
     ...trackedItemCurrentVariant,
     required: trackedItemCurrentVariant.required.filter((key) => key !== "applications"),
@@ -424,7 +607,8 @@ function snapshotSchemaForVersion(
   const versionedItem =
     version === SNAPSHOT_SCHEMA_VERSION_15 ||
     version === SNAPSHOT_SCHEMA_VERSION_16 ||
-    version === SNAPSHOT_SCHEMA_VERSION_17
+    version === SNAPSHOT_SCHEMA_VERSION_17 ||
+    version === SNAPSHOT_SCHEMA_VERSION_18
       ? item
       : {
           ...item,
@@ -436,6 +620,26 @@ function snapshotSchemaForVersion(
               ([key]) =>
                 key !== "personalReminderCauses" && key !== "personalReminderCausePlanning",
             ),
+          ),
+        };
+  const versionedItemWithoutAiDependencies =
+    version === SNAPSHOT_SCHEMA_VERSION_18
+      ? versionedItem
+      : {
+          ...versionedItem,
+          required: versionedItem.required.filter((key) => key !== "aiDependencies"),
+          properties: Object.fromEntries(
+            Object.entries(versionedItem.properties).filter(([key]) => key !== "aiDependencies"),
+          ),
+        };
+  const versionedRelation =
+    version === SNAPSHOT_SCHEMA_VERSION_18
+      ? relation
+      : {
+          ...relation,
+          required: relation.required.filter((key) => key !== "aiDependency"),
+          properties: Object.fromEntries(
+            Object.entries(relation.properties).filter(([key]) => key !== "aiDependency"),
           ),
         };
   const legacyAiAnalysisElements = {
@@ -505,7 +709,8 @@ function snapshotSchemaForVersion(
     version === SNAPSHOT_SCHEMA_VERSION_14 ||
     version === SNAPSHOT_SCHEMA_VERSION_15 ||
     version === SNAPSHOT_SCHEMA_VERSION_16 ||
-    version === SNAPSHOT_SCHEMA_VERSION_17
+    version === SNAPSHOT_SCHEMA_VERSION_17 ||
+    version === SNAPSHOT_SCHEMA_VERSION_18
       ? migrationAdoptedElement
       : {
           ...migrationAdoptedElement,
@@ -524,34 +729,60 @@ function snapshotSchemaForVersion(
               : legacyMigrationResultVariant,
           ],
         };
-  const versionedPersonalReminderEvaluationAttempt =
+  const legacyPersonalReminderFailedVariant = {
+    ...personalReminderFailedVariant,
+    required: personalReminderFailedVariant.required.filter((key) => key !== "rulesVersion"),
+    properties: Object.fromEntries(
+      Object.entries(personalReminderFailedVariant.properties).filter(
+        ([key]) => key !== "rulesVersion",
+      ),
+    ),
+  };
+  const legacyPersonalReminderDeferredVariant = {
+    ...personalReminderDeferredVariant,
+    required: personalReminderDeferredVariant.required.filter((key) => key !== "rulesVersion"),
+    properties: Object.fromEntries(
+      Object.entries(personalReminderDeferredVariant.properties).filter(
+        ([key]) => key !== "rulesVersion",
+      ),
+    ),
+  };
+  const legacyPersonalReminderDeferredVariantForVersion15 = {
+    ...legacyPersonalReminderDeferredVariant,
+    properties: {
+      ...legacyPersonalReminderDeferredVariant.properties,
+      reason: {
+        enum: [
+          "upstream_relation",
+          "input_incomplete",
+          "item_input_character_limit",
+          "call_limit",
+          "total_input_character_limit",
+          "estimated_cost_limit",
+        ],
+      },
+    },
+  };
+  const versionedPersonalReminderDeferredVariant =
     version === SNAPSHOT_SCHEMA_VERSION_15
+      ? legacyPersonalReminderDeferredVariantForVersion15
+      : legacyPersonalReminderDeferredVariant;
+  const versionedPersonalReminderEvaluationAttempt =
+    version === SNAPSHOT_SCHEMA_VERSION_15 ||
+    version === SNAPSHOT_SCHEMA_VERSION_16 ||
+    version === SNAPSHOT_SCHEMA_VERSION_17
       ? {
           ...personalReminderEvaluationAttempt,
           oneOf: [
-            ...personalReminderEvaluationAttempt.oneOf.slice(0, 3),
-            {
-              ...personalReminderDeferredVariant,
-              properties: {
-                ...personalReminderDeferredVariant.properties,
-                reason: {
-                  enum: [
-                    "upstream_relation",
-                    "input_incomplete",
-                    "item_input_character_limit",
-                    "call_limit",
-                    "total_input_character_limit",
-                    "estimated_cost_limit",
-                  ],
-                },
-              },
-            },
+            ...personalReminderEvaluationAttempt.oneOf.slice(0, 2),
+            legacyPersonalReminderFailedVariant,
+            versionedPersonalReminderDeferredVariant,
             ...personalReminderEvaluationAttempt.oneOf.slice(4),
           ],
         }
       : personalReminderEvaluationAttempt;
   let versionedTrackedItemAiAnalysis: object;
-  if (version === SNAPSHOT_SCHEMA_VERSION_17) {
+  if (version === SNAPSHOT_SCHEMA_VERSION_17 || version === SNAPSHOT_SCHEMA_VERSION_18) {
     versionedTrackedItemAiAnalysis = trackedItemAiAnalysis;
   } else if (
     version === SNAPSHOT_SCHEMA_VERSION_14 ||
@@ -615,18 +846,29 @@ function snapshotSchemaForVersion(
         version === SNAPSHOT_SCHEMA_VERSION_14 ||
         version === SNAPSHOT_SCHEMA_VERSION_15 ||
         version === SNAPSHOT_SCHEMA_VERSION_16 ||
-        version === SNAPSHOT_SCHEMA_VERSION_17
+        version === SNAPSHOT_SCHEMA_VERSION_17 ||
+        version === SNAPSHOT_SCHEMA_VERSION_18
           ? snapshotSchema.$defs.aiAnalysisElements
           : legacyAiAnalysisElements,
       aiAnalysisMigrationAdoptedElements:
         version === SNAPSHOT_SCHEMA_VERSION_14 ||
         version === SNAPSHOT_SCHEMA_VERSION_15 ||
         version === SNAPSHOT_SCHEMA_VERSION_16 ||
-        version === SNAPSHOT_SCHEMA_VERSION_17
+        version === SNAPSHOT_SCHEMA_VERSION_17 ||
+        version === SNAPSHOT_SCHEMA_VERSION_18
           ? snapshotSchema.$defs.aiAnalysisMigrationAdoptedElements
           : legacyAiAnalysisMigrationAdoptedElements,
       trackedItemAiAnalysis: versionedTrackedItemAiAnalysis,
-      item: versionedItem,
+      personalReminderCause:
+        version === SNAPSHOT_SCHEMA_VERSION_18
+          ? personalReminderCause
+          : legacyPersonalReminderCause,
+      personalReminderCausePlanning:
+        version === SNAPSHOT_SCHEMA_VERSION_18
+          ? personalReminderCausePlanning
+          : legacyPersonalReminderCausePlanning,
+      item: versionedItemWithoutAiDependencies,
+      relation: versionedRelation,
     },
     properties: {
       ...snapshotSchema.properties,
@@ -655,7 +897,10 @@ const validateSnapshotVersion15Schema = ajv.compile<StateSnapshotVersion15>(
 const validateSnapshotVersion16Schema = ajv.compile<StateSnapshotVersion16>(
   snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_16, "source"),
 );
-const validateSnapshotVersion17Schema = ajv.compile<StateSnapshotVersion17>(snapshotSchema);
+const validateSnapshotVersion17Schema = ajv.compile<StateSnapshotVersion17>(
+  snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_17, "source"),
+);
+const validateSnapshotVersion18Schema = ajv.compile<StateSnapshotVersion18>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -679,6 +924,31 @@ function assertUtcDateTime(value: string, description: string): void {
   }
 }
 
+function personalReminderSubjectIdentity(subject: {
+  kind: "user" | "team";
+  candidateId: string;
+}): string {
+  return `${subject.kind}\u0000${subject.candidateId.toLowerCase()}`;
+}
+
+function assertCanonicalPersonalReminderSubjects(
+  subjects: readonly Readonly<{ kind: "user" | "team"; candidateId: string }>[],
+  description: string,
+): void {
+  const identities = subjects.map(personalReminderSubjectIdentity);
+  assertUnique(identities, description);
+  for (let index = 1; index < identities.length; index += 1) {
+    const previous = identities[index - 1];
+    const current = identities[index];
+    if (previous == null || current == null) {
+      throw new StateSnapshotSemanticError(`${description}の並び順を検証できません`);
+    }
+    if (compareStrings(previous, current) > 0) {
+      throw new StateSnapshotSemanticError(`${description}は正規順に並べてください`);
+    }
+  }
+}
+
 function assertPersonalReminderTimeBasis(
   value: PersonalReminderCause["obligationSince"],
   item: SnapshotTrackedItemPersonalReminderFields,
@@ -692,7 +962,9 @@ function assertPersonalReminderTimeBasis(
   }
 }
 
-function assertPersonalReminderResponsibilitySemantics(cause: PersonalReminderCause): void {
+function assertPersonalReminderResponsibilitySemantics(
+  cause: Pick<PersonalReminderCause, "responsibility">,
+): void {
   if (cause.responsibility.authority === "fixed" && cause.responsibility.scope.kind !== "item") {
     throw new StateSnapshotSemanticError(
       "fixedなpersonal reminder責務はitem scopeでなければなりません",
@@ -708,7 +980,7 @@ function assertPersonalReminderResponsibilitySemantics(cause: PersonalReminderCa
 }
 
 function assertPersonalReminderLastConfirmedActionability(
-  cause: PersonalReminderCause,
+  cause: Pick<PersonalReminderCause, "lastConfirmedActionability">,
   assessment: CurrentPersonalReminderAssessment,
 ): void {
   if (assessment.status !== "available") {
@@ -754,6 +1026,7 @@ function assertPersonalReminderLastConfirmedActionability(
 function assertPersonalReminderCausesSemantics(
   item: SnapshotTrackedItemPersonalReminderFields,
   causeIds: ReadonlySet<string>,
+  legacyPersonalReminder: boolean,
 ): void {
   assertUnique(
     item.personalReminderCauses.map((cause) => cause.causeId),
@@ -764,11 +1037,13 @@ function assertPersonalReminderCausesSemantics(
     "itemのpersonal reminder responsibility ID",
   );
   for (const cause of item.personalReminderCauses) {
-    const parsedCause = personalReminderCauseSchema.safeParse(cause);
-    if (!parsedCause.success) {
-      throw new StateSnapshotSemanticError("personal reminder causeが不正です", {
-        cause: parsedCause.error,
-      });
+    if (!legacyPersonalReminder) {
+      const parsedCause = personalReminderCauseSchema.safeParse(cause);
+      if (!parsedCause.success) {
+        throw new StateSnapshotSemanticError("personal reminder causeが不正です", {
+          cause: parsedCause.error,
+        });
+      }
     }
     if (cause.itemNodeId !== item.nodeId) {
       throw new StateSnapshotSemanticError(
@@ -906,9 +1181,386 @@ function assertPersonalReminderCausesSemantics(
   }
 }
 
+function isLegacyPersonalReminder(item: SnapshotTrackedItemPersonalReminderFields): boolean {
+  return (
+    item.personalReminderCauses.some((cause) => !("aiDependencies" in cause)) ||
+    (item.personalReminderCausePlanning.status === "completed" &&
+      (!("causeSetAiDependency" in item.personalReminderCausePlanning) ||
+        !("causeSetSubjectChanges" in item.personalReminderCausePlanning)))
+  );
+}
+
+function assertPersonalReminderAiDependencySemantics(
+  dependency: unknown,
+  description: string,
+  itemNodeId: GraphNodeId,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+  restrictItemProducer: boolean,
+  allowHiddenProducerlessSentinels: boolean,
+): void {
+  const dependencyValue = assertAiAnalysisDependencyIntegrity(dependency, description, {
+    allowProducerlessNotRecorded: true,
+    allowProducerlessMigration: true,
+    allowHiddenProducerlessNotRecorded: allowHiddenProducerlessSentinels,
+    allowHiddenProducerlessMigration: allowHiddenProducerlessSentinels,
+    dependencyForProducer: (producer, producerDescription, containingDependency) =>
+      expectedAiAnalysisDependencyForProducer(
+        producer,
+        producerDescription,
+        itemsByNodeId,
+        relationsById,
+        containingDependency,
+      ),
+  });
+  if (dependencyValue.status === "not_dependent") {
+    return;
+  }
+  for (const producer of dependencyValue.producers ?? []) {
+    if (
+      restrictItemProducer &&
+      producer.kind === "relation_candidate" &&
+      !producer.endpointNodeIds.includes(itemNodeId)
+    ) {
+      throw new StateSnapshotSemanticError(
+        `${description}のrelation candidate endpointが親itemと一致しません`,
+      );
+    }
+    if (
+      restrictItemProducer &&
+      producer.kind === "item_element" &&
+      producer.nodeId !== itemNodeId
+    ) {
+      throw new StateSnapshotSemanticError(`${description}のitem producerが親itemと一致しません`);
+    }
+    if (restrictItemProducer && producer.kind === "relation") {
+      const relation = relationsById.get(producer.relationId);
+      if (
+        relation == null ||
+        (relation.fromNodeId !== itemNodeId && relation.toNodeId !== itemNodeId)
+      ) {
+        throw new StateSnapshotSemanticError(
+          `${description}のrelation producer endpointが親itemと一致しません`,
+        );
+      }
+    }
+  }
+}
+
+type SnapshotPersonalReminderSubject = Readonly<{
+  kind: "user" | "team";
+  candidateId: string;
+}>;
+
+function normalizeSnapshotPersonalReminderSubjects(
+  subjects: readonly SnapshotPersonalReminderSubject[],
+): readonly SnapshotPersonalReminderSubject[] {
+  const subjectsByIdentity = new Map<string, SnapshotPersonalReminderSubject>();
+  for (const subject of subjects) {
+    const identity = personalReminderSubjectIdentity(subject);
+    const current = subjectsByIdentity.get(identity);
+    if (current == null || compareStrings(subject.candidateId, current.candidateId) < 0) {
+      subjectsByIdentity.set(identity, subject);
+    }
+  }
+  return Object.freeze(
+    [...subjectsByIdentity.values()].sort((left, right) =>
+      compareStrings(personalReminderSubjectIdentity(left), personalReminderSubjectIdentity(right)),
+    ),
+  );
+}
+
+function aiAnalysisDependencyIsUnverified(dependency: AiAnalysisDependency): boolean {
+  return dependency.status === "unverified" || dependency.status === "unknown";
+}
+
+function causeSetDependencyHasUnrecordedInput(
+  dependency: AiAnalysisDependency,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+): boolean {
+  if (dependency.status !== "unknown") {
+    return false;
+  }
+  if (dependency.producers == null) {
+    return dependency.reason === "migration" || dependency.reason === "not_recorded";
+  }
+  if (dependency.reason !== "migration" && dependency.reason !== "not_recorded") {
+    return false;
+  }
+  return dependencyHasHiddenProducerlessReason(
+    dependency,
+    dependency.reason,
+    itemsByNodeId,
+    relationsById,
+  );
+}
+
+function expectedAddablePersonalReminderSubject(
+  producer: AiAnalysisDependencyProducer,
+  parentItem: SnapshotItemForRelationValidation,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+  causeSetDependency: AiAnalysisDependency,
+): SnapshotPersonalReminderSubject | "unbounded" | undefined {
+  const producerDependency = expectedAiAnalysisDependencyForProducer(
+    producer,
+    "personal reminder cause setの追加producer",
+    itemsByNodeId,
+    relationsById,
+    causeSetDependency,
+  );
+  if (!aiAnalysisDependencyIsUnverified(producerDependency)) {
+    return undefined;
+  }
+  if (producer.kind !== "relation_candidate") {
+    return "unbounded";
+  }
+  if (
+    parentItem.type !== "issue" ||
+    parentItem.state !== "open" ||
+    parentItem.assignees.length !== 0
+  ) {
+    return undefined;
+  }
+  const owner = itemsByNodeId.get(producer.producer.nodeId);
+  if (owner == null) {
+    return undefined;
+  }
+  if (!producer.endpointNodeIds.includes(parentItem.nodeId)) {
+    return undefined;
+  }
+  if (owner.type !== "pull_request" || owner.state !== "open") {
+    return undefined;
+  }
+  if (owner.author.status === "unavailable") {
+    return undefined;
+  }
+  if (owner.author.actor.type !== "human") {
+    return undefined;
+  }
+  const persistedRelation = relationsById.get(producer.candidateId);
+  if (
+    persistedRelation?.active === true &&
+    persistedRelation.type === "implements" &&
+    persistedRelation.fromNodeId === owner.nodeId &&
+    persistedRelation.toNodeId === parentItem.nodeId
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    kind: "user",
+    candidateId: owner.author.actor.login,
+  });
+}
+
+function assertPersonalReminderCauseSetSemantics(
+  item: SnapshotTrackedItemPersonalReminderFields,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+): void {
+  const planning = item.personalReminderCausePlanning;
+  if (
+    planning.status !== "completed" ||
+    !("causeSetAiDependency" in planning) ||
+    !("causeSetSubjectChanges" in planning)
+  ) {
+    return;
+  }
+  const presenceDependencies: AiAnalysisDependency[] = [];
+  const removableSubjects: SnapshotPersonalReminderSubject[] = [];
+  for (const cause of item.personalReminderCauses) {
+    if (!("aiDependencies" in cause)) {
+      throw new StateSnapshotSemanticError(
+        "personal reminder cause setの検証に必要なcause AI依存がありません",
+      );
+    }
+    const presenceDependency = cause.aiDependencies.presence;
+    presenceDependencies.push(presenceDependency);
+    if (!aiAnalysisDependencyIsUnverified(presenceDependency)) {
+      continue;
+    }
+    for (const responsible of cause.responsible) {
+      if (responsible.kind === "user" || responsible.kind === "team") {
+        removableSubjects.push(
+          Object.freeze({
+            kind: responsible.kind,
+            candidateId: responsible.candidateId,
+          }),
+        );
+      }
+    }
+  }
+  const expectedPresenceDependency = combineAiAnalysisDependencies(
+    presenceDependencies.length === 0
+      ? [Object.freeze({ status: "not_dependent" })]
+      : presenceDependencies,
+  );
+  if (
+    planning.causeSetAiDependency.status === "unknown" &&
+    planning.causeSetAiDependency.reason === "migration" &&
+    planning.causeSetAiDependency.producers == null &&
+    expectedPresenceDependency.status !== "not_dependent" &&
+    !(
+      expectedPresenceDependency.status === "unknown" &&
+      expectedPresenceDependency.reason === "migration" &&
+      expectedPresenceDependency.producers == null
+    )
+  ) {
+    throw new StateSnapshotSemanticError(
+      `item ${item.nodeId}のpersonal reminder cause set AI依存がcauseのpresenceを含んでいません`,
+    );
+  }
+  assertAiAnalysisDependencyLowerBound(
+    expectedPresenceDependency,
+    planning.causeSetAiDependency,
+    `item ${item.nodeId}のpersonal reminder cause set AI依存`,
+  );
+
+  let reconstructionIsBounded = !causeSetDependencyHasUnrecordedInput(
+    planning.causeSetAiDependency,
+    itemsByNodeId,
+    relationsById,
+  );
+  const presenceProducerSignatures = new Set(
+    expectedPresenceDependency.status === "not_dependent"
+      ? []
+      : (expectedPresenceDependency.producers ?? []).map(aiAnalysisDependencyProducerSignature),
+  );
+  const groundedAddableSubjects: SnapshotPersonalReminderSubject[] = [];
+  const parentItem = itemsByNodeId.get(item.nodeId);
+  if (parentItem == null) {
+    throw new StateSnapshotSemanticError(
+      `personal reminder cause setの親itemがありません。対象: ${item.nodeId}`,
+    );
+  }
+  for (const producer of planning.causeSetAiDependency.status === "not_dependent"
+    ? []
+    : (planning.causeSetAiDependency.producers ?? [])) {
+    if (presenceProducerSignatures.has(aiAnalysisDependencyProducerSignature(producer))) {
+      continue;
+    }
+    const subject = expectedAddablePersonalReminderSubject(
+      producer,
+      parentItem,
+      itemsByNodeId,
+      relationsById,
+      planning.causeSetAiDependency,
+    );
+    if (subject === "unbounded") {
+      reconstructionIsBounded = false;
+    } else if (subject != null) {
+      groundedAddableSubjects.push(subject);
+    }
+  }
+
+  const subjectChanges = planning.causeSetSubjectChanges;
+  if (!reconstructionIsBounded) {
+    if (subjectChanges.scope !== "unbounded") {
+      throw new StateSnapshotSemanticError(
+        "personal reminder cause集合の主体変化を完全に復元できない場合はunboundedにしてください",
+      );
+    }
+    return;
+  }
+  if (subjectChanges.scope !== "bounded") {
+    throw new StateSnapshotSemanticError(
+      "personal reminder cause集合の主体変化を復元できる場合はboundedにしてください",
+    );
+  }
+  const normalizedGroundedAddableSubjects =
+    normalizeSnapshotPersonalReminderSubjects(groundedAddableSubjects);
+  const expectedRemovableSubjects = normalizeSnapshotPersonalReminderSubjects(removableSubjects);
+  if (
+    hashCanonicalJson(subjectChanges.addableSubjects) !==
+      hashCanonicalJson(normalizedGroundedAddableSubjects) ||
+    hashCanonicalJson(subjectChanges.removableSubjects) !==
+      hashCanonicalJson(expectedRemovableSubjects)
+  ) {
+    throw new StateSnapshotSemanticError(
+      "personal reminder cause集合の主体変化がAI依存とcauseに一致しません",
+    );
+  }
+}
+
+function assertPersonalReminderDependenciesSemantics(
+  item: SnapshotTrackedItemPersonalReminderFields,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+): void {
+  for (const cause of item.personalReminderCauses) {
+    if (!("aiDependencies" in cause) || !("aiDependency" in cause.currentInput)) {
+      continue;
+    }
+    const descriptions = [
+      ["presence", cause.aiDependencies.presence],
+      ["responsible", cause.aiDependencies.responsible],
+      ["action", cause.aiDependencies.action],
+      ["evidence", cause.aiDependencies.evidence],
+    ] satisfies readonly (readonly [string, unknown])[];
+    for (const [field, dependency] of descriptions) {
+      assertPersonalReminderAiDependencySemantics(
+        dependency,
+        `personal reminder causeの${field} AI依存`,
+        item.nodeId,
+        itemsByNodeId,
+        relationsById,
+        false,
+        false,
+      );
+    }
+    assertPersonalReminderAiDependencySemantics(
+      cause.currentInput.aiDependency,
+      "personal reminder causeのcurrent input AI依存",
+      item.nodeId,
+      itemsByNodeId,
+      relationsById,
+      false,
+      true,
+    );
+  }
+  if (
+    item.personalReminderCausePlanning.status === "completed" &&
+    "causeSetAiDependency" in item.personalReminderCausePlanning
+  ) {
+    assertPersonalReminderAiDependencySemantics(
+      item.personalReminderCausePlanning.causeSetAiDependency,
+      "personal reminder cause setのAI依存",
+      item.nodeId,
+      itemsByNodeId,
+      relationsById,
+      true,
+      true,
+    );
+    assertPersonalReminderCauseSetSemantics(item, itemsByNodeId, relationsById);
+  }
+}
+
 function assertPersonalReminderCausePlanningSemantics(
   item: SnapshotTrackedItemPersonalReminderFields,
+  legacyPersonalReminder: boolean,
 ): void {
+  if (legacyPersonalReminder) {
+    const planning = item.personalReminderCausePlanning;
+    if (planning.status === "completed") {
+      assertUtcDateTime(planning.observedAt, "personal reminder planningの観測時刻");
+      if (planning.observedAt > item.observedAt) {
+        throw new StateSnapshotSemanticError(
+          "personal reminder planningの観測時刻はitemの観測時刻以前にしてください",
+        );
+      }
+      return;
+    }
+    if (
+      planning.status === "excluded" &&
+      (!isTerminalStatus(item.status) || item.personalReminderCauses.length !== 0)
+    ) {
+      throw new StateSnapshotSemanticError(
+        "causeがある、または継続中のitemをpersonal reminder planningから除外できません",
+      );
+    }
+    return;
+  }
   const parsedPlanning = personalReminderCausePlanningSchema.safeParse(
     item.personalReminderCausePlanning,
   );
@@ -924,6 +1576,17 @@ function assertPersonalReminderCausePlanningSemantics(
         "personal reminder planningの観測時刻はitemの観測時刻以前にしてください",
       );
     }
+    const subjectChanges = parsedPlanning.data.causeSetSubjectChanges;
+    if (subjectChanges.scope === "bounded") {
+      assertCanonicalPersonalReminderSubjects(
+        subjectChanges.addableSubjects,
+        "personal reminderで追加され得る主体",
+      );
+      assertCanonicalPersonalReminderSubjects(
+        subjectChanges.removableSubjects,
+        "personal reminderで削除され得る主体",
+      );
+    }
     return;
   }
   if (
@@ -933,6 +1596,30 @@ function assertPersonalReminderCausePlanningSemantics(
     throw new StateSnapshotSemanticError(
       "causeがある、または継続中のitemをpersonal reminder planningから除外できません",
     );
+  }
+}
+
+function assertGenerationBackedReuseProofSemantics(
+  proof: z.output<typeof aiAnalysisElementReuseProofSchema>,
+  generation: Readonly<{
+    metadata: Readonly<{
+      revision: number;
+      inputFingerprint: string;
+    }>;
+    result: unknown;
+  }>,
+  result: unknown,
+  description: string,
+): void {
+  if (proof.status === "unknown" || proof.source === "deterministic_update") {
+    return;
+  }
+  if (
+    proof.revision !== generation.metadata.revision ||
+    proof.inputFingerprint !== generation.metadata.inputFingerprint ||
+    hashCanonicalJson(result) !== hashCanonicalJson(generation.result)
+  ) {
+    throw new StateSnapshotSemanticError(`${description}が生成記録と一致しません`);
   }
 }
 
@@ -997,6 +1684,12 @@ function assertAiAnalysisElementMapSemantics(
           cause: resultResult.error,
         });
       }
+      assertGenerationBackedReuseProofSemantics(
+        evaluatedElement.data.evaluationProof,
+        generationResult.data,
+        resultResult.data,
+        `${description}の評価証明。対象: ${key}`,
+      );
     }
   }
 }
@@ -1041,8 +1734,8 @@ function assertAiAnalysisMigrationAdoptedMapSemantics(
     }
     const adopted = adoptedResult.data;
     const reuseProof = adopted.reuseProof;
+    const parsedReuseProof = aiAnalysisElementReuseProofSchema.safeParse(reuseProof);
     if (requireReuseProof) {
-      const parsedReuseProof = aiAnalysisElementReuseProofSchema.safeParse(reuseProof);
       if (!parsedReuseProof.success) {
         throw new StateSnapshotSemanticError(`${description}の再利用証明が不正です。対象: ${key}`, {
           cause: parsedReuseProof.error,
@@ -1071,6 +1764,18 @@ function assertAiAnalysisMigrationAdoptedMapSemantics(
               cause: parsedResult.error,
             });
           }
+          if (!parsedReuseProof.success) {
+            throw new StateSnapshotSemanticError(
+              `${description}の再利用証明が不正です。対象: ${key}`,
+              { cause: parsedReuseProof.error },
+            );
+          }
+          assertGenerationBackedReuseProofSemantics(
+            parsedReuseProof.data,
+            parsedGeneration.data,
+            parsedResult.data,
+            `${description}の再利用証明。対象: ${key}`,
+          );
         }
         assertUtcDateTime(
           parsedGeneration.data.metadata.generatedAt,
@@ -1161,19 +1866,2301 @@ function assertAiAnalysisCurrentAdoptedMapSemantics(
     ) {
       throw new StateSnapshotSemanticError(`${description}の出力hashが一致しません。対象: ${key}`);
     }
+    assertGenerationBackedReuseProofSemantics(
+      adoptedResult.data.reuseProof,
+      generationResult.data,
+      resultResult.data,
+      `${description}の再利用証明。対象: ${key}`,
+    );
   }
 }
 
 function assertAiAnalysisElementApplicationsSemantics(
   applications: unknown,
   description: string,
-): void {
+): TrackedItemAiAnalysis["applications"] {
   const parsedApplications = aiAnalysisElementApplicationsSchema.safeParse(applications);
   if (!parsedApplications.success) {
     throw new StateSnapshotSemanticError(`${description}が不正です`, {
       cause: parsedApplications.error,
     });
   }
+  return parsedApplications.data;
+}
+
+function assertAiAnalysisApplicationsMatchStoredElements(
+  aiAnalysis: TrackedItemAiAnalysis | LegacyTrackedItemAiAnalysis,
+  applications: TrackedItemAiAnalysis["applications"],
+  allowNotRecordedApplicationWithoutAdopted: boolean,
+): void {
+  for (const element of AI_ANALYSIS_ELEMENTS) {
+    const application = applications[element];
+    const evaluated = aiAnalysis.elements[element];
+    const adopted = aiAnalysis.adoptedElements[element];
+    switch (application.status) {
+      case "current_ai": {
+        if (adopted?.origin !== "current") {
+          throw new StateSnapshotSemanticError(
+            `current_aiの${element}に現行形式の採用結果がありません`,
+          );
+        }
+        if (adopted.reuseProof.status !== "verified") {
+          throw new StateSnapshotSemanticError(
+            `current_aiの${element}に検証済みの再利用証明がありません`,
+          );
+        }
+        if (
+          adopted.reuseProof.revision !== AI_ANALYSIS_ELEMENT_REVISIONS[element] ||
+          adopted.reuseProof.inputProjectionVersion !==
+            AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS[element]
+        ) {
+          throw new StateSnapshotSemanticError(
+            `current_aiの${element}の再利用証明が現在の要素規則と一致しません`,
+          );
+        }
+        if (application.origin === "verified_reuse") {
+          if (
+            (adopted.reuseProof.source === "current_generation" ||
+              adopted.reuseProof.source === "structural_migration") &&
+            (adopted.reuseProof.revision !== adopted.generation.metadata.revision ||
+              adopted.reuseProof.inputFingerprint !==
+                adopted.generation.metadata.inputFingerprint ||
+              hashCanonicalJson(adopted.result) !== hashCanonicalJson(adopted.generation.result))
+          ) {
+            throw new StateSnapshotSemanticError(
+              `verified_reuseの${element}が生成結果と一致しません`,
+            );
+          }
+          break;
+        }
+        if (evaluated == null) {
+          throw new StateSnapshotSemanticError(
+            `実行結果を使うcurrent_aiの${element}に現行の生成記録がありません`,
+          );
+        }
+        if (
+          hashCanonicalJson(evaluated.generation) !== hashCanonicalJson(adopted.generation) ||
+          adopted.reuseProof.source !== "current_generation" ||
+          adopted.reuseProof.revision !== adopted.generation.metadata.revision ||
+          adopted.reuseProof.inputFingerprint !== adopted.generation.metadata.inputFingerprint ||
+          hashCanonicalJson(adopted.result) !== hashCanonicalJson(adopted.generation.result)
+        ) {
+          throw new StateSnapshotSemanticError(
+            `実行結果を使うcurrent_aiの${element}が生成結果と一致しません`,
+          );
+        }
+        break;
+      }
+      case "retained_ai":
+        if (adopted?.origin !== "current") {
+          throw new StateSnapshotSemanticError(
+            `retained_aiの${element}に現行形式の採用結果がありません`,
+          );
+        }
+        if (application.reason === "failed" && aiAnalysis.status !== "failed") {
+          throw new StateSnapshotSemanticError(`retained_aiの${element}の失敗理由が不整合です`);
+        }
+        if (application.reason === "deferred" && aiAnalysis.status !== "deferred") {
+          throw new StateSnapshotSemanticError(`retained_aiの${element}の延期理由が不整合です`);
+        }
+        if (application.reason === "current_evaluation_not_adopted" && evaluated == null) {
+          throw new StateSnapshotSemanticError(
+            `retained_aiの${element}に不採用の現行評価記録がありません`,
+          );
+        }
+        break;
+      case "unavailable":
+        if (application.reason === "failed" && aiAnalysis.status !== "failed") {
+          throw new StateSnapshotSemanticError(`unavailableの${element}の失敗理由が不整合です`);
+        }
+        if (application.reason === "deferred" && aiAnalysis.status !== "deferred") {
+          throw new StateSnapshotSemanticError(`unavailableの${element}の延期理由が不整合です`);
+        }
+        if (application.reason === "current_evaluation_not_adopted" && evaluated == null) {
+          throw new StateSnapshotSemanticError(
+            `unavailableの${element}に不採用の現行評価記録がありません`,
+          );
+        }
+        break;
+      case "unknown":
+        if (
+          application.reason === "migration" ||
+          (application.reason === "not_recorded" &&
+            aiAnalysis.status === "not_recorded" &&
+            allowNotRecordedApplicationWithoutAdopted)
+        ) {
+          break;
+        }
+        if (adopted == null) {
+          throw new StateSnapshotSemanticError(
+            `適用元不明の${element}に対応する採用結果がありません`,
+          );
+        }
+        break;
+      case "not_required":
+      case "deterministic_fallback":
+      case "disabled":
+        break;
+      default:
+        throw new UnreachableError(application);
+    }
+  }
+}
+
+function assertAiAnalysisApplicationsMatchTrackedItemValues(item: SnapshotTrackedItem): void {
+  if (!("applications" in item.aiAnalysis)) {
+    throw new StateSnapshotSemanticError("itemのAI適用元がありません");
+  }
+  const values = Object.freeze({
+    status: item.status,
+    waitingOn: item.waitingOn,
+    nextAction: item.nextAction,
+  });
+  const stateElements: readonly ("status" | "waitingOn" | "nextAction")[] = [
+    "status",
+    "waitingOn",
+    "nextAction",
+  ];
+  for (const element of stateElements) {
+    const application = item.aiAnalysis.applications[element];
+    if (application.status === "unknown" && application.reason === "migration") {
+      continue;
+    }
+    if (!aiAnalysisElementApplicationUsesAiValue(application)) {
+      continue;
+    }
+    const adopted = item.aiAnalysis.adoptedElements[element];
+    if (adopted == null) {
+      throw new StateSnapshotSemanticError(`AI値を使う${element}に対応する採用結果がありません`);
+    }
+    if (hashCanonicalJson(adopted.result.value) !== hashCanonicalJson(values[element])) {
+      throw new StateSnapshotSemanticError(`AI値を使う${element}がitemの表示値と一致しません`);
+    }
+  }
+}
+
+function expectedAiAnalysisDependencyForProducer(
+  producer: AiAnalysisDependencyProducer,
+  description: string,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+  containingDependency: AiAnalysisDependency,
+): AiAnalysisDependency {
+  if (producer.kind === "item_element") {
+    const producerItem = itemsByNodeId.get(producer.nodeId);
+    if (producerItem == null || !("applications" in producerItem.aiAnalysis)) {
+      throw new StateSnapshotSemanticError(`${description}のitem producerにAI適用元がありません`);
+    }
+    return aiAnalysisDependencyForApplication(
+      producerItem.nodeId,
+      producer.element,
+      producerItem.aiAnalysis.applications[producer.element],
+    );
+  }
+  if (producer.kind === "relation_candidate") {
+    const producerItem = itemsByNodeId.get(producer.producer.nodeId);
+    if (producerItem == null || !("applications" in producerItem.aiAnalysis)) {
+      throw new StateSnapshotSemanticError(
+        `${description}のrelation candidate producerにAI適用元がありません`,
+      );
+    }
+    if (!producer.endpointNodeIds.includes(producer.producer.nodeId)) {
+      throw new StateSnapshotSemanticError(
+        `${description}のrelation candidate producer nodeがendpointと一致しません`,
+      );
+    }
+    const application = producerItem.aiAnalysis.applications.relations;
+    let expected = aiAnalysisDependencyForApplication(
+      producerItem.nodeId,
+      "relations",
+      application,
+    );
+    if (
+      containingDependency.status === "unknown" &&
+      containingDependency.reason === "proof_unknown" &&
+      (expected.status === "current" || expected.status === "not_dependent")
+    ) {
+      expected = aiAnalysisDependencyForMissingRelationCandidateAssessment(
+        producerItem.nodeId,
+        application,
+      );
+    }
+    if (expected.status === "not_dependent") {
+      throw new StateSnapshotSemanticError(
+        `${description}のrelation candidate producerにAI依存がありません`,
+      );
+    }
+    return aiAnalysisDependencyForRelationCandidate(
+      producer.candidateId,
+      producer.endpointNodeIds,
+      expected,
+    );
+  }
+  const relation = relationsById.get(producer.relationId);
+  if (relation == null || !("aiDependency" in relation)) {
+    throw new StateSnapshotSemanticError(`${description}のrelation producerが存在しません`);
+  }
+  if (producer.producer.element !== "relations") {
+    throw new StateSnapshotSemanticError(
+      `${description}のrelation producer elementがrelationsではありません`,
+    );
+  }
+  if (
+    producer.producer.nodeId !== relation.fromNodeId &&
+    producer.producer.nodeId !== relation.toNodeId
+  ) {
+    throw new StateSnapshotSemanticError(
+      `${description}のrelation producer nodeがrelation endpointと一致しません`,
+    );
+  }
+  if (relation.aiDependency.status === "not_dependent") {
+    throw new StateSnapshotSemanticError(
+      `${description}のrelation producerに対応するAI依存がありません`,
+    );
+  }
+  const relationProducers = relation.aiDependency.producers;
+  if (relationProducers == null) {
+    throw new StateSnapshotSemanticError(
+      `${description}のrelation producerに対応するAI依存がありません`,
+    );
+  }
+  const matchesRelationProducer = relationProducers.some(
+    (relationProducer) =>
+      relationProducer.kind === "relation" &&
+      relationProducer.relationId === producer.relationId &&
+      relationProducer.producer.nodeId === producer.producer.nodeId &&
+      relationProducer.producer.element === producer.producer.element,
+  );
+  if (!matchesRelationProducer) {
+    throw new StateSnapshotSemanticError(
+      `${description}のrelation producerがrelationのAI依存と一致しません`,
+    );
+  }
+  return relation.aiDependency;
+}
+
+type AiAnalysisDependencyIntegrityOptions = Readonly<{
+  allowProducerlessNotRecorded: boolean;
+  allowProducerlessMigration: boolean;
+  allowHiddenProducerlessNotRecorded: boolean;
+  allowHiddenProducerlessMigration: boolean;
+  dependencyForProducer: (
+    producer: AiAnalysisDependencyProducer,
+    description: string,
+    containingDependency: AiAnalysisDependency,
+  ) => AiAnalysisDependency;
+}>;
+
+const producerlessNotRecordedAiAnalysisDependency = Object.freeze({
+  status: "unknown",
+  reason: "not_recorded",
+} satisfies AiAnalysisDependency);
+
+const producerlessMigrationAiAnalysisDependency = Object.freeze({
+  status: "unknown",
+  reason: "migration",
+} satisfies AiAnalysisDependency);
+
+function aiAnalysisDependencyMatchesExpected(
+  actual: AiAnalysisDependency,
+  expected: AiAnalysisDependency,
+  options: Readonly<{
+    allowHiddenProducerlessNotRecorded: boolean;
+    allowHiddenProducerlessMigration: boolean;
+  }>,
+): boolean {
+  if (hashCanonicalJson(expected) === hashCanonicalJson(actual)) {
+    return true;
+  }
+  if (options.allowHiddenProducerlessNotRecorded) {
+    const withNotRecorded = combineAiAnalysisDependencies([
+      expected,
+      producerlessNotRecordedAiAnalysisDependency,
+    ]);
+    if (hashCanonicalJson(withNotRecorded) === hashCanonicalJson(actual)) {
+      return true;
+    }
+  }
+  if (options.allowHiddenProducerlessMigration) {
+    const withMigration = combineAiAnalysisDependencies([
+      expected,
+      producerlessMigrationAiAnalysisDependency,
+    ]);
+    if (hashCanonicalJson(withMigration) === hashCanonicalJson(actual)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function dependencyHasHiddenProducerlessReason(
+  dependency: AiAnalysisDependency,
+  reason: "not_recorded" | "migration",
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+): boolean {
+  if (
+    dependency.status !== "unknown" ||
+    dependency.reason !== reason ||
+    dependency.producers == null
+  ) {
+    return false;
+  }
+  const visibleDependency = combineAiAnalysisDependencies(
+    dependency.producers.map((producer) =>
+      expectedAiAnalysisDependencyForProducer(
+        producer,
+        "hidden producerless AI依存",
+        itemsByNodeId,
+        relationsById,
+        dependency,
+      ),
+    ),
+  );
+  const sentinel =
+    reason === "not_recorded"
+      ? producerlessNotRecordedAiAnalysisDependency
+      : producerlessMigrationAiAnalysisDependency;
+  return (
+    hashCanonicalJson(combineAiAnalysisDependencies([visibleDependency, sentinel])) ===
+    hashCanonicalJson(dependency)
+  );
+}
+
+function assertAiAnalysisDependencyIntegrity(
+  dependency: unknown,
+  description: string,
+  options: AiAnalysisDependencyIntegrityOptions,
+): AiAnalysisDependency {
+  const parsedDependency = aiAnalysisDependencySchema.safeParse(dependency);
+  if (!parsedDependency.success) {
+    throw new StateSnapshotSemanticError(`${description}が不正です`, {
+      cause: parsedDependency.error,
+    });
+  }
+  const dependencyValue = parsedDependency.data;
+  if (dependencyValue.status === "not_dependent") {
+    return dependencyValue;
+  }
+  const producers = dependencyValue.producers;
+  if (producers == null) {
+    if (
+      dependencyValue.status === "unknown" &&
+      dependencyValue.reason === "not_recorded" &&
+      options.allowProducerlessNotRecorded
+    ) {
+      return dependencyValue;
+    }
+    if (
+      dependencyValue.status === "unknown" &&
+      dependencyValue.reason === "migration" &&
+      options.allowProducerlessMigration
+    ) {
+      return dependencyValue;
+    }
+    if (dependencyValue.status === "unknown" && dependencyValue.reason === "proof_unknown") {
+      throw new StateSnapshotSemanticError(
+        `${description}のproducerless proof_unknownは許可されません`,
+      );
+    }
+    throw new StateSnapshotSemanticError(`${description}のproducerがありません`);
+  }
+  const expected = combineAiAnalysisDependencies(
+    producers.map((producer) =>
+      options.dependencyForProducer(producer, description, dependencyValue),
+    ),
+  );
+  if (!aiAnalysisDependencyMatchesExpected(dependencyValue, expected, options)) {
+    throw new StateSnapshotSemanticError(`${description}とproducerの合成結果が一致しません`);
+  }
+  return dependencyValue;
+}
+
+function assertRelationCandidateProducerDefinitions(
+  dependencies: readonly Readonly<{
+    description: string;
+    dependency: AiAnalysisDependency;
+    targetNodeId?: GraphNodeId;
+  }>[],
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+): void {
+  const definitionsByCandidateId = new Map<string, string>();
+  for (const entry of dependencies) {
+    if (entry.dependency.status === "not_dependent") {
+      continue;
+    }
+    for (const producer of entry.dependency.producers ?? []) {
+      if (producer.kind !== "relation_candidate") {
+        continue;
+      }
+      const firstEndpoint = producer.endpointNodeIds[0];
+      const secondEndpoint = producer.endpointNodeIds[1];
+      if (firstEndpoint === secondEndpoint || firstEndpoint > secondEndpoint) {
+        throw new StateSnapshotSemanticError(
+          `${entry.description}のrelation candidate endpointが正規化されていません`,
+        );
+      }
+      if (
+        !producer.endpointNodeIds.includes(producer.producer.nodeId) ||
+        (entry.targetNodeId != null && !producer.endpointNodeIds.includes(entry.targetNodeId))
+      ) {
+        throw new StateSnapshotSemanticError(
+          `${entry.description}のrelation candidate producer参照が不正です`,
+        );
+      }
+      const producerItem = itemsByNodeId.get(producer.producer.nodeId);
+      if (producerItem == null || !("applications" in producerItem.aiAnalysis)) {
+        throw new StateSnapshotSemanticError(
+          `${entry.description}のrelation candidate producerにAI適用元がありません`,
+        );
+      }
+      const definition = JSON.stringify([firstEndpoint, secondEndpoint, producer.producer.nodeId]);
+      const previousDefinition = definitionsByCandidateId.get(producer.candidateId);
+      if (previousDefinition == null) {
+        definitionsByCandidateId.set(producer.candidateId, definition);
+      } else if (previousDefinition !== definition) {
+        throw new StateSnapshotSemanticError(
+          `${entry.description}のrelation candidate IDに異なるendpointまたはownerがあります`,
+        );
+      }
+      const persistedRelation = relationsById.get(producer.candidateId);
+      if (persistedRelation != null) {
+        if (persistedRelation.provenance === "native") {
+          throw new StateSnapshotSemanticError(
+            `${entry.description}のrelation candidate IDがnative relationと衝突しています`,
+          );
+        }
+        const sameEndpoints =
+          (persistedRelation.fromNodeId === firstEndpoint &&
+            persistedRelation.toNodeId === secondEndpoint) ||
+          (persistedRelation.fromNodeId === secondEndpoint &&
+            persistedRelation.toNodeId === firstEndpoint);
+        if (!sameEndpoints) {
+          throw new StateSnapshotSemanticError(
+            `${entry.description}のrelation candidate endpointがpersisted relationと一致しません`,
+          );
+        }
+        if ("aiDependency" in persistedRelation) {
+          const persistedDependency = persistedRelation.aiDependency;
+          if (persistedDependency.status === "not_dependent") {
+            throw new StateSnapshotSemanticError(
+              `${entry.description}のrelation candidate IDがAI非依存relationと衝突しています`,
+            );
+          }
+          const producerlessMigration =
+            persistedDependency.status === "unknown" &&
+            persistedDependency.reason === "migration" &&
+            persistedDependency.producers == null;
+          if (producerlessMigration) {
+            continue;
+          }
+          const persistedProducers = persistedDependency.producers;
+          if (
+            persistedProducers?.some(
+              (persistedProducer) =>
+                persistedProducer.kind === "relation" &&
+                persistedProducer.relationId === producer.candidateId &&
+                persistedProducer.producer.nodeId === producer.producer.nodeId,
+            ) !== true
+          ) {
+            throw new StateSnapshotSemanticError(
+              `${entry.description}のrelation candidate ownerがpersisted relationと一致しません`,
+            );
+          }
+        }
+      }
+    }
+  }
+}
+
+function directAiAnalysisDependencyProducerElement(
+  element: AiAnalysisDependencyElement,
+): AiAnalysisElement | undefined {
+  switch (element) {
+    case "status":
+      return "status";
+    case "waitingOn":
+      return "waitingOn";
+    case "nextAction":
+      return "nextAction";
+    case "primaryWaitingOn":
+    case "uncertainties":
+    case "relationSet":
+      return undefined;
+    case "deadline":
+    case "deadlineLevel":
+      return "deadline";
+    case "confidence":
+    case "evidence":
+    case "lastProgressAt":
+    case "stallSince":
+    case "severity":
+    case "downstreamImpact":
+    case "importance":
+    case "attention":
+    case "blockers":
+      return undefined;
+    default:
+      throw new UnreachableError(element);
+  }
+}
+
+function assertDirectAiAnalysisDependencyProducer(
+  producer: AiAnalysisDependencyProducer,
+  element: AiAnalysisDependencyElement,
+  item: SnapshotTrackedItem,
+  description: string,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+  activeBlocksArcKeys: ReadonlySet<string>,
+): void {
+  const expectedProducerElement = directAiAnalysisDependencyProducerElement(element);
+  if (producer.kind === "item_element") {
+    if (element === "relationSet") {
+      throw new StateSnapshotSemanticError(`${description}にitem element producerは指定できません`);
+    }
+    if (
+      expectedProducerElement != null &&
+      (producer.nodeId !== item.nodeId || producer.element !== expectedProducerElement)
+    ) {
+      throw new StateSnapshotSemanticError(
+        `${description}の直接AI依存producerが親itemと一致しません`,
+      );
+    }
+    if (element === "primaryWaitingOn") {
+      if (!("applications" in item.aiAnalysis)) {
+        throw new StateSnapshotSemanticError("itemのAI適用元がありません");
+      }
+      if (
+        aiAnalysisElementApplicationUsesAiValue(item.aiAnalysis.applications.waitingOn) &&
+        (producer.nodeId !== item.nodeId || producer.element !== "waitingOn")
+      ) {
+        throw new StateSnapshotSemanticError(
+          `${description}の直接AI依存producerが親itemのwaitingOnと一致しません`,
+        );
+      }
+    }
+    return;
+  }
+  const blockerDerivedElements = new Set<AiAnalysisDependencyElement>([
+    "status",
+    "waitingOn",
+    "nextAction",
+    "primaryWaitingOn",
+    "confidence",
+    "evidence",
+    "uncertainties",
+    "blockers",
+  ]);
+  if (producer.kind === "relation_candidate") {
+    if (element === "relationSet") {
+      if (!producer.endpointNodeIds.includes(item.nodeId)) {
+        throw new StateSnapshotSemanticError(
+          `${description}のrelation candidate endpointが親itemと一致しません`,
+        );
+      }
+      return;
+    }
+    if (blockerDerivedElements.has(element)) {
+      if (element === "blockers") {
+        assertNegativeBlockerCandidateDirection(producer, item.nodeId, activeBlocksArcKeys);
+      } else if (!producer.endpointNodeIds.includes(item.nodeId)) {
+        throw new StateSnapshotSemanticError(
+          `${description}のrelation candidate endpointが親itemと一致しません`,
+        );
+      }
+      return;
+    }
+    return;
+  }
+  const relation = relationsById.get(producer.relationId);
+  if (relation == null) {
+    throw new StateSnapshotSemanticError(`${description}のrelation producerが存在しません`);
+  }
+  if (element === "relationSet") {
+    if (
+      !relation.active ||
+      (relation.fromNodeId !== item.nodeId && relation.toNodeId !== item.nodeId)
+    ) {
+      throw new StateSnapshotSemanticError(
+        `${description}のrelation producerが親itemへ接続するactive relationではありません`,
+      );
+    }
+    return;
+  }
+  if (
+    blockerDerivedElements.has(element) &&
+    (!relation.active || relation.type !== "blocks" || relation.toNodeId !== item.nodeId)
+  ) {
+    throw new StateSnapshotSemanticError(
+      `${description}のrelation producerが親itemのactive blockerではありません`,
+    );
+  }
+}
+
+function blockerDerivedItemElementIsValid(
+  producer: Extract<AiAnalysisDependencyProducer, { kind: "item_element" }>,
+  element: AiAnalysisDependencyElement,
+  itemNodeId: GraphNodeId,
+): boolean {
+  if (producer.nodeId !== itemNodeId) {
+    return false;
+  }
+  switch (element) {
+    case "status":
+      return producer.element === "status";
+    case "waitingOn":
+    case "primaryWaitingOn":
+      return producer.element === "waitingOn";
+    case "nextAction":
+      return producer.element === "nextAction";
+    case "confidence":
+    case "evidence":
+    case "uncertainties":
+      return (
+        producer.element === "status" ||
+        producer.element === "waitingOn" ||
+        producer.element === "nextAction"
+      );
+    default:
+      return false;
+  }
+}
+
+function blockerDerivedDependencyHasHiddenProducerlessReason(
+  dependency: AiAnalysisDependency,
+  reason: "not_recorded" | "migration",
+  element: AiAnalysisDependencyElement,
+  item: SnapshotTrackedItem,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+  activeBlocksArcKeys: ReadonlySet<string>,
+): boolean {
+  if (
+    dependency.status === "not_dependent" ||
+    !dependencyHasHiddenProducerlessReason(dependency, reason, itemsByNodeId, relationsById)
+  ) {
+    return false;
+  }
+  for (const producer of dependency.producers ?? []) {
+    if (
+      producer.kind === "item_element" &&
+      !blockerDerivedItemElementIsValid(producer, element, item.nodeId)
+    ) {
+      throw new StateSnapshotSemanticError(
+        `itemのAI依存の${element}にblocker由来でないitem producerがあります`,
+      );
+    }
+    assertDirectAiAnalysisDependencyProducer(
+      producer,
+      element,
+      item,
+      `itemのAI依存の${element}`,
+      relationsById,
+      activeBlocksArcKeys,
+    );
+  }
+  return true;
+}
+
+function expectedDirectAiAnalysisDependency(
+  element: AiAnalysisDependencyElement,
+  item: SnapshotTrackedItem,
+): AiAnalysisDependency | undefined {
+  if (!("applications" in item.aiAnalysis)) {
+    throw new StateSnapshotSemanticError("itemのAI適用元がありません");
+  }
+  if (
+    element === "primaryWaitingOn" &&
+    aiAnalysisElementApplicationUsesAiValue(item.aiAnalysis.applications.waitingOn)
+  ) {
+    return aiAnalysisDependencyForApplication(
+      item.nodeId,
+      "waitingOn",
+      item.aiAnalysis.applications.waitingOn,
+    );
+  }
+  const producerElement = directAiAnalysisDependencyProducerElement(element);
+  if (producerElement == null) {
+    return undefined;
+  }
+  return aiAnalysisDependencyForApplication(
+    item.nodeId,
+    producerElement,
+    item.aiAnalysis.applications[producerElement],
+  );
+}
+
+function directDependencyCanBeReplacedByNativeBlocker(
+  element: AiAnalysisDependencyElement,
+  item: SnapshotTrackedItem,
+  notDependentOpenBlockerTargetNodeIds: ReadonlySet<GraphNodeId>,
+): boolean {
+  if (element !== "status" && element !== "nextAction") {
+    return false;
+  }
+  if (!("applications" in item.aiAnalysis)) {
+    throw new StateSnapshotSemanticError("itemのAI適用元がありません");
+  }
+  return (
+    !aiAnalysisElementApplicationUsesAiValue(item.aiAnalysis.applications[element]) &&
+    notDependentOpenBlockerTargetNodeIds.has(item.nodeId)
+  );
+}
+
+function directDependencyMustMatchExactly(
+  element: AiAnalysisDependencyElement,
+  item: SnapshotTrackedItem,
+): boolean {
+  if (element === "deadline" || element === "deadlineLevel" || element === "primaryWaitingOn") {
+    return true;
+  }
+  if (element !== "status" && element !== "waitingOn" && element !== "nextAction") {
+    return false;
+  }
+  if (!("applications" in item.aiAnalysis)) {
+    throw new StateSnapshotSemanticError("itemのAI適用元がありません");
+  }
+  return aiAnalysisElementApplicationUsesAiValue(item.aiAnalysis.applications[element]);
+}
+
+function assertDirectAiAnalysisDependencyLowerBound(
+  expected: AiAnalysisDependency,
+  actual: AiAnalysisDependency,
+  element: AiAnalysisDependencyElement,
+  item: SnapshotTrackedItem,
+  description: string,
+): void {
+  const producerlessMigration =
+    actual.status === "unknown" && actual.reason === "migration" && actual.producers == null;
+  if (producerlessMigration) {
+    throw new StateSnapshotSemanticError(`${description}にproducerless migrationは指定できません`);
+  }
+  if (directDependencyMustMatchExactly(element, item)) {
+    if (hashCanonicalJson(expected) !== hashCanonicalJson(actual)) {
+      throw new StateSnapshotSemanticError(`${description}がAI適用元と一致しません`);
+    }
+    return;
+  }
+  assertAiAnalysisDependencyLowerBound(expected, actual, `${description}のAI適用元`);
+}
+
+function assertTrackedItemAiDependenciesSemantics(
+  dependencies: unknown,
+  description: string,
+  item: SnapshotTrackedItem,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+  activeBlocksArcKeys: ReadonlySet<string>,
+  notDependentOpenBlockerTargetNodeIds: ReadonlySet<GraphNodeId>,
+): void {
+  const parsedDependencies = trackedItemAiDependenciesSchema.safeParse(dependencies);
+  if (!parsedDependencies.success) {
+    throw new StateSnapshotSemanticError(`${description}が不正です`, {
+      cause: parsedDependencies.error,
+    });
+  }
+  const blockerDerivedElements = new Set<AiAnalysisDependencyElement>([
+    "status",
+    "waitingOn",
+    "primaryWaitingOn",
+    "nextAction",
+    "confidence",
+    "evidence",
+    "uncertainties",
+  ]);
+  const aggregateElements = new Set<AiAnalysisDependencyElement>([
+    "lastProgressAt",
+    "stallSince",
+    "severity",
+    "downstreamImpact",
+    "importance",
+    "attention",
+    "blockers",
+    "relationSet",
+  ]);
+  for (const element of AI_ANALYSIS_DEPENDENCY_ELEMENTS) {
+    const dependencyEntry = parsedDependencies.data[element];
+    if (dependencyEntry == null) {
+      throw new StateSnapshotSemanticError(
+        `${description}の依存要素がありません。対象: ${element}`,
+      );
+    }
+    const elementDescription = `${description}の${element}`;
+    const blockerDerivedHiddenNotRecorded =
+      blockerDerivedElements.has(element) &&
+      blockerDerivedDependencyHasHiddenProducerlessReason(
+        dependencyEntry,
+        "not_recorded",
+        element,
+        item,
+        itemsByNodeId,
+        relationsById,
+        activeBlocksArcKeys,
+      );
+    const blockerDerivedHiddenMigration =
+      blockerDerivedElements.has(element) &&
+      blockerDerivedDependencyHasHiddenProducerlessReason(
+        dependencyEntry,
+        "migration",
+        element,
+        item,
+        itemsByNodeId,
+        relationsById,
+        activeBlocksArcKeys,
+      );
+    const dependency = assertAiAnalysisDependencyIntegrity(dependencyEntry, elementDescription, {
+      allowProducerlessNotRecorded: true,
+      allowProducerlessMigration: true,
+      allowHiddenProducerlessNotRecorded:
+        aggregateElements.has(element) || blockerDerivedHiddenNotRecorded,
+      allowHiddenProducerlessMigration:
+        aggregateElements.has(element) || blockerDerivedHiddenMigration,
+      dependencyForProducer: (producer, producerDescription, containingDependency) =>
+        expectedAiAnalysisDependencyForProducer(
+          producer,
+          producerDescription,
+          itemsByNodeId,
+          relationsById,
+          containingDependency,
+        ),
+    });
+    const expectedDirectDependency = expectedDirectAiAnalysisDependency(element, item);
+    if (expectedDirectDependency != null) {
+      const nativeBlockerOverride = directDependencyCanBeReplacedByNativeBlocker(
+        element,
+        item,
+        notDependentOpenBlockerTargetNodeIds,
+      );
+      if (nativeBlockerOverride) {
+        if (dependency.status !== "not_dependent") {
+          throw new StateSnapshotSemanticError(
+            `${elementDescription}は確定blockerによる上書き時はnot_dependentにしてください`,
+          );
+        }
+      } else {
+        assertDirectAiAnalysisDependencyLowerBound(
+          expectedDirectDependency,
+          dependency,
+          element,
+          item,
+          elementDescription,
+        );
+      }
+    }
+    if (dependency.status === "not_dependent") {
+      continue;
+    }
+    for (const producer of dependency.producers ?? []) {
+      assertDirectAiAnalysisDependencyProducer(
+        producer,
+        element,
+        item,
+        elementDescription,
+        relationsById,
+        activeBlocksArcKeys,
+      );
+    }
+  }
+}
+
+function externalReferenceItemType(reference: ExternalGhostNode): "issue" | "pull_request" {
+  let url: URL;
+  try {
+    url = new URL(reference.url);
+  } catch (error: unknown) {
+    throw new StateSnapshotSemanticError(
+      `外部参照nodeのURLからitem種別を判定できません。対象: ${reference.nodeId}`,
+      { cause: error },
+    );
+  }
+  const pathSegments = url.pathname.split("/").filter((segment) => segment.length !== 0);
+  const itemPathKind = pathSegments[2];
+  const itemNumber = pathSegments[3];
+  if (
+    url.hostname !== "github.com" ||
+    pathSegments.length < 4 ||
+    itemNumber == null ||
+    !/^[1-9][0-9]*$/u.test(itemNumber)
+  ) {
+    throw new StateSnapshotSemanticError(
+      `外部参照nodeのURLからitem種別を判定できません。対象: ${reference.nodeId}`,
+    );
+  }
+  if (itemPathKind === "issues") {
+    return "issue";
+  }
+  if (itemPathKind === "pull") {
+    return "pull_request";
+  }
+  throw new StateSnapshotSemanticError(
+    `外部参照nodeのURLからitem種別を判定できません。対象: ${reference.nodeId}`,
+  );
+}
+
+function snapshotGraphNodeItemType(
+  nodeId: GraphNodeId,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  externalReferencesByNodeId: ReadonlyMap<string, ExternalGhostNode>,
+): "issue" | "pull_request" {
+  const item = itemsByNodeId.get(nodeId);
+  if (item != null) {
+    return item.type;
+  }
+  const externalReference = externalReferencesByNodeId.get(nodeId);
+  if (externalReference != null) {
+    return externalReferenceItemType(externalReference);
+  }
+  throw new StateSnapshotSemanticError(`relation endpointがsnapshotにありません。対象: ${nodeId}`);
+}
+
+function assertImplementsRelationEndpointTypes(
+  relation: Relation | LegacyRelationWithoutAiDependency,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  externalReferencesByNodeId: ReadonlyMap<string, ExternalGhostNode>,
+): void {
+  if (relation.type !== "implements") {
+    return;
+  }
+  const implementationType = snapshotGraphNodeItemType(
+    relation.fromNodeId,
+    itemsByNodeId,
+    externalReferencesByNodeId,
+  );
+  const targetType = snapshotGraphNodeItemType(
+    relation.toNodeId,
+    itemsByNodeId,
+    externalReferencesByNodeId,
+  );
+  if (implementationType !== "pull_request" || targetType !== "issue") {
+    throw new StateSnapshotSemanticError(
+      `implements relation ${relation.id}はPull RequestからIssueへ向けてください`,
+    );
+  }
+}
+
+function assertRelationAiDependencySemantics(dependency: unknown, description: string): void {
+  const parsedDependency = aiAnalysisDependencySchema.safeParse(dependency);
+  if (!parsedDependency.success) {
+    throw new StateSnapshotSemanticError(`${description}が不正です`, {
+      cause: parsedDependency.error,
+    });
+  }
+}
+
+function assertInferredRelationAiDependencySemantics(
+  relation: Relation,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  historicalDependency: boolean,
+): void {
+  if (relation.provenance === "native") {
+    return;
+  }
+  const dependency = relation.aiDependency;
+  if (dependency.status === "not_dependent") {
+    throw new StateSnapshotSemanticError(
+      `inferred relation ${relation.id}のnot_dependent AI依存は許可されません`,
+    );
+  }
+  if (
+    relation.active &&
+    historicalDependency &&
+    (dependency.status !== "unknown" ||
+      (dependency.reason !== "proof_unknown" && dependency.reason !== "migration"))
+  ) {
+    throw new StateSnapshotSemanticError(
+      `staleなactive inferred relation ${relation.id}のAI依存はunknownにしてください`,
+    );
+  }
+  for (const producer of dependency.producers ?? []) {
+    if (producer.kind !== "relation") {
+      throw new StateSnapshotSemanticError(
+        `inferred relation ${relation.id}のAI依存producer種別が不正です`,
+      );
+    }
+    if (producer.relationId !== relation.id || producer.producer.element !== "relations") {
+      throw new StateSnapshotSemanticError(
+        `inferred relation ${relation.id}のAI依存producer参照が不正です`,
+      );
+    }
+    if (
+      producer.producer.nodeId !== relation.fromNodeId &&
+      producer.producer.nodeId !== relation.toNodeId
+    ) {
+      throw new StateSnapshotSemanticError(
+        `inferred relation ${relation.id}のAI依存producer nodeがendpointと一致しません`,
+      );
+    }
+  }
+  assertAiAnalysisDependencyIntegrity(dependency, `inferred relation ${relation.id}のAI依存`, {
+    allowProducerlessNotRecorded: !relation.active,
+    allowProducerlessMigration: true,
+    allowHiddenProducerlessNotRecorded: false,
+    allowHiddenProducerlessMigration: false,
+    dependencyForProducer: (producer, description) => {
+      if (producer.kind !== "relation") {
+        throw new StateSnapshotSemanticError(`${description}のproducer種別が不正です`);
+      }
+      if (historicalDependency) {
+        switch (dependency.status) {
+          case "current":
+          case "unverified":
+            return Object.freeze({
+              status: dependency.status,
+              producers: Object.freeze([producer]),
+            });
+          case "unknown":
+            return Object.freeze({
+              status: dependency.status,
+              reason: dependency.reason,
+              producers: Object.freeze([producer]),
+            });
+        }
+      }
+      const producerItem = itemsByNodeId.get(producer.producer.nodeId);
+      if (producerItem == null || !("applications" in producerItem.aiAnalysis)) {
+        throw new StateSnapshotSemanticError(`${description}の生成元itemにAI適用元がありません`);
+      }
+      const producerDependency = aiAnalysisDependencyForApplication(
+        producerItem.nodeId,
+        "relations",
+        producerItem.aiAnalysis.applications.relations,
+      );
+      if (producerDependency.status === "not_dependent") {
+        throw new StateSnapshotSemanticError(`${description}の生成元itemにAI依存がありません`);
+      }
+      return aiAnalysisDependencyForRelation(relation.id, producerDependency);
+    },
+  });
+}
+
+function preferredBlockerSupportDependency(
+  dependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  if (dependencies.length === 0) {
+    throw new StateSnapshotSemanticError("blocker supportがありません");
+  }
+  if (dependencies.some((dependency) => dependency.status === "not_dependent")) {
+    return Object.freeze({ status: "not_dependent" });
+  }
+  if (dependencies.some((dependency) => dependency.status === "current")) {
+    return combineAiAnalysisDependencies(
+      dependencies.filter((dependency) => dependency.status === "current"),
+    );
+  }
+  if (dependencies.some((dependency) => dependency.status === "unverified")) {
+    return combineAiAnalysisDependencies(
+      dependencies.filter((dependency) => dependency.status === "unverified"),
+    );
+  }
+  return combineAiAnalysisDependencies(
+    dependencies.filter((dependency) => dependency.status === "unknown"),
+  );
+}
+
+function snapshotRelationCandidateId(relationId: string): RelationCandidateId {
+  if (!relationId.startsWith("rel:") || relationId.length === "rel:".length) {
+    throw new StateSnapshotSemanticError(`relation IDの形式が不正です。対象: ${relationId}`);
+  }
+  return `rel:${relationId.slice("rel:".length)}`;
+}
+
+function snapshotGraphEdge(relation: Relation): ReconciledGraphEdge {
+  const fields = {
+    id: snapshotRelationCandidateId(relation.id),
+    fromNodeId: relation.fromNodeId,
+    toNodeId: relation.toNodeId,
+    type: relation.type,
+    provenance: relation.provenance,
+    confidence: relation.confidence,
+    evidence: relation.evidence,
+    authoritative: relation.provenance === "native",
+    contradictions: Object.freeze(
+      relation.contradictions.map((contradiction) =>
+        Object.freeze({
+          verdict: contradiction.verdict,
+          confidence: contradiction.confidence,
+          evidence: Object.freeze([]),
+        }),
+      ),
+    ),
+    aiDependency: relation.aiDependency,
+    firstSeenAt: relation.firstSeenAt,
+    lastConfirmedAt: relation.lastConfirmedAt,
+  };
+  if (relation.active) {
+    return Object.freeze({ ...fields, active: true });
+  }
+  return Object.freeze({ ...fields, active: false, removedAt: relation.removedAt });
+}
+
+function expectedDownstreamImpactAiDependencies(
+  snapshot:
+    | StateSnapshotFields
+    | LegacyStateSnapshotFieldsWithoutAiDependencies
+    | LegacyStateSnapshotFields
+    | LegacyStateSnapshotFieldsWithPersonalReminder
+    | LegacyStateSnapshotFieldsWithPersonalReminderVersion17,
+): ReadonlyMap<GraphNodeId, AiAnalysisDependency> | undefined {
+  const relations: ReconciledGraphEdge[] = [];
+  for (const relation of snapshot.relations) {
+    if (!("aiDependency" in relation)) {
+      return undefined;
+    }
+    relations.push(snapshotGraphEdge(relation));
+  }
+  const nodes: GraphAnalysisNode[] = [
+    ...snapshot.items.map((item) =>
+      Object.freeze({
+        kind: item.type,
+        nodeId: item.nodeId,
+        repositoryId: item.repositoryId,
+        state: item.state,
+        directNotification: "eligible",
+      }),
+    ),
+    ...snapshot.externalReferences.map((reference) =>
+      Object.freeze({
+        kind: reference.kind,
+        nodeId: reference.nodeId,
+        repositoryFullName: reference.repositoryFullName,
+        state: reference.state,
+        directNotification: reference.directNotification,
+      }),
+    ),
+  ];
+  const analysis = analyzeGraph({
+    current: Object.freeze({
+      nodes: Object.freeze(nodes),
+      edges: Object.freeze(relations),
+    }),
+    previous: Object.freeze({ availability: "unavailable" }),
+  });
+  return new Map(
+    analysis.downstreamImpactAiDependencies.map((entry) => [entry.nodeId, entry.dependency]),
+  );
+}
+
+function expectedBlockersAiDependencies(
+  snapshot:
+    | StateSnapshotFields
+    | LegacyStateSnapshotFieldsWithoutAiDependencies
+    | LegacyStateSnapshotFields
+    | LegacyStateSnapshotFieldsWithPersonalReminder
+    | LegacyStateSnapshotFieldsWithPersonalReminderVersion17,
+): ReadonlyMap<GraphNodeId, AiAnalysisDependency> {
+  const openNodeIds = new Set<GraphNodeId>([
+    ...snapshot.items.filter((item) => item.state === "open").map((item) => item.nodeId),
+    ...snapshot.externalReferences
+      .filter((reference) => reference.state === "open")
+      .map((reference) => reference.nodeId),
+  ]);
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency>();
+  for (const item of snapshot.items) {
+    dependenciesByNodeId.set(item.nodeId, Object.freeze({ status: "not_dependent" }));
+  }
+  for (const reference of snapshot.externalReferences) {
+    dependenciesByNodeId.set(reference.nodeId, Object.freeze({ status: "not_dependent" }));
+  }
+  const supportsByNodeId = new Map<GraphNodeId, Map<string, AiAnalysisDependency[]>>();
+  for (const relation of snapshot.relations) {
+    if (
+      !relation.active ||
+      relation.type !== "blocks" ||
+      !openNodeIds.has(relation.fromNodeId) ||
+      !openNodeIds.has(relation.toNodeId) ||
+      !("aiDependency" in relation)
+    ) {
+      continue;
+    }
+    const supportsByMeaning = supportsByNodeId.get(relation.toNodeId);
+    const key = `${relation.type}\u0000${relation.fromNodeId}\u0000${relation.toNodeId}`;
+    if (supportsByMeaning == null) {
+      supportsByNodeId.set(relation.toNodeId, new Map([[key, [relation.aiDependency]]]));
+      continue;
+    }
+    const supports = supportsByMeaning.get(key);
+    if (supports == null) {
+      supportsByMeaning.set(key, [relation.aiDependency]);
+      continue;
+    }
+    supports.push(relation.aiDependency);
+  }
+  for (const [nodeId, supportsByMeaning] of supportsByNodeId) {
+    const selectedSupports = [...supportsByMeaning.values()].map((dependencies) =>
+      preferredBlockerSupportDependency(dependencies),
+    );
+    if (selectedSupports.length !== 0) {
+      dependenciesByNodeId.set(nodeId, combineAiAnalysisDependencies(selectedSupports));
+    }
+  }
+  return dependenciesByNodeId;
+}
+
+type SnapshotBlocker = Readonly<{
+  blockerNodeId: GraphNodeId;
+  authority: "authoritative" | "inferred";
+  confidenceValue: number;
+  becameBlockingAtValue: UtcIsoDateTime;
+  dependency: BlockerNodeAiDependency;
+}>;
+
+type SnapshotBlockerAnalysis = Readonly<{
+  blockersByBlockedNodeId: ReadonlyMap<GraphNodeId, readonly SnapshotBlocker[]>;
+  blockerSetDependenciesByNodeId: ReadonlyMap<GraphNodeId, AiAnalysisDependency>;
+  negativeDependenciesByNodeId: ReadonlyMap<GraphNodeId, AiAnalysisDependency>;
+}>;
+
+type SnapshotBlockerValueAiDependencies = Readonly<{
+  stateSupport: "conditional" | "authoritative_blocker";
+  statusCandidates: readonly AiAnalysisDependency[] | undefined;
+  waitingOn: AiAnalysisDependency | undefined;
+  primaryWaitingOn: AiAnalysisDependency | undefined;
+  nextAction: AiAnalysisDependency | undefined;
+  confidence: AiAnalysisDependency | undefined;
+  evidence: AiAnalysisDependency;
+  uncertainties: AiAnalysisDependency | undefined;
+}>;
+
+type RelationCandidateProducer = Extract<
+  AiAnalysisDependencyProducer,
+  { kind: "relation_candidate" }
+>;
+
+function notDependentSnapshotAiDependency(): AiAnalysisDependency {
+  return Object.freeze({ status: "not_dependent" });
+}
+
+function combineSnapshotAiDependencies(
+  dependencies: readonly AiAnalysisDependency[],
+): AiAnalysisDependency {
+  return dependencies.length === 0
+    ? notDependentSnapshotAiDependency()
+    : combineAiAnalysisDependencies(dependencies);
+}
+
+function candidateProofDependencyForProducer(
+  producer: RelationCandidateProducer,
+  itemsByNodeId: ReadonlyMap<string, SnapshotTrackedItem>,
+): AiAnalysisDependency {
+  const item = itemsByNodeId.get(producer.producer.nodeId);
+  if (item == null) {
+    throw new StateSnapshotSemanticError(
+      `relation candidate ${producer.candidateId}の生成元itemがありません`,
+    );
+  }
+  const application = item.aiAnalysis.applications.relations;
+  const dependency = aiAnalysisDependencyForApplication(item.nodeId, "relations", application);
+  return dependency.status === "not_dependent"
+    ? aiAnalysisDependencyForMissingRelationCandidateAssessment(item.nodeId, application)
+    : dependency;
+}
+
+function activeRelationCandidateProofDependency(
+  relation: Relation,
+): AiAnalysisDependency | undefined {
+  const dependency = relation.aiDependency;
+  if (dependency.status === "not_dependent") {
+    throw new StateSnapshotSemanticError(`推定relation ${relation.id}のAI依存がnot_dependentです`);
+  }
+  if (dependency.producers == null) {
+    return undefined;
+  }
+  const producers: AiAnalysisDependencyProducer[] = dependency.producers.map((producer) => {
+    if (producer.kind !== "relation" || producer.relationId !== relation.id) {
+      throw new StateSnapshotSemanticError(`推定relation ${relation.id}のAI依存producerが不正です`);
+    }
+    return Object.freeze({
+      kind: "item_element",
+      nodeId: producer.producer.nodeId,
+      element: producer.producer.element,
+    });
+  });
+  if (dependency.status === "unknown") {
+    return normalizeAiAnalysisDependency({
+      status: dependency.status,
+      reason: dependency.reason,
+      producers: Object.freeze(producers),
+    });
+  }
+  return normalizeAiAnalysisDependency({
+    status: dependency.status,
+    producers: Object.freeze(producers),
+  });
+}
+
+function candidateDecisionProofsFromSnapshot(
+  items: readonly SnapshotTrackedItem[],
+  relations: readonly Relation[],
+): readonly RelationCandidateDecisionProof[] {
+  const producersByCandidateId = new Map<string, RelationCandidateProducer>();
+  for (const item of items) {
+    for (const element of AI_ANALYSIS_DEPENDENCY_ELEMENTS) {
+      const dependency = item.aiDependencies[element];
+      if (dependency.status === "not_dependent") {
+        continue;
+      }
+      for (const producer of dependency.producers ?? []) {
+        if (producer.kind === "relation_candidate") {
+          producersByCandidateId.set(producer.candidateId, producer);
+        }
+      }
+    }
+  }
+  const itemsByNodeId = new Map<string, SnapshotTrackedItem>(
+    items.map((item) => [item.nodeId, item]),
+  );
+  const relationsById = new Map(relations.map((relation) => [relation.id, relation]));
+  const proofs: RelationCandidateDecisionProof[] = [];
+  for (const producer of producersByCandidateId.values()) {
+    const candidateId = snapshotRelationCandidateId(producer.candidateId);
+    const relation = relationsById.get(candidateId);
+    if (relation?.active === true) {
+      if (relation.provenance === "native") {
+        throw new StateSnapshotSemanticError(
+          `relation candidate ${candidateId}がnative relationと衝突しています`,
+        );
+      }
+      const dependency = activeRelationCandidateProofDependency(relation);
+      if (dependency == null) {
+        continue;
+      }
+      proofs.push(
+        Object.freeze({
+          candidateId,
+          endpointNodeIds: producer.endpointNodeIds,
+          authority: "inferred",
+          resolution: Object.freeze({
+            candidateId,
+            status: "active",
+            edgeId: candidateId,
+          }),
+          dependency,
+          canonicalRelation: Object.freeze({
+            fromNodeId: relation.fromNodeId,
+            toNodeId: relation.toNodeId,
+            type: relation.type,
+          }),
+        }),
+      );
+      continue;
+    }
+    proofs.push(
+      Object.freeze({
+        candidateId,
+        endpointNodeIds: producer.endpointNodeIds,
+        authority: "inferred",
+        resolution: Object.freeze({
+          candidateId,
+          status: "pending",
+          reason: "assessment_missing",
+        }),
+        dependency: candidateProofDependencyForProducer(producer, itemsByNodeId),
+      }),
+    );
+  }
+  return Object.freeze(proofs);
+}
+
+function compareSnapshotBlockers(left: SnapshotBlocker, right: SnapshotBlocker): number {
+  if (left.authority !== right.authority) {
+    return left.authority === "authoritative" ? -1 : 1;
+  }
+  if (left.confidenceValue !== right.confidenceValue) {
+    return right.confidenceValue - left.confidenceValue;
+  }
+  const becameBlockingAtOrder = compareStrings(
+    left.becameBlockingAtValue,
+    right.becameBlockingAtValue,
+  );
+  return becameBlockingAtOrder === 0
+    ? compareStrings(left.blockerNodeId, right.blockerNodeId)
+    : becameBlockingAtOrder;
+}
+
+function expectedSnapshotBlockerAnalysis(
+  snapshot:
+    | StateSnapshotFields
+    | LegacyStateSnapshotFieldsWithoutAiDependencies
+    | LegacyStateSnapshotFields
+    | LegacyStateSnapshotFieldsWithPersonalReminder
+    | LegacyStateSnapshotFieldsWithPersonalReminderVersion17,
+): SnapshotBlockerAnalysis | undefined {
+  const items: SnapshotTrackedItem[] = [];
+  for (const item of snapshot.items) {
+    if (!("aiDependencies" in item)) {
+      return undefined;
+    }
+    items.push(item);
+  }
+  const relations: Relation[] = [];
+  for (const relation of snapshot.relations) {
+    if (!("aiDependency" in relation)) {
+      return undefined;
+    }
+    relations.push(relation);
+  }
+  const nodes: GraphAnalysisNode[] = [
+    ...items.map(
+      (item) =>
+        Object.freeze({
+          kind: item.type,
+          nodeId: item.nodeId,
+          repositoryId: item.repositoryId,
+          state: item.state,
+          directNotification: "eligible",
+        }) satisfies GraphAnalysisNode,
+    ),
+    ...snapshot.externalReferences.map(
+      (reference) =>
+        Object.freeze({
+          kind: reference.kind,
+          nodeId: reference.nodeId,
+          repositoryFullName: reference.repositoryFullName,
+          state: reference.state,
+          directNotification: "not_eligible",
+        }) satisfies GraphAnalysisNode,
+    ),
+  ];
+  const graphSnapshot = Object.freeze({
+    nodes: Object.freeze(nodes),
+    edges: Object.freeze(relations.map(snapshotGraphEdge)),
+  });
+  const candidateProofNodeIds = new Set(nodes.map((node) => node.nodeId));
+  const candidateDecisionProofs = candidateDecisionProofsFromSnapshot(items, relations).filter(
+    (proof) => proof.endpointNodeIds.every((nodeId) => candidateProofNodeIds.has(nodeId)),
+  );
+  const graphAnalysis = analyzeGraphAiDependencies({
+    current: graphSnapshot,
+    previous: Object.freeze({ availability: "unavailable" }),
+    candidateProofSnapshot: graphSnapshot,
+    candidateDecisionProofs,
+  });
+  const primitiveByArc = new Map(
+    graphAnalysis.blockerNodeAiDependencies.map((dependency) => [
+      blocksArcKey(dependency.blockerNodeId, dependency.blockedNodeId),
+      dependency,
+    ]),
+  );
+  const openNodeIds = new Set<GraphNodeId>([
+    ...items.filter((item) => item.state === "open").map((item) => item.nodeId),
+    ...snapshot.externalReferences
+      .filter((reference) => reference.state === "open")
+      .map((reference) => reference.nodeId),
+  ]);
+  const supportsByArc = new Map<string, Relation[]>();
+  for (const relation of relations) {
+    if (
+      !relation.active ||
+      relation.type !== "blocks" ||
+      !openNodeIds.has(relation.fromNodeId) ||
+      !openNodeIds.has(relation.toNodeId)
+    ) {
+      continue;
+    }
+    const key = blocksArcKey(relation.fromNodeId, relation.toNodeId);
+    const supports = supportsByArc.get(key);
+    if (supports == null) {
+      supportsByArc.set(key, [relation]);
+    } else {
+      supports.push(relation);
+    }
+  }
+  const itemsByNodeId = new Map<string, SnapshotTrackedItem>(
+    items.map((item) => [item.nodeId, item]),
+  );
+  const blockersByBlockedNodeId = new Map<GraphNodeId, SnapshotBlocker[]>();
+  for (const [key, supports] of supportsByArc) {
+    const firstSupport = supports[0];
+    if (firstSupport == null) {
+      throw new StateSnapshotSemanticError("blocker supportがありません");
+    }
+    const dependency = primitiveByArc.get(key);
+    if (dependency == null) {
+      throw new StateSnapshotSemanticError(
+        `blocker ${firstSupport.fromNodeId}のAI依存primitiveがありません`,
+      );
+    }
+    const targetItem = itemsByNodeId.get(firstSupport.toNodeId);
+    const becameBlockingAtValue = supports.reduce(
+      (earliest, support) => {
+        const value =
+          support.provenance === "native" && targetItem != null
+            ? targetItem.createdAt
+            : support.firstSeenAt;
+        return value < earliest ? value : earliest;
+      },
+      firstSupport.provenance === "native" && targetItem != null
+        ? targetItem.createdAt
+        : firstSupport.firstSeenAt,
+    );
+    const blocker = Object.freeze({
+      blockerNodeId: firstSupport.fromNodeId,
+      authority: supports.some((support) => support.provenance === "native")
+        ? "authoritative"
+        : "inferred",
+      confidenceValue: Math.max(...supports.map((support) => support.confidence)),
+      becameBlockingAtValue,
+      dependency,
+    }) satisfies SnapshotBlocker;
+    const blockers = blockersByBlockedNodeId.get(firstSupport.toNodeId);
+    if (blockers == null) {
+      blockersByBlockedNodeId.set(firstSupport.toNodeId, [blocker]);
+    } else {
+      blockers.push(blocker);
+    }
+  }
+  return Object.freeze({
+    blockersByBlockedNodeId: new Map(
+      [...blockersByBlockedNodeId].map(([nodeId, blockers]) => [
+        nodeId,
+        Object.freeze(blockers.sort(compareSnapshotBlockers)),
+      ]),
+    ),
+    blockerSetDependenciesByNodeId: new Map(
+      graphAnalysis.blockerSetAiDependencies.map((entry) => [entry.nodeId, entry.dependency]),
+    ),
+    negativeDependenciesByNodeId: new Map(
+      graphAnalysis.negativeBlockerAiDependencies.map((entry) => [entry.nodeId, entry.dependency]),
+    ),
+  });
+}
+
+function snapshotBlockerPrimitiveDependency(
+  blocker: SnapshotBlocker,
+  primitives: readonly (keyof Pick<
+    BlockerNodeAiDependency,
+    "presence" | "confidence" | "sourceIds" | "becameBlockingAt"
+  >)[],
+): AiAnalysisDependency {
+  return combineSnapshotAiDependencies(
+    primitives.map((primitive) => blocker.dependency[primitive]),
+  );
+}
+
+function preferredSnapshotAiDependencies(
+  dependencies: readonly AiAnalysisDependency[],
+  count: number,
+): readonly AiAnalysisDependency[] {
+  return Object.freeze(
+    dependencies
+      .map((dependency, index) => Object.freeze({ dependency, index }))
+      .sort((left, right) => {
+        const priorityOrder =
+          aiAnalysisDependencyStatusPriority(left.dependency.status) -
+          aiAnalysisDependencyStatusPriority(right.dependency.status);
+        return priorityOrder === 0 ? left.index - right.index : priorityOrder;
+      })
+      .slice(0, count)
+      .map((entry) => entry.dependency),
+  );
+}
+
+function deterministicBlockerDecisionIsBlocked(
+  item: SnapshotTrackedItem,
+  blockers: readonly SnapshotBlocker[],
+): boolean | undefined {
+  if (item.state !== "open") {
+    return undefined;
+  }
+  const blockerNodeIds = new Set<string>(blockers.map((blocker) => blocker.blockerNodeId));
+  const results: boolean[] = [];
+  const applications = item.aiAnalysis.applications;
+  if (!aiAnalysisElementApplicationUsesAiValue(applications.status)) {
+    results.push(item.status === "waiting_for_unblock");
+  }
+  if (!aiAnalysisElementApplicationUsesAiValue(applications.waitingOn)) {
+    results.push(
+      item.waitingOn.some(
+        (waitingOn) =>
+          waitingOn.kind === "item" &&
+          waitingOn.role === "dependency" &&
+          blockerNodeIds.has(waitingOn.candidateId),
+      ),
+    );
+  }
+  if (!aiAnalysisElementApplicationUsesAiValue(applications.nextAction)) {
+    results.push(
+      blockers.some((blocker) => item.nextAction === `${blocker.blockerNodeId}の完了を待つ`),
+    );
+  }
+  if (new Set(results).size > 1) {
+    throw new StateSnapshotSemanticError(
+      `item ${item.nodeId}のblocker判定値が相互に矛盾しています`,
+    );
+  }
+  const visibleDecision = results[0];
+  if (visibleDecision != null) {
+    return visibleDecision;
+  }
+  return blockers.some((blocker) => blocker.authority === "authoritative") ? true : undefined;
+}
+
+function deterministicConfirmedBlockers(
+  item: SnapshotTrackedItem,
+  blockers: readonly SnapshotBlocker[],
+  blocked: boolean,
+): readonly SnapshotBlocker[] | undefined {
+  if (aiAnalysisElementApplicationUsesAiValue(item.aiAnalysis.applications.waitingOn)) {
+    return undefined;
+  }
+  if (!blocked) {
+    return Object.freeze([]);
+  }
+  const blockersByNodeId = new Map<string, SnapshotBlocker>(
+    blockers.map((blocker) => [blocker.blockerNodeId, blocker]),
+  );
+  const confirmed: SnapshotBlocker[] = [];
+  for (const waitingOn of item.waitingOn) {
+    if (waitingOn.kind !== "item" || waitingOn.role !== "dependency") {
+      throw new StateSnapshotSemanticError(`item ${item.nodeId}のblocker waitingOnが不正です`);
+    }
+    const blocker = blockersByNodeId.get(waitingOn.candidateId);
+    if (blocker == null) {
+      throw new StateSnapshotSemanticError(
+        `item ${item.nodeId}のblocker waitingOnに対応するactive relationがありません`,
+      );
+    }
+    confirmed.push(blocker);
+  }
+  if (confirmed.length === 0) {
+    throw new StateSnapshotSemanticError(`item ${item.nodeId}の確定blocker waitingOnがありません`);
+  }
+  return Object.freeze(confirmed);
+}
+
+function blockerStatusDependencyCandidates(
+  blockers: readonly SnapshotBlocker[],
+  confirmedBlockers: readonly SnapshotBlocker[] | undefined,
+): readonly AiAnalysisDependency[] {
+  const blockerGroups =
+    confirmedBlockers == null
+      ? [...new Set(blockers.map((blocker) => blocker.confidenceValue))].map((threshold) =>
+          blockers.filter((blocker) => blocker.confidenceValue >= threshold),
+        )
+      : [confirmedBlockers];
+  const dependencies = new Map<string, AiAnalysisDependency>();
+  for (const group of blockerGroups) {
+    const dependency = preferredBlockerSupportDependency(
+      group.map((blocker) =>
+        snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence"]),
+      ),
+    );
+    dependencies.set(hashCanonicalJson(dependency), dependency);
+  }
+  return Object.freeze([...dependencies.values()]);
+}
+
+function expectedSnapshotBlockerValueAiDependencies(
+  item: SnapshotTrackedItem,
+  analysis: SnapshotBlockerAnalysis,
+): SnapshotBlockerValueAiDependencies {
+  if (item.state !== "open") {
+    const dependency = notDependentSnapshotAiDependency();
+    return Object.freeze({
+      stateSupport: "conditional",
+      statusCandidates: Object.freeze([dependency]),
+      waitingOn: dependency,
+      primaryWaitingOn: dependency,
+      nextAction: dependency,
+      confidence: dependency,
+      evidence: dependency,
+      uncertainties: dependency,
+    });
+  }
+  const blockers = analysis.blockersByBlockedNodeId.get(item.nodeId) ?? [];
+  const negativeDependency =
+    analysis.negativeDependenciesByNodeId.get(item.nodeId) ?? notDependentSnapshotAiDependency();
+  const conditions = blockers.map((blocker) =>
+    snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence"]),
+  );
+  const evidence = blockers.map((blocker) =>
+    snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence", "sourceIds"]),
+  );
+  const selectionConditions = blockers.map((blocker) =>
+    snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence", "becameBlockingAt"]),
+  );
+  const blocked = deterministicBlockerDecisionIsBlocked(item, blockers);
+  if (blocked == null) {
+    return Object.freeze({
+      stateSupport: "conditional",
+      statusCandidates: undefined,
+      waitingOn: undefined,
+      primaryWaitingOn: undefined,
+      nextAction: undefined,
+      confidence: undefined,
+      evidence: combineSnapshotAiDependencies([...evidence, negativeDependency]),
+      uncertainties: undefined,
+    });
+  }
+  if (!blocked) {
+    const stateDependency = combineSnapshotAiDependencies([...conditions, negativeDependency]);
+    return Object.freeze({
+      stateSupport: "conditional",
+      statusCandidates: Object.freeze([stateDependency]),
+      waitingOn: stateDependency,
+      primaryWaitingOn: stateDependency,
+      nextAction: stateDependency,
+      confidence: stateDependency,
+      evidence: combineSnapshotAiDependencies([...evidence, negativeDependency]),
+      uncertainties: stateDependency,
+    });
+  }
+  const primaryBlocker = blockers[0];
+  if (primaryBlocker == null) {
+    throw new StateSnapshotSemanticError(`item ${item.nodeId}のprimary blockerを再構成できません`);
+  }
+  const confirmedBlockers = deterministicConfirmedBlockers(item, blockers, blocked);
+  const stateSupport =
+    primaryBlocker.authority === "authoritative" ? "authoritative_blocker" : "conditional";
+  const statusCandidates =
+    stateSupport === "authoritative_blocker"
+      ? Object.freeze([notDependentSnapshotAiDependency()])
+      : blockerStatusDependencyCandidates(blockers, confirmedBlockers);
+  let waitingOn: AiAnalysisDependency | undefined;
+  let primaryWaitingOn: AiAnalysisDependency | undefined;
+  if (confirmedBlockers != null) {
+    const confirmedNodeIds = new Set(confirmedBlockers.map((blocker) => blocker.blockerNodeId));
+    const uncertainBlockers = blockers.filter(
+      (blocker) => !confirmedNodeIds.has(blocker.blockerNodeId),
+    );
+    waitingOn = combineSnapshotAiDependencies([
+      ...confirmedBlockers.map((blocker) =>
+        snapshotBlockerPrimitiveDependency(blocker, [
+          "presence",
+          "confidence",
+          "sourceIds",
+          "becameBlockingAt",
+        ]),
+      ),
+      ...uncertainBlockers.map((blocker) =>
+        snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence"]),
+      ),
+      negativeDependency,
+    ]);
+    const primarySelectionDependency =
+      primaryBlocker.authority === "authoritative"
+        ? notDependentSnapshotAiDependency()
+        : combineSnapshotAiDependencies([...selectionConditions, negativeDependency]);
+    const authoritativeConfirmedCount = confirmedBlockers.filter(
+      (blocker) => blocker.authority === "authoritative",
+    ).length;
+    const inferredConfirmedConditions = confirmedBlockers.flatMap((blocker) =>
+      blocker.authority === "inferred"
+        ? [snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence"])]
+        : [],
+    );
+    const multiplicityDependency =
+      confirmedBlockers.length === 1
+        ? combineSnapshotAiDependencies([
+            ...uncertainBlockers.map((blocker) =>
+              snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence"]),
+            ),
+            negativeDependency,
+          ])
+        : combineSnapshotAiDependencies(
+            preferredSnapshotAiDependencies(
+              inferredConfirmedConditions,
+              Math.max(0, 2 - authoritativeConfirmedCount),
+            ),
+          );
+    primaryWaitingOn = combineSnapshotAiDependencies([
+      primarySelectionDependency,
+      multiplicityDependency,
+    ]);
+  }
+  const nextAction =
+    stateSupport === "authoritative_blocker"
+      ? notDependentSnapshotAiDependency()
+      : combineSnapshotAiDependencies([...selectionConditions, negativeDependency]);
+  const confidence =
+    stateSupport === "authoritative_blocker"
+      ? combineSnapshotAiDependencies([
+          primaryBlocker.dependency.confidence,
+          ...blockers
+            .filter((blocker) => blocker.authority === "inferred")
+            .map((blocker) =>
+              snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence"]),
+            ),
+          negativeDependency,
+        ])
+      : combineSnapshotAiDependencies([
+          primaryBlocker.dependency.confidence,
+          ...selectionConditions,
+          negativeDependency,
+        ]);
+  return Object.freeze({
+    stateSupport,
+    statusCandidates,
+    waitingOn,
+    primaryWaitingOn,
+    nextAction,
+    confidence,
+    evidence: combineSnapshotAiDependencies([...evidence, negativeDependency]),
+    uncertainties: combineSnapshotAiDependencies([...conditions, negativeDependency]),
+  });
+}
+
+function assertBlockerValueDependencyLowerBounds(
+  item: SnapshotTrackedItem,
+  expected: SnapshotBlockerValueAiDependencies,
+): void {
+  const applications = item.aiAnalysis.applications;
+  const statusUsesAi = aiAnalysisElementApplicationUsesAiValue(applications.status);
+  const waitingOnUsesAi = aiAnalysisElementApplicationUsesAiValue(applications.waitingOn);
+  const nextActionUsesAi = aiAnalysisElementApplicationUsesAiValue(applications.nextAction);
+  const assertLowerBound = (
+    element: AiAnalysisDependencyElement,
+    dependency: AiAnalysisDependency | undefined,
+  ): void => {
+    if (dependency == null) {
+      throw new StateSnapshotSemanticError(
+        `item ${item.nodeId}の${element} blocker AI依存を再構成できません`,
+      );
+    }
+    if (!aiAnalysisDependencyContainsRecordedLowerBound(dependency, item.aiDependencies[element])) {
+      throw new StateSnapshotSemanticError(
+        `item ${item.nodeId}の${element} AI依存がblocker判定の導出元を含んでいません`,
+      );
+    }
+  };
+  if (!statusUsesAi) {
+    const candidates = expected.statusCandidates;
+    if (
+      candidates?.some((candidate) =>
+        aiAnalysisDependencyContainsRecordedLowerBound(candidate, item.aiDependencies.status),
+      ) !== true
+    ) {
+      throw new StateSnapshotSemanticError(
+        `item ${item.nodeId}のstatus AI依存がblocker判定の導出元を含んでいません`,
+      );
+    }
+  }
+  if (!waitingOnUsesAi) {
+    assertLowerBound("waitingOn", expected.waitingOn);
+    assertLowerBound("primaryWaitingOn", expected.primaryWaitingOn);
+  }
+  if (!nextActionUsesAi) {
+    assertLowerBound("nextAction", expected.nextAction);
+  }
+  if (
+    !statusUsesAi ||
+    !waitingOnUsesAi ||
+    !nextActionUsesAi ||
+    expected.stateSupport === "authoritative_blocker"
+  ) {
+    assertLowerBound("confidence", expected.confidence);
+    assertLowerBound("evidence", expected.evidence);
+  }
+  if (expected.uncertainties != null) {
+    assertLowerBound("uncertainties", expected.uncertainties);
+  }
+}
+
+function expectedRelationSetAiDependencies(
+  snapshot:
+    | StateSnapshotFields
+    | LegacyStateSnapshotFieldsWithoutAiDependencies
+    | LegacyStateSnapshotFields
+    | LegacyStateSnapshotFieldsWithPersonalReminder
+    | LegacyStateSnapshotFieldsWithPersonalReminderVersion17,
+): ReadonlyMap<GraphNodeId, AiAnalysisDependency> {
+  const dependenciesByNodeId = new Map<GraphNodeId, AiAnalysisDependency>();
+  for (const item of snapshot.items) {
+    dependenciesByNodeId.set(item.nodeId, Object.freeze({ status: "not_dependent" }));
+  }
+  const supportsByNodeId = new Map<GraphNodeId, Map<string, AiAnalysisDependency[]>>();
+  const inferredDecisionsByNodeId = new Map<GraphNodeId, AiAnalysisDependency[]>();
+  for (const relation of snapshot.relations) {
+    if (!relation.active || !("aiDependency" in relation)) {
+      continue;
+    }
+    const key = JSON.stringify([relation.type, relation.fromNodeId, relation.toNodeId]);
+    for (const nodeId of [relation.fromNodeId, relation.toNodeId]) {
+      if (!dependenciesByNodeId.has(nodeId)) {
+        continue;
+      }
+      if (relation.provenance !== "native") {
+        const decisions = inferredDecisionsByNodeId.get(nodeId);
+        if (decisions == null) {
+          inferredDecisionsByNodeId.set(nodeId, [relation.aiDependency]);
+        } else {
+          decisions.push(relation.aiDependency);
+        }
+      }
+      const supportsByMeaning = supportsByNodeId.get(nodeId);
+      if (supportsByMeaning == null) {
+        supportsByNodeId.set(nodeId, new Map([[key, [relation.aiDependency]]]));
+        continue;
+      }
+      const supports = supportsByMeaning.get(key);
+      if (supports == null) {
+        supportsByMeaning.set(key, [relation.aiDependency]);
+      } else {
+        supports.push(relation.aiDependency);
+      }
+    }
+  }
+  for (const [nodeId, supportsByMeaning] of supportsByNodeId) {
+    const dependencies = [...supportsByMeaning.values()].map((supports) =>
+      preferredBlockerSupportDependency(supports),
+    );
+    dependencies.push(...(inferredDecisionsByNodeId.get(nodeId) ?? []));
+    dependenciesByNodeId.set(nodeId, combineAiAnalysisDependencies(dependencies));
+  }
+  return dependenciesByNodeId;
+}
+
+function aiAnalysisDependencyStatusPriority(status: AiAnalysisDependency["status"]): number {
+  switch (status) {
+    case "not_dependent":
+      return 0;
+    case "current":
+      return 1;
+    case "unverified":
+      return 2;
+    case "unknown":
+      return 3;
+    default:
+      throw new UnreachableError(status);
+  }
+}
+
+function blocksArcKey(fromNodeId: GraphNodeId, toNodeId: GraphNodeId): string {
+  return JSON.stringify(["blocks", fromNodeId, toNodeId]);
+}
+
+function aiAnalysisDependencyProducerSignature(producer: AiAnalysisDependencyProducer): string {
+  return hashCanonicalJson(producer);
+}
+
+function expectedProducersAreContained(
+  expected: AiAnalysisDependency,
+  actual: AiAnalysisDependency,
+): boolean {
+  const expectedProducers = expected.status === "not_dependent" ? undefined : expected.producers;
+  const actualProducers = actual.status === "not_dependent" ? undefined : actual.producers;
+  if (expectedProducers == null || expectedProducers.length === 0) {
+    return true;
+  }
+  if (actualProducers == null) {
+    return false;
+  }
+  const actualProducerSignatures = new Set(
+    actualProducers.map(aiAnalysisDependencyProducerSignature),
+  );
+  return expectedProducers.every((producer) =>
+    actualProducerSignatures.has(aiAnalysisDependencyProducerSignature(producer)),
+  );
+}
+
+function assertAiAnalysisDependencyLowerBound(
+  expected: AiAnalysisDependency,
+  actual: AiAnalysisDependency,
+  description: string,
+): void {
+  if (!aiAnalysisDependencyContainsLowerBound(expected, actual)) {
+    throw new StateSnapshotSemanticError(`${description}が導出元のAI依存を含んでいません`);
+  }
+}
+
+function aiAnalysisDependencyContainsLowerBound(
+  expected: AiAnalysisDependency,
+  actual: AiAnalysisDependency,
+): boolean {
+  const producerlessMigration =
+    actual.status === "unknown" && actual.reason === "migration" && actual.producers == null;
+  if (producerlessMigration || expected.status === "not_dependent") {
+    return true;
+  }
+  if (
+    aiAnalysisDependencyStatusPriority(actual.status) <
+      aiAnalysisDependencyStatusPriority(expected.status) ||
+    !expectedProducersAreContained(expected, actual)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function aiAnalysisDependencyContainsRecordedLowerBound(
+  expected: AiAnalysisDependency,
+  actual: AiAnalysisDependency,
+): boolean {
+  if (expected.status === "not_dependent") {
+    return true;
+  }
+  return (
+    aiAnalysisDependencyStatusPriority(actual.status) >=
+      aiAnalysisDependencyStatusPriority(expected.status) &&
+    expectedProducersAreContained(expected, actual)
+  );
+}
+
+function relationDerivedAiDependency(dependency: AiAnalysisDependency): AiAnalysisDependency {
+  if (dependency.status === "not_dependent") {
+    return dependency;
+  }
+  const producers = dependency.producers?.filter((producer) => producer.kind !== "item_element");
+  if (producers == null || producers.length === 0) {
+    return Object.freeze({ status: "not_dependent" });
+  }
+  if (dependency.status === "unknown") {
+    return normalizeAiAnalysisDependency({
+      status: dependency.status,
+      reason: dependency.reason,
+      producers,
+    });
+  }
+  return normalizeAiAnalysisDependency({ status: dependency.status, producers });
+}
+
+function assertGraphDerivedAiDependencyLowerBounds(
+  item: SnapshotTrackedItem,
+  expectedDownstreamImpact: AiAnalysisDependency,
+): void {
+  assertAiAnalysisDependencyLowerBound(
+    expectedDownstreamImpact,
+    item.aiDependencies.downstreamImpact,
+    `item ${item.nodeId}のdownstream impact AI依存`,
+  );
+  if (item.importance.factors.some((factor) => factor.kind === "downstreamImpact")) {
+    assertAiAnalysisDependencyLowerBound(
+      item.aiDependencies.downstreamImpact,
+      item.aiDependencies.importance,
+      `item ${item.nodeId}のimportance AI依存`,
+    );
+  }
+  const specialWaitClass =
+    item.severityContext.waitClass === "notApplicable" ||
+    item.severityContext.waitClass === "blockedParent";
+  const severitySource = specialWaitClass
+    ? relationDerivedAiDependency(item.aiDependencies.status)
+    : combineAiAnalysisDependencies([
+        relationDerivedAiDependency(item.aiDependencies.stallSince),
+        relationDerivedAiDependency(item.aiDependencies.status),
+        relationDerivedAiDependency(item.aiDependencies.waitingOn),
+      ]);
+  assertAiAnalysisDependencyLowerBound(
+    severitySource,
+    item.aiDependencies.severity,
+    `item ${item.nodeId}のseverity AI依存`,
+  );
+  const attentionSources = specialWaitClass
+    ? [relationDerivedAiDependency(item.aiDependencies.status)]
+    : [relationDerivedAiDependency(item.aiDependencies.importance)];
+  if (!specialWaitClass && item.importance.score !== 0) {
+    attentionSources.push(
+      relationDerivedAiDependency(item.aiDependencies.stallSince),
+      relationDerivedAiDependency(item.aiDependencies.status),
+      relationDerivedAiDependency(item.aiDependencies.waitingOn),
+    );
+  }
+  assertAiAnalysisDependencyLowerBound(
+    combineAiAnalysisDependencies(attentionSources),
+    item.aiDependencies.attention,
+    `item ${item.nodeId}のattention AI依存`,
+  );
+}
+
+function additionalBlockerProducers(
+  expected: AiAnalysisDependency,
+  actual: AiAnalysisDependency,
+): readonly AiAnalysisDependencyProducer[] {
+  const expectedProducerSignatures = new Set(
+    expected.status === "not_dependent"
+      ? []
+      : (expected.producers ?? []).map(aiAnalysisDependencyProducerSignature),
+  );
+  const actualProducers = actual.status === "not_dependent" ? [] : (actual.producers ?? []);
+  return Object.freeze(
+    actualProducers.filter(
+      (producer) =>
+        !expectedProducerSignatures.has(aiAnalysisDependencyProducerSignature(producer)),
+    ),
+  );
+}
+
+function relationSetExpectedProducerIsCovered(
+  expectedProducer: AiAnalysisDependencyProducer,
+  actualProducers: readonly AiAnalysisDependencyProducer[],
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+): boolean {
+  const expectedSignature = aiAnalysisDependencyProducerSignature(expectedProducer);
+  if (
+    actualProducers.some(
+      (producer) => aiAnalysisDependencyProducerSignature(producer) === expectedSignature,
+    )
+  ) {
+    return true;
+  }
+  if (expectedProducer.kind !== "relation") {
+    return false;
+  }
+  const relation = relationsById.get(expectedProducer.relationId);
+  if (relation == null) {
+    throw new StateSnapshotSemanticError(
+      `relation set AI依存のrelation ${expectedProducer.relationId}がありません`,
+    );
+  }
+  return actualProducers.some(
+    (producer) =>
+      producer.kind === "relation_candidate" &&
+      producer.candidateId === expectedProducer.relationId &&
+      producer.endpointNodeIds.includes(relation.fromNodeId) &&
+      producer.endpointNodeIds.includes(relation.toNodeId) &&
+      producer.producer.nodeId === expectedProducer.producer.nodeId,
+  );
+}
+
+function relationSetActualProducersAreExpected(
+  expectedProducers: readonly AiAnalysisDependencyProducer[],
+  actualProducers: readonly AiAnalysisDependencyProducer[],
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+): boolean {
+  const coverageCountByExpectedSignature = new Map<string, number>();
+  for (const actualProducer of actualProducers) {
+    if (actualProducer.kind === "item_element") {
+      return false;
+    }
+    const persistedRelation =
+      actualProducer.kind === "relation_candidate"
+        ? relationsById.get(actualProducer.candidateId)
+        : relationsById.get(actualProducer.relationId);
+    if (actualProducer.kind === "relation_candidate" && persistedRelation?.active !== true) {
+      continue;
+    }
+    const matchingExpectedProducer = expectedProducers.find((expectedProducer) =>
+      relationSetExpectedProducerIsCovered(expectedProducer, [actualProducer], relationsById),
+    );
+    if (matchingExpectedProducer == null) {
+      return false;
+    }
+    const signature = aiAnalysisDependencyProducerSignature(matchingExpectedProducer);
+    const nextCoverageCount = (coverageCountByExpectedSignature.get(signature) ?? 0) + 1;
+    if (nextCoverageCount > 1) {
+      return false;
+    }
+    coverageCountByExpectedSignature.set(signature, nextCoverageCount);
+  }
+  return true;
+}
+
+function relationSetDependencySatisfiesExpected(
+  expected: AiAnalysisDependency,
+  actual: AiAnalysisDependency,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+): boolean {
+  const hiddenSentinelOptions = Object.freeze({
+    allowHiddenProducerlessNotRecorded: true,
+    allowHiddenProducerlessMigration: true,
+  });
+  if (aiAnalysisDependencyMatchesExpected(actual, expected, hiddenSentinelOptions)) {
+    return true;
+  }
+  if (
+    aiAnalysisDependencyStatusPriority(actual.status) <
+    aiAnalysisDependencyStatusPriority(expected.status)
+  ) {
+    return false;
+  }
+  const expectedProducers = expected.status === "not_dependent" ? [] : (expected.producers ?? []);
+  const actualProducers = actual.status === "not_dependent" ? [] : (actual.producers ?? []);
+  if (!relationSetActualProducersAreExpected(expectedProducers, actualProducers, relationsById)) {
+    return false;
+  }
+  return expectedProducers.every((producer) =>
+    relationSetExpectedProducerIsCovered(producer, actualProducers, relationsById),
+  );
+}
+
+function assertNegativeBlockerCandidateDirection(
+  producer: Extract<AiAnalysisDependencyProducer, { kind: "relation_candidate" }>,
+  blockedNodeId: GraphNodeId,
+  activeBlocksArcKeys: ReadonlySet<string>,
+): void {
+  const [firstEndpoint, secondEndpoint] = producer.endpointNodeIds;
+  let otherEndpoint: GraphNodeId | undefined;
+  if (firstEndpoint === blockedNodeId) {
+    otherEndpoint = secondEndpoint;
+  } else if (secondEndpoint === blockedNodeId) {
+    otherEndpoint = firstEndpoint;
+  }
+  if (otherEndpoint == null) {
+    throw new StateSnapshotSemanticError(
+      `item ${blockedNodeId}のblockers AI依存candidate endpointが親itemと一致しません`,
+    );
+  }
+  if (activeBlocksArcKeys.has(blocksArcKey(otherEndpoint, blockedNodeId))) {
+    throw new StateSnapshotSemanticError(
+      `item ${blockedNodeId}のblockers AI依存にactiveなnegative relation candidateがあります`,
+    );
+  }
+}
+
+function blockerDependencySatisfiesExpected(
+  expected: AiAnalysisDependency,
+  actual: AiAnalysisDependency,
+  itemNodeId: GraphNodeId,
+  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
+  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
+  activeBlocksArcKeys: ReadonlySet<string>,
+): boolean {
+  const hiddenSentinelOptions = Object.freeze({
+    allowHiddenProducerlessNotRecorded: true,
+    allowHiddenProducerlessMigration: true,
+  });
+  if (aiAnalysisDependencyMatchesExpected(actual, expected, hiddenSentinelOptions)) {
+    return true;
+  }
+  if (
+    aiAnalysisDependencyStatusPriority(actual.status) <
+    aiAnalysisDependencyStatusPriority(expected.status)
+  ) {
+    return false;
+  }
+  if (!expectedProducersAreContained(expected, actual)) {
+    return false;
+  }
+  const additionalProducers = additionalBlockerProducers(expected, actual);
+  if (additionalProducers.length !== 0) {
+    for (const producer of additionalProducers) {
+      if (producer.kind === "relation") {
+        const relation = relationsById.get(producer.relationId);
+        if (
+          relation == null ||
+          !relation.active ||
+          relation.type !== "blocks" ||
+          relation.toNodeId !== itemNodeId
+        ) {
+          return false;
+        }
+        continue;
+      }
+      if (producer.kind === "relation_candidate") {
+        assertNegativeBlockerCandidateDirection(producer, itemNodeId, activeBlocksArcKeys);
+        continue;
+      }
+      return false;
+    }
+    const reconstructed = combineAiAnalysisDependencies([
+      expected,
+      ...additionalProducers.map((producer) =>
+        expectedAiAnalysisDependencyForProducer(
+          producer,
+          `item ${itemNodeId}のblockers AI依存`,
+          itemsByNodeId,
+          relationsById,
+          actual,
+        ),
+      ),
+    ]);
+    if (hashCanonicalJson(reconstructed) === hashCanonicalJson(actual)) {
+      return true;
+    }
+    return aiAnalysisDependencyMatchesExpected(actual, reconstructed, hiddenSentinelOptions);
+  }
+  return false;
 }
 
 function assertAiAnalysisSemantics(
@@ -1181,12 +4168,17 @@ function assertAiAnalysisSemantics(
   elementSchemaVersion: ElementSchemaVersion,
   adoptedElementsFormat: "legacy" | "current",
   requireApplications: boolean,
+  allowNotRecordedApplicationWithoutAdopted: boolean,
 ): void {
+  let applications: TrackedItemAiAnalysis["applications"] | undefined;
   if (requireApplications) {
     if (!("applications" in aiAnalysis)) {
       throw new StateSnapshotSemanticError("AI適用元がありません");
     }
-    assertAiAnalysisElementApplicationsSemantics(aiAnalysis.applications, "AI適用元");
+    applications = assertAiAnalysisElementApplicationsSemantics(
+      aiAnalysis.applications,
+      "AI適用元",
+    );
   }
   if (aiAnalysis.origin === "current") {
     if (aiAnalysis.status === "used" && Object.keys(aiAnalysis.elements).length === 0) {
@@ -1212,6 +4204,13 @@ function assertAiAnalysisSemantics(
         adoptedElementsFormat,
       );
     }
+    if (applications != null) {
+      assertAiAnalysisApplicationsMatchStoredElements(
+        aiAnalysis,
+        applications,
+        allowNotRecordedApplicationWithoutAdopted,
+      );
+    }
     return;
   }
   assertAiAnalysisElementMapSemantics(
@@ -1226,6 +4225,13 @@ function assertAiAnalysisSemantics(
     elementSchemaVersion,
     adoptedElementsFormat === "current",
   );
+  if (applications != null) {
+    assertAiAnalysisApplicationsMatchStoredElements(
+      aiAnalysis,
+      applications,
+      allowNotRecordedApplicationWithoutAdopted,
+    );
+  }
 }
 
 function normalizeActor(actor: Actor): Actor {
@@ -1242,6 +4248,34 @@ function normalizeActor(actor: Actor): Actor {
   });
 }
 
+function normalizePersonalReminderCause(cause: PersonalReminderCause): PersonalReminderCause {
+  return personalReminderCauseSchema.parse({
+    ...cause,
+    aiDependencies: personalReminderCauseAiDependenciesSchema.parse({
+      presence: normalizeAiAnalysisDependency(cause.aiDependencies.presence),
+      responsible: normalizeAiAnalysisDependency(cause.aiDependencies.responsible),
+      action: normalizeAiAnalysisDependency(cause.aiDependencies.action),
+      evidence: normalizeAiAnalysisDependency(cause.aiDependencies.evidence),
+    }),
+    currentInput: {
+      ...cause.currentInput,
+      aiDependency: normalizeAiAnalysisDependency(cause.currentInput.aiDependency),
+    },
+  });
+}
+
+function normalizePersonalReminderCausePlanning(
+  planning: PersonalReminderCausePlanning,
+): PersonalReminderCausePlanning {
+  if (planning.status !== "completed") {
+    return personalReminderCausePlanningSchema.parse(planning);
+  }
+  return personalReminderCausePlanningSchema.parse({
+    ...planning,
+    causeSetAiDependency: normalizeAiAnalysisDependency(planning.causeSetAiDependency),
+  });
+}
+
 function normalizeAccountActor(actor: GitHubAccountActor): GitHubAccountActor {
   return Object.freeze({
     type: actor.type,
@@ -1252,7 +4286,11 @@ function normalizeAccountActor(actor: GitHubAccountActor): GitHubAccountActor {
 
 function assertSnapshotSemantics(
   snapshot:
-    StateSnapshotFields | LegacyStateSnapshotFields | LegacyStateSnapshotFieldsWithPersonalReminder,
+    | StateSnapshotFields
+    | LegacyStateSnapshotFieldsWithoutAiDependencies
+    | LegacyStateSnapshotFields
+    | LegacyStateSnapshotFieldsWithPersonalReminder
+    | LegacyStateSnapshotFieldsWithPersonalReminderVersion17,
   elementSchemaVersion: ElementSchemaVersion,
   adoptedElementsFormat: "legacy" | "current",
   requireApplications: boolean,
@@ -1328,6 +4366,7 @@ function assertSnapshotSemantics(
         elementSchemaVersion,
         adoptedElementsFormat,
         requireApplications,
+        true,
       );
       if (item.observedAt > collectionRepository.successfulAt) {
         throw new StateSnapshotSemanticError(
@@ -1373,10 +4412,15 @@ function assertSnapshotSemantics(
       elementSchemaVersion,
       adoptedElementsFormat,
       requireApplications,
+      false,
     );
+    if ("aiDependencies" in item) {
+      assertAiAnalysisApplicationsMatchTrackedItemValues(item);
+    }
     if ("personalReminderCauses" in item) {
-      assertPersonalReminderCausesSemantics(item, personalReminderCauseIds);
-      assertPersonalReminderCausePlanningSemantics(item);
+      const legacyPersonalReminder = isLegacyPersonalReminder(item);
+      assertPersonalReminderCausesSemantics(item, personalReminderCauseIds, legacyPersonalReminder);
+      assertPersonalReminderCausePlanningSemantics(item, legacyPersonalReminder);
     }
     if (isTerminalStatus(item.status) && item.waitingOn.length !== 0) {
       throw new StateSnapshotSemanticError("terminal itemにwaitingOnを保存できません");
@@ -1472,14 +4516,246 @@ function assertSnapshotSemantics(
     ...snapshot.items.map((item) => item.nodeId),
     ...snapshot.externalReferences.map((reference) => reference.nodeId),
   ]);
+  const openGraphNodeIds = new Set<GraphNodeId>([
+    ...snapshot.items.filter((item) => item.state === "open").map((item) => item.nodeId),
+    ...snapshot.externalReferences
+      .filter((reference) => reference.state === "open")
+      .map((reference) => reference.nodeId),
+  ]);
+  const itemsByNodeId = new Map<string, SnapshotItemForRelationValidation>(
+    snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  const externalReferencesByNodeId = new Map<string, ExternalGhostNode>(
+    snapshot.externalReferences.map((reference) => [reference.nodeId, reference]),
+  );
+  const staleRepositoryIds = new Set(
+    snapshot.repositories
+      .filter((repository) => repository.freshness === "stale")
+      .map((repository) => repository.id),
+  );
+  const staleGraphNodeIds = new Set<GraphNodeId>(
+    snapshot.items
+      .filter((item) => staleRepositoryIds.has(item.repositoryId))
+      .map((item) => item.nodeId),
+  );
+  const relationsById = new Map(snapshot.relations.map((relation) => [relation.id, relation]));
+  const activeBlocksArcKeys = new Set(
+    snapshot.relations
+      .filter((relation) => relation.active && relation.type === "blocks")
+      .map((relation) => blocksArcKey(relation.fromNodeId, relation.toNodeId)),
+  );
+  const notDependentOpenBlockerTargetNodeIds = new Set(
+    snapshot.relations
+      .filter(
+        (relation) =>
+          relation.active &&
+          relation.type === "blocks" &&
+          openGraphNodeIds.has(relation.fromNodeId) &&
+          openGraphNodeIds.has(relation.toNodeId) &&
+          "aiDependency" in relation &&
+          typeof relation.aiDependency === "object" &&
+          relation.aiDependency != null &&
+          "status" in relation.aiDependency &&
+          relation.aiDependency.status === "not_dependent",
+      )
+      .map((relation) => relation.toNodeId),
+  );
   for (const relation of snapshot.relations) {
     if (!graphNodeIds.has(relation.fromNodeId) || !graphNodeIds.has(relation.toNodeId)) {
       throw new StateSnapshotSemanticError("relationがsnapshotにないnodeを参照しています");
     }
+    assertImplementsRelationEndpointTypes(relation, itemsByNodeId, externalReferencesByNodeId);
     assertUtcDateTime(relation.firstSeenAt, "relation firstSeenAt");
     assertUtcDateTime(relation.lastConfirmedAt, "relation lastConfirmedAt");
+    if ("aiDependency" in relation) {
+      assertRelationAiDependencySemantics(relation.aiDependency, "relationのAI依存");
+      if (relation.provenance === "native" && relation.aiDependency.status !== "not_dependent") {
+        throw new StateSnapshotSemanticError(
+          "native relationのAI依存はnot_dependentでなければなりません",
+        );
+      }
+      assertInferredRelationAiDependencySemantics(
+        relation,
+        itemsByNodeId,
+        !relation.active ||
+          staleGraphNodeIds.has(relation.fromNodeId) ||
+          staleGraphNodeIds.has(relation.toNodeId),
+      );
+    }
     if (!relation.active) {
+      if (!("removedAt" in relation)) {
+        throw new StateSnapshotSemanticError("inactive relationのremovedAtがありません");
+      }
       assertUtcDateTime(relation.removedAt, "relation removedAt");
+    }
+  }
+  const relationCandidateDependencies: {
+    description: string;
+    dependency: AiAnalysisDependency;
+    targetNodeId?: GraphNodeId;
+  }[] = [];
+  for (const item of snapshot.items) {
+    if ("aiDependencies" in item) {
+      for (const element of AI_ANALYSIS_DEPENDENCY_ELEMENTS) {
+        relationCandidateDependencies.push({
+          description: `item ${item.nodeId}の${element} AI依存`,
+          dependency: item.aiDependencies[element],
+          ...(element === "blockers" ? { targetNodeId: item.nodeId } : {}),
+        });
+      }
+    }
+    if ("personalReminderCauses" in item) {
+      for (const cause of item.personalReminderCauses) {
+        if (!("aiDependencies" in cause) || !("aiDependency" in cause.currentInput)) {
+          continue;
+        }
+        relationCandidateDependencies.push(
+          {
+            description: `personal reminder cause ${cause.causeId}のpresence AI依存`,
+            dependency: cause.aiDependencies.presence,
+          },
+          {
+            description: `personal reminder cause ${cause.causeId}のresponsible AI依存`,
+            dependency: cause.aiDependencies.responsible,
+          },
+          {
+            description: `personal reminder cause ${cause.causeId}のaction AI依存`,
+            dependency: cause.aiDependencies.action,
+          },
+          {
+            description: `personal reminder cause ${cause.causeId}のevidence AI依存`,
+            dependency: cause.aiDependencies.evidence,
+          },
+          {
+            description: `personal reminder cause ${cause.causeId}のcurrent input AI依存`,
+            dependency: cause.currentInput.aiDependency,
+          },
+        );
+      }
+      if (
+        item.personalReminderCausePlanning.status === "completed" &&
+        "causeSetAiDependency" in item.personalReminderCausePlanning
+      ) {
+        relationCandidateDependencies.push({
+          description: `item ${item.nodeId}のpersonal reminder cause set AI依存`,
+          dependency: item.personalReminderCausePlanning.causeSetAiDependency,
+          targetNodeId: item.nodeId,
+        });
+      }
+    }
+  }
+  for (const relation of snapshot.relations) {
+    if ("aiDependency" in relation) {
+      relationCandidateDependencies.push({
+        description: `relation ${relation.id}のAI依存`,
+        dependency: relation.aiDependency,
+      });
+    }
+  }
+  assertRelationCandidateProducerDefinitions(
+    relationCandidateDependencies,
+    itemsByNodeId,
+    relationsById,
+  );
+  for (const item of snapshot.items) {
+    if ("personalReminderCauses" in item) {
+      assertPersonalReminderDependenciesSemantics(item, itemsByNodeId, relationsById);
+    }
+  }
+  const expectedBlockerDependenciesByNodeId = expectedBlockersAiDependencies(snapshot);
+  const expectedBlockerAnalysis = expectedSnapshotBlockerAnalysis(snapshot);
+  const expectedRelationSetDependenciesByNodeId = expectedRelationSetAiDependencies(snapshot);
+  const expectedDownstreamImpactDependenciesByNodeId =
+    expectedDownstreamImpactAiDependencies(snapshot);
+  for (const item of snapshot.items) {
+    if (!("aiDependencies" in item)) {
+      continue;
+    }
+    assertTrackedItemAiDependenciesSemantics(
+      item.aiDependencies,
+      "itemのAI依存",
+      item,
+      itemsByNodeId,
+      relationsById,
+      activeBlocksArcKeys,
+      notDependentOpenBlockerTargetNodeIds,
+    );
+    if (expectedDownstreamImpactDependenciesByNodeId != null) {
+      const expectedDownstreamImpact = expectedDownstreamImpactDependenciesByNodeId.get(
+        item.nodeId,
+      );
+      if (expectedDownstreamImpact == null) {
+        throw new StateSnapshotSemanticError(
+          `item ${item.nodeId}のdownstream impact AI依存の検証対象がありません`,
+        );
+      }
+      assertGraphDerivedAiDependencyLowerBounds(item, expectedDownstreamImpact);
+    }
+    const relationSetIsProducerlessMigration =
+      item.aiDependencies.relationSet.status === "unknown" &&
+      item.aiDependencies.relationSet.reason === "migration" &&
+      item.aiDependencies.relationSet.producers == null;
+    if (!relationSetIsProducerlessMigration) {
+      const expectedRelationSet = expectedRelationSetDependenciesByNodeId.get(item.nodeId);
+      if (expectedRelationSet == null) {
+        throw new StateSnapshotSemanticError(
+          `item ${item.nodeId}のrelation set AI依存の検証対象がありません`,
+        );
+      }
+      if (
+        !relationSetDependencySatisfiesExpected(
+          expectedRelationSet,
+          item.aiDependencies.relationSet,
+          relationsById,
+        )
+      ) {
+        throw new StateSnapshotSemanticError(
+          `item ${item.nodeId}のrelation set AI依存がactive incident relation supportと一致しません`,
+        );
+      }
+    }
+    const expectedBlockers = expectedBlockerDependenciesByNodeId.get(item.nodeId);
+    if (expectedBlockers == null) {
+      throw new StateSnapshotSemanticError(
+        `item ${item.nodeId}のblockers AI依存の検証対象がありません`,
+      );
+    }
+    if (
+      !blockerDependencySatisfiesExpected(
+        expectedBlockers,
+        item.aiDependencies.blockers,
+        item.nodeId,
+        itemsByNodeId,
+        relationsById,
+        activeBlocksArcKeys,
+      )
+    ) {
+      throw new StateSnapshotSemanticError(
+        `item ${item.nodeId}のblockers AI依存がactive/open relation supportと一致しません`,
+      );
+    }
+    if (expectedBlockerAnalysis != null) {
+      const expectedBlockerSetDependency =
+        expectedBlockerAnalysis.blockerSetDependenciesByNodeId.get(item.nodeId);
+      if (expectedBlockerSetDependency == null) {
+        throw new StateSnapshotSemanticError(
+          `item ${item.nodeId}のblocker set AI依存を再構成できません`,
+        );
+      }
+      if (
+        !aiAnalysisDependencyContainsRecordedLowerBound(
+          expectedBlockerSetDependency,
+          item.aiDependencies.blockers,
+        )
+      ) {
+        throw new StateSnapshotSemanticError(
+          `item ${item.nodeId}のblockers AI依存がblocker setの導出元を含んでいません`,
+        );
+      }
+      assertBlockerValueDependencyLowerBounds(
+        item,
+        expectedSnapshotBlockerValueAiDependencies(item, expectedBlockerAnalysis),
+      );
     }
   }
 }
@@ -1523,6 +4799,7 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
         .map((item) =>
           Object.freeze({
             ...item,
+            aiDependencies: normalizeTrackedItemAiDependencies(item.aiDependencies),
             importance: Object.freeze({
               ...item.importance,
               factors: Object.freeze(
@@ -1575,7 +4852,10 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
             personalReminderCauses: Object.freeze(
               [...item.personalReminderCauses]
                 .sort((left, right) => compareStrings(left.causeId, right.causeId))
-                .map((cause) => Object.freeze({ ...cause })),
+                .map(normalizePersonalReminderCause),
+            ),
+            personalReminderCausePlanning: normalizePersonalReminderCausePlanning(
+              item.personalReminderCausePlanning,
             ),
             aiAnalysis: normalizeTrackedItemAiAnalysis(item.aiAnalysis),
             inputEvents: Object.freeze(
@@ -1599,7 +4879,14 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
       ),
     ),
     relations: Object.freeze(
-      [...snapshot.relations].sort((left, right) => compareStrings(left.id, right.id)),
+      [...snapshot.relations]
+        .sort((left, right) => compareStrings(left.id, right.id))
+        .map((relation) =>
+          Object.freeze({
+            ...relation,
+            aiDependency: normalizeAiAnalysisDependency(relation.aiDependency),
+          }),
+        ),
     ),
     run: Object.freeze({
       ...snapshot.run,
@@ -1632,6 +4919,30 @@ function normalizeTrackedItemAiAnalysis(aiAnalysis: TrackedItemAiAnalysis): Trac
       ...aiAnalysis.adoptedElements,
     }),
     applications,
+  });
+}
+
+function normalizeTrackedItemAiDependencies(
+  dependencies: TrackedItemAiDependencies,
+): TrackedItemAiDependencies {
+  return Object.freeze({
+    status: normalizeAiAnalysisDependency(dependencies.status),
+    waitingOn: normalizeAiAnalysisDependency(dependencies.waitingOn),
+    nextAction: normalizeAiAnalysisDependency(dependencies.nextAction),
+    primaryWaitingOn: normalizeAiAnalysisDependency(dependencies.primaryWaitingOn),
+    confidence: normalizeAiAnalysisDependency(dependencies.confidence),
+    evidence: normalizeAiAnalysisDependency(dependencies.evidence),
+    uncertainties: normalizeAiAnalysisDependency(dependencies.uncertainties),
+    deadline: normalizeAiAnalysisDependency(dependencies.deadline),
+    deadlineLevel: normalizeAiAnalysisDependency(dependencies.deadlineLevel),
+    lastProgressAt: normalizeAiAnalysisDependency(dependencies.lastProgressAt),
+    stallSince: normalizeAiAnalysisDependency(dependencies.stallSince),
+    severity: normalizeAiAnalysisDependency(dependencies.severity),
+    downstreamImpact: normalizeAiAnalysisDependency(dependencies.downstreamImpact),
+    importance: normalizeAiAnalysisDependency(dependencies.importance),
+    attention: normalizeAiAnalysisDependency(dependencies.attention),
+    blockers: normalizeAiAnalysisDependency(dependencies.blockers),
+    relationSet: normalizeAiAnalysisDependency(dependencies.relationSet),
   });
 }
 
@@ -1737,17 +5048,27 @@ function parseStateSnapshotVersion17Value(value: unknown): StateSnapshotVersion1
   return value;
 }
 
+function parseStateSnapshotVersion18Value(value: unknown): StateSnapshotVersion18 {
+  snapshotSchemaVersion18Schema.parse(value);
+  if (!validateSnapshotVersion18Schema(value)) {
+    const issueCount = validateSnapshotVersion18Schema.errors?.length ?? 1;
+    throw new StateSnapshotSchemaError(issueCount);
+  }
+  assertSnapshotSemantics(value, "source", "current", true);
+  return value;
+}
+
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
   const version = z.object({ schemaVersion: z.string() }).parse(value).schemaVersion;
-  if (version === SNAPSHOT_SCHEMA_VERSION_17) {
-    return normalizeSnapshot(parseStateSnapshotVersion17Value(value));
+  if (version === SNAPSHOT_SCHEMA_VERSION_18) {
+    return normalizeSnapshot(parseStateSnapshotVersion18Value(value));
   }
   throw new StateSnapshotSchemaError(1);
 }
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return normalizeSnapshot(parseStateSnapshotVersion17Value(value));
+  return normalizeSnapshot(parseStateSnapshotVersion18Value(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */
@@ -1963,6 +5284,38 @@ export function parseStateSnapshotVersion16(source: string): StateSnapshotVersio
 
   try {
     return parseStateSnapshotVersion16Value(value);
+  } catch (error: unknown) {
+    if (
+      error instanceof StateFormatError ||
+      error instanceof StateSnapshotSchemaError ||
+      error instanceof StateSnapshotSemanticError
+    ) {
+      throw error;
+    }
+    throw new StateFormatError("snapshot", {
+      cause: new TypeError("snapshot検証中に予期しないエラーが発生しました", {
+        cause: error,
+      }),
+    });
+  }
+}
+
+/** schema version 17のsnapshotを検証して読み取る。 */
+export function parseStateSnapshotVersion17(source: string): StateSnapshotVersion17 {
+  let value: unknown;
+  try {
+    const parseJson: (text: string) => unknown = JSON.parse;
+    value = parseJson(source);
+  } catch (error: unknown) {
+    throw new StateFormatError("snapshot", {
+      cause: new SyntaxError("JSON構文が不正です", {
+        cause: error,
+      }),
+    });
+  }
+
+  try {
+    return parseStateSnapshotVersion17Value(value);
   } catch (error: unknown) {
     if (
       error instanceof StateFormatError ||

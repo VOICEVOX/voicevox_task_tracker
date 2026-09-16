@@ -113,6 +113,18 @@ export type CodexRelationCoverage =
       unresolvedCandidateIds: readonly string[];
     }>;
 
+type CodexAnalysisElementApplications = Readonly<
+  Partial<
+    Record<
+      AiAnalysisElement,
+      Readonly<{
+        confidenceLevel: CodexConfidenceClassification["level"];
+        application: "applied" | "preserved" | "deterministic_fallback";
+      }>
+    >
+  >
+>;
+
 /** 検証済みCodex出力と決定論的判定のpure reducer結果。 */
 export type CodexAnalysisReduction = Readonly<{
   decision: ReducedCodexDecision;
@@ -122,22 +134,13 @@ export type CodexAnalysisReduction = Readonly<{
   ai:
     | Readonly<{
         status: "available";
-        elements: Readonly<
-          Partial<
-            Record<
-              AiAnalysisElement,
-              Readonly<{
-                confidenceLevel: CodexConfidenceClassification["level"];
-                application: "applied" | "preserved" | "deterministic_fallback";
-              }>
-            >
-          >
-        >;
+        elements: CodexAnalysisElementApplications;
       }>
     | Readonly<{
         status: "unavailable";
         reason: CodexUnavailableReason;
         errorType: string;
+        elements: CodexAnalysisElementApplications;
       }>;
   relationAssessments: readonly RelationCandidateAssessment[];
   relationCoverage: CodexRelationCoverage;
@@ -660,7 +663,7 @@ function isValidStateValues(status: Status, waitingOn: readonly WaitingOn[]): bo
   );
 }
 
-function reconcileUnavailableStateSelections(
+function reconcileStateValueConsistency(
   selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
   deterministicDecision: DeterministicCodexDecision,
   deterministicStatePriority: boolean,
@@ -880,17 +883,8 @@ function createElementEvidence(
 function createElementApplications(
   selections: ReadonlyMap<AiAnalysisElement, ElementResultSelection>,
   deterministicStatePriority: boolean,
-): Readonly<
-  Partial<
-    Record<
-      AiAnalysisElement,
-      Readonly<{
-        confidenceLevel: CodexConfidenceClassification["level"];
-        application: "applied" | "preserved" | "deterministic_fallback";
-      }>
-    >
-  >
-> {
+  confidenceThresholds: CodexConfidenceThresholds,
+): CodexAnalysisElementApplications {
   const applications: Partial<
     Record<
       AiAnalysisElement,
@@ -901,14 +895,15 @@ function createElementApplications(
     >
   > = {};
   for (const [element, selection] of selections) {
-    if (selection.classification == null) {
+    const classification = classificationForSelection(element, selection, confidenceThresholds);
+    if (classification == null) {
       continue;
     }
     const statePriority =
       deterministicStatePriority &&
       (element === "status" || element === "waitingOn" || element === "nextAction");
     applications[element] = Object.freeze({
-      confidenceLevel: selection.classification.level,
+      confidenceLevel: classification.level,
       application: statePriority ? "deterministic_fallback" : selection.application,
     });
   }
@@ -1028,6 +1023,7 @@ function createStateDecision(
   const uncertainties = [...deterministicDecision.uncertainties];
   for (const [, selection] of aiStateSelections) {
     if (
+      aiStateApplied &&
       (selection.application === "applied" || selection.application === "preserved") &&
       selection.result != null
     ) {
@@ -1074,6 +1070,7 @@ function reduceUnavailableCodexAnalysis(
   reason: CodexUnavailableReason,
   errorType: string,
   preservedElements: CodexPreservedElements,
+  applications: CodexAnalysisElementApplications,
 ): CodexAnalysisReduction {
   const uncertainty = unavailableUncertainty(reason);
   const importanceAssessment = createImportanceAssessment(preservedElements.importance);
@@ -1087,6 +1084,7 @@ function reduceUnavailableCodexAnalysis(
       status: "unavailable",
       reason,
       errorType,
+      elements: applications,
     }),
     relationAssessments: Object.freeze([]),
     relationCoverage: unresolvedRelationCoverage(relationCandidateIds),
@@ -1106,6 +1104,7 @@ export function reduceCodexInputValidationFailure(
     relationCandidateIds,
     "input_validation_failed",
     errorType,
+    Object.freeze({}),
     Object.freeze({}),
   );
 }
@@ -1144,22 +1143,25 @@ export function reduceCodexAnalysis(
     listNativeRelationConstraints(analysisInput).some(
       (constraint) => constraint.verdict === "current_is_blocked_by_target",
     );
-  const selections =
-    attempt.status === "unavailable"
-      ? reconcileUnavailableStateSelections(
-          reconciledSelections,
-          deterministicDecision,
-          deterministicStatePriority,
-        )
-      : reconciledSelections;
+  const selections = reconcileStateValueConsistency(
+    reconciledSelections,
+    deterministicDecision,
+    deterministicStatePriority,
+  );
 
   if (attempt.status === "unavailable") {
+    const applications = createElementApplications(
+      selections,
+      deterministicStatePriority,
+      confidenceThresholds,
+    );
     const unavailable = reduceUnavailableCodexAnalysis(
       deterministicDecision,
       analysisInput.candidates.relations.map((candidate) => candidate.id),
       attempt.reason,
       attempt.errorType,
       preservedElements,
+      applications,
     );
     const relationSelection = selections.get("relations");
     assertNonNullable(relationSelection, "relations要素の選択結果がありません");
@@ -1248,7 +1250,11 @@ export function reduceCodexAnalysis(
     ["waitingOn", waitingOnSelection],
     ["nextAction", nextActionSelection],
   ];
-  const applications = createElementApplications(selections, deterministicStatePriority);
+  const applications = createElementApplications(
+    selections,
+    deterministicStatePriority,
+    confidenceThresholds,
+  );
   const notification = createCodexNotification(notificationSelection, confidenceThresholds);
   return Object.freeze({
     decision,

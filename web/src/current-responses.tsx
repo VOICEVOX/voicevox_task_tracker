@@ -4,12 +4,16 @@ import {
   type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { UnreachableError, assertNonNullable } from "../../src/util/index.js";
+import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { ItemDetailsLink } from "./item-details.js";
 import {
+  currentResponseUnverifiedValueLabel,
   currentResponseResponsibleLabel,
   currentResponseRoleLabel,
   currentResponseStatusLabel,
   currentResponseUnknownReasonLabel,
+  currentResponseSubjectCountUnverifiedDescription,
+  currentResponsesUnverifiedDescription,
 } from "./model.js";
 import { SafeGitHubLink } from "./safe-link.js";
 import { Pill } from "./ui.js";
@@ -18,17 +22,47 @@ import { PersonLink, type PersonNavigation } from "./waiting-on-display.js";
 type CurrentResponse = PublicPersonalReminderResponseDto;
 type PersonalReminderCausePlanningStatus =
   PublicItemSummaryDto["personalReminderCausePlanningStatus"];
+type CurrentResponseUnverifiedValue = CurrentResponse["unverifiedValues"][number];
 
-type CurrentResponsesProps = PersonNavigation &
+type CurrentResponsesBaseProps = PersonNavigation &
   Readonly<{
     createItemHref: (nodeId: string) => string;
     item: PublicItemSummaryDto;
     onSelectItem: (nodeId: string) => void;
     summary: PublicSummaryDto;
+  }>;
+
+type CurrentResponsesProps = CurrentResponsesBaseProps &
+  Readonly<{
     responses: readonly CurrentResponse[];
     planningStatus: PersonalReminderCausePlanningStatus;
     variant: "compact" | "detail" | "nested";
   }>;
+
+type CurrentResponseRowProps = CurrentResponsesBaseProps &
+  Readonly<{
+    response: CurrentResponse;
+    variant: CurrentResponsesProps["variant"];
+  }>;
+
+function currentResponseUnverifiedDescription(value: CurrentResponseUnverifiedValue): string {
+  return `現在入力に対して${currentResponseUnverifiedValueLabel(value)}が未検証です。`;
+}
+
+function currentResponseResponsibleUnverifiedDescription(response: CurrentResponse): string {
+  const responsibleUnverified = response.unverifiedValues.includes("responsible");
+  const subjectCountUnverified = response.subjectMembershipUnverified;
+  if (responsibleUnverified && subjectCountUnverified) {
+    return "現在入力に対して、現在の対応者と、表示中の対応者を現在の対応者として数えるかが未検証で、対応中の項目数が増減する可能性があります。";
+  }
+  if (responsibleUnverified) {
+    return currentResponseUnverifiedDescription("responsible");
+  }
+  if (subjectCountUnverified) {
+    return currentResponseSubjectCountUnverifiedDescription();
+  }
+  throw new TypeError("現在の対応者の未検証警告がありません");
+}
 
 function responseTone(response: CurrentResponse): "danger" | "info" | "success" {
   switch (response.status) {
@@ -165,12 +199,15 @@ function CurrentResponseWaitingFor({
   onSelectItem,
   response,
   summary,
+  showUnverified,
 }: Readonly<{
   createItemHref: (nodeId: string) => string;
   onSelectItem: (nodeId: string) => void;
   response: Extract<CurrentResponse, Readonly<{ status: "waiting" }>>;
   summary: PublicSummaryDto;
+  showUnverified: boolean;
 }>) {
+  const waitingForUnverified = showUnverified && response.unverifiedValues.includes("waitingFor");
   return (
     <p class="m-0 text-sm text-text-secondary wrap-anywhere">
       <span class="font-bold">待機先:</span>{" "}
@@ -180,15 +217,34 @@ function CurrentResponseWaitingFor({
         onSelectItem={onSelectItem}
         summary={summary}
       />
+      {waitingForUnverified && (
+        <>
+          {" "}
+          <AiUnverifiedMark description={currentResponseUnverifiedDescription("waitingFor")} />
+        </>
+      )}
       <span> の{response.waitingFor.action}</span>
     </p>
   );
 }
 
-function CurrentResponseEvidence({ response }: Readonly<{ response: CurrentResponse }>) {
+function CurrentResponseEvidence({
+  response,
+}: Readonly<{
+  response: CurrentResponse;
+}>) {
+  const evidenceUnverified = response.unverifiedValues.includes("evidence");
   return (
     <div class="current-response-evidence grid gap-1">
-      <strong class="text-xs text-text-muted">根拠</strong>
+      <strong class="text-xs text-text-muted">
+        根拠
+        {evidenceUnverified && (
+          <>
+            {" "}
+            <AiUnverifiedMark description={currentResponseUnverifiedDescription("evidence")} />
+          </>
+        )}
+      </strong>
       <ul class="m-0 grid list-disc gap-1 pl-5 text-sm text-text-secondary">
         {response.evidence.map((evidence, index) => (
           <li key={`${evidence.sourceUrl}:${index.toString()}`}>
@@ -212,20 +268,38 @@ function CurrentResponseRow({
   response,
   summary,
   variant,
-}: Omit<CurrentResponsesProps, "responses" | "planningStatus"> &
-  Readonly<{ response: CurrentResponse }>) {
+}: CurrentResponseRowProps) {
+  const statusUnverified = response.unverifiedValues.includes("status");
+  const responsibleUnverified =
+    response.unverifiedValues.includes("responsible") || response.subjectMembershipUnverified;
+  const actionUnverified = response.unverifiedValues.includes("action");
   const status = (
-    <Pill className="current-response-status" tone={responseTone(response)}>
-      {currentResponseStatusLabel(response.status)}
-    </Pill>
+    <>
+      <Pill className="current-response-status" tone={responseTone(response)}>
+        {currentResponseStatusLabel(response.status)}
+      </Pill>
+      {statusUnverified && (
+        <AiUnverifiedMark description={currentResponseUnverifiedDescription("status")} />
+      )}
+    </>
   );
   const responsible = (
-    <ResponseResponsibleList
-      createPersonHref={createPersonHref}
-      item={item}
-      onSelectPerson={onSelectPerson}
-      response={response}
-    />
+    <>
+      <ResponseResponsibleList
+        createPersonHref={createPersonHref}
+        item={item}
+        onSelectPerson={onSelectPerson}
+        response={response}
+      />
+      {responsibleUnverified && (
+        <>
+          {" "}
+          <AiUnverifiedMark
+            description={currentResponseResponsibleUnverifiedDescription(response)}
+          />
+        </>
+      )}
+    </>
   );
   const details = (
     <>
@@ -235,14 +309,15 @@ function CurrentResponseRow({
           onSelectItem={onSelectItem}
           response={response}
           summary={summary}
+          showUnverified={true}
         />
       )}
       {response.status === "unknown" && (
         <p class="m-0 text-sm text-state-danger-text wrap-anywhere">
-          判定理由: {currentResponseUnknownReasonLabel(response.reason)}
+          現在の対応を確定できない理由: {currentResponseUnknownReasonLabel(response.reason)}
         </p>
       )}
-      {variant === "detail" && <CurrentResponseEvidence response={response} />}
+      {variant !== "compact" && <CurrentResponseEvidence response={response} />}
     </>
   );
 
@@ -253,7 +328,15 @@ function CurrentResponseRow({
           {status}
           <strong class="min-w-0 wrap-anywhere">{responsible}</strong>
         </div>
-        <p class="m-0 text-sm text-text-primary wrap-anywhere">{response.action.summary}</p>
+        <p class="m-0 text-sm text-text-primary wrap-anywhere">
+          {response.action.summary}
+          {actionUnverified && (
+            <>
+              {" "}
+              <AiUnverifiedMark description={currentResponseUnverifiedDescription("action")} />
+            </>
+          )}
+        </p>
         {details}
       </li>
     );
@@ -267,6 +350,12 @@ function CurrentResponseRow({
       </div>
       <p class="mt-1 mb-0 text-lg font-bold text-text-primary wrap-anywhere">
         {response.action.summary}
+        {actionUnverified && (
+          <>
+            {" "}
+            <AiUnverifiedMark description={currentResponseUnverifiedDescription("action")} />
+          </>
+        )}
       </p>
       <div class="mt-2 grid min-w-0 gap-2">{details}</div>
     </li>
@@ -274,17 +363,19 @@ function CurrentResponseRow({
 }
 
 /** currentResponsesから現在の対応者、行動、根拠を表示する。 */
-export function CurrentResponses({
-  createItemHref,
-  createPersonHref,
-  item,
-  onSelectItem,
-  onSelectPerson,
-  summary,
-  planningStatus,
-  responses,
-  variant,
-}: CurrentResponsesProps) {
+export function CurrentResponses(props: CurrentResponsesProps) {
+  const {
+    createItemHref,
+    createPersonHref,
+    item,
+    onSelectItem,
+    onSelectPerson,
+    summary,
+    planningStatus,
+    responses,
+    variant,
+  } = props;
+  const collectionUnverified = planningStatus === "completed" && item.currentResponsesUnverified;
   const list =
     responses.length === 0 ? (
       <p class="m-0 text-sm text-text-muted">
@@ -319,6 +410,12 @@ export function CurrentResponses({
           class="m-0 font-display text-base leading-snug font-semibold"
         >
           現在の対応
+          {collectionUnverified && (
+            <>
+              {" "}
+              <AiUnverifiedMark description={currentResponsesUnverifiedDescription()} />
+            </>
+          )}
         </h4>
         {list}
       </section>
@@ -327,5 +424,15 @@ export function CurrentResponses({
   if (variant === "nested") {
     return <div class="current-responses-nested min-w-0">{list}</div>;
   }
-  return <div class="current-responses-compact min-w-0">{list}</div>;
+  return (
+    <div class="current-responses-compact grid min-w-0 gap-1">
+      {collectionUnverified && (
+        <strong class="inline-flex items-center gap-1 text-xs leading-5 text-text-muted">
+          <span>現在の対応</span>
+          <AiUnverifiedMark description={currentResponsesUnverifiedDescription()} />
+        </strong>
+      )}
+      {list}
+    </div>
+  );
 }
