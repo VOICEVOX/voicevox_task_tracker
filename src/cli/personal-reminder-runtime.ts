@@ -25,6 +25,7 @@ import {
   currentPersonalReminderAssessment,
   personalReminderCauseSchema,
   personalReminderCauseSeedSchema,
+  personalReminderCauseSetSubjectChangesAreUnbounded,
   type CurrentPersonalReminderAssessment,
   type PersonalReminderActionKind,
   type PersonalReminderCause,
@@ -340,6 +341,8 @@ type PersonalReminderRuntimeSubjectDependency = Readonly<{
 type PersonalReminderRuntimeCauseSetSubjectChangeInput = Readonly<{
   addableSubjects: readonly PersonalReminderSubject[];
   removableSubjects: readonly PersonalReminderSubject[];
+  presenceDependency: AiAnalysisDependency;
+  negativeCandidateSubjectCount: number;
   unbounded: boolean;
 }>;
 
@@ -416,15 +419,22 @@ function createCauseSetSubjectChanges(
   dependency: AiAnalysisDependency,
   input: PersonalReminderRuntimeCauseSetSubjectChangeInput,
 ): PersonalReminderCauseSetSubjectChanges {
+  if (
+    personalReminderCauseSetSubjectChangesAreUnbounded({
+      causeSetDependency: dependency,
+      presenceDependency: input.presenceDependency,
+      negativeCandidateSubjectCount: input.negativeCandidateSubjectCount,
+      inputUnbounded: input.unbounded,
+    })
+  ) {
+    return Object.freeze({ scope: "unbounded" });
+  }
   if (!aiAnalysisDependencyIsUnverified(dependency)) {
     return Object.freeze({
       scope: "bounded",
       addableSubjects: [],
       removableSubjects: [],
     });
-  }
-  if (input.unbounded) {
-    return Object.freeze({ scope: "unbounded" });
   }
   const addableSubjects = normalizePersonalReminderSubjects(input.addableSubjects);
   const removableSubjects = normalizePersonalReminderSubjects(input.removableSubjects);
@@ -3550,6 +3560,10 @@ export function planPersonalReminderCauses(
     const causeSetDependencies = negativeCandidateDependencies.map(
       (candidate) => candidate.dependency,
     );
+    const presenceDependencies: AiAnalysisDependency[] = [];
+    const negativeCandidateSubjectCount = negativeCandidateDependencies.filter(
+      (candidate) => candidate.dependency.status !== "not_dependent",
+    ).length;
     const addableSubjects = negativeCandidateDependencies
       .filter((candidate) => aiAnalysisDependencyIsUnverified(candidate.dependency))
       .map((candidate) => candidate.subject);
@@ -3565,6 +3579,7 @@ export function planPersonalReminderCauses(
         presenceDependency = seed.aiDependencies.presence;
       }
       causeSetDependencies.push(presenceDependency);
+      presenceDependencies.push(presenceDependency);
       if (!aiAnalysisDependencyIsUnverified(presenceDependency)) {
         continue;
       }
@@ -3587,6 +3602,7 @@ export function planPersonalReminderCauses(
         item.aiAnalysisApplications,
       ).presence;
       causeSetDependencies.push(fallbackPresenceDependency);
+      presenceDependencies.push(fallbackPresenceDependency);
       if (aiAnalysisDependencyIsUnverified(fallbackPresenceDependency)) {
         subjectChangesUnbounded = true;
       }
@@ -3597,6 +3613,8 @@ export function planPersonalReminderCauses(
       Object.freeze({
         addableSubjects: Object.freeze(addableSubjects),
         removableSubjects: Object.freeze(removableSubjects),
+        presenceDependency: combineAiAnalysisDependencies(presenceDependencies),
+        negativeCandidateSubjectCount,
         unbounded: subjectChangesUnbounded,
       }),
     );

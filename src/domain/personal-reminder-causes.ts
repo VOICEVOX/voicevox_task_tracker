@@ -6,6 +6,7 @@ import {
 } from "./ai-analysis-elements.js";
 import {
   aiAnalysisDependencySchema,
+  aiAnalysisDependencyMayContainProducerlessUnrecordedInput,
   combineAiAnalysisDependencies,
   migratedAiAnalysisDependency,
   type AiAnalysisDependency,
@@ -169,6 +170,39 @@ export const personalReminderCauseSetSubjectChangesSchema = z.discriminatedUnion
 export type PersonalReminderCauseSetSubjectChanges = z.output<
   typeof personalReminderCauseSetSubjectChangesSchema
 >;
+
+/** 個人催促原因集合の主体変化が範囲不明になるか判定する。 */
+export function personalReminderCauseSetSubjectChangesAreUnbounded(
+  input: Readonly<{
+    causeSetDependency: AiAnalysisDependency;
+    presenceDependency: AiAnalysisDependency;
+    negativeCandidateSubjectCount: number;
+    inputUnbounded: boolean;
+  }>,
+): boolean {
+  if (
+    !Number.isInteger(input.negativeCandidateSubjectCount) ||
+    input.negativeCandidateSubjectCount < 0
+  ) {
+    throw new TypeError("個人催促原因集合のnegative候補主体数は0以上の整数にしてください");
+  }
+  if (
+    input.inputUnbounded ||
+    aiAnalysisDependencyMayContainProducerlessUnrecordedInput(input.causeSetDependency)
+  ) {
+    return true;
+  }
+  if (
+    input.causeSetDependency.status !== "unknown" ||
+    input.causeSetDependency.reason !== "proof_unknown"
+  ) {
+    return false;
+  }
+  const presenceIsProofUnknown =
+    input.presenceDependency.status === "unknown" &&
+    input.presenceDependency.reason === "proof_unknown";
+  return input.negativeCandidateSubjectCount > (presenceIsProofUnknown ? 0 : 1);
+}
 
 /** 個人催促原因の列挙計画状態。 */
 export const personalReminderCausePlanningSchema = z.discriminatedUnion("status", [

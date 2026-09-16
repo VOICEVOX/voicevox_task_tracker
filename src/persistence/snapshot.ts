@@ -68,6 +68,7 @@ import {
   normalizeAiAnalysisDependency,
   trackedItemAiDependenciesSchema,
 } from "../domain/ai-analysis-dependencies.js";
+import { personalReminderCauseSetSubjectChangesAreUnbounded } from "../domain/personal-reminder-causes.js";
 import {
   analyzeGraph,
   analyzeGraphAiDependencies,
@@ -1274,35 +1275,22 @@ function aiAnalysisDependencyIsUnverified(dependency: AiAnalysisDependency): boo
   return dependency.status === "unverified" || dependency.status === "unknown";
 }
 
-function causeSetDependencyHasUnrecordedInput(
-  dependency: AiAnalysisDependency,
-  itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
-  relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
-): boolean {
-  if (dependency.status !== "unknown") {
-    return false;
-  }
-  if (dependency.producers == null) {
-    return dependency.reason === "migration" || dependency.reason === "not_recorded";
-  }
-  if (dependency.reason !== "migration" && dependency.reason !== "not_recorded") {
-    return false;
-  }
-  return dependencyHasHiddenProducerlessReason(
-    dependency,
-    dependency.reason,
-    itemsByNodeId,
-    relationsById,
-  );
-}
+type SnapshotPersonalReminderCandidateSubject =
+  | Readonly<{
+      status: "grounded";
+      subject: SnapshotPersonalReminderSubject;
+      addable: boolean;
+    }>
+  | Readonly<{ status: "unbounded" }>
+  | Readonly<{ status: "excluded" }>;
 
-function expectedAddablePersonalReminderSubject(
+function expectedPersonalReminderCandidateSubject(
   producer: AiAnalysisDependencyProducer,
   parentItem: SnapshotItemForRelationValidation,
   itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
   relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
   causeSetDependency: AiAnalysisDependency,
-): SnapshotPersonalReminderSubject | "unbounded" | undefined {
+): SnapshotPersonalReminderCandidateSubject {
   const producerDependency = expectedAiAnalysisDependencyForProducer(
     producer,
     "personal reminder cause setの追加producer",
@@ -1310,34 +1298,34 @@ function expectedAddablePersonalReminderSubject(
     relationsById,
     causeSetDependency,
   );
-  if (!aiAnalysisDependencyIsUnverified(producerDependency)) {
-    return undefined;
-  }
   if (producer.kind !== "relation_candidate") {
-    return "unbounded";
+    if (aiAnalysisDependencyIsUnverified(producerDependency)) {
+      return Object.freeze({ status: "unbounded" });
+    }
+    return Object.freeze({ status: "excluded" });
   }
   if (
     parentItem.type !== "issue" ||
     parentItem.state !== "open" ||
     parentItem.assignees.length !== 0
   ) {
-    return undefined;
+    return Object.freeze({ status: "excluded" });
   }
   const owner = itemsByNodeId.get(producer.producer.nodeId);
   if (owner == null) {
-    return undefined;
+    return Object.freeze({ status: "excluded" });
   }
   if (!producer.endpointNodeIds.includes(parentItem.nodeId)) {
-    return undefined;
+    return Object.freeze({ status: "excluded" });
   }
   if (owner.type !== "pull_request" || owner.state !== "open") {
-    return undefined;
+    return Object.freeze({ status: "excluded" });
   }
   if (owner.author.status === "unavailable") {
-    return undefined;
+    return Object.freeze({ status: "excluded" });
   }
   if (owner.author.actor.type !== "human") {
-    return undefined;
+    return Object.freeze({ status: "excluded" });
   }
   const persistedRelation = relationsById.get(producer.candidateId);
   if (
@@ -1346,11 +1334,15 @@ function expectedAddablePersonalReminderSubject(
     persistedRelation.fromNodeId === owner.nodeId &&
     persistedRelation.toNodeId === parentItem.nodeId
   ) {
-    return undefined;
+    return Object.freeze({ status: "excluded" });
   }
   return Object.freeze({
-    kind: "user",
-    candidateId: owner.author.actor.login,
+    status: "grounded",
+    subject: Object.freeze({
+      kind: "user",
+      candidateId: owner.author.actor.login,
+    }),
+    addable: aiAnalysisDependencyIsUnverified(producerDependency),
   });
 }
 
@@ -1417,16 +1409,13 @@ function assertPersonalReminderCauseSetSemantics(
     `item ${item.nodeId}のpersonal reminder cause set AI依存`,
   );
 
-  let reconstructionIsBounded = !causeSetDependencyHasUnrecordedInput(
-    planning.causeSetAiDependency,
-    itemsByNodeId,
-    relationsById,
-  );
+  let subjectChangesInputUnbounded = false;
   const presenceProducerSignatures = new Set(
     expectedPresenceDependency.status === "not_dependent"
       ? []
       : (expectedPresenceDependency.producers ?? []).map(aiAnalysisDependencyProducerSignature),
   );
+  const groundedCandidateSubjects: SnapshotPersonalReminderSubject[] = [];
   const groundedAddableSubjects: SnapshotPersonalReminderSubject[] = [];
   const parentItem = itemsByNodeId.get(item.nodeId);
   if (parentItem == null) {
@@ -1440,22 +1429,36 @@ function assertPersonalReminderCauseSetSemantics(
     if (presenceProducerSignatures.has(aiAnalysisDependencyProducerSignature(producer))) {
       continue;
     }
-    const subject = expectedAddablePersonalReminderSubject(
+    const candidateSubject = expectedPersonalReminderCandidateSubject(
       producer,
       parentItem,
       itemsByNodeId,
       relationsById,
       planning.causeSetAiDependency,
     );
-    if (subject === "unbounded") {
-      reconstructionIsBounded = false;
-    } else if (subject != null) {
-      groundedAddableSubjects.push(subject);
+    if (candidateSubject.status === "unbounded") {
+      subjectChangesInputUnbounded = true;
+    } else if (candidateSubject.status === "grounded") {
+      groundedCandidateSubjects.push(candidateSubject.subject);
+      if (candidateSubject.addable) {
+        groundedAddableSubjects.push(candidateSubject.subject);
+      }
     }
   }
 
+  const normalizedGroundedCandidateSubjects =
+    normalizeSnapshotPersonalReminderSubjects(groundedCandidateSubjects);
+  const normalizedGroundedAddableSubjects =
+    normalizeSnapshotPersonalReminderSubjects(groundedAddableSubjects);
+  const expectedRemovableSubjects = normalizeSnapshotPersonalReminderSubjects(removableSubjects);
+  const subjectChangesAreUnbounded = personalReminderCauseSetSubjectChangesAreUnbounded({
+    causeSetDependency: planning.causeSetAiDependency,
+    presenceDependency: expectedPresenceDependency,
+    negativeCandidateSubjectCount: normalizedGroundedCandidateSubjects.length,
+    inputUnbounded: subjectChangesInputUnbounded,
+  });
   const subjectChanges = planning.causeSetSubjectChanges;
-  if (!reconstructionIsBounded) {
+  if (subjectChangesAreUnbounded) {
     if (subjectChanges.scope !== "unbounded") {
       throw new StateSnapshotSemanticError(
         "personal reminder cause集合の主体変化を完全に復元できない場合はunboundedにしてください",
@@ -1468,9 +1471,6 @@ function assertPersonalReminderCauseSetSemantics(
       "personal reminder cause集合の主体変化を復元できる場合はboundedにしてください",
     );
   }
-  const normalizedGroundedAddableSubjects =
-    normalizeSnapshotPersonalReminderSubjects(groundedAddableSubjects);
-  const expectedRemovableSubjects = normalizeSnapshotPersonalReminderSubjects(removableSubjects);
   if (
     hashCanonicalJson(subjectChanges.addableSubjects) !==
       hashCanonicalJson(normalizedGroundedAddableSubjects) ||
@@ -1489,7 +1489,20 @@ function assertPersonalReminderDependenciesSemantics(
   relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
 ): void {
   for (const cause of item.personalReminderCauses) {
-    if (!("aiDependencies" in cause) || !("aiDependency" in cause.currentInput)) {
+    if (!("aiDependencies" in cause)) {
+      continue;
+    }
+    if (
+      cause.aiDependencies.presence.status !== "not_dependent" &&
+      (cause.aiDependencies.presence.producers ?? []).some(
+        (producer) => producer.kind === "relation_candidate",
+      )
+    ) {
+      throw new StateSnapshotSemanticError(
+        "personal reminder causeのpresence AI依存にrelation candidate producerは指定できません",
+      );
+    }
+    if (!("aiDependency" in cause.currentInput)) {
       continue;
     }
     const descriptions = [

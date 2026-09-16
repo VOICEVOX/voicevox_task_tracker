@@ -222,6 +222,16 @@ export const trackedItemAiDependenciesSchema = z.strictObject(
   ),
 );
 
+/** 保存形式上producerlessな移行・未記録入力を否定できないか判定する。 */
+export function aiAnalysisDependencyMayContainProducerlessUnrecordedInput(
+  dependency: AiAnalysisDependency,
+): boolean {
+  return (
+    dependency.status === "unknown" &&
+    (dependency.reason === "migration" || dependency.reason === "not_recorded")
+  );
+}
+
 function producerSignature(producer: DependencyProducerLike): string {
   if (producer.kind === "item_element") {
     return JSON.stringify([producer.kind, producer.nodeId, producer.element]);
