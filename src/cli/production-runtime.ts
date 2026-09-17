@@ -7230,11 +7230,7 @@ function reductionForAnalysis(
         selectedElements: [],
         lockedElements: {},
       })
-    : createCodexAnalysisInput({
-        ...input,
-        selectedElements: [],
-        lockedElements: projectCodexLockedElements(preservedElements),
-      });
+    : input;
   const output = validateCodexAnalysisOutput(
     {
       schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
