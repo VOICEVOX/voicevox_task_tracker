@@ -63,6 +63,24 @@ Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`
 違反した検証ルールは先頭5件まで`validationIssue0Path`と`validationIssue0Code`の形式で残り、添字は0から始まります。
 違反の`message`は入力値を含みうるため残しません。
 
+AI有効runで汎用AIの分析処理が結果を返した場合、`diagnostics`に`codex_semantic_generations`から始まる集計行が1行残ります。
+
+| field                      | 意味                                                       |
+| -------------------------- | ---------------------------------------------------------- |
+| `generationCount`          | 初回を含む汎用AIの生成世代数                               |
+| `correctionStartedCount`   | 第2世代の補正を開始した候補数                              |
+| `correctionSucceededCount` | 補正出力がcanonical検証まで通った候補数                    |
+| `correctionExhaustedCount` | 補正を開始し、総世代数の上限までsemantic違反が残った候補数 |
+| `processAttemptCount`      | 汎用AIのtransport retryを含むprocess試行数                 |
+
+これらの件数は個人催促AIと認証preflightを含みません。集計行にはitem ID、違反のpathやcode、本文を含めません。
+補正上限に達した項目を縮退させて完了した通常runにも集計行が残ります。
+致命的なalias変換失敗やforcedモードの失敗で`analyzeCodex`が戻らない場合は、この行が残らないため、行がないことから補正0件とは判断できません。
+
+汎用AIのsemantic補正は`ai.execution.maxSemanticGenerations`で制限します。必須の整数設定で範囲は1から3、初回を含みます。1は補正無効で、現行値3では2回まで補正できます。
+各世代には`ai.execution.maxAttempts`までのtransport retryがあり、候補1件あたりのprocess試行数は最大で両設定値の積になります。
+補正の追加世代は`metrics.aiCallCount`に加算せず、補正envelopeの増分も論理入力予算と`metrics.estimatedInputTokens`へ含めません。実際の入力文字数は暗号化した詳細診断の`standardInputCharacters`で確認します。
+
 ## Codex認証preflight
 
 汎用AIと個人原因のAIは、call数、入力文字数、見積費用のrun上限を共有します。後段の原因評価は、関係を含む前段の分析が消費した予算を引いて計画します。認証preflightも両段で共有し、run中に1回だけ実行します。
@@ -116,6 +134,11 @@ forcedモードではnode IDを一つだけ指定し、要素の重複や空要�
 生成不要と判定された要素や、指定外の判定を維持するための情報が不足する指定は拒否します。
 指定要素はcacheを再利用せず、すべての指定要素で実推論に成功しなければ実行を失敗にします。
 normalモードでは本番と同じ選別とcache再利用を行うため、実推論が0件でも成功します。
+
+relation判定とsemantic補正を確認するときは、上記のforced実行で対象nodeを指定し、`forced_elements=relations`とします。
+生成された関係の向きと根拠が妥当であり、検証を通ってstateへ保存されたことを確認します。
+実AIの応答は非決定的なので、補正世代が発生すること自体は必須にしません。
+補正が発生した場合は、run reportの`codex_semantic_generations`と詳細診断の世代別attemptを照合します。第2世代に進んだ候補は開始数へ1件、検証を通った候補は成功数へ1件を計上し、生成世代数とprocess試行数が設定上限内であることを確認します。
 
 保存したstateから実行を続ける場合は、manifestに記録された作業ブランチを指定します。
 作業ブランチを更新した後のcontinueでは更新後のSHAを固定しますが、別ブランチを指定すると停止します。
@@ -566,6 +589,7 @@ node dist/cli/tracker-run.js diagnostics decrypt \
 ```
 
 復号したJSONLには、例外のstack、cause、AggregateErrorの各error、Codexの試行番号、終了状態、標準出力、標準エラー出力、最終応答が記録されます。
+汎用AIは`semanticGeneration`が生成世代、`attempt`がその世代内のtransport試行番号です。`standardInputCharacters`は補正envelopeを含む入力文字数であり、論理入力予算へ含まれない増分も確認できます。
 認証preflightは`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`で開始と終了を確認できます。標準出力、標準エラー出力、stackも暗号化診断にだけ記録し、公開run reportへraw出力を載せません。preflight失敗runでは通常metricsは完成しません。
 内容は公開用に無害化していないため、調査はローカルで行い、そのまま公開IssueやPull Requestへ貼り付けないでください。
 CLIが起動する前に失敗した場合や暗号化処理自体が失敗した場合は、対応するartifactが作られないことがあります。
@@ -599,6 +623,7 @@ Actions上でCodexの認証エラーが起きた場合は、まず過去の`coll
 
 `fallback`はAI分析に失敗または延期した項目を決定論的判定と利用可能な前回結果へ縮退した完全runです。個人原因も、有効な採用値がない失敗・延期が残る場合に含まれます。
 汎用AIの対象は項目一覧を`未検証値・分析失敗・未実行`で絞り込み、各行の警告マークと詳細の局所的な警告マークで特定します。この絞り込みには未検証の表示値や現在対応に加え、`runStatus`が`failed`または`deferred`の項目も含まれます。run reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から原因を追います。
+semantic補正の上限に達した場合、`codex_fallback`には最後の世代のsemantic違反が残ります。`unknown_native_relation`のような入力の不整合、schema検証失敗、process失敗、alias変換失敗、canonical検証失敗はsemantic補正の対象外なので、補正上限を増やしても解消しません。alias変換失敗は項目ごとの縮退にせず、run全体を停止します。
 個人原因は現在対応の`unknown`とrun reportの専用件数を確認し、正常な未確定判定か実行失敗・延期かを区別します。未確定の原因には個人催促を送らず、項目全体の判定とsystem通知はそれぞれの規則で確認します。
 `metrics.aiCacheHitCount`が0でも`metrics.aiRetainedResultCount`が1以上なら、未変更項目のAI結果はAI分析対象へ入れず保持されています。
 `failed`または`deferred`の対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。それ以外の未検証値は、詳細の警告説明と保存済みの適用元を照合します。

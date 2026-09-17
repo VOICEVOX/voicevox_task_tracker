@@ -115,6 +115,7 @@ run reportの`diagnostics`は、secretや信頼できない本文を含めない
 
 CLIの未処理エラーは既存の最上位境界まで伝播させ、境界でstack、cause、AggregateErrorの各errorを記録します。
 Codex実行では試行ごとに終了状態、標準出力、標準エラー出力、最終応答、検証エラーを記録します。
+汎用AIの試行には`semanticGeneration`と`attempt`を記録し、`standardInputCharacters`で補正envelopeを含む入力文字数を確認できます。
 認証preflightでは`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`を暗号化診断へ記録し、開始、終了、標準出力、標準エラー出力、stackを確認できます。raw出力は公開run reportへ載せません。
 通常のActions logには従来どおり公開可能なエラーだけを出します。
 
@@ -193,7 +194,7 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 正常に完了した低信頼または棄権の評価も完了結果として保持します。失敗や延期から新しい完了proofは作らず、現在の条件で未完了の要素を再試行します。
 
 汎用AIの判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨、selfCommitmentの9要素で選別します。
-入力schemaは5、出力schemaは7、snapshotは18とし、waitingOnのrevisionは3、selfCommitmentのrevisionは1、その他の要素のrevisionは1とします。selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
+入力schemaは5、出力schemaは7、snapshotは18とし、waitingOnとrelationsのrevisionは3、selfCommitmentのrevisionは1、その他の要素のrevisionは1とします。selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
 selfCommitmentの候補は前回`observedAt`より後、今回の評価時刻以前の未編集human commentに限り、source authorとtimeline event actorが同じhumanであることを確認します。前回観測がない場合は追加推論を行いません。通知時は現在の`waitingOn`が単独のhuman userであり、そのactorと一致することを決定論的に確認し、他者、混在、不明、依存解消の原因は通知を残します。
 該当する申し出がない場合、selfCommitmentの値と根拠はともに空配列にし、正常に完了した評価として保持します。申し出がある場合は、値と根拠を同じ候補コメントのsource IDで結び付けます。
 各要素の必要性を既存の確定情報と利用箇所から判断し、必要な要素だけ保存済み結果と比較します。
@@ -442,7 +443,25 @@ DiscordはHTTP 429だけを同じ設定で再試行します。通信例外、HT
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
 `prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、指定した要素以外の返却を禁止します。
+relationの向きは`current=input.item`から`target=candidate.targetUrl`を基準にします。
+`current_implements_target`はcurrentがPull Request、targetがIssueの場合だけ使います。
+currentがIssueでtargetがその実装Pull Requestの場合、チェックリストや作業分割の根拠があるときだけ`target_is_subtask_of_current`を使い、根拠がなければ`related`か`none`にします。
 意味上の規則のrevisionは`src/codex/analysis-elements.ts`で判定要素ごとに管理します。
+base prompt、補正prompt、semantic issue codeのglossaryは`CODEX_PROMPT_BUNDLE_VERSION`でまとめて識別し、prompt fingerprintへ反映します。
+
+汎用AIの出力がschema検証を通り、semantic違反がすべて補正可能な場合は、選択要素の出力全体を再生成します。個人催促AIはこのsemantic補正の対象外です。
+世代間ではtransport aliasに変換した入力、出力schema、`selectedElements`を固定し、各世代を新しいsubprocessで実行します。
+初回は入力JSONをそのまま渡します。第2世代以降は同じ`analysisInput`、直前のschema-validな`previousOutput`、世代番号`generation`、validatorが生成した`path`と`code`だけを持つ`issues`を渡します。
+入力と前回出力は未信頼データであり、違反の`message`、stack、stdout、stderr、credentialsは補正envelopeに含めません。
+
+必須設定`ai.execution.maxSemanticGenerations`は初回を含む総世代数で、1から3までの整数です。1は補正無効で、現行値3では2回まで補正できます。
+各世代のtransport retryには、それぞれ`ai.execution.maxAttempts`を適用します。候補1件あたりのprocess試行数は最大`maxSemanticGenerations * maxAttempts`です。
+semantic補正は候補1件の論理call内で行うため、追加世代を`aiCallCount`へ加算せず、補正envelopeの増分も論理入力予算と`estimatedInputTokens`へ含めません。実際の入力文字数は世代ごとの暗号化診断で確認します。
+
+`unknown_native_relation`のような入力の不変条件違反、schema検証失敗、process失敗、alias変換失敗、canonical IDへ戻した後の検証失敗はsemantic補正しません。process失敗のtransport retryは前述の規則に従い、alias変換失敗はrun全体を停止します。
+上限まで補正してもsemantic検証を通らない場合は、最後のsemantic errorを項目ごとの縮退処理へ渡します。
+中間出力はcache、state、Pages、Discordへ反映しません。最終出力だけをcanonical IDへ戻して再検証し、runnerで非対象の保存値との合成結果も検証した後にcacheへ保存します。
+補正の世代数や中間出力はcache、snapshot、run reportの保存schemaへ追加せず、診断で観測します。
 検証済み出力も候補データであり、reducerを通さずstateや外部サービスへ反映しません。
 
 ## state branch
