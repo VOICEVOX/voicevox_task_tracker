@@ -1619,7 +1619,6 @@ function assertPersonalReminderDependenciesSemantics(
     }
     const descriptions = [
       ["presence", cause.aiDependencies.presence],
-      ["response membership", cause.aiDependencies.responseMembership],
       ["responsible", cause.aiDependencies.responsible],
       ["action", cause.aiDependencies.action],
       ["evidence", cause.aiDependencies.evidence],
@@ -1635,6 +1634,15 @@ function assertPersonalReminderDependenciesSemantics(
         false,
       );
     }
+    assertPersonalReminderAiDependencySemantics(
+      cause.aiDependencies.responseMembership,
+      "personal reminder causeのresponse membership AI依存",
+      item.nodeId,
+      itemsByNodeId,
+      relationsById,
+      false,
+      true,
+    );
     assertPersonalReminderAiDependencySemantics(
       cause.currentInput.aiDependency,
       "personal reminder causeのcurrent input AI依存",
