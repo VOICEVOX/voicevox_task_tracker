@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "9",
+  "schemaVersion": "10",
   "runId": "sample-run-2026-07-31",
   "generatedAt": "2026-07-31T00:05:00.000Z",
   "items": [
@@ -7,6 +7,10 @@
       "summary": {
         "nodeId": "sample-item-editor-101",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "unbounded"
+        },
         "repositoryId": "sample-repository-editor",
         "displayReference": "VOICEVOX/sample-editor#101",
         "number": 101,
@@ -54,8 +58,24 @@
         },
         "priorityWeight": 25,
         "aiAnalysis": {
-          "status": "failed"
+          "runStatus": "failed",
+          "omission": "none",
+          "unverifiedValues": [
+            "status",
+            "waitingOn",
+            "primaryWaitingOn",
+            "confidence",
+            "evidence",
+            "uncertainties",
+            "deadline",
+            "staleness",
+            "downstreamImpact",
+            "importance",
+            "attention",
+            "relations"
+          ]
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-30T03:00:00.000Z",
         "stallSince": "2026-07-20T00:00:00.000Z",
@@ -88,6 +108,31 @@
                 "sourceUrl": "https://github.com/VOICEVOX/sample-editor/pull/101"
               }
             ],
+            "unverifiedValues": ["status", "responsible", "evidence"],
+            "subjectMembershipUnverified": true,
+            "status": "actionable"
+          },
+          {
+            "causeId": "sample-cause-editor-101-review",
+            "responsible": [
+              {
+                "kind": "user",
+                "candidateId": "sample-maintainer",
+                "role": "reviewer"
+              }
+            ],
+            "action": {
+              "kind": "review",
+              "summary": "変更内容をレビューする"
+            },
+            "evidence": [
+              {
+                "summary": "sample-maintainerがレビューを担当します",
+                "sourceUrl": "https://github.com/VOICEVOX/sample-editor/pull/101"
+              }
+            ],
+            "unverifiedValues": [],
+            "subjectMembershipUnverified": false,
             "status": "actionable"
           }
         ],
@@ -97,6 +142,7 @@
           "level": "over_30_days"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [
         {
           "kind": "priorityLabel",
@@ -144,6 +190,12 @@
       "summary": {
         "nodeId": "sample-item-engine-202",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-engine",
         "displayReference": "VOICEVOX/sample-engine#202",
         "number": 202,
@@ -191,8 +243,11 @@
         },
         "priorityWeight": 12,
         "aiAnalysis": {
-          "status": "deferred"
+          "runStatus": "deferred",
+          "omission": "partial",
+          "unverifiedValues": ["status", "nextAction", "confidence", "evidence", "blockers"]
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-30T06:00:00.000Z",
         "stallSince": "2026-07-30T00:05:00.000Z",
@@ -210,6 +265,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [
         {
           "kind": "downstreamImpact",
@@ -253,6 +309,12 @@
       "summary": {
         "nodeId": "sample-item-editor-103",
         "type": "issue",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-editor",
         "displayReference": "VOICEVOX/sample-editor#103",
         "number": 103,
@@ -300,8 +362,11 @@
         },
         "priorityWeight": 25,
         "aiAnalysis": {
-          "status": "failed"
+          "runStatus": "failed",
+          "omission": "partial",
+          "unverifiedValues": ["status", "confidence", "evidence"]
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 0.95,
         "githubUpdatedAt": "2026-07-29T05:00:00.000Z",
         "stallSince": "2026-07-29T00:05:00.000Z",
@@ -339,6 +404,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [
         {
           "kind": "priorityLabel",
@@ -378,6 +444,12 @@
       "summary": {
         "nodeId": "sample-item-engine-204",
         "type": "issue",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-engine",
         "displayReference": "VOICEVOX/sample-engine#204",
         "number": 204,
@@ -428,8 +500,11 @@
         },
         "priorityWeight": 12,
         "aiAnalysis": {
-          "status": "not_required"
+          "runStatus": "not_required",
+          "omission": "all",
+          "unverifiedValues": ["waitingOn", "primaryWaitingOn", "uncertainties", "blockers"]
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-25T02:00:00.000Z",
         "stallSince": "2026-07-01T00:00:00.000Z",
@@ -462,6 +537,8 @@
                 "sourceUrl": "https://github.com/VOICEVOX/sample-engine/issues/204"
               }
             ],
+            "unverifiedValues": ["status", "action", "waitingFor"],
+            "subjectMembershipUnverified": false,
             "status": "waiting",
             "waitingFor": {
               "itemNodeId": "sample-item-editor-103",
@@ -473,6 +550,16 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [
+        {
+          "nodeId": "external:github:sample-distribution-42",
+          "reasons": ["waiting_value"]
+        },
+        {
+          "nodeId": "sample-item-editor-103",
+          "reasons": ["waiting_value"]
+        }
+      ],
       "importanceFactors": [
         {
           "kind": "priorityLabel",
@@ -551,6 +638,12 @@
       "summary": {
         "nodeId": "sample-item-core-305",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-core",
         "displayReference": "VOICEVOX/sample-core#305",
         "number": 305,
@@ -598,8 +691,20 @@
         },
         "priorityWeight": 25,
         "aiAnalysis": {
-          "status": "deferred"
+          "runStatus": "deferred",
+          "omission": "none",
+          "unverifiedValues": [
+            "status",
+            "confidence",
+            "evidence",
+            "deadline",
+            "staleness",
+            "downstreamImpact",
+            "importance",
+            "attention"
+          ]
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 0.9,
         "githubUpdatedAt": "2026-07-27T08:00:00.000Z",
         "stallSince": "2026-07-25T00:05:00.000Z",
@@ -617,6 +722,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [
         {
           "kind": "priorityLabel",
@@ -660,6 +766,12 @@
       "summary": {
         "nodeId": "sample-item-workflow-401",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-workflow",
         "displayReference": "example/sample-workflow#401",
         "number": 401,
@@ -701,8 +813,11 @@
         },
         "priorityWeight": 0,
         "aiAnalysis": {
-          "status": "used"
+          "runStatus": "used",
+          "omission": "none",
+          "unverifiedValues": ["relations"]
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
         "stallSince": "2026-07-30T12:00:00.000Z",
@@ -720,6 +835,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [],
       "timestamps": {
         "createdAt": "2026-07-29T00:00:00.000Z",
@@ -748,6 +864,12 @@
       "summary": {
         "nodeId": "sample-item-workflow-402",
         "type": "pull_request",
+        "currentResponsesUnverified": true,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-workflow",
         "displayReference": "example/sample-workflow#402",
         "number": 402,
@@ -789,8 +911,11 @@
         },
         "priorityWeight": 0,
         "aiAnalysis": {
-          "status": "used"
+          "runStatus": "used",
+          "omission": "none",
+          "unverifiedValues": []
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
         "stallSince": "2026-07-30T12:00:00.000Z",
@@ -808,6 +933,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [],
       "timestamps": {
         "createdAt": "2026-07-29T00:00:00.000Z",
@@ -836,6 +962,12 @@
       "summary": {
         "nodeId": "sample-item-workflow-403",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-workflow",
         "displayReference": "example/sample-workflow#403",
         "number": 403,
@@ -877,8 +1009,11 @@
         },
         "priorityWeight": 0,
         "aiAnalysis": {
-          "status": "used"
+          "runStatus": "used",
+          "omission": "none",
+          "unverifiedValues": []
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
         "stallSince": "2026-07-30T12:00:00.000Z",
@@ -896,6 +1031,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [],
       "timestamps": {
         "createdAt": "2026-07-29T00:00:00.000Z",
@@ -928,6 +1064,12 @@
       "summary": {
         "nodeId": "sample-item-workflow-404",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-workflow",
         "displayReference": "example/sample-workflow#404",
         "number": 404,
@@ -975,8 +1117,11 @@
         },
         "priorityWeight": 0,
         "aiAnalysis": {
-          "status": "used"
+          "runStatus": "used",
+          "omission": "none",
+          "unverifiedValues": []
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
         "stallSince": "2026-07-30T12:00:00.000Z",
@@ -994,6 +1139,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [],
       "timestamps": {
         "createdAt": "2026-07-29T00:00:00.000Z",
@@ -1022,6 +1168,12 @@
       "summary": {
         "nodeId": "sample-item-workflow-405",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-workflow",
         "displayReference": "example/sample-workflow#405",
         "number": 405,
@@ -1069,8 +1221,11 @@
         },
         "priorityWeight": 0,
         "aiAnalysis": {
-          "status": "used"
+          "runStatus": "used",
+          "omission": "none",
+          "unverifiedValues": []
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
         "stallSince": "2026-07-30T12:00:00.000Z",
@@ -1088,6 +1243,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [],
       "timestamps": {
         "createdAt": "2026-07-29T00:00:00.000Z",
@@ -1116,6 +1272,12 @@
       "summary": {
         "nodeId": "sample-item-workflow-406",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-workflow",
         "displayReference": "example/sample-workflow#406",
         "number": 406,
@@ -1157,8 +1319,11 @@
         },
         "priorityWeight": 0,
         "aiAnalysis": {
-          "status": "used"
+          "runStatus": "used",
+          "omission": "none",
+          "unverifiedValues": []
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 1,
         "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
         "stallSince": "2026-07-30T12:00:00.000Z",
@@ -1176,6 +1341,7 @@
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [],
       "timestamps": {
         "createdAt": "2026-07-29T00:00:00.000Z",
@@ -1208,6 +1374,12 @@
       "summary": {
         "nodeId": "sample-item-workflow-407",
         "type": "pull_request",
+        "currentResponsesUnverified": false,
+        "currentResponseSubjectChanges": {
+          "scope": "bounded",
+          "addableSubjects": [],
+          "removableSubjects": []
+        },
         "repositoryId": "sample-repository-workflow",
         "displayReference": "example/sample-workflow#407",
         "number": 407,
@@ -1249,8 +1421,11 @@
         },
         "priorityWeight": 0,
         "aiAnalysis": {
-          "status": "used"
+          "runStatus": "used",
+          "omission": "none",
+          "unverifiedValues": []
         },
+        "personalReminderCausePlanningStatus": "completed",
         "confidence": 0.3,
         "githubUpdatedAt": "2026-07-30T12:00:00.000Z",
         "stallSince": "2026-07-30T12:00:00.000Z",
@@ -1268,6 +1443,11 @@
             "causeId": "sample-cause-workflow-407-assessment",
             "responsible": [
               {
+                "kind": "team",
+                "candidateId": "sample-maintainers",
+                "role": "maintainer"
+              },
+              {
                 "kind": "role",
                 "candidateId": "maintainer",
                 "role": "maintainer"
@@ -1283,14 +1463,17 @@
                 "sourceUrl": "https://github.com/example/sample-workflow/pull/407"
               }
             ],
+            "unverifiedValues": [],
+            "subjectMembershipUnverified": false,
             "status": "unknown",
-            "reason": "incomplete_input"
+            "reason": "deferred"
           }
         ],
         "deadline": {
           "status": "not_available"
         }
       },
+      "blockerUnverifiedReasons": [],
       "importanceFactors": [],
       "timestamps": {
         "createdAt": "2026-07-29T00:00:00.000Z",
@@ -1432,6 +1615,7 @@
         "type": "implements",
         "provenance": "native",
         "confidence": 1,
+        "aiCurrentness": "not_dependent",
         "active": true
       },
       {
@@ -1441,6 +1625,17 @@
         "type": "blocks",
         "provenance": "explicit_text",
         "confidence": 0.92,
+        "aiCurrentness": "unverified",
+        "active": true
+      },
+      {
+        "id": "sample-relation-editor-103-engine-204-current-support",
+        "fromNodeId": "sample-item-editor-103",
+        "toNodeId": "sample-item-engine-204",
+        "type": "blocks",
+        "provenance": "cross_reference",
+        "confidence": 0.96,
+        "aiCurrentness": "current",
         "active": true
       },
       {
@@ -1450,6 +1645,7 @@
         "type": "blocks",
         "provenance": "explicit_text",
         "confidence": 0.9,
+        "aiCurrentness": "current",
         "active": true
       }
     ],

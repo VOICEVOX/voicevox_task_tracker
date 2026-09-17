@@ -244,6 +244,9 @@ optionの`targetScope`はrelationが接続する責務範囲で、`itemNodeId`�
 JSONの構造検証に失敗したbatchは採用せず、構造検証後は原因ごとに意味検証して採用します。一つの原因の失敗で、他の原因の採用値とcacheを失いません。
 `currentInput`、`latestAttempt`、`adoptedAssessment`を分けて保存します。実行状態は`not_evaluated`、`completed`、`failed`、`deferred`で表し、正常な`unknown`も`completed`です。採用値の入力fingerprintと規則版が現在値へ一致する場合だけ表示と通知に使います。新しい実行が失敗・延期しても、この一致を満たす採用値は有効です。不一致の旧採用値は根拠を追跡するため保持し、現在対応は未確定にします。
 
+人物所属の表示現在性は、原因が現在存在するかと責任主体に必要な入力を常に含めます。意味評価は`semantic`原因で必須とし、`fixed`原因では現在有効な`duplicate` optionによって非canonicalになり得る場合だけ必須とします。評価が必要な原因は、行動と根拠に必要な入力と、最新assessmentを現在入力へ利用できるかも含めます。
+有効な`duplicate` optionがある場合は、canonicalな原因を選ぶすべての候補について、必要な依存と直接relationを含めます。人物所属を変え得る`pending`候補は応答計画用候補と別に選び、その依存を含めます。待機中であることだけを理由とする候補は除き、その上流関係の未検証を人物所属へ伝播させません。
+
 再利用は有効なsnapshotの採用値、専用cache、新しい呼び出しの順で判断します。正常な`unknown`は同一入力で再利用し、必要性が残る未評価・失敗・延期は入力不変でも再試行します。
 不完全な入力はcache照合前に保留します。cache miss後、既知のcollection容量上限を超えた入力だけを`input_cardinality_limit`で延期し、他の原因やbatchは継続します。容量超過で`complete`を変更せず、内容の切断やbatch分割もしません。送信容量を超えていても、cache hitと決定論的判定は利用できます。
 関係AIと原因AIはcall数、入力量、見積費用のrun上限を共有し、後段は前段の使用量を引いた残予算から実行します。認証preflightは両段を通して必要なrunで1回だけ実行します。関係だけ成功した場合も採用済みrelationを保存し、原因の失敗・延期だけを再試行できます。関係入力が変わって前段が未確定なら、古い不適合relationで後段を実行せず`upstream_relation`で延期します。`pendingRelations`はこの判別とfingerprintに使い、AIへは送りません。
@@ -317,6 +320,7 @@ summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を�
 各項目の`aiAnalysis`は、項目単位のAI実行状態を表す`runStatus`、判定要素の一部または全部を決定論的に不要としたかを表す`omission`、現在入力で未検証の表示値を列挙する`aiAnalysis.unverifiedValues`を分けて公開します。
 `runStatus`が成功でも保持したAI結果に依存する値は未検証になり得ます。反対に、確定規則だけで決まった表示値は、別の判定要素の失敗や延期だけを理由に未検証にしません。
 期限の切迫度のようにAIが抽出した値から決定論的に導出する値は、抽出値に寄与したAI producerの現在性を引き継ぎます。
+詳細のblocker表示行は、effective graphから得るblocker集合Eと、保持中の`waitingOn`が指す項目集合Wの和集合です。`blockers`の現在性とfrontierはEだけから決めます。WのうちEに含まれない保持項目は、`waitingOn`の現在性と、対応する`retained_waiting`または`waiting_value`を行へ反映します。行ごとの未検証理由は`blockerUnverifiedReasons`へ`relation_support`、`retained_waiting`、`waiting_value`の3種類で保持し、該当する行だけに警告します。staleな`waitingOn`だけを理由にfrontierへ警告を広げません。
 `currentResponses`は、原因ごとの値を`currentResponses[].unverifiedValues`、表示中の責任主体を人物集計へ含めるかを`currentResponses[].subjectMembershipUnverified`、対応の集合そのものが増減し得るかを`currentResponsesUnverified`として別々に公開します。
 `currentResponseSubjectChanges`は、人物集計へ追加され得るuserとteamを`addableSubjects`、削除され得るuserとteamを`removableSubjects`として公開します。変化する主体を特定できない場合だけ`unbounded`とします。roleだけの現在対応が増減しても人物集計は変わらないため、責任主体が検証済みなら`bounded`の空配列にします。責任主体自体が未検証ならkindを特定できないため`unbounded`とします。
 公開DTOには内部のproducerを含めず、実行状態、不要判定、未検証の表示値へ縮約します。

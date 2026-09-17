@@ -36,6 +36,7 @@ import {
   type StalenessSeverityContext,
   type TrackingStartAtState,
   type TrackedItem,
+  type TrackedItemState,
   type TrackedItemAiDependencies,
   type AiAnalysisDependency,
   type AiAnalysisDependencyElement,
@@ -163,6 +164,13 @@ export type SnapshotCollectionState = Readonly<{
   repositories: readonly SnapshotCollectionRepository[];
 }>;
 
+/** 関係先から取得した追跡項目のgraph用状態観測。 */
+export type SnapshotGraphNodeStateObservation = Readonly<{
+  nodeId: GitHubNodeId;
+  state: TrackedItemState;
+  observedAt: UtcIsoDateTime;
+}>;
+
 /** snapshotへ保存するAIの有効状態、利用可否、縮退状態。 */
 export type SnapshotAiState =
   | Readonly<{
@@ -204,6 +212,7 @@ type StateSnapshotFields = Readonly<{
   collection: SnapshotCollectionState;
   repositories: readonly SnapshotRepository[];
   items: readonly SnapshotTrackedItem[];
+  graphNodeStateObservations: readonly SnapshotGraphNodeStateObservation[];
   externalReferences: readonly ExternalGhostNode[];
   relations: readonly Relation[];
   run: SnapshotRun;
@@ -213,7 +222,7 @@ type LegacySnapshotTrackedItemWithoutAiDependencies = Omit<SnapshotTrackedItem, 
 type LegacyRelationWithoutAiDependency = Omit<Relation, "aiDependency">;
 type LegacyStateSnapshotFieldsWithoutAiDependencies = Omit<
   StateSnapshotFields,
-  "items" | "relations"
+  "items" | "graphNodeStateObservations" | "relations"
 > &
   Readonly<{
     items: readonly LegacySnapshotTrackedItemWithoutAiDependencies[];
@@ -248,10 +257,11 @@ type LegacyPersonalReminderEvaluationAttempt =
 /** AI依存が保存される前のpersonal reminder cause。 */
 export type LegacyPersonalReminderCause = Omit<
   PersonalReminderCause,
-  "aiDependencies" | "currentInput" | "latestAttempt"
+  "aiDependencies" | "responseMembershipAssessmentRequirement" | "currentInput" | "latestAttempt"
 > &
   Readonly<{
     aiDependencies?: never;
+    responseMembershipAssessmentRequirement?: never;
     currentInput: LegacyPersonalReminderCauseCurrentInput;
     latestAttempt: LegacyPersonalReminderEvaluationAttempt;
   }>;
@@ -541,11 +551,16 @@ function snapshotSchemaForVersion(
   }
   const legacyPersonalReminderCause = {
     ...personalReminderCause,
-    required: personalReminderCause.required.filter((key) => key !== "aiDependencies"),
+    required: personalReminderCause.required.filter(
+      (key) => key !== "aiDependencies" && key !== "responseMembershipAssessmentRequirement",
+    ),
     properties: {
       ...Object.fromEntries(
         Object.entries(personalReminderCause.properties).filter(
-          ([key]) => key !== "aiDependencies" && key !== "currentInput",
+          ([key]) =>
+            key !== "aiDependencies" &&
+            key !== "responseMembershipAssessmentRequirement" &&
+            key !== "currentInput",
         ),
       ),
       currentInput: {
@@ -824,6 +839,10 @@ function snapshotSchemaForVersion(
   }
   return {
     ...schema,
+    required:
+      version === SNAPSHOT_SCHEMA_VERSION_18
+        ? snapshotSchema.required
+        : snapshotSchema.required.filter((key) => key !== "graphNodeStateObservations"),
     $defs: {
       ...snapshotSchema.$defs,
       evidence: versionedEvidence,
@@ -872,7 +891,11 @@ function snapshotSchemaForVersion(
       relation: versionedRelation,
     },
     properties: {
-      ...snapshotSchema.properties,
+      ...Object.fromEntries(
+        Object.entries(snapshotSchema.properties).filter(
+          ([key]) => version === SNAPSHOT_SCHEMA_VERSION_18 || key !== "graphNodeStateObservations",
+        ),
+      ),
       schemaVersion: {
         const: version,
       },
@@ -923,6 +946,46 @@ function assertUtcDateTime(value: string, description: string): void {
   if (new Date(value).toISOString() !== value) {
     throw new StateSnapshotSemanticError(`${description}はUTCへ正規化してください`);
   }
+}
+
+type SnapshotGraphStateSource = Readonly<{
+  items: readonly Pick<SnapshotTrackedItem, "nodeId" | "state">[];
+  externalReferences: readonly Pick<ExternalGhostNode, "nodeId" | "state">[];
+  graphNodeStateObservations?: readonly SnapshotGraphNodeStateObservation[];
+}>;
+
+function effectiveGraphStateByNodeId(
+  snapshot: SnapshotGraphStateSource,
+): ReadonlyMap<GraphNodeId, TrackedItemState> {
+  const stateByNodeId = new Map<GraphNodeId, TrackedItemState>();
+  for (const item of snapshot.items) {
+    stateByNodeId.set(item.nodeId, item.state);
+  }
+  for (const reference of snapshot.externalReferences) {
+    stateByNodeId.set(reference.nodeId, reference.state);
+  }
+  for (const observation of snapshot.graphNodeStateObservations ?? []) {
+    stateByNodeId.set(observation.nodeId, observation.state);
+  }
+  return stateByNodeId;
+}
+
+function effectiveGraphStateForNode(
+  stateByNodeId: ReadonlyMap<GraphNodeId, TrackedItemState>,
+  nodeId: GraphNodeId,
+): TrackedItemState {
+  const state = stateByNodeId.get(nodeId);
+  if (state == null) {
+    throw new StateSnapshotSemanticError(`graph nodeの状態がありません。対象: ${nodeId}`);
+  }
+  return state;
+}
+
+/** snapshotに保存されたgraph用状態観測を反映したnode状態を返す。 */
+export function snapshotEffectiveGraphStateByNodeId(
+  snapshot: StateSnapshot,
+): ReadonlyMap<GraphNodeId, TrackedItemState> {
+  return effectiveGraphStateByNodeId(snapshot);
 }
 
 function personalReminderSubjectIdentity(subject: {
@@ -1052,6 +1115,16 @@ function assertPersonalReminderCausesSemantics(
       );
     }
     assertPersonalReminderResponsibilitySemantics(cause);
+    if (
+      !legacyPersonalReminder &&
+      "responseMembershipAssessmentRequirement" in cause &&
+      cause.responsibility.authority === "semantic" &&
+      cause.responseMembershipAssessmentRequirement.status !== "required"
+    ) {
+      throw new StateSnapshotSemanticError(
+        "semanticなpersonal reminder責務の人物所属には意味判定が必要です",
+      );
+    }
     if (cause.latestAttempt.status === "completed" && cause.latestAttempt.origin.kind === "ai") {
       if (
         cause.latestAttempt.origin.metadata.inputFingerprint !==
@@ -1138,6 +1211,16 @@ function assertPersonalReminderCausesSemantics(
         "fixedなpersonal reminder責務はnot_requiredへ変更できません",
       );
     }
+    if (
+      "responseMembershipAssessmentRequirement" in cause &&
+      assessment.status === "available" &&
+      (assessment.result.verdict === "duplicate" || assessment.result.verdict === "not_required") &&
+      cause.responseMembershipAssessmentRequirement.status === "not_required"
+    ) {
+      throw new StateSnapshotSemanticError(
+        "responseを除外するpersonal reminder判定には人物所属の意味判定が必要です",
+      );
+    }
     assertPersonalReminderLastConfirmedActionability(cause, assessment);
     if (assessment.status !== "available") {
       continue;
@@ -1201,10 +1284,13 @@ function assertPersonalReminderAiDependencySemantics(
   allowHiddenProducerlessSentinels: boolean,
 ): void {
   const dependencyValue = assertAiAnalysisDependencyIntegrity(dependency, description, {
+    allowStaleRepository: false,
     allowProducerlessNotRecorded: true,
     allowProducerlessMigration: true,
+    allowProducerlessStaleRepository: false,
     allowHiddenProducerlessNotRecorded: allowHiddenProducerlessSentinels,
     allowHiddenProducerlessMigration: allowHiddenProducerlessSentinels,
+    allowHiddenProducerlessStaleRepository: false,
     dependencyForProducer: (producer, producerDescription, containingDependency) =>
       expectedAiAnalysisDependencyForProducer(
         producer,
@@ -1483,6 +1569,22 @@ function assertPersonalReminderCauseSetSemantics(
   }
 }
 
+function personalReminderResponseMembershipProducerIsAllowed(
+  producer: AiAnalysisDependencyProducer,
+): boolean {
+  if (producer.kind === "item_element") {
+    return (
+      producer.element === "status" ||
+      producer.element === "waitingOn" ||
+      producer.element === "nextAction"
+    );
+  }
+  if (producer.kind === "relation") {
+    return producer.producer.element === "relations";
+  }
+  return true;
+}
+
 function assertPersonalReminderDependenciesSemantics(
   item: SnapshotTrackedItemPersonalReminderFields,
   itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
@@ -1502,11 +1604,22 @@ function assertPersonalReminderDependenciesSemantics(
         "personal reminder causeのpresence AI依存にrelation candidate producerは指定できません",
       );
     }
+    if (
+      cause.aiDependencies.responseMembership.status !== "not_dependent" &&
+      (cause.aiDependencies.responseMembership.producers ?? []).some(
+        (producer) => !personalReminderResponseMembershipProducerIsAllowed(producer),
+      )
+    ) {
+      throw new StateSnapshotSemanticError(
+        "personal reminder causeのresponse membership AI依存に人物所属の判定入力以外のproducerは指定できません",
+      );
+    }
     if (!("aiDependency" in cause.currentInput)) {
       continue;
     }
     const descriptions = [
       ["presence", cause.aiDependencies.presence],
+      ["response membership", cause.aiDependencies.responseMembership],
       ["responsible", cause.aiDependencies.responsible],
       ["action", cause.aiDependencies.action],
       ["evidence", cause.aiDependencies.evidence],
@@ -2153,10 +2266,13 @@ function expectedAiAnalysisDependencyForProducer(
 }
 
 type AiAnalysisDependencyIntegrityOptions = Readonly<{
+  allowStaleRepository: boolean;
   allowProducerlessNotRecorded: boolean;
   allowProducerlessMigration: boolean;
+  allowProducerlessStaleRepository: boolean;
   allowHiddenProducerlessNotRecorded: boolean;
   allowHiddenProducerlessMigration: boolean;
+  allowHiddenProducerlessStaleRepository: boolean;
   dependencyForProducer: (
     producer: AiAnalysisDependencyProducer,
     description: string,
@@ -2174,12 +2290,18 @@ const producerlessMigrationAiAnalysisDependency = Object.freeze({
   reason: "migration",
 } satisfies AiAnalysisDependency);
 
+const producerlessStaleRepositoryAiAnalysisDependency = Object.freeze({
+  status: "unknown",
+  reason: "stale_repository",
+} satisfies AiAnalysisDependency);
+
 function aiAnalysisDependencyMatchesExpected(
   actual: AiAnalysisDependency,
   expected: AiAnalysisDependency,
   options: Readonly<{
     allowHiddenProducerlessNotRecorded: boolean;
     allowHiddenProducerlessMigration: boolean;
+    allowHiddenProducerlessStaleRepository: boolean;
   }>,
 ): boolean {
   if (hashCanonicalJson(expected) === hashCanonicalJson(actual)) {
@@ -2200,6 +2322,15 @@ function aiAnalysisDependencyMatchesExpected(
       producerlessMigrationAiAnalysisDependency,
     ]);
     if (hashCanonicalJson(withMigration) === hashCanonicalJson(actual)) {
+      return true;
+    }
+  }
+  if (options.allowHiddenProducerlessStaleRepository) {
+    const withStaleRepository = combineAiAnalysisDependencies([
+      expected,
+      producerlessStaleRepositoryAiAnalysisDependency,
+    ]);
+    if (hashCanonicalJson(withStaleRepository) === hashCanonicalJson(actual)) {
       return true;
     }
   }
@@ -2252,6 +2383,15 @@ function assertAiAnalysisDependencyIntegrity(
     });
   }
   const dependencyValue = parsedDependency.data;
+  if (
+    dependencyValue.status === "unknown" &&
+    dependencyValue.reason === "stale_repository" &&
+    !options.allowStaleRepository
+  ) {
+    throw new StateSnapshotSemanticError(
+      `${description}のstale_repositoryはstale itemの保持値以外に指定できません`,
+    );
+  }
   if (dependencyValue.status === "not_dependent") {
     return dependencyValue;
   }
@@ -2268,6 +2408,13 @@ function assertAiAnalysisDependencyIntegrity(
       dependencyValue.status === "unknown" &&
       dependencyValue.reason === "migration" &&
       options.allowProducerlessMigration
+    ) {
+      return dependencyValue;
+    }
+    if (
+      dependencyValue.status === "unknown" &&
+      dependencyValue.reason === "stale_repository" &&
+      options.allowProducerlessStaleRepository
     ) {
       return dependencyValue;
     }
@@ -2416,6 +2563,102 @@ function directAiAnalysisDependencyProducerElement(
       return undefined;
     default:
       throw new UnreachableError(element);
+  }
+}
+
+const BLOCKER_STATE_DEPENDENCY_ELEMENTS = Object.freeze([
+  "status",
+  "waitingOn",
+  "primaryWaitingOn",
+  "nextAction",
+  "confidence",
+  "evidence",
+  "uncertainties",
+] satisfies readonly AiAnalysisDependencyElement[]);
+
+const STALE_BLOCKER_TOPOLOGY_DEPENDENCY_ELEMENTS = Object.freeze([
+  ...BLOCKER_STATE_DEPENDENCY_ELEMENTS,
+  "lastProgressAt",
+  "stallSince",
+] satisfies readonly AiAnalysisDependencyElement[]);
+
+const STALE_REPOSITORY_DERIVED_DEPENDENCY_ELEMENTS = Object.freeze([
+  "severity",
+  "attention",
+] satisfies readonly AiAnalysisDependencyElement[]);
+
+const NATIVE_BLOCKER_STATE_APPLICATION_ELEMENTS = Object.freeze([
+  "status",
+  "waitingOn",
+  "nextAction",
+] satisfies readonly AiAnalysisElement[]);
+
+function expectedStaleBlockerTopologyDependency(
+  item: SnapshotTrackedItem,
+  element: AiAnalysisDependencyElement,
+): AiAnalysisDependency {
+  const direct = expectedDirectAiAnalysisDependency(element, item);
+  return direct == null
+    ? producerlessStaleRepositoryAiAnalysisDependency
+    : combineAiAnalysisDependencies([direct, producerlessStaleRepositoryAiAnalysisDependency]);
+}
+
+function hasCanonicalStaleBlockerTopologyDependencies(item: SnapshotTrackedItem): boolean {
+  return STALE_BLOCKER_TOPOLOGY_DEPENDENCY_ELEMENTS.every(
+    (element) =>
+      hashCanonicalJson(item.aiDependencies[element]) ===
+      hashCanonicalJson(expectedStaleBlockerTopologyDependency(item, element)),
+  );
+}
+
+function staleRepositorySeverityDependency(item: SnapshotTrackedItem): AiAnalysisDependency {
+  if (
+    item.severityContext.waitClass === "notApplicable" ||
+    item.severityContext.waitClass === "blockedParent"
+  ) {
+    return item.aiDependencies.status;
+  }
+  return combineAiAnalysisDependencies([
+    item.aiDependencies.stallSince,
+    item.aiDependencies.status,
+    item.aiDependencies.waitingOn,
+  ]);
+}
+
+function staleRepositoryAttentionDependency(item: SnapshotTrackedItem): AiAnalysisDependency {
+  if (
+    item.severityContext.waitClass === "notApplicable" ||
+    item.severityContext.waitClass === "blockedParent"
+  ) {
+    return item.aiDependencies.status;
+  }
+  const dependencies = [item.aiDependencies.importance, item.aiDependencies.deadlineLevel];
+  if (item.importance.score !== 0) {
+    dependencies.push(
+      item.aiDependencies.stallSince,
+      item.aiDependencies.status,
+      item.aiDependencies.waitingOn,
+    );
+  }
+  if (
+    item.deadlineAssessment.status === "available" &&
+    item.deadlineAssessment.value.date != null
+  ) {
+    dependencies.push(item.aiDependencies.status, item.aiDependencies.waitingOn);
+  }
+  return combineAiAnalysisDependencies(dependencies);
+}
+
+function assertStaleRepositoryDerivedDependency(
+  item: SnapshotTrackedItem,
+  element: "severity" | "attention",
+  expected: AiAnalysisDependency,
+): void {
+  const dependency = item.aiDependencies[element];
+  if (hashCanonicalJson(dependency) !== hashCanonicalJson(expected)) {
+    throw new StateSnapshotSemanticError(
+      `item ${item.nodeId}の${element}がstale repository依存の導出結果と一致しません`,
+    );
   }
 }
 
@@ -2607,7 +2850,7 @@ function expectedDirectAiAnalysisDependency(
 function directDependencyCanBeReplacedByNativeBlocker(
   element: AiAnalysisDependencyElement,
   item: SnapshotTrackedItem,
-  notDependentOpenBlockerTargetNodeIds: ReadonlySet<GraphNodeId>,
+  notDependentOpenBlockerNodeIdsByTargetNodeId: ReadonlyMap<GraphNodeId, ReadonlySet<GraphNodeId>>,
 ): boolean {
   if (element !== "status" && element !== "nextAction") {
     return false;
@@ -2615,9 +2858,18 @@ function directDependencyCanBeReplacedByNativeBlocker(
   if (!("applications" in item.aiAnalysis)) {
     throw new StateSnapshotSemanticError("itemのAI適用元がありません");
   }
-  return (
-    !aiAnalysisElementApplicationUsesAiValue(item.aiAnalysis.applications[element]) &&
-    notDependentOpenBlockerTargetNodeIds.has(item.nodeId)
+  if (aiAnalysisElementApplicationUsesAiValue(item.aiAnalysis.applications[element])) {
+    return false;
+  }
+  const blockerNodeIds = notDependentOpenBlockerNodeIdsByTargetNodeId.get(item.nodeId);
+  if (blockerNodeIds == null) {
+    return false;
+  }
+  if (element === "status") {
+    return item.status === "waiting_for_unblock";
+  }
+  return [...blockerNodeIds].some(
+    (blockerNodeId) => item.nextAction === `${blockerNodeId}の完了を待つ`,
   );
 }
 
@@ -2665,7 +2917,8 @@ function assertTrackedItemAiDependenciesSemantics(
   itemsByNodeId: ReadonlyMap<string, SnapshotItemForRelationValidation>,
   relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
   activeBlocksArcKeys: ReadonlySet<string>,
-  notDependentOpenBlockerTargetNodeIds: ReadonlySet<GraphNodeId>,
+  notDependentOpenBlockerNodeIdsByTargetNodeId: ReadonlyMap<GraphNodeId, ReadonlySet<GraphNodeId>>,
+  itemIsStale: boolean,
 ): void {
   const parsedDependencies = trackedItemAiDependenciesSchema.safeParse(dependencies);
   if (!parsedDependencies.success) {
@@ -2673,15 +2926,32 @@ function assertTrackedItemAiDependenciesSemantics(
       cause: parsedDependencies.error,
     });
   }
-  const blockerDerivedElements = new Set<AiAnalysisDependencyElement>([
-    "status",
-    "waitingOn",
-    "primaryWaitingOn",
-    "nextAction",
-    "confidence",
-    "evidence",
-    "uncertainties",
-  ]);
+  const blockerDerivedElements = new Set<AiAnalysisDependencyElement>(
+    BLOCKER_STATE_DEPENDENCY_ELEMENTS,
+  );
+  const staleBlockerTopologyElements = new Set<AiAnalysisDependencyElement>(
+    STALE_BLOCKER_TOPOLOGY_DEPENDENCY_ELEMENTS,
+  );
+  const staleRepositoryDerivedElements = new Set<AiAnalysisDependencyElement>(
+    STALE_REPOSITORY_DERIVED_DEPENDENCY_ELEMENTS,
+  );
+  const staleBlockerTopologyFallback =
+    itemIsStale && hasCanonicalStaleBlockerTopologyDependencies(item);
+  if (
+    !staleBlockerTopologyFallback &&
+    notDependentOpenBlockerNodeIdsByTargetNodeId.has(item.nodeId)
+  ) {
+    if (!("applications" in item.aiAnalysis)) {
+      throw new StateSnapshotSemanticError("itemのAI適用元がありません");
+    }
+    for (const element of NATIVE_BLOCKER_STATE_APPLICATION_ELEMENTS) {
+      if (aiAnalysisElementApplicationUsesAiValue(item.aiAnalysis.applications[element])) {
+        throw new StateSnapshotSemanticError(
+          `item ${item.nodeId}の${element}は確定blockerがある場合にAI値を使用できません`,
+        );
+      }
+    }
+  }
   const aggregateElements = new Set<AiAnalysisDependencyElement>([
     "lastProgressAt",
     "stallSince",
@@ -2723,12 +2993,21 @@ function assertTrackedItemAiDependenciesSemantics(
         activeBlocksArcKeys,
       );
     const dependency = assertAiAnalysisDependencyIntegrity(dependencyEntry, elementDescription, {
+      allowStaleRepository:
+        staleBlockerTopologyFallback &&
+        (staleBlockerTopologyElements.has(element) || staleRepositoryDerivedElements.has(element)),
       allowProducerlessNotRecorded: true,
       allowProducerlessMigration: true,
+      allowProducerlessStaleRepository:
+        staleBlockerTopologyFallback &&
+        (staleBlockerTopologyElements.has(element) || staleRepositoryDerivedElements.has(element)),
       allowHiddenProducerlessNotRecorded:
         aggregateElements.has(element) || blockerDerivedHiddenNotRecorded,
       allowHiddenProducerlessMigration:
         aggregateElements.has(element) || blockerDerivedHiddenMigration,
+      allowHiddenProducerlessStaleRepository:
+        staleBlockerTopologyFallback &&
+        (staleBlockerTopologyElements.has(element) || staleRepositoryDerivedElements.has(element)),
       dependencyForProducer: (producer, producerDescription, containingDependency) =>
         expectedAiAnalysisDependencyForProducer(
           producer,
@@ -2739,11 +3018,14 @@ function assertTrackedItemAiDependenciesSemantics(
         ),
     });
     const expectedDirectDependency = expectedDirectAiAnalysisDependency(element, item);
-    if (expectedDirectDependency != null) {
+    if (
+      expectedDirectDependency != null &&
+      (!staleBlockerTopologyFallback || !staleBlockerTopologyElements.has(element))
+    ) {
       const nativeBlockerOverride = directDependencyCanBeReplacedByNativeBlocker(
         element,
         item,
-        notDependentOpenBlockerTargetNodeIds,
+        notDependentOpenBlockerNodeIdsByTargetNodeId,
       );
       if (nativeBlockerOverride) {
         if (dependency.status !== "not_dependent") {
@@ -2774,6 +3056,18 @@ function assertTrackedItemAiDependenciesSemantics(
         activeBlocksArcKeys,
       );
     }
+  }
+  if (staleBlockerTopologyFallback) {
+    assertStaleRepositoryDerivedDependency(
+      item,
+      "severity",
+      staleRepositorySeverityDependency(item),
+    );
+    assertStaleRepositoryDerivedDependency(
+      item,
+      "attention",
+      staleRepositoryAttentionDependency(item),
+    );
   }
 }
 
@@ -2859,6 +3153,12 @@ function assertRelationAiDependencySemantics(dependency: unknown, description: s
       cause: parsedDependency.error,
     });
   }
+  if (
+    parsedDependency.data.status === "unknown" &&
+    parsedDependency.data.reason === "stale_repository"
+  ) {
+    throw new StateSnapshotSemanticError(`${description}にstale repository依存は指定できません`);
+  }
 }
 
 function assertInferredRelationAiDependencySemantics(
@@ -2906,10 +3206,13 @@ function assertInferredRelationAiDependencySemantics(
     }
   }
   assertAiAnalysisDependencyIntegrity(dependency, `inferred relation ${relation.id}のAI依存`, {
+    allowStaleRepository: false,
     allowProducerlessNotRecorded: !relation.active,
     allowProducerlessMigration: true,
+    allowProducerlessStaleRepository: false,
     allowHiddenProducerlessNotRecorded: false,
     allowHiddenProducerlessMigration: false,
+    allowHiddenProducerlessStaleRepository: false,
     dependencyForProducer: (producer, description) => {
       if (producer.kind !== "relation") {
         throw new StateSnapshotSemanticError(`${description}のproducer種別が不正です`);
@@ -3015,6 +3318,7 @@ function expectedDownstreamImpactAiDependencies(
     | LegacyStateSnapshotFieldsWithPersonalReminder
     | LegacyStateSnapshotFieldsWithPersonalReminderVersion17,
 ): ReadonlyMap<GraphNodeId, AiAnalysisDependency> | undefined {
+  const stateByNodeId = effectiveGraphStateByNodeId(snapshot);
   const relations: ReconciledGraphEdge[] = [];
   for (const relation of snapshot.relations) {
     if (!("aiDependency" in relation)) {
@@ -3028,7 +3332,7 @@ function expectedDownstreamImpactAiDependencies(
         kind: item.type,
         nodeId: item.nodeId,
         repositoryId: item.repositoryId,
-        state: item.state,
+        state: effectiveGraphStateForNode(stateByNodeId, item.nodeId),
         directNotification: "eligible",
       }),
     ),
@@ -3062,8 +3366,11 @@ function expectedBlockersAiDependencies(
     | LegacyStateSnapshotFieldsWithPersonalReminder
     | LegacyStateSnapshotFieldsWithPersonalReminderVersion17,
 ): ReadonlyMap<GraphNodeId, AiAnalysisDependency> {
+  const stateByNodeId = effectiveGraphStateByNodeId(snapshot);
   const openNodeIds = new Set<GraphNodeId>([
-    ...snapshot.items.filter((item) => item.state === "open").map((item) => item.nodeId),
+    ...snapshot.items
+      .filter((item) => effectiveGraphStateForNode(stateByNodeId, item.nodeId) === "open")
+      .map((item) => item.nodeId),
     ...snapshot.externalReferences
       .filter((reference) => reference.state === "open")
       .map((reference) => reference.nodeId),
@@ -3299,6 +3606,7 @@ function expectedSnapshotBlockerAnalysis(
     | LegacyStateSnapshotFieldsWithPersonalReminder
     | LegacyStateSnapshotFieldsWithPersonalReminderVersion17,
 ): SnapshotBlockerAnalysis | undefined {
+  const stateByNodeId = effectiveGraphStateByNodeId(snapshot);
   const items: SnapshotTrackedItem[] = [];
   for (const item of snapshot.items) {
     if (!("aiDependencies" in item)) {
@@ -3320,7 +3628,7 @@ function expectedSnapshotBlockerAnalysis(
           kind: item.type,
           nodeId: item.nodeId,
           repositoryId: item.repositoryId,
-          state: item.state,
+          state: effectiveGraphStateForNode(stateByNodeId, item.nodeId),
           directNotification: "eligible",
         }) satisfies GraphAnalysisNode,
     ),
@@ -3356,7 +3664,9 @@ function expectedSnapshotBlockerAnalysis(
     ]),
   );
   const openNodeIds = new Set<GraphNodeId>([
-    ...items.filter((item) => item.state === "open").map((item) => item.nodeId),
+    ...items
+      .filter((item) => effectiveGraphStateForNode(stateByNodeId, item.nodeId) === "open")
+      .map((item) => item.nodeId),
     ...snapshot.externalReferences
       .filter((reference) => reference.state === "open")
       .map((reference) => reference.nodeId),
@@ -3472,8 +3782,9 @@ function preferredSnapshotAiDependencies(
 function deterministicBlockerDecisionIsBlocked(
   item: SnapshotTrackedItem,
   blockers: readonly SnapshotBlocker[],
+  effectiveState: TrackedItemState,
 ): boolean | undefined {
-  if (item.state !== "open") {
+  if (effectiveState !== "open") {
     return undefined;
   }
   const blockerNodeIds = new Set<string>(blockers.map((blocker) => blocker.blockerNodeId));
@@ -3497,7 +3808,13 @@ function deterministicBlockerDecisionIsBlocked(
       blockers.some((blocker) => item.nextAction === `${blocker.blockerNodeId}の完了を待つ`),
     );
   }
-  if (new Set(results).size > 1) {
+  const authoritativeBlockerExists = blockers.some(
+    (blocker) => blocker.authority === "authoritative",
+  );
+  if (
+    new Set(results).size > 1 ||
+    (authoritativeBlockerExists && results.some((result) => !result))
+  ) {
     throw new StateSnapshotSemanticError(
       `item ${item.nodeId}のblocker判定値が相互に矛盾しています`,
     );
@@ -3506,7 +3823,7 @@ function deterministicBlockerDecisionIsBlocked(
   if (visibleDecision != null) {
     return visibleDecision;
   }
-  return blockers.some((blocker) => blocker.authority === "authoritative") ? true : undefined;
+  return authoritativeBlockerExists ? true : undefined;
 }
 
 function deterministicConfirmedBlockers(
@@ -3542,6 +3859,46 @@ function deterministicConfirmedBlockers(
   return Object.freeze(confirmed);
 }
 
+function assertAuthoritativeBlockerStateCompleteness(
+  item: SnapshotTrackedItem,
+  blockers: readonly SnapshotBlocker[],
+): void {
+  const authoritativeBlockerNodeIds = blockers
+    .filter((blocker) => blocker.authority === "authoritative")
+    .map((blocker) => blocker.blockerNodeId);
+  if (authoritativeBlockerNodeIds.length === 0) {
+    return;
+  }
+  const waitingOnNodeIds = item.waitingOn.map((waitingOn) => waitingOn.candidateId);
+  if (
+    authoritativeBlockerNodeIds.some((blockerNodeId) => !waitingOnNodeIds.includes(blockerNodeId))
+  ) {
+    throw new StateSnapshotSemanticError(
+      `item ${item.nodeId}のwaitingOnに確定blockerが不足しています`,
+    );
+  }
+  if (
+    authoritativeBlockerNodeIds.some(
+      (blockerNodeId, index) => waitingOnNodeIds[index] !== blockerNodeId,
+    )
+  ) {
+    throw new StateSnapshotSemanticError(
+      `item ${item.nodeId}のwaitingOn先頭が確定blockerの順序と一致しません`,
+    );
+  }
+  const primaryAuthoritativeBlockerNodeId = authoritativeBlockerNodeIds[0];
+  if (primaryAuthoritativeBlockerNodeId == null) {
+    throw new StateSnapshotSemanticError(
+      `item ${item.nodeId}のprimary確定blockerを再構成できません`,
+    );
+  }
+  if (item.nextAction !== `${primaryAuthoritativeBlockerNodeId}の完了を待つ`) {
+    throw new StateSnapshotSemanticError(
+      `item ${item.nodeId}のnextActionがprimary確定blockerと一致しません`,
+    );
+  }
+}
+
 function blockerStatusDependencyCandidates(
   blockers: readonly SnapshotBlocker[],
   confirmedBlockers: readonly SnapshotBlocker[] | undefined,
@@ -3567,8 +3924,9 @@ function blockerStatusDependencyCandidates(
 function expectedSnapshotBlockerValueAiDependencies(
   item: SnapshotTrackedItem,
   analysis: SnapshotBlockerAnalysis,
+  effectiveState: TrackedItemState,
 ): SnapshotBlockerValueAiDependencies {
-  if (item.state !== "open") {
+  if (effectiveState !== "open") {
     const dependency = notDependentSnapshotAiDependency();
     return Object.freeze({
       stateSupport: "conditional",
@@ -3593,7 +3951,7 @@ function expectedSnapshotBlockerValueAiDependencies(
   const selectionConditions = blockers.map((blocker) =>
     snapshotBlockerPrimitiveDependency(blocker, ["presence", "confidence", "becameBlockingAt"]),
   );
-  const blocked = deterministicBlockerDecisionIsBlocked(item, blockers);
+  const blocked = deterministicBlockerDecisionIsBlocked(item, blockers, effectiveState);
   if (blocked == null) {
     return Object.freeze({
       stateSupport: "conditional",
@@ -4067,6 +4425,7 @@ function relationSetDependencySatisfiesExpected(
   const hiddenSentinelOptions = Object.freeze({
     allowHiddenProducerlessNotRecorded: true,
     allowHiddenProducerlessMigration: true,
+    allowHiddenProducerlessStaleRepository: false,
   });
   if (aiAnalysisDependencyMatchesExpected(actual, expected, hiddenSentinelOptions)) {
     return true;
@@ -4122,6 +4481,7 @@ function blockerDependencySatisfiesExpected(
   const hiddenSentinelOptions = Object.freeze({
     allowHiddenProducerlessNotRecorded: true,
     allowHiddenProducerlessMigration: true,
+    allowHiddenProducerlessStaleRepository: false,
   });
   if (aiAnalysisDependencyMatchesExpected(actual, expected, hiddenSentinelOptions)) {
     return true;
@@ -4266,6 +4626,7 @@ function normalizePersonalReminderCause(cause: PersonalReminderCause): PersonalR
     ...cause,
     aiDependencies: personalReminderCauseAiDependenciesSchema.parse({
       presence: normalizeAiAnalysisDependency(cause.aiDependencies.presence),
+      responseMembership: normalizeAiAnalysisDependency(cause.aiDependencies.responseMembership),
       responsible: normalizeAiAnalysisDependency(cause.aiDependencies.responsible),
       action: normalizeAiAnalysisDependency(cause.aiDependencies.action),
       evidence: normalizeAiAnalysisDependency(cause.aiDependencies.evidence),
@@ -4415,6 +4776,48 @@ function assertSnapshotSemantics(
       );
     }
   }
+  if ("graphNodeStateObservations" in snapshot) {
+    assertUnique(
+      snapshot.graphNodeStateObservations.map((observation) => observation.nodeId),
+      "graph node状態観測のnode ID",
+    );
+    const itemsByNodeId = new Map(snapshot.items.map((item) => [item.nodeId, item]));
+    for (const observation of snapshot.graphNodeStateObservations) {
+      const item = itemsByNodeId.get(observation.nodeId);
+      if (item == null) {
+        throw new StateSnapshotSemanticError(
+          `graph node状態観測のitemがありません。対象: ${observation.nodeId}`,
+        );
+      }
+      const repository = snapshotRepositoriesById.get(item.repositoryId);
+      if (repository?.freshness !== "stale") {
+        throw new StateSnapshotSemanticError(
+          `graph node状態観測のrepositoryはstaleでなければなりません。対象: ${observation.nodeId}`,
+        );
+      }
+      assertUtcDateTime(observation.observedAt, "graph node状態観測時刻");
+      if (observation.observedAt <= item.observedAt) {
+        throw new StateSnapshotSemanticError(
+          `graph node状態観測時刻はitem観測時刻より後にしてください。対象: ${observation.nodeId}`,
+        );
+      }
+      if (observation.observedAt > snapshot.generatedAt) {
+        throw new StateSnapshotSemanticError(
+          `graph node状態観測時刻はsnapshot generatedAt以前にしてください。対象: ${observation.nodeId}`,
+        );
+      }
+      if (observation.state === item.state) {
+        throw new StateSnapshotSemanticError(
+          `graph node状態観測はitem状態と異なる場合だけ保存してください。対象: ${observation.nodeId}`,
+        );
+      }
+      if (item.type === "issue" && observation.state === "merged") {
+        throw new StateSnapshotSemanticError(
+          `Issueのgraph node状態観測をmergedにはできません。対象: ${observation.nodeId}`,
+        );
+      }
+    }
+  }
   for (const item of snapshot.items) {
     if (!repositoryIds.has(item.repositoryId)) {
       throw new StateSnapshotSemanticError(
@@ -4530,8 +4933,11 @@ function assertSnapshotSemantics(
     ...snapshot.items.map((item) => item.nodeId),
     ...snapshot.externalReferences.map((reference) => reference.nodeId),
   ]);
+  const effectiveGraphStates = effectiveGraphStateByNodeId(snapshot);
   const openGraphNodeIds = new Set<GraphNodeId>([
-    ...snapshot.items.filter((item) => item.state === "open").map((item) => item.nodeId),
+    ...snapshot.items
+      .filter((item) => effectiveGraphStateForNode(effectiveGraphStates, item.nodeId) === "open")
+      .map((item) => item.nodeId),
     ...snapshot.externalReferences
       .filter((reference) => reference.state === "open")
       .map((reference) => reference.nodeId),
@@ -4558,22 +4964,31 @@ function assertSnapshotSemantics(
       .filter((relation) => relation.active && relation.type === "blocks")
       .map((relation) => blocksArcKey(relation.fromNodeId, relation.toNodeId)),
   );
-  const notDependentOpenBlockerTargetNodeIds = new Set(
-    snapshot.relations
-      .filter(
-        (relation) =>
-          relation.active &&
-          relation.type === "blocks" &&
-          openGraphNodeIds.has(relation.fromNodeId) &&
-          openGraphNodeIds.has(relation.toNodeId) &&
-          "aiDependency" in relation &&
-          typeof relation.aiDependency === "object" &&
-          relation.aiDependency != null &&
-          "status" in relation.aiDependency &&
-          relation.aiDependency.status === "not_dependent",
-      )
-      .map((relation) => relation.toNodeId),
-  );
+  const notDependentOpenBlockerNodeIdsByTargetNodeId = new Map<GraphNodeId, Set<GraphNodeId>>();
+  for (const relation of snapshot.relations) {
+    if (
+      !relation.active ||
+      relation.type !== "blocks" ||
+      relation.provenance !== "native" ||
+      !openGraphNodeIds.has(relation.fromNodeId) ||
+      !openGraphNodeIds.has(relation.toNodeId) ||
+      !("aiDependency" in relation) ||
+      typeof relation.aiDependency !== "object" ||
+      !("status" in relation.aiDependency) ||
+      relation.aiDependency.status !== "not_dependent"
+    ) {
+      continue;
+    }
+    const blockerNodeIds = notDependentOpenBlockerNodeIdsByTargetNodeId.get(relation.toNodeId);
+    if (blockerNodeIds == null) {
+      notDependentOpenBlockerNodeIdsByTargetNodeId.set(
+        relation.toNodeId,
+        new Set([relation.fromNodeId]),
+      );
+    } else {
+      blockerNodeIds.add(relation.fromNodeId);
+    }
+  }
   for (const relation of snapshot.relations) {
     if (!graphNodeIds.has(relation.fromNodeId) || !graphNodeIds.has(relation.toNodeId)) {
       throw new StateSnapshotSemanticError("relationがsnapshotにないnodeを参照しています");
@@ -4629,6 +5044,10 @@ function assertSnapshotSemantics(
           {
             description: `personal reminder cause ${cause.causeId}のpresence AI依存`,
             dependency: cause.aiDependencies.presence,
+          },
+          {
+            description: `personal reminder cause ${cause.causeId}のresponse membership AI依存`,
+            dependency: cause.aiDependencies.responseMembership,
           },
           {
             description: `personal reminder cause ${cause.causeId}のresponsible AI依存`,
@@ -4694,7 +5113,8 @@ function assertSnapshotSemantics(
       itemsByNodeId,
       relationsById,
       activeBlocksArcKeys,
-      notDependentOpenBlockerTargetNodeIds,
+      notDependentOpenBlockerNodeIdsByTargetNodeId,
+      staleGraphNodeIds.has(item.nodeId),
     );
     if (expectedDownstreamImpactDependenciesByNodeId != null) {
       const expectedDownstreamImpact = expectedDownstreamImpactDependenciesByNodeId.get(
@@ -4768,10 +5188,22 @@ function assertSnapshotSemantics(
           `item ${item.nodeId}のblockers AI依存がblocker setの導出元を含んでいません`,
         );
       }
-      assertBlockerValueDependencyLowerBounds(
-        item,
-        expectedSnapshotBlockerValueAiDependencies(item, expectedBlockerAnalysis),
-      );
+      const staleBlockerTopologyFallback =
+        staleGraphNodeIds.has(item.nodeId) && hasCanonicalStaleBlockerTopologyDependencies(item);
+      if (!staleBlockerTopologyFallback) {
+        assertAuthoritativeBlockerStateCompleteness(
+          item,
+          expectedBlockerAnalysis.blockersByBlockedNodeId.get(item.nodeId) ?? [],
+        );
+        assertBlockerValueDependencyLowerBounds(
+          item,
+          expectedSnapshotBlockerValueAiDependencies(
+            item,
+            expectedBlockerAnalysis,
+            effectiveGraphStateForNode(effectiveGraphStates, item.nodeId),
+          ),
+        );
+      }
     }
   }
 }
@@ -4888,6 +5320,11 @@ function normalizeSnapshot(snapshot: StateSnapshot): StateSnapshot {
             }),
           }),
         ),
+    ),
+    graphNodeStateObservations: Object.freeze(
+      [...snapshot.graphNodeStateObservations]
+        .sort((left, right) => compareStrings(left.nodeId, right.nodeId))
+        .map((observation) => Object.freeze({ ...observation })),
     ),
     externalReferences: Object.freeze(
       [...snapshot.externalReferences].sort((left, right) =>

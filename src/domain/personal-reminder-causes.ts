@@ -85,6 +85,7 @@ const aiCacheEntryIdSchema = z.custom<AiCacheEntryId>(
 /** 個人催促原因の表示フィールドごとのAI依存。 */
 export const personalReminderCauseAiDependenciesSchema = z.strictObject({
   presence: aiAnalysisDependencySchema,
+  responseMembership: aiAnalysisDependencySchema,
   responsible: aiAnalysisDependencySchema,
   action: aiAnalysisDependencySchema,
   evidence: aiAnalysisDependencySchema,
@@ -93,6 +94,7 @@ export const personalReminderCauseAiDependenciesSchema = z.strictObject({
 /** 個人催促原因の表示フィールドごとのAI依存。 */
 export type PersonalReminderCauseAiDependencies = Readonly<{
   presence: AiAnalysisDependency;
+  responseMembership: AiAnalysisDependency;
   responsible: AiAnalysisDependency;
   action: AiAnalysisDependency;
   evidence: AiAnalysisDependency;
@@ -103,6 +105,7 @@ export function migratedPersonalReminderCauseAiDependencies(): PersonalReminderC
   const dependency = migratedAiAnalysisDependency();
   return Object.freeze({
     presence: dependency,
+    responseMembership: dependency,
     responsible: dependency,
     action: dependency,
     evidence: dependency,
@@ -118,6 +121,9 @@ export function combinePersonalReminderCauseAiDependencies(
   }
   return Object.freeze({
     presence: combineAiAnalysisDependencies(values.map((value) => value.presence)),
+    responseMembership: combineAiAnalysisDependencies(
+      values.map((value) => value.responseMembership),
+    ),
     responsible: combineAiAnalysisDependencies(values.map((value) => value.responsible)),
     action: combineAiAnalysisDependencies(values.map((value) => value.action)),
     evidence: combineAiAnalysisDependencies(values.map((value) => value.evidence)),
@@ -281,6 +287,28 @@ export type PersonalReminderResponsibility = Readonly<{
         ];
       }>;
 }>;
+
+/** 個人催促の人物所属を意味判定で確定する必要性。 */
+export const personalReminderResponseMembershipAssessmentRequirementSchema = z.discriminatedUnion(
+  "status",
+  [
+    z.strictObject({
+      status: z.literal("not_required"),
+    }),
+    z.strictObject({
+      status: z.literal("required"),
+    }),
+    z.strictObject({
+      status: z.literal("unknown"),
+      reason: z.literal("migration"),
+    }),
+  ],
+);
+
+/** 個人催促の人物所属を意味判定で確定する必要性。 */
+export type PersonalReminderResponseMembershipAssessmentRequirement = z.output<
+  typeof personalReminderResponseMembershipAssessmentRequirementSchema
+>;
 
 /** 個人催促の対象となる行動種別。 */
 export const personalReminderActionKindSchema = z.enum([
@@ -639,6 +667,8 @@ const personalReminderReasonToAction: Readonly<
 /** 個人催促原因の保存schema。 */
 export const personalReminderCauseSchema = personalReminderCauseSeedSchema
   .extend({
+    responseMembershipAssessmentRequirement:
+      personalReminderResponseMembershipAssessmentRequirementSchema,
     currentInput: z.strictObject({
       fingerprint: aiAnalysisElementFingerprintSchema,
       rulesVersion: opaqueIdSchema,
@@ -655,6 +685,16 @@ export const personalReminderCauseSchema = personalReminderCauseSeedSchema
         code: "custom",
         path: ["action", "kind"],
         message: "個人催促原因の理由コードと行動種別が一致しません",
+      });
+    }
+    if (
+      cause.responsibility.authority === "semantic" &&
+      cause.responseMembershipAssessmentRequirement.status !== "required"
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["responseMembershipAssessmentRequirement", "status"],
+        message: "semanticな個人催促原因の人物所属には意味判定が必要です",
       });
     }
   });

@@ -6,13 +6,25 @@
   "changedItemCount": 300,
   "items": [
     {
-      "count": 5000,
+      "count": 1,
       "status": "in_progress",
       "waitingOn": [
         {
           "kind": "role",
           "candidateId": "assignee",
           "role": "assignee"
+        }
+      ],
+      "severity": "none"
+    },
+    {
+      "count": 4999,
+      "status": "waiting_for_unblock",
+      "waitingOn": [
+        {
+          "kind": "item",
+          "candidateId": "large-item-0000",
+          "role": "dependency"
         }
       ],
       "severity": "none"

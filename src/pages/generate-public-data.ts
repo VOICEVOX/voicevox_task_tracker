@@ -28,6 +28,7 @@ import {
   createStateSnapshot,
   parseStateHistoryRecords,
   serializeStateHistoryRecords,
+  snapshotEffectiveGraphStateByNodeId,
   type SnapshotRepository,
   type StateHistoryRecord,
   type StateHistoryResponsibility,
@@ -119,6 +120,18 @@ type PublicGraph = Readonly<{
 type PublicAiAnalysis = PublicItemSummaryDto["aiAnalysis"];
 type PublicUnverifiedValue = PublicAiAnalysis["unverifiedValues"][number];
 type PublicAiCurrentness = PublicGraphEdgeDto["aiCurrentness"];
+type PublicBlockerUnverifiedReason =
+  PublicDetailsDto["items"][number]["blockerUnverifiedReasons"][number]["reasons"][number];
+type PublicBlockerUnverifiedReasonEntry = Readonly<{
+  nodeId: string;
+  reasons: readonly PublicBlockerUnverifiedReason[];
+}>;
+
+const PUBLIC_BLOCKER_UNVERIFIED_REASON_ORDER: readonly PublicBlockerUnverifiedReason[] = [
+  "relation_support",
+  "retained_waiting",
+  "waiting_value",
+];
 
 function isUnverifiedAiDependency(dependency: AiAnalysisDependency): boolean {
   switch (dependency.status) {
@@ -178,37 +191,51 @@ function createPersonalReminderUnverifiedValues(
   return values;
 }
 
+function personalReminderMembershipAssessmentUnverified(
+  cause: PersonalReminderCause,
+  assessment: CurrentPersonalReminderAssessment,
+): boolean {
+  switch (cause.responseMembershipAssessmentRequirement.status) {
+    case "not_required":
+      return false;
+    case "required":
+      return assessment.status !== "available";
+    case "unknown":
+      return true;
+    default:
+      throw new UnreachableError(cause.responseMembershipAssessmentRequirement);
+  }
+}
+
+function personalReminderResponseMembershipUnverified(
+  cause: PersonalReminderCause,
+  assessment: CurrentPersonalReminderAssessment,
+): boolean {
+  return (
+    personalReminderMembershipAssessmentUnverified(cause, assessment) ||
+    hasUnverifiedAiDependency([
+      cause.aiDependencies.presence,
+      cause.aiDependencies.responseMembership,
+      cause.aiDependencies.responsible,
+    ])
+  );
+}
+
 function createPersonalReminderSubjectMembershipUnverified(
   cause: PersonalReminderCause,
   assessment: CurrentPersonalReminderAssessment,
 ): boolean {
-  if (!cause.responsible.some((responsible) => responsible.kind !== "role")) {
-    return false;
-  }
-  const dependencies = [cause.aiDependencies.presence, cause.aiDependencies.responsible];
-  switch (cause.responsibility.authority) {
-    case "fixed":
-      return hasUnverifiedAiDependency(dependencies);
-    case "semantic":
-      if (assessment.status !== "available") {
-        return true;
-      }
-      if (
-        assessment.result.verdict === "duplicate" ||
-        assessment.result.verdict === "not_required"
-      ) {
-        throw new PublicDtoSemanticError(
-          `responseを生成しないassessmentのsubject membershipを公開できません。対象: ${cause.causeId}`,
-        );
-      }
-      dependencies.push(cause.currentInput.aiDependency);
-      return hasUnverifiedAiDependency(dependencies);
-    default:
-      throw new UnreachableError(cause.responsibility.authority);
-  }
+  return (
+    cause.responsible.some((responsible) => responsible.kind !== "role") &&
+    personalReminderResponseMembershipUnverified(cause, assessment)
+  );
 }
 
-function createPublicAiAnalysis(item: StateSnapshot["items"][number]): PublicAiAnalysis {
+function createPublicAiAnalysis(
+  item: StateSnapshot["items"][number],
+  effectiveBlockerNodeIds: readonly string[],
+  retainedOnlyBlockerNodeIds: readonly string[],
+): PublicAiAnalysis {
   const applications = [
     item.aiAnalysis.applications.status,
     item.aiAnalysis.applications.waitingOn,
@@ -234,16 +261,28 @@ function createPublicAiAnalysis(item: StateSnapshot["items"][number]): PublicAiA
 
   const unverifiedValues: PublicUnverifiedValue[] = [];
   const dependencies = item.aiDependencies;
-  if (hasUnverifiedAiDependency([dependencies.status])) {
+  const primaryWaitingOn = item.waitingOn[0];
+  const primaryBlockerRetainedOnly =
+    item.status === "waiting_for_unblock" &&
+    primaryWaitingOn?.kind === "item" &&
+    primaryWaitingOn.role === "dependency" &&
+    retainedOnlyBlockerNodeIds.includes(primaryWaitingOn.candidateId);
+  if (
+    hasUnverifiedAiDependency([dependencies.status]) ||
+    (retainedOnlyBlockerNodeIds.length > 0 && effectiveBlockerNodeIds.length === 0)
+  ) {
     unverifiedValues.push("status");
   }
-  if (hasUnverifiedAiDependency([dependencies.waitingOn])) {
+  if (
+    hasUnverifiedAiDependency([dependencies.waitingOn]) ||
+    retainedOnlyBlockerNodeIds.length > 0
+  ) {
     unverifiedValues.push("waitingOn");
   }
-  if (hasUnverifiedAiDependency([dependencies.primaryWaitingOn])) {
+  if (hasUnverifiedAiDependency([dependencies.primaryWaitingOn]) || primaryBlockerRetainedOnly) {
     unverifiedValues.push("primaryWaitingOn");
   }
-  if (hasUnverifiedAiDependency([dependencies.nextAction])) {
+  if (hasUnverifiedAiDependency([dependencies.nextAction]) || primaryBlockerRetainedOnly) {
     unverifiedValues.push("nextAction");
   }
   if (hasUnverifiedAiDependency([dependencies.confidence])) {
@@ -998,6 +1037,13 @@ function createPersonalReminderResponses(
   );
   for (const cause of item.personalReminderCauses) {
     const assessment = currentPersonalReminderAssessment(cause);
+    const responseMembershipUnverified = personalReminderResponseMembershipUnverified(
+      cause,
+      assessment,
+    );
+    if (responseMembershipUnverified) {
+      currentResponsesUnverified = true;
+    }
     const response = createPersonalReminderResponse(
       cause,
       assessment,
@@ -1016,12 +1062,7 @@ function createPersonalReminderResponses(
       }
       continue;
     }
-    if (
-      assessment.status === "available" &&
-      (assessment.result.verdict === "duplicate" || assessment.result.verdict === "not_required") &&
-      hasUnverifiedAiDependency([cause.aiDependencies.presence, cause.currentInput.aiDependency])
-    ) {
-      currentResponsesUnverified = true;
+    if (responseMembershipUnverified) {
       addResponsibleCurrentResponseSubjectChanges(subjectChanges, "addable", cause.responsible);
       if (isUnverifiedAiDependency(cause.aiDependencies.responsible)) {
         subjectChanges.unbounded = true;
@@ -1082,7 +1123,10 @@ function createPublicGraphEdge(relation: Relation): PublicGraphEdgeDto {
   };
 }
 
-function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
+function createPublicGraph(
+  snapshot: StateSnapshot,
+  effectiveStateByNodeId: ReadonlyMap<string, TrackedItem["state"]>,
+): PublicGraph {
   const graphNodeIds = new Set([
     ...snapshot.items.map((item) => item.nodeId),
     ...snapshot.externalReferences.map((reference) => reference.nodeId),
@@ -1097,15 +1141,17 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
 
   const analysisEdges = snapshot.relations.map(createAnalysisEdge);
   const analysisNodes: GraphAnalysisNode[] = [
-    ...snapshot.items.map((item) =>
-      Object.freeze({
+    ...snapshot.items.map((item) => {
+      const state = effectiveStateByNodeId.get(item.nodeId);
+      assertNonNullable(state, `graph node ${item.nodeId}のeffective stateがありません`);
+      return Object.freeze({
         kind: item.type,
         nodeId: item.nodeId,
         repositoryId: item.repositoryId,
-        state: item.state,
+        state,
         directNotification: "eligible",
-      } satisfies GraphAnalysisNode),
-    ),
+      } satisfies GraphAnalysisNode);
+    }),
     ...snapshot.externalReferences.map((reference) =>
       Object.freeze({
         kind: reference.kind,
@@ -1125,14 +1171,18 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
       availability: "unavailable",
     },
   });
-  const nodes: PublicGraphNodeDto[] = snapshot.items.map((item) => ({
-    nodeId: item.nodeId,
-    kind: item.type,
-    repositoryId: item.repositoryId,
-    state: item.state,
-    status: item.status,
-    severity: item.severity,
-  }));
+  const nodes: PublicGraphNodeDto[] = snapshot.items.map((item) => {
+    const state = effectiveStateByNodeId.get(item.nodeId);
+    assertNonNullable(state, `公開graph node ${item.nodeId}のeffective stateがありません`);
+    return {
+      nodeId: item.nodeId,
+      kind: item.type,
+      repositoryId: item.repositoryId,
+      state,
+      status: item.status,
+      severity: item.severity,
+    };
+  });
   nodes.push(
     ...snapshot.externalReferences.map((reference) => ({
       nodeId: reference.nodeId,
@@ -1155,30 +1205,33 @@ function createPublicGraph(snapshot: StateSnapshot): PublicGraph {
 
 type PublicBlockerLists = Readonly<{
   blockerNodeIdsByNodeId: ReadonlyMap<string, readonly string[]>;
-  unverifiedBlockerNodeIdsByNodeId: ReadonlyMap<string, readonly string[]>;
+  blockerUnverifiedReasonsByNodeId: ReadonlyMap<
+    string,
+    readonly PublicBlockerUnverifiedReasonEntry[]
+  >;
+  effectiveBlockerNodeIdsByNodeId: ReadonlyMap<string, readonly string[]>;
+  retainedOnlyBlockerNodeIdsByNodeId: ReadonlyMap<string, readonly string[]>;
 }>;
 
-function createBlockerLists(snapshot: StateSnapshot): PublicBlockerLists {
+function createBlockerLists(
+  snapshot: StateSnapshot,
+  effectiveStateByNodeId: ReadonlyMap<string, TrackedItem["state"]>,
+): PublicBlockerLists {
   const itemByNodeId = new Map<string, TrackedItem>(
     snapshot.items.map((item) => [item.nodeId, item]),
   );
-  const graphStateByNodeId = new Map<string, TrackedItem["state"]>();
-  for (const item of snapshot.items) {
-    graphStateByNodeId.set(item.nodeId, item.state);
-  }
-  for (const reference of snapshot.externalReferences) {
-    graphStateByNodeId.set(reference.nodeId, reference.state);
-  }
   const supportsByMeaning = new Map<string, Relation[]>();
   for (const relation of snapshot.relations) {
     if (!relation.active || relation.type !== "blocks") {
       continue;
     }
-    const blockerState = graphStateByNodeId.get(relation.fromNodeId);
+    const blockerState = effectiveStateByNodeId.get(relation.fromNodeId);
+    const blockedState = effectiveStateByNodeId.get(relation.toNodeId);
     const blocked = itemByNodeId.get(relation.toNodeId);
     assertNonNullable(blockerState, `blocks relation ${relation.id}のblockerがありません`);
+    assertNonNullable(blockedState, `blocks relation ${relation.id}のblocked状態がありません`);
     assertNonNullable(blocked, `blocks relation ${relation.id}のblocked itemがありません`);
-    if (blockerState !== "open" || blocked.state !== "open") {
+    if (blockerState !== "open" || blockedState !== "open") {
       continue;
     }
     const meaningKey = JSON.stringify([relation.type, relation.fromNodeId, relation.toNodeId]);
@@ -1190,7 +1243,34 @@ function createBlockerLists(snapshot: StateSnapshot): PublicBlockerLists {
     }
   }
   const blockersByNodeId = new Map<string, Set<string>>();
-  const unverifiedBlockersByNodeId = new Map<string, Set<string>>();
+  const effectiveBlockersByNodeId = new Map<string, Set<string>>();
+  const blockerUnverifiedReasonsByNodeId = new Map<
+    string,
+    Map<string, Set<PublicBlockerUnverifiedReason>>
+  >();
+  const retainedOnlyBlockersByNodeId = new Map<string, Set<string>>();
+  const addBlockerUnverifiedReason = (
+    blockedNodeId: string,
+    blockerNodeId: string,
+    reason: PublicBlockerUnverifiedReason,
+  ): void => {
+    let reasonsByBlockerNodeId = blockerUnverifiedReasonsByNodeId.get(blockedNodeId);
+    if (reasonsByBlockerNodeId == null) {
+      reasonsByBlockerNodeId = new Map();
+      blockerUnverifiedReasonsByNodeId.set(blockedNodeId, reasonsByBlockerNodeId);
+    }
+    let reasons = reasonsByBlockerNodeId.get(blockerNodeId);
+    if (reasons == null) {
+      reasons = new Set();
+      reasonsByBlockerNodeId.set(blockerNodeId, reasons);
+    }
+    reasons.add(reason);
+  };
+  const staleRepositoryIds = new Set(
+    snapshot.repositories
+      .filter((repository) => repository.freshness === "stale")
+      .map((repository) => repository.id),
+  );
   for (const supports of supportsByMeaning.values()) {
     const firstSupport = supports[0];
     assertNonNullable(firstSupport, "blocks supportがありません");
@@ -1199,6 +1279,12 @@ function createBlockerLists(snapshot: StateSnapshot): PublicBlockerLists {
       blockersByNodeId.set(firstSupport.toNodeId, new Set([firstSupport.fromNodeId]));
     } else {
       blockers.add(firstSupport.fromNodeId);
+    }
+    const effectiveBlockers = effectiveBlockersByNodeId.get(firstSupport.toNodeId);
+    if (effectiveBlockers == null) {
+      effectiveBlockersByNodeId.set(firstSupport.toNodeId, new Set([firstSupport.fromNodeId]));
+    } else {
+      effectiveBlockers.add(firstSupport.fromNodeId);
     }
     let allUnverified = true;
     for (const support of supports) {
@@ -1209,11 +1295,45 @@ function createBlockerLists(snapshot: StateSnapshot): PublicBlockerLists {
     if (!allUnverified) {
       continue;
     }
-    const unverifiedBlockers = unverifiedBlockersByNodeId.get(firstSupport.toNodeId);
-    if (unverifiedBlockers == null) {
-      unverifiedBlockersByNodeId.set(firstSupport.toNodeId, new Set([firstSupport.fromNodeId]));
-    } else {
-      unverifiedBlockers.add(firstSupport.fromNodeId);
+    addBlockerUnverifiedReason(firstSupport.toNodeId, firstSupport.fromNodeId, "relation_support");
+  }
+  for (const item of snapshot.items) {
+    if (item.status !== "waiting_for_unblock") {
+      continue;
+    }
+    const effectiveBlockers = effectiveBlockersByNodeId.get(item.nodeId) ?? new Set<string>();
+    const waitingOnUnverified = isUnverifiedAiDependency(item.aiDependencies.waitingOn);
+    for (const waitingOn of item.waitingOn) {
+      if (waitingOn.kind !== "item" || waitingOn.role !== "dependency") {
+        continue;
+      }
+      if (!effectiveStateByNodeId.has(waitingOn.candidateId)) {
+        throw new PublicDtoSemanticError(
+          `waitingOn項目 ${waitingOn.candidateId}を公開項目またはexternal referenceへ解決できません`,
+        );
+      }
+      const blockers = blockersByNodeId.get(item.nodeId);
+      if (blockers == null) {
+        blockersByNodeId.set(item.nodeId, new Set([waitingOn.candidateId]));
+      } else {
+        blockers.add(waitingOn.candidateId);
+      }
+      if (waitingOnUnverified) {
+        addBlockerUnverifiedReason(item.nodeId, waitingOn.candidateId, "waiting_value");
+      }
+      if (effectiveBlockers.has(waitingOn.candidateId)) {
+        continue;
+      }
+      if (!staleRepositoryIds.has(item.repositoryId)) {
+        continue;
+      }
+      const retainedOnlyBlockers = retainedOnlyBlockersByNodeId.get(item.nodeId);
+      if (retainedOnlyBlockers == null) {
+        retainedOnlyBlockersByNodeId.set(item.nodeId, new Set([waitingOn.candidateId]));
+      } else {
+        retainedOnlyBlockers.add(waitingOn.candidateId);
+      }
+      addBlockerUnverifiedReason(item.nodeId, waitingOn.candidateId, "retained_waiting");
     }
   }
   const sortBlockerMap = (
@@ -1225,9 +1345,28 @@ function createBlockerLists(snapshot: StateSnapshot): PublicBlockerLists {
         Object.freeze([...blockerNodeIds].sort(compareStrings)),
       ]),
     );
+  const sortedBlockerUnverifiedReasonsByNodeId = new Map(
+    [...blockerUnverifiedReasonsByNodeId.entries()].map(([nodeId, reasonsByBlockerNodeId]) => [
+      nodeId,
+      Object.freeze(
+        [...reasonsByBlockerNodeId.entries()]
+          .sort(([leftNodeId], [rightNodeId]) => compareStrings(leftNodeId, rightNodeId))
+          .map(([blockerNodeId, reasons]) =>
+            Object.freeze({
+              nodeId: blockerNodeId,
+              reasons: Object.freeze(
+                PUBLIC_BLOCKER_UNVERIFIED_REASON_ORDER.filter((reason) => reasons.has(reason)),
+              ),
+            }),
+          ),
+      ),
+    ]),
+  );
   return Object.freeze({
     blockerNodeIdsByNodeId: sortBlockerMap(blockersByNodeId),
-    unverifiedBlockerNodeIdsByNodeId: sortBlockerMap(unverifiedBlockersByNodeId),
+    blockerUnverifiedReasonsByNodeId: sortedBlockerUnverifiedReasonsByNodeId,
+    effectiveBlockerNodeIdsByNodeId: sortBlockerMap(effectiveBlockersByNodeId),
+    retainedOnlyBlockerNodeIdsByNodeId: sortBlockerMap(retainedOnlyBlockersByNodeId),
   });
 }
 
@@ -1369,6 +1508,8 @@ function createItemSummary(
   personalReminderCausePlanningStatus: PublicPersonalReminderCausePlanningStatus,
   displayReferencesByNodeId: ReadonlyMap<string, string>,
   blockerNodeIds: readonly string[],
+  effectiveBlockerNodeIds: readonly string[],
+  retainedOnlyBlockerNodeIds: readonly string[],
   downstreamImpact: AnalyzeGraphResult["downstreamImpacts"][number],
   priorityWeight: number,
   evaluatedAt: UtcIsoDateTime,
@@ -1414,7 +1555,7 @@ function createItemSummary(
       level: item.attention.level,
     },
     priorityWeight,
-    aiAnalysis: createPublicAiAnalysis(item),
+    aiAnalysis: createPublicAiAnalysis(item, effectiveBlockerNodeIds, retainedOnlyBlockerNodeIds),
     confidence: item.confidence,
     githubUpdatedAt: item.githubUpdatedAt,
     stallSince: item.stallSince,
@@ -1698,7 +1839,8 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     ),
   );
   const evidenceBySourceId = createEvidenceBySourceId(snapshot);
-  const graph = createPublicGraph(snapshot);
+  const effectiveStateByNodeId = snapshotEffectiveGraphStateByNodeId(snapshot);
+  const graph = createPublicGraph(snapshot, effectiveStateByNodeId);
   const repositoriesById = new Map(
     snapshot.repositories.map((repository) => [repository.id, repository]),
   );
@@ -1708,7 +1850,7 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
     repositoriesById,
     displayReferencesByNodeId,
   );
-  const blockerLists = createBlockerLists(snapshot);
+  const blockerLists = createBlockerLists(snapshot, effectiveStateByNodeId);
   const resolveLabelEffects = createLabelEffectsResolver(input.options.labelRules);
   const impactByNodeId = new Map(
     graph.analysis.downstreamImpacts.map((impact) => [impact.nodeId, impact]),
@@ -1734,6 +1876,8 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       personalReminderCausePlanningStatus(item),
       displayReferencesByNodeId,
       blockerLists.blockerNodeIdsByNodeId.get(item.nodeId) ?? Object.freeze([]),
+      blockerLists.effectiveBlockerNodeIdsByNodeId.get(item.nodeId) ?? Object.freeze([]),
+      blockerLists.retainedOnlyBlockerNodeIdsByNodeId.get(item.nodeId) ?? Object.freeze([]),
       impact,
       resolveLabelEffects(`${repository.owner}/${repository.name}`, item.labels).priorityWeight,
       snapshot.generatedAt,
@@ -1773,9 +1917,12 @@ export function generatePublicData(input: GeneratePublicDataInput): GeneratedPub
       assertNonNullable(summaryItem, `item ${item.nodeId}のsummaryがありません`);
       return {
         summary: summaryItem,
-        unverifiedBlockerNodeIds: [
-          ...(blockerLists.unverifiedBlockerNodeIdsByNodeId.get(item.nodeId) ?? Object.freeze([])),
-        ],
+        blockerUnverifiedReasons: (
+          blockerLists.blockerUnverifiedReasonsByNodeId.get(item.nodeId) ?? Object.freeze([])
+        ).map((entry) => ({
+          nodeId: entry.nodeId,
+          reasons: [...entry.reasons],
+        })),
         deadline: createPublicDeadlineDetails(
           item.deadlineAssessment,
           snapshot.generatedAt,

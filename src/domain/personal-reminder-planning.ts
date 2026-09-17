@@ -267,6 +267,7 @@ export function personalReminderCauseAiDependenciesForDecision(
   const action = combineAiAnalysisDependencies([status, waitingOn, nextAction]);
   return Object.freeze({
     presence,
+    responseMembership: Object.freeze({ status: "not_dependent" }),
     responsible,
     action,
     evidence: combineAiAnalysisDependencies([presence, responsible]),

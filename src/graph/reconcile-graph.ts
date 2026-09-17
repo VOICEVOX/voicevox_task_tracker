@@ -482,6 +482,9 @@ function validateInferredRelationAiDependency(
   if (dependency.status === "not_dependent") {
     throw new TypeError(`推定relation ${candidate.id}のAI依存はnot_dependentにできません`);
   }
+  if (dependency.status === "unknown" && dependency.reason === "stale_repository") {
+    throw new TypeError(`推定relation ${candidate.id}にstale repository AI依存は指定できません`);
+  }
   const producers = dependency.producers;
   if (producers == null) {
     if (

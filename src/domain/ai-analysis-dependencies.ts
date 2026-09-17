@@ -68,7 +68,8 @@ export type AiAnalysisDependencyProducer =
       }>;
     }>;
 
-export type AiAnalysisDependencyUnknownReason = "migration" | "not_recorded" | "proof_unknown";
+export type AiAnalysisDependencyUnknownReason =
+  "migration" | "not_recorded" | "proof_unknown" | "stale_repository";
 
 export type AiAnalysisDependency =
   | Readonly<{
@@ -84,7 +85,7 @@ export type AiAnalysisDependency =
     }>
   | Readonly<{
       status: "unknown";
-      reason: "migration" | "not_recorded";
+      reason: "migration" | "not_recorded" | "stale_repository";
       producers?: readonly AiAnalysisDependencyProducer[] | undefined;
     }>
   | Readonly<{
@@ -192,6 +193,11 @@ const unknownAiAnalysisDependencySchema = z.discriminatedUnion("reason", [
   z.strictObject({
     status: z.literal("unknown"),
     reason: z.literal("not_recorded"),
+    producers: dependencyProducersSchema.optional(),
+  }),
+  z.strictObject({
+    status: z.literal("unknown"),
+    reason: z.literal("stale_repository"),
     producers: dependencyProducersSchema.optional(),
   }),
   z.strictObject({
@@ -305,6 +311,8 @@ function unknownReasonPriority(reason: AiAnalysisDependencyUnknownReason): numbe
       return 1;
     case "proof_unknown":
       return 2;
+    case "stale_repository":
+      return -1;
     default:
       throw new UnreachableError(reason);
   }

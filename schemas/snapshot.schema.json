@@ -12,6 +12,7 @@
     "collection",
     "repositories",
     "items",
+    "graphNodeStateObservations",
     "externalReferences",
     "relations",
     "run"
@@ -42,6 +43,12 @@
       "type": "array",
       "items": {
         "$ref": "#/$defs/item"
+      }
+    },
+    "graphNodeStateObservations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/graphNodeStateObservation"
       }
     },
     "externalReferences": {
@@ -2324,6 +2331,22 @@
         }
       }
     },
+    "graphNodeStateObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeId", "state", "observedAt"],
+      "properties": {
+        "nodeId": {
+          "$ref": "#/$defs/identifier"
+        },
+        "state": {
+          "enum": ["open", "closed", "merged"]
+        },
+        "observedAt": {
+          "$ref": "#/$defs/dateTime"
+        }
+      }
+    },
     "repository": {
       "type": "object",
       "additionalProperties": false,
@@ -3101,12 +3124,52 @@
         }
       ]
     },
+    "personalReminderResponseMembershipAssessmentRequirement": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "not_required"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status"],
+          "properties": {
+            "status": {
+              "const": "required"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {
+              "const": "unknown"
+            },
+            "reason": {
+              "const": "migration"
+            }
+          }
+        }
+      ]
+    },
     "personalReminderCauseAiDependencies": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["presence", "responsible", "action", "evidence"],
+      "required": ["presence", "responseMembership", "responsible", "action", "evidence"],
       "properties": {
         "presence": {
+          "$ref": "#/$defs/aiAnalysisDependency"
+        },
+        "responseMembership": {
           "$ref": "#/$defs/aiAnalysisDependency"
         },
         "responsible": {
@@ -3135,6 +3198,7 @@
         "obligationSince",
         "lastConfirmedActionability",
         "aiDependencies",
+        "responseMembershipAssessmentRequirement",
         "currentInput",
         "latestAttempt",
         "adoptedAssessment",
@@ -3232,6 +3296,9 @@
         },
         "aiDependencies": {
           "$ref": "#/$defs/personalReminderCauseAiDependencies"
+        },
+        "responseMembershipAssessmentRequirement": {
+          "$ref": "#/$defs/personalReminderResponseMembershipAssessmentRequirement"
         },
         "currentInput": {
           "type": "object",
@@ -3571,7 +3638,7 @@
               "const": "unknown"
             },
             "reason": {
-              "enum": ["migration", "not_recorded"]
+              "enum": ["migration", "not_recorded", "stale_repository"]
             },
             "producers": {
               "type": "array",

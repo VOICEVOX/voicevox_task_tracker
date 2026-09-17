@@ -3504,6 +3504,7 @@ function createSnapshot(
         severityContext: analysis.staleness.severityContext,
       };
     }),
+    graphNodeStateObservations: [],
     externalReferences: [],
     relations: edges.map(toStateRelation),
     run: {
@@ -3986,8 +3987,80 @@ function largeWaitingOn(nodeId: GitHubNodeId): WaitingOn {
   });
 }
 
-function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): readonly TrackedItem[] {
+type LargeBlocker = Readonly<{
+  candidateId: GitHubNodeId;
+  authority: "authoritative" | "inferred";
+  confidence: number;
+  sourceIds: readonly [SourceId, ...SourceId[]];
+  becameBlockingAt: UtcIsoDateTime;
+}>;
+
+function compareLargeBlockers(left: LargeBlocker, right: LargeBlocker): -1 | 0 | 1 {
+  if (left.authority !== right.authority) {
+    return left.authority === "authoritative" ? -1 : 1;
+  }
+  if (left.confidence !== right.confidence) {
+    return left.confidence > right.confidence ? -1 : 1;
+  }
+  if (left.becameBlockingAt < right.becameBlockingAt) {
+    return -1;
+  }
+  if (left.becameBlockingAt > right.becameBlockingAt) {
+    return 1;
+  }
+  if (left.candidateId < right.candidateId) {
+    return -1;
+  }
+  if (left.candidateId > right.candidateId) {
+    return 1;
+  }
+  return 0;
+}
+
+function largeBlockersByTargetNodeId(
+  edges: readonly (ReconciledGraphEdge & Readonly<{ active: true }>)[],
+  becameBlockingAt: UtcIsoDateTime,
+): ReadonlyMap<GitHubNodeId, readonly LargeBlocker[]> {
+  const blockersByTargetNodeId = new Map<GitHubNodeId, LargeBlocker[]>();
+  for (const edge of edges) {
+    if (edge.type !== "blocks" || edge.provenance !== "native") {
+      throw new TypeError("large fixtureのblocker relationが不正です");
+    }
+    const targetNodeId = createGitHubNodeId(edge.toNodeId);
+    const firstSourceId = edge.evidence[0]?.sourceId;
+    assertNonNullable(firstSourceId, `large fixtureのrelation ${edge.id}に根拠がありません`);
+    const blocker = Object.freeze({
+      candidateId: createGitHubNodeId(edge.fromNodeId),
+      authority: edge.authoritative ? "authoritative" : "inferred",
+      confidence: edge.confidence,
+      sourceIds: Object.freeze([
+        firstSourceId,
+        ...edge.evidence.slice(1).map((evidence) => evidence.sourceId),
+      ]) satisfies readonly [SourceId, ...SourceId[]],
+      becameBlockingAt,
+    } satisfies LargeBlocker);
+    const blockers = blockersByTargetNodeId.get(targetNodeId);
+    if (blockers == null) {
+      blockersByTargetNodeId.set(targetNodeId, [blocker]);
+    } else {
+      blockers.push(blocker);
+    }
+  }
+  return new Map(
+    [...blockersByTargetNodeId].map(([nodeId, blockers]) => [
+      nodeId,
+      Object.freeze(blockers.sort(compareLargeBlockers)),
+    ]),
+  );
+}
+
+function createLargeItems(
+  itemCount: number,
+  evaluatedAt: UtcIsoDateTime,
+  edges: readonly (ReconciledGraphEdge & Readonly<{ active: true }>)[],
+): readonly TrackedItem[] {
   const createdAt = createUtcIsoDateTime("2026-01-01T00:00:00.000Z");
+  const blockersByTargetNodeId = largeBlockersByTargetNodeId(edges, createdAt);
   const author = Object.freeze({
     type: "human",
     nodeId: createGitHubNodeId("large-fixture-author"),
@@ -3998,6 +4071,65 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
       const nodeId = largeNodeId(index);
       const repositoryIndex = index % 10;
       const repositoryName = `fixture-large-${repositoryIndex.toString().padStart(2, "0")}`;
+      const blockers = blockersByTargetNodeId.get(nodeId) ?? Object.freeze([]);
+      const primaryBlocker = blockers[0];
+      const status = primaryBlocker == null ? "in_progress" : "waiting_for_unblock";
+      const waitingOn =
+        primaryBlocker == null
+          ? Object.freeze([largeWaitingOn(nodeId)])
+          : Object.freeze(
+              blockers.map((blocker) =>
+                Object.freeze({
+                  kind: "item",
+                  candidateId: blocker.candidateId,
+                  role: "dependency",
+                  reasonSummary: "この項目の完了を待っています",
+                  sourceIds: blocker.sourceIds,
+                  confidence: blocker.confidence,
+                } satisfies WaitingOn),
+              ),
+            );
+      const primaryWaitingOn = Object.freeze({
+        index: 0,
+        selectionReason:
+          blockers.length <= 1
+            ? "唯一の確定済みopen blockerをprimaryに選定しました"
+            : "authoritative、confidence、blockerになった時刻、candidate IDの順で選定しました",
+      });
+      const nextAction =
+        primaryBlocker == null
+          ? "担当者が作業を進める"
+          : `${primaryBlocker.candidateId}の完了を待つ`;
+      const aiAnalysisStatus = primaryBlocker == null ? "disabled" : "not_required";
+      const evidence =
+        primaryBlocker == null
+          ? Object.freeze([
+              Object.freeze({
+                sourceId: buildSourceId("golden_large", nodeId),
+                supports: "status",
+                summary: "匿名の性能fixtureです",
+              }),
+            ])
+          : Object.freeze([
+              ...blockers.flatMap((blocker) =>
+                blocker.sourceIds.map((sourceId) =>
+                  Object.freeze({
+                    sourceId,
+                    supports: "status" as const,
+                    summary: "確定済みのopen blockerがあります",
+                  }),
+                ),
+              ),
+              ...blockers.flatMap((blocker) =>
+                blocker.sourceIds.map((sourceId) =>
+                  Object.freeze({
+                    sourceId,
+                    supports: "waiting_on" as const,
+                    summary: "open blockerの完了待ちです",
+                  }),
+                ),
+              ),
+            ]);
       return Object.freeze({
         nodeId,
         type: index % 2 === 0 ? "issue" : "pull_request",
@@ -4020,13 +4152,10 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         }),
         state: "open",
         notificationClass: "standard",
-        status: "in_progress",
-        waitingOn: Object.freeze([largeWaitingOn(nodeId)]),
-        primaryWaitingOn: Object.freeze({
-          index: 0,
-          selectionReason: "待ち相手の先頭候補をprimaryとして選びました",
-        }),
-        nextAction: "担当者が作業を進める",
+        status,
+        waitingOn,
+        primaryWaitingOn,
+        nextAction,
         createdAt,
         githubUpdatedAt: index < 300 ? evaluatedAt : createdAt,
         lastHumanActivityAt: createdAt,
@@ -4040,24 +4169,18 @@ function createLargeItems(itemCount: number, evaluatedAt: UtcIsoDateTime): reado
         reviewState: index % 2 === 0 ? "not_applicable" : "requested",
         checkState: index % 2 === 0 ? "not_applicable" : "pending",
         personalReminderCauses: Object.freeze([]),
-        personalReminderCausePlanning: createGoldenPersonalReminderCausePlanning("in_progress"),
+        personalReminderCausePlanning: createGoldenPersonalReminderCausePlanning(status),
         aiAnalysis: Object.freeze({
           origin: "current",
-          status: "disabled",
+          status: aiAnalysisStatus,
           elements: Object.freeze({}),
           adoptedElements: Object.freeze({}),
-          applications: createGoldenAiAnalysisApplications("disabled"),
+          applications: createGoldenAiAnalysisApplications(aiAnalysisStatus),
         }),
         aiDependencies: createGoldenNotDependentAiDependencies(),
         inputEvents: Object.freeze([]),
         confidence: 1,
-        evidence: Object.freeze([
-          Object.freeze({
-            sourceId: buildSourceId("golden_large", nodeId),
-            supports: "status",
-            summary: "匿名の性能fixtureです",
-          }),
-        ]),
+        evidence,
         uncertainties: Object.freeze([]),
       } satisfies TrackedItem);
     }),
@@ -4224,8 +4347,8 @@ function analyzeLargeFixture(
 ): GoldenFixtureAnalysisResult {
   const startedAt = performance.now();
   const evaluatedAt = createUtcIsoDateTime(input.evaluatedAt);
-  const items = createLargeItems(input.itemCount, evaluatedAt);
   const edges = createLargeEdges(input.itemCount, input.edgeCount, evaluatedAt);
+  const items = createLargeItems(input.itemCount, evaluatedAt, edges);
   const repositories: readonly Repository[] = Object.freeze(
     Array.from({ length: 10 }, (_, index) =>
       Object.freeze({
@@ -4296,10 +4419,11 @@ function analyzeLargeFixture(
       },
       severity: "none",
       severityContext: {
-        waitClass: "work",
+        waitClass: item.status === "waiting_for_unblock" ? "blockedParent" : "work",
         decisionBasis: "deterministic",
       },
     })),
+    graphNodeStateObservations: [],
     externalReferences: [],
     relations: edges.map(toStateRelation),
     run: {
@@ -4322,15 +4446,41 @@ function analyzeLargeFixture(
       timezone: PUBLIC_TIMEZONE,
     }),
   });
+  const blockersByTargetNodeId = largeBlockersByTargetNodeId(
+    edges,
+    createUtcIsoDateTime("2026-01-01T00:00:00.000Z"),
+  );
   const largeItemsMatchExpectation = snapshot.items.every((item) => {
-    const waitingOn = item.waitingOn[0];
+    const blockers = blockersByTargetNodeId.get(item.nodeId) ?? Object.freeze([]);
+    const primaryBlocker = blockers[0];
+    if (primaryBlocker == null) {
+      const waitingOn = item.waitingOn[0];
+      return (
+        item.status === "in_progress" &&
+        item.severity === "none" &&
+        item.severityContext.waitClass === "work" &&
+        item.waitingOn.length === 1 &&
+        waitingOn?.kind === "role" &&
+        waitingOn.candidateId === "assignee" &&
+        waitingOn.role === "assignee"
+      );
+    }
     return (
-      item.status === "in_progress" &&
+      item.status === "waiting_for_unblock" &&
       item.severity === "none" &&
-      item.waitingOn.length === 1 &&
-      waitingOn?.kind === "role" &&
-      waitingOn.candidateId === "assignee" &&
-      waitingOn.role === "assignee"
+      item.severityContext.waitClass === "blockedParent" &&
+      item.waitingOn.length === blockers.length &&
+      item.waitingOn.every((waitingOn, index) => {
+        const blocker = blockers[index];
+        return (
+          blocker != null &&
+          waitingOn.kind === "item" &&
+          waitingOn.candidateId === blocker.candidateId &&
+          waitingOn.role === "dependency"
+        );
+      }) &&
+      item.primaryWaitingOn.index === 0 &&
+      item.nextAction === `${primaryBlocker.candidateId}の完了を待つ`
     );
   });
   if (!largeItemsMatchExpectation) {
@@ -4344,6 +4494,17 @@ function analyzeLargeFixture(
   }
   const durationMilliseconds = performance.now() - startedAt;
   assertExternalWaitingOnInitialGraph(snapshot, repositories);
+  const inProgressItems = snapshot.items.filter((item) => item.status === "in_progress");
+  const waitingForUnblockItems = snapshot.items.filter(
+    (item) => item.status === "waiting_for_unblock",
+  );
+  const inProgressRepresentative = inProgressItems[0];
+  const waitingForUnblockRepresentative = waitingForUnblockItems[0];
+  assertNonNullable(inProgressRepresentative, "large fixtureのin progress itemがありません");
+  assertNonNullable(
+    waitingForUnblockRepresentative,
+    "large fixtureのwaiting for unblock itemがありません",
+  );
   const output = goldenEvalOutputSchema.parse({
     schemaVersion: "1",
     kind: "large",
@@ -4352,16 +4513,16 @@ function analyzeLargeFixture(
     changedItemCount: input.changedItemCount,
     items: Object.freeze([
       Object.freeze({
-        count: snapshot.items.length,
-        status: "in_progress",
-        waitingOn: Object.freeze([
-          Object.freeze({
-            kind: "role",
-            candidateId: "assignee",
-            role: "assignee",
-          }),
-        ]),
-        severity: "none",
+        count: inProgressItems.length,
+        status: inProgressRepresentative.status,
+        waitingOn: waitingOnOutput(inProgressRepresentative.waitingOn),
+        severity: inProgressRepresentative.severity,
+      }),
+      Object.freeze({
+        count: waitingForUnblockItems.length,
+        status: waitingForUnblockRepresentative.status,
+        waitingOn: waitingOnOutput(waitingForUnblockRepresentative.waitingOn),
+        severity: waitingForUnblockRepresentative.severity,
       }),
     ]),
     relations: Object.freeze([

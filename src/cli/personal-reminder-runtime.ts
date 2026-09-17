@@ -38,6 +38,7 @@ import {
   type PersonalReminderInputCompleteness,
   type PersonalReminderMissingInput,
   type PersonalReminderResponsibility,
+  type PersonalReminderResponseMembershipAssessmentRequirement,
   type PersonalReminderResponsible,
   type PersonalReminderSubject,
   type PersonalReminderTimeBasis,
@@ -349,6 +350,7 @@ type PersonalReminderRuntimeCauseSetSubjectChangeInput = Readonly<{
 /** cause seedと意味入力を時計適用へ渡す計画要素。 */
 export type PersonalReminderCauseRuntimePlanEntry = Readonly<{
   seed: PersonalReminderCauseSeed;
+  responseMembershipAssessmentRequirement: PersonalReminderResponseMembershipAssessmentRequirement;
   semanticInput: PersonalReminderCauseSemanticInput;
   deterministicAssessment: PersonalReminderCauseAssessment | undefined;
   previousCause: PersonalReminderCause | undefined;
@@ -2000,6 +2002,7 @@ function graphRelationAiDependencies(
 ): PersonalReminderCauseAiDependencies {
   return Object.freeze({
     presence: relation.aiDependency,
+    responseMembership: Object.freeze({ status: "not_dependent" }),
     responsible: relation.aiDependency,
     action: Object.freeze({ status: "not_dependent" }),
     evidence: relation.aiDependency,
@@ -3065,12 +3068,7 @@ function duplicateOptionsForCause(
   );
   const connected = connectedSeedRelations(indexes, current.seed, effectiveRelations);
   for (const { currentSeed: candidate, relations: directRelations } of connected.values()) {
-    if (
-      candidate.seed.causeId === current.seed.causeId ||
-      candidate.origin !== "current_draft" ||
-      candidate.seed.action.kind !== current.seed.action.kind ||
-      !sameResponsibleValues(candidate.seed.responsible, current.seed.responsible)
-    ) {
+    if (!seedCanBeDuplicateCandidate(current, candidate)) {
       continue;
     }
     const relationIds = directRelations.map((relation) => relation.id);
@@ -3128,6 +3126,143 @@ function duplicateOptionsForCause(
     sources: Object.freeze([...sources.values()]),
     aiDependenciesByCanonicalCauseId,
   });
+}
+
+function seedCanBeDuplicateCandidate(
+  current: PersonalReminderRuntimeCurrentSeed,
+  candidate: PersonalReminderRuntimeCurrentSeed,
+): boolean {
+  return (
+    candidate.seed.causeId !== current.seed.causeId &&
+    candidate.origin === "current_draft" &&
+    candidate.seed.action.kind === current.seed.action.kind &&
+    sameResponsibleValues(candidate.seed.responsible, current.seed.responsible)
+  );
+}
+
+function relationCandidateConnectsScopes(
+  candidate: PersonalReminderRuntimeCandidateRelation,
+  leftNodeIds: ReadonlySet<GraphNodeId>,
+  rightNodeIds: ReadonlySet<GraphNodeId>,
+): boolean {
+  const [firstNodeId, secondNodeId] = candidate.endpointNodeIds;
+  return (
+    (leftNodeIds.has(firstNodeId) && rightNodeIds.has(secondNodeId)) ||
+    (leftNodeIds.has(secondNodeId) && rightNodeIds.has(firstNodeId))
+  );
+}
+
+function pendingRelationCanHideCauseAsDuplicate(
+  current: PersonalReminderRuntimeCurrentSeed,
+  candidateSeed: PersonalReminderRuntimeCurrentSeed,
+  relationCandidate: PersonalReminderRuntimeCandidateRelation,
+  indexes: PersonalReminderRuntimePlanningIndexes,
+): boolean {
+  if (
+    !relationCandidateConnectsScopes(
+      relationCandidate,
+      scopeNodeIdsForSeed(indexes, current.seed),
+      scopeNodeIdsForSeed(indexes, candidateSeed.seed),
+    )
+  ) {
+    return false;
+  }
+  if (current.origin === "retained_without_draft") {
+    return true;
+  }
+  if (compareStrings(candidateSeed.seed.causeId, current.seed.causeId) < 0) {
+    return true;
+  }
+  const currentIsImplementation =
+    current.item.item.type === "pull_request" &&
+    relationCandidate.ownerNodeId === current.seed.itemNodeId;
+  const candidateIsImplementation =
+    candidateSeed.item.item.type === "pull_request" &&
+    relationCandidate.ownerNodeId === candidateSeed.seed.itemNodeId;
+  return candidateIsImplementation && !currentIsImplementation;
+}
+
+function pendingResponseMembershipDependencies(
+  context: PersonalReminderRuntimeContext,
+  current: PersonalReminderRuntimeCurrentSeed,
+  indexes: PersonalReminderRuntimePlanningIndexes,
+): readonly AiAnalysisDependency[] {
+  const dependencies: AiAnalysisDependency[] = [];
+  for (const resolution of context.graph.candidateResolutions) {
+    if (resolution.status !== "pending") {
+      continue;
+    }
+    const candidate = context.graph.candidateRelations.find(
+      (value) => value.candidateId === resolution.candidateId,
+    );
+    assertNonNullable(
+      candidate,
+      `pending relation candidateがありません。対象: ${resolution.candidateId}`,
+    );
+    if (
+      candidate.authority !== "inferred" ||
+      !relationEndpointsAllowPending(context.graph, candidate.endpointNodeIds)
+    ) {
+      continue;
+    }
+    const currentScopeNodeIds = scopeNodeIdsForSeed(indexes, current.seed);
+    const [firstNodeId, secondNodeId] = candidate.endpointNodeIds;
+    const duplicateCandidatesByCauseId = new Map<
+      PersonalReminderCauseId,
+      PersonalReminderRuntimeCurrentSeed
+    >();
+    if (currentScopeNodeIds.has(firstNodeId)) {
+      for (const duplicateCandidate of indexes.currentSeedsByScopeNodeId.get(secondNodeId) ?? []) {
+        duplicateCandidatesByCauseId.set(duplicateCandidate.seed.causeId, duplicateCandidate);
+      }
+    }
+    if (currentScopeNodeIds.has(secondNodeId)) {
+      for (const duplicateCandidate of indexes.currentSeedsByScopeNodeId.get(firstNodeId) ?? []) {
+        duplicateCandidatesByCauseId.set(duplicateCandidate.seed.causeId, duplicateCandidate);
+      }
+    }
+    const matchingDuplicateCandidates = [...duplicateCandidatesByCauseId.values()].filter(
+      (duplicateCandidate) =>
+        seedCanBeDuplicateCandidate(current, duplicateCandidate) &&
+        pendingRelationCanHideCauseAsDuplicate(current, duplicateCandidate, candidate, indexes),
+    );
+    if (matchingDuplicateCandidates.length === 0) {
+      continue;
+    }
+    if (candidate.aiDependency.status === "not_dependent") {
+      throw new TypeError(
+        `推定pending relation candidateのAI依存はnot_dependentにできません。対象: ${candidate.candidateId}`,
+      );
+    }
+    const relationDependency: AiAnalysisDependency =
+      candidate.aiDependency.status === "current"
+        ? Object.freeze({
+            status: "unknown",
+            reason: "proof_unknown",
+            producers: candidate.aiDependency.producers,
+          })
+        : candidate.aiDependency;
+    dependencies.push(
+      combineAiAnalysisDependencies([
+        relationDependency,
+        ...matchingDuplicateCandidates.flatMap((duplicateCandidate) => [
+          duplicateCandidate.seed.aiDependencies.presence,
+          duplicateCandidate.seed.aiDependencies.responsible,
+        ]),
+      ]),
+    );
+  }
+  return Object.freeze(dependencies);
+}
+
+function responseMembershipAssessmentRequirement(
+  seed: PersonalReminderCauseSeed,
+  duplicateOptions: readonly PersonalReminderDuplicateOption[],
+): PersonalReminderResponseMembershipAssessmentRequirement {
+  if (seed.responsibility.authority === "semantic" || duplicateOptions.length !== 0) {
+    return Object.freeze({ status: "required" });
+  }
+  return Object.freeze({ status: "not_required" });
 }
 
 function sameResponsibleValues(
@@ -3686,37 +3821,65 @@ export function planPersonalReminderCauses(
         globalSourcesById,
       );
       const optionSources = [...waitingProjection.sources, ...duplicateProjection.sources];
+      const relationDependencies = relationEdgesForInput.map((relation) => relation.aiDependency);
+      const pendingRelationDependencies = pendingRelations.flatMap((relation) => {
+        const candidate = context.graph.candidateRelations.find(
+          (value) => value.candidateId === relation.candidateId,
+        );
+        assertNonNullable(
+          candidate,
+          `pending relation candidateがありません。対象: ${relation.candidateId}`,
+        );
+        return [candidate.aiDependency];
+      });
+      const waitingOptionDependencies = waitingProjection.options.map((option) => {
+        const dependency = waitingProjection.aiDependenciesByOptionId.get(option.optionId);
+        assertNonNullable(
+          dependency,
+          `waiting optionのAI依存がありません。対象: ${option.optionId}`,
+        );
+        return dependency;
+      });
+      const duplicateOptionDependencies = duplicateProjection.options.map((option) => {
+        const dependency = duplicateProjection.aiDependenciesByCanonicalCauseId.get(
+          option.canonicalCauseId,
+        );
+        assertNonNullable(
+          dependency,
+          `duplicate optionのAI依存がありません。対象: ${option.canonicalCauseId}`,
+        );
+        return dependency;
+      });
+      const pendingResponseMembershipDependencyInputs = pendingResponseMembershipDependencies(
+        context,
+        currentSeed,
+        planningIndexes,
+      );
       const semanticDependencies = [
-        ...relationEdgesForInput.map((relation) => relation.aiDependency),
-        ...pendingRelations.flatMap((relation) => {
-          const candidate = context.graph.candidateRelations.find(
-            (value) => value.candidateId === relation.candidateId,
-          );
-          assertNonNullable(
-            candidate,
-            `pending relation candidateがありません。対象: ${relation.candidateId}`,
-          );
-          return [candidate.aiDependency];
-        }),
-        ...waitingProjection.options.map((option) => {
-          const dependency = waitingProjection.aiDependenciesByOptionId.get(option.optionId);
-          assertNonNullable(
-            dependency,
-            `waiting optionのAI依存がありません。対象: ${option.optionId}`,
-          );
-          return dependency;
-        }),
-        ...duplicateProjection.options.map((option) => {
-          const dependency = duplicateProjection.aiDependenciesByCanonicalCauseId.get(
-            option.canonicalCauseId,
-          );
-          assertNonNullable(
-            dependency,
-            `duplicate optionのAI依存がありません。対象: ${option.canonicalCauseId}`,
-          );
-          return dependency;
-        }),
+        ...relationDependencies,
+        ...pendingRelationDependencies,
+        ...waitingOptionDependencies,
+        ...duplicateOptionDependencies,
       ];
+      const membershipAssessmentRequirement = responseMembershipAssessmentRequirement(
+        seed,
+        duplicateProjection.options,
+      );
+      const responseMembershipAiDependency = combineAiAnalysisDependencies([
+        Object.freeze({ status: "not_dependent" }),
+        ...(membershipAssessmentRequirement.status === "required"
+          ? [seed.aiDependencies.action, seed.aiDependencies.evidence]
+          : []),
+        ...duplicateOptionDependencies,
+        ...pendingResponseMembershipDependencyInputs,
+      ]);
+      const seedWithResponseMembershipDependency = personalReminderCauseSeedSchema.parse({
+        ...seed,
+        aiDependencies: {
+          ...seed.aiDependencies,
+          responseMembership: responseMembershipAiDependency,
+        },
+      });
       const currentInputAiDependency = combinePersonalReminderCauseInputAiDependency(
         seed.aiDependencies,
         semanticDependencies,
@@ -3773,7 +3936,8 @@ export function planPersonalReminderCauses(
       }
       entries.push(
         Object.freeze({
-          seed,
+          seed: seedWithResponseMembershipDependency,
+          responseMembershipAssessmentRequirement: membershipAssessmentRequirement,
           semanticInput,
           deterministicAssessment: deterministicAssessment(
             item,
@@ -4085,6 +4249,7 @@ export function applyPersonalReminderCauseOutcomes(
     );
     const cause = personalReminderCauseSchema.parse({
       ...entry.seed,
+      responseMembershipAssessmentRequirement: entry.responseMembershipAssessmentRequirement,
       lastConfirmedActionability,
       currentInput: {
         fingerprint,

@@ -412,9 +412,18 @@ const publicItemHistoryEventSchema = z.strictObject({
   before: responsibilityHistoryValueSchema,
   after: responsibilityHistoryValueSchema,
 });
+const publicBlockerUnverifiedReasonSchema = z.enum([
+  "relation_support",
+  "retained_waiting",
+  "waiting_value",
+]);
+const publicBlockerUnverifiedReasonsSchema = z.strictObject({
+  nodeId: identifierSchema,
+  reasons: z.array(publicBlockerUnverifiedReasonSchema).nonempty().max(3),
+});
 const publicItemDetailsSchema = z.strictObject({
   summary: publicItemSummarySchema,
-  unverifiedBlockerNodeIds: z.array(identifierSchema),
+  blockerUnverifiedReasons: z.array(publicBlockerUnverifiedReasonsSchema),
   deadline: publicDeadlineDetailsSchema,
   importanceFactors: z.array(importanceFactorSchema),
   timestamps: itemTimestampsSchema,
@@ -1171,6 +1180,23 @@ function assertPublicUniqueSortedIds(ids: readonly string[], description: string
 function assertPublicItemSummarySemantics(item: PublicItemSummaryDto): void {
   assertPublicUnverifiedValues(item.nodeId, item.aiAnalysis.unverifiedValues);
   assertPublicUniqueSortedIds(item.blockerNodeIds, `item ${item.nodeId}のblocker node ID`);
+  if (item.status === "waiting_for_unblock") {
+    if (item.primaryWaitingOn.index !== 0) {
+      throw new PublicDtoSemanticError(
+        `item ${item.nodeId}はwaiting_for_unblockですがprimary waitingOnがありません`,
+      );
+    }
+    const primaryWaitingOn = item.waitingOn[0];
+    if (
+      primaryWaitingOn?.kind !== "item" ||
+      primaryWaitingOn.role !== "dependency" ||
+      !item.blockerNodeIds.includes(primaryWaitingOn.candidateId)
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.nodeId}のprimary waitingOnがblocker node IDに含まれていません`,
+      );
+    }
+  }
   assertPublicPersonalReminderResponses(item.nodeId, item.currentResponses);
   assertPublicCurrentResponseSubjectChanges(item);
 }
@@ -1231,16 +1257,42 @@ function assertPublicUnverifiedBlockerSemantics(details: PublicDetailsDto): void
   for (const item of details.items) {
     assertPublicItemSummarySemantics(item.summary);
     assertPublicUniqueSortedIds(
-      item.unverifiedBlockerNodeIds,
-      `item ${item.summary.nodeId}のunverified blocker node ID`,
+      item.blockerUnverifiedReasons.map((entry) => entry.nodeId),
+      `item ${item.summary.nodeId}のblocker未検証理由のnode ID`,
     );
+    const blockerUnverifiedReasonOrder: readonly (typeof item.blockerUnverifiedReasons)[number]["reasons"][number][] =
+      ["relation_support", "retained_waiting", "waiting_value"];
+    const reasonsByNodeId = new Map<
+      string,
+      Set<(typeof item.blockerUnverifiedReasons)[number]["reasons"][number]>
+    >();
+    for (const entry of item.blockerUnverifiedReasons) {
+      if (new Set(entry.reasons).size !== entry.reasons.length) {
+        throw new PublicDtoSemanticError(
+          `item ${item.summary.nodeId}のblocker ${entry.nodeId}の未検証理由が重複しています`,
+        );
+      }
+      let previousReason: (typeof entry.reasons)[number] | undefined;
+      for (const reason of entry.reasons) {
+        if (
+          previousReason != null &&
+          blockerUnverifiedReasonOrder.indexOf(previousReason) >=
+            blockerUnverifiedReasonOrder.indexOf(reason)
+        ) {
+          throw new PublicDtoSemanticError(
+            `item ${item.summary.nodeId}のblocker ${entry.nodeId}の未検証理由が固定順ではありません`,
+          );
+        }
+        previousReason = reason;
+      }
+      reasonsByNodeId.set(entry.nodeId, new Set(entry.reasons));
+    }
     const supportsByMeaning = new Map<string, PublicGraphEdgeDto[]>();
     for (const edge of details.graph.edges) {
       if (
         !edge.active ||
         edge.type !== "blocks" ||
         edge.toNodeId !== item.summary.nodeId ||
-        item.summary.state !== "open" ||
         graphNodeStates.get(edge.fromNodeId) !== "open" ||
         graphNodeStates.get(edge.toNodeId) !== "open"
       ) {
@@ -1255,7 +1307,7 @@ function assertPublicUnverifiedBlockerSemantics(details: PublicDetailsDto): void
       }
     }
     const expectedBlockerNodeIds = new Set<string>();
-    const expectedUnverifiedBlockerNodeIds = new Set<string>();
+    const effectiveUnverifiedBlockerNodeIds = new Set<string>();
     for (const meaningSupports of supportsByMeaning.values()) {
       const firstSupport = meaningSupports[0];
       assertNonNullable(firstSupport, "blocks supportがありません");
@@ -1267,8 +1319,30 @@ function assertPublicUnverifiedBlockerSemantics(details: PublicDetailsDto): void
         }
       }
       if (allUnverified) {
-        expectedUnverifiedBlockerNodeIds.add(firstSupport.fromNodeId);
+        effectiveUnverifiedBlockerNodeIds.add(firstSupport.fromNodeId);
       }
+    }
+    const waitingBlockerNodeIds = new Set<string>();
+    if (item.summary.status === "waiting_for_unblock") {
+      for (const waitingOn of item.summary.waitingOn) {
+        if (waitingOn.kind !== "item" || waitingOn.role !== "dependency") {
+          continue;
+        }
+        if (!graphNodeStates.has(waitingOn.candidateId)) {
+          throw new PublicDtoSemanticError(
+            `item ${item.summary.nodeId}のwaitingOn項目 ${waitingOn.candidateId}を公開項目またはexternal referenceへ解決できません`,
+          );
+        }
+        waitingBlockerNodeIds.add(waitingOn.candidateId);
+      }
+    }
+    const retainedOnlyBlockerNodeIds = new Set(
+      item.summary.repositoryFreshness === "stale"
+        ? [...waitingBlockerNodeIds].filter((nodeId) => !expectedBlockerNodeIds.has(nodeId))
+        : [],
+    );
+    for (const nodeId of waitingBlockerNodeIds) {
+      expectedBlockerNodeIds.add(nodeId);
     }
     const expectedBlockerNodeIdValues = [...expectedBlockerNodeIds].sort(compareStrings);
     if (
@@ -1278,33 +1352,109 @@ function assertPublicUnverifiedBlockerSemantics(details: PublicDetailsDto): void
       )
     ) {
       throw new PublicDtoSemanticError(
-        `item ${item.summary.nodeId}のblocker node IDがactive/open blocks supportから導出した集合と一致しません`,
+        `item ${item.summary.nodeId}のblocker node IDが有効なblockerと保持中の待ち相手から導出した集合と一致しません`,
       );
     }
-    const expectedUnverifiedBlockerNodeIdValues = [...expectedUnverifiedBlockerNodeIds].sort(
-      compareStrings,
-    );
+    for (const blockerNodeId of reasonsByNodeId.keys()) {
+      if (!expectedBlockerNodeIds.has(blockerNodeId)) {
+        throw new PublicDtoSemanticError(
+          `item ${item.summary.nodeId}のblocker未検証理由のnode IDがblocker node IDの部分集合ではありません`,
+        );
+      }
+    }
+    const nodeIdsForReason = (
+      reason: (typeof item.blockerUnverifiedReasons)[number]["reasons"][number],
+    ): Set<string> =>
+      new Set(
+        [...reasonsByNodeId.entries()]
+          .filter(([, reasons]) => reasons.has(reason))
+          .map(([nodeId]) => nodeId),
+      );
+    const relationSupportReasonNodeIds = nodeIdsForReason("relation_support");
     if (
-      expectedUnverifiedBlockerNodeIdValues.length !== item.unverifiedBlockerNodeIds.length ||
-      expectedUnverifiedBlockerNodeIdValues.some(
-        (nodeId, index) => nodeId !== item.unverifiedBlockerNodeIds[index],
+      relationSupportReasonNodeIds.size !== effectiveUnverifiedBlockerNodeIds.size ||
+      [...effectiveUnverifiedBlockerNodeIds].some(
+        (nodeId) => !relationSupportReasonNodeIds.has(nodeId),
       )
     ) {
       throw new PublicDtoSemanticError(
-        `item ${item.summary.nodeId}のunverified blocker node IDがactive/open blocks supportから導出した集合と一致しません`,
+        `item ${item.summary.nodeId}のrelation_support理由がAI未検証の有効blockerと一致しません`,
       );
     }
-    for (const blockerNodeId of item.unverifiedBlockerNodeIds) {
-      if (!item.summary.blockerNodeIds.includes(blockerNodeId)) {
-        throw new PublicDtoSemanticError(
-          `item ${item.summary.nodeId}のunverified blocker node IDがblocker node IDの部分集合ではありません`,
-        );
-      }
-      if (!item.summary.aiAnalysis.unverifiedValues.includes("blockers")) {
-        throw new PublicDtoSemanticError(
-          `item ${item.summary.nodeId}のunverified blocker node IDに対応するAI未検証値blockersがありません`,
-        );
-      }
+    const retainedWaitingReasonNodeIds = nodeIdsForReason("retained_waiting");
+    if (
+      retainedWaitingReasonNodeIds.size !== retainedOnlyBlockerNodeIds.size ||
+      [...retainedOnlyBlockerNodeIds].some((nodeId) => !retainedWaitingReasonNodeIds.has(nodeId))
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}のretained_waiting理由が保持中blockerと一致しません`,
+      );
+    }
+    const waitingValueReasonNodeIds = nodeIdsForReason("waiting_value");
+    if (
+      waitingValueReasonNodeIds.size !== 0 &&
+      (waitingValueReasonNodeIds.size !== waitingBlockerNodeIds.size ||
+        [...waitingBlockerNodeIds].some((nodeId) => !waitingValueReasonNodeIds.has(nodeId)))
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}のwaiting_value理由は待ち相手すべてに付与するか省略してください`,
+      );
+    }
+    if (
+      effectiveUnverifiedBlockerNodeIds.size > 0 &&
+      !item.summary.aiAnalysis.unverifiedValues.includes("blockers")
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}のAI未検証blocks supportに対応するAI未検証値blockersがありません`,
+      );
+    }
+    if (
+      retainedOnlyBlockerNodeIds.size > 0 &&
+      !item.summary.aiAnalysis.unverifiedValues.includes("waitingOn")
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}の保持中blockerに対応するAI未検証値waitingOnがありません`,
+      );
+    }
+    if (
+      waitingValueReasonNodeIds.size > 0 &&
+      !item.summary.aiAnalysis.unverifiedValues.includes("waitingOn")
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}のwaiting_value理由に対応するAI未検証値waitingOnがありません`,
+      );
+    }
+    if (
+      waitingBlockerNodeIds.size > 0 &&
+      retainedOnlyBlockerNodeIds.size === 0 &&
+      item.summary.aiAnalysis.unverifiedValues.includes("waitingOn") &&
+      waitingValueReasonNodeIds.size === 0
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}のAI未検証値waitingOnに対応するwaiting_value理由がありません`,
+      );
+    }
+    const primaryWaitingOn = item.summary.waitingOn[0];
+    if (
+      item.summary.status === "waiting_for_unblock" &&
+      primaryWaitingOn?.kind === "item" &&
+      primaryWaitingOn.role === "dependency" &&
+      retainedOnlyBlockerNodeIds.has(primaryWaitingOn.candidateId) &&
+      (!item.summary.aiAnalysis.unverifiedValues.includes("primaryWaitingOn") ||
+        !item.summary.aiAnalysis.unverifiedValues.includes("nextAction"))
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}の保持中primary blockerに対応するAI未検証値がありません`,
+      );
+    }
+    if (
+      retainedOnlyBlockerNodeIds.size > 0 &&
+      supportsByMeaning.size === 0 &&
+      !item.summary.aiAnalysis.unverifiedValues.includes("status")
+    ) {
+      throw new PublicDtoSemanticError(
+        `item ${item.summary.nodeId}の有効なblockerがないwaiting_for_unblockにAI未検証値statusがありません`,
+      );
     }
   }
 }
@@ -1423,6 +1573,32 @@ function assertPublicSummaryWaitingOnReferences(summary: PublicSummaryDto): void
   }
 }
 
+function assertPublicDetailsWaitingOnReferences(details: PublicDetailsDto): void {
+  const itemNodeIds = new Set(details.items.map((item) => item.summary.nodeId));
+  const externalGraphNodeIds = new Set(
+    details.graph.nodes
+      .filter((node) => node.kind === "external_reference")
+      .map((node) => node.nodeId),
+  );
+  for (const item of details.items) {
+    const waitingOnValues = [
+      ...item.summary.waitingOn,
+      ...item.summary.currentImplementations.flatMap((implementation) => implementation.waitingOn),
+    ];
+    for (const waitingOn of waitingOnValues) {
+      if (
+        waitingOn.kind === "item" &&
+        !itemNodeIds.has(waitingOn.candidateId) &&
+        !externalGraphNodeIds.has(waitingOn.candidateId)
+      ) {
+        throw new PublicDtoSemanticError(
+          `waitingOn項目 ${waitingOn.candidateId}をdetailsの公開項目またはexternal referenceから解決できません`,
+        );
+      }
+    }
+  }
+}
+
 function assertPublicCurrentResponseIds(
   items: readonly Readonly<{
     nodeId: string;
@@ -1530,6 +1706,7 @@ export function createPublicDetailsDto(value: unknown): PublicDetailsDto {
   assertPublicCurrentResponsesRequireCompletedPlanning(
     result.data.items.map((item) => item.summary),
   );
+  assertPublicDetailsWaitingOnReferences(result.data);
   assertPublicDetailsCurrentResponseReferences(result.data);
   assertPublicCurrentImplementations(result.data.items.map((item) => item.summary));
   return result.data;

@@ -61,6 +61,8 @@ type ResponsibilityHistoryValue = Extract<
 
 type ImportanceFactor = PublicItemDetailsDto["importanceFactors"][number];
 type AiUnverifiedValue = PublicItemDetailsDto["summary"]["aiAnalysis"]["unverifiedValues"][number];
+type BlockerUnverifiedReason =
+  PublicItemDetailsDto["blockerUnverifiedReasons"][number]["reasons"][number];
 
 type ImportanceFactorSource = Readonly<{
   kind: "deterministic" | "codex";
@@ -154,6 +156,23 @@ function DetailUnverifiedMark({
       description={`現在入力に対して${aiUnverifiedValueLabel(value)}が未検証です。`}
     />
   );
+}
+
+function blockerUnverifiedReasonDescription(reason: BlockerUnverifiedReason): string {
+  switch (reason) {
+    case "relation_support":
+      return "このブロッカー関係は現在入力で未検証です。";
+    case "retained_waiting":
+      return "このブロッカーは前回入力の待ち相手から保持されています。現在も待ち相手かは未検証です。";
+    case "waiting_value":
+      return "この項目を待ち相手とする判定は現在入力で未検証です。";
+    default:
+      throw new UnreachableError(reason);
+  }
+}
+
+function blockerUnverifiedDescription(reasons: readonly BlockerUnverifiedReason[]): string {
+  return reasons.map(blockerUnverifiedReasonDescription).join("");
 }
 
 /** 項目詳細pageへ遷移し、通常のリンク操作も維持する。 */
@@ -413,6 +432,10 @@ export function ItemDetailsContent({
   const itemsByNodeId = new Map(
     summary.items.map((summaryItem) => [summaryItem.nodeId, summaryItem]),
   );
+  const blockerUnverifiedReasonsByNodeId = new Map<string, readonly BlockerUnverifiedReason[]>();
+  for (const entry of details.blockerUnverifiedReasons) {
+    blockerUnverifiedReasonsByNodeId.set(entry.nodeId, entry.reasons);
+  }
   let primaryBlockerNodeId: string | undefined;
   if (item.status === "waiting_for_unblock") {
     if (item.primaryWaitingOn.index !== 0) {
@@ -588,31 +611,37 @@ export function ItemDetailsContent({
               <p class="m-0 text-sm text-text-muted">ブロッカーはありません。</p>
             ) : (
               <ul class="blocker-list m-0 grid list-none gap-2 p-0">
-                {item.blockerNodeIds.map((nodeId) => (
-                  <li
-                    class="flex min-w-0 flex-wrap items-center gap-2 border-l-4 border-state-danger-border py-1 pl-3 wrap-anywhere"
-                    key={nodeId}
-                  >
-                    {nodeId === primaryBlockerNodeId && (
-                      <span class="inline-flex items-center gap-1">
-                        <Pill className="primary-blocker-badge" tone="danger">
-                          主要
-                        </Pill>
-                        <DetailUnverifiedMark item={item} value="primaryWaitingOn" />
-                      </span>
-                    )}
-                    <RelatedItemReference
-                      createItemHref={createItemHref}
-                      graphNodesByNodeId={graphNodesByNodeId}
-                      itemsByNodeId={itemsByNodeId}
-                      nodeId={nodeId}
-                      onSelectItem={onSelectItem}
-                    />
-                    {details.unverifiedBlockerNodeIds.includes(nodeId) && (
-                      <DetailUnverifiedMark item={item} value="blockers" />
-                    )}
-                  </li>
-                ))}
+                {item.blockerNodeIds.map((nodeId) => {
+                  const unverifiedReasons = blockerUnverifiedReasonsByNodeId.get(nodeId);
+                  return (
+                    <li
+                      class="flex min-w-0 flex-wrap items-center gap-2 border-l-4 border-state-danger-border py-1 pl-3 wrap-anywhere"
+                      key={nodeId}
+                    >
+                      {nodeId === primaryBlockerNodeId && (
+                        <span class="inline-flex items-center gap-1">
+                          <Pill className="primary-blocker-badge" tone="danger">
+                            主要
+                          </Pill>
+                          <DetailUnverifiedMark item={item} value="primaryWaitingOn" />
+                        </span>
+                      )}
+                      <RelatedItemReference
+                        createItemHref={createItemHref}
+                        graphNodesByNodeId={graphNodesByNodeId}
+                        itemsByNodeId={itemsByNodeId}
+                        nodeId={nodeId}
+                        onSelectItem={onSelectItem}
+                      />
+                      {unverifiedReasons != null && (
+                        <AiUnverifiedMark
+                          ariaLabel="このブロッカーの現在性に未検証の理由があります"
+                          description={blockerUnverifiedDescription(unverifiedReasons)}
+                        />
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>

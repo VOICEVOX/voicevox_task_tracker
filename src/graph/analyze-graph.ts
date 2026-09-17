@@ -1029,6 +1029,9 @@ function validateCandidateDecisionProofs(
     if (proof.resolution.candidateId !== proof.candidateId) {
       throw new TypeError(`関係候補 ${proof.candidateId}の判定proof IDが不整合です`);
     }
+    if (proof.dependency.status === "unknown" && proof.dependency.reason === "stale_repository") {
+      throw new TypeError(`関係候補 ${proof.candidateId}にstale repository AI依存は指定できません`);
+    }
     if (proof.authority === "authoritative") {
       if (proof.dependency.status !== "not_dependent") {
         throw new TypeError(
