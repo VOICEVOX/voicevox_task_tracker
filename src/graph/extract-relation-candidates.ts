@@ -215,6 +215,8 @@ function createReferenceIndex(
           : [existingByNodeId, item];
       throw new RelationReferenceConflictError(
         "node_id",
+        existing,
+        incoming,
         findRelationReferenceMismatches(existing, incoming),
       );
     }
@@ -228,6 +230,8 @@ function createReferenceIndex(
           : [existingByAlias, item];
       throw new RelationReferenceConflictError(
         "repository_number",
+        existing,
+        incoming,
         findRelationReferenceMismatches(existing, incoming),
       );
     }
