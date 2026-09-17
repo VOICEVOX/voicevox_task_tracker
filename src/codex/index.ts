@@ -78,7 +78,10 @@ export {
   type PersonalReminderAiRunResult,
   type PreparedPersonalReminderAiBudgetCandidate,
 } from "./personal-reminder-runner.js";
-export { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
+export {
+  executeCodexAnalysisWithTransportAliases,
+  type CodexSemanticGenerationObserver,
+} from "./transport-alias.js";
 export {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
   CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
@@ -324,3 +327,4 @@ export {
   type CodexElementOutput,
   type NativeRelationConstraint,
 } from "./semantic-validation.js";
+export { CODEX_PROMPT_BUNDLE_VERSION } from "./semantic-validation-issues.js";

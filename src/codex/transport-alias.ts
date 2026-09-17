@@ -3,10 +3,22 @@ import {
   createCodexAnalysisInput,
   transformCodexSourceReferences,
 } from "./input.js";
-import { CodexTransportAliasError } from "./errors.js";
+import { z } from "zod";
+import {
+  CodexOutputSemanticValidationError,
+  CodexTransportAliasError,
+  type CodexOutputValidationIssue,
+} from "./errors.js";
+import { validateCodexElementOutputSchema } from "./element-output.js";
 import { validateCodexAnalysisOutput } from "./output-validation.js";
 import { type CodexElementOutput } from "./semantic-validation.js";
 import { type CodexElementEvidence, type SchemaValidCodexElementOutput } from "./element-output.js";
+import {
+  isCodexSemanticCorrectionEligible,
+  codexSemanticValidationIssueCodeSchema,
+  type CodexSemanticValidationIssueCode,
+} from "./semantic-validation-issues.js";
+import { serializeCanonicalJson } from "./canonical-json.js";
 
 const SOURCE_ALIAS_PREFIX = "codex_source:";
 const RELATION_ALIAS_PREFIX = "rel:codex-";
@@ -31,6 +43,111 @@ type CodexTransportInput = Readonly<{
   input: CodexAnalysisInput;
   codec: CodexTransportAliasCodec;
 }>;
+
+/** semantic generationの補正入力へ渡すissue要約。 */
+export type CodexSemanticCorrectionIssue = Readonly<{
+  path: string;
+  code: CodexSemanticValidationIssueCode;
+}>;
+
+/** 通常項目AIのgenerationごとの実行context。 */
+export type CodexSemanticGenerationContext =
+  | Readonly<{
+      generation: 1;
+    }>
+  | Readonly<{
+      generation: 2 | 3;
+      previousOutput: SchemaValidCodexElementOutput;
+      issues: readonly CodexSemanticCorrectionIssue[];
+    }>;
+
+/** 通常項目AIのsemantic generation集計を受け取る同期observer。 */
+export type CodexSemanticGenerationObserver = Readonly<{
+  onGenerationStarted: (generation: number) => void;
+  onCorrectionStarted: (generation: number) => void;
+  onCorrectionSucceeded: (generation: number) => void;
+  onCorrectionExhausted: (generation: number) => void;
+  onProcessAttemptStarted: (generation: number, attempt: number) => void;
+}>;
+
+/** semantic generation loopの設定。 */
+export type CodexSemanticGenerationOptions = Readonly<{
+  maxSemanticGenerations: number;
+  observer?: CodexSemanticGenerationObserver;
+}>;
+
+const semanticGenerationOptionsSchema = z.strictObject({
+  maxSemanticGenerations: z.number().int().min(1).max(3),
+});
+
+const correctionIssueSchema = z.strictObject({
+  path: z.string(),
+  code: codexSemanticValidationIssueCodeSchema,
+});
+
+const correctionEnvelopeSchema = z
+  .strictObject({
+    analysisInput: z.unknown(),
+    previousOutput: z.unknown(),
+    generation: z.number().int().min(2).max(3),
+    issues: z.array(correctionIssueSchema).min(1),
+  })
+  .superRefine((envelope, context) => {
+    for (const [index, issue] of envelope.issues.entries()) {
+      if (!isCodexSemanticCorrectionEligible(issue.code)) {
+        context.addIssue({
+          code: "custom",
+          path: ["issues", index, "code"],
+          message: "補正対象外のsemantic issue codeです",
+        });
+      }
+    }
+  });
+
+function createSemanticGenerationContext(
+  generation: number,
+  previousOutput: SchemaValidCodexElementOutput | undefined,
+  issues: readonly CodexSemanticCorrectionIssue[] | undefined,
+): CodexSemanticGenerationContext {
+  if (generation === 1) {
+    if (previousOutput != null || issues != null) {
+      throw new TypeError("Codex初回generationへsemantic補正contextを指定できません");
+    }
+    return Object.freeze({ generation: 1 });
+  }
+  if (generation !== 2 && generation !== 3) {
+    throw new RangeError("Codex semantic generationは1から3にしてください");
+  }
+  if (previousOutput == null || issues == null) {
+    throw new TypeError("Codex補正generationへ直前出力とsemantic issueが必要です");
+  }
+  return Object.freeze({
+    generation,
+    previousOutput,
+    issues,
+  });
+}
+
+/** semantic補正generationのstrict stdin envelopeをシリアライズする。 */
+export function serializeCodexSemanticCorrectionEnvelope(
+  analysisInput: CodexAnalysisInput,
+  previousOutput: SchemaValidCodexElementOutput,
+  generation: number,
+  issues: readonly CodexSemanticCorrectionIssue[],
+): string {
+  const validatedAnalysisInput = createCodexAnalysisInput(analysisInput);
+  const validatedPreviousOutput = validateCodexElementOutputSchema(
+    previousOutput,
+    validatedAnalysisInput.selectedElements,
+  );
+  const envelope = correctionEnvelopeSchema.parse({
+    analysisInput: validatedAnalysisInput,
+    previousOutput: validatedPreviousOutput,
+    generation,
+    issues,
+  });
+  return `${serializeCanonicalJson(envelope)}\n`;
+}
 
 function jsonPointerPath(parent: string, field: string): string {
   const escapedField = field.replaceAll("~", "~0").replaceAll("/", "~1");
@@ -327,19 +444,100 @@ function restoreCodexOutput(
 /** Codexをtransport aliasで実行し、canonical IDへ戻した要素別出力を返す。 */
 export async function executeCodexAnalysisWithTransportAliases(
   input: CodexAnalysisInput,
-  execute: (input: CodexAnalysisInput) => Promise<unknown>,
+  execute: (input: CodexAnalysisInput, context: CodexSemanticGenerationContext) => Promise<unknown>,
+  options: CodexSemanticGenerationOptions,
 ): Promise<CodexElementOutput> {
+  const maxSemanticGenerations = semanticGenerationOptionsSchema.parse({
+    maxSemanticGenerations: options.maxSemanticGenerations,
+  }).maxSemanticGenerations;
+  const observer = options.observer;
   let transport: CodexTransportInput;
   try {
     transport = createCodexTransportInput(input);
   } catch (error: unknown) {
     throw new CodexTransportAliasError("input", { cause: error });
   }
-  const rawOutput = await execute(transport.input);
-  const validatedOutput = validateCodexAnalysisOutput(rawOutput, transport.input);
+  let previousOutput: SchemaValidCodexElementOutput | undefined;
+  let previousIssues: readonly CodexSemanticCorrectionIssue[] | undefined;
+  for (let generation = 1; generation <= maxSemanticGenerations; generation += 1) {
+    observer?.onGenerationStarted(generation);
+    const context = createSemanticGenerationContext(generation, previousOutput, previousIssues);
+    const rawOutput = await execute(transport.input, context);
+    let validatedOutput: SchemaValidCodexElementOutput;
+    try {
+      validatedOutput = validateCodexAnalysisOutput(rawOutput, transport.input);
+    } catch (error: unknown) {
+      if (!(error instanceof CodexOutputSemanticValidationError)) {
+        throw error;
+      }
+      const schemaValidOutput = validateCodexElementOutputSchema(
+        rawOutput,
+        transport.input.selectedElements,
+      );
+      const issues = semanticCorrectionIssues(error.issues);
+      if (issues == null || !allSemanticIssuesAreCorrectable(issues)) {
+        throw error;
+      }
+      if (generation === maxSemanticGenerations) {
+        if (previousOutput != null) {
+          observer?.onCorrectionExhausted(generation);
+        }
+        throw error;
+      }
+      const correctionStarted = previousOutput == null;
+      previousOutput = schemaValidOutput;
+      previousIssues = issues;
+      if (correctionStarted) {
+        observer?.onCorrectionStarted(generation + 1);
+      }
+      continue;
+    }
+    const canonicalOutput = restoreAndValidateCanonicalOutput(
+      validatedOutput,
+      transport.codec,
+      input,
+    );
+    if (generation > 1) {
+      observer?.onCorrectionSucceeded(generation);
+    }
+    return canonicalOutput;
+  }
+  throw new TypeError("Codex semantic generation loopが終了条件なしに終了しました");
+}
+
+function semanticCorrectionIssues(
+  issues: readonly CodexOutputValidationIssue[],
+): readonly CodexSemanticCorrectionIssue[] | undefined {
+  const correctionIssues: CodexSemanticCorrectionIssue[] = [];
+  for (const issue of issues) {
+    const code = codexSemanticValidationIssueCodeSchema.safeParse(issue.code);
+    if (!code.success) {
+      return undefined;
+    }
+    correctionIssues.push(
+      Object.freeze({
+        path: issue.path,
+        code: code.data,
+      }),
+    );
+  }
+  return Object.freeze(correctionIssues);
+}
+
+function allSemanticIssuesAreCorrectable(issues: readonly CodexSemanticCorrectionIssue[]): boolean {
+  return (
+    issues.length > 0 && issues.every((issue) => isCodexSemanticCorrectionEligible(issue.code))
+  );
+}
+
+function restoreAndValidateCanonicalOutput(
+  output: SchemaValidCodexElementOutput,
+  codec: CodexTransportAliasCodec,
+  input: CodexAnalysisInput,
+): CodexElementOutput {
   let restoredOutput: unknown;
   try {
-    restoredOutput = restoreCodexOutput(validatedOutput, transport.codec);
+    restoredOutput = restoreCodexOutput(output, codec);
   } catch (error: unknown) {
     throw new CodexTransportAliasError("restore", { cause: error });
   }

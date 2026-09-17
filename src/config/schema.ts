@@ -480,6 +480,7 @@ const configSchema = z.strictObject({
       execution: z.strictObject({
         timeoutSeconds: positiveIntegerSchema,
         maxAttempts: positiveIntegerSchema,
+        maxSemanticGenerations: z.number().int().min(1).max(3),
         maxConcurrentCalls: positiveIntegerSchema,
         sandbox: z.literal("read-only"),
         approvalPolicy: z.literal("never"),

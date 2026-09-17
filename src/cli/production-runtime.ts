@@ -5,6 +5,7 @@ import {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
   CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
   CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  CODEX_PROMPT_BUNDLE_VERSION,
   createEmptyAiBudgetUsage,
   createAiAnalysisTarget,
   assessAnalysisImpact,
@@ -62,6 +63,7 @@ import {
   type CodexAdapterDependencies,
   type CodexAnalysisReduction,
   type CodexProcessRunner,
+  type CodexSemanticGenerationObserver,
   type DeterministicCodexDecision,
   type PreparedAiAnalysisCandidate,
   type ReducedCodexDecision,
@@ -400,7 +402,9 @@ import { WorkflowStageRunner } from "./workflow-stage.js";
 
 const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
-const CODEX_PROMPT_FINGERPRINT = hashCanonicalJson("codex-system-prompt");
+const CODEX_PROMPT_FINGERPRINT = hashCanonicalJson({
+  bundleVersion: CODEX_PROMPT_BUNDLE_VERSION,
+});
 const PAGES_BASE_URL = "https://voicevox.github.io";
 const DISCORD_DELIVERY_ID_PATTERN = /^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u;
 const GITHUB_MENTION_PATTERN =
@@ -6586,6 +6590,7 @@ function createCodexAdapterConfiguration(config: Config): CodexAdapterConfigurat
     execution: {
       timeoutSeconds: config.ai.execution.timeoutSeconds,
       maxAttempts: config.ai.execution.maxAttempts,
+      maxSemanticGenerations: config.ai.execution.maxSemanticGenerations,
       sandbox: config.ai.execution.sandbox,
       approvalPolicy: config.ai.execution.approvalPolicy,
       reasoningEffort: config.ai.execution.reasoningEffort,
@@ -6601,6 +6606,7 @@ function createCodexAdapterDependencies(
   adapters: ProductionRuntimeAdapters,
   credentials: EnabledCodexCredentials,
   diagnostics: CodexDiagnosticsContext | undefined,
+  semanticGenerationObserver: CodexSemanticGenerationObserver | undefined,
 ): CodexAdapterDependencies {
   return Object.freeze({
     environment: credentials.environment,
@@ -6610,7 +6616,77 @@ function createCodexAdapterDependencies(
       random: adapters.random,
     },
     ...(diagnostics == null ? {} : { diagnostics }),
+    ...(semanticGenerationObserver == null ? {} : { semanticGenerationObserver }),
   });
+}
+
+type CodexSemanticGenerationCounts = Readonly<{
+  generationCount: number;
+  correctionStartedCount: number;
+  correctionSucceededCount: number;
+  correctionExhaustedCount: number;
+  processAttemptCount: number;
+}>;
+
+type CodexSemanticGenerationCounter = Readonly<{
+  observer: CodexSemanticGenerationObserver;
+  read: () => CodexSemanticGenerationCounts;
+}>;
+
+function assertSemanticGenerationNumber(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 3) {
+    throw new RangeError("Codex semantic generationは1から3の整数にしてください");
+  }
+}
+
+function createCodexSemanticGenerationCounter(): CodexSemanticGenerationCounter {
+  const counts = {
+    generationCount: 0,
+    correctionStartedCount: 0,
+    correctionSucceededCount: 0,
+    correctionExhaustedCount: 0,
+    processAttemptCount: 0,
+  };
+  const observer = Object.freeze({
+    onGenerationStarted: (generation: number): void => {
+      assertSemanticGenerationNumber(generation);
+      counts.generationCount += 1;
+    },
+    onCorrectionStarted: (generation: number): void => {
+      assertSemanticGenerationNumber(generation);
+      counts.correctionStartedCount += 1;
+    },
+    onCorrectionSucceeded: (generation: number): void => {
+      assertSemanticGenerationNumber(generation);
+      counts.correctionSucceededCount += 1;
+    },
+    onCorrectionExhausted: (generation: number): void => {
+      assertSemanticGenerationNumber(generation);
+      counts.correctionExhaustedCount += 1;
+    },
+    onProcessAttemptStarted: (generation: number, attempt: number): void => {
+      assertSemanticGenerationNumber(generation);
+      if (!Number.isSafeInteger(attempt) || attempt < 1) {
+        throw new RangeError("Codex process attemptは正の整数にしてください");
+      }
+      counts.processAttemptCount += 1;
+    },
+  }) satisfies CodexSemanticGenerationObserver;
+  return Object.freeze({
+    observer,
+    read: (): CodexSemanticGenerationCounts => Object.freeze({ ...counts }),
+  });
+}
+
+function codexSemanticGenerationDiagnostic(counts: CodexSemanticGenerationCounts): string {
+  return [
+    "codex_semantic_generations",
+    `generationCount=${counts.generationCount.toString()}`,
+    `correctionStartedCount=${counts.correctionStartedCount.toString()}`,
+    `correctionSucceededCount=${counts.correctionSucceededCount.toString()}`,
+    `correctionExhaustedCount=${counts.correctionExhaustedCount.toString()}`,
+    `processAttemptCount=${counts.processAttemptCount.toString()}`,
+  ].join(" ");
 }
 
 function createCodexPreflightDiagnostics(
@@ -6743,7 +6819,13 @@ async function analyzeCodex(
     throw new TypeError("AIが有効ですがCodex認証情報がありません");
   }
   const codexConfiguration = createCodexAdapterConfiguration(configuration.config);
-  const codexDependencies = createCodexAdapterDependencies(adapters, codexCredentials, diagnostics);
+  const semanticGenerationCounter = createCodexSemanticGenerationCounter();
+  const codexDependencies = createCodexAdapterDependencies(
+    adapters,
+    codexCredentials,
+    diagnostics,
+    semanticGenerationCounter.observer,
+  );
   const preflightInputCost =
     codexCredentials.authentication === "auth-json"
       ? estimateAiInputCost(
@@ -6829,6 +6911,9 @@ async function analyzeCodex(
     deferredItemCount: run.deferred.length,
     inputValidationFailureCount: prepared.inputValidationFailures.length,
   });
+  const semanticGenerationCounts = semanticGenerationCounter.read();
+  const semanticGenerationPublicDiagnostic =
+    codexSemanticGenerationDiagnostic(semanticGenerationCounts);
   const fallback = run.failures.length > 0 || run.deferred.length > 0;
   return Object.freeze({
     stage: Object.freeze({
@@ -6853,6 +6938,7 @@ async function analyzeCodex(
       ...run.deferred.map(
         (deferred) => `codex_deferred item=${deferred.candidateId} reason=${deferred.reason}`,
       ),
+      semanticGenerationPublicDiagnostic,
     ]),
   });
 }
@@ -14621,6 +14707,7 @@ async function analyzePersonalReminders(
       adapters,
       codexCredentials,
       diagnostics,
+      undefined,
     );
     const preflightInputCost =
       codexCredentials.authentication === "auth-json"

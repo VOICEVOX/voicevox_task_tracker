@@ -140,6 +140,7 @@ ai:
   execution:
     timeoutSeconds: 120
     maxAttempts: 2
+    maxSemanticGenerations: 3
     maxConcurrentCalls: 4
     sandbox: read-only
     approvalPolicy: never

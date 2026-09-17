@@ -18,6 +18,7 @@ import {
   validateCodexElementOutput,
   type SchemaValidCodexElementOutput,
 } from "./element-output.js";
+import { type CodexSemanticValidationIssueCode } from "./semantic-validation-issues.js";
 
 const TARGET_ORGANIZATION = "VOICEVOX";
 const URL_IN_TEXT_PATTERN = /https?:\/\/[^\s<>"']+/gu;
@@ -71,7 +72,11 @@ const nativeSignalDefinitions: readonly NativeSignalDefinition[] = Object.freeze
   }),
 ]);
 
-function createIssue(path: string, code: string, message: string): CodexOutputValidationIssue {
+function createIssue(
+  path: string,
+  code: CodexSemanticValidationIssueCode,
+  message: string,
+): CodexOutputValidationIssue {
   return Object.freeze({
     path,
     code,

@@ -46,11 +46,21 @@ import { REASONING_EFFORTS } from "../domain/index.js";
 import { UnreachableError } from "../util/index.js";
 import { CODEX_AUTHENTICATION_PREFLIGHT_PROMPT } from "./preflight.js";
 import { type CodexElementOutput } from "./semantic-validation.js";
-import { executeCodexAnalysisWithTransportAliases } from "./transport-alias.js";
+import {
+  executeCodexAnalysisWithTransportAliases,
+  serializeCodexSemanticCorrectionEnvelope,
+  type CodexSemanticGenerationContext,
+  type CodexSemanticGenerationObserver,
+} from "./transport-alias.js";
+import { listCodexSemanticValidationIssueGlossary } from "./semantic-validation-issues.js";
 
 const CODEX_COMMAND = "codex";
 const CODEX_TEMPORARY_DIRECTORY_PREFIX = "voicevox-task-tracker-codex-";
 const SYSTEM_PROMPT_URL = new URL("../../prompts/codex-system.md", import.meta.url);
+const SEMANTIC_CORRECTION_PROMPT_URL = new URL(
+  "../../prompts/codex-semantic-correction.md",
+  import.meta.url,
+);
 const OUTPUT_SCHEMA_FILE_NAME = "codex-element-output.schema.json";
 const PERSONAL_REMINDER_SYSTEM_PROMPT_URL = new URL(
   "../../prompts/personal-reminder-causes.md",
@@ -98,6 +108,7 @@ const codexAdapterConfigurationSchema = z.strictObject({
   execution: z.strictObject({
     timeoutSeconds: z.number().int().positive().max(MAX_TIMEOUT_SECONDS),
     maxAttempts: z.number().int().positive(),
+    maxSemanticGenerations: z.number().int().min(1).max(3),
     sandbox: z.literal("read-only"),
     approvalPolicy: z.literal("never"),
     reasoningEffort: z.enum(REASONING_EFFORTS),
@@ -135,6 +146,7 @@ export type CodexAdapterDependencies = Readonly<{
     random: () => number;
   }>;
   diagnostics?: CodexDiagnosticsContext;
+  semanticGenerationObserver?: CodexSemanticGenerationObserver;
 }>;
 
 type AttemptOutcome =
@@ -173,6 +185,18 @@ async function readFixedPrompt(promptUrl: URL, resource: string): Promise<string
 
 async function readFixedSystemPrompt(): Promise<string> {
   return readFixedPrompt(SYSTEM_PROMPT_URL, "prompts/codex-system.md");
+}
+
+async function readFixedSemanticCorrectionPrompt(): Promise<string> {
+  return readFixedPrompt(SEMANTIC_CORRECTION_PROMPT_URL, "prompts/codex-semantic-correction.md");
+}
+
+function createSemanticCorrectionSystemPrompt(
+  systemPrompt: string,
+  correctionPrompt: string,
+): string {
+  const glossary = serializeCanonicalJson(listCodexSemanticValidationIssueGlossary());
+  return `${systemPrompt}\n\n${correctionPrompt}\n\n固定semantic issue glossary:\n${glossary}`;
 }
 
 async function readFixedPersonalReminderPrompt(): Promise<string> {
@@ -532,6 +556,7 @@ function safeApiErrorDetails(
 function attemptDetails(
   configuration: CodexAdapterConfiguration,
   attempts: number,
+  semanticGeneration: number,
   request: CodexProcessRequest | undefined,
   processResult: CodexProcessResult | undefined,
   stdout: string,
@@ -542,6 +567,7 @@ function attemptDetails(
 ): Readonly<Record<string, DiagnosticsJsonValue>> {
   const details: Record<string, DiagnosticsJsonValue> = {
     attempt: attempts,
+    semanticGeneration,
     command: CODEX_COMMAND,
     model: configuration.model,
     timeoutMilliseconds:
@@ -596,10 +622,14 @@ async function executeAttempt(
   outputSchemaFileName: string,
   outputSchemaResource: string,
   attempts: number,
+  generation: number,
+  observer: CodexSemanticGenerationObserver | undefined,
 ): Promise<unknown> {
+  observer?.onProcessAttemptStarted(generation, attempts);
   const diagnostics = dependencies.diagnostics;
   await recordCodexDiagnostic(diagnostics, "codex.attempt.started", {
     attempt: attempts,
+    semanticGeneration: generation,
     command: CODEX_COMMAND,
     model: configuration.model,
     timeoutMilliseconds: configuration.execution.timeoutSeconds * 1000,
@@ -692,6 +722,7 @@ async function executeAttempt(
       "codex.stdout.json_parse_failed",
       {
         attempt: attempts,
+        semanticGeneration: generation,
       },
       parseError,
     );
@@ -699,6 +730,7 @@ async function executeAttempt(
   for (const apiEvent of stdoutInspection.apiEvents) {
     const apiEventDetails: Record<string, DiagnosticsJsonValue> = {
       attempt: attempts,
+      semanticGeneration: generation,
       apiEvent,
     };
     const safeApiError = safeApiErrorDetails(apiError);
@@ -726,6 +758,7 @@ async function executeAttempt(
       "codex.last_message.read_failed",
       {
         attempt: attempts,
+        semanticGeneration: generation,
       },
       lastMessageResult.error,
     );
@@ -736,6 +769,7 @@ async function executeAttempt(
       "codex.last_message.json_parse_failed",
       {
         attempt: attempts,
+        semanticGeneration: generation,
       },
       lastMessageResult.error,
     );
@@ -747,6 +781,7 @@ async function executeAttempt(
       attemptDetails(
         configuration,
         attempts,
+        generation,
         request,
         processResult,
         stdout,
@@ -763,6 +798,7 @@ async function executeAttempt(
       attemptDetails(
         configuration,
         attempts,
+        generation,
         request,
         processResult,
         stdout,
@@ -781,6 +817,7 @@ async function executeAttempt(
     attemptDetails(
       configuration,
       attempts,
+      generation,
       request,
       processResult,
       stdout,
@@ -1080,6 +1117,8 @@ type CodexExecutionInput = Readonly<{
   outputSchema: Readonly<Record<string, unknown>>;
   outputSchemaFileName: string;
   outputSchemaResource: string;
+  generation: number;
+  observer?: CodexSemanticGenerationObserver;
 }>;
 
 async function executeWithRetries(input: CodexExecutionInput): Promise<unknown> {
@@ -1094,6 +1133,8 @@ async function executeWithRetries(input: CodexExecutionInput): Promise<unknown> 
         input.outputSchemaFileName,
         input.outputSchemaResource,
         attempts,
+        input.generation,
+        input.observer,
       );
     } catch (error: unknown) {
       if (!(error instanceof CodexAttemptError)) {
@@ -1114,20 +1155,39 @@ async function executeRawCodexAnalysis(
   input: CodexAnalysisInput,
   configurationValue: CodexAdapterConfiguration,
   dependencies: CodexAdapterDependencies,
+  context: CodexSemanticGenerationContext,
 ): Promise<unknown> {
   const configuration = parseCodexAdapterConfiguration(configurationValue);
   const validatedInput = createCodexAnalysisInput(input);
-  const inputJson = serializeCodexAnalysisInput(validatedInput);
   const systemPrompt = await readFixedSystemPrompt();
+  const correctionPrompt = await readFixedSemanticCorrectionPrompt();
   const outputSchema = createCodexElementOutputSchema(validatedInput.selectedElements);
+  let inputJson: string;
+  let generationSystemPrompt: string;
+  if (context.generation === 1) {
+    inputJson = serializeCodexAnalysisInput(validatedInput);
+    generationSystemPrompt = systemPrompt;
+  } else {
+    inputJson = serializeCodexSemanticCorrectionEnvelope(
+      validatedInput,
+      context.previousOutput,
+      context.generation,
+      context.issues,
+    );
+    generationSystemPrompt = createSemanticCorrectionSystemPrompt(systemPrompt, correctionPrompt);
+  }
   return executeWithRetries({
     configuration,
     dependencies,
-    systemPrompt,
+    systemPrompt: generationSystemPrompt,
     inputJson,
     outputSchema,
     outputSchemaFileName: OUTPUT_SCHEMA_FILE_NAME,
     outputSchemaResource: "要素別Codex出力schema",
+    generation: context.generation,
+    ...(dependencies.semanticGenerationObserver == null
+      ? {}
+      : { observer: dependencies.semanticGenerationObserver }),
   });
 }
 
@@ -1148,6 +1208,7 @@ async function executeRawPersonalReminderAnalysis(
     outputSchema,
     outputSchemaFileName: PERSONAL_REMINDER_OUTPUT_SCHEMA_FILE_NAME,
     outputSchemaResource: "個人催促AI出力schema",
+    generation: 1,
   });
 }
 
@@ -1180,8 +1241,17 @@ export async function executeCodexAnalysis(
   configurationValue: CodexAdapterConfiguration,
   dependencies: CodexAdapterDependencies,
 ): Promise<CodexElementOutput> {
-  return executeCodexAnalysisWithTransportAliases(input, (transportInput) =>
-    executeRawCodexAnalysis(transportInput, configurationValue, dependencies),
+  const configuration = parseCodexAdapterConfiguration(configurationValue);
+  return executeCodexAnalysisWithTransportAliases(
+    input,
+    (transportInput, context) =>
+      executeRawCodexAnalysis(transportInput, configuration, dependencies, context),
+    {
+      maxSemanticGenerations: configuration.execution.maxSemanticGenerations,
+      ...(dependencies.semanticGenerationObserver == null
+        ? {}
+        : { observer: dependencies.semanticGenerationObserver }),
+    },
   );
 }
 

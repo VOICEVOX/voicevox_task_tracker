@@ -53,6 +53,7 @@ import { CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION } from "./element-output-schema.js"
 import { aiAnalysisElementGenerationSchema } from "./analysis-elements.js";
 import { classifyCodexUnavailableReason, type CodexUnavailableReason } from "./reducer.js";
 import { validateCodexAnalysisSemantics } from "./semantic-validation.js";
+import { type CodexSemanticValidationIssueCode } from "./semantic-validation-issues.js";
 import { createUtcIsoDateTime, type AnalysisMetadata } from "../domain/index.js";
 import { assertNonNullable } from "../util/index.js";
 
@@ -255,7 +256,7 @@ function assertOutputItemMatchesInput(
   throw new CodexOutputSemanticValidationError([
     Object.freeze({
       path: "/item",
-      code: "item_mismatch",
+      code: "item_mismatch" satisfies CodexSemanticValidationIssueCode,
       message: "Codex出力のitemが入力対象と一致しません",
     }),
   ]);

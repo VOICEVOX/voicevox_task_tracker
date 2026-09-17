@@ -18,6 +18,7 @@ import {
   CodexOutputSemanticValidationError,
   type CodexOutputValidationIssue,
 } from "./errors.js";
+import { type CodexSemanticValidationIssueCode } from "./semantic-validation-issues.js";
 
 /** 要素に帰属する根拠。 */
 export type CodexElementEvidence = AiAnalysisElementEvidence;
@@ -189,6 +190,18 @@ function hasOwnProperty(value: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
+function createSemanticIssue(
+  path: string,
+  code: CodexSemanticValidationIssueCode,
+  message: string,
+): CodexOutputValidationIssue {
+  return Object.freeze({
+    path,
+    code,
+    message,
+  });
+}
+
 function validateSelectedElementKeys(
   output: SchemaValidCodexElementOutput,
   selectedElements: readonly AiAnalysisElement[],
@@ -203,29 +216,35 @@ function validateSelectedElementKeys(
       continue;
     }
     if (!selectedSet.has(key)) {
-      issues.push({
-        path: `/${key}`,
-        code: "unselected_element_present",
-        message: "選択されていないAI判定要素が返されています",
-      });
+      issues.push(
+        createSemanticIssue(
+          `/${key}`,
+          "unselected_element_present",
+          "選択されていないAI判定要素が返されています",
+        ),
+      );
     }
   }
   for (const element of normalizedElements) {
     if (!hasOwnProperty(output, element) || getElementResult(output, element) == null) {
-      issues.push({
-        path: `/${element}`,
-        code: "selected_element_missing",
-        message: "選択したAI判定要素が返されていません",
-      });
+      issues.push(
+        createSemanticIssue(
+          `/${element}`,
+          "selected_element_missing",
+          "選択したAI判定要素が返されていません",
+        ),
+      );
     }
   }
   for (const element of AI_ANALYSIS_ELEMENTS) {
     if (!selectedSet.has(element) && hasOwnProperty(output, element)) {
-      issues.push({
-        path: `/${element}`,
-        code: "unselected_element_present",
-        message: "選択されていないAI判定要素が返されています",
-      });
+      issues.push(
+        createSemanticIssue(
+          `/${element}`,
+          "unselected_element_present",
+          "選択されていないAI判定要素が返されています",
+        ),
+      );
     }
   }
 }
@@ -238,11 +257,13 @@ function validateUniqueIds(
   const used = new Set<string>();
   for (const [index, value] of values.entries()) {
     if (used.has(value)) {
-      issues.push({
-        path: `${path}/${index.toString()}`,
-        code: "duplicate_id",
-        message: "同じIDが重複しています",
-      });
+      issues.push(
+        createSemanticIssue(
+          `${path}/${index.toString()}`,
+          "duplicate_id",
+          "同じIDが重複しています",
+        ),
+      );
     }
     used.add(value);
   }
