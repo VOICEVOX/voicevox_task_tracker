@@ -29,6 +29,7 @@ import {
   calculateStaleness,
   aiAnalysisElementApplicationUsesAiValue,
   aiAnalysisDependencyForApplication,
+  aiAnalysisDependencyForRelationCandidate,
   combineAiAnalysisDependencies,
   type AiAnalysisDependency,
   createStalenessNotificationSeverityReason,
@@ -1195,6 +1196,28 @@ function createGoldenPersonalReminderAnalysis(
       staleNodeIds: new Set<GitHubNodeId>(),
     }),
     graph,
+    aiDependencyContext: Object.freeze({
+      applicationsByNodeId: new Map(
+        [...applicationsByNodeId].map(([nodeId, applications]) => [
+          createGitHubNodeId(nodeId),
+          applications,
+        ]),
+      ),
+      relationsById: new Map(reconciled.edges.map((edge) => [edge.id, edge])),
+      candidatesById: new Map(
+        graph.candidateRelations.map((candidate) => [
+          candidate.candidateId,
+          Object.freeze({
+            ...candidate,
+            aiDependency: aiAnalysisDependencyForRelationCandidate(
+              candidate.candidateId,
+              candidate.endpointNodeIds,
+              candidate.aiDependency,
+            ),
+          }),
+        ]),
+      ),
+    }),
     snapshotEvidenceSourceIds,
   });
   const plan = planPersonalReminderCauses(context);
@@ -1225,7 +1248,11 @@ function createGoldenPersonalReminderAnalysis(
               };
         return [nodeId, planning];
       }
-      if (collectionItem.completeness.status === "incomplete") {
+      if (
+        item.state === "open" &&
+        (collectionItem.completeness.status === "incomplete" ||
+          plan.unrecordedDependencyNodeIds.has(nodeId))
+      ) {
         const planning: PersonalReminderCausePlanning = Object.freeze({
           status: "pending",
           planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
@@ -3456,7 +3483,7 @@ function createSnapshot(
 ): StateSnapshot {
   const generatedAt = createUtcIsoDateTime(input.evaluatedAt);
   return createStateSnapshot({
-    schemaVersion: "18",
+    schemaVersion: "19",
     generatedAt,
     trackingStartAt: {
       status: "fixed",
@@ -4386,7 +4413,7 @@ function analyzeLargeFixture(
     throw new TypeError("large fixtureのgraph解析結果が全itemを含んでいません");
   }
   const snapshot = createStateSnapshot({
-    schemaVersion: "18",
+    schemaVersion: "19",
     generatedAt: evaluatedAt,
     trackingStartAt: {
       status: "fixed",

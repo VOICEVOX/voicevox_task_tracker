@@ -1,7 +1,6 @@
 import {
   createPersonalReminderCauseSemanticInput,
   createPersonalReminderCauseInputFingerprint,
-  combinePersonalReminderCauseInputAiDependency,
   type PersonalReminderAiItemContext,
   type PersonalReminderAiRelationContext,
   type PersonalReminderAiSourceContext,
@@ -22,6 +21,7 @@ import {
   PERSONAL_REMINDER_AI_GENERATION_SCHEMA_VERSION,
   PERSONAL_REMINDER_AI_REVISION,
   PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION,
+  PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
   currentPersonalReminderAssessment,
   personalReminderCauseSchema,
   personalReminderCauseSeedSchema,
@@ -32,6 +32,7 @@ import {
   type PersonalReminderCauseAiDependencies,
   type PersonalReminderCauseAssessment,
   type PersonalReminderCauseId,
+  type PersonalReminderCausePlanning,
   type PersonalReminderCauseSeed,
   type PersonalReminderCauseSetSubjectChanges,
   type PersonalReminderExecutionSurface,
@@ -44,9 +45,12 @@ import {
   type PersonalReminderTimeBasis,
 } from "../domain/personal-reminder-causes.js";
 import {
-  combineAiAnalysisDependencies,
+  combineReconciledAiAnalysisDependencies,
   aiAnalysisDependencyForRelationCandidate,
+  reconcileRetainedAiAnalysisDependency,
   type AiAnalysisDependency,
+  type AiAnalysisDependencyInput,
+  type AiAnalysisDependencyReconciliationContext,
 } from "../domain/ai-analysis-dependencies.js";
 import {
   createPersonalReminderCauseDraft,
@@ -250,6 +254,7 @@ export type PersonalReminderRuntimeContext = Readonly<{
   state: PersonalReminderRuntimeState;
   items: readonly PersonalReminderRuntimeContextItem[];
   graph: PersonalReminderRuntimeGraph;
+  aiDependencyContext: AiAnalysisDependencyReconciliationContext;
   candidateRelationsByTargetNodeId: ReadonlyMap<
     GraphNodeId,
     readonly PersonalReminderRuntimeCandidateRelation[]
@@ -329,7 +334,7 @@ type PersonalReminderRuntimeOptionProjection = Readonly<{
   options: readonly PersonalReminderWaitingOption[];
   sources: readonly PersonalReminderRuntimeSource[];
   missing: readonly PersonalReminderMissingInput[];
-  aiDependenciesByOptionId: ReadonlyMap<string, AiAnalysisDependency>;
+  aiDependencyInputsByOptionId: ReadonlyMap<string, readonly AiAnalysisDependencyInput[]>;
 }>;
 
 type PersonalReminderGraphDraftProjection = Readonly<{
@@ -348,13 +353,13 @@ type PersonalReminderRuntimeActivityProjection = Readonly<{
 
 type PersonalReminderRuntimeSubjectDependency = Readonly<{
   subject: PersonalReminderSubject;
-  dependency: AiAnalysisDependency;
+  inputs: readonly AiAnalysisDependencyInput[];
 }>;
 
 type PersonalReminderRuntimeCauseSetSubjectChangeInput = Readonly<{
   addableSubjects: readonly PersonalReminderSubject[];
   removableSubjects: readonly PersonalReminderSubject[];
-  presenceDependency: AiAnalysisDependency;
+  presenceInputs: readonly AiAnalysisDependencyInput[];
   negativeCandidateSubjectCount: number;
   unbounded: boolean;
 }>;
@@ -381,6 +386,7 @@ export type PersonalReminderCauseRuntimePlan = Readonly<{
   continuityConflicts: readonly PersonalReminderCauseContinuityConflict[];
   endedCauseIds: readonly PersonalReminderCauseId[];
   pendingCauseIds: readonly PersonalReminderCauseId[];
+  unrecordedDependencyNodeIds: ReadonlySet<GitHubNodeId>;
   causeSetAiDependencyByNodeId: ReadonlyMap<GitHubNodeId, AiAnalysisDependency>;
   causeSetSubjectChangesByNodeId: ReadonlyMap<GitHubNodeId, PersonalReminderCauseSetSubjectChanges>;
 }>;
@@ -410,6 +416,42 @@ function aiAnalysisDependencyIsUnverified(dependency: AiAnalysisDependency): boo
   return dependency.status === "unverified" || dependency.status === "unknown";
 }
 
+function currentAiDependencyInput(dependency: AiAnalysisDependency): AiAnalysisDependencyInput {
+  return Object.freeze({ origin: "current", dependency, relationCandidateAssessment: "graph" });
+}
+
+function retainedAiDependencyInput(dependency: AiAnalysisDependency): AiAnalysisDependencyInput {
+  return Object.freeze({ origin: "retained", dependency });
+}
+
+function seedAiDependencyInput(
+  dependency: AiAnalysisDependency,
+  origin: PersonalReminderRuntimeCurrentSeed["origin"],
+): AiAnalysisDependencyInput {
+  return origin === "current_draft"
+    ? currentAiDependencyInput(dependency)
+    : retainedAiDependencyInput(dependency);
+}
+
+function combineCauseSetAiDependency(
+  inputs: readonly AiAnalysisDependencyInput[],
+  presenceInputs: readonly AiAnalysisDependencyInput[],
+  context: AiAnalysisDependencyReconciliationContext,
+): AiAnalysisDependency {
+  const dependency = combineReconciledAiAnalysisDependencies(inputs, context);
+  if (
+    dependency.status === "unknown" &&
+    dependency.reasons.includes("not_recorded") &&
+    dependency.producers == null
+  ) {
+    return combineReconciledAiAnalysisDependencies(
+      [retainedAiDependencyInput(dependency), ...presenceInputs],
+      context,
+    );
+  }
+  return dependency;
+}
+
 function personalReminderSubjectKey(subject: PersonalReminderSubject): string {
   return `${subject.kind}\u0000${subject.candidateId.toLowerCase()}`;
 }
@@ -433,11 +475,12 @@ function normalizePersonalReminderSubjects(
 function createCauseSetSubjectChanges(
   dependency: AiAnalysisDependency,
   input: PersonalReminderRuntimeCauseSetSubjectChangeInput,
+  context: AiAnalysisDependencyReconciliationContext,
 ): PersonalReminderCauseSetSubjectChanges {
   if (
     personalReminderCauseSetSubjectChangesAreUnbounded({
       causeSetDependency: dependency,
-      presenceDependency: input.presenceDependency,
+      presenceDependency: combineReconciledAiAnalysisDependencies(input.presenceInputs, context),
       negativeCandidateSubjectCount: input.negativeCandidateSubjectCount,
       inputUnbounded: input.unbounded,
     })
@@ -479,6 +522,118 @@ function createPreviousCauses(
     return previous;
   }
   return Object.freeze({ observedAt: item.item.createdAt, causes: Object.freeze([]) });
+}
+
+/** 保持原因の値を変えずにAI依存を最終適用元へ照合する。 */
+export function reconcileRetainedPersonalReminderCause(
+  cause: PersonalReminderCause,
+  context: AiAnalysisDependencyReconciliationContext,
+): PersonalReminderCause {
+  return personalReminderCauseSchema.parse({
+    ...cause,
+    aiDependencies: {
+      presence: reconcileRetainedAiAnalysisDependency(cause.aiDependencies.presence, context),
+      responseMembership: reconcileRetainedAiAnalysisDependency(
+        cause.aiDependencies.responseMembership,
+        context,
+      ),
+      responsible: reconcileRetainedAiAnalysisDependency(cause.aiDependencies.responsible, context),
+      action: reconcileRetainedAiAnalysisDependency(cause.aiDependencies.action, context),
+      evidence: reconcileRetainedAiAnalysisDependency(cause.aiDependencies.evidence, context),
+    },
+    currentInput: {
+      ...cause.currentInput,
+      aiDependency: reconcileRetainedAiAnalysisDependency(cause.currentInput.aiDependency, context),
+    },
+  });
+}
+
+/** 保持原因の列挙計画を最終依存へ合わせ、open項目を再計画へ戻す。 */
+export function reconcileRetainedPersonalReminderPlanning(
+  itemState: "open" | "closed" | "merged",
+  observedAt: UtcIsoDateTime,
+  planning: PersonalReminderCausePlanning,
+  causes: readonly PersonalReminderCause[],
+  context: AiAnalysisDependencyReconciliationContext,
+): PersonalReminderCausePlanning {
+  if (itemState === "open") {
+    return Object.freeze({
+      status: "pending",
+      planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+    });
+  }
+  if (causes.length === 0) {
+    return Object.freeze({
+      status: "excluded",
+      planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+      reason: "terminal_without_cause",
+    });
+  }
+  const presenceInputs = causes.map((cause) =>
+    retainedAiDependencyInput(cause.aiDependencies.presence),
+  );
+  const presenceDependency = combineReconciledAiAnalysisDependencies(presenceInputs, context);
+  const causeSetAiDependency = combineCauseSetAiDependency(
+    [
+      retainedAiDependencyInput(
+        planning.status === "completed"
+          ? planning.causeSetAiDependency
+          : Object.freeze({
+              status: "unknown",
+              reasons: Object.freeze(["not_recorded"]),
+            } satisfies AiAnalysisDependency),
+      ),
+      ...presenceInputs,
+    ],
+    presenceInputs,
+    context,
+  );
+  const presenceProducerSignatures = new Set(
+    presenceDependency.status === "not_dependent"
+      ? []
+      : (presenceDependency.producers ?? []).map((producer) => serializeCanonicalJson(producer)),
+  );
+  const additionalProducers =
+    causeSetAiDependency.status === "not_dependent"
+      ? []
+      : (causeSetAiDependency.producers ?? []).filter(
+          (producer) =>
+            producer.kind !== "relation_candidate" &&
+            !presenceProducerSignatures.has(serializeCanonicalJson(producer)),
+        );
+  const removableSubjects = causes.flatMap((cause) =>
+    aiAnalysisDependencyIsUnverified(cause.aiDependencies.presence)
+      ? cause.responsible.flatMap((responsible) =>
+          responsible.kind === "role"
+            ? []
+            : [Object.freeze({ kind: responsible.kind, candidateId: responsible.candidateId })],
+        )
+      : [],
+  );
+  return Object.freeze({
+    status: "completed",
+    planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+    observedAt,
+    causeSetAiDependency,
+    causeSetSubjectChanges: createCauseSetSubjectChanges(
+      causeSetAiDependency,
+      {
+        addableSubjects: Object.freeze([]),
+        removableSubjects,
+        presenceInputs,
+        negativeCandidateSubjectCount: 0,
+        unbounded: additionalProducers.some((producer) =>
+          aiAnalysisDependencyIsUnverified(
+            reconcileRetainedAiAnalysisDependency(
+              Object.freeze({ status: "current", producers: Object.freeze([producer]) }),
+              context,
+            ),
+          ),
+        ),
+      },
+      context,
+    ),
+  });
 }
 
 function determineLocalDecision(
@@ -1483,6 +1638,7 @@ export function createPersonalReminderRuntimeContext(
     state: PersonalReminderRuntimeState;
     collection: PersonalReminderRuntimeCollection;
     graph: PersonalReminderRuntimeGraph;
+    aiDependencyContext: AiAnalysisDependencyReconciliationContext;
     snapshotEvidenceSourceIds: ReadonlySet<SourceId>;
   }>,
 ): PersonalReminderRuntimeContext {
@@ -1559,7 +1715,15 @@ export function createPersonalReminderRuntimeContext(
       sourceProjection.sources,
       item.relatedContexts,
     );
-    const previous = createPreviousCauses(input.state, item);
+    const previousCauses = createPreviousCauses(input.state, item);
+    const previous = Object.freeze({
+      ...previousCauses,
+      causes: Object.freeze(
+        previousCauses.causes.map((cause) =>
+          reconcileRetainedPersonalReminderCause(cause, input.aiDependencyContext),
+        ),
+      ),
+    });
     const activity = createRuntimeActivity(
       item.item,
       localDecision,
@@ -1600,6 +1764,7 @@ export function createPersonalReminderRuntimeContext(
     state: input.state,
     items: Object.freeze(items),
     graph,
+    aiDependencyContext: input.aiDependencyContext,
     candidateRelationsByTargetNodeId,
     snapshotEvidenceSourceIds: input.snapshotEvidenceSourceIds,
   });
@@ -2022,19 +2187,15 @@ function graphRelationAiDependencies(
   });
 }
 
-function personalReminderCauseSeedAiDependencies(
-  seed: PersonalReminderCauseSeed,
-): readonly [
-  AiAnalysisDependency,
-  AiAnalysisDependency,
-  AiAnalysisDependency,
-  AiAnalysisDependency,
-] {
+function personalReminderCauseSeedAiDependencyInputs(
+  currentSeed: PersonalReminderRuntimeCurrentSeed,
+): readonly AiAnalysisDependencyInput[] {
+  const seed = currentSeed.seed;
   return Object.freeze([
-    seed.aiDependencies.presence,
-    seed.aiDependencies.responsible,
-    seed.aiDependencies.action,
-    seed.aiDependencies.evidence,
+    seedAiDependencyInput(seed.aiDependencies.presence, currentSeed.origin),
+    seedAiDependencyInput(seed.aiDependencies.responsible, currentSeed.origin),
+    seedAiDependencyInput(seed.aiDependencies.action, currentSeed.origin),
+    seedAiDependencyInput(seed.aiDependencies.evidence, currentSeed.origin),
   ]);
 }
 
@@ -2301,8 +2462,8 @@ function negativeCandidateDependenciesForIssue(
       .map((group) =>
         Object.freeze({
           subject: Object.freeze({ kind: "user", candidateId: group.login }),
-          dependency: combineAiAnalysisDependencies(
-            group.candidates.map((candidate) => candidate.aiDependency),
+          inputs: Object.freeze(
+            group.candidates.map((candidate) => currentAiDependencyInput(candidate.aiDependency)),
           ),
         }),
       ),
@@ -2938,7 +3099,7 @@ function waitingOptionsForCause(
   const options: PersonalReminderWaitingOption[] = [];
   const sources = new Map<SourceId, PersonalReminderRuntimeSource>();
   const missing = new Set<PersonalReminderMissingInput>();
-  const aiDependenciesByOptionId = new Map<string, AiAnalysisDependency>();
+  const aiDependencyInputsByOptionId = new Map<string, readonly AiAnalysisDependencyInput[]>();
   const connected = connectedSeedRelations(indexes, seed, relationEdges);
   const candidateSeedsByCauseId = new Map<
     PersonalReminderCauseId,
@@ -2996,11 +3157,11 @@ function waitingOptionsForCause(
       evidenceSourceIds: [...sourceIds],
     });
     options.push(option);
-    aiDependenciesByOptionId.set(
+    aiDependencyInputsByOptionId.set(
       option.optionId,
-      combineAiAnalysisDependencies([
-        ...personalReminderCauseSeedAiDependencies(candidate.seed),
-        ...matchingRelations.map((relation) => relation.aiDependency),
+      Object.freeze([
+        ...personalReminderCauseSeedAiDependencyInputs(candidate),
+        ...matchingRelations.map((relation) => currentAiDependencyInput(relation.aiDependency)),
       ]),
     );
   }
@@ -3043,9 +3204,9 @@ function waitingOptionsForCause(
     }
     if (authorReply.option != null) {
       options.push(authorReply.option);
-      aiDependenciesByOptionId.set(
+      aiDependencyInputsByOptionId.set(
         authorReply.option.optionId,
-        Object.freeze({ status: "not_dependent" }),
+        Object.freeze([currentAiDependencyInput(Object.freeze({ status: "not_dependent" }))]),
       );
     }
   }
@@ -3055,7 +3216,7 @@ function waitingOptionsForCause(
     ),
     sources: Object.freeze([...sources.values()]),
     missing: Object.freeze([...missing]),
-    aiDependenciesByOptionId,
+    aiDependencyInputsByOptionId,
   });
 }
 
@@ -3067,11 +3228,14 @@ function duplicateOptionsForCause(
 ): Readonly<{
   options: readonly PersonalReminderDuplicateOption[];
   sources: readonly PersonalReminderRuntimeSource[];
-  aiDependenciesByCanonicalCauseId: ReadonlyMap<string, AiAnalysisDependency>;
+  aiDependencyInputsByCanonicalCauseId: ReadonlyMap<string, readonly AiAnalysisDependencyInput[]>;
 }> {
   const options: PersonalReminderDuplicateOption[] = [];
   const sources = new Map<SourceId, PersonalReminderRuntimeSource>();
-  const aiDependenciesByCanonicalCauseId = new Map<string, AiAnalysisDependency>();
+  const aiDependencyInputsByCanonicalCauseId = new Map<
+    string,
+    readonly AiAnalysisDependencyInput[]
+  >();
   const effectiveRelations = relationsIncidentToScope(
     indexes,
     scopeNodeIdsForSeed(indexes, current.seed),
@@ -3121,23 +3285,23 @@ function duplicateOptionsForCause(
       evidenceSourceIds: [...evidenceSourceIds],
     });
     options.push(option);
-    if (aiDependenciesByCanonicalCauseId.has(option.canonicalCauseId)) {
+    if (aiDependencyInputsByCanonicalCauseId.has(option.canonicalCauseId)) {
       throw new TypeError(
         `duplicate optionのcanonical cause IDが重複しています。対象: ${option.canonicalCauseId}`,
       );
     }
-    aiDependenciesByCanonicalCauseId.set(
+    aiDependencyInputsByCanonicalCauseId.set(
       option.canonicalCauseId,
-      combineAiAnalysisDependencies([
-        ...personalReminderCauseSeedAiDependencies(candidate.seed),
-        ...directRelations.map((relation) => relation.aiDependency),
+      Object.freeze([
+        ...personalReminderCauseSeedAiDependencyInputs(candidate),
+        ...directRelations.map((relation) => currentAiDependencyInput(relation.aiDependency)),
       ]),
     );
   }
   return Object.freeze({
     options: Object.freeze(options),
     sources: Object.freeze([...sources.values()]),
-    aiDependenciesByCanonicalCauseId,
+    aiDependencyInputsByCanonicalCauseId,
   });
 }
 
@@ -3195,12 +3359,12 @@ function pendingRelationCanHideCauseAsDuplicate(
   return candidateIsImplementation && !currentIsImplementation;
 }
 
-function pendingResponseMembershipDependencies(
+function pendingResponseMembershipDependencyInputs(
   context: PersonalReminderRuntimeContext,
   current: PersonalReminderRuntimeCurrentSeed,
   indexes: PersonalReminderRuntimePlanningIndexes,
-): readonly AiAnalysisDependency[] {
-  const dependencies: AiAnalysisDependency[] = [];
+): readonly AiAnalysisDependencyInput[] {
+  const dependencies: AiAnalysisDependencyInput[] = [];
   for (const resolution of context.graph.candidateResolutions) {
     if (resolution.status !== "pending") {
       continue;
@@ -3247,21 +3411,21 @@ function pendingResponseMembershipDependencies(
         `推定pending relation candidateのAI依存はnot_dependentにできません。対象: ${candidate.candidateId}`,
       );
     }
-    const relationDependency: AiAnalysisDependency =
-      candidate.aiDependency.status === "current"
-        ? Object.freeze({
-            status: "unknown",
-            reason: "proof_unknown",
-            producers: candidate.aiDependency.producers,
-          })
-        : candidate.aiDependency;
     dependencies.push(
-      combineAiAnalysisDependencies([
-        relationDependency,
-        ...matchingDuplicateCandidates.flatMap((duplicateCandidate) => [
+      Object.freeze({
+        origin: "current",
+        dependency: candidate.aiDependency,
+        relationCandidateAssessment: "missing",
+      }),
+      ...matchingDuplicateCandidates.flatMap((duplicateCandidate) => [
+        seedAiDependencyInput(
           duplicateCandidate.seed.aiDependencies.presence,
+          duplicateCandidate.origin,
+        ),
+        seedAiDependencyInput(
           duplicateCandidate.seed.aiDependencies.responsible,
-        ]),
+          duplicateCandidate.origin,
+        ),
       ]),
     );
   }
@@ -3628,7 +3792,8 @@ export function planPersonalReminderCauses(
   const continuityConflicts: PersonalReminderCauseContinuityConflict[] = [];
   const endedCauseIds = new Set<PersonalReminderCauseId>();
   const pendingCauseIds = new Set<PersonalReminderCauseId>();
-  const causeSetAiDependencyInputsByNodeId = new Map<GitHubNodeId, AiAnalysisDependency[]>();
+  const unrecordedDependencyNodeIds = new Set<GitHubNodeId>();
+  const causeSetAiDependencyInputsByNodeId = new Map<GitHubNodeId, AiAnalysisDependencyInput[]>();
   const causeSetSubjectChangeInputsByNodeId = new Map<
     GitHubNodeId,
     PersonalReminderRuntimeCauseSetSubjectChangeInput
@@ -3722,29 +3887,42 @@ export function planPersonalReminderCauses(
       continue;
     }
     const previousById = previousCauseById(previous);
-    const causeSetDependencies = negativeCandidateDependencies.map(
-      (candidate) => candidate.dependency,
+    const causeSetDependencies = negativeCandidateDependencies.flatMap(
+      (candidate) => candidate.inputs,
     );
-    const presenceDependencies: AiAnalysisDependency[] = [];
-    const negativeCandidateSubjectCount = negativeCandidateDependencies.filter(
+    const presenceInputs: AiAnalysisDependencyInput[] = [];
+    const negativeCandidateSubjects = negativeCandidateDependencies.map((candidate) =>
+      Object.freeze({
+        subject: candidate.subject,
+        dependency: combineReconciledAiAnalysisDependencies(
+          candidate.inputs,
+          context.aiDependencyContext,
+        ),
+      }),
+    );
+    const negativeCandidateSubjectCount = negativeCandidateSubjects.filter(
       (candidate) => candidate.dependency.status !== "not_dependent",
     ).length;
-    const addableSubjects = negativeCandidateDependencies
+    const addableSubjects = negativeCandidateSubjects
       .filter((candidate) => aiAnalysisDependencyIsUnverified(candidate.dependency))
       .map((candidate) => candidate.subject);
     const removableSubjects: PersonalReminderSubject[] = [];
     let subjectChangesUnbounded = false;
     for (const seed of reconciliation.seeds) {
       const previousCause = previousById.get(seed.causeId);
-      let presenceDependency: AiAnalysisDependency;
+      let presenceInput: AiAnalysisDependencyInput;
       if (reconciliation.retainedWithoutDraftCauseIds.includes(seed.causeId)) {
         assertNonNullable(previousCause, `保持した前回causeがありません。対象: ${seed.causeId}`);
-        presenceDependency = previousCause.aiDependencies.presence;
+        presenceInput = retainedAiDependencyInput(previousCause.aiDependencies.presence);
       } else {
-        presenceDependency = seed.aiDependencies.presence;
+        presenceInput = currentAiDependencyInput(seed.aiDependencies.presence);
       }
-      causeSetDependencies.push(presenceDependency);
-      presenceDependencies.push(presenceDependency);
+      causeSetDependencies.push(presenceInput);
+      presenceInputs.push(presenceInput);
+      const presenceDependency = combineReconciledAiAnalysisDependencies(
+        [presenceInput],
+        context.aiDependencyContext,
+      );
       if (!aiAnalysisDependencyIsUnverified(presenceDependency)) {
         continue;
       }
@@ -3766,8 +3944,9 @@ export function planPersonalReminderCauses(
         item.localDecision,
         item.aiAnalysisApplications,
       ).presence;
-      causeSetDependencies.push(fallbackPresenceDependency);
-      presenceDependencies.push(fallbackPresenceDependency);
+      const fallbackPresenceInput = currentAiDependencyInput(fallbackPresenceDependency);
+      causeSetDependencies.push(fallbackPresenceInput);
+      presenceInputs.push(fallbackPresenceInput);
       if (aiAnalysisDependencyIsUnverified(fallbackPresenceDependency)) {
         subjectChangesUnbounded = true;
       }
@@ -3778,7 +3957,7 @@ export function planPersonalReminderCauses(
       Object.freeze({
         addableSubjects: Object.freeze(addableSubjects),
         removableSubjects: Object.freeze(removableSubjects),
-        presenceDependency: combineAiAnalysisDependencies(presenceDependencies),
+        presenceInputs: Object.freeze(presenceInputs),
         negativeCandidateSubjectCount,
         unbounded: subjectChangesUnbounded,
       }),
@@ -3851,7 +4030,9 @@ export function planPersonalReminderCauses(
         globalSourcesById,
       );
       const optionSources = [...waitingProjection.sources, ...duplicateProjection.sources];
-      const relationDependencies = relationEdgesForInput.map((relation) => relation.aiDependency);
+      const relationDependencies = relationEdgesForInput.map((relation) =>
+        currentAiDependencyInput(relation.aiDependency),
+      );
       const pendingRelationDependencies = pendingRelations.flatMap((relation) => {
         const candidate = context.graph.candidateRelations.find(
           (value) => value.candidateId === relation.candidateId,
@@ -3860,18 +4041,18 @@ export function planPersonalReminderCauses(
           candidate,
           `pending relation candidateがありません。対象: ${relation.candidateId}`,
         );
-        return [candidate.aiDependency];
+        return [currentAiDependencyInput(candidate.aiDependency)];
       });
-      const waitingOptionDependencies = waitingProjection.options.map((option) => {
-        const dependency = waitingProjection.aiDependenciesByOptionId.get(option.optionId);
+      const waitingOptionDependencies = waitingProjection.options.flatMap((option) => {
+        const dependency = waitingProjection.aiDependencyInputsByOptionId.get(option.optionId);
         assertNonNullable(
           dependency,
           `waiting optionのAI依存がありません。対象: ${option.optionId}`,
         );
         return dependency;
       });
-      const duplicateOptionDependencies = duplicateProjection.options.map((option) => {
-        const dependency = duplicateProjection.aiDependenciesByCanonicalCauseId.get(
+      const duplicateOptionDependencies = duplicateProjection.options.flatMap((option) => {
+        const dependency = duplicateProjection.aiDependencyInputsByCanonicalCauseId.get(
           option.canonicalCauseId,
         );
         assertNonNullable(
@@ -3880,7 +4061,7 @@ export function planPersonalReminderCauses(
         );
         return dependency;
       });
-      const pendingResponseMembershipDependencyInputs = pendingResponseMembershipDependencies(
+      const pendingMembershipInputs = pendingResponseMembershipDependencyInputs(
         context,
         currentSeed,
         planningIndexes,
@@ -3895,14 +4076,22 @@ export function planPersonalReminderCauses(
         seed,
         duplicateProjection.options,
       );
-      const responseMembershipAiDependency = combineAiAnalysisDependencies([
-        Object.freeze({ status: "not_dependent" }),
-        ...(membershipAssessmentRequirement.status === "required"
-          ? [seed.aiDependencies.action, seed.aiDependencies.evidence]
-          : []),
-        ...duplicateOptionDependencies,
-        ...pendingResponseMembershipDependencyInputs,
-      ]);
+      const responseMembershipAiDependency = combineReconciledAiAnalysisDependencies(
+        [
+          currentSeed.origin === "retained_without_draft"
+            ? retainedAiDependencyInput(seed.aiDependencies.responseMembership)
+            : currentAiDependencyInput(Object.freeze({ status: "not_dependent" })),
+          ...(membershipAssessmentRequirement.status === "required"
+            ? [
+                seedAiDependencyInput(seed.aiDependencies.action, currentSeed.origin),
+                seedAiDependencyInput(seed.aiDependencies.evidence, currentSeed.origin),
+              ]
+            : []),
+          ...duplicateOptionDependencies,
+          ...pendingMembershipInputs,
+        ],
+        context.aiDependencyContext,
+      );
       const seedWithResponseMembershipDependency = personalReminderCauseSeedSchema.parse({
         ...seed,
         aiDependencies: {
@@ -3910,10 +4099,22 @@ export function planPersonalReminderCauses(
           responseMembership: responseMembershipAiDependency,
         },
       });
-      const currentInputAiDependency = combinePersonalReminderCauseInputAiDependency(
-        seed.aiDependencies,
-        semanticDependencies,
+      const currentInputAiDependency = combineReconciledAiAnalysisDependencies(
+        [...personalReminderCauseSeedAiDependencyInputs(currentSeed), ...semanticDependencies],
+        context.aiDependencyContext,
       );
+      if (
+        [
+          ...Object.values(seed.aiDependencies),
+          responseMembershipAiDependency,
+          currentInputAiDependency,
+        ].some(
+          (dependency) =>
+            dependency.status === "unknown" && dependency.reasons.includes("not_recorded"),
+        )
+      ) {
+        unrecordedDependencyNodeIds.add(seed.itemNodeId);
+      }
       const targetScopeNodeIds = new Set<GraphNodeId>();
       for (const option of [...waitingProjection.options, ...duplicateProjection.options]) {
         for (const nodeId of optionTargetScopeNodeIds(option)) {
@@ -3991,18 +4192,23 @@ export function planPersonalReminderCauses(
     PersonalReminderCauseSetSubjectChanges
   >();
   for (const [nodeId, dependencies] of causeSetAiDependencyInputsByNodeId) {
-    const dependency = combineAiAnalysisDependencies(
-      dependencies.length === 0 ? [Object.freeze({ status: "not_dependent" })] : dependencies,
-    );
-    causeSetAiDependencyByNodeId.set(nodeId, dependency);
     const subjectChangeInput = causeSetSubjectChangeInputsByNodeId.get(nodeId);
     assertNonNullable(
       subjectChangeInput,
       `個人催促cause集合の主体変化入力がありません。対象: ${nodeId}`,
     );
+    const dependency = combineCauseSetAiDependency(
+      dependencies,
+      subjectChangeInput.presenceInputs,
+      context.aiDependencyContext,
+    );
+    if (dependency.status === "unknown" && dependency.reasons.includes("not_recorded")) {
+      unrecordedDependencyNodeIds.add(nodeId);
+    }
+    causeSetAiDependencyByNodeId.set(nodeId, dependency);
     causeSetSubjectChangesByNodeId.set(
       nodeId,
-      createCauseSetSubjectChanges(dependency, subjectChangeInput),
+      createCauseSetSubjectChanges(dependency, subjectChangeInput, context.aiDependencyContext),
     );
   }
   return Object.freeze({
@@ -4016,6 +4222,7 @@ export function planPersonalReminderCauses(
     ),
     endedCauseIds: Object.freeze([...endedCauseIds].sort(compareStrings)),
     pendingCauseIds: Object.freeze([...pendingCauseIds].sort(compareStrings)),
+    unrecordedDependencyNodeIds,
     causeSetAiDependencyByNodeId,
     causeSetSubjectChangesByNodeId,
   });

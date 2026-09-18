@@ -998,7 +998,7 @@ function aiDependencySignature(dependency: AiAnalysisDependency): string {
           .sort((left, right) => compareStrings(JSON.stringify(left), JSON.stringify(right)));
   return JSON.stringify({
     status: dependency.status,
-    ...(dependency.status === "unknown" ? { reason: dependency.reason } : {}),
+    ...(dependency.status === "unknown" ? { reasons: dependency.reasons } : {}),
     ...(producers == null ? {} : { producers }),
   });
 }
@@ -1029,7 +1029,10 @@ function validateCandidateDecisionProofs(
     if (proof.resolution.candidateId !== proof.candidateId) {
       throw new TypeError(`関係候補 ${proof.candidateId}の判定proof IDが不整合です`);
     }
-    if (proof.dependency.status === "unknown" && proof.dependency.reason === "stale_repository") {
+    if (
+      proof.dependency.status === "unknown" &&
+      proof.dependency.reasons.includes("stale_repository")
+    ) {
       throw new TypeError(`関係候補 ${proof.candidateId}にstale repository AI依存は指定できません`);
     }
     if (proof.authority === "authoritative") {
@@ -1052,7 +1055,8 @@ function validateCandidateDecisionProofs(
         const producerlessNotRecorded =
           proof.resolution.status !== "active" &&
           proof.dependency.status === "unknown" &&
-          proof.dependency.reason === "not_recorded";
+          proof.dependency.reasons.length === 1 &&
+          proof.dependency.reasons[0] === "not_recorded";
         if (!producerlessNotRecorded) {
           throw new TypeError(`推定relation ${proof.candidateId}のAI依存producerがありません`);
         }

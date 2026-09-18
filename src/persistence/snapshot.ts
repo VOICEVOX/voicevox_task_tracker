@@ -2,6 +2,7 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 
 import snapshotSchema from "../../schemas/snapshot.schema.json" with { type: "json" };
+import snapshotAiDependencyVersion18Schema from "../../schemas/snapshot-ai-dependency-v18.schema.json" with { type: "json" };
 import {
   hashCanonicalJson,
   serializeCanonicalJson,
@@ -204,6 +205,7 @@ export const SNAPSHOT_SCHEMA_VERSION_15 = "15";
 export const SNAPSHOT_SCHEMA_VERSION_16 = "16";
 export const SNAPSHOT_SCHEMA_VERSION_17 = "17";
 export const SNAPSHOT_SCHEMA_VERSION_18 = "18";
+export const SNAPSHOT_SCHEMA_VERSION_19 = "19";
 
 type StateSnapshotFields = Readonly<{
   generatedAt: UtcIsoDateTime;
@@ -408,19 +410,77 @@ type StateSnapshotVersion17 = LegacyStateSnapshotFieldsWithPersonalReminderVersi
     schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_17;
   }>;
 
-type StateSnapshotVersion18 = StateSnapshotFields &
+/** schema version 18で保存される単一理由のAI依存。 */
+export type LegacyAiAnalysisDependencyVersion18 =
+  | Exclude<AiAnalysisDependency, { status: "unknown" }>
+  | Readonly<{
+      status: "unknown";
+      reason: "migration" | "not_recorded" | "stale_repository";
+      producers?: readonly AiAnalysisDependencyProducer[] | undefined;
+    }>
+  | Readonly<{
+      status: "unknown";
+      reason: "proof_unknown";
+      producers: readonly AiAnalysisDependencyProducer[];
+    }>;
+
+type LegacyPersonalReminderCauseVersion18 = Omit<
+  PersonalReminderCause,
+  "aiDependencies" | "currentInput"
+> &
   Readonly<{
-    schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_18;
+    aiDependencies: Readonly<
+      Record<keyof PersonalReminderCause["aiDependencies"], LegacyAiAnalysisDependencyVersion18>
+    >;
+    currentInput: Omit<PersonalReminderCause["currentInput"], "aiDependency"> &
+      Readonly<{
+        aiDependency: LegacyAiAnalysisDependencyVersion18;
+      }>;
   }>;
 
-/** tracker-stateへ保存するschema version 18のcurrent snapshot。 */
-export type StateSnapshot = StateSnapshotVersion18;
+type LegacyPersonalReminderCausePlanningVersion18 =
+  | Exclude<PersonalReminderCausePlanning, { status: "completed" }>
+  | (Omit<Extract<PersonalReminderCausePlanning, { status: "completed" }>, "causeSetAiDependency"> &
+      Readonly<{
+        causeSetAiDependency: LegacyAiAnalysisDependencyVersion18;
+      }>);
+
+type LegacySnapshotTrackedItemVersion18 = Omit<
+  SnapshotTrackedItem,
+  "aiDependencies" | "personalReminderCauses" | "personalReminderCausePlanning"
+> &
+  Readonly<{
+    aiDependencies: Readonly<
+      Record<AiAnalysisDependencyElement, LegacyAiAnalysisDependencyVersion18>
+    >;
+    personalReminderCauses: readonly LegacyPersonalReminderCauseVersion18[];
+    personalReminderCausePlanning: LegacyPersonalReminderCausePlanningVersion18;
+  }>;
+
+type StateSnapshotVersion18 = Omit<StateSnapshotFields, "items" | "relations"> &
+  Readonly<{
+    schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_18;
+    items: readonly LegacySnapshotTrackedItemVersion18[];
+    relations: readonly (Omit<Relation, "aiDependency"> &
+      Readonly<{
+        aiDependency: LegacyAiAnalysisDependencyVersion18;
+      }>)[];
+  }>;
+
+/** tracker-stateへ保存するschema version 19のcurrent snapshot。 */
+export type StateSnapshot = StateSnapshotFields &
+  Readonly<{
+    schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION_19;
+  }>;
 
 const snapshotSchemaVersion17Schema = z.object({
   schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_17),
 });
 const snapshotSchemaVersion18Schema = z.object({
   schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_18),
+});
+const snapshotSchemaVersion19Schema = z.object({
+  schemaVersion: z.literal(SNAPSHOT_SCHEMA_VERSION_19),
 });
 
 const snapshotSchemaVersion16Schema = z.object({
@@ -845,6 +905,7 @@ function snapshotSchemaForVersion(
         : snapshotSchema.required.filter((key) => key !== "graphNodeStateObservations"),
     $defs: {
       ...snapshotSchema.$defs,
+      ...(version === SNAPSHOT_SCHEMA_VERSION_18 ? snapshotAiDependencyVersion18Schema : {}),
       evidence: versionedEvidence,
       personalReminderEvaluationAttempt: versionedPersonalReminderEvaluationAttempt,
       aiAnalysisElementEvidence: {
@@ -924,7 +985,10 @@ const validateSnapshotVersion16Schema = ajv.compile<StateSnapshotVersion16>(
 const validateSnapshotVersion17Schema = ajv.compile<StateSnapshotVersion17>(
   snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_17, "source"),
 );
-const validateSnapshotVersion18Schema = ajv.compile<StateSnapshotVersion18>(snapshotSchema);
+const validateSnapshotVersion18Schema = ajv.compile<StateSnapshotVersion18>(
+  snapshotSchemaForVersion(SNAPSHOT_SCHEMA_VERSION_18, "source"),
+);
+const validateSnapshotVersion19Schema = ajv.compile<StateSnapshot>(snapshotSchema);
 
 function compareStrings(left: string, right: string): number {
   if (left < right) {
@@ -1476,12 +1540,14 @@ function assertPersonalReminderCauseSetSemantics(
   );
   if (
     planning.causeSetAiDependency.status === "unknown" &&
-    planning.causeSetAiDependency.reason === "migration" &&
+    planning.causeSetAiDependency.reasons.length === 1 &&
+    planning.causeSetAiDependency.reasons[0] === "migration" &&
     planning.causeSetAiDependency.producers == null &&
     expectedPresenceDependency.status !== "not_dependent" &&
     !(
       expectedPresenceDependency.status === "unknown" &&
-      expectedPresenceDependency.reason === "migration" &&
+      expectedPresenceDependency.reasons.length === 1 &&
+      expectedPresenceDependency.reasons[0] === "migration" &&
       expectedPresenceDependency.producers == null
     )
   ) {
@@ -2211,8 +2277,7 @@ function expectedAiAnalysisDependencyForProducer(
     );
     if (
       containingDependency.status === "unknown" &&
-      containingDependency.reason === "proof_unknown" &&
-      (expected.status === "current" || expected.status === "not_dependent")
+      containingDependency.reasons.includes("proof_unknown")
     ) {
       expected = aiAnalysisDependencyForMissingRelationCandidateAssessment(
         producerItem.nodeId,
@@ -2290,17 +2355,17 @@ type AiAnalysisDependencyIntegrityOptions = Readonly<{
 
 const producerlessNotRecordedAiAnalysisDependency = Object.freeze({
   status: "unknown",
-  reason: "not_recorded",
+  reasons: Object.freeze(["not_recorded"]),
 } satisfies AiAnalysisDependency);
 
 const producerlessMigrationAiAnalysisDependency = Object.freeze({
   status: "unknown",
-  reason: "migration",
+  reasons: Object.freeze(["migration"]),
 } satisfies AiAnalysisDependency);
 
 const producerlessStaleRepositoryAiAnalysisDependency = Object.freeze({
   status: "unknown",
-  reason: "stale_repository",
+  reasons: Object.freeze(["stale_repository"]),
 } satisfies AiAnalysisDependency);
 
 function aiAnalysisDependencyMatchesExpected(
@@ -2315,34 +2380,42 @@ function aiAnalysisDependencyMatchesExpected(
   if (hashCanonicalJson(expected) === hashCanonicalJson(actual)) {
     return true;
   }
-  if (options.allowHiddenProducerlessNotRecorded) {
-    const withNotRecorded = combineAiAnalysisDependencies([
-      expected,
-      producerlessNotRecordedAiAnalysisDependency,
-    ]);
-    if (hashCanonicalJson(withNotRecorded) === hashCanonicalJson(actual)) {
-      return true;
+  if (actual.status !== "unknown") {
+    return false;
+  }
+  const dependencies = [expected];
+  for (const reason of actual.reasons) {
+    if (expected.status === "unknown" && expected.reasons.includes(reason)) {
+      continue;
+    }
+    switch (reason) {
+      case "not_recorded":
+        if (!options.allowHiddenProducerlessNotRecorded) {
+          return false;
+        }
+        dependencies.push(producerlessNotRecordedAiAnalysisDependency);
+        break;
+      case "migration":
+        if (!options.allowHiddenProducerlessMigration) {
+          return false;
+        }
+        dependencies.push(producerlessMigrationAiAnalysisDependency);
+        break;
+      case "stale_repository":
+        if (!options.allowHiddenProducerlessStaleRepository) {
+          return false;
+        }
+        dependencies.push(producerlessStaleRepositoryAiAnalysisDependency);
+        break;
+      case "proof_unknown":
+        return false;
+      default:
+        throw new UnreachableError(reason);
     }
   }
-  if (options.allowHiddenProducerlessMigration) {
-    const withMigration = combineAiAnalysisDependencies([
-      expected,
-      producerlessMigrationAiAnalysisDependency,
-    ]);
-    if (hashCanonicalJson(withMigration) === hashCanonicalJson(actual)) {
-      return true;
-    }
-  }
-  if (options.allowHiddenProducerlessStaleRepository) {
-    const withStaleRepository = combineAiAnalysisDependencies([
-      expected,
-      producerlessStaleRepositoryAiAnalysisDependency,
-    ]);
-    if (hashCanonicalJson(withStaleRepository) === hashCanonicalJson(actual)) {
-      return true;
-    }
-  }
-  return false;
+  return (
+    hashCanonicalJson(combineAiAnalysisDependencies(dependencies)) === hashCanonicalJson(actual)
+  );
 }
 
 function dependencyHasHiddenProducerlessReason(
@@ -2353,7 +2426,7 @@ function dependencyHasHiddenProducerlessReason(
 ): boolean {
   if (
     dependency.status !== "unknown" ||
-    dependency.reason !== reason ||
+    !dependency.reasons.includes(reason) ||
     dependency.producers == null
   ) {
     return false;
@@ -2369,14 +2442,11 @@ function dependencyHasHiddenProducerlessReason(
       ),
     ),
   );
-  const sentinel =
-    reason === "not_recorded"
-      ? producerlessNotRecordedAiAnalysisDependency
-      : producerlessMigrationAiAnalysisDependency;
-  return (
-    hashCanonicalJson(combineAiAnalysisDependencies([visibleDependency, sentinel])) ===
-    hashCanonicalJson(dependency)
-  );
+  return aiAnalysisDependencyMatchesExpected(dependency, visibleDependency, {
+    allowHiddenProducerlessNotRecorded: true,
+    allowHiddenProducerlessMigration: true,
+    allowHiddenProducerlessStaleRepository: false,
+  });
 }
 
 function assertAiAnalysisDependencyIntegrity(
@@ -2393,7 +2463,7 @@ function assertAiAnalysisDependencyIntegrity(
   const dependencyValue = parsedDependency.data;
   if (
     dependencyValue.status === "unknown" &&
-    dependencyValue.reason === "stale_repository" &&
+    dependencyValue.reasons.includes("stale_repository") &&
     !options.allowStaleRepository
   ) {
     throw new StateSnapshotSemanticError(
@@ -2407,26 +2477,24 @@ function assertAiAnalysisDependencyIntegrity(
   if (producers == null) {
     if (
       dependencyValue.status === "unknown" &&
-      dependencyValue.reason === "not_recorded" &&
-      options.allowProducerlessNotRecorded
+      dependencyValue.reasons.every((reason) => {
+        switch (reason) {
+          case "not_recorded":
+            return options.allowProducerlessNotRecorded;
+          case "migration":
+            return options.allowProducerlessMigration;
+          case "stale_repository":
+            return options.allowProducerlessStaleRepository;
+          case "proof_unknown":
+            return false;
+          default:
+            throw new UnreachableError(reason);
+        }
+      })
     ) {
       return dependencyValue;
     }
-    if (
-      dependencyValue.status === "unknown" &&
-      dependencyValue.reason === "migration" &&
-      options.allowProducerlessMigration
-    ) {
-      return dependencyValue;
-    }
-    if (
-      dependencyValue.status === "unknown" &&
-      dependencyValue.reason === "stale_repository" &&
-      options.allowProducerlessStaleRepository
-    ) {
-      return dependencyValue;
-    }
-    if (dependencyValue.status === "unknown" && dependencyValue.reason === "proof_unknown") {
+    if (dependencyValue.status === "unknown" && dependencyValue.reasons.includes("proof_unknown")) {
       throw new StateSnapshotSemanticError(
         `${description}のproducerless proof_unknownは許可されません`,
       );
@@ -2518,7 +2586,8 @@ function assertRelationCandidateProducerDefinitions(
           }
           const producerlessMigration =
             persistedDependency.status === "unknown" &&
-            persistedDependency.reason === "migration" &&
+            persistedDependency.reasons.length === 1 &&
+            persistedDependency.reasons[0] === "migration" &&
             persistedDependency.producers == null;
           if (producerlessMigration) {
             continue;
@@ -2905,7 +2974,10 @@ function assertDirectAiAnalysisDependencyLowerBound(
   description: string,
 ): void {
   const producerlessMigration =
-    actual.status === "unknown" && actual.reason === "migration" && actual.producers == null;
+    actual.status === "unknown" &&
+    actual.reasons.length === 1 &&
+    actual.reasons[0] === "migration" &&
+    actual.producers == null;
   if (producerlessMigration) {
     throw new StateSnapshotSemanticError(`${description}にproducerless migrationは指定できません`);
   }
@@ -3163,7 +3235,7 @@ function assertRelationAiDependencySemantics(dependency: unknown, description: s
   }
   if (
     parsedDependency.data.status === "unknown" &&
-    parsedDependency.data.reason === "stale_repository"
+    parsedDependency.data.reasons.includes("stale_repository")
   ) {
     throw new StateSnapshotSemanticError(`${description}にstale repository依存は指定できません`);
   }
@@ -3187,7 +3259,7 @@ function assertInferredRelationAiDependencySemantics(
     relation.active &&
     historicalDependency &&
     (dependency.status !== "unknown" ||
-      (dependency.reason !== "proof_unknown" && dependency.reason !== "migration"))
+      !dependency.reasons.every((reason) => reason === "proof_unknown" || reason === "migration"))
   ) {
     throw new StateSnapshotSemanticError(
       `staleなactive inferred relation ${relation.id}のAI依存はunknownにしてください`,
@@ -3236,7 +3308,7 @@ function assertInferredRelationAiDependencySemantics(
           case "unknown":
             return Object.freeze({
               status: dependency.status,
-              reason: dependency.reason,
+              reasons: dependency.reasons,
               producers: Object.freeze([producer]),
             });
         }
@@ -3507,7 +3579,7 @@ function activeRelationCandidateProofDependency(
   if (dependency.status === "unknown") {
     return normalizeAiAnalysisDependency({
       status: dependency.status,
-      reason: dependency.reason,
+      reasons: dependency.reasons,
       producers: Object.freeze(producers),
     });
   }
@@ -4248,7 +4320,10 @@ function aiAnalysisDependencyContainsLowerBound(
   actual: AiAnalysisDependency,
 ): boolean {
   const producerlessMigration =
-    actual.status === "unknown" && actual.reason === "migration" && actual.producers == null;
+    actual.status === "unknown" &&
+    actual.reasons.length === 1 &&
+    actual.reasons[0] === "migration" &&
+    actual.producers == null;
   if (producerlessMigration || expected.status === "not_dependent") {
     return true;
   }
@@ -4287,7 +4362,7 @@ function relationDerivedAiDependency(dependency: AiAnalysisDependency): AiAnalys
   if (dependency.status === "unknown") {
     return normalizeAiAnalysisDependency({
       status: dependency.status,
-      reason: dependency.reason,
+      reasons: dependency.reasons,
       producers,
     });
   }
@@ -5137,7 +5212,8 @@ function assertSnapshotSemantics(
     }
     const relationSetIsProducerlessMigration =
       item.aiDependencies.relationSet.status === "unknown" &&
-      item.aiDependencies.relationSet.reason === "migration" &&
+      item.aiDependencies.relationSet.reasons.length === 1 &&
+      item.aiDependencies.relationSet.reasons[0] === "migration" &&
       item.aiDependencies.relationSet.producers == null;
     if (!relationSetIsProducerlessMigration) {
       const expectedRelationSet = expectedRelationSetDependenciesByNodeId.get(item.nodeId);
@@ -5515,21 +5591,57 @@ function parseStateSnapshotVersion18Value(value: unknown): StateSnapshotVersion1
     const issueCount = validateSnapshotVersion18Schema.errors?.length ?? 1;
     throw new StateSnapshotSchemaError(issueCount);
   }
+  return value;
+}
+
+/** schema version 18のsnapshotを構造検証して読み取る。 */
+export function parseStateSnapshotVersion18(source: string): StateSnapshotVersion18 {
+  let value: unknown;
+  try {
+    const parseJson: (text: string) => unknown = JSON.parse;
+    value = parseJson(source);
+  } catch (error: unknown) {
+    throw new StateFormatError("snapshot", {
+      cause: new SyntaxError("JSON構文が不正です", {
+        cause: error,
+      }),
+    });
+  }
+  try {
+    return parseStateSnapshotVersion18Value(value);
+  } catch (error: unknown) {
+    if (error instanceof StateSnapshotSchemaError) {
+      throw error;
+    }
+    throw new StateFormatError("snapshot", {
+      cause: new TypeError("snapshot検証中に予期しないエラーが発生しました", {
+        cause: error,
+      }),
+    });
+  }
+}
+
+function parseStateSnapshotVersion19Value(value: unknown): StateSnapshot {
+  snapshotSchemaVersion19Schema.parse(value);
+  if (!validateSnapshotVersion19Schema(value)) {
+    const issueCount = validateSnapshotVersion19Schema.errors?.length ?? 1;
+    throw new StateSnapshotSchemaError(issueCount);
+  }
   assertSnapshotSemantics(value, "source", "current", true, true);
   return value;
 }
 
 function parseVersionedStateSnapshot(value: unknown): StateSnapshot {
   const version = z.object({ schemaVersion: z.string() }).parse(value).schemaVersion;
-  if (version === SNAPSHOT_SCHEMA_VERSION_18) {
-    return normalizeSnapshot(parseStateSnapshotVersion18Value(value));
+  if (version === SNAPSHOT_SCHEMA_VERSION_19) {
+    return normalizeSnapshot(parseStateSnapshotVersion19Value(value));
   }
   throw new StateSnapshotSchemaError(1);
 }
 
 /** 未検証の値をschema検証済みかつ決定論的順序のsnapshotへ変換する。 */
 export function createStateSnapshot(value: unknown): StateSnapshot {
-  return normalizeSnapshot(parseStateSnapshotVersion18Value(value));
+  return normalizeSnapshot(parseStateSnapshotVersion19Value(value));
 }
 
 /** snapshotを末尾改行付きcanonical JSONへ変換する。 */

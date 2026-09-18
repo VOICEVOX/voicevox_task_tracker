@@ -194,7 +194,7 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 正常に完了した低信頼または棄権の評価も完了結果として保持します。失敗や延期から新しい完了proofは作らず、現在の条件で未完了の要素を再試行します。
 
 汎用AIの判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨、selfCommitmentの9要素で選別します。
-入力schemaは5、出力schemaは7、snapshotは18とし、waitingOnのrevisionは3、relationsのrevisionは2、selfCommitmentのrevisionは1、その他の要素のrevisionは1とします。selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
+入力schemaは5、出力schemaは7、snapshotは19とし、waitingOnのrevisionは3、relationsのrevisionは2、selfCommitmentのrevisionは1、その他の要素のrevisionは1とします。selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
 selfCommitmentの候補は前回`observedAt`より後、今回の評価時刻以前の未編集human commentに限り、source authorとtimeline event actorが同じhumanであることを確認します。前回観測がない場合は追加推論を行いません。通知時は現在の`waitingOn`が単独のhuman userであり、そのactorと一致することを決定論的に確認し、他者、混在、不明、依存解消の原因は通知を残します。
 該当する申し出がない場合、selfCommitmentの値と根拠はともに空配列にし、正常に完了した評価として保持します。申し出がある場合は、値と根拠を同じ候補コメントのsource IDで結び付けます。
 各要素の必要性を既存の確定情報と利用箇所から判断し、必要な要素だけ保存済み結果と比較します。
@@ -257,9 +257,16 @@ JSONの構造検証に失敗したbatchは採用せず、構造検証後は原�
 初回は現在の収集結果にある責務と採用済み関係から有限個の原因を作り、意味評価が必要なものだけを選びます。列挙の完了とAI評価の成否は別に記録し、有効な採用値がなく必要性が残る未評価・失敗・延期は入力不変でも再試行します。以後は新しい原因と関連入力の変化も同じ規則で選びます。
 runtimeの分析対象に含まれる項目は、今回の代表候補に現れない未終了の旧原因も最新入力で再評価します。たとえば同じPRがreview待ちに変わった場合も、継続中のmerge原因をそのreview待ちとして評価できます。それ以外の追跡項目は前回snapshotの原因・根拠・採用済み評価を保持し、open項目の`personalReminderCausePlanning`だけを`pending`にします。取得だけでは評価完了にせず、保持する採用値を`unknown`へ書き換えません。終了済み項目の計画状態は`pending`にせず、原因がなければ`excluded`へ更新して列挙対象から除外します。
 
-前回の原因または列挙計画が関係候補を参照している場合は、その両端を収集し直します。両端と判定担当項目を今回の公開収集結果で確認できた場合だけ、原因の親項目と判定担当項目を汎用分析と個人原因の列挙へ戻します。取得できない端点がある場合は候補が消えたと判断せず、前回の原因・根拠・計画を保持します。保持値が今回の汎用分析結果と両立しない場合は、snapshotの意味検証で保存を停止します。
+前回の項目、原因、意味入力、列挙計画が関係候補を参照している場合は、保存した両端を収集し直します。原因または列挙計画の両端と判定担当項目を今回の公開収集結果で確認できた場合は、今回の候補一覧に同じ候補がなくても、原因の親項目と保存した判定担当項目を汎用分析と個人原因の列挙へ戻します。取得できない端点がある場合は、前回の原因・根拠・採用済み評価・時計を保持し、open項目の列挙計画を`pending`にします。
 
-前回の未終了原因に、項目・行動・責任主体・責務の`authority`が同じで継続一致が競合し得る複数の原因がある場合は、その項目を毎回、詳細収集と再計画へ戻します。今回の原因draftが複数の前回原因へ継続一致した場合だけ、その項目全体の前回原因・根拠・列挙計画を保持し、個人催促のAI候補から外してrunを`fallback`として診断します。毎回新しい原因draftで判定し、一致する前回原因が1件以下になれば通常計画へ戻します。永続的な除外markerは保存しません。保持状態が今回のsnapshotと両立しない場合は、既存の意味検証で保存を停止します。
+保持する原因と項目のAI依存は、最終的な項目の`applications`とactive relationへ照合します。関係候補の依存は保存したID・両端・判定担当を維持し、判定担当の最終`applications.relations`が`retained_ai`または`unavailable`なら`unverified`、`unknown`なら同じ理由を記録します。`current_ai`またはAI非依存でも、保持値に使った候補判定の現在性は証明できないため`proof_unknown`にします。今回入力と保持入力は生成時に区別し、合成が終わるまでその区別を保ちます。今回の候補依存は最終graphの判定へ、保持依存は最終適用元へ照合してから合成し、候補の再出現だけで保持値を`current`へ昇格させません。
+
+保持値に記録された`migration`と`not_recorded`は、producerを照合できても理由として残します。`proof_unknown`は入力の由来と判定担当の最終適用元から再計算します。判定担当項目がないなど、解決できないproducerがある場合は`not_recorded`を加え、解決できたproducerと理由は保持します。`stale_repository`は履歴から持ち越さず、現在もstaleと確認した専用の経路でだけ付けます。
+取得不能で保持するactiveな推定relationでは、理由を`migration`と`proof_unknown`に限ります。今回の候補に付いた`not_recorded`や`stale_repository`は、保持relationの履歴理由へ流用しません。
+
+open項目の列挙計画は`pending`にし、今回組み立て直していない値・採用済み評価・根拠・confidence・時計は保持します。この照合にはAIの追加実行を必要とせず、call上限に達した場合も行います。候補IDに対する両端や判定担当の不一致、今回使った候補や適用元の欠落は構造矛盾として例外にします。
+
+前回の未終了原因に、項目・行動・責任主体・責務の`authority`が同じで継続一致が競合し得る複数の原因がある場合は、その項目を毎回、詳細収集と再計画へ戻します。今回の原因draftが複数の前回原因へ継続一致した場合だけ、その項目全体の前回原因・根拠・採用済み評価・時計を保持し、個人催促のAI候補から外してrunを`fallback`として診断します。保持依存にも最終適用元との照合を行い、open項目の列挙計画を`pending`にします。毎回新しい原因draftで判定し、一致する前回原因が1件以下になれば通常計画へ戻します。永続的な除外markerは保存しません。
 
 ## 停滞起点の決定論性
 
@@ -475,14 +482,14 @@ semantic補正は候補1件の論理call内で行うため、追加世代を`aiC
 
 | 既定パス                                         | 内容                                                                                                                         |
 | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `state/snapshot.json`                            | 要対応度、期限日、AI状態、AI要素の適用元、値別のAI依存、trackingStartAt、個人催促の原因を含むschema version 18の最新snapshot |
+| `state/snapshot.json`                            | 要対応度、期限日、AI状態、AI要素の適用元、値別のAI依存、trackingStartAt、個人催促の原因を含むschema version 19の最新snapshot |
 | `state/history/YYYY-MM-DD.jsonl`                 | schema version 7。前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                                 |
 | `state/ai-cache/<sha256>.json`                   | 汎用AIのcontent-addressed cache                                                                                              |
 | `state/personal-reminder-ai-cache/<sha256>.json` | 個人原因ごとの意味評価cache。`state.personalReminderAiCacheDirectory`で配置先を指定する                                      |
 | `state/notification-ledger.json`                 | schema version 8。予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                         |
 | `state/run-reports/YYYY-MM-DD.json`              | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                                        |
 
-snapshot 18の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
+snapshot 19の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
 freshなopen項目の列挙が完了すれば原因0件でも`completed`にし、原因がないterminal項目だけを`excluded`にします。staleを含む分析対象外の項目は、前述の保持規則に従います。入口では旧`planningVersion`も受け入れ、現在版との不一致を再計画の選定へ渡します。
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
@@ -498,10 +505,12 @@ freshなopen項目の列挙が完了すれば原因0件でも`completed`にし�
 
 要素ごとの生成結果、正常に完了した評価、採用結果に加え、`aiAnalysis.applications`へ各AI要素の最終適用元を保存します。
 追跡項目の`aiDependencies`は、状態、待ち相手、期限、重要度、要対応度、blocker、関係集合などの最終値ごとに、AI非依存、現在入力で検証済み、未検証、proof不明を区別します。producerを識別できる依存は寄与したproducerを保持し、旧形式から識別できない依存はproducerを推測せずproof不明として保持します。関係と個人原因もそれぞれのAI依存を保存します。
+AI依存の`unknown`は、空でない`reasons`配列に理由を保存します。理由とproducerは合成時に和集合を取り、理由は重複を除いて`migration`、`not_recorded`、`proof_unknown`、`stale_repository`の順で保存します。この順序は直列化のためのもので、理由の優先度を表しません。`proof_unknown`を含む依存にはproducerが必須です。AI要素の適用元を表す`applications`は単一の`reason`を使います。
+保存時はproducerから依存を再計算し、要素ごとに許可した移行・未記録・staleの理由だけを加えた結果と照合します。`proof_unknown`を含む場合は関係候補を未判定として照合し、理由の合成によって検証済みへ変わることを防ぎます。producerのない移行値の特例は、理由が`migration`だけの場合に限ります。blocker、関係集合、下流影響、severity、attentionの依存が必要なproducerと状態を含むことも検証します。
 Pagesのsummaryとdetailsは`aiAnalysis.status`を`runStatus`として公開し、生成元のcache keyと内部producerは公開しません。
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、汎用AIと個人原因の追加cache、通知候補選別後の通知管理記録を通常stateの最初のGit commitへまとめます。個人原因の採用結果と実行状態を永続化できる前に外部通知へ進みません。
-旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 11から17を18へ移行します。snapshot 14以前の移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
+旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 11から18を19へ移行します。snapshot 18のAI依存は単一の`reason`を1要素の`reasons`配列へ変換し、値・producer・適用元・採用済み評価・根拠・時計を保持します。snapshot 14以前の移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
 読み込みやCI検証だけでは本番へ保存せず、workflowによるpushまで完了してから移行済みとします。
 移行したAIの採用値は新しい生成結果と区別し、旧generationのresult、metadata、outputHashを改変せず、再推論の失敗・延期だけで消しません。
 本人起因の通知抑制は新しいsignalからnotification keyまたは未送信候補を作る前だけに適用し、既存pendingとnotification ledgerへ今回の原因を転用しません。既存のpending、reserved、delivery_started、sent、acknowledgedは通常の有効性・送信・失効規則でだけ更新します。

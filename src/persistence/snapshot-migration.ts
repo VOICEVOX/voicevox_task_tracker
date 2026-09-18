@@ -67,6 +67,8 @@ import {
   parseStateSnapshotVersion15,
   parseStateSnapshotVersion16,
   parseStateSnapshotVersion17,
+  parseStateSnapshotVersion18,
+  type LegacyAiAnalysisDependencyVersion18,
   type LegacyPersonalReminderCause,
   type LegacyPersonalReminderCausePlanning,
   type SnapshotAnalysisPlanFingerprint,
@@ -1542,7 +1544,7 @@ function migrateVersion11StateSnapshot(source: string): StateSnapshot {
     );
     return createStateSnapshot({
       ...value,
-      schemaVersion: "18",
+      schemaVersion: "19",
       graphNodeStateObservations: [],
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
@@ -1588,7 +1590,7 @@ function migrateVersion12StateSnapshot(source: string): StateSnapshot {
     );
     return createStateSnapshot({
       ...value,
-      schemaVersion: "18",
+      schemaVersion: "19",
       graphNodeStateObservations: [],
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
@@ -1634,7 +1636,7 @@ function migrateVersion13StateSnapshot(source: string): StateSnapshot {
     );
     return createStateSnapshot({
       ...value,
-      schemaVersion: "18",
+      schemaVersion: "19",
       graphNodeStateObservations: [],
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
@@ -1701,7 +1703,7 @@ function migrateLegacyStateSnapshot(
       }),
     }));
     return createStateSnapshot({
-      schemaVersion: "18",
+      schemaVersion: "19",
       generatedAt: value.generatedAt,
       trackingStartAt: value.trackingStartAt,
       ai: value.ai,
@@ -1730,7 +1732,7 @@ function migrateVersion16StateSnapshot(source: string): StateSnapshot {
     );
     return createStateSnapshot({
       ...value,
-      schemaVersion: "18",
+      schemaVersion: "19",
       graphNodeStateObservations: [],
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
@@ -1781,7 +1783,7 @@ function migrateVersion17StateSnapshot(source: string): StateSnapshot {
     );
     return createStateSnapshot({
       ...value,
-      schemaVersion: "18",
+      schemaVersion: "19",
       graphNodeStateObservations: [],
       items: value.items.map((item) => {
         const aiState = migrateTrackedItemAiStateForNativeBlocker(
@@ -1819,7 +1821,7 @@ function migrateVersion14StateSnapshot(source: string): StateSnapshot {
     );
     return createStateSnapshot({
       ...value,
-      schemaVersion: "18",
+      schemaVersion: "19",
       graphNodeStateObservations: [],
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
@@ -1872,7 +1874,7 @@ function migrateVersion15StateSnapshot(source: string): StateSnapshot {
     );
     return createStateSnapshot({
       ...value,
-      schemaVersion: "18",
+      schemaVersion: "19",
       graphNodeStateObservations: [],
       collection: {
         repositories: value.collection.repositories.map((repository) => ({
@@ -1932,6 +1934,66 @@ function migrateVersion14PullRequestInputEvents(
   });
 }
 
+function migrateVersion18AiAnalysisDependency(
+  dependency: LegacyAiAnalysisDependencyVersion18,
+): AiAnalysisDependency {
+  if (dependency.status !== "unknown") {
+    return dependency;
+  }
+  return Object.freeze({
+    status: dependency.status,
+    reasons: Object.freeze([dependency.reason]),
+    ...(dependency.producers == null ? {} : { producers: dependency.producers }),
+  } satisfies AiAnalysisDependency);
+}
+
+function migrateVersion18StateSnapshot(source: string): StateSnapshot {
+  try {
+    const snapshot = parseStateSnapshotVersion18(source);
+    return createStateSnapshot({
+      ...snapshot,
+      schemaVersion: "19",
+      items: snapshot.items.map((item) => ({
+        ...item,
+        aiDependencies: Object.fromEntries(
+          Object.entries(item.aiDependencies).map(([element, dependency]) => [
+            element,
+            migrateVersion18AiAnalysisDependency(dependency),
+          ]),
+        ),
+        personalReminderCauses: item.personalReminderCauses.map((cause) => ({
+          ...cause,
+          aiDependencies: Object.fromEntries(
+            Object.entries(cause.aiDependencies).map(([element, dependency]) => [
+              element,
+              migrateVersion18AiAnalysisDependency(dependency),
+            ]),
+          ),
+          currentInput: {
+            ...cause.currentInput,
+            aiDependency: migrateVersion18AiAnalysisDependency(cause.currentInput.aiDependency),
+          },
+        })),
+        personalReminderCausePlanning:
+          item.personalReminderCausePlanning.status === "completed"
+            ? {
+                ...item.personalReminderCausePlanning,
+                causeSetAiDependency: migrateVersion18AiAnalysisDependency(
+                  item.personalReminderCausePlanning.causeSetAiDependency,
+                ),
+              }
+            : item.personalReminderCausePlanning,
+      })),
+      relations: snapshot.relations.map((relation) => ({
+        ...relation,
+        aiDependency: migrateVersion18AiAnalysisDependency(relation.aiDependency),
+      })),
+    });
+  } catch (error: unknown) {
+    throw migrationFormatError(error);
+  }
+}
+
 /** snapshotをschema versionに応じて現行形式へ変換する。 */
 export function migrateStateSnapshot(
   source: string,
@@ -1942,8 +2004,10 @@ export function migrateStateSnapshot(
     throw StateFormatError.fromZodError("snapshot", versionResult.error);
   }
   switch (versionResult.data.schemaVersion) {
-    case "18":
+    case "19":
       return parseStateSnapshot(source);
+    case "18":
+      return migrateVersion18StateSnapshot(source);
     case "10":
       return migrateLegacyStateSnapshot(source, legacyEntriesByCacheKey);
     case "11":

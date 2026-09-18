@@ -91,6 +91,7 @@ import type {
   AiAnalysisDependency,
   AiAnalysisDependencyElement,
   AiAnalysisDependencyProducer,
+  AiAnalysisDependencyReconciliationContext,
   TrackedItemAiDependencies,
 } from "../domain/ai-analysis-dependencies.js";
 import {
@@ -101,6 +102,8 @@ import {
   aiAnalysisDependencyForRelationCandidate,
   combineAiAnalysisDependencies,
   normalizeAiAnalysisDependency,
+  reconcileRetainedAiAnalysisDependency,
+  trackedItemAiDependenciesSchema,
 } from "../domain/ai-analysis-dependencies.js";
 import {
   createAiAnalysisElementSourceGenerationSchema,
@@ -215,6 +218,8 @@ import {
   applyPersonalReminderCauseOutcomes,
   createPersonalReminderRuntimeContext,
   planPersonalReminderCauses,
+  reconcileRetainedPersonalReminderCause,
+  reconcileRetainedPersonalReminderPlanning,
   type PersonalReminderRuntimeCollectedItem,
   type PersonalReminderRuntimeCandidateEndpointItem,
   type PersonalReminderRuntimeGraph,
@@ -1369,28 +1374,47 @@ type PreviousPersonalReminderRelationCandidateDependency = Readonly<{
   producer: PreviousRelationCandidateDependencyProducer;
 }>;
 
+function personalReminderAiDependencies(
+  item: SnapshotTrackedItem,
+): readonly AiAnalysisDependency[] {
+  return Object.freeze([
+    ...(item.personalReminderCausePlanning.status === "completed"
+      ? [item.personalReminderCausePlanning.causeSetAiDependency]
+      : []),
+    ...item.personalReminderCauses.flatMap((cause) => [
+      ...Object.values(cause.aiDependencies),
+      cause.currentInput.aiDependency,
+    ]),
+  ]);
+}
+
 function previousRelationCandidateDependencyProducers(
   state: RuntimeState,
 ): readonly PreviousRelationCandidateDependencyProducer[] {
   const producersByCandidateId = new Map<string, PreviousRelationCandidateDependencyProducer>();
-  for (const item of previousSnapshot(state)?.items ?? []) {
-    for (const element of AI_ANALYSIS_DEPENDENCY_ELEMENTS) {
-      const dependency = item.aiDependencies[element];
-      if (dependency.status === "not_dependent" || dependency.producers == null) {
+  const snapshot = previousSnapshot(state);
+  const dependencies = [
+    ...(snapshot?.items ?? []).flatMap((item) => [
+      ...Object.values(item.aiDependencies),
+      ...personalReminderAiDependencies(item),
+    ]),
+    ...(snapshot?.relations ?? []).map((relation) => relation.aiDependency),
+  ];
+  for (const dependency of dependencies) {
+    if (dependency.status === "not_dependent" || dependency.producers == null) {
+      continue;
+    }
+    for (const producer of dependency.producers) {
+      if (producer.kind !== "relation_candidate") {
         continue;
       }
-      for (const producer of dependency.producers) {
-        if (producer.kind !== "relation_candidate") {
-          continue;
-        }
-        const existing = producersByCandidateId.get(producer.candidateId);
-        if (existing != null && hashCanonicalJson(existing) !== hashCanonicalJson(producer)) {
-          throw new TypeError(
-            `前回snapshotのrelation candidate producer定義が一致しません。対象: ${producer.candidateId}`,
-          );
-        }
-        producersByCandidateId.set(producer.candidateId, producer);
+      const existing = producersByCandidateId.get(producer.candidateId);
+      if (existing != null && hashCanonicalJson(existing) !== hashCanonicalJson(producer)) {
+        throw new TypeError(
+          `前回snapshotのrelation candidate producer定義が一致しません。対象: ${producer.candidateId}`,
+        );
       }
+      producersByCandidateId.set(producer.candidateId, producer);
     }
   }
   return Object.freeze([...producersByCandidateId.values()]);
@@ -1405,19 +1429,7 @@ function previousPersonalReminderRelationCandidateDependencies(
     PreviousPersonalReminderRelationCandidateDependency
   >();
   for (const item of previousSnapshot(state)?.items ?? []) {
-    const dependencies: readonly AiAnalysisDependency[] = [
-      ...(item.personalReminderCausePlanning.status === "completed"
-        ? [item.personalReminderCausePlanning.causeSetAiDependency]
-        : []),
-      ...item.personalReminderCauses.flatMap((cause) => [
-        cause.aiDependencies.presence,
-        cause.aiDependencies.responseMembership,
-        cause.aiDependencies.responsible,
-        cause.aiDependencies.action,
-        cause.aiDependencies.evidence,
-        cause.currentInput.aiDependency,
-      ]),
-    ];
+    const dependencies = personalReminderAiDependencies(item);
     for (const dependency of dependencies) {
       if (dependency.status === "not_dependent" || dependency.producers == null) {
         continue;
@@ -1487,7 +1499,7 @@ function previousStaleRepositoryBlockerTopologyNodeIds(
   for (const item of previousSnapshot(state)?.items ?? []) {
     const hasMarker = STALE_BLOCKER_TOPOLOGY_DEPENDENCY_ELEMENTS.every((element) => {
       const dependency = item.aiDependencies[element];
-      return dependency.status === "unknown" && dependency.reason === "stale_repository";
+      return dependency.status === "unknown" && dependency.reasons.includes("stale_repository");
     });
     if (hasMarker) {
       nodeIds.add(item.nodeId);
@@ -9074,49 +9086,38 @@ function notDependentAiDependency(): AiAnalysisDependency {
 function unrecordedAiDependency(): AiAnalysisDependency {
   return Object.freeze({
     status: "unknown",
-    reason: "not_recorded",
-  });
+    reasons: Object.freeze(["not_recorded"]),
+  } satisfies AiAnalysisDependency);
 }
 
 function staleRepositoryAiDependency(): AiAnalysisDependency {
   return Object.freeze({
     status: "unknown",
-    reason: "stale_repository",
-  });
+    reasons: Object.freeze(["stale_repository"]),
+  } satisfies AiAnalysisDependency);
+}
+
+function historicalAiDependencyHistory(
+  dependency: AiAnalysisDependency,
+): readonly AiAnalysisDependency[] {
+  const reasons =
+    dependency.status === "unknown"
+      ? dependency.reasons.filter((reason) => reason === "migration" || reason === "not_recorded")
+      : [];
+  const [firstReason, ...remainingReasons] = reasons;
+  return firstReason == null
+    ? []
+    : [
+        normalizeAiAnalysisDependency({
+          status: "unknown",
+          reasons: [firstReason, ...remainingReasons],
+        }),
+      ];
 }
 
 function historicalAiDependencyFallback(dependency: AiAnalysisDependency): AiAnalysisDependency {
-  if (dependency.status === "unknown" && dependency.reason === "migration") {
-    return Object.freeze({
-      status: "unknown",
-      reason: "migration",
-    });
-  }
-  return unrecordedAiDependency();
-}
-
-function historicalAiDependencyMatchesExpected(
-  dependency: AiAnalysisDependency,
-  expectedDependency: AiAnalysisDependency,
-): boolean {
-  if (hashCanonicalJson(dependency) === hashCanonicalJson(expectedDependency)) {
-    return true;
-  }
-  if (
-    dependency.status !== "unknown" ||
-    dependency.reason === "proof_unknown" ||
-    dependency.reason === "stale_repository"
-  ) {
-    return false;
-  }
-  const expectedWithHiddenReason = combineAiAnalysisDependencies([
-    expectedDependency,
-    Object.freeze({
-      status: "unknown",
-      reason: dependency.reason,
-    }),
-  ]);
-  return hashCanonicalJson(dependency) === hashCanonicalJson(expectedWithHiddenReason);
+  const history = historicalAiDependencyHistory(dependency);
+  return history.length === 0 ? unrecordedAiDependency() : combineAiAnalysisDependencies(history);
 }
 
 function revalidatedHistoricalAiDependencyForExpected(
@@ -9124,9 +9125,27 @@ function revalidatedHistoricalAiDependencyForExpected(
   expectedDependency: AiAnalysisDependency,
 ): AiAnalysisDependency {
   const normalizedDependency = normalizeAiAnalysisDependency(dependency);
-  return historicalAiDependencyMatchesExpected(normalizedDependency, expectedDependency)
-    ? normalizedDependency
-    : historicalAiDependencyFallback(normalizedDependency);
+  if (normalizedDependency.status === "not_dependent") {
+    return normalizedDependency;
+  }
+  if (normalizedDependency.producers == null) {
+    return historicalAiDependencyFallback(normalizedDependency);
+  }
+  if (
+    expectedDependency.status === "not_dependent" ||
+    expectedDependency.producers == null ||
+    hashCanonicalJson(normalizedDependency.producers) !==
+      hashCanonicalJson(expectedDependency.producers)
+  ) {
+    return combineAiAnalysisDependencies([
+      ...historicalAiDependencyHistory(normalizedDependency),
+      unrecordedAiDependency(),
+    ]);
+  }
+  return combineAiAnalysisDependencies([
+    expectedDependency,
+    ...historicalAiDependencyHistory(normalizedDependency),
+  ]);
 }
 
 function revalidatedHistoricalAiDependency(
@@ -9134,33 +9153,11 @@ function revalidatedHistoricalAiDependency(
   applications: TrackedItemAiAnalysisApplications,
   dependency: AiAnalysisDependency,
 ): AiAnalysisDependency {
-  const normalizedDependency = normalizeAiAnalysisDependency(dependency);
-  if (
-    normalizedDependency.status === "unknown" &&
-    normalizedDependency.reason === "stale_repository"
-  ) {
-    return historicalAiDependencyFallback(normalizedDependency);
-  }
-  if (normalizedDependency.status === "not_dependent") {
-    return normalizedDependency;
-  }
-  const producers = normalizedDependency.producers;
-  if (producers == null) {
-    return normalizedDependency;
-  }
-  const selfItemElementProducers = producers.filter(
-    (producer): producer is Extract<AiAnalysisDependencyProducer, { kind: "item_element" }> =>
-      producer.kind === "item_element" && producer.nodeId === nodeId,
-  );
-  if (selfItemElementProducers.length !== producers.length) {
-    return historicalAiDependencyFallback(normalizedDependency);
-  }
-  const expectedDependency = combineAiAnalysisDependencies(
-    selfItemElementProducers.map((producer) =>
-      aiDependencyForElementApplication(nodeId, applications, producer.element),
-    ),
-  );
-  return revalidatedHistoricalAiDependencyForExpected(normalizedDependency, expectedDependency);
+  return reconcileRetainedAiAnalysisDependency(dependency, {
+    applicationsByNodeId: new Map([[nodeId, applications]]),
+    relationsById: new Map(),
+    candidatesById: new Map(),
+  });
 }
 
 type RetainedBlockerValueAiDependencies = Readonly<{
@@ -9174,14 +9171,45 @@ type RetainedBlockerValueAiDependencies = Readonly<{
   blockerStateRetainedWithoutCurrentTopology: boolean;
 }>;
 
-type CurrentAiDependencyContext = Readonly<{
-  applicationsByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemAiAnalysisApplications>;
-  relationsById: ReadonlyMap<string, ReconciledGraphEdge>;
-  relationCandidateAiDependencies: ReadonlyMap<string, AiAnalysisDependency>;
-  openNodeIds: ReadonlySet<GraphNodeId>;
-  nativeOpenBlockerNodeIdsByTargetNodeId: ReadonlyMap<GraphNodeId, ReadonlySet<GraphNodeId>>;
-  blockerValueDependenciesByNodeId: ReadonlyMap<GraphNodeId, RetainedBlockerValueAiDependencies>;
-}>;
+function aiDependencyReconciliationContext(
+  items: readonly PendingTrackedItem[],
+  candidates: readonly RelationCandidate[],
+  graph: Pick<GraphResult, "edges" | "relationCandidateAiDependencies">,
+): AiAnalysisDependencyReconciliationContext {
+  const definitionsById = currentRelationCandidatesById(candidates);
+  return Object.freeze({
+    applicationsByNodeId: new Map(items.map((item) => [item.nodeId, item.aiAnalysis.applications])),
+    relationsById: new Map(graph.edges.map((edge) => [edge.id, edge])),
+    candidatesById: new Map(
+      [...graph.relationCandidateAiDependencies].map(([candidateId, dependency]) => {
+        const definition = definitionsById.get(candidateId);
+        assertNonNullable(
+          definition,
+          `現在のrelation candidate定義がありません。対象: ${candidateId}`,
+        );
+        return [
+          candidateId,
+          Object.freeze({
+            ...definition,
+            aiDependency: aiAnalysisDependencyForRelationCandidate(
+              candidateId,
+              definition.endpointNodeIds,
+              dependency,
+            ),
+          }),
+        ];
+      }),
+    ),
+  });
+}
+
+type CurrentAiDependencyContext = Omit<AiAnalysisDependencyReconciliationContext, "relationsById"> &
+  Readonly<{
+    relationsById: ReadonlyMap<string, ReconciledGraphEdge>;
+    openNodeIds: ReadonlySet<GraphNodeId>;
+    nativeOpenBlockerNodeIdsByTargetNodeId: ReadonlyMap<GraphNodeId, ReadonlySet<GraphNodeId>>;
+    blockerValueDependenciesByNodeId: ReadonlyMap<GraphNodeId, RetainedBlockerValueAiDependencies>;
+  }>;
 
 function retainedElementUsesBlockerDependency(element: AiAnalysisDependencyElement): boolean {
   return (
@@ -9236,7 +9264,6 @@ function retainedBlockerItemElementProducerIsValid(
 
 function currentAiDependencyForProducer(
   producer: AiAnalysisDependencyProducer,
-  containingDependency: AiAnalysisDependency,
   itemNodeId: GitHubNodeId,
   element: AiAnalysisDependencyElement,
   context: CurrentAiDependencyContext,
@@ -9286,32 +9313,9 @@ function currentAiDependencyForProducer(
       if (usesBlockerDependency && !producer.endpointNodeIds.includes(itemNodeId)) {
         return undefined;
       }
-      if (context.relationsById.get(producer.candidateId)?.active === true) {
-        return undefined;
-      }
-      const graphDependency = context.relationCandidateAiDependencies.get(producer.candidateId);
-      if (graphDependency == null) {
-        return undefined;
-      }
-      let dependency = graphDependency;
-      if (
-        containingDependency.status === "unknown" &&
-        containingDependency.reason === "proof_unknown" &&
-        (dependency.status === "current" || dependency.status === "not_dependent")
-      ) {
-        const applications = context.applicationsByNodeId.get(producer.producer.nodeId);
-        if (applications == null) {
-          return undefined;
-        }
-        dependency = aiAnalysisDependencyForMissingRelationCandidateAssessment(
-          producer.producer.nodeId,
-          applications.relations,
-        );
-      }
-      return aiAnalysisDependencyForRelationCandidate(
-        producer.candidateId,
-        producer.endpointNodeIds,
-        dependency,
+      return reconcileRetainedAiAnalysisDependency(
+        Object.freeze({ status: "current", producers: Object.freeze([producer]) }),
+        context,
       );
     }
     default:
@@ -9326,29 +9330,17 @@ function revalidatedHistoricalAiDependencyWithCurrentContext(
   context: CurrentAiDependencyContext,
 ): AiAnalysisDependency {
   const normalizedDependency = normalizeAiAnalysisDependency(dependency);
-  if (
-    normalizedDependency.status === "unknown" &&
-    normalizedDependency.reason === "stale_repository"
-  ) {
-    return historicalAiDependencyFallback(normalizedDependency);
-  }
   if (normalizedDependency.status === "not_dependent") {
     return normalizedDependency;
   }
   const producers = normalizedDependency.producers;
   if (producers == null) {
-    return normalizedDependency;
+    return historicalAiDependencyFallback(normalizedDependency);
   }
   const resolvedDependencies: AiAnalysisDependency[] = [];
   let allProducersResolved = true;
   for (const producer of producers) {
-    const resolved = currentAiDependencyForProducer(
-      producer,
-      normalizedDependency,
-      itemNodeId,
-      element,
-      context,
-    );
+    const resolved = currentAiDependencyForProducer(producer, itemNodeId, element, context);
     if (resolved == null || resolved.status === "not_dependent" || resolved.producers == null) {
       allProducersResolved = false;
       continue;
@@ -9357,18 +9349,16 @@ function revalidatedHistoricalAiDependencyWithCurrentContext(
   }
   if (allProducersResolved) {
     const expectedDependency = combineAiAnalysisDependencies(resolvedDependencies);
-    if (historicalAiDependencyMatchesExpected(normalizedDependency, expectedDependency)) {
-      return normalizedDependency;
-    }
     return combineAiAnalysisDependencies([
       expectedDependency,
-      historicalAiDependencyFallback(normalizedDependency),
+      ...historicalAiDependencyHistory(normalizedDependency),
     ]);
   }
-  const fallback = historicalAiDependencyFallback(normalizedDependency);
-  return resolvedDependencies.length === 0
-    ? fallback
-    : combineAiAnalysisDependencies([...resolvedDependencies, fallback]);
+  return combineAiAnalysisDependencies([
+    ...resolvedDependencies,
+    ...historicalAiDependencyHistory(normalizedDependency),
+    unrecordedAiDependency(),
+  ]);
 }
 
 function currentDirectAiDependencyForRetainedElement(
@@ -9537,13 +9527,7 @@ function currentRetainedItemElementDependencies(
     if (producer.kind !== "item_element") {
       continue;
     }
-    const current = currentAiDependencyForProducer(
-      producer,
-      dependency,
-      item.nodeId,
-      element,
-      context,
-    );
+    const current = currentAiDependencyForProducer(producer, item.nodeId, element, context);
     if (current != null && current.status !== "not_dependent" && current.producers != null) {
       dependencies.push(current);
     }
@@ -9620,7 +9604,8 @@ function revalidatedRetainedTrackedItemAiDependency(
   if (
     (element === "status" || element === "waitingOn" || element === "nextAction") &&
     revalidated.status === "unknown" &&
-    revalidated.reason === "migration" &&
+    revalidated.reasons.length === 1 &&
+    revalidated.reasons[0] === "migration" &&
     revalidated.producers == null
   ) {
     return unrecordedAiDependency();
@@ -12233,8 +12218,38 @@ function reduceAnalysisPass(
   if (stalenessByNodeId.size !== items.length) {
     throw new TypeError("全追跡項目のseverityを再計算できませんでした");
   }
+  const dependencyContext =
+    graph == null
+      ? undefined
+      : aiDependencyReconciliationContext(items, collection.relationCandidates, graph);
+  const normalizedItems = items.map((item) => {
+    if (dependencyContext == null || currentNodeIds.has(item.nodeId)) {
+      return item;
+    }
+    return Object.freeze({
+      ...item,
+      aiDependencies: Object.freeze(
+        trackedItemAiDependenciesSchema.parse(
+          Object.fromEntries(
+            AI_ANALYSIS_DEPENDENCY_ELEMENTS.map((element) => [
+              element,
+              item.aiDependencies[element].status !== "not_dependent" &&
+              item.aiDependencies[element].producers?.some(
+                (producer) => producer.kind === "relation_candidate",
+              ) === true
+                ? reconcileRetainedAiAnalysisDependency(
+                    item.aiDependencies[element],
+                    dependencyContext,
+                  )
+                : item.aiDependencies[element],
+            ]),
+          ),
+        ),
+      ),
+    });
+  });
   return Object.freeze({
-    items: Object.freeze(items),
+    items: Object.freeze(normalizedItems),
     currentItems: Object.freeze(currentItems),
     stalenessByNodeId,
     relationAssessments: Object.freeze(relationAssessments),
@@ -12585,7 +12600,9 @@ function downgradedPreservedRelationDependency(
 ): AiAnalysisDependency | undefined {
   if (
     currentDependency?.status === "unknown" &&
-    (currentDependency.reason === "proof_unknown" || currentDependency.reason === "migration") &&
+    currentDependency.reasons.every(
+      (reason) => reason === "proof_unknown" || reason === "migration",
+    ) &&
     currentDependency.producers != null
   ) {
     return currentDependency;
@@ -12601,15 +12618,20 @@ function downgradedPreservedRelationDependency(
   if (producers == null) {
     return undefined;
   }
-  const reason =
-    currentDependency?.status === "unknown" && currentDependency.reason === "migration"
-      ? "migration"
-      : "proof_unknown";
-  return normalizeAiAnalysisDependency({
+  const proofUnknown: AiAnalysisDependency = Object.freeze({
     status: "unknown",
-    reason,
+    reasons: Object.freeze(["proof_unknown"]),
     producers,
-  });
+  } satisfies AiAnalysisDependency);
+  return currentDependency?.status === "unknown" && currentDependency.reasons.includes("migration")
+    ? combineAiAnalysisDependencies([
+        proofUnknown,
+        Object.freeze({
+          status: "unknown",
+          reasons: Object.freeze(["migration"]),
+        } satisfies AiAnalysisDependency),
+      ])
+    : normalizeAiAnalysisDependency(proofUnknown);
 }
 
 function activeProofForPreservedEdge(
@@ -13193,7 +13215,7 @@ function relationAiDependenciesForCandidates(
         (node) => node.nodeId === ownerNodeId,
       );
       assertNonNullable(ownerNode, `関係候補 ${candidate.id}のowner nodeがありません`);
-      dependencies.set(candidate.id, Object.freeze({ status: "unknown", reason: "not_recorded" }));
+      dependencies.set(candidate.id, unrecordedAiDependency());
       continue;
     }
     const assessment = assessmentsByCandidateId.get(candidate.id);
@@ -14569,15 +14591,15 @@ type PersonalReminderRelationCandidateSelection = Readonly<{
   unavailableConsumerNodeIds: ReadonlySet<GitHubNodeId>;
 }>;
 
-type CurrentPersonalReminderRelationCandidate = Readonly<{
+type CurrentRelationCandidate = Readonly<{
   endpointNodeIds: readonly [GraphNodeId, GraphNodeId];
   ownerNodeId: GraphNodeId;
 }>;
 
-function currentPersonalReminderRelationCandidatesById(
+function currentRelationCandidatesById(
   relationCandidates: readonly RelationCandidate[],
-): ReadonlyMap<string, CurrentPersonalReminderRelationCandidate> {
-  const candidatesById = new Map<string, CurrentPersonalReminderRelationCandidate>();
+): ReadonlyMap<string, CurrentRelationCandidate> {
+  const candidatesById = new Map<string, CurrentRelationCandidate>();
   for (const candidate of relationCandidates) {
     const [firstNode, secondNode] = relationNodes(candidate.relation);
     const endpointNodeIds: readonly [GraphNodeId, GraphNodeId] = [
@@ -14598,9 +14620,7 @@ function currentPersonalReminderRelationCandidatesById(
       existing.endpointNodeIds[1] !== normalized.endpointNodeIds[1] ||
       existing.ownerNodeId !== normalized.ownerNodeId
     ) {
-      throw new TypeError(
-        `現在のpersonal reminder relation candidate定義が一致しません。対象: ${candidate.id}`,
-      );
+      throw new TypeError(`現在のrelation candidate定義が一致しません。対象: ${candidate.id}`);
     }
   }
   return candidatesById;
@@ -14612,9 +14632,7 @@ function selectPersonalReminderRelationCandidateConsumers(
   trackedNodeIds: ReadonlySet<GitHubNodeId>,
 ): PersonalReminderRelationCandidateSelection {
   const endpointAvailabilityByNodeId = personalReminderEndpointAvailabilityByNodeId(collection);
-  const currentCandidatesById = currentPersonalReminderRelationCandidatesById(
-    collection.relationCandidates,
-  );
+  const currentCandidatesById = currentRelationCandidatesById(collection.relationCandidates);
   const freshObservedNodeIds = new Set<GitHubNodeId>(
     collection.observedItems.map((item) => item.nodeId),
   );
@@ -14649,25 +14667,23 @@ function selectPersonalReminderRelationCandidateConsumers(
       selection.available = false;
     }
     const currentCandidate = currentCandidatesById.get(dependency.producer.candidateId);
-    if (currentCandidate == null) {
-      continue;
-    }
     const previousEndpointNodeIds = normalizedBlockerRelationEndpointNodeIds(
       dependency.producer.endpointNodeIds,
     );
     if (
-      currentCandidate.endpointNodeIds[0] !== previousEndpointNodeIds[0] ||
-      currentCandidate.endpointNodeIds[1] !== previousEndpointNodeIds[1] ||
-      currentCandidate.ownerNodeId !== dependency.producer.producer.nodeId
+      currentCandidate != null &&
+      (currentCandidate.endpointNodeIds[0] !== previousEndpointNodeIds[0] ||
+        currentCandidate.endpointNodeIds[1] !== previousEndpointNodeIds[1] ||
+        currentCandidate.ownerNodeId !== dependency.producer.producer.nodeId)
     ) {
       throw new TypeError(
         `前回と現在のpersonal reminder relation candidate定義が一致しません。対象: ${dependency.producer.candidateId}`,
       );
     }
     const ownerItem = collection.observedItems.find(
-      (item) => item.nodeId === currentCandidate.ownerNodeId,
+      (item) => item.nodeId === dependency.producer.producer.nodeId,
     );
-    if (ownerItem == null || !trackedGraphNodeIds.has(currentCandidate.ownerNodeId)) {
+    if (ownerItem == null || !trackedGraphNodeIds.has(ownerItem.nodeId)) {
       selection.available = false;
       continue;
     }
@@ -14940,6 +14956,11 @@ async function analyzePersonalReminders(
     state: personalReminderPreviousState(state),
     collection: runtimeCollection.collection,
     graph: runtimeGraph,
+    aiDependencyContext: aiDependencyReconciliationContext(
+      reduction.items,
+      collection.relationCandidates,
+      graph,
+    ),
     snapshotEvidenceSourceIds,
   });
   const plan = planPersonalReminderCauses(context);
@@ -15072,31 +15093,23 @@ async function analyzePersonalReminders(
       previous,
       `個人催促runtime対象外の前回項目がありません。対象: ${item.nodeId}`,
     );
-    const causes = previous.personalReminderCauses;
+    const causes = Object.freeze(
+      previous.personalReminderCauses.map((cause) =>
+        reconcileRetainedPersonalReminderCause(cause, context.aiDependencyContext),
+      ),
+    );
     causesByNodeId.set(item.nodeId, causes);
     evidenceByNodeId.set(item.nodeId, previous.evidence);
-    if (personalReminderFallbackNodeIds.has(item.nodeId)) {
-      planningByNodeId.set(item.nodeId, previous.personalReminderCausePlanning);
-    } else if (item.state === "open") {
-      planningByNodeId.set(
-        item.nodeId,
-        Object.freeze({
-          status: "pending",
-          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
-        }),
-      );
-    } else if (causes.length === 0) {
-      planningByNodeId.set(
-        item.nodeId,
-        Object.freeze({
-          status: "excluded",
-          planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
-          reason: "terminal_without_cause",
-        }),
-      );
-    } else {
-      planningByNodeId.set(item.nodeId, previous.personalReminderCausePlanning);
-    }
+    planningByNodeId.set(
+      item.nodeId,
+      reconcileRetainedPersonalReminderPlanning(
+        item.state,
+        item.observedAt,
+        previous.personalReminderCausePlanning,
+        causes,
+        context.aiDependencyContext,
+      ),
+    );
   }
   for (const [nodeId, causes] of application.causesByNodeId) {
     causesByNodeId.set(nodeId, causes);
@@ -15106,12 +15119,6 @@ async function analyzePersonalReminders(
   }
   for (const item of runtimeCollection.collection.items) {
     if (continuityConflictNodeIds.has(item.item.nodeId)) {
-      const previous = previousItemsByNodeId.get(item.item.nodeId);
-      assertNonNullable(
-        previous,
-        `個人催促の継続競合対象の前回項目がありません。対象: ${item.item.nodeId}`,
-      );
-      planningByNodeId.set(item.item.nodeId, previous.personalReminderCausePlanning);
       continue;
     }
     const causes = causesByNodeId.get(item.item.nodeId);
@@ -15127,7 +15134,11 @@ async function analyzePersonalReminders(
       `個人催促causeの計画結果がありません。対象: ${item.item.nodeId}`,
     );
     let planning: SnapshotTrackedItem["personalReminderCausePlanning"];
-    if (item.completeness.status === "incomplete") {
+    if (
+      item.item.state === "open" &&
+      (item.completeness.status === "incomplete" ||
+        plan.unrecordedDependencyNodeIds.has(item.item.nodeId))
+    ) {
       planning = Object.freeze({
         status: "pending",
         planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
@@ -15265,17 +15276,9 @@ function validateRunCompleteness(
     "relation集合AI依存",
   );
   const currentAiDependencyContext: CurrentAiDependencyContext = Object.freeze({
-    applicationsByNodeId: new Map(
-      reduction.items.map((item): [GitHubNodeId, TrackedItemAiAnalysisApplications] => [
-        item.nodeId,
-        item.aiAnalysis.applications,
-      ]),
-    ),
+    ...aiDependencyReconciliationContext(reduction.items, collection.relationCandidates, graph),
     relationsById: new Map(
       graph.edges.map((edge): [string, ReconciledGraphEdge] => [edge.id, edge]),
-    ),
-    relationCandidateAiDependencies: new Map<string, AiAnalysisDependency>(
-      graph.relationCandidateAiDependencies,
     ),
     openNodeIds: graph.openNodeIds,
     nativeOpenBlockerNodeIdsByTargetNodeId: nativeOpenBlockerNodeIdsByTargetNodeId(graph),
@@ -15364,7 +15367,7 @@ function validateRunCompleteness(
   });
   const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
   const snapshot = createStateSnapshot({
-    schemaVersion: "18",
+    schemaVersion: "19",
     generatedAt: collection.evaluatedAt,
     trackingStartAt: pendingSnapshotTrackingStartAt(configuration, state, collection.evaluatedAt),
     ai: snapshotAiState(configuration.config, codexAnalysis),

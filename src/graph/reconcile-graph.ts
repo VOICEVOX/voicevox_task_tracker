@@ -482,7 +482,7 @@ function validateInferredRelationAiDependency(
   if (dependency.status === "not_dependent") {
     throw new TypeError(`推定relation ${candidate.id}のAI依存はnot_dependentにできません`);
   }
-  if (dependency.status === "unknown" && dependency.reason === "stale_repository") {
+  if (dependency.status === "unknown" && dependency.reasons.includes("stale_repository")) {
     throw new TypeError(`推定relation ${candidate.id}にstale repository AI依存は指定できません`);
   }
   const producers = dependency.producers;
@@ -490,7 +490,8 @@ function validateInferredRelationAiDependency(
     if (
       allowProducerlessNotRecorded &&
       dependency.status === "unknown" &&
-      dependency.reason === "not_recorded"
+      dependency.reasons.length === 1 &&
+      dependency.reasons[0] === "not_recorded"
     ) {
       return;
     }
@@ -541,7 +542,8 @@ function validatePreviousEdgeCandidateIdentity(
   const dependency = previousEdge.aiDependency;
   if (
     dependency.status === "unknown" &&
-    dependency.reason === "migration" &&
+    dependency.reasons.length === 1 &&
+    dependency.reasons[0] === "migration" &&
     dependency.producers == null
   ) {
     return;
@@ -719,7 +721,11 @@ function validatePreviousEdge(edge: ReconciledGraphEdge, reconciledAt: UtcIsoDat
     edge.provenance !== "native" &&
     edge.aiDependency.status !== "not_dependent" &&
     edge.aiDependency.producers == null &&
-    !(edge.aiDependency.status === "unknown" && edge.aiDependency.reason === "migration")
+    !(
+      edge.aiDependency.status === "unknown" &&
+      edge.aiDependency.reasons.length === 1 &&
+      edge.aiDependency.reasons[0] === "migration"
+    )
   ) {
     throw new TypeError(`active inferred edge ${edge.id}のAI依存producerがありません`);
   }

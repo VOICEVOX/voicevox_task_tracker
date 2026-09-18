@@ -1,0 +1,215 @@
+{
+  "aiAnalysisDependency": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "const": "not_dependent"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "producers"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "current",
+              "unverified"
+            ]
+          },
+          "producers": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/aiAnalysisDependencyProducer"
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "reason"
+        ],
+        "properties": {
+          "status": {
+            "const": "unknown"
+          },
+          "reason": {
+            "enum": [
+              "migration",
+              "not_recorded",
+              "stale_repository"
+            ]
+          },
+          "producers": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/aiAnalysisDependencyProducer"
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "status",
+          "reason",
+          "producers"
+        ],
+        "properties": {
+          "status": {
+            "const": "unknown"
+          },
+          "reason": {
+            "const": "proof_unknown"
+          },
+          "producers": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/aiAnalysisDependencyProducer"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "aiAnalysisDependencyProducer": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "nodeId",
+          "element"
+        ],
+        "properties": {
+          "kind": {
+            "const": "item_element"
+          },
+          "nodeId": {
+            "$ref": "#/$defs/identifier"
+          },
+          "element": {
+            "enum": [
+              "status",
+              "waitingOn",
+              "nextAction",
+              "relations",
+              "progress",
+              "importance",
+              "deadline",
+              "notification",
+              "selfCommitment"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "relationId",
+          "producer"
+        ],
+        "properties": {
+          "kind": {
+            "const": "relation"
+          },
+          "relationId": {
+            "$ref": "#/$defs/identifier"
+          },
+          "producer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "nodeId",
+              "element"
+            ],
+            "properties": {
+              "nodeId": {
+                "$ref": "#/$defs/identifier"
+              },
+              "element": {
+                "enum": [
+                  "status",
+                  "waitingOn",
+                  "nextAction",
+                  "relations",
+                  "progress",
+                  "importance",
+                  "deadline",
+                  "notification",
+                  "selfCommitment"
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "candidateId",
+          "endpointNodeIds",
+          "producer"
+        ],
+        "properties": {
+          "kind": {
+            "const": "relation_candidate"
+          },
+          "candidateId": {
+            "$ref": "#/$defs/identifier"
+          },
+          "endpointNodeIds": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/identifier"
+            }
+          },
+          "producer": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "nodeId",
+              "element"
+            ],
+            "properties": {
+              "nodeId": {
+                "$ref": "#/$defs/identifier"
+              },
+              "element": {
+                "const": "relations"
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

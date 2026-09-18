@@ -19,7 +19,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": "18"
+      "const": "19"
     },
     "generatedAt": {
       "$ref": "#/$defs/dateTime"
@@ -3604,7 +3604,9 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status"],
+          "required": [
+            "status"
+          ],
           "properties": {
             "status": {
               "const": "not_dependent"
@@ -3614,10 +3616,16 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "producers"],
+          "required": [
+            "status",
+            "producers"
+          ],
           "properties": {
             "status": {
-              "enum": ["current", "unverified"]
+              "enum": [
+                "current",
+                "unverified"
+              ]
             },
             "producers": {
               "type": "array",
@@ -3632,13 +3640,54 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "reason"],
+          "required": [
+            "status",
+            "reasons"
+          ],
           "properties": {
             "status": {
               "const": "unknown"
             },
-            "reason": {
-              "enum": ["migration", "not_recorded", "stale_repository"]
+            "reasons": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "migration",
+                  "not_recorded",
+                  "proof_unknown",
+                  "stale_repository"
+                ]
+              },
+              "enum": [
+                [
+                  "migration"
+                ],
+                [
+                  "not_recorded"
+                ],
+                [
+                  "migration",
+                  "not_recorded"
+                ],
+                [
+                  "stale_repository"
+                ],
+                [
+                  "migration",
+                  "stale_repository"
+                ],
+                [
+                  "not_recorded",
+                  "stale_repository"
+                ],
+                [
+                  "migration",
+                  "not_recorded",
+                  "stale_repository"
+                ]
+              ]
             },
             "producers": {
               "type": "array",
@@ -3653,13 +3702,65 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["status", "reason", "producers"],
+          "required": [
+            "status",
+            "reasons",
+            "producers"
+          ],
           "properties": {
             "status": {
               "const": "unknown"
             },
-            "reason": {
-              "const": "proof_unknown"
+            "reasons": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "migration",
+                  "not_recorded",
+                  "proof_unknown",
+                  "stale_repository"
+                ]
+              },
+              "enum": [
+                [
+                  "proof_unknown"
+                ],
+                [
+                  "migration",
+                  "proof_unknown"
+                ],
+                [
+                  "not_recorded",
+                  "proof_unknown"
+                ],
+                [
+                  "migration",
+                  "not_recorded",
+                  "proof_unknown"
+                ],
+                [
+                  "proof_unknown",
+                  "stale_repository"
+                ],
+                [
+                  "migration",
+                  "proof_unknown",
+                  "stale_repository"
+                ],
+                [
+                  "not_recorded",
+                  "proof_unknown",
+                  "stale_repository"
+                ],
+                [
+                  "migration",
+                  "not_recorded",
+                  "proof_unknown",
+                  "stale_repository"
+                ]
+              ]
             },
             "producers": {
               "type": "array",

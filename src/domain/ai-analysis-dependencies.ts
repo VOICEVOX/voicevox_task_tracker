@@ -4,9 +4,10 @@ import {
   aiAnalysisElementSchema,
   type AiAnalysisElement,
   type AiAnalysisElementApplication,
+  type AiAnalysisElementApplications,
 } from "./ai-analysis-elements.js";
 import type { GitHubNodeId, GraphNodeId } from "./types.js";
-import { UnreachableError } from "../util/index.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 
 const githubNodeIdSchema = z.string().min(1).regex(/^\S+$/u).brand<"GitHubNodeId">();
 
@@ -68,8 +69,20 @@ export type AiAnalysisDependencyProducer =
       }>;
     }>;
 
-export type AiAnalysisDependencyUnknownReason =
-  "migration" | "not_recorded" | "proof_unknown" | "stale_repository";
+const aiAnalysisDependencyUnknownReasonSchema = z.enum([
+  "migration",
+  "not_recorded",
+  "proof_unknown",
+  "stale_repository",
+]);
+
+const AI_ANALYSIS_DEPENDENCY_UNKNOWN_REASONS = Object.freeze(
+  aiAnalysisDependencyUnknownReasonSchema.options,
+);
+
+export type AiAnalysisDependencyUnknownReason = z.output<
+  typeof aiAnalysisDependencyUnknownReasonSchema
+>;
 
 export type AiAnalysisDependency =
   | Readonly<{
@@ -85,18 +98,47 @@ export type AiAnalysisDependency =
     }>
   | Readonly<{
       status: "unknown";
-      reason: "migration" | "not_recorded" | "stale_repository";
+      reasons: readonly [AiAnalysisDependencyUnknownReason, ...AiAnalysisDependencyUnknownReason[]];
       producers?: readonly AiAnalysisDependencyProducer[] | undefined;
-    }>
-  | Readonly<{
-      status: "unknown";
-      reason: "proof_unknown";
-      producers: readonly AiAnalysisDependencyProducer[];
     }>;
 
 export type TrackedItemAiDependencies = Readonly<
   Record<AiAnalysisDependencyElement, AiAnalysisDependency>
 >;
+
+/** 保持したAI依存を最終適用元へ照合するための参照集合。 */
+export type AiAnalysisDependencyReconciliationContext = Readonly<{
+  applicationsByNodeId: ReadonlyMap<GitHubNodeId, AiAnalysisElementApplications>;
+  relationsById: ReadonlyMap<
+    string,
+    Readonly<{
+      active: boolean;
+      fromNodeId: GraphNodeId;
+      toNodeId: GraphNodeId;
+      aiDependency: AiAnalysisDependency;
+    }>
+  >;
+  candidatesById: ReadonlyMap<
+    string,
+    Readonly<{
+      endpointNodeIds: readonly [GraphNodeId, GraphNodeId];
+      ownerNodeId: GraphNodeId;
+      aiDependency: AiAnalysisDependency;
+    }>
+  >;
+}>;
+
+/** 最終合成まで保持する入力の由来と候補判定の利用方法。 */
+export type AiAnalysisDependencyInput =
+  | Readonly<{
+      origin: "current";
+      dependency: AiAnalysisDependency;
+      relationCandidateAssessment: "graph" | "missing";
+    }>
+  | Readonly<{
+      origin: "retained";
+      dependency: AiAnalysisDependency;
+    }>;
 
 const dependencyProducerBaseSchema = z.strictObject({
   nodeId: githubNodeIdSchema,
@@ -184,28 +226,34 @@ const dependencyProducersSchema = z
     }
   });
 
-const unknownAiAnalysisDependencySchema = z.discriminatedUnion("reason", [
-  z.strictObject({
+const unknownAiAnalysisDependencySchema = z
+  .strictObject({
     status: z.literal("unknown"),
-    reason: z.literal("migration"),
+    reasons: z
+      .tuple([aiAnalysisDependencyUnknownReasonSchema], aiAnalysisDependencyUnknownReasonSchema)
+      .readonly(),
     producers: dependencyProducersSchema.optional(),
-  }),
-  z.strictObject({
-    status: z.literal("unknown"),
-    reason: z.literal("not_recorded"),
-    producers: dependencyProducersSchema.optional(),
-  }),
-  z.strictObject({
-    status: z.literal("unknown"),
-    reason: z.literal("stale_repository"),
-    producers: dependencyProducersSchema.optional(),
-  }),
-  z.strictObject({
-    status: z.literal("unknown"),
-    reason: z.literal("proof_unknown"),
-    producers: dependencyProducersSchema,
-  }),
-]);
+  })
+  .superRefine((dependency, context) => {
+    const canonicalReasons = AI_ANALYSIS_DEPENDENCY_UNKNOWN_REASONS.filter((reason) =>
+      dependency.reasons.includes(reason),
+    );
+    if (
+      canonicalReasons.length !== dependency.reasons.length ||
+      canonicalReasons.some((reason, index) => reason !== dependency.reasons[index])
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "AI依存の不明理由が正規化されていません",
+      });
+    }
+    if (dependency.reasons.includes("proof_unknown") && dependency.producers == null) {
+      context.addIssue({
+        code: "custom",
+        message: "producerless proof_unknownは許可されません",
+      });
+    }
+  });
 
 export const aiAnalysisDependencySchema = z.union([
   z.strictObject({
@@ -234,7 +282,7 @@ export function aiAnalysisDependencyMayContainProducerlessUnrecordedInput(
 ): boolean {
   return (
     dependency.status === "unknown" &&
-    (dependency.reason === "migration" || dependency.reason === "not_recorded")
+    (dependency.reasons.includes("migration") || dependency.reasons.includes("not_recorded"))
   );
 }
 
@@ -303,21 +351,6 @@ function normalizeProducer(producer: AiAnalysisDependencyProducer): AiAnalysisDe
   });
 }
 
-function unknownReasonPriority(reason: AiAnalysisDependencyUnknownReason): number {
-  switch (reason) {
-    case "migration":
-      return 0;
-    case "not_recorded":
-      return 1;
-    case "proof_unknown":
-      return 2;
-    case "stale_repository":
-      return -1;
-    default:
-      throw new UnreachableError(reason);
-  }
-}
-
 function normalizeProducers(
   producers: readonly AiAnalysisDependencyProducer[],
 ): readonly AiAnalysisDependencyProducer[] {
@@ -355,20 +388,23 @@ function normalizeProducers(
 }
 
 function createUnknownAiAnalysisDependency(
-  reason: AiAnalysisDependencyUnknownReason,
+  reasons: readonly AiAnalysisDependencyUnknownReason[],
   producers: readonly AiAnalysisDependencyProducer[] | undefined,
 ): AiAnalysisDependency {
-  if (reason === "proof_unknown") {
-    if (producers == null) {
-      throw new TypeError("producerless proof_unknownは許可されません");
-    }
-    return Object.freeze({ status: "unknown", reason, producers });
+  const [firstReason, ...remainingReasons] = AI_ANALYSIS_DEPENDENCY_UNKNOWN_REASONS.filter(
+    (reason) => reasons.includes(reason),
+  );
+  if (firstReason == null) {
+    throw new TypeError("AI依存unknownの理由がありません");
+  }
+  if (reasons.includes("proof_unknown") && producers == null) {
+    throw new TypeError("producerless proof_unknownは許可されません");
   }
   return Object.freeze({
     status: "unknown",
-    reason,
+    reasons: Object.freeze([firstReason, ...remainingReasons]),
     ...(producers == null ? {} : { producers }),
-  });
+  } satisfies AiAnalysisDependency);
 }
 
 /** AI依存をproducer署名順へ正規化する。 */
@@ -380,13 +416,6 @@ export function normalizeAiAnalysisDependency(
     return Object.freeze({ status: "not_dependent" });
   }
   const producers = parsedDependency.producers;
-  if (
-    producers == null &&
-    parsedDependency.status === "unknown" &&
-    parsedDependency.reason === "proof_unknown"
-  ) {
-    throw new TypeError("producerless proof_unknownは許可されません");
-  }
   return Object.freeze({
     ...parsedDependency,
     ...(producers == null ? {} : { producers: normalizeProducers(producers) }),
@@ -417,11 +446,7 @@ export function aiAnalysisDependencyForApplication(
         producers: Object.freeze([producer]),
       });
     case "unknown":
-      return Object.freeze({
-        status: "unknown",
-        reason: application.reason,
-        producers: Object.freeze([producer]),
-      });
+      return createUnknownAiAnalysisDependency([application.reason], Object.freeze([producer]));
     case "not_required":
     case "deterministic_fallback":
     case "disabled":
@@ -510,7 +535,7 @@ export function aiAnalysisDependencyForRelationCandidate(
       throw new TypeError("relation candidateのAI依存producerが空です");
     }
     return createUnknownAiAnalysisDependency(
-      dependency.reason,
+      dependency.reasons,
       producers == null ? undefined : normalizeProducers(producers),
     );
   }
@@ -521,6 +546,260 @@ export function aiAnalysisDependencyForRelationCandidate(
     status: dependency.status,
     producers: normalizeProducers(producers),
   });
+}
+
+function finalAiAnalysisDependencyForProducer(
+  producer: AiAnalysisDependencyProducer,
+  relationCandidateAssessment: "application" | "missing",
+  context: AiAnalysisDependencyReconciliationContext,
+): AiAnalysisDependency | undefined {
+  if (producer.kind === "relation") {
+    const relation = context.relationsById.get(producer.relationId);
+    if (relation?.active !== true) {
+      return undefined;
+    }
+    if (
+      producer.producer.element !== "relations" ||
+      (producer.producer.nodeId !== relation.fromNodeId &&
+        producer.producer.nodeId !== relation.toNodeId)
+    ) {
+      throw new TypeError(`relation producerの参照が不正です。対象: ${producer.relationId}`);
+    }
+    const dependency = relation.aiDependency;
+    if (
+      dependency.status === "not_dependent" ||
+      dependency.producers?.some(
+        (current) => producerSignature(current) === producerSignature(producer),
+      ) !== true
+    ) {
+      return undefined;
+    }
+    return dependency;
+  }
+  if (producer.kind === "item_element") {
+    const applications = context.applicationsByNodeId.get(producer.nodeId);
+    if (applications == null) {
+      return undefined;
+    }
+    const dependency = aiAnalysisDependencyForApplication(
+      producer.nodeId,
+      producer.element,
+      applications[producer.element],
+    );
+    return dependency.status === "not_dependent" ? undefined : dependency;
+  }
+  if (!producer.endpointNodeIds.includes(producer.producer.nodeId)) {
+    throw new TypeError(
+      `relation candidate producer nodeがendpointと一致しません。対象: ${producer.candidateId}`,
+    );
+  }
+  const candidate = context.candidatesById.get(producer.candidateId);
+  if (candidate != null) {
+    const endpoints = normalizeRelationCandidateEndpointNodeIds(candidate.endpointNodeIds);
+    if (
+      endpoints[0] !== producer.endpointNodeIds[0] ||
+      endpoints[1] !== producer.endpointNodeIds[1] ||
+      candidate.ownerNodeId !== producer.producer.nodeId
+    ) {
+      throw new TypeError(
+        `relation candidateに異なるendpointまたはownerがあります。対象: ${producer.candidateId}`,
+      );
+    }
+  }
+  const applications = context.applicationsByNodeId.get(producer.producer.nodeId);
+  if (applications == null) {
+    return undefined;
+  }
+  const dependency =
+    relationCandidateAssessment === "missing"
+      ? aiAnalysisDependencyForMissingRelationCandidateAssessment(
+          producer.producer.nodeId,
+          applications.relations,
+        )
+      : aiAnalysisDependencyForApplication(
+          producer.producer.nodeId,
+          "relations",
+          applications.relations,
+        );
+  return dependency.status === "not_dependent"
+    ? undefined
+    : aiAnalysisDependencyForRelationCandidate(
+        producer.candidateId,
+        producer.endpointNodeIds,
+        dependency,
+      );
+}
+
+function unrecordedReconciledAiAnalysisDependency(): AiAnalysisDependency {
+  return createUnknownAiAnalysisDependency(["not_recorded"], undefined);
+}
+
+function retainedHistoryAiAnalysisDependencies(
+  dependency: AiAnalysisDependency,
+): AiAnalysisDependency[] {
+  if (dependency.status !== "unknown") {
+    return [];
+  }
+  const reasons = dependency.reasons.filter(
+    (reason) => reason === "migration" || reason === "not_recorded",
+  );
+  return reasons.length === 0 ? [] : [createUnknownAiAnalysisDependency(reasons, undefined)];
+}
+
+function sameAiAnalysisDependency(
+  left: AiAnalysisDependency,
+  right: AiAnalysisDependency,
+): boolean {
+  return (
+    JSON.stringify(normalizeAiAnalysisDependency(left)) ===
+    JSON.stringify(normalizeAiAnalysisDependency(right))
+  );
+}
+
+function dependencyMatchesFinalProducers(
+  dependency: AiAnalysisDependency,
+  expected: AiAnalysisDependency,
+): boolean {
+  if (sameAiAnalysisDependency(dependency, expected)) {
+    return true;
+  }
+  return sameAiAnalysisDependency(
+    dependency,
+    combineAiAnalysisDependencies([expected, ...retainedHistoryAiAnalysisDependencies(dependency)]),
+  );
+}
+
+function currentAiAnalysisDependencyForProducer(
+  producer: AiAnalysisDependencyProducer,
+  context: AiAnalysisDependencyReconciliationContext,
+): AiAnalysisDependency {
+  if (producer.kind === "relation_candidate") {
+    const candidate = context.candidatesById.get(producer.candidateId);
+    assertNonNullable(
+      candidate,
+      `現在のrelation candidateがありません。対象: ${producer.candidateId}`,
+    );
+    const applicationDependency = finalAiAnalysisDependencyForProducer(
+      producer,
+      candidate.aiDependency.status === "unknown" &&
+        candidate.aiDependency.reasons.includes("proof_unknown")
+        ? "missing"
+        : "application",
+      context,
+    );
+    if (
+      applicationDependency == null ||
+      !sameAiAnalysisDependency(candidate.aiDependency, applicationDependency)
+    ) {
+      throw new TypeError(
+        `現在のrelation candidateとownerの最終適用元が一致しません。対象: ${producer.candidateId}`,
+      );
+    }
+    return candidate.aiDependency;
+  }
+  const resolved = finalAiAnalysisDependencyForProducer(producer, "application", context);
+  assertNonNullable(resolved, "現在のAI依存に対応する最終適用元がありません");
+  if (producer.kind === "relation") {
+    const applications = context.applicationsByNodeId.get(producer.producer.nodeId);
+    assertNonNullable(
+      applications,
+      `現在のrelation ownerのAI適用元がありません。対象: ${producer.relationId}`,
+    );
+  }
+  return resolved;
+}
+
+function resolveAiAnalysisDependencyInput(
+  input: AiAnalysisDependencyInput,
+  context: AiAnalysisDependencyReconciliationContext,
+): AiAnalysisDependency {
+  const dependency = normalizeAiAnalysisDependency(input.dependency);
+  if (dependency.status === "not_dependent") {
+    return dependency;
+  }
+  const historyDependencies = retainedHistoryAiAnalysisDependencies(dependency);
+  if (dependency.producers == null) {
+    if (input.origin === "current") {
+      return dependency;
+    }
+    return historyDependencies.length === 0
+      ? unrecordedReconciledAiAnalysisDependency()
+      : combineAiAnalysisDependencies(historyDependencies);
+  }
+  if (input.origin === "current") {
+    const currentDependencies = dependency.producers.map((producer) =>
+      currentAiAnalysisDependencyForProducer(producer, context),
+    );
+    const currentDependency = combineAiAnalysisDependencies(currentDependencies);
+    if (!dependencyMatchesFinalProducers(dependency, currentDependency)) {
+      throw new TypeError("今回入力のAI依存と最終適用元が一致しません");
+    }
+    if (input.relationCandidateAssessment === "graph") {
+      return dependency;
+    }
+    const missingDependencies = dependency.producers.map((producer) => {
+      if (producer.kind !== "relation_candidate") {
+        throw new TypeError(
+          "候補判定の未確認入力にはrelation candidate producerだけを指定してください",
+        );
+      }
+      const missing = finalAiAnalysisDependencyForProducer(producer, "missing", context);
+      assertNonNullable(
+        missing,
+        `現在のrelation candidate ownerのAI適用元がありません。対象: ${producer.candidateId}`,
+      );
+      return missing;
+    });
+    return combineAiAnalysisDependencies([...missingDependencies, ...historyDependencies]);
+  }
+  const resolved = dependency.producers.map((producer) =>
+    finalAiAnalysisDependencyForProducer(producer, "missing", context),
+  );
+  const resolvedDependencies = resolved.filter((value) => value != null);
+  if (resolved.some((value) => value == null)) {
+    resolvedDependencies.push(unrecordedReconciledAiAnalysisDependency());
+  }
+  return combineAiAnalysisDependencies([...resolvedDependencies, ...historyDependencies]);
+}
+
+/** 入力の由来と候補判定の証明を保ったまま最終AI依存を合成する。 */
+export function combineReconciledAiAnalysisDependencies(
+  inputs: readonly AiAnalysisDependencyInput[],
+  context: AiAnalysisDependencyReconciliationContext,
+): AiAnalysisDependency {
+  const resolvedInputs = inputs.map((input) => resolveAiAnalysisDependencyInput(input, context));
+  const combined = combineAiAnalysisDependencies(resolvedInputs);
+  if (combined.status === "not_dependent" || combined.producers == null) {
+    return combined;
+  }
+  const expectedDependencies = combined.producers.map((producer) => {
+    const dependency = finalAiAnalysisDependencyForProducer(
+      producer,
+      combined.status === "unknown" && combined.reasons.includes("proof_unknown")
+        ? "missing"
+        : "application",
+      context,
+    );
+    assertNonNullable(dependency, "照合済みAI依存の最終適用元がありません");
+    return dependency;
+  });
+  if (
+    !dependencyMatchesFinalProducers(combined, combineAiAnalysisDependencies(expectedDependencies))
+  ) {
+    throw new TypeError("照合済みAI依存と最終適用元が一致しません");
+  }
+  return combined;
+}
+
+/** 保持値のproducerを最終適用元へ照合し、候補の再出現だけではcurrentにしない。 */
+export function reconcileRetainedAiAnalysisDependency(
+  dependency: AiAnalysisDependency,
+  context: AiAnalysisDependencyReconciliationContext,
+): AiAnalysisDependency {
+  return combineReconciledAiAnalysisDependencies(
+    [Object.freeze({ origin: "retained", dependency })],
+    context,
+  );
 }
 
 /** AI入力の依存producerをrelation経由のproducerへ変換する。 */
@@ -557,7 +836,7 @@ export function aiAnalysisDependencyForRelation(
       return relationAiDependencyProducer(relationId, producer);
     });
     return createUnknownAiAnalysisDependency(
-      dependency.reason,
+      dependency.reasons,
       producers == null || producers.length === 0 ? undefined : normalizeProducers(producers),
     );
   }
@@ -595,18 +874,10 @@ export function combineAiAnalysisDependencies(
       (dependency): dependency is Extract<AiAnalysisDependency, { status: "unknown" }> =>
         dependency.status === "unknown",
     );
-    const firstUnknownDependency = unknownDependencies[0];
-    if (firstUnknownDependency == null) {
-      throw new TypeError("AI依存unknownの理由がありません");
-    }
-    const reason = unknownDependencies.reduce(
-      (selected, dependency) =>
-        unknownReasonPriority(dependency.reason) < unknownReasonPriority(selected)
-          ? dependency.reason
-          : selected,
-      firstUnknownDependency.reason,
+    return createUnknownAiAnalysisDependency(
+      unknownDependencies.flatMap((dependency) => dependency.reasons),
+      normalizedProducers,
     );
-    return createUnknownAiAnalysisDependency(reason, normalizedProducers);
   }
   if (statuses.has("unverified")) {
     if (normalizedProducers == null) {
@@ -633,10 +904,7 @@ export function combineAiAnalysisDependencies(
 
 /** 移行で復元できない最終値のAI依存を作る。 */
 export function migratedAiAnalysisDependency(): AiAnalysisDependency {
-  return Object.freeze({
-    status: "unknown",
-    reason: "migration",
-  });
+  return createUnknownAiAnalysisDependency(["migration"], undefined);
 }
 
 /** 全最終値を移行unknownで初期化する。 */

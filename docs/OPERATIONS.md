@@ -468,7 +468,7 @@ AI判定の更新内容を確認してから通知したい場合は、手動実
 2. 実行中・待機中のrunと手動のstate操作を確認し、更新と送信の完了を待ちます。受信結果が不明な`delivery_started`は消さず、既存の送信結果確認手順で扱います。
 3. 稼働中のコードと`tracker-state`のコミットIDを復旧用に記録します。そのstateに対して`verify-state`を再実行し、成功後にPRをマージします。
 4. マージしたコードのCI成功を確認して日次workflowを有効に戻します。停止用変数は維持し、初回を`hold`で手動実行します。
-5. GitHubへ反映されたstateで、snapshotが現行形式になり、追跡開始時刻・追跡対象・履歴・通知管理記録を引き継いでいることを確認します。snapshot 18への移行では汎用AIの現行cacheと採用値を維持し、AI要素の適用元と値別のAI依存を追加します。移行前の情報だけで現在性を証明せず、proof不明として再検証へ渡します。個人原因のcacheは`state.personalReminderAiCacheDirectory`へ分けます。
+5. GitHubへ反映されたstateで、snapshotが現行形式になり、追跡開始時刻・追跡対象・履歴・通知管理記録を引き継いでいることを確認します。snapshot 18から19への移行では、AI依存の単一の`reason`を1要素の`reasons`配列へ変換します。値・producer・AI要素の適用元・採用済み評価・根拠・時計と、汎用AI・個人原因の現行cacheは保持します。
 6. 必要なAI再推論の結果と通知候補を確認してから、前節の手順で通常送信と定期実行を再開します。
 
 snapshot 14の読み込み時は個人原因を空配列として移行し、列挙計画`personalReminderCausePlanning`をopen項目では`pending`、原因がないterminal項目では`excluded`にします。旧AIの文章から個人義務や時刻を補填しません。初回は現在の収集結果から原因を組み立て、open項目の列挙が完了すれば0件でも`completed`と観測時刻を保存します。stale項目は前回値を維持します。

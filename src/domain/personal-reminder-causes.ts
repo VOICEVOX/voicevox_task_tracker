@@ -200,13 +200,13 @@ export function personalReminderCauseSetSubjectChangesAreUnbounded(
   }
   if (
     input.causeSetDependency.status !== "unknown" ||
-    input.causeSetDependency.reason !== "proof_unknown"
+    !input.causeSetDependency.reasons.includes("proof_unknown")
   ) {
     return false;
   }
   const presenceIsProofUnknown =
     input.presenceDependency.status === "unknown" &&
-    input.presenceDependency.reason === "proof_unknown";
+    input.presenceDependency.reasons.includes("proof_unknown");
   return input.negativeCandidateSubjectCount > (presenceIsProofUnknown ? 0 : 1);
 }
 
