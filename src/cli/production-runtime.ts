@@ -1363,6 +1363,11 @@ type PreviousRelationCandidateDependencyProducer = Extract<
   { kind: "relation_candidate" }
 >;
 
+type PreviousPersonalReminderRelationCandidateDependency = Readonly<{
+  consumerNodeId: GitHubNodeId;
+  producer: PreviousRelationCandidateDependencyProducer;
+}>;
+
 function previousRelationCandidateDependencyProducers(
   state: RuntimeState,
 ): readonly PreviousRelationCandidateDependencyProducer[] {
@@ -1388,6 +1393,90 @@ function previousRelationCandidateDependencyProducers(
     }
   }
   return Object.freeze([...producersByCandidateId.values()]);
+}
+
+function previousPersonalReminderRelationCandidateDependencies(
+  state: RuntimeState,
+): readonly PreviousPersonalReminderRelationCandidateDependency[] {
+  const producersByCandidateId = new Map<string, PreviousRelationCandidateDependencyProducer>();
+  const dependenciesByConsumerAndCandidate = new Map<
+    string,
+    PreviousPersonalReminderRelationCandidateDependency
+  >();
+  for (const item of previousSnapshot(state)?.items ?? []) {
+    const dependencies: readonly AiAnalysisDependency[] = [
+      ...(item.personalReminderCausePlanning.status === "completed"
+        ? [item.personalReminderCausePlanning.causeSetAiDependency]
+        : []),
+      ...item.personalReminderCauses.flatMap((cause) => [
+        cause.aiDependencies.presence,
+        cause.aiDependencies.responseMembership,
+        cause.aiDependencies.responsible,
+        cause.aiDependencies.action,
+        cause.aiDependencies.evidence,
+        cause.currentInput.aiDependency,
+      ]),
+    ];
+    for (const dependency of dependencies) {
+      if (dependency.status === "not_dependent" || dependency.producers == null) {
+        continue;
+      }
+      for (const producer of dependency.producers) {
+        if (producer.kind !== "relation_candidate") {
+          continue;
+        }
+        const endpointNodeIds = normalizedBlockerRelationEndpointNodeIds(producer.endpointNodeIds);
+        if (!endpointNodeIds.includes(producer.producer.nodeId)) {
+          throw new TypeError(
+            `前回snapshotのpersonal reminder relation candidate producer nodeがendpointと一致しません。対象: ${producer.candidateId}`,
+          );
+        }
+        const normalizedProducer = Object.freeze({ ...producer, endpointNodeIds });
+        const existingProducer = producersByCandidateId.get(producer.candidateId);
+        if (existingProducer != null) {
+          if (
+            existingProducer.producer.nodeId !== normalizedProducer.producer.nodeId ||
+            existingProducer.endpointNodeIds[0] !== normalizedProducer.endpointNodeIds[0] ||
+            existingProducer.endpointNodeIds[1] !== normalizedProducer.endpointNodeIds[1]
+          ) {
+            throw new TypeError(
+              `前回snapshotのpersonal reminder relation candidate producer定義が一致しません。対象: ${producer.candidateId}`,
+            );
+          }
+        } else {
+          producersByCandidateId.set(producer.candidateId, normalizedProducer);
+        }
+        const dependencyKey = JSON.stringify([item.nodeId, producer.candidateId]);
+        if (!dependenciesByConsumerAndCandidate.has(dependencyKey)) {
+          dependenciesByConsumerAndCandidate.set(
+            dependencyKey,
+            Object.freeze({
+              consumerNodeId: item.nodeId,
+              producer: normalizedProducer,
+            }),
+          );
+        }
+      }
+    }
+  }
+  return Object.freeze(
+    [...dependenciesByConsumerAndCandidate.values()].sort((left, right) => {
+      const candidateOrder = left.producer.candidateId.localeCompare(right.producer.candidateId);
+      return candidateOrder !== 0
+        ? candidateOrder
+        : left.consumerNodeId.localeCompare(right.consumerNodeId);
+    }),
+  );
+}
+
+function previousPersonalReminderRelationCandidateConsumerNodeIds(
+  state: RuntimeState,
+): ReadonlySet<GitHubNodeId> {
+  return new Set(
+    previousPersonalReminderRelationCandidateDependencies(state).map(
+      (dependency) => dependency.consumerNodeId,
+    ),
+  );
 }
 
 function previousStaleRepositoryBlockerTopologyNodeIds(
@@ -14433,11 +14522,180 @@ function personalReminderRelatedContexts(
   });
 }
 
+type PersonalReminderEndpointAvailability =
+  "github_observed" | "github_stale" | "external_public" | "unknown";
+
+function addPersonalReminderEndpointAvailability(
+  availabilityByNodeId: Map<GraphNodeId, PersonalReminderEndpointAvailability>,
+  nodeId: GraphNodeId,
+  availability: PersonalReminderEndpointAvailability,
+): void {
+  const existing = availabilityByNodeId.get(nodeId);
+  if (existing != null && existing !== availability) {
+    throw new TypeError(
+      `個人催促relation endpointのavailabilityが複数区分に所属します。対象: ${nodeId}`,
+    );
+  }
+  availabilityByNodeId.set(nodeId, availability);
+}
+
+function personalReminderEndpointAvailabilityByNodeId(
+  collection: Pick<CollectedItems, "observedItems" | "staleItems" | "relationCandidates">,
+): ReadonlyMap<GraphNodeId, PersonalReminderEndpointAvailability> {
+  const availabilityByNodeId = new Map<GraphNodeId, PersonalReminderEndpointAvailability>();
+  for (const item of collection.observedItems) {
+    addPersonalReminderEndpointAvailability(availabilityByNodeId, item.nodeId, "github_observed");
+  }
+  for (const item of collection.staleItems) {
+    addPersonalReminderEndpointAvailability(availabilityByNodeId, item.nodeId, "github_stale");
+  }
+  for (const candidate of collection.relationCandidates) {
+    for (const node of relationNodes(candidate.relation)) {
+      if (node.scope === "external_public") {
+        addPersonalReminderEndpointAvailability(
+          availabilityByNodeId,
+          node.nodeId,
+          "external_public",
+        );
+      }
+    }
+  }
+  return availabilityByNodeId;
+}
+
+type PersonalReminderRelationCandidateSelection = Readonly<{
+  analysisNodeIds: ReadonlySet<GitHubNodeId>;
+  unavailableConsumerNodeIds: ReadonlySet<GitHubNodeId>;
+}>;
+
+type CurrentPersonalReminderRelationCandidate = Readonly<{
+  endpointNodeIds: readonly [GraphNodeId, GraphNodeId];
+  ownerNodeId: GraphNodeId;
+}>;
+
+function currentPersonalReminderRelationCandidatesById(
+  relationCandidates: readonly RelationCandidate[],
+): ReadonlyMap<string, CurrentPersonalReminderRelationCandidate> {
+  const candidatesById = new Map<string, CurrentPersonalReminderRelationCandidate>();
+  for (const candidate of relationCandidates) {
+    const [firstNode, secondNode] = relationNodes(candidate.relation);
+    const endpointNodeIds: readonly [GraphNodeId, GraphNodeId] = [
+      firstNode.nodeId,
+      secondNode.nodeId,
+    ];
+    const normalized = Object.freeze({
+      endpointNodeIds: normalizedBlockerRelationEndpointNodeIds(endpointNodeIds),
+      ownerNodeId: relationAssessmentOwnerNodeId(candidate),
+    });
+    const existing = candidatesById.get(candidate.id);
+    if (existing == null) {
+      candidatesById.set(candidate.id, normalized);
+      continue;
+    }
+    if (
+      existing.endpointNodeIds[0] !== normalized.endpointNodeIds[0] ||
+      existing.endpointNodeIds[1] !== normalized.endpointNodeIds[1] ||
+      existing.ownerNodeId !== normalized.ownerNodeId
+    ) {
+      throw new TypeError(
+        `現在のpersonal reminder relation candidate定義が一致しません。対象: ${candidate.id}`,
+      );
+    }
+  }
+  return candidatesById;
+}
+
+function selectPersonalReminderRelationCandidateConsumers(
+  state: RuntimeState,
+  collection: Pick<CollectedItems, "observedItems" | "staleItems" | "relationCandidates">,
+  trackedNodeIds: ReadonlySet<GitHubNodeId>,
+): PersonalReminderRelationCandidateSelection {
+  const endpointAvailabilityByNodeId = personalReminderEndpointAvailabilityByNodeId(collection);
+  const currentCandidatesById = currentPersonalReminderRelationCandidatesById(
+    collection.relationCandidates,
+  );
+  const freshObservedNodeIds = new Set<GitHubNodeId>(
+    collection.observedItems.map((item) => item.nodeId),
+  );
+  const trackedGraphNodeIds = new Set<GraphNodeId>(trackedNodeIds);
+  const selectionByConsumerNodeId = new Map<
+    GitHubNodeId,
+    {
+      available: boolean;
+      ownerNodeIds: Set<GitHubNodeId>;
+    }
+  >();
+  for (const dependency of previousPersonalReminderRelationCandidateDependencies(state)) {
+    if (
+      !freshObservedNodeIds.has(dependency.consumerNodeId) ||
+      !trackedNodeIds.has(dependency.consumerNodeId)
+    ) {
+      continue;
+    }
+    let selection = selectionByConsumerNodeId.get(dependency.consumerNodeId);
+    if (selection == null) {
+      selection = {
+        available: true,
+        ownerNodeIds: new Set<GitHubNodeId>(),
+      };
+      selectionByConsumerNodeId.set(dependency.consumerNodeId, selection);
+    }
+    const endpointComplete = dependency.producer.endpointNodeIds.every((endpointNodeId) => {
+      const availability = endpointAvailabilityByNodeId.get(endpointNodeId);
+      return availability === "github_observed" || availability === "external_public";
+    });
+    if (!endpointComplete) {
+      selection.available = false;
+    }
+    const currentCandidate = currentCandidatesById.get(dependency.producer.candidateId);
+    if (currentCandidate == null) {
+      continue;
+    }
+    const previousEndpointNodeIds = normalizedBlockerRelationEndpointNodeIds(
+      dependency.producer.endpointNodeIds,
+    );
+    if (
+      currentCandidate.endpointNodeIds[0] !== previousEndpointNodeIds[0] ||
+      currentCandidate.endpointNodeIds[1] !== previousEndpointNodeIds[1] ||
+      currentCandidate.ownerNodeId !== dependency.producer.producer.nodeId
+    ) {
+      throw new TypeError(
+        `前回と現在のpersonal reminder relation candidate定義が一致しません。対象: ${dependency.producer.candidateId}`,
+      );
+    }
+    const ownerItem = collection.observedItems.find(
+      (item) => item.nodeId === currentCandidate.ownerNodeId,
+    );
+    if (ownerItem == null || !trackedGraphNodeIds.has(currentCandidate.ownerNodeId)) {
+      selection.available = false;
+      continue;
+    }
+    selection.ownerNodeIds.add(ownerItem.nodeId);
+  }
+  const analysisNodeIds = new Set<GitHubNodeId>();
+  const unavailableConsumerNodeIds = new Set<GitHubNodeId>();
+  for (const [consumerNodeId, selection] of selectionByConsumerNodeId) {
+    if (!selection.available) {
+      unavailableConsumerNodeIds.add(consumerNodeId);
+      continue;
+    }
+    analysisNodeIds.add(consumerNodeId);
+    for (const ownerNodeId of selection.ownerNodeIds) {
+      analysisNodeIds.add(ownerNodeId);
+    }
+  }
+  return Object.freeze({
+    analysisNodeIds,
+    unavailableConsumerNodeIds,
+  });
+}
+
 function personalReminderRuntimeCollection(
   collection: CollectedItems,
   deterministicAnalysis: DeterministicAnalysis,
   reduction: ReducedAnalysis,
   graph: GraphResult,
+  unavailableConsumerNodeIds: ReadonlySet<GitHubNodeId>,
 ): Readonly<{
   collection: Readonly<{
     items: readonly PersonalReminderRuntimeCollectedItem[];
@@ -14452,6 +14710,9 @@ function personalReminderRuntimeCollection(
   const staleNodeIds = new Set(collection.staleItems.map((item) => item.nodeId));
   const items: PersonalReminderRuntimeCollectedItem[] = [];
   for (const analysis of deterministicAnalysis.items) {
+    if (unavailableConsumerNodeIds.has(analysis.item.nodeId)) {
+      continue;
+    }
     const currentAnalysis = analysesByNodeId.get(analysis.item.nodeId);
     assertNonNullable(
       currentAnalysis,
@@ -14657,11 +14918,16 @@ async function analyzePersonalReminders(
   reduction: ReducedAnalysis,
   graph: GraphResult,
 ): Promise<PersonalReminderAnalysisStageResult<PersonalReminderAnalysis>> {
+  const personalReminderRelationCandidateSelection =
+    selectPersonalReminderRelationCandidateConsumers(state, collection, collection.trackedNodeIds);
+  const unavailableConsumerNodeIds =
+    personalReminderRelationCandidateSelection.unavailableConsumerNodeIds;
   const runtimeCollection = personalReminderRuntimeCollection(
     collection,
     deterministicAnalysis,
     reduction,
     graph,
+    unavailableConsumerNodeIds,
   );
   const runtimeGraph = personalReminderRuntimeGraph(state, collection, reduction, graph);
   const snapshotEvidenceSourceIds = new Set<SourceId>([
@@ -14791,7 +15057,9 @@ async function analyzePersonalReminders(
     const causes = previous.personalReminderCauses;
     causesByNodeId.set(item.nodeId, causes);
     evidenceByNodeId.set(item.nodeId, previous.evidence);
-    if (item.state === "open") {
+    if (unavailableConsumerNodeIds.has(item.nodeId)) {
+      planningByNodeId.set(item.nodeId, previous.personalReminderCausePlanning);
+    } else if (item.state === "open") {
       planningByNodeId.set(
         item.nodeId,
         Object.freeze({
@@ -14902,6 +15170,7 @@ async function analyzePersonalReminders(
   const usage = run?.usage ?? initialUsage;
   const usageDelta = personalReminderUsageDelta(usage, initialUsage);
   const status =
+    unavailableConsumerNodeIds.size > 0 ||
     counts.failed > 0 ||
     counts.deferred > 0 ||
     [...planningByNodeId.values()].some((planning) => planning.status === "pending")
@@ -16516,11 +16785,16 @@ function personalReminderDetailNodeIdsForCollection(
   const previousItemsByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
   );
+  const relationCandidateConsumerNodeIds =
+    previousPersonalReminderRelationCandidateConsumerNodeIds(state);
   const nodeIds = new Set<GitHubNodeId>();
   for (const item of enumeratedItems) {
     const previous = previousItemsByNodeId.get(item.nodeId);
     if (previous == null) {
       continue;
+    }
+    if (relationCandidateConsumerNodeIds.has(item.nodeId)) {
+      nodeIds.add(item.nodeId);
     }
     if (
       previous.personalReminderCausePlanning.status === "pending" ||
@@ -16557,11 +16831,11 @@ function personalReminderReplanNodeIdsForCollection(
   );
   const nodeIds = new Set<GitHubNodeId>();
   for (const item of enumeratedItems) {
-    if (item.state !== "open") {
-      continue;
-    }
     const previous = previousItemsByNodeId.get(item.nodeId);
     if (previous == null) {
+      continue;
+    }
+    if (item.state !== "open") {
       continue;
     }
     if (
@@ -16867,6 +17141,61 @@ function relationExpansionRepositoriesByNodeId(
         throw new TypeError("同じ関係先node IDに異なるallowlist repositoryが指定されています");
       }
       repositoriesByNodeId.set(node.nodeId, repository);
+    }
+  }
+  return repositoriesByNodeId;
+}
+
+function personalReminderRelationExpansionRepositoriesByNodeId(
+  state: RuntimeState,
+  aggregate: FreshRuntimeCollectionAggregate,
+  tracking: RuntimeTrackingSelection,
+  relationCandidates: readonly RelationCandidate[],
+  allowlist: PublicRepositoryAllowlist,
+): ReadonlyMap<GitHubNodeId, PublicRepository> {
+  const freshObservedNodeIds = new Set<string>(aggregate.observedItems.map((item) => item.nodeId));
+  const trackedNodeIds = new Set<string>(tracking.workByNodeId.keys());
+  const previousItemsByNodeId = new Map<string, SnapshotCollectionItem>();
+  for (const [nodeId, item] of previousCollectionItemsByNodeId(state)) {
+    previousItemsByNodeId.set(nodeId, item);
+  }
+  const externalEndpointNodeIds = new Set<string>();
+  for (const candidate of relationCandidates) {
+    for (const node of relationNodes(candidate.relation)) {
+      if (node.scope === "external_public") {
+        externalEndpointNodeIds.add(node.nodeId);
+      }
+    }
+  }
+  const repositoriesByNodeId = new Map<GitHubNodeId, PublicRepository>();
+  for (const dependency of previousPersonalReminderRelationCandidateDependencies(state)) {
+    if (
+      !freshObservedNodeIds.has(dependency.consumerNodeId) ||
+      !trackedNodeIds.has(dependency.consumerNodeId)
+    ) {
+      continue;
+    }
+    for (const endpointNodeId of dependency.producer.endpointNodeIds) {
+      if (freshObservedNodeIds.has(endpointNodeId) || externalEndpointNodeIds.has(endpointNodeId)) {
+        continue;
+      }
+      const previousCollectionItem = previousItemsByNodeId.get(endpointNodeId);
+      if (previousCollectionItem == null) {
+        continue;
+      }
+      const repository = allowlist.repositories.find(
+        (candidate) => candidate.id === previousCollectionItem.repositoryId,
+      );
+      if (repository == null) {
+        continue;
+      }
+      const existing = repositoriesByNodeId.get(previousCollectionItem.nodeId);
+      if (existing != null && existing.id !== repository.id) {
+        throw new TypeError(
+          "個人催促relation candidateの同じendpoint node IDに異なるallowlist repositoryが指定されています",
+        );
+      }
+      repositoriesByNodeId.set(previousCollectionItem.nodeId, repository);
     }
   }
   return repositoriesByNodeId;
@@ -17586,6 +17915,23 @@ async function collectRelationExpandedItems(
         ? configuration.config.tracking.autoInclude.relationDepth
         : 0,
     });
+    const repositoriesByNodeId = new Map(
+      relationExpansionRepositoriesByNodeId(
+        discoveredRelationCandidates,
+        repositoryInventory.allowlist,
+      ),
+    );
+    const observedNodeIds = new Set<string>(
+      refreshedAggregate.observedItems.map((item) => item.nodeId),
+    );
+    const personalReminderSeedRepositoriesByNodeId =
+      personalReminderRelationExpansionRepositoriesByNodeId(
+        state,
+        refreshedAggregate,
+        tracking,
+        discoveredRelationCandidates,
+        repositoryInventory.allowlist,
+      );
     const effectiveAssigneeTargetNodeIds = changedTrackedImplementationTargetNodeIds(
       refreshedAggregate,
       tracking,
@@ -17611,6 +17957,30 @@ async function collectRelationExpandedItems(
         }),
       );
     }
+    for (const [nodeId, repository] of personalReminderSeedRepositoriesByNodeId) {
+      const existingRequest = requestsByNodeId.get(nodeId);
+      const existingRepository = repositoriesByNodeId.get(nodeId);
+      if (existingRepository != null && existingRepository.id !== repository.id) {
+        throw new TypeError("関係先追加取得対象の同じnode IDに異なるrepositoryが指定されています");
+      }
+      if (existingRequest != null) {
+        if (existingRepository == null) {
+          repositoriesByNodeId.set(nodeId, repository);
+        }
+        continue;
+      }
+      if (requestedNodeIds.has(nodeId) || observedNodeIds.has(nodeId)) {
+        continue;
+      }
+      repositoriesByNodeId.set(nodeId, repository);
+      requestsByNodeId.set(
+        nodeId,
+        Object.freeze({
+          nodeId,
+          nativeDepth: 0,
+        }),
+      );
+    }
     const nextRequests = [...requestsByNodeId.values()];
     if (nextRequests.length === 0) {
       return Object.freeze({
@@ -17622,10 +17992,6 @@ async function collectRelationExpandedItems(
         tracking,
       });
     }
-    const repositoriesByNodeId = relationExpansionRepositoriesByNodeId(
-      discoveredRelationCandidates,
-      repositoryInventory.allowlist,
-    );
     const targetNodeIdsByRepositoryId = new Map<GitHubRepositoryId, GitHubNodeId[]>();
     for (const request of nextRequests) {
       requestedNodeIds.add(request.nodeId);
@@ -18003,6 +18369,19 @@ async function collectProductionItems(
     uniqueObservedItems,
     staleRepositoryIds,
   );
+  const personalReminderRelationCandidateSelection =
+    selectPersonalReminderRelationCandidateConsumers(
+      state,
+      {
+        observedItems: uniqueObservedItems,
+        staleItems,
+        relationCandidates,
+      },
+      trackedNodeIds,
+    );
+  for (const nodeId of personalReminderRelationCandidateSelection.analysisNodeIds) {
+    analysisNodeIds.add(nodeId);
+  }
   for (const nodeId of staleEffectiveAssigneeTargets) {
     analysisNodeIds.delete(nodeId);
   }
