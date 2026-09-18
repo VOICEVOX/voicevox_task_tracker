@@ -192,6 +192,7 @@ export {
 export {
   createPersonalReminderCauseDraft,
   personalReminderCauseAiDependenciesForDecision,
+  determinePotentialPersonalReminderContinuityConflictNodeIds,
   determineStructurallyEndedPersonalReminderCauses,
   reconcilePersonalReminderCauseSeeds,
   relationAffectsPersonalReminderCause,

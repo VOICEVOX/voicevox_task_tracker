@@ -86,12 +86,22 @@ export type PreviousPersonalReminderCauses = Readonly<{
 }>;
 
 /** 個人催促原因候補の照合結果。 */
-export type PersonalReminderCauseSeedReconciliation = Readonly<{
-  status: "available";
-  seeds: readonly PersonalReminderCauseSeed[];
-  retainedWithoutDraftCauseIds: readonly PersonalReminderCauseId[];
-  endedCauseIds: readonly PersonalReminderCauseId[];
-}>;
+export type PersonalReminderCauseSeedReconciliation =
+  | Readonly<{
+      status: "available";
+      seeds: readonly PersonalReminderCauseSeed[];
+      retainedWithoutDraftCauseIds: readonly PersonalReminderCauseId[];
+      endedCauseIds: readonly PersonalReminderCauseId[];
+    }>
+  | Readonly<{
+      status: "continuity_conflict";
+      itemNodeId: GitHubNodeId;
+      previousCauseIds: readonly [
+        PersonalReminderCauseId,
+        PersonalReminderCauseId,
+        ...PersonalReminderCauseId[],
+      ];
+    }>;
 
 /** 現在のreview request先を責務終了判定へ渡す識別情報。 */
 export type PersonalReminderReviewRequestTarget =
@@ -446,6 +456,100 @@ function responsibilityEpisodeContinues(
   return hasSharedExecutionSurface(previous, current);
 }
 
+function personalReminderContinuityScopeCandidates(
+  left: ResponsibilityValue,
+  right: ResponsibilityValue,
+): readonly ResponsibilityValue[] {
+  const surfaceValues = [
+    ...(left.scope.kind === "item" ? [] : left.scope.surfaces),
+    ...(right.scope.kind === "item" ? [] : right.scope.surfaces),
+  ];
+  const candidates: ResponsibilityValue[] = [
+    Object.freeze({
+      authority: left.authority,
+      scope: Object.freeze({ kind: "item" }),
+    }),
+  ];
+  if (surfaceValues.length !== 0) {
+    const surfaces = sortedExecutionSurfaces(surfaceValues);
+    candidates.push(
+      Object.freeze({
+        authority: left.authority,
+        scope: Object.freeze({
+          kind: "execution_surfaces",
+          surfaces,
+        }),
+      }),
+      Object.freeze({
+        authority: left.authority,
+        scope: Object.freeze({
+          kind: "item_and_execution_surfaces",
+          surfaces,
+        }),
+      }),
+    );
+  }
+  return Object.freeze(candidates);
+}
+
+function personalReminderResponsibilitiesMayShareContinuation(
+  left: ResponsibilityValue,
+  right: ResponsibilityValue,
+): boolean {
+  return personalReminderContinuityScopeCandidates(left, right).some(
+    (current) =>
+      responsibilityEpisodeContinues(left, current) &&
+      responsibilityEpisodeContinues(right, current),
+  );
+}
+
+function personalReminderContinuityGroupKey(cause: PersonalReminderCause): string {
+  return JSON.stringify([
+    cause.itemNodeId,
+    cause.action.kind,
+    responsibleSignatures(cause.responsible),
+    cause.responsibility.authority,
+  ]);
+}
+
+/** 前回の個人催促原因から継続競合の可能性がある項目を抽出する。 */
+export function determinePotentialPersonalReminderContinuityConflictNodeIds(
+  causes: readonly PersonalReminderCause[],
+): ReadonlySet<GitHubNodeId> {
+  const causesByGroup = new Map<string, PersonalReminderCause[]>();
+  for (const cause of causes) {
+    const key = personalReminderContinuityGroupKey(cause);
+    const group = causesByGroup.get(key);
+    if (group == null) {
+      causesByGroup.set(key, [cause]);
+    } else {
+      group.push(cause);
+    }
+  }
+  const nodeIds = new Set<GitHubNodeId>();
+  for (const group of causesByGroup.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+    const hasPotentialConflict = group.some((leftCause, leftIndex) =>
+      group
+        .slice(leftIndex + 1)
+        .some((rightCause) =>
+          personalReminderResponsibilitiesMayShareContinuation(
+            leftCause.responsibility,
+            rightCause.responsibility,
+          ),
+        ),
+    );
+    if (hasPotentialConflict) {
+      const firstCause = group[0];
+      assertNonNullable(firstCause, "個人催促原因の継続競合候補がありません");
+      nodeIds.add(firstCause.itemNodeId);
+    }
+  }
+  return nodeIds;
+}
+
 function canonicalHash(value: readonly unknown[]): string {
   const serialized = JSON.stringify(value);
   const digest = createHash("sha256").update(serialized, "utf8").digest("hex");
@@ -585,13 +689,35 @@ function responsibilityEpisodeTransition(
   });
 }
 
+type PersonalReminderCauseContinuityMatch =
+  | Readonly<{ status: "none" }>
+  | Readonly<{ status: "matched"; cause: PersonalReminderCause }>
+  | Readonly<{
+      status: "conflict";
+      matchingCauses: readonly [
+        PersonalReminderCause,
+        PersonalReminderCause,
+        ...PersonalReminderCause[],
+      ];
+      previousCauseIds: readonly [
+        PersonalReminderCauseId,
+        PersonalReminderCauseId,
+        ...PersonalReminderCauseId[],
+      ];
+    }>;
+
+type PersonalReminderCauseSeedContinuityConflict = Extract<
+  PersonalReminderCauseSeedReconciliation,
+  Readonly<{ status: "continuity_conflict" }>
+>;
+
 function findContinuousCause(
   item: PersonalReminderItem,
   draft: PersonalReminderCauseDraft,
   previous: readonly PersonalReminderCause[],
   previousObservedAt: UtcIsoDateTime,
   confirmedEndedCauseIds: ReadonlySet<PersonalReminderCauseId>,
-): PersonalReminderCause | undefined {
+): PersonalReminderCauseContinuityMatch {
   const matching = previous.filter(
     (cause) =>
       cause.itemNodeId === item.nodeId &&
@@ -601,17 +727,38 @@ function findContinuousCause(
       !confirmedEndedCauseIds.has(cause.causeId),
   );
   if (matching.length > 1) {
-    throw new TypeError("同じ個人催促責務に対応する前回causeが複数あります");
+    const matchingCauses = [...matching].sort((left, right) =>
+      compareStrings(left.causeId, right.causeId),
+    );
+    const [firstCause, secondCause, ...remainingCauses] = matchingCauses;
+    assertNonNullable(firstCause, "個人催促責務の競合causeがありません");
+    assertNonNullable(secondCause, "個人催促責務の競合causeが2件未満です");
+    const remainingCauseIds = remainingCauses.map((cause) => cause.causeId);
+    const matchingCausesWithAtLeastTwo: [
+      PersonalReminderCause,
+      PersonalReminderCause,
+      ...PersonalReminderCause[],
+    ] = [firstCause, secondCause, ...remainingCauses];
+    const previousCauseIdsWithAtLeastTwo: [
+      PersonalReminderCauseId,
+      PersonalReminderCauseId,
+      ...PersonalReminderCauseId[],
+    ] = [firstCause.causeId, secondCause.causeId, ...remainingCauseIds];
+    return Object.freeze({
+      status: "conflict",
+      matchingCauses: Object.freeze(matchingCausesWithAtLeastTwo),
+      previousCauseIds: Object.freeze(previousCauseIdsWithAtLeastTwo),
+    });
   }
   const cause = matching[0];
   if (cause == null) {
-    return undefined;
+    return Object.freeze({ status: "none" });
   }
   const transition = responsibilityEpisodeTransition(item, cause, previousObservedAt);
   if (transition.ended || transition.restarted) {
-    return undefined;
+    return Object.freeze({ status: "none" });
   }
-  return cause;
+  return Object.freeze({ status: "matched", cause });
 }
 
 function createSeed(
@@ -754,19 +901,41 @@ export function reconcilePersonalReminderCauseSeeds(
   }
 
   const seeds: PersonalReminderCauseSeed[] = [];
+  const continuityConflicts: PersonalReminderCauseSeedContinuityConflict[] = [];
   const retainedCauseIds = new Set<PersonalReminderCauseId>();
   const endedCauseIds = new Set<PersonalReminderCauseId>(input.confirmedEndedCauseIds);
   const sortedDrafts = [...input.drafts].sort((left, right) =>
     compareStrings(draftKey(left), draftKey(right)),
   );
   for (const draft of sortedDrafts) {
-    const continuousCause = findContinuousCause(
+    const continuityMatch = findContinuousCause(
       input.item,
       draft,
       previousItemCauses,
       input.previous.observedAt,
       input.confirmedEndedCauseIds,
     );
+    if (continuityMatch.status === "conflict") {
+      for (const cause of continuityMatch.matchingCauses) {
+        createSeed(
+          draft,
+          cause.obligationSince,
+          cause.responsibilityId,
+          cause.causeId,
+          cause.lastConfirmedActionability,
+        );
+      }
+      continuityConflicts.push(
+        Object.freeze({
+          status: "continuity_conflict",
+          itemNodeId: input.item.nodeId,
+          previousCauseIds: continuityMatch.previousCauseIds,
+        }),
+      );
+      continue;
+    }
+    const continuousCause =
+      continuityMatch.status === "matched" ? continuityMatch.cause : undefined;
     let obligationSince =
       continuousCause == null
         ? createObligationSince(draft, input.currentObservedAt, input.sourceOccurredAtById)
@@ -803,6 +972,11 @@ export function reconcilePersonalReminderCauseSeeds(
       createSeed(draft, obligationSince, responsibilityId, causeId, lastConfirmedActionability),
     );
     retainedCauseIds.add(causeId);
+  }
+
+  const [firstContinuityConflict] = continuityConflicts;
+  if (firstContinuityConflict != null) {
+    return firstContinuityConflict;
   }
 
   const retainedWithoutDraftCauseIds = new Set<PersonalReminderCauseId>();

@@ -282,7 +282,19 @@ type PersonalReminderRuntimeContextItem = Omit<
 type PersonalReminderRuntimeReconciledItem = Readonly<{
   item: PersonalReminderRuntimeContextItem;
   previousById: ReadonlyMap<PersonalReminderCauseId, PersonalReminderCause>;
-  reconciliation: ReturnType<typeof reconcilePersonalReminderCauseSeeds>;
+  reconciliation: Extract<
+    ReturnType<typeof reconcilePersonalReminderCauseSeeds>,
+    Readonly<{ status: "available" }>
+  >;
+}>;
+
+type PersonalReminderCauseContinuityConflict = Readonly<{
+  itemNodeId: GitHubNodeId;
+  previousCauseIds: readonly [
+    PersonalReminderCauseId,
+    PersonalReminderCauseId,
+    ...PersonalReminderCauseId[],
+  ];
 }>;
 
 type PersonalReminderRuntimeCurrentSeed = Readonly<{
@@ -366,6 +378,7 @@ export type PersonalReminderCauseRuntimePlan = Readonly<{
   entries: readonly PersonalReminderCauseRuntimePlanEntry[];
   preservedCauses: readonly PersonalReminderCause[];
   preservedEvidenceByNodeId: ReadonlyMap<GitHubNodeId, readonly Evidence[]>;
+  continuityConflicts: readonly PersonalReminderCauseContinuityConflict[];
   endedCauseIds: readonly PersonalReminderCauseId[];
   pendingCauseIds: readonly PersonalReminderCauseId[];
   causeSetAiDependencyByNodeId: ReadonlyMap<GitHubNodeId, AiAnalysisDependency>;
@@ -3612,6 +3625,7 @@ export function planPersonalReminderCauses(
   const entries: PersonalReminderCauseRuntimePlanEntry[] = [];
   const preservedCauses: PersonalReminderCause[] = [];
   const preservedEvidenceByNodeId = new Map<GitHubNodeId, readonly Evidence[]>();
+  const continuityConflicts: PersonalReminderCauseContinuityConflict[] = [];
   const endedCauseIds = new Set<PersonalReminderCauseId>();
   const pendingCauseIds = new Set<PersonalReminderCauseId>();
   const causeSetAiDependencyInputsByNodeId = new Map<GitHubNodeId, AiAnalysisDependency[]>();
@@ -3691,6 +3705,22 @@ export function planPersonalReminderCauses(
       sourceOccurredAtById,
       confirmedEndedCauseIds: new Set(structuralEnded),
     });
+    if (reconciliation.status === "continuity_conflict") {
+      for (const cause of previous.causes) {
+        preservedCauses.push(cause);
+      }
+      const evidence = context.state.previousEvidenceByNodeId.get(item.item.nodeId);
+      if (evidence != null) {
+        preservedEvidenceByNodeId.set(item.item.nodeId, evidence);
+      }
+      continuityConflicts.push(
+        Object.freeze({
+          itemNodeId: reconciliation.itemNodeId,
+          previousCauseIds: reconciliation.previousCauseIds,
+        }),
+      );
+      continue;
+    }
     const previousById = previousCauseById(previous);
     const causeSetDependencies = negativeCandidateDependencies.map(
       (candidate) => candidate.dependency,
@@ -3981,6 +4011,9 @@ export function planPersonalReminderCauses(
     ),
     preservedCauses: Object.freeze(preservedCauses),
     preservedEvidenceByNodeId,
+    continuityConflicts: Object.freeze(
+      continuityConflicts.sort((left, right) => compareStrings(left.itemNodeId, right.itemNodeId)),
+    ),
     endedCauseIds: Object.freeze([...endedCauseIds].sort(compareStrings)),
     pendingCauseIds: Object.freeze([...pendingCauseIds].sort(compareStrings)),
     causeSetAiDependencyByNodeId,

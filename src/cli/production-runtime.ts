@@ -132,6 +132,7 @@ import {
   calculateStaleness,
   calculatePersonalReminderStaleness,
   determineDeadlineLevel,
+  determinePotentialPersonalReminderContinuityConflictNodeIds,
   recalculateStalenessSeverity,
   determineIssueState,
   determineIssueLocalResponsibility,
@@ -14942,6 +14943,13 @@ async function analyzePersonalReminders(
     snapshotEvidenceSourceIds,
   });
   const plan = planPersonalReminderCauses(context);
+  const continuityConflictNodeIds = new Set(
+    plan.continuityConflicts.map((conflict) => conflict.itemNodeId),
+  );
+  const personalReminderFallbackNodeIds = new Set<GitHubNodeId>([
+    ...unavailableConsumerNodeIds,
+    ...continuityConflictNodeIds,
+  ]);
   const candidates = Object.freeze(
     plan.entries.flatMap((entry) => {
       const candidate = personalReminderAiCandidate(entry, graph);
@@ -14957,6 +14965,13 @@ async function analyzePersonalReminders(
           runId: invocation.runId,
           invocationId: `${invocation.runId}:personal-reminder`,
         });
+  for (const conflict of plan.continuityConflicts) {
+    await recordCodexDiagnostic(diagnostics, "codex.personal_reminder.continuity_conflict", {
+      phase: "fallback",
+      itemNodeId: conflict.itemNodeId,
+      previousCauseIds: conflict.previousCauseIds,
+    });
+  }
   const forcedTarget = forcedAiAnalysisTarget(configuration);
   let run: PersonalReminderAiRunResult | undefined;
   if (configuration.config.ai.enabled && forcedTarget == null) {
@@ -15036,6 +15051,9 @@ async function analyzePersonalReminders(
   const runtimeNodeIds = new Set(
     runtimeCollection.collection.items.map((item) => item.item.nodeId),
   );
+  for (const nodeId of continuityConflictNodeIds) {
+    runtimeNodeIds.delete(nodeId);
+  }
   const previousItemsByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
   );
@@ -15057,7 +15075,7 @@ async function analyzePersonalReminders(
     const causes = previous.personalReminderCauses;
     causesByNodeId.set(item.nodeId, causes);
     evidenceByNodeId.set(item.nodeId, previous.evidence);
-    if (unavailableConsumerNodeIds.has(item.nodeId)) {
+    if (personalReminderFallbackNodeIds.has(item.nodeId)) {
       planningByNodeId.set(item.nodeId, previous.personalReminderCausePlanning);
     } else if (item.state === "open") {
       planningByNodeId.set(
@@ -15087,6 +15105,15 @@ async function analyzePersonalReminders(
     evidenceByNodeId.set(nodeId, evidence);
   }
   for (const item of runtimeCollection.collection.items) {
+    if (continuityConflictNodeIds.has(item.item.nodeId)) {
+      const previous = previousItemsByNodeId.get(item.item.nodeId);
+      assertNonNullable(
+        previous,
+        `個人催促の継続競合対象の前回項目がありません。対象: ${item.item.nodeId}`,
+      );
+      planningByNodeId.set(item.item.nodeId, previous.personalReminderCausePlanning);
+      continue;
+    }
     const causes = causesByNodeId.get(item.item.nodeId);
     if (causes == null) {
       causesByNodeId.set(item.item.nodeId, Object.freeze([]));
@@ -15170,7 +15197,7 @@ async function analyzePersonalReminders(
   const usage = run?.usage ?? initialUsage;
   const usageDelta = personalReminderUsageDelta(usage, initialUsage);
   const status =
-    unavailableConsumerNodeIds.size > 0 ||
+    personalReminderFallbackNodeIds.size > 0 ||
     counts.failed > 0 ||
     counts.deferred > 0 ||
     [...planningByNodeId.values()].some((planning) => planning.status === "pending")
@@ -16787,11 +16814,18 @@ function personalReminderDetailNodeIdsForCollection(
   );
   const relationCandidateConsumerNodeIds =
     previousPersonalReminderRelationCandidateConsumerNodeIds(state);
+  const potentialContinuityConflictNodeIds =
+    determinePotentialPersonalReminderContinuityConflictNodeIds(
+      [...previousItemsByNodeId.values()].flatMap((item) => item.personalReminderCauses),
+    );
   const nodeIds = new Set<GitHubNodeId>();
   for (const item of enumeratedItems) {
     const previous = previousItemsByNodeId.get(item.nodeId);
     if (previous == null) {
       continue;
+    }
+    if (potentialContinuityConflictNodeIds.has(item.nodeId)) {
+      nodeIds.add(item.nodeId);
     }
     if (relationCandidateConsumerNodeIds.has(item.nodeId)) {
       nodeIds.add(item.nodeId);
@@ -16829,11 +16863,18 @@ function personalReminderReplanNodeIdsForCollection(
   const previousItemsByNodeId = new Map(
     (previousSnapshot(state)?.items ?? []).map((item) => [item.nodeId, item]),
   );
+  const potentialContinuityConflictNodeIds =
+    determinePotentialPersonalReminderContinuityConflictNodeIds(
+      [...previousItemsByNodeId.values()].flatMap((item) => item.personalReminderCauses),
+    );
   const nodeIds = new Set<GitHubNodeId>();
   for (const item of enumeratedItems) {
     const previous = previousItemsByNodeId.get(item.nodeId);
     if (previous == null) {
       continue;
+    }
+    if (potentialContinuityConflictNodeIds.has(item.nodeId)) {
+      nodeIds.add(item.nodeId);
     }
     if (item.state !== "open") {
       continue;
