@@ -35,7 +35,6 @@
 | Codex ChatGPT認証のCI利用 | https://developers.openai.com/codex/noninteractive#use-chatgpt-managed-auth-in-cicd-advanced | `auth.json`の実行中更新と次回runへの保存                             |
 | Codex token更新実装       | https://github.com/openai/codex/blob/main/codex-rs/login/src/auth/manager.rs                 | access tokenの有効期限前5分以内の更新とrotation後のrefresh token保存 |
 | Structured Outputs        | https://platform.openai.com/docs/guides/structured-outputs                                   | JSON Schema拘束とvalidation                                          |
-| Evaluation best practices | https://platform.openai.com/docs/guides/evals                                                | 固定AI出力を通したgolden fixtureの回帰評価                           |
 
 ## Discord公式
 

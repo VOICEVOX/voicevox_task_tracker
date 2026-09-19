@@ -347,9 +347,6 @@ pnpm exec codex --version
 その場合は設定済みmodel IDを`--model`へ指定した最小の`pnpm exec codex exec`を同じ認証情報で実行します。
 
 `metrics.aiCacheHitCount`、`metrics.estimatedInputTokens`、`diagnostics`も確認します。
-`pnpm eval:golden`はfixture内の固定AI出力をschema検証、semantic検証、reducer、状態判定、graph、通知選別へ通し、期待結果と比較します。
-標準fixtureは`fixedAi.networkCallCount: 0`を要求するため、実モデル、reasoning effort、promptの応答品質を評価しません。
-schema、semantic validation、reducer、状態、graph、通知判定を変更した場合はgolden evalも実行します。
 model、reasoning effort、promptを変更した場合は、実モデルを呼び出したdry-runで`metrics.aiCallCount`が1以上になることを確認し、AI判定と通知候補の差分を確認します。
 Actionsの`collect-analyze` jobはlockfileから同じCodex CLIをインストールし、収集前にversion確認を行います。
 

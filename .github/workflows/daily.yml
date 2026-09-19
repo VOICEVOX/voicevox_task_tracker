@@ -40,7 +40,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  quality-eval:
+  quality:
     if: >-
       github.event_name != 'schedule' ||
       vars.VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED != 'true'
@@ -66,35 +66,8 @@ jobs:
         run: pnpm lint
       - name: formatを検査
         run: pnpm format:check
-      - name: golden evalを実行
-        env:
-          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
-        run: pnpm eval:golden
-      - name: 診断JSONLを暗号化
-        if: >-
-          always() &&
-          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
-          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        env:
-          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64: ${{ secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 }}
-        run: .github/scripts/encrypt-diagnostics.sh dist/cli/tracker-run.js
-      - name: 暗号化済み診断artifactを保存
-        if: >-
-          always() &&
-          github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
-          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: daily-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
-          path: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.bundle
-          if-no-files-found: error
-          retention-days: 7
-      - name: 診断JSONLを削除
-        if: always()
-        run: rm -f -- "${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl"
-
   collect-analyze:
-    needs: quality-eval
+    needs: quality
     if: >-
       github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -651,7 +624,7 @@ jobs:
 
   report-workflow:
     needs:
-      - quality-eval
+      - quality
       - collect-analyze
       - persist-state
       - build-pages
@@ -698,7 +671,7 @@ jobs:
           NOTIFY_OPERATIONS_RESULT: ${{ needs.notify-operations.result }}
           PUBLISH_NOTIFICATION_HISTORY_RESULT: ${{ needs.publish-notification-history.result }}
           PERSIST_STATE_RESULT: ${{ needs.persist-state.result }}
-          QUALITY_EVAL_RESULT: ${{ needs.quality-eval.result }}
+          QUALITY_RESULT: ${{ needs.quality.result }}
           VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
           WORKFLOW_RUN_ATTEMPT: ${{ github.run_attempt }}
           WORKFLOW_RUN_ID: ${{ github.run_id }}
@@ -706,7 +679,7 @@ jobs:
           pnpm tracker:run report-workflow
           --run-id "$WORKFLOW_RUN_ID"
           --run-attempt "$WORKFLOW_RUN_ATTEMPT"
-          --quality-eval-result "$QUALITY_EVAL_RESULT"
+          --quality-result "$QUALITY_RESULT"
           --collect-analyze-result "$COLLECT_ANALYZE_RESULT"
           --persist-state-result "$PERSIST_STATE_RESULT"
           --build-pages-result "$BUILD_PAGES_RESULT"

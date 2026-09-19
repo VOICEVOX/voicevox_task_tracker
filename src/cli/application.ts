@@ -4,7 +4,6 @@ import {
   type DailyRunExecutionResult,
   type DailyTransactionTypeMap,
 } from "./daily-transaction.js";
-import { OfflineRunRunner, type OfflineRunExecutionResult } from "./offline-runner.js";
 import { StateVerificationRunner } from "./state-verification.js";
 import { WorkflowStageRunner } from "./workflow-stage.js";
 
@@ -33,18 +32,12 @@ export type CliExecutionResult =
   | Readonly<{
       command: "verify-state";
       exitCode: 0;
-    }>
-  | Readonly<{
-      command: "replay" | "eval";
-      exitCode: 0 | 1;
-      result: OfflineRunExecutionResult;
     }>;
 
-/** CLI applicationへ注入するonline、offline、標準出力境界。 */
+/** CLI applicationへ注入するonline、標準出力境界。 */
 export type CliApplicationDependencies<Types extends DailyTransactionTypeMap> = Readonly<{
   dailyRunner: DailyTransactionRunner<Types>;
   workflowStageRunner: WorkflowStageRunner;
-  offlineRunner: OfflineRunRunner;
   stateVerificationRunner: StateVerificationRunner;
   writeStandardOutput: (source: string) => Promise<void>;
 }>;
@@ -98,15 +91,6 @@ export class CliApplication<Types extends DailyTransactionTypeMap> {
           command: command.kind,
           exitCode: 0,
         });
-      case "replay":
-      case "eval": {
-        const result = await this.#dependencies.offlineRunner.run(command);
-        return Object.freeze({
-          command: command.kind,
-          exitCode: exitCodeForStatus(result.report.status),
-          result,
-        });
-      }
     }
   }
 

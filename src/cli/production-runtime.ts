@@ -249,7 +249,6 @@ import {
   type DiscordSecretProvider,
   type DiscordWebhookHttpClient,
 } from "../discord/index.js";
-import { analyzeGoldenFixture, goldenEvalInputSchema } from "../eval/index.js";
 import {
   type collectGitHubItemDetails,
   collectRepositoriesWithStaleFallback,
@@ -380,15 +379,6 @@ import {
   CliRelationExpansionLimitError,
 } from "./errors.js";
 import { safeCodexFallbackDiagnostic } from "./error-diagnostic.js";
-import {
-  OfflineRunRunner,
-  type readGoldenFixtureFiles,
-  type readReplayFixtureFile,
-  type readReplayStateFile,
-  type OfflineAnalysisMetrics,
-  type OfflineAnalysisResult,
-  type ReplayFixture,
-} from "./offline-runner.js";
 import { writeRunReport, type RunMetrics } from "./run-report.js";
 import {
   StateVerificationRunner,
@@ -784,9 +774,6 @@ export type ProductionRuntimeAdapters = Readonly<{
     configuration: CodexAdapterConfiguration,
     dependencies: CodexAdapterDependencies,
   ) => Promise<void>;
-  readReplayFixture: typeof readReplayFixtureFile;
-  readReplayState: typeof readReplayStateFile;
-  readGoldenFixtures: typeof readGoldenFixtureFiles;
   readWorkflowArtifact: typeof readWorkflowArtifactFile;
   verifyStateDirectory: typeof verifyPersistentStateDirectory;
   createGitHubClient: (options: CreateGitHubClientOptions) => Promise<GitHubClient>;
@@ -19155,90 +19142,6 @@ function createWorkflowStageRunner(adapters: ProductionRuntimeAdapters): Workflo
   });
 }
 
-function emptyOfflineMetrics(): OfflineAnalysisMetrics {
-  return Object.freeze({
-    repositoryCount: 0,
-    itemCount: 0,
-    changedItemCount: 0,
-    activeEdgeCount: 0,
-    aiCallCount: 0,
-    aiCacheHitCount: 0,
-    aiRetainedResultCount: 0,
-    estimatedInputTokens: 0,
-    personalReminderCauseCount: 0,
-    personalReminderAiCallCount: 0,
-    personalReminderAiCacheHitCount: 0,
-    personalReminderAssessmentReuseCount: 0,
-    personalReminderUnknownCount: 0,
-    personalReminderFailedCount: 0,
-    personalReminderDeferredCount: 0,
-    personalReminderNotEvaluatedCount: 0,
-    staleRepositoryCount: 0,
-  });
-}
-
-function createOfflineRunner(adapters: ProductionRuntimeAdapters): OfflineRunRunner {
-  return new OfflineRunRunner(
-    {
-      ...(adapters.diagnosticsRecorder == null
-        ? {}
-        : { diagnosticsRecorder: adapters.diagnosticsRecorder }),
-      engine: {
-        replayFixture: (fixture: ReplayFixture): Promise<OfflineAnalysisResult> => {
-          const goldenInput = goldenEvalInputSchema.safeParse(fixture.input);
-          if (!goldenInput.success) {
-            return Promise.resolve(
-              Object.freeze({
-                status: "success",
-                output: fixture.input,
-                metrics: emptyOfflineMetrics(),
-                diagnostics: Object.freeze([]),
-              }),
-            );
-          }
-          const analysis = analyzeGoldenFixture(goldenInput.data);
-          return Promise.resolve(
-            Object.freeze({
-              status: "success",
-              output: analysis.output,
-              metrics: Object.freeze({
-                ...emptyOfflineMetrics(),
-                ...analysis.metrics,
-              }),
-              diagnostics: analysis.diagnostics,
-            }),
-          );
-        },
-        replayState: (state): Promise<OfflineAnalysisResult> =>
-          Promise.resolve(
-            Object.freeze({
-              status: "success",
-              output: state,
-              metrics: Object.freeze({
-                ...emptyOfflineMetrics(),
-                repositoryCount: state.repositories.length,
-                itemCount: state.items.length,
-                activeEdgeCount: state.relations.filter((relation) => relation.active).length,
-                staleRepositoryCount: state.repositories.filter(
-                  (repository) => repository.freshness === "stale",
-                ).length,
-              }),
-              diagnostics: Object.freeze([]),
-            }),
-          ),
-      },
-      readReplayFixture: adapters.readReplayFixture,
-      readState: adapters.readReplayState,
-      readGoldenFixtures: adapters.readGoldenFixtures,
-      writeArtifact: adapters.writeJsonArtifact,
-      writeReport: (path, report) => writeRunReport(path, report, adapters.writeTextFile),
-    },
-    {
-      now: adapters.now,
-    },
-  );
-}
-
 /** 注入済みの具体アダプターから全サブコマンドを実行するapplicationを組み立てる。 */
 export function createProductionCliApplication(
   adapters: ProductionRuntimeAdapters,
@@ -19248,7 +19151,6 @@ export function createProductionCliApplication(
       now: adapters.now,
     }),
     workflowStageRunner: createWorkflowStageRunner(adapters),
-    offlineRunner: createOfflineRunner(adapters),
     stateVerificationRunner: new StateVerificationRunner({
       verifyStateDirectory: adapters.verifyStateDirectory,
       writeStandardOutput: adapters.writeStandardOutput,

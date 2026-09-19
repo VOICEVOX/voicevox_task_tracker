@@ -14,13 +14,6 @@ export class CliOutputError extends TaskTrackerError {
   }
 }
 
-/** replayまたはevalの入力fixtureを読み取れないことを表す。 */
-export class CliFixtureError extends TaskTrackerError {
-  public constructor(path: string, options: ErrorOptions) {
-    super(`CLI fixtureを読み取れません。対象: ${path}`, options);
-  }
-}
-
 /** 指定した永続stateファイルを読み取れないか検証できないことを表す。 */
 export class CliStateVerificationError extends TaskTrackerError {
   public constructor(path: string, options: ErrorOptions) {

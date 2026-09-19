@@ -462,7 +462,7 @@ function completedReport(
   finishedAt: UtcIsoDateTime,
 ): RunReport {
   return createRunReport({
-    schemaVersion: "2",
+    schemaVersion: "3",
     runId: invocation.runId,
     command: invocation.command.kind,
     status,
@@ -487,7 +487,7 @@ function failureReport(
   finishedAt: UtcIsoDateTime,
 ): RunReport {
   return createRunReport({
-    schemaVersion: "2",
+    schemaVersion: "3",
     runId: invocation.runId,
     command: invocation.command.kind,
     status: "failure",

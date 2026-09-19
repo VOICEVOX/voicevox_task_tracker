@@ -133,35 +133,6 @@ export type VerifyStateCliCommand = Readonly<{
   stateDirectory: string;
 }>;
 
-/** replayへ渡すfixtureまたは過去stateの入力元。 */
-export type ReplaySource =
-  | Readonly<{
-      kind: "fixture";
-      path: string;
-    }>
-  | Readonly<{
-      kind: "state";
-      path: string;
-    }>;
-
-/** 保存済み入力をネットワークなしで再判定するCLI入力。 */
-export type ReplayCliCommand = Readonly<{
-  kind: "replay";
-  source: ReplaySource;
-  artifactPath: string;
-  reportPath: string;
-  schedule: CliSchedule;
-}>;
-
-/** golden fixtureを比較するCLI入力。 */
-export type EvalCliCommand = Readonly<{
-  kind: "eval";
-  fixturesPath: string;
-  artifactPath: string;
-  reportPath: string;
-  schedule: CliSchedule;
-}>;
-
 /** CLIの使用方法だけを表示する入力。 */
 export type HelpCliCommand = Readonly<{
   kind: "help";
@@ -180,8 +151,6 @@ export type CliCommand =
   | NotifyOperationsCliCommand
   | ReportWorkflowCliCommand
   | VerifyStateCliCommand
-  | ReplayCliCommand
-  | EvalCliCommand
   | HelpCliCommand;
 
 type ParsedOptions = ReadonlyMap<string, readonly string[]>;
@@ -587,7 +556,7 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
       "--publish-notification-history-result",
       "--run-attempt",
       "--run-id",
-      "--quality-eval-result",
+      "--quality-result",
     ]),
   );
   const collectAnalyzeReportPath = singleOption(
@@ -606,7 +575,7 @@ function parseReportWorkflow(args: readonly string[]): ReportWorkflowCliCommand 
     workflowRunId: parseWorkflowRunId(options),
     workflowRunAttempt: parseWorkflowRunAttempt(options),
     jobResults: Object.freeze({
-      "quality-eval": parseWorkflowJobResult(options, "--quality-eval-result"),
+      quality: parseWorkflowJobResult(options, "--quality-result"),
       "collect-analyze": parseWorkflowJobResult(options, "--collect-analyze-result"),
       "persist-state": parseWorkflowJobResult(options, "--persist-state-result"),
       "build-pages": parseWorkflowJobResult(options, "--build-pages-result"),
@@ -626,71 +595,6 @@ function parseVerifyState(args: readonly string[]): VerifyStateCliCommand {
   return Object.freeze({
     kind: "verify-state",
     stateDirectory: requiredSingleOption(options, "--state-directory", "verify-state"),
-  });
-}
-
-function parseReplaySource(options: ParsedOptions): ReplaySource {
-  const fixturePath = optionalSingleOption(options, "--fixture");
-  const statePath = optionalSingleOption(options, "--state");
-  if ((fixturePath == null) === (statePath == null)) {
-    throw usageError("--fixtureまたは--stateのどちらか一方を指定してください");
-  }
-  if (fixturePath != null) {
-    return Object.freeze({
-      kind: "fixture",
-      path: fixturePath,
-    });
-  }
-  assertNonNullable(statePath, "--stateの値を取得できませんでした");
-  return Object.freeze({
-    kind: "state",
-    path: statePath,
-  });
-}
-
-function parseReplay(args: readonly string[]): ReplayCliCommand {
-  const options = parseOptions(
-    args,
-    new Set(["--artifact", "--fixture", "--report", "--scheduled-for", "--state"]),
-  );
-  const reportPath = singleOption(options, "--report", `${DEFAULT_REPORT_DIRECTORY}/replay.json`);
-  const artifactPath = singleOption(
-    options,
-    "--artifact",
-    `${DEFAULT_ARTIFACT_DIRECTORY}/replay.json`,
-  );
-  assertDifferentOutputPaths(reportPath, artifactPath);
-  return Object.freeze({
-    kind: "replay",
-    source: parseReplaySource(options),
-    artifactPath,
-    reportPath,
-    schedule: parseSchedule(options),
-  });
-}
-
-function parseEval(args: readonly string[]): EvalCliCommand {
-  const options = parseOptions(
-    args,
-    new Set(["--artifact", "--fixtures", "--report", "--scheduled-for"]),
-  );
-  const fixturesPath = optionalSingleOption(options, "--fixtures");
-  if (fixturesPath == null) {
-    throw usageError("evalには--fixturesが必要です");
-  }
-  const reportPath = singleOption(options, "--report", `${DEFAULT_REPORT_DIRECTORY}/eval.json`);
-  const artifactPath = singleOption(
-    options,
-    "--artifact",
-    `${DEFAULT_ARTIFACT_DIRECTORY}/eval.json`,
-  );
-  assertDifferentOutputPaths(reportPath, artifactPath);
-  return Object.freeze({
-    kind: "eval",
-    fixturesPath,
-    artifactPath,
-    reportPath,
-    schedule: parseSchedule(options),
   });
 }
 
@@ -732,10 +636,6 @@ export function parseCliArguments(args: readonly string[]): CliCommand {
       return parseReportWorkflow(options);
     case "verify-state":
       return parseVerifyState(options);
-    case "replay":
-      return parseReplay(options);
-    case "eval":
-      return parseEval(options);
     default:
       throw usageError(`未対応のサブコマンドです。対象: ${subcommand}`);
   }
@@ -754,9 +654,7 @@ export function formatCliUsage(): string {
     "  voicevox-task-tracker notify-discord --pages-url URL [--artifact PATH]",
     "  voicevox-task-tracker resolve-discord-delivery --delivery-id ID --resolution retry|acknowledge [--config PATH]",
     "  voicevox-task-tracker notify-operations --kind collection|pages|discord --incident-id ID --occurred-at ISO",
-    "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --quality-eval-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --publish-notification-history-result RESULT --notify-operations-result RESULT",
+    "  voicevox-task-tracker report-workflow --run-id ID --run-attempt NUMBER --quality-result RESULT --collect-analyze-result RESULT --persist-state-result RESULT --build-pages-result RESULT --deploy-pages-result RESULT --notify-discord-result RESULT --publish-notification-history-result RESULT --notify-operations-result RESULT",
     "  voicevox-task-tracker verify-state --state-directory PATH",
-    "  voicevox-task-tracker replay (--fixture PATH | --state PATH) [--artifact PATH]",
-    "  voicevox-task-tracker eval --fixtures PATH [--artifact PATH]",
   ].join("\n");
 }

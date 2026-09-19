@@ -105,7 +105,6 @@ function parseRepositoryFilter(value: string): readonly string[] {
 /** workflow向けoptionを日次またはbackfillサブコマンドへ変換する。 */
 export function createTrackerRunCliArguments(args: readonly string[]): readonly string[] {
   if (
-    args[0] === "eval" ||
     args[0] === "collect-analyze" ||
     args[0] === "persist-state" ||
     args[0] === "build-pages" ||
@@ -180,8 +179,6 @@ function topLevelDiagnosticStage(command: CliCommand): RunStage | "unknown" {
     case "dry-run":
     case "backfill":
     case "collect-analyze":
-    case "replay":
-    case "eval":
     case "verify-state":
     case "help":
       return "unknown";

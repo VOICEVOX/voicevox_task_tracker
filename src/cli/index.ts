@@ -14,14 +14,11 @@ export {
   type CollectAnalyzeCliCommand,
   type DailyCliCommand,
   type DryRunCliCommand,
-  type EvalCliCommand,
   type HelpCliCommand,
   type NotifyDiscordCliCommand,
   type NotifyOperationsCliCommand,
   type PersistStateCliCommand,
   type ReportWorkflowCliCommand,
-  type ReplayCliCommand,
-  type ReplaySource,
   type ResolveDiscordDeliveryCliCommand,
   type VerifyStateCliCommand,
 } from "./command.js";
@@ -46,7 +43,6 @@ export {
   CliCodexAuthenticationError,
   CliCredentialsError,
   CliExecutableError,
-  CliFixtureError,
   CliOutputError,
   CliRelationExpansionLimitError,
   CliStateVerificationError,
@@ -61,20 +57,6 @@ export {
   type ProductionTypes,
 } from "./composition-root.js";
 export { writeCliJsonArtifact, writeCliTextFile } from "./file-output.js";
-export {
-  OfflineRunRunner,
-  readGoldenFixtureFiles,
-  readReplayFixtureFile,
-  readReplayStateFile,
-  type GoldenFixture,
-  type OfflineAnalysisEngine,
-  type OfflineAnalysisMetrics,
-  type OfflineAnalysisResult,
-  type OfflineRunDependencies,
-  type OfflineRunExecutionResult,
-  type OfflineRunRuntime,
-  type ReplayFixture,
-} from "./offline-runner.js";
 export { RunCoordinator, type CoordinatedRunResult } from "./run-coordinator.js";
 export {
   StateVerificationRunner,

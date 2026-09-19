@@ -8,7 +8,7 @@ GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は�
 
 `.github/workflows/daily.yml`の最新runで、実行対象のjobが依存順に成功したことを確認します。
 
-1. `quality-eval`
+1. `quality`
 2. `collect-analyze`
 3. `persist-state`
 4. `build-pages`
@@ -559,9 +559,7 @@ blockerの停滞レベルとdownstream impactが通知順位を決めます。
 6. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目と個人原因、通知候補を確認します。前段の関係評価だけで予算を使い切っていないかも確認します。
 
 閾値、confidence、label規則、AI予算を変更する場合は、dry-runを実行して通知候補の差分を確認します。
-schema、semantic validation、reducer、状態、graph、通知判定を変更する場合は`pnpm eval:golden`も実行します。
-golden evalはfixture内の固定AI出力を検証して期待結果と比較し、標準fixtureで`fixedAi.networkCallCount: 0`を要求します。
-実モデル、reasoning effort、promptの応答品質は評価しないため、これらを変更する場合は`metrics.aiCallCount`が1以上のdry-runでAI判定と通知候補の差分を確認します。
+model、reasoning effort、promptを変更する場合は、`metrics.aiCallCount`が1以上になるdry-runでAI判定と通知候補の差分を確認します。
 `ai.execution.maxConcurrentCalls`を上げるとrun時間は縮みますが、Codexのrate limitに当たる頻度が増えて再試行が発生しやすくなります。
 上げた後は`codex_analysis` stageの失敗数と再試行数を確認します。
 mentionは通知量の調整に使わず、運用上必要なuserだけをallowlistへ追加します。
@@ -596,7 +594,7 @@ CLIが起動する前に失敗した場合や暗号化処理自体が失敗し�
 
 | stageまたはjob                  | 確認内容                                                                                                                                                                                      |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quality-eval`                  | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`、`pnpm eval:golden`をローカルで再現する                                                                                                    |
+| `quality`                       | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`をローカルで再現する                                                                                                                        |
 | `configuration`                 | maintainerのGitHubユーザー名一覧、repository名、未知field、日時、正規表現、secret名を確認する                                                                                                 |
 | `authentication`                | `GH_APP_ID`、PEM形式、Organizationへのinstallation、必要なread権限だけがあることを確認する                                                                                                    |
 | `repository_inventory`          | Appのrepository access、public、archive、disabledの状態を確認する                                                                                                                             |

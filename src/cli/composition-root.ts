@@ -22,11 +22,6 @@ import { GitStateBranchAdapter, StatePersistenceSession } from "../persistence/i
 import { type CliApplication } from "./application.js";
 import { writeCliJsonArtifact, writeCliTextFile } from "./file-output.js";
 import {
-  readGoldenFixtureFiles,
-  readReplayFixtureFile,
-  readReplayStateFile,
-} from "./offline-runner.js";
-import {
   createProductionCliApplication,
   type ProductionRuntimeAdapters,
   type ProductionTypes,
@@ -47,9 +42,6 @@ type ConcreteOperationName =
   | "executeCodexPersonalReminderAnalysis"
   | "loadConfig"
   | "openStateSession"
-  | "readGoldenFixtures"
-  | "readReplayFixture"
-  | "readReplayState"
   | "readSandboxContext"
   | "readWorkflowArtifact"
   | "verifyStateDirectory";
@@ -70,9 +62,6 @@ function createProductionAdapters(adapters: CliCompositionAdapters): ProductionR
     collectGitHubItemDetails,
     executeCodexAnalysis,
     executeCodexPersonalReminderAnalysis,
-    readReplayFixture: readReplayFixtureFile,
-    readReplayState: readReplayStateFile,
-    readGoldenFixtures: readGoldenFixtureFiles,
     readSandboxContext: async (path) =>
       parseSandboxContext(JSON.parse(await readFile(path, "utf8"))),
     readWorkflowArtifact: readWorkflowArtifactFile,

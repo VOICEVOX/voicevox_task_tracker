@@ -18,19 +18,18 @@ pnpm install --frozen-lockfile
 
 ## 開発コマンド
 
-| コマンド                  | 内容                                                         | 出力先                                                   |
-| ------------------------- | ------------------------------------------------------------ | -------------------------------------------------------- |
-| `pnpm build`              | `src`をNode.js向けJavaScriptと型定義へ変換する               | `dist/`                                                  |
-| `pnpm build:web`          | 静的Web UIをビルドする                                       | `dist/web/`                                              |
-| `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る            | `artifacts/workflow/runtime/tracker-run.mjs`             |
-| `pnpm dev:web`            | Web UIの開発serverを起動する                                 | なし                                                     |
-| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                              | なし                                                     |
-| `pnpm lint`               | ESLintでコードを検査する                                     | なし                                                     |
-| `pnpm format`             | Prettierで対象ファイルを整形する                             | 対象ファイル                                             |
-| `pnpm format:check`       | Prettierによる整形差分がないことを検査する                   | なし                                                     |
-| `pnpm eval:golden`        | CLIをビルドし、golden fixtureを外部接続なしで評価する        | `artifacts/eval.json`、`artifacts/run-reports/eval.json` |
-| `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の上限を検証する | `artifacts/performance-profile.json`                     |
-| `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                                       |
+| コマンド                  | 内容                                                         | 出力先                                       |
+| ------------------------- | ------------------------------------------------------------ | -------------------------------------------- |
+| `pnpm build`              | `src`をNode.js向けJavaScriptと型定義へ変換する               | `dist/`                                      |
+| `pnpm build:web`          | 静的Web UIをビルドする                                       | `dist/web/`                                  |
+| `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る            | `artifacts/workflow/runtime/tracker-run.mjs` |
+| `pnpm dev:web`            | Web UIの開発serverを起動する                                 | なし                                         |
+| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                              | なし                                         |
+| `pnpm lint`               | ESLintでコードを検査する                                     | なし                                         |
+| `pnpm format`             | Prettierで対象ファイルを整形する                             | 対象ファイル                                 |
+| `pnpm format:check`       | Prettierによる整形差分がないことを検査する                   | なし                                         |
+| `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の上限を検証する | `artifacts/performance-profile.json`         |
+| `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                           |
 
 `build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`status/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
 GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdeep linkをこの複製で受けます。
@@ -66,7 +65,7 @@ pnpm tracker:run build-pages --output web/public/data
 ## CLIをローカルで動かす
 
 各stageの役割と操作は[運用手順](OPERATIONS.md)の「stageごとの実行」にまとめてあります。
-外部サービスへ接続しないサブコマンドは`eval`、`report-workflow`、`persist-state`、`build-pages`です。
+外部サービスへ接続しないサブコマンドは`report-workflow`、`persist-state`、`build-pages`です。
 `persist-state`と`build-pages`は検証済みartifactとローカルのGit stateを必要とします。
 
 `daily`、`backfill`、`collect-analyze`には`--notification-action send|hold|acknowledge-current`を指定できます。省略時は`send`です。`dry-run`にはこの指定はありません。
@@ -105,27 +104,7 @@ state、Pages、Discordを更新せずに収集から検証までを通したい
 
 ユーザーの指示の有無にかかわらず、テストを一切実装しません。
 
-## Golden評価
-
-`fixtures/golden/`の各ケースは`fixture.json`と`expected.json`の2ファイルで構成します。
-`fixture.json`は評価時刻、repository、IssueとPull Request、関係候補、固定AI分析、前回状態を持ちます。
-`expected.json`は`status`、待ち相手を表す`waitingOn`、停滞レベルを表す`severity`、停滞開始時刻、関係、通知、公開可否の期待値を持ちます。
-`large`ケースだけは集計値と性能、サイズ、API予算、Codex予算の合否を記録します。
-
-fixtureはネットワークへ接続しません。
-実在するIssue、Pull Request、repository、ユーザー名をfixtureへ持ち込まないでください。
-
-期待値の更新に自動化されたコマンドはありません。
-判定ロジックか`fixture.json`を変更したら`pnpm eval:golden`で実測値との差を確認し、意図した仕様を表す値だけを`expected.json`へ手で反映します。
-新しいケースを足す場合は、同じdirectoryへ`fixture.json`と`expected.json`を追加します。
-`fixture.json`の`name`は既存ケースと重複させないでください。
-
-期待値を更新してよいのは、判定仕様を意図して変更した場合、fixtureの誤りを直す場合、回帰ケースを追加する場合だけです。
-意図しない回帰を通すために期待値を合わせないでください。
-golden evalは固定AI出力を検証するもので実モデルを呼ばないため、model、reasoning effort、promptの変更を理由に期待値を更新することもありません。
-これらを変更した場合は`metrics.aiCallCount`が1以上になるdry-runで確認します。
-
-### 判定規則versionを更新する
+## 判定規則versionを更新する
 
 判定規則を変えたら、対応するversionを上げてください。
 上げないと、GitHub側が動いていない項目は再判定されず、古い判定が残り続けます。
@@ -136,7 +115,7 @@ golden evalは固定AI出力を検証するもので実モデルを呼ばない�
 | Pull Requestの判定      | `PULL_REQUEST_DETERMINISTIC_RULES_VERSION`           |
 | Codexの意味上の判定規則 | `src/codex/analysis-elements.ts`の判定要素別revision |
 
-#### Codexプロンプトのversionを判断する
+### Codexプロンプトのversionを判断する
 
 AI推論のやり直しは重いため、プロンプトの差分だけを理由に全項目や全判定を再推論しません。
 `src/codex/analysis-elements.ts`のrevisionは、判定要素ごとの意味上のAI判定規則を識別します。
@@ -158,7 +137,9 @@ AI推論のやり直しは重いため、プロンプトの差分だけを理由
 
 versionを据え置いた表記変更は、既存cacheやsnapshotへ即時反映されません。新規分析や別要因による再分析だけが新しい表記になり、新旧の文言が一時的に混在します。この挙動は推論負荷を避けるために受け入れます。既存項目の表記を即時に統一する必要がある場合は、全AI再推論を伴わない表示時の決定論的な変換などを検討します。
 
-#### 判定要素ごとに再推論の必要性を決める
+model、reasoning effort、promptを変更した場合は、`metrics.aiCallCount`が1以上になるdry-runでAI判定と通知候補の差分を確認します。
+
+### 判定要素ごとに再推論の必要性を決める
 
 再推論するIssue・PRの選別と、更新する判定要素の範囲を分けます。
 各要素について、現在の入力と決定論的な規則だけで確定する判定をAI対象から除きます。
@@ -199,7 +180,7 @@ cacheが欠落しても保存済みの有効な結果があれば再分析せず
 要対応度だけの変更ではIssueとPull Requestの決定論的規則versionを上げません。
 期限日から切迫度を求める規則を変えた場合は、IssueとPull Requestの決定論的規則versionを上げます。
 
-### 永続stateの形式を変更する
+## 永続stateの形式を変更する
 
 snapshot、履歴、通知管理記録の保存形式や列挙値は、次の順序で変更します。
 
@@ -244,7 +225,6 @@ CIの`verify-state`は、本番と同じ移行処理を使ってstate全体を�
 | `src/diagnostics/`   | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                       |
 | `src/discord/`       | 通知候補選別、通知管理記録による重複抑制、payload生成、Webhook送信                                   |
 | `src/domain/`        | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度のpure TypeScript |
-| `src/eval/`          | golden fixtureの解析、期待値との比較、回帰指標                                                       |
 | `src/github/`        | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                         |
 | `src/graph/`         | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                        |
 | `src/pages/`         | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                               |
@@ -252,7 +232,7 @@ CIの`verify-state`は、本番と同じ移行処理を使ってstate全体を�
 | `src/persistence/`   | canonical JSON、snapshot、履歴、AI cache、通知管理記録、run report、state branch transaction         |
 | `src/util/`          | null検査、到達不能検査、共通エラー、Zod診断                                                          |
 | `web/`               | ViteとPreactによる静的Web UIとサンプル公開DTO                                                        |
-| `fixtures/`          | Golden評価と性能profileへ渡す固定入力                                                                |
+| `fixtures/`          | 性能profileへ渡す固定入力                                                                            |
 | `schemas/`           | Codex分析出力とsnapshotのJSON Schema                                                                 |
 | `prompts/`           | Codexへ渡す固定system prompt                                                                         |
 | `docs/`              | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                         |
@@ -361,7 +341,6 @@ CIと同じ検査を手元で実行します。
 pnpm typecheck
 pnpm lint
 pnpm format:check
-pnpm eval:golden
 pnpm build
 pnpm build:workflow-cli
 pnpm build:web

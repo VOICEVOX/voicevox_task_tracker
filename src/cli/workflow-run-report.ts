@@ -12,7 +12,7 @@ import {
 
 const workflowJobResultSchema = z.enum(["success", "failure", "cancelled", "skipped"]);
 const workflowJobResultsSchema = z.strictObject({
-  "quality-eval": workflowJobResultSchema,
+  quality: workflowJobResultSchema,
   "collect-analyze": workflowJobResultSchema,
   "persist-state": workflowJobResultSchema,
   "build-pages": workflowJobResultSchema,
@@ -42,7 +42,7 @@ export type WorkflowJobResults = Readonly<z.output<typeof workflowJobResultsSche
 
 /** CLI reportと全job結果をまとめたworkflow run report。 */
 export type WorkflowRunReport = Readonly<{
-  schemaVersion: "3";
+  schemaVersion: "4";
   workflowRunId: string;
   workflowRunAttempt: number;
   status: "success" | "fallback" | "failure";
@@ -54,7 +54,7 @@ export type WorkflowRunReport = Readonly<{
 
 function requiredJobFailed(jobs: WorkflowJobResults): boolean {
   return (
-    jobs["quality-eval"] !== "success" ||
+    jobs.quality !== "success" ||
     jobs["collect-analyze"] !== "success" ||
     jobs["persist-state"] !== "success" ||
     jobs["build-pages"] !== "success" ||
@@ -98,7 +98,7 @@ export function createWorkflowRunReport(value: unknown): WorkflowRunReport {
   const status = workflowStatus(parsed.data.jobs, collectAnalyzeReport);
   const metrics = collectAnalyzeReport?.metrics ?? createEmptyRunMetrics();
   return Object.freeze({
-    schemaVersion: "3",
+    schemaVersion: "4",
     workflowRunId: parsed.data.workflowRunId,
     workflowRunAttempt: parsed.data.workflowRunAttempt,
     status,
