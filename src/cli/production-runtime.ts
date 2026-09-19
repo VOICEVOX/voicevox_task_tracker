@@ -318,6 +318,8 @@ import {
   createStateRunReport,
   createStateSnapshot,
   assertPersonalReminderEvidenceClosure,
+  assertPersonalReminderEvidenceRecordsClosure,
+  createPersonalReminderEvidenceSourceIndex,
   snapshotEffectiveGraphStateByNodeId,
   StateBranchConflictError,
   NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
@@ -14758,12 +14760,22 @@ function personalReminderRuntimeCollection(
   });
 }
 
+function previousPersonalReminderEvidenceBySourceId(
+  snapshot: StateSnapshot | undefined,
+): ReadonlyMap<SourceId, readonly Evidence[]> {
+  return createPersonalReminderEvidenceSourceIndex([
+    ...(snapshot?.items.map((item) => item.evidence) ?? []),
+    ...(snapshot?.relations.map((relation) => relation.evidence) ?? []),
+  ]);
+}
+
 function personalReminderPreviousState(state: RuntimeState): PersonalReminderRuntimeState {
   const snapshot = previousSnapshot(state);
   if (snapshot == null) {
     return Object.freeze({
       previousCausesByNodeId: new Map(),
       previousEvidenceByNodeId: new Map(),
+      previousEvidenceBySourceId: new Map(),
     });
   }
   return Object.freeze({
@@ -14774,7 +14786,61 @@ function personalReminderPreviousState(state: RuntimeState): PersonalReminderRun
       ]),
     ),
     previousEvidenceByNodeId: new Map(snapshot.items.map((item) => [item.nodeId, item.evidence])),
+    previousEvidenceBySourceId: previousPersonalReminderEvidenceBySourceId(snapshot),
   });
+}
+
+function completePersonalReminderEvidenceClosure(
+  input: Readonly<{
+    causesByNodeId: ReadonlyMap<GitHubNodeId, readonly PersonalReminderCause[]>;
+    evidenceByNodeId: Map<GitHubNodeId, readonly Evidence[]>;
+    currentEvidenceBySourceId: ReadonlyMap<SourceId, readonly Evidence[]>;
+    previousEvidenceBySourceId: ReadonlyMap<SourceId, readonly Evidence[]>;
+  }>,
+): void {
+  for (const [nodeId, causes] of input.causesByNodeId) {
+    const existingEvidence = input.evidenceByNodeId.get(nodeId) ?? Object.freeze([]);
+    const evidenceByIdentity = new Map(
+      existingEvidence.map((evidence) => [serializeCanonicalJson(evidence), evidence]),
+    );
+    let changed = false;
+    for (const cause of causes) {
+      const requiredSourceIds = new Set(cause.evidenceSourceIds);
+      if (cause.adoptedAssessment.status === "available") {
+        for (const sourceId of cause.adoptedAssessment.result.references.sourceIds) {
+          requiredSourceIds.add(sourceId);
+        }
+      }
+      for (const sourceId of requiredSourceIds) {
+        const currentEvidence = input.currentEvidenceBySourceId.get(sourceId) ?? [];
+        const previousEvidence = input.previousEvidenceBySourceId.get(sourceId) ?? [];
+        if (currentEvidence.length === 0 && previousEvidence.length === 0) {
+          throw new TypeError(
+            `個人催促causeの保存evidenceに必要なsourceがありません。item: ${nodeId} cause: ${cause.causeId} source: ${sourceId}`,
+          );
+        }
+        const beforeSize = evidenceByIdentity.size;
+        for (const evidence of [...currentEvidence, ...previousEvidence]) {
+          evidenceByIdentity.set(serializeCanonicalJson(evidence), evidence);
+        }
+        changed ||= evidenceByIdentity.size !== beforeSize;
+      }
+    }
+    const sortedEvidence = [...evidenceByIdentity.values()].sort((left, right) => {
+      const leftIdentity = serializeCanonicalJson(left);
+      const rightIdentity = serializeCanonicalJson(right);
+      return leftIdentity < rightIdentity ? -1 : leftIdentity > rightIdentity ? 1 : 0;
+    });
+    const orderChanged =
+      existingEvidence.length !== sortedEvidence.length ||
+      existingEvidence.some(
+        (evidence, index) =>
+          serializeCanonicalJson(evidence) !== serializeCanonicalJson(sortedEvidence[index]),
+      );
+    if (changed || orderChanged) {
+      input.evidenceByNodeId.set(nodeId, Object.freeze(sortedEvidence));
+    }
+  }
 }
 
 function personalReminderPlaceholderCause(
@@ -14934,13 +15000,16 @@ async function analyzePersonalReminders(
     unavailableConsumerNodeIds,
   );
   const runtimeGraph = personalReminderRuntimeGraph(state, collection, reduction, graph);
-  const snapshotEvidenceSourceIds = new Set<SourceId>([
-    ...reduction.items.flatMap((item) => item.evidence.map((evidence) => evidence.sourceId)),
-    ...graph.edges.flatMap((edge) => edge.evidence.map((evidence) => evidence.sourceId)),
-  ]);
+  const currentEvidenceGroups: readonly (readonly Evidence[])[] = [
+    ...reduction.items.map((item) => item.evidence),
+    ...graph.edges.map((edge) => edge.evidence),
+  ];
+  const currentEvidenceBySourceId =
+    createPersonalReminderEvidenceSourceIndex(currentEvidenceGroups);
+  const previousState = personalReminderPreviousState(state);
   const context = createPersonalReminderRuntimeContext({
     evaluatedAt: collection.evaluatedAt,
-    state: personalReminderPreviousState(state),
+    state: previousState,
     collection: runtimeCollection.collection,
     graph: runtimeGraph,
     aiDependencyContext: aiDependencyReconciliationContext(
@@ -14948,7 +15017,7 @@ async function analyzePersonalReminders(
       collection.relationCandidates,
       graph,
     ),
-    snapshotEvidenceSourceIds,
+    currentEvidenceBySourceId,
   });
   const plan = planPersonalReminderCauses(context);
   const continuityConflictNodeIds = new Set(
@@ -14957,6 +15026,8 @@ async function analyzePersonalReminders(
   const personalReminderFallbackNodeIds = new Set<GitHubNodeId>([
     ...unavailableConsumerNodeIds,
     ...continuityConflictNodeIds,
+    ...plan.incompleteInputNodeIds,
+    ...plan.deferredStructuralEndNodeIds,
   ]);
   const candidates = Object.freeze(
     plan.entries.flatMap((entry) => {
@@ -15089,13 +15160,16 @@ async function analyzePersonalReminders(
     evidenceByNodeId.set(item.nodeId, previous.evidence);
     planningByNodeId.set(
       item.nodeId,
-      reconcileRetainedPersonalReminderPlanning(
-        item.state,
-        item.observedAt,
-        previous.personalReminderCausePlanning,
-        causes,
-        context.aiDependencyContext,
-      ),
+      continuityConflictNodeIds.has(item.nodeId)
+        ? Object.freeze({
+            status: "pending",
+            planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
+          })
+        : reconcileRetainedPersonalReminderPlanning(
+            item.state,
+            previous.personalReminderCausePlanning,
+            causes,
+          ),
     );
   }
   for (const [nodeId, causes] of application.causesByNodeId) {
@@ -15122,8 +15196,10 @@ async function analyzePersonalReminders(
     );
     let planning: SnapshotTrackedItem["personalReminderCausePlanning"];
     if (
-      item.item.state === "open" &&
+      plannedCauses.length !== 0 &&
       (item.completeness.status === "incomplete" ||
+        plan.incompleteInputNodeIds.has(item.item.nodeId) ||
+        plan.deferredStructuralEndNodeIds.has(item.item.nodeId) ||
         plan.unrecordedDependencyNodeIds.has(item.item.nodeId))
     ) {
       planning = Object.freeze({
@@ -15157,6 +15233,19 @@ async function analyzePersonalReminders(
     }
     planningByNodeId.set(item.item.nodeId, planning);
   }
+  const currentPersonalEvidenceBySourceId = createPersonalReminderEvidenceSourceIndex([
+    ...evidenceByNodeId.values(),
+  ]);
+  const currentEvidenceIndex = createPersonalReminderEvidenceSourceIndex([
+    ...currentEvidenceBySourceId.values(),
+    ...currentPersonalEvidenceBySourceId.values(),
+  ]);
+  completePersonalReminderEvidenceClosure({
+    causesByNodeId,
+    evidenceByNodeId,
+    currentEvidenceBySourceId: currentEvidenceIndex,
+    previousEvidenceBySourceId: previousState.previousEvidenceBySourceId,
+  });
   const stalenessByCauseId = new Map(application.stalenessByCauseId);
   const observedItemsByNodeId = new Map(
     collection.observedItems.map((item) => [item.nodeId, item]),
@@ -15344,12 +15433,17 @@ function validateRunCompleteness(
     for (const evidence of [...trackedItem.evidence, ...personalEvidence]) {
       evidenceByIdentity.set(serializeCanonicalJson(evidence), evidence);
     }
+    const evidence = [...evidenceByIdentity.values()].sort((left, right) => {
+      const leftIdentity = serializeCanonicalJson(left);
+      const rightIdentity = serializeCanonicalJson(right);
+      return leftIdentity < rightIdentity ? -1 : leftIdentity > rightIdentity ? 1 : 0;
+    });
     return Object.freeze({
       ...trackedItem,
       aiDependencies,
       personalReminderCauses: causes,
       personalReminderCausePlanning: planning,
-      evidence: Object.freeze([...evidenceByIdentity.values()]),
+      evidence: Object.freeze(evidence),
     });
   });
   const itemsByNodeId = new Map(items.map((item) => [item.nodeId, item]));
@@ -15403,6 +15497,13 @@ function validateRunCompleteness(
       complete: true,
     },
   });
+  const expectedEvidenceBySourceId = createPersonalReminderEvidenceSourceIndex([
+    ...snapshot.items.map((item) => item.evidence),
+    ...snapshot.relations.map((relation) => relation.evidence),
+    ...(previousSnapshot(state)?.items.map((item) => item.evidence) ?? []),
+    ...(previousSnapshot(state)?.relations.map((relation) => relation.evidence) ?? []),
+  ]);
+  assertPersonalReminderEvidenceRecordsClosure(snapshot, expectedEvidenceBySourceId);
   assertPersonalReminderEvidenceClosure(snapshot);
   const notificationInput = {
     evaluatedAt: collection.evaluatedAt,
@@ -16825,7 +16926,7 @@ function personalReminderDetailNodeIdsForCollection(
       previous.personalReminderCausePlanning.planningVersion !==
         PERSONAL_REMINDER_CAUSE_PLANNING_VERSION
     ) {
-      if (item.state === "open") {
+      if (item.state === "open" || previous.personalReminderCauses.length !== 0) {
         nodeIds.add(item.nodeId);
       }
     }
@@ -16867,6 +16968,9 @@ function personalReminderReplanNodeIdsForCollection(
       nodeIds.add(item.nodeId);
     }
     if (item.state !== "open") {
+      if (previous.personalReminderCauses.length !== 0) {
+        nodeIds.add(item.nodeId);
+      }
       continue;
     }
     if (

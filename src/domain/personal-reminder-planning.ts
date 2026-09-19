@@ -85,23 +85,57 @@ export type PreviousPersonalReminderCauses = Readonly<{
   causes: readonly PersonalReminderCause[];
 }>;
 
+/** 個人催促原因seedを作った生成元。 */
+export type PersonalReminderCauseSeedOrigin =
+  | Readonly<{
+      kind: "new_draft";
+      seed: PersonalReminderCauseSeed;
+      draft: PersonalReminderCauseDraft;
+    }>
+  | Readonly<{
+      kind: "normal_continuation";
+      seed: PersonalReminderCauseSeed;
+      draft: PersonalReminderCauseDraft;
+      previousCause: PersonalReminderCause;
+    }>
+  | Readonly<{
+      kind: "retained_without_draft";
+      seed: PersonalReminderCauseSeed;
+      previousCause: PersonalReminderCause;
+    }>;
+
 /** 個人催促原因候補の照合結果。 */
 export type PersonalReminderCauseSeedReconciliation =
   | Readonly<{
       status: "available";
       seeds: readonly PersonalReminderCauseSeed[];
+      seedOrigins: readonly PersonalReminderCauseSeedOrigin[];
       retainedWithoutDraftCauseIds: readonly PersonalReminderCauseId[];
       endedCauseIds: readonly PersonalReminderCauseId[];
     }>
   | Readonly<{
       status: "continuity_conflict";
+      reason: "multiple_continuation_matches";
       itemNodeId: GitHubNodeId;
       previousCauseIds: readonly [
         PersonalReminderCauseId,
         PersonalReminderCauseId,
         ...PersonalReminderCauseId[],
       ];
+    }>
+  | Readonly<{
+      status: "continuity_conflict";
+      reason: "new_draft_id_collision";
+      itemNodeId: GitHubNodeId;
+      previousCauseIds: readonly [PersonalReminderCauseId];
     }>;
+
+/** 個人催促原因を保存せずに意味入力へ投影する候補。 */
+export type PersonalReminderCauseProjection = Readonly<{
+  key: string;
+  draft: PersonalReminderCauseDraft | undefined;
+  previousCause: PersonalReminderCause | undefined;
+}>;
 
 /** 現在のreview request先を責務終了判定へ渡す識別情報。 */
 export type PersonalReminderReviewRequestTarget =
@@ -112,6 +146,7 @@ export type PersonalReminderStructuralEndInput = Readonly<{
   item: PersonalReminderItem;
   previous: PreviousPersonalReminderCauses;
   currentDrafts: readonly PersonalReminderCauseDraft[];
+  successorDrafts?: readonly PersonalReminderCauseDraft[];
   currentDecisionStatus: PersonalReminderLocalDecision["status"];
   complete: boolean;
   currentReviewRequestTargets: readonly PersonalReminderReviewRequestTarget[];
@@ -711,6 +746,16 @@ type PersonalReminderCauseSeedContinuityConflict = Extract<
   Readonly<{ status: "continuity_conflict" }>
 >;
 
+type PersonalReminderCauseSeedMultipleContinuationConflict = Extract<
+  PersonalReminderCauseSeedContinuityConflict,
+  Readonly<{ reason: "multiple_continuation_matches" }>
+>;
+
+type PersonalReminderCauseSeedNewDraftIdCollision = Extract<
+  PersonalReminderCauseSeedContinuityConflict,
+  Readonly<{ reason: "new_draft_id_collision" }>
+>;
+
 function findContinuousCause(
   item: PersonalReminderItem,
   draft: PersonalReminderCauseDraft,
@@ -781,6 +826,33 @@ function createSeed(
     lastConfirmedActionability,
     aiDependencies: draft.aiDependencies,
   });
+}
+
+function createSeedFromDraft(
+  input: Readonly<{
+    draft: PersonalReminderCauseDraft;
+    previousCause: PersonalReminderCause | undefined;
+    currentObservedAt: UtcIsoDateTime;
+    sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>;
+  }>,
+): PersonalReminderCauseSeed {
+  if (input.previousCause != null) {
+    return createSeed(
+      input.draft,
+      input.previousCause.obligationSince,
+      input.previousCause.responsibilityId,
+      input.previousCause.causeId,
+      input.previousCause.lastConfirmedActionability,
+    );
+  }
+  const responsibilityId = createResponsibilityId(input.draft);
+  return createSeed(
+    input.draft,
+    createObligationSince(input.draft, input.currentObservedAt, input.sourceOccurredAtById),
+    responsibilityId,
+    createCauseId(input.draft, responsibilityId),
+    personalReminderLastConfirmedActionabilitySchema.parse({ status: "not_observed" }),
+  );
 }
 
 function seedFromCause(cause: PersonalReminderCause): PersonalReminderCauseSeed {
@@ -858,6 +930,108 @@ function draftKey(draft: PersonalReminderCauseDraft): string {
   ]);
 }
 
+function projectionKey(
+  draft: PersonalReminderCauseDraft | undefined,
+  previousCause: PersonalReminderCause | undefined,
+): string {
+  return JSON.stringify([draft == null ? undefined : draftKey(draft), previousCause?.causeId]);
+}
+
+/** 現在候補と前回causeの継続可能性を保存せずに列挙する。 */
+export function enumeratePersonalReminderCauseProjections(
+  input: Readonly<{
+    item: PersonalReminderItem;
+    drafts: readonly PersonalReminderCauseDraft[];
+    previous: PreviousPersonalReminderCauses;
+  }>,
+): readonly PersonalReminderCauseProjection[] {
+  const projections = new Map<string, PersonalReminderCauseProjection>();
+  const matchedPreviousCauseIds = new Set<PersonalReminderCauseId>();
+  const previousItemCauses = input.previous.causes.filter(
+    (cause) => cause.itemNodeId === input.item.nodeId,
+  );
+  const draftKeys = new Set<string>();
+  const addProjection = (
+    draft: PersonalReminderCauseDraft | undefined,
+    previousCause: PersonalReminderCause | undefined,
+  ): void => {
+    const key = projectionKey(draft, previousCause);
+    if (!projections.has(key)) {
+      projections.set(key, Object.freeze({ key, draft, previousCause }));
+    }
+  };
+  const sortedDrafts = [...input.drafts].sort((left, right) =>
+    compareStrings(draftKey(left), draftKey(right)),
+  );
+  for (const draft of sortedDrafts) {
+    if (draft.itemNodeId !== input.item.nodeId) {
+      throw new TypeError("個人催促原因projectionのdraft item node IDが一致しません");
+    }
+    const key = draftKey(draft);
+    if (draftKeys.has(key)) {
+      throw new TypeError(`同じ個人催促責務のdraftが重複しています。対象: ${key}`);
+    }
+    draftKeys.add(key);
+    const continuityMatch = findContinuousCause(
+      input.item,
+      draft,
+      previousItemCauses,
+      input.previous.observedAt,
+      new Set(),
+    );
+    if (continuityMatch.status === "conflict") {
+      for (const cause of continuityMatch.matchingCauses) {
+        matchedPreviousCauseIds.add(cause.causeId);
+        addProjection(draft, cause);
+      }
+      continue;
+    }
+    if (continuityMatch.status === "matched") {
+      matchedPreviousCauseIds.add(continuityMatch.cause.causeId);
+      addProjection(draft, continuityMatch.cause);
+      continue;
+    }
+    addProjection(draft, undefined);
+  }
+  for (const cause of previousItemCauses) {
+    if (!matchedPreviousCauseIds.has(cause.causeId)) {
+      addProjection(undefined, cause);
+    }
+  }
+  return Object.freeze(
+    [...projections.values()].sort((left, right) => compareStrings(left.key, right.key)),
+  );
+}
+
+/** 個人催促原因の投影候補へ一時的な意味入力用seedを付与する。 */
+export function createPersonalReminderCauseProjectionSeed(
+  input: Readonly<{
+    projection: PersonalReminderCauseProjection;
+    currentObservedAt: UtcIsoDateTime;
+    sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>;
+  }>,
+): PersonalReminderCauseSeed {
+  if (input.projection.previousCause != null) {
+    if (input.projection.draft == null) {
+      return seedFromCause(input.projection.previousCause);
+    }
+    return createSeedFromDraft({
+      draft: input.projection.draft,
+      previousCause: input.projection.previousCause,
+      currentObservedAt: input.currentObservedAt,
+      sourceOccurredAtById: input.sourceOccurredAtById,
+    });
+  }
+  const draft = input.projection.draft;
+  assertNonNullable(draft, `個人催促原因の投影draftがありません。対象: ${input.projection.key}`);
+  return createSeedFromDraft({
+    draft,
+    previousCause: undefined,
+    currentObservedAt: input.currentObservedAt,
+    sourceOccurredAtById: input.sourceOccurredAtById,
+  });
+}
+
 /** 個人催促原因候補集合へ責務episodeの識別情報と義務時刻を付与する。 */
 export function reconcilePersonalReminderCauseSeeds(
   input: Readonly<{
@@ -901,7 +1075,9 @@ export function reconcilePersonalReminderCauseSeeds(
   }
 
   const seeds: PersonalReminderCauseSeed[] = [];
-  const continuityConflicts: PersonalReminderCauseSeedContinuityConflict[] = [];
+  const seedOrigins: PersonalReminderCauseSeedOrigin[] = [];
+  const multipleContinuationConflicts: PersonalReminderCauseSeedMultipleContinuationConflict[] = [];
+  const newDraftIdCollisions: PersonalReminderCauseSeedNewDraftIdCollision[] = [];
   const retainedCauseIds = new Set<PersonalReminderCauseId>();
   const endedCauseIds = new Set<PersonalReminderCauseId>(input.confirmedEndedCauseIds);
   const sortedDrafts = [...input.drafts].sort((left, right) =>
@@ -925,9 +1101,10 @@ export function reconcilePersonalReminderCauseSeeds(
           cause.lastConfirmedActionability,
         );
       }
-      continuityConflicts.push(
+      multipleContinuationConflicts.push(
         Object.freeze({
           status: "continuity_conflict",
+          reason: "multiple_continuation_matches",
           itemNodeId: input.item.nodeId,
           previousCauseIds: continuityMatch.previousCauseIds,
         }),
@@ -936,18 +1113,7 @@ export function reconcilePersonalReminderCauseSeeds(
     }
     const continuousCause =
       continuityMatch.status === "matched" ? continuityMatch.cause : undefined;
-    let obligationSince =
-      continuousCause == null
-        ? createObligationSince(draft, input.currentObservedAt, input.sourceOccurredAtById)
-        : continuousCause.obligationSince;
-    let responsibilityId =
-      continuousCause == null ? createResponsibilityId(draft) : continuousCause.responsibilityId;
-    let causeId =
-      continuousCause == null ? createCauseId(draft, responsibilityId) : continuousCause.causeId;
-    let lastConfirmedActionability =
-      continuousCause == null
-        ? personalReminderLastConfirmedActionabilitySchema.parse({ status: "not_observed" })
-        : continuousCause.lastConfirmedActionability;
+    let previousCauseForSeed = continuousCause;
     if (continuousCause != null) {
       const transition = responsibilityEpisodeTransition(
         input.item,
@@ -956,27 +1122,48 @@ export function reconcilePersonalReminderCauseSeeds(
       );
       if (transition.ended || transition.restarted) {
         endedCauseIds.add(continuousCause.causeId);
-        obligationSince = createObligationSince(
-          draft,
-          input.currentObservedAt,
-          input.sourceOccurredAtById,
-        );
-        responsibilityId = createResponsibilityId(draft);
-        causeId = createCauseId(draft, responsibilityId);
-        lastConfirmedActionability = personalReminderLastConfirmedActionabilitySchema.parse({
-          status: "not_observed",
-        });
+        previousCauseForSeed = undefined;
       }
     }
-    seeds.push(
-      createSeed(draft, obligationSince, responsibilityId, causeId, lastConfirmedActionability),
+    const seed = createSeedFromDraft({
+      draft,
+      previousCause: previousCauseForSeed,
+      currentObservedAt: input.currentObservedAt,
+      sourceOccurredAtById: input.sourceOccurredAtById,
+    });
+    if (previousCauseForSeed == null && previousIds.has(seed.causeId)) {
+      const previousCauseIds: [PersonalReminderCauseId] = [seed.causeId];
+      newDraftIdCollisions.push(
+        Object.freeze({
+          status: "continuity_conflict",
+          reason: "new_draft_id_collision",
+          itemNodeId: input.item.nodeId,
+          previousCauseIds: Object.freeze(previousCauseIds),
+        }),
+      );
+      continue;
+    }
+    seeds.push(seed);
+    seedOrigins.push(
+      previousCauseForSeed == null
+        ? Object.freeze({ kind: "new_draft", seed, draft })
+        : Object.freeze({
+            kind: "normal_continuation",
+            seed,
+            draft,
+            previousCause: previousCauseForSeed,
+          }),
     );
-    retainedCauseIds.add(causeId);
+    retainedCauseIds.add(seed.causeId);
   }
 
-  const [firstContinuityConflict] = continuityConflicts;
-  if (firstContinuityConflict != null) {
-    return firstContinuityConflict;
+  const [firstNewDraftIdCollision] = newDraftIdCollisions;
+  if (firstNewDraftIdCollision != null) {
+    return firstNewDraftIdCollision;
+  }
+  const [firstMultipleContinuationConflict] = multipleContinuationConflicts;
+  if (firstMultipleContinuationConflict != null) {
+    return firstMultipleContinuationConflict;
   }
 
   const retainedWithoutDraftCauseIds = new Set<PersonalReminderCauseId>();
@@ -984,7 +1171,9 @@ export function reconcilePersonalReminderCauseSeeds(
     if (retainedCauseIds.has(cause.causeId) || endedCauseIds.has(cause.causeId)) {
       continue;
     }
-    seeds.push(seedFromCause(cause));
+    const seed = seedFromCause(cause);
+    seeds.push(seed);
+    seedOrigins.push(Object.freeze({ kind: "retained_without_draft", seed, previousCause: cause }));
     retainedWithoutDraftCauseIds.add(cause.causeId);
   }
   for (const causeId of retainedCauseIds) {
@@ -999,6 +1188,9 @@ export function reconcilePersonalReminderCauseSeeds(
   return Object.freeze({
     status: "available",
     seeds: Object.freeze(seeds.sort((left, right) => compareStrings(left.causeId, right.causeId))),
+    seedOrigins: Object.freeze(
+      seedOrigins.sort((left, right) => compareStrings(left.seed.causeId, right.seed.causeId)),
+    ),
     retainedWithoutDraftCauseIds: Object.freeze(
       [...retainedWithoutDraftCauseIds].sort(compareStrings),
     ),
@@ -1152,7 +1344,8 @@ function hasCurrentDraftWithAction(
   input: PersonalReminderStructuralEndInput,
   actionKind: PersonalReminderCauseDraft["action"]["kind"],
 ): boolean {
-  return input.currentDrafts.some(
+  const successorDrafts = input.successorDrafts ?? input.currentDrafts;
+  return successorDrafts.some(
     (draft) => draft.itemNodeId === input.item.nodeId && draft.action.kind === actionKind,
   );
 }
@@ -1177,7 +1370,8 @@ function isAssessmentSuccessorAction(
 }
 
 function hasCurrentAssessmentSuccessorDraft(input: PersonalReminderStructuralEndInput): boolean {
-  return input.currentDrafts.some(
+  const successorDrafts = input.successorDrafts ?? input.currentDrafts;
+  return successorDrafts.some(
     (draft) =>
       draft.itemNodeId === input.item.nodeId && isAssessmentSuccessorAction(draft.action.kind),
   );
@@ -1254,6 +1448,7 @@ function structuralCauseEnded(
     return true;
   }
   const previousObservedAt = input.previous.observedAt;
+  const successorDrafts = input.successorDrafts ?? input.currentDrafts;
   if (cause.action.kind === "review" && input.item.type === "pull_request") {
     if (reviewRequestEpisodeRestarted(input.item, cause, previousObservedAt)) {
       return true;
@@ -1261,7 +1456,7 @@ function structuralCauseEnded(
     const currentReviewerExists = input.currentReviewRequestTargets.some((target) =>
       cause.responsible.some((responsible) => targetMatchesResponsible(target, responsible)),
     );
-    if (!currentReviewerExists && !currentResponsibleDraftExists(cause, input.currentDrafts)) {
+    if (!currentReviewerExists && !currentResponsibleDraftExists(cause, successorDrafts)) {
       return true;
     }
   }
@@ -1274,7 +1469,7 @@ function structuralCauseEnded(
   if (
     cause.action.kind === "revision" &&
     input.item.type === "pull_request" &&
-    !currentResponsibleDraftExists(cause, input.currentDrafts) &&
+    !currentResponsibleDraftExists(cause, successorDrafts) &&
     (currentDecisionCanConfirmResponsibilityEnd(input.currentDecisionStatus) ||
       (cause.obligationSince.source === "event" &&
         isPullRequestRevisionResponsibilityResolved({

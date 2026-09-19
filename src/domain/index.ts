@@ -191,14 +191,18 @@ export {
 } from "./pull-request-state-machine.js";
 export {
   createPersonalReminderCauseDraft,
+  createPersonalReminderCauseProjectionSeed,
   personalReminderCauseAiDependenciesForDecision,
   determinePotentialPersonalReminderContinuityConflictNodeIds,
   determineStructurallyEndedPersonalReminderCauses,
+  enumeratePersonalReminderCauseProjections,
   reconcilePersonalReminderCauseSeeds,
   relationAffectsPersonalReminderCause,
   type PersonalReminderCauseDraft,
+  type PersonalReminderCauseProjection,
   type PersonalReminderCauseDraftUnavailable,
   type PersonalReminderCauseDraftUnavailableReason,
+  type PersonalReminderCauseSeedOrigin,
   type PersonalReminderCauseSeedReconciliation,
   type PersonalReminderItem,
   type PersonalReminderLocalDecision,

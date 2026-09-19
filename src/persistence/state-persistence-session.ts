@@ -52,6 +52,8 @@ import {
 import { assertStatePublicSafety, assertStateValuesPublicSafety } from "./public-safety.js";
 import {
   assertPersonalReminderEvidenceClosure,
+  assertPersonalReminderEvidenceRecordsClosure,
+  createPersonalReminderEvidenceSourceIndex,
   createStateSnapshot,
   serializeStateSnapshot,
   type StateSnapshot,
@@ -957,6 +959,13 @@ export class StatePersistenceSession {
     const previousResult = await this.loadSnapshot();
     const previousSnapshot =
       previousResult.status === "available" ? previousResult.snapshot : undefined;
+    const expectedEvidenceBySourceId = createPersonalReminderEvidenceSourceIndex([
+      ...snapshot.items.map((item) => item.evidence),
+      ...snapshot.relations.map((relation) => relation.evidence),
+      ...(previousSnapshot?.items.map((item) => item.evidence) ?? []),
+      ...(previousSnapshot?.relations.map((relation) => relation.evidence) ?? []),
+    ]);
+    assertPersonalReminderEvidenceRecordsClosure(snapshot, expectedEvidenceBySourceId);
     const historyRecord = createStateHistoryRecord(
       previousSnapshot,
       snapshot,

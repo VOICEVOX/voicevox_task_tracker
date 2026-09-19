@@ -74,6 +74,8 @@ export {
 } from "./public-safety.js";
 export {
   assertPersonalReminderEvidenceClosure,
+  assertPersonalReminderEvidenceRecordsClosure,
+  createPersonalReminderEvidenceSourceIndex,
   createStateSnapshot,
   parseStateSnapshot,
   serializeStateSnapshot,

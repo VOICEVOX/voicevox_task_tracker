@@ -54,11 +54,15 @@ import {
 } from "../domain/ai-analysis-dependencies.js";
 import {
   createPersonalReminderCauseDraft,
+  createPersonalReminderCauseProjectionSeed,
   personalReminderCauseAiDependenciesForDecision,
   determineStructurallyEndedPersonalReminderCauses,
+  enumeratePersonalReminderCauseProjections,
   reconcilePersonalReminderCauseSeeds,
   relationAffectsPersonalReminderCause,
   type PersonalReminderCauseDraft,
+  type PersonalReminderCauseProjection,
+  type PersonalReminderCauseSeedOrigin,
   type PersonalReminderItem,
   type PersonalReminderLocalDecision,
   type PersonalReminderReviewRequestTarget,
@@ -106,7 +110,7 @@ import {
   type RelationCandidateId,
   type RelationCandidateResolution,
 } from "../graph/index.js";
-import { assertNonNullable } from "../util/index.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import {
   createPersonalReminderAiCacheKey,
   type PersonalReminderAiCacheKey,
@@ -180,6 +184,7 @@ export type PersonalReminderRuntimeCollection = Readonly<{
 export type PersonalReminderRuntimeState = Readonly<{
   previousCausesByNodeId: ReadonlyMap<GitHubNodeId, PreviousPersonalReminderCauses>;
   previousEvidenceByNodeId: ReadonlyMap<GitHubNodeId, readonly Evidence[]>;
+  previousEvidenceBySourceId: ReadonlyMap<SourceId, readonly Evidence[]>;
 }>;
 
 /** final graphのrelation候補とendpoint状態。 */
@@ -259,7 +264,7 @@ export type PersonalReminderRuntimeContext = Readonly<{
     GraphNodeId,
     readonly PersonalReminderRuntimeCandidateRelation[]
   >;
-  snapshotEvidenceSourceIds: ReadonlySet<SourceId>;
+  currentEvidenceBySourceId: ReadonlyMap<SourceId, readonly Evidence[]>;
 }>;
 
 type PersonalReminderRuntimeContextItem = Omit<
@@ -293,19 +298,28 @@ type PersonalReminderRuntimeReconciledItem = Readonly<{
   >;
 }>;
 
-type PersonalReminderCauseContinuityConflict = Readonly<{
-  itemNodeId: GitHubNodeId;
-  previousCauseIds: readonly [
-    PersonalReminderCauseId,
-    PersonalReminderCauseId,
-    ...PersonalReminderCauseId[],
-  ];
-}>;
+type PersonalReminderCauseContinuityConflict = Omit<
+  Extract<
+    ReturnType<typeof reconcilePersonalReminderCauseSeeds>,
+    Readonly<{ status: "continuity_conflict" }>
+  >,
+  "status" | "reason"
+>;
+
+type PersonalReminderCauseNewDraftIdCollision = Extract<
+  ReturnType<typeof reconcilePersonalReminderCauseSeeds>,
+  Readonly<{ status: "continuity_conflict"; reason: "new_draft_id_collision" }>
+>;
 
 type PersonalReminderRuntimeCurrentSeed = Readonly<{
   seed: PersonalReminderCauseSeed;
   item: PersonalReminderRuntimeContextItem;
   origin: "current_draft" | "retained_without_draft";
+  constructionOrigin: PersonalReminderCauseSeedOrigin;
+  draft: PersonalReminderCauseDraft | undefined;
+  draftIdentity: string | undefined;
+  projectionKey: string;
+  probe: boolean;
   previousCause: PersonalReminderCause | undefined;
 }>;
 
@@ -322,7 +336,6 @@ type PersonalReminderRuntimePlanningIndexes = Readonly<{
     GraphNodeId,
     readonly PersonalReminderRuntimeCurrentSeed[]
   >;
-  scopeNodeIdsByCauseId: ReadonlyMap<PersonalReminderCauseId, ReadonlySet<GraphNodeId>>;
 }>;
 
 type PersonalReminderConnectedSeedRelations = Readonly<{
@@ -337,6 +350,12 @@ type PersonalReminderRuntimeOptionProjection = Readonly<{
   aiDependencyInputsByOptionId: ReadonlyMap<string, readonly AiAnalysisDependencyInput[]>;
 }>;
 
+type PersonalReminderRuntimeDuplicateOptionProjection = Readonly<{
+  options: readonly PersonalReminderDuplicateOption[];
+  sources: readonly PersonalReminderRuntimeSource[];
+  aiDependencyInputsByCanonicalCauseId: ReadonlyMap<string, readonly AiAnalysisDependencyInput[]>;
+}>;
+
 type PersonalReminderGraphDraftProjection = Readonly<{
   drafts: readonly PersonalReminderCauseDraft[];
 }>;
@@ -349,6 +368,26 @@ type PersonalReminderRuntimeSourceProjection = Readonly<{
 type PersonalReminderRuntimeActivityProjection = Readonly<{
   activity: PersonalReminderRuntimeActivity;
   missing: readonly PersonalReminderMissingInput[];
+}>;
+
+type PersonalReminderCauseSemanticProjection = Readonly<{
+  currentSeed: PersonalReminderRuntimeCurrentSeed;
+  relationEdges: readonly PersonalReminderRuntimeActiveRelation[];
+  pendingRelations: readonly PersonalReminderPendingRelation[];
+  waitingProjection: PersonalReminderRuntimeOptionProjection;
+  duplicateProjection: PersonalReminderRuntimeDuplicateOptionProjection;
+  relations: readonly PersonalReminderAiRelationContext[];
+  relationSources: PersonalReminderRuntimeSourceProjection;
+  optionSources: readonly PersonalReminderRuntimeSource[];
+  additionalItemContexts: readonly PersonalReminderAiItemContext[];
+  activityProjection: PersonalReminderRuntimeActivityProjection;
+  semanticInput: PersonalReminderCauseSemanticInput;
+}>;
+
+type PersonalReminderRuntimeDraftedItem = Readonly<{
+  item: PersonalReminderRuntimeContextItem;
+  drafts: readonly PersonalReminderCauseDraft[];
+  negativeCandidateDependencies: readonly PersonalReminderRuntimeSubjectDependency[];
 }>;
 
 type PersonalReminderRuntimeSubjectDependency = Readonly<{
@@ -386,6 +425,8 @@ export type PersonalReminderCauseRuntimePlan = Readonly<{
   continuityConflicts: readonly PersonalReminderCauseContinuityConflict[];
   endedCauseIds: readonly PersonalReminderCauseId[];
   pendingCauseIds: readonly PersonalReminderCauseId[];
+  incompleteInputNodeIds: ReadonlySet<GitHubNodeId>;
+  deferredStructuralEndNodeIds: ReadonlySet<GitHubNodeId>;
   unrecordedDependencyNodeIds: ReadonlySet<GitHubNodeId>;
   causeSetAiDependencyByNodeId: ReadonlyMap<GitHubNodeId, AiAnalysisDependency>;
   causeSetSubjectChangesByNodeId: ReadonlyMap<GitHubNodeId, PersonalReminderCauseSetSubjectChanges>;
@@ -410,6 +451,24 @@ function compareStrings(left: string, right: string): number {
 
 function compareSourceIds(left: SourceId, right: SourceId): number {
   return compareStrings(left, right);
+}
+
+function personalReminderDraftIdentity(draft: PersonalReminderCauseDraft): string {
+  return serializeCanonicalJson([draft.itemNodeId, draft.action.kind, draft.responsible]);
+}
+
+function seedMatchesDraft(
+  seed: PersonalReminderCauseSeed,
+  draft: PersonalReminderCauseDraft,
+): boolean {
+  return (
+    seed.itemNodeId === draft.itemNodeId &&
+    seed.reasonCode === draft.reasonCode &&
+    seed.action.kind === draft.action.kind &&
+    seed.action.summary === draft.action.summary &&
+    serializeCanonicalJson(seed.responsible) === serializeCanonicalJson(draft.responsible) &&
+    serializeCanonicalJson(seed.responsibility) === serializeCanonicalJson(draft.responsibility)
+  );
 }
 
 function aiAnalysisDependencyIsUnverified(dependency: AiAnalysisDependency): boolean {
@@ -548,91 +607,25 @@ export function reconcileRetainedPersonalReminderCause(
   });
 }
 
-/** 保持原因の列挙計画を最終依存へ合わせ、open項目を再計画へ戻す。 */
+/** 保持経路の個人催促cause計画をpendingへ戻し、terminalでcauseなしだけexcludedにする。 */
 export function reconcileRetainedPersonalReminderPlanning(
   itemState: "open" | "closed" | "merged",
-  observedAt: UtcIsoDateTime,
   planning: PersonalReminderCausePlanning,
   causes: readonly PersonalReminderCause[],
-  context: AiAnalysisDependencyReconciliationContext,
 ): PersonalReminderCausePlanning {
-  if (itemState === "open") {
-    return Object.freeze({
-      status: "pending",
-      planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
-    });
+  if (planning.status === "excluded" && (itemState === "open" || causes.length !== 0)) {
+    throw new TypeError("個人催促cause planningのexcluded状態が項目と一致しません");
   }
-  if (causes.length === 0) {
+  if (itemState !== "open" && causes.length === 0) {
     return Object.freeze({
       status: "excluded",
       planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
       reason: "terminal_without_cause",
     });
   }
-  const presenceInputs = causes.map((cause) =>
-    retainedAiDependencyInput(cause.aiDependencies.presence),
-  );
-  const presenceDependency = combineReconciledAiAnalysisDependencies(presenceInputs, context);
-  const causeSetAiDependency = combineCauseSetAiDependency(
-    [
-      retainedAiDependencyInput(
-        planning.status === "completed"
-          ? planning.causeSetAiDependency
-          : Object.freeze({
-              status: "unknown",
-              reasons: Object.freeze(["not_recorded"]),
-            } satisfies AiAnalysisDependency),
-      ),
-      ...presenceInputs,
-    ],
-    presenceInputs,
-    context,
-  );
-  const presenceProducerSignatures = new Set(
-    presenceDependency.status === "not_dependent"
-      ? []
-      : (presenceDependency.producers ?? []).map((producer) => serializeCanonicalJson(producer)),
-  );
-  const additionalProducers =
-    causeSetAiDependency.status === "not_dependent"
-      ? []
-      : (causeSetAiDependency.producers ?? []).filter(
-          (producer) =>
-            producer.kind !== "relation_candidate" &&
-            !presenceProducerSignatures.has(serializeCanonicalJson(producer)),
-        );
-  const removableSubjects = causes.flatMap((cause) =>
-    aiAnalysisDependencyIsUnverified(cause.aiDependencies.presence)
-      ? cause.responsible.flatMap((responsible) =>
-          responsible.kind === "role"
-            ? []
-            : [Object.freeze({ kind: responsible.kind, candidateId: responsible.candidateId })],
-        )
-      : [],
-  );
   return Object.freeze({
-    status: "completed",
+    status: "pending",
     planningVersion: PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
-    observedAt,
-    causeSetAiDependency,
-    causeSetSubjectChanges: createCauseSetSubjectChanges(
-      causeSetAiDependency,
-      {
-        addableSubjects: Object.freeze([]),
-        removableSubjects,
-        presenceInputs,
-        negativeCandidateSubjectCount: 0,
-        unbounded: additionalProducers.some((producer) =>
-          aiAnalysisDependencyIsUnverified(
-            reconcileRetainedAiAnalysisDependency(
-              Object.freeze({ status: "current", producers: Object.freeze([producer]) }),
-              context,
-            ),
-          ),
-        ),
-      },
-      context,
-    ),
   });
 }
 
@@ -1639,7 +1632,7 @@ export function createPersonalReminderRuntimeContext(
     collection: PersonalReminderRuntimeCollection;
     graph: PersonalReminderRuntimeGraph;
     aiDependencyContext: AiAnalysisDependencyReconciliationContext;
-    snapshotEvidenceSourceIds: ReadonlySet<SourceId>;
+    currentEvidenceBySourceId: ReadonlyMap<SourceId, readonly Evidence[]>;
   }>,
 ): PersonalReminderRuntimeContext {
   const items: PersonalReminderRuntimeContextItem[] = [];
@@ -1766,7 +1759,7 @@ export function createPersonalReminderRuntimeContext(
     graph,
     aiDependencyContext: input.aiDependencyContext,
     candidateRelationsByTargetNodeId,
-    snapshotEvidenceSourceIds: input.snapshotEvidenceSourceIds,
+    currentEvidenceBySourceId: input.currentEvidenceBySourceId,
   });
 }
 
@@ -1888,8 +1881,12 @@ function createPersonalReminderPlanningIndexes(
   >();
   const currentSeedsByItemNodeId = new Map<GraphNodeId, PersonalReminderRuntimeCurrentSeed[]>();
   const currentSeedsByScopeNodeId = new Map<GraphNodeId, PersonalReminderRuntimeCurrentSeed[]>();
-  const scopeNodeIdsByCauseId = new Map<PersonalReminderCauseId, ReadonlySet<GraphNodeId>>();
   for (const currentSeed of currentSeeds) {
+    if (currentSeed.probe) {
+      throw new TypeError(
+        `終了probeをcurrent option indexへ追加できません。対象: ${currentSeed.seed.causeId}`,
+      );
+    }
     if (currentSeedByCauseId.has(currentSeed.seed.causeId)) {
       throw new TypeError(`current seed IDが重複しています。対象: ${currentSeed.seed.causeId}`);
     }
@@ -1901,7 +1898,6 @@ function createPersonalReminderPlanningIndexes(
       itemSeeds.push(currentSeed);
     }
     const nodeIds = seedScopeNodeIds(currentSeed.seed);
-    scopeNodeIdsByCauseId.set(currentSeed.seed.causeId, nodeIds);
     for (const nodeId of nodeIds) {
       const scopedSeeds = currentSeedsByScopeNodeId.get(nodeId);
       if (scopedSeeds == null) {
@@ -1923,17 +1919,11 @@ function createPersonalReminderPlanningIndexes(
     currentSeedsByScopeNodeId: new Map(
       [...currentSeedsByScopeNodeId].map(([nodeId, seeds]) => [nodeId, Object.freeze(seeds)]),
     ),
-    scopeNodeIdsByCauseId,
   });
 }
 
-function scopeNodeIdsForSeed(
-  indexes: PersonalReminderRuntimePlanningIndexes,
-  seed: PersonalReminderCauseSeed,
-): ReadonlySet<GraphNodeId> {
-  const nodeIds = indexes.scopeNodeIdsByCauseId.get(seed.causeId);
-  assertNonNullable(nodeIds, `current seedのscopeがありません。対象: ${seed.causeId}`);
-  return nodeIds;
+function scopeNodeIdsForSeed(seed: PersonalReminderCauseSeed): ReadonlySet<GraphNodeId> {
+  return seedScopeNodeIds(seed);
 }
 
 function relationsIncidentToScope(
@@ -1953,8 +1943,9 @@ function connectedSeedRelations(
   indexes: PersonalReminderRuntimePlanningIndexes,
   seed: PersonalReminderCauseSeed,
   relations: readonly PersonalReminderRuntimeActiveRelation[],
+  subject: PersonalReminderRuntimeCurrentSeed,
 ): ReadonlyMap<PersonalReminderCauseId, PersonalReminderConnectedSeedRelations> {
-  const seedNodeIds = scopeNodeIdsForSeed(indexes, seed);
+  const seedNodeIds = scopeNodeIdsForSeed(seed);
   const relationsByCauseId = new Map<
     PersonalReminderCauseId,
     Readonly<{
@@ -1972,8 +1963,12 @@ function connectedSeedRelations(
     }
     for (const candidate of candidateSeeds) {
       if (
-        !relationConnectsScopes(relation, seedNodeIds, scopeNodeIdsForSeed(indexes, candidate.seed))
+        candidate.seed.causeId === seed.causeId ||
+        (subject.draftIdentity != null && candidate.draftIdentity === subject.draftIdentity)
       ) {
+        continue;
+      }
+      if (!relationConnectsScopes(relation, seedNodeIds, scopeNodeIdsForSeed(candidate.seed))) {
         continue;
       }
       const existing = relationsByCauseId.get(candidate.seed.causeId);
@@ -2853,12 +2848,31 @@ function previousCauseById(
   return causes;
 }
 
+function assertNewDraftIdCollisionPreviousCauses(
+  item: PersonalReminderRuntimeContextItem,
+  conflict: PersonalReminderCauseNewDraftIdCollision,
+): void {
+  if (conflict.itemNodeId !== item.item.nodeId) {
+    throw new TypeError(`new_draft ID衝突のitem node IDが一致しません。対象: ${item.item.nodeId}`);
+  }
+  for (const causeId of conflict.previousCauseIds) {
+    const previousCause = item.previous.causes.find((cause) => cause.causeId === causeId);
+    assertNonNullable(
+      previousCause,
+      `new_draft ID衝突のprevious causeがありません。対象: ${causeId}`,
+    );
+    if (previousCause.itemNodeId !== item.item.nodeId) {
+      throw new TypeError(`new_draft ID衝突のprevious cause所有者が一致しません。対象: ${causeId}`);
+    }
+  }
+}
+
 function selectedRelationEdges(
   context: PersonalReminderRuntimeContext,
   seed: PersonalReminderCauseSeed,
   indexes: PersonalReminderRuntimePlanningIndexes,
 ): readonly PersonalReminderRuntimeActiveRelation[] {
-  const relations = relationsIncidentToScope(indexes, scopeNodeIdsForSeed(indexes, seed));
+  const relations = relationsIncidentToScope(indexes, scopeNodeIdsForSeed(seed));
   return Object.freeze(
     relations
       .filter((relation) => relationAffectsPersonalReminderCause(relation, seed))
@@ -3100,7 +3114,7 @@ function waitingOptionsForCause(
   const sources = new Map<SourceId, PersonalReminderRuntimeSource>();
   const missing = new Set<PersonalReminderMissingInput>();
   const aiDependencyInputsByOptionId = new Map<string, readonly AiAnalysisDependencyInput[]>();
-  const connected = connectedSeedRelations(indexes, seed, relationEdges);
+  const connected = connectedSeedRelations(indexes, seed, relationEdges, currentSeed);
   const candidateSeedsByCauseId = new Map<
     PersonalReminderCauseId,
     PersonalReminderRuntimeCurrentSeed
@@ -3114,7 +3128,11 @@ function waitingOptionsForCause(
     compareStrings(left.seed.causeId, right.seed.causeId),
   );
   for (const candidate of candidateSeeds) {
-    if (candidate.origin !== "current_draft" || candidate.seed.causeId === seed.causeId) {
+    if (
+      candidate.origin !== "current_draft" ||
+      candidate.seed.causeId === seed.causeId ||
+      (currentSeed.draftIdentity != null && candidate.draftIdentity === currentSeed.draftIdentity)
+    ) {
       continue;
     }
     const matchingRelations = connected.get(candidate.seed.causeId)?.relations ?? [];
@@ -3170,7 +3188,7 @@ function waitingOptionsForCause(
       .filter(([causeId]) => causeId !== seed.causeId)
       .flatMap(([, value]) => value.relations.map((relation) => relation.id)),
   );
-  const subjectScope = scopeNodeIdsForSeed(indexes, seed);
+  const subjectScope = scopeNodeIdsForSeed(seed);
   for (const relation of relationEdges) {
     if (representedRelationIds.has(relation.id)) {
       continue;
@@ -3182,6 +3200,17 @@ function waitingOptionsForCause(
       endpoint = relation.fromNodeId;
     }
     if (endpoint == null) {
+      continue;
+    }
+    const endpointSeeds = indexes.currentSeedsByScopeNodeId.get(endpoint) ?? [];
+    if (
+      endpointSeeds.some(
+        (candidate) =>
+          candidate.seed.causeId === seed.causeId ||
+          (currentSeed.draftIdentity != null &&
+            candidate.draftIdentity === currentSeed.draftIdentity),
+      )
+    ) {
       continue;
     }
     const endpointItem = contextItemByNodeId(context, endpoint);
@@ -3238,12 +3267,12 @@ function duplicateOptionsForCause(
   >();
   const effectiveRelations = relationsIncidentToScope(
     indexes,
-    scopeNodeIdsForSeed(indexes, current.seed),
+    scopeNodeIdsForSeed(current.seed),
   ).filter(
     (relation) =>
       relation.type !== "related_to" && activeRelationIsEffective(context.graph, relation),
   );
-  const connected = connectedSeedRelations(indexes, current.seed, effectiveRelations);
+  const connected = connectedSeedRelations(indexes, current.seed, effectiveRelations, current);
   for (const { currentSeed: candidate, relations: directRelations } of connected.values()) {
     if (!seedCanBeDuplicateCandidate(current, candidate)) {
       continue;
@@ -3311,6 +3340,7 @@ function seedCanBeDuplicateCandidate(
 ): boolean {
   return (
     candidate.seed.causeId !== current.seed.causeId &&
+    (current.draftIdentity == null || candidate.draftIdentity !== current.draftIdentity) &&
     candidate.origin === "current_draft" &&
     candidate.seed.action.kind === current.seed.action.kind &&
     sameResponsibleValues(candidate.seed.responsible, current.seed.responsible)
@@ -3333,13 +3363,12 @@ function pendingRelationCanHideCauseAsDuplicate(
   current: PersonalReminderRuntimeCurrentSeed,
   candidateSeed: PersonalReminderRuntimeCurrentSeed,
   relationCandidate: PersonalReminderRuntimeCandidateRelation,
-  indexes: PersonalReminderRuntimePlanningIndexes,
 ): boolean {
   if (
     !relationCandidateConnectsScopes(
       relationCandidate,
-      scopeNodeIdsForSeed(indexes, current.seed),
-      scopeNodeIdsForSeed(indexes, candidateSeed.seed),
+      scopeNodeIdsForSeed(current.seed),
+      scopeNodeIdsForSeed(candidateSeed.seed),
     )
   ) {
     return false;
@@ -3382,7 +3411,7 @@ function pendingResponseMembershipDependencyInputs(
     ) {
       continue;
     }
-    const currentScopeNodeIds = scopeNodeIdsForSeed(indexes, current.seed);
+    const currentScopeNodeIds = scopeNodeIdsForSeed(current.seed);
     const [firstNodeId, secondNodeId] = candidate.endpointNodeIds;
     const duplicateCandidatesByCauseId = new Map<
       PersonalReminderCauseId,
@@ -3401,7 +3430,7 @@ function pendingResponseMembershipDependencyInputs(
     const matchingDuplicateCandidates = [...duplicateCandidatesByCauseId.values()].filter(
       (duplicateCandidate) =>
         seedCanBeDuplicateCandidate(current, duplicateCandidate) &&
-        pendingRelationCanHideCauseAsDuplicate(current, duplicateCandidate, candidate, indexes),
+        pendingRelationCanHideCauseAsDuplicate(current, duplicateCandidate, candidate),
     );
     if (matchingDuplicateCandidates.length === 0) {
       continue;
@@ -3748,18 +3777,24 @@ function createCauseSourceEvidence(
   item: PersonalReminderRuntimeContextItem,
   globalSourcesById: ReadonlyMap<SourceId, PersonalReminderRuntimeSource>,
   semanticInput: PersonalReminderCauseSemanticInput,
-  snapshotEvidenceSourceIds: ReadonlySet<SourceId>,
+  currentEvidenceBySourceId: ReadonlyMap<SourceId, readonly Evidence[]>,
+  previousEvidenceBySourceId: ReadonlyMap<SourceId, readonly Evidence[]>,
   seed: PersonalReminderCauseSeed,
 ): readonly Evidence[] {
   const evidenceByIdentity = new Map<string, Evidence>();
-  const existingSourceIds = new Set<SourceId>([...snapshotEvidenceSourceIds]);
-  for (const evidence of item.seedEvidence) {
-    evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
-    existingSourceIds.add(evidence.sourceId);
-  }
   const semanticSourceIds = new Set(semanticInput.sources.map((source) => source.sourceId));
   for (const sourceId of [...new Set(seed.evidenceSourceIds)].sort(compareStrings)) {
-    if (existingSourceIds.has(sourceId)) {
+    const currentEvidence = currentEvidenceBySourceId.get(sourceId) ?? [];
+    const previousEvidence = previousEvidenceBySourceId.get(sourceId) ?? [];
+    const seedEvidence = item.seedEvidence.filter((evidence) => evidence.sourceId === sourceId);
+    for (const evidence of [...currentEvidence, ...previousEvidence, ...seedEvidence]) {
+      evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
+    }
+    if (
+      currentEvidence.length !== 0 ||
+      previousEvidence.length !== 0 ||
+      seedEvidence.length !== 0
+    ) {
       continue;
     }
     if (!globalSourcesById.has(sourceId) && !semanticSourceIds.has(sourceId)) {
@@ -3773,13 +3808,232 @@ function createCauseSourceEvidence(
       summary: `担当する対応: ${seed.action.summary}`,
     });
     evidenceByIdentity.set(evidenceIdentity(evidence), evidence);
-    existingSourceIds.add(sourceId);
   }
   return Object.freeze(
     [...evidenceByIdentity.values()].sort((left, right) =>
       compareStrings(evidenceIdentity(left), evidenceIdentity(right)),
     ),
   );
+}
+
+function createCauseSemanticProjection(
+  input: Readonly<{
+    context: PersonalReminderRuntimeContext;
+    item: PersonalReminderRuntimeContextItem;
+    globalSourcesById: ReadonlyMap<SourceId, PersonalReminderRuntimeSource>;
+    globalCausalSourcesByNodeId: ReadonlyMap<GraphNodeId, readonly PersonalReminderRuntimeSource[]>;
+    globalItemContextsByNodeId: ReadonlyMap<GraphNodeId, PersonalReminderAiItemContext>;
+    seed: PersonalReminderCauseSeed;
+    currentSeed: PersonalReminderRuntimeCurrentSeed;
+    currentSeeds: readonly PersonalReminderRuntimeCurrentSeed[];
+    planningIndexes: PersonalReminderRuntimePlanningIndexes;
+  }>,
+): PersonalReminderCauseSemanticProjection {
+  const relationEdges = selectedRelationEdges(input.context, input.seed, input.planningIndexes);
+  const pendingRelations = selectedPendingRelations(input.context, input.seed);
+  const waitingProjection = waitingOptionsForCause(
+    input.context,
+    input.item,
+    input.globalSourcesById,
+    input.seed,
+    relationEdges,
+    input.currentSeed,
+    input.planningIndexes,
+  );
+  const duplicateProjection = duplicateOptionsForCause(
+    input.context,
+    input.globalSourcesById,
+    input.currentSeed,
+    input.planningIndexes,
+  );
+  const duplicateRelationIds = new Set(
+    duplicateProjection.options.flatMap((option) => option.relationIds),
+  );
+  const duplicateRelationEdges = input.context.graph.activeRelations.filter(
+    (relation) =>
+      duplicateRelationIds.has(relation.id) &&
+      activeRelationIsEffective(input.context.graph, relation),
+  );
+  const relationEdgesForInput = [
+    ...new Map(
+      [...relationEdges, ...duplicateRelationEdges].map((relation) => [relation.id, relation]),
+    ).values(),
+  ].sort((left, right) => compareStrings(left.id, right.id));
+  const relations = relationEdgesForInput.map(relationContextFromEdge);
+  const relationSources = relationSourceProjectionForEdges(
+    relationEdgesForInput,
+    input.globalSourcesById,
+  );
+  const optionSources = [...waitingProjection.sources, ...duplicateProjection.sources];
+  const targetScopeNodeIds = new Set<GraphNodeId>();
+  for (const option of [...waitingProjection.options, ...duplicateProjection.options]) {
+    for (const nodeId of optionTargetScopeNodeIds(option)) {
+      targetScopeNodeIds.add(nodeId);
+    }
+  }
+  const additionalItemContexts = [...targetScopeNodeIds].sort(compareStrings).map((nodeId) => {
+    const itemContext = input.globalItemContextsByNodeId.get(nodeId);
+    assertNonNullable(itemContext, `target scopeのitem contextがありません。対象: ${nodeId}`);
+    return itemContext;
+  });
+  const activityProjection = activityForCause(
+    input.item,
+    input.seed,
+    input.currentSeed.previousCause,
+    input.context.evaluatedAt,
+    input.currentSeeds,
+  );
+  const relationMissing: readonly PersonalReminderMissingInput[] =
+    relationSources.missingSourceIds.length === 0 ? [] : ["relation_evidence"];
+  const additionalMissing: readonly PersonalReminderMissingInput[] = [
+    ...waitingProjection.missing,
+    ...activityProjection.missing,
+    ...relationMissing,
+  ];
+  const semanticInput = createCauseSemanticInput(
+    input.item,
+    input.globalSourcesById,
+    input.globalCausalSourcesByNodeId,
+    input.globalItemContextsByNodeId,
+    input.seed,
+    relations,
+    pendingRelations,
+    waitingProjection.options,
+    duplicateProjection.options,
+    relationSources.sources,
+    optionSources,
+    additionalItemContexts,
+    additionalMissing,
+  );
+  return Object.freeze({
+    currentSeed: input.currentSeed,
+    relationEdges,
+    pendingRelations,
+    waitingProjection,
+    duplicateProjection,
+    relations,
+    relationSources,
+    optionSources,
+    additionalItemContexts,
+    activityProjection,
+    semanticInput,
+  });
+}
+
+function createRuntimeCurrentSeed(
+  input: Readonly<{
+    item: PersonalReminderRuntimeContextItem;
+    seed: PersonalReminderCauseSeed;
+    constructionOrigin: PersonalReminderCauseSeedOrigin;
+    projectionKey: string;
+    probe: boolean;
+  }>,
+): PersonalReminderRuntimeCurrentSeed {
+  if (
+    input.constructionOrigin.seed.causeId !== input.seed.causeId ||
+    serializeCanonicalJson(input.constructionOrigin.seed) !== serializeCanonicalJson(input.seed)
+  ) {
+    throw new TypeError(`seedの生成元とseedが一致しません。対象: ${input.seed.causeId}`);
+  }
+  const draft =
+    input.constructionOrigin.kind === "retained_without_draft"
+      ? undefined
+      : input.constructionOrigin.draft;
+  if (draft != null && !seedMatchesDraft(input.seed, draft)) {
+    throw new TypeError(`current seedとdraftが一致しません。対象: ${input.seed.causeId}`);
+  }
+  let previousCause: PersonalReminderCause | undefined;
+  switch (input.constructionOrigin.kind) {
+    case "new_draft":
+      previousCause = undefined;
+      break;
+    case "normal_continuation":
+    case "retained_without_draft":
+      previousCause = input.constructionOrigin.previousCause;
+      break;
+    default:
+      throw new UnreachableError(input.constructionOrigin);
+  }
+  return Object.freeze({
+    seed: input.seed,
+    item: input.item,
+    origin: draft == null ? "retained_without_draft" : "current_draft",
+    constructionOrigin: input.constructionOrigin,
+    draft,
+    draftIdentity: draft == null ? undefined : personalReminderDraftIdentity(draft),
+    projectionKey: input.projectionKey,
+    probe: input.probe,
+    previousCause,
+  });
+}
+
+function seedOriginForProjection(
+  projection: PersonalReminderCauseProjection,
+  seed: PersonalReminderCauseSeed,
+): PersonalReminderCauseSeedOrigin {
+  if (projection.draft == null) {
+    assertNonNullable(
+      projection.previousCause,
+      `保持seedのprevious causeがありません。対象: ${seed.causeId}`,
+    );
+    return Object.freeze({
+      kind: "retained_without_draft",
+      seed,
+      previousCause: projection.previousCause,
+    });
+  }
+  if (projection.previousCause == null) {
+    return Object.freeze({ kind: "new_draft", seed, draft: projection.draft });
+  }
+  return Object.freeze({
+    kind: "normal_continuation",
+    seed,
+    draft: projection.draft,
+    previousCause: projection.previousCause,
+  });
+}
+
+function assertRuntimeSeedMatchesBuilder(
+  currentSeed: PersonalReminderRuntimeCurrentSeed,
+  evaluatedAt: UtcIsoDateTime,
+): void {
+  const origin = currentSeed.constructionOrigin;
+  let projection: PersonalReminderCauseProjection;
+  switch (origin.kind) {
+    case "new_draft":
+      projection = Object.freeze({
+        key: currentSeed.projectionKey,
+        draft: origin.draft,
+        previousCause: undefined,
+      });
+      break;
+    case "normal_continuation":
+      projection = Object.freeze({
+        key: currentSeed.projectionKey,
+        draft: origin.draft,
+        previousCause: origin.previousCause,
+      });
+      break;
+    case "retained_without_draft":
+      projection = Object.freeze({
+        key: currentSeed.projectionKey,
+        draft: undefined,
+        previousCause: origin.previousCause,
+      });
+      break;
+    default:
+      throw new UnreachableError(origin);
+  }
+  const rebuilt = createPersonalReminderCauseProjectionSeed({
+    projection,
+    currentObservedAt: evaluatedAt,
+    sourceOccurredAtById: currentSeed.item.sourceOccurredAtById,
+  });
+  if (serializeCanonicalJson(rebuilt) !== serializeCanonicalJson(currentSeed.seed)) {
+    throw new TypeError(
+      `個人催促cause seedの生成元が一致しません。対象: ${currentSeed.seed.causeId}`,
+    );
+  }
 }
 
 /** fresh itemのcause候補をgraphと前回causeへreconcileする。 */
@@ -3792,6 +4046,7 @@ export function planPersonalReminderCauses(
   const continuityConflicts: PersonalReminderCauseContinuityConflict[] = [];
   const endedCauseIds = new Set<PersonalReminderCauseId>();
   const pendingCauseIds = new Set<PersonalReminderCauseId>();
+  const incompleteInputNodeIds = new Set<GitHubNodeId>();
   const unrecordedDependencyNodeIds = new Set<GitHubNodeId>();
   const causeSetAiDependencyInputsByNodeId = new Map<GitHubNodeId, AiAnalysisDependencyInput[]>();
   const causeSetSubjectChangeInputsByNodeId = new Map<
@@ -3799,6 +4054,10 @@ export function planPersonalReminderCauses(
     PersonalReminderRuntimeCauseSetSubjectChangeInput
   >();
   const reconciledItems: PersonalReminderRuntimeReconciledItem[] = [];
+  const newDraftIdCollisionsByNodeId = new Map<
+    GitHubNodeId,
+    PersonalReminderCauseNewDraftIdCollision
+  >();
   const globalSourcesById = new Map<SourceId, PersonalReminderRuntimeSource>();
   const globalItemContextsByNodeId = createGlobalItemContextIndex(context);
   for (const item of context.items) {
@@ -3819,6 +4078,7 @@ export function planPersonalReminderCauses(
     }
   }
   const globalSources = globalSourcesById;
+  const draftedItems: PersonalReminderRuntimeDraftedItem[] = [];
   for (const item of context.items) {
     const previous = item.previous;
     if (item.stale) {
@@ -3852,46 +4112,441 @@ export function planPersonalReminderCauses(
       graphDraftProjection.drafts,
     );
     const drafts = [...localDrafts, ...graphDraftProjection.drafts];
-    const structuralEnded = determineStructurallyEndedPersonalReminderCauses({
-      item: item.item,
-      previous,
-      currentDrafts: drafts,
-      currentDecisionStatus: item.localDecision.status,
-      complete: item.completeness.status === "complete",
-      currentReviewRequestTargets: item.currentReviewRequestTargets,
-      executionSurfaceStates: item.executionSurfaceStates,
+    draftedItems.push(
+      Object.freeze({
+        item,
+        drafts: Object.freeze(drafts),
+        negativeCandidateDependencies,
+      }),
+    );
+  }
+  const draftedItemsByNodeId = new Map(
+    draftedItems.map((draftedItem) => [draftedItem.item.item.nodeId, draftedItem]),
+  );
+
+  const projectionsByNodeId = new Map<GitHubNodeId, readonly PersonalReminderCauseProjection[]>();
+  for (const draftedItem of draftedItems) {
+    const projections = enumeratePersonalReminderCauseProjections({
+      item: draftedItem.item.item,
+      drafts: draftedItem.drafts,
+      previous: draftedItem.item.previous,
     });
-    const sourceOccurredAtById = new Map(item.sourceOccurredAtById);
-    const reconciliation = reconcilePersonalReminderCauseSeeds({
-      item: item.item,
-      drafts,
-      previous,
-      currentObservedAt: context.evaluatedAt,
-      sourceOccurredAtById,
-      confirmedEndedCauseIds: new Set(structuralEnded),
+    projectionsByNodeId.set(draftedItem.item.item.nodeId, projections);
+  }
+
+  const initialStructuralEndedByNodeId = new Map<
+    GitHubNodeId,
+    readonly PersonalReminderCauseId[]
+  >();
+  for (const draftedItem of draftedItems) {
+    const structurallyEnded = determineStructurallyEndedPersonalReminderCauses({
+      item: draftedItem.item.item,
+      previous: draftedItem.item.previous,
+      currentDrafts: draftedItem.drafts,
+      successorDrafts: draftedItem.drafts,
+      currentDecisionStatus: draftedItem.item.localDecision.status,
+      complete: draftedItem.item.completeness.status === "complete",
+      currentReviewRequestTargets: draftedItem.item.currentReviewRequestTargets,
+      executionSurfaceStates: draftedItem.item.executionSurfaceStates,
     });
-    if (reconciliation.status === "continuity_conflict") {
-      for (const cause of previous.causes) {
-        preservedCauses.push(cause);
+    initialStructuralEndedByNodeId.set(
+      draftedItem.item.item.nodeId,
+      Object.freeze(structurallyEnded),
+    );
+  }
+
+  const confirmedEndedByNodeId = new Map<GitHubNodeId, Set<PersonalReminderCauseId>>(
+    [...initialStructuralEndedByNodeId].map(([nodeId, causeIds]) => [nodeId, new Set(causeIds)]),
+  );
+  const deferredStructuralEndNodeIds = new Set<GitHubNodeId>();
+  let stableSemanticProjectionsByCauseId = new Map<
+    PersonalReminderCauseId,
+    PersonalReminderCauseSemanticProjection
+  >();
+  let stablePlanningIndexes: PersonalReminderRuntimePlanningIndexes | undefined;
+  let stableContinuityConflicts: readonly PersonalReminderCauseContinuityConflict[] = [];
+  let stableReconciledItems: PersonalReminderRuntimeReconciledItem[] = [];
+  const initialEndedCauseCount = [...confirmedEndedByNodeId.values()].reduce(
+    (count, causeIds) => count + causeIds.size,
+    0,
+  );
+  const maximumRounds = initialEndedCauseCount + 1;
+  for (let round = 1; round <= maximumRounds; round += 1) {
+    const roundReconciledItems: PersonalReminderRuntimeReconciledItem[] = [];
+    const roundContinuityConflicts: PersonalReminderCauseContinuityConflict[] = [];
+    const provisionalConflictNodeIds = new Set<GitHubNodeId>();
+    for (const draftedItem of draftedItems) {
+      const item = draftedItem.item;
+      const previous = item.previous;
+      const confirmedEnded = confirmedEndedByNodeId.get(item.item.nodeId) ?? new Set();
+      const storedCollision = newDraftIdCollisionsByNodeId.get(item.item.nodeId);
+      let reconciliation: ReturnType<typeof reconcilePersonalReminderCauseSeeds>;
+      if (storedCollision != null) {
+        assertNewDraftIdCollisionPreviousCauses(item, storedCollision);
+        reconciliation = storedCollision;
+      } else {
+        reconciliation = reconcilePersonalReminderCauseSeeds({
+          item: item.item,
+          drafts: draftedItem.drafts,
+          previous,
+          currentObservedAt: context.evaluatedAt,
+          sourceOccurredAtById: item.sourceOccurredAtById,
+          confirmedEndedCauseIds: confirmedEnded,
+        });
+        if (
+          reconciliation.status === "continuity_conflict" &&
+          reconciliation.reason === "new_draft_id_collision"
+        ) {
+          assertNewDraftIdCollisionPreviousCauses(item, reconciliation);
+          newDraftIdCollisionsByNodeId.set(item.item.nodeId, reconciliation);
+        }
       }
-      const evidence = context.state.previousEvidenceByNodeId.get(item.item.nodeId);
-      if (evidence != null) {
-        preservedEvidenceByNodeId.set(item.item.nodeId, evidence);
+      if (reconciliation.status === "continuity_conflict") {
+        provisionalConflictNodeIds.add(item.item.nodeId);
+        roundContinuityConflicts.push(
+          Object.freeze({
+            itemNodeId: reconciliation.itemNodeId,
+            previousCauseIds: reconciliation.previousCauseIds,
+          }),
+        );
+        continue;
       }
-      continuityConflicts.push(
+      for (const endedCauseId of reconciliation.endedCauseIds) {
+        if (!confirmedEnded.has(endedCauseId)) {
+          throw new TypeError(`reconcileのended cause IDが終了集合外です。対象: ${endedCauseId}`);
+        }
+      }
+      roundReconciledItems.push(
         Object.freeze({
-          itemNodeId: reconciliation.itemNodeId,
-          previousCauseIds: reconciliation.previousCauseIds,
+          item,
+          previousById: previousCauseById(previous),
+          reconciliation,
         }),
       );
+    }
+    const removedByConflict = new Set<PersonalReminderCauseId>();
+    for (const nodeId of provisionalConflictNodeIds) {
+      const causeIds = confirmedEndedByNodeId.get(nodeId);
+      if (causeIds == null) {
+        continue;
+      }
+      for (const causeId of causeIds) {
+        removedByConflict.add(causeId);
+      }
+      causeIds.clear();
+      deferredStructuralEndNodeIds.add(nodeId);
+    }
+    if (removedByConflict.size !== 0) {
+      if (round >= maximumRounds) {
+        throw new RangeError("個人催促causeの構造終了確認roundが上限を超えました");
+      }
       continue;
     }
-    const previousById = previousCauseById(previous);
-    const causeSetDependencies = negativeCandidateDependencies.flatMap(
+
+    const roundCurrentSeeds: PersonalReminderRuntimeCurrentSeed[] = [];
+    for (const reconciled of roundReconciledItems) {
+      const draftedItem = draftedItemsByNodeId.get(reconciled.item.item.nodeId);
+      assertNonNullable(
+        draftedItem,
+        `個人催促原因draftの項目がありません。対象: ${reconciled.item.item.nodeId}`,
+      );
+      const seedOriginsByCauseId = new Map(
+        reconciled.reconciliation.seedOrigins.map((origin) => [origin.seed.causeId, origin]),
+      );
+      for (const seed of reconciled.reconciliation.seeds) {
+        const constructionOrigin = seedOriginsByCauseId.get(seed.causeId);
+        assertNonNullable(
+          constructionOrigin,
+          `個人催促cause seedの生成元がありません。対象: ${seed.causeId}`,
+        );
+        const matchingDrafts =
+          constructionOrigin.kind === "retained_without_draft"
+            ? []
+            : draftedItem.drafts.filter((draft) => seedMatchesDraft(seed, draft));
+        if (matchingDrafts.length > 1) {
+          throw new TypeError(`current seedに対応するdraftが重複しています。対象: ${seed.causeId}`);
+        }
+        const currentSeed = createRuntimeCurrentSeed({
+          item: reconciled.item,
+          seed,
+          constructionOrigin,
+          projectionKey: `${seed.causeId}:member`,
+          probe: false,
+        });
+        assertRuntimeSeedMatchesBuilder(currentSeed, context.evaluatedAt);
+        roundCurrentSeeds.push(currentSeed);
+      }
+    }
+    roundCurrentSeeds.sort((left, right) => compareStrings(left.seed.causeId, right.seed.causeId));
+    const roundPlanningIndexes = createPersonalReminderPlanningIndexes(context, roundCurrentSeeds);
+    const roundSemanticProjectionsByCauseId = new Map<
+      PersonalReminderCauseId,
+      PersonalReminderCauseSemanticProjection
+    >();
+    const completeDraftIdentitiesByNodeId = new Map<GitHubNodeId, Set<string>>();
+    let hasIncompleteRoundInput = false;
+    for (const reconciled of roundReconciledItems) {
+      const draftedItem = draftedItems.find(
+        (value) => value.item.item.nodeId === reconciled.item.item.nodeId,
+      );
+      assertNonNullable(
+        draftedItem,
+        `個人催促原因draftの項目がありません。対象: ${reconciled.item.item.nodeId}`,
+      );
+      const itemSeeds = roundCurrentSeeds.filter(
+        (currentSeed) => currentSeed.item.item.nodeId === reconciled.item.item.nodeId,
+      );
+      for (const currentSeed of itemSeeds) {
+        const semanticProjection = createCauseSemanticProjection({
+          context,
+          item: reconciled.item,
+          globalSourcesById: globalSources,
+          globalCausalSourcesByNodeId,
+          globalItemContextsByNodeId,
+          seed: currentSeed.seed,
+          currentSeed,
+          currentSeeds: roundCurrentSeeds,
+          planningIndexes: roundPlanningIndexes,
+        });
+        if (roundSemanticProjectionsByCauseId.has(currentSeed.seed.causeId)) {
+          throw new TypeError(
+            `current seedのsemantic projectionが重複しています。対象: ${currentSeed.seed.causeId}`,
+          );
+        }
+        roundSemanticProjectionsByCauseId.set(currentSeed.seed.causeId, semanticProjection);
+        if (
+          currentSeed.draftIdentity != null &&
+          semanticProjection.semanticInput.completeness.status === "complete"
+        ) {
+          const completeDraftIdentities =
+            completeDraftIdentitiesByNodeId.get(currentSeed.item.item.nodeId) ?? new Set();
+          completeDraftIdentities.add(currentSeed.draftIdentity);
+          completeDraftIdentitiesByNodeId.set(
+            currentSeed.item.item.nodeId,
+            completeDraftIdentities,
+          );
+        }
+        if (semanticProjection.semanticInput.completeness.status === "incomplete") {
+          hasIncompleteRoundInput = true;
+        }
+      }
+      if (reconciled.reconciliation.seeds.length === 0 && draftedItem.drafts.length !== 0) {
+        throw new TypeError(
+          `個人催促原因draftがseedへ投影されていません。対象: ${reconciled.item.item.nodeId}`,
+        );
+      }
+    }
+    if (hasIncompleteRoundInput) {
+      for (const value of roundReconciledItems) {
+        if (
+          roundCurrentSeeds.some(
+            (currentSeed) =>
+              currentSeed.item.item.nodeId === value.item.item.nodeId &&
+              roundSemanticProjectionsByCauseId.get(currentSeed.seed.causeId)?.semanticInput
+                .completeness.status === "incomplete",
+          )
+        ) {
+          incompleteInputNodeIds.add(value.item.item.nodeId);
+        }
+      }
+    }
+
+    const invalidEndedCauseIds = new Set<PersonalReminderCauseId>();
+    for (const draftedItem of draftedItems) {
+      const itemNodeId = draftedItem.item.item.nodeId;
+      const endedCauseIdsForItem = confirmedEndedByNodeId.get(itemNodeId) ?? new Set();
+      if (endedCauseIdsForItem.size === 0) {
+        continue;
+      }
+      const itemReconciled = roundReconciledItems.find(
+        (value) => value.item.item.nodeId === itemNodeId,
+      );
+      if (itemReconciled == null) {
+        continue;
+      }
+      const verifiedSuccessorDrafts = draftedItem.drafts.filter((draft) => {
+        const identity = personalReminderDraftIdentity(draft);
+        return (completeDraftIdentitiesByNodeId.get(itemNodeId) ?? new Set()).has(identity);
+      });
+      const projections = projectionsByNodeId.get(itemNodeId);
+      assertNonNullable(projections, `個人催促原因の投影候補がありません。対象: ${itemNodeId}`);
+      for (const causeId of endedCauseIdsForItem) {
+        const matchingProjections: readonly PersonalReminderCauseProjection[] = projections.filter(
+          (projection) => projection.previousCause?.causeId === causeId,
+        );
+        const previousCauseForProbe = draftedItem.item.previous.causes.find(
+          (cause) => cause.causeId === causeId,
+        );
+        assertNonNullable(
+          previousCauseForProbe,
+          `終了probeのprevious causeがありません。対象: ${causeId}`,
+        );
+        const matchedDraftIdentities = new Set(
+          matchingProjections.flatMap((projection) =>
+            projection.draft == null ? [] : [personalReminderDraftIdentity(projection.draft)],
+          ),
+        );
+        const continuationProbeProjections = draftedItem.drafts
+          .filter(
+            (draft) =>
+              draft.action.kind === previousCauseForProbe.action.kind &&
+              sameResponsibleValues(draft.responsible, previousCauseForProbe.responsible) &&
+              !matchedDraftIdentities.has(personalReminderDraftIdentity(draft)),
+          )
+          .map((draft) =>
+            Object.freeze({
+              key: `ended:${causeId}:${personalReminderDraftIdentity(draft)}`,
+              draft,
+              previousCause: previousCauseForProbe,
+            }),
+          );
+        const probeProjections: readonly PersonalReminderCauseProjection[] = [
+          ...matchingProjections,
+          ...continuationProbeProjections,
+          ...(matchingProjections.length === 0 && continuationProbeProjections.length === 0
+            ? [
+                Object.freeze({
+                  key: `ended:${causeId}`,
+                  draft: undefined,
+                  previousCause: previousCauseForProbe,
+                }),
+              ]
+            : []),
+        ];
+        let causeHasIncompleteProbe = false;
+        const draftIdentities = new Set<string>();
+        for (const projection of probeProjections) {
+          const probeSeed = createPersonalReminderCauseProjectionSeed({
+            projection,
+            currentObservedAt: context.evaluatedAt,
+            sourceOccurredAtById: draftedItem.item.sourceOccurredAtById,
+          });
+          const probeCurrentSeed = createRuntimeCurrentSeed({
+            item: draftedItem.item,
+            seed: probeSeed,
+            constructionOrigin: seedOriginForProjection(projection, probeSeed),
+            projectionKey: projection.key,
+            probe: true,
+          });
+          assertRuntimeSeedMatchesBuilder(probeCurrentSeed, context.evaluatedAt);
+          const probeSemanticProjection = createCauseSemanticProjection({
+            context,
+            item: draftedItem.item,
+            globalSourcesById: globalSources,
+            globalCausalSourcesByNodeId,
+            globalItemContextsByNodeId,
+            seed: probeCurrentSeed.seed,
+            currentSeed: probeCurrentSeed,
+            currentSeeds: roundCurrentSeeds,
+            planningIndexes: roundPlanningIndexes,
+          });
+          if (probeSemanticProjection.semanticInput.completeness.status === "incomplete") {
+            causeHasIncompleteProbe = true;
+          }
+          if (projection.draft != null) {
+            draftIdentities.add(personalReminderDraftIdentity(projection.draft));
+          }
+        }
+        const missingDraftIdentity = [...draftIdentities].some(
+          (identity) =>
+            !(completeDraftIdentitiesByNodeId.get(itemNodeId) ?? new Set()).has(identity),
+        );
+        const structurallyEnded = determineStructurallyEndedPersonalReminderCauses({
+          item: draftedItem.item.item,
+          previous: Object.freeze({
+            observedAt: draftedItem.item.previous.observedAt,
+            causes: Object.freeze(
+              draftedItem.item.previous.causes.filter((cause) => cause.causeId === causeId),
+            ),
+          }),
+          currentDrafts: draftedItem.drafts,
+          successorDrafts: verifiedSuccessorDrafts,
+          currentDecisionStatus: draftedItem.item.localDecision.status,
+          complete: draftedItem.item.completeness.status === "complete",
+          currentReviewRequestTargets: draftedItem.item.currentReviewRequestTargets,
+          executionSurfaceStates: draftedItem.item.executionSurfaceStates,
+        });
+        if (
+          causeHasIncompleteProbe ||
+          missingDraftIdentity ||
+          !structurallyEnded.includes(causeId)
+        ) {
+          invalidEndedCauseIds.add(causeId);
+          if (
+            causeHasIncompleteProbe ||
+            missingDraftIdentity ||
+            incompleteInputNodeIds.has(itemNodeId)
+          ) {
+            deferredStructuralEndNodeIds.add(itemNodeId);
+            incompleteInputNodeIds.add(itemNodeId);
+          }
+        }
+      }
+    }
+    if (invalidEndedCauseIds.size !== 0) {
+      let removed = false;
+      for (const [nodeId, causeIds] of confirmedEndedByNodeId) {
+        for (const causeId of invalidEndedCauseIds) {
+          if (causeIds.delete(causeId)) {
+            removed = true;
+          }
+        }
+        if (causeIds.size === 0) {
+          confirmedEndedByNodeId.set(nodeId, causeIds);
+        }
+      }
+      if (!removed) {
+        throw new TypeError("構造終了causeを終了集合へ再追加できません");
+      }
+      if (round >= maximumRounds) {
+        throw new RangeError("個人催促causeの構造終了確認roundが上限を超えました");
+      }
+      continue;
+    }
+
+    stableReconciledItems = roundReconciledItems;
+    stablePlanningIndexes = roundPlanningIndexes;
+    stableSemanticProjectionsByCauseId = roundSemanticProjectionsByCauseId;
+    stableContinuityConflicts = Object.freeze(roundContinuityConflicts);
+    break;
+  }
+  if (stablePlanningIndexes == null) {
+    throw new RangeError("個人催促causeの構造終了確認roundが上限を超えました");
+  }
+
+  const planningIndexes = stablePlanningIndexes;
+  assertNonNullable(planningIndexes, "個人催促causeの安定round planning indexがありません");
+  reconciledItems.push(...stableReconciledItems);
+  continuityConflicts.push(...stableContinuityConflicts);
+  for (const reconciled of stableReconciledItems) {
+    for (const causeId of reconciled.reconciliation.endedCauseIds) {
+      endedCauseIds.add(causeId);
+    }
+  }
+  for (const conflict of stableContinuityConflicts) {
+    const item = context.items.find((value) => value.item.nodeId === conflict.itemNodeId);
+    assertNonNullable(item, `継続競合のruntime itemがありません。対象: ${conflict.itemNodeId}`);
+    for (const cause of item.previous.causes) {
+      preservedCauses.push(cause);
+    }
+    const evidence = context.state.previousEvidenceByNodeId.get(conflict.itemNodeId);
+    if (evidence != null) {
+      preservedEvidenceByNodeId.set(conflict.itemNodeId, evidence);
+    }
+  }
+  for (const reconciled of reconciledItems) {
+    const draftedItem = draftedItems.find(
+      (value) => value.item.item.nodeId === reconciled.item.item.nodeId,
+    );
+    assertNonNullable(
+      draftedItem,
+      `個人催促原因draftの項目がありません。対象: ${reconciled.item.item.nodeId}`,
+    );
+    const causeSetDependencies = draftedItem.negativeCandidateDependencies.flatMap(
       (candidate) => candidate.inputs,
     );
     const presenceInputs: AiAnalysisDependencyInput[] = [];
-    const negativeCandidateSubjects = negativeCandidateDependencies.map((candidate) =>
+    const negativeCandidateSubjects = draftedItem.negativeCandidateDependencies.map((candidate) =>
       Object.freeze({
         subject: candidate.subject,
         dependency: combineReconciledAiAnalysisDependencies(
@@ -3908,15 +4563,19 @@ export function planPersonalReminderCauses(
       .map((candidate) => candidate.subject);
     const removableSubjects: PersonalReminderSubject[] = [];
     let subjectChangesUnbounded = false;
-    for (const seed of reconciliation.seeds) {
-      const previousCause = previousById.get(seed.causeId);
-      let presenceInput: AiAnalysisDependencyInput;
-      if (reconciliation.retainedWithoutDraftCauseIds.includes(seed.causeId)) {
-        assertNonNullable(previousCause, `保持した前回causeがありません。対象: ${seed.causeId}`);
-        presenceInput = retainedAiDependencyInput(previousCause.aiDependencies.presence);
-      } else {
-        presenceInput = currentAiDependencyInput(seed.aiDependencies.presence);
-      }
+    for (const seed of reconciled.reconciliation.seeds) {
+      const previousCause = reconciled.previousById.get(seed.causeId);
+      const presenceInput = reconciled.reconciliation.retainedWithoutDraftCauseIds.includes(
+        seed.causeId,
+      )
+        ? (() => {
+            assertNonNullable(
+              previousCause,
+              `保持した前回causeがありません。対象: ${seed.causeId}`,
+            );
+            return retainedAiDependencyInput(previousCause.aiDependencies.presence);
+          })()
+        : currentAiDependencyInput(seed.aiDependencies.presence);
       causeSetDependencies.push(presenceInput);
       presenceInputs.push(presenceInput);
       const presenceDependency = combineReconciledAiAnalysisDependencies(
@@ -3938,11 +4597,11 @@ export function planPersonalReminderCauses(
         );
       }
     }
-    if (reconciliation.seeds.length === 0) {
+    if (reconciled.reconciliation.seeds.length === 0) {
       const fallbackPresenceDependency = personalReminderCauseAiDependenciesForDecision(
-        item.item.nodeId,
-        item.localDecision,
-        item.aiAnalysisApplications,
+        reconciled.item.item.nodeId,
+        reconciled.item.localDecision,
+        reconciled.item.aiAnalysisApplications,
       ).presence;
       const fallbackPresenceInput = currentAiDependencyInput(fallbackPresenceDependency);
       causeSetDependencies.push(fallbackPresenceInput);
@@ -3951,9 +4610,9 @@ export function planPersonalReminderCauses(
         subjectChangesUnbounded = true;
       }
     }
-    causeSetAiDependencyInputsByNodeId.set(item.item.nodeId, causeSetDependencies);
+    causeSetAiDependencyInputsByNodeId.set(reconciled.item.item.nodeId, causeSetDependencies);
     causeSetSubjectChangeInputsByNodeId.set(
-      item.item.nodeId,
+      reconciled.item.item.nodeId,
       Object.freeze({
         addableSubjects: Object.freeze(addableSubjects),
         removableSubjects: Object.freeze(removableSubjects),
@@ -3962,75 +4621,52 @@ export function planPersonalReminderCauses(
         unbounded: subjectChangesUnbounded,
       }),
     );
-    for (const causeId of reconciliation.endedCauseIds) {
-      endedCauseIds.add(causeId);
-    }
-    reconciledItems.push(
-      Object.freeze({
-        item,
-        previousById,
-        reconciliation,
-      }),
-    );
   }
-
-  const currentSeeds = reconciledItems.flatMap((value) =>
-    value.reconciliation.seeds.map((seed) =>
-      Object.freeze({
-        seed,
-        item: value.item,
-        origin: value.reconciliation.retainedWithoutDraftCauseIds.includes(seed.causeId)
-          ? "retained_without_draft"
-          : "current_draft",
-        previousCause: value.previousById.get(seed.causeId),
-      }),
-    ),
-  );
-  currentSeeds.sort((left, right) => compareStrings(left.seed.causeId, right.seed.causeId));
-  const planningIndexes = createPersonalReminderPlanningIndexes(context, currentSeeds);
 
   for (const reconciled of reconciledItems) {
     const item = reconciled.item;
     for (const seed of reconciled.reconciliation.seeds) {
       const currentSeed = planningIndexes.currentSeedByCauseId.get(seed.causeId);
       assertNonNullable(currentSeed, `current seedがありません。対象: ${seed.causeId}`);
-      const relationEdges = selectedRelationEdges(context, seed, planningIndexes);
-      const pendingRelations = selectedPendingRelations(context, seed);
-      const waitingProjection = waitingOptionsForCause(
-        context,
-        item,
-        globalSourcesById,
-        seed,
+      const semanticProjection = stableSemanticProjectionsByCauseId.get(seed.causeId);
+      assertNonNullable(
+        semanticProjection,
+        `安定roundのsemantic projectionがありません。対象: ${seed.causeId}`,
+      );
+      if (semanticProjection.currentSeed !== currentSeed) {
+        throw new TypeError(`安定roundのcurrent seedが一致しません。対象: ${seed.causeId}`);
+      }
+      const {
         relationEdges,
-        currentSeed,
-        planningIndexes,
-      );
-      const duplicateProjection = duplicateOptionsForCause(
-        context,
-        globalSourcesById,
-        currentSeed,
-        planningIndexes,
-      );
-      const duplicateRelationIds = new Set(
-        duplicateProjection.options.flatMap((option) => option.relationIds),
-      );
-      const duplicateRelationEdges = context.graph.activeRelations.filter(
-        (relation) =>
-          duplicateRelationIds.has(relation.id) &&
-          activeRelationIsEffective(context.graph, relation),
-      );
-      const relationEdgesForInput = [
-        ...new Map(
-          [...relationEdges, ...duplicateRelationEdges].map((relation) => [relation.id, relation]),
-        ).values(),
-      ].sort((left, right) => compareStrings(left.id, right.id));
-      const relations = relationEdgesForInput.map(relationContextFromEdge);
-      const relationSources = relationSourceProjectionForEdges(
-        relationEdgesForInput,
-        globalSourcesById,
-      );
-      const optionSources = [...waitingProjection.sources, ...duplicateProjection.sources];
-      const relationDependencies = relationEdgesForInput.map((relation) =>
+        pendingRelations,
+        waitingProjection,
+        duplicateProjection,
+        activityProjection,
+        semanticInput,
+      } = semanticProjection;
+      if (
+        serializeCanonicalJson([
+          seed.causeId,
+          seed.itemNodeId,
+          seed.reasonCode,
+          seed.responsible,
+          seed.responsibility,
+          seed.action,
+        ]) !==
+        serializeCanonicalJson([
+          semanticInput.cause.causeId,
+          semanticInput.cause.itemNodeId,
+          semanticInput.cause.reasonCode,
+          semanticInput.cause.responsible,
+          semanticInput.cause.responsibility,
+          semanticInput.cause.action,
+        ])
+      ) {
+        throw new TypeError(
+          `個人催促cause seedとsemantic inputが一致しません。対象: ${seed.causeId}`,
+        );
+      }
+      const relationDependencies = relationEdges.map((relation) =>
         currentAiDependencyInput(relation.aiDependency),
       );
       const pendingRelationDependencies = pendingRelations.flatMap((relation) => {
@@ -4115,51 +4751,15 @@ export function planPersonalReminderCauses(
       ) {
         unrecordedDependencyNodeIds.add(seed.itemNodeId);
       }
-      const targetScopeNodeIds = new Set<GraphNodeId>();
-      for (const option of [...waitingProjection.options, ...duplicateProjection.options]) {
-        for (const nodeId of optionTargetScopeNodeIds(option)) {
-          targetScopeNodeIds.add(nodeId);
-        }
+      if (semanticInput.completeness.status === "incomplete") {
+        incompleteInputNodeIds.add(item.item.nodeId);
       }
-      const additionalItemContexts = [...targetScopeNodeIds].sort(compareStrings).map((nodeId) => {
-        const itemContext = globalItemContextsByNodeId.get(nodeId);
-        assertNonNullable(itemContext, `target scopeのitem contextがありません。対象: ${nodeId}`);
-        return itemContext;
-      });
-      const activityProjection = activityForCause(
-        item,
-        seed,
-        currentSeed.previousCause,
-        context.evaluatedAt,
-        currentSeeds,
-      );
-      const relationMissing: readonly PersonalReminderMissingInput[] =
-        relationSources.missingSourceIds.length === 0 ? [] : ["relation_evidence"];
-      const additionalMissing: PersonalReminderMissingInput[] = [
-        ...waitingProjection.missing,
-        ...activityProjection.missing,
-        ...relationMissing,
-      ];
-      const semanticInput = createCauseSemanticInput(
-        item,
-        globalSources,
-        globalCausalSourcesByNodeId,
-        globalItemContextsByNodeId,
-        seed,
-        relations,
-        pendingRelations,
-        waitingProjection.options,
-        duplicateProjection.options,
-        relationSources.sources,
-        optionSources,
-        additionalItemContexts,
-        additionalMissing,
-      );
       const sourceEvidence = createCauseSourceEvidence(
         item,
         globalSourcesById,
         semanticInput,
-        context.snapshotEvidenceSourceIds,
+        context.currentEvidenceBySourceId,
+        context.state.previousEvidenceBySourceId,
         seed,
       );
       if (pendingRelations.length !== 0) {
@@ -4211,6 +4811,24 @@ export function planPersonalReminderCauses(
       createCauseSetSubjectChanges(dependency, subjectChangeInput, context.aiDependencyContext),
     );
   }
+  const entryCauseIds = new Set(entries.map((entry) => entry.seed.causeId));
+  const stableCauseIds = new Set(planningIndexes.currentSeedByCauseId.keys());
+  if (
+    entryCauseIds.size !== stableCauseIds.size ||
+    [...entryCauseIds].some((causeId) => !stableCauseIds.has(causeId))
+  ) {
+    throw new TypeError("final entryのcause ID集合が安定roundと一致しません");
+  }
+  for (const causeId of endedCauseIds) {
+    if (entryCauseIds.has(causeId)) {
+      throw new TypeError(`終了causeがfinal entryへ残っています。対象: ${causeId}`);
+    }
+  }
+  for (const cause of preservedCauses) {
+    if (entryCauseIds.has(cause.causeId)) {
+      throw new TypeError(`保持causeがfinal entryと重複しています。対象: ${cause.causeId}`);
+    }
+  }
   return Object.freeze({
     entries: Object.freeze(
       entries.sort((left, right) => compareStrings(left.seed.causeId, right.seed.causeId)),
@@ -4222,6 +4840,8 @@ export function planPersonalReminderCauses(
     ),
     endedCauseIds: Object.freeze([...endedCauseIds].sort(compareStrings)),
     pendingCauseIds: Object.freeze([...pendingCauseIds].sort(compareStrings)),
+    incompleteInputNodeIds: new Set([...incompleteInputNodeIds].sort(compareStrings)),
+    deferredStructuralEndNodeIds: new Set([...deferredStructuralEndNodeIds].sort(compareStrings)),
     unrecordedDependencyNodeIds,
     causeSetAiDependencyByNodeId,
     causeSetSubjectChangesByNodeId,
@@ -4432,7 +5052,7 @@ function createCauseEvidence(
 }
 
 function evidenceIdentity(evidence: Evidence): string {
-  return JSON.stringify([evidence.sourceId, evidence.supports, evidence.summary]);
+  return serializeCanonicalJson(evidence);
 }
 
 function previousClock(
