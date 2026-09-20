@@ -12,7 +12,7 @@ export default defineConfig([
     extends: [eslint.configs.recommended, eslintConfigPrettier],
   },
   {
-    files: ["**/*.{cts,mts,ts}"],
+    files: ["**/*.{cts,mts,ts,tsx}"],
     extends: [
       eslint.configs.recommended,
       tseslint.configs.strictTypeChecked,

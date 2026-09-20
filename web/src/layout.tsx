@@ -1,4 +1,4 @@
-import { type ComponentChildren, type JSX } from "preact";
+import { type ComponentChildren, type HTMLAttributes } from "preact";
 
 import { UnreachableError } from "../../src/util/index.js";
 import { appendClassName } from "./class-name.js";
@@ -18,7 +18,7 @@ type ContentStateProps = Readonly<
     message: string;
     status: "empty" | "failed" | "loading";
   } & Omit<
-    JSX.HTMLAttributes<HTMLDivElement>,
+    HTMLAttributes<HTMLDivElement>,
     "aria-live" | "children" | "class" | "className" | "role"
   >
 >;

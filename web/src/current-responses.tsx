@@ -114,7 +114,8 @@ export function ResponseResponsible({
   Readonly<{
     responsible: CurrentResponse["responsible"][number];
   }>) {
-  switch (responsible.kind) {
+  const responsibleKind = responsible.kind;
+  switch (responsibleKind) {
     case "user":
       return (
         <PersonLink
@@ -129,7 +130,7 @@ export function ResponseResponsible({
     case "role":
       return <span>{currentResponseRoleLabel(responsible.role)}の役割</span>;
     default:
-      throw new TypeError(`現在の対応者のkindが不正です: ${responsible.kind}`);
+      throw new UnreachableError(responsibleKind);
   }
 }
 

@@ -24,7 +24,7 @@ type ActionButtonProps = Readonly<
   {
     children: ComponentChildren;
     className?: string;
-  } & Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children" | "class" | "className">
+  } & Omit<ButtonHTMLAttributes, "children" | "class" | "className">
 >;
 
 type PillProps = Readonly<{

@@ -128,12 +128,12 @@ function GraphNodeShape({
         <polygon
           class={className}
           points={[
-            `${left + corner},${top}`,
-            `${left + width - corner},${top}`,
-            `${left + width},${y}`,
-            `${left + width - corner},${top + height}`,
-            `${left + corner},${top + height}`,
-            `${left},${y}`,
+            `${(left + corner).toString()},${top.toString()}`,
+            `${(left + width - corner).toString()},${top.toString()}`,
+            `${(left + width).toString()},${y.toString()}`,
+            `${(left + width - corner).toString()},${(top + height).toString()}`,
+            `${(left + corner).toString()},${(top + height).toString()}`,
+            `${left.toString()},${y.toString()}`,
           ].join(" ")}
         />
       );
@@ -143,10 +143,10 @@ function GraphNodeShape({
         <polygon
           class={className}
           points={[
-            `${x},${top}`,
-            `${left + width},${y}`,
-            `${x},${top + height}`,
-            `${left},${y}`,
+            `${x.toString()},${top.toString()}`,
+            `${(left + width).toString()},${y.toString()}`,
+            `${x.toString()},${(top + height).toString()}`,
+            `${left.toString()},${y.toString()}`,
           ].join(" ")}
         />
       );
