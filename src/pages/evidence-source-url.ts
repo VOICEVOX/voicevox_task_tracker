@@ -175,16 +175,6 @@ export function resolveEvidenceSourceUrlForItem(
     case "github_account":
     case "github_check_rollup":
     case "body":
-    case "golden_event":
-    case "golden_item":
-    case "golden_review_request":
-    case "golden_team":
-    case "golden_checks":
-    case "golden_commit":
-    case "golden_relation":
-    case "golden_ai_source":
-    case "golden_large":
-    case "golden_large_edge":
       return itemSourceUrl(sourceId, currentSourceItem, allSourceItems, sourceOwnersById);
     default:
       throw new TypeError(`公開evidence URLへ解決できないsource ID種別です。対象: ${kind}`);
