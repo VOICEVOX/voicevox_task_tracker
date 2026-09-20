@@ -1,5 +1,4 @@
-import { stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 
 import { hashCanonicalJson, serializeCanonicalJson } from "../canonical-json/index.js";
 import {
@@ -10,7 +9,6 @@ import {
   createEmptyAiBudgetUsage,
   createAiAnalysisTarget,
   assessAnalysisImpact,
-  createCodexEnvironment,
   createCodexAnalysisInput,
   CodexOutputValidationError,
   createPersonalReminderCauseInputFingerprint,
@@ -18,7 +16,6 @@ import {
   determineAnalysisElementReuse,
   estimateAiInputCost,
   effectiveElementConfidence,
-  getCodexEnvironmentVariableAllowlist,
   listNativeRelationConstraints,
   prepareAiAnalysisCandidate,
   planAnalysisElements,
@@ -259,11 +256,9 @@ import {
   markObservedGitHubItemsStale,
   normalizeObservedGitHubItems,
   planIncrementalItemCollection,
-  parseGitHubAppCredentials,
   type CreateGitHubClientOptions,
   type EnumeratedGitHubItem,
   type FreshObservedGitHubItem,
-  type GitHubAppCredentials,
   type GitHubClient,
   type GitHubCheckContext,
   type GitHubIssueComment,
@@ -320,7 +315,6 @@ import {
   assertPersonalReminderEvidenceRecordsClosure,
   createPersonalReminderEvidenceSourceIndex,
   snapshotEffectiveGraphStateByNodeId,
-  StateBranchConflictError,
   NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
   assertStatePublicSafety,
   StatePersistenceSession,
@@ -354,31 +348,15 @@ import {
   type ReportWorkflowCliCommand,
   type ResolveDiscordDeliveryCliCommand,
 } from "./command.js";
-import {
-  type OnlineCliCommand,
-  type PersonalReminderAnalysisStageResult,
-} from "./daily-transaction.js";
-import {
-  assertSandboxManifestMatchesContext,
-  assertSandboxOrigin,
-  parseSandboxManifest,
-  sandboxBranchForEnvironment,
-  SANDBOX_MANIFEST_PATH,
-  type SandboxManifest,
-  type SandboxRunContext,
-} from "./sandbox-context.js";
+import { type PersonalReminderAnalysisStageResult } from "./daily-transaction.js";
+import { type SandboxRunContext } from "./sandbox-context.js";
 import {
   DailyTransactionRunner,
   type DailyTransactionDependencies,
   type DailyTransactionTypeMap,
   type DailyRunInvocation,
 } from "./daily-transaction.js";
-import {
-  CliCodexAuthenticationError,
-  CliCredentialsError,
-  CliExecutableError,
-  CliRelationExpansionLimitError,
-} from "./errors.js";
+import { CliRelationExpansionLimitError } from "./errors.js";
 import { safeCodexFallbackDiagnostic } from "./error-diagnostic.js";
 import { writeRunReport, type RunMetrics } from "./run-report.js";
 import {
@@ -396,6 +374,16 @@ import {
 } from "./workflow-artifact.js";
 import { createWorkflowRunReport, readOptionalRunReportFile } from "./workflow-run-report.js";
 import { WorkflowStageRunner } from "./workflow-stage.js";
+import {
+  assertCodexRuntimeReady,
+  readRuntimeCredentials,
+  requireEnvironmentValue,
+  requireEnvironmentVariables,
+  resolveRuntimeTarget,
+  type EnabledCodexCredentials,
+  type RuntimeCredentials,
+  type RuntimeExecutionTarget,
+} from "./production-runtime-setup.js";
 
 const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
@@ -417,41 +405,11 @@ const STALE_BLOCKER_TOPOLOGY_DEPENDENCY_ELEMENTS = Object.freeze([
   "lastProgressAt",
   "stallSince",
 ] satisfies readonly AiAnalysisDependencyElement[]);
-type EnabledCodexCredentials = Readonly<{
-  enabled: true;
-  authentication: Config["ai"]["authentication"];
-  environment: Readonly<Record<string, string>>;
-}>;
-
-type RuntimeCodexCredentials =
-  | Readonly<{
-      enabled: false;
-    }>
-  | EnabledCodexCredentials;
-
-type RuntimeCredentials = Readonly<{
-  github: GitHubAppCredentials;
-  codex: RuntimeCodexCredentials;
-  knownSecrets: readonly string[];
-}>;
-
 type RuntimeConfiguration = Readonly<{
   config: Config;
   credentials: RuntimeCredentials;
   target: RuntimeExecutionTarget;
 }>;
-
-type RuntimeExecutionTarget =
-  | Readonly<{
-      kind: "production";
-      state: Config["state"];
-    }>
-  | Readonly<{
-      kind: "sandbox";
-      state: StatePersistenceConfiguration;
-      manifest: SandboxManifest;
-      context: SandboxRunContext;
-    }>;
 
 function createAiAnalysisRunIdentity(config: Config): AiAnalysisRunIdentity {
   return Object.freeze({
@@ -802,195 +760,6 @@ function currentRuntimeTime(adapters: ProductionRuntimeAdapters): UtcIsoDateTime
   return createUtcIsoDateTime(now.toISOString());
 }
 
-function requireEnvironmentValue(
-  environment: Readonly<NodeJS.ProcessEnv>,
-  variableName: string,
-): string {
-  const value = environment[variableName];
-  if (value == null || value.trim().length === 0) {
-    throw new CliCredentialsError([variableName], {});
-  }
-  return value;
-}
-
-function requireEnvironmentVariables(
-  environment: Readonly<NodeJS.ProcessEnv>,
-  variableNames: readonly string[],
-): void {
-  const missingVariableNames = variableNames.filter((variableName) => {
-    const value = environment[variableName];
-    return value == null || value.trim().length === 0;
-  });
-  if (missingVariableNames.length > 0) {
-    throw new CliCredentialsError(missingVariableNames, {});
-  }
-}
-
-function readCodexCredentials(
-  environment: Readonly<NodeJS.ProcessEnv>,
-  config: Config,
-): RuntimeCodexCredentials {
-  if (!config.ai.enabled) {
-    return Object.freeze({
-      enabled: false,
-    });
-  }
-  const authentication = config.ai.authentication;
-  requireEnvironmentVariables(environment, getCodexEnvironmentVariableAllowlist(authentication));
-  return Object.freeze({
-    enabled: true,
-    authentication,
-    environment: createCodexEnvironment(authentication, environment),
-  });
-}
-
-function codexKnownSecrets(credentials: RuntimeCodexCredentials): readonly string[] {
-  if (!credentials.enabled) {
-    return Object.freeze([]);
-  }
-  switch (credentials.authentication) {
-    case "api-key": {
-      const openAiApiKey = credentials.environment["OPENAI_API_KEY"];
-      assertNonNullable(openAiApiKey, "組み立て済みCodex環境にOPENAI_API_KEYがありません");
-      return Object.freeze([openAiApiKey]);
-    }
-    case "auth-json":
-      return Object.freeze([]);
-    default:
-      throw new UnreachableError(credentials.authentication);
-  }
-}
-
-function readRuntimeCredentials(
-  environment: Readonly<NodeJS.ProcessEnv>,
-  config: Config,
-  command: OnlineCliCommand,
-  executionTargetKind: RuntimeExecutionTarget["kind"],
-): RuntimeCredentials {
-  requireEnvironmentVariables(environment, ["GH_APP_ID", "GH_APP_PRIVATE_KEY"]);
-  let github: GitHubAppCredentials;
-  try {
-    github = parseGitHubAppCredentials(environment);
-  } catch (error: unknown) {
-    const variableNames =
-      error instanceof Error &&
-      "variableNames" in error &&
-      Array.isArray(error.variableNames) &&
-      error.variableNames.every((value) => typeof value === "string")
-        ? error.variableNames
-        : ["GH_APP_ID", "GH_APP_PRIVATE_KEY"];
-    throw new CliCredentialsError(variableNames, { cause: error });
-  }
-  const codex = readCodexCredentials(environment, config);
-  const knownSecrets = [github.privateKey, ...codexKnownSecrets(codex)];
-  if (config.notifications.discord.enabled && executionTargetKind === "production") {
-    switch (command.kind) {
-      case "daily":
-      case "backfill":
-        switch (command.notificationAction) {
-          case "send":
-            knownSecrets.push(
-              requireEnvironmentValue(environment, config.notifications.discord.webhookSecretName),
-              requireEnvironmentValue(
-                environment,
-                config.notifications.discord.operationsWebhookSecretName,
-              ),
-            );
-            break;
-          case "hold":
-          case "acknowledge-current":
-            knownSecrets.push(
-              requireEnvironmentValue(
-                environment,
-                config.notifications.discord.operationsWebhookSecretName,
-              ),
-            );
-            break;
-          default:
-            throw new UnreachableError(command.notificationAction);
-        }
-        break;
-      case "dry-run":
-      case "collect-analyze":
-        break;
-      default:
-        throw new UnreachableError(command);
-    }
-  }
-  return Object.freeze({
-    github,
-    codex,
-    knownSecrets: Object.freeze(knownSecrets),
-  });
-}
-
-function parseSandboxManifestBytes(bytes: Uint8Array): SandboxManifest {
-  return parseSandboxManifest(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
-}
-
-async function resolveRuntimeTarget(
-  adapters: ProductionRuntimeAdapters,
-  config: Config,
-  command: OnlineCliCommand,
-): Promise<RuntimeExecutionTarget> {
-  const sandboxContextPath = command.kind === "daily" ? command.sandboxContextPath : undefined;
-  if (sandboxContextPath == null) {
-    return Object.freeze({
-      kind: "production",
-      state: config.state,
-    });
-  }
-  if (command.kind !== "daily") {
-    throw new TypeError("sandbox contextはdaily commandでだけ指定できます");
-  }
-  if (command.notificationAction !== "hold") {
-    throw new TypeError("sandbox実行のnotification-actionはholdにしてください");
-  }
-  const readSandboxContext = adapters.readSandboxContext;
-  if (readSandboxContext == null) {
-    throw new TypeError("sandbox contextの読み取りadapterがありません");
-  }
-  const context = await readSandboxContext(resolve(adapters.repositoryPath, sandboxContextPath));
-  const branch = sandboxBranchForEnvironment(context.environmentId);
-  const stateAdapter = adapters.createStateBranchAdapter();
-  const head = await stateAdapter.resolveHead(branch);
-  if (head.status === "missing") {
-    throw new StateBranchConflictError();
-  }
-  if (head.revision !== context.baseStateRevision) {
-    throw new StateBranchConflictError();
-  }
-  const manifestResult = await stateAdapter.readFile(head.revision, SANDBOX_MANIFEST_PATH);
-  if (manifestResult.status === "missing") {
-    throw new TypeError("sandbox environment manifestがありません");
-  }
-  const manifest = parseSandboxManifestBytes(manifestResult.bytes);
-  assertSandboxManifestMatchesContext(manifest, context);
-  assertNonNullable(
-    stateAdapter.resolveRepositoryRevision,
-    "checkout repositoryのcommit SHA取得adapterがありません",
-  );
-  const repositoryRevision = await stateAdapter.resolveRepositoryRevision();
-  if (repositoryRevision !== context.codeRevision) {
-    throw new TypeError("sandbox contextとcheckout repositoryのcommit SHAが一致しません");
-  }
-  assertNonNullable(stateAdapter.resolveOriginUrls, "origin URL取得adapterがありません");
-  const originUrls = await stateAdapter.resolveOriginUrls();
-  for (const originUrl of [...originUrls.fetchUrls, ...originUrls.pushUrls]) {
-    assertSandboxOrigin(originUrl);
-  }
-  const state = Object.freeze({
-    ...config.state,
-    branch,
-  }) satisfies StatePersistenceConfiguration;
-  return Object.freeze({
-    kind: "sandbox",
-    state,
-    manifest,
-    context,
-  });
-}
-
 function normalizeLabelRules(config: Config): readonly LabelRule[] {
   return Object.freeze(
     config.labels.rules.map((rule) => {
@@ -1023,54 +792,6 @@ function normalizeLabelRules(config: Config): readonly LabelRule[] {
       });
     }),
   );
-}
-
-async function assertCodexAuthenticationAvailable(
-  credentials: EnabledCodexCredentials,
-): Promise<void> {
-  switch (credentials.authentication) {
-    case "api-key":
-      return;
-    case "auth-json": {
-      const codexHome = credentials.environment["CODEX_HOME"];
-      assertNonNullable(codexHome, "組み立て済みCodex環境にCODEX_HOMEがありません");
-      try {
-        const authJsonStat = await stat(join(codexHome, "auth.json"));
-        if (!authJsonStat.isFile()) {
-          throw new TypeError("CODEX_HOME直下のauth.jsonがファイルではありません");
-        }
-      } catch (error: unknown) {
-        throw new CliCodexAuthenticationError({ cause: error });
-      }
-      return;
-    }
-    default:
-      throw new UnreachableError(credentials.authentication);
-  }
-}
-
-async function assertCodexCliAvailable(
-  adapters: ProductionRuntimeAdapters,
-  environment: Readonly<Record<string, string>>,
-): Promise<void> {
-  let result: Awaited<ReturnType<CodexProcessRunner>>;
-  try {
-    result = await adapters.codexProcessRunner({
-      command: "codex",
-      arguments: ["--version"],
-      workingDirectory: adapters.repositoryPath,
-      environment,
-      standardInput: "",
-      timeoutMilliseconds: 10_000,
-    });
-  } catch (error: unknown) {
-    throw new CliExecutableError("codex", { cause: error });
-  }
-  if (result.timedOut || result.exitCode !== 0 || result.signal != null) {
-    throw new CliExecutableError("codex", {
-      cause: new Error("Codex CLIのversion確認が正常終了しませんでした"),
-    });
-  }
 }
 
 function githubApiRemaining(client: GitHubClient): number {
@@ -18618,7 +18339,17 @@ function createDailyDependencies(
     validateConfiguration: async ({ invocation, configPath }) => {
       requireEnvironmentVariables(adapters.environment, ["GH_APP_ID", "GH_APP_PRIVATE_KEY"]);
       const config = await adapters.loadConfig(resolve(adapters.repositoryPath, configPath));
-      const target = await resolveRuntimeTarget(adapters, config, invocation.command);
+      const target = await resolveRuntimeTarget(
+        Object.freeze({
+          repositoryPath: adapters.repositoryPath,
+          ...(adapters.readSandboxContext == null
+            ? {}
+            : { readSandboxContext: adapters.readSandboxContext }),
+          createStateBranchAdapter: adapters.createStateBranchAdapter,
+        }),
+        config,
+        invocation.command,
+      );
       const credentials = readRuntimeCredentials(
         adapters.environment,
         config,
@@ -18626,8 +18357,13 @@ function createDailyDependencies(
         target.kind,
       );
       if (credentials.codex.enabled) {
-        await assertCodexAuthenticationAvailable(credentials.codex);
-        await assertCodexCliAvailable(adapters, credentials.codex.environment);
+        await assertCodexRuntimeReady(
+          Object.freeze({
+            repositoryPath: adapters.repositoryPath,
+            codexProcessRunner: adapters.codexProcessRunner,
+          }),
+          credentials.codex,
+        );
       }
       return Object.freeze({
         config,
