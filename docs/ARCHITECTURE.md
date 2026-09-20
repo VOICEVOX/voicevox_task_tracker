@@ -5,21 +5,21 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 
 ## モジュール境界
 
-| モジュール           | 責務                                                                                             | 主な依存先                                                    |
-| -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
-| `src/canonical-json` | Node.js専用のcanonical JSON直列化、末尾改行、SHA-256 hashの共有                                  | Node.js標準module                                             |
-| `src/config`         | YAMLの読み込み、Zod schemaとsemantic validation                                                  | `src/codex`、`src/domain`、`src/util`                         |
-| `src/diagnostics`    | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                   | Node.js標準module                                             |
-| `src/github`         | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理             | `src/config`、`src/domain`                                    |
-| `src/domain`         | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度                | `src/util`                                                    |
-| `src/graph`          | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                                 | `src/domain`                                                  |
-| `src/codex`          | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                        | `src/canonical-json`、`src/domain`、`src/graph`               |
-| `src/persistence`    | snapshot、履歴、AI cache、通知管理記録、run report、Git branch transaction                       | `src/canonical-json`、`src/codex`、`src/domain`、`src/github` |
-| `src/pages`          | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                           | `src/domain`、`src/graph`、`src/persistence`、`src/util`      |
-| `src/discord`        | 通知候補選別、通知管理記録による重複抑制、payload分割、mention制限、Webhook送信                  | `src/domain`、`src/graph`                                     |
-| `src/performance`    | 外部接続をモックした日次run全体の性能と予算の検証                                                | `src/cli`と全実処理モジュール                                 |
-| `src/cli`            | コマンド解析、日次トランザクション、実アダプターの合成、run report                               | 上記の全モジュール                                            |
-| `web`                | 公開DTOの検証、要対応度と重要度を含む一覧と詳細、通知履歴、項目ごとの依存グラフ、検索、deep link | `src/pages`のDTO契約                                          |
+| モジュール           | 責務                                                                                             | 主な依存先                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
+| `src/canonical-json` | Node.js専用のcanonical JSON直列化、末尾改行、SHA-256 hashの共有                                  | Node.js標準module                                                              |
+| `src/config`         | YAMLの読み込み、Zod schemaとsemantic validation                                                  | `src/codex`、`src/domain`、`src/util`                                          |
+| `src/diagnostics`    | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                   | `src/canonical-json`、Node.js標準module                                        |
+| `src/github`         | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理             | `src/config`、`src/domain`                                                     |
+| `src/domain`         | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度                | `src/util`                                                                     |
+| `src/graph`          | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                                 | `src/domain`                                                                   |
+| `src/codex`          | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                        | `src/canonical-json`、`src/domain`、`src/graph`                                |
+| `src/persistence`    | snapshot、履歴、AI cache、通知管理記録、run report、Git branch transaction                       | `src/canonical-json`、`src/codex`、`src/domain`、`src/github`                  |
+| `src/pages`          | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                           | `src/canonical-json`、`src/domain`、`src/graph`、`src/persistence`、`src/util` |
+| `src/discord`        | 通知候補選別、通知管理記録による重複抑制、payload分割、mention制限、Webhook送信                  | `src/domain`、`src/graph`                                                      |
+| `src/performance`    | 外部接続をモックした日次run全体の性能と予算の検証                                                | `src/cli`と全実処理モジュール                                                  |
+| `src/cli`            | コマンド解析、日次トランザクション、実アダプターの合成、run report                               | 上記の全モジュール                                                             |
+| `web`                | 公開DTOの検証、要対応度と重要度を含む一覧と詳細、通知履歴、項目ごとの依存グラフ、検索、deep link | `src/pages`のDTO契約                                                           |
 
 `src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
@@ -37,6 +37,7 @@ flowchart LR
   CLI --> Pages[src/pages]
   CLI --> Discord[src/discord]
   Util[src/util]
+  Diagnostics[src/diagnostics]
   Config --> Codex
   Config --> Domain
   GitHub --> Domain
@@ -48,6 +49,8 @@ flowchart LR
   State --> Codex
   State --> Domain
   State --> GitHub
+  Diagnostics --> Canonical
+  Pages --> Canonical
   Pages --> Domain
   Pages --> Graph
   Pages --> State
