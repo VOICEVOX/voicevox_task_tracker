@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
+import { parseSha256Hash, serializeCanonicalJson } from "../canonical-json/index.js";
 import {
   AI_ANALYSIS_ELEMENTS,
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,

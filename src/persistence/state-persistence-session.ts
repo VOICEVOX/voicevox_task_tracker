@@ -19,7 +19,7 @@ import {
   type AiCacheMigrationFile,
   type AiCacheMigrationPlan,
 } from "./ai-cache-migration.js";
-import { parseSha256Hash, serializeCanonicalJsonLine } from "./canonical-json.js";
+import { parseSha256Hash, serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { migrateStateSnapshot } from "./snapshot-migration.js";
 import {
   joinStatePath,

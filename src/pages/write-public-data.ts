@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { serializeCanonicalJsonLine } from "../persistence/index.js";
+import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { PublicDataWriteError, PublicDtoSemanticError } from "./errors.js";
 import { type GeneratedPublicData } from "./generate-public-data.js";
 import {

@@ -159,12 +159,6 @@ export {
   type AiCacheStore,
 } from "./cache.js";
 export {
-  hashCanonicalJson,
-  parseSha256Hash,
-  serializeCanonicalJson,
-  type Sha256Hash,
-} from "./canonical-json.js";
-export {
   CodexAdapterError,
   CodexAttemptError,
   CodexInvalidJsonError,

@@ -18,7 +18,7 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import { assertValidStatePath } from "./branch-adapter.js";
-import { hashCanonicalJson, parseSha256Hash, type Sha256Hash } from "./canonical-json.js";
+import { hashCanonicalJson, parseSha256Hash, type Sha256Hash } from "../canonical-json/index.js";
 import { StateFormatError } from "./errors.js";
 
 const LEGACY_AI_CACHE_FILE_PATTERN = /^([0-9a-f]{64})\.json$/u;

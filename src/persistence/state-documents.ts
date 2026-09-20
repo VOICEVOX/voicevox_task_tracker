@@ -1,6 +1,6 @@
 import { z, type RefinementCtx } from "zod";
 
-import { serializeCanonicalJsonLine } from "./canonical-json.js";
+import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { StateFormatError } from "./errors.js";
 import {
   type LegacyNotificationReasonCode,

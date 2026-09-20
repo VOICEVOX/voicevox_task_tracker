@@ -12,7 +12,7 @@ import {
   type PersonalReminderTargetScope,
   type PersonalReminderWaitingOption,
 } from "../codex/personal-reminder-input.js";
-import { serializeCanonicalJson } from "../codex/canonical-json.js";
+import { serializeCanonicalJson } from "../canonical-json/index.js";
 import {
   type PersonalReminderAiCauseRunOutcome,
   type PersonalReminderAiRunResult,

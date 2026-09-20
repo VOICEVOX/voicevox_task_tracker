@@ -19,7 +19,7 @@ import {
 import { createUtcIsoDateTime, type GitHubNodeId, type GraphNodeId } from "../domain/types.js";
 import { parseSourceId, type SourceId } from "../domain/source-id.js";
 import { assertNonNullable } from "../util/index.js";
-import { hashCanonicalJson, serializeCanonicalJson } from "./canonical-json.js";
+import { hashCanonicalJson, serializeCanonicalJson } from "../canonical-json/index.js";
 
 /** 個人催促AIが根拠へ付与する役割。 */
 export const personalReminderEvidenceRoleSchema = z.enum([

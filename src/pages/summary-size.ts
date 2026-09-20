@@ -1,6 +1,6 @@
 import { gzipSync } from "node:zlib";
 
-import { serializeCanonicalJsonLine } from "../persistence/index.js";
+import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { PublicDtoSemanticError, PublicSummarySizeError } from "./errors.js";
 import { createPublicSummaryDto, type PublicSummaryDto } from "./public-dto.js";
 

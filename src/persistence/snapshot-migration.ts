@@ -53,7 +53,7 @@ import {
 } from "../domain/ai-analysis-source-generations.js";
 import { type AiCacheKey } from "../codex/cache.js";
 import { type LegacyAiCacheEntry } from "./ai-cache-migration.js";
-import { parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
+import { parseSha256Hash, serializeCanonicalJson } from "../canonical-json/index.js";
 import { StateFormatError, StateSnapshotSemanticError } from "./errors.js";
 import { UnreachableError } from "../util/index.js";
 import { buildPullRequestCommitSourceId } from "../github/production-source-id.js";

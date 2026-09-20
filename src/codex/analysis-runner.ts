@@ -30,7 +30,11 @@ import {
   type AiCacheKey,
   type AiCacheStore,
 } from "./cache.js";
-import { hashCanonicalJson, parseSha256Hash, serializeCanonicalJson } from "./canonical-json.js";
+import {
+  hashCanonicalJson,
+  parseSha256Hash,
+  serializeCanonicalJson,
+} from "../canonical-json/index.js";
 import {
   CodexAttemptError,
   CodexOutputSchemaValidationError,

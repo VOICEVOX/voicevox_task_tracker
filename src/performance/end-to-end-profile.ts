@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 
 import { z } from "zod";
 
+import { serializeCanonicalJson } from "../canonical-json/index.js";
 import {
   createProductionCliApplication,
   type ProductionRuntimeAdapters,
@@ -37,11 +38,7 @@ import {
   type PublicRepository,
 } from "../github/index.js";
 import { PUBLIC_SUMMARY_GZIP_LIMIT_BYTES, type GeneratedPublicData } from "../pages/index.js";
-import {
-  MemoryStateBranchAdapter,
-  serializeCanonicalJson,
-  StatePersistenceSession,
-} from "../persistence/index.js";
+import { MemoryStateBranchAdapter, StatePersistenceSession } from "../persistence/index.js";
 import { assertNonNullable } from "../util/index.js";
 
 const PROFILE_ITEM_COUNT = 5_000;

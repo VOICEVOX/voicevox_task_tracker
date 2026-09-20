@@ -7,7 +7,7 @@ import {
   hashCanonicalJson,
   serializeCanonicalJson,
   serializeCanonicalJsonLine,
-} from "./canonical-json.js";
+} from "../canonical-json/index.js";
 import {
   StateFormatError,
   StateSnapshotSchemaError,

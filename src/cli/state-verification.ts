@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { createAiCacheEntry, type AiCacheKey } from "../codex/cache.js";
+import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import {
   createAiCacheMigrationPlan,
-  serializeCanonicalJsonLine,
   serializeStateHistoryRecords,
   serializeStateNotificationLedger,
   serializeStateSnapshot,

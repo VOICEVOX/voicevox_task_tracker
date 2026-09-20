@@ -17,7 +17,7 @@ import {
   type AiAnalysisElementInputFingerprint,
 } from "../domain/ai-analysis-elements.js";
 import { REASONING_EFFORTS, type AiCacheEntryId, type ReasoningEffort } from "../domain/types.js";
-import { hashCanonicalJson, parseSha256Hash } from "./canonical-json.js";
+import { hashCanonicalJson, parseSha256Hash } from "../canonical-json/index.js";
 
 const aiCacheEntryIdSchema = z.custom<AiCacheEntryId>(
   (value) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value),

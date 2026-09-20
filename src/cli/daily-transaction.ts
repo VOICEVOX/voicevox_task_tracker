@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { createUtcIsoDateTime, type UtcIsoDateTime } from "../domain/index.js";
 import { GitHubRetryExhaustedError } from "../github/index.js";
-import { serializeCanonicalJson } from "../persistence/index.js";
+import { serializeCanonicalJson } from "../canonical-json/index.js";
 import { UnreachableError } from "../util/index.js";
 import {
   type BackfillCliCommand,

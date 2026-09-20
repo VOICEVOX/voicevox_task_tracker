@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { serializeCanonicalJsonLine } from "../persistence/index.js";
+import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { CliOutputError } from "./errors.js";
 
 const nonEmptyStringSchema = z.string().min(1).max(1000);

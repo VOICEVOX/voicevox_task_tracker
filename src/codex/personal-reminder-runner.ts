@@ -22,7 +22,7 @@ import {
   type AiBudgetUsage,
   type AiRunBudget,
 } from "./budget.js";
-import { hashCanonicalJson } from "./canonical-json.js";
+import { hashCanonicalJson } from "../canonical-json/index.js";
 import {
   createPersonalReminderAiCacheEntry,
   createPersonalReminderAiCacheKey,

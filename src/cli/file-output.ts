@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-import { serializeCanonicalJsonLine } from "../persistence/index.js";
+import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { CliOutputError } from "./errors.js";
 
 function validateOutputPath(path: string): void {

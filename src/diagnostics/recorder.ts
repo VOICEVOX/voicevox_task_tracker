@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 
 import { z } from "zod";
 
-import { serializeCanonicalJsonLine } from "../persistence/index.js";
+import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { DiagnosticsError, DiagnosticsValidationError } from "./errors.js";
 import { DIAGNOSTICS_MAX_BYTES } from "./schema.js";
 import {

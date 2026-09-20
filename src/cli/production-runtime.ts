@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { hashCanonicalJson, serializeCanonicalJson } from "../canonical-json/index.js";
 import {
   CODEX_AUTHENTICATION_PREFLIGHT_INPUT_CHARACTERS,
   CODEX_AUTHENTICATION_PREFLIGHT_PROMPT,
@@ -18,7 +19,6 @@ import {
   estimateAiInputCost,
   effectiveElementConfidence,
   getCodexEnvironmentVariableAllowlist,
-  hashCanonicalJson,
   listNativeRelationConstraints,
   prepareAiAnalysisCandidate,
   planAnalysisElements,
@@ -30,7 +30,6 @@ import {
   reducePreservedCodexRelationsAndNotification,
   runAiAnalyses,
   runPersonalReminderAiAnalyses,
-  serializeCanonicalJson,
   validateCodexAnalysisOutput,
   validateCodexElementOutputSchema,
   AI_ANALYSIS_ELEMENT_REVISIONS,

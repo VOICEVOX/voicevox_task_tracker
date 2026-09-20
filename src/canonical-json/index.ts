@@ -2,5 +2,6 @@ export {
   hashCanonicalJson,
   parseSha256Hash,
   serializeCanonicalJson,
+  serializeCanonicalJsonLine,
   type Sha256Hash,
-} from "../persistence/canonical-json.js";
+} from "./canonical-json.js";

@@ -217,26 +217,27 @@ CIの`verify-state`は、本番と同じ移行処理を使ってstate全体を�
 
 ## ディレクトリ構成
 
-| パス                 | 責務                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------- |
-| `src/cli/`           | 引数解析、日次トランザクション、workflow stage、実アダプターの合成、run report                       |
-| `src/codex/`         | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                            |
-| `src/config/`        | `config.yml`の読み込みとZod schema検証                                                               |
-| `src/diagnostics/`   | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                       |
-| `src/discord/`       | 通知候補選別、通知管理記録による重複抑制、payload生成、Webhook送信                                   |
-| `src/domain/`        | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度のpure TypeScript |
-| `src/github/`        | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                         |
-| `src/graph/`         | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                        |
-| `src/pages/`         | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                               |
-| `src/performance/`   | 外部接続をモックした日次run全体の性能と予算のprofile                                                 |
-| `src/persistence/`   | canonical JSON、snapshot、履歴、AI cache、通知管理記録、run report、state branch transaction         |
-| `src/util/`          | null検査、到達不能検査、共通エラー、Zod診断                                                          |
-| `web/`               | ViteとPreactによる静的Web UIとサンプル公開DTO                                                        |
-| `fixtures/`          | 性能profileへ渡す固定入力                                                                            |
-| `schemas/`           | Codex分析出力とsnapshotのJSON Schema                                                                 |
-| `prompts/`           | Codexへ渡す固定system prompt                                                                         |
-| `docs/`              | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                         |
-| `.github/workflows/` | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                      |
+| パス                  | 責務                                                                                                 |
+| --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/cli/`            | 引数解析、日次トランザクション、workflow stage、実アダプターの合成、run report                       |
+| `src/canonical-json/` | Node.js専用のcanonical JSON直列化、末尾改行、SHA-256 hashの共有                                      |
+| `src/codex/`          | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                            |
+| `src/config/`         | `config.yml`の読み込みとZod schema検証                                                               |
+| `src/diagnostics/`    | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                       |
+| `src/discord/`        | 通知候補選別、通知管理記録による重複抑制、payload生成、Webhook送信                                   |
+| `src/domain/`         | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度のpure TypeScript |
+| `src/github/`         | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                         |
+| `src/graph/`          | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                        |
+| `src/pages/`          | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                               |
+| `src/performance/`    | 外部接続をモックした日次run全体の性能と予算のprofile                                                 |
+| `src/persistence/`    | snapshot、履歴、AI cache、通知管理記録、run report、state branch transaction                         |
+| `src/util/`           | null検査、到達不能検査、共通エラー、Zod診断                                                          |
+| `web/`                | ViteとPreactによる静的Web UIとサンプル公開DTO                                                        |
+| `fixtures/`           | 性能profileへ渡す固定入力                                                                            |
+| `schemas/`            | Codex分析出力とsnapshotのJSON Schema                                                                 |
+| `prompts/`            | Codexへ渡す固定system prompt                                                                         |
+| `docs/`               | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                         |
+| `.github/workflows/`  | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                      |
 
 ## コードの方針
 

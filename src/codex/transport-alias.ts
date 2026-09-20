@@ -18,7 +18,7 @@ import {
   codexSemanticValidationIssueCodeSchema,
   type CodexSemanticValidationIssueCode,
 } from "./semantic-validation-issues.js";
-import { serializeCanonicalJson } from "./canonical-json.js";
+import { serializeCanonicalJson } from "../canonical-json/index.js";
 
 const SOURCE_ALIAS_PREFIX = "codex_source:";
 const RELATION_ALIAS_PREFIX = "rel:codex-";

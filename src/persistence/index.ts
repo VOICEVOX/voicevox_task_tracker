@@ -14,13 +14,6 @@ export {
   type StateRemoteUrls,
 } from "./branch-adapter.js";
 export {
-  hashCanonicalJson,
-  parseSha256Hash,
-  serializeCanonicalJson,
-  serializeCanonicalJsonLine,
-  type Sha256Hash,
-} from "./canonical-json.js";
-export {
   StateBranchCommitError,
   StateBranchConflictError,
   StateBranchReadError,

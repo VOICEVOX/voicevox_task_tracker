@@ -35,7 +35,7 @@ import {
   validatePersonalReminderAiOutput,
   type SchemaValidPersonalReminderAiOutput,
 } from "./personal-reminder-output.js";
-import { serializeCanonicalJson } from "./canonical-json.js";
+import { serializeCanonicalJson } from "../canonical-json/index.js";
 import {
   type CodexApiErrorDiagnostic,
   type CodexProcessRequest,

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { serializeCanonicalJson, serializeCanonicalJsonLine } from "./canonical-json.js";
+import { serializeCanonicalJson, serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { StateFormatError, StateHistoryError } from "./errors.js";
 import { type LegacyStatus, migrateLegacyStatus } from "./legacy-enum.js";
 import { type StateSnapshot } from "./snapshot.js";

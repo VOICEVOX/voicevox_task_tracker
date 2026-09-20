@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
 
+import { serializeCanonicalJson } from "../canonical-json/index.js";
 import {
   createAiCacheEntry,
   createPersonalReminderAiCacheEntry,
@@ -35,7 +36,6 @@ import {
   createStateHistoryInputEvents,
   createStateNotificationLedger,
   createStateSnapshot,
-  serializeCanonicalJson,
   StatePublicSafetyError,
   type StateNotificationLedger,
   type StateHistoryInputEvent,
