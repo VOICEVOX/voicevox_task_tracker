@@ -54,7 +54,6 @@ import {
   type CodexInitialAttemptTicket,
   type CodexAnalysisReduction,
   type CodexProcessRunner,
-  type CodexSemanticGenerationObserver,
   type DeterministicCodexDecision,
   type PreparedAiAnalysisCandidate,
   type ReducedCodexDecision,
@@ -202,7 +201,6 @@ import {
   type TrackedItemAiAnalysisMigrationAdoptedElement,
   type TrackedItemAiAnalysisMigrationAdoptedElements,
   type TrackedItemAiAnalysisMigrationElements,
-  type TrackedItemInputEvent,
   type TrackingConnection,
   type TrackingNotificationClass,
   type TrackingRunCompletion,
@@ -332,6 +330,13 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { CliApplication } from "./application.js";
 import { createTrackingBackfillRequest } from "./backfill.js";
 import {
+  codexSemanticGenerationDiagnostic,
+  createCodexAdapterConfiguration,
+  createCodexAdapterDependencies,
+  createCodexPreflightDiagnostics,
+  createCodexSemanticGenerationCounter,
+} from "./codex-runtime-support.js";
+import {
   addCodexSourceOccurredAtForContext,
   codexCommentSources,
   createCodexInput,
@@ -394,10 +399,10 @@ import {
   requireEnvironmentValue,
   requireEnvironmentVariables,
   resolveRuntimeTarget,
-  type EnabledCodexCredentials,
   type RuntimeCredentials,
   type RuntimeExecutionTarget,
 } from "./production-runtime-setup.js";
+import { trackedItemInputEvents } from "./tracked-item-input-events.js";
 
 const CODEX_CLI_VERSION = "0.145.0";
 const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
@@ -4677,128 +4682,6 @@ function countRetainedAiResults(state: RuntimeState, collection: CollectedItems)
   ).length;
 }
 
-function createCodexAdapterConfiguration(config: Config): CodexAdapterConfiguration {
-  return Object.freeze({
-    authentication: config.ai.authentication,
-    model: config.ai.model,
-    execution: {
-      timeoutSeconds: config.ai.execution.timeoutSeconds,
-      maxAttempts: config.ai.execution.maxAttempts,
-      maxSemanticGenerations: config.ai.execution.maxSemanticGenerations,
-      sandbox: config.ai.execution.sandbox,
-      approvalPolicy: config.ai.execution.approvalPolicy,
-      reasoningEffort: config.ai.execution.reasoningEffort,
-    },
-    retry: {
-      initialDelaySeconds: config.operations.retry.initialDelaySeconds,
-      maxDelaySeconds: config.operations.retry.maxDelaySeconds,
-    },
-  }) satisfies CodexAdapterConfiguration;
-}
-
-function createCodexAdapterDependencies(
-  adapters: ProductionRuntimeAdapters,
-  credentials: EnabledCodexCredentials,
-  attemptBudget: CodexAttemptBudget,
-  diagnostics: CodexDiagnosticsContext | undefined,
-  semanticGenerationObserver: CodexSemanticGenerationObserver | undefined,
-): CodexAdapterDependencies {
-  return Object.freeze({
-    environment: credentials.environment,
-    processRunner: adapters.codexProcessRunner,
-    attemptBudget,
-    runtime: {
-      sleep: adapters.sleep,
-      random: adapters.random,
-    },
-    ...(diagnostics == null ? {} : { diagnostics }),
-    ...(semanticGenerationObserver == null ? {} : { semanticGenerationObserver }),
-  });
-}
-
-type CodexSemanticGenerationCounts = Readonly<{
-  generationCount: number;
-  correctionStartedCount: number;
-  correctionSucceededCount: number;
-  correctionExhaustedCount: number;
-  processAttemptCount: number;
-}>;
-
-type CodexSemanticGenerationCounter = Readonly<{
-  observer: CodexSemanticGenerationObserver;
-  read: () => CodexSemanticGenerationCounts;
-}>;
-
-function assertSemanticGenerationNumber(value: number): void {
-  if (!Number.isSafeInteger(value) || value < 1 || value > 3) {
-    throw new RangeError("Codex semantic generationは1から3の整数にしてください");
-  }
-}
-
-function createCodexSemanticGenerationCounter(): CodexSemanticGenerationCounter {
-  const counts = {
-    generationCount: 0,
-    correctionStartedCount: 0,
-    correctionSucceededCount: 0,
-    correctionExhaustedCount: 0,
-    processAttemptCount: 0,
-  };
-  const observer = Object.freeze({
-    onGenerationStarted: (generation: number): void => {
-      assertSemanticGenerationNumber(generation);
-      counts.generationCount += 1;
-    },
-    onCorrectionStarted: (generation: number): void => {
-      assertSemanticGenerationNumber(generation);
-      counts.correctionStartedCount += 1;
-    },
-    onCorrectionSucceeded: (generation: number): void => {
-      assertSemanticGenerationNumber(generation);
-      counts.correctionSucceededCount += 1;
-    },
-    onCorrectionExhausted: (generation: number): void => {
-      assertSemanticGenerationNumber(generation);
-      counts.correctionExhaustedCount += 1;
-    },
-    onProcessAttemptStarted: (generation: number, attempt: number): void => {
-      assertSemanticGenerationNumber(generation);
-      if (!Number.isSafeInteger(attempt) || attempt < 1) {
-        throw new RangeError("Codex process attemptは正の整数にしてください");
-      }
-      counts.processAttemptCount += 1;
-    },
-  }) satisfies CodexSemanticGenerationObserver;
-  return Object.freeze({
-    observer,
-    read: (): CodexSemanticGenerationCounts => Object.freeze({ ...counts }),
-  });
-}
-
-function codexSemanticGenerationDiagnostic(counts: CodexSemanticGenerationCounts): string {
-  return [
-    "codex_semantic_generations",
-    `generationCount=${counts.generationCount.toString()}`,
-    `correctionStartedCount=${counts.correctionStartedCount.toString()}`,
-    `correctionSucceededCount=${counts.correctionSucceededCount.toString()}`,
-    `correctionExhaustedCount=${counts.correctionExhaustedCount.toString()}`,
-    `processAttemptCount=${counts.processAttemptCount.toString()}`,
-  ].join(" ");
-}
-
-function createCodexPreflightDiagnostics(
-  diagnostics: CodexDiagnosticsContext | undefined,
-  invocation: DailyRunInvocation,
-): CodexDiagnosticsContext | undefined {
-  if (diagnostics == null) {
-    return undefined;
-  }
-  return Object.freeze({
-    recorder: diagnostics.recorder,
-    ...(diagnostics.runId == null ? {} : { runId: diagnostics.runId }),
-    invocationId: `${invocation.runId}:codex:authentication-preflight`,
-  });
-}
-
 async function analyzeCodex(
   adapters: ProductionRuntimeAdapters,
   invocation: DailyRunInvocation,
@@ -7020,71 +6903,6 @@ function trackedItemState(
     return "merged";
   }
   return item.state;
-}
-
-function inputCommentUrl(
-  analysis: DeterministicItemAnalysis,
-  sourceId: SourceId,
-): TrackedItemInputEvent["url"] {
-  const sourceKind = parseSourceId(sourceId).kind;
-  if (sourceKind === "github_issue_comment") {
-    const comment = analysis.detail.comments.find((candidate) => candidate.sourceId === sourceId);
-    assertNonNullable(comment, `Issue commentのURLがありません。対象: ${sourceId}`);
-    return comment.url;
-  }
-  if (sourceKind === "github_pull_request_review_comment") {
-    if (analysis.detail.type !== "pull_request") {
-      throw new TypeError(`IssueにPull Request review commentがあります。対象: ${sourceId}`);
-    }
-    const comment = analysis.detail.reviewThreads
-      .flatMap((thread) => thread.comments)
-      .find((candidate) => candidate.sourceId === sourceId);
-    assertNonNullable(comment, `Pull Request review commentのURLがありません。対象: ${sourceId}`);
-    return comment.url;
-  }
-  throw new TypeError(`commentイベントのsource ID種別が不正です。対象: ${sourceId}`);
-}
-
-function inputReviewUrl(
-  analysis: DeterministicItemAnalysis,
-  sourceId: SourceId,
-): TrackedItemInputEvent["url"] {
-  if (parseSourceId(sourceId).kind !== "github_pull_request_review") {
-    throw new TypeError(`reviewイベントのsource ID種別が不正です。対象: ${sourceId}`);
-  }
-  if (analysis.detail.type !== "pull_request") {
-    throw new TypeError(`IssueにPull Request reviewがあります。対象: ${sourceId}`);
-  }
-  const review = analysis.detail.reviews.find((candidate) => candidate.sourceId === sourceId);
-  assertNonNullable(review, `Pull Request reviewのURLがありません。対象: ${sourceId}`);
-  return review.url;
-}
-
-function trackedItemInputEventUrl(
-  analysis: DeterministicItemAnalysis,
-  event: FreshObservedGitHubItem["events"][number],
-): TrackedItemInputEvent["url"] {
-  switch (event.kind) {
-    case "comment":
-      return inputCommentUrl(analysis, event.sourceId);
-    case "review":
-      return inputReviewUrl(analysis, event.sourceId);
-    default:
-      return analysis.item.url;
-  }
-}
-
-function trackedItemInputEvents(
-  analysis: DeterministicItemAnalysis,
-): readonly TrackedItemInputEvent[] {
-  return Object.freeze(
-    analysis.item.events.map((event) =>
-      Object.freeze({
-        sourceId: event.sourceId,
-        url: trackedItemInputEventUrl(analysis, event),
-      }),
-    ),
-  );
 }
 
 function notDependentAiDependency(): AiAnalysisDependency {
