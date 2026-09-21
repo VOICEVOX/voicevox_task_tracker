@@ -25,7 +25,8 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
 `src/cli`だけが実アダプターを組み合わせて一つのrunにします。
 Issueの明示依頼候補と実質担当候補、IssueとPull Requestに共通するmention候補を`src/cli/issue-responsibility-candidates.ts`で抽出します。
-`production-runtime.ts`がこれらの候補をAI入力と採用判定へ渡します。
+`production-runtime.ts`がこれらの候補をAI入力と採用判定へ渡し、日次runとworkflow stageを配線してrun完了を保存します。
+`src/cli/notification-delivery-runtime.ts`はDiscord通知の送達、送信済み履歴と通知管理記録の保存、送信開始済み通知の手動解決を担当します。
 
 ```mermaid
 flowchart LR
