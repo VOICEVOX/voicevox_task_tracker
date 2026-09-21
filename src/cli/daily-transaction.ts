@@ -124,6 +124,7 @@ export type DiscordStageResult<Value> = Readonly<{
 /** 日次transactionの外部接続と各モジュールの結合境界。 */
 export type DailyTransactionDependencies<Types extends DailyTransactionTypeMap> = Readonly<{
   diagnosticsRecorder?: DiagnosticsJsonlRecorder;
+  readAiProcessAttemptCount: (configuration: Types["configuration"]) => number;
   validateConfiguration: (
     input: Readonly<{
       invocation: DailyRunInvocation;
@@ -312,7 +313,7 @@ export type DailyRunExecutionResult = Readonly<{
 /** dry-runが公開副作用の代わりに保存する検証済み成果物。 */
 export type DryRunArtifact<Value> =
   | Readonly<{
-      schemaVersion: "1";
+      schemaVersion: "2";
       runId: string;
       command: "dry-run";
       status: "success" | "fallback";
@@ -322,7 +323,7 @@ export type DryRunArtifact<Value> =
       diagnostics: readonly string[];
     }>
   | Readonly<{
-      schemaVersion: "1";
+      schemaVersion: "2";
       runId: string;
       command: "dry-run";
       status: "failure";
@@ -432,7 +433,7 @@ function createDryRunArtifact<Value>(
   });
   if (validation.status === "incomplete") {
     return Object.freeze({
-      schemaVersion: "1",
+      schemaVersion: "2",
       runId: invocation.runId,
       command: "dry-run",
       status: "failure",
@@ -442,7 +443,7 @@ function createDryRunArtifact<Value>(
     });
   }
   return Object.freeze({
-    schemaVersion: "1",
+    schemaVersion: "2",
     runId: invocation.runId,
     command: "dry-run",
     status,
@@ -462,7 +463,7 @@ function completedReport(
   finishedAt: UtcIsoDateTime,
 ): RunReport {
   return createRunReport({
-    schemaVersion: "3",
+    schemaVersion: "4",
     runId: invocation.runId,
     command: invocation.command.kind,
     status,
@@ -487,7 +488,7 @@ function failureReport(
   finishedAt: UtcIsoDateTime,
 ): RunReport {
   return createRunReport({
-    schemaVersion: "3",
+    schemaVersion: "4",
     runId: invocation.runId,
     command: invocation.command.kind,
     status: "failure",
@@ -539,11 +540,24 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
     this.#coordinator = new RunCoordinator((result) => result.report.status !== "failure");
   }
 
+  #metricsWithAiProcessAttemptCount(
+    metrics: RunMetrics,
+    configuration: Types["configuration"] | undefined,
+  ): RunMetrics {
+    if (configuration == null) {
+      return metrics;
+    }
+    return updateMetrics(metrics, {
+      aiProcessAttemptCount: this.#dependencies.readAiProcessAttemptCount(configuration),
+    });
+  }
+
   async #writeFailure(
     invocation: DailyRunInvocation,
     reportPath: string,
     stage: RunStage,
     metrics: RunMetrics,
+    configuration: Types["configuration"] | undefined,
     diagnostics: readonly string[],
     discordSentAt: UtcIsoDateTime | null,
     effects: MutableEffects,
@@ -551,7 +565,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
     const report = failureReport(
       invocation,
       stage,
-      metrics,
+      this.#metricsWithAiProcessAttemptCount(metrics, configuration),
       diagnostics,
       discordSentAt,
       currentTime(this.#runtime),
@@ -737,6 +751,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         personalReminderAnalysis: personalReminderAnalysis.value,
       });
       diagnostics.push(...validation.diagnostics);
+      metrics = this.#metricsWithAiProcessAttemptCount(metrics, configuration);
 
       if (invocation.command.kind === "dry-run") {
         stage = "artifact";
@@ -760,6 +775,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
           invocation.command.reportPath,
           "completeness_validation",
           metrics,
+          configuration,
           diagnostics,
           discordSentAt,
           effects,
@@ -838,7 +854,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
       const report = completedReport(
         invocation,
         runStatus,
-        metrics,
+        this.#metricsWithAiProcessAttemptCount(metrics, configuration),
         diagnostics,
         discordSentAt,
         currentTime(this.#runtime),
@@ -881,6 +897,7 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
         invocation.command.reportPath,
         stage,
         metrics,
+        configuration,
         [...diagnostics, safeErrorDiagnostic(stage, error)],
         discordSentAt,
         effects,

@@ -18,6 +18,7 @@ const runMetricsSchema = z.strictObject({
   changedItemCount: nonNegativeIntegerSchema,
   activeEdgeCount: nonNegativeIntegerSchema,
   aiCallCount: nonNegativeIntegerSchema,
+  aiProcessAttemptCount: nonNegativeIntegerSchema,
   aiCacheHitCount: nonNegativeIntegerSchema,
   aiRetainedResultCount: nonNegativeIntegerSchema,
   estimatedInputTokens: nonNegativeIntegerSchema,
@@ -37,7 +38,7 @@ const runMetricsSchema = z.strictObject({
 });
 
 const runReportFields = {
-  schemaVersion: z.literal("3"),
+  schemaVersion: z.literal("4"),
   runId: nonEmptyStringSchema,
   command: z.enum(["daily", "dry-run", "backfill", "collect-analyze"]),
   scheduledFor: dateTimeSchema,
@@ -143,6 +144,7 @@ export function createEmptyRunMetrics(): RunMetrics {
     changedItemCount: 0,
     activeEdgeCount: 0,
     aiCallCount: 0,
+    aiProcessAttemptCount: 0,
     aiCacheHitCount: 0,
     aiRetainedResultCount: 0,
     estimatedInputTokens: 0,

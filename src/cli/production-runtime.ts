@@ -15321,6 +15321,7 @@ function persistedMetrics(
     changedItemCount: metrics.changedItemCount,
     activeEdgeCount: validated.snapshot.relations.filter((relation) => relation.active).length,
     aiCallCount: metrics.aiCallCount,
+    aiProcessAttemptCount: metrics.aiProcessAttemptCount,
     aiCacheHitCount: metrics.aiCacheHitCount,
     aiRetainedResultCount: metrics.aiRetainedResultCount,
     estimatedInputTokens: metrics.estimatedInputTokens,
@@ -15361,7 +15362,7 @@ function createPersistedRunReport(
   finishedAt: UtcIsoDateTime,
 ): StateRunReport {
   return createStateRunReport({
-    schemaVersion: "2",
+    schemaVersion: "3",
     runId: snapshot.run.id,
     date: metadata.startedAt.slice(0, 10),
     status: snapshot.run.status,
@@ -15401,7 +15402,7 @@ function createCollectAnalyzeArtifact(
     throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
   }
   const artifact = createWorkflowArtifact({
-    schemaVersion: "12",
+    schemaVersion: "13",
     kind: "validated_public_run",
     notificationAction: invocation.command.notificationAction,
     repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
@@ -18351,6 +18352,7 @@ function createDailyDependencies(
     ...(adapters.diagnosticsRecorder == null
       ? {}
       : { diagnosticsRecorder: adapters.diagnosticsRecorder }),
+    readAiProcessAttemptCount: (configuration) => configuration.codexAttemptBudget.attemptCount,
     validateConfiguration: async ({ invocation, configPath }) => {
       requireEnvironmentVariables(adapters.environment, ["GH_APP_ID", "GH_APP_PRIVATE_KEY"]);
       const config = await adapters.loadConfig(resolve(adapters.repositoryPath, configPath));

@@ -42,7 +42,7 @@ export type WorkflowJobResults = Readonly<z.output<typeof workflowJobResultsSche
 
 /** CLI reportと全job結果をまとめたworkflow run report。 */
 export type WorkflowRunReport = Readonly<{
-  schemaVersion: "4";
+  schemaVersion: "5";
   workflowRunId: string;
   workflowRunAttempt: number;
   status: "success" | "fallback" | "failure";
@@ -98,7 +98,7 @@ export function createWorkflowRunReport(value: unknown): WorkflowRunReport {
   const status = workflowStatus(parsed.data.jobs, collectAnalyzeReport);
   const metrics = collectAnalyzeReport?.metrics ?? createEmptyRunMetrics();
   return Object.freeze({
-    schemaVersion: "4",
+    schemaVersion: "5",
     workflowRunId: parsed.data.workflowRunId,
     workflowRunAttempt: parsed.data.workflowRunAttempt,
     status,

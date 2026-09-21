@@ -78,6 +78,7 @@ const runMetricsSchema = z.strictObject({
   changedItemCount: nonNegativeIntegerSchema,
   activeEdgeCount: nonNegativeIntegerSchema,
   aiCallCount: nonNegativeIntegerSchema,
+  aiProcessAttemptCount: nonNegativeIntegerSchema,
   aiCacheHitCount: nonNegativeIntegerSchema,
   aiRetainedResultCount: nonNegativeIntegerSchema,
   estimatedInputTokens: nonNegativeIntegerSchema,
@@ -97,7 +98,7 @@ const runMetricsSchema = z.strictObject({
 });
 const runReportSchema = z
   .strictObject({
-    schemaVersion: z.literal("2"),
+    schemaVersion: z.literal("3"),
     runId: nonEmptyStringSchema,
     date: dateSchema,
     status: z.enum(["success", "fallback"]),
