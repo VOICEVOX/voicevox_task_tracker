@@ -28,7 +28,7 @@ pnpm install --frozen-lockfile
 | `pnpm lint`               | ESLintでコードを検査する                                     | なし                                         |
 | `pnpm format`             | Prettierで対象ファイルを整形する                             | 対象ファイル                                 |
 | `pnpm format:check`       | Prettierによる整形差分がないことを検査する                   | なし                                         |
-| `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の上限を検証する | `artifacts/performance-profile.json`         |
+| `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の指標を確認する | `artifacts/performance-profile.json`         |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                           |
 
 `build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`status/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
@@ -119,13 +119,15 @@ state、Pages、Discordを更新せずに収集から検証までを通したい
 
 AI推論のやり直しは重いため、プロンプトの差分だけを理由に全項目や全判定を再推論しません。
 `src/codex/analysis-elements.ts`のrevisionは、判定要素ごとの意味上のAI判定規則を識別します。
-プロンプトを編集するたびに、状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨の8要素すべてについて、更新するか維持するかを判断してください。
+プロンプトを編集するたびに、状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨、selfCommitmentの9要素すべてについて、更新するか維持するかを判断してください。
 変更のレビューには各要素の判断と理由を示し、変更が影響する要素のrevisionだけを上げます。
 根拠、信頼度、不確実性の規則や共通指示を変更するときも、影響を受ける所有判定を明示してください。
 
-変更内容と影響範囲から、変更前後のプロンプトに同じ入力を与えた場合の代表的な分析対象の95％以上で意味上の判定が維持されると見込める変更は、その要素のrevisionを据え置きます。実際の全件再推論を判断手段にしません。比較する対象は、構造化された出力と下流処理に関わる判定の一致率です。文章の一致率は基準にしません。95％以上と見込めない場合、または影響を判断できない場合はrevisionを上げます。
+各要素の構造化出力と下流処理に関わる意味上の判定が変わり得るかを、変更内容と影響範囲から判断します。
+意味上の判定が変わらない表記変更ならrevisionを据え置き、判定が変わり得る変更や影響を判断できない変更では、該当要素のrevisionを上げます。
+文章の一致率や根拠のない割合を基準にせず、実際の全件再推論も判断手段にしません。
 
-次の変更は、95％以上の判定が維持される条件を満たす限り、原則としてversionを据え置きます。
+次の変更は、意味上の判定が変わらない場合に限りversionを据え置きます。
 
 - 用語、表記、説明文だけを変える
 - 行動主体、行動、対象を変えない自由文の言い換えを行う
@@ -137,7 +139,8 @@ AI推論のやり直しは重いため、プロンプトの差分だけを理由
 
 versionを据え置いた表記変更は、既存cacheやsnapshotへ即時反映されません。新規分析や別要因による再分析だけが新しい表記になり、新旧の文言が一時的に混在します。この挙動は推論負荷を避けるために受け入れます。既存項目の表記を即時に統一する必要がある場合は、全AI再推論を伴わない表示時の決定論的な変換などを検討します。
 
-model、reasoning effort、promptを変更した場合は、`metrics.aiCallCount`が1以上になるdry-runでAI判定と通知候補の差分を確認します。
+model、reasoning effort、promptを変更した場合は、preflight以外の実分析を含むdry-runでAI判定と通知候補の差分を確認します。
+`metrics.aiProcessAttemptCount`が1以上でもpreflightだけの場合は実分析を確認できません。
 
 ### 判定要素ごとに再推論の必要性を決める
 

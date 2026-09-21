@@ -46,10 +46,11 @@ run reportの主な確認項目は次のとおりです。
 | `metrics.itemCount`                 | 追跡項目数                                                                        |
 | `metrics.changedItemCount`          | 前回から更新された追跡項目数                                                      |
 | `metrics.activeEdgeCount`           | 有効な関係edge数                                                                  |
-| `metrics.aiCallCount`               | preflightを含むCodexの論理call数。retryのattempt数は含めない                      |
+| `metrics.aiCallCount`               | preflightを含むCodexの論理call数。retryとsemantic補正の追加世代は含めない         |
+| `metrics.aiProcessAttemptCount`     | preflight、汎用AI、個人原因AI、retry、semantic補正のCodex exec実試行数            |
 | `metrics.aiCacheHitCount`           | AI cacheを再利用した件数                                                          |
 | `metrics.aiRetainedResultCount`     | AI分析対象へ入れず前回のAI結果を保持した件数                                      |
-| `metrics.estimatedInputTokens`      | preflightを含むCodex入力tokenの見積り                                             |
+| `metrics.estimatedInputTokens`      | 選択した分析候補とpreflightの入力token見積り。追加試行の増分は含めない            |
 | `metrics.githubApiRemaining`        | 最後に観測したGitHub API残量                                                      |
 | `metrics.staleRepositoryCount`      | 前回値を利用したrepository数                                                      |
 | `metrics.notificationCount`         | Discord送信結果を通知管理記録へ記録した通知数。`hold`と`acknowledge-current`では0 |
@@ -57,6 +58,7 @@ run reportの主な確認項目は次のとおりです。
 | `metrics.durationMilliseconds`      | CLI開始からrun完了までの所要時間                                                  |
 
 個人原因は`metrics.personalReminderCauseCount`で件数を確認します。`personalReminderAiCallCount`は複数原因をまとめた実行batch数で、preflightを含みません。`personalReminderAiCacheHitCount`と`personalReminderAssessmentReuseCount`は原因ごとのcache利用数と採用値再利用数です。全体の`aiCallCount`と`estimatedInputTokens`には、汎用AI、個人原因のAI、preflightを合わせて計上します。
+`aiProcessAttemptCount`は論理call数と別に、processRunnerへ渡した`codex exec`を1回ずつ数えます。呼び出し後の起動失敗、timeout、結果不明も含み、呼び出し前の失敗と`codex --version`は含みません。成功、縮退、段階失敗のreportに記録します。
 `personalReminderUnknownCount`は正常に完了した未確定判定です。`personalReminderFailedCount`、`personalReminderDeferredCount`、`personalReminderNotEvaluatedCount`は現在有効な採用値がない原因を数えます。正常なunknownだけではrunを`fallback`にせず、失敗・延期で有効な判定を使えない場合を縮退として確認します。
 
 Codex出力のschema検証とsemantic検証に失敗した場合、`diagnostics`へ違反件数が`validationIssueCount`として残ります。
@@ -73,21 +75,23 @@ AI有効runで汎用AIの分析処理が結果を返した場合、`diagnostics`
 | `correctionExhaustedCount` | 補正を開始し、総世代数の上限までsemantic違反が残った候補数 |
 | `processAttemptCount`      | 汎用AIのtransport retryを含むprocess試行数                 |
 
-これらの件数は個人催促AIと認証preflightを含みません。集計行にはitem ID、違反のpathやcode、本文を含めません。
+これらの件数は個人催促AIと認証preflightを含みません。ここでの`processAttemptCount`は汎用AIだけの集計で、run全体の`metrics.aiProcessAttemptCount`とは範囲が異なります。集計行にはitem ID、違反のpathやcode、本文を含めません。
 補正上限に達した項目を縮退させて完了した通常runにも集計行が残ります。
 致命的なalias変換失敗やforcedモードの失敗で`analyzeCodex`が戻らない場合は、この行が残らないため、行がないことから補正0件とは判断できません。
 
 汎用AIのsemantic補正は`ai.execution.maxSemanticGenerations`で制限します。必須の整数設定で範囲は1から3、初回を含みます。1は補正無効で、現行値3では2回まで補正できます。
-各世代には`ai.execution.maxAttempts`までのtransport retryがあり、候補1件あたりのprocess試行数は最大で両設定値の積になります。
+各世代には`ai.execution.maxAttempts`までのtransport retryがあり、候補1件あたりのprocess試行数は最大で両設定値の積になります。実試行のrun残枠がなければretryと補正は行わず、候補を延期します。
 補正の追加世代は`metrics.aiCallCount`に加算せず、補正envelopeの増分も論理入力予算と`metrics.estimatedInputTokens`へ含めません。実際の入力文字数は暗号化した詳細診断の`standardInputCharacters`で確認します。
 
 ## Codex認証preflight
 
-汎用AIと個人原因のAIは、call数、入力文字数、見積費用のrun上限を共有します。後段の原因評価は、関係を含む前段の分析が消費した予算を引いて計画します。認証preflightも両段で共有し、run中に1回だけ実行します。
+汎用AIと個人原因のAIは、Codex exec実試行回数、入力文字数、見積費用のrun上限を共有します。後段の原因評価は、関係を含む前段の分析が消費した予算を引いて計画します。認証preflightも両段で共有し、run中に1回だけ実行します。
+入力文字数と見積費用は候補選択時の概算です。retryやsemantic補正の追加入力と出力tokenを含む実課金の上限ではありません。
 
 `auth-json`で実行候補が1件以上あるrunだけ、候補processより先に固定した短文を空の一時directoryで実行します。候補データと通常のsystem promptは渡さず、preflightの完了後に候補workerを`ai.execution.maxConcurrentCalls`の設定値まで並列実行します。
 `api-key`、候補なし、cache hitだけのrun、全候補が予算延期されたrunでは実行しません。preflightに失敗した場合は候補を開始せず、実行段階に応じて`codex_analysis`または`personal_reminder_analysis`を失敗させます。
-preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の50 call設定では最大49候補になり、retryで複数attemptになっても予算上は1論理callです。成功runの`aiCallCount`と`estimatedInputTokens`にも含まれます。
+preflightを始める前に、preflightと最優先候補の初回試行に2枠を確保します。2枠を確保できなければ候補を延期します。preflightの完了後に残りの候補の初回試行枠を優先順で予約し、retryとsemantic補正には未予約枠だけを使います。
+preflightはrun全体の入力文字数と見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。`ai.budget.maxCodexExecAttemptsPerRun`の現行値は50で、preflightを実行するrunでは初回試行を最大49候補へ配れます。preflightと候補の実試行は、複数attemptになった分も同じ50枠から消費します。成功runの`aiCallCount`と`estimatedInputTokens`にもpreflightを含めます。
 これは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば認証競合は残ります。
 
 `tracker-state`は自動更新専用です。
