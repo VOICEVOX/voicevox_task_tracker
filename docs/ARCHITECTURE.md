@@ -203,7 +203,22 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 正常に完了した低信頼または棄権の評価も完了結果として保持します。失敗や延期から新しい完了proofは作らず、現在の条件で未完了の要素を再試行します。
 
 汎用AIの判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨、selfCommitmentの9要素で選別します。
-入力schemaは5、出力schemaは7、snapshotは19とし、waitingOnのrevisionは3、relationsのrevisionは2、selfCommitmentのrevisionは1、その他の要素のrevisionは1とします。selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
+入力schemaは5、出力schemaは7、snapshotは19とします。
+各要素のrevisionは`src/codex/analysis-elements.ts`、必要条件は`src/cli/production-runtime.ts`と`src/codex/element-planning.ts`で定義します。表の意味入力は`src/codex/analysis-element-dependencies.ts`で作る要素別fingerprintの対象であり、汎用AIへ渡す入力全体ではありません。主な利用先は`src/codex/reducer.ts`と`src/cli/production-runtime.ts`です。
+
+| 要素             | revision | 必要条件                                                                                       | 意味入力fingerprintの対象                                                  | 主な利用先                     |
+| ---------------- | -------: | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------ |
+| `status`         |        1 | 状態を決定論的に確定できないか、未解決の依頼・CI失敗・実質担当候補がある                       | 項目全体、待ち相手候補、本文・コメント・レビュー、状態系の確定signal       | 状態と停滞の判定               |
+| `waitingOn`      |        3 | 待ち相手を決定論的に確定できないか、未解決の依頼・CI失敗・実質担当候補がある                   | 項目全体、待ち相手候補、本文・コメント・レビュー、状態系の確定signal       | 待ち相手、実質担当、停滞の判定 |
+| `nextAction`     |        1 | 次の行動を決定論的に確定できないか、未解決の依頼・CI失敗・実質担当候補がある                   | 項目全体、待ち相手候補、本文・コメント・レビュー、状態系の確定signal       | 次の行動の表示                 |
+| `relations`      |        2 | 未解決の推定関係候補がある                                                                     | 項目基本情報、関係候補、関係・本文・コメント・レビュー、関係系の確定signal | 関係の採否とgraph              |
+| `progress`       |        1 | 本文のあるhuman commentイベントがある                                                          | 項目基本情報、本文・コメント・レビュー                                     | 進捗評価と停滞起点             |
+| `importance`     |        1 | 確定判定以外・実質担当候補・人の進捗候補・推定関係候補のいずれかがあるか、前回の評価が利用可能 | 項目基本情報、本文・コメント・レビュー                                     | 重要度と要対応度               |
+| `deadline`       |        1 | 確定判定以外・実質担当候補・人の進捗候補・推定関係候補のいずれかがあるか、前回の評価が利用可能 | 項目基本情報、本文・コメント・レビュー                                     | 期限日と要対応度               |
+| `notification`   |        1 | 非terminalのCodex候補で、native blocker・自動化ノイズ・通知抑制ラベルがない                    | 項目基本情報、全候補、本文・コメント・レビュー、状態系の確定signal         | 通知推奨                       |
+| `selfCommitment` |        1 | 観測期間内の未編集human comment候補がある                                                      | 項目全体、自己申告候補、本文・コメント・レビュー                           | 自己申告原因による通知抑制     |
+
+selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
 selfCommitmentの候補は前回`observedAt`より後、今回の評価時刻以前の未編集human commentに限り、source authorとtimeline event actorが同じhumanであることを確認します。前回観測がない場合は追加推論を行いません。通知時は現在の`waitingOn`が単独のhuman userであり、そのactorと一致することを決定論的に確認し、他者、混在、不明、依存解消の原因は通知を残します。
 該当する申し出がない場合、selfCommitmentの値と根拠はともに空配列にし、正常に完了した評価として保持します。申し出がある場合は、値と根拠を同じ候補コメントのsource IDで結び付けます。
 各要素の必要性を既存の確定情報と利用箇所から判断し、必要な要素だけ保存済み結果と比較します。
