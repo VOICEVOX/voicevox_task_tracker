@@ -3,13 +3,14 @@ import { z } from "zod";
 
 import {
   AI_ANALYSIS_ELEMENTS,
+  aiAnalysisElementResultSchemas,
   createAiAnalysisElementResultSchema,
   type AiAnalysisElement,
   type AiAnalysisElementEvidence,
   type AiAnalysisElementResult,
 } from "../domain/ai-analysis-elements.js";
 import {
-  CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  codexElementOutputBaseShape,
   createCodexElementOutputSchema,
   normalizeCodexElementSelection,
 } from "./element-output-schema.js";
@@ -29,23 +30,9 @@ export type CodexElementResult<Element extends AiAnalysisElement = AiAnalysisEle
 
 export { CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION } from "./element-output-schema.js";
 
-const itemSchema = z.strictObject({
-  nodeId: z.string().min(1),
-  url: z.string().regex(/^https:\/\/github\.com\//u),
-});
-
 const codexElementOutputSchema = z.strictObject({
-  schemaVersion: z.literal(CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION),
-  item: itemSchema,
-  status: createAiAnalysisElementResultSchema("status").optional(),
-  waitingOn: createAiAnalysisElementResultSchema("waitingOn").optional(),
-  nextAction: createAiAnalysisElementResultSchema("nextAction").optional(),
-  relations: createAiAnalysisElementResultSchema("relations").optional(),
-  progress: createAiAnalysisElementResultSchema("progress").optional(),
-  importance: createAiAnalysisElementResultSchema("importance").optional(),
-  deadline: createAiAnalysisElementResultSchema("deadline").optional(),
-  notification: createAiAnalysisElementResultSchema("notification").optional(),
-  selfCommitment: createAiAnalysisElementResultSchema("selfCommitment").optional(),
+  ...codexElementOutputBaseShape,
+  ...z.strictObject(aiAnalysisElementResultSchemas).partial().shape,
 });
 
 /** JSON Schema検証を通った要素別Codex出力。 */
