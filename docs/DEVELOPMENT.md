@@ -31,6 +31,8 @@ pnpm install --frozen-lockfile
 | `pnpm perf:profile`       | CLIをビルドし、モックした日次runの処理時間、API使用率、AI論理call数、summaryサイズを確認する | `artifacts/performance-profile.json`         |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する                                              | サブコマンドによる                           |
 
+`pnpm typecheck`、`pnpm lint`、`pnpm format`、`pnpm format:check`は静的解析のcacheを`node_modules/.cache/`へ保存します。Node.js側とWeb側の型検査は別のcache fileを使います。
+
 `build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`status/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
 GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdeep linkをこの複製で受けます。
 
