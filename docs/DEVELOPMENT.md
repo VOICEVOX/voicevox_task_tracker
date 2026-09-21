@@ -94,7 +94,7 @@ pnpm tracker:run collect-analyze --mode none --notification-action acknowledge-c
 | `DISCORD_WEBHOOK_URL`            | 通常通知を送る処理                               |
 | `DISCORD_OPERATIONS_WEBHOOK_URL` | 障害通知を送る処理                               |
 
-現行の`config.yml`はAIを有効にし、認証方式を`auth-json`にしているため、収集には`CODEX_HOME`が必要です。
+現行の`config.yml`はAIを有効にし、認証方式を`auth-json`にしているため、実行候補がある場合だけCodex CLIと`CODEX_HOME`が必要です。
 `collect-analyze`はDiscordの環境変数を読みません。
 
 state、Pages、Discordを更新せずに収集から検証までを通したい場合は`dry-run`を使います。

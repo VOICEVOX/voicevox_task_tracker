@@ -352,7 +352,6 @@ pnpm exec codex --version
 
 `metrics.aiCacheHitCount`、`metrics.estimatedInputTokens`、`diagnostics`も確認します。
 model、reasoning effort、promptを変更した場合は、実モデルを呼び出したdry-runで`metrics.aiCallCount`が1以上になることを確認し、AI判定と通知候補の差分を確認します。
-Actionsの`collect-analyze` jobはlockfileから同じCodex CLIをインストールし、収集前にversion確認を行います。
 
 ### 3. 日次workflow
 
@@ -371,7 +370,7 @@ workflow artifactは`notificationAction`を保持します。`persist-state`はs
 
 成功後に次を確認します。
 
-- `collect-analyze`の「更新されたCodex認証ファイルをsecretへ書き戻す」stepが成功していること
+- Codex認証ファイルを配置した場合は、`collect-analyze`の「更新されたCodex認証ファイルをsecretへ書き戻す」stepが成功していること
 - `tracker-state`がdefault branchと別の履歴を持つこと
 - `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知管理記録がまとまっていること
 - 後続の通知jobが実測時刻と実送信数を含むrun report、通知管理記録、当日の日次履歴のcommitを追加していること
