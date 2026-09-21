@@ -515,7 +515,7 @@ async function createPerformanceConfig(repositoryPath: string): Promise<Config> 
       enabled: true,
       budget: Object.freeze({
         ...base.ai.budget,
-        maxCallsPerRun: PROFILE_CHANGED_ITEM_COUNT,
+        maxCodexExecAttemptsPerRun: PROFILE_CHANGED_ITEM_COUNT,
       }),
     }),
     notifications: Object.freeze({
@@ -819,7 +819,7 @@ export async function runEndToEndPerformanceProfile(
       }),
       codex: Object.freeze({
         calls: metrics.aiCallCount,
-        configuredMaxCalls: result.config.ai.budget.maxCallsPerRun,
+        configuredMaxCalls: result.config.ai.budget.maxCodexExecAttemptsPerRun,
       }),
       webInitialSummary: Object.freeze({
         gzipBytes: result.generatedPublicData.summarySize.gzipBytes,

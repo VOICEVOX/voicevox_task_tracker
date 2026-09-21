@@ -471,7 +471,7 @@ const configSchema = z.strictObject({
         medium: DEFAULT_MEDIUM_CONFIDENCE,
       }),
       budget: z.strictObject({
-        maxCallsPerRun: nonNegativeIntegerSchema,
+        maxCodexExecAttemptsPerRun: nonNegativeIntegerSchema,
         maxInputCharactersPerItem: positiveIntegerSchema,
         maxTotalInputCharactersPerRun: positiveIntegerSchema,
         maxEstimatedCostUsdPerRun: nonNegativeNumberSchema,

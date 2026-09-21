@@ -16,6 +16,12 @@ import { assertNonNullable } from "../util/index.js";
 import { type AiAnalysisPreflight } from "./analysis-runner.js";
 import { type AiAnalysisPriority } from "./analysis-selection.js";
 import {
+  CodexAttemptBudgetExceededError,
+  prepareCodexInitialAttempts,
+  type CodexAttemptBudget,
+  type CodexInitialAttemptTicket,
+} from "./attempt-budget.js";
+import {
   estimateAiInputCost,
   planAiAnalysisBudget,
   planAiAnalysisBudgetWithPreflight,
@@ -87,8 +93,12 @@ export type PersonalReminderAiRunConfiguration = Readonly<{
 /** 個人催促AIの副作用境界。 */
 export type PersonalReminderAiRunDependencies = Readonly<{
   cache: PersonalReminderAiCacheStore;
+  attemptBudget: CodexAttemptBudget;
   ensureReady: () => Promise<void>;
-  execute: (input: PersonalReminderAiInput) => Promise<SchemaValidPersonalReminderAiOutput>;
+  execute: (
+    input: PersonalReminderAiInput,
+    ticket: CodexInitialAttemptTicket,
+  ) => Promise<SchemaValidPersonalReminderAiOutput>;
   executedAt: () => string;
   preflight?: AiAnalysisPreflight;
   diagnostics?: CodexDiagnosticsContext;
@@ -492,16 +502,27 @@ async function executeBatch(
   state: PreparedBatchState,
   configuration: PersonalReminderAiRunConfiguration,
   dependencies: PersonalReminderAiRunDependencies,
+  ticket: CodexInitialAttemptTicket,
 ): Promise<BatchExecutionOutcome> {
   let semanticValidation: PersonalReminderCauseSemanticValidation;
   try {
-    const output = await dependencies.execute(state.budgetCandidate.batch.input);
+    const output = await dependencies.execute(state.budgetCandidate.batch.input, ticket);
     semanticValidation = validatePersonalReminderCauseSemantics({
       batch: state.budgetCandidate.batch,
       output,
       minimumConfidence: configuration.minimumConfidence,
     });
   } catch (error: unknown) {
+    if (error instanceof CodexAttemptBudgetExceededError) {
+      return Object.freeze({
+        outcomes: new Map<PersonalReminderCauseId, PersonalReminderAiCauseRunOutcome>(
+          state.misses.map((miss) => [
+            miss.candidate.cause.causeId,
+            Object.freeze({ status: "deferred", reason: "call_limit" }),
+          ]),
+        ),
+      });
+    }
     if (!isCodexExecutionFailure(error)) {
       throw error;
     }
@@ -572,7 +593,10 @@ async function executeBatch(
 
 async function executeSelectedBatches(
   states: readonly PreparedBatchState[],
-  selected: readonly PreparedPersonalReminderAiBudgetCandidate[],
+  selected: readonly Readonly<{
+    candidate: PreparedPersonalReminderAiBudgetCandidate;
+    ticket: CodexInitialAttemptTicket;
+  }>[],
   configuration: PersonalReminderAiRunConfiguration,
   dependencies: PersonalReminderAiRunDependencies,
 ): Promise<ReadonlyMap<PersonalReminderCauseId, PersonalReminderAiCauseRunOutcome>> {
@@ -589,15 +613,19 @@ async function executeSelectedBatches(
           return;
         }
         nextIndex += 1;
-        const budgetCandidate = selected.at(index);
-        assertNonNullable(budgetCandidate, "個人催促AIの予算候補がありません");
+        const reserved = selected.at(index);
+        assertNonNullable(reserved, "個人催促AIの予算候補がありません");
+        const { candidate: budgetCandidate, ticket } = reserved;
         const state = statesByBatchId.get(budgetCandidate.id);
         assertNonNullable(
           state,
           `個人催促AIのbatch stateがありません。対象: ${budgetCandidate.id}`,
         );
         try {
-          outcomesByIndex.set(index, await executeBatch(state, configuration, dependencies));
+          outcomesByIndex.set(
+            index,
+            await executeBatch(state, configuration, dependencies, ticket),
+          );
         } catch (error: unknown) {
           stopped = true;
           throw error;
@@ -606,6 +634,9 @@ async function executeSelectedBatches(
     },
   );
   const settledWorkers = await Promise.allSettled(workers);
+  for (const reserved of selected) {
+    dependencies.attemptBudget.releaseInitialAttempt(reserved.ticket);
+  }
   for (const worker of settledWorkers) {
     if (worker.status === "rejected") {
       throw worker.reason;
@@ -656,14 +687,24 @@ export async function runPersonalReminderAiAnalyses(
           configuration.initialUsage,
           dependencies.preflight,
         );
-  if (budgetPlan.selected.length > 0) {
-    await dependencies.ensureReady();
-  }
-  const authenticationPreflightExecuted =
-    dependencies.preflight != null && budgetPlan.selected.length > 0;
-  if (authenticationPreflightExecuted) {
-    assertNonNullable(dependencies.preflight, "個人催促AIの認証preflightがありません");
-    await dependencies.preflight.execute();
+  const reserved = await prepareCodexInitialAttempts(
+    budgetPlan.selected,
+    dependencies.attemptBudget,
+    dependencies.ensureReady,
+    dependencies.preflight?.execute,
+  );
+  const selected = reserved.selected.map((value) => value.candidate);
+  let usage = budgetPlan.usage;
+  if (selected.length !== budgetPlan.selected.length) {
+    usage =
+      dependencies.preflight == null
+        ? planAiAnalysisBudget(selected, configuration.budget, configuration.initialUsage).usage
+        : planAiAnalysisBudgetWithPreflight(
+            selected,
+            configuration.budget,
+            configuration.initialUsage,
+            dependencies.preflight,
+          ).usage;
   }
   const outcomes = new Map<PersonalReminderCauseId, PersonalReminderAiCauseRunOutcome>();
   for (const [causeId, outcome] of resolved.outcomes) {
@@ -692,9 +733,25 @@ export async function runPersonalReminderAiAnalyses(
       );
     }
   }
+  for (const budgetCandidate of reserved.deferred) {
+    const state = preparedBatches.states.find(
+      (value) => value.budgetCandidate.id === budgetCandidate.id,
+    );
+    assertNonNullable(
+      state,
+      `個人催促AIの延期batch stateがありません。対象: ${budgetCandidate.id}`,
+    );
+    for (const miss of state.misses) {
+      addOutcome(
+        outcomes,
+        miss.candidate.cause.causeId,
+        Object.freeze({ status: "deferred", reason: "call_limit" }),
+      );
+    }
+  }
   const executedOutcomes = await executeSelectedBatches(
     preparedBatches.states,
-    budgetPlan.selected,
+    reserved.selected,
     configuration,
     dependencies,
   );
@@ -708,11 +765,11 @@ export async function runPersonalReminderAiAnalyses(
   }
   return Object.freeze({
     outcomesByCauseId: outcomes,
-    usage: budgetPlan.usage,
-    executedBatchCount: budgetPlan.selected.length,
+    usage,
+    executedBatchCount: selected.length,
     cacheHitCauseCount: [...resolved.outcomes.values()].filter(
       (outcome) => outcome.status === "accepted" && outcome.origin === "cache",
     ).length,
-    authenticationPreflightExecuted,
+    authenticationPreflightExecuted: reserved.authenticationPreflightExecuted,
   });
 }

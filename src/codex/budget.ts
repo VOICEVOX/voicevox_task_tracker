@@ -3,9 +3,9 @@ import { type AiAnalysisPriority } from "./analysis-selection.js";
 const MICRO_USD_PER_USD = 1_000_000;
 const TOKENS_PER_MILLION = 1_000_000;
 
-/** 1 runのCodex呼び出し予算。 */
+/** 1 runのCodex分析予算とexec実試行上限。 */
 export type AiRunBudget = Readonly<{
-  maxCallsPerRun: number;
+  maxCodexExecAttemptsPerRun: number;
   maxInputCharactersPerItem: number;
   maxTotalInputCharactersPerRun: number;
   maxEstimatedCostUsdPerRun: number;
@@ -170,7 +170,10 @@ function convertEstimatedCostToMicroUsd(
 }
 
 function validateBudget(budget: AiRunBudget): void {
-  validateNonNegativeSafeInteger(budget.maxCallsPerRun, "runあたりの最大呼び出し回数");
+  validateNonNegativeSafeInteger(
+    budget.maxCodexExecAttemptsPerRun,
+    "runあたりの最大Codex exec実試行回数",
+  );
   validatePositiveSafeInteger(budget.maxInputCharactersPerItem, "項目あたりの最大入力文字数");
   validatePositiveSafeInteger(budget.maxTotalInputCharactersPerRun, "runあたりの最大入力文字数");
   convertEstimatedCostToMicroUsd(
@@ -209,12 +212,6 @@ function determineBudgetDecision(
       reason: "item_input_character_limit",
     });
   }
-  if (usage.calls >= budget.maxCallsPerRun) {
-    return Object.freeze({
-      status: "deferred",
-      reason: "call_limit",
-    });
-  }
   if (usage.inputCharacters + candidate.inputCharacters > budget.maxTotalInputCharactersPerRun) {
     return Object.freeze({
       status: "deferred",
@@ -250,9 +247,6 @@ function validateInitialUsage(usage: AiBudgetUsage, budget: AiRunBudget): number
     "estimate_up",
     "run予算の使用見積費用",
   );
-  if (usage.calls > budget.maxCallsPerRun) {
-    throw new RangeError("run予算の使用呼び出し回数が上限を超えています");
-  }
   if (usage.inputCharacters > budget.maxTotalInputCharactersPerRun) {
     throw new RangeError("run予算の使用入力文字数が上限を超えています");
   }
@@ -361,9 +355,6 @@ function preflightBudgetLimitReason(
   initialUsage: AiBudgetUsage,
   preflightEstimatedCostMicroUsd: number,
 ): AiAnalysisDeferReason | undefined {
-  if (initialUsage.calls + 1 > budget.maxCallsPerRun) {
-    return "call_limit";
-  }
   if (
     initialUsage.inputCharacters + preflight.inputCharacters >
     budget.maxTotalInputCharactersPerRun

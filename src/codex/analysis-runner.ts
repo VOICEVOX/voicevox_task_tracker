@@ -22,6 +22,12 @@ import {
   type AiRunBudget,
 } from "./budget.js";
 import {
+  CodexAttemptBudgetExceededError,
+  prepareCodexInitialAttempts,
+  type CodexAttemptBudget,
+  type CodexInitialAttemptTicket,
+} from "./attempt-budget.js";
+import {
   createAiCacheEntry,
   createAiCacheKey,
   determineAiCacheReuse,
@@ -75,13 +81,14 @@ export type AiAnalysisRunConfiguration = Readonly<{
 /** AI分析前に実行するCodex認証preflight。 */
 export type AiAnalysisPreflight = Readonly<
   AiPreflightBudget & {
-    execute: () => Promise<void>;
+    execute: (ticket: CodexInitialAttemptTicket) => Promise<void>;
   }
 >;
 
 /** AI分析runへ注入する副作用境界。 */
 export type AiAnalysisRunDependencies = Readonly<{
   cache: AiCacheStore;
+  attemptBudget: CodexAttemptBudget;
   ensureReady: () => Promise<void>;
   execute: (input: CodexAnalysisInput, context: AiAnalysisExecutionContext) => Promise<unknown>;
   executedAt: () => string;
@@ -93,6 +100,7 @@ export type AiAnalysisRunDependencies = Readonly<{
 export type AiAnalysisExecutionContext = Readonly<{
   candidateId: string;
   selectedElements: readonly AiAnalysisElement[];
+  initialAttemptTicket: CodexInitialAttemptTicket;
 }>;
 
 /** cache再利用または新規実行で取得した要素別AI結果。 */
@@ -149,6 +157,10 @@ type CandidateExecutionOutcome =
   | Readonly<{
       status: "failure";
       failure: AiAnalysisRunFailure;
+    }>
+  | Readonly<{
+      status: "deferred";
+      candidateId: string;
     }>;
 
 function candidateDiagnosticsContext(
@@ -549,6 +561,7 @@ async function executeCandidate(
   state: CandidateCacheState,
   identity: AiAnalysisRunIdentity,
   dependencies: AiAnalysisRunDependencies,
+  ticket: CodexInitialAttemptTicket,
 ): Promise<CandidateExecutionOutcome> {
   const candidate = createExecutionInput(state);
   try {
@@ -556,6 +569,7 @@ async function executeCandidate(
       await dependencies.execute(candidate.input, {
         candidateId: candidate.id,
         selectedElements: Object.freeze(candidate.selectedElements.map((value) => value.element)),
+        initialAttemptTicket: ticket,
       }),
       candidate.input,
     );
@@ -597,6 +611,9 @@ async function executeCandidate(
       result: createRunItemResult(candidate.id, [...state.cached, ...executedResults]),
     });
   } catch (error: unknown) {
+    if (error instanceof CodexAttemptBudgetExceededError) {
+      return Object.freeze({ status: "deferred", candidateId: candidate.id });
+    }
     if (error instanceof CodexTransportAliasError) {
       throw error;
     }
@@ -610,7 +627,10 @@ async function executeCandidate(
 
 async function executeSelectedCandidates(
   states: readonly CandidateCacheState[],
-  selected: readonly PreparedAiAnalysisCandidate[],
+  selected: readonly Readonly<{
+    candidate: PreparedAiAnalysisCandidate;
+    ticket: CodexInitialAttemptTicket;
+  }>[],
   maxConcurrentCalls: number,
   configuration: AiAnalysisRunConfiguration,
   dependencies: AiAnalysisRunDependencies,
@@ -618,6 +638,7 @@ async function executeSelectedCandidates(
   Readonly<{
     results: readonly AiAnalysisRunItemResult[];
     failures: readonly AiAnalysisRunFailure[];
+    deferred: readonly string[];
   }>
 > {
   if (!Number.isSafeInteger(maxConcurrentCalls) || maxConcurrentCalls <= 0) {
@@ -635,14 +656,15 @@ async function executeSelectedCandidates(
           return;
         }
         nextCandidateIndex += 1;
-        const candidate = selected.at(candidateIndex);
-        assertNonNullable(candidate, "Codex分析候補を予算計画順に取得できませんでした");
+        const reserved = selected.at(candidateIndex);
+        assertNonNullable(reserved, "Codex分析候補を予算計画順に取得できませんでした");
+        const { candidate, ticket } = reserved;
         const state = states.find((value) => value.candidate.id === candidate.id);
         assertNonNullable(state, `Codex分析候補のcache stateがありません。対象: ${candidate.id}`);
         try {
           outcomes.set(
             candidateIndex,
-            await executeCandidate(state, configuration.identity, dependencies),
+            await executeCandidate(state, configuration.identity, dependencies, ticket),
           );
         } catch (error: unknown) {
           stopped = true;
@@ -652,6 +674,9 @@ async function executeSelectedCandidates(
     },
   );
   const settledWorkers = await Promise.allSettled(workers);
+  for (const reserved of selected) {
+    dependencies.attemptBudget.releaseInitialAttempt(reserved.ticket);
+  }
   for (const settledWorker of settledWorkers) {
     if (settledWorker.status === "rejected") {
       throw settledWorker.reason;
@@ -659,18 +684,22 @@ async function executeSelectedCandidates(
   }
   const results: AiAnalysisRunItemResult[] = [];
   const failures: AiAnalysisRunFailure[] = [];
+  const deferred: string[] = [];
   for (const candidateIndex of selected.keys()) {
     const outcome = outcomes.get(candidateIndex);
     assertNonNullable(outcome, "Codex分析候補の実行結果がありません");
     if (outcome.status === "result") {
       results.push(outcome.result);
-    } else {
+    } else if (outcome.status === "failure") {
       failures.push(outcome.failure);
+    } else {
+      deferred.push(outcome.candidateId);
     }
   }
   return Object.freeze({
     results: Object.freeze(results),
     failures: Object.freeze(failures),
+    deferred: Object.freeze(deferred),
   });
 }
 
@@ -707,18 +736,28 @@ export async function runAiAnalyses(
           configuration.initialUsage,
           dependencies.preflight,
         );
-  if (budgetPlan.selected.length > 0) {
-    await dependencies.ensureReady();
-  }
-  const authenticationPreflightExecuted =
-    dependencies.preflight != null && budgetPlan.selected.length > 0;
-  if (authenticationPreflightExecuted) {
-    assertNonNullable(dependencies.preflight, "認証preflightがありません");
-    await dependencies.preflight.execute();
+  const reserved = await prepareCodexInitialAttempts(
+    budgetPlan.selected,
+    dependencies.attemptBudget,
+    dependencies.ensureReady,
+    dependencies.preflight?.execute,
+  );
+  const selected = reserved.selected.map((value) => value.candidate);
+  let usage = budgetPlan.usage;
+  if (selected.length !== budgetPlan.selected.length) {
+    usage =
+      dependencies.preflight == null
+        ? planAiAnalysisBudget(selected, configuration.budget, configuration.initialUsage).usage
+        : planAiAnalysisBudgetWithPreflight(
+            selected,
+            configuration.budget,
+            configuration.initialUsage,
+            dependencies.preflight,
+          ).usage;
   }
   const executed = await executeSelectedCandidates(
     resolved.states,
-    budgetPlan.selected,
+    reserved.selected,
     configuration.maxConcurrentCalls,
     configuration,
     dependencies,
@@ -734,16 +773,22 @@ export async function runAiAnalyses(
         }),
       ),
     ),
-    deferred: Object.freeze(
-      budgetPlan.deferred.map((value) =>
+    deferred: Object.freeze([
+      ...budgetPlan.deferred.map((value) =>
         Object.freeze({
           candidateId: value.candidate.id,
           reason: value.reason,
         }),
       ),
-    ),
-    usage: budgetPlan.usage,
-    authenticationPreflightExecuted,
+      ...reserved.deferred.map((candidate): AiAnalysisRunResult["deferred"][number] =>
+        Object.freeze({ candidateId: candidate.id, reason: "call_limit" }),
+      ),
+      ...executed.deferred.map((candidateId): AiAnalysisRunResult["deferred"][number] =>
+        Object.freeze({ candidateId, reason: "call_limit" }),
+      ),
+    ]),
+    usage,
+    authenticationPreflightExecuted: reserved.authenticationPreflightExecuted,
   });
   if (target != null) {
     assertTargetWasExecuted(result, target);

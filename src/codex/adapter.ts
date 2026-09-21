@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import type { DiagnosticsJsonValue } from "../diagnostics/error-serializer.js";
+import {
+  CodexAttemptBudgetExceededError,
+  type CodexAttemptBudget,
+  type CodexInitialAttemptTicket,
+} from "./attempt-budget.js";
 import { recordCodexDiagnostic, type CodexDiagnosticsContext } from "./diagnostics.js";
 import {
   CodexAttemptError,
@@ -141,6 +146,8 @@ function parseCodexAdapterConfiguration(
 export type CodexAdapterDependencies = Readonly<{
   environment: NodeJS.ProcessEnv;
   processRunner: CodexProcessRunner;
+  attemptBudget: CodexAttemptBudget;
+  initialAttemptTicket?: CodexInitialAttemptTicket;
   runtime: Readonly<{
     sleep: (delayMilliseconds: number) => Promise<void>;
     random: () => number;
@@ -314,12 +321,16 @@ function createAuthenticationPreflightProcessRequest(
 
 async function runProcess(
   request: CodexProcessRequest,
-  processRunner: CodexProcessRunner,
+  dependencies: CodexAdapterDependencies,
   attempts: number,
 ): Promise<CodexProcessResult> {
+  dependencies.attemptBudget.beginAttempt(dependencies.initialAttemptTicket);
   try {
-    return await processRunner(request);
+    return await dependencies.processRunner(request);
   } catch (error: unknown) {
+    if (error instanceof CodexAttemptBudgetExceededError) {
+      throw error;
+    }
     throw new CodexProcessStartError(attempts, { cause: error });
   }
 }
@@ -669,7 +680,7 @@ async function executeAttempt(
       workingDirectory,
       outputSchemaPath,
     );
-    processResult = await runProcess(request, dependencies.processRunner, attempts);
+    processResult = await runProcess(request, dependencies, attempts);
     stdout = normalizedProcessOutput(processResult.stdout, "stdout");
     stderr = normalizedProcessOutput(processResult.stderr, "stderr");
     stdoutInspection = inspectCodexStdout(stdout);
@@ -906,7 +917,7 @@ async function executeAuthenticationPreflightAttempt(
       dependencies,
       workingDirectory,
     );
-    processResult = await runProcess(request, dependencies.processRunner, attempts);
+    processResult = await runProcess(request, dependencies, attempts);
     stdout = normalizedProcessOutput(processResult.stdout, "stdout");
     stderr = normalizedProcessOutput(processResult.stderr, "stderr");
     stdoutInspection = inspectCodexStdout(stdout);

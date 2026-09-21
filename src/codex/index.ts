@@ -9,6 +9,7 @@ export {
   type CodexAdapterDependencies,
   type CodexAuthentication,
 } from "./adapter.js";
+export { CodexAttemptBudget, type CodexInitialAttemptTicket } from "./attempt-budget.js";
 export {
   createPersonalReminderCauseSemanticInput,
   createPersonalReminderAiInput,
