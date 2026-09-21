@@ -24,6 +24,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 `src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
 `src/cli`だけが実アダプターを組み合わせて一つのrunにします。
+Issueの明示依頼、実質担当、mentionの候補は`src/cli/issue-responsibility-candidates.ts`で抽出し、`production-runtime.ts`がAI入力と採用判定へ渡します。
 
 ```mermaid
 flowchart LR
