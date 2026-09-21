@@ -214,10 +214,10 @@ CI上では`性能profile` workflowを手動実行し、同じJSONをActions art
 
 収集と判定はGitHub Appの認証情報を使います。
 現行の`config.yml`は`ai.authentication: auth-json`を指定します。
-Actionsの`collect-analyze` jobは配置stepだけへ`CODEX_AUTH_JSON`を渡し、一時的な`auth.json`を配置して収集stepへ`CODEX_HOME`を渡します。
-`CODEX_AUTH_SYNC_TOKEN`は書き戻しstepだけへ`GH_TOKEN`として渡します。
-jobは一時ファイルを削除する前に、更新された`auth.json`を`CODEX_AUTH_JSON`へ同期します。
-`ai.enabled: true`のローカル実行ではlockfileで固定した`codex`に加え、`auth-json`なら`CODEX_HOME`直下の`auth.json`、`api-key`なら`OPENAI_API_KEY`が必要です。
+Actionsの`collect-analyze` jobは配置stepだけへ`CODEX_AUTH_JSON`を渡し、非空なら一時的な`auth.json`を配置します。収集stepへは`CODEX_HOME`と同期用tokenの有無だけを渡します。
+`CODEX_AUTH_SYNC_TOKEN`の値は書き戻しstepだけへ`GH_TOKEN`として渡します。
+jobは認証ファイルを配置した場合に限り、一時ファイルを削除する前に更新された`auth.json`を`CODEX_AUTH_JSON`へ同期します。
+`ai.enabled: true`で実行候補がある場合は、lockfileで固定した`codex`に加え、`auth-json`なら`CODEX_HOME`直下の`auth.json`、`api-key`なら`OPENAI_API_KEY`が必要です。
 検証後のsnapshot、通知候補、通知管理記録、run report生成用の収集指標、AI cacheを公開可能なartifactへ保存します。
 
 ```console

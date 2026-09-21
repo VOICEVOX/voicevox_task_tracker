@@ -115,15 +115,10 @@ jobs:
         if: inputs.operation != 'dispose'
         env:
           CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
-          CODEX_AUTH_SYNC_TOKEN_PRESENT: ${{ secrets.CODEX_AUTH_SYNC_TOKEN != '' }}
         run: |
           if [[ -z "$CODEX_AUTH_JSON" ]]; then
-            echo "CODEX_AUTH_JSONが空です" >&2
-            exit 1
-          fi
-          if [[ "$CODEX_AUTH_SYNC_TOKEN_PRESENT" != "true" ]]; then
-            echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
-            exit 1
+            echo "CODEX_AUTH_JSONが空のため認証ファイルを配置しません"
+            exit 0
           fi
           mkdir -p "${{ runner.temp }}/codex-home"
           chmod 700 "${{ runner.temp }}/codex-home"
@@ -132,10 +127,12 @@ jobs:
           sha256sum "${{ runner.temp }}/codex-home/auth.json" > "${{ runner.temp }}/codex-auth-fingerprint"
           chmod 600 "${{ runner.temp }}/codex-auth-fingerprint"
           .github/scripts/mask-codex-auth-values.sh "${{ runner.temp }}/codex-home/auth.json"
+          echo "placed=true" >> "$GITHUB_OUTPUT"
 
       - name: sandbox日次処理を実行
         if: inputs.operation != 'dispose'
         env:
+          CODEX_AUTH_SYNC_TOKEN_PRESENT: ${{ secrets.CODEX_AUTH_SYNC_TOKEN != '' }}
           CODEX_HOME: ${{ runner.temp }}/codex-home
           GH_APP_ID: ${{ vars.GH_APP_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
@@ -195,19 +192,19 @@ jobs:
           retention-days: 30
 
       - name: 更新されたCodex認証ファイルをsecretへ書き戻す
-        if: always() && steps.codex_auth_placement.outcome == 'success'
+        if: always() && steps.codex_auth_placement.outputs.placed == 'true'
         env:
           CODEX_HOME: ${{ runner.temp }}/codex-home
           GH_TOKEN: ${{ secrets.CODEX_AUTH_SYNC_TOKEN }}
         run: |
-          if [[ -z "$GH_TOKEN" ]]; then
-            echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
-            exit 1
-          fi
           .github/scripts/mask-codex-auth-values.sh "$CODEX_HOME/auth.json"
           if sha256sum --check --status "${{ runner.temp }}/codex-auth-fingerprint"; then
             echo "Codex認証ファイルは更新されていません"
             exit 0
+          fi
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
+            exit 1
           fi
           gh secret set CODEX_AUTH_JSON \
             --repo "$GITHUB_REPOSITORY" \

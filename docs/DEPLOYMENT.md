@@ -94,7 +94,7 @@ gh secret set CODEX_AUTH_SYNC_TOKEN --repo VOICEVOX/voicevox_task_tracker
 ```
 
 現行の`config.yml`は`ai.authentication: auth-json`を指定します。
-`collect-analyze` jobは`CODEX_AUTH_JSON`を`${{ runner.temp }}/codex-home/auth.json`へ権限600で書き出します。
+`collect-analyze` jobは`CODEX_AUTH_JSON`が空なら認証ファイルの配置を省き、非空なら`${{ runner.temp }}/codex-home/auth.json`へ権限600で書き出します。
 配置時のsha256は指紋として`${{ runner.temp }}/codex-auth-fingerprint`へ保存します。
 `codex-home`を`CODEX_HOME`として収集stepへ渡します。
 Codexへ渡す認証用の環境変数は`CODEX_HOME`だけです。
@@ -103,9 +103,11 @@ Codex CLIはaccess tokenの残り有効期間が5分未満になるとrefresh to
 `auth-json`で実行候補が1件以上あるrunでは、候補processより先に固定した短文による認証preflightを空の一時directoryで1論理call実行します。候補データと通常のsystem promptは渡さず、preflightの完了後に設定済みの並列度で候補を処理します。候補なし、cache hitだけ、全候補が予算延期のrunでは実行しません。
 `api-key`ではpreflightを実行しません。このpreflightは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば、認証競合は残ります。
 preflightに失敗したrunは候補を1件も開始せず、`codex_analysis`を失敗させます。
-認証ファイルの配置に成功していれば、書き戻しstepは先行stepの成否を問わず実行します。
-`CODEX_AUTH_SYNC_TOKEN`はこのstepだけへ`GH_TOKEN`として渡し、空なら明示的に失敗します。
-書き戻しstepは配置時のsha256と現在の`auth.json`を比較します。
+配置後のmaskまで完了していれば、書き戻しstepは先行stepの成否を問わず実行します。
+実行stepへは`CODEX_AUTH_SYNC_TOKEN`の有無を示す真偽値だけを渡します。`auth-json`で実行候補がある場合、この値が偽ならCodexの起動前に失敗します。
+tokenの値は書き戻しstepだけへ`GH_TOKEN`として渡します。
+書き戻しstepは更新後の値をmaskしてから、配置時のsha256と現在の`auth.json`を比較します。
+変更があってtokenが空なら、secretの更新前に失敗します。
 変更がなければsecretを更新せず、変更があれば`gh secret set`で`CODEX_AUTH_JSON`を更新します。
 この同期が成功する限り、手動の再ログインとsecretの再登録なしにtokenの期限が延長され続けます。
 `collect-analyze`は認証ファイルの配置直後とsecretへ書き戻す直前に`.github/scripts/mask-codex-auth-values.sh`を実行します。
@@ -121,6 +123,8 @@ Codex認証情報と`CODEX_AUTH_SYNC_TOKEN`を`config.yml`、branch、artifact�
 repository secretはworkflow runの受付時に読み込まれるため、待機中に別runが認証を更新しても、受付済みrunには反映されません。
 手動実行は、同じ認証を使う前のrunが完了してから起動します。
 この制約は日次workflowとsandbox workflowに共通です。
+真偽値はtokenの登録有無だけを示し、有効期限やsecret更新権限は保証しません。
+tokenの権限不足やjobの中断が起きた場合、stateの保存と認証secretの同期は原子的に完了しません。
 
 repositoryのWorkflow permissionsは既定の読み取り専用にします。
 read and writeへ変更する必要はありません。

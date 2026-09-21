@@ -57,7 +57,7 @@ pnpm tracker:run persist-state
 pnpm tracker:run build-pages --output web/public/data
 ```
 
-`collect-analyze`にはGitHub AppとCodexの認証情報が必要です。
+`collect-analyze`にはGitHub Appの認証情報が必要です。Codexの認証情報とCLIは実行候補がある場合だけ必要です。
 `persist-state`はローカルの`tracker-state` refへ保存するだけで、remoteへはpushしません。
 `build-pages --output web/public/data`はサンプル公開DTOを実データで上書きします。
 実データは一時出力として扱い、確認後は元のサンプルへ戻してからコミットしてください。
