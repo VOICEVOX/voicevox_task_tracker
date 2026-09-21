@@ -2,11 +2,11 @@ import { hashCanonicalJson } from "../canonical-json/index.js";
 import type { AiAnalysisDependencyProducer } from "../domain/ai-analysis-dependencies.js";
 import type { GitHubNodeId, GraphNodeId, Relation, TrackedItemState } from "../domain/index.js";
 import type { FreshObservedGitHubItem, GitHubItemDetail } from "../github/index.js";
-import type {
-  CandidateRelation,
-  RelationCandidate,
-  RelationCandidateNode,
-} from "../graph/index.js";
+import type { RelationCandidate } from "../graph/index.js";
+import {
+  relationAssessmentOwnerNodeId,
+  relationNodes,
+} from "../graph/relation-candidate-endpoints.js";
 import { snapshotEffectiveGraphStateByNodeId, type StateSnapshot } from "../persistence/index.js";
 import { assertNonNullable } from "../util/index.js";
 
@@ -45,10 +45,6 @@ type BlockerRelationAnalysisInput = Readonly<{
   previousRelationCandidateDependencyProducers: () => readonly PreviousRelationCandidateDependencyProducer[];
   currentNativeStatesByStaleNodeId: () => ReadonlyMap<GitHubNodeId, TrackedItemState>;
   previousStaleRepositoryBlockerTopologyNodeIds: () => ReadonlySet<GitHubNodeId>;
-  relationNodes: (
-    relation: CandidateRelation,
-  ) => readonly [RelationCandidateNode, RelationCandidateNode];
-  relationAssessmentOwnerNodeId: (candidate: RelationCandidate) => GraphNodeId;
 }>;
 
 /** blocker関係候補の端点を正規化する。 */
@@ -210,10 +206,6 @@ function previousBlockerRelationAnalysisIndex(
 function currentBlockerRelationAnalysisIndex(
   relationCandidates: readonly RelationCandidate[],
   trackedNodeIdsByValue: ReadonlyMap<string, GitHubNodeId>,
-  relationNodes: (
-    relation: CandidateRelation,
-  ) => readonly [RelationCandidateNode, RelationCandidateNode],
-  relationAssessmentOwnerNodeId: (candidate: RelationCandidate) => GraphNodeId,
 ): BlockerRelationAnalysisIndex {
   const candidatesById = new Map<string, PotentialBlockerRelationAnalysis>();
   for (const candidate of relationCandidates) {
@@ -291,8 +283,6 @@ export function blockerRelationAnalysisTargets(
   const currentIndex = currentBlockerRelationAnalysisIndex(
     input.relationCandidates,
     trackedNodeIdsByValue,
-    input.relationNodes,
-    input.relationAssessmentOwnerNodeId,
   );
   const changedGraphNodeIds = new Set<GraphNodeId>(input.changedNodeIds);
   if (input.snapshot != null) {

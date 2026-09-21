@@ -19,7 +19,6 @@ import {
   listNativeRelationConstraints,
   prepareAiAnalysisCandidate,
   planAnalysisElements,
-  projectCodexLockedElements,
   recordCodexDiagnostic,
   reduceAiAnalysisElements,
   reduceCodexAnalysis,
@@ -149,7 +148,6 @@ import {
   parseSourceId,
   PULL_REQUEST_DETERMINISTIC_RULES_VERSION,
   PERSONAL_REMINDER_CAUSE_PLANNING_VERSION,
-  resolvePullRequestCommitOccurredAt,
   resolveTrackingStartAt,
   resolveRepositoryMaintainers,
   resolveWaitingOnAccountIdentifiers,
@@ -219,8 +217,6 @@ import {
   reconcileRetainedPersonalReminderCause,
   reconcileRetainedPersonalReminderPlanning,
   type PersonalReminderRuntimeCollectedItem,
-  type PersonalReminderRuntimeCandidateEndpointItem,
-  type PersonalReminderRuntimeGraph,
   type PersonalReminderRuntimeLocalDecision,
   type PersonalReminderRuntimeRelatedContext,
   type PersonalReminderRuntimeState,
@@ -256,10 +252,7 @@ import {
   type EnumeratedGitHubItem,
   type FreshObservedGitHubItem,
   type GitHubClient,
-  type GitHubCheckContext,
-  type GitHubIssueComment,
   type GitHubItemDetail,
-  type GitHubPullRequestReviewComment,
   type GitHubReferencedItem,
   type PublicRepository,
   type PublicRepositoryAllowlist,
@@ -280,12 +273,10 @@ import {
   type BlockerSetAiDependency,
   type NegativeBlockerAiDependency,
   type RelationSetAiDependency,
-  type CandidateRelation,
   type PublicGitHubRelationItem,
   type ReconciledGraphEdge,
   type GraphAnalysisNode,
   type GraphAnalysisSnapshot,
-  type OrganizationRelationCandidateNode,
   type ReconcileGraphResult,
   type RelationCandidate,
   type RelationCandidateAssessment,
@@ -295,6 +286,12 @@ import {
   type RelationCandidateResolution,
   type RelationExtractionItem,
 } from "../graph/index.js";
+import {
+  isOrganizationRelationCandidateNode,
+  relationAssessmentOwnerNodeId,
+  relationNodes,
+  selectRelationAssessmentCandidates,
+} from "../graph/relation-candidate-endpoints.js";
 import {
   generatePublicData,
   PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
@@ -335,6 +332,13 @@ import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { CliApplication } from "./application.js";
 import { createTrackingBackfillRequest } from "./backfill.js";
 import {
+  addCodexSourceOccurredAtForContext,
+  codexCommentSources,
+  createCodexInput,
+  createCodexSourceOccurredAtById,
+  latestUtcIsoDateTime,
+} from "./codex-input-projection.js";
+import {
   type BuildPagesCliCommand,
   type NotifyDiscordCliCommand,
   type NotifyOperationsCliCommand,
@@ -360,11 +364,10 @@ import {
   createEffectiveAssigneeCandidateContexts,
   createIssueRequestCandidates,
   createMentionedWaitingOnCandidates,
-  resolveEffectiveAssigneePullRequestState,
   type EffectiveAssigneeCandidateContext,
   type EffectiveAssigneeCollectionContext,
-  type EffectiveAssigneeSourceContext,
 } from "./issue-responsibility-candidates.js";
+import { personalReminderRuntimeGraph } from "./personal-reminder-graph-projection.js";
 import {
   blockerRelationAnalysisTargets,
   normalizedBlockerRelationEndpointNodeIds,
@@ -510,17 +513,6 @@ type RuntimeTrackingSelection = Readonly<{
   workByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemWorkDecision>;
   excludedCandidateCount: number;
 }>;
-
-type CodexWaitingOnCandidate = Readonly<{
-  id: string;
-}>;
-
-type CodexSelfCommitmentCandidate = Readonly<{
-  id: string;
-  sourceIds: readonly SourceId[];
-}>;
-
-type CodexSourceAuthor = CodexAnalysisInput["sources"][number]["author"];
 
 type DeterministicItemAnalysis = Readonly<{
   item: FreshObservedGitHubItem;
@@ -1769,21 +1761,6 @@ async function extractAllRelationCandidates(
   }
 }
 
-function relationNodes(
-  relation: CandidateRelation,
-): readonly [RelationCandidateNode, RelationCandidateNode] {
-  switch (relation.type) {
-    case "blocks":
-      return Object.freeze([relation.blocker, relation.blocked]);
-    case "parent_of":
-      return Object.freeze([relation.parent, relation.subtask]);
-    case "implements":
-      return Object.freeze([relation.implementation, relation.target]);
-    case "unclassified":
-      return Object.freeze([relation.referencing, relation.referenced]);
-  }
-}
-
 function createTrackingConnections(
   candidates: readonly RelationCandidate[],
 ): readonly TrackingConnection[] {
@@ -1962,13 +1939,6 @@ function completedSnapshotTrackingStartAt(
     throw new TypeError("完全成功したrunでtracking.startAtを確定できませんでした");
   }
   return resolved;
-}
-
-function authorType(item: FreshObservedGitHubItem): "human" | "bot" | "unknown" {
-  if (item.author.status === "unavailable") {
-    return "unknown";
-  }
-  return item.author.actor.type;
 }
 
 function enumeratedAuthorType(
@@ -2281,47 +2251,6 @@ function createNativeBlockers(
   return Object.freeze(blockers);
 }
 
-function addMirroredNativeBlockerSourceRecords(
-  sourceRecords: Map<string, unknown>,
-  item: FreshObservedGitHubItem,
-  relationCandidates: readonly RelationCandidate[],
-): void {
-  for (const candidate of relationCandidates) {
-    if (
-      candidate.provenance !== "native" ||
-      candidate.relation.type !== "blocks" ||
-      candidate.relation.blocked.nodeId !== item.nodeId
-    ) {
-      continue;
-    }
-    const currentEvent = item.events.find(
-      (event) =>
-        event.kind === "relation" &&
-        event.provenance === "native" &&
-        event.relationType === "blocks" &&
-        candidate.sourceIds.includes(event.sourceId),
-    );
-    if (currentEvent == null) {
-      continue;
-    }
-    for (const sourceId of candidate.sourceIds) {
-      if (sourceRecords.has(sourceId)) {
-        continue;
-      }
-      sourceRecords.set(
-        sourceId,
-        Object.freeze({
-          id: sourceId,
-          kind: currentEvent.kind,
-          actorType: currentEvent.actor.type,
-          author: createUnavailableCodexSourceAuthor(),
-          createdAt: currentEvent.occurredAt,
-        }),
-      );
-    }
-  }
-}
-
 function applyDeterministicAnalysis(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
@@ -2457,792 +2386,6 @@ function applyDeterministicAnalysis(
     items: Object.freeze(items),
     state,
     inventory,
-  });
-}
-
-function codexActorType(item: FreshObservedGitHubItem): "human" | "bot" | "system" {
-  const type = authorType(item);
-  return type === "unknown" ? "system" : type;
-}
-
-function codexAuthorCandidateId(item: FreshObservedGitHubItem): string | undefined {
-  if (item.author.status === "unavailable") {
-    return undefined;
-  }
-  return item.author.actor.login;
-}
-
-function createUnavailableCodexSourceAuthor(): CodexSourceAuthor {
-  return Object.freeze({
-    status: "unavailable",
-  });
-}
-
-function codexCommentSources(
-  detail: GitHubItemDetail,
-): readonly (GitHubIssueComment | GitHubPullRequestReviewComment)[] {
-  if (detail.type === "issue") {
-    return detail.comments;
-  }
-  return Object.freeze([
-    ...detail.comments,
-    ...detail.reviewThreads.flatMap((thread) => thread.comments),
-  ]);
-}
-
-function createCodexCommentAuthor(
-  item: FreshObservedGitHubItem,
-  comment: GitHubIssueComment | GitHubPullRequestReviewComment,
-):
-  | Readonly<{
-      candidate: CodexWaitingOnCandidate;
-      sourceAuthor: CodexSourceAuthor;
-    }>
-  | undefined {
-  const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
-  if (comment.author.status !== "identified" || event?.actor.type !== "human") {
-    return undefined;
-  }
-  assertNonNullable(event, `comment ${comment.sourceId}のeventがありません`);
-  if (event.actor.nodeId !== comment.author.account.nodeId) {
-    return undefined;
-  }
-  const candidate: CodexWaitingOnCandidate = Object.freeze({
-    id: comment.author.account.login,
-  });
-  const sourceAuthor: CodexSourceAuthor =
-    comment.createdAt === comment.updatedAt
-      ? Object.freeze({
-          status: "identified",
-          candidateId: candidate.id,
-          nodeId: comment.author.account.nodeId,
-        })
-      : createUnavailableCodexSourceAuthor();
-  return Object.freeze({
-    candidate,
-    sourceAuthor,
-  });
-}
-
-function selfCommitmentCandidates(
-  item: FreshObservedGitHubItem,
-  detail: GitHubItemDetail,
-  previousObservedAt: UtcIsoDateTime | undefined,
-  evaluatedAt: UtcIsoDateTime,
-): readonly CodexSelfCommitmentCandidate[] {
-  if (previousObservedAt == null) {
-    return Object.freeze([]);
-  }
-  const sourceIdsByCandidateId = new Map<string, SourceId[]>();
-  for (const comment of codexCommentSources(detail)) {
-    const commentAuthor = createCodexCommentAuthor(item, comment);
-    if (commentAuthor?.sourceAuthor.status !== "identified") {
-      continue;
-    }
-    const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
-    assertNonNullable(event, `comment ${comment.sourceId}のeventがありません`);
-    if (
-      event.kind !== "comment" ||
-      event.actor.type !== "human" ||
-      event.actor.nodeId !== commentAuthor.sourceAuthor.nodeId ||
-      event.occurredAt !== comment.createdAt ||
-      event.occurredAt <= previousObservedAt ||
-      event.occurredAt > evaluatedAt
-    ) {
-      continue;
-    }
-    const sourceIds = sourceIdsByCandidateId.get(commentAuthor.sourceAuthor.candidateId);
-    if (sourceIds == null) {
-      sourceIdsByCandidateId.set(commentAuthor.sourceAuthor.candidateId, [comment.sourceId]);
-    } else {
-      sourceIds.push(comment.sourceId);
-    }
-  }
-  return Object.freeze(
-    [...sourceIdsByCandidateId.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([id, sourceIds]) =>
-        Object.freeze({
-          id,
-          sourceIds: Object.freeze([...new Set(sourceIds)].sort()),
-        }),
-      ),
-  );
-}
-
-function relationTargetUrl(
-  nodeId: GitHubNodeId,
-  candidate: RelationCandidate,
-): PublicGitHubRelationItem["url"] {
-  const nodes = relationNodes(candidate.relation);
-  const target = nodes.find((node) => node.nodeId !== nodeId);
-  assertNonNullable(target, `関係候補 ${candidate.id}の相手項目がありません`);
-  return target.url;
-}
-
-function relationAssessmentOwnerNodeId(candidate: RelationCandidate): GraphNodeId {
-  switch (candidate.relation.type) {
-    case "blocks":
-      return candidate.relation.blocked.nodeId;
-    case "parent_of":
-      return candidate.relation.parent.nodeId;
-    case "implements":
-      return candidate.relation.implementation.nodeId;
-    case "unclassified":
-      return candidate.relation.referencing.nodeId;
-  }
-}
-
-function isOrganizationRelationCandidateNode(
-  node: RelationCandidateNode,
-): node is OrganizationRelationCandidateNode {
-  return node.scope === "organization";
-}
-
-function selectRelationAssessmentCandidates(
-  nodeId: GraphNodeId,
-  candidates: readonly RelationCandidate[],
-): readonly RelationCandidate[] {
-  return candidates.filter((candidate) => relationAssessmentOwnerNodeId(candidate) === nodeId);
-}
-
-function createNativeRelationSignals(
-  currentNodeId: GitHubNodeId,
-  candidates: readonly RelationCandidate[],
-): Readonly<{
-  nativeBlockedBy: readonly RelationCandidateId[];
-  nativeBlocking: readonly RelationCandidateId[];
-  nativeParent: readonly RelationCandidateId[];
-  nativeSubIssues: readonly RelationCandidateId[];
-}> {
-  const nativeBlockedBy: RelationCandidateId[] = [];
-  const nativeBlocking: RelationCandidateId[] = [];
-  const nativeParent: RelationCandidateId[] = [];
-  const nativeSubIssues: RelationCandidateId[] = [];
-  for (const candidate of candidates) {
-    if (candidate.provenance !== "native") {
-      continue;
-    }
-    switch (candidate.relation.type) {
-      case "blocks":
-        if (candidate.relation.blocked.nodeId === currentNodeId) {
-          nativeBlockedBy.push(candidate.id);
-        } else if (candidate.relation.blocker.nodeId === currentNodeId) {
-          nativeBlocking.push(candidate.id);
-        } else {
-          throw new TypeError(`native関係候補 ${candidate.id}に現在項目が含まれていません`);
-        }
-        break;
-      case "parent_of":
-        if (candidate.relation.subtask.nodeId === currentNodeId) {
-          nativeParent.push(candidate.id);
-        } else if (candidate.relation.parent.nodeId === currentNodeId) {
-          nativeSubIssues.push(candidate.id);
-        } else {
-          throw new TypeError(`native関係候補 ${candidate.id}に現在項目が含まれていません`);
-        }
-        break;
-      case "implements":
-        break;
-    }
-  }
-  return Object.freeze({
-    nativeBlockedBy: Object.freeze(nativeBlockedBy.sort()),
-    nativeBlocking: Object.freeze(nativeBlocking.sort()),
-    nativeParent: Object.freeze(nativeParent.sort()),
-    nativeSubIssues: Object.freeze(nativeSubIssues.sort()),
-  });
-}
-
-function latestUtcIsoDateTime(values: readonly UtcIsoDateTime[], context: string): UtcIsoDateTime {
-  const firstValue = values[0];
-  assertNonNullable(firstValue, `${context}の時刻がありません`);
-  return values.slice(1).reduce((latest, value) => (latest < value ? value : latest), firstValue);
-}
-
-function addCodexSourceOccurredAt(
-  sourceOccurredAtById: Map<SourceId, UtcIsoDateTime>,
-  sourceId: SourceId,
-  occurredAt: UtcIsoDateTime,
-): void {
-  const existingOccurredAt = sourceOccurredAtById.get(sourceId);
-  if (existingOccurredAt != null && existingOccurredAt !== occurredAt) {
-    if (parseSourceId(sourceId).kind !== "github_commit") {
-      throw new TypeError(`同じCodex source IDに異なる発生時刻があります。対象: ${sourceId}`);
-    }
-    sourceOccurredAtById.set(
-      sourceId,
-      existingOccurredAt < occurredAt ? existingOccurredAt : occurredAt,
-    );
-    return;
-  }
-  sourceOccurredAtById.set(sourceId, occurredAt);
-}
-
-function checkContextOccurredAt(
-  headOccurredAt: UtcIsoDateTime,
-  context: GitHubCheckContext,
-): UtcIsoDateTime {
-  if (context.type === "commit_status") {
-    return context.createdAt;
-  }
-  return context.completedAt ?? headOccurredAt;
-}
-
-function addCodexSourceOccurredAtForContext(
-  sourceOccurredAtById: Map<SourceId, UtcIsoDateTime>,
-  item: FreshObservedGitHubItem,
-  detail: GitHubItemDetail,
-): void {
-  for (const [sourceId, occurredAt] of createEarliestRelationSourceOccurredAtById([item])) {
-    addCodexSourceOccurredAt(sourceOccurredAtById, sourceId, occurredAt);
-  }
-  addCodexSourceOccurredAt(sourceOccurredAtById, item.sourceId, item.createdAt);
-  addCodexSourceOccurredAt(sourceOccurredAtById, detail.bodySourceId, item.createdAt);
-  for (const comment of detail.comments) {
-    addCodexSourceOccurredAt(sourceOccurredAtById, comment.sourceId, comment.createdAt);
-  }
-  if (detail.type !== "pull_request" || detail.mergeState.checks.status !== "configured") {
-    return;
-  }
-  const headOccurredAt = resolvePullRequestCommitOccurredAt(detail.headCommit, item.createdAt);
-  const checkOccurredAts = detail.mergeState.checks.contexts.map((context) => {
-    const occurredAt = checkContextOccurredAt(headOccurredAt, context);
-    addCodexSourceOccurredAt(sourceOccurredAtById, context.sourceId, occurredAt);
-    return occurredAt;
-  });
-  addCodexSourceOccurredAt(
-    sourceOccurredAtById,
-    detail.mergeState.checks.sourceId,
-    latestUtcIsoDateTime(
-      [headOccurredAt, ...checkOccurredAts],
-      `check rollup ${detail.mergeState.checks.sourceId}`,
-    ),
-  );
-}
-
-function createCodexSourceOccurredAtById(
-  item: FreshObservedGitHubItem,
-  detail: GitHubItemDetail,
-): ReadonlyMap<SourceId, UtcIsoDateTime> {
-  const sourceOccurredAtById = new Map<SourceId, UtcIsoDateTime>();
-  addCodexSourceOccurredAtForContext(sourceOccurredAtById, item, detail);
-  return sourceOccurredAtById;
-}
-
-function addCodexSourceRecord(
-  sourceRecords: Map<string, unknown>,
-  sourceId: SourceId,
-  record: unknown,
-): void {
-  if (sourceRecords.has(sourceId)) {
-    return;
-  }
-  sourceRecords.set(sourceId, record);
-}
-
-function addCodexSourceRecordsForContext(
-  sourceRecords: Map<string, unknown>,
-  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
-  context: EffectiveAssigneeSourceContext,
-): void {
-  const { item, detail } = context;
-  addCodexSourceRecord(
-    sourceRecords,
-    item.sourceId,
-    Object.freeze({
-      id: item.sourceId,
-      kind: "item",
-      actorType: codexActorType(item),
-      author: createUnavailableCodexSourceAuthor(),
-      createdAt: item.createdAt,
-    }),
-  );
-  for (const event of item.events) {
-    addCodexSourceRecord(
-      sourceRecords,
-      event.sourceId,
-      Object.freeze({
-        id: event.sourceId,
-        kind: event.kind,
-        actorType: event.actor.type,
-        author: createUnavailableCodexSourceAuthor(),
-        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
-      }),
-    );
-  }
-  const itemActorType = codexActorType(item);
-  addCodexSourceRecord(
-    sourceRecords,
-    detail.bodySourceId,
-    Object.freeze({
-      id: detail.bodySourceId,
-      kind: "body",
-      actorType: itemActorType,
-      author: createUnavailableCodexSourceAuthor(),
-      createdAt: item.createdAt,
-      ...(itemActorType === "human" ? { content: detail.body } : {}),
-    }),
-  );
-  for (const comment of detail.comments) {
-    const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
-    const actorType = event?.actor.type ?? "system";
-    addCodexSourceRecord(
-      sourceRecords,
-      comment.sourceId,
-      Object.freeze({
-        id: comment.sourceId,
-        kind: "comment",
-        actorType,
-        author: createUnavailableCodexSourceAuthor(),
-        createdAt: comment.createdAt,
-        ...(actorType === "human" ? { content: comment.body } : {}),
-      }),
-    );
-  }
-  if (detail.type !== "pull_request") {
-    return;
-  }
-  if (item.type !== "pull_request") {
-    throw new TypeError("Pull Request詳細にIssueの観測値が指定されています");
-  }
-  for (const thread of detail.reviewThreads) {
-    for (const comment of thread.comments) {
-      const event = item.events.find((candidate) => candidate.sourceId === comment.sourceId);
-      const actorType = event?.actor.type ?? "system";
-      addCodexSourceRecord(
-        sourceRecords,
-        comment.sourceId,
-        Object.freeze({
-          id: comment.sourceId,
-          kind: "comment",
-          actorType,
-          author: createUnavailableCodexSourceAuthor(),
-          createdAt: comment.createdAt,
-          ...(actorType === "human" ? { content: comment.body } : {}),
-        }),
-      );
-    }
-  }
-  for (const review of detail.reviews) {
-    const event = item.events.find((candidate) => candidate.sourceId === review.sourceId);
-    const actorType = event?.actor.type ?? "system";
-    addCodexSourceRecord(
-      sourceRecords,
-      review.sourceId,
-      Object.freeze({
-        id: review.sourceId,
-        kind: "review",
-        actorType,
-        author: createUnavailableCodexSourceAuthor(),
-        createdAt: review.submittedAt,
-        ...(actorType === "human" ? { content: review.body } : {}),
-      }),
-    );
-  }
-  for (const request of detail.reviewRequests.current) {
-    if (request.requestedAt.status === "unavailable") {
-      continue;
-    }
-    addCodexSourceRecord(
-      sourceRecords,
-      request.sourceId,
-      Object.freeze({
-        id: request.sourceId,
-        kind: "review_request",
-        actorType: "system",
-        author: createUnavailableCodexSourceAuthor(),
-        createdAt: request.requestedAt.value,
-      }),
-    );
-  }
-  if (item.mergeState.autoMerge.status === "enabled") {
-    const autoMerge = item.mergeState.autoMerge;
-    addCodexSourceRecord(
-      sourceRecords,
-      autoMerge.sourceId,
-      Object.freeze({
-        id: autoMerge.sourceId,
-        kind: "auto_merge_request",
-        actorType: autoMerge.enabledBy.type,
-        author: createUnavailableCodexSourceAuthor(),
-        createdAt: autoMerge.enabledAt,
-        mergeMethod: autoMerge.mergeMethod,
-      }),
-    );
-  }
-  if (detail.mergeState.checks.status !== "configured") {
-    return;
-  }
-  const checks = detail.mergeState.checks;
-  addCodexSourceRecord(
-    sourceRecords,
-    checks.sourceId,
-    Object.freeze({
-      id: checks.sourceId,
-      kind: "required_check_rollup",
-      actorType: "system",
-      author: createUnavailableCodexSourceAuthor(),
-      createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, checks.sourceId),
-      combinedState: checks.combinedState,
-    }),
-  );
-  for (const check of checks.contexts) {
-    addCodexSourceRecord(
-      sourceRecords,
-      check.sourceId,
-      Object.freeze({
-        id: check.sourceId,
-        kind: check.type,
-        actorType: "system",
-        author: createUnavailableCodexSourceAuthor(),
-        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, check.sourceId),
-        ...(check.type === "check_run"
-          ? {
-              name: check.name,
-              status: check.status,
-              conclusion: check.conclusion,
-            }
-          : {
-              context: check.context,
-              state: check.state,
-            }),
-      }),
-    );
-  }
-}
-
-function requireCodexSourceOccurredAt(
-  sourceOccurredAtById: ReadonlyMap<SourceId, UtcIsoDateTime>,
-  sourceId: SourceId,
-): UtcIsoDateTime {
-  const occurredAt = sourceOccurredAtById.get(sourceId);
-  assertNonNullable(occurredAt, `Codex sourceの発生時刻がありません。対象: ${sourceId}`);
-  return occurredAt;
-}
-
-function createCodexInput(
-  configuration: RuntimeConfiguration,
-  evaluatedAt: UtcIsoDateTime,
-  analysis: DeterministicItemAnalysis,
-  selectedElements: readonly AiAnalysisElement[],
-  preservedElements: CodexPreservedElements,
-  previousObservedAt: UtcIsoDateTime | undefined,
-): CodexAnalysisInput {
-  const relationCandidates = deduplicateByStableId(
-    selectRelationAssessmentCandidates(analysis.item.nodeId, analysis.relationCandidates),
-    (candidate) => candidate.id,
-  );
-  const mentionedCandidates = createMentionedWaitingOnCandidates(analysis.detail);
-  const selfCandidates = selfCommitmentCandidates(
-    analysis.item,
-    analysis.detail,
-    previousObservedAt,
-    evaluatedAt,
-  );
-  const nativeRelationSignals = createNativeRelationSignals(
-    analysis.item.nodeId,
-    relationCandidates,
-  );
-  const waitingOnCandidates = new Map<string, CodexWaitingOnCandidate>(
-    analysis.decision.waitingOn.map(
-      (waitingOn) =>
-        [
-          waitingOn.candidateId,
-          Object.freeze({
-            id: waitingOn.candidateId,
-          }),
-        ] satisfies readonly [string, CodexWaitingOnCandidate],
-    ),
-  );
-  const authorCandidateId = codexAuthorCandidateId(analysis.item);
-  if (authorCandidateId != null) {
-    waitingOnCandidates.set(
-      authorCandidateId,
-      Object.freeze({
-        id: authorCandidateId,
-      }),
-    );
-  }
-  for (const candidate of mentionedCandidates) {
-    waitingOnCandidates.set(candidate.id, Object.freeze({ id: candidate.id }));
-  }
-  const commentAuthorBySourceId = new Map<SourceId, CodexSourceAuthor>();
-  for (const comment of codexCommentSources(analysis.detail)) {
-    const commentAuthor = createCodexCommentAuthor(analysis.item, comment);
-    if (commentAuthor == null) {
-      continue;
-    }
-    waitingOnCandidates.set(commentAuthor.candidate.id, commentAuthor.candidate);
-    commentAuthorBySourceId.set(comment.sourceId, commentAuthor.sourceAuthor);
-  }
-  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
-    const candidate = effectiveCandidateContext.candidate;
-    const existingKey = [...waitingOnCandidates.keys()].find(
-      (candidateId) => candidateId.toLowerCase() === candidate.candidateId.toLowerCase(),
-    );
-    if (existingKey != null && existingKey !== candidate.candidateId) {
-      waitingOnCandidates.delete(existingKey);
-    }
-    waitingOnCandidates.set(
-      candidate.candidateId,
-      Object.freeze({
-        id: candidate.candidateId,
-      }),
-    );
-  }
-  const sourceOccurredAtById = new Map(
-    createCodexSourceOccurredAtById(analysis.item, analysis.detail),
-  );
-  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
-    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
-      addCodexSourceOccurredAtForContext(
-        sourceOccurredAtById,
-        sourceContext.item,
-        sourceContext.detail,
-      );
-    }
-  }
-  const sourceRecords = new Map<string, unknown>();
-  sourceRecords.set(
-    analysis.item.sourceId,
-    Object.freeze({
-      id: analysis.item.sourceId,
-      kind: "item",
-      actorType: codexActorType(analysis.item),
-      author: createUnavailableCodexSourceAuthor(),
-      createdAt: analysis.item.createdAt,
-    }),
-  );
-  for (const event of analysis.item.events) {
-    sourceRecords.set(
-      event.sourceId,
-      Object.freeze({
-        id: event.sourceId,
-        kind: event.kind,
-        actorType: event.actor.type,
-        author: createUnavailableCodexSourceAuthor(),
-        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, event.sourceId),
-      }),
-    );
-  }
-  addMirroredNativeBlockerSourceRecords(sourceRecords, analysis.item, relationCandidates);
-  sourceRecords.set(
-    analysis.detail.bodySourceId,
-    Object.freeze({
-      id: analysis.detail.bodySourceId,
-      kind: "body",
-      actorType: codexActorType(analysis.item),
-      author: createUnavailableCodexSourceAuthor(),
-      createdAt: analysis.item.createdAt,
-      content: analysis.detail.body,
-    }),
-  );
-  for (const comment of analysis.detail.comments) {
-    const event = analysis.item.events.find((candidate) => candidate.sourceId === comment.sourceId);
-    sourceRecords.set(
-      comment.sourceId,
-      Object.freeze({
-        id: comment.sourceId,
-        kind: "comment",
-        actorType: event?.actor.type ?? "system",
-        author:
-          commentAuthorBySourceId.get(comment.sourceId) ?? createUnavailableCodexSourceAuthor(),
-        createdAt: comment.createdAt,
-        content: comment.body,
-      }),
-    );
-  }
-  if (analysis.detail.type === "pull_request") {
-    if (analysis.item.type !== "pull_request") {
-      throw new TypeError("Pull RequestのCodex入力にIssueの観測値が指定されています");
-    }
-    for (const thread of analysis.detail.reviewThreads) {
-      for (const comment of thread.comments) {
-        const event = analysis.item.events.find(
-          (candidate) => candidate.sourceId === comment.sourceId,
-        );
-        sourceRecords.set(
-          comment.sourceId,
-          Object.freeze({
-            id: comment.sourceId,
-            kind: "comment",
-            actorType: event?.actor.type ?? "system",
-            author:
-              commentAuthorBySourceId.get(comment.sourceId) ?? createUnavailableCodexSourceAuthor(),
-            createdAt: comment.createdAt,
-            content: comment.body,
-          }),
-        );
-      }
-    }
-    for (const review of analysis.detail.reviews) {
-      const event = analysis.item.events.find(
-        (candidate) => candidate.sourceId === review.sourceId,
-      );
-      sourceRecords.set(
-        review.sourceId,
-        Object.freeze({
-          id: review.sourceId,
-          kind: "review",
-          actorType: event?.actor.type ?? "system",
-          author: createUnavailableCodexSourceAuthor(),
-          createdAt: review.submittedAt,
-          content: review.body,
-        }),
-      );
-    }
-    for (const request of analysis.detail.reviewRequests.current) {
-      if (request.requestedAt.status === "unavailable") {
-        continue;
-      }
-      sourceRecords.set(
-        request.sourceId,
-        Object.freeze({
-          id: request.sourceId,
-          kind: "review_request",
-          actorType: "system",
-          author: createUnavailableCodexSourceAuthor(),
-          createdAt: request.requestedAt.value,
-        }),
-      );
-    }
-    if (analysis.item.mergeState.autoMerge.status === "enabled") {
-      const autoMerge = analysis.item.mergeState.autoMerge;
-      sourceRecords.set(
-        autoMerge.sourceId,
-        Object.freeze({
-          id: autoMerge.sourceId,
-          kind: "auto_merge_request",
-          actorType: autoMerge.enabledBy.type,
-          author: createUnavailableCodexSourceAuthor(),
-          createdAt: autoMerge.enabledAt,
-          mergeMethod: autoMerge.mergeMethod,
-        }),
-      );
-    }
-  }
-  if (
-    analysis.detail.type === "pull_request" &&
-    analysis.detail.mergeState.checks.status === "configured"
-  ) {
-    const checks = analysis.detail.mergeState.checks;
-    sourceRecords.set(
-      checks.sourceId,
-      Object.freeze({
-        id: checks.sourceId,
-        kind: "required_check_rollup",
-        actorType: "system",
-        author: createUnavailableCodexSourceAuthor(),
-        createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, checks.sourceId),
-        combinedState: checks.combinedState,
-      }),
-    );
-    for (const context of checks.contexts) {
-      sourceRecords.set(
-        context.sourceId,
-        Object.freeze({
-          id: context.sourceId,
-          kind: context.type,
-          actorType: "system",
-          author: createUnavailableCodexSourceAuthor(),
-          createdAt: requireCodexSourceOccurredAt(sourceOccurredAtById, context.sourceId),
-          ...(context.type === "check_run"
-            ? {
-                name: context.name,
-                status: context.status,
-                conclusion: context.conclusion,
-              }
-            : {
-                context: context.context,
-                state: context.state,
-              }),
-        }),
-      );
-    }
-  }
-  for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
-    for (const sourceContext of effectiveCandidateContext.sourceContexts) {
-      addCodexSourceRecordsForContext(sourceRecords, sourceOccurredAtById, sourceContext);
-    }
-  }
-  return createCodexAnalysisInput({
-    schemaVersion: "5",
-    now: evaluatedAt,
-    item: {
-      nodeId: analysis.item.nodeId,
-      url: analysis.item.url,
-      type: analysis.item.type,
-      title: analysis.item.title,
-      ...(authorCandidateId == null ? {} : { authorCandidateId }),
-      ...(analysis.item.type === "pull_request"
-        ? {
-            headSha: analysis.item.headSha,
-          }
-        : {}),
-    },
-    candidates: {
-      waitingOn: [...waitingOnCandidates.values()],
-      relations: relationCandidates.map((candidate) => ({
-        id: candidate.id,
-        targetUrl: relationTargetUrl(analysis.item.nodeId, candidate),
-      })),
-    },
-    selfCommitmentCandidates: selfCandidates,
-    sources: [...sourceRecords.values()],
-    deterministicSignals: {
-      status: analysis.decision.status,
-      waitingOn: analysis.decision.waitingOn,
-      relationCandidateIds: relationCandidates.map((candidate) => candidate.id),
-      ...nativeRelationSignals,
-      mentionedWaitingOnCandidates: mentionedCandidates,
-      requiredCheckFailure:
-        analysis.detail.type === "pull_request" &&
-        analysis.detail.mergeState.checks.status === "configured" &&
-        (analysis.detail.mergeState.checks.combinedState === "failure" ||
-          analysis.detail.mergeState.checks.combinedState === "error")
-          ? analysis.detail.mergeState.checks
-          : null,
-      uncertainties: analysis.decision.uncertainties,
-      effectiveAssigneeEligible:
-        analysis.item.type === "issue" &&
-        analysis.item.state === "open" &&
-        analysis.item.assignees.length === 0,
-      effectiveAssigneeCandidates: analysis.effectiveAssigneeCandidates.map(({ candidate }) => ({
-        candidateId: candidate.candidateId,
-        sourceIds: candidate.sourceIds,
-        occurredAt: candidate.occurredAt,
-      })),
-      effectiveAssigneeImplementations: analysis.effectiveAssigneeCandidates.flatMap(
-        ({ candidate, sourceContexts }) =>
-          sourceContexts.flatMap(({ item: sourceItem }) => {
-            if (sourceItem.type !== "pull_request") {
-              return [];
-            }
-            return analysis.relationCandidates.flatMap((relationCandidate) => {
-              if (
-                relationCandidate.relation.type !== "implements" ||
-                relationCandidate.relation.implementation.nodeId !== sourceItem.nodeId ||
-                relationCandidate.relation.target.nodeId !== analysis.item.nodeId
-              ) {
-                return [];
-              }
-              return [
-                {
-                  candidateId: candidate.candidateId,
-                  pullRequestNodeId: sourceItem.nodeId,
-                  pullRequestUrl: sourceItem.url,
-                  pullRequestState: resolveEffectiveAssigneePullRequestState(sourceItem),
-                  relationCandidateIds: [relationCandidate.id],
-                },
-              ];
-            });
-          }),
-      ),
-      effectiveAssigneeConfidenceThreshold: configuration.config.ai.confidence.high,
-    },
-    selectedElements,
-    lockedElements: projectCodexLockedElements(preservedElements),
   });
 }
 
@@ -4464,6 +3607,7 @@ function createAiCandidates(
         [],
         {},
         previousObservedAt,
+        createEarliestRelationSourceOccurredAtById,
       );
     } catch (error: unknown) {
       inputValidationFailures.push(
@@ -4556,6 +3700,7 @@ function createAiCandidates(
         baseInput,
       ),
       previousObservedAt,
+      createEarliestRelationSourceOccurredAtById,
     );
     inputByNodeId.set(analysis.item.nodeId, input);
     const previousIncomingBlockers = new Set<string>(
@@ -7245,7 +6390,11 @@ function createDependencySourceOccurredAtById(
   for (const item of collection.observedItems) {
     const detail = detailsByNodeId.get(item.nodeId);
     assertNonNullable(detail, `依存解消sourceの詳細がありません。対象: ${item.nodeId}`);
-    for (const [sourceId, occurredAt] of createCodexSourceOccurredAtById(item, detail)) {
+    for (const [sourceId, occurredAt] of createCodexSourceOccurredAtById(
+      item,
+      detail,
+      createEarliestRelationSourceOccurredAtById,
+    )) {
       const existingOccurredAt = sourceOccurredAtById.get(sourceId);
       if (existingOccurredAt == null || existingOccurredAt < occurredAt) {
         sourceOccurredAtById.set(sourceId, occurredAt);
@@ -7819,7 +6968,11 @@ function sourceOccurredAtByIdForAnalysis(
   >,
 ): ReadonlyMap<SourceId, UtcIsoDateTime> {
   const sourceOccurredAtById = new Map(
-    createCodexSourceOccurredAtById(analysis.item, analysis.detail),
+    createCodexSourceOccurredAtById(
+      analysis.item,
+      analysis.detail,
+      createEarliestRelationSourceOccurredAtById,
+    ),
   );
   for (const effectiveCandidateContext of analysis.effectiveAssigneeCandidates) {
     for (const sourceContext of effectiveCandidateContext.sourceContexts) {
@@ -7827,6 +6980,7 @@ function sourceOccurredAtByIdForAnalysis(
         sourceOccurredAtById,
         sourceContext.item,
         sourceContext.detail,
+        createEarliestRelationSourceOccurredAtById,
       );
     }
   }
@@ -13033,297 +12187,6 @@ function personalReminderRuntimeItem(
   });
 }
 
-function personalReminderRuntimeEndpointState(
-  item: Readonly<{
-    type: FreshObservedGitHubItem["type"];
-    state: "open" | "closed" | "merged";
-    events: readonly NormalizedEvent[];
-  }>,
-): "open" | "closed" | "merged" {
-  if (item.state === "open") {
-    return "open";
-  }
-  if (
-    item.type === "pull_request" &&
-    item.events.some((event) => event.kind === "state" && event.state === "merged")
-  ) {
-    return "merged";
-  }
-  return "closed";
-}
-
-function personalReminderRuntimeCandidateRelation(
-  candidate: RelationCandidate,
-  aiDependenciesByCandidateId: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
-  proof: RelationCandidateDecisionProof,
-  resolution: RelationCandidateResolution,
-): PersonalReminderRuntimeGraph["candidateRelations"][number] {
-  const [firstNode, secondNode] = relationNodes(candidate.relation);
-  if (firstNode.nodeId === secondNode.nodeId) {
-    throw new TypeError(`個人催促relation候補のendpointが同一です。対象: ${candidate.id}`);
-  }
-  const endpointNodeIds = [firstNode.nodeId, secondNode.nodeId].sort((left, right) =>
-    left.localeCompare(right),
-  );
-  const firstEndpoint = endpointNodeIds[0];
-  const secondEndpoint = endpointNodeIds[1];
-  assertNonNullable(
-    firstEndpoint,
-    `個人催促relation候補のendpointがありません。対象: ${candidate.id}`,
-  );
-  assertNonNullable(
-    secondEndpoint,
-    `個人催促relation候補のendpointがありません。対象: ${candidate.id}`,
-  );
-  const normalizedSourceIds = [...new Set(candidate.sourceIds)].sort((left, right) =>
-    left.localeCompare(right),
-  );
-  const firstSourceId = normalizedSourceIds[0];
-  assertNonNullable(
-    firstSourceId,
-    `個人催促relation候補のsourceがありません。対象: ${candidate.id}`,
-  );
-  const endpointTuple: readonly [GraphNodeId, GraphNodeId] = [firstEndpoint, secondEndpoint];
-  const sourceTuple: readonly [SourceId, ...SourceId[]] = [
-    firstSourceId,
-    ...normalizedSourceIds.slice(1),
-  ];
-  const aiDependency = aiDependenciesByCandidateId.get(candidate.id);
-  assertNonNullable(
-    aiDependency,
-    `個人催促relation候補のAI依存がありません。対象: ${candidate.id}`,
-  );
-  if (proof.candidateId !== candidate.id || resolution.candidateId !== candidate.id) {
-    throw new TypeError(`個人催促relation候補のproof IDが一致しません。対象: ${candidate.id}`);
-  }
-  if (proof.authority !== candidate.authority) {
-    throw new TypeError(
-      `個人催促relation候補のproof authorityが一致しません。対象: ${candidate.id}`,
-    );
-  }
-  if (
-    proof.endpointNodeIds[0] !== firstNode.nodeId ||
-    proof.endpointNodeIds[1] !== secondNode.nodeId
-  ) {
-    throw new TypeError(
-      `個人催促relation候補のproof endpointが一致しません。対象: ${candidate.id}`,
-    );
-  }
-  if (proof.resolution.status !== resolution.status) {
-    throw new TypeError(`個人催促relation候補のresolutionが一致しません。対象: ${candidate.id}`);
-  }
-  if (serializeCanonicalJson(proof.resolution) !== serializeCanonicalJson(resolution)) {
-    throw new TypeError(
-      `個人催促relation候補のresolution内容が一致しません。対象: ${candidate.id}`,
-    );
-  }
-  if (serializeCanonicalJson(proof.dependency) !== serializeCanonicalJson(aiDependency)) {
-    throw new TypeError(`個人催促relation候補のproof AI依存が一致しません。対象: ${candidate.id}`);
-  }
-  return Object.freeze({
-    candidateId: candidate.id,
-    endpointNodeIds: Object.freeze(endpointTuple),
-    ownerNodeId: relationAssessmentOwnerNodeId(candidate),
-    relationType: candidate.relation.type,
-    authority: candidate.authority,
-    provenance: candidate.provenance,
-    resolution,
-    ...(proof.canonicalRelation == null ? {} : { canonicalRelation: proof.canonicalRelation }),
-    evidenceSourceIds: Object.freeze(sourceTuple),
-    aiDependency,
-  });
-}
-
-function personalReminderRuntimeGraph(
-  state: RuntimeState,
-  collection: CollectedItems,
-  reduction: ReducedAnalysis,
-  graph: GraphResult,
-): PersonalReminderRuntimeGraph {
-  const endpointStates = new Map<GraphNodeId, "open" | "closed" | "merged" | "missing">();
-  for (const item of previousSnapshot(state)?.items ?? []) {
-    endpointStates.set(
-      item.nodeId,
-      item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed",
-    );
-  }
-  for (const reference of graph.externalReferences) {
-    endpointStates.set(reference.nodeId, reference.state);
-  }
-  for (const item of collection.observedItems) {
-    endpointStates.set(item.nodeId, personalReminderRuntimeEndpointState(item));
-  }
-  for (const item of reduction.items) {
-    endpointStates.set(
-      item.nodeId,
-      item.state === "merged" ? "merged" : item.state === "open" ? "open" : "closed",
-    );
-  }
-  for (const [nodeId, effectiveState] of graph.effectiveStateByNodeId) {
-    endpointStates.set(nodeId, effectiveState);
-  }
-  const candidateEndpointItemsByNodeId = personalReminderCandidateEndpointItems(
-    state,
-    collection,
-    reduction,
-    graph.effectiveStateByNodeId,
-  );
-  const candidateRelations = graphCandidateRelations(
-    collection.relationCandidates.filter((candidate) =>
-      graph.relationCandidateAiDependencies.has(candidate.id),
-    ),
-    graph.relationCandidateAiDependencies,
-    graph.candidateDecisionProofs,
-    graph.candidateResolutions,
-  );
-  for (const candidate of candidateRelations) {
-    for (const endpointNodeId of candidate.endpointNodeIds) {
-      if (!endpointStates.has(endpointNodeId)) {
-        endpointStates.set(endpointNodeId, "missing");
-      }
-    }
-  }
-  for (const edge of graph.edges) {
-    for (const endpointNodeId of [edge.fromNodeId, edge.toNodeId]) {
-      if (!endpointStates.has(endpointNodeId)) {
-        endpointStates.set(endpointNodeId, "missing");
-      }
-    }
-  }
-  return Object.freeze({
-    activeRelations: Object.freeze(
-      graph.edges.filter(
-        (edge): edge is ReconciledGraphEdge & Readonly<{ active: true }> => edge.active,
-      ),
-    ),
-    candidateRelations,
-    candidateResolutions: Object.freeze(graph.candidateResolutions),
-    endpointStates,
-    candidateEndpointItemsByNodeId,
-    externalReferences: Object.freeze(
-      graph.externalReferences.map((reference) =>
-        Object.freeze({
-          nodeId: reference.nodeId,
-          url: reference.url,
-          title: reference.title,
-          state: reference.state,
-        }),
-      ),
-    ),
-  });
-}
-
-function personalReminderCandidateEndpointItem(
-  item: Pick<TrackedItem, "nodeId" | "type" | "state" | "author">,
-): PersonalReminderRuntimeCandidateEndpointItem {
-  return Object.freeze({
-    nodeId: item.nodeId,
-    type: item.type,
-    state: item.state,
-    author:
-      item.author.status === "identified"
-        ? Object.freeze({
-            status: "identified",
-            type: item.author.actor.type,
-            login: item.author.actor.login,
-          })
-        : Object.freeze({ status: "unavailable" }),
-  });
-}
-
-function personalReminderCandidateEndpointItems(
-  state: RuntimeState,
-  collection: CollectedItems,
-  reduction: ReducedAnalysis,
-  effectiveStateByNodeId: ReadonlyMap<GraphNodeId, TrackedItemState>,
-): ReadonlyMap<GraphNodeId, PersonalReminderRuntimeCandidateEndpointItem> {
-  const itemsByNodeId = new Map<GraphNodeId, PersonalReminderRuntimeCandidateEndpointItem>();
-  for (const item of previousSnapshot(state)?.items ?? []) {
-    itemsByNodeId.set(item.nodeId, personalReminderCandidateEndpointItem(item));
-  }
-  for (const item of collection.observedItems) {
-    itemsByNodeId.set(item.nodeId, personalReminderCandidateEndpointItem(item));
-  }
-  for (const item of reduction.items) {
-    itemsByNodeId.set(item.nodeId, personalReminderCandidateEndpointItem(item));
-  }
-  for (const [nodeId, effectiveState] of effectiveStateByNodeId) {
-    const item = itemsByNodeId.get(nodeId);
-    if (item == null) {
-      continue;
-    }
-    itemsByNodeId.set(
-      nodeId,
-      Object.freeze({
-        ...item,
-        state: effectiveState,
-      }),
-    );
-  }
-  return itemsByNodeId;
-}
-
-function graphCandidateRelations(
-  candidates: readonly RelationCandidate[],
-  aiDependenciesByCandidateId: ReadonlyMap<RelationCandidateId, AiAnalysisDependency>,
-  proofs: readonly RelationCandidateDecisionProof[],
-  resolutions: readonly RelationCandidateResolution[],
-): readonly PersonalReminderRuntimeGraph["candidateRelations"][number][] {
-  const proofsByCandidateId = new Map<RelationCandidateId, RelationCandidateDecisionProof>();
-  for (const proof of proofs) {
-    if (proofsByCandidateId.has(proof.candidateId)) {
-      throw new TypeError(
-        `個人催促relation候補のproof IDが重複しています。対象: ${proof.candidateId}`,
-      );
-    }
-    proofsByCandidateId.set(proof.candidateId, proof);
-  }
-  const resolutionsByCandidateId = new Map<RelationCandidateId, RelationCandidateResolution>();
-  for (const resolution of resolutions) {
-    if (resolutionsByCandidateId.has(resolution.candidateId)) {
-      throw new TypeError(
-        `個人催促relation候補のresolution IDが重複しています。対象: ${resolution.candidateId}`,
-      );
-    }
-    resolutionsByCandidateId.set(resolution.candidateId, resolution);
-  }
-  const candidateIds = new Set(candidates.map((candidate) => candidate.id));
-  for (const candidateId of candidateIds) {
-    if (!proofsByCandidateId.has(candidateId) || !resolutionsByCandidateId.has(candidateId)) {
-      throw new TypeError(
-        `個人催促relation候補のproofまたはresolutionがありません。対象: ${candidateId}`,
-      );
-    }
-  }
-  for (const candidateId of proofsByCandidateId.keys()) {
-    if (!candidateIds.has(candidateId)) {
-      throw new TypeError(`個人催促relation候補のproof対象がありません。対象: ${candidateId}`);
-    }
-  }
-  for (const candidateId of resolutionsByCandidateId.keys()) {
-    if (!candidateIds.has(candidateId)) {
-      throw new TypeError(`個人催促relation候補のresolution対象がありません。対象: ${candidateId}`);
-    }
-  }
-  return Object.freeze(
-    candidates.map((candidate) => {
-      const proof = proofsByCandidateId.get(candidate.id);
-      const resolution = resolutionsByCandidateId.get(candidate.id);
-      assertNonNullable(proof, `個人催促relation候補のproofがありません。対象: ${candidate.id}`);
-      assertNonNullable(
-        resolution,
-        `個人催促relation候補のresolutionがありません。対象: ${candidate.id}`,
-      );
-      return personalReminderRuntimeCandidateRelation(
-        candidate,
-        aiDependenciesByCandidateId,
-        proof,
-        resolution,
-      );
-    }),
-  );
-}
-
 type PersonalReminderRelatedContextProjection = Readonly<{
   contexts: readonly PersonalReminderRuntimeRelatedContext[];
 }>;
@@ -13864,7 +12727,12 @@ async function analyzePersonalReminders(
     graph,
     unavailableConsumerNodeIds,
   );
-  const runtimeGraph = personalReminderRuntimeGraph(state, collection, reduction, graph);
+  const runtimeGraph = personalReminderRuntimeGraph(
+    () => previousSnapshot(state),
+    collection,
+    reduction,
+    graph,
+  );
   const currentEvidenceGroups: readonly (readonly Evidence[])[] = [
     ...reduction.items.map((item) => item.evidence),
     ...graph.edges.map((edge) => edge.evidence),
@@ -16022,8 +14890,6 @@ async function collectProductionItems(
       ),
     previousStaleRepositoryBlockerTopologyNodeIds: () =>
       previousStaleRepositoryBlockerTopologyNodeIds(state),
-    relationNodes,
-    relationAssessmentOwnerNodeId,
   });
   for (const nodeId of blockerTargets.freshNodeIds) {
     analysisNodeIds.add(nodeId);
