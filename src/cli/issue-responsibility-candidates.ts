@@ -18,7 +18,7 @@ const GITHUB_MENTION_PATTERN =
   /(?<![A-Za-z0-9-])@([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))(?:\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,99})))?/gu;
 
 /** 本文とコメントで言及された待機先候補。 */
-export type MentionedWaitingOnCandidate = Readonly<{
+type MentionedWaitingOnCandidate = Readonly<{
   id: string;
   kind: "user" | "team";
   sourceIds: readonly [SourceId, ...SourceId[]];
