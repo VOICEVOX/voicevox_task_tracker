@@ -82,6 +82,7 @@ export type AiAnalysisPreflight = Readonly<
 /** AI分析runへ注入する副作用境界。 */
 export type AiAnalysisRunDependencies = Readonly<{
   cache: AiCacheStore;
+  ensureReady: () => Promise<void>;
   execute: (input: CodexAnalysisInput, context: AiAnalysisExecutionContext) => Promise<unknown>;
   executedAt: () => string;
   preflight?: AiAnalysisPreflight;
@@ -706,6 +707,9 @@ export async function runAiAnalyses(
           configuration.initialUsage,
           dependencies.preflight,
         );
+  if (budgetPlan.selected.length > 0) {
+    await dependencies.ensureReady();
+  }
   const authenticationPreflightExecuted =
     dependencies.preflight != null && budgetPlan.selected.length > 0;
   if (authenticationPreflightExecuted) {

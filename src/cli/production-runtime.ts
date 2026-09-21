@@ -409,6 +409,7 @@ type RuntimeConfiguration = Readonly<{
   config: Config;
   credentials: RuntimeCredentials;
   target: RuntimeExecutionTarget;
+  ensureCodexReady: () => Promise<void>;
 }>;
 
 function createAiAnalysisRunIdentity(config: Config): AiAnalysisRunIdentity {
@@ -6675,6 +6676,7 @@ async function analyzeCodex(
     },
     {
       cache: state.session.aiCache,
+      ensureReady: configuration.ensureCodexReady,
       ...(preflight == null ? {} : { preflight }),
       ...(diagnostics == null ? {} : { diagnostics }),
       execute: (input, context) =>
@@ -14827,6 +14829,7 @@ async function analyzePersonalReminders(
       } satisfies PersonalReminderAiRunConfiguration,
       {
         cache: state.session.personalReminderAiCache,
+        ensureReady: configuration.ensureCodexReady,
         ...(preflight == null ? {} : { preflight }),
         ...(diagnostics == null ? {} : { diagnostics }),
         execute: (input) =>
@@ -18356,19 +18359,26 @@ function createDailyDependencies(
         invocation.command,
         target.kind,
       );
-      if (credentials.codex.enabled) {
-        await assertCodexRuntimeReady(
+      let codexReadinessPromise: Promise<void> | undefined;
+      const ensureCodexReady = (): Promise<void> => {
+        const codexCredentials = credentials.codex;
+        if (!codexCredentials.enabled) {
+          throw new TypeError("AIが有効ですがCodex認証情報がありません");
+        }
+        codexReadinessPromise ??= assertCodexRuntimeReady(
           Object.freeze({
             repositoryPath: adapters.repositoryPath,
             codexProcessRunner: adapters.codexProcessRunner,
           }),
-          credentials.codex,
+          codexCredentials,
         );
-      }
+        return codexReadinessPromise;
+      };
       return Object.freeze({
         config,
         credentials,
         target,
+        ensureCodexReady,
       });
     },
     loadState: async ({ configuration }) => {

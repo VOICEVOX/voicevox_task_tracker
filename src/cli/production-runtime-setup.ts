@@ -29,7 +29,9 @@ import {
 export type EnabledCodexCredentials = Readonly<{
   enabled: true;
   authentication: Config["ai"]["authentication"];
-  environment: Readonly<Record<string, string>>;
+  environment: Readonly<NodeJS.ProcessEnv>;
+  authenticationSync:
+    Readonly<{ kind: "direct" }> | Readonly<{ kind: "github-actions"; tokenPresent: boolean }>;
 }>;
 
 export type RuntimeCodexCredentials =
@@ -103,11 +105,24 @@ function readCodexCredentials(
     });
   }
   const authentication = config.ai.authentication;
-  requireEnvironmentVariables(environment, getCodexEnvironmentVariableAllowlist(authentication));
+  const codexEnvironment: NodeJS.ProcessEnv = {};
+  for (const variableName of getCodexEnvironmentVariableAllowlist(authentication)) {
+    const value = environment[variableName];
+    if (value != null) {
+      codexEnvironment[variableName] = value;
+    }
+  }
   return Object.freeze({
     enabled: true,
     authentication,
-    environment: createCodexEnvironment(authentication, environment),
+    environment: Object.freeze(codexEnvironment),
+    authenticationSync:
+      environment["GITHUB_ACTIONS"] === "true"
+        ? Object.freeze({
+            kind: "github-actions",
+            tokenPresent: environment["CODEX_AUTH_SYNC_TOKEN_PRESENT"] === "true",
+          })
+        : Object.freeze({ kind: "direct" }),
   });
 }
 
@@ -118,7 +133,9 @@ function codexKnownSecrets(credentials: RuntimeCodexCredentials): readonly strin
   switch (credentials.authentication) {
     case "api-key": {
       const openAiApiKey = credentials.environment["OPENAI_API_KEY"];
-      assertNonNullable(openAiApiKey, "組み立て済みCodex環境にOPENAI_API_KEYがありません");
+      if (openAiApiKey == null || openAiApiKey.trim().length === 0) {
+        return Object.freeze([]);
+      }
       return Object.freeze([openAiApiKey]);
     }
     case "auth-json":
@@ -264,12 +281,19 @@ export async function resolveRuntimeTarget(
 
 async function assertCodexAuthenticationAvailable(
   credentials: EnabledCodexCredentials,
+  environment: Readonly<Record<string, string>>,
 ): Promise<void> {
   switch (credentials.authentication) {
     case "api-key":
       return;
     case "auth-json": {
-      const codexHome = credentials.environment["CODEX_HOME"];
+      if (
+        credentials.authenticationSync.kind === "github-actions" &&
+        !credentials.authenticationSync.tokenPresent
+      ) {
+        throw new CliCredentialsError(["CODEX_AUTH_SYNC_TOKEN_PRESENT"], {});
+      }
+      const codexHome = environment["CODEX_HOME"];
       assertNonNullable(codexHome, "組み立て済みCodex環境にCODEX_HOMEがありません");
       try {
         const authJsonStat = await stat(join(codexHome, "auth.json"));
@@ -315,6 +339,11 @@ export async function assertCodexRuntimeReady(
   dependencies: CodexReadinessDependencies,
   credentials: EnabledCodexCredentials,
 ): Promise<void> {
-  await assertCodexAuthenticationAvailable(credentials);
-  await assertCodexCliAvailable(dependencies, credentials.environment);
+  requireEnvironmentVariables(
+    credentials.environment,
+    getCodexEnvironmentVariableAllowlist(credentials.authentication),
+  );
+  const environment = createCodexEnvironment(credentials.authentication, credentials.environment);
+  await assertCodexAuthenticationAvailable(credentials, environment);
+  await assertCodexCliAvailable(dependencies, environment);
 }

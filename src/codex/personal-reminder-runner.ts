@@ -87,6 +87,7 @@ export type PersonalReminderAiRunConfiguration = Readonly<{
 /** 個人催促AIの副作用境界。 */
 export type PersonalReminderAiRunDependencies = Readonly<{
   cache: PersonalReminderAiCacheStore;
+  ensureReady: () => Promise<void>;
   execute: (input: PersonalReminderAiInput) => Promise<SchemaValidPersonalReminderAiOutput>;
   executedAt: () => string;
   preflight?: AiAnalysisPreflight;
@@ -655,6 +656,9 @@ export async function runPersonalReminderAiAnalyses(
           configuration.initialUsage,
           dependencies.preflight,
         );
+  if (budgetPlan.selected.length > 0) {
+    await dependencies.ensureReady();
+  }
   const authenticationPreflightExecuted =
     dependencies.preflight != null && budgetPlan.selected.length > 0;
   if (authenticationPreflightExecuted) {
