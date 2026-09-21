@@ -466,7 +466,8 @@ function createElementResultSchema<ValueSchema extends z.ZodType, EvidenceSchema
   });
 }
 
-const aiAnalysisElementResultSchemas = {
+/** 新規AI分析要素ごとの現行result schema。 */
+export const aiAnalysisElementResultSchemas = {
   status: createElementResultSchema(aiAnalysisStatusSchema, aiAnalysisElementResultEvidenceSchema),
   waitingOn: createElementResultSchema(
     aiAnalysisWaitingOnSchema,
@@ -500,7 +501,7 @@ const aiAnalysisElementResultSchemas = {
     aiAnalysisSelfCommitmentSchema,
     aiAnalysisSelfCommitmentResultEvidenceSchema,
   ),
-};
+} satisfies Readonly<Record<AiAnalysisElement, z.ZodType>>;
 
 /** 要素ごとのresult schemaを取得する。 */
 export function createAiAnalysisElementResultSchema<Element extends AiAnalysisElement>(
