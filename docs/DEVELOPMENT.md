@@ -24,10 +24,10 @@ pnpm install --frozen-lockfile
 | `pnpm build:web`          | 静的Web UIをビルドする                                                                       | `dist/web/`                                  |
 | `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る                                            | `artifacts/workflow/runtime/tracker-run.mjs` |
 | `pnpm dev:web`            | Web UIの開発serverを起動する                                                                 | なし                                         |
-| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                                                              | なし                                         |
-| `pnpm lint`               | ESLintでコードを検査する                                                                     | なし                                         |
-| `pnpm format`             | Prettierで対象ファイルを整形する                                                             | 対象ファイル                                 |
-| `pnpm format:check`       | Prettierによる整形差分がないことを検査する                                                   | なし                                         |
+| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                                                              | `node_modules/.cache/`                       |
+| `pnpm lint`               | ESLintでコードを検査する                                                                     | `node_modules/.cache/`                       |
+| `pnpm format`             | Prettierで対象ファイルを整形する                                                             | 対象ファイル、`node_modules/.cache/`         |
+| `pnpm format:check`       | Prettierによる整形差分がないことを検査する                                                   | `node_modules/.cache/`                       |
 | `pnpm perf:profile`       | CLIをビルドし、モックした日次runの処理時間、API使用率、AI論理call数、summaryサイズを確認する | `artifacts/performance-profile.json`         |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する                                              | サブコマンドによる                           |
 
