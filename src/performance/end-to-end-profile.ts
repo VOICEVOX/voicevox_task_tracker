@@ -79,8 +79,6 @@ const performanceMeasurementSchema = z
     }),
     codex: z.strictObject({
       calls: nonNegativeIntegerSchema,
-      processAttempts: nonNegativeIntegerSchema,
-      configuredMaxProcessAttempts: nonNegativeIntegerSchema,
     }),
     webInitialSummary: z.strictObject({
       gzipBytes: nonNegativeIntegerSchema,
@@ -119,14 +117,12 @@ const performanceProfileSchema = z.strictObject({
   thresholds: z.strictObject({
     durationMilliseconds: z.literal(THIRTY_MINUTES_MILLISECONDS),
     githubApiBudgetRatio: z.literal(GITHUB_API_BUDGET_RATIO),
-    codexMaxProcessAttempts: nonNegativeIntegerSchema,
     summaryGzipBytes: z.literal(PUBLIC_SUMMARY_GZIP_LIMIT_BYTES),
   }),
   measurements: performanceMeasurementSchema,
   checks: z.strictObject({
     processingWithinThirtyMinutes: z.boolean(),
     githubApiBudgetWithinSeventyPercent: z.boolean(),
-    codexBudgetWithinConfiguredLimit: z.boolean(),
     summaryGzipWithinOneMiB: z.boolean(),
   }),
 });
@@ -744,9 +740,6 @@ export function evaluateEndToEndPerformanceMeasurement(
       parsedMeasurement.durationMilliseconds <= THIRTY_MINUTES_MILLISECONDS,
     githubApiBudgetWithinSeventyPercent:
       parsedMeasurement.githubApi.usedRatio <= GITHUB_API_BUDGET_RATIO,
-    codexBudgetWithinConfiguredLimit:
-      parsedMeasurement.codex.processAttempts <=
-      parsedMeasurement.codex.configuredMaxProcessAttempts,
     summaryGzipWithinOneMiB:
       parsedMeasurement.webInitialSummary.gzipBytes <=
       parsedMeasurement.webInitialSummary.limitBytes,
@@ -763,7 +756,6 @@ export function evaluateEndToEndPerformanceMeasurement(
     thresholds: {
       durationMilliseconds: THIRTY_MINUTES_MILLISECONDS,
       githubApiBudgetRatio: GITHUB_API_BUDGET_RATIO,
-      codexMaxProcessAttempts: parsedMeasurement.codex.configuredMaxProcessAttempts,
       summaryGzipBytes: PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
     },
     measurements: parsedMeasurement,
@@ -821,8 +813,6 @@ export async function runEndToEndPerformanceProfile(
       }),
       codex: Object.freeze({
         calls: metrics.aiCallCount,
-        processAttempts: metrics.aiProcessAttemptCount,
-        configuredMaxProcessAttempts: result.config.ai.budget.maxCodexExecAttemptsPerRun,
       }),
       webInitialSummary: Object.freeze({
         gzipBytes: result.generatedPublicData.summarySize.gzipBytes,

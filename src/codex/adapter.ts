@@ -323,8 +323,10 @@ async function runProcess(
   request: CodexProcessRequest,
   dependencies: CodexAdapterDependencies,
   attempts: number,
+  onProcessAttemptStarted: (() => void) | undefined,
 ): Promise<CodexProcessResult> {
   dependencies.attemptBudget.beginAttempt(dependencies.initialAttemptTicket);
+  onProcessAttemptStarted?.();
   try {
     return await dependencies.processRunner(request);
   } catch (error: unknown) {
@@ -636,7 +638,6 @@ async function executeAttempt(
   generation: number,
   observer: CodexSemanticGenerationObserver | undefined,
 ): Promise<unknown> {
-  observer?.onProcessAttemptStarted(generation, attempts);
   const diagnostics = dependencies.diagnostics;
   await recordCodexDiagnostic(diagnostics, "codex.attempt.started", {
     attempt: attempts,
@@ -680,7 +681,9 @@ async function executeAttempt(
       workingDirectory,
       outputSchemaPath,
     );
-    processResult = await runProcess(request, dependencies, attempts);
+    processResult = await runProcess(request, dependencies, attempts, () =>
+      observer?.onProcessAttemptStarted(generation, attempts),
+    );
     stdout = normalizedProcessOutput(processResult.stdout, "stdout");
     stderr = normalizedProcessOutput(processResult.stderr, "stderr");
     stdoutInspection = inspectCodexStdout(stdout);
@@ -917,7 +920,7 @@ async function executeAuthenticationPreflightAttempt(
       dependencies,
       workingDirectory,
     );
-    processResult = await runProcess(request, dependencies, attempts);
+    processResult = await runProcess(request, dependencies, attempts, undefined);
     stdout = normalizedProcessOutput(processResult.stdout, "stdout");
     stderr = normalizedProcessOutput(processResult.stderr, "stderr");
     stdoutInspection = inspectCodexStdout(stdout);

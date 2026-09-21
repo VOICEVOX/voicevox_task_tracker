@@ -147,7 +147,7 @@ export function selectAiAnalysisElements(
     candidatesByElement.set(candidate.element, candidate);
   }
   if (candidatesByElement.size !== AI_ANALYSIS_ELEMENTS.length) {
-    throw new TypeError("AI判定要素の必要性候補が8要素を網羅していません");
+    throw new TypeError("AI判定要素の必要性候補が9要素を網羅していません");
   }
   const status = candidatesByElement.get("status");
   const waitingOn = candidatesByElement.get("waitingOn");
