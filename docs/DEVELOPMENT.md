@@ -18,18 +18,18 @@ pnpm install --frozen-lockfile
 
 ## 開発コマンド
 
-| コマンド                  | 内容                                                         | 出力先                                       |
-| ------------------------- | ------------------------------------------------------------ | -------------------------------------------- |
-| `pnpm build`              | `src`をNode.js向けJavaScriptと型定義へ変換する               | `dist/`                                      |
-| `pnpm build:web`          | 静的Web UIをビルドする                                       | `dist/web/`                                  |
-| `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る            | `artifacts/workflow/runtime/tracker-run.mjs` |
-| `pnpm dev:web`            | Web UIの開発serverを起動する                                 | なし                                         |
-| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                              | なし                                         |
-| `pnpm lint`               | ESLintでコードを検査する                                     | なし                                         |
-| `pnpm format`             | Prettierで対象ファイルを整形する                             | 対象ファイル                                 |
-| `pnpm format:check`       | Prettierによる整形差分がないことを検査する                   | なし                                         |
-| `pnpm perf:profile`       | CLIをビルドし、モックした日次runで性能と予算の指標を確認する | `artifacts/performance-profile.json`         |
-| `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する              | サブコマンドによる                           |
+| コマンド                  | 内容                                                                                         | 出力先                                       |
+| ------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `pnpm build`              | `src`をNode.js向けJavaScriptと型定義へ変換する                                               | `dist/`                                      |
+| `pnpm build:web`          | 静的Web UIをビルドする                                                                       | `dist/web/`                                  |
+| `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る                                            | `artifacts/workflow/runtime/tracker-run.mjs` |
+| `pnpm dev:web`            | Web UIの開発serverを起動する                                                                 | なし                                         |
+| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                                                              | なし                                         |
+| `pnpm lint`               | ESLintでコードを検査する                                                                     | なし                                         |
+| `pnpm format`             | Prettierで対象ファイルを整形する                                                             | 対象ファイル                                 |
+| `pnpm format:check`       | Prettierによる整形差分がないことを検査する                                                   | なし                                         |
+| `pnpm perf:profile`       | CLIをビルドし、モックした日次runの処理時間、API使用率、AI論理call数、summaryサイズを確認する | `artifacts/performance-profile.json`         |
+| `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する                                              | サブコマンドによる                           |
 
 `build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`status/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
 GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdeep linkをこの複製で受けます。
@@ -232,7 +232,7 @@ CIの`verify-state`は、本番と同じ移行処理を使ってstate全体を�
 | `src/github/`         | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                         |
 | `src/graph/`          | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                        |
 | `src/pages/`          | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                               |
-| `src/performance/`    | 外部接続をモックした日次run全体の性能と予算のprofile                                                 |
+| `src/performance/`    | 外部接続をモックした日次runの処理時間、API使用率、AI論理call数、summaryサイズのprofile               |
 | `src/persistence/`    | snapshot、履歴、AI cache、通知管理記録、run report、state branch transaction                         |
 | `src/util/`           | null検査、到達不能検査、共通エラー、Zod診断                                                          |
 | `web/`                | ViteとPreactによる静的Web UIとサンプル公開DTO                                                        |
@@ -353,5 +353,5 @@ pnpm build:web
 `format:check`が失敗した場合は`pnpm format`で整形し、意図しないファイルまで変わっていないことを確認します。
 サンプル公開DTOを実データで上書きしたままにしていないかも確認してください。
 
-日次run全体の性能、API予算、Codex予算、Pages summaryのサイズに影響する変更では`pnpm perf:profile`も実行し、`artifacts/performance-profile.json`を確認します。
+日次runの処理時間、API予算、AI論理call数、Pages summaryのサイズに影響する変更では`pnpm perf:profile`も実行し、`artifacts/performance-profile.json`を確認します。
 `.github/workflows/performance.yml`の手動workflowでも同じ検証を実行できます。

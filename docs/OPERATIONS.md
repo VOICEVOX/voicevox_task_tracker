@@ -199,14 +199,14 @@ gh run view RUN_ID --repo Hiroshiba/voicevox_task_tracker
 OPS-004は通常のCIから分離したend-to-end性能profileで確認します。
 外部サービスへ接続せず、本番の`daily`トランザクションへ5,000項目、10,000 edge、変更300件を流します。
 GitHub APIは15,000 unitのモックrate limitから、一覧のpaginationと項目ごとの詳細取得で消費したunitを差し引きます。
-Codexは設定上限300件までモック出力を返し、予算選別、schema検証、reducerを実際に通します。
+Codex processは起動せず、変更300件のAI論理候補にモック出力を返して、予算選別、schema検証、reducerを通します。論理call数が300件であることも確認します。
 state永続化はメモリ上で行い、Pages初期summaryは実際に生成してgzipサイズを測ります。
 
 ```console
 pnpm perf:profile
 ```
 
-30分、GitHub API 70%、Codex設定上限、summary gzip 1 MiBのいずれかを超えると終了codeが1になります。
+30分、GitHub API 70%、summary gzip 1 MiBのいずれかを超えると終了codeが1になります。AI論理call数が300件と一致しない場合も失敗します。
 測定結果は`artifacts/performance-profile.json`へ保存されます。
 CI上では`性能profile` workflowを手動実行し、同じJSONをActions artifactとして保存します。
 

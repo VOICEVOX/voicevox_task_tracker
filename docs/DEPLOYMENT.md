@@ -344,14 +344,14 @@ pnpm exec codex --version
 `CODEX_HOME`直下の`auth.json`を使って同じ`dry-run`を実行し、`ai.model`に設定されたmodel IDでCodex呼び出しが成功することを確認します。
 ローカルで`api-key`を使う場合は、`ai.authentication`を`api-key`にして`OPENAI_API_KEY`を渡します。
 どちらの方式でも、選択しなかった方式の環境変数はCodexへ渡りません。
-`auth-json`で候補を実行するrunでは、preflightを含む`metrics.aiCallCount`と`metrics.estimatedInputTokens`を確認します。preflightは`maxCallsPerRun`、run全体の入力文字数、見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の50 call設定では最大49候補になり、retryで複数attemptになっても予算上は1論理callです。
+`auth-json`で候補を実行するrunでは、preflightを含む`metrics.aiCallCount`、`metrics.aiProcessAttemptCount`、`metrics.estimatedInputTokens`を確認します。preflightはrun全体の入力文字数と見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の`ai.budget.maxCodexExecAttemptsPerRun`は実試行50回の上限です。preflightを行うrunでは候補の初回試行枠を最大49件分確保でき、retryとsemantic補正の追加実試行も同じ上限から消費します。追加実試行は論理call数へ加えません。
 
-`metrics.aiCallCount`が1以上で`status`が`success`となり、`diagnostics`にmodelの利用不可を示す内容がなければ、設定済みmodel IDを利用できています。
-`metrics.aiCallCount`が0ならmodelを呼び出していないため、利用可否を確認できていません。
-その場合は設定済みmodel IDを`--model`へ指定した最小の`pnpm exec codex exec`を同じ認証情報で実行します。
+`status`が`success`で`metrics.aiProcessAttemptCount`が1以上となり、`diagnostics`にmodelの利用不可を示す内容がなければ、設定済みmodel IDを利用できています。
+`metrics.aiProcessAttemptCount`が0ならmodelを呼び出していないため、利用可否を確認できていません。`status`が`failure`の場合は、`metrics.aiCallCount`が0でもpreflightでmodelを呼び出した可能性があるため、実試行数と`diagnostics`で失敗段階を確認します。
+実試行数が0なら、設定済みmodel IDを`--model`へ指定した最小の`pnpm exec codex exec`を同じ認証情報で実行します。
 
 `metrics.aiCacheHitCount`、`metrics.estimatedInputTokens`、`diagnostics`も確認します。
-model、reasoning effort、promptを変更した場合は、実モデルを呼び出したdry-runで`metrics.aiCallCount`が1以上になることを確認し、AI判定と通知候補の差分を確認します。
+model、reasoning effort、promptを変更した場合は、preflight以外の実分析を含むdry-runでAI判定と通知候補の差分を確認します。
 
 ### 3. 日次workflow
 

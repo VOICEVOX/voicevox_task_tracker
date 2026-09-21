@@ -17,7 +17,7 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 | `src/persistence`    | snapshot、履歴、AI cache、通知管理記録、run report、Git branch transaction                       | `src/canonical-json`、`src/codex`、`src/domain`、`src/github`                  |
 | `src/pages`          | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                           | `src/canonical-json`、`src/domain`、`src/graph`、`src/persistence`、`src/util` |
 | `src/discord`        | 通知候補選別、通知管理記録による重複抑制、payload分割、mention制限、Webhook送信                  | `src/domain`、`src/graph`                                                      |
-| `src/performance`    | 外部接続をモックした日次run全体の性能と予算の検証                                                | `src/cli`と全実処理モジュール                                                  |
+| `src/performance`    | 外部接続をモックした日次runの処理時間、API使用率、AI論理call数、summaryサイズの確認              | `src/cli`と全実処理モジュール                                                  |
 | `src/cli`            | コマンド解析、日次トランザクション、実アダプターの合成、run report                               | 上記の全モジュール                                                             |
 | `web`                | 公開DTOの検証、要対応度と重要度を含む一覧と詳細、通知履歴、項目ごとの依存グラフ、検索、deep link | `src/pages`のDTO契約                                                           |
 
@@ -428,7 +428,7 @@ run共有のCodex exec実試行数、候補選択時の入力文字数と見積�
 preflightはrun全体の入力文字数と見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の`ai.budget.maxCodexExecAttemptsPerRun`は50回で、preflightを実行するrunでは初回試行を最大49候補へ配れます。汎用AI、個人原因AI、preflight、transport retry、semantic補正がprocessRunnerへ渡す`codex exec`を合算し、呼び出し後の起動失敗やtimeoutも数えます。`codex --version`と呼び出し前の失敗は数えません。retryとsemantic補正には未予約枠だけを使います。
 
 予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`件まで同時に実行します。
-判定結果と失敗の並びは完了順ではなく予算計画順へ再構成するため、並列度を変えてもrun reportとstateのbyte列は変わりません。
+判定結果と失敗の並びは完了順ではなく予算計画順へ再構成します。retryとsemantic補正は未予約の実試行枠を到着順で確保するため、枠を競合した候補の採用結果は完了順によって変わり得ます。この場合、並列度を変えたrun reportとstateのbyte列一致は保証しません。
 実行中に予期しない例外が出た場合は新しい候補の実行を始めず、実行中の候補の完了を待ってから例外を伝播します。
 
 実行時は空の一時directoryを作り、`codex exec`へ次の制約を渡します。
