@@ -31,11 +31,15 @@ pnpm install --frozen-lockfile
 | `pnpm perf:profile`       | CLIをビルドし、モックした日次runの処理時間、API使用率、AI論理call数、summaryサイズを確認する | `artifacts/performance-profile.json`         |
 | `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する                                              | サブコマンドによる                           |
 
+`typecheck`、`lint`、`format`、`format:check`のキャッシュは`node_modules/.cache/voicevox-task-tracker/`に保存します。
+
 `build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`status/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
 GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdeep linkをこの複製で受けます。
 
 `tracker:run`はビルドを兼ねません。
 CLIのコードを変更した後は先に`pnpm build`を実行してください。
+GitHub App認証なしで要素別schemaの生成・検証を確認する場合は、`pnpm build`の後に`dist/codex/element-output-schema.js`と`dist/codex/element-output.js`の公開関数を直接呼び出します。
+この確認にはGitHub収集と実AIの呼び出しは含まれません。
 
 ## Web UIをローカルで見る
 
@@ -351,6 +355,7 @@ pnpm build:web
 ```
 
 `format:check`が失敗した場合は`pnpm format`で整形し、意図しないファイルまで変わっていないことを確認します。
+型情報を使うESLint規則を含むため、最終確認前に`node_modules/.cache/voicevox-task-tracker/eslint`だけを削除し、`pnpm lint`でキャッシュを再構築します。
 サンプル公開DTOを実データで上書きしたままにしていないかも確認してください。
 
 日次runの処理時間、API予算、AI論理call数、Pages summaryのサイズに影響する変更では`pnpm perf:profile`も実行し、`artifacts/performance-profile.json`を確認します。

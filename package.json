@@ -16,10 +16,10 @@
     "tracker:run": "node dist/cli/tracker-run.js",
     "sandbox:lifecycle": ".github/scripts/sandbox-lifecycle.sh",
     "diagnostics": "node dist/diagnostics/cli.js",
-    "typecheck": "tsc --project tsconfig.json && tsc --project web/tsconfig.json",
-    "lint": "eslint .",
-    "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "typecheck": "tsc --project tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/voicevox-task-tracker/typecheck-node.tsbuildinfo && tsc --project web/tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/voicevox-task-tracker/typecheck-web.tsbuildinfo",
+    "lint": "eslint . --cache --cache-strategy content --cache-location node_modules/.cache/voicevox-task-tracker/eslint",
+    "format": "prettier --write . --cache --cache-location node_modules/.cache/voicevox-task-tracker/prettier-write",
+    "format:check": "prettier --check . --cache --cache-location node_modules/.cache/voicevox-task-tracker/prettier-check"
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",

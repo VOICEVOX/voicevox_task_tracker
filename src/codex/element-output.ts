@@ -9,7 +9,7 @@ import {
   type AiAnalysisElementResult,
 } from "../domain/ai-analysis-elements.js";
 import {
-  CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  codexElementOutputStructureSchema,
   createCodexElementOutputSchema,
   normalizeCodexElementSelection,
 } from "./element-output-schema.js";
@@ -29,27 +29,8 @@ export type CodexElementResult<Element extends AiAnalysisElement = AiAnalysisEle
 
 export { CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION } from "./element-output-schema.js";
 
-const itemSchema = z.strictObject({
-  nodeId: z.string().min(1),
-  url: z.string().regex(/^https:\/\/github\.com\//u),
-});
-
-const codexElementOutputSchema = z.strictObject({
-  schemaVersion: z.literal(CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION),
-  item: itemSchema,
-  status: createAiAnalysisElementResultSchema("status").optional(),
-  waitingOn: createAiAnalysisElementResultSchema("waitingOn").optional(),
-  nextAction: createAiAnalysisElementResultSchema("nextAction").optional(),
-  relations: createAiAnalysisElementResultSchema("relations").optional(),
-  progress: createAiAnalysisElementResultSchema("progress").optional(),
-  importance: createAiAnalysisElementResultSchema("importance").optional(),
-  deadline: createAiAnalysisElementResultSchema("deadline").optional(),
-  notification: createAiAnalysisElementResultSchema("notification").optional(),
-  selfCommitment: createAiAnalysisElementResultSchema("selfCommitment").optional(),
-});
-
 /** JSON Schema検証を通った要素別Codex出力。 */
-export type SchemaValidCodexElementOutput = z.output<typeof codexElementOutputSchema>;
+export type SchemaValidCodexElementOutput = z.output<typeof codexElementOutputStructureSchema>;
 
 /** 指定した要素のresultを同じ値schemaで検証する。 */
 export function parseCodexElementResult(
@@ -122,7 +103,7 @@ function createZodIssues(error: z.ZodError): readonly CodexOutputValidationIssue
 }
 
 function parseElementOutput(value: unknown): SchemaValidCodexElementOutput {
-  const parsed = codexElementOutputSchema.safeParse(value);
+  const parsed = codexElementOutputStructureSchema.safeParse(value);
   if (!parsed.success) {
     throw new CodexOutputSchemaValidationError(createZodIssues(parsed.error));
   }

@@ -479,6 +479,9 @@ preflightは必要時のtoken更新機会を先に設ける緩和策であり、
 DiscordはHTTP 429だけを同じ設定で再試行します。通信例外、HTTP 5xx、応答不正は送信結果を確定できないため、自動再送せず停止します。secret不備とその他のHTTPエラーも直ちに失敗します。
 
 Codex出力はJSON Schema検証の後にsemantic validationを通します。
+要素別Codex出力の構造制約は、新規生成用のドメインZod schemaと、それを組み合わせたCodex出力の共有Zod構造を正本にします。
+Codexへ渡すJSON Schemaは共有構造から選択要素だけを必須として生成し、値・根拠・長さの制約を手書きで重複させません。
+候補や根拠参照の整合は別のsemantic validationで確認し、移行済みの保存値には新規生成用と異なる移行用schemaを使います。
 入力にないsource ID、user、team、relation targetは拒否し、native relationは変更させません。
 `prompts/codex-system.md`の出力制約は同じsemantic validation規則をAIへ明示し、指定した要素以外の返却を禁止します。
 relationの向きは`current=input.item`から`target=candidate.targetUrl`を基準にします。
