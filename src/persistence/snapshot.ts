@@ -9,9 +9,12 @@ import {
   serializeCanonicalJsonLine,
 } from "../canonical-json/index.js";
 import {
+  StatePersonalReminderAiDependencyMismatchError,
   StateFormatError,
   StateSnapshotSchemaError,
   StateSnapshotSemanticError,
+  type PersonalReminderAiDependencyField,
+  type ResolvedPersonalReminderAiDependencyProducer,
 } from "./errors.js";
 import {
   type Attention,
@@ -27,6 +30,7 @@ import {
   currentPersonalReminderAssessment,
   type CurrentPersonalReminderAssessment,
   type PersonalReminderCause,
+  type PersonalReminderCauseId,
   type PersonalReminderCausePlanning,
   type PersonalReminderEvaluationAttempt,
   personalReminderCauseAiDependenciesSchema,
@@ -1348,6 +1352,10 @@ function assertPersonalReminderAiDependencySemantics(
   relationsById: ReadonlyMap<string, Relation | LegacyRelationWithoutAiDependency>,
   restrictItemProducer: boolean,
   allowHiddenProducerlessSentinels: boolean,
+  mismatchDetails?: Readonly<{
+    causeId: PersonalReminderCauseId;
+    field: PersonalReminderAiDependencyField;
+  }>,
 ): void {
   const dependencyValue = assertAiAnalysisDependencyIntegrity(dependency, description, {
     allowStaleRepository: false,
@@ -1365,6 +1373,18 @@ function assertPersonalReminderAiDependencySemantics(
         relationsById,
         containingDependency,
       ),
+    onMismatch:
+      mismatchDetails == null
+        ? undefined
+        : (actualDependency, resolvedProducerDependencies, expectedDependency) =>
+            new StatePersonalReminderAiDependencyMismatchError({
+              itemNodeId,
+              causeId: mismatchDetails.causeId,
+              field: mismatchDetails.field,
+              actualDependency,
+              resolvedProducerDependencies,
+              expectedDependency,
+            }),
   });
   if (dependencyValue.status === "not_dependent") {
     return;
@@ -1690,7 +1710,7 @@ function assertPersonalReminderDependenciesSemantics(
       ["responsible", cause.aiDependencies.responsible],
       ["action", cause.aiDependencies.action],
       ["evidence", cause.aiDependencies.evidence],
-    ] satisfies readonly (readonly [string, unknown])[];
+    ] satisfies readonly (readonly [PersonalReminderAiDependencyField, unknown])[];
     for (const [field, dependency] of descriptions) {
       assertPersonalReminderAiDependencySemantics(
         dependency,
@@ -1700,6 +1720,7 @@ function assertPersonalReminderDependenciesSemantics(
         relationsById,
         false,
         false,
+        { causeId: cause.causeId, field },
       );
     }
     assertPersonalReminderAiDependencySemantics(
@@ -2353,6 +2374,13 @@ type AiAnalysisDependencyIntegrityOptions = Readonly<{
     description: string,
     containingDependency: AiAnalysisDependency,
   ) => AiAnalysisDependency;
+  onMismatch?:
+    | ((
+        actualDependency: AiAnalysisDependency,
+        resolvedProducerDependencies: readonly ResolvedPersonalReminderAiDependencyProducer[],
+        expectedDependency: AiAnalysisDependency,
+      ) => StateSnapshotSemanticError)
+    | undefined;
 }>;
 
 const producerlessNotRecordedAiAnalysisDependency = Object.freeze({
@@ -2503,12 +2531,17 @@ function assertAiAnalysisDependencyIntegrity(
     }
     throw new StateSnapshotSemanticError(`${description}のproducerがありません`);
   }
+  const resolvedProducerDependencies = producers.map((producer) => ({
+    producer,
+    dependency: options.dependencyForProducer(producer, description, dependencyValue),
+  }));
   const expected = combineAiAnalysisDependencies(
-    producers.map((producer) =>
-      options.dependencyForProducer(producer, description, dependencyValue),
-    ),
+    resolvedProducerDependencies.map(({ dependency: resolvedDependency }) => resolvedDependency),
   );
   if (!aiAnalysisDependencyMatchesExpected(dependencyValue, expected, options)) {
+    if (options.onMismatch != null) {
+      throw options.onMismatch(dependencyValue, resolvedProducerDependencies, expected);
+    }
     throw new StateSnapshotSemanticError(`${description}とproducerの合成結果が一致しません`);
   }
   return dependencyValue;

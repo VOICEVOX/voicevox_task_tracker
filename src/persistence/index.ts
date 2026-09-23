@@ -21,10 +21,14 @@ export {
   StateFormatError,
   StateHistoryError,
   StatePersistenceError,
+  StatePersonalReminderAiDependencyMismatchError,
   StatePublicSafetyError,
   StateSnapshotSchemaError,
   StateSnapshotSemanticError,
   StateZodValidationError,
+  type PersonalReminderAiDependencyField,
+  type PersonalReminderAiDependencyMismatchDetails,
+  type ResolvedPersonalReminderAiDependencyProducer,
 } from "./errors.js";
 export {
   GitStateBranchAdapter,

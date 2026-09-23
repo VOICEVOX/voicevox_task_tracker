@@ -4,6 +4,7 @@ import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import { createUtcIsoDateTime, type UtcIsoDateTime } from "../domain/index.js";
 import { GitHubRetryExhaustedError } from "../github/index.js";
 import { serializeCanonicalJson } from "../canonical-json/index.js";
+import { StatePersonalReminderAiDependencyMismatchError } from "../persistence/index.js";
 import { UnreachableError } from "../util/index.js";
 import {
   type BackfillCliCommand,
@@ -594,6 +595,12 @@ export class DailyTransactionRunner<Types extends DailyTransactionTypeMap> {
           runId: invocation.runId,
           command: invocation.command.kind,
           stage,
+          ...(event === "cli.stage.failed" &&
+          error instanceof StatePersonalReminderAiDependencyMismatchError
+            ? {
+                personalReminderAiDependencyMismatch: error.diagnosticDetails(),
+              }
+            : {}),
         },
         error,
       });

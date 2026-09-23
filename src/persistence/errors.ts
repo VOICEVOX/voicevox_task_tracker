@@ -1,5 +1,11 @@
 import { type ZodError } from "zod";
 
+import type {
+  AiAnalysisDependency,
+  AiAnalysisDependencyProducer,
+  GraphNodeId,
+  PersonalReminderCauseId,
+} from "../domain/index.js";
 import { TaskTrackerError } from "../util/index.js";
 import {
   createZodErrorDiagnostics,
@@ -31,6 +37,40 @@ export class StateSnapshotSchemaError extends StatePersistenceError {
 export class StateSnapshotSemanticError extends StatePersistenceError {
   public constructor(message: string, options?: ErrorOptions) {
     super(`snapshotの意味検証に失敗しました。${message}`, options ?? {});
+  }
+}
+
+export type PersonalReminderAiDependencyField = "presence" | "responsible" | "action" | "evidence";
+
+export type ResolvedPersonalReminderAiDependencyProducer = Readonly<{
+  producer: AiAnalysisDependencyProducer;
+  dependency: AiAnalysisDependency;
+}>;
+
+export type PersonalReminderAiDependencyMismatchDetails = Readonly<{
+  itemNodeId: GraphNodeId;
+  causeId: PersonalReminderCauseId;
+  field: PersonalReminderAiDependencyField;
+  actualDependency: AiAnalysisDependency;
+  resolvedProducerDependencies: readonly ResolvedPersonalReminderAiDependencyProducer[];
+  expectedDependency: AiAnalysisDependency;
+}>;
+
+/** 個人催促原因のAI依存がproducerの合成結果と一致しないことを表す。 */
+export class StatePersonalReminderAiDependencyMismatchError extends StateSnapshotSemanticError {
+  readonly #details: PersonalReminderAiDependencyMismatchDetails;
+
+  public constructor(input: PersonalReminderAiDependencyMismatchDetails) {
+    super("personal reminder causeのAI依存とproducerの合成結果が一致しません");
+    this.#details = Object.freeze({
+      ...input,
+      resolvedProducerDependencies: Object.freeze([...input.resolvedProducerDependencies]),
+    });
+  }
+
+  /** 暗号化診断へ記録する不一致の詳細を返す。 */
+  public diagnosticDetails(): PersonalReminderAiDependencyMismatchDetails {
+    return this.#details;
   }
 }
 

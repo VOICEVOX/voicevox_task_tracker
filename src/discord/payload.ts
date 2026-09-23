@@ -1392,7 +1392,7 @@ export function buildDiscordDigestPlan(input: BuildDiscordDigestPlanInput): Disc
 function operationsKindText(kind: OperationsAlertKind): string {
   switch (kind) {
     case "collection":
-      return "GitHub収集";
+      return "収集・解析の失敗";
     case "pages":
       return "Pages公開";
     case "discord":
@@ -1403,7 +1403,7 @@ function operationsKindText(kind: OperationsAlertKind): string {
 function operationsSummary(kind: OperationsAlertKind): string {
   switch (kind) {
     case "collection":
-      return "GitHub収集がretry上限に達したため、公開処理を停止しました";
+      return "収集・解析に失敗したため、公開処理を停止しました";
     case "pages":
       return "Pages公開に失敗したため、通常digestを停止しました";
     case "discord":
@@ -1448,11 +1448,15 @@ export function buildDiscordOperationsAlertPlan(
             value: operationsSummary(incident.kind),
             inline: false,
           }),
-          Object.freeze({
-            name: "試行回数",
-            value: incident.retryAttempts.toString(),
-            inline: false,
-          }),
+          ...(incident.kind === "collection"
+            ? []
+            : [
+                Object.freeze({
+                  name: "試行回数",
+                  value: incident.retryAttempts.toString(),
+                  inline: false,
+                }),
+              ]),
           Object.freeze({
             name: "incident ID",
             value: incident.incidentId,
