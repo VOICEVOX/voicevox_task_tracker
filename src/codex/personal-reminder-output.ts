@@ -1,12 +1,6 @@
 import { Ajv2020, type ErrorObject } from "ajv/dist/2020.js";
-import { z } from "zod";
+import type { z } from "zod";
 
-import { personalReminderCauseIdSchema } from "../domain/personal-reminder-causes.js";
-import {
-  personalReminderItemRefSchema,
-  personalReminderRelationRefSchema,
-  personalReminderSourceRefSchema,
-} from "./personal-reminder-input.js";
 import {
   CodexOutputSchemaValidationError,
   CodexOutputSemanticValidationError,
@@ -14,75 +8,21 @@ import {
 } from "./errors.js";
 import {
   createPersonalReminderAiOutputSchema,
-  PERSONAL_REMINDER_AI_OUTPUT_SCHEMA_VERSION,
+  personalReminderAiOutputStructureSchema,
   type PersonalReminderAiOutputJsonSchema,
 } from "./personal-reminder-output-schema.js";
 
-const referencesSchema = z.strictObject({
-  itemRefs: z.array(personalReminderItemRefSchema).max(100),
-  relationRefs: z.array(personalReminderRelationRefSchema).max(100),
-  sourceRefs: z.array(personalReminderSourceRefSchema).max(100),
-  reasonSummary: z.string().min(1).max(300),
-});
-
-/** 個人催促AIが返す根拠参照。 */
-export type PersonalReminderRawReferences = z.output<typeof referencesSchema>;
-
-const confidenceSchema = z.number().min(0).max(1);
-
-const personalReminderRawAssessmentSchema = z.discriminatedUnion("verdict", [
-  z.strictObject({
-    verdict: z.literal("actionable"),
-    references: referencesSchema,
-    confidence: confidenceSchema,
-  }),
-  z.strictObject({
-    verdict: z.literal("waiting"),
-    optionId: z.string().min(1).max(512).regex(/^\S+$/u),
-    references: referencesSchema,
-    confidence: confidenceSchema,
-  }),
-  z.strictObject({
-    verdict: z.literal("duplicate"),
-    canonicalCauseId: personalReminderCauseIdSchema,
-    references: referencesSchema,
-    confidence: confidenceSchema,
-  }),
-  z.strictObject({
-    verdict: z.literal("not_required"),
-    references: referencesSchema,
-    confidence: confidenceSchema,
-  }),
-  z.strictObject({
-    verdict: z.literal("unknown"),
-    reason: z.enum(["incomplete_input", "conflicting_evidence", "ambiguous_meaning"]),
-    references: referencesSchema,
-    confidence: confidenceSchema,
-  }),
-]);
+/** JSON Schema検証を通った個人催促AI出力。 */
+export type SchemaValidPersonalReminderAiOutput = z.output<
+  typeof personalReminderAiOutputStructureSchema
+>;
 
 /** 個人催促AIが返す原因単位の意味判定。 */
-export type PersonalReminderRawAssessment = z.output<typeof personalReminderRawAssessmentSchema>;
+export type PersonalReminderRawAssessment =
+  SchemaValidPersonalReminderAiOutput["causes"][number]["assessment"];
 
-const personalReminderAiOutputSchema = z.strictObject({
-  schemaVersion: z.literal(PERSONAL_REMINDER_AI_OUTPUT_SCHEMA_VERSION),
-  item: z.strictObject({
-    nodeId: z.string().min(1).max(512).regex(/^\S+$/u),
-    url: z.string().regex(/^https?:\/\/\S+$/u),
-  }),
-  causes: z
-    .array(
-      z.strictObject({
-        causeId: personalReminderCauseIdSchema,
-        assessment: personalReminderRawAssessmentSchema,
-      }),
-    )
-    .min(1)
-    .max(100),
-});
-
-/** JSON Schema検証を通った個人催促AI出力。 */
-export type SchemaValidPersonalReminderAiOutput = z.output<typeof personalReminderAiOutputSchema>;
+/** 個人催促AIが返す根拠参照。 */
+export type PersonalReminderRawReferences = PersonalReminderRawAssessment["references"];
 
 function schemaIssueMessage(keyword: string): string {
   switch (keyword) {
@@ -152,7 +92,7 @@ function createAjv(): Ajv2020 {
 }
 
 function parsePersonalReminderAiOutput(value: unknown): SchemaValidPersonalReminderAiOutput {
-  const parsed = personalReminderAiOutputSchema.safeParse(value);
+  const parsed = personalReminderAiOutputStructureSchema.safeParse(value);
   if (!parsed.success) {
     throw new CodexOutputSchemaValidationError(createZodIssues(parsed.error));
   }
