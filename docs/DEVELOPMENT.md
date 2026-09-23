@@ -38,8 +38,11 @@ GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdee
 
 `tracker:run`はビルドを兼ねません。
 CLIのコードを変更した後は先に`pnpm build`を実行してください。
-GitHub App認証なしで要素別schemaの生成・検証を確認する場合は、`pnpm build`の後に`dist/codex/element-output-schema.js`と`dist/codex/element-output.js`の公開関数を直接呼び出します。
-この確認にはGitHub収集と実AIの呼び出しは含まれません。
+GitHub App認証なしでschemaの生成・検証を確認する場合は、先に`pnpm build`を実行します。
+要素別schemaは、`dist/codex/element-output-schema.js`と`dist/codex/element-output.js`の公開関数を直接呼び出して確認します。
+個人催促AIの出力schemaは、`dist/codex/personal-reminder-output-schema.js`の`createPersonalReminderAiOutputSchema()`で生成します。
+`dist/codex/personal-reminder-output.js`の`validatePersonalReminderAiOutputSchema()`で出力構造、`validatePersonalReminderAiOutput()`で出力構造と対象項目の一致を検証します。
+この確認にはGitHub収集、実AIの生成、原因単位の意味検証、保存・通知の通し確認は含まれません。
 
 ## Web UIをローカルで見る
 

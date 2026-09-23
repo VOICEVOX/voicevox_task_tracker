@@ -268,7 +268,8 @@ AIは各`causeId`について、`actionable`、`waiting`、`duplicate`、`not_re
 optionの`targetScope`はrelationが接続する責務範囲で、`itemNodeId`は待機・表示の主項目です。relationは原因の責務範囲と`targetScope`の間を接続し、主項目への直接接続は必須にしません。候補は`current_draft`から作り、責務範囲全体の文脈と、`targetScope`の全nodeが入力の`items`に含まれることを保証します。未収集の端点は不完全な入力として扱います。保存する`waitingFor`と公開DTOが示す待機先は主項目です。
 
 意味入力のfingerprintは、原因の責務範囲とoptionの`targetScope`を含む原因ごとの参照入力から作り、同じbatchの別原因や無関係な項目の変化では無効化しません。AI送信用の入力にも同じ責務範囲を渡し、relationの接続と参照先を検証します。時間の経過、閾値到達、説明文だけの変更は再推論の理由にしません。
-JSONの構造検証に失敗したbatchは採用せず、構造検証後は原因ごとに意味検証して採用します。一つの原因の失敗で、他の原因の採用値とcacheを失いません。
+個人催促AIの出力構造は、`src/codex/personal-reminder-output-schema.ts`のZod定義を正本とします。AIへ渡すJSON Schemaと受信時の型は、この定義から導出します。
+出力の構造検証と対象項目の一致確認は別の段階で行い、失敗したbatchは採用しません。通過したbatchは、原因ごとの根拠や選択肢を意味検証して採用します。一つの原因の失敗で、他の原因の採用値とcacheを失いません。
 `currentInput`、`latestAttempt`、`adoptedAssessment`を分けて保存します。実行状態は`not_evaluated`、`completed`、`failed`、`deferred`で表し、正常な`unknown`も`completed`です。採用値の入力fingerprintと規則版が現在値へ一致する場合だけ表示と通知に使います。新しい実行が失敗・延期しても、この一致を満たす採用値は有効です。不一致の旧採用値は根拠を追跡するため保持し、現在対応は未確定にします。
 
 人物所属の表示現在性は、原因が現在存在するかと責任主体に必要な入力を常に含めます。意味評価は`semantic`原因で必須とし、`fixed`原因では現在有効な`duplicate` optionによって非canonicalになり得る場合だけ必須とします。評価が必要な原因は、行動と根拠に必要な入力と、最新assessmentを現在入力へ利用できるかも含めます。
