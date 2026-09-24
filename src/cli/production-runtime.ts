@@ -365,8 +365,8 @@ import {
 } from "./daily-transaction.js";
 import { CliRelationExpansionLimitError } from "./errors.js";
 import { safeCodexFallbackDiagnostic } from "./error-diagnostic.js";
+import { analyzeInitialItem, type DeterministicItemAnalysis } from "./initial-item-analysis.js";
 import {
-  createEffectiveAssigneeCandidateContexts,
   createIssueRequestCandidates,
   createMentionedWaitingOnCandidates,
   type EffectiveAssigneeCandidateContext,
@@ -517,17 +517,6 @@ type RuntimeTrackingSelection = Readonly<{
   result: ReturnType<typeof selectTrackingItems>;
   workByNodeId: ReadonlyMap<GitHubNodeId, TrackedItemWorkDecision>;
   excludedCandidateCount: number;
-}>;
-
-type DeterministicItemAnalysis = Readonly<{
-  item: FreshObservedGitHubItem;
-  detail: GitHubItemDetail;
-  decision: IssueStateDecision | PullRequestStateDecision;
-  localResponsibilityDecision: IssueStateDecision | PullRequestStateDecision;
-  notificationClass: TrackingNotificationClass;
-  notificationsSuppressedByLabel: boolean;
-  relationCandidates: readonly RelationCandidate[];
-  effectiveAssigneeCandidates: readonly EffectiveAssigneeCandidateContext[];
 }>;
 
 const EMPTY_RELATION_CANDIDATES = Object.freeze([] satisfies RelationCandidate[]);
@@ -2287,105 +2276,24 @@ function applyDeterministicAnalysis(
     assertNonNullable(detail, `GitHub詳細取得結果がありません。対象: ${item.nodeId}`);
     const notificationClass = collection.trackingNotificationClassByNodeId.get(item.nodeId);
     assertNonNullable(notificationClass, `追跡項目の通知分類がありません。対象: ${item.nodeId}`);
-    const notificationsSuppressedByLabel = resolveLabelEffects(
-      repositoryFullName(repository),
-      item.labels,
-    ).suppressNotifications;
+    const labelEffects = resolveLabelEffects(repositoryFullName(repository), item.labels);
     const relationCandidates =
       relationCandidatesByNodeId.get(item.nodeId) ?? EMPTY_RELATION_CANDIDATES;
     const blockers = createNativeBlockers(item, relationCandidates);
-    if (item.type === "issue" && detail.type === "issue") {
-      const effectiveAssigneeCandidates = createEffectiveAssigneeCandidateContexts(
-        effectiveAssigneeCollectionContext,
+    items.push(
+      analyzeInitialItem({
         item,
         detail,
+        blockers,
+        maintainers,
+        labelEffects,
+        confidenceThresholds: configuration.config.ai.confidence,
+        evaluatedAt: collection.evaluatedAt,
+        notificationClass,
         relationCandidates,
-      );
-      const decision = determineIssueState({
-        issue: item,
-        blockers,
-        explicitRequestCandidates: createIssueRequestCandidates(item, detail),
-        explicitRequestAssessment: {
-          status: "not_assessed",
-        },
-        effectiveAssigneeCandidates: effectiveAssigneeCandidates.map(
-          (candidate) => candidate.candidate,
-        ),
-        effectiveAssigneeAssessment: {
-          status: "not_assessed",
-        },
-        maintainers,
-        confidenceThresholds: configuration.config.ai.confidence,
-        evaluatedAt: collection.evaluatedAt,
-      });
-      const localResponsibilityDecision = determineIssueLocalResponsibility({
-        issue: item,
-        explicitRequestCandidates: createIssueRequestCandidates(item, detail),
-        explicitRequestAssessment: {
-          status: "not_assessed",
-        },
-        effectiveAssigneeCandidates: effectiveAssigneeCandidates.map(
-          (candidate) => candidate.candidate,
-        ),
-        effectiveAssigneeAssessment: {
-          status: "not_assessed",
-        },
-        maintainers,
-        confidenceThresholds: configuration.config.ai.confidence,
-        evaluatedAt: collection.evaluatedAt,
-      });
-      items.push(
-        Object.freeze({
-          item,
-          detail,
-          decision,
-          localResponsibilityDecision,
-          notificationClass,
-          notificationsSuppressedByLabel,
-          relationCandidates,
-          effectiveAssigneeCandidates,
-        }),
-      );
-      continue;
-    }
-    if (item.type === "pull_request" && detail.type === "pull_request") {
-      const labelEffects = resolveLabelEffects(repositoryFullName(repository), item.labels);
-      const decision = determinePullRequestState({
-        pullRequest: item,
-        blockers,
-        checkFailureAssessment: {
-          cause: "not_assessed",
-        },
-        labelEffects,
-        maintainers,
-        confidenceThresholds: configuration.config.ai.confidence,
-        evaluatedAt: collection.evaluatedAt,
-      });
-      const localResponsibilityDecision = determinePullRequestLocalResponsibility({
-        pullRequest: item,
-        checkFailureAssessment: {
-          cause: "not_assessed",
-        },
-        labelEffects,
-        maintainers,
-        confidenceThresholds: configuration.config.ai.confidence,
-        evaluatedAt: collection.evaluatedAt,
-      });
-      items.push(
-        Object.freeze({
-          item,
-          detail,
-          decision,
-          localResponsibilityDecision,
-          notificationClass,
-          notificationsSuppressedByLabel,
-          relationCandidates,
-          effectiveAssigneeCandidates: Object.freeze([]),
-        }),
-      );
-      continue;
-    }
-    throw new TypeError(`GitHub項目と詳細の種別が一致しません。対象: ${item.nodeId}`);
+        effectiveAssigneeCollectionContext,
+      }),
+    );
   }
   return Object.freeze({
     items: Object.freeze(items),
