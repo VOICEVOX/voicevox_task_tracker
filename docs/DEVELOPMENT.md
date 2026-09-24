@@ -363,3 +363,9 @@ pnpm build:web
 
 日次runの処理時間、API予算、AI論理call数、Pages summaryのサイズに影響する変更では`pnpm perf:profile`も実行し、`artifacts/performance-profile.json`を確認します。
 `.github/workflows/performance.yml`の手動workflowでも同じ検証を実行できます。
+
+ローカルにGitHub Appの環境変数がない場合も、`pnpm perf:profile`は実行できます。
+この処理は、内部で用意したモックの接続先とメモリ上のstateを、本番の日次実行処理へ渡します。
+実際のGitHub、Codex、Discordには接続しません。
+現行のデータはIssueのみであり、Pull Requestの実行経路や実サービスとの接続確認は含まれません。
+`collect-analyze --mode none`や`dry-run`は認証不要の代替手段ではありません。

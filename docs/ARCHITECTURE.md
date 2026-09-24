@@ -26,6 +26,10 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 `src/cli`だけが実アダプターを組み合わせて一つのrunにします。
 Issueの明示依頼候補と実質担当候補、IssueとPull Requestに共通するmention候補を`src/cli/issue-responsibility-candidates.ts`で抽出します。
 `production-runtime.ts`がこれらの候補をAI入力と採用判定へ渡し、日次runとworkflow stageを配線してrun完了を保存します。
+`src/cli/initial-item-analysis.ts`は、設定解決済みの値と収集済みの情報から、AI分析前のIssueとPull Requestを1件ずつ判定します。
+判定対象の選別、公開対象の確認、入力の組み立て、stateとinventoryの引き渡しは`production-runtime.ts`が担います。
+初期判定は実行環境や永続化セッションを受け取らず、評価日時も入力で受け取ります。
+初期判定とAI結果を採用した再判定は、入力契約を分けます。
 `src/cli/notification-delivery-runtime.ts`はDiscord通知の送達、送信済み履歴と通知管理記録の保存、送信開始済み通知の手動解決を担当します。
 
 ```mermaid
