@@ -1719,7 +1719,7 @@ function assertPersonalReminderDependenciesSemantics(
         itemsByNodeId,
         relationsById,
         false,
-        false,
+        true,
         { causeId: cause.causeId, field },
       );
     }
