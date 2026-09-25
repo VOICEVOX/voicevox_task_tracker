@@ -32,9 +32,12 @@ import {
   createPublicRepositoryAllowlist,
   type EnumeratedGitHubItem,
   type GitHubIssueComment,
+  type GitHubInboundCrossReferenceCandidate,
   type GitHubItemDetail,
   type GitHubNativeDependency,
   type GitHubRateLimitSnapshot,
+  type GitHubReferencedItem,
+  type GitHubTimelineEvent,
   type PublicRepository,
 } from "../github/index.js";
 import { PUBLIC_SUMMARY_GZIP_LIMIT_BYTES, type GeneratedPublicData } from "../pages/index.js";
@@ -44,6 +47,23 @@ import { assertNonNullable } from "../util/index.js";
 const PROFILE_ITEM_COUNT = 5_000;
 const PROFILE_EDGE_COUNT = 10_000;
 const PROFILE_CHANGED_ITEM_COUNT = 300;
+const PROFILE_GROUP_COUNT = 100;
+const PROFILE_CHANGED_ITEMS_PER_GROUP = 3;
+const PROFILE_BLOCKER_PAIR_SIZE = 10;
+const PROFILE_NATIVE_BLOCKERS_PER_GROUP = 30;
+const PROFILE_CROSS_REFERENCE_TARGETS_PER_GROUP = 17;
+const PROFILE_GENERIC_AI_CALL_COUNT = PROFILE_CHANGED_ITEM_COUNT;
+const PROFILE_PERSONAL_REMINDER_AI_CALL_COUNT = PROFILE_CHANGED_ITEM_COUNT;
+const PROFILE_TOTAL_AI_CALL_COUNT =
+  PROFILE_GENERIC_AI_CALL_COUNT + PROFILE_PERSONAL_REMINDER_AI_CALL_COUNT;
+const PROFILE_BLOCKERS_PER_CHANGED_ITEM = PROFILE_BLOCKER_PAIR_SIZE * 2;
+const PROFILE_CROSS_REFERENCE_COUNT =
+  PROFILE_EDGE_COUNT - PROFILE_CHANGED_ITEM_COUNT * PROFILE_BLOCKERS_PER_CHANGED_ITEM;
+const PROFILE_TRIPLE_REFERENCE_TARGETS_PER_GROUP =
+  PROFILE_CROSS_REFERENCE_COUNT / PROFILE_GROUP_COUNT -
+  PROFILE_CROSS_REFERENCE_TARGETS_PER_GROUP * 2;
+const PROFILE_CROSS_REFERENCE_TARGET_START_INDEX =
+  PROFILE_CHANGED_ITEM_COUNT + PROFILE_GROUP_COUNT * PROFILE_NATIVE_BLOCKERS_PER_GROUP;
 const PROFILE_REPOSITORY_NAME = "performance-profile";
 const PROFILE_REPOSITORY_ID = createGitHubRepositoryId("R_performance_profile");
 const PROFILE_MAINTAINER_LOGIN = "performance-maintainer";
@@ -78,6 +98,8 @@ const performanceMeasurementSchema = z
       usedRatio: ratioSchema,
     }),
     codex: z.strictObject({
+      genericCalls: nonNegativeIntegerSchema,
+      personalReminderCalls: nonNegativeIntegerSchema,
       calls: nonNegativeIntegerSchema,
     }),
     webInitialSummary: z.strictObject({
@@ -104,10 +126,20 @@ const performanceMeasurementSchema = z
         message: "GitHub API使用率が使用量と上限に一致しません",
       });
     }
+    if (
+      measurement.codex.genericCalls + measurement.codex.personalReminderCalls !==
+      measurement.codex.calls
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["codex"],
+        message: "Codexのcall内訳と合計が一致しません",
+      });
+    }
   });
 
 const performanceProfileSchema = z.strictObject({
-  schemaVersion: z.literal("2"),
+  schemaVersion: z.literal("3"),
   status: z.enum(["passed", "failed"]),
   fixture: z.strictObject({
     itemCount: z.literal(PROFILE_ITEM_COUNT),
@@ -123,6 +155,9 @@ const performanceProfileSchema = z.strictObject({
   checks: z.strictObject({
     processingWithinThirtyMinutes: z.boolean(),
     githubApiBudgetWithinSeventyPercent: z.boolean(),
+    genericAiCallsMatchFixture: z.boolean(),
+    personalReminderAiCallsMatchFixture: z.boolean(),
+    aiCallsMatchExpectedTotal: z.boolean(),
     summaryGzipWithinOneMiB: z.boolean(),
   }),
 });
@@ -151,6 +186,8 @@ type PerformanceHarness = Readonly<{
       githubApiRemaining: number;
       generatedPublicData: GeneratedPublicData;
       config: Config;
+      genericAiNodeIds: readonly string[];
+      personalReminderAiNodeIds: readonly string[];
     }>
   >;
 }>;
@@ -268,20 +305,58 @@ function createProfileItems(
 }
 
 function blockerIndexes(blockedIndex: number): readonly number[] {
-  if (blockedIndex <= PROFILE_CHANGED_ITEM_COUNT) {
+  if (blockedIndex >= PROFILE_CHANGED_ITEM_COUNT) {
     return Object.freeze([]);
   }
-  const indexes = [blockedIndex - 1];
-  if (blockedIndex >= PROFILE_CHANGED_ITEM_COUNT + 2) {
-    indexes.push(blockedIndex - 2);
+  const groupIndex = Math.floor(blockedIndex / PROFILE_CHANGED_ITEMS_PER_GROUP);
+  const changedItemOffset = blockedIndex % PROFILE_CHANGED_ITEMS_PER_GROUP;
+  return Object.freeze(
+    Array.from({ length: PROFILE_BLOCKERS_PER_CHANGED_ITEM }, (_, offset) => {
+      const blockerOffset =
+        ((changedItemOffset + Math.floor(offset / PROFILE_BLOCKER_PAIR_SIZE)) %
+          PROFILE_CHANGED_ITEMS_PER_GROUP) *
+          PROFILE_BLOCKER_PAIR_SIZE +
+        (offset % PROFILE_BLOCKER_PAIR_SIZE);
+      return (
+        PROFILE_CHANGED_ITEM_COUNT + groupIndex * PROFILE_NATIVE_BLOCKERS_PER_GROUP + blockerOffset
+      );
+    }),
+  );
+}
+
+function crossReferenceSourceIndexes(targetIndex: number): readonly number[] {
+  if (targetIndex < PROFILE_CROSS_REFERENCE_TARGET_START_INDEX) {
+    return Object.freeze([]);
   }
-  if (
-    blockedIndex >= PROFILE_CHANGED_ITEM_COUNT + 3 &&
-    blockedIndex <= PROFILE_CHANGED_ITEM_COUNT + 605
-  ) {
-    indexes.push(blockedIndex - 3);
-  }
-  return Object.freeze(indexes);
+  const targetOffset = targetIndex - PROFILE_CROSS_REFERENCE_TARGET_START_INDEX;
+  const groupIndex = Math.floor(targetOffset / PROFILE_CROSS_REFERENCE_TARGETS_PER_GROUP);
+  const targetOffsetInGroup = targetOffset % PROFILE_CROSS_REFERENCE_TARGETS_PER_GROUP;
+  const sourceCount = targetOffsetInGroup < PROFILE_TRIPLE_REFERENCE_TARGETS_PER_GROUP ? 3 : 2;
+  return Object.freeze(
+    Array.from(
+      { length: sourceCount },
+      (_, offset) =>
+        groupIndex * PROFILE_CHANGED_ITEMS_PER_GROUP +
+        ((targetOffsetInGroup + offset) % PROFILE_CHANGED_ITEMS_PER_GROUP),
+    ),
+  );
+}
+
+function createReferencedItem(item: EnumeratedGitHubItem): GitHubReferencedItem {
+  return Object.freeze({
+    sourceId: buildSourceId("github_item", item.nodeId),
+    nodeId: item.nodeId,
+    repositoryId: item.repositoryId,
+    repositoryOwner: "VOICEVOX",
+    repositoryName: PROFILE_REPOSITORY_NAME,
+    repositoryArchived: false,
+    repositoryDisabled: false,
+    type: "issue",
+    number: item.number,
+    url: item.url,
+    createdAt: item.createdAt,
+    state: "open",
+  } satisfies GitHubReferencedItem);
 }
 
 function createNativeDependency(
@@ -296,20 +371,46 @@ function createNativeDependency(
     authoritative: true,
     provenance: "native",
     direction: "blocked_by",
-    relatedItem: Object.freeze({
-      sourceId: buildSourceId("github_item", blockerItem.nodeId),
-      nodeId: blockerItem.nodeId,
-      repositoryId: blockerItem.repositoryId,
-      repositoryOwner: "VOICEVOX",
-      repositoryName: PROFILE_REPOSITORY_NAME,
-      repositoryArchived: false,
-      repositoryDisabled: false,
-      type: "issue",
-      number: blockerItem.number,
-      url: blockerItem.url,
-      createdAt: blockerItem.createdAt,
-      state: "open",
-    }),
+    relatedItem: createReferencedItem(blockerItem),
+  });
+}
+
+function createCrossReference(
+  targetItem: EnumeratedGitHubItem,
+  sourceItem: EnumeratedGitHubItem,
+  sequence: number,
+): Readonly<{
+  event: GitHubTimelineEvent;
+  inbound: GitHubInboundCrossReferenceCandidate;
+}> {
+  const nodeId = createGitHubNodeId(`XREF_${targetItem.nodeId}_${sourceItem.nodeId}`);
+  const eventSourceId = buildSourceId("github_timeline_event", nodeId);
+  const referencedSource = createReferencedItem(sourceItem);
+  return Object.freeze({
+    event: Object.freeze({
+      sourceId: eventSourceId,
+      nodeId,
+      sequence,
+      occurredAt: BASELINE_RUN_AT,
+      actor: Object.freeze({
+        status: "unavailable",
+        reason: "github_did_not_return_actor",
+      }),
+      kind: "cross_referenced",
+      source: referencedSource,
+      willCloseTarget: false,
+    } satisfies GitHubTimelineEvent),
+    inbound: Object.freeze({
+      sourceId: buildSourceId(
+        "github_inbound_cross_reference",
+        `${targetItem.nodeId}:${sourceItem.nodeId}`,
+      ),
+      candidateOnly: true,
+      provenance: "cross_reference",
+      eventSourceId,
+      sourceItem: referencedSource,
+      willCloseTarget: false,
+    } satisfies GitHubInboundCrossReferenceCandidate),
   });
 }
 
@@ -353,6 +454,11 @@ function createProfileDetail(
     );
     return createNativeDependency(item, blocker);
   });
+  const crossReferences = crossReferenceSourceIndexes(index).map((sourceIndex, sequence) => {
+    const source = itemsByNodeId.get(profileNodeId(sourceIndex));
+    assertNonNullable(source, `性能profileの参照元がありません。対象: ${sourceIndex.toString()}`);
+    return createCrossReference(item, source, sequence);
+  });
   return Object.freeze({
     sourceId: buildSourceId("github_item_detail", item.nodeId),
     nodeId: item.nodeId,
@@ -363,13 +469,13 @@ function createProfileDetail(
     body:
       index < PROFILE_CHANGED_ITEM_COUNT
         ? `自然言語判定を必要とする性能profile本文 v${changedVersion.toString()}`
-        : "native dependencyだけを持つ性能profile本文",
+        : "",
     comments:
       index < PROFILE_CHANGED_ITEM_COUNT
         ? Object.freeze([createProfileComment(item, changedVersion)])
         : Object.freeze([]),
-    timeline: Object.freeze([]),
-    inboundCrossReferences: Object.freeze([]),
+    timeline: Object.freeze(crossReferences.map((reference) => reference.event)),
+    inboundCrossReferences: Object.freeze(crossReferences.map((reference) => reference.inbound)),
     nativeDependencies: Object.freeze({
       availability: "available",
       relations: Object.freeze(dependencies),
@@ -512,7 +618,8 @@ async function createPerformanceConfig(repositoryPath: string): Promise<Config> 
       enabled: true,
       budget: Object.freeze({
         ...base.ai.budget,
-        maxCodexExecAttemptsPerRun: PROFILE_CHANGED_ITEM_COUNT,
+        maxCodexExecAttemptsPerRun: PROFILE_TOTAL_AI_CALL_COUNT,
+        maxTotalInputCharactersPerRun: 20_000_000,
       }),
     }),
     notifications: Object.freeze({
@@ -536,6 +643,8 @@ function requireSingleRepository(repositories: readonly PublicRepository[]): Pub
 function createPerformanceHarness(repositoryPath: string, config: Config): PerformanceHarness {
   const stateAdapter = new MemoryStateBranchAdapter();
   const apiBudget = createApiBudgetMeter(GITHUB_API_LIMIT);
+  const genericAiNodeIds: string[] = [];
+  const personalReminderAiNodeIds: string[] = [];
   let currentRunAt = BASELINE_RUN_AT;
   let currentRunStartedAt = performance.now();
   let changedVersion: 1 | 2 = 1;
@@ -589,9 +698,17 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
         }),
       );
     },
-    executeCodexAnalysis: (input) => Promise.resolve(createCodexOutput(input)),
-    executeCodexPersonalReminderAnalysis: (input: PersonalReminderAiInput) =>
-      Promise.resolve<SchemaValidPersonalReminderAiOutput>({
+    executeCodexAnalysis: (input) => {
+      if (currentRunAt === PROFILE_RUN_AT) {
+        genericAiNodeIds.push(input.item.nodeId);
+      }
+      return Promise.resolve(createCodexOutput(input));
+    },
+    executeCodexPersonalReminderAnalysis: (input: PersonalReminderAiInput) => {
+      if (currentRunAt === PROFILE_RUN_AT) {
+        personalReminderAiNodeIds.push(input.item.nodeId);
+      }
+      return Promise.resolve<SchemaValidPersonalReminderAiOutput>({
         schemaVersion: "1",
         item: input.item,
         causes: input.causes.map((cause) => {
@@ -616,7 +733,8 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
             },
           };
         }),
-      }),
+      });
+    },
     executeCodexAuthenticationPreflight: () =>
       Promise.reject(new TypeError("性能profileではCodex認証preflightを実行しません")),
     readWorkflowArtifact: () =>
@@ -692,9 +810,7 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
   return Object.freeze({
     runBaseline: async () => {
       const result = await runDaily(BASELINE_RUN_AT);
-      if (result.exitCode !== 0) {
-        throw new TypeError("性能profileの基準state作成に失敗しました");
-      }
+      requireSuccessfulDailyMetrics(result);
     },
     runProfile: async () => {
       changedVersion = 2;
@@ -715,19 +831,43 @@ function createPerformanceHarness(repositoryPath: string, config: Config): Perfo
         githubApiRemaining: apiBudget.remaining(),
         generatedPublicData,
         config,
+        genericAiNodeIds: Object.freeze([...genericAiNodeIds]),
+        personalReminderAiNodeIds: Object.freeze([...personalReminderAiNodeIds]),
       });
     },
   });
 }
 
-function requireDailyMetrics(execution: CliExecutionResult) {
+function requireSuccessfulDailyMetrics(execution: CliExecutionResult) {
   if (execution.command !== "daily") {
     throw new TypeError("性能profileがdailyコマンドを通っていません");
   }
-  if (execution.exitCode !== 0 || execution.result.report.status === "failure") {
-    throw new TypeError("性能profileの日次runが失敗しました");
+  const report = execution.result.report;
+  if (execution.exitCode !== 0 || report.status !== "success") {
+    throw new TypeError(`性能profileの日次runが成功しませんでした。状態: ${report.status}`);
   }
-  return execution.result.report.metrics;
+  const metrics = report.metrics;
+  if (
+    metrics.personalReminderFailedCount !== 0 ||
+    metrics.personalReminderDeferredCount !== 0 ||
+    metrics.personalReminderNotEvaluatedCount !== 0
+  ) {
+    throw new TypeError("性能profileの日次runに失敗または延期した個人催促原因があります");
+  }
+  return metrics;
+}
+
+function assertProfileAnalysisTargets(nodeIds: readonly string[], kind: string): void {
+  const expectedNodeIds = new Set<string>(
+    Array.from({ length: PROFILE_CHANGED_ITEM_COUNT }, (_, index) => profileNodeId(index)),
+  );
+  if (
+    nodeIds.length !== PROFILE_CHANGED_ITEM_COUNT ||
+    new Set(nodeIds).size !== PROFILE_CHANGED_ITEM_COUNT ||
+    nodeIds.some((nodeId) => !expectedNodeIds.has(nodeId))
+  ) {
+    throw new TypeError(`性能profileの${kind}対象が変更300件と一致しません`);
+  }
 }
 
 /** OPS-004の測定値を全閾値へ照合する。 */
@@ -740,13 +880,18 @@ export function evaluateEndToEndPerformanceMeasurement(
       parsedMeasurement.durationMilliseconds <= THIRTY_MINUTES_MILLISECONDS,
     githubApiBudgetWithinSeventyPercent:
       parsedMeasurement.githubApi.usedRatio <= GITHUB_API_BUDGET_RATIO,
+    genericAiCallsMatchFixture:
+      parsedMeasurement.codex.genericCalls === PROFILE_GENERIC_AI_CALL_COUNT,
+    personalReminderAiCallsMatchFixture:
+      parsedMeasurement.codex.personalReminderCalls === PROFILE_PERSONAL_REMINDER_AI_CALL_COUNT,
+    aiCallsMatchExpectedTotal: parsedMeasurement.codex.calls === PROFILE_TOTAL_AI_CALL_COUNT,
     summaryGzipWithinOneMiB:
       parsedMeasurement.webInitialSummary.gzipBytes <=
       parsedMeasurement.webInitialSummary.limitBytes,
   });
   const passed = Object.values(checks).every((value) => value);
   return performanceProfileSchema.parse({
-    schemaVersion: "2",
+    schemaVersion: "3",
     status: passed ? "passed" : "failed",
     fixture: {
       itemCount: PROFILE_ITEM_COUNT,
@@ -783,7 +928,9 @@ export async function runEndToEndPerformanceProfile(
   const harness = createPerformanceHarness(repositoryPath, config);
   await harness.runBaseline();
   const result = await harness.runProfile();
-  const metrics = requireDailyMetrics(result.execution);
+  const metrics = requireSuccessfulDailyMetrics(result.execution);
+  assertProfileAnalysisTargets(result.genericAiNodeIds, "汎用AI");
+  assertProfileAnalysisTargets(result.personalReminderAiNodeIds, "個人催促AI");
   if (
     metrics.itemCount !== PROFILE_ITEM_COUNT ||
     metrics.activeEdgeCount !== PROFILE_EDGE_COUNT ||
@@ -793,13 +940,15 @@ export async function runEndToEndPerformanceProfile(
       `性能fixtureの件数が一致しません。items=${metrics.itemCount.toString()} edges=${metrics.activeEdgeCount.toString()} changed=${metrics.changedItemCount.toString()}`,
     );
   }
-  if (metrics.aiCallCount !== PROFILE_CHANGED_ITEM_COUNT) {
-    throw new TypeError(
-      `性能fixtureのCodex呼び出し件数が一致しません。calls=${metrics.aiCallCount.toString()}`,
-    );
-  }
   if (metrics.githubApiRemaining !== result.githubApiRemaining) {
     throw new TypeError("run reportとGitHub APIモックの残量が一致しません");
+  }
+  const genericAiCallCount = metrics.aiCallCount - metrics.personalReminderAiCallCount;
+  if (
+    genericAiCallCount !== result.genericAiNodeIds.length ||
+    metrics.personalReminderAiCallCount !== result.personalReminderAiNodeIds.length
+  ) {
+    throw new TypeError("run reportと性能profileのAIモック呼び出し件数が一致しません");
   }
   const githubApiUsedRatio = result.githubApiUsed / GITHUB_API_LIMIT;
   return evaluateEndToEndPerformanceMeasurement(
@@ -812,6 +961,8 @@ export async function runEndToEndPerformanceProfile(
         usedRatio: githubApiUsedRatio,
       }),
       codex: Object.freeze({
+        genericCalls: genericAiCallCount,
+        personalReminderCalls: metrics.personalReminderAiCallCount,
         calls: metrics.aiCallCount,
       }),
       webInitialSummary: Object.freeze({

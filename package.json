@@ -12,7 +12,7 @@
     "build:workflow-cli": "vite build --config workflow.vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts",
     "dev:web": "vite --config web/vite.config.ts",
-    "perf:profile": "tsc --project tsconfig.build.json && node dist/performance/run-profile.js",
+    "perf:profile": "tsc --project tsconfig.build.json && node --max-old-space-size=4096 dist/performance/run-profile.js",
     "tracker:run": "node dist/cli/tracker-run.js",
     "sandbox:lifecycle": ".github/scripts/sandbox-lifecycle.sh",
     "diagnostics": "node dist/diagnostics/cli.js",
