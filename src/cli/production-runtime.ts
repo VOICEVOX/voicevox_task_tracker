@@ -225,8 +225,6 @@ import {
   createNotificationCauses,
   selectDiscordNotifications,
   type sendDiscordDigest,
-  type DiscordDigestDelivery,
-  type DiscordDeliverySettings,
   type DiscordNotificationItem,
   type NotificationCause,
   type NotificationCauseEvidence,
@@ -300,7 +298,6 @@ import {
 import {
   createStateHistoryInputEvents,
   createStateNotificationLedger,
-  createStateRunReport,
   createStateSnapshot,
   assertPersonalReminderEvidenceClosure,
   assertPersonalReminderEvidenceRecordsClosure,
@@ -308,7 +305,6 @@ import {
   snapshotEffectiveGraphStateByNodeId,
   NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
   StatePersistenceSession,
-  type PersistStateTransactionResult,
   type SnapshotAiState,
   type SnapshotAnalysisPlanFingerprint,
   type SnapshotCollectionItem,
@@ -319,7 +315,6 @@ import {
   type StateBranchAdapter,
   type StateNotificationLedger,
   type StatePersistenceConfiguration,
-  type StateRunReport,
   type StateHistoryRecord,
   type StateHistoryInputEvent,
   type StateHistoryNotificationEvent,
@@ -377,18 +372,26 @@ import {
   blockerRelationAnalysisTargets,
   normalizedBlockerRelationEndpointNodeIds,
 } from "./relation-driven-analysis-targets.js";
-import { writeRunReport, type RunMetrics } from "./run-report.js";
+import { writeRunReport } from "./run-report.js";
+import {
+  createCollectAnalyzeArtifact,
+  validatedRunFromArtifact,
+} from "./run-publication/artifact.js";
+import type {
+  DiscordResult,
+  PagesResult,
+  PersistedRun,
+  ValidatedRun,
+} from "./run-publication/contracts.js";
+import { createPersistedRunReport, createRunMetadata } from "./run-publication/metadata.js";
+import { discordDeliverySettings, pagesUrl } from "./run-publication/settings.js";
 import {
   StateVerificationRunner,
   type verifyPersistentStateDirectory,
 } from "./state-verification.js";
 import {
-  assertWorkflowArtifactPublicSafety,
-  createWorkflowArtifact,
-  createWorkflowRunMetadata,
   type readWorkflowArtifactFile,
   workflowArtifactRepositoryInventory,
-  type WorkflowArtifact,
   type WorkflowRunMetadata,
 } from "./workflow-artifact.js";
 import { createWorkflowRunReport, readOptionalRunReportFile } from "./workflow-run-report.js";
@@ -409,7 +412,6 @@ const CODEX_BACKEND_VERSION = `codex-cli-${CODEX_CLI_VERSION}`;
 const CODEX_PROMPT_FINGERPRINT = hashCanonicalJson({
   bundleVersion: CODEX_PROMPT_BUNDLE_VERSION,
 });
-const PAGES_BASE_URL = "https://voicevox.github.io";
 const STALE_BLOCKER_TOPOLOGY_DEPENDENCY_ELEMENTS = Object.freeze([
   "status",
   "waitingOn",
@@ -626,35 +628,6 @@ type PersonalReminderAnalysis = Readonly<{
   budgetUsage: AiBudgetUsage;
   authenticationPreflightExecuted: boolean;
 }>;
-
-type ValidatedRun = Readonly<{
-  snapshot: StateSnapshot;
-  historyInputEvents: readonly StateHistoryInputEvent[];
-  notificationLedger: StateNotificationLedger;
-  notificationSelection: DiscordNotificationSelection;
-}>;
-
-type PersistedRun = Readonly<{
-  result: PersistStateTransactionResult;
-  historyRecords: readonly StateHistoryRecord[];
-  notificationLedger: StateNotificationLedger;
-}>;
-
-type PagesResult = Readonly<{
-  data: GeneratedPublicData;
-  output: PublicDataWriteResult;
-  pagesUrl: string;
-}>;
-
-type DiscordDeliveryResult = Readonly<{
-  delivery: DiscordDigestDelivery;
-  notificationEvents: readonly StateHistoryNotificationEvent[];
-}>;
-
-type DiscordResult = DiscordDeliveryResult &
-  Readonly<{
-    notificationLedger: StateNotificationLedger;
-  }>;
 
 export type ProductionTypes = DailyTransactionTypeMap &
   Readonly<{
@@ -12749,123 +12722,6 @@ function validateRunCompleteness(
   });
 }
 
-function persistedMetrics(
-  metrics: RunMetrics,
-  validated: ValidatedRun,
-): WorkflowRunMetadata["metrics"] {
-  return Object.freeze({
-    repositoryCount: validated.snapshot.repositories.length,
-    itemCount: validated.snapshot.items.length,
-    changedItemCount: metrics.changedItemCount,
-    activeEdgeCount: validated.snapshot.relations.filter((relation) => relation.active).length,
-    aiCallCount: metrics.aiCallCount,
-    aiProcessAttemptCount: metrics.aiProcessAttemptCount,
-    aiCacheHitCount: metrics.aiCacheHitCount,
-    aiRetainedResultCount: metrics.aiRetainedResultCount,
-    estimatedInputTokens: metrics.estimatedInputTokens,
-    personalReminderCauseCount: metrics.personalReminderCauseCount,
-    personalReminderAiCallCount: metrics.personalReminderAiCallCount,
-    personalReminderAiCacheHitCount: metrics.personalReminderAiCacheHitCount,
-    personalReminderAssessmentReuseCount: metrics.personalReminderAssessmentReuseCount,
-    personalReminderUnknownCount: metrics.personalReminderUnknownCount,
-    personalReminderFailedCount: metrics.personalReminderFailedCount,
-    personalReminderDeferredCount: metrics.personalReminderDeferredCount,
-    personalReminderNotEvaluatedCount: metrics.personalReminderNotEvaluatedCount,
-    githubApiRemaining: metrics.githubApiRemaining,
-    staleRepositoryCount: validated.snapshot.repositories.filter(
-      (repository) => repository.freshness === "stale",
-    ).length,
-    scheduleDelayMilliseconds: metrics.scheduleDelayMilliseconds,
-  });
-}
-
-function createRunMetadata(
-  invocation: DailyRunInvocation,
-  validated: ValidatedRun,
-  metrics: RunMetrics,
-  diagnostics: readonly string[],
-): WorkflowRunMetadata {
-  return createWorkflowRunMetadata({
-    scheduledFor: invocation.scheduledFor,
-    startedAt: invocation.startedAt,
-    metrics: persistedMetrics(metrics, validated),
-    diagnostics,
-  });
-}
-
-function createPersistedRunReport(
-  snapshot: StateSnapshot,
-  metadata: WorkflowRunMetadata,
-  notificationCount: number,
-  finishedAt: UtcIsoDateTime,
-): StateRunReport {
-  return createStateRunReport({
-    schemaVersion: "3",
-    runId: snapshot.run.id,
-    date: metadata.startedAt.slice(0, 10),
-    status: snapshot.run.status,
-    complete: true,
-    scheduledFor: metadata.scheduledFor,
-    startedAt: metadata.startedAt,
-    finishedAt,
-    metrics: {
-      ...metadata.metrics,
-      notificationCount,
-      durationMilliseconds: Date.parse(finishedAt) - Date.parse(metadata.startedAt),
-    },
-    diagnostics: metadata.diagnostics,
-  });
-}
-
-function discordDeliverySettings(config: Config): DiscordDeliverySettings {
-  return Object.freeze({
-    enabled: config.notifications.discord.enabled,
-    webhookSecretName: config.notifications.discord.webhookSecretName,
-    operationsWebhookSecretName: config.notifications.discord.operationsWebhookSecretName,
-    mentions: config.notifications.discord.mentions,
-    retry: config.operations.retry,
-  });
-}
-
-function createCollectAnalyzeArtifact(
-  invocation: DailyRunInvocation,
-  configuration: RuntimeConfiguration,
-  state: RuntimeState,
-  inventory: RepositoryInventory,
-  validated: ValidatedRun,
-  metrics: RunMetrics,
-  diagnostics: readonly string[],
-): WorkflowArtifact {
-  if (invocation.command.kind !== "collect-analyze") {
-    throw new TypeError("collect-analyze以外のrunからworkflow artifactを生成できません");
-  }
-  const artifact = createWorkflowArtifact({
-    schemaVersion: "13",
-    kind: "validated_public_run",
-    notificationAction: invocation.command.notificationAction,
-    repositoryAllowlist: inventory.allowlist.repositories.map((repository) => ({
-      id: repository.id,
-      owner: repository.owner,
-      name: repository.name,
-    })),
-    snapshot: validated.snapshot,
-    historyInputEvents: validated.historyInputEvents,
-    notificationLedger: validated.notificationLedger,
-    notificationSelection: validated.notificationSelection,
-    runMetadata: createRunMetadata(invocation, validated, metrics, diagnostics),
-    aiCacheEntries: state.session.pendingAiCacheEntries(),
-    personalReminderAiCacheEntries: state.session.pendingPersonalReminderAiCacheEntries(),
-    pagesUrl: pagesUrl(configuration.config),
-    discordSettings: discordDeliverySettings(configuration.config),
-  });
-  assertWorkflowArtifactPublicSafety(
-    artifact,
-    inventory.inventory,
-    configuration.credentials.knownSecrets,
-  );
-  return artifact;
-}
-
 async function persistValidatedRun(
   configuration: RuntimeConfiguration,
   state: RuntimeState,
@@ -12888,10 +12744,6 @@ async function persistValidatedRun(
     historyRecords,
     notificationLedger: validated.notificationLedger,
   });
-}
-
-function pagesUrl(config: Config): string {
-  return new URL(config.web.basePath, PAGES_BASE_URL).href;
 }
 
 async function buildPublicPages(
@@ -12957,12 +12809,12 @@ async function persistSuccessfulRunCompletion(
     }),
     notificationEvents: Object.freeze([]),
     notificationLedger: delivery.notificationLedger,
-    runReport: createPersistedRunReport(
+    runReport: createPersistedRunReport({
       snapshot,
-      runMetadata,
-      delivery.notificationCount,
-      completedAt,
-    ),
+      metadata: runMetadata,
+      notificationCount: delivery.notificationCount,
+      finishedAt: completedAt,
+    }),
     repositoryInventory,
     knownSecrets,
   });
@@ -14643,7 +14495,7 @@ function createDailyDependencies(
         state,
         repositoryInventory.inventory,
         validated,
-        createRunMetadata(invocation, validated, metrics, diagnostics),
+        createRunMetadata({ invocation, validated, metrics, diagnostics }),
         {
           notificationLedger: discord.notificationLedger,
           notificationCount: metrics.notificationCount,
@@ -14697,26 +14549,17 @@ function createDailyDependencies(
     writeCollectAnalyzeArtifact: (path, input) =>
       adapters.writeJsonArtifact(
         path,
-        createCollectAnalyzeArtifact(
-          input.invocation,
-          input.configuration,
-          input.state,
-          input.repositoryInventory,
-          input.validated,
-          input.metrics,
-          input.diagnostics,
-        ),
+        createCollectAnalyzeArtifact({
+          invocation: input.invocation,
+          configuration: input.configuration,
+          state: input.state,
+          inventory: input.repositoryInventory,
+          validated: input.validated,
+          metrics: input.metrics,
+          diagnostics: input.diagnostics,
+        }),
       ),
     writeReport: (path, report) => writeRunReport(path, report, adapters.writeTextFile),
-  });
-}
-
-function validatedRunFromArtifact(artifact: WorkflowArtifact): ValidatedRun {
-  return Object.freeze({
-    snapshot: artifact.snapshot,
-    historyInputEvents: artifact.historyInputEvents,
-    notificationLedger: artifact.notificationLedger,
-    notificationSelection: artifact.notificationSelection,
   });
 }
 
