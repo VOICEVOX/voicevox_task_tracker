@@ -111,6 +111,8 @@ export default defineConfig([
                 "**/discord/**",
                 "./index",
                 "./index.*",
+                "../personal-reminder/index",
+                "../personal-reminder/index.*",
               ],
               message:
                 "個人催促の解析は実行環境や副作用を参照せず、実装間は所有元を直接参照してください",
