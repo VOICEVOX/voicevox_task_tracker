@@ -1,4 +1,5 @@
 import eslint from "@eslint/js";
+import { builtinModules } from "node:module";
 import { defineConfig } from "eslint/config";
 import eslintConfigPrettier from "eslint-config-prettier/flat";
 import tseslint from "typescript-eslint";
@@ -84,6 +85,38 @@ export default defineConfig([
         "error",
         { name: "fetch", message: "初期判定では外部接続を行わないでください" },
         { name: "process", message: "初期判定では実行環境を参照しないでください" },
+      ],
+    },
+  },
+  {
+    files: ["src/cli/personal-reminder/**/*.ts"],
+    rules: {
+      "max-lines": ["error", { max: 1000, skipBlankLines: false, skipComments: false }],
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: builtinModules
+            .filter((moduleName) => !moduleName.startsWith("node:"))
+            .map((name) => ({
+              name,
+              message: "個人催促の解析はNode.jsの組み込みモジュールを参照しないでください",
+            })),
+          patterns: [
+            {
+              group: [
+                "node:*",
+                "**/production-runtime*",
+                "**/persistence/**",
+                "**/pages/**",
+                "**/discord/**",
+                "./index",
+                "./index.*",
+              ],
+              message:
+                "個人催促の解析は実行環境や副作用を参照せず、実装間は所有元を直接参照してください",
+            },
+          ],
+        },
       ],
     },
   },
