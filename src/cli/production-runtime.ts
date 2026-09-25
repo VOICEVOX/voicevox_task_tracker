@@ -331,18 +331,10 @@ import {
   latestUtcIsoDateTime,
 } from "./codex-input-projection.js";
 import {
-  type BuildPagesCliCommand,
-  type NotifyDiscordCliCommand,
-  type NotifyOperationsCliCommand,
-  type PersistStateCliCommand,
   type ReportWorkflowCliCommand,
 } from "./command.js";
 import { type PersonalReminderAnalysisStageResult } from "./daily-transaction.js";
-import {
-  deliverDiscord,
-  deliverOperationsAlert,
-  resolveDiscordDelivery,
-} from "./notification-delivery-runtime.js";
+import { resolveDiscordDelivery } from "./notification-delivery-runtime.js";
 import { type SandboxRunContext } from "./sandbox-context.js";
 import {
   DailyTransactionRunner,
@@ -365,7 +357,6 @@ import {
   normalizedBlockerRelationEndpointNodeIds,
 } from "./relation-driven-analysis-targets.js";
 import { writeRunReport } from "./run-report.js";
-import { validatedRunFromArtifact } from "./run-publication/artifact.js";
 import type {
   DiscordResult,
   PagesResult,
@@ -373,23 +364,17 @@ import type {
   ValidatedRun,
 } from "./run-publication/contracts.js";
 import { createDailyPublicationStageHandlers } from "./run-publication/daily-stage-handlers.js";
-import { buildPublicPages } from "./run-publication/pages.js";
-import { persistSuccessfulRunCompletion } from "./run-publication/persistence.js";
-import { discordDeliverySettings, pagesUrl } from "./run-publication/settings.js";
+import { createWorkflowPublicationStageHandlers } from "./run-publication/workflow-stage-handlers.js";
 import {
   StateVerificationRunner,
   type verifyPersistentStateDirectory,
 } from "./state-verification.js";
-import {
-  type readWorkflowArtifactFile,
-  workflowArtifactRepositoryInventory,
-} from "./workflow-artifact.js";
+import { type readWorkflowArtifactFile } from "./workflow-artifact.js";
 import { createWorkflowRunReport, readOptionalRunReportFile } from "./workflow-run-report.js";
 import { WorkflowStageRunner } from "./workflow-stage.js";
 import {
   assertCodexRuntimeReady,
   readRuntimeCredentials,
-  requireEnvironmentValue,
   requireEnvironmentVariables,
   resolveRuntimeTarget,
   type RuntimeCredentials,
@@ -14327,190 +14312,6 @@ function createDailyDependencies(
   });
 }
 
-async function persistWorkflowState(
-  adapters: ProductionRuntimeAdapters,
-  command: PersistStateCliCommand,
-): Promise<void> {
-  const artifact = await adapters.readWorkflowArtifact(
-    resolve(adapters.repositoryPath, command.artifactPath),
-  );
-  const config = await adapters.loadConfig(resolve(adapters.repositoryPath, command.configPath));
-  const session = await adapters.openStateSession(
-    adapters.createStateBranchAdapter(),
-    config.state,
-  );
-  for (const entry of artifact.aiCacheEntries) {
-    await session.aiCache.write(entry);
-  }
-  for (const entry of artifact.personalReminderAiCacheEntries) {
-    await session.personalReminderAiCache.write(entry);
-  }
-  await session.persist({
-    snapshot: artifact.snapshot,
-    historyInputEvents: artifact.historyInputEvents,
-    notificationLedger: artifact.notificationLedger,
-    repositoryInventory: workflowArtifactRepositoryInventory(artifact),
-    knownSecrets: [],
-  });
-}
-
-async function buildWorkflowPages(
-  adapters: ProductionRuntimeAdapters,
-  command: BuildPagesCliCommand,
-): Promise<void> {
-  const artifact = await adapters.readWorkflowArtifact(
-    resolve(adapters.repositoryPath, command.artifactPath),
-  );
-  const config = await adapters.loadConfig(resolve(adapters.repositoryPath, command.configPath));
-  if (pagesUrl(config) !== artifact.pagesUrl) {
-    throw new TypeError("workflow artifactと現在の設定でPages URLが一致しません");
-  }
-  const session = await adapters.openStateSession(
-    adapters.createStateBranchAdapter(),
-    config.state,
-  );
-  const persistedSnapshot = await session.loadSnapshot();
-  if (
-    persistedSnapshot.status !== "available" ||
-    persistedSnapshot.snapshot.run.id !== artifact.snapshot.run.id
-  ) {
-    throw new TypeError("Pages生成対象のrunがtracker-state branchにありません");
-  }
-  const historyRecords = await session.loadHistoryRecords();
-  await buildPublicPages({
-    writePublicData: adapters.writePublicData,
-    config,
-    inventory: workflowArtifactRepositoryInventory(artifact),
-    repositoryAllowlist: artifact.repositoryAllowlist,
-    validated: validatedRunFromArtifact(artifact),
-    historyRecords,
-    outputDirectory: resolve(adapters.repositoryPath, command.outputDirectory),
-    knownSecrets: [],
-    resolveLabelRules: () => normalizeLabelRules(config),
-  });
-}
-
-async function notifyWorkflowDiscord(
-  adapters: ProductionRuntimeAdapters,
-  command: NotifyDiscordCliCommand,
-): Promise<void> {
-  const artifact = await adapters.readWorkflowArtifact(
-    resolve(adapters.repositoryPath, command.artifactPath),
-  );
-  const config = await adapters.loadConfig(resolve(adapters.repositoryPath, command.configPath));
-  if (command.pagesUrl !== artifact.pagesUrl) {
-    throw new TypeError("deploy済みPages URLがworkflow artifactの公開先と一致しません");
-  }
-  const session = await adapters.openStateSession(
-    adapters.createStateBranchAdapter(),
-    config.state,
-  );
-  const persistedSnapshot = await session.loadSnapshot();
-  if (persistedSnapshot.status !== "available") {
-    throw new TypeError("Discord通知対象のstate snapshotがありません");
-  }
-  if (persistedSnapshot.snapshot.run.id !== artifact.snapshot.run.id) {
-    throw new TypeError(
-      "Discord通知対象のworkflow artifactとtracker-state branchでrunが一致しません",
-    );
-  }
-  const state = Object.freeze({
-    session,
-    snapshot: persistedSnapshot,
-    notificationLedger: await session.loadNotificationLedger(),
-  });
-  if (
-    artifact.notificationAction === "acknowledge-current" ||
-    artifact.notificationAction === "hold"
-  ) {
-    await persistSuccessfulRunCompletion({
-      now: adapters.now,
-      config,
-      state,
-      repositoryInventory: workflowArtifactRepositoryInventory(artifact),
-      validated: validatedRunFromArtifact(artifact),
-      runMetadata: artifact.runMetadata,
-      delivery: {
-        notificationLedger: state.notificationLedger,
-        notificationCount: 0,
-      },
-      knownSecrets: [],
-      resolveCompletedTrackingStartAt: completedSnapshotTrackingStartAt,
-    });
-    return;
-  }
-  const knownSecrets = artifact.discordSettings.enabled
-    ? Object.freeze([
-        requireEnvironmentValue(adapters.environment, artifact.discordSettings.webhookSecretName),
-        requireEnvironmentValue(
-          adapters.environment,
-          artifact.discordSettings.operationsWebhookSecretName,
-        ),
-      ])
-    : Object.freeze([]);
-  const result = await deliverDiscord(
-    adapters,
-    config,
-    () => normalizeLabelRules(config),
-    artifact.discordSettings,
-    state,
-    workflowArtifactRepositoryInventory(artifact),
-    knownSecrets,
-    Object.freeze({
-      snapshot: artifact.snapshot,
-      historyInputEvents: artifact.historyInputEvents,
-      notificationLedger: state.notificationLedger,
-      notificationSelection: artifact.notificationSelection,
-    }),
-    command.pagesUrl,
-  );
-  await persistSuccessfulRunCompletion({
-    now: adapters.now,
-    config,
-    state,
-    repositoryInventory: workflowArtifactRepositoryInventory(artifact),
-    validated: validatedRunFromArtifact(artifact),
-    runMetadata: artifact.runMetadata,
-    delivery: {
-      notificationLedger: result.notificationLedger,
-      notificationCount: result.notificationCount,
-    },
-    knownSecrets,
-    resolveCompletedTrackingStartAt: completedSnapshotTrackingStartAt,
-  });
-}
-
-async function notifyWorkflowOperations(
-  adapters: ProductionRuntimeAdapters,
-  command: NotifyOperationsCliCommand,
-): Promise<void> {
-  const config = await adapters.loadConfig(resolve(adapters.repositoryPath, command.configPath));
-  const session = await adapters.openStateSession(
-    adapters.createStateBranchAdapter(),
-    config.state,
-  );
-  const snapshot = await session.loadSnapshot();
-  const state = Object.freeze({
-    session,
-    snapshot,
-    notificationLedger: await session.loadNotificationLedger(),
-  });
-  const knownSecrets = config.notifications.discord.enabled
-    ? Object.freeze([
-        requireEnvironmentValue(
-          adapters.environment,
-          config.notifications.discord.operationsWebhookSecretName,
-        ),
-      ])
-    : Object.freeze([]);
-  await deliverOperationsAlert(adapters, discordDeliverySettings(config), knownSecrets, state, {
-    incidentId: command.incidentId,
-    kind: command.incidentKind,
-    occurredAt: command.occurredAt,
-    retryAttempts: command.retryAttempts,
-  });
-}
-
 async function reportWorkflowRun(
   adapters: ProductionRuntimeAdapters,
   command: ReportWorkflowCliCommand,
@@ -14528,11 +14329,16 @@ async function reportWorkflowRun(
 }
 
 function createWorkflowStageRunner(adapters: ProductionRuntimeAdapters): WorkflowStageRunner {
+  const publicationHandlers = createWorkflowPublicationStageHandlers({
+    adapters,
+    normalizeLabelRules,
+    resolveCompletedTrackingStartAt: completedSnapshotTrackingStartAt,
+  });
   return new WorkflowStageRunner({
-    persistState: (command) => persistWorkflowState(adapters, command),
-    buildPages: (command) => buildWorkflowPages(adapters, command),
-    notifyDiscord: (command) => notifyWorkflowDiscord(adapters, command),
-    notifyOperations: (command) => notifyWorkflowOperations(adapters, command),
+    persistState: publicationHandlers.persistState,
+    buildPages: publicationHandlers.buildPages,
+    notifyDiscord: publicationHandlers.notifyDiscord,
+    notifyOperations: publicationHandlers.notifyOperations,
     resolveDiscordDelivery: (command) => resolveDiscordDelivery(adapters, command),
     reportWorkflow: (command) => reportWorkflowRun(adapters, command),
   });
