@@ -25,12 +25,18 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
 `src/cli`だけが実アダプターを組み合わせて一つのrunにします。
 Issueの明示依頼候補と実質担当候補、IssueとPull Requestに共通するmention候補を`src/cli/issue-responsibility-candidates.ts`で抽出します。
-`production-runtime.ts`がこれらの候補をAI入力と採用判定へ渡し、日次runとworkflow stageを配線してrun完了を保存します。
+`production-runtime.ts`がこれらの候補をAI入力と採用判定へ渡し、日次runとworkflow stageに実アダプターを配線します。
 `src/cli/initial-item-analysis.ts`は、設定解決済みの値と収集済みの情報から、AI分析前のIssueとPull Requestを1件ずつ判定します。
 判定対象の選別、公開対象の確認、入力の組み立て、stateとinventoryの引き渡しは`production-runtime.ts`が担います。
 初期判定は実行環境や永続化セッションを受け取らず、評価日時も入力で受け取ります。
 初期判定とAI結果を採用した再判定は、入力契約を分けます。
 `src/cli/notification-delivery-runtime.ts`はDiscord通知の送達、送信済み履歴と通知管理記録の保存、送信開始済み通知の手動解決を担当します。
+完全性検証後の公開処理は`src/cli/run-publication/`が担当します。
+`ValidatedRun`は完全性検証から公開処理へ渡す共有契約です。dailyは一つの`ValidatedRun`を公開処理へ渡し、分割workflowはartifactの値を再解析・再計算せず`ValidatedRun`として復元します。
+公開順序は、初期保存、Pages生成、Discord送信または省略、完了保存です。
+分割workflowの`notify-discord`は分岐前に現在の通知管理記録を読み、`send`では配送処理内でも保存済みの記録を再読込します。再読込でsnapshot、`notificationSelection`、run IDの供給元は差し替えません。
+通知eventはDiscord配送callbackが逐次保存してpublishします。完了保存には空配列を渡し、同じeventを二重保存しません。
+下位層の例外は握りつぶさず、既存のCLIエラー境界へ伝播します。`production-runtime.ts`から公開処理へ一方向に依存し、`run-publication`から`production-runtime.ts`はimportしません。
 
 ```mermaid
 flowchart LR

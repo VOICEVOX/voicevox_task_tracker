@@ -122,4 +122,26 @@ export default defineConfig([
       ],
     },
   },
+  {
+    files: ["src/cli/run-publication/**/*.ts"],
+    rules: {
+      "max-lines": ["error", { max: 1000, skipBlankLines: false, skipComments: false }],
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/production-runtime.js"],
+              message: "公開処理からproduction-runtimeを参照しないでください",
+            },
+          ],
+        },
+      ],
+      "no-restricted-globals": [
+        "error",
+        { name: "fetch", message: "公開処理ではglobal fetchを使わないでください" },
+        { name: "process", message: "公開処理ではglobal processを使わないでください" },
+      ],
+    },
+  },
 ]);
