@@ -288,13 +288,7 @@ import {
   relationNodes,
   selectRelationAssessmentCandidates,
 } from "../graph/relation-candidate-endpoints.js";
-import {
-  generatePublicData,
-  PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
-  type GeneratedPublicData,
-  type PublicDataWriteResult,
-  type PagesPublicSafetyInput,
-} from "../pages/index.js";
+import { type GeneratedPublicData, type PublicDataWriteResult } from "../pages/index.js";
 import {
   createStateHistoryInputEvents,
   createStateNotificationLedger,
@@ -315,9 +309,7 @@ import {
   type StateBranchAdapter,
   type StateNotificationLedger,
   type StatePersistenceConfiguration,
-  type StateHistoryRecord,
   type StateHistoryInputEvent,
-  type StateHistoryNotificationEvent,
   type StateSnapshot,
   type StateSnapshotReadResult,
 } from "../persistence/index.js";
@@ -373,17 +365,16 @@ import {
   normalizedBlockerRelationEndpointNodeIds,
 } from "./relation-driven-analysis-targets.js";
 import { writeRunReport } from "./run-report.js";
-import {
-  createCollectAnalyzeArtifact,
-  validatedRunFromArtifact,
-} from "./run-publication/artifact.js";
+import { validatedRunFromArtifact } from "./run-publication/artifact.js";
 import type {
   DiscordResult,
   PagesResult,
   PersistedRun,
   ValidatedRun,
 } from "./run-publication/contracts.js";
-import { createPersistedRunReport, createRunMetadata } from "./run-publication/metadata.js";
+import { createDailyPublicationStageHandlers } from "./run-publication/daily-stage-handlers.js";
+import { buildPublicPages } from "./run-publication/pages.js";
+import { persistSuccessfulRunCompletion } from "./run-publication/persistence.js";
 import { discordDeliverySettings, pagesUrl } from "./run-publication/settings.js";
 import {
   StateVerificationRunner,
@@ -392,7 +383,6 @@ import {
 import {
   type readWorkflowArtifactFile,
   workflowArtifactRepositoryInventory,
-  type WorkflowRunMetadata,
 } from "./workflow-artifact.js";
 import { createWorkflowRunReport, readOptionalRunReportFile } from "./workflow-run-report.js";
 import { WorkflowStageRunner } from "./workflow-stage.js";
@@ -12722,105 +12712,6 @@ function validateRunCompleteness(
   });
 }
 
-async function persistValidatedRun(
-  configuration: RuntimeConfiguration,
-  state: RuntimeState,
-  inventory: RepositoryInventory,
-  validated: ValidatedRun,
-): Promise<PersistedRun> {
-  const result = await state.session.persist({
-    snapshot: validated.snapshot,
-    historyInputEvents: validated.historyInputEvents,
-    notificationLedger: validated.notificationLedger,
-    repositoryInventory: inventory.inventory,
-    knownSecrets: configuration.credentials.knownSecrets,
-  });
-  if (configuration.target.kind === "sandbox") {
-    await state.session.publish();
-  }
-  const historyRecords = await state.session.loadHistoryRecords();
-  return Object.freeze({
-    result,
-    historyRecords,
-    notificationLedger: validated.notificationLedger,
-  });
-}
-
-async function buildPublicPages(
-  adapters: ProductionRuntimeAdapters,
-  config: Config,
-  inventory: readonly Repository[],
-  repositoryAllowlist: PagesPublicSafetyInput["repositoryAllowlist"],
-  validated: ValidatedRun,
-  historyRecords: readonly StateHistoryRecord[],
-  outputDirectory: string,
-  knownSecrets: readonly string[],
-): Promise<PagesResult> {
-  const data = generatePublicData({
-    snapshot: validated.snapshot,
-    historyRecords,
-    repositoryAllowlist,
-    repositoryInventory: inventory,
-    knownSecrets,
-    options: {
-      confidenceThresholds: config.ai.confidence,
-      labelRules: normalizeLabelRules(config),
-      maxInitialGraphNodes: config.web.graph.maxInitialNodes,
-      maxSummaryGzipBytes: PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
-      timezone: config.staleness.timezone,
-    },
-  });
-  const output = await adapters.writePublicData(outputDirectory, data);
-  return Object.freeze({
-    data,
-    output,
-    pagesUrl: pagesUrl(config),
-  });
-}
-
-async function persistSuccessfulRunCompletion(
-  adapters: ProductionRuntimeAdapters,
-  config: Config,
-  state: RuntimeState,
-  repositoryInventory: readonly Repository[],
-  validated: ValidatedRun,
-  runMetadata: WorkflowRunMetadata,
-  delivery: Readonly<{
-    notificationLedger: StateNotificationLedger;
-    notificationCount: number;
-    notificationEvents: readonly StateHistoryNotificationEvent[];
-  }>,
-  knownSecrets: readonly string[],
-): Promise<void> {
-  const completedAt = createUtcIsoDateTime(adapters.now().toISOString());
-  const persistedSnapshot = await state.session.loadSnapshot();
-  if (persistedSnapshot.status !== "available") {
-    throw new TypeError("run完了対象のstate snapshotがありません");
-  }
-  if (persistedSnapshot.snapshot.run.id !== validated.snapshot.run.id) {
-    throw new TypeError("run完了対象のrunがstate snapshotと一致しません");
-  }
-  const snapshot = persistedSnapshot.snapshot;
-  const trackingStartAt = completedSnapshotTrackingStartAt(config, snapshot, completedAt);
-  await state.session.persistRunCompletion({
-    snapshot: createStateSnapshot({
-      ...snapshot,
-      trackingStartAt,
-    }),
-    notificationEvents: Object.freeze([]),
-    notificationLedger: delivery.notificationLedger,
-    runReport: createPersistedRunReport({
-      snapshot,
-      metadata: runMetadata,
-      notificationCount: delivery.notificationCount,
-      finishedAt: completedAt,
-    }),
-    repositoryInventory,
-    knownSecrets,
-  });
-  await state.session.publish();
-}
-
 function configuredNodeIdentifiers(config: Config): readonly string[] {
   return Object.freeze(config.tracking.include.filter((identifier) => !identifier.includes("://")));
 }
@@ -14208,6 +14099,11 @@ async function collectProductionItems(
 function createDailyDependencies(
   adapters: ProductionRuntimeAdapters,
 ): DailyTransactionDependencies<ProductionTypes> {
+  const publicationHandlers = createDailyPublicationStageHandlers({
+    adapters,
+    normalizeLabelRules,
+    resolveCompletedTrackingStartAt: completedSnapshotTrackingStartAt,
+  });
   return Object.freeze({
     ...(adapters.diagnosticsRecorder == null
       ? {}
@@ -14420,145 +14316,13 @@ function createDailyDependencies(
           diagnostics: Object.freeze([]),
         }),
       ),
-    persistState: ({ configuration, state, repositoryInventory, validated }) =>
-      persistValidatedRun(configuration, state, repositoryInventory, validated),
-    buildPages: ({ configuration, repositoryInventory, validated, persisted }) =>
-      buildPublicPages(
-        adapters,
-        configuration.config,
-        repositoryInventory.inventory,
-        repositoryInventory.allowlist.repositories,
-        validated,
-        persisted.historyRecords,
-        adapters.pagesOutputDirectory,
-        configuration.credentials.knownSecrets,
-      ),
-    sendDiscord: async ({
-      invocation,
-      configuration,
-      state,
-      repositoryInventory,
-      validated,
-      pages,
-    }) => {
-      if (
-        invocation.command.kind !== "dry-run" &&
-        (invocation.command.notificationAction === "acknowledge-current" ||
-          invocation.command.notificationAction === "hold")
-      ) {
-        return Object.freeze({
-          value: Object.freeze({
-            delivery: Object.freeze({
-              status: "skipped",
-              reason: invocation.command.notificationAction === "hold" ? "held" : "no_candidates",
-            }),
-            notificationEvents: Object.freeze([]),
-            notificationLedger: validated.notificationLedger,
-          }),
-          notificationCount: 0,
-          discordSentAt: null,
-        });
-      }
-      const result = await deliverDiscord(
-        adapters,
-        configuration.config,
-        () => normalizeLabelRules(configuration.config),
-        discordDeliverySettings(configuration.config),
-        state,
-        repositoryInventory.inventory,
-        configuration.credentials.knownSecrets,
-        validated,
-        pages.pagesUrl,
-      );
-      return Object.freeze({
-        value: Object.freeze({
-          ...result.value,
-          notificationLedger: result.notificationLedger,
-        }),
-        notificationCount: result.notificationCount,
-        discordSentAt: result.discordSentAt,
-      });
-    },
-    completeRun: ({
-      invocation,
-      configuration,
-      state,
-      repositoryInventory,
-      validated,
-      discord,
-      metrics,
-      diagnostics,
-    }) =>
-      persistSuccessfulRunCompletion(
-        adapters,
-        configuration.config,
-        state,
-        repositoryInventory.inventory,
-        validated,
-        createRunMetadata({ invocation, validated, metrics, diagnostics }),
-        {
-          notificationLedger: discord.notificationLedger,
-          notificationCount: metrics.notificationCount,
-          notificationEvents: discord.notificationEvents,
-        },
-        configuration.credentials.knownSecrets,
-      ),
-    sendOperationsAlert: async ({
-      invocation,
-      configuration,
-      state,
-      persisted,
-      kind,
-      retryAttempts,
-    }) => {
-      if (configuration.target.kind === "sandbox") {
-        return Object.freeze({
-          value: Object.freeze({
-            delivery: Object.freeze({
-              status: "disabled",
-            }),
-            notificationEvents: Object.freeze([]),
-            notificationLedger:
-              persisted == null ? state.notificationLedger : persisted.notificationLedger,
-          }),
-          notificationCount: 0,
-          discordSentAt: null,
-        });
-      }
-      let persistedState = state;
-      if (persisted != null) {
-        persistedState = Object.freeze({
-          ...state,
-          notificationLedger: persisted.notificationLedger,
-        });
-      }
-      return deliverOperationsAlert(
-        adapters,
-        discordDeliverySettings(configuration.config),
-        configuration.credentials.knownSecrets,
-        persistedState,
-        {
-          incidentId: `${invocation.runId}:${kind}`,
-          kind,
-          occurredAt: invocation.startedAt,
-          retryAttempts,
-        },
-      );
-    },
+    persistState: publicationHandlers.persistState,
+    buildPages: publicationHandlers.buildPages,
+    sendDiscord: publicationHandlers.sendDiscord,
+    completeRun: publicationHandlers.completeRun,
+    sendOperationsAlert: publicationHandlers.sendOperationsAlert,
     writeDryRunArtifact: (path, artifact) => adapters.writeJsonArtifact(path, artifact),
-    writeCollectAnalyzeArtifact: (path, input) =>
-      adapters.writeJsonArtifact(
-        path,
-        createCollectAnalyzeArtifact({
-          invocation: input.invocation,
-          configuration: input.configuration,
-          state: input.state,
-          inventory: input.repositoryInventory,
-          validated: input.validated,
-          metrics: input.metrics,
-          diagnostics: input.diagnostics,
-        }),
-      ),
+    writeCollectAnalyzeArtifact: publicationHandlers.writeCollectAnalyzeArtifact,
     writeReport: (path, report) => writeRunReport(path, report, adapters.writeTextFile),
   });
 }
@@ -14613,16 +14377,17 @@ async function buildWorkflowPages(
     throw new TypeError("Pages生成対象のrunがtracker-state branchにありません");
   }
   const historyRecords = await session.loadHistoryRecords();
-  await buildPublicPages(
-    adapters,
+  await buildPublicPages({
+    writePublicData: adapters.writePublicData,
     config,
-    workflowArtifactRepositoryInventory(artifact),
-    artifact.repositoryAllowlist,
-    validatedRunFromArtifact(artifact),
+    inventory: workflowArtifactRepositoryInventory(artifact),
+    repositoryAllowlist: artifact.repositoryAllowlist,
+    validated: validatedRunFromArtifact(artifact),
     historyRecords,
-    resolve(adapters.repositoryPath, command.outputDirectory),
-    [],
-  );
+    outputDirectory: resolve(adapters.repositoryPath, command.outputDirectory),
+    knownSecrets: [],
+    resolveLabelRules: () => normalizeLabelRules(config),
+  });
 }
 
 async function notifyWorkflowDiscord(
@@ -14658,20 +14423,20 @@ async function notifyWorkflowDiscord(
     artifact.notificationAction === "acknowledge-current" ||
     artifact.notificationAction === "hold"
   ) {
-    await persistSuccessfulRunCompletion(
-      adapters,
+    await persistSuccessfulRunCompletion({
+      now: adapters.now,
       config,
       state,
-      workflowArtifactRepositoryInventory(artifact),
-      validatedRunFromArtifact(artifact),
-      artifact.runMetadata,
-      {
+      repositoryInventory: workflowArtifactRepositoryInventory(artifact),
+      validated: validatedRunFromArtifact(artifact),
+      runMetadata: artifact.runMetadata,
+      delivery: {
         notificationLedger: state.notificationLedger,
         notificationCount: 0,
-        notificationEvents: Object.freeze([]),
       },
-      [],
-    );
+      knownSecrets: [],
+      resolveCompletedTrackingStartAt: completedSnapshotTrackingStartAt,
+    });
     return;
   }
   const knownSecrets = artifact.discordSettings.enabled
@@ -14699,16 +14464,20 @@ async function notifyWorkflowDiscord(
     }),
     command.pagesUrl,
   );
-  await persistSuccessfulRunCompletion(
-    adapters,
+  await persistSuccessfulRunCompletion({
+    now: adapters.now,
     config,
     state,
-    workflowArtifactRepositoryInventory(artifact),
-    validatedRunFromArtifact(artifact),
-    artifact.runMetadata,
-    result,
+    repositoryInventory: workflowArtifactRepositoryInventory(artifact),
+    validated: validatedRunFromArtifact(artifact),
+    runMetadata: artifact.runMetadata,
+    delivery: {
+      notificationLedger: result.notificationLedger,
+      notificationCount: result.notificationCount,
+    },
     knownSecrets,
-  );
+    resolveCompletedTrackingStartAt: completedSnapshotTrackingStartAt,
+  });
 }
 
 async function notifyWorkflowOperations(
