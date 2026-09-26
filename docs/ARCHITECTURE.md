@@ -24,19 +24,29 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 `src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
 副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
 `src/cli`だけが実アダプターを組み合わせて一つのrunにします。
-Issueの明示依頼候補と実質担当候補、IssueとPull Requestに共通するmention候補を`src/cli/issue-responsibility-candidates.ts`で抽出します。
-`production-runtime.ts`がこれらの候補をAI入力と採用判定へ渡し、日次runとworkflow stageに実アダプターを配線します。
+`src/cli/production-runtime.ts`は`ProductionTypes`、`ProductionRuntimeAdapters`、`createProductionCliApplication`を再公開するファサードです。
+`production-runtime/create-application.ts`がCLIアプリケーションを組み立て、`daily-dependencies.ts`が日次runの各stageを実アダプターへ接続します。
+分割workflowの組み立ては`workflow/create-runner.ts`が担います。
+`production-runtime/daily-startup/`は設定、state、認証、公開repository inventoryを準備し、`collection/`は詳細収集と追跡対象の選定を担います。
+Issueの明示依頼候補と実質担当候補、IssueとPull Requestに共通するmention候補は`src/cli/issue-responsibility-candidates.ts`で抽出します。
 `src/cli/initial-item-analysis.ts`は、設定解決済みの値と収集済みの情報から、AI分析前のIssueとPull Requestを1件ずつ判定します。
-判定対象の選別、公開対象の確認、入力の組み立て、stateとinventoryの引き渡しは`production-runtime.ts`が担います。
 初期判定は実行環境や永続化セッションを受け取らず、評価日時も入力で受け取ります。
 初期判定とAI結果を採用した再判定は、入力契約を分けます。
+`production-runtime/deterministic/stage.ts`が初期判定を段階へ接続し、`codex/candidates.ts`と`codex/input.ts`が汎用AIの候補と入力を組み立てます。
+AI結果の採用と判定の統合は`reduction/`、暫定graphと最終graphの構築は`graph/`が担います。
+`personal-reminder/stage.ts`は既存の個人催促moduleを接続し、`validation/`はsnapshotと通知候補を作って完全性を検証します。
+日次runの各stageの入出力は`DailyTransactionDependencies<ProductionTypes>`を契約とし、段階をまたぐ型は`production-runtime/contracts.ts`に置きます。
+実アダプターの契約は`adapters.ts`に置きます。
+前回stateの参照は`previous-state/`、解析identityは`analysis-identity.ts`、AI依存は`ai-dependencies/`、関係候補とgraphの索引は`relation-candidate-index.ts`と`graph-result-indexes.ts`で共有します。
+新しい判断は対応するstageを唯一の所有先とし、組み立て側から各stageへ一方向に依存します。
+stage間の実装参照は`reduction/stage.ts`から暫定graphを作る`graph/stage.ts`への呼び出しに限ります。
 `src/cli/notification-delivery-runtime.ts`はDiscord通知の送達、送信済み履歴と通知管理記録の保存、送信開始済み通知の手動解決を担当します。
-完全性検証後の公開処理は`src/cli/run-publication/`が担当します。
-`ValidatedRun`は完全性検証から公開処理へ渡す共有契約です。dailyは一つの`ValidatedRun`を公開処理へ渡し、分割workflowはartifactの値を再解析・再計算せず`ValidatedRun`として復元します。
+`production-runtime/publication/`は公開処理への接続を担い、公開可否、成果物、公開順序の判断は`src/cli/run-publication/`が担当します。
+完全性検証で`ValidatedRun`を得た後だけ、保存、Pages生成、Discord通知へ進めます。dailyは一つの`ValidatedRun`を公開処理へ渡し、分割workflowはartifactの値を再解析・再計算せず`ValidatedRun`として復元します。
 公開順序は、初期保存、Pages生成、Discord送信または省略、完了保存です。
 分割workflowの`notify-discord`は分岐前に現在の通知管理記録を読み、`send`では配送処理内でも保存済みの記録を再読込します。再読込でsnapshot、`notificationSelection`、run IDの供給元は差し替えません。
 通知eventはDiscord配送callbackが逐次保存してpublishします。完了保存には空配列を渡し、同じeventを二重保存しません。
-下位層の例外は握りつぶさず、既存のCLIエラー境界へ伝播します。`production-runtime.ts`から公開処理へ一方向に依存し、`run-publication`から`production-runtime.ts`はimportしません。
+下位層の例外は握りつぶさず、既存のCLIエラー境界へ伝播します。production runtimeの実装から`run-publication`へ一方向に依存し、`run-publication`からproduction runtimeの実装はimportしません。
 実環境で確認できない経路は、実装完了報告で明示します。
 
 ```mermaid
@@ -215,7 +225,7 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 
 汎用AIの判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨、selfCommitmentの9要素で選別します。
 入力schemaは5、出力schemaは7、snapshotは19とします。
-各要素のrevisionは`src/codex/analysis-elements.ts`、必要条件は`src/cli/production-runtime.ts`と`src/codex/element-planning.ts`で定義します。表の意味入力は`src/codex/analysis-element-dependencies.ts`で作る要素別fingerprintの対象であり、汎用AIへ渡す入力全体ではありません。主な利用先は`src/codex/reducer.ts`と`src/cli/production-runtime.ts`です。
+各要素のrevisionは`src/codex/analysis-elements.ts`、必要条件は`src/cli/production-runtime/codex/input.ts`と`src/codex/element-planning.ts`で定義します。`src/cli/production-runtime/codex/candidates.ts`が必要条件を使って実行対象を選び、`reduction/`が採用結果を統合します。表の意味入力は`src/codex/analysis-element-dependencies.ts`で作る要素別fingerprintの対象であり、汎用AIへ渡す入力全体ではありません。
 
 | 要素             | revision | 必要条件                                                                                       | 意味入力fingerprintの対象                                                  | 主な利用先                     |
 | ---------------- | -------: | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------ |
@@ -277,7 +287,7 @@ CLI内の最終正本は`PersonalReminderAnalysisResult.itemsByNodeId`です。
 finalizationは、期待する項目と入力項目が一致し、planの適用対象・`evaluated`項目・outcome applicationの項目集合が一致することを検証します。原因の所有項目ID、原因IDの一意性、原因と採用済み評価が参照する根拠の閉包も検証します。
 これらの契約違反は例外として既存の診断経路へ伝播させ、AI失敗時の`fallback`へ変換しません。
 
-`production-runtime.ts`は各段階の入力と副作用を接続し、最終結果を通知候補とsnapshotへ渡します。原因、現在性、停滞、根拠、列挙計画の最終値を再導出しません。
+`production-runtime/personal-reminder/stage.ts`は各段階の入力と既存の個人催促moduleを接続し、結果を`validation/`へ渡します。`validation/`は通知候補とsnapshotへ結果を反映し、原因、現在性、停滞、根拠、列挙計画の最終値を再導出しません。
 `src/persistence`は保存値の完全性を独立に検証します。根拠の閉包を含む生成規則は個人催促moduleが所有し、persistenceのvalidatorへ依存させません。
 PagesとDiscordは、同じ保存済みの原因と現在性を表示・通知の判断に使います。
 

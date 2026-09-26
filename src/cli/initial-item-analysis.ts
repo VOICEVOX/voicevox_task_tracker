@@ -47,6 +47,34 @@ export type DeterministicItemAnalysis = Readonly<{
   effectiveAssigneeCandidates: readonly EffectiveAssigneeCandidateContext[];
 }>;
 
+/** GitHubの確定した関係候補からblockerを構築する。 */
+export function createNativeBlockers(
+  item: FreshObservedGitHubItem,
+  candidates: readonly RelationCandidate[],
+): readonly IssueBlocker[] {
+  const blockers: IssueBlocker[] = [];
+  for (const candidate of candidates) {
+    if (
+      candidate.authority !== "authoritative" ||
+      candidate.relation.type !== "blocks" ||
+      candidate.relation.blocked.nodeId !== item.nodeId
+    ) {
+      continue;
+    }
+    blockers.push(
+      Object.freeze({
+        candidateId: candidate.relation.blocker.nodeId,
+        state: candidate.relation.blocker.state,
+        authority: "authoritative",
+        confidence: 1,
+        sourceIds: candidate.sourceIds,
+        becameBlockingAt: item.createdAt,
+      }),
+    );
+  }
+  return Object.freeze(blockers);
+}
+
 /** 収集済みのIssueまたはPull Requestを、AI分析前の契約で初期判定する。 */
 export function analyzeInitialItem(input: InitialItemAnalysisInput): DeterministicItemAnalysis {
   const {

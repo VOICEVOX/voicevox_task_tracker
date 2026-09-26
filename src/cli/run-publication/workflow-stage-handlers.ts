@@ -19,23 +19,32 @@ import { buildPublicPages } from "./pages.js";
 import { persistSuccessfulRunCompletion } from "./persistence.js";
 import { discordDeliverySettings, pagesUrl } from "./settings.js";
 
-/** 分割workflowの公開stageの実行関数。 */
-export type WorkflowPublicationStageHandlers = Readonly<{
-  persistState: (command: PersistStateCliCommand) => Promise<void>;
-  buildPages: (command: BuildPagesCliCommand) => Promise<void>;
-  notifyDiscord: (command: NotifyDiscordCliCommand) => Promise<void>;
-  notifyOperations: (command: NotifyOperationsCliCommand) => Promise<void>;
-}>;
+type WorkflowStateAdapters = Pick<
+  RunPublicationAdapters,
+  | "repositoryPath"
+  | "readWorkflowArtifact"
+  | "loadConfig"
+  | "openStateSession"
+  | "createStateBranchAdapter"
+>;
 
-/** 分割workflowの公開stageを組み立てる依存。 */
-export type CreateWorkflowPublicationStageHandlersInput = Readonly<{
-  adapters: RunPublicationAdapters;
-  normalizeLabelRules: NormalizeLabelRules;
-  resolveCompletedTrackingStartAt: ResolveCompletedTrackingStartAt;
-}>;
+type WorkflowDeliveryAdapters = Pick<
+  RunPublicationAdapters,
+  | "environment"
+  | "repositoryPath"
+  | "loadConfig"
+  | "openStateSession"
+  | "createStateBranchAdapter"
+  | "discordHttpClient"
+  | "now"
+  | "sleep"
+  | "random"
+  | "sendDiscord"
+>;
 
-async function persistWorkflowState(
-  dependencies: CreateWorkflowPublicationStageHandlersInput,
+/** workflow artifactの検証済みstateを初期保存する。 */
+export async function persistWorkflowState(
+  dependencies: Readonly<{ adapters: WorkflowStateAdapters }>,
   command: PersistStateCliCommand,
 ): Promise<void> {
   const artifact = await dependencies.adapters.readWorkflowArtifact(
@@ -63,8 +72,12 @@ async function persistWorkflowState(
   });
 }
 
-async function buildWorkflowPages(
-  dependencies: CreateWorkflowPublicationStageHandlersInput,
+/** workflow artifactの検証済みrunからPagesを生成する。 */
+export async function buildWorkflowPages(
+  dependencies: Readonly<{
+    adapters: WorkflowStateAdapters & Pick<RunPublicationAdapters, "writePublicData">;
+    normalizeLabelRules: NormalizeLabelRules;
+  }>,
   command: BuildPagesCliCommand,
 ): Promise<void> {
   const artifact = await dependencies.adapters.readWorkflowArtifact(
@@ -101,8 +114,13 @@ async function buildWorkflowPages(
   });
 }
 
-async function notifyWorkflowDiscord(
-  dependencies: CreateWorkflowPublicationStageHandlersInput,
+/** workflowのDiscord通知と完了保存を実行する。 */
+export async function notifyWorkflowDiscord(
+  dependencies: Readonly<{
+    adapters: WorkflowDeliveryAdapters & Pick<RunPublicationAdapters, "readWorkflowArtifact">;
+    normalizeLabelRules: NormalizeLabelRules;
+    resolveCompletedTrackingStartAt: ResolveCompletedTrackingStartAt;
+  }>,
   command: NotifyDiscordCliCommand,
 ): Promise<void> {
   const artifact = await dependencies.adapters.readWorkflowArtifact(
@@ -196,8 +214,9 @@ async function notifyWorkflowDiscord(
   });
 }
 
-async function notifyWorkflowOperations(
-  dependencies: CreateWorkflowPublicationStageHandlersInput,
+/** workflowの障害通知を実行する。 */
+export async function notifyWorkflowOperations(
+  dependencies: Readonly<{ adapters: WorkflowDeliveryAdapters }>,
   command: NotifyOperationsCliCommand,
 ): Promise<void> {
   const config = await dependencies.adapters.loadConfig(
@@ -233,16 +252,4 @@ async function notifyWorkflowOperations(
       retryAttempts: command.retryAttempts,
     },
   );
-}
-
-/** 分割workflowの公開stageだけを組み立てる。 */
-export function createWorkflowPublicationStageHandlers(
-  dependencies: CreateWorkflowPublicationStageHandlersInput,
-): WorkflowPublicationStageHandlers {
-  return Object.freeze({
-    persistState: (command) => persistWorkflowState(dependencies, command),
-    buildPages: (command) => buildWorkflowPages(dependencies, command),
-    notifyDiscord: (command) => notifyWorkflowDiscord(dependencies, command),
-    notifyOperations: (command) => notifyWorkflowOperations(dependencies, command),
-  });
 }
