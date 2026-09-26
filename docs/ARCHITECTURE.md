@@ -37,6 +37,7 @@ Issueの明示依頼候補と実質担当候補、IssueとPull Requestに共通�
 分割workflowの`notify-discord`は分岐前に現在の通知管理記録を読み、`send`では配送処理内でも保存済みの記録を再読込します。再読込でsnapshot、`notificationSelection`、run IDの供給元は差し替えません。
 通知eventはDiscord配送callbackが逐次保存してpublishします。完了保存には空配列を渡し、同じeventを二重保存しません。
 下位層の例外は握りつぶさず、既存のCLIエラー境界へ伝播します。`production-runtime.ts`から公開処理へ一方向に依存し、`run-publication`から`production-runtime.ts`はimportしません。
+実環境で確認できない経路は、実装完了報告で明示します。
 
 ```mermaid
 flowchart LR
