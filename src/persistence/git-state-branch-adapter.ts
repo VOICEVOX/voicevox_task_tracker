@@ -5,9 +5,11 @@ import { join, resolve } from "node:path";
 
 import {
   assertValidStateDirectory,
-  assertValidStateBranch,
   assertValidStatePath,
+  assertValidStateStorageBranch,
+  PRODUCTION_PAGES_EFFECT_LEASE_BRANCH,
   type StateBranchAdapter,
+  type StateBranchCommitInspection,
   type StateBranchCommitRequest,
   type StateBranchCommitResult,
   type StateBranchHead,
@@ -21,11 +23,15 @@ import {
   StateBranchReadError,
   StateConfigurationError,
 } from "./errors.js";
+import {
+  createStateChangedPathManifest,
+  createStateCommitMetadata,
+  digestStateManifest,
+  parseStateCommitTrailers,
+  serializeStateCommitTrailers,
+} from "./state-commit-metadata.js";
 
-const ZERO_OBJECT_ID = "0000000000000000000000000000000000000000";
 const OBJECT_ID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/u;
-const PUBLISH_MAX_ATTEMPTS = 3;
-const PUBLISH_RETRY_DELAY_MILLISECONDS = 1000;
 
 type GitCommandInput =
   | Readonly<{
@@ -65,16 +71,6 @@ export type GitStateBranchAdapterOptions = Readonly<{
   authorName: string;
   authorEmail: string;
 }>;
-
-function compareHeads(left: StateBranchHead, right: StateBranchHead): boolean {
-  if (left.status !== right.status) {
-    return false;
-  }
-  if (left.status === "missing" || right.status === "missing") {
-    return true;
-  }
-  return left.revision === right.revision;
-}
 
 function decodeUtf8(bytes: Uint8Array): string {
   try {
@@ -240,11 +236,17 @@ function parseGitBatchResult(
 }
 
 function validateBranch(branch: string): void {
-  assertValidStateBranch(branch);
+  assertValidStateStorageBranch(branch);
 }
 
 function validateCommitRequest(request: StateBranchCommitRequest): void {
   validateBranch(request.branch);
+  if (
+    (request.branch === PRODUCTION_PAGES_EFFECT_LEASE_BRANCH) !==
+    (request.commitIdentity.commitScope === "production_pages_effect")
+  ) {
+    throw new StateConfigurationError("production Pages lease commitのbranchとscopeが一致しません");
+  }
   if (request.updates.length === 0) {
     throw new StateConfigurationError("commitするstateファイルがありません");
   }
@@ -277,12 +279,6 @@ function validatePublishRequest(request: StateBranchPublishRequest): void {
   if (!OBJECT_ID_PATTERN.test(request.revision)) {
     throw new StateConfigurationError("公開revisionのobject IDが不正です");
   }
-}
-
-function waitBeforePublishRetry(): Promise<void> {
-  return new Promise<void>((resolvePromise) => {
-    setTimeout(resolvePromise, PUBLISH_RETRY_DELAY_MILLISECONDS);
-  });
 }
 
 /** checkoutせずGit objectとrefを操作してstateをatomic commitするadapter。 */
@@ -379,22 +375,57 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
   async #resolveHead(branch: string): Promise<StateBranchHead> {
     validateBranch(branch);
     const result = await this.#runGit({
-      arguments: ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`],
+      arguments: ["ls-remote", "--exit-code", "--refs", "origin", `refs/heads/${branch}`],
       input: {
         status: "none",
       },
-      environment: this.#baseEnvironment,
-      acceptedExitCodes: new Set([0, 1]),
+      environment: { ...process.env, ...this.#baseEnvironment },
+      acceptedExitCodes: new Set([0, 2]),
     });
-    if (result.exitCode === 1) {
+    if (result.exitCode === 2) {
       return Object.freeze({
         status: "missing",
       });
     }
+    const lines = decodeUtf8(result.stdout).trimEnd().split("\n");
+    const fields = lines[0]?.split("\t");
+    if (lines.length !== 1 || fields?.length !== 2 || fields[1] !== `refs/heads/${branch}`) {
+      throw new TypeError("remote state refの応答が不正です");
+    }
     return Object.freeze({
       status: "present",
-      revision: parseObjectId(result.stdout),
+      revision: parseObjectId(new TextEncoder().encode(fields[0])),
     });
+  }
+
+  async #ensureCommit(revision: string): Promise<void> {
+    if (!OBJECT_ID_PATTERN.test(revision)) {
+      throw new StateConfigurationError("読み取りrevisionのobject IDが不正です");
+    }
+    const present = await this.#runGit({
+      arguments: ["cat-file", "-e", `${revision}^{commit}`],
+      input: { status: "none" },
+      environment: this.#baseEnvironment,
+      acceptedExitCodes: new Set([0, 1, 128]),
+    });
+    if (present.exitCode === 0) {
+      return;
+    }
+    await this.#runGit({
+      arguments: ["fetch", "--no-tags", "--no-write-fetch-head", "origin", revision],
+      input: { status: "none" },
+      environment: { ...process.env, ...this.#baseEnvironment },
+      acceptedExitCodes: new Set([0]),
+    });
+    const fetched = await this.#runGit({
+      arguments: ["cat-file", "-e", `${revision}^{commit}`],
+      input: { status: "none" },
+      environment: this.#baseEnvironment,
+      acceptedExitCodes: new Set([0, 1, 128]),
+    });
+    if (fetched.exitCode !== 0) {
+      throw new TypeError("指定commit SHAを取得できません");
+    }
   }
 
   public async resolveHead(branch: string): Promise<StateBranchHead> {
@@ -449,6 +480,7 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
       throw new StateConfigurationError("読み取りrevisionのobject IDが不正です");
     }
     try {
+      await this.#ensureCommit(revision);
       const listing = await this.#runGit({
         arguments: ["ls-tree", "-z", revision, "--", path],
         input: {
@@ -503,6 +535,7 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
       ) + "\n",
     );
     try {
+      await this.#ensureCommit(revision);
       const result = await this.#runGit({
         arguments: ["cat-file", "--batch-command"],
         input: {
@@ -531,6 +564,7 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
       throw new StateConfigurationError("一覧revisionのobject IDが不正です");
     }
     try {
+      await this.#ensureCommit(revision);
       const result = await this.#runGit({
         arguments: ["ls-tree", "-r", "--name-only", "-z", revision, "--", directory],
         input: {
@@ -563,7 +597,34 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
     }
   }
 
-  async #createCommitCandidate(request: StateBranchCommitRequest): Promise<string> {
+  async #createCommitCandidate(
+    request: StateBranchCommitRequest,
+  ): Promise<StateBranchCommitResult> {
+    const changedPaths = [...request.updates.map((update) => update.path), ...request.deletions];
+    const before =
+      request.expectedHead.status === "missing"
+        ? new Map(
+            changedPaths.map((path) => [path, { status: "missing" } satisfies StateFileReadResult]),
+          )
+        : await this.readFiles(request.expectedHead.revision, changedPaths);
+    const after = new Map<string, StateFileReadResult>([
+      ...request.updates.map(
+        (update) =>
+          [
+            update.path,
+            { status: "present", bytes: update.bytes } satisfies StateFileReadResult,
+          ] satisfies [string, StateFileReadResult],
+      ),
+      ...request.deletions.map(
+        (path) =>
+          [path, { status: "missing" } satisfies StateFileReadResult] satisfies [
+            string,
+            StateFileReadResult,
+          ],
+      ),
+    ]);
+    const changedPathManifest = createStateChangedPathManifest(before, after);
+    const metadata = createStateCommitMetadata(request.commitIdentity, changedPathManifest);
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "voicevox-state-index-"));
     const indexPath = join(temporaryDirectory, "index");
     const indexEnvironment = Object.freeze({
@@ -661,12 +722,19 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
             : ["commit-tree", parseObjectId(tree.stdout), "-p", request.expectedHead.revision],
         input: {
           status: "present",
-          bytes: new TextEncoder().encode(`${request.message}\n`),
+          bytes: new TextEncoder().encode(
+            `${request.message}\n\n${serializeStateCommitTrailers(metadata)}\n`,
+          ),
         },
         environment: commitEnvironment,
         acceptedExitCodes: new Set([0]),
       });
-      return parseObjectId(commit.stdout);
+      return Object.freeze({
+        revision: parseObjectId(commit.stdout),
+        branchCreated: request.expectedHead.status === "missing",
+        metadata,
+        changedPathManifest,
+      });
     } finally {
       await rm(temporaryDirectory, {
         recursive: true,
@@ -677,9 +745,17 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
 
   public async commit(request: StateBranchCommitRequest): Promise<StateBranchCommitResult> {
     validateCommitRequest(request);
-    let revision: string;
+    const remote = await this.resolveHead(request.branch);
+    if (
+      remote.status !== request.expectedHead.status ||
+      (remote.status === "present" &&
+        request.expectedHead.status === "present" &&
+        remote.revision !== request.expectedHead.revision)
+    ) {
+      throw new StateBranchConflictError();
+    }
     try {
-      revision = await this.#createCommitCandidate(request);
+      return await this.#createCommitCandidate(request);
     } catch (error: unknown) {
       throw new StateBranchCommitError({
         cause: new Error("Git commit objectの生成に失敗しました", {
@@ -687,70 +763,166 @@ export class GitStateBranchAdapter implements StateBranchAdapter {
         }),
       });
     }
+  }
 
-    const expectedObjectId =
-      request.expectedHead.status === "missing" ? ZERO_OBJECT_ID : request.expectedHead.revision;
-    let updateResult: GitCommandResult;
-    try {
-      updateResult = await this.#runGit({
-        arguments: ["update-ref", `refs/heads/${request.branch}`, revision, expectedObjectId],
-        input: {
-          status: "none",
-        },
-        environment: this.#baseEnvironment,
-        acceptedExitCodes: new Set([0, 1, 128]),
-      });
-    } catch (error: unknown) {
-      throw new StateBranchCommitError({
-        cause: new Error("Git refの更新に失敗しました", {
-          cause: error,
-        }),
-      });
+  async #commitParent(revision: string): Promise<StateBranchHead> {
+    await this.#ensureCommit(revision);
+    const result = await this.#runGit({
+      arguments: ["cat-file", "-p", revision],
+      input: { status: "none" },
+      environment: this.#baseEnvironment,
+      acceptedExitCodes: new Set([0]),
+    });
+    const header = decodeUtf8(result.stdout).split("\n\n", 1)[0];
+    const parents = header?.split("\n").filter((line) => line.startsWith("parent ")) ?? [];
+    if (parents.length > 1) {
+      throw new StateBranchReadError({ cause: new TypeError("state commitに複数の親があります") });
     }
-    if (updateResult.exitCode !== 0) {
-      const currentHead = await this.resolveHead(request.branch);
-      if (!compareHeads(currentHead, request.expectedHead)) {
-        throw new StateBranchConflictError();
-      }
-      throw new StateBranchCommitError({
-        cause: new GitCommandError(updateResult.exitCode),
-      });
+    const parentLine = parents[0];
+    if (parentLine == null) {
+      return Object.freeze({ status: "missing" });
     }
     return Object.freeze({
-      revision,
-      branchCreated: request.expectedHead.status === "missing",
+      status: "present",
+      revision: parseObjectId(new TextEncoder().encode(parentLine.slice("parent ".length))),
     });
+  }
+
+  /** exact commitの親、trailer、実際のtree差分を再検証する。 */
+  public async readCommit(revision: string): Promise<StateBranchCommitInspection> {
+    try {
+      const parent = await this.#commitParent(revision);
+      const messageResult = await this.#runGit({
+        arguments: ["log", "-1", "--format=%B", revision],
+        input: { status: "none" },
+        environment: this.#baseEnvironment,
+        acceptedExitCodes: new Set([0]),
+      });
+      const metadata = parseStateCommitTrailers(decodeUtf8(messageResult.stdout));
+      if (parent.status === "present") {
+        await this.#ensureCommit(parent.revision);
+      }
+      const diff = await this.#runGit({
+        arguments:
+          parent.status === "missing"
+            ? [
+                "diff-tree",
+                "--root",
+                "--no-renames",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "-z",
+                revision,
+              ]
+            : [
+                "diff-tree",
+                "--no-renames",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "-z",
+                parent.revision,
+                revision,
+              ],
+        input: { status: "none" },
+        environment: this.#baseEnvironment,
+        acceptedExitCodes: new Set([0]),
+      });
+      const paths = parseNullSeparatedPaths(diff.stdout);
+      const before =
+        parent.status === "missing"
+          ? new Map(
+              paths.map((path) => [path, { status: "missing" } satisfies StateFileReadResult]),
+            )
+          : await this.readFiles(parent.revision, paths);
+      const after = await this.readFiles(revision, paths);
+      const changedPathManifest = createStateChangedPathManifest(before, after);
+      if (
+        changedPathManifest.entries.length === 0 ||
+        digestStateManifest(changedPathManifest) !== metadata.changedPathManifestDigest
+      ) {
+        throw new TypeError("state commitの変更manifestがtrailerと一致しません");
+      }
+      if (
+        metadata.commitScope === "operations_alert" &&
+        changedPathManifest.entries.some(
+          (entry) => entry.path !== "state/operations-alert-ledger-v1.json",
+        )
+      ) {
+        throw new TypeError("運用障害通知commitが追跡対象pathを変更しています");
+      }
+      if (
+        metadata.commitScope === "sandbox_manifest" &&
+        (metadata.runId != null ||
+          changedPathManifest.entries.length !== 1 ||
+          changedPathManifest.entries[0]?.path !== "state/sandbox-environment.json" ||
+          changedPathManifest.entries[0].kind !== "modified")
+      ) {
+        throw new TypeError("sandbox manifest commitが追跡対象pathを変更しています");
+      }
+      if (
+        metadata.commitScope === "production_pages_effect" &&
+        (changedPathManifest.entries.length !== 1 ||
+          changedPathManifest.entries[0]?.path !== "state/production-pages-effect-lease-v1.json")
+      ) {
+        throw new TypeError("production Pages lease commitが追跡対象pathを変更しています");
+      }
+      return Object.freeze({ revision, parent, metadata, changedPathManifest });
+    } catch (error: unknown) {
+      throw new StateBranchReadError({ cause: error });
+    }
   }
 
   /** state branchの指定revisionをリモートへ公開する。 */
   public async publish(request: StateBranchPublishRequest): Promise<void> {
     validatePublishRequest(request);
-    for (let attempt = 1; attempt <= PUBLISH_MAX_ATTEMPTS; attempt += 1) {
-      try {
-        await this.#runGit({
-          arguments: [
-            "push",
-            "--no-follow-tags",
-            "origin",
-            `${request.revision}:refs/heads/${request.branch}`,
-          ],
-          input: {
-            status: "none",
-          },
-          environment: {
-            ...process.env,
-            ...this.#baseEnvironment,
-          },
-          acceptedExitCodes: new Set([0]),
-        });
-        return;
-      } catch (error: unknown) {
-        if (attempt === PUBLISH_MAX_ATTEMPTS) {
-          throw error;
-        }
-        await waitBeforePublishRetry();
-      }
+    const expected = await this.#commitParent(request.revision);
+    const observed = await this.resolveHead(request.branch);
+    if (observed.status === "present" && observed.revision === request.revision) {
+      return;
     }
-    throw new TypeError("state branch公開の到達不能な分岐へ到達しました");
+    if (
+      observed.status !== expected.status ||
+      (observed.status === "present" &&
+        expected.status === "present" &&
+        observed.revision !== expected.revision)
+    ) {
+      throw new StateBranchConflictError();
+    }
+    let pushError: unknown;
+    try {
+      await this.#runGit({
+        arguments: [
+          "push",
+          "--no-follow-tags",
+          "origin",
+          `${request.revision}:refs/heads/${request.branch}`,
+        ],
+        input: { status: "none" },
+        environment: { ...process.env, ...this.#baseEnvironment },
+        acceptedExitCodes: new Set([0]),
+      });
+    } catch (error: unknown) {
+      pushError = error;
+    }
+    const after = await this.resolveHead(request.branch);
+    if (after.status === "present" && after.revision === request.revision) {
+      return;
+    }
+    if (
+      after.status !== expected.status ||
+      (after.status === "present" &&
+        expected.status === "present" &&
+        after.revision !== expected.revision)
+    ) {
+      throw new StateBranchConflictError();
+    }
+    throw new StateBranchCommitError({
+      cause:
+        pushError instanceof Error
+          ? pushError
+          : new TypeError("remoteへstate commitが反映されませんでした"),
+    });
   }
 }

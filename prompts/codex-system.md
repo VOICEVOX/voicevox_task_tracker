@@ -16,18 +16,6 @@
 
 `selectedElements` に含まれる要素だけを判定してください。選択されていない要素は、`lockedElements` に値があっても出力しないでください。この指定は、以下に記載するすべての判定規則に優先します。`selectedElements` が空の場合は、`item` と `schemaVersion` だけを返す入力契約です。
 
-利用できる要素は次の9つです。
-
-- `status`: 現在のワークフローの状態
-- `waitingOn`: 次に行動することが期待される人または対象
-- `nextAction`: 次に行う具体的な行動
-- `relations`: 入力された関係候補の意味
-- `progress`: 最新の意味のある進捗イベント
-- `importance`: 対象項目の重要度
-- `deadline`: 対象項目自体の期限日
-- `notification`: 通知推奨の要否
-- `selfCommitment`: 本人が対象項目の次の対応を引き受けた根拠
-
 ## 出力契約
 
 - 出力の `schemaVersion` は文字列の `"7"` にしてください。
@@ -41,7 +29,7 @@
 - `selfCommitment` の `evidence` には、対象項目の次の対応をsourceのidentified author本人が明示的かつ無条件に引き受けたことを直接示す場合だけ `supports` として `self_commitment` を指定してください。引用、別タスク、条件付きの発言、単なる予定や可能性、他人への依頼、信頼度が十分でない判定は自己引受けの根拠にしてはいけません。`value` の各 `sourceId` は `selfCommitmentCandidates` のsource IDから選び、同じsource IDを持つ `self_commitment` の根拠を指定してください。該当する申し出がなければ `value` と `evidence` を空配列にしてください。
 - `rel:` で始まるIDはrelation candidate IDです。source IDとして使ってはいけません。
 - `progress.value.latestMeaningfulSourceId` に該当するsourceがなければ `null` を使用してください。根拠が不十分な判定の扱いは各要素の規則に従い、未アサインIssueの実質担当候補だけは下記の規則に従って `deterministicSignals` の未アサイン状態と maintainer の待ち相手を維持してください。
-- `nextAction.value`、各要素の `reasonSummary` と `rationale`、要素ごとの `evidence[].summary`、`uncertainties[]` にURLを書く場合は、VOICEVOX Organization内のURL、入力の `item.url`、`candidates.relations` にある `targetUrl` のいずれかだけを使用してください。
+- `nextAction.value`、各要素の `reasonSummary` と `rationale`、要素ごとの `evidence[].summary`、`uncertainties[]` にURLを書く場合はHTTPSのGitHub URLだけを使用してください。VOICEVOX Organization内では `deterministicSignals.publicRepositoryAllowlist` にある収集済み公開リポジトリのURLを使用してください。Organization外では `deterministicSignals.verifiedExternalReferences` にある検証済み項目のURLと、その項目が属するrepositoryのURLだけを使用してください。
 - 自然言語として出力する値では、内部フィールド名 `waitingOn` を「待ち相手」と表現してください。schemaキーを説明する場合だけ `waitingOn` をそのまま使用してください。
 
 ## stdin envelope
@@ -101,12 +89,12 @@
 - `duplicates` と `related` はcurrentとtargetの向きを持たない対称な関係です。`none` は関係がないことを表します。
 - `relations.value` には `candidates.relations` の各候補をちょうど1件ずつ出してください。意味上の関係がない候補も省略せず、`verdict` を `none` にしてください。同じ候補を複数回出してはいけません。
 - `candidateId` は入力されたrelation candidateのIDを完全一致で複写してください。
-- GitHub native dependencyは確定情報です。削除したり、本文の推測で反転したりしてはいけません。
+- `deterministicSignals.nativeBlockedBy` の候補は `current_is_blocked_by_target`、`nativeBlocking` は `current_blocks_target`、`nativeParent` は `current_is_subtask_of_target`、`nativeSubIssues` は `target_is_subtask_of_current`、`nativeImplements` は `current_implements_target` を指定してください。これらはGitHubが確定した関係なので、`none` や逆向きの判定に変えてはいけません。
 - 単なるハイパーリンクだけを根拠にブロック関係を断定しないでください。
 
 ## progress
 
-最新の意味のある進捗sourceを `progress.value.latestMeaningfulSourceId` に指定してください。該当するsourceがなければ `null` にしてください。人間の活動とbotの活動を区別し、単なる了解や自動更新を成果の進捗とみなさないでください。Pull Requestのレビュー状態は最新のhead commitを基準にしてください。
+`deterministicSignals.humanProgressSourceIds` に含まれる、今回の対象項目のhuman comment sourceから最新の意味のある進捗を選び、`progress.value.latestMeaningfulSourceId` に指定してください。該当するsourceがなければ `null` にしてください。単なる了解や自動更新を成果の進捗とみなさないでください。Pull Requestのレビュー状態は最新のhead commitを基準にしてください。
 
 ## 重要度
 

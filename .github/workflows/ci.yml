@@ -21,6 +21,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Node.jsを準備
+        id: node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
@@ -28,10 +29,30 @@ jobs:
         run: corepack enable
       - name: 依存関係をインストール
         run: pnpm install --frozen-lockfile
+      - name: 静的検査cacheを復元
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            node_modules/.cache/voicevox-task-tracker/typecheck-node.tsbuildinfo
+            node_modules/.cache/voicevox-task-tracker/typecheck-web.tsbuildinfo
+            node_modules/.cache/voicevox-task-tracker/dependency-graph.json
+            node_modules/.cache/voicevox-task-tracker/source-lines.json
+            node_modules/.cache/voicevox-task-tracker/prettier-check
+          key: static-source2-dependency2-${{ runner.os }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package.json', 'pnpm-lock.yaml', '.node-version', 'eslint.config.js', '.prettierrc.json', '.prettierignore', 'tsconfig.json', 'tsconfig.build.json', 'web/tsconfig.json', 'config/source-line-policy.mjs', 'scripts/check-source-lines.mjs', 'scripts/check-dependencies.mjs') }}
+      - name: ESLint cacheの入力を計算
+        id: eslint_cache_key
+        run: echo "key=$(node scripts/eslint-cache.mjs key)" >> "$GITHUB_OUTPUT"
+      - name: ESLint cacheを復元
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: node_modules/.cache/voicevox-task-tracker/eslint-cache/
+          key: eslint-source1-${{ runner.os }}-node${{ steps.node.outputs.node-version }}-${{ steps.eslint_cache_key.outputs.key }}
       - name: 型を検査
         run: pnpm typecheck
       - name: lintを実行
         run: pnpm lint
+      - name: ソース行数を検査
+        run: pnpm check:source-lines
       - name: formatを検査
         run: pnpm format:check
       - name: CLIをビルド
@@ -43,7 +64,7 @@ jobs:
 
   verify-state:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -56,9 +77,11 @@ jobs:
         with:
           ref: tracker-state
           path: tracker-state
+          fetch-depth: 0
           persist-credentials: false
       - name: 永続stateのrevisionを記録
-        run: git -C tracker-state rev-parse HEAD
+        id: state_revision
+        run: echo "revision=$(git -C tracker-state rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Node.jsを準備
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -70,4 +93,4 @@ jobs:
       - name: CLIをビルド
         run: pnpm build
       - name: 永続stateを検証
-        run: pnpm tracker:run verify-state --state-directory tracker-state/state
+        run: pnpm tracker:run verify-state --state-directory tracker-state/state --state-revision '${{ steps.state_revision.outputs.revision }}'

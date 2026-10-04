@@ -5,161 +5,156 @@ VOICEVOX Task Trackerは、GitHubから得た確定情報を決定論的に評�
 
 ## モジュール境界
 
-| モジュール           | 責務                                                                                             | 主な依存先                                                                     |
-| -------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
-| `src/canonical-json` | Node.js専用のcanonical JSON直列化、末尾改行、SHA-256 hashの共有                                  | Node.js標準module                                                              |
-| `src/config`         | YAMLの読み込み、Zod schemaとsemantic validation                                                  | `src/codex`、`src/domain`、`src/util`                                          |
-| `src/diagnostics`    | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                   | `src/canonical-json`、Node.js標準module                                        |
-| `src/github`         | GitHub App認証、RESTとGraphQLの読み取り、公開allowlist、収集、正規化、rate limit管理             | `src/config`、`src/domain`                                                     |
-| `src/domain`         | 状態機械、maintainerとlabel解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度                | `src/util`                                                                     |
-| `src/graph`          | 関係候補抽出、edge reconcile、cycle、frontier、downstream impact                                 | `src/domain`                                                                   |
-| `src/codex`          | 分析候補選定、予算、cache、隔離実行、schemaとsemantic validation、reducer                        | `src/canonical-json`、`src/domain`、`src/graph`                                |
-| `src/persistence`    | snapshot、履歴、AI cache、通知管理記録、run report、Git branch transaction                       | `src/canonical-json`、`src/codex`、`src/domain`、`src/github`                  |
-| `src/pages`          | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                           | `src/canonical-json`、`src/domain`、`src/graph`、`src/persistence`、`src/util` |
-| `src/discord`        | 通知候補選別、通知管理記録による重複抑制、payload分割、mention制限、Webhook送信                  | `src/domain`、`src/graph`                                                      |
-| `src/performance`    | 外部接続をモックした日次runの処理時間、API使用率、AI論理call数、summaryサイズの確認              | `src/cli`と全実処理モジュール                                                  |
-| `src/cli`            | コマンド解析、日次トランザクション、実アダプターの合成、run report                               | 上記の全モジュール                                                             |
-| `web`                | 公開DTOの検証、要対応度と重要度を含む一覧と詳細、通知履歴、項目ごとの依存グラフ、検索、deep link | `src/pages`のDTO契約                                                           |
+| モジュール                                                               | 責務                                                                                       |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `src/application/tracking-run`                                           | canonical stageの順序、判断、入力と出力、proof、checkpoint・receipt・markerの契約          |
+| `src/domain`、`src/graph`                                                | 状態、責務、停滞、重要度、要対応度、関係と依存グラフのpureな判定                           |
+| `src/infrastructure/tracking-run`                                        | stageのportをGitHub、Codex、Git、Pages、Discord、時計、digest計算へ接続する                |
+| `src/cli`                                                                | 引数の検証、実アダプターの合成、applicationへのdispatch                                    |
+| `src/github`、`src/codex`、`src/persistence`、`src/pages`、`src/discord` | 各サービスと保存・公開処理のadapter、個別のpure leaf契約                                   |
+| `src/canonical-json`                                                     | canonical JSONの値と直列化、SHA-256値のpureな検証。Node.jsによるhash計算はleaf契約と分ける |
+| `src/config`、`src/diagnostics`                                          | 設定の検証、公開要約と暗号化する詳細診断                                                   |
+| `web`                                                                    | 公開DTOを検証し、項目、担当者、通知履歴を表示する                                          |
 
-`src/domain`と`src/graph`はネットワークとファイルシステムへ依存しません。
-副作用を持つモジュールがpureな判定を呼び出し、pureな判定からGitHub、Codex、Git、Pages、Discordを呼び出す逆向きの依存は作りません。
-`src/cli`だけが実アダプターを組み合わせて一つのrunにします。
-`src/cli/production-runtime.ts`は`ProductionTypes`、`ProductionRuntimeAdapters`、`createProductionCliApplication`を再公開するファサードです。
-`production-runtime/create-application.ts`がCLIアプリケーションを組み立て、`daily-dependencies.ts`が日次runの各stageを実アダプターへ接続します。
-分割workflowの組み立ては`workflow/create-runner.ts`が担います。
-`production-runtime/daily-startup/`は設定、state、認証、公開repository inventoryを準備し、`collection/`は詳細収集と追跡対象の選定を担います。
-Issueの明示依頼候補と実質担当候補、IssueとPull Requestに共通するmention候補は`src/cli/issue-responsibility-candidates.ts`で抽出します。
-`src/cli/initial-item-analysis.ts`は、設定解決済みの値と収集済みの情報から、AI分析前のIssueとPull Requestを1件ずつ判定します。
-初期判定は実行環境や永続化セッションを受け取らず、評価日時も入力で受け取ります。
-初期判定とAI結果を採用した再判定は、入力契約を分けます。
-`production-runtime/deterministic/stage.ts`が初期判定を段階へ接続し、`codex/candidates.ts`と`codex/input.ts`が汎用AIの候補と入力を組み立てます。
-AI結果の採用と判定の統合は`reduction/`、暫定graphと最終graphの構築は`graph/`が担います。
-`personal-reminder/stage.ts`は既存の個人催促moduleを接続し、`validation/`はsnapshotと通知候補を作って完全性を検証します。
-日次runの各stageの入出力は`DailyTransactionDependencies<ProductionTypes>`を契約とし、段階をまたぐ型は`production-runtime/contracts.ts`に置きます。
-実アダプターの契約は`adapters.ts`に置きます。
-前回stateの参照は`previous-state/`、解析identityは`analysis-identity.ts`、AI依存は`ai-dependencies/`、関係候補とgraphの索引は`relation-candidate-index.ts`と`graph-result-indexes.ts`で共有します。
-新しい判断は対応するstageを唯一の所有先とし、組み立て側から各stageへ一方向に依存します。
-stage間の実装参照は`reduction/stage.ts`から暫定graphを作る`graph/stage.ts`への呼び出しに限ります。
-`src/cli/notification-delivery-runtime.ts`はDiscord通知の送達、送信済み履歴と通知管理記録の保存、送信開始済み通知の手動解決を担当します。
-`production-runtime/publication/`は公開処理への接続を担い、公開可否、成果物、公開順序の判断は`src/cli/run-publication/`が担当します。
-完全性検証で`ValidatedRun`を得た後だけ、保存、Pages生成、Discord通知へ進めます。dailyは一つの`ValidatedRun`を公開処理へ渡し、分割workflowはartifactの値を再解析・再計算せず`ValidatedRun`として復元します。
-公開順序は、初期保存、Pages生成、Discord送信または省略、完了保存です。
-分割workflowの`notify-discord`は分岐前に現在の通知管理記録を読み、`send`では配送処理内でも保存済みの記録を再読込します。再読込でsnapshot、`notificationSelection`、run IDの供給元は差し替えません。
-通知eventはDiscord配送callbackが逐次保存してpublishします。完了保存には空配列を渡し、同じeventを二重保存しません。
-下位層の例外は握りつぶさず、既存のCLIエラー境界へ伝播します。production runtimeの実装から`run-publication`へ一方向に依存し、`run-publication`からproduction runtimeの実装はimportしません。
-実環境で確認できない経路は、実装完了報告で明示します。
+application、domain、graphからCLI、infrastructure、環境変数、ファイルシステム、ネットワークへ依存しません。
+副作用を持つbarrelからpure contractをimportせず、所有するleafを直接参照します。
+CLIがinfraのadapterを組み立て、applicationがportを通して副作用を要求します。
+`pnpm lint`はこの依存方向を検査し、`check:dependencies`はsrcとwebの静的importとexportの循環を拒否します。
+型専用のimportとexportも依存辺として検査します。
 
-```mermaid
-flowchart LR
-  CLI[src/cli] --> Config[src/config]
-  CLI --> GitHub[src/github]
-  CLI --> Domain[src/domain]
-  CLI --> Graph[src/graph]
-  CLI --> Codex[src/codex]
-  CLI --> State[src/persistence]
-  CLI --> Canonical[src/canonical-json]
-  CLI --> Pages[src/pages]
-  CLI --> Discord[src/discord]
-  Util[src/util]
-  Diagnostics[src/diagnostics]
-  Config --> Codex
-  Config --> Domain
-  GitHub --> Domain
-  Graph --> Domain
-  Codex --> Canonical
-  Codex --> Domain
-  Codex --> Graph
-  State --> Canonical
-  State --> Codex
-  State --> Domain
-  State --> GitHub
-  Diagnostics --> Canonical
-  Pages --> Canonical
-  Pages --> Domain
-  Pages --> Graph
-  Pages --> State
-  Pages --> Util
-  Discord --> Domain
-  Discord --> Graph
-  Web[web] --> Pages
-```
+## canonical stageは直前の成果物を受け取る
 
-## 日次run
+業務stageの正本と順序は`src/application/tracking-run/contracts/closed-values.ts`と`engine.ts`です。
+各stageは直前の成果物だけを受け取り、自分が所有する判断を確定します。
+下流へ不要なbase state、session、API client、CLI requestを渡しません。
+下流は確定したallowlist、AI採用、最終graph、個人原因、通知候補、固定outboxを再判断しません。
 
-`pnpm tracker:run`はworkflow向けサブコマンドを検証し、変換せず既存CLIへ渡します。
-option形式の引数は`--backfill`に従って`daily`または`backfill`へ変換し、`DailyTransactionRunner`へ渡します。
-日次トランザクションは次の順で進みます。
+| 順序 | stage                                  | 確定する値                                                                   |
+| ---- | -------------------------------------- | ---------------------------------------------------------------------------- |
+| 1    | `prepared`                             | run identity、設定digest、実行policy、同じrevisionから読み移行したbase state |
+| 2    | `inventory_collected`                  | 公開repository inventory、選定済みallowlistとdigest                          |
+| 3    | `collected`                            | 正規化した観測値、source catalog、収集後に固定した評価時刻                   |
+| 4    | `deterministically_analyzed`           | 追跡対象、初期状態・責務、関係候補、AIへ渡す確定事実                         |
+| 5    | `generic_ai_planned`                   | 9要素ごとの必要性、意味入力、fingerprint、予算計画                           |
+| 6    | `generic_ai_executed`                  | 実行・再利用・失敗・延期の結果と消費予算                                     |
+| 7    | `generic_ai_adopted`                   | schema・semantic検証を通った要素の採用と生成元                               |
+| 8    | `graph_reconciled`                     | 2回の項目統合と最終graph、重要度、要対応度、AI依存                           |
+| 9    | `personal_reminder_planned`            | 最終graphに基づく個人原因、責務・根拠・時計、残予算の計画                    |
+| 10   | `personal_reminder_executed`           | 個人原因の意味評価と再利用・失敗・延期                                       |
+| 11   | `personal_reminder_finalized`          | 採用結果、現在対応、通知へ渡す原因の最終値                                   |
+| 12   | `validated`                            | 完全性、sourceと生成元の結合、公開安全性                                     |
+| 13   | `publication_planned`                  | 保存内容、通知action、固定outbox、公開計画                                   |
+| 14   | `initial_state_committed`              | checkpointから保存した初回state commitのreceiptと再読込値                    |
+| 15   | `initial_pages_prepared`               | 初回保存revisionから投影した公開DTO、Web出力全fileのmanifest                 |
+| 16   | `initial_pages_published`              | Pages actionまたはrecording portの検証済み公開結果                           |
+| 17   | `notifications_settled`                | 固定outboxの送達結果、ledger、送信履歴、settlement receipt                   |
+| 18   | `run_finalized`                        | 完了時刻・実測値・追跡開始時刻を確定した最終state commit                     |
+| 19   | `notification_history_pages_prepared`  | 最終stateから生成する通知履歴Pages、または不要という結果                     |
+| 20   | `notification_history_pages_published` | 通知履歴Pagesの公開結果、または公開不要という結果                            |
+| 21   | `completed`                            | 検証したreceipt chainとrun全体の完了結果                                     |
 
-1. `config.yml`を検証し、必要な環境変数だけを読み取ります。
-2. `tracker-state` branchのsnapshotと通知管理記録を同じrevisionから読み取ります。
-3. GitHub Appのinstallation tokenを発行し、期限前に更新できる読み取り専用clientを作ります。
-4. Organizationのrepository metadataを全ページ取得し、run中に不変な公開allowlistを作ります。
-5. allowlist内repositoryのopen IssueとPull Requestを列挙して詳細を収集します。前回の`aiAnalysis.status`が`failed`か`deferred`の項目は、GitHub側の変化にかかわらず詳細を収集します。個人原因も初回の未計画、計画versionの変更、必要性が残る未評価・失敗・延期で有効な採用値がない場合、terminalになった原因の終了確認を詳細取得へ加えます。AI無効中は個人原因の再試行だけを理由に毎回取得しません。収集した詳細から関係先を抽出し、まだ取得していないOrganization内の関係先を識別子指定で個別列挙して収集結果へ統合します。追加した詳細から関係先を再び抽出し、対象がなくなるまで同じrun内で繰り返します。native relationは設定した深度まで、参照は追跡根から1 hopだけ辿ります。
-6. GitHubイベントをsource ID付きに正規化し、追跡対象と関係候補を選びます。Pull Request作成前のcommitは作成時刻を下限としてpushイベント化し、項目作成前のイベントを作りません。
-7. `config.yml`の`maintainers`からrepositoryごとのGitHubユーザー名一覧を解決し、IssueとPull Requestの状態と責務を決定論的に判定します。抽象的なmaintainer、reviewer、merge_deciderの責務は、メンテナ1人につき1件の`kind: "user"`候補へ展開します。openかつ未アサインIssueでは、明確な着手宣言、追跡中のPRとのGitHub上で確定したauthoritativeな直接`implements`関係、継続成果物を持つ人間を実質担当候補として`candidates.waitingOn`へ加え、候補IDとsource IDを`deterministicSignals`へ渡します。正式assigneeを解除した場合は解除前のsourceを候補から除きます。 個人催促向けには、block適用前のローカルな状態と責務もIssue・PR双方で判定します。
-8. 汎用AIの解釈が必要な要素をCodexで分析し、出力を検証します。未アサインIssueの候補はIssue全体を進めているとhigh以上で判断できる場合だけ既存の`waiting_for_work`へ反映し、推論だけのrelation、部分実装、親・横断Issue、助言、検証、review、条件付き意向、撤回、延期、単なるauthorやcommenterは反映しません。一般的な活動状態の推察と、部分担当や部分実装のモデル化は行いません。前回のAI分析が失敗または延期した項目は、GitHub側の変化にかかわらず分析対象を再選定します。
-9. reducerの第1 pass、暫定graphのreconcileと解析、graphを反映したreducerの第2 pass、最終graphのreconcileと解析の順に実行し、停滞時間、cycle、frontier、downstream impactを確定して重要度と要対応度を計算します。
-10. 最終graph、収集した項目と詳細、ローカル判定、前回の原因を専用helperへ渡し、原因・根拠・責務範囲・時計を組み立てます。関係や汎用AIの採用で初めて確定した原因も追加・更新し、必要な原因を残予算で意味評価します。
-11. 原因ごとの採用結果から現在対応と個人通知候補を作り、snapshot全体の完全性と公開安全性を検証します。system通知は項目全体の確定事実と変化から選びます。
-12. `daily`と`backfill`では検証済みstateをatomic commitし、Pages用DTOを書き出して通知処理を実行します。`send`は既存の最大件数と通知管理記録の重複抑制に従ってDiscord送信を行い、`hold`は候補を未送信のまま保存します。`acknowledge-current`は現在の通知条件を満たす候補をreasonごとに上限なしで確認済みとして通知管理記録へ保存します。完了時に実測時刻と処理結果を反映したrun reportと通知管理記録を追加commitし、`send`だけが送信済み通知を日次履歴へ追加します。`tracking.startAt`が未確定なら同じcommitで確定します。
-13. 成功、Codex縮退、失敗のいずれでもCLIのreport pathへrun reportを書き出します。
+公開repositoryはinventoryで一度だけ選定します。
+前回stateにあるrepositoryが今回非公開なら、選定前に停止します。
+GitHub clientとtokenはinfra内に保持し、stage出力へ含めません。
+汎用AIの選択外要素は生成・採用し直さず、採用値と生成元を下流まで保ちます。
+個人催促は最終graphを使い、validationは確定済みの原因・現在対応・時計を再導出しません。
 
-`dry-run`は手順11まで実行し、state、Pages、Discordを変更せずに検証済みartifactとrun reportだけを書き出します。
-Codexの失敗は決定論的判定へ縮退できるため、完全性を満たす場合は`fallback`として後続処理を続けます。
-snapshotは汎用AIの有効状態、利用可否、縮退状態をrun statusと別に保存します。
-`available`は検証済みのAI分析結果を1件以上利用できたことを表します。分析対象がなく失敗も延期もないrunも`available`です。
-`degraded`は失敗または延期が1件以上あることを表します。利用できた結果が1件もなければ`available`は`false`になります。
-PagesはこのAI状態を公開DTOへ変換し、run statusからAIの状態を推定しません。
-個人原因は原因ごとの評価状態を別に保存します。列挙計画に`pending`がある場合や、有効な採用値のない失敗・延期がある場合は、個人原因の分析状態を`fallback`とし、runへ反映します。正常に完了した`unknown`だけでは縮退にしません。
-repository単位の収集は、再試行後も503で失敗し、同じrepositoryの前回値がある場合だけ前回値を`stale`として使います。
-収集の縮退はdiagnosticとstale件数に記録して後続処理を続けます。run statusは、個人原因の列挙計画を含む後続の分析結果に従います。
-前回値がない503、503以外の例外、不完全な結果は`failure`となり、通常の後続stageを実行しません。
-同じGitHub項目への関係参照で、取得時点の違いにより`state`だけが競合した場合は、競合項目と参照元の詳細を限定回数再取得し、収集結果全体の整合性を検証し直します。
-識別情報など`state`以外も競合する場合や、再取得後も競合が残る場合は、保存、Pages生成、通常通知へ進まず停止します。
-反復を終えても端点を取得できなかった関係候補は追跡選定へ渡さず、除外した件数をdiagnosticへ記録します。
-GitHubの`closingIssuesReferences`とtimelineの`willCloseTarget`はauthoritativeな`implements`関係として確定します。実質担当のPR根拠には、追跡中のPRに対するこの関係だけを使います。
-本文のclosing keywordだけから得た`implements`候補は推定のままとし、実質担当の根拠には使いません。
-関係先のPRや子Issueで確認した作業者を、親Issueや横断Issueの実質担当者へ拡張しません。
+`daily`、`dry-run`、`backfill`と、直列・分割workflowは同じbusiness stageを使います。
+違いは入力範囲、effect target、通知actionを表すpolicyだけです。
+dry-runはrecording portで保存・公開・送達・完了まで進み、external state、Pages、Discordを変更しません。
+sandboxはsandbox stateを更新し、PagesとDiscordをrecording portへ接続します。
+sandboxのworkflow排他groupは対象environment ID単位です。createは新ID、resetは旧IDをgroupに使います。resetは旧環境の読込から新環境の確定まで旧groupを保持し、新branchを`preparing` manifest付きで不存在CAS作成します。`preparing`の新環境への通常continueとdisposeは副作用前に拒否します。異なるenvironmentは並行実行でき、同じenvironmentの操作にはActionsの既定のpending置換規則が適用されます。
+新環境のtracking、Pagesと通知のrecording receipt、finalization、対象scenarioのcoverageを検証し、旧環境のheadを再観測してからmanifestだけをCAS commitで`ready`へ進めます。このcommitは`sandbox_manifest` scopeで、完了markerと変更pathを検証します。新branch作成後に失敗しても自動削除せず、`preparing`のまま保持します。復旧の所有者はmanifestに固定した元Actions runとcode revisionです。source branchの現在のheadから旧効果の帰属を判断しません。確定receiptがある場合だけ元runtimeでstateとreceiptを再検証して`recover-reset`でready化を再試行します。曖昧な通知で停止した場合は、元runの終了、旧環境head、現在のreusable workflowと旧定義の一致を効果前に確認し、`resume-preparing`で元runtimeの同じrunを手動解決します。外部からのstate更新にはCASとleaseの検証を維持します。
+productionのPages deployはActionsのaction境界で行います。
+直列production CLIにはPagesの直接deploy adapterがないため、本番の通し実行は日次workflowを使います。
 
-`.github/workflows/daily.yml`は通常経路の`quality`、`collect-analyze`、`persist-state`、初回の`build-pages`、初回の`deploy-pages`、`notify-discord`、通知候補がある場合だけ動く`publish-notification-history`に、失敗時だけ動く`notify-operations`と全job結果を保存する`report-workflow`を加えた9 jobで構成されています。
-schema version 13のworkflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと、未送信候補を含む通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合してから、`send`なら通知を送り、`hold`と`acknowledge-current`なら通常通知を送らずにrunを完了します。不一致の場合は通知もrun完了処理も行いません。`send`で通知候補がある場合だけ`publish-notification-history`が最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。運用障害通知はこの通知処理と別系統です。
-repository variableの`VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED`が`true`の場合は、定期実行の開始jobと障害通知・run報告を省略します。手動実行には影響しません。
-`collect-analyze`とsandbox jobは、`CODEX_AUTH_JSON`が空なら認証ファイルを配置せず、実行候補があるときだけCLI側で認証不足を検出します。
-secretが非空ならrunnerの一時directoryへ配置し、配置直後の`auth.json`のsha256を指紋として保存します。
-配置直後とsecretへ書き戻す直前に、`auth.json`内のすべての文字列値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
-値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
-個々のtokenは`CODEX_AUTH_JSON`の部分文字列であり、更新後の認証ファイルもjob開始時のsecretとは異なるため、Actionsの自動マスクには依存しません。
-Codex CLIはaccess tokenの残り有効期間が5分未満になるとrefresh tokenで更新し、rotation後の認証情報を`auth.json`へ保存します。
-配置とmaskが完了していれば、先行stepの成否を問わず更新後の値をmaskしてから配置時の指紋と現在値を比較し、変更された場合だけ`CODEX_AUTH_JSON`へ書き戻します。
-書き戻しにはこのrepositoryだけを対象とし、repository permissionsを`Secrets`のRead and writeだけにした`CODEX_AUTH_SYNC_TOKEN`を使います。
-`CODEX_AUTH_SYNC_TOKEN`の有無だけを実行stepへ渡し、tokenの値は書き戻しstepだけへ渡します。
-jobの最後は成否を問わず`codex-home`と指紋ファイルを削除します。
-各jobは`contents`、`pages`、`id-token`を必要な範囲だけ要求し、secretを使うjobはdefault branchのscheduleと手動実行に限定しています。
-`report-workflow`は収集時のCLI reportと各jobの結果をActions artifactへ保存するだけで、stateとPagesを変更しません。
-現在のActions統合上の制約は[デプロイ手順](DEPLOYMENT.md)に記載しています。
+## checkpoint、receipt、markerで公開順序を検証する
 
-## 詳細診断は公開データから分離する
+公開計画からschema version 23の`validated-run.cpk`とsidecarを作り、論理checkpoint digest、file digest、runtime identity、base revisionを照合して結合します。
+snapshot本文は`validatedPayload.snapshot`だけへ保存し、公開計画の初回state write setはそのdigestを参照します。
+復元時は同じsnapshot objectをwrite setへ渡し、保存するstateのcanonical digestまで照合します。
+`.cpk`は1MiB以下のcanonical manifestと順序付きgzip frameで構成します。manifestはframeの順序、件数、非圧縮byte数とSHA-256を固定します。
+非圧縮frameは32MiB以下、合計は512MiB以下、圧縮file全体は128MiB以下に制限します。論理checkpoint digestはmanifestの論理値、file digestは`.cpk`の全byteから求めます。
+旧versionのcheckpointは現行codecへ移行せず、記録されたexact runtimeで検証します。
+checkpointには前回の送信待ち通知の原因と所有範囲を示すwitnessを必ず含めます。
+最終追跡項目の汎用AI状態が今回の解析値か前回からの保持値かを、全項目分の由来記録としてcheckpointへ保存します。
+由来記録は項目ID順で重複を認めず、追跡項目との一対一対応、repositoryの所有、同じ項目が収集値にもある場合のAI状態の一致を再読込時に検証します。
+結合時には固定baseの前回snapshotを読み直し、保持項目のrepositoryと`aiAnalysis`全体を比較します。結果が空でも実行状態、適用元、証明を省きません。
+旧snapshotの移行で原因の時計が`reconfirmation_pending`になった場合は、前回通知の`event`時計と時刻、source IDが一致するときだけ対応を認めます。
+前回通知のsource参照は固定baseの前回snapshotにあるEvidenceで証明し、現行観測を根拠にしません。
+結合時には同じ固定baseからwitnessを再構成し、前回通知台帳との一致も検査します。
+artifact内のdigestは保存値同士の整合性を検査するもので、独立した生成元の認証ではありません。
+proofは非公開brandとconstructorを持つvalidatorだけが発行します。
+初回commitの入力は結合済みcheckpointに限定します。
+保存後はメモリ上の計画を破棄し、結果revisionからsnapshot、record、markerとledgerを再読み込みます。
+初回履歴と追加AI cache、個人催促AI cacheの業務値はcheckpointのdigestに結合します。初回commitでは固定baseから履歴を再構成し、保存する履歴とcacheの実byte、保存先、変更pathをcheckpointのwrite manifestと照合します。
 
-run reportの`diagnostics`は、secretや信頼できない本文を含めない公開可能な要約です。
-調査用の詳細診断は別のJSONLへ記録し、state、公開可能なworkflow artifact、Pages、Discordへ渡しません。
+初回state commitではsnapshot、履歴、追加AI cache、通常通知ledger、durable record、markerをCASでまとめて保存します。
+同じcommitで移行対象の旧cacheと前runの初回Pages証拠を削除します。
+実際の親、変更path manifest、公開安全性をpush前に検証し、直交する運用通知commitだけを許可条件付きで跨ぎます。
 
-CLIの未処理エラーは既存の最上位境界まで伝播させ、境界でstack、cause、AggregateErrorの各errorを記録します。
-Codex実行では試行ごとに終了状態、標準出力、標準エラー出力、最終応答、検証エラーを記録します。
-汎用AIの試行には`semanticGeneration`と`attempt`を記録し、`standardInputCharacters`で補正envelopeを含む入力文字数を確認できます。
-認証preflightでは`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`を暗号化診断へ記録し、開始、終了、標準出力、標準エラー出力、stackを確認できます。raw出力は公開run reportへ載せません。
-通常のActions logには従来どおり公開可能なエラーだけを出します。
+receiptはrun・checkpointへの結合、operation ID、attempt ID、実測時刻、結果digest、親receiptを保持します。
+receipt chainは順序と前後の結果を照合し、artifactがあるだけで外部effectの成功と見なしません。
+固定pathは次の3つです。file名のV1はpath契約の識別子で、record本文のschema versionとは別です。
 
-日次workflowはtracker CLIを実行するjobごとにrunnerの一時directoryへJSONLを作ります。
-各jobの最後に32 byteの共通鍵とAES-256-GCMで暗号化し、暗号化済みファイルだけを保持期間7日のActions artifactへ保存します。
-暗号化鍵はrepository secretから暗号化stepだけへ渡します。
-平文JSONLは暗号化処理の成否にかかわらずjobの終了前に削除します。
-暗号化済みartifactはdefault branchのscheduleと手動実行でだけ作成します。
+| 固定path                                           | 内容                                                                |
+| -------------------------------------------------- | ------------------------------------------------------------------- |
+| `state/durable-publication-record-v1.json`         | checkpointとruntime identity、回復計画、公開allowlist、固定outbox   |
+| `state/run-transaction-marker-v1.json`             | run・checkpoint・recordのdigest、phase sequence、期待する親revision |
+| `state/initial-pages-publication-evidence-v1.json` | 初回Pages buildと公開結果の結合、adapter identity                   |
+
+markerのphaseは`initial_state_committed`、`notifications_in_progress`、`notifications_settled`、`run_finalized`の順です。
+送達中のcommitでは`notifications_in_progress`を繰り返せます。送信不要なら初回phaseからsettledへ進みます。
+同じrunのphaseは後戻りせず、通知開始後は同じrunの初回Pages証拠を必須にします。
+
+初回Pages成功後だけDiscordへ進みます。
+送信直前にmessage単位の`delivery_started`を保存してpushし、送信結果、ledger、履歴をcommitしてから次のmessageを送ります。
+曖昧な送達は自動再送せず、同じrunのsettlementとfinalizationを停止します。
+全messageの処理後にrunをfinalizeし、その後で通知履歴Pagesを公開します。
+通知履歴Pagesの失敗はfinalizationを取り消さず、保存済みの通知を再送しません。
+
+## 起動時はbootstrapからruntimeを選ぶ
+
+現行制御runtimeは同じexact state revisionのmarkerとrecordからbootstrapだけを読みます。
+両方がない場合、または整合した完了済みrunの場合はcurrent runtimeで新規runを始めます。
+未完了runは記録されたexact runtimeへ渡し、current runtimeで業務payloadをparse・migrationしません。
+片方の欠落、digest不一致、runtime再現不能、別runやheadの競合では停止します。
+
+V2は二段階で起動します。
+現行制御runtimeが記録されたcode revision、lockfile、toolchain、bundle manifest、全fileのbyte列とdigest、固定entrypoint、adapter identityを検証します。
+exact runtimeの`inspect`がcheckpointとstateを検証して次stageを返し、`execute_stage`、Pages action後の`record_pages`を一段ずつ呼びます。
+再開時にGitHub再収集やAI再計画を行いません。
+bundleが消失した場合は同じsourceから再生成し、記録されたdigestに一致した場合だけ使用します。
+現行Pages YAMLの実効job条件、権限、外部actionのSHAを記録元と比較します。
+両Pages jobは先頭で記録されたsourceをcheckoutし、local actionと参照scriptはそのexact sourceのbyte列で照合します。
+checkoutのref、配置先、取得元、実行条件、後続checkoutがこの経路を変える場合はeffect前に停止します。
+
+V1は固定input/outputとentrypointを持つ回復protocolとして扱います。
+静的action adapterへ対応付ける前に、adapter identityとaction SHAが登録値に一致することを検証します。
+未知のadapterや実行不能なready-only bundleを現行CLIの業務commandへ置き換えません。
+V2の手動解決も固定operationを使い、V1へCLI commandのfallbackを作りません。
+凍結されたsourceの配置とpath列もdigestの入力です。選択元の配置で当時のpathとbyte列をhashし、現行の配置へ読み替えません。
+
+## failure artifactは失敗したoperationの証拠を残す
+
+失敗stageはcanonical stageに加え、`prepare`、`runtime_bootstrap`、`runtime_selection`、`runtime_launch`、`workflow_effect_observation`、`checkpoint_encoding`、`checkpoint_binding`を区別します。
+公開failure artifactはbinding evidence、failure kind、直前の検証済みreceipt、`failedOperationEffectCertainty`、recovery disposition、暗号化診断の参照を保持します。
+run IDがないpre-runと、bootstrap・pre-checkpoint・checkpoint以後では別のbindingを使います。
+
+`failedOperationEffectCertainty`は失敗したoperation自身の`no_effect`、`committed`、`ambiguous`です。
+先行stageの成功やstate変更だけで、今回の失敗をcommittedにしません。
+公開境界違反は通常保存、Pages、Discord、運用障害通知を停止します。
+運用通知は専用state branchの送信予約とreceiptを使い、曖昧な送達を自動再送しません。
+
+詳細なstack、cause、Codexのstdout・stderrは公開failureへ入れず、runnerの一時JSONLへ記録します。
+productionではAES-256-GCMで暗号化したdiagnostics artifactだけを保存し、平文は削除します。
+暗号化処理自体の失敗も独立したfailure artifactで報告します。
 
 ## 重要度の計算
 
 重要度は`src/domain`のpureな判定で計算します。
 停滞レベルとは独立した値です。
-`src/cli`は最終graphの解析後に必要な入力を集めて`src/domain`へ渡し、Codexやgraphがscoreとlevelを直接決めることはありません。
+`GraphReconciledRun`は最終graphの解析結果を`src/domain`の規則へ渡し、重要度と要対応度のscoreとlevelを確定します。
 
 | 入力                      | 依存する情報                                               |
 | ------------------------- | ---------------------------------------------------------- |
@@ -216,7 +211,7 @@ AIの規則変更は判定要素ごとに調べ、コードだけで確定でき
 再判定していない項目に現在値を書くと、古い判定のまま最新規則で判定済みと記録され、以後再判定されなくなります。
 検査するのは前回snapshotに判定結果を持つ項目だけです。追跡対象外の列挙項目には引き継ぐ判定がないため、毎回の再取得を避けます。
 
-汎用AIの要素への影響が`unknown`でも前回の採用値はgraph、表示、通知へ残します。ただし、その値を最新またはlockedとは扱いません。
+汎用AIの要素への影響が`unknown`なら前回の採用値を履歴として保持し、現在の項目判定や通知へ使いません。前回の推定relationは、今回も同じ候補があり、判定が欠けている場合だけ未検証の辺として保持します。
 
 前回の`aiAnalysis.status`が`failed`か`deferred`の項目も、GitHub側の変化と判定規則fingerprintにかかわらず詳細取得の対象へ加えます。
 AI分析の失敗と延期はGitHub側を動かさないため、この扱いがなければ縮退した判定が固着します。
@@ -224,8 +219,9 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 正常に完了した低信頼または棄権の評価も完了結果として保持します。失敗や延期から新しい完了proofは作らず、現在の条件で未完了の要素を再試行します。
 
 汎用AIの判定は状態、待ち相手、次の行動、関係、進捗、重要度、期限、通知推奨、selfCommitmentの9要素で選別します。
-入力schemaは5、出力schemaは7、snapshotは19とします。
-各要素のrevisionは`src/codex/analysis-elements.ts`、必要条件は`src/cli/production-runtime/codex/input.ts`と`src/codex/element-planning.ts`で定義します。`src/cli/production-runtime/codex/candidates.ts`が必要条件を使って実行対象を選び、`reduction/`が採用結果を統合します。表の意味入力は`src/codex/analysis-element-dependencies.ts`で作る要素別fingerprintの対象であり、汎用AIへ渡す入力全体ではありません。
+入力schemaは5、出力schemaは7、snapshotは23とします。
+旧snapshotは保存時のschemaと意味revisionで検証してから移行します。現行の入力投影versionで検証できない採用値は理由を付けて履歴に保持し、現在値へ採用しません。その値に基づくAI依存を未検証として再分類した後、最終graph投影を確定します。
+各要素のrevision、必要条件、入力投影、利用先、出力schemaは`src/codex/generic-ai-definition.ts`で対応付けます。`GenericAiPlannedRun`が選択要素と理由を項目ごとに固定し、`GenericAiAdoptedRun`が新規結果、cache、前回snapshotを同じ規則で採用します。表の意味入力は要素別fingerprintの対象であり、汎用AIへ渡す入力全体ではありません。
 
 | 要素             | revision | 必要条件                                                                                       | 意味入力fingerprintの対象                                                  | 主な利用先                     |
 | ---------------- | -------: | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------ |
@@ -238,6 +234,9 @@ terminal項目も同じ扱いにし、次回runで必ずAI分析を再試行し�
 | `deadline`       |        1 | 確定判定以外・実質担当候補・人の進捗候補・推定関係候補のいずれかがあるか、前回の評価が利用可能 | 項目基本情報、本文・コメント・レビュー                                     | 期限日と要対応度               |
 | `notification`   |        1 | 非terminalのCodex候補で、native blocker・自動化ノイズ・通知抑制ラベルがない                    | 項目基本情報、全候補、本文・コメント・レビュー、状態系の確定signal         | 通知推奨                       |
 | `selfCommitment` |        1 | 観測期間内の未編集human comment候補がある                                                      | 項目全体、自己申告候補、本文・コメント・レビュー                           | 自己申告原因による通知抑制     |
+
+要素別の計画は意味入力そのものと、そのcanonical JSONから作ったfingerprintを一緒に保持します。入力投影version 2では、要素に意味のある選択状態と、自身以外の固定contextも意味入力に含めます。statusとwaitingOnは互いの選択状態を含みます。評価時刻の経過だけではfingerprintを変えません。決定論的な値と現在入力で再利用を証明した保存済みAI値だけを固定contextに使い、要素別の最終意味入力を確定してからcacheを照合します。cache hitの値を照合後の輸送入力へ追加せず、missだけを選択した実輸送入力で費用を予約します。statusとwaitingOnの片方だけがcache hitなら両方を実行し、ほかの要素は個別に再利用します。AI無効、不要、現在の完了結果の再利用、強制解析による延期も要素ごとに区別します。
+採用段階は要素ごとに実行状態、採用値、保持値、生成元、現在性、適用元、AI依存を一つの記録へ確定します。失敗や延期の後も現在の入力に一致する前回の完了値を使い、入力が一致しない値は未検証理由を付けて履歴に保持し、現在値には採用しません。採用後のrunはAI送信用の厳密入力を保持しません。
 
 selfCommitmentは他の要素から独立して扱い、他の要素のprojectionへ専用の観測期間を混ぜません。
 selfCommitmentの候補は前回`observedAt`より後、今回の評価時刻以前の未編集human commentに限り、source authorとtimeline event actorが同じhumanであることを確認します。前回観測がない場合は追加推論を行いません。通知時は現在の`waitingOn`が単独のhuman userであり、そのactorと一致することを決定論的に確認し、他者、混在、不明、依存解消の原因は通知を残します。
@@ -276,19 +275,21 @@ AIのrevisionは意味上の判定規則を表し、プロンプトの共通本�
 
 ## 個人催促の原因と意味評価
 
-個人催促は、原因を計画する`plan`、評価結果を適用する`outcome application`、項目ごとの結果を確定する`finalization`の3段階で処理します。
+個人催促は、`personal_reminder_planned`、`personal_reminder_executed`、`personal_reminder_finalized`の3段階で処理します。
 
-1. `src/cli/personal-reminder-runtime.ts`は、型付きの収集結果、Issue・PRのローカル判定、前回state、最終graphから原因を計画します。責務の範囲と時計の入力を組み立て、原因がない項目も適用対象へ含めます。
-2. `src/cli/personal-reminder/outcome-application.ts`は、計画へ決定論的判定とAIの評価結果を適用し、原因と時計を更新して項目ごとの根拠を集めます。
-3. `src/cli/personal-reminder/finalization.ts`は、今回の適用結果と保持結果を項目ごとに確定します。保持値のAI依存を最終適用元へ照合し、原因が参照する根拠を所有項目へ集めて、列挙計画と原因ごとの停滞を確定します。
+1. `src/application/tracking-run/stages/personal-reminder-plan.ts`は、型付きの収集結果、Issue・PRのローカル判定、前回state、最終graphから原因を計画します。責務の範囲と時計の入力を組み立て、原因がない項目も項目計画へ含めます。
+2. `src/application/tracking-run/stages/personal-reminder-execution.ts`は、計画した原因ごとに決定論的判定、再利用、AI試行の結果を結び付け、共有予算のledgerを更新します。
+3. `src/application/tracking-run/stages/personal-reminder-finalization.ts`は、実行結果と保持結果を項目ごとに確定します。保持値のAI依存を最終適用元へ照合し、原因が参照する根拠を所有項目へ集めて、列挙計画と原因ごとの停滞を確定します。
 
-CLI内の最終正本は`PersonalReminderAnalysisResult.itemsByNodeId`です。
+最終正本は`PersonalReminderFinalizedRun.data.items`です。
 各項目は原因と停滞の組を`causeResults`へ持ち、同じ項目の`evidence`と`planning`を一緒に保持します。cause、staleness、evidence、planningを別々の正本へ分離しません。
-finalizationは、期待する項目と入力項目が一致し、planの適用対象・`evaluated`項目・outcome applicationの項目集合が一致することを検証します。原因の所有項目ID、原因IDの一意性、原因と採用済み評価が参照する根拠の閉包も検証します。
+finalizationは、計画と最終項目の集合、原因の計画・判断・実行結果の集合が一致することを検証します。原因の所有項目ID、原因IDの一意性、原因と採用済み評価が参照する根拠の閉包も検証します。
 これらの契約違反は例外として既存の診断経路へ伝播させ、AI失敗時の`fallback`へ変換しません。
 
-`production-runtime/personal-reminder/stage.ts`は各段階の入力と既存の個人催促moduleを接続し、結果を`validation/`へ渡します。`validation/`は通知候補とsnapshotへ結果を反映し、原因、現在性、停滞、根拠、列挙計画の最終値を再導出しません。
-`src/persistence`は保存値の完全性を独立に検証します。根拠の閉包を含む生成規則は個人催促moduleが所有し、persistenceのvalidatorへ依存させません。
+`src/application/tracking-run/stages/`の個人催促stageは直前の成果物から結果を確定し、validationへ渡します。validationは通知候補とsnapshotへ結果を反映し、原因、現在性、停滞、根拠、列挙計画の最終値を再導出しません。
+`PersonalReminderFinalizedRun`の項目、関係、AI採用値に、保存予定の履歴、AI cache、通知原因、未送信候補を加えて`EvidenceCatalog`で参照を閉じます。同じsource IDの不変fieldが衝突する場合や、参照元が欠落、非公開、未来時刻、別項目の所有に当たる場合は、保存、Pages生成、Discord通知の前に停止します。今回のsource事実と前回から保持する根拠を区別し、保持値から今回の根拠を作りません。
+保持する汎用AI結果は、前回snapshotの追跡項目または収集項目に保存された同じ所有者・要素・result全体へ照合します。今回も同じsource IDを収集した場合に、この照合を省きません。今回の実行結果とcache採用結果は、確定した生成元と入力fingerprint、現行source事実へ照合します。分割workflowの初期保存前には基準revisionのsnapshotを読み直し、artifactの履歴AI記録と照合します。
+閉包済みの項目と関係をsnapshotへ渡します。`src/persistence`は保存値の形と公開安全性を独立に検証し、根拠を補いません。
 PagesとDiscordは、同じ保存済みの原因と現在性を表示・通知の判断に使います。
 
 `src/domain/personal-reminder-causes.ts`の原因は、実行対象、責任主体の集合、行動、通知理由、責務期間を持ちます。`causeId`は同じ責務期間で安定させ、入力fingerprintや表示文の変化で作り直しません。複数reviewerの同じ依頼を人ごとの別原因へ分解せず、責任主体の集合として扱います。
@@ -327,6 +328,7 @@ runtimeの分析対象に含まれ、継続競合がない項目は`evaluated`�
 
 保持値に記録された`migration`と`not_recorded`は、producerを照合できても理由として残します。`proof_unknown`は入力の由来と判定担当の最終適用元から再計算します。判定担当項目がないなど、解決できないproducerがある場合は`not_recorded`を加え、解決できたproducerと理由は保持します。`stale_repository`は履歴から持ち越さず、現在もstaleと確認した専用の経路でだけ付けます。
 取得不能で保持するactiveな推定relationでは、理由を`migration`と`proof_unknown`に限ります。今回の候補に付いた`not_recorded`や`stale_repository`は、保持relationの履歴理由へ流用しません。
+保持した推定relationの根拠、confidence、最終確認時刻は更新しません。今回の判定が`none`の場合や、同じ候補がなくなった場合はactiveな辺として保持しません。
 
 open項目の列挙計画は`pending`にし、今回組み立て直していない値・採用済み評価・根拠・confidence・時計は保持します。この照合にはAIの追加実行を必要とせず、call上限に達した場合も行います。候補IDに対する両端や判定担当の不一致、今回使った候補や適用元の欠落は構造矛盾として例外にします。
 
@@ -386,14 +388,23 @@ Pull Requestのtimelineとheadにあるcommitは、Pull Requestとcommitの組�
 最も古い時刻はsourceの集合だけで決まるので、収集した項目の順番が変わっても同じ値になります。
 
 個人原因では、責務が発生した`obligationSince`、実行可能になった`actionableSince`、通知の計算に使う`stallSince`を分けます。
+個人催促時計のイベント時刻は、source ID、所有項目、種類、GitHub詳細の実測時刻と正規化イベントの一致を確認して使います。本文、native関係の合成時刻、push時刻が不明なcommitや作成時刻へ切り上げたcommitは時計の活動に含めません。これらのsourceはAI入力とgraphの時刻下限には残します。
 同じ行動に関する進捗や責任主体の活動を既存の理由別規則で評価し、`actionableSince`、継続中の停滞起点、有効な進捗時刻の最大値を`stallSince`にします。reviewでは人間のレビューも進捗に含めます。関連項目の活動は、その原因の進捗や待機解消と確認できる場合だけ反映します。
 block中も独立した行動が継続して可能なら両起点を保持し、実際に待たされた行動だけ待機解消の因果イベントを新しい実行可能性の起点にします。
 イベント時刻が不明な場合は、規則上の責務や実行可能性を最初に確認できた入力snapshotの`observedAt`を一度だけ保存し、時刻の出典を`first_observation`とします。AI評価時刻で代用せず、後日の再評価でも更新しません。証拠なしに義務発生時点まで遡らせることもしません。
+保存済み時計のイベントsourceが今回収集した詳細に再出現し、前回の所有項目を特定できる場合は、最終時計から外れても前回の所有項目、sourceの種類、実時刻を今回の詳細と該当する正規化イベントで照合します。新たに採用するイベント時計は現行の根拠で証明します。
+旧Pull Request commit時計のsourceが今回のcommit所属から消えた場合、公開許可済みの同じPull Requestについて全ページを取得し、取得前後のhead SHAと総件数が一致したときだけ不在を確定します。所有項目や取得結果を確認できない場合は保存と公開を停止します。
+旧commitの実push時刻を確認できない場合は、今回の詳細の`observedAt`を`reconfirmed_observation`として一度だけ保存します。旧source IDと旧時計時刻は監査用に保持し、現在の時刻を支持するEvidenceとして扱いません。後続の収集で同じsourceが再出現し、実push時刻が旧時計時刻と異なる場合や所有項目、種類が矛盾する場合は保存と公開を停止します。原因ID、責務ID、採用済み評価、既存Evidenceは保持します。
+旧snapshotのreview requestがEvidenceや時計以外の参照を持たない場合は、source ID単位で時計を再確認します。公開許可済みの旧nodeから所有Pull Requestと依頼先を確認し、今回の詳細で同じ所有項目の現行review requestを全ページ取得します。旧IDが現行一覧にない場合や、現行IDから実時刻を確認できない場合は、今回の詳細の`observedAt`を`reconfirmed_observation`として一度だけ保存します。同じ依頼先のtimeline eventと旧時刻が一致しても、旧nodeとの対応を一意に確認できなければ旧時刻の証明には使いません。旧nodeの読取結果を現行Evidenceへ変換せず、旧source IDと旧時計時刻を監査値として保持します。後続の収集で旧IDが再出現した場合も時計を旧時刻へ戻さず、所有項目、種類、依頼先、取得できた実時刻の矛盾を検出したら保存と公開を停止します。
+再確認によって時計の時刻が変わっても、同じ原因と責務に対する送信済みの個人催促は旧時計時刻で計算した通知keyで照合します。新しい進捗や責務期間、severityが変わった通知は別のkeyにします。
+再確認後に行動可能時刻や停滞起点を義務発生時刻以後へそろえる場合、監査用のsource IDと`previousAt`は同じ旧イベント事実に対応させます。最初の観測時刻を旧イベントの発生時刻として記録しません。
+未送信の個人催促は通知keyが同じでも、旧対象の項目、理由、原因ID、責務ID、行動可能時刻と停滞起点を現行原因と照合します。両時計は時刻、出典、旧時刻、source IDまで比較します。不一致が確定した旧対象は失効させ、現行候補があれば置き換えます。現行原因や時計を照合できない場合は保存と公開を停止します。前回の通知管理記録は保存時の値のまま照合します。今回の送信待ちから外れた旧対象でも、event時計のsourceは前回snapshotに保存されたEvidenceだけで閉じ、前回の原因、関係、実行面から所有範囲を確定します。今回のsource事実や原因で前回の欠落を補いません。公開前には固定した基準revisionから前回snapshotと通知管理記録を読み直し、根拠の保存位置、所有者、原因、時計、関係を照合します。
 正常な`unknown`、失敗、延期を挟んでも、最後に確認できた実行可能性と時計を保持します。入力fingerprintの変化は意味結果の再検証に使い、同じ責務期間の原因や時計を終了させません。
 
 ## 公開DTOとWeb UI
 
 `src/pages`はsnapshotの各項目を公開DTO schema version 10の`PublicItemSummaryDto`へ変換し、重要度、期限日、期限の切迫度、要対応度、`currentResponses`を公開します。
+現在対応の根拠文は対象項目のsnapshotに保存された一致する根拠から写し、評価理由の文章や別項目の根拠から作りません。通知原因は今回のイベントと一致するsource事実を用い、同じsource IDに異なる時刻や行為者があれば停止します。
 summaryとdetailsは同じ項目summaryを持ち、Web UIは両者の一致を検証します。
 各項目の`aiAnalysis`は、項目単位のAI実行状態を表す`runStatus`、判定要素の一部または全部を決定論的に不要としたかを表す`omission`、現在入力で未検証の表示値を列挙する`aiAnalysis.unverifiedValues`を分けて公開します。
 `runStatus`が成功でも保持したAI結果に依存する値は未検証になり得ます。反対に、確定規則だけで決まった表示値は、別の判定要素の失敗や延期だけを理由に未検証にしません。
@@ -446,21 +457,24 @@ Web UIは停滞レベルを表示、絞り込み、並び替え、依存グラ�
 
 公開境界は一つのfilterへ依存せず、三つの段階で検証します。
 
-1. 収集guardはrepository metadataだけを先に取得し、`public`、非アーカイブ、非disabledを満たすrepository IDをallowlistへ固定します。Organization外の参照先は詳細応答で`public`を検証し、関係候補の解決時にarchive済みとdisabledを除外します。
-2. 永続化guardはcommit直前にsnapshotと付随データを走査し、allowlist外ID、private repositoryのID、owner/name、repository URL、既知secret、credential field、不要な全文を拒否します。
-3. Pages guardはDTO生成直前に別実装で収集時の公開allowlistとsnapshotを照合し、repository identity、private sentinel、secret、安全でないURL、不要な全文を再検査します。
+1. 収集guardはrepository metadataだけを先に取得し、`public`、非アーカイブ、非disabledを満たすrepository IDをallowlistへ固定します。選定前に前回stateと既知の非公開repositoryを照合し、構造化されたrepository IDの完全一致と、境界を区切ったowner/nameまたはGitHub URLの一致で停止します。IDのない旧履歴と改名済みrepositoryの同一性は判定しません。Organization外の参照先は詳細応答で`public`を検証し、関係候補の解決時にarchive済みとdisabledを除外します。
+2. 永続化guardはcommit直前に収集段階のallowlistとinventory、snapshot、付随データを照合し、allowlist外ID、既知の非公開repository参照、既知secret、credential field、不要な全文を拒否します。allowlistを再生成しません。
+3. Pages guardはDTO生成直前に別実装で収集段階のallowlist、inventory、snapshotを照合し、repository identity、既知の非公開repository参照、secret、安全でないURL、不要な全文を再検査します。
+
+自然文のURLは共通の規則で候補を抽出し、GitHubのhostとowner/nameを正規化してから公開allowlistと検証済み外部参照に照合します。外部参照の公開証明は今回取得したrepository metadataへ結合します。URLや符号化を一意に解析できない場合、または現在の公開状態を確認できない場合は、保存と公開を停止します。
 
 `config.yml`の`maintainers`に書いたGitHubユーザー名と、GitHubのreview requestや本文とコメントから得たteam識別子は公開情報としてguardを通過できます。
 GitHubのteam member一覧は収集しないため、snapshot、公開DTO、Discord通知の入力にも含まれません。
 
-収集時の公開allowlistはworkflow artifactへ保存し、Pages guardではsnapshotから再構築しません。
-artifactには照合に必要なrepository ID、owner、nameだけを保存します。
+Organization外のIssueとPull Requestは、今回取得したrepository metadataで公開・非アーカイブ・非disabledを確認した候補だけを検証済み外部参照としてsnapshotへ保存します。外部候補が最終graphに残らなくても証拠を保持し、Codexの自然言語、state、公開DTO、Discord送信前の検査では、その項目URLとrepository URLだけを許可します。今回の確認でarchive済みまたはdisabledと確定した外部repositoryは、前回の検証済み参照からも失効させます。残存URLがあれば公開前に停止します。旧snapshotの外部ghostも今回のmetadataで再確認し、未確認のURLを推測で追加しません。
+
+収集時の公開allowlist、公開inventory、digestはcheckpointへ保存します。後続jobはsnapshotからinventoryを作らず、checkpointに保存された値の形、digest、所属とsnapshotのrepository参照を照合します。既知の非公開repositoryへの参照は履歴も含めて検査します。
 
 guard違反は例外として日次トランザクションへ伝播します。
 新しいPages公開と通常digestは実行されず、最後に成功した公開結果が残ります。
-Pages guardを含むPages stageのエラーでは、通常digestの代わりにDiscordへ運用障害通知を試みます。
+Pages guardを含む公開境界違反では、通常digestも運用障害通知も送信しません。通常のPages障害では運用障害通知を試みます。
 通常digestにはPages guardを通過したsnapshot由来の通知候補だけを使います。
-通常digestの送信前には、artifactのsnapshotとtracker-state branchへ永続化済みのsnapshotでrun IDが一致することを検証し、不一致なら送信せず失敗します。
+通常digestの送信前には、checkpointのsnapshotとtracker-state branchへ永続化済みのsnapshotでrun IDが一致することを検証し、既存履歴と通知台帳を含む公開安全性を再検査します。不一致や公開境界違反では送信せず失敗します。運用障害通知も既存snapshot、履歴、通知台帳、送信予定値をHTTP呼出前に検査します。
 
 ## Codexの隔離
 
@@ -478,8 +492,8 @@ run共有のCodex exec実試行数、候補選択時の入力文字数と見積�
 本番経路は候補の入力から費用を見積もり、blocker変化と前回graphのdownstream impactを予算不足時の優先順位へ反映します。入力文字数と費用の見積は追加入力と出力tokenを含む実課金の上限ではありません。
 これらの条件が同じ候補では、前回延期された項目をnode ID順より先にします。
 
-`auth-json`で実行候補が1件以上あるrunだけ、候補workerより先にCodex認証preflightを1論理call実行します。preflightは固定した短文を、候補データと通常のsystem promptを含めず、空の一時directoryで実行します。preflightと最優先候補の初回試行に2枠を確保してからpreflightを実行し、完了後に他の候補の初回試行枠を優先順で予約します。予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`の設定値まで並列実行します。
-`api-key`、候補なし、cache hitだけのrun、全候補が予算延期されたrunではpreflightを実行しません。preflightに失敗した場合は候補を開始せず、実行段階に応じて`codex_analysis`または`personal_reminder_analysis`を失敗させます。
+`auth-json`で実行候補が1件以上あるrunだけ、候補workerより先にCodex認証preflightを1論理call実行します。preflightは固定した短文を、候補データと通常のsystem promptを含めず、空の一時directoryで実行します。計画時にpreflightと最優先候補の初回試行に2枠を確保し、他の候補の初回試行枠も優先順に予約します。実行時はpreflightの完了後に候補workerを開始します。予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`の設定値まで並列実行します。
+`api-key`、候補なし、cache hitだけのrun、全候補が予算延期されたrunではpreflightを実行しません。preflightに失敗した場合は候補を開始せず、実行段階に応じて`generic_ai_executed`または`personal_reminder_executed`を失敗させます。
 preflightはrun全体の入力文字数と見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の`ai.budget.maxCodexExecAttemptsPerRun`は50回で、preflightを実行するrunでは初回試行を最大49候補へ配れます。汎用AI、個人原因AI、preflight、transport retry、semantic補正がprocessRunnerへ渡す`codex exec`を合算し、呼び出し後の起動失敗やtimeoutも数えます。`codex --version`と呼び出し前の失敗は数えません。retryとsemantic補正には未予約枠だけを使います。
 
 予算計画で選ばれた候補は`ai.execution.maxConcurrentCalls`件まで同時に実行します。
@@ -500,10 +514,12 @@ preflightはrun全体の入力文字数と見積費用へ1論理callとして計
 現行の`config.yml`は`ai.authentication: auth-json`を指定します。
 `ai.authentication: api-key`ではsubprocessへ`HOME`、`OPENAI_API_KEY`、`PATH`だけを渡します。
 `ai.authentication: auth-json`では`CODEX_HOME`、`HOME`、`PATH`だけを渡し、起動前に`CODEX_HOME`直下の`auth.json`がファイルとして存在することを確認します。
+workflowの解析stepでは、`node_modules/.bin`の絶対pathを`PATH`へ追加してtracker CLIを起動します。
+Codex subprocessは空の一時directoryから起動するため、CLIの場所を相対pathで渡しません。
 アプリケーション側のCodex認証providerは`auth.json`の存在だけを確認し、内容を読みません。
 GitHub App private key、installation token、Discord Webhook URL、`CODEX_AUTH_SYNC_TOKEN`は渡しません。
 Issue本文、コメント、ラベル、ユーザー名はID付きの信頼できない入力データとして渡し、命令として扱いません。
-`deterministicSignals`にはnative relation候補のIDを`nativeBlockedBy`、`nativeBlocking`、`nativeParent`、`nativeSubIssues`へ分けて渡します。
+`deterministicSignals`にはnative relation候補のIDを`nativeBlockedBy`、`nativeBlocking`、`nativeParent`、`nativeSubIssues`、`nativeImplements`へ分けて渡します。
 未アサインIssueの実質担当候補も、候補IDとsource IDを`deterministicSignals`へ渡します。Codexは入力された候補からIssue全体の担当可否だけを返し、候補を追加しません。
 
 Codexのtimeout、rate limit、不正JSON、一時的なprocess起動失敗、signal終了は`ai.execution.maxAttempts`まで再試行します。
@@ -547,16 +563,19 @@ semantic補正は候補1件の論理call内で行うため、追加世代を`aiC
 `main`にはsource、設定、schema、prompt、Web UI、fixture、文書を置きます。
 日次stateはorphan branchの`tracker-state`へcanonical JSONとして保存し、外部databaseは使いません。
 
-| 既定パス                                         | 内容                                                                                                                         |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `state/snapshot.json`                            | 要対応度、期限日、AI状態、AI要素の適用元、値別のAI依存、trackingStartAt、個人催促の原因を含むschema version 19の最新snapshot |
-| `state/history/YYYY-MM-DD.jsonl`                 | schema version 7。前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                                 |
-| `state/ai-cache/<sha256>.json`                   | 汎用AIのcontent-addressed cache                                                                                              |
-| `state/personal-reminder-ai-cache/<sha256>.json` | 個人原因ごとの意味評価cache。`state.personalReminderAiCacheDirectory`で配置先を指定する                                      |
-| `state/notification-ledger.json`                 | schema version 8。予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                         |
-| `state/run-reports/YYYY-MM-DD.json`              | PagesとDiscordの完了後に保存するsuccessまたはfallbackの実績指標と診断                                                        |
+根拠閉包は、保存時と同じ正規化を通したoutward値から参照pathを作ります。
+追跡項目の`inputEvents`はsource ID順にそろえ、snapshotの保存と再読み込みでも同じ順序を保ちます。
 
-snapshot 19の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
+| 既定パス                                         | 内容                                                                                                                                           |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `state/snapshot.json`                            | 要対応度、期限日、AI状態、AI要素の適用元、値別のAI依存、trackingStartAt、個人催促の原因と検証済み外部参照を含むschema version 23の最新snapshot |
+| `state/history/YYYY-MM-DD.jsonl`                 | schema version 7。前回snapshotとの差分と送信済み通知を持つ日次履歴。確認済み状態は記録しない                                                   |
+| `state/ai-cache/<sha256>.json`                   | 汎用AIのcontent-addressed cache                                                                                                                |
+| `state/personal-reminder-ai-cache/<sha256>.json` | 個人原因ごとの意味評価cache。`state.personalReminderAiCacheDirectory`で配置先を指定する                                                        |
+| `state/notification-ledger.json`                 | schema version 10。予約期限、送信開始済み、送信済み、確認済みの記録を持つ通知管理記録                                                          |
+| `state/run-reports/YYYY-MM-DD.json`              | 初回Pagesと通知の確定後、finalizationで保存する実績指標と診断                                                                                  |
+
+snapshot 23の各項目は、原因の列挙計画を表す`personalReminderCausePlanning`を必須で持ちます。`status`は`pending`、`completed`、`excluded`のいずれかとし、すべて`planningVersion`を保持します。`completed`には列挙に使った観測時刻`observedAt`、`excluded`には`reason: terminal_without_cause`を持たせます。
 freshなopen項目の列挙が完了すれば原因0件でも`completed`にし、原因がないterminal項目だけを`excluded`にします。staleを含む分析対象外の項目は、前述の保持規則に従います。入口では旧`planningVersion`も受け入れ、現在版との不一致を再計画の選定へ渡します。
 
 追跡項目の`aiAnalysis.status`は次の利用状況を表します。
@@ -570,14 +589,15 @@ freshなopen項目の列挙が完了すれば原因0件でも`completed`にし�
 | `disabled`     | 設定でAI分析が無効だった                           |
 | `not_recorded` | 項目単位のAI利用状況が記録されていない             |
 
-要素ごとの生成結果、正常に完了した評価、採用結果に加え、`aiAnalysis.applications`へ各AI要素の最終適用元を保存します。
+要素ごとの生成結果と正常に完了した評価を`aiAnalysis.elements`へ保存します。現在入力で検証済みのAI採用値だけを`aiAnalysis.adoptedElements`へ、現在使わない採用履歴を`aiAnalysis.retainedElements`へ保存します。各要素の最終適用元は`aiAnalysis.applications`へ保存し、`current_ai`以外の要素に現在採用値を持たせません。graph、Pages、通知、個人催促は採用履歴を現在値として読みません。
+汎用AIの採用記録は今回解析した項目だけに作り、失敗・延期も含めて解析対象と一対一で照合します。今回解析しなかった追跡項目は、前回snapshotの同じ項目と`aiAnalysis`全体が一致する場合に保持します。保存前とcheckpointの結合時にこの一致を検証します。保持した`adoptedElements`の適用元が`current_ai`でも、このrunのAI生成元としては扱いません。各AI結果は前回snapshotの所有項目、repository、要素、resultと照合します。
 追跡項目の`aiDependencies`は、状態、待ち相手、期限、重要度、要対応度、blocker、関係集合などの最終値ごとに、AI非依存、現在入力で検証済み、未検証、proof不明を区別します。producerを識別できる依存は寄与したproducerを保持し、旧形式から識別できない依存はproducerを推測せずproof不明として保持します。関係と個人原因もそれぞれのAI依存を保存します。
 AI依存の`unknown`は、空でない`reasons`配列に理由を保存します。理由とproducerは合成時に和集合を取り、理由は重複を除いて`migration`、`not_recorded`、`proof_unknown`、`stale_repository`の順で保存します。この順序は直列化のためのもので、理由の優先度を表しません。`proof_unknown`を含む依存にはproducerが必須です。AI要素の適用元を表す`applications`は単一の`reason`を使います。
 保存時はproducerから依存を再計算し、要素ごとに許可した移行・未記録・staleの理由だけを加えた結果と照合します。`proof_unknown`を含む場合は関係候補を未判定として照合し、理由の合成によって検証済みへ変わることを防ぎます。producerのない移行値の特例は、理由が`migration`だけの場合に限ります。blocker、関係集合、下流影響、severity、attentionの依存が必要なproducerと状態を含むことも検証します。
 Pagesのsummaryとdetailsは`aiAnalysis.status`を`runStatus`として公開し、生成元のcache keyと内部producerは公開しません。
 
 永続化sessionはbranch headを開始時に固定し、snapshot、履歴、汎用AIと個人原因の追加cache、通知候補選別後の通知管理記録を通常stateの最初のGit commitへまとめます。個人原因の採用結果と実行状態を永続化できる前に外部通知へ進みません。
-旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 11から18を19へ移行します。snapshot 18のAI依存は単一の`reason`を1要素の`reasons`配列へ変換し、値・producer・適用元・採用済み評価・根拠・時計を保持します。snapshot 14以前の移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
+旧形式は入口で現行形式へ移行し、必要な旧cacheの削除もsnapshot更新と同じcommitへ含めます。snapshot 11から21を22へ移行した後、22を23へ移行します。snapshot 18のAI依存は単一の`reason`を1要素の`reasons`配列へ変換し、値・producer・適用元・採用済み評価・根拠・時計を保持します。snapshot 14以前の移行では個人原因を空配列として追加し、open項目の列挙計画を`pending`、原因がないterminal項目を`excluded`にします。PRの`inputEvents`は旧commit IDだけをそのPRに紐づく現行IDへ移行し、発生時刻を保持します。このID移行では既存の履歴、通知管理記録、現行cache、AIの採用値と根拠を書き換えません。旧AIの自由文から責務・時刻・意味結果を補填しません。
 読み込みやCI検証だけでは本番へ保存せず、workflowによるpushまで完了してから移行済みとします。
 移行したAIの採用値は新しい生成結果と区別し、旧generationのresult、metadata、outputHashを改変せず、再推論の失敗・延期だけで消しません。
 本人起因の通知抑制は新しいsignalからnotification keyまたは未送信候補を作る前だけに適用し、既存pendingとnotification ledgerへ今回の原因を転用しません。既存のpending、reserved、delivery_started、sent、acknowledgedは通常の有効性・送信・失効規則でだけ更新します。
@@ -591,13 +611,13 @@ Pagesのsummaryとdetailsは`aiAnalysis.status`を`runStatus`として公開し�
 systemの時間系通知と待ち先不明の通知では、同じ項目・通知理由・停滞レベルについて、現在の待ち期間内に予約した記録も照合します。期間内の送信開始済み・送信済み・確認済み記録があれば除外し、予約中の記録は期限まで再送を抑えます。
 待ち期間は`statusSince`と`ownerSince`の新しい方から始まります。照合には`reservedAt`を使い、送信完了が次の待ち期間に遅れた記録を新しい期間の通知と取り違えないようにします。
 system通知は進捗で停滞起点だけが変わっても、同じ待ち期間の同じ停滞レベルを再送しません。新しい待ち期間や停滞レベルの上昇は再び選別対象とします。依存解消・循環検出などの非時間系通知は、それぞれのトリガーを使います。
-個人原因の未送信候補は、列挙計画が`pending`なら保留し、`excluded`なら失効させ、`completed`の場合に現在の原因を再検証します。同じkeyなら検出時刻を保ちます。入力不一致や`waiting`・`unknown`は保留し、失敗・延期だけでは削除しません。時計の変化でkeyが変わる場合は候補と検出時刻を更新し、閾値未満なら古い候補を失効させます。責務の終了、`not_required`、`duplicate`、責任主体・行動・責務期間の交代でも旧候補を失効させます。
+個人原因の未送信候補は、旧対象と現行原因の一致を、列挙計画や評価状態による保留と現行候補との統合より先に判定します。一致する旧対象は、列挙計画が`pending`なら保留し、`excluded`なら失効させ、`completed`の場合に現在の原因を再検証します。同じkeyなら検出時刻を保ちます。入力不一致や`waiting`・`unknown`は保留し、失敗・延期だけでは削除しません。時計の変化でkeyが変わる場合は候補と検出時刻を更新し、閾値未満なら古い候補を失効させます。責務の終了、`not_required`、`duplicate`、責任主体・行動・責務期間の交代でも旧候補を失効させます。
 送信段階は保存済みsnapshotと通知管理記録を読み、run IDと選別済み原因の内容を照合します。自分の予約を含む通知選別全体は再実行せず、GitHubの再収集も行いません。各メッセージの送信直前にも、個人通知は現行の列挙計画が`completed`であることを確認します。原因、key、停滞レベル、予約時刻を検証し、同じstate headに対して`delivery_started`をatomic commitしてpushできた場合だけWebhookへ進みます。system通知には個人原因の列挙計画を適用せず、各通知の条件で検証します。送信文面と履歴はこの検証済み文脈を共有します。
 run reportはDiscord送信結果が確定してから、実送信数と完了時刻を含めて保存します。
 初回の通常state commitでは、未指定の`tracking.startAt`を`not_fixed`のまま保存します。
-PagesとDiscordが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。
+初回Pagesと通知のsettlementが完了した場合だけ、`resolveTrackingStartAt`で完全成功時刻を確定します。
 Discordの各メッセージを送信した後、送信済みの通知管理記録と日次履歴を同じGit commitへ保存し、`origin`の`tracker-state`へpushします。pushが成功してから次のメッセージを送信します。
 全メッセージの処理が完了した後、追跡開始時刻の確定値、最新の通知管理記録、run reportを保存してpushします。送信履歴は各メッセージの送信後に保存済みなので、完了時に再度追加しません。
-`resolve-discord-delivery`は指定した送信開始済みメッセージを確認済みにするか、開始済みの記録を解除して次回の候補選別へ戻します。解除だけで通知を送らず、送信済み履歴も作りません。
+`resolve-discord-delivery`は指定した送信開始済みメッセージを確認済みにするか、開始済みの記録を解除し、同じrunの固定outboxを検証した再開で再試行可能にします。解除だけで通知を送らず、送信済み履歴も作りません。
 各commitの前にheadが変わった場合は競合として失敗し、不完全なcommitへ切り替えません。
 GitHub Pagesはbranchを公開元にせず、ActionsのPages artifactからdeployします。

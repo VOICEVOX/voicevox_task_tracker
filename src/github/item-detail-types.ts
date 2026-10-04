@@ -346,6 +346,18 @@ export type GitHubPullRequestReviewRequests = Readonly<{
   >[];
 }>;
 
+/** 旧review requestの所有と依頼先を確認した読取結果。 */
+export type LegacyReviewRequestInspection = Readonly<{
+  sourceId: SourceId;
+  ownerNodeId: GitHubNodeId;
+  repositoryId: GitHubRepositoryId;
+  target: Readonly<{
+    kind: "user" | "team";
+    nodeId: GitHubNodeId;
+    candidateId: string;
+  }>;
+}>;
+
 type GitHubItemDetailFields = Readonly<{
   sourceId: SourceId;
   nodeId: GitHubNodeId;
@@ -376,6 +388,11 @@ export type GitHubItemDetail =
         nativeClosingIssues: readonly GitHubNativeClosingIssue[];
         headSha: string;
         headCommit: GitHubPullRequestCommit;
+        commitMembership: Readonly<{
+          headSha: string;
+          totalCount: number;
+          commits: readonly GitHubPullRequestCommit[];
+        }>;
         mergeState: GitHubPullRequestMergeState;
       }>);
 

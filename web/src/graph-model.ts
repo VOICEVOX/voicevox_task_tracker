@@ -1,10 +1,10 @@
-import {
-  type PublicDetailsDto,
-  type PublicGraphEdgeDto,
-  type PublicGraphNodeDto,
-  type PublicItemSummaryDto,
-  type PublicSummaryDto,
-} from "../../src/pages/public-dto.js";
+import type {
+  PublicDetailsDto,
+  PublicGraphEdgeDto,
+  PublicGraphNodeDto,
+  PublicItemSummaryDto,
+  PublicSummaryDto,
+} from "../../src/pages/public-dto-contracts.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;

@@ -1,6 +1,6 @@
 import { type ComponentChildren } from "preact";
 
-import { validateGitHubUrl } from "./model.js";
+import { validateGitHubUrl } from "./model-tables.js";
 
 type SafeGitHubLinkVariant = "action" | "icon" | "inline";
 

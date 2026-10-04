@@ -1,15 +1,15 @@
 import { useMemo } from "preact/hooks";
 
-import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import type { PublicSummaryDto } from "../../src/pages/public-dto-contracts.js";
 import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { ContentState, PageSection } from "./layout.js";
 import {
   collectCurrentResponseSubjectRows,
-  currentResponseSubjectsUnverifiedDescription,
   currentResponseSubjectKey,
   hasCurrentResponseSubjectListingUnverified,
   resolveCurrentResponseSubjects,
-} from "./model.js";
+} from "./model-current-response.js";
+import { currentResponseSubjectsUnverifiedDescription } from "./model-labels.js";
 import {
   ResponsiveTableCardList,
   type ResponsiveCardField,

@@ -1,167 +1,37 @@
-import { z } from "zod";
+import {
+  notificationCauseSchema,
+  notificationDependencyCauseSchema,
+  type FreshObservedGitHubItem,
+  type NotificationCause,
+  type NotificationCauseActor,
+  type NotificationCauseEvidence,
+  type NotificationCauseEvidenceList,
+  type NotificationDependencyCause,
+  type CreateNotificationCausesInput,
+  type NotificationCauses,
+} from "./notification-cause-contracts.js";
+import { serializeCanonicalJson } from "../canonical-json/value.js";
 
 import {
-  buildSourceId,
-  createGitHubNodeId,
-  createUtcIsoDateTime,
-  parseSourceId,
-  type FreshObservedGitHubIssue,
-  type FreshObservedGitHubPullRequest,
   type GitHubAccountActor,
   type NormalizedEvent,
   type SourceId,
-  type UtcIsoDateTime,
   type WaitingOn,
 } from "../domain/index.js";
 import { assertNonNullable, UnreachableError } from "../util/index.js";
-
-/** causeの責任者または根拠イベントを起こしたhuman actor。 */
-export type NotificationCauseActor = GitHubAccountActor & Readonly<{ type: "human" }>;
-
-type FreshObservedGitHubItem = FreshObservedGitHubIssue | FreshObservedGitHubPullRequest;
-
-/** causeが直接対応付けた構造化timeline eventの要約。 */
-export type NotificationCauseEvidence = Readonly<{
-  sourceId: SourceId;
-  occurredAt: UtcIsoDateTime;
-  actor: NotificationCauseActor;
-}>;
-
-const notificationCauseActorSchema = z
-  .strictObject({
-    type: z.literal("human"),
-    nodeId: z.string().min(1),
-    login: z.string().min(1),
-  })
-  .transform(({ nodeId, login }): NotificationCauseActor =>
-    Object.freeze({
-      type: "human",
-      nodeId: createGitHubNodeId(nodeId),
-      login,
-    }),
-  );
-
-const notificationCauseSourceIdSchema = z
-  .string()
-  .min(3)
-  .transform((sourceId) => {
-    const parts = parseSourceId(sourceId);
-    return buildSourceId(parts.kind, parts.originalId);
-  });
-
-const notificationCauseEvidenceSchema = z
-  .strictObject({
-    sourceId: notificationCauseSourceIdSchema,
-    occurredAt: z.iso
-      .datetime({
-        offset: true,
-        error: "タイムゾーンを含むISO 8601日時を指定してください",
-      })
-      .transform(createUtcIsoDateTime),
-    actor: notificationCauseActorSchema,
-  })
-  .transform((evidence): NotificationCauseEvidence => Object.freeze(evidence));
-
-const notificationCauseEvidenceListSchema = z
-  .array(notificationCauseEvidenceSchema)
-  .min(1)
-  .transform((evidence): readonly [NotificationCauseEvidence, ...NotificationCauseEvidence[]] => {
-    const [first, ...rest] = evidence;
-    assertNonNullable(first, "cause evidenceがありません");
-    return Object.freeze([first, ...rest]);
-  });
-
-const notificationDependencyCauseSchema = z.discriminatedUnion("status", [
-  z.strictObject({
-    status: z.literal("not_applicable"),
-  }),
-  z.strictObject({
-    status: z.literal("complete"),
-    evidence: notificationCauseEvidenceListSchema,
-  }),
-  z.strictObject({
-    status: z.literal("indeterminate"),
-  }),
-]);
-
-/** 通知理由の原因対応結果を検証するcause schema。 */
-export const notificationCauseSchema = z.discriminatedUnion("status", [
-  z.strictObject({
-    status: z.literal("complete"),
-    responsible: notificationCauseActorSchema,
-    evidence: notificationCauseEvidenceListSchema,
-  }),
-  z.strictObject({
-    status: z.literal("indeterminate"),
-  }),
-]);
-
-/** 通知理由の原因対応結果を表す検証済みcause。 */
-export type NotificationCause = z.output<typeof notificationCauseSchema>;
-
-type NotificationCauseEvidenceList = readonly [
-  NotificationCauseEvidence,
-  ...NotificationCauseEvidence[],
-];
-
-/** 責任者が確定する前の依存解消cause。 */
-export type NotificationDependencyCause =
-  | Readonly<{
-      status: "not_applicable";
-    }>
-  | Readonly<{
-      status: "complete";
-      evidence: NotificationCauseEvidenceList;
-    }>
-  | Readonly<{
-      status: "indeterminate";
-    }>;
-
-type PreviousResponsibility = Readonly<{
-  waitingOn: readonly WaitingOn[];
-  observedAt: UtcIsoDateTime;
-}>;
-
-/** 通知理由のcauseを正規化eventと依存解消から導出する入力。 */
-export type CreateNotificationCausesInput = Readonly<{
-  item: FreshObservedGitHubItem;
-  currentWaitingOn: readonly WaitingOn[];
-  previous:
-    | Readonly<{
-        availability: "not_available";
-      }>
-    | Readonly<{
-        availability: "available";
-        value: PreviousResponsibility;
-      }>;
-  currentResponsibilityBasis: Readonly<{
-    sourceIds: readonly [SourceId, ...SourceId[]];
-    occurredAt: UtcIsoDateTime;
-  }>;
-  dependencyCause: NotificationDependencyCause;
-  selfCommitmentCause: NotificationCause;
-  hasUnobservedHeadChange: boolean;
-  evaluatedAt: UtcIsoDateTime;
-}>;
-
-/** 通知選別へ渡す理由ごとのcause。 */
-export type NotificationCauses = Readonly<{
-  responsibility_changed: NotificationCause;
-  newly_unblocked: NotificationCause;
-}>;
-
-type WaitingOnSignature = Readonly<Pick<WaitingOn, "kind" | "candidateId" | "role">>;
-
-type WaitingOnDifference = Readonly<{
-  added: readonly WaitingOn[];
-  removed: readonly WaitingOn[];
-}>;
-
-type MappedEvent = Readonly<{
-  event: NormalizedEvent;
-  addedSignatures: readonly string[];
-  removedSignatures: readonly string[];
-}>;
+import {
+  compareSourceIds,
+  eventAssigneeMatches,
+  eventInWindow,
+  eventMayAffectResponsibility,
+  eventsInWindow,
+  mappedEventFor,
+  previousWaitingOn,
+  responsibilitySourceIds,
+  unsupportedEventInWindow,
+  waitingOnSignature,
+  type WaitingOnDifference,
+} from "./notification-cause-event-mapping.js";
 
 type LocalCauseResolution =
   | Readonly<{
@@ -174,30 +44,6 @@ type LocalCauseResolution =
   | Readonly<{
       status: "indeterminate";
     }>;
-
-function compareSourceIds(left: SourceId, right: SourceId): -1 | 0 | 1 {
-  if (left < right) {
-    return -1;
-  }
-  if (left > right) {
-    return 1;
-  }
-  return 0;
-}
-
-function compareEvents(left: NormalizedEvent, right: NormalizedEvent): -1 | 0 | 1 {
-  if (left.occurredAt < right.occurredAt) {
-    return -1;
-  }
-  if (left.occurredAt > right.occurredAt) {
-    return 1;
-  }
-  return compareSourceIds(left.sourceId, right.sourceId);
-}
-
-function waitingOnSignature(waitingOn: WaitingOnSignature): string {
-  return JSON.stringify([waitingOn.kind, waitingOn.candidateId, waitingOn.role]);
-}
 
 function waitingOnDifference(
   previous: readonly WaitingOn[],
@@ -330,299 +176,6 @@ function notificationCauseHumanActor(
   });
 }
 
-function eventInWindow(
-  event: NormalizedEvent,
-  previousObservedAt: UtcIsoDateTime,
-  evaluatedAt: UtcIsoDateTime,
-): boolean {
-  return event.occurredAt > previousObservedAt && event.occurredAt <= evaluatedAt;
-}
-
-function eventsInWindow(input: CreateNotificationCausesInput): readonly NormalizedEvent[] {
-  const previous = input.previous;
-  if (previous.availability === "not_available") {
-    return [];
-  }
-  const previousObservedAt = previous.value.observedAt;
-  return Object.freeze(
-    input.item.events
-      .filter((event) => eventInWindow(event, previousObservedAt, input.evaluatedAt))
-      .sort(compareEvents),
-  );
-}
-
-function isImplicitMaintainerWaitingOn(waitingOn: WaitingOn): boolean {
-  return (
-    waitingOn.role === "maintainer" && (waitingOn.kind === "role" || waitingOn.kind === "user")
-  );
-}
-
-function currentResponsibilityBasisContains(
-  input: CreateNotificationCausesInput,
-  sourceId: SourceId,
-): boolean {
-  return input.currentResponsibilityBasis.sourceIds.includes(sourceId);
-}
-
-function normalPushIsProvenByForcePush(
-  input: CreateNotificationCausesInput,
-  event: Extract<NormalizedEvent, { kind: "push" }>,
-): boolean {
-  const item = input.item;
-  if (event.forcePush || item.type !== "pull_request") {
-    return false;
-  }
-  const previous = input.previous;
-  if (previous.availability === "not_available") {
-    return false;
-  }
-  return input.item.events.some(
-    (candidate) =>
-      candidate.kind === "push" &&
-      candidate.forcePush &&
-      candidate.headCommitSha === event.headCommitSha &&
-      candidate.headCommitSha === item.headCommit.sha &&
-      eventInWindow(candidate, previous.value.observedAt, input.evaluatedAt),
-  );
-}
-
-function eventAssigneeMatches(
-  event: Extract<NormalizedEvent, { kind: "assignee" }>,
-  waitingOn: WaitingOn,
-): boolean {
-  return (
-    waitingOn.kind === "user" &&
-    waitingOn.role === "assignee" &&
-    event.assignee.login.toLowerCase() === waitingOn.candidateId.toLowerCase()
-  );
-}
-
-function mapAssigneeEvent(
-  event: Extract<NormalizedEvent, { kind: "assignee" }>,
-  input: CreateNotificationCausesInput,
-  difference: WaitingOnDifference,
-): MappedEvent | undefined {
-  if (event.action === "added" && !currentResponsibilityBasisContains(input, event.sourceId)) {
-    return undefined;
-  }
-  const sourceWaitingOn = event.action === "added" ? difference.added : difference.removed;
-  const matchingWaitingOn = sourceWaitingOn.find((waitingOn) =>
-    eventAssigneeMatches(event, waitingOn),
-  );
-  if (matchingWaitingOn == null) {
-    return undefined;
-  }
-  const signature = waitingOnSignature(matchingWaitingOn);
-  const implicitMaintainerWaitingOn =
-    event.action === "added" ? difference.removed.filter(isImplicitMaintainerWaitingOn) : [];
-  return Object.freeze({
-    event,
-    addedSignatures: event.action === "added" ? [signature] : [],
-    removedSignatures:
-      event.action === "removed"
-        ? [signature]
-        : implicitMaintainerWaitingOn.map(waitingOnSignature),
-  });
-}
-
-function mapConvertedToDraftEvent(
-  event: NormalizedEvent,
-  input: CreateNotificationCausesInput,
-  item: FreshObservedGitHubItem,
-  difference: WaitingOnDifference,
-): MappedEvent | undefined {
-  if (
-    event.kind !== "converted_to_draft" ||
-    item.type !== "pull_request" ||
-    difference.added.length !== 1 ||
-    !currentResponsibilityBasisContains(input, event.sourceId)
-  ) {
-    return undefined;
-  }
-  const current = difference.added[0];
-  assertNonNullable(current, "converted_to_draftによる現在のwaitingOnを取得できませんでした");
-  if (current.kind !== "role" || current.candidateId !== "author" || current.role !== "author") {
-    return undefined;
-  }
-  return Object.freeze({
-    event,
-    addedSignatures: [waitingOnSignature(current)],
-    removedSignatures: difference.removed.map(waitingOnSignature),
-  });
-}
-
-function mapForcePushEvent(
-  event: NormalizedEvent,
-  input: CreateNotificationCausesInput,
-  item: FreshObservedGitHubItem,
-  difference: WaitingOnDifference,
-): MappedEvent | undefined {
-  if (
-    event.kind !== "push" ||
-    item.type !== "pull_request" ||
-    !event.forcePush ||
-    event.headCommitSha !== item.headCommit.sha ||
-    difference.added.length !== 1 ||
-    !currentResponsibilityBasisContains(input, item.headCommit.sourceId)
-  ) {
-    return undefined;
-  }
-  const current = difference.added[0];
-  assertNonNullable(current, "force-pushによる現在のwaitingOnを取得できませんでした");
-  if (current.kind !== "user" || current.role !== "reviewer") {
-    return undefined;
-  }
-  return Object.freeze({
-    event,
-    addedSignatures: [waitingOnSignature(current)],
-    removedSignatures: difference.removed.map(waitingOnSignature),
-  });
-}
-
-function previousWaitingOn(input: CreateNotificationCausesInput): readonly WaitingOn[] {
-  return input.previous.availability === "available" ? input.previous.value.waitingOn : [];
-}
-
-function responsibilitySourceIds(input: CreateNotificationCausesInput): ReadonlySet<SourceId> {
-  return new Set([
-    ...input.currentResponsibilityBasis.sourceIds,
-    ...input.currentWaitingOn.flatMap((waitingOn) => waitingOn.sourceIds),
-    ...previousWaitingOn(input).flatMap((waitingOn) => waitingOn.sourceIds),
-  ]);
-}
-
-function waitingOnHasRole(
-  waitingOn: readonly WaitingOn[],
-  roles: readonly WaitingOn["role"][],
-): boolean {
-  return waitingOn.some((value) => roles.includes(value.role));
-}
-
-function eventMayAffectResponsibility(
-  event: NormalizedEvent,
-  input: CreateNotificationCausesInput,
-  difference: WaitingOnDifference,
-): boolean {
-  if (event.kind === "push" && !event.forcePush) {
-    return (
-      currentResponsibilityBasisContains(input, event.sourceId) &&
-      !normalPushIsProvenByForcePush(input, event)
-    );
-  }
-  if (responsibilitySourceIds(input).has(event.sourceId)) {
-    return true;
-  }
-  switch (event.kind) {
-    case "comment":
-      return false;
-    case "assignee": {
-      const affectedWaitingOn = event.action === "added" ? difference.added : difference.removed;
-      return affectedWaitingOn.some((waitingOn) => eventAssigneeMatches(event, waitingOn));
-    }
-    case "push":
-      if (
-        input.item.type !== "pull_request" ||
-        !event.forcePush ||
-        event.headCommitSha !== input.item.headCommit.sha
-      ) {
-        return false;
-      }
-      return (
-        waitingOnHasRole(input.currentWaitingOn, ["author", "reviewer"]) ||
-        waitingOnHasRole(previousWaitingOn(input), ["author", "reviewer"])
-      );
-    case "converted_to_draft":
-      return (
-        input.item.type === "pull_request" &&
-        (waitingOnHasRole(input.currentWaitingOn, ["author"]) ||
-          waitingOnHasRole(previousWaitingOn(input), ["author", "reviewer"]))
-      );
-    case "review":
-    case "review_request":
-      return (
-        waitingOnHasRole(input.currentWaitingOn, ["author", "reviewer"]) ||
-        waitingOnHasRole(previousWaitingOn(input), ["author", "reviewer"])
-      );
-    case "label":
-    case "state":
-    case "relation":
-    case "ready_for_review":
-    case "added_to_merge_queue":
-    case "removed_from_merge_queue":
-    case "auto_merge_enabled":
-    case "auto_merge_disabled":
-      return false;
-    default:
-      throw new UnreachableError(event);
-  }
-}
-
-function unsupportedEventInWindow(
-  event: NormalizedEvent,
-  input: CreateNotificationCausesInput,
-  difference: WaitingOnDifference,
-): boolean {
-  if (!eventMayAffectResponsibility(event, input, difference)) {
-    return false;
-  }
-  if (mappedEventFor(event, input, input.item, difference) != null) {
-    return false;
-  }
-  switch (event.kind) {
-    case "comment":
-      return false;
-    case "assignee":
-      return false;
-    case "push":
-      return true;
-    case "converted_to_draft":
-      return false;
-    case "ready_for_review":
-    case "review":
-    case "review_request":
-    case "label":
-    case "state":
-    case "relation":
-    case "added_to_merge_queue":
-    case "removed_from_merge_queue":
-    case "auto_merge_enabled":
-    case "auto_merge_disabled":
-      return true;
-    default:
-      throw new UnreachableError(event);
-  }
-}
-
-function mappedEventFor(
-  event: NormalizedEvent,
-  input: CreateNotificationCausesInput,
-  item: FreshObservedGitHubItem,
-  difference: WaitingOnDifference,
-): MappedEvent | undefined {
-  switch (event.kind) {
-    case "assignee":
-      return mapAssigneeEvent(event, input, difference);
-    case "converted_to_draft":
-      return mapConvertedToDraftEvent(event, input, item, difference);
-    case "push":
-      return mapForcePushEvent(event, input, item, difference);
-    case "comment":
-    case "ready_for_review":
-    case "review":
-    case "review_request":
-    case "label":
-    case "state":
-    case "relation":
-    case "added_to_merge_queue":
-    case "removed_from_merge_queue":
-    case "auto_merge_enabled":
-    case "auto_merge_disabled":
-      return undefined;
-    default:
-      throw new UnreachableError(event);
-  }
-}
-
 function evidenceFromEvents(
   events: readonly NormalizedEvent[],
 ): readonly [NotificationCauseEvidence, ...NotificationCauseEvidence[]] | undefined {
@@ -633,14 +186,18 @@ function evidenceFromEvents(
     }
     const actor = notificationCauseHumanActor(event.actor);
     assertNonNullable(actor, "cause evidenceのactorを取得できませんでした");
-    evidenceBySourceId.set(
-      event.sourceId,
-      Object.freeze({
-        sourceId: event.sourceId,
-        occurredAt: event.occurredAt,
-        actor,
-      }),
-    );
+    const evidence = Object.freeze({
+      sourceId: event.sourceId,
+      occurredAt: event.occurredAt,
+      actor,
+    });
+    const existing = evidenceBySourceId.get(event.sourceId);
+    if (existing != null && serializeCanonicalJson(existing) !== serializeCanonicalJson(evidence)) {
+      throw new TypeError(
+        `通知原因の同じsource IDに異なるイベントがあります。対象: ${event.sourceId}`,
+      );
+    }
+    evidenceBySourceId.set(event.sourceId, evidence);
   }
   const evidence = [...evidenceBySourceId.values()].sort((left, right) => {
     if (left.occurredAt < right.occurredAt) {
@@ -664,6 +221,15 @@ function mergeEvidence(
   const evidenceBySourceId = new Map<SourceId, NotificationCauseEvidence>();
   for (const evidenceGroup of evidenceGroups) {
     for (const evidence of evidenceGroup) {
+      const existing = evidenceBySourceId.get(evidence.sourceId);
+      if (
+        existing != null &&
+        serializeCanonicalJson(existing) !== serializeCanonicalJson(evidence)
+      ) {
+        throw new TypeError(
+          `通知原因の同じsource IDに異なる根拠があります。対象: ${evidence.sourceId}`,
+        );
+      }
       evidenceBySourceId.set(evidence.sourceId, evidence);
     }
   }
@@ -716,6 +282,12 @@ function responsibilityBasisEvents(
 ): readonly NormalizedEvent[] | undefined {
   const eventsBySourceId = new Map<SourceId, NormalizedEvent>();
   for (const event of input.item.events) {
+    const existing = eventsBySourceId.get(event.sourceId);
+    if (existing != null && serializeCanonicalJson(existing) !== serializeCanonicalJson(event)) {
+      throw new TypeError(
+        `通知原因の同じsource IDに異なるイベントがあります。対象: ${event.sourceId}`,
+      );
+    }
     eventsBySourceId.set(event.sourceId, event);
   }
   const events: NormalizedEvent[] = [];
@@ -1163,10 +735,42 @@ function validateCauseInput(input: CreateNotificationCausesInput): void {
   }
   notificationDependencyCauseSchema.parse(input.dependencyCause);
   notificationCauseSchema.parse(input.selfCommitmentCause);
+  const eventsBySourceId = new Map<SourceId, NormalizedEvent>();
   for (const event of input.item.events) {
     if (event.itemNodeId !== input.item.nodeId) {
       throw new TypeError("項目と正規化イベントのitem node IDが一致しません");
     }
+    const existing = eventsBySourceId.get(event.sourceId);
+    if (existing != null && serializeCanonicalJson(existing) !== serializeCanonicalJson(event)) {
+      throw new TypeError(
+        `通知原因の同じsource IDに異なるイベントがあります。対象: ${event.sourceId}`,
+      );
+    }
+    eventsBySourceId.set(event.sourceId, event);
+  }
+  const evidenceBySourceId = new Map<SourceId, NotificationCauseEvidence>();
+  const evidenceGroups = [
+    input.dependencyCause.status === "complete" ? input.dependencyCause.evidence : [],
+    input.selfCommitmentCause.status === "complete" ? input.selfCommitmentCause.evidence : [],
+  ];
+  for (const evidence of evidenceGroups.flat()) {
+    const existing = evidenceBySourceId.get(evidence.sourceId);
+    if (existing != null && serializeCanonicalJson(existing) !== serializeCanonicalJson(evidence)) {
+      throw new TypeError(
+        `通知原因の同じsource IDに異なる根拠があります。対象: ${evidence.sourceId}`,
+      );
+    }
+    const event = eventsBySourceId.get(evidence.sourceId);
+    if (
+      event != null &&
+      (event.occurredAt !== evidence.occurredAt ||
+        event.actor.type !== "human" ||
+        event.actor.nodeId !== evidence.actor.nodeId ||
+        event.actor.login !== evidence.actor.login)
+    ) {
+      throw new TypeError(`通知原因の根拠とイベントが一致しません。対象: ${evidence.sourceId}`);
+    }
+    evidenceBySourceId.set(evidence.sourceId, evidence);
   }
 }
 

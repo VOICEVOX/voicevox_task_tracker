@@ -1,0 +1,167 @@
+name: 追跡runの観測
+
+on:
+  workflow_call:
+    inputs:
+      state_ref:
+        required: true
+        type: string
+      effect_target:
+        required: true
+        type: string
+      config_path:
+        required: true
+        type: string
+      quality_success:
+        required: true
+        type: boolean
+      bootstrap_code_revision:
+        required: false
+        type: string
+      run_id:
+        required: false
+        type: string
+      stage_results_json:
+        required: true
+        type: string
+      has_failed_stage:
+        required: true
+        type: boolean
+      workflow_kind:
+        required: true
+        type: string
+      artifact_retention_days:
+        required: true
+        type: number
+
+permissions: {}
+
+env:
+  TRACKING_EFFECT_TARGET: ${{ inputs.effect_target }}
+  TRACKING_STATE_REF: ${{ inputs.state_ref }}
+
+jobs:
+  recovery-router:
+    if: always() && inputs.quality_success
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      run_id: ${{ steps.route.outputs.run_id }}
+      next_stage: ${{ steps.route.outputs.next_stage }}
+    steps:
+      - name: remote bootstrapを読むsourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.bootstrap_code_revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 診断先を設定
+        run: echo "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH=$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" >> "$GITHUB_ENV"
+      - name: remote stateから再開入口を判定
+        id: route
+        uses: ./.github/actions/route-tracking-stage
+        with:
+          state-ref: ${{ inputs.state_ref }}
+          effect-target: ${{ inputs.effect_target }}
+          config-path: ${{ inputs.config_path }}
+          run-id: ${{ inputs.run_id }}
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.workflow_kind }}
+          runtime-cli: artifacts/workflow/runtime/tracker-run.mjs
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+
+  notify-operations:
+    needs: recovery-router
+    if: always() && inputs.effect_target == 'production' && (inputs.has_failed_stage || needs.recovery-router.result == 'failure')
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/_tracking-notify-operations.yml
+    with:
+      state_ref: ${{ inputs.state_ref }}
+      config_path: ${{ inputs.config_path }}
+      workflow_kind: ${{ inputs.workflow_kind }}
+      stage_results_json: ${{ inputs.stage_results_json }}
+      router_result: ${{ needs.recovery-router.result }}
+      infrastructure_failure_eligible: true
+      artifact_retention_days: ${{ inputs.artifact_retention_days }}
+    secrets: inherit
+
+  report-workflow:
+    needs: [recovery-router, notify-operations]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: 現行制御コードを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: 制御CLIを準備
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: 完了receiptを取得
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tracking-stage-complete
+          path: artifacts/workflow/runs
+      - name: 収集run reportを取得
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: daily-run-report-${{ github.run_id }}-${{ github.run_attempt }}-analyze
+          path: artifacts/run-reports
+      - name: 公開失敗artifactを取得
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ${{ inputs.workflow_kind }}-failure-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: artifacts/workflow/failures
+          merge-multiple: true
+      - name: Actionsのjobとstep結果を取得
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" --paginate | jq -c '.jobs[] | {name, status, conclusion, steps: [(.steps // [])[] | {name, status, conclusion}]}' > "$RUNNER_TEMP/tracking-actions-jobs.jsonl"
+      - name: workflow reportを作成
+        id: report
+        env:
+          TRACKING_EFFECT_TARGET: ${{ inputs.effect_target }}
+          TRACKING_RUN_ID: ${{ needs.recovery-router.outputs.run_id || inputs.run_id }}
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
+        run: |
+          arguments=(report-workflow --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --effect-target "$TRACKING_EFFECT_TARGET" --actions-jobs "$RUNNER_TEMP/tracking-actions-jobs.jsonl" --collect-report artifacts/run-reports/run-stage-analyze.json)
+          if [[ -n "$TRACKING_RUN_ID" ]]; then
+            arguments+=(--tracking-run-id "$TRACKING_RUN_ID")
+          fi
+          node --enable-source-maps dist/cli/tracker-run.js "${arguments[@]}"
+      - name: workflow reportを保存
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.workflow_kind }}-run-report-${{ github.run_id }}-${{ github.run_attempt }}-workflow
+          path: artifacts/run-reports/workflow.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.workflow_kind }}
+          runtime-cli: dist/cli/tracker-run.js
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+          diagnostics-required: ${{ steps.report.outcome == 'success' || steps.report.outcome == 'failure' }}

@@ -1,11 +1,11 @@
-import { type LabelEffectsResolver } from "./label-resolution.js";
-import { type SourceId } from "./source-id.js";
-import { type NormalizedEvent, type UtcIsoDateTime } from "./types.js";
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import {
   aiAnalysisDependencySchema,
   type AiAnalysisDependency,
 } from "./ai-analysis-dependencies.js";
-import { assertNonNullable, UnreachableError } from "../util/index.js";
+import { type LabelEffectsResolver } from "./label-resolution.js";
+import { type SourceId } from "./source-id.js";
+import { type NormalizedEvent, type UtcIsoDateTime } from "./types.js";
 
 /** 依存グラフから渡す確定済みの依存解消。 */
 export type DependencyResolutionProgress = Readonly<{

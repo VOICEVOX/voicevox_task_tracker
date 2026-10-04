@@ -1,8 +1,13 @@
 import { z } from "zod";
 
+import { hashCanonicalJson, parseSha256Hash } from "../canonical-json/index.js";
 import {
-  PERSONAL_REMINDER_AI_INPUT_SCHEMA_VERSION,
+  type AiAnalysisElementExecutionFingerprint,
+  type AiAnalysisElementInputFingerprint,
+} from "../domain/ai-analysis-elements.js";
+import {
   PERSONAL_REMINDER_AI_GENERATION_SCHEMA_VERSION,
+  PERSONAL_REMINDER_AI_INPUT_SCHEMA_VERSION,
   PERSONAL_REMINDER_AI_OUTPUT_SCHEMA_VERSION,
   PERSONAL_REMINDER_AI_PROMPT_VERSION,
   PERSONAL_REMINDER_AI_REVISION,
@@ -12,12 +17,7 @@ import {
   type PersonalReminderAiGeneration,
   type PersonalReminderCauseId,
 } from "../domain/personal-reminder-causes.js";
-import {
-  type AiAnalysisElementExecutionFingerprint,
-  type AiAnalysisElementInputFingerprint,
-} from "../domain/ai-analysis-elements.js";
 import { REASONING_EFFORTS, type AiCacheEntryId, type ReasoningEffort } from "../domain/types.js";
-import { hashCanonicalJson, parseSha256Hash } from "../canonical-json/index.js";
 
 const aiCacheEntryIdSchema = z.custom<AiCacheEntryId>(
   (value) => typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value),

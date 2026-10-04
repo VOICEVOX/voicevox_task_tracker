@@ -1,0 +1,290 @@
+name: Discord送達の手動解決
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 保留中runのActions実行ID
+        required: true
+        type: string
+      execution_shape:
+        description: 記録済みrunの実行形態
+        required: true
+        default: split
+        type: choice
+        options:
+          - split
+          - sequential
+      code_revision:
+        description: 保留中runのコードcommit SHA
+        required: true
+        type: string
+      run_id:
+        description: 保留中のtracking run ID
+        required: true
+        type: string
+      checkpoint_digest:
+        description: 保留中のcheckpoint digest
+        required: true
+        type: string
+      delivery_id:
+        description: 曖昧な送達のdelivery ID
+        required: true
+        type: string
+      attempt_id:
+        description: 曖昧な送達のattempt ID
+        required: true
+        type: string
+      notification_keys:
+        description: 固定outboxのnotification keyを順番どおりカンマで区切る
+        required: true
+        type: string
+      resolution:
+        description: Discordの実結果を確認した後の判断
+        required: true
+        type: choice
+        options:
+          - acknowledge
+          - retry
+
+permissions: {}
+
+concurrency:
+  group: ${{ inputs.execution_shape == 'sequential' && format('voicevox-task-tracker-sequential-manual-{0}', github.run_id) || 'voicevox-task-tracker-daily' }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-delivery:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: ${{ inputs.execution_shape == 'sequential' && 'voicevox-task-tracker-daily' || format('voicevox-task-tracker-manual-split-{0}', github.run_id) }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      TRACKING_EFFECT_TARGET: production
+      TRACKING_STATE_REF: tracker-state
+      VOICEVOX_EXPECTED_RUN_ID: ${{ inputs.run_id }}
+      VOICEVOX_MANUAL_CHECKPOINT_DIGEST: ${{ inputs.checkpoint_digest }}
+      VOICEVOX_MANUAL_CODE_REVISION: ${{ inputs.code_revision }}
+      VOICEVOX_MANUAL_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+      VOICEVOX_MANUAL_EXACT_CHECKOUT: ${{ github.workspace }}/artifacts/exact-runtime
+      VOICEVOX_TASK_TRACKER_FAILURE_DIRECTORY: ${{ github.workspace }}/artifacts/workflow/failures
+    steps:
+      - name: 診断先を設定
+        run: echo "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH=$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" >> "$GITHUB_ENV"
+      - name: 現行制御コードを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: production Pages leaseを確認
+        env:
+          MANUAL_EXECUTION_SHAPE: ${{ inputs.execution_shape }}
+          MANUAL_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          if [[ "$MANUAL_EXECUTION_SHAPE" == sequential ]]; then
+            bash .github/scripts/assert-production-pages-lease.sh --recovery-run-id "$MANUAL_RUN_ID"
+          else
+            bash .github/scripts/assert-production-pages-lease.sh
+          fi
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: 現行制御CLIを準備
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: 保留runの固定runtimeを選ぶ
+        id: inspect
+        env:
+          MANUAL_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          MANUAL_CODE_REVISION: ${{ inputs.code_revision }}
+          MANUAL_RUN_ID: ${{ inputs.run_id }}
+          MANUAL_EXECUTION_SHAPE: ${{ inputs.execution_shape }}
+        run: |
+          node --enable-source-maps dist/cli/tracker-run.js inspect-run-state --config config.yml --state-ref tracker-state > "$RUNNER_TEMP/manual-bootstrap.json"
+          jq -e --arg source "$MANUAL_SOURCE_RUN_ID" --arg revision "$MANUAL_CODE_REVISION" --arg run_id "$MANUAL_RUN_ID" --arg shape "$MANUAL_EXECUTION_SHAPE" '
+            .kind == "resume_with_exact_runtime" and
+            .recoveryInput.runId == $run_id and
+            .recoveryInput.runtimeRecoveryPlan.codeRevision == $revision and
+            (if $shape == "sequential" then
+              .recoveryInput.protocolVersion == 1 and
+              .recoveryInput.runtimeRecoveryPlan.kind == "rebuild_exact"
+            else
+              .recoveryInput.protocolVersion == 2 and
+              .recoveryInput.runtimeRecoveryPlan.kind == "workflow_bundle" and
+              .recoveryInput.runtimeRecoveryPlan.workflowRunId == $source
+            end)
+          ' "$RUNNER_TEMP/manual-bootstrap.json" > /dev/null
+          echo "protocol_version=$(jq -r '.recoveryInput.protocolVersion' "$RUNNER_TEMP/manual-bootstrap.json")" >> "$GITHUB_OUTPUT"
+          echo "node_version=$(jq -r '.recoveryInput.runtimeRecoveryPlan.toolchain.nodeVersion | ltrimstr("v")' "$RUNNER_TEMP/manual-bootstrap.json")" >> "$GITHUB_OUTPUT"
+      - name: 元runのコードを隔離して取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.code_revision }}
+          path: artifacts/exact-runtime
+          fetch-depth: 0
+      - name: 記録されたNode.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ steps.inspect.outputs.node_version }}
+      - name: 固定runtimeの依存関係を準備
+        working-directory: artifacts/exact-runtime
+        run: pnpm install --frozen-lockfile
+      - name: V1の固定sourceを再構築
+        if: steps.inspect.outputs.protocol_version == '1'
+        working-directory: artifacts/exact-runtime
+        run: pnpm build
+      - name: 元runの固定bundleを取得
+        id: source_runtime
+        if: steps.inspect.outputs.protocol_version == '2'
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: workflow-cli-runtime
+          path: artifacts/exact-runtime/artifacts/workflow/runtime
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ github.token }}
+      - name: 消失した固定bundleを同じsourceから再生成
+        if: steps.inspect.outputs.protocol_version == '2' && steps.source_runtime.outcome == 'failure'
+        working-directory: artifacts/exact-runtime
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm build:workflow-cli
+          node --input-type=module <<'NODE'
+          import { lstatSync } from "node:fs";
+          const modules = [];
+          for (const [source, module] of [
+            ["src/infrastructure/tracking-run/publication-runtime.ts", "./dist/infrastructure/tracking-run/publication-runtime.js"],
+            ["src/cli/publication-runtime.ts", "./dist/cli/publication-runtime.js"],
+          ]) {
+            try {
+              if (!lstatSync(source).isFile()) throw new TypeError("runtimeのsourceは通常fileである必要があります");
+              modules.push(module);
+            } catch (error) {
+              if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+              throw error;
+            }
+          }
+          if (modules.length !== 1) throw new TypeError("exact runtimeのsource配置を一意に識別できません");
+          const [module] = modules;
+          if (module == null) throw new TypeError("manifest writerを取得できません");
+          const { writeWorkflowRuntimeManifest } = await import(module);
+          await writeWorkflowRuntimeManifest(process.cwd());
+          NODE
+      - name: 元runのstateを取得
+        working-directory: artifacts/exact-runtime
+        run: git fetch --no-tags origin refs/heads/tracker-state:refs/heads/tracker-state
+      - name: 固定bundleとcheckpointを検証
+        id: verify_runtime
+        run: node --enable-source-maps dist/cli/manual-exact-runtime.js select-runtime
+      - name: 曖昧な送達を手動解決
+        id: resolve_delivery
+        env:
+          MANUAL_NOTIFICATION_KEYS: ${{ inputs.notification_keys }}
+          MANUAL_RUN_ID: ${{ inputs.run_id }}
+          MANUAL_CHECKPOINT_DIGEST: ${{ inputs.checkpoint_digest }}
+          MANUAL_DELIVERY_ID: ${{ inputs.delivery_id }}
+          MANUAL_ATTEMPT_ID: ${{ inputs.attempt_id }}
+          MANUAL_RESOLUTION: ${{ inputs.resolution }}
+        run: |
+          IFS=',' read -r -a notification_keys <<< "$MANUAL_NOTIFICATION_KEYS"
+          arguments=(
+            --run-id "$MANUAL_RUN_ID"
+            --checkpoint-digest "$MANUAL_CHECKPOINT_DIGEST"
+            --delivery-id "$MANUAL_DELIVERY_ID"
+            --attempt-id "$MANUAL_ATTEMPT_ID"
+            --resolution "$MANUAL_RESOLUTION"
+          )
+          for notification_key in "${notification_keys[@]}"; do
+            arguments+=(--notification-key "$notification_key")
+          done
+          node --enable-source-maps dist/cli/manual-exact-runtime.js resolve-discord-delivery "${arguments[@]}"
+      - name: 同じrunの手動解決receiptを保存
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: manual-resolution-record
+          path: artifacts/exact-runtime/artifacts/workflow/manual-resolution-receipt.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: 診断JSONLを暗号化
+        if: always() && (steps.inspect.outcome == 'success' || steps.inspect.outcome == 'failure')
+        env:
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64: ${{ secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 }}
+        run: |
+          if [[ -f "$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" ]]; then
+            .github/scripts/encrypt-diagnostics.sh dist/cli/tracker-run.js
+          fi
+      - name: 公開失敗artifactを保存
+        if: always()
+        uses: ./.github/actions/upload-failure-artifact
+        with:
+          artifact-name: manual-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+      - name: 暗号化済み診断artifactを保存
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: manual-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          path: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.bundle
+          if-no-files-found: ignore
+          retention-days: 7
+
+  tracking:
+    needs: resolve-delivery
+    if: needs.resolve-delivery.result == 'success' && inputs.execution_shape == 'split'
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/_tracking-run.yml
+    with:
+      state_ref: tracker-state
+      pages_environment: github-pages
+      effect_concurrency_key: voicevox-task-tracker-daily
+      effect_target: production
+      config_path: config.yml
+      backfill: none
+      notification_action: send
+      expected_run_id: ${{ inputs.run_id }}
+      manual_resolution_artifact: true
+    secrets: inherit
+
+  sequential-recovery:
+    needs: resolve-delivery
+    if: needs.resolve-delivery.result == 'success' && inputs.execution_shape == 'sequential'
+    permissions:
+      contents: write
+      actions: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/run_sequential.yml
+    with:
+      run_id: ${{ inputs.run_id }}
+    secrets: inherit
+
+  report-resolution-failure:
+    needs: [resolve-delivery, tracking, sequential-recovery]
+    if: always() && inputs.execution_shape == 'split' && needs.resolve-delivery.result == 'failure'
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/_tracking-observe.yml
+    with:
+      state_ref: tracker-state
+      effect_target: production
+      config_path: config.yml
+      quality_success: false
+      run_id: ${{ inputs.run_id }}
+      stage_results_json: ${{ toJSON(needs) }}
+      has_failed_stage: true
+      workflow_kind: manual
+      artifact_retention_days: 7
+    secrets: inherit

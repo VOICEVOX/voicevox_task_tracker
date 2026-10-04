@@ -8,7 +8,8 @@ import {
   DiscordWebhookSecretMissingError,
   DiscordWebhookSecretReadError,
 } from "./errors.js";
-import { assertDiscordWebhookPayloadWithinLimits, type DiscordWebhookPayload } from "./payload.js";
+import type { DiscordWebhookPayload } from "./payload-contracts.js";
+import { assertDiscordWebhookPayloadWithinLimits } from "./payload-packing.js";
 
 const DISCORD_WEBHOOK_HOSTS = new Set([
   "discord.com",

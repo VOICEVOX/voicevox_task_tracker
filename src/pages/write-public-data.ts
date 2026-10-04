@@ -3,7 +3,7 @@ import { join } from "node:path";
 
 import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { PublicDataWriteError, PublicDtoSemanticError } from "./errors.js";
-import { type GeneratedPublicData } from "./generate-public-data.js";
+import { type GeneratedPublicData } from "./generate-public-data-v20.js";
 import {
   createPublicDetailsDto,
   createPublicNotificationHistoryDto,

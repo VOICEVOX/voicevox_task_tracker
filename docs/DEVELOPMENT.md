@@ -16,96 +16,92 @@ pnpm install --frozen-lockfile
 
 `--frozen-lockfile`を付けると、`pnpm-lock.yaml`と`package.json`が一致しない場合にインストールが失敗します。
 
-## 開発コマンド
+## GitHub Appなしで静的確認する
 
-| コマンド                  | 内容                                                                                         | 出力先                                       |
-| ------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `pnpm build`              | `src`をNode.js向けJavaScriptと型定義へ変換する                                               | `dist/`                                      |
-| `pnpm build:web`          | 静的Web UIをビルドする                                                                       | `dist/web/`                                  |
-| `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る                                            | `artifacts/workflow/runtime/tracker-run.mjs` |
-| `pnpm dev:web`            | Web UIの開発serverを起動する                                                                 | なし                                         |
-| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                                                              | なし                                         |
-| `pnpm lint`               | ESLintでコードを検査する                                                                     | なし                                         |
-| `pnpm format`             | Prettierで対象ファイルを整形する                                                             | 対象ファイル                                 |
-| `pnpm format:check`       | Prettierによる整形差分がないことを検査する                                                   | なし                                         |
-| `pnpm perf:profile`       | CLIをビルドし、モックした日次runの処理時間、API使用率、AI論理call数、summaryサイズを確認する | `artifacts/performance-profile.json`         |
-| `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する                                              | サブコマンドによる                           |
+通常の開発確認は、外部サービスへ接続しない次のcommandを使います。
 
-`typecheck`、`lint`、`format`、`format:check`のキャッシュは`node_modules/.cache/voicevox-task-tracker/`に保存します。
+```console
+pnpm format
+pnpm typecheck
+pnpm lint
+pnpm check:source-lines
+pnpm format:check
+pnpm build
+pnpm build:workflow-cli
+pnpm build:web
+```
 
-`build:web`は`index.html`に加えて`404.html`と`items/index.html`、`people/index.html`、`notification-history/index.html`、`status/index.html`、`guide/index.html`、`notifications/index.html`を生成します。
-GitHub Pagesは任意のrewrite設定を持たないため、pathベースのdeep linkをこの複製で受けます。
+GitHub App、実Codex、Pages deploy、Discordの認証は不要です。
+`tracker:run`はビルド済みCLIの起動だけを行うため、sourceを変更したら先に`pnpm build`を実行します。
+変更したTaskのcontractと呼出元を確認し、対象のcodec・schema・入力検証を必要な範囲で検証してください。
 
-`tracker:run`はビルドを兼ねません。
-CLIのコードを変更した後は先に`pnpm build`を実行してください。
-GitHub App認証なしでschemaの生成・検証を確認する場合は、先に`pnpm build`を実行します。
-要素別schemaは、`dist/codex/element-output-schema.js`と`dist/codex/element-output.js`の公開関数を直接呼び出して確認します。
-個人催促AIの出力schemaは、`dist/codex/personal-reminder-output-schema.js`の`createPersonalReminderAiOutputSchema()`で生成します。
-`dist/codex/personal-reminder-output.js`の`validatePersonalReminderAiOutputSchema()`で出力構造、`validatePersonalReminderAiOutput()`で出力構造と対象項目の一致を検証します。
-この確認にはGitHub収集、実AIの生成、原因単位の意味検証、保存・通知の通し確認は含まれません。
+| command                  | 検査・出力                                                     |
+| ------------------------ | -------------------------------------------------------------- |
+| `typecheck`              | Nodeとwebのincremental型検査                                   |
+| `lint`                   | 静的importとexportの循環、source上限、層の依存方向、ESLint規則 |
+| `check:dependencies`     | srcとwebの静的importとexportの循環。型専用の辺も含む           |
+| `check:source-lines`     | generated/mockを除いた直接編集sourceの1000行上限               |
+| `format`、`format:check` | Prettierの整形と差分確認                                       |
+| `build`                  | Node向けの`dist/`                                              |
+| `build:workflow-cli`     | 固定entrypointを含む`artifacts/workflow/runtime/`のbundle      |
+| `build:web`              | `dist/web/`の静的サイト                                        |
+
+cacheは`node_modules/.cache/voicevox-task-tracker/`へ保存します。
+型検査はincremental、Prettierとsource-lines・依存検査はcacheを使います。
+ESLintはlint対象の全source、型の参照先となるJSON、tsconfig、ESLint設定、package manifest、lockfile、Node版の内容からkeyを計算し、そのkey専用のcacheを使います。
+参照先sourceが変わるとkeyも変わるため、型依存規則の古い結果は使われません。
+依存検査はsourceの一覧が変わると依存先を解決し直します。
+CIはESLint cacheを完全一致のkeyだけで復元し、ほかの静的検査cacheは設定とcheckerのdigestを含むkeyで復元します。
+cacheを無効化して繰り返す確認は通常の手順にしません。
+新しいsourceが400行を超えたら責務分割を検討し、1000行超はerrorとして扱います。`.github/actions`の直接編集するJavaScriptはESLintとsource-lines検査の両方、composite actionのYAMLはsource-lines検査で確認します。
+依存検査は通常のimportとexportに加え、`import("...").Type`などのimport型も循環判定の辺に含めます。
+一時baselineや新しいignoreでsourceを例外化しません。
+
+## codecと保存stateを検証する
+
+CLIの次の入口は外部effectを起こさず、指定した入力を検証します。
+
+| command                                                    | 必要な入力                                   |
+| ---------------------------------------------------------- | -------------------------------------------- |
+| `verify-checkpoint --artifact PATH`                        | `.cpk` checkpointとsidecar、設定             |
+| `verify-receipt-chain --input PATH`                        | checkpointとreceipt chainの検証入力          |
+| `verify-runtime-recovery --input PATH --bundle-root PATH`  | 固定回復inputとexact bundle                  |
+| `verify-state --state-directory PATH --state-revision SHA` | ローカルのGit checkoutと固定commit SHA、設定 |
+
+verify-stateは作業treeのファイルを検査対象にせず、指定したSHAのstate treeを読みます。
+bootstrapを最初に確認し、未完了runならcurrent runtimeで業務payloadをparse・migrationする前に停止します。
+未完了runの検証と再開は記録されたexact runtimeで行います。
+完了済みstateは現行ingressで読み、marker・record・初回Pages証拠と実Gitの親・初回commitを照合します。
+旧snapshotから個人催促時計の再確認待ちが生じた場合は、入口で構造・意味・IDと個人催促のEvidence参照を検証し、保存形式の検証を保留します。
+今回収集するGitHub詳細で時計を再確認するまで、`verify-state`の成功はsnapshotを保存できることを示しません。
+再確認待ちがないsnapshotは、保存用の直列化と再読込も検証します。
+検証用の一時コピーは終了時に削除し、元のstateとremoteを変更しません。
 
 ## Web UIをローカルで見る
 
-```console
-pnpm dev:web
-```
+`pnpm dev:web`でViteを起動します。
+Viteは`config.yml`のweb設定と`web/public/data/`のサンプル公開DTOを読みます。
+summaryは最初に、detailsは詳細表示や検索時に、通知履歴は履歴ページを開いたときに取得します。
+`build:web`はPagesのdeep linkを受ける各ページのHTMLも生成します。
+サンプルDTOを実データへ上書きしたままコミットしないでください。
 
-Viteは起動時に`config.yml`の`web`設定を読み、base path、画面名、localeを反映します。
-表示に使うサンプル公開DTOは`web/public/data/summary.json`、`web/public/data/details.json`、`web/public/data/notification-history.json`です。
-Web UIは`summary.json`を最初に取得します。
-項目詳細を開いたときと項目を検索したときだけ`details.json`を取得し、通知履歴を開いたときだけ`notification-history.json`を取得します。
+## オンライン確認は専用workflowで行う
 
-実データで表示を確かめる場合は、収集結果を保存してからPages用DTOを書き出します。
+ローカルで重い通しrun、全件AI再推論、5,000項目の性能profileを実行しません。
+`dry-run`も実GitHub収集と実Codexを使うため、認証不要の静的確認には使えません。
+実サービスの確認は、対象範囲と予算を決めたsandbox workflowで行い、連続runと通知actionの証拠を保存します。
+性能計測は通常CIから分離した`performance.yml`の手動workflowで行います。
 
-```console
-pnpm build
-pnpm tracker:run collect-analyze --mode none
-pnpm tracker:run persist-state
-pnpm tracker:run build-pages --output web/public/data
-```
+CLIは明示的なsubcommandを受け取り、option形式のcommand変換を行いません。
+`run-sequential`、`daily`、`dry-run`、`backfill`は同じcanonical engineを使います。
+`collect-analyze`は解析と公開計画を同じstageで確定し、checkpointを書き出します。
+分割workflowは`route-stage`、`run-stage`、V2固定入口を使って一段ずつ進みます。
+production CLIにはPagesの直接deploy adapterがないため、公開の通し確認は日次workflowで行います。
 
-`collect-analyze`にはGitHub Appの認証情報が必要です。Codexの認証情報とCLIは実行候補がある場合だけ必要です。
-`persist-state`はローカルの`tracker-state` refへ保存するだけで、remoteへはpushしません。
-`build-pages --output web/public/data`はサンプル公開DTOを実データで上書きします。
-実データは一時出力として扱い、確認後は元のサンプルへ戻してからコミットしてください。
-
-## CLIをローカルで動かす
-
-各stageの役割と操作は[運用手順](OPERATIONS.md)の「stageごとの実行」にまとめてあります。
-外部サービスへ接続しないサブコマンドは`report-workflow`、`persist-state`、`build-pages`です。
-`persist-state`と`build-pages`は検証済みartifactとローカルのGit stateを必要とします。
-
-`daily`、`backfill`、`collect-analyze`には`--notification-action send|hold|acknowledge-current`を指定できます。省略時は`send`です。`dry-run`にはこの指定はありません。
-
-```console
-pnpm tracker:run --backfill none --notification-action acknowledge-current
-pnpm tracker:run --backfill linked --notification-action acknowledge-current
-pnpm tracker:run collect-analyze --mode none --notification-action acknowledge-current
-```
-
-`tracker:run`は`--backfill none`を`daily`へ変換し、`linked`または`all-open`を`backfill`へ変換します。
-
-`hold`は送信可能な候補を含めて未送信候補を通知管理記録へ保存し、通常のDiscord送信を保留します。送信予約、送信済み、確認済みの記録は追加しません。次の`send`では保存した候補の有効性を再確認して送信します。保留は指定したrunだけに適用されます。
-
-`acknowledge-current`は現在の通知条件を満たす候補を上限なしで確認済みとして通知管理記録へ保存し、同じnotification keyを送信済みと同様に通知対象から除外します。通常のDiscord送信と`notification_sent`履歴は作りません。すでに送信済みの同じkeyは送信日時とDiscord message IDを維持します。通知判定規則、Web UI、README、`config.yml`は変わりません。
-
-オンラインで収集する場合は、実行するshellへ次の環境変数を設定します。
-
-| 環境変数                         | 必要になる場面                                   |
-| -------------------------------- | ------------------------------------------------ |
-| `GH_APP_ID`                      | GitHubから収集するすべての処理                   |
-| `GH_APP_PRIVATE_KEY`             | GitHubから収集するすべての処理                   |
-| `GH_APP_INSTALLATION_ID`         | installation IDの自動発見を上書きする場合だけ    |
-| `CODEX_HOME`                     | Codexを使う処理。直下に`auth.json`が必要         |
-| `OPENAI_API_KEY`                 | `ai.authentication`を`api-key`へ変更した場合だけ |
-| `DISCORD_WEBHOOK_URL`            | 通常通知を送る処理                               |
-| `DISCORD_OPERATIONS_WEBHOOK_URL` | 障害通知を送る処理                               |
-
-現行の`config.yml`はAIを有効にし、認証方式を`auth-json`にしているため、実行候補がある場合だけCodex CLIと`CODEX_HOME`が必要です。
-`collect-analyze`はDiscordの環境変数を読みません。
-
-state、Pages、Discordを更新せずに収集から検証までを通したい場合は`dry-run`を使います。
-`tracker:run`のpackage scriptは`dry-run`を転送しないため、[デプロイ手順](DEPLOYMENT.md)の「ローカルdry-run」にある呼び出し方を使ってください。
+通知actionは`send`、`hold`、`acknowledge-current`です。
+`hold`は未送信候補を保持し、`acknowledge-current`は現在の候補を確認済みにします。
+どちらも通常のDiscord送信と送信履歴を作りません。jobやbusiness stageの省略には使いません。
+起動条件と実サービスの操作は[運用手順](OPERATIONS.md)を参照してください。
 
 ## テスト
 
@@ -201,7 +197,7 @@ snapshot、履歴、通知管理記録の保存形式や列挙値は、次の順
 
 ```console
 pnpm build
-pnpm tracker:run verify-state --state-directory path/to/tracker-state/state
+pnpm tracker:run verify-state --state-directory path/to/tracker-state/state --state-revision COMMIT_SHA
 ```
 
 移行の入口で旧形式を検証し、業務処理には現行の型だけを渡します。
@@ -227,27 +223,29 @@ CIの`verify-state`は、本番と同じ移行処理を使ってstate全体を�
 
 ## ディレクトリ構成
 
-| パス                  | 責務                                                                                                 |
-| --------------------- | ---------------------------------------------------------------------------------------------------- |
-| `src/cli/`            | 引数解析、日次トランザクション、workflow stage、実アダプターの合成、run report                       |
-| `src/canonical-json/` | Node.js専用のcanonical JSON直列化、末尾改行、SHA-256 hashの共有                                      |
-| `src/codex/`          | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                            |
-| `src/config/`         | `config.yml`の読み込みとZod schema検証                                                               |
-| `src/diagnostics/`    | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                       |
-| `src/discord/`        | 通知候補選別、通知管理記録による重複抑制、payload生成、Webhook送信                                   |
-| `src/domain/`         | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度のpure TypeScript |
-| `src/github/`         | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                         |
-| `src/graph/`          | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                        |
-| `src/pages/`          | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                               |
-| `src/performance/`    | 外部接続をモックした日次runの処理時間、API使用率、AI論理call数、summaryサイズのprofile               |
-| `src/persistence/`    | snapshot、履歴、AI cache、通知管理記録、run report、state branch transaction                         |
-| `src/util/`           | null検査、到達不能検査、共通エラー、Zod診断                                                          |
-| `web/`                | ViteとPreactによる静的Web UIとサンプル公開DTO                                                        |
-| `fixtures/`           | 性能profileへ渡す固定入力                                                                            |
-| `schemas/`            | Codex分析出力とsnapshotのJSON Schema                                                                 |
-| `prompts/`            | Codexへ渡す固定system prompt                                                                         |
-| `docs/`               | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                         |
-| `.github/workflows/`  | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                      |
+| パス                               | 責務                                                                                                 |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/cli/`                         | 引数解析、実アダプターの合成、applicationへのdispatch                                                |
+| `src/application/tracking-run/`    | 日次runの閉じた値、proof型、副作用を要求するport契約                                                 |
+| `src/canonical-json/`              | pure leafでcanonical JSON直列化とSHA-256値を検証し、`index.ts`からNode.js hashを公開する             |
+| `src/codex/`                       | 分析候補選定、予算、cache、隔離process、schema検証、semantic検証、reducer                            |
+| `src/config/`                      | `config.yml`の読み込みとZod schema検証                                                               |
+| `src/diagnostics/`                 | 詳細診断のJSONL記録、Error直列化、暗号化、復号                                                       |
+| `src/discord/`                     | 通知候補選別、通知管理記録による重複抑制、payload生成、Webhook送信                                   |
+| `src/domain/`                      | 状態機械、maintainerとlabelの解決、追跡選定、停滞時間、停滞レベル、重要度、要対応度のpure TypeScript |
+| `src/github/`                      | GitHub App認証、読み取り専用API、収集、正規化、公開allowlist、rate limit管理                         |
+| `src/graph/`                       | 関係候補、edge reconcile、cycle、frontier、downstream impactのpure TypeScript                        |
+| `src/infrastructure/tracking-run/` | GitHub・Codex・Git・Pages・Discord・時計・digestのport実装とworkflowへの接続                         |
+| `src/pages/`                       | 独立した公開guard、公開DTO生成、gzip上限検査、JSON出力                                               |
+| `src/performance/`                 | 外部接続をモックした日次runの処理時間、API使用率、AI論理call数、summaryサイズのprofile               |
+| `src/persistence/`                 | snapshot、履歴、AI cache、通知管理記録、run report、state branch transaction                         |
+| `src/util/`                        | null検査、到達不能検査、共通エラー、Zod診断                                                          |
+| `web/`                             | ViteとPreactによる静的Web UIとサンプル公開DTO                                                        |
+| `fixtures/`                        | 性能profileへ渡す固定入力                                                                            |
+| `schemas/`                         | Codex分析出力とsnapshotのJSON Schema                                                                 |
+| `prompts/`                         | Codexへ渡す固定system prompt                                                                         |
+| `docs/`                            | 要求定義、アーキテクチャ、デプロイ、運用、開発手順、調査資料                                         |
+| `.github/workflows/`               | CI、日次run、性能profile、マージゲートのGitHub Actions workflow                                      |
 
 ## コードの方針
 
@@ -256,7 +254,12 @@ CIの`verify-state`は、本番と同じ移行処理を使ってstate全体を�
 
 `src/domain`と`src/graph`はネットワークやファイルシステムへ依存しないpure TypeScriptにします。
 同じ入力から同じ結果を返す処理だけを置き、pureな判定層から副作用のあるadapterを呼びません。
-GitHub、Codex、永続化、Pages、Discordへの副作用はそれぞれのadapterへ閉じ込め、一つのrunとしての順序制御を`src/cli`で行います。
+`src/application/tracking-run`はCLI、環境変数、ファイルシステム、副作用を持つbarrelを参照せず、pureなleafとport契約だけを使います。
+段階のcore型は`CoreByStage`で段階名に対応付け、inventory以後へbase state全体やCLI requestを引き継ぎません。
+公開repositoryの選定はinventory portで一度だけ行い、下流は確定済みallowlistをそのまま使います。
+checkpoint、artifact、receiptのdigest計算は`ContentDigestPort`を通して`src/infrastructure/tracking-run`へ置きます。
+sourceの1000行上限はTypeScriptとJavaScriptをESLint、shell、CSS、Vue、Python、workflow YAMLを`check:source-lines`で確認します。
+GitHub、Codex、永続化、Pages、Discordへの副作用はそれぞれのadapterへ閉じ込め、一つのrunとしての順序制御はapplicationのcanonical engineで行います。
 
 GitHub由来の本文、コメント、label、ユーザー名は信頼できない入力として扱い、命令として解釈しません。
 Codex出力は候補データとしてschema検証とsemantic検証を通し、状態や外部サービスへ直接反映しません。
@@ -291,7 +294,7 @@ GitHubへのリンクには`GitHubIconButton`を使うか、`SafeGitHubLink`に�
 - カードのフィールドも表の列と同じ順に置きます。
 - 待ち相手と状態は、主な待ち相手、状態、主候補の理由の順に表示します。理由が空なら理由の段を省きます。
 - 複数の待ち相手がいる場合は主候補だけを表示し、残りは件数で示します。
-- 待ち相手の表示は`model.ts`で文字列とユーザー名の断片へ分け、文字列が必要な処理と画面表示を同じ断片から組み立てます。
+- 待ち相手の表示は`model-waiting-on.ts`で文字列とユーザー名の断片へ分け、文字列が必要な処理と画面表示を同じ断片から組み立てます。
 - 個人のユーザー名は共通部品で人ごとのページへリンクし、teamはリンクにしません。
 - 項目一覧のユーザー名には20px、担当者一覧のユーザー名には24px、人ページの見出しには40pxのGitHubアバターを添えます。項目詳細には添えません。
 - アバターURLはユーザー名を`encodeURIComponent`へ通して`https://github.com/{ユーザー名}.png?size=48`の形で組み立てます。
@@ -351,6 +354,7 @@ CIと同じ検査を手元で実行します。
 ```console
 pnpm typecheck
 pnpm lint
+pnpm check:source-lines
 pnpm format:check
 pnpm build
 pnpm build:workflow-cli
@@ -358,14 +362,8 @@ pnpm build:web
 ```
 
 `format:check`が失敗した場合は`pnpm format`で整形し、意図しないファイルまで変わっていないことを確認します。
-型情報を使うESLint規則を含むため、最終確認前に`node_modules/.cache/voicevox-task-tracker/eslint`だけを削除し、`pnpm lint`でキャッシュを再構築します。
+参照先の型を変更した場合も、`pnpm lint`で型情報を使うESLint規則を確認します。
 サンプル公開DTOを実データで上書きしたままにしていないかも確認してください。
 
-日次runの処理時間、API予算、AI論理call数、Pages summaryのサイズに影響する変更では`pnpm perf:profile`も実行し、`artifacts/performance-profile.json`を確認します。
-`.github/workflows/performance.yml`の手動workflowでも同じ検証を実行できます。
-
-ローカルにGitHub Appの環境変数がない場合も、`pnpm perf:profile`は実行できます。
-この処理は、内部で用意したモックの接続先とメモリ上のstateを、本番の日次実行処理へ渡します。
-実際のGitHub、Codex、Discordには接続しません。
-現行のデータはIssueのみであり、Pull Requestの実行経路や実サービスとの接続確認は含まれません。
-`collect-analyze --mode none`や`dry-run`は認証不要の代替手段ではありません。
+外部サービスを使った確認、sandboxの連続run、通知actionの確認結果は、実行IDと証拠artifactを別途レビューへ記載します。
+静的確認の成功だけで外部確認も完了したとは扱いません。

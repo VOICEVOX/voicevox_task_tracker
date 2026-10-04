@@ -1,13 +1,13 @@
 import {
+  resolvePullRequestCommitOccurredAt,
   type Actor,
-  type FreshObservedGitHubItemBase,
   type FreshObservedGitHubIssue as DomainFreshObservedGitHubIssue,
+  type FreshObservedGitHubItemBase,
   type FreshObservedGitHubPullRequest,
   type GitHubAccountActor,
   type GitHubItemDisplayReference,
   type GitHubItemUrl,
   type GitHubNodeId,
-  type GitHubRepositoryId,
   type NormalizedEvent,
   type ObservedGitHubAutoMerge,
   type ObservedGitHubItemAuthor,
@@ -16,7 +16,6 @@ import {
   type ObservedGitHubReviewRequest,
   type ObservedGitHubReviewRequestTarget,
   type ObservedGitHubReviewThread,
-  resolvePullRequestCommitOccurredAt,
   type SourceId,
   type SystemActor,
   type UtcIsoDateTime,
@@ -117,30 +116,6 @@ type GitHubPullRequestNormalizationResult = FreshObservedGitHubPullRequest &
 export type FreshObservedGitHubItem =
   FreshObservedGitHubIssue | GitHubPullRequestNormalizationResult;
 
-/** stale化に必要な前回観測値の最小契約。 */
-export type FreshObservedGitHubItemReference = Readonly<{
-  freshness: "fresh";
-  nodeId: GitHubNodeId;
-  repositoryId: GitHubRepositoryId;
-  observedAt: UtcIsoDateTime;
-}>;
-
-/** 取得失敗により前回観測値だけを保持するGitHub項目。 */
-export type StaleObservedGitHubItem<
-  PreviousObservation extends FreshObservedGitHubItemReference = FreshObservedGitHubItem,
-> = Readonly<{
-  freshness: "stale";
-  nodeId: GitHubNodeId;
-  repositoryId: PreviousObservation["repositoryId"];
-  previousObservation: PreviousObservation;
-  lastSuccessfulAt: UtcIsoDateTime;
-  failedAt: UtcIsoDateTime;
-  diagnostic: Readonly<{
-    code: "github_repository_temporarily_unavailable";
-    message: string;
-  }>;
-}>;
-
 export type NormalizeGitHubEventsOptions = Readonly<{
   item: EnumeratedGitHubItem;
   detail: GitHubItemDetail;
@@ -153,17 +128,6 @@ export type NormalizeObservedGitHubItemsOptions = Readonly<{
   items: readonly EnumeratedGitHubItem[];
   details: readonly GitHubItemDetail[];
   isBot: GitHubBotPredicate;
-}>;
-
-export type MarkObservedGitHubItemsStaleOptions<
-  PreviousObservation extends FreshObservedGitHubItemReference = FreshObservedGitHubItem,
-> = Readonly<{
-  previousItems: readonly PreviousObservation[];
-  failedAt: UtcIsoDateTime;
-  diagnostic: Readonly<{
-    code: "github_repository_temporarily_unavailable";
-    message: string;
-  }>;
 }>;
 
 function normalizeAccountActor(
@@ -976,34 +940,6 @@ export function normalizeObservedGitHubItems(
         item,
         detail,
         isBot: options.isBot,
-      });
-    }),
-  );
-}
-
-/** 前回の最新観測値を現在値へ昇格させずstale項目として保持する。 */
-export function markObservedGitHubItemsStale<
-  PreviousObservation extends FreshObservedGitHubItemReference,
->(
-  options: MarkObservedGitHubItemsStaleOptions<PreviousObservation>,
-): readonly StaleObservedGitHubItem<PreviousObservation>[] {
-  assertUniqueItemNodeIds(options.previousItems, "前回観測値");
-  return Object.freeze(
-    options.previousItems.map((previousObservation) => {
-      if (options.failedAt < previousObservation.observedAt) {
-        throw new RangeError("取得失敗時刻は前回成功時刻以後にしてください");
-      }
-      return Object.freeze({
-        freshness: "stale",
-        nodeId: previousObservation.nodeId,
-        repositoryId: previousObservation.repositoryId,
-        previousObservation,
-        lastSuccessfulAt: previousObservation.observedAt,
-        failedAt: options.failedAt,
-        diagnostic: Object.freeze({
-          code: options.diagnostic.code,
-          message: options.diagnostic.message,
-        }),
       });
     }),
   );

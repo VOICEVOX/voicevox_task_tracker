@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot-v20.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "trackingStartAt",
+    "ai",
+    "collection",
+    "repositories",
+    "items",
+    "graphNodeStateObservations",
+    "externalReferences",
+    "relations",
+    "run",
+    "finalGraphProjection",
+    "finalGraphProjectionDigest"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "20"
+    },
+    "generatedAt": {
+      "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/dateTime"
+    },
+    "trackingStartAt": {
+      "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/trackingStartAt"
+    },
+    "ai": {
+      "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/ai"
+    },
+    "collection": {
+      "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/collection"
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/repository"
+      }
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/item"
+      }
+    },
+    "graphNodeStateObservations": {
+      "type": "array",
+      "items": {
+        "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/graphNodeStateObservation"
+      }
+    },
+    "externalReferences": {
+      "type": "array",
+      "items": {
+        "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/externalReference"
+      }
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/relation"
+      }
+    },
+    "run": {
+      "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/run"
+    },
+    "finalGraphProjection": {
+      "$ref": "#/$defs/finalGraphProjection"
+    },
+    "finalGraphProjectionDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "finalGraphProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evaluatedAt",
+        "timezone",
+        "nodes",
+        "dependencyCycles",
+        "frontierNodeIds",
+        "items"
+      ],
+      "properties": {
+        "evaluatedAt": {
+          "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/dateTime"
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "nodeId",
+              "effectiveState",
+              "downstreamImpact"
+            ],
+            "properties": {
+              "nodeId": {
+                "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+              },
+              "effectiveState": {
+                "enum": [
+                  "open",
+                  "closed",
+                  "merged"
+                ]
+              },
+              "downstreamImpact": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "openNodeCount",
+                  "repositoryCount"
+                ],
+                "properties": {
+                  "openNodeCount": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "repositoryCount": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "dependencyCycles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "nodeIds",
+              "edgeIds"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+              },
+              "nodeIds": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+                }
+              },
+              "edgeIds": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+                }
+              }
+            }
+          }
+        },
+        "frontierNodeIds": {
+          "type": "array",
+          "items": {
+            "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "nodeId",
+              "deadlineLevel",
+              "blockerNodeIds",
+              "effectiveBlockerNodeIds",
+              "retainedOnlyBlockerNodeIds",
+              "blockerUnverifiedReasons"
+            ],
+            "properties": {
+              "nodeId": {
+                "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+              },
+              "deadlineLevel": {
+                "enum": [
+                  "none",
+                  "over_30_days",
+                  "within_30_days",
+                  "within_7_days",
+                  "within_3_days",
+                  "within_1_day",
+                  "overdue"
+                ]
+              },
+              "blockerNodeIds": {
+                "type": "array",
+                "items": {
+                  "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+                }
+              },
+              "effectiveBlockerNodeIds": {
+                "type": "array",
+                "items": {
+                  "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+                }
+              },
+              "retainedOnlyBlockerNodeIds": {
+                "type": "array",
+                "items": {
+                  "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+                }
+              },
+              "blockerUnverifiedReasons": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "nodeId",
+                    "reasons"
+                  ],
+                  "properties": {
+                    "nodeId": {
+                      "$ref": "https://voicevox.github.io/voicevox_task_tracker/schemas/snapshot.schema.json#/$defs/identifier"
+                    },
+                    "reasons": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "enum": [
+                          "relation_support",
+                          "retained_waiting",
+                          "waiting_value"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

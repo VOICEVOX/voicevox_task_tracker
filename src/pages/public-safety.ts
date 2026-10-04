@@ -1,6 +1,20 @@
 import { type Repository } from "../domain/index.js";
+import { aiAnalysisElementApplicationUsesAiValue } from "../domain/ai-analysis-elements.js";
+import { containsUrlLikeText } from "../domain/url-like-text.js";
+import type { VerifiedExternalReference } from "../domain/verified-external-reference.js";
+import {
+  containsDisallowedAiTextUrlInValues,
+  containsPrivateRepositoryReference,
+  containsUnallowlistedGitHubRepositoryUrl,
+} from "../github/private-repository-reference.js";
+import { isEligiblePublicRepository } from "../github/public-repository-allowlist.js";
 import { type StateHistoryRecord, type StateSnapshot } from "../persistence/index.js";
 import { PagesPublicSafetyError } from "./errors.js";
+import type {
+  PublicDetailsDto,
+  PublicNotificationHistoryDto,
+  PublicSummaryDto,
+} from "./public-dto-contracts.js";
 
 const MAX_PUBLIC_SOURCE_STRING_LENGTH = 4096;
 const SECRET_PATTERNS: readonly RegExp[] = [
@@ -96,18 +110,6 @@ function isSafeGitHubUrl(value: string): boolean {
   );
 }
 
-function privateRepositorySentinels(inventory: readonly Repository[]): readonly string[] {
-  return Object.freeze(
-    inventory
-      .filter((repository) => repository.visibility !== "public")
-      .flatMap((repository) => [
-        repository.id,
-        `${repository.owner}/${repository.name}`,
-        `https://github.com/${repository.owner}/${repository.name}`,
-      ]),
-  );
-}
-
 function createRepositoryAllowlist(
   entries: readonly PagesRepositoryAllowlistEntry[],
 ): ReadonlyMap<Repository["id"], PagesRepositoryAllowlistEntry> {
@@ -120,19 +122,25 @@ function createRepositoryAllowlist(
 
 function scanValues(
   values: readonly unknown[],
-  privateSentinels: readonly string[],
+  repositoryInventory: readonly Repository[],
+  repositoryAllowlist: readonly PagesRepositoryAllowlistEntry[],
+  externalReferences: readonly VerifiedExternalReference[],
   knownSecrets: readonly string[],
 ): readonly string[] {
   const violationCodes = new Set<string>();
+  if (containsPrivateRepositoryReference(values, repositoryInventory)) {
+    violationCodes.add("private_repository_data");
+  }
+  if (containsUnallowlistedGitHubRepositoryUrl(values, repositoryAllowlist, externalReferences)) {
+    violationCodes.add("repository_url_not_allowlisted");
+  }
   const pending: unknown[] = [...values];
   const visited = new WeakSet<object>();
+  const aiValues: unknown[] = [];
 
   while (pending.length > 0) {
     const value = pending.pop();
     if (typeof value === "string") {
-      if (containsValue(value, privateSentinels)) {
-        violationCodes.add("private_repository_data");
-      }
       if (containsValue(value, knownSecrets) || containsSecretPattern(value)) {
         violationCodes.add("secret");
       }
@@ -150,8 +158,30 @@ function scanValues(
       continue;
     }
 
-    for (const [key, propertyValue] of Object.entries(value)) {
+    const entries: [string, unknown][] = Object.entries(value);
+    for (const [key, propertyValue] of entries) {
       const fieldName = normalizedFieldName(key);
+      if (fieldName === "aianalysis") {
+        aiValues.push(propertyValue);
+      }
+      if (
+        fieldName === "generation" &&
+        typeof propertyValue === "object" &&
+        propertyValue != null &&
+        "result" in propertyValue
+      ) {
+        aiValues.push(propertyValue.result);
+      }
+      if (
+        fieldName === "references" &&
+        typeof propertyValue === "object" &&
+        propertyValue != null &&
+        "reasonSummary" in propertyValue &&
+        typeof propertyValue.reasonSummary === "string" &&
+        containsUrlLikeText(propertyValue.reasonSummary)
+      ) {
+        violationCodes.add("personal_reminder_url_not_allowed");
+      }
       if (CREDENTIAL_FIELD_NAMES.has(fieldName)) {
         violationCodes.add("credential_field");
       }
@@ -172,6 +202,10 @@ function scanValues(
     }
   }
 
+  if (containsDisallowedAiTextUrlInValues(aiValues, repositoryAllowlist, externalReferences)) {
+    violationCodes.add("ai_text_url_not_allowed");
+  }
+
   return Object.freeze([...violationCodes]);
 }
 
@@ -183,6 +217,16 @@ export function assertPagesPublicSafety(input: PagesPublicSafetyInput): void {
 
   const allowlist = createRepositoryAllowlist(input.repositoryAllowlist);
   const violationCodes: string[] = [];
+  const eligibleRepositories = input.repositoryInventory.filter(isEligiblePublicRepository);
+  if (
+    allowlist.size !== eligibleRepositories.length ||
+    eligibleRepositories.some((repository) => {
+      const entry = allowlist.get(repository.id);
+      return entry?.owner !== repository.owner || entry.name !== repository.name;
+    })
+  ) {
+    violationCodes.push("invalid_repository_allowlist");
+  }
   for (const repository of input.snapshot.repositories) {
     const allowlistedRepository = allowlist.get(repository.id);
     if (allowlistedRepository == null) {
@@ -205,11 +249,58 @@ export function assertPagesPublicSafety(input: PagesPublicSafetyInput): void {
   violationCodes.push(
     ...scanValues(
       [input.snapshot, ...input.historyRecords],
-      privateRepositorySentinels(input.repositoryInventory),
+      input.repositoryInventory,
+      input.repositoryAllowlist,
+      input.snapshot.verifiedExternalReferences,
       input.knownSecrets,
     ),
   );
 
+  if (violationCodes.length > 0) {
+    throw new PagesPublicSafetyError(violationCodes);
+  }
+}
+
+/** 生成済み公開DTOもsnapshotと同じURL許可集合で検査する。 */
+export function assertPagesOutputPublicSafety(
+  input: PagesPublicSafetyInput,
+  values: readonly [PublicSummaryDto, PublicDetailsDto, PublicNotificationHistoryDto],
+): void {
+  const violationCodes = [
+    ...scanValues(
+      values,
+      input.repositoryInventory,
+      input.repositoryAllowlist,
+      input.snapshot.verifiedExternalReferences,
+      input.knownSecrets,
+    ),
+  ];
+  const sourceItems = new Map<string, StateSnapshot["items"][number]>(
+    input.snapshot.items.map((item) => [item.nodeId, item]),
+  );
+  const aiValues: string[] = [];
+  for (const item of values[0].items) {
+    const source = sourceItems.get(item.nodeId);
+    if (source == null) {
+      violationCodes.push("public_item_without_source");
+      continue;
+    }
+    if (aiAnalysisElementApplicationUsesAiValue(source.aiAnalysis.applications.nextAction)) {
+      aiValues.push(item.nextAction);
+    }
+    if (aiAnalysisElementApplicationUsesAiValue(source.aiAnalysis.applications.waitingOn)) {
+      aiValues.push(...item.waitingOn.map((waitingOn) => waitingOn.reasonSummary));
+    }
+  }
+  if (
+    containsDisallowedAiTextUrlInValues(
+      aiValues,
+      input.repositoryAllowlist,
+      input.snapshot.verifiedExternalReferences,
+    )
+  ) {
+    violationCodes.push("ai_text_url_not_allowed");
+  }
   if (violationCodes.length > 0) {
     throw new PagesPublicSafetyError(violationCodes);
   }

@@ -1,20 +1,20 @@
-import {
-  type PublicItemSummaryDto,
-  type PublicPersonalReminderResponseDto,
-  type PublicSummaryDto,
-} from "../../src/pages/public-dto.js";
+import type {
+  PublicItemSummaryDto,
+  PublicPersonalReminderResponseDto,
+  PublicSummaryDto,
+} from "../../src/pages/public-dto-contracts.js";
 import { UnreachableError, assertNonNullable } from "../../src/util/index.js";
 import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
-import { ItemDetailsLink } from "./item-details.js";
+import { ItemDetailsLink } from "./item-details-link.js";
+import { currentResponseResponsibleLabel } from "./model-current-response.js";
 import {
-  currentResponseUnverifiedValueLabel,
-  currentResponseResponsibleLabel,
   currentResponseRoleLabel,
   currentResponseStatusLabel,
-  currentResponseUnknownReasonLabel,
   currentResponseSubjectCountUnverifiedDescription,
+  currentResponseUnknownReasonLabel,
+  currentResponseUnverifiedValueLabel,
   currentResponsesUnverifiedDescription,
-} from "./model.js";
+} from "./model-labels.js";
 import { SafeGitHubLink } from "./safe-link.js";
 import { Pill } from "./ui.js";
 import { PersonLink, type PersonNavigation } from "./waiting-on-display.js";

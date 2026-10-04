@@ -4,8 +4,8 @@ import { parseSourceId } from "../domain/source-id.js";
 import { UnreachableError } from "../util/index.js";
 import {
   AI_ANALYSIS_ELEMENTS,
-  aiAnalysisElementSchema,
   aiAnalysisDeadlineSchema,
+  aiAnalysisElementSchema,
   aiAnalysisImportanceSchema,
   aiAnalysisNextActionSchema,
   aiAnalysisNotificationSchema,

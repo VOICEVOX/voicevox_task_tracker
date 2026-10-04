@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Hex } from "../canonical-json/sha256-hex.js";
 
 import {
   type CandidateRelation,
@@ -34,6 +34,6 @@ export function buildRelationCandidateId(
   relation: CandidateRelation,
 ): RelationCandidateId {
   const canonicalIdentity = JSON.stringify([provenance, ...relationIdentity(relation)]);
-  const digest = createHash("sha256").update(canonicalIdentity, "utf8").digest("hex");
+  const digest = sha256Hex(canonicalIdentity);
   return `rel:${digest}`;
 }

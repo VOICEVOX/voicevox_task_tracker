@@ -1,9 +1,10 @@
+import { type AiAnalysisElementInputFingerprint } from "../domain/ai-analysis-elements.js";
 import {
   personalReminderCauseAssessmentSchema,
   type PersonalReminderCauseAssessment,
   type PersonalReminderResponsible,
 } from "../domain/personal-reminder-causes.js";
-import { type AiAnalysisElementInputFingerprint } from "../domain/ai-analysis-elements.js";
+import { containsUrlLikeText } from "../domain/url-like-text.js";
 import { assertNonNullable } from "../util/index.js";
 import {
   type PersonalReminderAiInput,
@@ -103,6 +104,11 @@ function canonicalizeReferences(
   path: string,
   issues: PersonalReminderCauseSemanticIssue[],
 ): CanonicalReferences | undefined {
+  if (containsUrlLikeText(references.reasonSummary)) {
+    issues.push(
+      issue(`${path}/references/reasonSummary`, "url_not_allowed", "理由要約にURLは指定できません"),
+    );
+  }
   const allowedItemRefs = new Set<string>(causeInput.itemRefs);
   const allowedRelationRefs = new Set<string>(causeInput.relationRefs);
   const allowedSourceRefs = new Set<string>(causeInput.sourceRefs);

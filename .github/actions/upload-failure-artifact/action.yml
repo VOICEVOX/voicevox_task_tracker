@@ -1,0 +1,19 @@
+name: 公開失敗artifactを保存
+description: CLIが出した公開失敗artifactをjobごとに保存する
+inputs:
+  artifact-name:
+    description: 保存先artifact名
+    required: true
+  failure-directory:
+    description: 保存する公開失敗artifactのディレクトリ
+    required: false
+    default: artifacts/workflow/failures
+runs:
+  using: composite
+  steps:
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.failure-directory }}/*.json
+        if-no-files-found: ignore
+        retention-days: 7
