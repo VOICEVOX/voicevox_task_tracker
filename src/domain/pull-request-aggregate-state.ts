@@ -1,3 +1,4 @@
+import { UnreachableError } from "../util/index.js";
 import {
   type FreshObservedGitHubPullRequest,
   type ObservedGitHubPullRequestMergeState,
@@ -9,7 +10,6 @@ import {
   type NormalizedEvent,
   type ReviewState,
 } from "./types.js";
-import { UnreachableError } from "../util/index.js";
 
 type ReviewEvent = Extract<NormalizedEvent, { kind: "review" }>;
 type HumanReviewEvent = ReviewEvent &

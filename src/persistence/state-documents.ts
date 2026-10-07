@@ -1,12 +1,34 @@
-import { z, type RefinementCtx } from "zod";
+import { z } from "zod";
+import { validateNotificationLedger } from "./notification-ledger-validation.js";
 
 import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
+import {
+  notificationDeliveryAttemptSchema,
+  notificationManualResolutionSchema,
+} from "../domain/notification-delivery-attempt.js";
+import { pendingNotificationSchema } from "../domain/pending-notification.js";
 import { StateFormatError } from "./errors.js";
 import {
   type LegacyNotificationReasonCode,
   migrateLegacyNotificationReasonCode,
 } from "./legacy-enum.js";
-import { pendingNotificationSchema } from "../domain/types.js";
+import { compareStateKeys } from "./state-key-order.js";
+export {
+  createStateOperationsAlertLedger,
+  isCanonicalStateOperationsAlertLedgerSource,
+  OPERATIONS_ALERT_LEDGER_SCHEMA_VERSION_1,
+  OPERATIONS_ALERT_LEDGER_SCHEMA_VERSION_2,
+  OPERATIONS_ALERT_LEDGER_STATE_PATH_V1,
+  parseStateOperationsAlertLedger,
+  serializeStateOperationsAlertLedger,
+  type StateOperationsAlertLedger,
+  type StateOperationsAlertReservation,
+} from "./operations-alert-ledger.js";
+export {
+  createStateRunReport,
+  serializeStateRunReport,
+  type StateRunReport,
+} from "./state-run-report.js";
 
 const NOTIFICATION_LEDGER_SCHEMA_VERSION_1 = "1";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_2 = "2";
@@ -16,6 +38,8 @@ export const NOTIFICATION_LEDGER_SCHEMA_VERSION_5 = "5";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_6 = "6";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_7 = "7";
 export const NOTIFICATION_LEDGER_SCHEMA_VERSION_8 = "8";
+export const NOTIFICATION_LEDGER_SCHEMA_VERSION_9 = "9";
+export const NOTIFICATION_LEDGER_SCHEMA_VERSION_10 = "10";
 
 const nonEmptyStringSchema = z.string().min(1).max(1000);
 const deliveryIdSchema = z.string().regex(/^discord-digest:v1:[0-9a-f]{24}:message:[1-9][0-9]*$/u);
@@ -25,19 +49,6 @@ const dateTimeSchema = z.iso
     error: "タイムゾーンを含むISO 8601日時を指定してください",
   })
   .transform((value) => new Date(value).toISOString());
-const dateSchema = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/u)
-  .refine(
-    (value) => {
-      const timestamp = Date.parse(`${value}T00:00:00.000Z`);
-      return Number.isFinite(timestamp) && new Date(timestamp).toISOString().startsWith(value);
-    },
-    {
-      message: "実在する日付を指定してください",
-    },
-  );
-const nonNegativeIntegerSchema = z.number().int().nonnegative();
 const severitySchema = z.enum(["none", "watch", "urgent", "critical"]);
 const legacyNotificationReasonCodeSchema: z.ZodType<LegacyNotificationReasonCode> = z.enum([
   "none",
@@ -70,85 +81,12 @@ export const NOTIFICATION_LEDGER_REASON_CODE_VALUES = [
   "automation_stuck",
 ] as const;
 const notificationReasonCodeSchema = z.enum(NOTIFICATION_LEDGER_REASON_CODE_VALUES);
-const operationsAlertKindSchema = z.enum(["collection", "pages", "discord"]);
-
-const runMetricsSchema = z.strictObject({
-  repositoryCount: nonNegativeIntegerSchema,
-  itemCount: nonNegativeIntegerSchema,
-  changedItemCount: nonNegativeIntegerSchema,
-  activeEdgeCount: nonNegativeIntegerSchema,
-  aiCallCount: nonNegativeIntegerSchema,
-  aiProcessAttemptCount: nonNegativeIntegerSchema,
-  aiCacheHitCount: nonNegativeIntegerSchema,
-  aiRetainedResultCount: nonNegativeIntegerSchema,
-  estimatedInputTokens: nonNegativeIntegerSchema,
-  personalReminderCauseCount: nonNegativeIntegerSchema,
-  personalReminderAiCallCount: nonNegativeIntegerSchema,
-  personalReminderAiCacheHitCount: nonNegativeIntegerSchema,
-  personalReminderAssessmentReuseCount: nonNegativeIntegerSchema,
-  personalReminderUnknownCount: nonNegativeIntegerSchema,
-  personalReminderFailedCount: nonNegativeIntegerSchema,
-  personalReminderDeferredCount: nonNegativeIntegerSchema,
-  personalReminderNotEvaluatedCount: nonNegativeIntegerSchema,
-  githubApiRemaining: nonNegativeIntegerSchema,
-  staleRepositoryCount: nonNegativeIntegerSchema,
-  notificationCount: nonNegativeIntegerSchema,
-  scheduleDelayMilliseconds: nonNegativeIntegerSchema,
-  durationMilliseconds: nonNegativeIntegerSchema,
-});
-const runReportSchema = z
-  .strictObject({
-    schemaVersion: z.literal("3"),
-    runId: nonEmptyStringSchema,
-    date: dateSchema,
-    status: z.enum(["success", "fallback"]),
-    complete: z.literal(true),
-    scheduledFor: dateTimeSchema,
-    startedAt: dateTimeSchema,
-    finishedAt: dateTimeSchema,
-    metrics: runMetricsSchema,
-    diagnostics: z.array(z.string().max(1000)),
-  })
-  .superRefine((report, context) => {
-    const scheduledFor = Date.parse(report.scheduledFor);
-    const startedAt = Date.parse(report.startedAt);
-    const finishedAt = Date.parse(report.finishedAt);
-    if (scheduledFor > startedAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["scheduledFor"],
-        message: "予定時刻は開始時刻以前にしてください",
-      });
-    }
-    if (startedAt > finishedAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["finishedAt"],
-        message: "終了時刻は開始時刻以後にしてください",
-      });
-    }
-    if (report.date !== report.startedAt.slice(0, 10)) {
-      context.addIssue({
-        code: "custom",
-        path: ["date"],
-        message: "日付は開始時刻のUTC日付に一致させてください",
-      });
-    }
-    if (report.metrics.scheduleDelayMilliseconds !== startedAt - scheduledFor) {
-      context.addIssue({
-        code: "custom",
-        path: ["metrics", "scheduleDelayMilliseconds"],
-        message: "schedule遅延が予定時刻と開始時刻に一致しません",
-      });
-    }
-    if (report.metrics.durationMilliseconds !== finishedAt - startedAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["metrics", "durationMilliseconds"],
-        message: "所要時間が開始時刻と終了時刻に一致しません",
-      });
-    }
-  });
+const operationsAlertKindSchema = z.enum([
+  "collection",
+  "pages",
+  "discord",
+  "workflow_infrastructure_failure",
+]);
 
 const ledgerEntryBaseSchema = z.strictObject({
   notificationKey: nonEmptyStringSchema,
@@ -224,6 +162,30 @@ const ledgerEntryVersion7Schema = z.discriminatedUnion("status", [
   sentLedgerEntryVersion4Schema,
   acknowledgedLedgerEntryVersion5Schema,
   deliveryStartedLedgerEntryVersion7Schema,
+]);
+const ledgerEntryVersion10BaseSchema = ledgerEntryVersion4BaseSchema.extend({
+  lastDeliveryAttempt: notificationDeliveryAttemptSchema.optional(),
+  manualResolution: notificationManualResolutionSchema.optional(),
+});
+const ledgerEntryVersion10Schema = z.discriminatedUnion("status", [
+  ledgerEntryVersion10BaseSchema.extend({
+    status: z.literal("reserved"),
+    expiresAt: dateTimeSchema,
+  }),
+  ledgerEntryVersion10BaseSchema.extend({
+    status: z.literal("delivery_started"),
+    deliveryId: deliveryIdSchema,
+    startedAt: dateTimeSchema,
+  }),
+  ledgerEntryVersion10BaseSchema.extend({
+    status: z.literal("sent"),
+    sentAt: dateTimeSchema,
+    discordMessageId: nonEmptyStringSchema,
+  }),
+  ledgerEntryVersion10BaseSchema.extend({
+    status: z.literal("acknowledged"),
+    acknowledgedAt: dateTimeSchema,
+  }),
 ]);
 const legacyPendingNotificationSchema = pendingNotificationSchema.superRefine(
   (notification, context) => {
@@ -583,125 +545,6 @@ const notificationLedgerVersion6Schema = z
       }
     }
   });
-type NotificationLedgerWithPending = Readonly<{
-  entries: readonly z.output<typeof ledgerEntryVersion7Schema>[];
-  operationsAlerts: readonly z.output<typeof operationsAlertEntrySchema>[];
-  pendingNotifications: readonly z.output<typeof pendingNotificationSchema>[];
-}>;
-
-function validateNotificationLedger(
-  ledger: NotificationLedgerWithPending,
-  context: RefinementCtx,
-): void {
-  const keys = ledger.entries.map((entry) => entry.notificationKey);
-  if (new Set(keys).size !== keys.length) {
-    context.addIssue({
-      code: "custom",
-      path: ["entries"],
-      message: "notificationKeyが重複しています",
-    });
-  }
-  const alertKeys = ledger.operationsAlerts.map((entry) => entry.alertKey);
-  if (new Set(alertKeys).size !== alertKeys.length) {
-    context.addIssue({
-      code: "custom",
-      path: ["operationsAlerts"],
-      message: "alertKeyが重複しています",
-    });
-  }
-  for (const [index, entry] of ledger.operationsAlerts.entries()) {
-    if (entry.sentAt < entry.occurredAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["operationsAlerts", index, "sentAt"],
-        message: "運用障害通知の送信時刻は発生時刻以後にしてください",
-      });
-    }
-  }
-  for (const [index, entry] of ledger.entries.entries()) {
-    if (entry.status === "reserved" && entry.expiresAt < entry.reservedAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["entries", index, "expiresAt"],
-        message: "予約期限は予約時刻以後にしてください",
-      });
-    }
-    if (entry.status === "delivery_started" && entry.startedAt < entry.reservedAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["entries", index, "startedAt"],
-        message: "送信開始時刻は予約時刻以後にしてください",
-      });
-    }
-    if (entry.status === "sent" && entry.sentAt < entry.reservedAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["entries", index, "sentAt"],
-        message: "送信時刻は予約時刻以後にしてください",
-      });
-    }
-    if (entry.status === "acknowledged" && entry.acknowledgedAt < entry.reservedAt) {
-      context.addIssue({
-        code: "custom",
-        path: ["entries", index, "acknowledgedAt"],
-        message: "確認時刻は予約時刻以後にしてください",
-      });
-    }
-  }
-  const pendingKeys = new Set<string>();
-  const itemReasonKeys = new Set<string>();
-  const personalReminderKeys = new Set<string>();
-  const cycleKeys = new Set<string>();
-  for (const [index, notification] of ledger.pendingNotifications.entries()) {
-    if (pendingKeys.has(notification.notificationKey)) {
-      context.addIssue({
-        code: "custom",
-        path: ["pendingNotifications", index, "notificationKey"],
-        message: "送信待ち通知のnotificationKeyが重複しています",
-      });
-    }
-    pendingKeys.add(notification.notificationKey);
-    const itemReasonKey = JSON.stringify([notification.itemNodeId, notification.reason.reasonCode]);
-    if (notification.target.kind === "cycle") {
-      const cycleKey = JSON.stringify([
-        notification.itemNodeId,
-        notification.reason.reasonCode,
-        notification.target.cycleId,
-      ]);
-      if (cycleKeys.has(cycleKey)) {
-        context.addIssue({
-          code: "custom",
-          path: ["pendingNotifications", index],
-          message: "同じ項目、理由、cycleの送信待ち通知が重複しています",
-        });
-      }
-      cycleKeys.add(cycleKey);
-    } else if (notification.target.kind === "personal_reminder") {
-      const personalReminderKey = JSON.stringify([
-        notification.itemNodeId,
-        notification.reason.reasonCode,
-        notification.target.causeId,
-      ]);
-      if (personalReminderKeys.has(personalReminderKey)) {
-        context.addIssue({
-          code: "custom",
-          path: ["pendingNotifications", index],
-          message: "同じ項目、理由、個人催促原因の送信待ち通知が重複しています",
-        });
-      }
-      personalReminderKeys.add(personalReminderKey);
-    } else if (itemReasonKeys.has(itemReasonKey)) {
-      context.addIssue({
-        code: "custom",
-        path: ["pendingNotifications", index],
-        message: "同じ項目と理由の送信待ち通知が重複しています",
-      });
-    } else {
-      itemReasonKeys.add(itemReasonKey);
-    }
-  }
-}
-
 const notificationLedgerVersion7Schema = z
   .strictObject({
     schemaVersion: z.literal(NOTIFICATION_LEDGER_SCHEMA_VERSION_7),
@@ -718,10 +561,40 @@ const notificationLedgerVersion8Schema = z
     pendingNotifications: z.array(pendingNotificationSchema),
   })
   .superRefine(validateNotificationLedger);
-
-/** 日次runの完了状態と運用metricsを保持するreport。 */
-export type StateRunReport = z.output<typeof runReportSchema>;
-
+const notificationLedgerVersion9Schema = z
+  .strictObject({
+    schemaVersion: z.literal(NOTIFICATION_LEDGER_SCHEMA_VERSION_9),
+    entries: z.array(ledgerEntryVersion7Schema),
+    pendingNotifications: z.array(pendingNotificationSchema),
+  })
+  .superRefine((ledger, context) => {
+    validateNotificationLedger({ ...ledger, operationsAlerts: [] }, context);
+  });
+const combinedNotificationLedgerVersion9Schema = z
+  .strictObject({
+    schemaVersion: z.literal(NOTIFICATION_LEDGER_SCHEMA_VERSION_9),
+    entries: z.array(ledgerEntryVersion7Schema),
+    operationsAlerts: z.array(operationsAlertEntrySchema),
+    pendingNotifications: z.array(pendingNotificationSchema),
+  })
+  .superRefine(validateNotificationLedger);
+const notificationLedgerVersion10Schema = z
+  .strictObject({
+    schemaVersion: z.literal(NOTIFICATION_LEDGER_SCHEMA_VERSION_10),
+    entries: z.array(ledgerEntryVersion10Schema),
+    pendingNotifications: z.array(pendingNotificationSchema),
+  })
+  .superRefine((ledger, context) => {
+    validateNotificationLedger({ ...ledger, operationsAlerts: [] }, context);
+  });
+const combinedNotificationLedgerVersion10Schema = z
+  .strictObject({
+    schemaVersion: z.literal(NOTIFICATION_LEDGER_SCHEMA_VERSION_10),
+    entries: z.array(ledgerEntryVersion10Schema),
+    operationsAlerts: z.array(operationsAlertEntrySchema),
+    pendingNotifications: z.array(pendingNotificationSchema),
+  })
+  .superRefine(validateNotificationLedger);
 type StateNotificationLedgerVersion1 = z.output<typeof notificationLedgerVersion1MigrationSchema>;
 type StateNotificationLedgerVersion2 = z.output<typeof notificationLedgerVersion2Schema>;
 type StateNotificationLedgerVersion3 = z.output<typeof notificationLedgerVersion3Schema>;
@@ -730,28 +603,13 @@ type StateNotificationLedgerVersion5 = z.output<typeof notificationLedgerVersion
 type StateNotificationLedgerVersion6 = z.output<typeof notificationLedgerVersion6Schema>;
 type StateNotificationLedgerVersion7 = z.output<typeof notificationLedgerVersion7Schema>;
 type StateNotificationLedgerVersion8 = z.output<typeof notificationLedgerVersion8Schema>;
+type StateNotificationLedgerVersion10 = z.output<typeof combinedNotificationLedgerVersion10Schema>;
 type StateNotificationLedgerVersionParser = (value: unknown) => StateNotificationLedger;
 
 /** 通常通知の予約、送信開始、送信結果、確認済みledger entry、送信待ち通知、送信済み運用障害を保持するledger。 */
-export type StateNotificationLedger = StateNotificationLedgerVersion8;
-
+export type StateNotificationLedger = StateNotificationLedgerVersion10;
 function createFormatError(kind: string, error: z.ZodError): StateFormatError {
   return StateFormatError.fromZodError(kind, error);
-}
-
-/** 未検証の値を完了済みrun reportへ変換する。 */
-export function createStateRunReport(value: unknown): StateRunReport {
-  const result = runReportSchema.safeParse(value);
-  if (!result.success) {
-    throw createFormatError("run report", result.error);
-  }
-  return {
-    ...result.data,
-    metrics: {
-      ...result.data.metrics,
-    },
-    diagnostics: [...result.data.diagnostics],
-  };
 }
 
 function parseStateNotificationLedgerVersion1(value: unknown): StateNotificationLedgerVersion1 {
@@ -914,7 +772,7 @@ function migrateStateNotificationLedgerVersion6(
 function migrateStateNotificationLedgerVersion7(
   ledger: StateNotificationLedgerVersion7,
 ): StateNotificationLedger {
-  return migrateStateNotificationLedgerVersion8(
+  return normalizeStateNotificationLedger(
     parseStateNotificationLedgerVersion8({
       schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
       entries: ledger.entries,
@@ -924,46 +782,23 @@ function migrateStateNotificationLedgerVersion7(
   );
 }
 
-function migrateStateNotificationLedgerVersion8(
-  ledger: StateNotificationLedgerVersion8,
+function normalizeStateNotificationLedger(
+  ledger: Pick<
+    StateNotificationLedgerVersion10,
+    "entries" | "operationsAlerts" | "pendingNotifications"
+  >,
 ): StateNotificationLedger {
-  const compareNotificationKeys = (
-    left: StateNotificationLedgerVersion8["entries"][number],
-    right: StateNotificationLedgerVersion8["entries"][number],
-  ): number => {
-    if (left.notificationKey < right.notificationKey) {
-      return -1;
-    }
-    if (left.notificationKey > right.notificationKey) {
-      return 1;
-    }
-    return 0;
-  };
-  const comparePendingNotificationKeys = (
-    left: StateNotificationLedgerVersion8["pendingNotifications"][number],
-    right: StateNotificationLedgerVersion8["pendingNotifications"][number],
-  ): number => {
-    if (left.notificationKey < right.notificationKey) {
-      return -1;
-    }
-    if (left.notificationKey > right.notificationKey) {
-      return 1;
-    }
-    return 0;
-  };
   return {
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
-    entries: [...ledger.entries].sort(compareNotificationKeys),
-    operationsAlerts: [...ledger.operationsAlerts].sort((left, right) => {
-      if (left.alertKey < right.alertKey) {
-        return -1;
-      }
-      if (left.alertKey > right.alertKey) {
-        return 1;
-      }
-      return 0;
-    }),
-    pendingNotifications: [...ledger.pendingNotifications].sort(comparePendingNotificationKeys),
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_10,
+    entries: [...ledger.entries].sort((left, right) =>
+      compareStateKeys(left.notificationKey, right.notificationKey),
+    ),
+    operationsAlerts: [...ledger.operationsAlerts].sort((left, right) =>
+      compareStateKeys(left.alertKey, right.alertKey),
+    ),
+    pendingNotifications: [...ledger.pendingNotifications].sort((left, right) =>
+      compareStateKeys(left.notificationKey, right.notificationKey),
+    ),
   };
 }
 
@@ -1031,7 +866,21 @@ const stateNotificationLedgerVersionParsers: ReadonlyMap<
     NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
     createStateNotificationLedgerVersionParser(
       parseStateNotificationLedgerVersion8,
-      migrateStateNotificationLedgerVersion8,
+      normalizeStateNotificationLedger,
+    ),
+  ],
+  [
+    NOTIFICATION_LEDGER_SCHEMA_VERSION_9,
+    createStateNotificationLedgerVersionParser(
+      (value) => combinedNotificationLedgerVersion9Schema.parse(value),
+      normalizeStateNotificationLedger,
+    ),
+  ],
+  [
+    NOTIFICATION_LEDGER_SCHEMA_VERSION_10,
+    createStateNotificationLedgerVersionParser(
+      (value) => combinedNotificationLedgerVersion10Schema.parse(value),
+      normalizeStateNotificationLedger,
     ),
   ],
 ]);
@@ -1058,21 +907,23 @@ export function createStateNotificationLedger(value: unknown): StateNotification
 /** 初回bootstrap用の空notification ledgerを生成する。 */
 export function createEmptyStateNotificationLedger(): StateNotificationLedger {
   return {
-    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_8,
+    schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_10,
     entries: [],
     operationsAlerts: [],
     pendingNotifications: [],
   };
 }
 
-/** run reportを末尾改行付きcanonical JSONへ変換する。 */
-export function serializeStateRunReport(report: StateRunReport): string {
-  return serializeCanonicalJsonLine(createStateRunReport(report));
-}
-
 /** notification ledgerを末尾改行付きcanonical JSONへ変換する。 */
 export function serializeStateNotificationLedger(ledger: StateNotificationLedger): string {
-  return serializeCanonicalJsonLine(createStateNotificationLedger(ledger));
+  const validated = createStateNotificationLedger(ledger);
+  return serializeCanonicalJsonLine(
+    notificationLedgerVersion10Schema.parse({
+      schemaVersion: NOTIFICATION_LEDGER_SCHEMA_VERSION_10,
+      entries: validated.entries,
+      pendingNotifications: validated.pendingNotifications,
+    }),
+  );
 }
 
 /** JSONからnotification ledgerを検証して読み取る。 */
@@ -1088,5 +939,37 @@ export function parseStateNotificationLedger(source: string): StateNotificationL
       }),
     });
   }
+  const version = notificationLedgerSchemaVersionSchema.parse(value);
+  if (version.schemaVersion === NOTIFICATION_LEDGER_SCHEMA_VERSION_10) {
+    return createStateNotificationLedger({
+      ...notificationLedgerVersion10Schema.parse(value),
+      operationsAlerts: [],
+    });
+  }
+  if (version.schemaVersion === NOTIFICATION_LEDGER_SCHEMA_VERSION_9) {
+    return createStateNotificationLedger({
+      ...notificationLedgerVersion9Schema.parse(value),
+      operationsAlerts: [],
+    });
+  }
   return parseVersionedStateNotificationLedger(value);
+}
+
+/** marker付き旧ledgerのcanonical sourceとdigest対象を入口で検証する。 */
+export function parseRunTransactionNotificationLedger(source: string): Readonly<{
+  ledger: StateNotificationLedger;
+  legacyDigestValue?: z.output<typeof notificationLedgerVersion9Schema>;
+}> {
+  const ledger = parseStateNotificationLedger(source);
+  if (source === serializeStateNotificationLedger(ledger)) {
+    return Object.freeze({ ledger });
+  }
+  const parseJson: (text: string) => unknown = JSON.parse;
+  const legacy = notificationLedgerVersion9Schema.parse(parseJson(source));
+  if (source !== serializeCanonicalJsonLine(legacy)) {
+    throw new StateFormatError("notification ledger", {
+      cause: new TypeError("marker付きstateの通常ledgerがcanonical JSONではありません"),
+    });
+  }
+  return Object.freeze({ ledger, legacyDigestValue: legacy });
 }

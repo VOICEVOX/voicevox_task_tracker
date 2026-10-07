@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import { parseSha256Hash, serializeCanonicalJson } from "../canonical-json/index.js";
+import { parseSha256Hash } from "../canonical-json/sha256.js";
+import { type ReasoningEffort } from "../domain/index.js";
 import {
   AI_ANALYSIS_ELEMENTS,
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
@@ -8,12 +9,10 @@ import {
   type AiAnalysisElement,
 } from "./analysis-elements.js";
 import {
-  selectAiAnalysisElements,
   type AiAnalysisElementSelection,
   type AiAnalysisElementSelectionCandidate,
 } from "./element-selection.js";
-import { type CodexAnalysisInput } from "./input.js";
-import { type ReasoningEffort } from "../domain/index.js";
+import { serializeCodexAnalysisInput, type CodexAnalysisInput } from "./input.js";
 
 const aiAnalysisTargetSchema = z
   .strictObject({
@@ -133,14 +132,14 @@ function validatePromptFingerprint(value: string): void {
   parseSha256Hash(value);
 }
 
-/** 要素選別、正規化入力、入力文字数を候補へ付加する。 */
+/** 確定済みの要素選別と正規化入力を候補へ付加する。 */
 export function prepareAiAnalysisCandidate(
   candidate: AiAnalysisCandidate,
+  elementSelection: AiAnalysisElementSelection,
 ): PreparedAiAnalysisCandidate {
   validateCandidateId(candidate.id);
   validatePromptFingerprint(candidate.promptFingerprint);
-  const normalizedInput = `${serializeCanonicalJson(candidate.input)}\n`;
-  const elementSelection = selectAiAnalysisElements(candidate.elements);
+  const normalizedInput = serializeCodexAnalysisInput(candidate.input);
   return Object.freeze({
     ...candidate,
     elementSelection,

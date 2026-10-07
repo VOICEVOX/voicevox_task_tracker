@@ -1,26 +1,36 @@
 # 運用手順
 
-正常運用時のVOICEVOX Task Trackerは毎日03:00、07:00、11:00、15:00、19:00、23:00 UTCに起動します。
-日本時間では00:00、04:00、08:00、12:00、16:00、20:00にPagesとDiscordを更新します。
-GitHub Actionsのscheduleには遅延があるため、厳密な投稿時刻は保証しません。
+運用担当者がrunの結果を確認し、停止・再開・手動解決を行う手順です。
+構築は[デプロイ手順](DEPLOYMENT.md)、ローカル確認は[開発手順](DEVELOPMENT.md)を参照してください。
+日次起動の予定は03:00、07:00、11:00、15:00、19:00、23:00 UTC、日本時間の00:00、04:00、08:00、12:00、16:00、20:00です。Actionsのscheduleには遅延があります。
 
-## 日々の確認
+## 日次runはreceiptとstateの両方で確認する
 
-`.github/workflows/daily.yml`の最新runで、実行対象のjobが依存順に成功したことを確認します。
+`daily.yml`は`_tracking-run.yml`を呼び、次の依存順で進みます。
 
 1. `quality`
-2. `collect-analyze`
-3. `persist-state`
-4. `build-pages`
-5. `deploy-pages`
-6. `notify-discord`
-7. `publish-notification-history` 通知候補があるときのみ
-8. `notify-operations` 失敗時のみ
-9. `report-workflow`
+2. `bootstrap`
+3. `prepare-runtime`
+4. `analyze`
+5. `commit-initial-state`
+6. `initial-pages`
+7. `settle-notifications`
+8. `finalize-run`
+9. `notification-history-pages`
+10. `complete`
+11. `observe`
 
-通常の公開経路は`notify-discord`までの6 jobです。通知候補があるrunでは、その後に`publish-notification-history`が動きます。
-`notify-operations`は収集、Pages関連、Discord通知のいずれかのjobが失敗したときだけ実行されます。
-`report-workflow`は先行jobの成否にかかわらず実行され、全job結果と収集metricをActions artifactへ保存します。
+business stageの一覧と所有先は[アーキテクチャ](ARCHITECTURE.md#canonical-stageは直前の成果物を受け取る)にあります。
+再開時はexact stateから次stageを選び、完了済みeffectを再実行しません。
+通知actionがholdやacknowledge-currentでもsettlementとfinalizationを実行します。
+通知履歴Pagesはfinalization後です。公開不要のrunも、その結果をreceiptへ記録してcompleteへ進みます。
+observeは先行jobの成否にかかわらず全jobの結果とfailure artifactをまとめます。
+
+固定pathは`state/run-transaction-marker-v1.json`、`state/durable-publication-record-v1.json`、`state/initial-pages-publication-evidence-v1.json`です。
+同じrevisionから読み、run ID、checkpointとrecordのdigest、phase sequence、期待する親、初回Pages証拠を照合します。
+markerはinitial_state_committed、notifications_in_progress、notifications_settled、run_finalizedの順に進みます。
+ファイル名のV1は固定pathの契約名で、record本文のversionとは別です。
+stateやledgerを人間が直接編集して結果を変更しません。
 
 Pagesではトップの項目一覧に未完了の追跡項目が表示され、既定が要対応度の降順であることを確認します。
 状態で「すべて」を選ぶと、完了済みの追跡項目も表示されます。
@@ -28,7 +38,7 @@ Pagesではトップの項目一覧に未完了の追跡項目が表示され、
 表が表示される幅では列見出しから並び替えられ、カードが表示される幅では並び順の選択UIが現れることも確認します。
 共通ヘッダーには「最新更新」と相対時刻、共通フッターにはrun IDだけが表示されます。
 通知履歴ではDiscordへ送信済みの項目通知が新しい順に表示され、履歴がなければ空状態になることを確認します。
-送信した通知は、同じrunの`publish-notification-history`がPages公開に成功した後に表示されます。
+送信した通知は、同じrunの`notification-history-pages`がPages公開に成功した後に表示されます。
 個人通知の履歴は送信時の相手と行動であり、現在対応が変わっても書き換わらないことを確認します。
 `tracker-state`では`state/run-reports/YYYY-MM-DD.json`を確認します。
 ローカル実行のreportは`artifacts/run-reports/`へ出力されます。
@@ -83,193 +93,119 @@ AI有効runで汎用AIの分析処理が結果を返した場合、`diagnostics`
 各世代には`ai.execution.maxAttempts`までのtransport retryがあり、候補1件あたりのprocess試行数は最大で両設定値の積になります。実試行のrun残枠がなければretryと補正は行わず、候補を延期します。
 補正の追加世代は`metrics.aiCallCount`に加算せず、補正envelopeの増分も論理入力予算と`metrics.estimatedInputTokens`へ含めません。実際の入力文字数は暗号化した詳細診断の`standardInputCharacters`で確認します。
 
-## Codex認証preflight
+## 未完了runは記録されたexact runtimeで再開する
 
-汎用AIと個人原因のAIは、Codex exec実試行回数、入力文字数、見積費用のrun上限を共有します。後段の原因評価は、関係を含む前段の分析が消費した予算を引いて計画します。認証preflightも両段で共有し、run中に1回だけ実行します。
-入力文字数と見積費用は候補選択時の概算です。retryやsemantic補正の追加入力と出力tokenを含む実課金の上限ではありません。
+現行制御runtimeはbootstrapだけを読みます。
+markerとrecordが両方ない場合、または整合した完了runの場合だけcurrent runtimeで新規runを開始します。
+未完了runの業務payloadはcurrent runtimeでparse・migrationせず、元のcode revisionとbundleのexact runtimeへ渡します。
 
-`auth-json`で実行候補が1件以上あるrunだけ、候補processより先に固定した短文を空の一時directoryで実行します。候補データと通常のsystem promptは渡さず、preflightの完了後に候補workerを`ai.execution.maxConcurrentCalls`の設定値まで並列実行します。
-`api-key`、候補なし、cache hitだけのrun、全候補が予算延期されたrunでは実行しません。preflightに失敗した場合は候補を開始せず、実行段階に応じて`codex_analysis`または`personal_reminder_analysis`を失敗させます。
-preflightを始める前に、preflightと最優先候補の初回試行に2枠を確保します。2枠を確保できなければ候補を延期します。preflightの完了後に残りの候補の初回試行枠を優先順で予約し、retryとsemantic補正には未予約枠だけを使います。
-preflightはrun全体の入力文字数と見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。`ai.budget.maxCodexExecAttemptsPerRun`の現行値は50で、preflightを実行するrunでは初回試行を最大49候補へ配れます。preflightと候補の実試行は、複数attemptになった分も同じ50枠から消費します。成功runの`aiCallCount`と`estimatedInputTokens`にもpreflightを含めます。
-これは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば認証競合は残ります。
+V2の再開は、制御側のbundle検証とexact側のstage実行の二段階です。
+制御側でlockfile、toolchain、manifestの全file digest、固定entrypoint、adapter identityを照合し、exact側のinspectが次stageを選びます。
+execute_stageが一段を進め、Pages action後はrecord_pagesが観測結果を検証します。
+元artifactの消失時は同じsourceから再生成し、記録されたdigestと一致した場合だけ使用します。
+Pagesの現行YAMLの実効条件と外部actionのSHA、exact sourceから起動するlocal actionとscriptのbyte列を照合します。
+記録されたsourceを先頭でcheckoutする経路が変わった場合はeffect前に停止します。
+GitHub再収集、AI再計画、固定outboxの選び直しを再開手段にしません。
 
-`tracker-state`は自動更新専用です。
-人間がsnapshot、履歴、AI cache、通知管理記録を直接編集すると履歴と通知抑制の整合を壊すため、修正はGitHub上の正本か`config.yml`で行います。
+V1は固定entrypointとinput/outputの回復protocolを維持し、静的action adapterとaction SHAの登録値を照合します。
+未知のadapter、identity不一致、manifest欠落、実行できないready-only bundleは通常の自動復旧対象として扱いません。
+ready-onlyのimmutable V1 runは、state revision、record/marker digest、元sourceとbundle、実送達の証拠を保存して手動停止し、現行CLIの業務commandで代替しません。
+停止対象のstateを通常の再開やsandbox連続runの証拠に使いません。
+V2 bundleは生成時期にかかわらず、記録されたexact runtimeと同じadapterを検証できれば、安全な未完stageから自動再開します。
 
-## forkでPRのコードを動かし、試行環境ごとにstateを分ける
+## 失敗したoperationのeffect certaintyを確認する
 
-PRのコードで実推論とstate更新を確認するときは、`Hiroshiba/voicevox_task_tracker`のActionsから`sandbox task tracking`を起動します。
-同じPRでも試行環境を複数作り、それぞれのstateで実行できます。
-Codex認証の更新を共有するため、試行jobと同じrepositoryの日次収集jobは一つずつ実行します。
-このworkflowはforkのデフォルトブランチである`main`から起動した場合だけ動きます。
-最初にsandbox用のworkflowと実行コードをforkの`main`へ反映し、Actionsを有効にします。
-実行対象の作業ブランチにも、この機能の実装を含めます。
-[デプロイ手順](DEPLOYMENT.md#forkの試行用認証を登録する)に従い、GitHub Appの設定と、repository secretsの`CODEX_AUTH_JSON`、`CODEX_AUTH_SYNC_TOKEN`を登録します。
-Codex認証ファイルは実行中だけrunnerの一時ディレクトリへ配置し、変更があれば同じrepository secretへ書き戻します。
-同期用tokenは書き戻しstepだけへ渡します。
-Discord用secretはsandbox workflowに渡しません。
+公開failure artifactのfailedStage、failureKind、binding evidence、lastReceiptDigest、failedOperationEffectCertainty、recovery dispositionを確認します。
+run開始前、bootstrap、pre-checkpoint、checkpoint以後ではbindingを区別します。
+operation-local certaintyは失敗した処理自身のno_effect、committed、ambiguousです。前段の成功receiptだけでcommittedへ変えません。
 
-通常モードで新しい環境を作る例です。
+| 失敗位置                                        | 状態と次の操作                                                               |
+| ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| 初回commit前                                    | state更新は未確定。今回のfailure evidenceを確認し、原因を直して新規runへ進む |
+| 初回commit・Pages・通知settlementの途中         | 同じrun・checkpointのexact runtimeで残るeffectだけを再開する                 |
+| Discordの通信例外、5xx、応答不正、送信中の停止  | delivery_startedを残し、届いたか確認するまでsettlementとfinalizationを止める |
+| finalization後の通知履歴Pages                   | finalized stateと送達結果を保ち、同じrunの履歴公開だけを再開する             |
+| 別run、別checkpoint、state head変更、superseded | 競合として停止し、最新stateと元runの証拠を照合する                           |
+| 公開境界違反                                    | 保存・Pages・通常Discord・運用障害通知を停止し、公開境界の原因を除く         |
 
-```console
-gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
-  -f operation=create -f source_ref=feature/example -f analysis_mode=normal
-```
+Pagesでは同じrun、checkpoint、revision、content、adapterに結合した成功receiptを検証し、再deployを省略できます。
+矛盾する成功結果、破損、元buildやchainの欠落、成功を証明できないupload結果では停止します。
+前runの初回Pages証拠を今回の通知開始条件へ転用しません。
+state commit後のPages失敗でstateを巻き戻しません。
 
-createでは`env-<workflow run ID>-<run attempt>`形式の環境IDを自動生成し、VOICEVOX本番repositoryの公開`tracker-state`の最新コミットから、forkに`sandbox-state/<環境ID>`ブランチを作成します。
-複製元のコミットをseedと呼びます。
-`state/sandbox-environment.json`へ環境ID、対象ブランチ、複製元のSHAを保存し、実推論より先にpushします。
-このmanifestは環境の存続中に更新しません。
-作業ブランチは実行開始時のコミットSHAへ固定し、run contextのartifactへコードとstateのSHA、run ID、attempt、分析モードを記録します。
-Pagesはdeployせず、生成したサイトとrun contextをActions artifactへ保存します。
-通知処理は`hold`で完了記録だけを保存するため、Discordへ送信しません。
+production直列実行のPages childが起動した場合、`tracker-pages-effect-lease`の`state/production-pages-effect-lease-v1.json`を確認します。
+固定pathのlease本文はschema version 2です。active leaseはrun、checkpoint、親Actions実行IDとattempt、公開phase、固定state revision、intent digestを保持します。同じ公開operationの識別子は固定し、deployが始まらなかったと証明できた場合だけattemptの連番と識別子を更新します。
+親が停止しても子は公開を続けるため、leaseがactiveの間は別のtracking runを開始しません。
+同じrunを再開するには`recover_tracking_run`で`execution_shape`に`sequential`、`run_id`にleaseのrun IDを指定します。`run_sequential`の`run_id`指定でも再開できます。
+再開処理はexact runtime、state、receiptを照合し、同じattemptのchildを探します。childがleaseに記録済みなら、その実行IDとattemptから観測artifactを取得します。dispatch開始後のattemptを再dispatchしません。
+初回Pagesの成功receiptが確定した場合だけ履歴Pagesのleaseへ進みます。新たなchildを起動するときは、実行中のworkflowと固定sourceのPages child workflowが同じ内容であることを確認します。childは固定sourceでPagesを生成し、公開前に出力manifestをintentと照合します。
+childの検索はdispatch期間のActions runを全ページ確認し、1000件を超える期間は分割します。childの重複、未発見、実行中、観測artifactの欠落や不一致、upload、deploy、deployment ID、公開URLの未確定は停止してactive leaseを保持します。
+`no_effect`は失敗したchildのdeploy stepが未開始だったことをActionsの実記録で確認した場合だけ確定します。効果が不明なattemptは`unknown`として停止し、同じoperationの次attemptを自動開始しません。
+最終reportとreceiptを検証して保存した継続attemptがleaseをCASで解放します。効果が曖昧なleaseを自動解放する操作はありません。
 
-一つの項目を指定して実推論する場合は、`NODE_ID`を対象のGitHub node IDへ置き換え、AI判定要素をカンマ区切りで指定します。
+運用障害通知は`tracker-operations-alerts`の`state/operations-alert-ledger-v1.json`へ送信予約を保存してから送ります。
+同じincidentの送信済みまたは曖昧な予約を再送せず、receiptを失っても専用branchの実状態を先に確認します。
+通常runのmarkerを運用障害通知のcommitで書き換えません。
+本番の直列runでtracking jobが失敗した場合も、公開failure artifactを分割runと同じ通知jobへ渡します。
+直列runではCLI起動前の失敗でartifactがない場合だけ基盤障害として通知します。CLI起動後にartifactを取得できなければ送信を止めます。
+Pages leaseがactiveでも運用通知は専用branchだけを更新し、leaseを解放しません。
 
-```console
-gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
-  -f operation=create -f source_ref=feature/example -f analysis_mode=forced \
-  -f forced_node_id=NODE_ID -f forced_elements=status,waitingOn
-```
+## 曖昧なDiscord送達を手動解決する
 
-利用できる要素は`status`、`waitingOn`、`nextAction`、`relations`、`progress`、`importance`、`deadline`、`notification`、`selfCommitment`です。
-forcedモードではnode IDを一つだけ指定し、要素の重複や空要素は受け付けません。
-生成不要と判定された要素や、指定外の判定を維持するための情報が不足する指定は拒否します。
-指定要素はcacheを再利用せず、すべての指定要素で実推論に成功しなければ実行を失敗にします。
-normalモードでは本番と同じ選別とcache再利用を行うため、実推論が0件でも成功します。
+delivery_startedは期限で解除しません。
+同じrunのsettlementとfinalization、新しい日次runを止め、Discordの投稿と実行ログを確認します。
+届いていなければretry、届いたか送信不要ならacknowledgeを選びます。
+受信を確認せずretryすると重複送信になり得ます。
 
-relation判定とsemantic補正を確認するときは、上記のforced実行で対象nodeを指定し、`forced_elements=relations`とします。
-生成された関係の向きと根拠が妥当であり、検証を通ってstateへ保存されたことを確認します。
-実AIの応答は非決定的なので、補正世代が発生すること自体は必須にしません。
-補正が発生した場合は、run reportの`codex_semantic_generations`と詳細診断の世代別attemptを照合します。第2世代に進んだ候補は開始数へ1件、検証を通った候補は成功数へ1件を計上し、生成世代数とprocess試行数が設定上限内であることを確認します。
+1. 同じexact revisionのmarkerとledgerからrun ID、checkpoint digest、delivery ID、attempt ID、固定outbox順のnotification keyを取得します。
+2. 元Actions実行IDとcode revision、記録済みrunの実行形態を確認し、default branchの「Discord送達の手動解決」へ指定します。production直列runではactive Pages leaseの親Actions実行IDを指定します。
+3. select-runtimeが分割runのV2固定bundle、または直列runのV1固定sourceを検証したことを確認します。手動判断の結果は同じrunのmanual resolution receiptへ記録されます。
+4. 分割runは共通workflow、直列runは固定V1 runtimeの再開から、残りmessage、settlement、finalization、通知履歴Pages、completeへ進んだことを確認します。
 
-保存したstateから実行を続ける場合は、manifestに記録された作業ブランチを指定します。
-作業ブランチを更新した後のcontinueでは更新後のSHAを固定しますが、別ブランチを指定すると停止します。
-解析に失敗した環境も同じ方法で再開できます。
+retryの手動解決操作自体はDiscordへ送信しません。
+元の固定予約と開始試行を保持し、検証済みreceiptを受け取る同じrunの再開だけが再送できます。
+acknowledgeは確認済みにし、送信履歴を追加しません。
+receipt消失時は同じ入力の解決操作を再実行し、実Gitの親子stateから独立に検証したreceiptを取得します。
+相反する判断、別runや別attemptへの適用は拒否されます。
+直列runでは、固定sourceとactive Pages lease、開始済み送達をGit stateと照合してからV1の手動解決commandを実行します。証拠が欠ける場合は送達状態もleaseも変更しません。
 
-```console
-gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
-  -f operation=continue -f environment_id=env-123456789-1 \
-  -f source_ref=feature/example -f analysis_mode=normal
-```
+## sandboxで連続runと通知actionを確認する
 
-環境をseedからやり直す場合はresetを使います。
-resetは元の環境を読み取り、新しい環境IDとstateブランチを作ります。
-`reset_source=seed`は元環境のmanifestにあるseedへ戻し、`reset_source=latest`はVOICEVOX本番repositoryの最新`tracker-state`から開始します。
+`sandbox.yml`は`Hiroshiba/voicevox_task_tracker`の`codex/daily-transaction-refactor`から起動し、source_refも同じbranchにします。
+実行code revisionを固定し、reusable workflowの定義が一致することを確認します。
+create/resetは公開seedから新しいenvironmentと`sandbox-state/env-<run ID>-<attempt>`を作り、`preparing` manifestを保存します。
+新環境はstate、receipt、必要なcoverageの検証が終わると`ready`になります。`preparing`の環境では通常のcontinueとdisposeを実行できません。旧形式のmanifestはreadyとして読み、次のcontinueが完了したときに現行形式へ保存します。
+workflowの排他groupはenvironment ID単位です。resetは旧環境のgroupで読込から新環境のready確定まで実行し、旧branchを上書きしません。異なるenvironmentの操作は並行できます。continueは同じenvironmentの前回stateを読み、disposeは取得したheadから変更されていない場合だけ削除します。待機中のrunがActionsによって新しい待機runへ置換された場合は、取り消されたrunのjobが始まっていないこととstate revisionが変わっていないことを確認し、無効果として扱います。必要な操作は改めて起動します。
+新branch作成後にresetが失敗した場合、そのbranchは`preparing`のまま残ります。確定したresult、receipt、coverage artifactがそろっていれば`recover-reset`に旧environment IDと新environment IDを指定します。確定結果を持つrunが元resetと異なる場合は、そのActions run IDとattemptも指定します。復旧はmanifestに記録した元reset runのID、attempt、code revision、終了状態、旧環境headと、新環境のstate、receipt、coverageを照合します。検証CLIは元のcode revisionから組み立て、追跡や通知を再実行せずmanifestだけをreadyへ進めます。source branchのheadが進んでも復旧できます。証拠が欠ける場合や新旧環境のheadが変わった場合は停止します。
+Discordと本番Pagesへは書き込まず、実GitHub収集・実AI・sandbox state更新と、Pages/Discordのrecording portを組み合わせます。
+同じCodex認証を使うrunは前のrunが完了してから起動します。
 
-```console
-gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
-  -f operation=reset -f environment_id=env-123456789-1 \
-  -f source_ref=feature/example -f reset_source=latest -f analysis_mode=normal
-```
+連続2 runではscenario_idをcontinuity、notification_actionをsend、outcomeをrecorded_success、messageIndexを0にします。
+firstはcreateまたはresetで実AIの成功を含むrunを完了させます。
+secondはcontinueで、firstのActions run ID/attempt、tracking run ID、final state revision、code revisionをrecording_controlのcontinuityへ渡します。
+firstのresult/coverage artifactと実Gitの親子revisionを照合し、同じenvironmentのstate読込、cache再利用、通知重複抑制を確認します。
+preflightだけのAI実試行を、対象項目の推論成功として数えません。
 
-不要になった環境は環境IDを指定して廃棄します。
-削除時にリモートのheadが取得時の値から変わっていた場合は、競合として停止します。
+通知actionは次の順に独立scenarioで確認します。
 
-```console
-gh workflow run sandbox.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
-  -f operation=dispose -f environment_id=env-123456789-1
-```
+| scenario_id           | actionとrecording結果                                           | 確認する証拠                                                   |
+| --------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
+| send-clear-rejection  | send / recorded_clear_rejection                                 | 明確な拒否が送信済み履歴にならず、再試行可能な予約へ戻る       |
+| hold                  | hold / recorded_success                                         | pendingを保持し、送信予約と送信履歴を増やさない                |
+| acknowledge-current   | acknowledge-current / recorded_success                          | 確認済みへ進み、送信履歴を増やさず、既存sentを保持する         |
+| ambiguous-retry       | send / recorded_ambiguous、その後retry / recorded_success       | 曖昧な開始記録を保持し、同じ固定予約の手動解決と再開だけが送る |
+| ambiguous-acknowledge | send / recorded_ambiguous、その後acknowledge / recorded_success | 確認済みへ進み、自動再送と送信履歴の追加をしない               |
 
-state更新の排他単位はforkリポジトリと書き込み先の環境です。
-createとresetは新しく作る環境、continueとdisposeは指定した環境への操作を一つずつ実行します。
-resetは元環境のmanifestを取得してから、選択した複製元のSHAを固定して新環境を作ります。
-manifestの取得前に元環境が削除された場合は失敗します。
-`cancel-in-progress: false`でも、同じstate更新の排他groupの待機中runは後から来たrunに置き換わります。
-同じ環境で順番に実行したい場合は、前の実行が完了してから次を起動します。
+各scenarioのfirstはreset_sourceをseedにしたresetを使います。
+曖昧なfirstは`preparing`のまま停止します。resolutionは`resume-preparing`で元のpending revision、delivery operation、Actions run IDとattempt、tracking run IDを渡します。元reset runと子effectの終了、旧環境head、新旧環境の進行中runを確認し、元runのcode revisionと現在のreusable workflow定義を照合してから、既存の手動解決と同じrunの再開を実行します。source branchが進んでいても元runのcode revisionとruntimeを使います。workflow定義が一致しなければ効果を加えず停止します。finalized receiptが確定した後に新環境をreadyへ進めます。
+notification controlのpriorへ先行scenarioの実行ID、environment、最終revision、coverage digestを順番どおり指定し、機械検証を通します。
+通知matrixは各scenarioの元reset run、manifest、永続record、runtime bundle、coverage、完了resultを個別に照合します。scenario間でsource branchのcommitが異なっていても、各runのcode revisionと証拠が一致すれば集約できます。
+曖昧なfirstではpendingを示す失敗結果も必要な証拠です。すべてのfirstを通常完了として扱いません。
+入力schemaは`.github/scripts/parse-sandbox-recording-control.mjs`を正本とします。
 
-異なる環境のsandbox jobと、同じrepositoryの日次workflowの`collect-analyze`は、認証を共有する排他groupで一つずつ実行します。
-このgroupは`queue: max`で最大100件の待機jobを保持します。
-実行順は保証されません。
-repository secretはworkflow runの受付時に読み込まれるため、待機中に別runが認証を更新しても、受付済みrunは古い認証を使います。
-異なる環境でも、同じ認証を使う前のrunが完了してから次を起動します。日次workflowの手動実行も同様です。
-この排他は同じrepositoryの日次収集jobとsandbox jobに限り、別のrepositoryやローカルで同じ認証を使う処理には及びません。
-
-初回は異なる二つの作業ブランチでcreateを起動し、環境ID、stateブランチ、run contextのartifactが分かれていることを確認します。
-その後、それぞれの環境でcontinueを実行し、前回保存したstateが読み込まれることと、Pagesのartifactを確認します。
-
-```console
-gh run list --repo Hiroshiba/voicevox_task_tracker --workflow sandbox.yml --limit 2
-gh run view RUN_ID --repo Hiroshiba/voicevox_task_tracker
-```
-
-## 性能profile
-
-OPS-004は通常のCIから分離したend-to-end性能profileで確認します。
-外部サービスへ接続せず、本番の`daily`トランザクションへ5,000項目、10,000 edge、変更300件を流します。
-変更項目は3件ずつ100組に分け、関係先を組内で共有します。
-GitHub APIは15,000 unitのモックrate limitから、一覧のpaginationと項目ごとの詳細取得で消費したunitを差し引きます。
-Codex processは起動せず、変更300件から汎用AIの論理callを300件、個人催促AIのbatchを300件実行し、モック出力を予算選別、schema検証、reducerへ通します。
-profile専用のCodex実試行上限を600件、総入力文字数の上限を2,000万字に設定します。
-日次reportの`aiCallCount`が合計600件、内訳がそれぞれ300件であることを確認します。
-ここで測るのは外部接続をモックしたdaily経路の処理時間です。Codex processは起動しないため、実Codex processを600回起動した場合の性能は保証しません。
-state永続化はメモリ上で行い、Pages初期summaryは実際に生成してgzipサイズを測ります。
-
-```console
-pnpm perf:profile
-```
-
-このコマンドはNodeのheap上限を4 GiBに設定します。
-30分、GitHub API 70%、summary gzip 1 MiBのいずれかを超えると終了codeが1になります。汎用AIが300件、個人催促AIが300 batch、`aiCallCount`の合計が600件と一致しない場合も失敗します。
-測定結果は`artifacts/performance-profile.json`へ保存されます。
-CI上では`性能profile` workflowを手動実行し、同じJSONをActions artifactとして保存します。
-
-## stageごとの実行
-
-日次workflowはjobの権限と副作用を一致させるため、次のstageを別processで実行します。
-各stageは`artifacts/workflow/validated-run.json`をschema検証、semantic検証、公開安全性検証へ通してから利用します。
-前stageのartifactが存在しない場合や検証に失敗した場合は明示的なエラーで停止します。
-
-収集と判定はGitHub Appの認証情報を使います。
-現行の`config.yml`は`ai.authentication: auth-json`を指定します。
-Actionsの`collect-analyze` jobは配置stepだけへ`CODEX_AUTH_JSON`を渡し、非空なら一時的な`auth.json`を配置します。収集stepへは`CODEX_HOME`と同期用tokenの有無だけを渡します。
-`CODEX_AUTH_SYNC_TOKEN`の値は書き戻しstepだけへ`GH_TOKEN`として渡します。
-jobは認証ファイルを配置した場合に限り、一時ファイルを削除する前に更新された`auth.json`を`CODEX_AUTH_JSON`へ同期します。
-`ai.enabled: true`で実行候補がある場合は、lockfileで固定した`codex`に加え、`auth-json`なら`CODEX_HOME`直下の`auth.json`、`api-key`なら`OPENAI_API_KEY`が必要です。
-検証後のsnapshot、通知候補、通知管理記録、run report生成用の収集指標、AI cacheを公開可能なartifactへ保存します。
-
-```console
-pnpm build
-pnpm tracker:run collect-analyze --mode none
-```
-
-backfillでは`--mode linked`か`--mode all-open`を指定し、対象を絞る場合は`--repository VOICEVOX/voicevox`を繰り返します。
-
-state永続化は収集artifactを受け取り、`tracker-state`へ一つのcommitとして保存します。
-GitHub App、Codex、Discordのsecretは読みません。
-
-```console
-pnpm tracker:run persist-state
-```
-
-Pages buildは保存済みstateと同じ収集artifactから公開DTOを生成します。
-外部secretは読みません。
-
-```console
-pnpm tracker:run build-pages --output web/public/data
-pnpm build:web
-```
-
-`notify-discord`が成功して通知候補がある場合は、`publish-notification-history`が通知後の最新stateを取得し、送信済み通知を含むPagesを再生成してdeployします。候補がない場合、`hold`、`acknowledge-current`ではこのjobを実行しません。
-
-GitHub Pagesへのdeployが成功した後だけ、deploy結果のURLを渡してDiscord stageを実行します。
-Discordへの送信には、通常通知用の`DISCORD_WEBHOOK_URL`と障害通知用の`DISCORD_OPERATIONS_WEBHOOK_URL`を使います。
-通常digestはHTTP送信の前に、送信開始済みの記録を保存して`origin`の`tracker-state`へpushします。送信結果が不明なまま停止しても、同じ通知を自動再送しないための記録です。
-メッセージを1通送信するたびに、送信済みの通知管理記録と通知履歴を同じcommitへ保存し、`origin`の`tracker-state`へpushします。pushが成功してから次のメッセージを送信します。途中で失敗しても、保存済みの送信結果は残ります。同じrunを再実行するときは、送信済みまたは確認済みの通知理由を除いて送信します。
-
-GitHub Actionsではcheckoutが設定したGit認証を使います。ローカルで`notify-discord`または`daily`を実行する場合も、`origin`の`tracker-state`へpushできる認証が必要です。追跡開始時刻とrun完了の記録は、すべてのメッセージを処理した後に確定します。
-
-```console
-pnpm tracker:run notify-discord --pages-url https://voicevox.github.io/voicevox_task_tracker/
-```
-
-ローカルで全stageを1processで確認する場合は従来の`daily`を利用できます。
-この実行はstate、Pages用データ、Discordへ順に副作用を発生させるため、設定と認証情報を確認してから実行します。
-
-```console
-pnpm tracker:run --backfill none
-```
+Actionsの成功表示だけでgate完了にしません。
+同じenvironmentの2 runと全action scenarioについて、実行ID、固定SHA、state revision、receipt chain、effect report、result、coverage artifactを保存して照合します。
+未実行、DNS・認証・外部サービス障害で止まった確認は未完了として記録します。
 
 ## 誤判定の直し方
 
@@ -346,7 +282,7 @@ repository globとlabel名の正規表現を一致させ、必要な効果を設
 | `countsAsProgress`           | そのlabel変更を意味のある進捗として扱う              |
 
 trackerはlabelを追加も変更もしません。
-label規則を変えた場合はdry-runで通知候補の差分を確認します。
+label規則を変えた場合はsandboxで通知候補の差分を確認します。
 
 ### review request
 
@@ -430,23 +366,6 @@ backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定�
 
 ## 通知量の調整
 
-### 送信結果が不明な通知を確認する
-
-通信例外、HTTP 5xx、応答不正が発生すると、Discordに届いたかどうかを判定できません。プロセスが送信中に停止した場合も、通知管理記録には送信開始済みの`delivery_started`が残ります。この記録は時間が経っても解除しません。同じrunの再実行は確認を求めるエラーで停止し、次の通常runは保留中の通知を除いて処理します。
-
-Discordの投稿と実行ログを確認し、対象メッセージを確認済みにするか、次回の送信候補へ戻します。運用障害通知のincident ID、または再実行時のエラーに表示される`deliveryId`で対象を指定します。ログが残っていない場合は、`tracker-state`の`state/notification-ledger.json`から`status`が`delivery_started`の記録を確認します。
-
-1. 日次workflowが実行中でないことを確認し、ローカルの`tracker-state`を`origin`の最新状態へ取得します。
-2. Discordで通知を確認できた場合、または送信を不要と判断した場合は、次のコマンドで確認済みにします。`ID`には対象の`deliveryId`を指定します。
-
-   ```console
-   pnpm tracker:run resolve-discord-delivery --delivery-id ID --resolution acknowledge
-   ```
-
-3. Discordへ届いていないことを確認できた場合は、`--resolution retry`を指定して実行します。その後、新しい日次runを開始します。
-
-このコマンドは通知管理記録を保存してpushします。ローカルでのビルドと、`origin`の`tracker-state`へpushできる認証が必要です。`retry`は通知を直接送信せず、次の集計時にまだ有効な候補だけを選別対象に戻します。`acknowledge`は確認済みにし、送信済みの履歴は作りません。受信の有無を確認せずに`retry`を選ぶと重複送信する可能性があります。
-
 ### 通知候補を保持して送信を保留する
 
 AI判定の更新内容を確認してから通知したい場合は、手動実行の`notification_action`を`hold`にします。
@@ -456,7 +375,7 @@ AI判定の更新内容を確認してから通知したい場合は、手動実
 1. repository variableの`VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED`を文字列`true`にし、定期実行を停止します。
 2. 実行中と待機中の日次runを確認します。変数の変更だけでは開始済みのrunは止まらないため、state更新と通知処理の完了を待ちます。
 3. default branchの「日次タスク追跡」を、`backfill: none`、`repository_filter`は空、`notification_action: hold`で手動実行します。
-4. `persist-state`、`notify-discord`、`report-workflow`の成功を確認します。`notify-discord`は送信せずにrunの完了処理を行うため、jobを省略しません。
+4. `commit-initial-state`、`settle-notifications`、`finalize-run`、`complete`、`observe`の成功を確認します。`settle-notifications`は送信せずにrunの完了処理を行うため、jobを省略しません。
 5. Pagesとrun reportで判定結果を確認し、通知管理記録で保留候補を確認します。分析の失敗・延期が残る場合は、各runの完了を待って`hold`で再実行します。
 6. 通常送信に戻すときは、手動実行で`send`を指定します。保留候補は現在の条件で再検証され、まだ有効な候補だけが通常の件数上限に従って送信されます。
 7. 古いrunが残っていないことを確認し、停止用変数を削除するか`false`にして定期実行を再開します。
@@ -469,28 +388,17 @@ AI判定の更新内容を確認してから通知したい場合は、手動実
 個人原因の候補は、同じ通知keyなら検出時刻を保って再検証します。入力が変わって採用値が使えない場合や、`waiting`・`unknown`へ変わった場合は送信を保留します。失敗・延期やrepositoryの収集失敗だけでは責務を終了させません。
 進捗や待機解消で停滞起点が変わった場合は、現在の閾値で候補を選び直します。新しいkeyになると検出時刻も更新し、閾値未満なら古い候補を失効させます。責務が終了した場合、`not_required`・`duplicate`になった場合、相手・行動・責務期間が交代した場合も旧候補を取り除きます。
 
-### stateの保存形式を移行する
+### 保存形式の変更は未完了runの復旧後に切り替える
 
-保存形式を変更するPRは、実stateのコピーで移行と保存後の再読み込みを検証し、CIが通ったことを確認してから切り替えます。
+1. 定期起動を停止し、開始済み・待機中のrunの完了を確認します。曖昧なdelivery_startedは手動解決し、未完了runは元のexact runtimeで復旧します。
+2. 稼働codeとstateのSHAを保存し、Git checkoutの同じSHAをverify-stateへ指定して現行ingressとcommit chainを検証します。
+3. 入口で旧形式から現行形式へ一方向に移行し、AI採用値、根拠、時計、履歴、通知済み・確認済み記録を保つことを確認します。
+4. マージ後のCI成功を確認し、定期停止を維持してholdで初回runを実行します。
+5. remoteへpushされた現行state、cache移行、marker・record・初回Pages証拠、finalizationを確認し、通知候補の確認後にsendと定期起動を再開します。
 
-1. 停止用変数を`true`にし、Actionsで日次workflow全体を無効にします。切替前のコードによる新たなstate更新を防ぐため、マージ前に行います。
-2. 実行中・待機中のrunと手動のstate操作を確認し、更新と送信の完了を待ちます。受信結果が不明な`delivery_started`は消さず、既存の送信結果確認手順で扱います。
-3. 稼働中のコードと`tracker-state`のコミットIDを復旧用に記録します。そのstateに対して`verify-state`を再実行し、成功後にPRをマージします。
-4. マージしたコードのCI成功を確認して日次workflowを有効に戻します。停止用変数は維持し、初回を`hold`で手動実行します。
-5. GitHubへ反映されたstateで、snapshotが現行形式になり、追跡開始時刻・追跡対象・履歴・通知管理記録を引き継いでいることを確認します。snapshot 18から19への移行では、AI依存の単一の`reason`を1要素の`reasons`配列へ変換します。値・producer・AI要素の適用元・採用済み評価・根拠・時計と、汎用AI・個人原因の現行cacheは保持します。
-6. 必要なAI再推論の結果と通知候補を確認してから、前節の手順で通常送信と定期実行を再開します。
-
-snapshot 14の読み込み時は個人原因を空配列として移行し、列挙計画`personalReminderCausePlanning`をopen項目では`pending`、原因がないterminal項目では`excluded`にします。旧AIの文章から個人義務や時刻を補填しません。初回は現在の収集結果から原因を組み立て、open項目の列挙が完了すれば0件でも`completed`と観測時刻を保存します。stale項目は前回値を維持します。
-計画versionの変更や、必要性が残る未評価・失敗・延期で有効な採用値がない場合は、次回runで再取得・再評価します。terminalになった原因も終了を確認します。AI無効中は個人原因の再試行だけを理由に毎回取得しません。正常なunknownや有効な採用値がある失敗は、この再試行と縮退件数の対象に含めません。
-snapshot、追加cache、通知管理記録の更新は同じcommitで保存します。保存済みの`sent`と`acknowledged`は維持し、現在の原因との一致を証明できる通知keyはそのまま再利用します。既存のoverdue候補を個人原因へ対応付けられない場合、system通知として送信してはいけません。
-ローカルのcommit作成とGitHubへの反映は別なので、pushが成立しなければ移行完了として扱いません。
-反映前に失敗した場合は、日次停止を維持し、最新のremote headを取得して再試行します。
-反映後にAI分析が失敗・延期した場合は、新形式のstateで再試行します。保存形式の移行をやり直す必要はありません。
-
-移行後は、原則として新形式のまま修正します。
-旧stateへ単純に戻すと、移行後の通知済み・確認済み記録を失うためです。
-コードとstateを復旧用の保存点へ戻せるのは、以後の外部送信やstate更新を確認し、失われる記録がないか整合を取れた場合だけです。
-履歴と保証対象の復旧用保存点に旧形式が残る間は、その形式を読み込む移行処理を削除しません。
+検証やローカルcommitだけでは本番の移行完了と見なしません。
+push前の失敗は停止を維持し最新remote headから再試行します。
+push後のAI失敗・延期は現行stateで再試行し、古いstateへの巻き戻しで通知記録を失わせません。
 
 ### 現在の通知候補を一括で確認済みにする
 
@@ -498,9 +406,9 @@ snapshot、追加cache、通知管理記録の更新は同じcommitで保存し�
 
 1. default branchのActionsから「日次タスク追跡」のworkflowを開きます。
 2. `backfill`を`none`、`repository_filter`を空、`notification_action`を`acknowledge-current`にして実行します。
-3. `collect-analyze`、`persist-state`、`build-pages`、`deploy-pages`、`notify-discord`、`report-workflow`が成功することを確認します。`publish-notification-history`は候補がないため実行されません。
+3. `analyze`、`commit-initial-state`、`initial-pages`、`settle-notifications`、`finalize-run`、`complete`、`observe`が成功することを確認します。`notification-history-pages`は公開不要という結果を記録します。
 
-`acknowledge-current`は現在の通知条件を満たす候補を、reasonごとに最大件数の制限なく、確認済みとして通知管理記録へ保存します。同じnotification keyは送信済みと同様に通知対象から除外します。すでに送信済みの同じkeyは送信日時とDiscord message IDを維持します。通常のDiscord digestは送信せず、`notification_sent`履歴も作りません。snapshotとPagesの生成は通常runと同じで、通知管理記録の更新は同じatomic transactionへ含まれます。運用障害が発生した場合の`notify-operations`は別系統で動作します。
+`acknowledge-current`は現在の通知条件を満たす候補を、reasonごとに最大件数の制限なく、確認済みとして通知管理記録へ保存します。同じnotification keyは送信済みと同様に通知対象から除外します。すでに送信済みの同じkeyは送信日時とDiscord message IDを維持します。通常のDiscord digestは送信せず、`notification_sent`履歴も作りません。snapshotとPagesの生成は通常runと同じで、通知管理記録の更新は同じatomic transactionへ含まれます。運用障害が発生した場合の`observe`の運用通知は別系統で動作します。
 
 成功確認では、`tracker-state`の通知管理記録に未送信だった対象候補の`status: acknowledged`が保存され、通知履歴に送信済み項目が追加されていないことを確認します。すでに送信済みだった同じkeyは`status: sent`のままです。state branchや通知管理記録を直接編集して確認済み状態を解除してはいけません。
 
@@ -556,7 +464,7 @@ blockerの停滞レベルとdownstream impactが通知順位を決めます。
 3. 通知を減らす状態に対応する`staleness.thresholdsHours`を増やします。
 4. 全状態で直近の進捗を長く猶予する場合は`recentProgressGraceHours`を増やします。
 5. `maxItemsPerDigest`を減らします。
-6. 汎用AIの低信頼な推定が原因なら`ai.confidence.medium`を上げ、実モデルを呼び出すdry-runでAI判定と通知候補の差分を確認します。個人原因では、まず義務と実行可能性の根拠がそろっているかを確認します。
+6. 汎用AIの低信頼な推定が原因なら`ai.confidence.medium`を上げ、実モデルを呼び出すsandboxでAI判定と通知候補の差分を確認します。個人原因では、まず義務と実行可能性の根拠がそろっているかを確認します。
 
 通知が少なすぎる場合は逆方向に調整します。
 
@@ -567,81 +475,32 @@ blockerの停滞レベルとdownstream impactが通知順位を決めます。
 5. 重要labelへ`priorityWeight`か`severityLift: 1`を設定します。
 6. AI予算不足なら`ai.budget`を増やし、dry-runの`metrics.aiCallCount`、`metrics.estimatedInputTokens`、deferred項目と個人原因、通知候補を確認します。前段の関係評価だけで予算を使い切っていないかも確認します。
 
-閾値、confidence、label規則、AI予算を変更する場合は、dry-runを実行して通知候補の差分を確認します。
-model、reasoning effort、promptを変更する場合は、`metrics.aiCallCount`が1以上になるdry-runでAI判定と通知候補の差分を確認します。
+閾値、confidence、label規則、AI予算を変更する場合は、sandboxで通知候補の差分を確認します。
+model、reasoning effort、promptを変更する場合は、`metrics.aiCallCount`が1以上になるsandboxでAI判定と通知候補の差分を確認します。
 `ai.execution.maxConcurrentCalls`を上げるとrun時間は縮みますが、Codexのrate limitに当たる頻度が増えて再試行が発生しやすくなります。
-上げた後は`codex_analysis` stageの失敗数と再試行数を確認します。
+上げた後は`generic_ai_executed` stageの失敗数と再試行数を確認します。
 mentionは通知量の調整に使わず、運用上必要なuserだけをallowlistへ追加します。
 
-## 障害時の確認
+## 詳細な失敗を調べる
 
-失敗したActions jobをworkflow全体のreportにある`jobs`と照合し、収集失敗ではCLI reportの`failedStage`も確認します。
-
-### 詳細なエラーを確認する
-
-run reportの`diagnostics`は公開可能な要約です。
-スタックトレースやCodex processの出力が必要な場合は、失敗したjobに対応する`daily-diagnostics-<run ID>-<試行番号>-<job名>`artifactを取得します。
-artifactには暗号化済みの`.bundle`ファイルだけが入り、保持期間は7日です。
-
-依存関係を導入してCLIをビルドした後、登録時と同じ鍵ファイルで復号します。
-出力先に既存ファイルがある場合は上書きしません。
+公開failureのdiagnostics参照に対応する暗号化artifactを取得し、安全なローカル環境で登録時と同じ鍵を使って復号します。
+復号したstack、cause、Codex出力は公開IssueやPRへそのまま貼りません。
+CLI起動前や暗号化自体の失敗では詳細artifactがない場合もあるため、公開failureのbindingと元jobの結果を確認します。
 
 ```console
-pnpm install --frozen-lockfile
-pnpm build
-node dist/cli/tracker-run.js diagnostics decrypt \
-  --key-file path/to/diagnostics-key.b64 \
-  --input path/to/voicevox-task-tracker-diagnostics-collect-analyze.bundle \
-  --output path/to/diagnostics.jsonl
+pnpm diagnostics decrypt --key-file path/to/key.b64 --input path/to/diagnostics.bundle --output path/to/diagnostics.jsonl
 ```
 
-復号したJSONLには、例外のstack、cause、AggregateErrorの各error、Codexの試行番号、終了状態、標準出力、標準エラー出力、最終応答が記録されます。
-汎用AIは`semanticGeneration`が生成世代、`attempt`がその世代内のtransport試行番号です。`standardInputCharacters`は補正envelopeを含む入力文字数であり、論理入力予算へ含まれない増分も確認できます。
-認証preflightは`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`で開始と終了を確認できます。標準出力、標準エラー出力、stackも暗号化診断にだけ記録し、公開run reportへraw出力を載せません。preflight失敗runでは通常metricsは完成しません。
-内容は公開用に無害化していないため、調査はローカルで行い、そのまま公開IssueやPull Requestへ貼り付けないでください。
-CLIが起動する前に失敗した場合や暗号化処理自体が失敗した場合は、対応するartifactが作られないことがあります。
+| failedStage                                                                | 最初に確認するもの                                                        |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| prepared / inventory_collected / collected                                 | 設定、read権限、公開inventory、API残量、収集failure                       |
+| generic_ai_executed / personal_reminder_executed                           | 認証preflight、実試行・予算・timeout、schema/semantic診断                 |
+| runtime_bootstrap / runtime_selection / runtime_launch                     | exact state、元codeとbundle、manifest、全file digest、adapterとaction SHA |
+| checkpoint_encoding / checkpoint_binding                                   | canonical bytes、sidecar、payload/file digest、base revision、完全性proof |
+| initial_state_committed / notifications_settled / run_finalized            | 実Gitの親、changed path manifest、marker・record、同じrunのreceipt        |
+| initial_pages_prepared / initial_pages_published                           | 出力manifest、deploy intent、現在性preflight、初回Pages証拠               |
+| notification_history_pages_prepared / notification_history_pages_published | finalized revision、送信履歴、同じrunの公開receipt                        |
 
-| stageまたはjob                  | 確認内容                                                                                                                                                                                      |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quality`                       | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`をローカルで再現する                                                                                                                        |
-| `configuration`                 | maintainerのGitHubユーザー名一覧、repository名、未知field、日時、正規表現、secret名を確認する                                                                                                 |
-| `authentication`                | `GH_APP_ID`、PEM形式、Organizationへのinstallation、必要なread権限だけがあることを確認する                                                                                                    |
-| `repository_inventory`          | Appのrepository access、public、archive、disabledの状態を確認する                                                                                                                             |
-| `incremental_collection`        | GitHub API残量、429と503、対象repositoryの一時障害を確認する                                                                                                                                  |
-| `codex_analysis`                | `codex` executable、model ID、reasoning effort、予算、timeout、同時実行数、`ai.authentication`を確認し、`auth-json`では`CODEX_HOME`直下の`auth.json`、`api-key`では`OPENAI_API_KEY`を確認する |
-| `state_persistence`             | Actionsの`contents: write`、`tracker-state`のruleset、同時runがないことを確認する                                                                                                             |
-| `build-pages`                   | Pages DTO、`web.basePath`、Web build、公開guardの診断を確認する                                                                                                                               |
-| `deploy-pages`                  | Pages Source、`github-pages` environment、`pages: write`と`id-token: write`を確認する                                                                                                         |
-| `publish-notification-history`  | 通知後のstate取得、通知履歴を含むPages DTO、再deployの診断を確認する                                                                                                                          |
-| `discord`または`notify-discord` | enabled設定、Webhook secret、channel、Webhook失効、429と503を確認する                                                                                                                         |
-
-`incremental_collection`が`errorType=CliRelationExpansionLimitError`で失敗した場合は、同じ診断行の`relationExpansionLimit`、`relationExpansionFetchedCount`、`relationExpansionUnfetchedCount`を確認します。
-件数が想定より多いときは、GitHub上の誤ったnative relationや参照を直します。
-妥当な件数なら、GitHub API残量と`operations.githubApiBudgetRatio`を確認したうえで`tracking.relationExpansion.maxItemsPerRun`を引き上げ、`backfill: none`で再実行します。
-この失敗ではstate、Pages、通常のDiscord通知を更新しません。
-
-収集の診断に「端点を取得できなかった関係候補を除外しました」が出る場合は、archive済みrepositoryやOrganization外の参照先など、公開境界の外にある関係先が残っています。
-run自体は成功し、除外した関係候補は依存グラフへ載りません。
-
-Actions上でCodexの認証エラーが起きた場合は、まず過去の`collect-analyze`でCodex認証の書き戻しstepが失敗していないか確認します。
-書き戻しが失敗していたときは、`CODEX_AUTH_SYNC_TOKEN`の登録、tokenの有効期限、Organizationの承認、対象repositoryと`Secrets`の`Read and write`権限を確認して直し、`backfill: none`で再実行します。
-保存済みのCodex認証をrefreshできず、再実行でも回復しない場合だけローカルのCodexへログインし直します。
-[デプロイ手順](DEPLOYMENT.md)のコマンドで、新しい`auth.json`を`CODEX_AUTH_JSON`の初期値として登録します。
-
-`fallback`はAI分析に失敗または延期した項目を決定論的判定と利用可能な前回結果へ縮退した完全runです。個人原因も、有効な採用値がない失敗・延期が残る場合に含まれます。
-汎用AIの対象は項目一覧を`未検証値・分析失敗・未実行`で絞り込み、各行の警告マークと詳細の局所的な警告マークで特定します。この絞り込みには未検証の表示値や現在対応に加え、`runStatus`が`failed`または`deferred`の項目も含まれます。run reportの`codex_fallback`と`codex_deferred`、および`validationIssue0Code`から原因を追います。
-semantic補正の上限に達した場合、`codex_fallback`には最後の世代のsemantic違反が残ります。`unknown_native_relation`のような入力の不整合、schema検証失敗、process失敗、alias変換失敗、canonical検証失敗はsemantic補正の対象外なので、補正上限を増やしても解消しません。alias変換失敗は項目ごとの縮退にせず、run全体を停止します。
-個人原因は現在対応の`unknown`とrun reportの専用件数を確認し、正常な未確定判定か実行失敗・延期かを区別します。未確定の原因には個人催促を送らず、項目全体の判定とsystem通知はそれぞれの規則で確認します。
-`metrics.aiCacheHitCount`が0でも`metrics.aiRetainedResultCount`が1以上なら、未変更項目のAI結果はAI分析対象へ入れず保持されています。
-`failed`または`deferred`の対象項目は次回runで詳細取得とAI分析へ再び含まれるため、原因を直せば手動再実行なしで解消します。それ以外の未検証値は、詳細の警告説明と保存済みの適用元を照合します。
-`failure`が`state_persistence`より前ならstateは更新されません。
-`pages`か`discord`で失敗した場合はstate commit後の可能性があるため、snapshotのrun IDとPagesの生成時刻を比較し、両者が同じrunか確認します。
-初回Pages deployに失敗した場合は最後に成功したPagesを基準にし、Discordを送信しません。通知後の`publish-notification-history`に失敗した場合も最後に成功したPagesを基準にし、通知自体は重複送信しません。
-state commit後のPages失敗は想定内であり、stateを巻き戻しません。
-
-公開guardが失敗した場合は安全設定を無効化しません。
-どの入力にallowlist外repository、private sentinel、secretらしい値、長すぎる全文、安全でないURLが入ったかを、secretをlogへ出さずに調べます。
-原因を除いた後に`backfill: none`で手動再実行します。
-
-同じrunを再実行してもworkflow concurrencyと通知管理記録が競合と通常通知の重複を抑えます。
-GitHubとCodexの429と503は設定した回数だけretryし、それでも失敗する場合は外部サービスの回復後に再実行します。Discordが自動retryするのは429だけです。通信例外、5xx、応答不正の場合は、送信結果が不明な通知の確認手順に従います。
+GitHubとCodexのretryは設定した上限に従います。
+Discordの自動retryは429だけです。通信例外・5xx・応答不正は曖昧として手動確認します。
+公開guardの原因を直すためにallowlistや安全設定を無効化しません。

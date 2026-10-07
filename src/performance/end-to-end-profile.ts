@@ -1,22 +1,13 @@
 import { join } from "node:path";
-import { performance } from "node:perf_hooks";
 
 import { z } from "zod";
 
-import { serializeCanonicalJson } from "../canonical-json/index.js";
-import {
-  createProductionCliApplication,
-  type ProductionRuntimeAdapters,
-} from "../cli/production-runtime.js";
-import { type CliExecutionResult } from "../cli/index.js";
 import {
   CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
+  listNativeRelationConstraints,
   type CodexAnalysisInput,
-  type PersonalReminderAiInput,
-  type SchemaValidPersonalReminderAiOutput,
 } from "../codex/index.js";
 import { loadConfig, type Config } from "../config/index.js";
-import { type DiscordDigestDelivery } from "../discord/index.js";
 import {
   buildSourceId,
   createGitHubNodeId,
@@ -35,14 +26,13 @@ import {
   type GitHubInboundCrossReferenceCandidate,
   type GitHubItemDetail,
   type GitHubNativeDependency,
-  type GitHubRateLimitSnapshot,
   type GitHubReferencedItem,
   type GitHubTimelineEvent,
   type PublicRepository,
 } from "../github/index.js";
-import { PUBLIC_SUMMARY_GZIP_LIMIT_BYTES, type GeneratedPublicData } from "../pages/index.js";
-import { MemoryStateBranchAdapter, StatePersistenceSession } from "../persistence/index.js";
+import { PUBLIC_SUMMARY_GZIP_LIMIT_BYTES } from "../pages/index.js";
 import { assertNonNullable } from "../util/index.js";
+import { runEndToEndPerformanceRuntime } from "./end-to-end-profile-runtime.js";
 
 const PROFILE_ITEM_COUNT = 5_000;
 const PROFILE_EDGE_COUNT = 10_000;
@@ -74,12 +64,6 @@ const GITHUB_API_LIMIT = 15_000;
 const GITHUB_CONNECTION_PAGE_SIZE = 100;
 const GITHUB_API_BUDGET_RATIO = 0.7;
 const THIRTY_MINUTES_MILLISECONDS = 30 * 60 * 1_000;
-const PRIVATE_KEY = [
-  "-----BEGIN PRIVATE KEY-----",
-  "performance-profile-dummy-key",
-  "-----END PRIVATE KEY-----",
-].join("\n");
-
 const displayReferenceSchema = z.custom<GitHubItemDisplayReference>(
   (value) => typeof value === "string" && /^[^/\s]+\/[^#\s]+#[1-9]\d*$/u.test(value),
 );
@@ -167,62 +151,6 @@ export type EndToEndPerformanceMeasurement = z.output<typeof performanceMeasurem
 
 /** OPS-004の閾値判定と証跡を含む性能profile。 */
 export type EndToEndPerformanceProfile = z.output<typeof performanceProfileSchema>;
-
-type ApiBudgetMeter = Readonly<{
-  reset: () => void;
-  consume: (units: number) => void;
-  snapshot: (observedAt: UtcIsoDateTime) => GitHubRateLimitSnapshot;
-  used: () => number;
-  remaining: () => number;
-}>;
-
-type PerformanceHarness = Readonly<{
-  runBaseline: () => Promise<void>;
-  runProfile: () => Promise<
-    Readonly<{
-      execution: CliExecutionResult;
-      durationMilliseconds: number;
-      githubApiUsed: number;
-      githubApiRemaining: number;
-      generatedPublicData: GeneratedPublicData;
-      config: Config;
-      genericAiNodeIds: readonly string[];
-      personalReminderAiNodeIds: readonly string[];
-    }>
-  >;
-}>;
-
-function createApiBudgetMeter(limit: number): ApiBudgetMeter {
-  if (!Number.isSafeInteger(limit) || limit <= 0) {
-    throw new RangeError("GitHub API上限は正の安全な整数にしてください");
-  }
-  let remaining = limit;
-  return Object.freeze({
-    reset: () => {
-      remaining = limit;
-    },
-    consume: (units) => {
-      if (!Number.isSafeInteger(units) || units < 0) {
-        throw new RangeError("GitHub API使用量は0以上の安全な整数にしてください");
-      }
-      if (units > remaining) {
-        throw new RangeError("GitHub APIモックの残量を超えました");
-      }
-      remaining -= units;
-    },
-    snapshot: (observedAt) =>
-      Object.freeze({
-        source: "graphql",
-        limit,
-        remaining,
-        resetAt: createUtcIsoDateTime("2026-08-03T00:00:00.000Z"),
-        observedAt,
-        cost: 1,
-      }),
-    used: () => limit - remaining,
-    remaining: () => remaining,
-  });
-}
 
 function createRepository(observedAt: UtcIsoDateTime): Repository {
   return Object.freeze({
@@ -366,7 +294,7 @@ function createNativeDependency(
   return Object.freeze({
     sourceId: buildSourceId(
       "github_native_dependency",
-      `${blockedItem.nodeId}:${blockerItem.nodeId}`,
+      `${blockedItem.nodeId}:blocked_by:${blockerItem.nodeId}`,
     ),
     authoritative: true,
     provenance: "native",
@@ -401,10 +329,7 @@ function createCrossReference(
       willCloseTarget: false,
     } satisfies GitHubTimelineEvent),
     inbound: Object.freeze({
-      sourceId: buildSourceId(
-        "github_inbound_cross_reference",
-        `${targetItem.nodeId}:${sourceItem.nodeId}`,
-      ),
+      sourceId: buildSourceId("github_inbound_cross_reference", `${nodeId}:${sourceItem.nodeId}`),
       candidateOnly: true,
       provenance: "cross_reference",
       eventSourceId,
@@ -426,7 +351,7 @@ function createProfileComment(
     author: Object.freeze({
       status: "identified",
       account: Object.freeze({
-        sourceId: buildSourceId("github_account", `U_commenter_${item.nodeId}`),
+        sourceId: buildSourceId("github_actor", `U_commenter_${item.nodeId}`),
         nodeId: createGitHubNodeId(`U_commenter_${item.nodeId}`),
         login: `commenter-${item.number.toString()}`,
         apiType: "User",
@@ -503,6 +428,12 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
     `性能profileのCodex入力に作者候補IDがありません。対象: ${input.item.nodeId}`,
   );
   const selectedElements = new Set(input.selectedElements);
+  const nativeRelationVerdicts = new Map(
+    listNativeRelationConstraints(input).map((constraint) => [
+      constraint.candidateId,
+      constraint.verdict,
+    ]),
+  );
   const evidence = Object.freeze([
     Object.freeze({
       sourceId: source.id,
@@ -544,7 +475,7 @@ function createCodexOutput(input: CodexAnalysisInput): unknown {
           relations: result(
             input.candidates.relations.map((candidate) => ({
               candidateId: candidate.id,
-              verdict: "related",
+              verdict: nativeRelationVerdicts.get(candidate.id) ?? "related",
               reasonSummary: "性能profileでは曖昧な関係を関連として扱います",
               sourceIds: [source.id],
               confidence: 0.95,
@@ -632,231 +563,6 @@ async function createPerformanceConfig(repositoryPath: string): Promise<Config> 
   });
 }
 
-function requireSingleRepository(repositories: readonly PublicRepository[]): PublicRepository {
-  const repository = repositories[0];
-  if (repository == null || repositories.length !== 1) {
-    throw new TypeError("性能profileの収集対象repositoryが1件ではありません");
-  }
-  return repository;
-}
-
-function createPerformanceHarness(repositoryPath: string, config: Config): PerformanceHarness {
-  const stateAdapter = new MemoryStateBranchAdapter();
-  const apiBudget = createApiBudgetMeter(GITHUB_API_LIMIT);
-  const genericAiNodeIds: string[] = [];
-  const personalReminderAiNodeIds: string[] = [];
-  let currentRunAt = BASELINE_RUN_AT;
-  let currentRunStartedAt = performance.now();
-  let changedVersion: 1 | 2 = 1;
-  let currentItems = createProfileItems(
-    requirePublicRepository(createRepository(BASELINE_RUN_AT)),
-    BASELINE_RUN_AT,
-    changedVersion,
-  );
-  let generatedPublicData: GeneratedPublicData | undefined;
-
-  const now = (): Date =>
-    new Date(Date.parse(currentRunAt) + Math.floor(performance.now() - currentRunStartedAt));
-  const runtimeAdapters: ProductionRuntimeAdapters = Object.freeze({
-    environment: Object.freeze({
-      GH_APP_ID: "123",
-      GH_APP_PRIVATE_KEY: PRIVATE_KEY,
-      GH_APP_INSTALLATION_ID: "456",
-      HOME: "/tmp",
-      OPENAI_API_KEY: "performance-profile-openai-key",
-      PATH: "/usr/bin",
-    }),
-    repositoryPath,
-    pagesOutputDirectory: "unused-performance-pages",
-    loadConfig: () => Promise.resolve(config),
-    openStateSession: (adapter, stateConfiguration) =>
-      StatePersistenceSession.open(adapter, stateConfiguration),
-    discoverRepositoryInventory: () => {
-      apiBudget.consume(1);
-      return Promise.resolve(Object.freeze([createRepository(currentRunAt)]));
-    },
-    enumerateOpenGitHubItems: (input) => {
-      requireSingleRepository(input.allowlist.repositories);
-      apiBudget.consume(Math.ceil(currentItems.length / GITHUB_CONNECTION_PAGE_SIZE));
-      return Promise.resolve(currentItems);
-    },
-    enumerateGitHubItemsByIdentifiers: () =>
-      Promise.reject(new TypeError("性能profileでは項目の個別取得を行いません")),
-    collectGitHubItemDetails: (input) => {
-      apiBudget.consume(input.targets.length + 1);
-      const itemsByNodeId = new Map(currentItems.map((item) => [item.nodeId, item]));
-      const details = input.targets.map((target) =>
-        createProfileDetail(target.item, itemsByNodeId, currentRunAt, changedVersion),
-      );
-      return Promise.resolve(
-        Object.freeze({
-          capabilities: Object.freeze({
-            nativeDependencies: "available",
-            nativeHierarchy: "available",
-          }),
-          items: Object.freeze(details),
-        }),
-      );
-    },
-    executeCodexAnalysis: (input) => {
-      if (currentRunAt === PROFILE_RUN_AT) {
-        genericAiNodeIds.push(input.item.nodeId);
-      }
-      return Promise.resolve(createCodexOutput(input));
-    },
-    executeCodexPersonalReminderAnalysis: (input: PersonalReminderAiInput) => {
-      if (currentRunAt === PROFILE_RUN_AT) {
-        personalReminderAiNodeIds.push(input.item.nodeId);
-      }
-      return Promise.resolve<SchemaValidPersonalReminderAiOutput>({
-        schemaVersion: "1",
-        item: input.item,
-        causes: input.causes.map((cause) => {
-          const firstSourceRef = cause.sourceRefs[0];
-          if (firstSourceRef == null) {
-            throw new TypeError(
-              `性能profileの個人催促入力にsourceがありません。対象: ${cause.causeId}`,
-            );
-          }
-          return {
-            causeId: cause.causeId,
-            assessment: {
-              verdict: "unknown",
-              reason: "ambiguous_meaning",
-              references: {
-                itemRefs: cause.itemRefs,
-                relationRefs: cause.relationRefs,
-                sourceRefs: [firstSourceRef],
-                reasonSummary: "性能profileでは個人催促の意味を判定しません",
-              },
-              confidence: 1,
-            },
-          };
-        }),
-      });
-    },
-    executeCodexAuthenticationPreflight: () =>
-      Promise.reject(new TypeError("性能profileではCodex認証preflightを実行しません")),
-    readWorkflowArtifact: () =>
-      Promise.reject(new TypeError("性能profileではworkflow artifactを読みません")),
-    verifyStateDirectory: () =>
-      Promise.reject(new TypeError("性能profileでは永続stateを検証しません")),
-    createGitHubClient: () => {
-      apiBudget.reset();
-      return Promise.resolve(
-        Object.freeze({
-          installationId: 456,
-          request: () => Promise.reject(new TypeError("GitHub RESTへの外部接続は禁止です")),
-          graphql: () => Promise.reject(new TypeError("GitHub GraphQLへの外部接続は禁止です")),
-          getRateLimitSnapshot: () => apiBudget.snapshot(createUtcIsoDateTime(now().toISOString())),
-        }),
-      );
-    },
-    createStateBranchAdapter: () => stateAdapter,
-    codexProcessRunner: (request) => {
-      if (request.arguments.length === 1 && request.arguments[0] === "--version") {
-        return Promise.resolve({
-          exitCode: 0,
-          signal: null,
-          timedOut: false,
-        });
-      }
-      return Promise.reject(new TypeError("Codex subprocessへの外部接続は禁止です"));
-    },
-    discordHttpClient: Object.freeze({
-      execute: () => Promise.reject(new TypeError("Discordへの外部接続は禁止です")),
-    }),
-    now,
-    sleep: () => Promise.resolve(),
-    random: () => 0,
-    writeStandardOutput: () => Promise.resolve(),
-    writeJsonArtifact: () => Promise.resolve(),
-    writeTextFile: () => Promise.resolve(),
-    writePublicData: (_outputDirectory, data) => {
-      generatedPublicData = data;
-      const summarySource = serializeCanonicalJson(data.summary);
-      const detailsSource = serializeCanonicalJson(data.details);
-      const notificationHistorySource = serializeCanonicalJson(data.notificationHistory);
-      return Promise.resolve({
-        summaryPath: "unused-performance-pages/summary.json",
-        detailsPath: "unused-performance-pages/details.json",
-        notificationHistoryPath: "unused-performance-pages/notification-history.json",
-        summaryBytes: Buffer.byteLength(summarySource, "utf8"),
-        detailsBytes: Buffer.byteLength(detailsSource, "utf8"),
-        notificationHistoryBytes: Buffer.byteLength(notificationHistorySource, "utf8"),
-      });
-    },
-    sendDiscord: () =>
-      Promise.resolve(
-        Object.freeze({
-          status: "disabled",
-        } satisfies DiscordDigestDelivery),
-      ),
-  });
-  const application = createProductionCliApplication(runtimeAdapters);
-
-  const runDaily = (runAt: UtcIsoDateTime) => {
-    currentRunAt = runAt;
-    currentRunStartedAt = performance.now();
-    return application.run([
-      "daily",
-      "--config",
-      "unused-performance-config.yml",
-      "--report",
-      "unused-performance-report.json",
-    ]);
-  };
-
-  return Object.freeze({
-    runBaseline: async () => {
-      const result = await runDaily(BASELINE_RUN_AT);
-      requireSuccessfulDailyMetrics(result);
-    },
-    runProfile: async () => {
-      changedVersion = 2;
-      currentItems = createProfileItems(
-        requirePublicRepository(createRepository(PROFILE_RUN_AT)),
-        PROFILE_RUN_AT,
-        changedVersion,
-      );
-      generatedPublicData = undefined;
-      const startedAt = performance.now();
-      const execution = await runDaily(PROFILE_RUN_AT);
-      const durationMilliseconds = performance.now() - startedAt;
-      assertNonNullable(generatedPublicData, "性能profileでPages公開データが生成されませんでした");
-      return Object.freeze({
-        execution,
-        durationMilliseconds,
-        githubApiUsed: apiBudget.used(),
-        githubApiRemaining: apiBudget.remaining(),
-        generatedPublicData,
-        config,
-        genericAiNodeIds: Object.freeze([...genericAiNodeIds]),
-        personalReminderAiNodeIds: Object.freeze([...personalReminderAiNodeIds]),
-      });
-    },
-  });
-}
-
-function requireSuccessfulDailyMetrics(execution: CliExecutionResult) {
-  if (execution.command !== "daily") {
-    throw new TypeError("性能profileがdailyコマンドを通っていません");
-  }
-  const report = execution.result.report;
-  if (execution.exitCode !== 0 || report.status !== "success") {
-    throw new TypeError(`性能profileの日次runが成功しませんでした。状態: ${report.status}`);
-  }
-  const metrics = report.metrics;
-  if (
-    metrics.personalReminderFailedCount !== 0 ||
-    metrics.personalReminderDeferredCount !== 0 ||
-    metrics.personalReminderNotEvaluatedCount !== 0
-  ) {
-    throw new TypeError("性能profileの日次runに失敗または延期した個人催促原因があります");
-  }
-  return metrics;
-}
-
 function assertProfileAnalysisTargets(nodeIds: readonly string[], kind: string): void {
   const expectedNodeIds = new Set<string>(
     Array.from({ length: PROFILE_CHANGED_ITEM_COUNT }, (_, index) => profileNodeId(index)),
@@ -920,15 +626,27 @@ export function assertEndToEndPerformanceProfilePassed(profile: EndToEndPerforma
   throw new Error(`end-to-end性能profileが閾値を満たしません。対象: ${failedChecks.join(", ")}`);
 }
 
-/** 外部接続をモックした本番daily経路でOPS-004を計測する。 */
+/** 外部接続をモックした共通engineのrecording policyでOPS-004を計測する。 */
 export async function runEndToEndPerformanceProfile(
   repositoryPath: string,
 ): Promise<EndToEndPerformanceProfile> {
   const config = await createPerformanceConfig(repositoryPath);
-  const harness = createPerformanceHarness(repositoryPath, config);
-  await harness.runBaseline();
-  const result = await harness.runProfile();
-  const metrics = requireSuccessfulDailyMetrics(result.execution);
+  const result = await runEndToEndPerformanceRuntime(repositoryPath, config, {
+    baselineRunAt: BASELINE_RUN_AT,
+    profileRunAt: PROFILE_RUN_AT,
+    githubApiLimit: GITHUB_API_LIMIT,
+    githubConnectionPageSize: GITHUB_CONNECTION_PAGE_SIZE,
+    createRepository,
+    createItems: (observedAt, changedVersion) =>
+      createProfileItems(
+        requirePublicRepository(createRepository(observedAt)),
+        observedAt,
+        changedVersion,
+      ),
+    createDetail: createProfileDetail,
+    createGenericOutput: createCodexOutput,
+  });
+  const metrics = result.metrics;
   assertProfileAnalysisTargets(result.genericAiNodeIds, "汎用AI");
   assertProfileAnalysisTargets(result.personalReminderAiNodeIds, "個人催促AI");
   if (

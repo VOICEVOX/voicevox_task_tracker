@@ -1,0 +1,51 @@
+name: 追跡jobの診断と失敗を保存
+description: 未処理エラー後も診断暗号化と失敗artifact保存を行う
+inputs:
+  workflow-kind:
+    description: artifact名のworkflow種別
+    required: true
+  runtime-cli:
+    description: 診断暗号化に使うCLI
+    required: true
+  retention-days:
+    description: artifactの保持日数
+    required: true
+  diagnostics-key:
+    description: 診断JSONLの暗号化鍵
+    required: false
+  diagnostics-required:
+    description: 診断JSONLがない場合も暗号化を試みるか
+    required: false
+    default: "false"
+  failure-directory:
+    description: 失敗artifactを保存するディレクトリ
+    required: false
+    default: artifacts/workflow/failures
+runs:
+  using: composite
+  steps:
+    - name: 診断JSONLを暗号化
+      if: always()
+      shell: bash
+      env:
+        TRACKING_RUNTIME_CLI: ${{ inputs['runtime-cli'] }}
+        TRACKING_DIAGNOSTICS_REQUIRED: ${{ inputs['diagnostics-required'] }}
+        VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64: ${{ inputs['diagnostics-key'] }}
+      run: |
+        if [[ -f "$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" || "$TRACKING_DIAGNOSTICS_REQUIRED" == 'true' ]]; then
+          .github/scripts/encrypt-diagnostics.sh "$TRACKING_RUNTIME_CLI"
+        fi
+    - name: 暗号化済み診断artifactを保存
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: ${{ inputs['workflow-kind'] }}-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        path: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.bundle
+        if-no-files-found: ignore
+        retention-days: ${{ inputs['retention-days'] }}
+    - name: 公開失敗artifactを保存
+      if: always()
+      uses: ./.github/actions/upload-failure-artifact
+      with:
+        artifact-name: ${{ inputs['workflow-kind'] }}-failure-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        failure-directory: ${{ inputs['failure-directory'] }}

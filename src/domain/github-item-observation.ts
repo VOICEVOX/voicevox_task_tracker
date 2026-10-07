@@ -1,10 +1,10 @@
 import { type SourceId } from "./source-id.js";
 import {
   type Actor,
+  type ObservedGitHubItemAuthor as DomainObservedGitHubItemAuthor,
   type GitHubAccountActor,
   type GitHubNodeId,
   type NormalizedEvent,
-  type ObservedGitHubItemAuthor as DomainObservedGitHubItemAuthor,
   type UtcIsoDateTime,
 } from "./types.js";
 

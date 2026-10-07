@@ -233,6 +233,7 @@ export type EnumeratedGitHubItem = EnumeratedGitHubItemFields &
 
 export type EnumerateOpenGitHubItemsOptions = Readonly<{
   allowlist: PublicRepositoryAllowlist;
+  repositories: readonly PublicRepository[];
   observedAt: UtcIsoDateTime;
   request: GitHubRestRequest;
 }>;
@@ -780,7 +781,8 @@ export async function enumerateOpenGitHubItems(
 ): Promise<readonly EnumeratedGitHubItem[]> {
   const items: EnumeratedGitHubItem[] = [];
 
-  for (const repository of options.allowlist.repositories) {
+  for (const repository of options.repositories) {
+    options.allowlist.require(repository.id);
     const repositoryItems = await enumerateRepositoryOpenItems(
       repository,
       options.observedAt,

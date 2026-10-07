@@ -1,4 +1,6 @@
-import { hashCanonicalJson } from "../canonical-json/index.js";
+import { sha256Hex } from "../canonical-json/sha256-hex.js";
+import { parseSha256Hash } from "../canonical-json/sha256.js";
+import { serializeCanonicalJson } from "../canonical-json/value.js";
 import {
   aiAnalysisElementReuseProofSchema,
   createAiAnalysisMigrationElementResultSchema,
@@ -8,12 +10,11 @@ import {
   type AiAnalysisElementReuseProof,
 } from "../domain/ai-analysis-elements.js";
 import { type AiAnalysisElementSourceGeneration } from "../domain/ai-analysis-source-generations.js";
-import { assertNonNullable, UnreachableError } from "../util/index.js";
+import { type AnalysisElementReuseRecord } from "./analysis-elements.js";
 import {
   AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
   AI_ANALYSIS_ELEMENT_REVISIONS,
-  type AnalysisElementReuseRecord,
-} from "./analysis-elements.js";
+} from "./generic-ai-definition.js";
 import {
   assessAnalysisImpact,
   type AnalysisImpactAssessment,
@@ -23,11 +24,24 @@ import {
   type AnalysisImpactValue,
   type AnalysisImpactVersion,
 } from "./analysis-impact.js";
+import { GENERIC_AI_ELEMENT_DEFINITIONS } from "./generic-ai-definition.js";
 import { type CodexAnalysisInput } from "./input.js";
+
+function hashCanonicalJson(value: unknown): AiAnalysisElementInputFingerprint {
+  return parseSha256Hash(`sha256:${sha256Hex(serializeCanonicalJson(value))}`);
+}
 
 /** 要素ごとの意味入力fingerprint。 */
 export type AnalysisElementInputFingerprintMap = Readonly<
   Record<AiAnalysisElement, AiAnalysisElementInputFingerprint>
+>;
+
+/** 要素ごとの厳密な意味入力。 */
+export type AnalysisElementExactInputMap = Readonly<
+  Record<
+    AiAnalysisElement,
+    Readonly<{ exactInput: object; fingerprint: AiAnalysisElementInputFingerprint }>
+  >
 >;
 
 /** 要素ごとの意味依存fingerprint。 */
@@ -42,11 +56,6 @@ export type AnalysisImpactDecisionForDiagnostics = Readonly<{
   targetVersion: AnalysisImpactVersion;
   compatibilityPath: readonly string[];
   reason?: string;
-}>;
-
-type AnalysisImpactInputProjectionContext = Readonly<{
-  input: CodexAnalysisInput;
-  dependencyFingerprints: AnalysisElementDependencyFingerprintMap;
 }>;
 
 const WAITING_ON_ANALYSIS_IMPACT_DECLARATIONS: readonly AnalysisImpactDeclaration<
@@ -149,63 +158,23 @@ function analysisImpactSourceVersion(
   });
 }
 
-type AnalysisImpactInputProjectionProjector = (
-  context: AnalysisImpactInputProjectionContext,
-) => AnalysisImpactCurrentInputProjection;
-
-function createAnalysisImpactInputProjectionProjector(
-  element: AiAnalysisElement,
-  inputProjectionVersion: number,
-): AnalysisImpactInputProjectionProjector {
-  return ({ input, dependencyFingerprints }) =>
-    Object.freeze({
-      inputProjectionVersion,
-      fingerprint: analysisImpactInputFingerprintV1(input, element),
-      dependencyFingerprint: dependencyFingerprints[element],
-    });
-}
-
-const ANALYSIS_IMPACT_INPUT_PROJECTORS: Readonly<
-  Record<AiAnalysisElement, Readonly<Record<number, AnalysisImpactInputProjectionProjector>>>
-> = Object.freeze({
-  status: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("status", 1),
-  }),
-  waitingOn: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("waitingOn", 1),
-  }),
-  nextAction: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("nextAction", 1),
-  }),
-  relations: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("relations", 1),
-  }),
-  progress: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("progress", 1),
-  }),
-  importance: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("importance", 1),
-  }),
-  deadline: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("deadline", 1),
-  }),
-  notification: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("notification", 1),
-  }),
-  selfCommitment: Object.freeze({
-    1: createAnalysisImpactInputProjectionProjector("selfCommitment", 1),
-  }),
-});
-
 function analysisImpactInputProjection(
   element: AiAnalysisElement,
   version: AnalysisImpactVersion,
   input: CodexAnalysisInput,
   dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
 ): AnalysisImpactCurrentInputProjection | undefined {
-  return ANALYSIS_IMPACT_INPUT_PROJECTORS[element][version.inputProjectionVersion]?.(
-    Object.freeze({ input, dependencyFingerprints }),
-  );
+  if (
+    version.inputProjectionVersion !==
+    GENERIC_AI_ELEMENT_DEFINITIONS[element].inputProjectionVersion
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    inputProjectionVersion: version.inputProjectionVersion,
+    fingerprint: createAnalysisElementExactInput(input, element).fingerprint,
+    dependencyFingerprint: dependencyFingerprints[element],
+  });
 }
 
 /** 保存値の版差による影響と再利用証明を判定する。 */
@@ -315,140 +284,83 @@ export function analysisImpactResolutionForRole(
   });
 }
 
-function codexNaturalLanguageSources(input: CodexAnalysisInput): readonly object[] {
-  return input.sources.filter(
-    (source) => source.kind === "body" || source.kind === "comment" || source.kind === "review",
-  );
+/** 要素別の厳密な意味入力とそのfingerprintを同時に確定する。 */
+export function createAnalysisElementExactInput(
+  input: CodexAnalysisInput,
+  element: AiAnalysisElement,
+): Readonly<{ exactInput: object; fingerprint: AiAnalysisElementInputFingerprint }> {
+  const exactInput = GENERIC_AI_ELEMENT_DEFINITIONS[element].exactInput(input);
+  return Object.freeze({ exactInput, fingerprint: hashCanonicalJson(exactInput) });
 }
 
-function codexRelationSources(input: CodexAnalysisInput): readonly object[] {
-  return input.sources.filter((source) => source.kind === "relation");
-}
-
-function codexTextItem(input: CodexAnalysisInput): Readonly<Record<string, unknown>> {
+/** 9要素の厳密入力とfingerprintを一度ずつ作る。 */
+export function createAnalysisElementExactInputs(
+  input: CodexAnalysisInput,
+): AnalysisElementExactInputMap {
   return Object.freeze({
-    nodeId: input.item.nodeId,
-    url: input.item.url,
-    type: input.item.type,
-    title: input.item.title,
-    ...(input.item.authorCandidateId == null
-      ? {}
-      : { authorCandidateId: input.item.authorCandidateId }),
+    status: createAnalysisElementExactInput(input, "status"),
+    waitingOn: createAnalysisElementExactInput(input, "waitingOn"),
+    nextAction: createAnalysisElementExactInput(input, "nextAction"),
+    relations: createAnalysisElementExactInput(input, "relations"),
+    progress: createAnalysisElementExactInput(input, "progress"),
+    importance: createAnalysisElementExactInput(input, "importance"),
+    deadline: createAnalysisElementExactInput(input, "deadline"),
+    notification: createAnalysisElementExactInput(input, "notification"),
+    selfCommitment: createAnalysisElementExactInput(input, "selfCommitment"),
   });
 }
 
-function deterministicSignalProjection(
-  signals: Readonly<Record<string, unknown>>,
-  keys: readonly string[],
-): Readonly<Record<string, unknown>> {
-  const projection: Record<string, unknown> = {};
-  for (const key of keys) {
-    if (Object.hasOwn(signals, key)) {
-      projection[key] = signals[key];
-    }
-  }
-  return Object.freeze(projection);
-}
-
-function analysisImpactInputFingerprintV1(
-  input: CodexAnalysisInput,
-  element: AiAnalysisElement,
-): AiAnalysisElementInputFingerprint {
-  const naturalLanguageSources = codexNaturalLanguageSources(input);
-  const relationSources = [...codexRelationSources(input), ...naturalLanguageSources];
-  const stateInput = {
-    item: input.item,
-    candidates: input.candidates.waitingOn,
-    sources: naturalLanguageSources,
-    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
-      "status",
-      "waitingOn",
-      "requiredCheckFailure",
-      "effectiveAssigneeCandidates",
-      "effectiveAssigneeImplementations",
-      "mentionedWaitingOnCandidates",
-      "uncertainties",
-    ]),
-  };
-  const relationInput = {
-    item: codexTextItem(input),
-    candidates: input.candidates.relations,
-    sources: relationSources,
-    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
-      "relationCandidateIds",
-      "nativeBlockedBy",
-      "nativeBlocking",
-      "nativeParent",
-      "nativeSubIssues",
-    ]),
-  };
-  const textInput = {
-    item: codexTextItem(input),
-    sources: naturalLanguageSources,
-  };
-  const notificationInput = {
-    item: codexTextItem(input),
-    candidates: input.candidates,
-    sources: naturalLanguageSources,
-    deterministicSignals: deterministicSignalProjection(input.deterministicSignals, [
-      "status",
-      "waitingOn",
-      "requiredCheckFailure",
-      "effectiveAssigneeCandidates",
-      "effectiveAssigneeImplementations",
-      "mentionedWaitingOnCandidates",
-      "uncertainties",
-    ]),
-  };
-  switch (element) {
-    case "status":
-    case "waitingOn":
-    case "nextAction":
-      return hashCanonicalJson(stateInput);
-    case "relations":
-      return hashCanonicalJson(relationInput);
-    case "progress":
-    case "importance":
-    case "deadline":
-      return hashCanonicalJson(textInput);
-    case "notification":
-      return hashCanonicalJson(notificationInput);
-    case "selfCommitment":
-      return hashCanonicalJson({
-        item: input.item,
-        candidates: input.selfCommitmentCandidates,
-        sources: naturalLanguageSources,
-      });
-    default:
-      throw new UnreachableError(element);
-  }
+/** 実行要素だけ実輸送入力の意味文脈へ差し替える。 */
+export function withExecutedAnalysisElementExactInputs(
+  candidateInputs: AnalysisElementExactInputMap,
+  executionInput: CodexAnalysisInput,
+): AnalysisElementExactInputMap {
+  const selected = new Set(executionInput.selectedElements);
+  return Object.freeze({
+    status: selected.has("status")
+      ? createAnalysisElementExactInput(executionInput, "status")
+      : candidateInputs.status,
+    waitingOn: selected.has("waitingOn")
+      ? createAnalysisElementExactInput(executionInput, "waitingOn")
+      : candidateInputs.waitingOn,
+    nextAction: selected.has("nextAction")
+      ? createAnalysisElementExactInput(executionInput, "nextAction")
+      : candidateInputs.nextAction,
+    relations: selected.has("relations")
+      ? createAnalysisElementExactInput(executionInput, "relations")
+      : candidateInputs.relations,
+    progress: selected.has("progress")
+      ? createAnalysisElementExactInput(executionInput, "progress")
+      : candidateInputs.progress,
+    importance: selected.has("importance")
+      ? createAnalysisElementExactInput(executionInput, "importance")
+      : candidateInputs.importance,
+    deadline: selected.has("deadline")
+      ? createAnalysisElementExactInput(executionInput, "deadline")
+      : candidateInputs.deadline,
+    notification: selected.has("notification")
+      ? createAnalysisElementExactInput(executionInput, "notification")
+      : candidateInputs.notification,
+    selfCommitment: selected.has("selfCommitment")
+      ? createAnalysisElementExactInput(executionInput, "selfCommitment")
+      : candidateInputs.selfCommitment,
+  });
 }
 
 /** 現在の要素別意味入力fingerprintを求める。 */
 export function elementInputFingerprints(
-  input: CodexAnalysisInput,
-  dependencyFingerprints: AnalysisElementDependencyFingerprintMap,
+  exactInputs: AnalysisElementExactInputMap,
 ): AnalysisElementInputFingerprintMap {
-  const fingerprintFor = (element: AiAnalysisElement): AiAnalysisElementInputFingerprint => {
-    const projection = analysisImpactInputProjection(
-      element,
-      analysisImpactTargetVersion(element),
-      input,
-      dependencyFingerprints,
-    );
-    assertNonNullable(projection, `AI判定要素の入力投影がありません。対象: ${element}`);
-    return projection.fingerprint;
-  };
   return Object.freeze({
-    status: fingerprintFor("status"),
-    waitingOn: fingerprintFor("waitingOn"),
-    nextAction: fingerprintFor("nextAction"),
-    relations: fingerprintFor("relations"),
-    progress: fingerprintFor("progress"),
-    importance: fingerprintFor("importance"),
-    deadline: fingerprintFor("deadline"),
-    notification: fingerprintFor("notification"),
-    selfCommitment: fingerprintFor("selfCommitment"),
+    status: exactInputs.status.fingerprint,
+    waitingOn: exactInputs.waitingOn.fingerprint,
+    nextAction: exactInputs.nextAction.fingerprint,
+    relations: exactInputs.relations.fingerprint,
+    progress: exactInputs.progress.fingerprint,
+    importance: exactInputs.importance.fingerprint,
+    deadline: exactInputs.deadline.fingerprint,
+    notification: exactInputs.notification.fingerprint,
+    selfCommitment: exactInputs.selfCommitment.fingerprint,
   });
 }
 

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import {
   aiAnalysisElementSchema,
   type AiAnalysisElement,
@@ -7,7 +8,6 @@ import {
   type AiAnalysisElementApplications,
 } from "./ai-analysis-elements.js";
 import type { GitHubNodeId, GraphNodeId } from "./types.js";
-import { assertNonNullable, UnreachableError } from "../util/index.js";
 
 const githubNodeIdSchema = z.string().min(1).regex(/^\S+$/u).brand<"GitHubNodeId">();
 

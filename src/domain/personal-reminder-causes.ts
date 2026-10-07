@@ -1,24 +1,25 @@
 import { z } from "zod";
 
 import {
-  aiAnalysisElementFingerprintSchema,
-  aiAnalysisElementMetadataSchema,
-} from "./ai-analysis-elements.js";
-import {
-  aiAnalysisDependencySchema,
   aiAnalysisDependencyMayContainProducerlessUnrecordedInput,
+  aiAnalysisDependencySchema,
   combineAiAnalysisDependencies,
   migratedAiAnalysisDependency,
   type AiAnalysisDependency,
 } from "./ai-analysis-dependencies.js";
 import {
+  aiAnalysisElementFingerprintSchema,
+  aiAnalysisElementMetadataSchema,
+} from "./ai-analysis-elements.js";
+import { type NotificationTimeReasonCode } from "./notification-reason.js";
+import { NO_URL_LIKE_TEXT_PATTERN } from "./url-like-text.js";
+import {
+  createUtcIsoDateTime,
   type AiCacheEntryId,
   type GitHubNodeId,
   type GraphNodeId,
-  createUtcIsoDateTime,
   type WaitingOnRole,
 } from "./types.js";
-import { type NotificationTimeReasonCode } from "./notification-reason.js";
 
 /** 個人催促AI入力のschema version。 */
 export const PERSONAL_REMINDER_AI_INPUT_SCHEMA_VERSION = "1";
@@ -40,7 +41,7 @@ export const PERSONAL_REMINDER_ASSESSMENT_MIGRATION_RULES_VERSION =
   "personal-reminder-assessment-migration";
 
 /** 個人催促AI promptのversion。 */
-export const PERSONAL_REMINDER_AI_PROMPT_VERSION = "1";
+export const PERSONAL_REMINDER_AI_PROMPT_VERSION = "2";
 
 /** 個人催促原因の列挙計画version。 */
 export const PERSONAL_REMINDER_CAUSE_PLANNING_VERSION = "personal-reminder-planning-v2";
@@ -372,10 +373,48 @@ export const personalReminderTimeBasisSchema = z.discriminatedUnion("source", [
     source: z.literal("first_observation"),
     at: utcIsoDateTimeSchema,
   }),
+  z.strictObject({
+    source: z.literal("reconfirmation_pending"),
+    at: utcIsoDateTimeSchema,
+    sourceIds: z.array(sourceIdSchema).nonempty().max(30),
+  }),
+  z.strictObject({
+    source: z.literal("reconfirmed_observation"),
+    at: utcIsoDateTimeSchema,
+    previousAt: utcIsoDateTimeSchema,
+    sourceIds: z.array(sourceIdSchema).nonempty().max(30),
+  }),
 ]);
 
 /** 義務や実行可能性の時刻を特定する根拠。 */
 export type PersonalReminderTimeBasis = z.output<typeof personalReminderTimeBasisSchema>;
+
+/** 再確認を完了した公開可能な個人催促時計。 */
+export const confirmedPersonalReminderTimeBasisSchema = personalReminderTimeBasisSchema.refine(
+  (basis) => basis.source !== "reconfirmation_pending",
+  "個人催促時計の再確認が完了していません",
+);
+
+/** 再確認前の個人催促時計が公開経路へ進むのを拒否する。 */
+export function assertConfirmedPersonalReminderTimeBasis(
+  basis: PersonalReminderTimeBasis,
+): asserts basis is Exclude<PersonalReminderTimeBasis, { source: "reconfirmation_pending" }> {
+  if (basis.source === "reconfirmation_pending") {
+    throw new TypeError("個人催促時計の再確認が完了していません");
+  }
+}
+
+/** 保存済み原因に再確認を要する時刻があるか判定する。 */
+export function personalReminderCauseNeedsClockReconfirmation(
+  cause: PersonalReminderCause,
+): boolean {
+  if (cause.obligationSince.source === "reconfirmation_pending") return true;
+  if (cause.actionableClock.status === "not_observed") return false;
+  return (
+    cause.actionableClock.actionableSince.source === "reconfirmation_pending" ||
+    cause.actionableClock.stallSince.source === "reconfirmation_pending"
+  );
+}
 
 const personalReminderAssessmentWaitingForSchema = z.strictObject({
   itemNodeId: graphNodeIdSchema,
@@ -443,7 +482,11 @@ export const personalReminderAssessmentReferencesSchema = z.strictObject({
   nodeIds: z.array(graphNodeIdSchema).max(100),
   relationIds: z.array(opaqueIdSchema).max(100),
   sourceIds: z.array(sourceIdSchema).max(100),
-  reasonSummary: z.string().min(1).max(300),
+  reasonSummary: z
+    .string()
+    .min(1)
+    .max(300)
+    .regex(NO_URL_LIKE_TEXT_PATTERN, "理由要約にURLは指定できません"),
 });
 
 /** 個人催促原因の意味判定が参照した情報。 */
@@ -642,7 +685,12 @@ export const personalReminderActionableClockSchema = z.discriminatedUnion("statu
     status: z.literal("observed"),
     actionableSince: personalReminderTimeBasisSchema,
     stallSince: personalReminderTimeBasisSchema,
-    basis: z.enum(["obligation", "dependency_resolved", "first_observation"]),
+    basis: z.enum([
+      "obligation",
+      "dependency_resolved",
+      "first_observation",
+      "reconfirmed_observation",
+    ]),
   }),
 ]);
 
@@ -713,7 +761,8 @@ export type CurrentPersonalReminderAssessment =
     }>;
 
 type PersonalReminderAssessmentInput = Readonly<{
-  currentInput: Pick<PersonalReminderCause["currentInput"], "fingerprint" | "rulesVersion">;
+  currentInput: Pick<PersonalReminderCause["currentInput"], "fingerprint" | "rulesVersion"> &
+    Partial<Pick<PersonalReminderCause["currentInput"], "aiDependency">>;
   adoptedAssessment: PersonalReminderCause["adoptedAssessment"];
 }>;
 
@@ -727,7 +776,9 @@ export function currentPersonalReminderAssessment(
   if (
     cause.adoptedAssessment.inputFingerprint !== cause.currentInput.fingerprint ||
     cause.adoptedAssessment.rulesVersion !== cause.currentInput.rulesVersion ||
-    cause.currentInput.rulesVersion !== PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION
+    cause.currentInput.rulesVersion !== PERSONAL_REMINDER_ASSESSMENT_RULES_VERSION ||
+    cause.currentInput.aiDependency?.status === "unverified" ||
+    cause.currentInput.aiDependency?.status === "unknown"
   ) {
     return Object.freeze({ status: "not_available" });
   }

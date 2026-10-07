@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-import { writeCliJsonArtifact } from "../cli/index.js";
+import { writeCliJsonArtifact } from "../infrastructure/tracking-run/file-output.js";
 import {
   assertEndToEndPerformanceProfilePassed,
   runEndToEndPerformanceProfile,

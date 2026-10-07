@@ -157,3 +157,43 @@ export async function discoverRepositoryInventory(
   assertUniqueRepositories(repositories);
   return Object.freeze(repositories);
 }
+
+/** 指定repositoryの現在の公開状態をGitHubから取得する。 */
+export async function collectRepositoryMetadata(
+  repositoryFullNames: readonly string[],
+  observedAt: UtcIsoDateTime,
+  request: GitHubRestRequest,
+): Promise<readonly Repository[]> {
+  const repositories: Repository[] = [];
+  for (const fullName of repositoryFullNames) {
+    const [owner, repo, extra] = fullName.split("/");
+    if (owner == null || repo == null || extra != null || owner.length === 0 || repo.length === 0) {
+      throw new TypeError("repository metadata取得対象の名前が不正です");
+    }
+    const response = await request("GET /repos/{owner}/{repo}", { owner, repo });
+    if (response.status !== 200) {
+      throw new GitHubResponseValidationError("repository metadata", {
+        cause: new TypeError("成功以外のHTTP statusを受け取りました"),
+      });
+    }
+    const repository = repositoryMetadataSchema.parse(response.data);
+    if (`${repository.owner.login}/${repository.name}`.toLowerCase() !== fullName.toLowerCase()) {
+      throw new GitHubResponseValidationError("repository metadata", {
+        cause: new TypeError("取得したrepositoryが要求と一致しません"),
+      });
+    }
+    repositories.push(
+      Object.freeze({
+        id: createGitHubRepositoryId(repository.node_id),
+        owner: repository.owner.login,
+        name: repository.name,
+        visibility: repository.visibility,
+        archived: repository.archived,
+        disabled: repository.disabled,
+        observedAt,
+      }),
+    );
+  }
+  assertUniqueRepositories(repositories);
+  return Object.freeze(repositories);
+}

@@ -1,7 +1,7 @@
 import {
   parseSourceId,
-  type GitHubNodeId,
   type GitHubItemUrl,
+  type GitHubNodeId,
   type SourceId,
   type TrackedItemInputEvent,
 } from "../domain/index.js";
@@ -60,16 +60,22 @@ function directSourceUrl(
 function itemSourceUrl(
   sourceId: SourceId,
   currentSourceItem: EvidenceSourceItem,
-  allSourceItems: readonly EvidenceSourceItem[],
   sourceOwnersById: EvidenceSourceUrlMap,
 ): GitHubItemUrl {
   const sourceOwners = sourceOwnersById.get(sourceId);
   if (sourceOwners != null) {
-    for (const sourceItem of allSourceItems) {
-      if (sourceOwners.some((owner) => owner.itemNodeId === sourceItem.nodeId)) {
-        return sourceItem.url;
-      }
+    const currentOwner = sourceOwners.find(
+      (owner) => owner.itemNodeId === currentSourceItem.nodeId,
+    );
+    if (currentOwner != null) {
+      return currentOwner.itemUrl;
     }
+    if (sourceOwners.length !== 1) {
+      throw new TypeError(`公開evidenceのsource所有項目を一意に解決できません。対象: ${sourceId}`);
+    }
+    const owner = sourceOwners[0];
+    assertNonNullable(owner, `公開evidenceのsource所有項目がありません。対象: ${sourceId}`);
+    return owner.itemUrl;
   }
   return currentSourceItem.url;
 }
@@ -116,9 +122,8 @@ function resolveProductionEvidenceSourceUrl(
   if (kind === "github_item" || kind === "github_item_body" || kind === "github_item_detail") {
     const itemNodeId = parseSourceId(sourceId).originalId;
     const item = allSourceItems.find((sourceItem) => sourceItem.nodeId === itemNodeId);
-    if (item != null) {
-      return item.url;
-    }
+    assertNonNullable(item, `公開evidenceの参照項目がありません。対象: ${sourceId}`);
+    return item.url;
   }
   switch (kind) {
     case "github_issue_comment":
@@ -130,7 +135,6 @@ function resolveProductionEvidenceSourceUrl(
     case "github_actor":
     case "github_user":
     case "github_team":
-    case "github_item":
     case "github_commit":
     case "github_pull_request_commit":
     case "github_timeline_event":
@@ -146,9 +150,7 @@ function resolveProductionEvidenceSourceUrl(
     case "github_status_check_rollup":
     case "github_auto_merge_request":
     case "github_merge_queue_entry":
-    case "github_item_detail":
-    case "github_item_body":
-      return itemSourceUrl(sourceId, currentSourceItem, allSourceItems, sourceOwnersById);
+      return itemSourceUrl(sourceId, currentSourceItem, sourceOwnersById);
     default:
       throw new UnreachableError(kind);
   }
@@ -175,27 +177,8 @@ export function resolveEvidenceSourceUrlForItem(
     case "github_account":
     case "github_check_rollup":
     case "body":
-      return itemSourceUrl(sourceId, currentSourceItem, allSourceItems, sourceOwnersById);
+      return itemSourceUrl(sourceId, currentSourceItem, sourceOwnersById);
     default:
       throw new TypeError(`公開evidence URLへ解決できないsource ID種別です。対象: ${kind}`);
   }
-}
-
-/** source IDの種別から公開evidenceが参照するGitHub URLを解決する。 */
-export function resolveEvidenceSourceUrl(
-  sourceId: SourceId,
-  sourceItems: readonly EvidenceSourceItem[],
-  sourceOwnersById: EvidenceSourceUrlMap,
-): GitHubItemUrl {
-  const currentSourceItem = sourceItems[0];
-  assertNonNullable(
-    currentSourceItem,
-    `sourceに対応するOrganization内itemがありません。source: ${sourceId}`,
-  );
-  return resolveEvidenceSourceUrlForItem(
-    sourceId,
-    currentSourceItem,
-    sourceItems,
-    sourceOwnersById,
-  );
 }

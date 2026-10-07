@@ -1,3 +1,9 @@
+import type {
+  AiAnalysisElement,
+  AiAnalysisElementMigrationResult,
+  AiAnalysisRelation,
+  AiAnalysisWaitingOn,
+} from "../domain/ai-analysis-elements.js";
 import {
   buildSourceId,
   isTerminalStatus,
@@ -5,24 +11,16 @@ import {
   validateDeadlineDate,
   type SourceId,
 } from "../domain/index.js";
-import type {
-  AiAnalysisElement,
-  AiAnalysisElementMigrationResult,
-  AiAnalysisRelation,
-  AiAnalysisWaitingOn,
-} from "../domain/ai-analysis-elements.js";
 import type { RelationAssessmentVerdict } from "../graph/index.js";
-import { CodexOutputSemanticValidationError, type CodexOutputValidationIssue } from "./errors.js";
-import { type CodexAnalysisInput } from "./input.js";
 import {
-  validateCodexElementOutput,
+  validateCodexElementOutputSchema,
+  validateCodexElementOutputSemantics,
   type SchemaValidCodexElementOutput,
 } from "./element-output.js";
+import { CodexOutputSemanticValidationError, type CodexOutputValidationIssue } from "./errors.js";
+import { type CodexAnalysisInput } from "./input.js";
+import { validateCodexOutputUrls } from "./semantic-validation-urls.js";
 import { type CodexSemanticValidationIssueCode } from "./semantic-validation-issues.js";
-
-const TARGET_ORGANIZATION = "VOICEVOX";
-const URL_IN_TEXT_PATTERN = /https?:\/\/[^\s<>"']+/gu;
-const URL_TRAILING_PUNCTUATION_PATTERN = /[),.;:!?、。！？）】]+$/u;
 
 /** authoritative relationとCodex判定を比較するための制約。 */
 export type NativeRelationConstraint = Readonly<{
@@ -33,11 +31,6 @@ export type NativeRelationConstraint = Readonly<{
 type KnownSource = Readonly<{
   id: SourceId;
   occurredAt: number;
-}>;
-
-type TextField = Readonly<{
-  path: string;
-  value: string;
 }>;
 
 type SourceReference = Readonly<{
@@ -69,6 +62,10 @@ const nativeSignalDefinitions: readonly NativeSignalDefinition[] = Object.freeze
   Object.freeze({
     key: "nativeSubIssues",
     verdict: "target_is_subtask_of_current",
+  }),
+  Object.freeze({
+    key: "nativeImplements",
+    verdict: "current_implements_target",
   }),
 ]);
 
@@ -590,189 +587,32 @@ function relationCandidateTargetItemType(value: string): "issue" | "pull_request
   throw new TypeError("relation候補のtarget URLから項目種別を取得できません");
 }
 
-function normalizedUrl(value: string): string | null {
-  try {
-    const url = new URL(value);
-    url.hash = "";
-    const normalized = url.toString();
-    return normalized.endsWith("/") ? normalized.slice(0, -1) : normalized;
-  } catch (error: unknown) {
-    if (!(error instanceof TypeError)) {
-      throw error;
-    }
-    return null;
-  }
-}
-
-function organizationFromUrl(value: string): string | null {
-  const normalized = normalizedUrl(value);
-  if (normalized == null) {
-    return null;
-  }
-  const url = new URL(normalized);
-  if (url.protocol !== "https:" || url.hostname.toLowerCase() !== "github.com") {
-    return null;
-  }
-  const organization = url.pathname.split("/").find((segment) => segment.length > 0);
-  return organization ?? null;
-}
-
 function resultPath(output: SchemaValidCodexElementOutput, element: AiAnalysisElement): string {
   return Object.hasOwn(output, element) ? `/${element}` : `/lockedElements/${element}`;
 }
 
-type TextResult = Readonly<{
-  evidence?: readonly Readonly<{ summary: string }>[];
-  uncertainties: readonly string[];
-}>;
-
-function appendCommonTextFields(result: TextResult, path: string, fields: TextField[]): void {
-  if (result.evidence != null) {
-    for (const [index, evidence] of result.evidence.entries()) {
-      fields.push(
-        Object.freeze({
-          path: `${path}/evidence/${index.toString()}/summary`,
-          value: evidence.summary,
-        }),
-      );
-    }
-  }
-  for (const [index, uncertainty] of result.uncertainties.entries()) {
-    fields.push(
-      Object.freeze({
-        path: `${path}/uncertainties/${index.toString()}`,
-        value: uncertainty,
-      }),
-    );
-  }
-}
-
-function collectTextFields(
-  output: SchemaValidCodexElementOutput,
-  input: CodexAnalysisInput,
-): readonly TextField[] {
-  const fields: TextField[] = [];
-  const nextAction = output.nextAction ?? input.lockedElements.nextAction;
-  if (nextAction != null) {
-    const path = resultPath(output, "nextAction");
-    fields.push(Object.freeze({ path: `${path}/value`, value: nextAction.value }));
-    appendCommonTextFields(nextAction, path, fields);
-  }
-  const waitingOn = output.waitingOn ?? input.lockedElements.waitingOn;
-  if (waitingOn != null) {
-    const path = resultPath(output, "waitingOn");
-    for (const [index, candidate] of waitingOn.value.entries()) {
-      fields.push(
-        Object.freeze({
-          path: `${path}/value/${index.toString()}/reasonSummary`,
-          value: candidate.reasonSummary,
-        }),
-      );
-    }
-    appendCommonTextFields(waitingOn, path, fields);
-  }
-  const relations = output.relations ?? input.lockedElements.relations;
-  if (relations != null) {
-    const path = resultPath(output, "relations");
-    for (const [index, candidate] of relations.value.entries()) {
-      fields.push(
-        Object.freeze({
-          path: `${path}/value/${index.toString()}/reasonSummary`,
-          value: candidate.reasonSummary,
-        }),
-      );
-    }
-    appendCommonTextFields(relations, path, fields);
-  }
-  const progress = output.progress ?? input.lockedElements.progress;
-  if (progress != null) {
-    const path = resultPath(output, "progress");
-    fields.push(
-      Object.freeze({
-        path: `${path}/value/reasonSummary`,
-        value: progress.value.reasonSummary,
-      }),
-    );
-    appendCommonTextFields(progress, path, fields);
-  }
-  const importance = output.importance ?? input.lockedElements.importance;
-  if (importance != null) {
-    const path = resultPath(output, "importance");
-    fields.push(
-      Object.freeze({ path: `${path}/value/rationale`, value: importance.value.rationale }),
-    );
-    appendCommonTextFields(importance, path, fields);
-  }
-  const deadline = output.deadline ?? input.lockedElements.deadline;
-  if (deadline != null) {
-    const path = resultPath(output, "deadline");
-    fields.push(
-      Object.freeze({ path: `${path}/value/rationale`, value: deadline.value.rationale }),
-    );
-    appendCommonTextFields(deadline, path, fields);
-  }
-  const notification = output.notification ?? input.lockedElements.notification;
-  if (notification != null) {
-    const path = resultPath(output, "notification");
-    fields.push(
-      Object.freeze({
-        path: `${path}/value/reasonSummary`,
-        value: notification.value.reasonSummary,
-      }),
-    );
-    appendCommonTextFields(notification, path, fields);
-  }
-  const status = output.status ?? input.lockedElements.status;
-  if (status != null) {
-    appendCommonTextFields(status, resultPath(output, "status"), fields);
-  }
-  return Object.freeze(fields);
-}
-
-function validateUrls(
+function validateProgressSource(
   output: SchemaValidCodexElementOutput,
   input: CodexAnalysisInput,
   issues: CodexOutputValidationIssue[],
 ): void {
-  if (organizationFromUrl(input.item.url)?.toLowerCase() !== TARGET_ORGANIZATION.toLowerCase()) {
-    throw new TypeError("Codex入力の対象項目がVOICEVOX Organization内ではありません");
+  const sourceId = output.progress?.value.latestMeaningfulSourceId;
+  if (sourceId == null) {
+    return;
   }
-  if (output.item.url !== input.item.url) {
+  const source = input.sources.find((candidate) => candidate.id === sourceId);
+  if (
+    !signalCandidateIds(input, "humanProgressSourceIds").includes(sourceId) ||
+    source?.kind !== "comment" ||
+    source.actorType !== "human"
+  ) {
     issues.push(
       createIssue(
-        "/item/url",
-        "item_url_mismatch",
-        "Codex出力の項目URLが入力の対象項目と一致しません",
+        "/progress/value/latestMeaningfulSourceId",
+        "invalid_progress_source",
+        "進捗には今回の対象項目のhuman comment sourceだけを指定してください",
       ),
     );
-  }
-
-  const allowedExternalUrls = new Set(
-    input.candidates.relations
-      .map((candidate) => normalizedUrl(candidate.targetUrl))
-      .filter((url): url is string => url != null),
-  );
-  allowedExternalUrls.add(input.item.url);
-
-  for (const field of collectTextFields(output, input)) {
-    for (const match of field.value.matchAll(URL_IN_TEXT_PATTERN)) {
-      const rawUrl = match[0].replace(URL_TRAILING_PUNCTUATION_PATTERN, "");
-      const normalized = normalizedUrl(rawUrl);
-      const organization = organizationFromUrl(rawUrl);
-      if (
-        normalized == null ||
-        (organization?.toLowerCase() !== TARGET_ORGANIZATION.toLowerCase() &&
-          !allowedExternalUrls.has(normalized))
-      ) {
-        issues.push(
-          createIssue(
-            field.path,
-            "url_not_allowed",
-            "URLは対象Organizationまたは入力で許可された外部候補を指してください",
-          ),
-        );
-      }
-    }
   }
 }
 
@@ -896,12 +736,57 @@ function validateNativeRelationReferences(
   }
 }
 
+function validateNativeRelationVerdicts(
+  values: readonly Pick<AiAnalysisRelation, "candidateId" | "verdict">[] | undefined,
+  input: CodexAnalysisInput,
+  path: string,
+  issues: CodexOutputValidationIssue[],
+): void {
+  if (values == null) {
+    return;
+  }
+  const constraints = new Map(
+    listNativeRelationConstraints(input).map((constraint) => [
+      constraint.candidateId,
+      constraint.verdict,
+    ]),
+  );
+  const counts = new Map<string, number>();
+  for (const [index, value] of values.entries()) {
+    const expected = constraints.get(value.candidateId);
+    if (expected == null) {
+      continue;
+    }
+    counts.set(value.candidateId, (counts.get(value.candidateId) ?? 0) + 1);
+    if (value.verdict !== expected) {
+      issues.push(
+        createIssue(
+          `${path}/value/${index.toString()}/verdict`,
+          "native_relation_verdict_mismatch",
+          "native relationのverdictはauthoritativeな関係の向きと一致させてください",
+        ),
+      );
+    }
+  }
+  for (const candidateId of constraints.keys()) {
+    if (counts.get(candidateId) !== 1) {
+      issues.push(
+        createIssue(
+          `${path}/value`,
+          "native_relation_verdict_mismatch",
+          `native relationのverdictは1件必要です。対象: ${candidateId}`,
+        ),
+      );
+    }
+  }
+}
+
 /** schema検証済みのCodex出力を入力候補とsourceの範囲でsemantic検証する。 */
-export function validateCodexAnalysisSemantics(
-  value: unknown,
+export function validateCodexAnalysisSemanticConstraints(
+  value: SchemaValidCodexElementOutput,
   input: CodexAnalysisInput,
 ): SchemaValidCodexElementOutput {
-  const output = validateCodexElementOutput(value, input.selectedElements);
+  const output = validateCodexElementOutputSemantics(value, input.selectedElements);
   const knownSources = createKnownSources(input);
   const issues: CodexOutputValidationIssue[] = [];
 
@@ -922,15 +807,26 @@ export function validateCodexAnalysisSemantics(
       output.relations != null,
       issues,
     );
+    validateNativeRelationVerdicts(relations.value, input, resultPath(output, "relations"), issues);
   }
+  validateProgressSource(output, input, issues);
   validateResultSourceIdUniqueness(output, issues);
   validateSelfCommitmentEvidence(output, input, issues);
   validateSourceReferences(output, input, knownSources, issues);
-  validateUrls(output, input, issues);
+  validateCodexOutputUrls(output, input, issues);
   validateNativeRelationReferences(input, issues);
 
   if (issues.length > 0) {
     throw new CodexOutputSemanticValidationError(issues);
   }
   return output;
+}
+
+/** Codex出力をschemaとsemanticの順に検証する。 */
+export function validateCodexAnalysisSemantics(
+  value: unknown,
+  input: CodexAnalysisInput,
+): SchemaValidCodexElementOutput {
+  const schemaValid = validateCodexElementOutputSchema(value, input.selectedElements);
+  return validateCodexAnalysisSemanticConstraints(schemaValid, input);
 }

@@ -1,0 +1,68 @@
+name: 追跡runの手動復旧
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 再開するtracking run ID。Pages失敗の再試行にも使用する
+        required: true
+        type: string
+      execution_shape:
+        description: 記録済みrunの実行形態
+        required: true
+        default: split
+        type: choice
+        options:
+          - split
+          - sequential
+
+permissions: {}
+
+concurrency:
+  group: ${{ inputs.execution_shape == 'sequential' && format('voicevox-task-tracker-sequential-entry-{0}', github.run_id) || 'voicevox-task-tracker-daily' }}
+  cancel-in-progress: false
+
+jobs:
+  production-pages-lease:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.execution_shape == 'split'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: sourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: production Pages leaseを確認
+        run: bash .github/scripts/assert-production-pages-lease.sh
+  tracking:
+    needs: production-pages-lease
+    if: inputs.execution_shape == 'split'
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/_tracking-run.yml
+    with:
+      state_ref: tracker-state
+      pages_environment: github-pages
+      effect_concurrency_key: voicevox-task-tracker-daily
+      effect_target: production
+      config_path: config.yml
+      backfill: none
+      notification_action: send
+      expected_run_id: ${{ inputs.run_id }}
+    secrets: inherit
+  sequential-recovery:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.execution_shape == 'sequential'
+    permissions:
+      contents: write
+      actions: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/run_sequential.yml
+    with:
+      run_id: ${{ inputs.run_id }}
+    secrets: inherit

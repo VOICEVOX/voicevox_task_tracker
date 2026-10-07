@@ -1,5 +1,5 @@
 import { assertNonNullable } from "../../src/util/index.js";
-import { type ItemSort, type ItemSortKey } from "./model.js";
+import type { ItemSort, ItemSortKey } from "./model-contracts.js";
 import { ActionButton, FORM_CONTROL_CLASS_NAME } from "./ui.js";
 
 /** 項目一覧で選べる並び替えキー。 */

@@ -1,15 +1,15 @@
 import { z } from "zod";
 
-import {
-  createDefaultTableFilters,
-  currentResponseSubjectKey,
-  type TableFilterKey,
-  type TableFilterOption,
-  type TableFilterOptions,
-  type TableFilters,
-  type TableSelectFilterKey,
-  type ItemSort,
-} from "./model.js";
+import type {
+  ItemSort,
+  TableFilterKey,
+  TableFilterOption,
+  TableFilterOptions,
+  TableFilters,
+  TableSelectFilterKey,
+} from "./model-contracts.js";
+import { currentResponseSubjectKey } from "./model-current-response.js";
+import { createDefaultTableFilters } from "./model-labels.js";
 
 type TableFilterDefinition =
   | Readonly<{

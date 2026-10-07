@@ -1,0 +1,781 @@
+name: 追跡run
+
+on:
+  workflow_call:
+    outputs:
+      tracking_run_id:
+        description: 完了したtracking run ID
+        value: ${{ jobs.complete.outputs.run_id }}
+      final_state_revision:
+        description: 完了receiptが確認したsandbox state revision
+        value: ${{ jobs.complete.outputs.final_state_revision }}
+    inputs:
+      state_ref:
+        description: 永続stateのbranch
+        required: true
+        type: string
+      pages_environment:
+        description: Pagesを公開するenvironment
+        required: true
+        type: string
+      effect_concurrency_key:
+        description: 同じstateとPagesを使うcallerの排他key
+        required: true
+        type: string
+      effect_target:
+        description: 副作用の対象
+        required: true
+        type: string
+      config_path:
+        description: state refを含む設定ファイル
+        required: true
+        type: string
+      backfill:
+        description: 追跡範囲
+        required: true
+        type: string
+      repository_filter:
+        description: 対象repositoryのカンマ区切り
+        required: false
+        type: string
+      notification_action:
+        description: 通知処理
+        required: true
+        type: string
+      schedule:
+        description: 発火したschedule式
+        required: false
+        type: string
+      expected_run_id:
+        description: 再開対象のtracking run ID
+        required: false
+        type: string
+      manual_resolution_artifact:
+        description: 同じActions runの手動解決receiptを通知段階へ渡す
+        required: false
+        default: false
+        type: boolean
+      source_code_revision:
+        description: sandboxで解析するfork branchのcommit SHA
+        required: false
+        type: string
+      sandbox_context_artifact:
+        description: sandbox lifecycleが保存した実行context
+        required: false
+        type: string
+      sandbox_scenario_id:
+        description: sandboxで記録するscenario ID
+        required: false
+        type: string
+      recording_outcome:
+        description: sandbox通知portの結果
+        required: false
+        type: string
+      recording_message_index:
+        description: success以外の結果を記録するmessage位置
+        required: false
+        default: 0
+        type: number
+      artifact_retention_days:
+        description: 実行artifactの保持日数
+        required: false
+        default: 7
+        type: number
+    secrets:
+      GH_APP_PRIVATE_KEY:
+        required: false
+      CODEX_AUTH_JSON:
+        required: false
+      CODEX_AUTH_SYNC_TOKEN:
+        required: false
+      DISCORD_WEBHOOK_URL:
+        required: false
+      DISCORD_OPERATIONS_WEBHOOK_URL:
+        required: false
+      VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64:
+        required: false
+      VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64:
+        required: false
+
+permissions: {}
+
+env:
+  TRACKING_EFFECT_TARGET: ${{ inputs.effect_target }}
+  TRACKING_STATE_REF: ${{ inputs.state_ref }}
+  TRACKING_RECORDING_OUTCOME: ${{ inputs.recording_outcome }}
+  TRACKING_RECORDING_MESSAGE_INDEX: ${{ inputs.recording_message_index }}
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: ソースコードを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.source_code_revision || github.sha }}
+          persist-credentials: false
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: pnpmを準備
+        run: corepack enable
+      - name: 依存関係をインストール
+        run: pnpm install --frozen-lockfile
+      - name: 型を検査
+        run: pnpm typecheck
+      - name: lintを実行
+        run: pnpm lint
+      - name: formatを検査
+        run: pnpm format:check
+
+  bootstrap:
+    needs: quality
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      kind: ${{ steps.inspect.outputs.kind }}
+      code_revision: ${{ steps.inspect.outputs.code_revision }}
+      node_version: ${{ steps.inspect.outputs.node_version }}
+      source_run_id: ${{ steps.inspect.outputs.source_run_id }}
+      run_id: ${{ steps.inspect.outputs.run_id }}
+      protocol_version: ${{ steps.inspect.outputs.protocol_version }}
+    steps:
+      - name: 現行制御コードを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.source_code_revision || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: pnpmと制御CLIを準備
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: 永続stateのbootstrapを検査
+        id: inspect
+        env:
+          TRACKING_CONFIG_PATH: ${{ inputs.config_path }}
+          TRACKING_EFFECT_CONCURRENCY_KEY: ${{ inputs.effect_concurrency_key }}
+          TRACKING_EFFECT_TARGET: ${{ inputs.effect_target }}
+          TRACKING_EXPECTED_RUN_ID: ${{ inputs.expected_run_id }}
+          TRACKING_PAGES_ENVIRONMENT: ${{ inputs.pages_environment }}
+          TRACKING_SANDBOX_CONTEXT_ARTIFACT: ${{ inputs.sandbox_context_artifact }}
+          TRACKING_SOURCE_CODE_REVISION: ${{ inputs.source_code_revision }}
+          TRACKING_STATE_REF: ${{ inputs.state_ref }}
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
+        run: bash .github/scripts/inspect-tracking-bootstrap.sh
+      - name: V2 Pages adapterの記録元を取得
+        if: steps.inspect.outputs.protocol_version == '2'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ steps.inspect.outputs.code_revision }}
+          path: artifacts/adapter-source
+          persist-credentials: false
+      - name: V2 Pages adapterを記録済みrunと照合
+        if: steps.inspect.outputs.protocol_version == '2'
+        env:
+          TRACKING_EXPECTED_ADAPTER_IDENTITY: ${{ steps.inspect.outputs.expected_identity }}
+        run: |
+          node --input-type=module -e 'import { resolve } from "node:path"; import { assertWorkflowV2AdapterCompatibility } from "./dist/infrastructure/tracking-run/publication-runtime.js"; import { nodeContentDigestPort } from "./dist/infrastructure/tracking-run/content-digest.js"; await assertWorkflowV2AdapterCompatibility(process.cwd(), resolve("artifacts/adapter-source"), process.env.TRACKING_EXPECTED_ADAPTER_IDENTITY, nodeContentDigestPort);'
+      - name: bootstrap結果を保存
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tracking-bootstrap
+          path: ${{ runner.temp }}/tracking-bootstrap.json
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.effect_target == 'sandbox' && 'sandbox' || 'daily' }}
+          runtime-cli: dist/cli/tracker-run.js
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+
+  prepare-runtime:
+    needs: bootstrap
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      code_revision: ${{ needs.bootstrap.outputs.code_revision }}
+      run_id: ${{ needs.bootstrap.outputs.run_id }}
+    steps:
+      - name: 選択したexact sourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.bootstrap.outputs.code_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 記録されたNode.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ needs.bootstrap.outputs.node_version }}
+      - name: pnpmと依存関係を準備
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: 保存済みexact runtimeを取得
+        id: source_runtime
+        if: needs.bootstrap.outputs.kind == 'resume_with_exact_runtime'
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: workflow-cli-runtime
+          run-id: ${{ needs.bootstrap.outputs.source_run_id }}
+          github-token: ${{ github.token }}
+          path: artifacts/workflow/runtime
+      - name: 新規または消失したruntimeをbuild
+        if: needs.bootstrap.outputs.kind == 'start_with_current_runtime' || steps.source_runtime.outcome == 'failure'
+        run: |
+          pnpm build
+          pnpm build:workflow-cli
+          node --input-type=module <<'NODE'
+          import { lstatSync } from "node:fs";
+          const modules = [];
+          for (const [source, module] of [
+            ["src/infrastructure/tracking-run/publication-runtime.ts", "./dist/infrastructure/tracking-run/publication-runtime.js"],
+            ["src/cli/publication-runtime.ts", "./dist/cli/publication-runtime.js"],
+          ]) {
+            try {
+              if (!lstatSync(source).isFile()) throw new TypeError("runtimeのsourceは通常fileである必要があります");
+              modules.push(module);
+            } catch (error) {
+              if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+              throw error;
+            }
+          }
+          if (modules.length !== 1) throw new TypeError("exact runtimeのsource配置を一意に識別できません");
+          const [module] = modules;
+          if (module == null) throw new TypeError("manifest writerを取得できません");
+          const { writeWorkflowRuntimeManifest } = await import(module);
+          await writeWorkflowRuntimeManifest(process.cwd());
+          NODE
+      - name: exact runtimeとremote stageを検査
+        env:
+          TRACKING_CONFIG_PATH: ${{ inputs.config_path }}
+          TRACKING_EFFECT_TARGET: ${{ inputs.effect_target }}
+          TRACKING_PROTOCOL_VERSION: ${{ needs.bootstrap.outputs.protocol_version }}
+          TRACKING_RUN_ID: ${{ needs.bootstrap.outputs.run_id }}
+          TRACKING_STATE_REF: ${{ inputs.state_ref }}
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
+        run: |
+          if [[ "$TRACKING_PROTOCOL_VERSION" == '2' ]]; then
+            node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs runtime-recovery-v2 --operation inspect --config "$TRACKING_CONFIG_PATH" --state-ref "$TRACKING_STATE_REF" --run-id "$TRACKING_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --bundle-root artifacts/workflow/runtime > "$RUNNER_TEMP/tracking-v2-inspect.json"
+            jq -e '.protocolVersion == 2 and .status == "inspected" and (.nextStage | type == "string")' "$RUNNER_TEMP/tracking-v2-inspect.json" > /dev/null
+          else
+            arguments=(route-stage --config "$TRACKING_CONFIG_PATH" --state-ref "$TRACKING_STATE_REF" --effect-target "$TRACKING_EFFECT_TARGET")
+            if [[ -n "$TRACKING_RUN_ID" ]]; then
+              arguments+=(--run-id "$TRACKING_RUN_ID")
+            fi
+            node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs "${arguments[@]}" > "$RUNNER_TEMP/tracking-route.json"
+            jq -e '.schemaVersion == 1 and (.nextStage | type == "string")' "$RUNNER_TEMP/tracking-route.json" > /dev/null
+          fi
+      - name: 固定runtimeを保存
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: workflow-cli-runtime
+          path: artifacts/workflow/runtime/
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.effect_target == 'sandbox' && 'sandbox' || 'daily' }}
+          runtime-cli: artifacts/workflow/runtime/tracker-run.mjs
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+
+  analyze:
+    needs: [quality, prepare-runtime]
+    if: always() && needs.quality.result == 'success' && needs.prepare-runtime.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      run_id: ${{ steps.analyze.outputs.run_id || steps.route.outputs.run_id }}
+    concurrency:
+      group: voicevox-task-tracker-codex-auth
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: exact sourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare-runtime.outputs.code_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 診断先を設定
+        run: echo "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH=$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" >> "$GITHUB_ENV"
+      - name: remote stateから次段階を判定
+        id: route
+        uses: ./.github/actions/route-tracking-stage
+        with:
+          state-ref: ${{ inputs.state_ref }}
+          effect-target: ${{ inputs.effect_target }}
+          config-path: ${{ inputs.config_path }}
+          run-id: ${{ needs.prepare-runtime.outputs.run_id }}
+      - name: sandbox実行contextを取得
+        if: inputs.effect_target == 'sandbox' && steps.route.outputs.next_stage == 'analyze'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.sandbox_context_artifact }}
+          path: ${{ runner.temp }}
+      - name: Codex認証ファイルを配置
+        id: codex_auth_placement
+        if: steps.route.outputs.next_stage == 'analyze'
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          if [[ -z "$CODEX_AUTH_JSON" ]]; then
+            echo "CODEX_AUTH_JSONが空のため認証ファイルを配置しません"
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/codex-home"
+          chmod 700 "$RUNNER_TEMP/codex-home"
+          printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json"
+          chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
+          sha256sum "$RUNNER_TEMP/codex-home/auth.json" > "$RUNNER_TEMP/codex-auth-fingerprint"
+          chmod 600 "$RUNNER_TEMP/codex-auth-fingerprint"
+          .github/scripts/mask-codex-auth-values.sh "$RUNNER_TEMP/codex-home/auth.json"
+          echo "placed=true" >> "$GITHUB_OUTPUT"
+      - name: 収集と解析を実行
+        id: analyze
+        if: steps.route.outputs.next_stage == 'analyze'
+        env:
+          BACKFILL_MODE: ${{ inputs.backfill }}
+          CODEX_AUTH_SYNC_TOKEN_PRESENT: ${{ inputs.effect_target == 'production' && secrets.CODEX_AUTH_SYNC_TOKEN != '' }}
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          GH_APP_ID: ${{ vars.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          NOTIFICATION_ACTION: ${{ inputs.notification_action }}
+          REPOSITORY_FILTER: ${{ inputs.repository_filter }}
+          SANDBOX_CONTEXT_PATH: ${{ inputs.effect_target == 'sandbox' && format('{0}/sandbox-context.json', runner.temp) || '' }}
+          SCHEDULE: ${{ inputs.schedule }}
+          TRACKING_CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          current_time="$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
+          if [[ -n "$SCHEDULE" ]]; then
+            case "$SCHEDULE" in
+              "0 3 * * *") scheduled_time="03:00" ;;
+              "0 7 * * *") scheduled_time="07:00" ;;
+              "0 11 * * *") scheduled_time="11:00" ;;
+              "0 15 * * *") scheduled_time="15:00" ;;
+              "0 19 * * *") scheduled_time="19:00" ;;
+              "0 23 * * *") scheduled_time="23:00" ;;
+              *) echo "未知のschedule式です。対象: $SCHEDULE" >&2; exit 1 ;;
+            esac
+            scheduled_for="$(date -u --date="today $scheduled_time" +'%Y-%m-%dT%H:%M:%S.000Z')"
+            if [[ "$scheduled_for" > "$current_time" ]]; then
+              scheduled_for="$(date -u --date="yesterday $scheduled_time" +'%Y-%m-%dT%H:%M:%S.000Z')"
+            fi
+          else
+            scheduled_for="$current_time"
+          fi
+          arguments=(run-stage --stage analyze --config "$TRACKING_CONFIG_PATH" --run-attempt "$GITHUB_RUN_ATTEMPT" --mode "$BACKFILL_MODE" --notification-action "$NOTIFICATION_ACTION" --scheduled-for "$scheduled_for")
+          if [[ -n "$SANDBOX_CONTEXT_PATH" ]]; then
+            arguments+=(--sandbox-context "$SANDBOX_CONTEXT_PATH")
+          fi
+          if [[ -n "$REPOSITORY_FILTER" ]]; then
+            IFS=',' read -r -a repositories <<< "$REPOSITORY_FILTER"
+            for repository in "${repositories[@]}"; do
+              repository="$(printf '%s' "$repository" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              if [[ "$repository" != VOICEVOX/* ]]; then
+                repository="VOICEVOX/$repository"
+              fi
+              arguments+=(--repository "$repository")
+            done
+          fi
+          PATH="$PWD/node_modules/.bin:$PATH" node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs "${arguments[@]}" > "$RUNNER_TEMP/tracking-analyze.json"
+          jq -e '.runId | test("^tracker-run:[0-9a-f]{64}$")' "$RUNNER_TEMP/tracking-analyze.json" > /dev/null
+          echo "run_id=$(jq -r .runId "$RUNNER_TEMP/tracking-analyze.json")" >> "$GITHUB_OUTPUT"
+      - name: checkpointとsidecarを保存
+        if: steps.analyze.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tracking-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/workflow/validated-run.cpk
+            artifacts/workflow/validated-run.cpk.sidecar.json
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+      - name: 収集run reportを保存
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: daily-run-report-${{ github.run_id }}-${{ github.run_attempt }}-analyze
+          path: artifacts/run-reports/run-stage-analyze.json
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: 更新されたCodex認証ファイルをsecretへ書き戻す
+        if: always() && inputs.effect_target == 'production' && steps.codex_auth_placement.outputs.placed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_AUTH_SYNC_TOKEN }}
+        run: |
+          .github/scripts/mask-codex-auth-values.sh "$RUNNER_TEMP/codex-home/auth.json"
+          if sha256sum --check --status "$RUNNER_TEMP/codex-auth-fingerprint"; then
+            echo "Codex認証ファイルは更新されていません"
+            exit 0
+          fi
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
+            exit 1
+          fi
+          gh secret set CODEX_AUTH_JSON --repo "$GITHUB_REPOSITORY" < "$RUNNER_TEMP/codex-home/auth.json"
+      - name: Codex認証関連ファイルを削除
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/codex-home"
+          rm -f "$RUNNER_TEMP/codex-auth-fingerprint"
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.effect_target == 'sandbox' && 'sandbox' || 'daily' }}
+          runtime-cli: artifacts/workflow/runtime/tracker-run.mjs
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+
+  commit-initial-state:
+    needs: [quality, prepare-runtime, analyze]
+    if: always() && needs.quality.result == 'success' && needs.prepare-runtime.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      run_id: ${{ steps.route.outputs.run_id }}
+    steps:
+      - name: exact sourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare-runtime.outputs.code_revision }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: 解析済みcheckpointとsidecarを取得
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tracking-checkpoint-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/workflow
+      - name: 診断先を設定
+        run: echo "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH=$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" >> "$GITHUB_ENV"
+      - name: remote stateから次段階を判定
+        id: route
+        uses: ./.github/actions/route-tracking-stage
+        with:
+          state-ref: ${{ inputs.state_ref }}
+          effect-target: ${{ inputs.effect_target }}
+          config-path: ${{ inputs.config_path }}
+          run-id: ${{ needs.analyze.outputs.run_id }}
+      - name: 初回stateをcommit
+        id: execute
+        if: steps.route.outputs.next_stage == 'commit-initial-state'
+        env:
+          TRACKING_CONFIG_PATH: ${{ inputs.config_path }}
+          TRACKING_RUN_ID: ${{ steps.route.outputs.run_id }}
+        run: node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs run-stage --stage commit-initial-state --config "$TRACKING_CONFIG_PATH" --run-id "$TRACKING_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+      - name: 段階receiptを保存
+        if: steps.execute.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tracking-stage-commit-initial-state
+          path: artifacts/workflow/runs/
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.effect_target == 'sandbox' && 'sandbox' || 'daily' }}
+          runtime-cli: artifacts/workflow/runtime/tracker-run.mjs
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+
+  settle-notifications:
+    needs: [quality, prepare-runtime, initial-pages]
+    if: always() && needs.quality.result == 'success' && needs.prepare-runtime.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      run_id: ${{ steps.route.outputs.run_id }}
+    steps:
+      - name: exact sourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare-runtime.outputs.code_revision }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: 前段のreceiptを取得
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tracking-stage-initial-pages
+          path: artifacts/workflow/runs
+      - name: 診断先を設定
+        run: echo "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH=$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" >> "$GITHUB_ENV"
+      - name: remote stateから次段階を判定
+        id: route
+        uses: ./.github/actions/route-tracking-stage
+        with:
+          state-ref: ${{ inputs.state_ref }}
+          effect-target: ${{ inputs.effect_target }}
+          config-path: ${{ inputs.config_path }}
+          run-id: ${{ needs.initial-pages.outputs.run_id }}
+      - name: 手動解決receiptを取得
+        if: inputs.manual_resolution_artifact && steps.route.outputs.next_stage == 'settle-notifications'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: manual-resolution-record
+          path: artifacts/workflow/runs/${{ steps.route.outputs.run_suffix }}
+      - name: 通知をsettle
+        id: execute
+        if: steps.route.outputs.next_stage == 'settle-notifications'
+        env:
+          DISCORD_OPERATIONS_WEBHOOK_URL: ${{ inputs.effect_target == 'production' && secrets.DISCORD_OPERATIONS_WEBHOOK_URL || '' }}
+          DISCORD_WEBHOOK_URL: ${{ inputs.effect_target == 'production' && secrets.DISCORD_WEBHOOK_URL || '' }}
+          TRACKING_CONFIG_PATH: ${{ inputs.config_path }}
+          TRACKING_MANUAL_RESOLUTION_ARTIFACT: ${{ inputs.manual_resolution_artifact }}
+          TRACKING_PROTOCOL_VERSION: ${{ steps.route.outputs.protocol_version }}
+          TRACKING_RUN_ID: ${{ steps.route.outputs.run_id }}
+          TRACKING_RUN_SUFFIX: ${{ steps.route.outputs.run_suffix }}
+        run: |
+          if [[ "$TRACKING_PROTOCOL_VERSION" == '2' ]]; then
+            arguments=(runtime-recovery-v2 --operation execute_stage --stage settle-notifications --config "$TRACKING_CONFIG_PATH" --state-ref "$TRACKING_STATE_REF" --run-id "$TRACKING_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --bundle-root artifacts/workflow/runtime)
+          else
+            arguments=(run-stage --stage settle-notifications --config "$TRACKING_CONFIG_PATH" --run-id "$TRACKING_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT")
+          fi
+          if [[ "$TRACKING_MANUAL_RESOLUTION_ARTIFACT" == 'true' ]]; then
+            arguments+=(--manual-resolution-receipt "artifacts/workflow/runs/$TRACKING_RUN_SUFFIX/manual-resolution-receipt.json")
+          fi
+          node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs "${arguments[@]}"
+      - name: 段階receiptを保存
+        if: steps.execute.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tracking-stage-settle-notifications
+          path: artifacts/workflow/runs/
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.effect_target == 'sandbox' && 'sandbox' || 'daily' }}
+          runtime-cli: artifacts/workflow/runtime/tracker-run.mjs
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+
+  finalize-run:
+    needs: [quality, prepare-runtime, settle-notifications]
+    if: always() && needs.quality.result == 'success' && needs.prepare-runtime.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      run_id: ${{ steps.route.outputs.run_id }}
+    steps:
+      - name: exact sourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare-runtime.outputs.code_revision }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: 前段のreceiptを取得
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tracking-stage-settle-notifications
+          path: artifacts/workflow/runs
+      - name: 診断先を設定
+        run: echo "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH=$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" >> "$GITHUB_ENV"
+      - name: remote stateから次段階を判定
+        id: route
+        uses: ./.github/actions/route-tracking-stage
+        with:
+          state-ref: ${{ inputs.state_ref }}
+          effect-target: ${{ inputs.effect_target }}
+          config-path: ${{ inputs.config_path }}
+          run-id: ${{ needs.settle-notifications.outputs.run_id }}
+      - name: runをfinalize
+        id: execute
+        if: steps.route.outputs.next_stage == 'finalize-run'
+        env:
+          TRACKING_CONFIG_PATH: ${{ inputs.config_path }}
+          TRACKING_PROTOCOL_VERSION: ${{ steps.route.outputs.protocol_version }}
+          TRACKING_RUN_ID: ${{ steps.route.outputs.run_id }}
+        run: |
+          if [[ "$TRACKING_PROTOCOL_VERSION" == '2' ]]; then
+            node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs runtime-recovery-v2 --operation execute_stage --stage finalize-run --config "$TRACKING_CONFIG_PATH" --state-ref "$TRACKING_STATE_REF" --run-id "$TRACKING_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --bundle-root artifacts/workflow/runtime
+          else
+            node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs run-stage --stage finalize-run --config "$TRACKING_CONFIG_PATH" --run-id "$TRACKING_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          fi
+      - name: 段階receiptを保存
+        if: steps.execute.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tracking-stage-finalize-run
+          path: artifacts/workflow/runs/
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.effect_target == 'sandbox' && 'sandbox' || 'daily' }}
+          runtime-cli: artifacts/workflow/runtime/tracker-run.mjs
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+
+  complete:
+    needs: [quality, prepare-runtime, notification-history-pages]
+    if: always() && needs.quality.result == 'success' && needs.prepare-runtime.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      run_id: ${{ steps.route.outputs.run_id }}
+      final_state_revision: ${{ steps.final_revision.outputs.revision }}
+    steps:
+      - name: exact sourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.prepare-runtime.outputs.code_revision }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: 前段のreceiptを取得
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tracking-stage-notification-history-pages
+          path: artifacts/workflow/runs
+      - name: 診断先を設定
+        run: echo "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH=$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" >> "$GITHUB_ENV"
+      - name: remote stateから次段階を判定
+        id: route
+        uses: ./.github/actions/route-tracking-stage
+        with:
+          state-ref: ${{ inputs.state_ref }}
+          effect-target: ${{ inputs.effect_target }}
+          config-path: ${{ inputs.config_path }}
+          run-id: ${{ needs.notification-history-pages.outputs.run_id }}
+      - name: receipt chainを完了まで検証
+        id: execute
+        if: steps.route.outputs.next_stage == 'complete'
+        env:
+          TRACKING_CONFIG_PATH: ${{ inputs.config_path }}
+          TRACKING_PROTOCOL_VERSION: ${{ steps.route.outputs.protocol_version }}
+          TRACKING_RUN_ID: ${{ steps.route.outputs.run_id }}
+        run: |
+          if [[ "$TRACKING_PROTOCOL_VERSION" == '2' ]]; then
+            node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs runtime-recovery-v2 --operation execute_stage --stage complete --config "$TRACKING_CONFIG_PATH" --state-ref "$TRACKING_STATE_REF" --run-id "$TRACKING_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" --bundle-root artifacts/workflow/runtime
+          else
+            node --enable-source-maps artifacts/workflow/runtime/tracker-run.mjs run-stage --stage complete --config "$TRACKING_CONFIG_PATH" --run-id "$TRACKING_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          fi
+      - name: 完了receiptのstate revisionを出力
+        id: final_revision
+        if: steps.execute.outcome == 'success'
+        env:
+          TRACKING_RUN_SUFFIX: ${{ steps.route.outputs.run_suffix }}
+        run: |
+          receipt="artifacts/workflow/runs/$TRACKING_RUN_SUFFIX/completion-receipt.json"
+          jq -e '.receiptType == "completion" and (.result.finalStateRevision | test("^[0-9a-f]{40}$"))' "$receipt" > /dev/null
+          echo "revision=$(jq -r .result.finalStateRevision "$receipt")" >> "$GITHUB_OUTPUT"
+      - name: 段階receiptを保存
+        if: steps.execute.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tracking-stage-complete
+          path: artifacts/workflow/runs/
+          if-no-files-found: error
+          retention-days: ${{ inputs.artifact_retention_days }}
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.effect_target == 'sandbox' && 'sandbox' || 'daily' }}
+          runtime-cli: artifacts/workflow/runtime/tracker-run.mjs
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ inputs.effect_target == 'production' && secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 || inputs.effect_target == 'sandbox' && secrets.VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 || '' }}
+
+  initial-pages:
+    needs: [quality, prepare-runtime, commit-initial-state]
+    if: always() && needs.quality.result == 'success' && needs.prepare-runtime.result == 'success'
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/_tracking-pages.yml
+    with:
+      phase: initial
+      state_ref: ${{ inputs.state_ref }}
+      effect_target: ${{ inputs.effect_target }}
+      config_path: ${{ inputs.config_path }}
+      pages_environment: ${{ inputs.pages_environment }}
+      code_revision: ${{ needs.prepare-runtime.outputs.code_revision }}
+      run_id: ${{ needs.commit-initial-state.outputs.run_id }}
+      artifact_retention_days: ${{ inputs.artifact_retention_days }}
+    secrets: inherit
+
+  notification-history-pages:
+    needs: [quality, prepare-runtime, finalize-run]
+    if: always() && needs.quality.result == 'success' && needs.prepare-runtime.result == 'success'
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/_tracking-pages.yml
+    with:
+      phase: notification_history
+      state_ref: ${{ inputs.state_ref }}
+      effect_target: ${{ inputs.effect_target }}
+      config_path: ${{ inputs.config_path }}
+      pages_environment: ${{ inputs.pages_environment }}
+      code_revision: ${{ needs.prepare-runtime.outputs.code_revision }}
+      run_id: ${{ needs.finalize-run.outputs.run_id }}
+      artifact_retention_days: ${{ inputs.artifact_retention_days }}
+    secrets: inherit
+
+  observe:
+    needs:
+      - quality
+      - bootstrap
+      - prepare-runtime
+      - analyze
+      - commit-initial-state
+      - initial-pages
+      - settle-notifications
+      - finalize-run
+      - notification-history-pages
+      - complete
+    if: always()
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/_tracking-observe.yml
+    with:
+      state_ref: ${{ inputs.state_ref }}
+      effect_target: ${{ inputs.effect_target }}
+      config_path: ${{ inputs.config_path }}
+      quality_success: ${{ needs.quality.result == 'success' }}
+      bootstrap_code_revision: ${{ needs.bootstrap.outputs.code_revision }}
+      run_id: ${{ needs.complete.outputs.run_id || needs.bootstrap.outputs.run_id }}
+      stage_results_json: ${{ toJSON(needs) }}
+      has_failed_stage: ${{ contains(needs.*.result, 'failure') }}
+      workflow_kind: ${{ inputs.effect_target == 'sandbox' && 'sandbox' || 'daily' }}
+      artifact_retention_days: ${{ inputs.artifact_retention_days }}
+    secrets: inherit

@@ -1,3 +1,4 @@
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { type LabelEffectsResolver } from "./label-resolution.js";
 import {
   determineMeaningfulProgress,
@@ -26,7 +27,6 @@ import {
   type WaitClass,
   type WaitingOn,
 } from "./types.js";
-import { assertNonNullable, UnreachableError } from "../util/index.js";
 
 const MILLISECONDS_PER_HOUR = 60 * 60 * 1000;
 
