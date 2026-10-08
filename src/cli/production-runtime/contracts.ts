@@ -91,6 +91,7 @@ export type RuntimeConfiguration = Readonly<{
 
 export type RuntimeState = Readonly<{
   session: StatePersistenceSession;
+  rawSnapshot: StateSnapshotReadResult;
   snapshot: StateSnapshotReadResult;
   notificationLedger: StateNotificationLedger;
 }>;

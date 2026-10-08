@@ -19,6 +19,11 @@ import { relationNodes } from "../../../graph/relation-candidate-endpoints.js";
 import type { SnapshotCollectionRepository } from "../../../persistence/index.js";
 import { assertNonNullable } from "../../../util/index.js";
 import type { RuntimeState } from "../contracts.js";
+import {
+  isExcludedPullRequestNodeId,
+  isExcludedPullRequestRelationItem,
+  isExcludedPullRequestRelationNode,
+} from "../excluded-pull-request.js";
 import { previousSnapshot } from "../previous-state/snapshot.js";
 import type { FreshRepositoryRuntimeCollection } from "./repository-collection.js";
 
@@ -56,44 +61,66 @@ export function extractRelationCandidatesOnce(
   items: readonly EnumeratedGitHubItem[],
   details: readonly GitHubItemDetail[],
 ): readonly RelationCandidate[] {
-  const knownItems = items.map((item) =>
+  const publicItems = items.map((item) =>
     createPublicRelationItem(item, allowlist.require(item.repositoryId)),
   );
+  const excludedNodeIds = new Set(
+    publicItems.filter(isExcludedPullRequestRelationItem).map((item) => item.nodeId),
+  );
+  const knownItems = publicItems.filter((item) => !excludedNodeIds.has(item.nodeId));
   const itemByNodeId = new Map(knownItems.map((item) => [item.nodeId, item]));
-  const extractionItems = details.map((detail) => {
-    const item = itemByNodeId.get(detail.nodeId);
-    assertNonNullable(item, `関係候補抽出対象がありません。対象: ${detail.nodeId}`);
-    return Object.freeze({
-      ...item,
-      body: {
-        sourceId: detail.bodySourceId,
-        markdown: detail.body,
-      },
-      comments: detail.comments.map((comment) => ({
-        sourceId: comment.sourceId,
-        markdown: comment.body,
-      })),
-      crossReferences: detail.inboundCrossReferences.map((reference) => ({
-        sourceId: reference.eventSourceId,
-        sourceItem: reference.sourceItem,
-        willCloseTarget: reference.willCloseTarget,
-      })),
-      nativeDependencies:
-        detail.type === "issue" && detail.nativeDependencies.availability === "available"
-          ? detail.nativeDependencies.relations
-          : [],
-      nativeHierarchy:
-        detail.type === "issue" && detail.nativeHierarchy.availability === "available"
-          ? detail.nativeHierarchy.relations
-          : [],
-      nativeClosingIssues: detail.type === "pull_request" ? detail.nativeClosingIssues : [],
-    }) satisfies RelationExtractionItem;
-  });
+  const extractionItems = details
+    .filter(
+      (detail) =>
+        !excludedNodeIds.has(detail.nodeId) && !isExcludedPullRequestNodeId(detail.nodeId),
+    )
+    .map((detail) => {
+      const item = itemByNodeId.get(detail.nodeId);
+      assertNonNullable(item, `関係候補抽出対象がありません。対象: ${detail.nodeId}`);
+      return Object.freeze({
+        ...item,
+        body: {
+          sourceId: detail.bodySourceId,
+          markdown: detail.body,
+        },
+        comments: detail.comments.map((comment) => ({
+          sourceId: comment.sourceId,
+          markdown: comment.body,
+        })),
+        crossReferences: detail.inboundCrossReferences
+          .filter((reference) => !isExcludedPullRequestRelationItem(reference.sourceItem))
+          .map((reference) => ({
+            sourceId: reference.eventSourceId,
+            sourceItem: reference.sourceItem,
+            willCloseTarget: reference.willCloseTarget,
+          })),
+        nativeDependencies:
+          detail.type === "issue" && detail.nativeDependencies.availability === "available"
+            ? detail.nativeDependencies.relations.filter(
+                (relation) => !isExcludedPullRequestRelationItem(relation.relatedItem),
+              )
+            : [],
+        nativeHierarchy:
+          detail.type === "issue" && detail.nativeHierarchy.availability === "available"
+            ? detail.nativeHierarchy.relations.filter(
+                (relation) => !isExcludedPullRequestRelationItem(relation.relatedItem),
+              )
+            : [],
+        nativeClosingIssues:
+          detail.type === "pull_request"
+            ? detail.nativeClosingIssues.filter(
+                (relation) => !isExcludedPullRequestRelationItem(relation.relatedItem),
+              )
+            : [],
+      }) satisfies RelationExtractionItem;
+    });
   return extractRelationCandidatesForItems({
     organization: config.organization,
     items: extractionItems,
     knownItems,
-  });
+  }).filter(
+    (candidate) => !relationNodes(candidate.relation).some(isExcludedPullRequestRelationNode),
+  );
 }
 
 /** 端点を収集できた関係候補を選ぶ。 */

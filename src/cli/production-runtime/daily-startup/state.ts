@@ -2,6 +2,7 @@ import { StatePersistenceSession } from "../../../persistence/index.js";
 import type { DailyTransactionDependencies } from "../../daily-transaction.js";
 import type { StateRuntimeAdapters } from "../adapters.js";
 import type { ProductionTypes } from "../contracts.js";
+import { projectExcludedPullRequestSnapshot } from "../previous-state/excluded-pull-request-snapshot.js";
 
 /** 前回stateの読取段階を既存adapterへ接続する。 */
 export function createLoadStateStage(
@@ -23,7 +24,14 @@ export function createLoadStateStage(
     ]);
     return Object.freeze({
       session,
-      snapshot,
+      rawSnapshot: snapshot,
+      snapshot:
+        snapshot.status === "available"
+          ? Object.freeze({
+              ...snapshot,
+              snapshot: projectExcludedPullRequestSnapshot(snapshot.snapshot),
+            })
+          : snapshot,
       notificationLedger,
     });
   };

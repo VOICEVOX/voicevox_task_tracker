@@ -24,6 +24,7 @@ import type { SnapshotTrackedItem } from "../../../persistence/index.js";
 import { UnreachableError } from "../../../util/index.js";
 import type { DeterministicItemAnalysis } from "../../initial-item-analysis.js";
 import type { MutablePartial, RuntimeState } from "../contracts.js";
+import { referencesExcludedPullRequestSource } from "../excluded-pull-request.js";
 import { previousTrackedItem } from "./snapshot.js";
 
 export function savedGenerationsForItem(
@@ -37,7 +38,11 @@ export function savedGenerationsForItem(
   const generations: Partial<Record<AiAnalysisElement, AiAnalysisElementSourceGeneration>> = {};
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const evaluated = item.aiAnalysis.elements[element];
-    if (evaluated == null) {
+    if (
+      evaluated == null ||
+      referencesExcludedPullRequestSource(evaluated.result) ||
+      referencesExcludedPullRequestSource(evaluated.generation.result)
+    ) {
       continue;
     }
     generations[element] = createAiAnalysisElementSourceGenerationSchema(element).parse(
@@ -156,12 +161,25 @@ export function savedCurrentAdoptedElementsForItem(
     return Object.freeze({});
   }
   if (item.aiAnalysis.origin === "current") {
-    return item.aiAnalysis.adoptedElements;
+    const adopted = Object.fromEntries(
+      Object.entries(item.aiAnalysis.adoptedElements).filter(
+        ([, value]) =>
+          !(
+            referencesExcludedPullRequestSource(value.result) ||
+            referencesExcludedPullRequestSource(value.generation.result)
+          ),
+      ),
+    );
+    return Object.freeze(adopted);
   }
   const adopted: MutablePartial<TrackedItemAiAnalysisCurrentAdoptedElements> = {};
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const value = item.aiAnalysis.adoptedElements[element];
-    if (value?.origin !== "current") {
+    if (
+      value?.origin !== "current" ||
+      referencesExcludedPullRequestSource(value.result) ||
+      referencesExcludedPullRequestSource(value.generation.result)
+    ) {
       continue;
     }
     setCurrentAdoptedElement(adopted, element, value);
@@ -176,7 +194,11 @@ export function savedEvaluationRecordForElement(
 ): AnalysisElementReuseRecord | undefined {
   const item = previousTrackedItem(state, nodeId);
   const evaluated = item?.aiAnalysis.elements[element];
-  if (evaluated == null) {
+  if (
+    evaluated == null ||
+    referencesExcludedPullRequestSource(evaluated.result) ||
+    referencesExcludedPullRequestSource(evaluated.generation.result)
+  ) {
     return undefined;
   }
   return Object.freeze({
@@ -193,26 +215,30 @@ export function savedMigrationAdoptedElementsForItem(
   if (item?.aiAnalysis.origin !== "migration") {
     return Object.freeze({});
   }
-  return item.aiAnalysis.adoptedElements;
+  const adopted = Object.fromEntries(
+    Object.entries(item.aiAnalysis.adoptedElements).filter(
+      ([, value]) =>
+        !(
+          referencesExcludedPullRequestSource(value.result) ||
+          (value.origin === "current" &&
+            referencesExcludedPullRequestSource(value.generation.result))
+        ),
+    ),
+  );
+  return Object.freeze(adopted);
 }
 
 export function adoptedResultForRetainedItem(
   item: SnapshotTrackedItem,
   element: AiAnalysisElement,
 ): AiAnalysisElementMigrationResult | undefined {
-  if (item.aiAnalysis.origin === "current") {
-    const adopted = item.aiAnalysis.adoptedElements[element];
-    if (adopted == null) {
-      return undefined;
-    }
-    return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
-  }
   const adopted = item.aiAnalysis.adoptedElements[element];
-  if (adopted == null) {
+  if (
+    adopted == null ||
+    referencesExcludedPullRequestSource(adopted.result) ||
+    (adopted.origin === "current" && referencesExcludedPullRequestSource(adopted.generation.result))
+  ) {
     return undefined;
-  }
-  if (adopted.origin === "current") {
-    return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
   }
   return createAiAnalysisMigrationElementResultSchema(element).parse(adopted.result);
 }

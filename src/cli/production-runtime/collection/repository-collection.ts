@@ -25,6 +25,7 @@ import type {
 import type { DailyRunInvocation } from "../../daily-transaction.js";
 import type { CollectionRuntimeAdapters } from "../adapters.js";
 import type { RuntimeConfiguration, RuntimeState } from "../contracts.js";
+import { isExcludedPullRequestItem } from "../excluded-pull-request.js";
 import {
   configuredUrlIdentifiersForRepository,
   missingIdentifiers,
@@ -176,16 +177,19 @@ export async function collectFreshRepositoryItemObservations(
   forcedDetailNodeIds: ReadonlySet<GitHubNodeId>,
 ): Promise<FreshRepositoryItemCollection> {
   const allowlist = createPublicRepositoryAllowlist([repository]);
+  const includedItems = enumeratedItems.filter(
+    (item) => !isExcludedPullRequestItem(item, repository),
+  );
   const detailPlan = planRepositoryItemDetails(
     invocation,
     configuration,
     state,
     repository,
-    enumeratedItems,
+    includedItems,
     adjacentNodeIds,
     forcedDetailNodeIds,
   );
-  const detailItems = enumeratedItems.filter((item) => detailPlan.detailNodeIds.has(item.nodeId));
+  const detailItems = includedItems.filter((item) => detailPlan.detailNodeIds.has(item.nodeId));
   const detailTargets = Object.freeze(detailItems.map((item) => Object.freeze({ item })));
   const details =
     detailTargets.length === 0
@@ -204,7 +208,7 @@ export async function collectFreshRepositoryItemObservations(
     isBot: createGitHubBotPredicate(configuration.config.actors.bots),
   });
   return Object.freeze({
-    enumeratedItems: Object.freeze([...enumeratedItems]),
+    enumeratedItems: Object.freeze([...includedItems]),
     details,
     observedItems,
     changedNodeIds: detailPlan.collectionPlan.changedItemNodeIds,
@@ -230,7 +234,9 @@ export async function collectFreshRepositoryItems(
     observedAt: invocation.startedAt,
     request: authentication.request,
   });
-  const resolvedNodeItems = explicitNodeItems.filter((item) => item.repositoryId === repository.id);
+  const resolvedNodeItems = explicitNodeItems.filter(
+    (item) => item.repositoryId === repository.id && !isExcludedPullRequestItem(item, repository),
+  );
   const identifiers = missingIdentifiers(
     [
       ...configuredUrlIdentifiersForRepository(configuration.config, repository),
@@ -249,7 +255,9 @@ export async function collectFreshRepositoryItems(
           graphql: authentication.graphql,
         });
   const enumeratedItems = deduplicateByStableId(
-    [...openItems, ...resolvedNodeItems, ...individuallyEnumeratedItems],
+    [...openItems, ...resolvedNodeItems, ...individuallyEnumeratedItems].filter(
+      (item) => !isExcludedPullRequestItem(item, repository),
+    ),
     (item) => item.nodeId,
   );
   const itemCollection = await collectFreshRepositoryItemObservations(

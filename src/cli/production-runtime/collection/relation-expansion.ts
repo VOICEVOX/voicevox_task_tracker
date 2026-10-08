@@ -16,6 +16,7 @@ import { CliRelationExpansionLimitError } from "../../errors.js";
 import type { CollectionRuntimeAdapters } from "../adapters.js";
 import { currentRuntimeTime } from "../clock.js";
 import type { RepositoryInventory, RuntimeConfiguration, RuntimeState } from "../contracts.js";
+import { isExcludedPullRequestNodeId } from "../excluded-pull-request.js";
 import { previousRepositoryValues } from "../previous-state/collection.js";
 import {
   collectedTrackingCandidateNodeIds,
@@ -314,7 +315,9 @@ export async function collectRelationExpandedItems(
         }),
       );
     }
-    const nextRequests = [...requestsByNodeId.values()];
+    const nextRequests = [...requestsByNodeId.values()].filter(
+      (request) => !isExcludedPullRequestNodeId(request.nodeId),
+    );
     if (nextRequests.length === 0) {
       return Object.freeze({
         ...refreshedAggregate,
