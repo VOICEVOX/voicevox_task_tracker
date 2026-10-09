@@ -1,7 +1,7 @@
 import type { Config } from "../../config/index.js";
 import { createUtcIsoDateTime } from "../../domain/index.js";
 import type { Repository } from "../../domain/index.js";
-import { createStateSnapshot } from "../../persistence/index.js";
+import { createStateSnapshot, type PersistStateTransactionInput } from "../../persistence/index.js";
 import type { WorkflowRunMetadata } from "../workflow-artifact.js";
 import { createPersistedRunReport } from "./metadata.js";
 import type {
@@ -21,12 +21,14 @@ export type PersistValidatedRunInput = Readonly<{
   state: PublicationState;
   inventory: PublicationRepositoryInventory;
   validated: ValidatedRun;
+  projectPreviousSnapshot: PersistStateTransactionInput["projectPreviousSnapshot"];
 }>;
 
 /** 完全性検証済みrunを初期保存し、Pages用履歴を読む。 */
 export async function persistValidatedRun(input: PersistValidatedRunInput): Promise<PersistedRun> {
   const result = await input.state.session.persist({
     snapshot: input.validated.snapshot,
+    projectPreviousSnapshot: input.projectPreviousSnapshot,
     historyInputEvents: input.validated.historyInputEvents,
     notificationLedger: input.validated.notificationLedger,
     repositoryInventory: input.inventory.inventory,

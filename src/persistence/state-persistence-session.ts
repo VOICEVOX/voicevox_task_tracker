@@ -90,6 +90,7 @@ export type StateSnapshotReadResult =
 /** 一つのatomic state commitへ渡す検証済みrun成果物。 */
 export type PersistStateTransactionInput = Readonly<{
   snapshot: StateSnapshot;
+  projectPreviousSnapshot: (snapshot: StateSnapshot) => StateSnapshot;
   historyInputEvents: readonly StateHistoryInputEvent[];
   notificationLedger: StateNotificationLedger;
   repositoryInventory: readonly Repository[];
@@ -959,11 +960,13 @@ export class StatePersistenceSession {
     const previousResult = await this.loadSnapshot();
     const previousSnapshot =
       previousResult.status === "available" ? previousResult.snapshot : undefined;
+    const previousEvidenceSnapshot =
+      previousSnapshot == null ? undefined : input.projectPreviousSnapshot(previousSnapshot);
     const expectedEvidenceBySourceId = createPersonalReminderEvidenceSourceIndex([
       ...snapshot.items.map((item) => item.evidence),
       ...snapshot.relations.map((relation) => relation.evidence),
-      ...(previousSnapshot?.items.map((item) => item.evidence) ?? []),
-      ...(previousSnapshot?.relations.map((relation) => relation.evidence) ?? []),
+      ...(previousEvidenceSnapshot?.items.map((item) => item.evidence) ?? []),
+      ...(previousEvidenceSnapshot?.relations.map((relation) => relation.evidence) ?? []),
     ]);
     assertPersonalReminderEvidenceRecordsClosure(snapshot, expectedEvidenceBySourceId);
     const historyRecord = createStateHistoryRecord(
