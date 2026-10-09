@@ -8,7 +8,11 @@ import type {
 } from "./contracts.js";
 import { createRunMetadata } from "./metadata.js";
 import { buildPublicPages } from "./pages.js";
-import { persistSuccessfulRunCompletion, persistValidatedRun } from "./persistence.js";
+import {
+  persistSuccessfulRunCompletion,
+  persistValidatedRun,
+  type PersistValidatedRunInput,
+} from "./persistence.js";
 import { discordDeliverySettings } from "./settings.js";
 
 type DailyNotificationAdapters = Pick<
@@ -27,6 +31,9 @@ type DailyNotificationAdapters = Pick<
 
 /** 完全性検証済みrunを初期保存へ渡す。 */
 export function persistDailyState(
+  dependencies: Readonly<{
+    projectPreviousSnapshot: PersistValidatedRunInput["projectPreviousSnapshot"];
+  }>,
   input: Parameters<DailyPublicationStageHandlers["persistState"]>[0],
 ): ReturnType<DailyPublicationStageHandlers["persistState"]> {
   const { configuration, state, repositoryInventory, validated } = input;
@@ -35,6 +42,7 @@ export function persistDailyState(
     state,
     inventory: repositoryInventory,
     validated,
+    projectPreviousSnapshot: dependencies.projectPreviousSnapshot,
   });
 }
 

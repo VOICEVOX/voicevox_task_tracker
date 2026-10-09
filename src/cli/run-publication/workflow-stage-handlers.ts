@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 
+import type { PersistStateTransactionInput } from "../../persistence/index.js";
 import type {
   BuildPagesCliCommand,
   NotifyDiscordCliCommand,
@@ -44,7 +45,10 @@ type WorkflowDeliveryAdapters = Pick<
 
 /** workflow artifactの検証済みstateを初期保存する。 */
 export async function persistWorkflowState(
-  dependencies: Readonly<{ adapters: WorkflowStateAdapters }>,
+  dependencies: Readonly<{
+    adapters: WorkflowStateAdapters;
+    projectPreviousSnapshot: PersistStateTransactionInput["projectPreviousSnapshot"];
+  }>,
   command: PersistStateCliCommand,
 ): Promise<void> {
   const artifact = await dependencies.adapters.readWorkflowArtifact(
@@ -65,6 +69,7 @@ export async function persistWorkflowState(
   }
   await session.persist({
     snapshot: artifact.snapshot,
+    projectPreviousSnapshot: dependencies.projectPreviousSnapshot,
     historyInputEvents: artifact.historyInputEvents,
     notificationLedger: artifact.notificationLedger,
     repositoryInventory: workflowArtifactRepositoryInventory(artifact),
