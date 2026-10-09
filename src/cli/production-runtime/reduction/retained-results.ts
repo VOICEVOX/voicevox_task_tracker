@@ -14,7 +14,6 @@ import { assertNonNullable, UnreachableError } from "../../../util/index.js";
 import type { DeterministicItemAnalysis } from "../../initial-item-analysis.js";
 import { isForcedUnexecutedElement } from "../ai-analysis-target.js";
 import type { CodexAnalysis, RuntimeState } from "../contracts.js";
-import { referencesExcludedPullRequestSource } from "../excluded-pull-request.js";
 import { preservedElementsWithCompatibleRelations } from "../preserved-codex-relations.js";
 import {
   adoptedResultForRetainedItem,
@@ -50,18 +49,11 @@ function preservedElementsForForcedReduction(
     } else if (isForcedUnexecutedElement(analysis, element, target)) {
       result = currentSavedResultForElement(state, analysis, element);
     }
-    if (result != null && referencesExcludedPullRequestSource(result)) {
-      result = undefined;
-    }
-    const savedReuse = candidate.savedReuse?.result;
-    result ??=
-      savedReuse != null && !referencesExcludedPullRequestSource(savedReuse)
-        ? savedReuse
-        : undefined;
+    result ??= candidate.savedReuse?.result;
     if (result == null && previousItem != null) {
       result = adoptedResultForRetainedItem(previousItem, element);
     }
-    if (result != null && !referencesExcludedPullRequestSource(result)) {
+    if (result != null) {
       preservedElements[element] = result;
     }
   }
@@ -74,7 +66,7 @@ export function adoptedRecordsForPlanning(
   const records: Partial<Record<AiAnalysisElement, AnalysisElementReuseRecord>> = {};
   for (const element of AI_ANALYSIS_ELEMENTS) {
     const record = planning.candidates[element].savedReuse;
-    if (record != null && !referencesExcludedPullRequestSource(record.result)) {
+    if (record != null) {
       records[element] = record;
     }
   }
@@ -102,11 +94,8 @@ function preservedElementsForReduction(
     if (candidate.necessity !== "required") {
       continue;
     }
-    const savedReuse = candidate.savedReuse?.result;
     const retained =
-      (savedReuse != null && !referencesExcludedPullRequestSource(savedReuse)
-        ? savedReuse
-        : undefined) ??
+      candidate.savedReuse?.result ??
       (previousItem == null ? undefined : adoptedResultForRetainedItem(previousItem, element));
     if (retained == null) {
       continue;

@@ -17,8 +17,16 @@ export async function assertExcludedPullRequestReturns404(
       pull_number: excludedPullRequest.number,
     });
   } catch (error: unknown) {
-    if (error instanceof GitHubRequestError && error.status === 404) {
-      return;
+    if (error instanceof GitHubRequestError) {
+      if (error.status === 404) {
+        return;
+      }
+      if (error.status === 304) {
+        throw new Error(
+          `個別除外対象のPull Requestが304を返したので例外を削除してください。対象: ${excludedPullRequestUrl}`,
+          { cause: error },
+        );
+      }
     }
     throw error;
   }

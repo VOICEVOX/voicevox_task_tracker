@@ -9,7 +9,6 @@ import { relationNodes } from "../../../graph/relation-candidate-endpoints.js";
 import type { SnapshotCollectionItem, SnapshotTrackedItem } from "../../../persistence/index.js";
 import { assertNonNullable } from "../../../util/index.js";
 import type { RuntimeState } from "../contracts.js";
-import { isExcludedPullRequestNodeId } from "../excluded-pull-request.js";
 import { previousPersonalReminderRelationCandidateDependencies } from "../previous-state/analysis.js";
 import { previousCollectionItemsByNodeId } from "../previous-state/collection.js";
 import { previousSnapshot } from "../previous-state/snapshot.js";
@@ -76,11 +75,7 @@ export function personalReminderRelationExpansionRepositoriesByNodeId(
       continue;
     }
     for (const endpointNodeId of dependency.producer.endpointNodeIds) {
-      if (
-        isExcludedPullRequestNodeId(endpointNodeId) ||
-        freshObservedNodeIds.has(endpointNodeId) ||
-        externalEndpointNodeIds.has(endpointNodeId)
-      ) {
+      if (freshObservedNodeIds.has(endpointNodeId) || externalEndpointNodeIds.has(endpointNodeId)) {
         continue;
       }
       const previousCollectionItem = previousItemsByNodeId.get(endpointNodeId);
@@ -201,12 +196,6 @@ function previousAuthoritativeImplementationRelations(
   return Object.freeze(
     snapshot.relations.flatMap((relation) => {
       if (!relation.active || relation.provenance !== "native" || relation.type !== "implements") {
-        return [];
-      }
-      if (
-        isExcludedPullRequestNodeId(relation.fromNodeId) ||
-        isExcludedPullRequestNodeId(relation.toNodeId)
-      ) {
         return [];
       }
       const implementation = itemsByNodeId.get(relation.fromNodeId);

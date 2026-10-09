@@ -35,6 +35,7 @@ import type {
 import { previousCollectionItemsByNodeId } from "../previous-state/collection.js";
 import { previousSnapshot } from "../previous-state/snapshot.js";
 import { pendingSnapshotTrackingStartAt } from "../tracking-start-at.js";
+import { assertExcludedPullRequestSavedSnapshot } from "./excluded-pull-request.js";
 import { deadlineLevelForAssessment } from "./snapshot-item-ai-dependencies.js";
 import { snapshotItems } from "./snapshot-items.js";
 
@@ -299,5 +300,6 @@ export function createValidatedSnapshot(
   ]);
   assertPersonalReminderEvidenceRecordsClosure(snapshot, expectedEvidenceBySourceId);
   assertPersonalReminderEvidenceClosure(snapshot);
+  assertExcludedPullRequestSavedSnapshot(state, collection, snapshot);
   return snapshot;
 }

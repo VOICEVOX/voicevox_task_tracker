@@ -18,7 +18,6 @@ import type { SnapshotCollectionRepository } from "../../../persistence/index.js
 import type { DailyRunInvocation } from "../../daily-transaction.js";
 import type { CollectionRuntimeAdapters } from "../adapters.js";
 import type { RuntimeConfiguration, RuntimeState } from "../contracts.js";
-import { isExcludedPullRequestRelationItem } from "../excluded-pull-request.js";
 import {
   aggregateFreshRepositoryCollections,
   createPublicRelationItem,
@@ -81,9 +80,6 @@ function relationReferenceRefreshTargets(
   error: RelationReferenceConflictError,
   allowlist: PublicRepositoryAllowlist,
 ): readonly RelationReferenceRefreshTarget[] {
-  if (isExcludedPullRequestRelationItem(error.existing)) {
-    throw error;
-  }
   const nodeIds = new Set<GitHubNodeId>([error.existing.nodeId]);
   for (const detail of aggregate.details) {
     if (detailReferencesRelationNode(detail, error.existing.nodeId)) {

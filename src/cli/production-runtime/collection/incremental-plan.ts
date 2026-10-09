@@ -23,11 +23,7 @@ import {
   createAiAnalysisRunIdentity,
 } from "../analysis-identity.js";
 import type { RuntimeConfiguration, RuntimeState } from "../contracts.js";
-import {
-  isExcludedPullRequestIdentifier,
-  isExcludedPullRequestItem,
-  isExcludedPullRequestNodeId,
-} from "../excluded-pull-request.js";
+import { isExcludedPullRequestIdentifier } from "../excluded-pull-request.js";
 import {
   previousCollectionItemsByNodeId,
   previousItemCollection,
@@ -112,7 +108,7 @@ export function previousTrackedItemIdentifiers(
   const collectionItemsByNodeId = previousCollectionItemsByNodeId(state);
   const identifiers: string[] = [];
   for (const item of previousSnapshot(state)?.items ?? []) {
-    if (item.repositoryId !== repository.id || isExcludedPullRequestItem(item, repository)) {
+    if (item.repositoryId !== repository.id) {
       continue;
     }
     const collectionItem = collectionItemsByNodeId.get(item.nodeId);
@@ -143,9 +139,7 @@ export function configuredUrlIdentifiersForRepository(
       .map(normalizeTrackingIdentifier)
       .filter(
         (identifier) =>
-          identifier.includes("://") &&
-          identifier.toLowerCase().startsWith(expectedPrefix) &&
-          !isExcludedPullRequestIdentifier(identifier),
+          identifier.includes("://") && identifier.toLowerCase().startsWith(expectedPrefix),
       ),
   );
 }
@@ -190,9 +184,6 @@ export function requiredTrackingDetailNodeIds(
   return Object.freeze(
     enumeratedItems
       .filter((item) => {
-        if (isExcludedPullRequestItem(item, repository)) {
-          return false;
-        }
         if (!previouslyTrackedNodeIds.has(item.nodeId)) {
           return (
             explicitIdentifierMatchesItem(configuration.config.tracking.include, item) ||
@@ -352,21 +343,13 @@ export function planRepositoryItemDetails(
   );
   const staleRepositoryBlockerTopologyNodeIds =
     previousStaleRepositoryBlockerTopologyNodeIds(state);
-  const detailNodeIds = new Set(
-    [
-      ...plan.detailItemNodeIds,
-      ...requiredTrackingDetailNodeIds(
-        invocation,
-        configuration,
-        state,
-        repository,
-        enumeratedItems,
-      ),
-      ...personalReminderDetailNodeIds,
-      ...staleRepositoryBlockerTopologyNodeIds,
-      ...forcedDetailNodeIds,
-    ].filter((nodeId) => !isExcludedPullRequestNodeId(nodeId)),
-  );
+  const detailNodeIds = new Set([
+    ...plan.detailItemNodeIds,
+    ...requiredTrackingDetailNodeIds(invocation, configuration, state, repository, enumeratedItems),
+    ...personalReminderDetailNodeIds,
+    ...staleRepositoryBlockerTopologyNodeIds,
+    ...forcedDetailNodeIds,
+  ]);
   return Object.freeze({
     collectionPlan: plan,
     detailNodeIds,

@@ -177,19 +177,16 @@ export async function collectFreshRepositoryItemObservations(
   forcedDetailNodeIds: ReadonlySet<GitHubNodeId>,
 ): Promise<FreshRepositoryItemCollection> {
   const allowlist = createPublicRepositoryAllowlist([repository]);
-  const includedItems = enumeratedItems.filter(
-    (item) => !isExcludedPullRequestItem(item, repository),
-  );
   const detailPlan = planRepositoryItemDetails(
     invocation,
     configuration,
     state,
     repository,
-    includedItems,
+    enumeratedItems,
     adjacentNodeIds,
     forcedDetailNodeIds,
   );
-  const detailItems = includedItems.filter((item) => detailPlan.detailNodeIds.has(item.nodeId));
+  const detailItems = enumeratedItems.filter((item) => detailPlan.detailNodeIds.has(item.nodeId));
   const detailTargets = Object.freeze(detailItems.map((item) => Object.freeze({ item })));
   const details =
     detailTargets.length === 0
@@ -208,7 +205,7 @@ export async function collectFreshRepositoryItemObservations(
     isBot: createGitHubBotPredicate(configuration.config.actors.bots),
   });
   return Object.freeze({
-    enumeratedItems: Object.freeze([...includedItems]),
+    enumeratedItems: Object.freeze([...enumeratedItems]),
     details,
     observedItems,
     changedNodeIds: detailPlan.collectionPlan.changedItemNodeIds,
@@ -234,9 +231,7 @@ export async function collectFreshRepositoryItems(
     observedAt: invocation.startedAt,
     request: authentication.request,
   });
-  const resolvedNodeItems = explicitNodeItems.filter(
-    (item) => item.repositoryId === repository.id && !isExcludedPullRequestItem(item, repository),
-  );
+  const resolvedNodeItems = explicitNodeItems.filter((item) => item.repositoryId === repository.id);
   const identifiers = missingIdentifiers(
     [
       ...configuredUrlIdentifiersForRepository(configuration.config, repository),

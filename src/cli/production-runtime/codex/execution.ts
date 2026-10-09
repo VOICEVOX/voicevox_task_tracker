@@ -31,6 +31,7 @@ import type {
 } from "../contracts.js";
 import { previousSnapshot } from "../previous-state/snapshot.js";
 import { createAiCandidates } from "./candidates.js";
+import { aiCacheWithoutAffectedIssueReads } from "./excluded-pull-request-cache.js";
 import { elementGenerationsByNodeId } from "./generations.js";
 
 function codexFallbackDiagnostic(failure: AiAnalysisRunFailure): string {
@@ -215,7 +216,7 @@ export async function analyzeCodex(
       ...(target == null ? {} : { target }),
     },
     {
-      cache: state.session.aiCache,
+      cache: aiCacheWithoutAffectedIssueReads(state.session.aiCache, prepared.candidates, identity),
       attemptBudget: configuration.codexAttemptBudget,
       ensureReady: configuration.ensureCodexReady,
       ...(preflight == null ? {} : { preflight }),
