@@ -101,7 +101,7 @@ preflightはrun全体の入力文字数と見積費用へ1論理callとして計
 
 PRのコードで実推論とstate更新を確認するときは、`Hiroshiba/voicevox_task_tracker`のActionsから`sandbox task tracking`を起動します。
 同じPRでも試行環境を複数作り、それぞれのstateで実行できます。
-Codex認証の更新を共有するため、試行jobと同じrepositoryの日次収集jobは一つずつ実行します。
+Codex認証の更新を共有するため、sandbox、手動dry-run、同じrepositoryの日次収集jobは一つずつ実行します。
 このworkflowはforkのデフォルトブランチである`main`から起動した場合だけ動きます。
 最初にsandbox用のworkflowと実行コードをforkの`main`へ反映し、Actionsを有効にします。
 実行対象の作業ブランチにも、この機能の実装を含めます。
@@ -179,12 +179,12 @@ manifestの取得前に元環境が削除された場合は失敗します。
 `cancel-in-progress: false`でも、同じstate更新の排他groupの待機中runは後から来たrunに置き換わります。
 同じ環境で順番に実行したい場合は、前の実行が完了してから次を起動します。
 
-異なる環境のsandbox jobと、同じrepositoryの日次workflowの`collect-analyze`は、認証を共有する排他groupで一つずつ実行します。
+異なる環境のsandbox job、手動dry-run、同じrepositoryの日次workflowの`collect-analyze`は、認証を共有する排他groupで一つずつ実行します。
 このgroupは`queue: max`で最大100件の待機jobを保持します。
 実行順は保証されません。
 repository secretはworkflow runの受付時に読み込まれるため、待機中に別runが認証を更新しても、受付済みrunは古い認証を使います。
-異なる環境でも、同じ認証を使う前のrunが完了してから次を起動します。日次workflowの手動実行も同様です。
-この排他は同じrepositoryの日次収集jobとsandbox jobに限り、別のrepositoryやローカルで同じ認証を使う処理には及びません。
+異なる環境でも、同じ認証を使う前のrunが完了してから次を起動します。日次workflowとdry-runの手動実行も同様です。
+この排他は同じrepositoryの日次収集job、sandbox、手動dry-runに限り、別のrepositoryやローカルで同じ認証を使う処理には及びません。
 
 初回は異なる二つの作業ブランチでcreateを起動し、環境ID、stateブランチ、run contextのartifactが分かれていることを確認します。
 その後、それぞれの環境でcontinueを実行し、前回保存したstateが読み込まれることと、Pagesのartifactを確認します。
@@ -197,6 +197,17 @@ gh run view RUN_ID --repo Hiroshiba/voicevox_task_tracker
 ## 性能profile
 
 OPS-004は通常のCIから分離したend-to-end性能profileで確認します。
+日次runの処理時間、API予算、AI論理call数、Pages summaryのサイズに影響する変更で、GitHub Actionsの「性能profile」を対象のリモートブランチから手動実行します。
+通常のPull Requestでは自動実行されません。
+
+```console
+gh workflow run performance.yml --repo Hiroshiba/voicevox_task_tracker --ref feature/example
+```
+
+repositoryとbranchは検証対象に置き換えます。
+完了後はrunのActions artifact `end-to-end-performance-profile`を取得し、中の`performance-profile.json`を確認します。
+ローカルで`pnpm perf:profile`は実行しません。
+
 外部サービスへ接続せず、本番の`daily`トランザクションへ5,000項目、10,000 edge、変更300件を流します。
 変更項目は3件ずつ100組に分け、関係先を組内で共有します。
 GitHub APIは15,000 unitのモックrate limitから、一覧のpaginationと項目ごとの詳細取得で消費したunitを差し引きます。
@@ -206,18 +217,14 @@ profile専用のCodex実試行上限を600件、総入力文字数の上限を2,
 ここで測るのは外部接続をモックしたdaily経路の処理時間です。Codex processは起動しないため、実Codex processを600回起動した場合の性能は保証しません。
 state永続化はメモリ上で行い、Pages初期summaryは実際に生成してgzipサイズを測ります。
 
-```console
-pnpm perf:profile
-```
-
-このコマンドはNodeのheap上限を4 GiBに設定します。
+workflow内の検証コマンドはNodeのheap上限を4 GiBに設定します。
 30分、GitHub API 70%、summary gzip 1 MiBのいずれかを超えると終了codeが1になります。汎用AIが300件、個人催促AIが300 batch、`aiCallCount`の合計が600件と一致しない場合も失敗します。
 測定結果は`artifacts/performance-profile.json`へ保存されます。
-CI上では`性能profile` workflowを手動実行し、同じJSONをActions artifactとして保存します。
 
 ## stageごとの実行
 
 日次workflowはjobの権限と副作用を一致させるため、次のstageを別processで実行します。
+以下のコマンド例は各stageの仕様を示します。実データを使う一連の処理は目的に応じたActionsで実行し、ローカルでは変更箇所に絞った確認に使います。
 各stageは`artifacts/workflow/validated-run.json`をschema検証、semantic検証、公開安全性検証へ通してから利用します。
 前stageのartifactが存在しない場合や検証に失敗した場合は明示的なエラーで停止します。
 
@@ -264,12 +271,9 @@ GitHub Actionsではcheckoutが設定したGit認証を使います。ローカ�
 pnpm tracker:run notify-discord --pages-url https://voicevox.github.io/voicevox_task_tracker/
 ```
 
-ローカルで全stageを1processで確認する場合は従来の`daily`を利用できます。
-この実行はstate、Pages用データ、Discordへ順に副作用を発生させるため、設定と認証情報を確認してから実行します。
-
-```console
-pnpm tracker:run --backfill none
-```
+本番の収集、state保存、Pages公開、Discord通知を実行する場合は、[日次workflowの手順](DEPLOYMENT.md#3-日次workflow)に従い、本番repositoryのデフォルトブランチから「日次タスク追跡」を`backfill: none`で手動実行します。
+通常は定期実行に任せ、運用上必要なときだけ手動で起動します。
+開発中のコードで収集・判定を確認する場合は[手動dry-run](DEPLOYMENT.md#1-actionsでdry-runを実行する)、試行用stateの保存とPages生成まで確認する場合はsandboxを使います。
 
 ## 誤判定の直し方
 
@@ -408,7 +412,8 @@ terminal項目とブロック解消待ちの項目が0点になるのは意図�
 
 ## backfill
 
-backfillはGitHub Actionsの`日次タスク追跡`を手動実行して指定します。
+本番で追跡項目を追加するbackfillは、本番repositoryのデフォルトブランチからGitHub Actionsの`日次タスク追跡`を手動実行して指定します。
+この操作は本番のstateとPagesを更新し、`notification_action`の指定に従って通知を処理します。
 
 | `backfill` | 対象                                                     |
 | ---------- | -------------------------------------------------------- |
@@ -603,7 +608,7 @@ CLIが起動する前に失敗した場合や暗号化処理自体が失敗し�
 
 | stageまたはjob                  | 確認内容                                                                                                                                                                                      |
 | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `quality`                       | `pnpm typecheck`、`pnpm lint`、`pnpm format:check`をローカルで再現する                                                                                                                        |
+| `quality`                       | Actionsの失敗stepと診断を確認し、必要なら対象箇所だけをローカルで再現する                                                                                                                     |
 | `configuration`                 | maintainerのGitHubユーザー名一覧、repository名、未知field、日時、正規表現、secret名を確認する                                                                                                 |
 | `authentication`                | `GH_APP_ID`、PEM形式、Organizationへのinstallation、必要なread権限だけがあることを確認する                                                                                                    |
 | `repository_inventory`          | Appのrepository access、public、archive、disabledの状態を確認する                                                                                                                             |

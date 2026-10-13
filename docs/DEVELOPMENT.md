@@ -1,8 +1,11 @@
 # 開発手順
 
-VOICEVOX Task Trackerを手元で開発するための手順です。
+VOICEVOX Task Trackerを開発・検証するための手順です。
 本番環境の構築は[デプロイ手順](DEPLOYMENT.md)、運用中の操作は[運用手順](OPERATIONS.md)を参照してください。
 設計の背景は[アーキテクチャ](ARCHITECTURE.md)にあります。
+
+画面開発、整形、変更箇所に絞った軽い確認はローカルで行い、全体検査はPull Requestで自動実行されるCIの結果を確認します。
+実データの収集・AI解析や性能検証が必要な変更では、目的に合う手動workflowを使います。
 
 ## 環境を用意する
 
@@ -18,18 +21,18 @@ pnpm install --frozen-lockfile
 
 ## 開発コマンド
 
-| コマンド                  | 内容                                                                                         | 出力先                                       |
-| ------------------------- | -------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `pnpm build`              | `src`をNode.js向けJavaScriptと型定義へ変換する                                               | `dist/`                                      |
-| `pnpm build:web`          | 静的Web UIをビルドする                                                                       | `dist/web/`                                  |
-| `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る                                            | `artifacts/workflow/runtime/tracker-run.mjs` |
-| `pnpm dev:web`            | Web UIの開発serverを起動する                                                                 | なし                                         |
-| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                                                              | なし                                         |
-| `pnpm lint`               | ESLintでコードを検査する                                                                     | なし                                         |
-| `pnpm format`             | Prettierで対象ファイルを整形する                                                             | 対象ファイル                                 |
-| `pnpm format:check`       | Prettierによる整形差分がないことを検査する                                                   | なし                                         |
-| `pnpm perf:profile`       | CLIをビルドし、モックした日次runの処理時間、API使用率、AI論理call数、summaryサイズを確認する | `artifacts/performance-profile.json`         |
-| `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する                                              | サブコマンドによる                           |
+| コマンド                  | 内容                                              | 出力先                                       |
+| ------------------------- | ------------------------------------------------- | -------------------------------------------- |
+| `pnpm build`              | `src`をNode.js向けJavaScriptと型定義へ変換する    | `dist/`                                      |
+| `pnpm build:web`          | 静的Web UIをビルドする                            | `dist/web/`                                  |
+| `pnpm build:workflow-cli` | 日次workflowの後続jobが使うES module bundleを作る | `artifacts/workflow/runtime/tracker-run.mjs` |
+| `pnpm dev:web`            | Web UIの開発serverを起動する                      | なし                                         |
+| `pnpm typecheck`          | Node.js側とWeb UI側を型検査する                   | なし                                         |
+| `pnpm lint`               | ESLintでコードを検査する                          | なし                                         |
+| `pnpm format`             | Prettierで対象ファイルを整形する                  | 対象ファイル                                 |
+| `pnpm format:check`       | Prettierによる整形差分がないことを検査する        | なし                                         |
+| `pnpm perf:profile`       | Actionsの「性能profile」で使う性能検証コマンド    | `artifacts/performance-profile.json`         |
+| `pnpm tracker:run`        | ビルド済みの`dist/cli/tracker-run.js`を起動する   | サブコマンドによる                           |
 
 `typecheck`、`lint`、`format`、`format:check`のキャッシュは`node_modules/.cache/voicevox-task-tracker/`に保存します。
 
@@ -55,25 +58,21 @@ Viteは起動時に`config.yml`の`web`設定を読み、base path、画面名�
 Web UIは`summary.json`を最初に取得します。
 項目詳細を開いたときと項目を検索したときだけ`details.json`を取得し、通知履歴を開いたときだけ`notification-history.json`を取得します。
 
-実データで表示を確かめる場合は、収集結果を保存してからPages用DTOを書き出します。
-
-```console
-pnpm build
-pnpm tracker:run collect-analyze --mode none
-pnpm tracker:run persist-state
-pnpm tracker:run build-pages --output web/public/data
-```
-
-`collect-analyze`にはGitHub Appの認証情報が必要です。Codexの認証情報とCLIは実行候補がある場合だけ必要です。
-`persist-state`はローカルの`tracker-state` refへ保存するだけで、remoteへはpushしません。
-`build-pages --output web/public/data`はサンプル公開DTOを実データで上書きします。
+実データで表示を確かめる必要がある場合は、[運用手順のsandbox](OPERATIONS.md#forkでprのコードを動かし試行環境ごとにstateを分ける)で収集・解析とPages生成を実行します。
+生成済みサイトは`sandbox-pages-<環境ID>-<run ID>-<run attempt>`、公開DTOは`sandbox-output-<環境ID>-<run ID>-<run attempt>`のActions artifactから取得できます。
+公開DTOを`web/public/data/`へ配置すれば、`pnpm dev:web`で手元のUIに表示できます。
 実データは一時出力として扱い、確認後は元のサンプルへ戻してからコミットしてください。
+通常のCIにある`build:web`はWeb UIのビルドを確認するもので、実データから公開DTOを生成する`build-pages`は実行しません。
 
-## CLIをローカルで動かす
+## CLIの仕様と部分確認
 
+schemaの生成・検証など、変更箇所に絞った確認はローカルで行えます。
 各stageの役割と操作は[運用手順](OPERATIONS.md)の「stageごとの実行」にまとめてあります。
 外部サービスへ接続しないサブコマンドは`report-workflow`、`persist-state`、`build-pages`です。
 `persist-state`と`build-pages`は検証済みartifactとローカルのGit stateを必要とします。
+
+以下のコマンド例と環境変数はCLIの仕様です。
+実データを使う一連の処理は、収集・判定の確認なら手動dry-run、試行用stateの保存とPages生成まで確認するならsandboxで実行します。
 
 `daily`、`backfill`、`collect-analyze`には`--notification-action send|hold|acknowledge-current`を指定できます。省略時は`send`です。`dry-run`にはこの指定はありません。
 
@@ -104,8 +103,8 @@ pnpm tracker:run collect-analyze --mode none --notification-action acknowledge-c
 現行の`config.yml`はAIを有効にし、認証方式を`auth-json`にしているため、実行候補がある場合だけCodex CLIと`CODEX_HOME`が必要です。
 `collect-analyze`はDiscordの環境変数を読みません。
 
-state、Pages、Discordを更新せずに収集から検証までを通したい場合は`dry-run`を使います。
-`tracker:run`のpackage scriptは`dry-run`を転送しないため、[デプロイ手順](DEPLOYMENT.md)の「ローカルdry-run」にある呼び出し方を使ってください。
+state保存、Pages生成・公開、Discord送信をせずに収集から検証までを通す場合は、[デプロイ手順の手動dry-run](DEPLOYMENT.md#1-actionsでdry-runを実行する)を使います。
+forkの対象branchまたはSHAのコードと設定を、公開本番の`tracker-state`に対して実行します。
 
 ## テスト
 
@@ -344,28 +343,23 @@ IssueとPull Requestの種別はそれぞれsuccess系とinfo系、状態はneut
 | `Pill`                    | 意味に対応する配色のpill型label          |
 | `ActionButton`            | 操作button                               |
 
-## Pull Requestを出す前に
+## Pull Requestの確認
 
-CIと同じ検査を手元で実行します。
-
-```console
-pnpm typecheck
-pnpm lint
-pnpm format:check
-pnpm build
-pnpm build:workflow-cli
-pnpm build:web
-```
-
-`format:check`が失敗した場合は`pnpm format`で整形し、意図しないファイルまで変わっていないことを確認します。
-型情報を使うESLint規則を含むため、最終確認前に`node_modules/.cache/voicevox-task-tracker/eslint`だけを削除し、`pnpm lint`でキャッシュを再構築します。
+コミット直前にローカルで`pnpm format`を実行し、意図しないファイルまで変わっていないことを確認します。
 サンプル公開DTOを実データで上書きしたままにしていないかも確認してください。
 
-日次runの処理時間、API予算、AI論理call数、Pages summaryのサイズに影響する変更では`pnpm perf:profile`も実行し、`artifacts/performance-profile.json`を確認します。
-`.github/workflows/performance.yml`の手動workflowでも同じ検証を実行できます。
+Pull Requestでは`.github/workflows/ci.yml`が`typecheck`、`lint`、`format:check`、`build`、`build:workflow-cli`、`build:web`、`verify-state`を自動実行します。
+マージ前にこれらの通過を確認します。通常のPR更新で起動するため、検査のためだけの追加pushや手動起動は不要です。
+変更箇所を早く確かめたい場合は、対象を絞った軽い確認をローカルで行えます。
 
-ローカルにGitHub Appの環境変数がない場合も、`pnpm perf:profile`は実行できます。
-この処理は、内部で用意したモックの接続先とメモリ上のstateを、本番の日次実行処理へ渡します。
+実データの収集・AI解析に関わる変更では、必要に応じて手動dry-runやsandboxを使います。
+model、reasoning effort、promptの変更ではpreflight以外の実分析を確認します。
+保存形式の変更では「永続stateの形式を変更する」の移行・保存・再読み込み検証を行います。
+CIの`verify-state`やdry-runは、保存後の再読み込み検証の代わりにはなりません。
+
+日次runの処理時間、API予算、AI論理call数、Pages summaryのサイズに影響する変更では、[運用手順の性能profile](OPERATIONS.md#性能profile)を対象のリモートブランチで手動実行します。
+ローカルで`pnpm perf:profile`は実行しません。
+性能profileは通常のPR CIには含まれず、性能に関わる変更で使います。
+この処理はモックの接続先とメモリ上のstateを本番の日次実行処理へ渡します。
 実際のGitHub、Codex、Discordには接続しません。
 現行のデータはIssueのみであり、Pull Requestの実行経路や実サービスとの接続確認は含まれません。
-`collect-analyze --mode none`や`dry-run`は認証不要の代替手段ではありません。

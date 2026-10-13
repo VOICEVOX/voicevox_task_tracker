@@ -1,0 +1,129 @@
+name: 手動dry-run
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 実行するforkのbranch名またはcommit SHA
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  dry-run:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    concurrency:
+      group: voicevox-task-tracker-codex-auth
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - name: forkのコードと設定を取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: 公開上流の既存stateを取得
+        run: git fetch --no-tags https://github.com/VOICEVOX/voicevox_task_tracker.git refs/heads/tracker-state:refs/heads/tracker-state
+
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+
+      - name: pnpmを準備
+        run: corepack enable
+
+      - name: 依存関係をインストール
+        run: pnpm install --frozen-lockfile
+
+      - name: CLIをビルド
+        run: pnpm build
+
+      - name: Codex認証ファイルを配置
+        id: codex_auth_placement
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          if [[ -z "$CODEX_AUTH_JSON" ]]; then
+            echo "CODEX_AUTH_JSONが空のため認証ファイルを配置しません"
+            exit 0
+          fi
+          mkdir -p "${{ runner.temp }}/codex-home"
+          chmod 700 "${{ runner.temp }}/codex-home"
+          printf '%s' "$CODEX_AUTH_JSON" > "${{ runner.temp }}/codex-home/auth.json"
+          chmod 600 "${{ runner.temp }}/codex-home/auth.json"
+          sha256sum "${{ runner.temp }}/codex-home/auth.json" > "${{ runner.temp }}/codex-auth-fingerprint"
+          chmod 600 "${{ runner.temp }}/codex-auth-fingerprint"
+          .github/scripts/mask-codex-auth-values.sh "${{ runner.temp }}/codex-home/auth.json"
+          echo "placed=true" >> "$GITHUB_OUTPUT"
+
+      - name: GitHub収集とCodex解析をdry-runで実行
+        env:
+          CODEX_AUTH_SYNC_TOKEN_PRESENT: ${{ secrets.CODEX_AUTH_SYNC_TOKEN != '' }}
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          GH_APP_ID: ${{ vars.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+        run: |
+          pnpm exec node --input-type=module --eval '
+          const { createDefaultCliApplication } = await import("./dist/index.js");
+          const result = await createDefaultCliApplication().run([
+            "dry-run",
+            "--config",
+            "config.yml",
+            "--artifact",
+            "artifacts/dry-run.json",
+            "--report",
+            "artifacts/run-reports/dry-run.json",
+          ]);
+          process.exitCode = result.exitCode;
+          '
+
+      - name: dry-run成果物を保存
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dry-run-artifact-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/dry-run.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: dry-run reportを保存
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dry-run-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/run-reports/dry-run.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: 更新されたCodex認証ファイルをsecretへ書き戻す
+        if: always() && steps.codex_auth_placement.outputs.placed == 'true'
+        env:
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          GH_TOKEN: ${{ secrets.CODEX_AUTH_SYNC_TOKEN }}
+        run: |
+          .github/scripts/mask-codex-auth-values.sh "$CODEX_HOME/auth.json"
+          if sha256sum --check --status "${{ runner.temp }}/codex-auth-fingerprint"; then
+            echo "Codex認証ファイルは更新されていません"
+            exit 0
+          fi
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルをsecretへ書き戻せません" >&2
+            exit 1
+          fi
+          gh secret set CODEX_AUTH_JSON \
+            --repo "$GITHUB_REPOSITORY" \
+            < "$CODEX_HOME/auth.json"
+
+      - name: Codex認証関連ファイルを削除
+        if: always()
+        run: |
+          rm -rf "${{ runner.temp }}/codex-home"
+          rm -f "${{ runner.temp }}/codex-auth-fingerprint"

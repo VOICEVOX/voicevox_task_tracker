@@ -44,7 +44,7 @@ workflowでは`GH_APP_INSTALLATION_ID`を設定しません。
 ## Actionsの設定
 
 日次workflowには、repositoryのSettingsからActions variableとActions secretを登録します。
-forkのsandbox workflowには、[試行用認証の登録手順](#forkの試行用認証を登録する)を使います。
+forkのsandboxと手動dry-runには、[試行用認証の登録手順](#forkの試行用認証を登録する)を使います。
 
 | 名前                                                  | 種別     | 値                                                  |
 | ----------------------------------------------------- | -------- | --------------------------------------------------- |
@@ -119,10 +119,10 @@ Codexが更新した`auth.json`もjob開始時のsecretとは異なるため、�
 書き戻し後はjobの最後に`codex-home`と指紋ファイルを削除します。
 Codex認証情報と`CODEX_AUTH_SYNC_TOKEN`を`config.yml`、branch、artifact、run logへ書きません。
 
-同じrepositoryの`collect-analyze`とsandbox jobは、共通の排他groupで認証の使用と書き戻しを一つずつ実行します。
+同じrepositoryの`collect-analyze`、sandbox、手動dry-runは、共通の排他groupで認証の使用と書き戻しを一つずつ実行します。
 repository secretはworkflow runの受付時に読み込まれるため、待機中に別runが認証を更新しても、受付済みrunには反映されません。
 手動実行は、同じ認証を使う前のrunが完了してから起動します。
-この制約は日次workflowとsandbox workflowに共通です。
+この制約は日次workflow、sandbox、手動dry-runに共通です。
 真偽値はtokenの登録有無だけを示し、有効期限やsecret更新権限は保証しません。
 tokenの権限不足やjobの中断が起きた場合、stateの保存と認証secretの同期は原子的に完了しません。
 
@@ -277,81 +277,64 @@ terminal項目とブロック解消待ちの項目は要対応度scoreが0にな
 
 ## デプロイ確認
 
-### 1. ローカルdry-run
+### 1. Actionsでdry-runを実行する
 
-`.node-version`に記載されたNode.jsをversion managerで有効にします。
-Node.jsのversionを確認した後にCorepackを有効にし、`package.json`で固定されたpnpmを使います。
+実データの収集・AI解析を確認する場合は、forkの「手動dry-run」workflowを使います。
+指定したコードと`config.yml`でGitHubから収集し、実行候補があればCodexを呼び出します。
+追跡stateの保存、Pagesの生成・公開、Discord送信は行いません。
 
-```console
-node --version
-corepack enable
-pnpm --version
-```
+初回は`.github/workflows/dry-run.yml`をforkのデフォルトブランチへ反映し、Actionsを有効にします。
+PRの作業ブランチへファイルを追加しただけでは手動起動できません。
+[試行用認証の登録手順](#forkの試行用認証を登録する)に従い、本番とは別にforkの`GH_APP_ID` variableと`GH_APP_PRIVATE_KEY`、`CODEX_AUTH_JSON`、`CODEX_AUTH_SYNC_TOKEN` secretsを登録します。
+PagesとDiscordの設定は不要です。
 
-`maintainers`のGitHubユーザー名一覧とrepository別上書きが意図した内容であることを確認します。
-GitHub Appの`GH_APP_ID`と`GH_APP_PRIVATE_KEY`を安全な方法でshellへ渡します。
-Codexは`auth.json`を直下に持つdirectoryを`CODEX_HOME`へ指定します。
-
-```console
-export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-ls "$CODEX_HOME/auth.json"
-```
-
-`auth.json`が無ければ`codex login`でログインしてから再度確認します。
-
-`dry-run`はDiscord webhookを読み取らず、state、Pages、Discordを変更しません。
-
-依存関係を検証してCLIをビルドします。
+起動するworkflowのbranchにはforkのデフォルトブランチを選びます。
+実行するコードと設定は、必須入力`source_ref`に同じfork内のbranch名またはcommit SHAを指定します。
+`Hiroshiba/voicevox_task_tracker`の`feature/example`を確認する例です。
 
 ```console
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm lint
-pnpm format:check
-pnpm build
+gh workflow run dry-run.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
+  -f source_ref=feature/example
 ```
 
-現在の`config.yml`を変更せずに`dry-run`を実行します。
+stateは公開本番`VOICEVOX/voicevox_task_tracker`の`tracker-state`から取得し、取得に失敗すると停止します。
+`source_ref`の`config.yml`にある`maintainers`などの設定が意図どおりか確認してください。
+state branchは`tracker-state`のまま使います。dry-runにはmodeやrepository filterの入力はありません。
+
+Codex認証ファイルが更新された場合はforkの`CODEX_AUTH_JSON`へ書き戻し、runの終了時に一時ファイルを削除します。
+同じ認証を使う前のrunが完了してから起動してください。
+
+完了したrunの状態と、次の二つのActions artifactを確認します。保持期間は30日です。
+
+| Actions artifact                          | workflow内の出力先                   | 確認内容                                       |
+| ----------------------------------------- | ------------------------------------ | ---------------------------------------------- |
+| `dry-run-report-<run ID>-<run attempt>`   | `artifacts/run-reports/dry-run.json` | `status`、`complete`、`metrics`、`diagnostics` |
+| `dry-run-artifact-<run ID>-<run attempt>` | `artifacts/dry-run.json`             | `complete`、snapshot、通知候補                 |
+
+run IDを確認し、artifactを取得する例です。
 
 ```console
-node --input-type=module --eval '
-const { createDefaultCliApplication } = await import("./dist/index.js");
-const result = await createDefaultCliApplication().run([
-  "dry-run",
-  "--config",
-  "config.yml",
-  "--artifact",
-  "artifacts/dry-run.json",
-  "--report",
-  "artifacts/run-reports/dry-run.json",
-]);
-process.exitCode = result.exitCode;
-'
+gh run list --repo Hiroshiba/voicevox_task_tracker --workflow dry-run.yml --limit 1
+gh run view RUN_ID --repo Hiroshiba/voicevox_task_tracker
+gh run download RUN_ID --repo Hiroshiba/voicevox_task_tracker --dir hiho_dry_run
 ```
 
-`artifacts/run-reports/dry-run.json`の`status`、`complete`、`diagnostics`、各metricを確認します。
-`artifacts/dry-run.json`には検証済みsnapshotと通知候補が入るため、repository範囲、待ち相手を表す`waitingOn`、関係、通知量を確認します。
+reportとartifactの`complete`を確認し、snapshotのrepository範囲、待ち相手を表す`waitingOn`、関係、通知量を調べます。
+CLIの開始前などに失敗するとartifactが作られないことがあるため、runの失敗stepも確認します。
 
 ### 2. Codexのdry-run
 
-lockfileで固定したCodex CLI `0.145.0`を確認します。
-
-```console
-pnpm exec codex --version
-```
-
 現行の`config.yml`は`ai.enabled: true`と`ai.authentication: auth-json`を設定済みです。
-`CODEX_HOME`直下の`auth.json`を使って同じ`dry-run`を実行し、`ai.model`に設定されたmodel IDでCodex呼び出しが成功することを確認します。
-ローカルで`api-key`を使う場合は、`ai.authentication`を`api-key`にして`OPENAI_API_KEY`を渡します。
-どちらの方式でも、選択しなかった方式の環境変数はCodexへ渡りません。
+手動dry-runはlockfileで固定したCodex CLIとforkの認証情報を使います。
+前節のrun reportで、`ai.model`に設定されたmodel IDの呼び出しが成功したかを確認します。
 `auth-json`で候補を実行するrunでは、preflightを含む`metrics.aiCallCount`、`metrics.aiProcessAttemptCount`、`metrics.estimatedInputTokens`を確認します。preflightはrun全体の入力文字数と見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の`ai.budget.maxCodexExecAttemptsPerRun`は実試行50回の上限です。preflightを行うrunでは候補の初回試行枠を最大49件分確保でき、retryとsemantic補正の追加実試行も同じ上限から消費します。追加実試行は論理call数へ加えません。
 
 `status`が`success`で`metrics.aiProcessAttemptCount`が1以上となり、`diagnostics`にmodelの利用不可を示す内容がなければ、設定済みmodel IDを利用できています。
 `metrics.aiProcessAttemptCount`が0ならmodelを呼び出していないため、利用可否を確認できていません。`status`が`failure`の場合は、`metrics.aiCallCount`が0でもpreflightでmodelを呼び出した可能性があるため、実試行数と`diagnostics`で失敗段階を確認します。
-実試行数が0なら、設定済みmodel IDを`--model`へ指定した最小の`pnpm exec codex exec`を同じ認証情報で実行します。
-
 `metrics.aiCacheHitCount`、`metrics.estimatedInputTokens`、`diagnostics`も確認します。
 model、reasoning effort、promptを変更した場合は、preflight以外の実分析を含むdry-runでAI判定と通知候補の差分を確認します。
+preflightだけ、cache再利用だけ、予算による延期で実分析が0件だった場合は、実推論の確認を済ませたことにしません。
+対象を指定して実推論を確認する必要がある場合は、[sandboxのforcedモード](OPERATIONS.md#forkでprのコードを動かし試行環境ごとにstateを分ける)を使います。
 
 ### 3. 日次workflow
 
