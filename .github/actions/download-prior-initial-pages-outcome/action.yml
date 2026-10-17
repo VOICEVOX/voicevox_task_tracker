@@ -1,0 +1,28 @@
+name: 保存済み初回Pages証拠を取得
+description: 全Actions runの通常artifactと個別結果を照合して取得する
+inputs:
+  run-id:
+    description: tracking run ID
+    required: true
+  github-token:
+    description: Actions artifactの読取token
+    required: true
+  output-path:
+    description: 取得証拠の照合情報の保存先
+    required: false
+    default: artifacts/workflow/previous/initial-pages-evidence.json
+outputs:
+  status:
+    description: 保存済み結果の取得状態
+    value: ${{ steps.download.outputs.status }}
+runs:
+  using: composite
+  steps:
+    - name: 保持されている証拠を照会して取得
+      id: download
+      shell: bash
+      env:
+        ACTIONS_READ_TOKEN: ${{ inputs.github-token }}
+        PRIOR_TRACKING_RUN_ID: ${{ inputs.run-id }}
+        PRIOR_OUTCOME_PATH: ${{ inputs.output-path }}
+      run: node "$GITHUB_ACTION_PATH/download.mjs"

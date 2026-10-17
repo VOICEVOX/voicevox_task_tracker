@@ -71,6 +71,16 @@ export class DiscordWebhookDeliveryUnknownError extends DiscordError {
   }
 }
 
+/** Discord送信後に運用通知の送達記録が失敗したことを表す。 */
+export class DiscordOperationsPostSendError extends DiscordError {
+  public readonly discordMessageId: string;
+
+  public constructor(discordMessageId: string, cause: unknown) {
+    super("運用障害通知の送信後に送達記録を確定できませんでした", { cause });
+    this.discordMessageId = discordMessageId;
+  }
+}
+
 /** Discord webhookのretry上限へ到達したことを表す。 */
 export class DiscordWebhookRetryExhaustedError extends DiscordWebhookRequestError {
   public constructor(status: 429, attempts: number, options: ErrorOptions) {

@@ -1,0 +1,39 @@
+name: Pages deploymentの実IDを観測
+description: 完了した同一run・attemptのdeploy actionログとPages APIを照合する
+inputs:
+  phase:
+    description: Pages公開の段階
+    required: true
+  run-id:
+    description: Actions run ID
+    required: true
+  run-attempt:
+    description: Actions run attempt
+    required: true
+  build-version:
+    description: deploy-pages actionが使用したGITHUB_SHA
+    required: true
+  page-url:
+    description: deploy-pages actionが出力したPages URL
+    required: true
+  github-token:
+    description: Actions jobとPages deploymentを読むtoken
+    required: true
+outputs:
+  deployment_id:
+    description: Pages APIで成功を確認した実deployment ID
+    value: ${{ steps.observe.outputs.deployment_id }}
+runs:
+  using: composite
+  steps:
+    - name: deploy actionのログとPages APIを照合
+      id: observe
+      shell: bash
+      env:
+        PAGES_OBSERVATION_PHASE: ${{ inputs.phase }}
+        PAGES_OBSERVATION_RUN_ID: ${{ inputs.run-id }}
+        PAGES_OBSERVATION_RUN_ATTEMPT: ${{ inputs.run-attempt }}
+        PAGES_OBSERVATION_BUILD_VERSION: ${{ inputs.build-version }}
+        PAGES_OBSERVATION_PAGE_URL: ${{ inputs.page-url }}
+        PAGES_OBSERVATION_TOKEN: ${{ inputs.github-token }}
+      run: node "$GITHUB_ACTION_PATH/observe.mjs"

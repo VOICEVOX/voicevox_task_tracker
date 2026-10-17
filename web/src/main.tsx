@@ -1,12 +1,14 @@
 import { render } from "preact";
 
+import type {
+  PublicDetailsDto,
+  PublicNotificationHistoryDto,
+  PublicSummaryDto,
+} from "../../src/pages/public-dto-contracts.js";
 import {
   createPublicDetailsDto,
   createPublicNotificationHistoryDto,
   createPublicSummaryDto,
-  type PublicDetailsDto,
-  type PublicNotificationHistoryDto,
-  type PublicSummaryDto,
 } from "../../src/pages/public-dto.js";
 import { App, DataLoadFailure } from "./app.js";
 import { type PublicNotificationHistoryLoader } from "./notification-history-loader.js";

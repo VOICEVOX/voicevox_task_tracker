@@ -1,44 +1,19 @@
 import { z } from "zod";
 
-import { type Importance } from "./importance.js";
-import { notificationReasonSchema, type NotificationReason } from "./notification-reason.js";
 import type {
-  PersonalReminderCause,
-  PersonalReminderCauseId,
-  PersonalReminderCausePlanning,
-  PersonalReminderResponsibilityId,
-  PersonalReminderTimeBasis,
-} from "./personal-reminder-causes.js";
+  NotificationDeliveryAttempt,
+  NotificationManualResolution,
+} from "./notification-delivery-attempt.js";
 import { type SourceId } from "./source-id.js";
-import type { StalenessWaitClass } from "./staleness.js";
-import type {
-  AiAnalysisElement,
-  AiAnalysisElementApplications,
-  AiAnalysisElementMetadata,
-  AiAnalysisElementMigrationResult,
-  AiAnalysisElementReuseProof,
-} from "./ai-analysis-elements.js";
-import type { AiAnalysisElementSourceGeneration } from "./ai-analysis-source-generations.js";
-import type {
-  TrackedItemAiDependencies,
-  AiAnalysisDependency,
-} from "./ai-analysis-dependencies.js";
 
-export type {
-  AiAnalysisElement,
-  AiAnalysisElementMetadata,
-  AiAnalysisElementGeneration,
-} from "./ai-analysis-elements.js";
-export type { AiAnalysisElementSourceGeneration } from "./ai-analysis-source-generations.js";
-
-const opaqueIdSchema = z
+export const opaqueIdSchema = z
   .string()
   .min(1, "IDは空にできません")
   .regex(/^\S+$/, "IDに空白は使えません");
-const githubNodeIdSchema = opaqueIdSchema.brand<"GitHubNodeId">();
+export const githubNodeIdSchema = opaqueIdSchema.brand<"GitHubNodeId">();
 const githubRepositoryIdSchema = opaqueIdSchema.brand<"GitHubRepositoryId">();
 const externalReferenceNodeIdSchema = opaqueIdSchema.brand<"ExternalReferenceNodeId">();
-const utcIsoDateTimeSchema = z.iso
+export const utcIsoDateTimeSchema = z.iso
   .datetime({
     offset: true,
     error: "タイムゾーンを含むISO 8601日時を指定してください",
@@ -369,226 +344,6 @@ export type WaitingOn = Readonly<{
   confidence: number;
 }>;
 
-/** 通知候補に保存する待ち相手の参照。 */
-type PendingNotificationWaitingOn = Pick<WaitingOn, "kind" | "candidateId" | "role">;
-
-/** 個人催促原因を対象にした送信待ち通知の対象状態。 */
-export type PendingPersonalReminderTarget = Readonly<{
-  kind: "personal_reminder";
-  causeId: PersonalReminderCauseId;
-  responsibilityId: PersonalReminderResponsibilityId;
-  actionableSince: PersonalReminderTimeBasis;
-  stallSince: PersonalReminderTimeBasis;
-}>;
-
-/** 通知候補の判定対象。 */
-export type PendingNotificationTarget =
-  | Readonly<{
-      kind: "responsibility";
-      waitingOn: readonly PendingNotificationWaitingOn[];
-    }>
-  | Readonly<{
-      kind: "unblocked";
-    }>
-  | Readonly<{
-      kind: "cycle";
-      cycleId: string;
-    }>
-  | Readonly<{
-      kind: "overdue";
-      status: Status;
-      waitClass: StalenessWaitClass;
-      waitingOn: readonly PendingNotificationWaitingOn[];
-      lastProgressAt: UtcIsoDateTime;
-    }>
-  | PendingPersonalReminderTarget;
-
-/** 送信待ち通知の判定結果と公開可能な対象状態。 */
-export type PendingNotification = Readonly<{
-  notificationKey: string;
-  itemNodeId: GitHubNodeId;
-  reason: NotificationReason;
-  detectedAt: UtcIsoDateTime;
-  highPriorityEligible: boolean;
-  target: PendingNotificationTarget;
-}>;
-
-const pendingNotificationWaitingOnSchema = z.strictObject({
-  kind: z.enum(["user", "team", "role", "item", "automation", "unknown"]),
-  candidateId: opaqueIdSchema,
-  role: z.enum([
-    "author",
-    "maintainer",
-    "reviewer",
-    "assignee",
-    "respondent",
-    "dependency",
-    "merge_decider",
-    "ci",
-    "unknown",
-  ]),
-});
-const pendingNotificationStatusSchema = z.enum([
-  "waiting_for_assessment",
-  "waiting_for_owner",
-  "waiting_for_decision",
-  "waiting_for_review",
-  "waiting_for_revision",
-  "waiting_for_reply",
-  "waiting_for_work",
-  "waiting_for_unblock",
-  "waiting_for_automation",
-  "waiting_for_merge",
-  "in_progress",
-  "unknown",
-  "terminal_merged",
-  "terminal_completed",
-  "terminal_not_planned",
-]);
-const pendingNotificationWaitClassSchema = z.enum([
-  "assessment",
-  "owner",
-  "decision",
-  "review",
-  "revision",
-  "reply",
-  "work",
-  "merge",
-  "automation",
-  "blockedParent",
-  "notApplicable",
-]);
-const pendingPersonalReminderCauseIdSchema = z
-  .string()
-  .min(1)
-  .max(512)
-  .regex(/^\S+$/u)
-  .brand<"PersonalReminderCauseId">();
-const pendingPersonalReminderResponsibilityIdSchema = z
-  .string()
-  .min(1)
-  .max(512)
-  .regex(/^\S+$/u)
-  .brand<"PersonalReminderResponsibilityId">();
-const pendingPersonalReminderSourceIdSchema = z
-  .string()
-  .min(3)
-  .max(512)
-  .regex(/^\S+$/u)
-  .brand<"SourceId">();
-const pendingPersonalReminderTimeBasisSchema = z.discriminatedUnion("source", [
-  z.strictObject({
-    source: z.literal("event"),
-    at: utcIsoDateTimeSchema,
-    sourceIds: z.array(pendingPersonalReminderSourceIdSchema).nonempty().max(30),
-  }),
-  z.strictObject({
-    source: z.literal("first_observation"),
-    at: utcIsoDateTimeSchema,
-  }),
-]);
-const pendingNotificationTargetSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("responsibility"),
-    waitingOn: z.array(pendingNotificationWaitingOnSchema).min(1),
-  }),
-  z.strictObject({
-    kind: z.literal("unblocked"),
-  }),
-  z.strictObject({
-    kind: z.literal("cycle"),
-    cycleId: opaqueIdSchema,
-  }),
-  z.strictObject({
-    kind: z.literal("overdue"),
-    status: pendingNotificationStatusSchema,
-    waitClass: pendingNotificationWaitClassSchema,
-    waitingOn: z.array(pendingNotificationWaitingOnSchema).min(1),
-    lastProgressAt: utcIsoDateTimeSchema,
-  }),
-  z.strictObject({
-    kind: z.literal("personal_reminder"),
-    causeId: pendingPersonalReminderCauseIdSchema,
-    responsibilityId: pendingPersonalReminderResponsibilityIdSchema,
-    actionableSince: pendingPersonalReminderTimeBasisSchema,
-    stallSince: pendingPersonalReminderTimeBasisSchema,
-  }),
-]);
-
-function isPersonalReminderReasonCode(
-  reasonCode: Exclude<NotificationReason["reasonCode"], "none">,
-): boolean {
-  switch (reasonCode) {
-    case "assessment_overdue":
-    case "owner_overdue":
-    case "decision_overdue":
-    case "review_overdue":
-    case "revision_overdue":
-    case "reply_overdue":
-    case "work_overdue":
-    case "merge_overdue":
-      return true;
-    case "owner_unknown":
-    case "blocker_overdue":
-    case "newly_unblocked":
-    case "dependency_cycle":
-    case "responsibility_changed":
-    case "automation_stuck":
-      return false;
-  }
-}
-
-function pendingNotificationTargetKind(
-  reasonCode: Exclude<NotificationReason["reasonCode"], "none">,
-): PendingNotificationTarget["kind"] {
-  switch (reasonCode) {
-    case "responsibility_changed":
-      return "responsibility";
-    case "newly_unblocked":
-      return "unblocked";
-    case "dependency_cycle":
-      return "cycle";
-    case "assessment_overdue":
-    case "owner_overdue":
-    case "decision_overdue":
-    case "review_overdue":
-    case "revision_overdue":
-    case "reply_overdue":
-    case "work_overdue":
-    case "owner_unknown":
-    case "blocker_overdue":
-    case "merge_overdue":
-    case "automation_stuck":
-      return "overdue";
-  }
-}
-
-/** 送信待ち通知の判定結果を検証するschema。 */
-export const pendingNotificationSchema = z
-  .strictObject({
-    notificationKey: opaqueIdSchema,
-    itemNodeId: githubNodeIdSchema,
-    reason: notificationReasonSchema,
-    detectedAt: utcIsoDateTimeSchema,
-    highPriorityEligible: z.boolean(),
-    target: pendingNotificationTargetSchema,
-  })
-  .superRefine((notification, context) => {
-    if (
-      notification.target.kind !== pendingNotificationTargetKind(notification.reason.reasonCode) &&
-      !(
-        notification.target.kind === "personal_reminder" &&
-        isPersonalReminderReasonCode(notification.reason.reasonCode)
-      )
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["target", "kind"],
-        message: "通知理由と対象kindの組み合わせが不正です",
-      });
-    }
-  });
-
 /** waitingOn配列でprimaryに選んだ要素と選定理由。 */
 export type PrimaryWaitingOn =
   | Readonly<{
@@ -657,81 +412,6 @@ export type GitHubItemUrl = `https://github.com/${string}`;
 
 export type AiCacheEntryId = `sha256:${string}`;
 
-/** 追跡項目へ保存する要素別AI分析結果。 */
-export type TrackedItemAiAnalysisCurrentElement<
-  Element extends AiAnalysisElement = AiAnalysisElement,
-> = Readonly<{
-  generation: AiAnalysisElementSourceGeneration<Element>;
-  result: AiAnalysisElementMigrationResult<Element>;
-  evaluationProof: AiAnalysisElementReuseProof;
-}>;
-
-/** 追跡項目へ保存する要素別AI分析結果。 */
-export type TrackedItemAiAnalysisCurrentElements = Readonly<{
-  [Element in AiAnalysisElement]?: TrackedItemAiAnalysisCurrentElement<Element>;
-}>;
-
-/** 採用済みの現在形式AI判定要素。 */
-export type TrackedItemAiAnalysisCurrentAdoptedElement<
-  Element extends AiAnalysisElement = AiAnalysisElement,
-> = Readonly<{
-  origin: "current";
-  result: AiAnalysisElementMigrationResult<Element>;
-  generation: AiAnalysisElementSourceGeneration<Element>;
-  reuseProof: AiAnalysisElementReuseProof;
-}>;
-
-/** 採用済みの現在形式AI判定要素一覧。 */
-export type TrackedItemAiAnalysisCurrentAdoptedElements = Readonly<{
-  [Element in AiAnalysisElement]?: TrackedItemAiAnalysisCurrentAdoptedElement<Element>;
-}>;
-
-export type TrackedItemAiAnalysisMigrationElements = Readonly<{
-  [Element in AiAnalysisElement]?: AiAnalysisElementMigrationResult<Element>;
-}>;
-
-export type TrackedItemAiAnalysisMigrationAdoptedElement<
-  Element extends AiAnalysisElement = AiAnalysisElement,
-> =
-  | Readonly<{
-      origin: "current";
-      generation: AiAnalysisElementSourceGeneration<Element>;
-      result: AiAnalysisElementMigrationResult<Element>;
-      reuseProof: AiAnalysisElementReuseProof;
-    }>
-  | Readonly<{
-      origin: "migration";
-      result: AiAnalysisElementMigrationResult<Element>;
-      reuseProof: AiAnalysisElementReuseProof;
-    }>;
-
-export type TrackedItemAiAnalysisMigrationAdoptedElements = Readonly<{
-  [Element in AiAnalysisElement]?: TrackedItemAiAnalysisMigrationAdoptedElement<Element>;
-}>;
-
-type TrackedItemAiAnalysisStatus =
-  "used" | "failed" | "deferred" | "not_required" | "disabled" | "not_recorded";
-
-/** 追跡項目へ保存するAI判定要素ごとの最終適用元。 */
-export type TrackedItemAiAnalysisApplications = AiAnalysisElementApplications;
-
-/** 追跡項目へ保存する要素別AI分析結果と生成元。 */
-export type TrackedItemAiAnalysis =
-  | Readonly<{
-      origin: "current";
-      status: TrackedItemAiAnalysisStatus;
-      elements: TrackedItemAiAnalysisCurrentElements;
-      adoptedElements: TrackedItemAiAnalysisCurrentAdoptedElements;
-      applications: TrackedItemAiAnalysisApplications;
-    }>
-  | Readonly<{
-      origin: "migration";
-      status: TrackedItemAiAnalysisStatus;
-      elements: TrackedItemAiAnalysisCurrentElements;
-      adoptedElements: TrackedItemAiAnalysisMigrationAdoptedElements;
-      applications: TrackedItemAiAnalysisApplications;
-    }>;
-
 export type TrackedItemInputEvent = Readonly<{
   sourceId: SourceId;
   url: GitHubItemUrl;
@@ -774,82 +454,6 @@ export function createTrackedItemLatestEventActor(
   });
 }
 
-type TrackedItemFields = Readonly<{
-  nodeId: GitHubNodeId;
-  type: TrackedItemType;
-  repositoryId: GitHubRepositoryId;
-  displayReference: GitHubItemDisplayReference;
-  number: number;
-  url: GitHubItemUrl;
-  title: string;
-  importance: Importance;
-  author: ObservedGitHubItemAuthor;
-  latestEventActor: TrackedItemLatestEventActor;
-  state: TrackedItemState;
-  notificationClass: TrackingNotificationClass;
-  primaryWaitingOn: PrimaryWaitingOn;
-  nextAction: string;
-  createdAt: UtcIsoDateTime;
-  githubUpdatedAt: UtcIsoDateTime;
-  lastHumanActivityAt: UtcIsoDateTime;
-  lastProgressAt: UtcIsoDateTime;
-  statusSince: UtcIsoDateTime;
-  ownerSince: UtcIsoDateTime;
-  stallSince: UtcIsoDateTime;
-  observedAt: UtcIsoDateTime;
-  labels: readonly string[];
-  assignees: readonly GitHubAccountActor[];
-  reviewState: ReviewState;
-  checkState: CheckState;
-  aiAnalysis: TrackedItemAiAnalysis;
-  aiDependencies: TrackedItemAiDependencies;
-  personalReminderCauses: readonly PersonalReminderCause[];
-  personalReminderCausePlanning: PersonalReminderCausePlanning;
-  inputEvents: readonly TrackedItemInputEvent[];
-  confidence: number;
-  evidence: readonly Evidence[];
-  uncertainties: readonly string[];
-}>;
-
-/** nodeIdを正本とし、renameで変わり得る表示用別名を分離した追跡項目。 */
-export type TrackedItem =
-  | (TrackedItemFields &
-      Readonly<{
-        status: NonTerminalStatus;
-        waitingOn: readonly WaitingOn[];
-      }>)
-  | (TrackedItemFields &
-      Readonly<{
-        status: TerminalStatus;
-        waitingOn: readonly [];
-      }>);
-
-type RelationFields = Readonly<{
-  id: string;
-  fromNodeId: GraphNodeId;
-  toNodeId: GraphNodeId;
-  type: RelationType;
-  provenance: RelationProvenance;
-  confidence: number;
-  evidence: readonly Evidence[];
-  contradictions: readonly RelationContradictionSummary[];
-  firstSeenAt: UtcIsoDateTime;
-  lastConfirmedAt: UtcIsoDateTime;
-  aiDependency: AiAnalysisDependency;
-}>;
-
-/** blocksではfromNodeIdをblocker、toNodeIdをblocked itemとするRelation。 */
-export type Relation =
-  | (RelationFields &
-      Readonly<{
-        active: true;
-      }>)
-  | (RelationFields &
-      Readonly<{
-        active: false;
-        removedAt: UtcIsoDateTime;
-      }>);
-
 /** Codex実行で指定できるreasoning effortの許容値一覧。 */
 export const REASONING_EFFORTS = [
   "none",
@@ -864,15 +468,14 @@ export const REASONING_EFFORTS = [
 /** Codex実行で指定するreasoning effort。 */
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-/** Codex分析要素を再現するための実行設定、hash、生成時刻。 */
-export type AnalysisMetadata = AiAnalysisElementMetadata;
-
 type NotificationLedgerEntryBase = Readonly<{
   notificationKey: string;
   itemNodeId: GitHubNodeId;
   reasonCode: NotificationLedgerReasonCode;
   severity: Severity;
   reservedAt: UtcIsoDateTime;
+  lastDeliveryAttempt?: NotificationDeliveryAttempt | undefined;
+  manualResolution?: NotificationManualResolution | undefined;
 }>;
 
 /** Discord通知の予約、送信開始、送信結果、確認済みledger entryを記録する型。 */
@@ -903,11 +506,14 @@ export type NotificationLedgerEntry =
 /** 運用障害として通知する処理の分類。 */
 export type OperationsAlertKind = "collection" | "pages" | "discord";
 
+/** 専用台帳へ保存する運用障害の分類。 */
+export type OperationsAlertLedgerKind = OperationsAlertKind | "workflow_infrastructure_failure";
+
 /** 送信済みの運用障害通知を重複抑制するledger entry。 */
 export type OperationsAlertLedgerEntry = Readonly<{
   alertKey: string;
   incidentId: string;
-  kind: OperationsAlertKind;
+  kind: OperationsAlertLedgerKind;
   occurredAt: UtcIsoDateTime;
   sentAt: UtcIsoDateTime;
   discordMessageId: string;

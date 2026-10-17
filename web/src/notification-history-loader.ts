@@ -1,4 +1,4 @@
-import { type PublicNotificationHistoryDto } from "../../src/pages/public-dto.js";
+import type { PublicNotificationHistoryDto } from "../../src/pages/public-dto-contracts.js";
 
 /** notification-history.jsonを取得する遅延loader。 */
 export type PublicNotificationHistoryLoader = () => Promise<PublicNotificationHistoryDto>;

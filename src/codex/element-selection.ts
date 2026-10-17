@@ -8,7 +8,6 @@ import {
   type AnalysisElementSourceGeneration,
 } from "./analysis-elements.js";
 import { determineAnalysisElementReuse } from "./analysis-reuse.js";
-import { assertNonNullable } from "../util/assert-non-nullable.js";
 
 /** IssueまたはPull RequestについてAIへ渡す要素の選別候補。 */
 export type AnalysisElementSelectionCandidate = Readonly<{
@@ -132,50 +131,5 @@ export function selectAnalysisElements(
     selected: Object.freeze(selected),
     skipped: Object.freeze(skipped.map((value) => Object.freeze(value))),
     shouldCallAi: selected.length !== 0,
-  });
-}
-
-/** 要素をすべて含む候補配列からAIが必要な要素だけを純粋に選別する。 */
-export function selectAiAnalysisElements(
-  candidates: readonly AnalysisElementSelectionCandidate[],
-): AnalysisElementSelection {
-  const candidatesByElement = new Map<AnalysisElement, AnalysisElementSelectionCandidate>();
-  for (const candidate of candidates) {
-    if (candidatesByElement.has(candidate.element)) {
-      throw new TypeError(`AI判定要素が重複しています。対象: ${candidate.element}`);
-    }
-    candidatesByElement.set(candidate.element, candidate);
-  }
-  if (candidatesByElement.size !== AI_ANALYSIS_ELEMENTS.length) {
-    throw new TypeError("AI判定要素の必要性候補が9要素を網羅していません");
-  }
-  const status = candidatesByElement.get("status");
-  const waitingOn = candidatesByElement.get("waitingOn");
-  const nextAction = candidatesByElement.get("nextAction");
-  const relations = candidatesByElement.get("relations");
-  const progress = candidatesByElement.get("progress");
-  const importance = candidatesByElement.get("importance");
-  const deadline = candidatesByElement.get("deadline");
-  const notification = candidatesByElement.get("notification");
-  const selfCommitment = candidatesByElement.get("selfCommitment");
-  assertNonNullable(status, "AI判定要素の必要性候補がありません。対象: status");
-  assertNonNullable(waitingOn, "AI判定要素の必要性候補がありません。対象: waitingOn");
-  assertNonNullable(nextAction, "AI判定要素の必要性候補がありません。対象: nextAction");
-  assertNonNullable(relations, "AI判定要素の必要性候補がありません。対象: relations");
-  assertNonNullable(progress, "AI判定要素の必要性候補がありません。対象: progress");
-  assertNonNullable(importance, "AI判定要素の必要性候補がありません。対象: importance");
-  assertNonNullable(deadline, "AI判定要素の必要性候補がありません。対象: deadline");
-  assertNonNullable(notification, "AI判定要素の必要性候補がありません。対象: notification");
-  assertNonNullable(selfCommitment, "AI判定要素の必要性候補がありません。対象: selfCommitment");
-  return selectAnalysisElements({
-    status,
-    waitingOn,
-    nextAction,
-    relations,
-    progress,
-    importance,
-    deadline,
-    notification,
-    selfCommitment,
   });
 }

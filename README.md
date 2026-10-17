@@ -13,7 +13,7 @@ GitHub Actionsから1日6回、4時間間隔で実行し、GitHub Pagesへ項目
 - 一覧の既定の並び順と依存グラフの優先順位は要対応度で決めます。停滞レベルはDiscord通知の判断にだけ使い、画面には出しません。
 - 公開かつ非アーカイブで、無効化されていないリポジトリだけを収集対象に選びます。
 - 選定を抜けた非公開データやsecretがstateや公開DTOから見つかったrunはfail closedとし、state、Pages、Discordを更新しません。
-- snapshot、日次履歴、AI cache、通知管理記録、run reportは専用の`tracker-state` branchへ保存します。
+- snapshot、日次履歴、AI cache、通常通知の管理記録、run reportは`tracker-state` branchへ保存します。運用障害通知の送信予約と送信済み記録は`tracker-operations-alerts` branchへ保存します。
 
 ## はじめかた
 

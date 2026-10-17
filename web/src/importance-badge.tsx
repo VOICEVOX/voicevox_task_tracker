@@ -1,5 +1,5 @@
-import { type PublicItemSummaryDto } from "../../src/pages/public-dto.js";
-import { importanceLevelLabel } from "./model.js";
+import type { PublicItemSummaryDto } from "../../src/pages/public-dto-contracts.js";
+import { importanceLevelLabel } from "./model-labels.js";
 import { Pill } from "./ui.js";
 
 type ScoreWithLevel = PublicItemSummaryDto["importance"];

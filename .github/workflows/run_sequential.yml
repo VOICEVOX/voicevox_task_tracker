@@ -1,0 +1,216 @@
+name: 追跡runの直列実行
+
+on:
+  workflow_call:
+    inputs:
+      run_id:
+        required: false
+        type: string
+        default: ""
+      backfill:
+        required: false
+        type: string
+        default: none
+      repository_filter:
+        required: false
+        type: string
+        default: ""
+      notification_action:
+        required: false
+        type: string
+        default: send
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 再開するtracking run ID。新規runでは空にする
+        required: false
+        type: string
+      backfill:
+        description: 追跡対象へ追加する範囲
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - linked
+          - all-open
+      repository_filter:
+        description: backfill対象を限定するVOICEVOXリポジトリ名のカンマ区切り
+        required: false
+        type: string
+      notification_action:
+        description: 通知処理
+        required: true
+        default: send
+        type: choice
+        options:
+          - send
+          - hold
+          - acknowledge-current
+
+permissions: {}
+
+concurrency:
+  group: voicevox-task-tracker-daily
+  cancel-in-progress: false
+
+jobs:
+  tracking:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    outputs:
+      command_started: ${{ steps.run.outputs.command_started }}
+    permissions:
+      contents: write
+      actions: write
+      pages: write
+      id-token: write
+    steps:
+      - name: sourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: production Pages leaseを確認
+        env:
+          RECOVERY_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          if [[ -n "$RECOVERY_RUN_ID" ]]; then
+            bash .github/scripts/assert-production-pages-lease.sh --recovery-run-id "$RECOVERY_RUN_ID"
+          else
+            bash .github/scripts/assert-production-pages-lease.sh
+          fi
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: pnpmと実行sourceを準備
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm lint
+          pnpm format:check
+          pnpm build
+      - name: 診断先を設定
+        run: echo "VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH=$RUNNER_TEMP/voicevox-task-tracker-diagnostics-$GITHUB_JOB.jsonl" >> "$GITHUB_ENV"
+      - name: Codex認証ファイルを配置
+        id: codex_auth_placement
+        env:
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+        run: |
+          if [[ -z "$CODEX_AUTH_JSON" ]]; then
+            echo 'CODEX_AUTH_JSONが空のため認証ファイルを配置しません'
+            exit 0
+          fi
+          mkdir -p "$RUNNER_TEMP/codex-home"
+          chmod 700 "$RUNNER_TEMP/codex-home"
+          printf '%s' "$CODEX_AUTH_JSON" > "$RUNNER_TEMP/codex-home/auth.json"
+          chmod 600 "$RUNNER_TEMP/codex-home/auth.json"
+          sha256sum "$RUNNER_TEMP/codex-home/auth.json" > "$RUNNER_TEMP/codex-auth-fingerprint"
+          chmod 600 "$RUNNER_TEMP/codex-auth-fingerprint"
+          .github/scripts/mask-codex-auth-values.sh "$RUNNER_TEMP/codex-home/auth.json"
+          echo 'placed=true' >> "$GITHUB_OUTPUT"
+      - name: 全canonical stageを一プロセスで実行
+        id: run
+        env:
+          CODEX_AUTH_SYNC_TOKEN_PRESENT: ${{ secrets.CODEX_AUTH_SYNC_TOKEN != '' }}
+          CODEX_HOME: ${{ runner.temp }}/codex-home
+          GH_APP_ID: ${{ vars.GH_APP_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_OPERATIONS_WEBHOOK_URL: ${{ secrets.DISCORD_OPERATIONS_WEBHOOK_URL }}
+          TRACKING_EFFECT_TARGET: production
+          TRACKING_STATE_REF: tracker-state
+          TRACKING_PAGES_ENVIRONMENT: github-pages
+          BACKFILL_MODE: ${{ inputs.backfill }}
+          REPOSITORY_FILTER: ${{ inputs.repository_filter }}
+          NOTIFICATION_ACTION: ${{ inputs.notification_action }}
+          RECOVERY_RUN_ID: ${{ inputs.run_id }}
+        run: |
+          if [[ -n "$RECOVERY_RUN_ID" ]]; then
+            export VOICEVOX_EXPECTED_RUN_ID="$RECOVERY_RUN_ID"
+          fi
+          arguments=(run-sequential --config config.yml --mode "$BACKFILL_MODE" --notification-action "$NOTIFICATION_ACTION" --scheduled-for "$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')")
+          if [[ -n "$REPOSITORY_FILTER" ]]; then
+            IFS=',' read -r -a repositories <<< "$REPOSITORY_FILTER"
+            for repository in "${repositories[@]}"; do
+              repository="$(printf '%s' "$repository" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+              if [[ "$repository" != VOICEVOX/* ]]; then
+                repository="VOICEVOX/$repository"
+              fi
+              arguments+=(--repository "$repository")
+            done
+          fi
+          echo 'command_started=true' >> "$GITHUB_OUTPUT"
+          PATH="$PWD/node_modules/.bin:$PATH" node --enable-source-maps dist/cli/tracker-run.js "${arguments[@]}"
+      - name: 直列runのreportを保存
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sequential-run-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/run-reports/run-sequential.json
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Pagesとreceiptの確定結果を保存
+        id: receipts
+        if: steps.run.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sequential-run-receipts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/workflow/sequential-pages/
+            artifacts/workflow/sequential-receipts/
+          if-no-files-found: error
+          retention-days: 7
+      - name: 完了したPages leaseを解放
+        if: steps.run.outcome == 'success' && steps.receipts.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node --enable-source-maps dist/cli/sequential-pages-lease-release.js
+      - name: 更新されたCodex認証ファイルをsecretへ書き戻す
+        if: always() && steps.codex_auth_placement.outputs.placed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CODEX_AUTH_SYNC_TOKEN }}
+        run: |
+          .github/scripts/mask-codex-auth-values.sh "$RUNNER_TEMP/codex-home/auth.json"
+          if sha256sum --check --status "$RUNNER_TEMP/codex-auth-fingerprint"; then
+            echo 'Codex認証ファイルは更新されていません'
+            exit 0
+          fi
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo 'CODEX_AUTH_SYNC_TOKENが空のためCodex認証ファイルを書き戻せません' >&2
+            exit 1
+          fi
+          gh secret set CODEX_AUTH_JSON --repo "$GITHUB_REPOSITORY" < "$RUNNER_TEMP/codex-home/auth.json"
+      - name: Codex認証関連ファイルを削除
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/codex-home"
+          rm -f "$RUNNER_TEMP/codex-auth-fingerprint"
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: daily
+          runtime-cli: dist/cli/tracker-run.js
+          retention-days: 7
+          diagnostics-key: ${{ secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 }}
+
+  notify-operations:
+    needs: tracking
+    if: always() && needs.tracking.result == 'failure'
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/_tracking-notify-operations.yml
+    with:
+      state_ref: tracker-state
+      config_path: config.yml
+      workflow_kind: daily
+      stage_results_json: ${{ toJSON(needs) }}
+      infrastructure_failure_eligible: ${{ needs.tracking.outputs.command_started != 'true' }}
+      artifact_retention_days: 7
+    secrets: inherit

@@ -1,15 +1,17 @@
 import { useEffect, useState } from "preact/hooks";
 
-import {
-  type PublicNotificationHistoryDto,
-  type PublicSummaryDto,
-} from "../../src/pages/public-dto.js";
 import { notificationReasonText } from "../../src/domain/notification-reason.js";
+import type {
+  PublicNotificationHistoryDto,
+  PublicSummaryDto,
+} from "../../src/pages/public-dto-contracts.js";
 import { UnreachableError } from "../../src/util/index.js";
 import { ResponseResponsible } from "./current-responses.js";
 import { ItemHeading, type ItemHeadingLink } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
-import { formatDateTime, notificationWaitingOnLabelParts } from "./model.js";
+import { formatDateTime } from "./model-time.js";
+import { notificationWaitingOnLabelParts } from "./model-waiting-on.js";
+import { type PublicNotificationHistoryLoader } from "./notification-history-loader.js";
 import {
   ResponsiveTableCardList,
   type ResponsiveCardField,
@@ -17,7 +19,6 @@ import {
   type ResponsiveTableColumn,
 } from "./responsive-table-card-list.js";
 import { ActionButton } from "./ui.js";
-import { type PublicNotificationHistoryLoader } from "./notification-history-loader.js";
 import { WaitingOnDisplay, type PersonNavigation } from "./waiting-on-display.js";
 
 type NotificationHistoryPageProps = Readonly<{

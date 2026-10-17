@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { ConfigError, type ConfigIssue } from "./config-error.js";
-import { CODEX_AUTHENTICATIONS } from "../codex/index.js";
+import { CODEX_AUTHENTICATIONS } from "../codex/authentication.js";
 import { REASONING_EFFORTS } from "../domain/index.js";
 import { assertNonNullable } from "../util/assert-non-nullable.js";
 
@@ -9,6 +9,7 @@ const SUPPORTED_SCHEMA_MAJOR = 1;
 const TARGET_ORGANIZATION = "VOICEVOX";
 const SUPPORTED_AI_PROVIDER = "codex";
 const STATE_BRANCH = "tracker-state";
+const SANDBOX_STATE_BRANCH_PATTERN = /^sandbox-state\/env-[1-9][0-9]*-[1-9][0-9]*$/u;
 const DEFAULT_HIGH_CONFIDENCE = 0.85;
 const DEFAULT_MEDIUM_CONFIDENCE = 0.65;
 const SCHEMA_VERSION_PATTERN = /^(?:0|[1-9]\d*)(?:\.\d+)*$/;
@@ -284,9 +285,10 @@ const mentionsSchema = z
 
 const stateSchema = z
   .strictObject({
-    branch: z.literal(STATE_BRANCH, {
-      error: `${STATE_BRANCH}を指定してください`,
-    }),
+    branch: z.union([
+      z.literal(STATE_BRANCH),
+      z.string().regex(SANDBOX_STATE_BRANCH_PATTERN, "sandbox state branchの形式が不正です"),
+    ]),
     snapshotPath: stateJsonPathSchema,
     historyDirectory: statePathSchema,
     aiCacheDirectory: statePathSchema,

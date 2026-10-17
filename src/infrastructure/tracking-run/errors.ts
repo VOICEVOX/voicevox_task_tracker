@@ -1,0 +1,63 @@
+import { TaskTrackerError } from "../../util/index.js";
+
+/** CLIの引数が利用規約へ適合しないことを表す。 */
+export class CliUsageError extends TaskTrackerError {
+  public constructor(message: string, options: ErrorOptions) {
+    super(`CLI引数が不正です。${message}`, options);
+  }
+}
+
+/** CLIのartifactまたはrun reportを書き出せないことを表す。 */
+export class CliOutputError extends TaskTrackerError {
+  public constructor(path: string, options: ErrorOptions) {
+    super(`CLI出力を書き出せません。対象: ${path}`, options);
+  }
+}
+
+/** 指定した永続stateファイルを読み取れないか検証できないことを表す。 */
+export class CliStateVerificationError extends TaskTrackerError {
+  public constructor(path: string, options: ErrorOptions) {
+    super(`永続stateを検証できません。対象: ${path}`, options);
+  }
+}
+
+/** CLIへ安全に表示できる環境変数名だけを保持する認証情報エラー。 */
+export class CliCredentialsError extends TaskTrackerError {
+  public readonly variableNames: readonly string[];
+
+  public constructor(variableNames: readonly string[], options: ErrorOptions) {
+    const uniqueVariableNames = [...new Set(variableNames)].sort();
+    super(`必要な認証情報が不足または不正です。環境変数: ${uniqueVariableNames.join(", ")}`, {
+      cause: options.cause,
+    });
+    this.variableNames = Object.freeze(uniqueVariableNames);
+  }
+}
+
+/** Codexのauth.jsonが認証に利用できないことを表す。 */
+export class CliCodexAuthenticationError extends TaskTrackerError {
+  public constructor(options: ErrorOptions) {
+    super(
+      "Codex認証ファイルを確認できません。CODEX_HOME直下にauth.jsonが存在することを確認してください",
+      options,
+    );
+  }
+}
+
+/** workflowの前段成果物が存在しないか検証できないことを表す。 */
+export class CliWorkflowArtifactError extends TaskTrackerError {
+  public constructor(path: string, reason: "missing" | "invalid", options: ErrorOptions) {
+    const description =
+      reason === "missing" ? "前stageの成果物がありません" : "前stageの成果物が不正です";
+    super(`${description}。対象: ${path}`, options);
+  }
+}
+
+/** 有効な機能が必要とする実行可能ファイルを起動できないことを表す。 */
+export class CliExecutableError extends TaskTrackerError {
+  public constructor(executable: string, options: ErrorOptions) {
+    super(`必要な実行可能ファイルが見つからないか起動できません。対象: ${executable}`, options);
+  }
+}
+
+export { CollectionRelationExpansionLimitError as CliRelationExpansionLimitError } from "../../application/tracking-run/stages/collection-errors.js";

@@ -1,3 +1,4 @@
+export { buildWebOutput, readPagesContentManifest } from "./build-web-output.js";
 export {
   PagesError,
   PagesPublicSafetyError,
@@ -6,47 +7,49 @@ export {
   PublicDtoValidationError,
   PublicSummarySizeError,
 } from "./errors.js";
-export { createEvidenceSourceUrlMap, resolveEvidenceSourceUrl } from "./evidence-source-url.js";
+export { createEvidenceSourceUrlMap } from "./evidence-source-url.js";
 export {
   DEFAULT_INITIAL_GRAPH_NODE_LIMIT,
   generatePublicData,
-  type GeneratedPublicData,
   type GeneratePublicDataInput,
+  type GeneratedPublicData,
   type PublicDtoGenerationOptions,
-} from "./generate-public-data.js";
+} from "./generate-public-data-v20.js";
+export type {
+  PublicDetailsDto,
+  PublicGraphEdgeDto,
+  PublicGraphNodeDto,
+  PublicItemDetailsDto,
+  PublicItemHistoryEventDto,
+  PublicItemSummaryDto,
+  PublicNotificationHistoryDto,
+  PublicNotificationHistoryEntryDto,
+  PublicNotificationHistoryPersonalReminderDto,
+  PublicPersonalReminderResponseDto,
+  PublicPersonalReminderUnknownReason,
+  PublicSummaryDto,
+} from "./public-dto-contracts.js";
+export { PUBLIC_DTO_SCHEMA_VERSION } from "./public-dto-primitives.js";
 export {
-  PUBLIC_DTO_SCHEMA_VERSION,
   createPublicDetailsDto,
   createPublicNotificationHistoryDto,
   createPublicSummaryDto,
-  comparePublicNotificationHistoryEntries,
-  type PublicDetailsDto,
-  type PublicGraphEdgeDto,
-  type PublicGraphNodeDto,
-  type PublicItemDetailsDto,
-  type PublicItemHistoryEventDto,
-  type PublicItemSummaryDto,
-  type PublicNotificationHistoryDto,
-  type PublicNotificationHistoryEntryDto,
-  type PublicNotificationHistoryPersonalReminderDto,
-  type PublicPersonalReminderResponseDto,
-  type PublicPersonalReminderUnknownReason,
-  type PublicSummaryDto,
 } from "./public-dto.js";
+export { comparePublicNotificationHistoryEntries } from "./public-history-dto-validation.js";
 export {
   assertPagesPublicSafety,
   type PagesPublicSafetyInput,
   type PagesRepositoryAllowlistEntry,
 } from "./public-safety.js";
 export {
+  PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
   assertPublicSummarySize,
   measurePublicSummarySize,
-  PUBLIC_SUMMARY_GZIP_LIMIT_BYTES,
   type PublicSummarySizeMeasurement,
 } from "./summary-size.js";
 export {
-  PUBLIC_NOTIFICATION_HISTORY_FILE_NAME,
   PUBLIC_DETAILS_FILE_NAME,
+  PUBLIC_NOTIFICATION_HISTORY_FILE_NAME,
   PUBLIC_SUMMARY_FILE_NAME,
   writePublicDataFiles,
   type PublicDataWriteResult,

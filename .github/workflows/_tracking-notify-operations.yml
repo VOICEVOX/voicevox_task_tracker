@@ -1,0 +1,136 @@
+name: 追跡runの運用障害通知
+
+on:
+  workflow_call:
+    inputs:
+      state_ref:
+        required: true
+        type: string
+      config_path:
+        required: true
+        type: string
+      workflow_kind:
+        required: true
+        type: string
+      stage_results_json:
+        required: true
+        type: string
+      router_result:
+        required: false
+        type: string
+        default: ""
+      infrastructure_failure_eligible:
+        required: true
+        type: boolean
+      artifact_retention_days:
+        required: true
+        type: number
+
+permissions: {}
+
+env:
+  TRACKING_EFFECT_TARGET: production
+  TRACKING_STATE_REF: ${{ inputs.state_ref }}
+
+jobs:
+  notify-operations:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: 現行制御コードを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: 制御CLIを準備
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: 公開失敗artifactの一覧を取得
+        id: failure_artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_KIND: ${{ inputs.workflow_kind }}
+        run: |
+          response="$RUNNER_TEMP/operations-failure-artifacts.json"
+          prefix="$WORKFLOW_KIND-failure-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$response"
+          count="$(jq -s --arg prefix "$prefix" '
+            if length > 0 and
+              all(.[]; (.artifacts | type) == "array") and
+              all([.[] | .artifacts[]]; (.name | type) == "string")
+            then [.[] | .artifacts[] | select(.name | startswith($prefix))] | length
+            else error("Actions artifact一覧の形式が不正です")
+            end
+          ' "$response")"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - name: 公開失敗artifactを取得
+        if: steps.failure_artifacts.outputs.count != '0'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: ${{ inputs.workflow_kind }}-failure-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: artifacts/workflow/failures
+          merge-multiple: true
+      - name: 公開失敗artifactの取得結果を照合
+        if: steps.failure_artifacts.outputs.count != '0'
+        run: |
+          shopt -s nullglob
+          files=(artifacts/workflow/failures/*.json)
+          if (( ${#files[@]} == 0 )); then
+            echo '一覧にある公開失敗artifactを取得できませんでした' >&2
+            exit 1
+          fi
+      - name: 以前の運用障害通知の証拠を取得
+        uses: ./.github/actions/download-prior-operations-artifacts
+        with:
+          workflow-kind: ${{ inputs.workflow_kind }}
+          run-id: ${{ github.run_id }}
+          github-token: ${{ github.token }}
+      - name: 運用障害をDiscordへ通知
+        id: notify
+        env:
+          DISCORD_OPERATIONS_WEBHOOK_URL: ${{ secrets.DISCORD_OPERATIONS_WEBHOOK_URL }}
+          WORKFLOW_NEEDS: ${{ inputs.stage_results_json }}
+          WORKFLOW_KIND: ${{ inputs.workflow_kind }}
+          ROUTER_RESULT: ${{ inputs.router_result }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          INFRASTRUCTURE_FAILURE_ELIGIBLE: ${{ inputs.infrastructure_failure_eligible }}
+          VOICEVOX_TASK_TRACKER_DIAGNOSTICS_PATH: ${{ runner.temp }}/voicevox-task-tracker-diagnostics-${{ github.job }}.jsonl
+          VOICEVOX_TASK_TRACKER_FAILURE_DIRECTORY: ${{ github.workspace }}/artifacts/workflow/notify-failures
+        run: |
+          occurred_at="$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')"
+          arguments=(notify-operations --config "$CONFIG_PATH" --workflow-run-id "$GITHUB_RUN_ID" --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" --workflow-kind "$WORKFLOW_KIND" --occurred-at "$occurred_at")
+          if [[ "$INFRASTRUCTURE_FAILURE_ELIGIBLE" == 'true' ]]; then
+            printf '%s' "$WORKFLOW_NEEDS" | jq -r 'to_entries[] | select(.value.result == "failure") | .key' > "$RUNNER_TEMP/failed-jobs.txt"
+            while IFS= read -r job; do
+              arguments+=(--failed-job "$job")
+            done < "$RUNNER_TEMP/failed-jobs.txt"
+            if [[ "$ROUTER_RESULT" == 'failure' ]]; then
+              arguments+=(--failed-job recovery-router)
+            fi
+          fi
+          node --enable-source-maps dist/cli/tracker-run.js "${arguments[@]}"
+      - name: 運用障害通知receiptを保存
+        if: always() && steps.notify.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: operations-alert-receipt-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/workflow/operations-alert-receipt.json
+          if-no-files-found: warn
+          retention-days: ${{ inputs.artifact_retention_days }}
+      - name: 診断と失敗を保存
+        if: always()
+        uses: ./.github/actions/finalize-tracking-job
+        with:
+          workflow-kind: ${{ inputs.workflow_kind }}
+          runtime-cli: dist/cli/tracker-run.js
+          retention-days: ${{ inputs.artifact_retention_days }}
+          diagnostics-key: ${{ secrets.VOICEVOX_TASK_TRACKER_DIAGNOSTICS_AES256_KEY_V1_B64 }}
+          diagnostics-required: ${{ steps.notify.outcome == 'success' || steps.notify.outcome == 'failure' }}
+          failure-directory: artifacts/workflow/notify-failures

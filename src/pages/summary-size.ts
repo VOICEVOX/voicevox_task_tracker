@@ -2,7 +2,8 @@ import { gzipSync } from "node:zlib";
 
 import { serializeCanonicalJsonLine } from "../canonical-json/index.js";
 import { PublicDtoSemanticError, PublicSummarySizeError } from "./errors.js";
-import { createPublicSummaryDto, type PublicSummaryDto } from "./public-dto.js";
+import type { PublicSummaryDto } from "./public-dto-contracts.js";
+import { createPublicSummaryDto } from "./public-dto.js";
 
 /** 公開summaryに許可するgzip後の最大byte数。 */
 export const PUBLIC_SUMMARY_GZIP_LIMIT_BYTES = 1024 * 1024;

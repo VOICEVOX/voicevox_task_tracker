@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { hashCanonicalJson, parseSha256Hash, type Sha256Hash } from "../canonical-json/index.js";
 import { createAiCacheEntry, type AiCacheEntry, type AiCacheKey } from "../codex/cache.js";
 import {
   aiAnalysisElementEvidenceSchema,
@@ -18,7 +19,6 @@ import {
   type UtcIsoDateTime,
 } from "../domain/index.js";
 import { assertValidStatePath } from "./branch-adapter.js";
-import { hashCanonicalJson, parseSha256Hash, type Sha256Hash } from "../canonical-json/index.js";
 import { StateFormatError } from "./errors.js";
 
 const LEGACY_AI_CACHE_FILE_PATTERN = /^([0-9a-f]{64})\.json$/u;

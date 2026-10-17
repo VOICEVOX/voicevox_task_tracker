@@ -17,9 +17,11 @@
     "sandbox:lifecycle": ".github/scripts/sandbox-lifecycle.sh",
     "diagnostics": "node dist/diagnostics/cli.js",
     "typecheck": "tsc --project tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/voicevox-task-tracker/typecheck-node.tsbuildinfo && tsc --project web/tsconfig.json --incremental --tsBuildInfoFile node_modules/.cache/voicevox-task-tracker/typecheck-web.tsbuildinfo",
-    "lint": "eslint . --cache --cache-strategy content --cache-location node_modules/.cache/voicevox-task-tracker/eslint",
+    "lint": "pnpm check:dependencies && pnpm check:source-lines && eslint . --cache --cache-location node_modules/.cache/voicevox-task-tracker/eslint-cache/$(node scripts/eslint-cache.mjs key).json --cache-strategy content --ignore-pattern 'hiho*/**' --ignore-pattern '**/hiho*/**'",
+    "check:source-lines": "node scripts/check-source-lines.mjs",
     "format": "prettier --write . --cache --cache-location node_modules/.cache/voicevox-task-tracker/prettier-write",
-    "format:check": "prettier --check . --cache --cache-location node_modules/.cache/voicevox-task-tracker/prettier-check"
+    "format:check": "prettier --check . --cache --cache-location node_modules/.cache/voicevox-task-tracker/prettier-check",
+    "check:dependencies": "node scripts/check-dependencies.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.32.0",

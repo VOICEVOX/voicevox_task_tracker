@@ -1,24 +1,26 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 
-import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import type { PublicSummaryDto } from "../../src/pages/public-dto-contracts.js";
 import { UnreachableError } from "../../src/util/index.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { createItemCardFields, createItemTableColumns } from "./item-list-fields.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
+import type {
+  ItemSort,
+  ItemSortKey,
+  ItemTableRow,
+  TableFilterKey,
+  TableFilterOptions,
+  TableFilters,
+} from "./model-contracts.js";
+import { isTableSelectFilterKey } from "./model-labels.js";
 import {
   createItemDetailsMap,
   createItemTableRows,
   filterAndSortTableRows,
-  isTableSelectFilterKey,
   searchItemNodeIds,
-  type TableFilterOptions,
-  type TableFilterKey,
-  type ItemTableRow,
-  type ItemSort,
-  type ItemSortKey,
-  type TableFilters,
-} from "./model.js";
+} from "./model-tables.js";
 import {
   ResponsiveTableCardList,
   type ResponsiveListRowPresentation,

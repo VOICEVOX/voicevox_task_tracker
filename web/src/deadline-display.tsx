@@ -1,6 +1,6 @@
-import { type PublicItemSummaryDto } from "../../src/pages/public-dto.js";
+import type { PublicItemSummaryDto } from "../../src/pages/public-dto-contracts.js";
 import { UnreachableError } from "../../src/util/index.js";
-import { deadlineLevelLabel, formatDeadlineDate } from "./model.js";
+import { deadlineLevelLabel, formatDeadlineDate } from "./model-labels.js";
 import { Pill } from "./ui.js";
 
 type DeadlineTone = "neutral" | "low" | "medium" | "danger" | "warning";

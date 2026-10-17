@@ -1,14 +1,15 @@
-import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 import type {
   DiagnosticsJsonObject,
   DiagnosticsJsonValue,
 } from "../diagnostics/error-serializer.js";
+import type { DiagnosticsJsonlRecorder } from "../diagnostics/recorder.js";
 
 /** Codex診断へ付与するrunと候補の識別情報。 */
 export type CodexDiagnosticsContext = Readonly<{
   recorder: DiagnosticsJsonlRecorder;
   runId?: string;
   invocationId?: string;
+  stage?: string;
   candidateId?: string;
 }>;
 
@@ -19,6 +20,9 @@ function identifierDetails(context: CodexDiagnosticsContext): DiagnosticsJsonObj
   }
   if (context.invocationId != null) {
     details["invocationId"] = context.invocationId;
+  }
+  if (context.stage != null) {
+    details["stage"] = context.stage;
   }
   if (context.candidateId != null) {
     details["candidateId"] = context.candidateId;

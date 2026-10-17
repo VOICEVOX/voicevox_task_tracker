@@ -1,3 +1,28 @@
+export {
+  type AnalyzeGraphAiDependenciesInput,
+  type AnalyzeGraphAiDependenciesResult,
+  type AnalyzeGraphInput,
+  type AnalyzeGraphResult,
+  type AvailablePreviousGraphAnalysisSnapshot,
+  type BlockerNodeAiDependency,
+  type BlockerSetAiDependency,
+  type CandidateOnlyGraphAnalysisNode,
+  type ConnectedComponent,
+  type ConnectedComponentId,
+  type DependencyCycle,
+  type DependencyCycleId,
+  type DownstreamImpact,
+  type ExternalGraphAnalysisNode,
+  type GraphAnalysisNode,
+  type GraphAnalysisSnapshot,
+  type GraphRepositoryKey,
+  type NegativeBlockerAiDependency,
+  type ReclassificationReason,
+  type ReclassificationTarget,
+  type RelationSetAiDependency,
+  type TrackedGraphAnalysisNode,
+  type UnavailablePreviousGraphAnalysisSnapshot,
+} from "./analyze-graph-types.js";
 export { analyzeGraph, analyzeGraphAiDependencies } from "./analyze-graph.js";
 export { RelationReferenceConflictError } from "./errors.js";
 export {
@@ -5,34 +30,6 @@ export {
   extractRelationCandidatesForItems,
 } from "./extract-relation-candidates.js";
 export { normalizeRelationCandidates } from "./normalize-relation-candidates.js";
-export { deriveBlockedBy, reconcileGraph } from "./reconcile-graph.js";
-export { buildRelationCandidateId } from "./relation-candidate-id.js";
-export { planRelationExpansion } from "./relation-expansion.js";
-export {
-  type AnalyzeGraphInput,
-  type AnalyzeGraphAiDependenciesInput,
-  type AnalyzeGraphAiDependenciesResult,
-  type AnalyzeGraphResult,
-  type AvailablePreviousGraphAnalysisSnapshot,
-  type ConnectedComponent,
-  type ConnectedComponentId,
-  type DependencyCycle,
-  type DependencyCycleId,
-  type DownstreamImpact,
-  type BlockerNodeAiDependency,
-  type BlockerSetAiDependency,
-  type NegativeBlockerAiDependency,
-  type RelationSetAiDependency,
-  type CandidateOnlyGraphAnalysisNode,
-  type ExternalGraphAnalysisNode,
-  type GraphAnalysisNode,
-  type GraphAnalysisSnapshot,
-  type GraphRepositoryKey,
-  type ReclassificationReason,
-  type ReclassificationTarget,
-  type TrackedGraphAnalysisNode,
-  type UnavailablePreviousGraphAnalysisSnapshot,
-} from "./analyze-graph-types.js";
 export {
   type ActiveRelationCandidateResolution,
   type BlockedByEntry,
@@ -53,6 +50,8 @@ export {
   type RelationCandidateResolution,
   type RelationContradiction,
 } from "./reconcile-graph-types.js";
+export { deriveBlockedBy, reconcileGraph } from "./reconcile-graph.js";
+export { buildRelationCandidateId } from "./relation-candidate-id.js";
 export {
   type CandidateBlocksRelation,
   type CandidateImplementsRelation,
@@ -79,3 +78,4 @@ export {
   type RelationExtractionItem,
   type RelationTextSource,
 } from "./relation-candidate-types.js";
+export { planRelationExpansion } from "./relation-expansion.js";

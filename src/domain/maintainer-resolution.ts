@@ -1,5 +1,5 @@
-import { type WaitingOn } from "./types.js";
 import { assertNonNullable } from "../util/index.js";
+import { type WaitingOn } from "./types.js";
 
 /** 既定値とリポジトリ別上書きを持つメンテナ設定。 */
 export type MaintainerResolutionSettings = Readonly<{

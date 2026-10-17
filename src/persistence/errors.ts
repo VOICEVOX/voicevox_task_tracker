@@ -142,7 +142,7 @@ export class StateBranchCommitError extends StatePersistenceError {
 
 /** state branchがsession開始後に別のcommitへ進んだことを表す。 */
 export class StateBranchConflictError extends StatePersistenceError {
-  public constructor() {
-    super("state branchが別の処理によって更新されました", {});
+  public constructor(options?: ErrorOptions) {
+    super("state branchが別の処理によって更新されました", options ?? {});
   }
 }

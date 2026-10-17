@@ -1,17 +1,17 @@
 import { useEffect, useState } from "preact/hooks";
 
-import {
-  type PublicDetailsDto,
-  type PublicGraphNodeDto,
-  type PublicItemDetailsDto,
-  type PublicSummaryDto,
-} from "../../src/pages/public-dto.js";
+import type {
+  PublicDetailsDto,
+  PublicGraphNodeDto,
+  PublicItemDetailsDto,
+  PublicSummaryDto,
+} from "../../src/pages/public-dto-contracts.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { type PublicDetailsLoader } from "./details-loader.js";
 import { createItemGraphView } from "./graph-model.js";
 import { ItemDetailsContent } from "./item-details.js";
 import { ContentState, PageSection } from "./layout.js";
-import { createItemDetailsMap } from "./model.js";
+import { createItemDetailsMap } from "./model-tables.js";
 import { ActionButton } from "./ui.js";
 import { type ItemRouteTarget } from "./url-state.js";
 import { type PersonNavigation } from "./waiting-on-display.js";

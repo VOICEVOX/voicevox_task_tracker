@@ -1,0 +1,157 @@
+name: 直列runのPages効果
+run-name: tracking-sequential-pages-${{ fromJSON(inputs.payload).attemptKey }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload:
+        description: 親runが固定したPages intentとlease識別子
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: tracking-sequential-pages-${{ fromJSON(inputs.payload).idempotencyKey }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: ${{ fromJSON(inputs.payload).intent.phase == 'initial' && 'initial-pages-deploy' || 'notification-history-pages-deploy' }}
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      actions: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      upload_outcome: ${{ steps.upload.outcome }}
+      deployment_outcome: ${{ steps.deployment.outcome }}
+      artifact_name: ${{ steps.prepare.outputs.artifact_name }}
+      artifact_id: ${{ steps.upload.outputs.artifact_id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact_digest }}
+      page_url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: 親が固定したsourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ fromJSON(inputs.payload).owner.codeRevision }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Node.jsを準備
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: pnpmとCLIを準備
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: leaseとstateと全Pages出力を再検証
+        id: prepare
+        env:
+          PAGES_EFFECT_PAYLOAD: ${{ inputs.payload }}
+          PAGES_EFFECT_COMMAND: prepare
+          PAGES_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          node --enable-source-maps dist/cli/sequential-pages-effect-child.js
+          echo 'artifact_name=tracking-sequential-pages-${{ fromJSON(inputs.payload).attemptKey }}' >> "$GITHUB_OUTPUT"
+      - name: Pagesを構成
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - name: Pages artifactを保存
+        id: upload
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          name: ${{ steps.prepare.outputs.artifact_name }}
+          path: dist/web
+      - name: deploy効果の開始を記録
+        env:
+          PAGES_EFFECT_PAYLOAD: ${{ inputs.payload }}
+          PAGES_EFFECT_COMMAND: begin
+        run: node --enable-source-maps dist/cli/sequential-pages-effect-child.js
+      - name: Pagesへdeploy
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
+        with:
+          artifact_name: ${{ steps.prepare.outputs.artifact_name }}
+          timeout: 1200000
+
+  observe:
+    needs: deploy
+    if: always()
+    name: Pages効果を観測
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pages: read
+    steps:
+      - name: 親が固定したsourceを取得
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ fromJSON(inputs.payload).owner.codeRevision }}
+          persist-credentials: false
+      - name: Pages deploymentの実IDを確認
+        id: observed_deployment
+        if: needs.deploy.outputs.deployment_outcome == 'success'
+        continue-on-error: true
+        uses: ./.github/actions/observe-pages-deployment
+        with:
+          phase: ${{ fromJSON(inputs.payload).intent.phase }}
+          run-id: ${{ github.run_id }}
+          run-attempt: ${{ github.run_attempt }}
+          build-version: ${{ github.sha }}
+          page-url: ${{ needs.deploy.outputs.page_url }}
+          github-token: ${{ github.token }}
+      - name: 固定context付き観測を保存
+        env:
+          PAGES_ATTEMPT_KEY: ${{ fromJSON(inputs.payload).attemptKey }}
+          PAGES_ATTEMPT_SEQUENCE: ${{ fromJSON(inputs.payload).attemptSequence }}
+          PAGES_KEY: ${{ fromJSON(inputs.payload).idempotencyKey }}
+          PAGES_PARENT_RUN_ID: ${{ fromJSON(inputs.payload).owner.parentRunId }}
+          PAGES_PARENT_RUN_ATTEMPT: ${{ fromJSON(inputs.payload).owner.parentRunAttempt }}
+          PAGES_CODE_REVISION: ${{ fromJSON(inputs.payload).owner.codeRevision }}
+          PAGES_PHASE: ${{ fromJSON(inputs.payload).intent.phase }}
+          PAGES_SOURCE_REVISION: ${{ fromJSON(inputs.payload).intent.sourceStateRevision }}
+          PAGES_INTENT_DIGEST: ${{ fromJSON(inputs.payload).intent.deploymentIntentDigest }}
+          PAGES_UPLOAD_OUTCOME: ${{ needs.deploy.outputs.upload_outcome || 'skipped' }}
+          PAGES_DEPLOYMENT_OUTCOME: ${{ needs.deploy.outputs.deployment_outcome || 'skipped' }}
+          PAGES_ARTIFACT_NAME: ${{ needs.deploy.outputs.artifact_name || format('tracking-sequential-pages-{0}', fromJSON(inputs.payload).attemptKey) }}
+          PAGES_ARTIFACT_ID: ${{ needs.deploy.outputs.artifact_id }}
+          PAGES_ARTIFACT_DIGEST: ${{ needs.deploy.outputs.artifact_digest }}
+          PAGES_DEPLOYMENT_ID: ${{ steps.observed_deployment.outputs.deployment_id }}
+          PAGES_URL: ${{ needs.deploy.outputs.page_url }}
+        run: |
+          jq -ncS \
+            --arg key "$PAGES_KEY" \
+            --arg attempt_key "$PAGES_ATTEMPT_KEY" \
+            --argjson attempt_sequence "$PAGES_ATTEMPT_SEQUENCE" \
+            --arg parent_run_id "$PAGES_PARENT_RUN_ID" \
+            --argjson parent_attempt "$PAGES_PARENT_RUN_ATTEMPT" \
+            --arg code_revision "$PAGES_CODE_REVISION" \
+            --arg child_run_id "$GITHUB_RUN_ID" \
+            --argjson child_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg phase "$PAGES_PHASE" \
+            --arg source_revision "$PAGES_SOURCE_REVISION" \
+            --arg intent_digest "$PAGES_INTENT_DIGEST" \
+            --arg upload "$PAGES_UPLOAD_OUTCOME" \
+            --arg deployment "$PAGES_DEPLOYMENT_OUTCOME" \
+            --arg artifact_name "$PAGES_ARTIFACT_NAME" \
+            --arg artifact_id "$PAGES_ARTIFACT_ID" \
+            --arg artifact_digest "$PAGES_ARTIFACT_DIGEST" \
+            --arg deployment_id "$PAGES_DEPLOYMENT_ID" \
+            --arg page_url "$PAGES_URL" \
+            '{schemaVersion:2,idempotencyKey:$key,attemptKey:$attempt_key,attemptSequence:$attempt_sequence,parentRunId:$parent_run_id,parentRunAttempt:$parent_attempt,childRunId:$child_run_id,childRunAttempt:$child_attempt,codeRevision:$code_revision,phase:$phase,sourceStateRevision:$source_revision,deploymentIntentDigest:$intent_digest,uploadOutcome:$upload,deploymentOutcome:$deployment,artifactName:$artifact_name,artifactId:$artifact_id,artifactDigest:$artifact_digest,deploymentId:$deployment_id,pageUrl:$page_url} | with_entries(select(.value != ""))' > observation.json
+      - name: 観測artifactを保存
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tracking-sequential-pages-${{ fromJSON(inputs.payload).attemptKey }}-observation
+          path: observation.json
+          if-no-files-found: error
+          retention-days: 7

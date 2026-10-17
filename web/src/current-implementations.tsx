@@ -1,15 +1,18 @@
-import { type PublicItemSummaryDto, type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import type {
+  PublicItemSummaryDto,
+  PublicSummaryDto,
+} from "../../src/pages/public-dto-contracts.js";
 import { assertNonNullable } from "../../src/util/index.js";
 import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { CurrentResponses } from "./current-responses.js";
 import { GitHubIconButton } from "./github-icon-button.js";
-import { ItemDetailsLink } from "./item-details.js";
+import { ItemDetailsLink } from "./item-details-link.js";
+import { hasAiUnverifiedValue } from "./model-ai-presentation.js";
 import {
   aiUnverifiedValueLabel,
   currentResponsesUnverifiedDescription,
-  hasAiUnverifiedValue,
   statusLabel,
-} from "./model.js";
+} from "./model-labels.js";
 import { Pill } from "./ui.js";
 import { type PersonNavigation } from "./waiting-on-display.js";
 

@@ -1,9 +1,10 @@
 import { z } from "zod";
 
 import {
-  personalReminderCauseIdSchema,
   PERSONAL_REMINDER_AI_OUTPUT_SCHEMA_VERSION,
+  personalReminderCauseIdSchema,
 } from "../domain/personal-reminder-causes.js";
+import { NO_URL_LIKE_TEXT_PATTERN } from "../domain/url-like-text.js";
 import {
   personalReminderItemRefSchema,
   personalReminderRelationRefSchema,
@@ -23,12 +24,16 @@ const referencesSchema = z.strictObject({
   itemRefs: z.array(personalReminderItemRefSchema).max(100),
   relationRefs: z.array(personalReminderRelationRefSchema).max(100),
   sourceRefs: z.array(personalReminderSourceRefSchema).max(100),
-  reasonSummary: z.string().min(1).max(300),
+  reasonSummary: z
+    .string()
+    .min(1)
+    .max(300)
+    .regex(NO_URL_LIKE_TEXT_PATTERN, "理由要約にURLは指定できません"),
 });
 
 const confidenceSchema = z.number().min(0).max(1);
 
-const personalReminderRawAssessmentSchema = z.discriminatedUnion("verdict", [
+const personalReminderRawAssessmentSchema = z.union([
   z.strictObject({
     verdict: z.literal("actionable"),
     references: referencesSchema,
@@ -84,6 +89,11 @@ export function createPersonalReminderAiOutputSchema(): PersonalReminderAiOutput
     io: "input",
     unrepresentable: "throw",
     reused: "inline",
+    override: ({ zodSchema, jsonSchema: generatedSchema }) => {
+      if (zodSchema === referencesSchema.shape.reasonSummary) {
+        delete generatedSchema.pattern;
+      }
+    },
   });
   return Object.freeze({
     ...jsonSchema,

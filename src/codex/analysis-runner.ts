@@ -1,153 +1,49 @@
+import { summarizeAiBudgetLedger } from "../application/tracking-run/contracts/ai-budget-ledger.js";
+import type { GenericAiPlan } from "../application/tracking-run/stages/generic-ai-plan-contracts.js";
+import { assertNonNullable } from "../util/index.js";
+import type {
+  AiAnalysisRunConfiguration,
+  AiAnalysisRunDependencies,
+  AiAnalysisRunElementResult,
+  AiAnalysisRunFailure,
+  AiAnalysisRunItemResult,
+  AiAnalysisRunResult,
+} from "./analysis-runner-contracts.js";
 import {
-  AI_ANALYSIS_ELEMENT_REVISIONS,
-  type AiAnalysisElement,
-  type AiAnalysisElementGeneration,
-  type AiAnalysisElementResult,
-} from "./analysis-elements.js";
+  assertTargetWasExecuted,
+  selectPlannedCandidates,
+  type CandidateCacheState,
+} from "./analysis-runner-planning.js";
 import {
-  createAiAnalysisTarget,
-  selectAiAnalysisCandidates,
-  selectAiAnalysisTarget,
-  type AiAnalysisTarget,
-  type AiAnalysisRunIdentity,
-  type AiAnalysisSkipReason,
-  type PreparedAiAnalysisCandidate,
-} from "./analysis-selection.js";
-import {
-  planAiAnalysisBudget,
-  planAiAnalysisBudgetWithPreflight,
-  type AiAnalysisDeferReason,
-  type AiBudgetUsage,
-  type AiPreflightBudget,
-  type AiRunBudget,
-} from "./budget.js";
+  assertOutputItemMatchesInput,
+  createCacheIdentity,
+  createElementGeneration,
+  createFailure,
+  createRunElementResult,
+  createRunItemResult,
+  recordCandidateFailure,
+  resultForElement,
+  validateComposedOutput,
+} from "./analysis-runner-results.js";
+import type { AiAnalysisRunIdentity } from "./analysis-selection.js";
 import {
   CodexAttemptBudgetExceededError,
-  prepareCodexInitialAttempts,
-  type CodexAttemptBudget,
   type CodexInitialAttemptTicket,
 } from "./attempt-budget.js";
-import {
-  createAiCacheEntry,
-  createAiCacheKey,
-  determineAiCacheReuse,
-  type AiCacheEntry,
-  type AiCacheIdentity,
-  type AiCacheKey,
-  type AiCacheStore,
-} from "./cache.js";
-import {
-  hashCanonicalJson,
-  parseSha256Hash,
-  serializeCanonicalJson,
-} from "../canonical-json/index.js";
-import {
-  CodexAttemptError,
-  CodexOutputSchemaValidationError,
-  CodexOutputSemanticValidationError,
-  CodexOutputValidationError,
-  CodexNonZeroExitError,
-  CodexTransportAliasError,
-  type CodexNonZeroExitDiagnostic,
-  type CodexOutputValidationDiagnostic,
-} from "./errors.js";
-import { recordCodexDiagnostic, type CodexDiagnosticsContext } from "./diagnostics.js";
-import type { DiagnosticsJsonValue } from "../diagnostics/error-serializer.js";
-import {
-  createCodexAnalysisInput,
-  projectCodexLockedElementResult,
-  type CodexAnalysisInput,
-} from "./input.js";
-import { type SchemaValidCodexElementOutput } from "./element-output.js";
-import { CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION } from "./element-output-schema.js";
-import { aiAnalysisElementGenerationSchema } from "./analysis-elements.js";
-import { classifyCodexUnavailableReason, type CodexUnavailableReason } from "./reducer.js";
+import { createAiCacheEntry, createAiCacheKey, type AiCacheEntry } from "./cache.js";
+import { CodexAttemptError, CodexOutputValidationError } from "./errors.js";
 import { validateCodexAnalysisSemantics } from "./semantic-validation.js";
-import { type CodexSemanticValidationIssueCode } from "./semantic-validation-issues.js";
-import { createUtcIsoDateTime, type AnalysisMetadata } from "../domain/index.js";
-import { assertNonNullable } from "../util/index.js";
 
-const CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT = 5;
-
-/** 1 runのAI cache、予算、実行方針の設定。 */
-export type AiAnalysisRunConfiguration = Readonly<{
-  identity: AiAnalysisRunIdentity;
-  budget: AiRunBudget;
-  initialUsage: AiBudgetUsage;
-  maxConcurrentCalls: number;
-  target?: AiAnalysisTarget;
-}>;
-
-/** AI分析前に実行するCodex認証preflight。 */
-export type AiAnalysisPreflight = Readonly<
-  AiPreflightBudget & {
-    execute: (ticket: CodexInitialAttemptTicket) => Promise<void>;
-  }
->;
-
-/** AI分析runへ注入する副作用境界。 */
-export type AiAnalysisRunDependencies = Readonly<{
-  cache: AiCacheStore;
-  attemptBudget: CodexAttemptBudget;
-  ensureReady: () => Promise<void>;
-  execute: (input: CodexAnalysisInput, context: AiAnalysisExecutionContext) => Promise<unknown>;
-  executedAt: () => string;
-  preflight?: AiAnalysisPreflight;
-  diagnostics?: CodexDiagnosticsContext;
-}>;
-
-/** AI分析の実行候補を識別し、今回の選択要素を伝えるcontext。 */
-export type AiAnalysisExecutionContext = Readonly<{
-  candidateId: string;
-  selectedElements: readonly AiAnalysisElement[];
-  initialAttemptTicket: CodexInitialAttemptTicket;
-}>;
-
-/** cache再利用または新規実行で取得した要素別AI結果。 */
-export type AiAnalysisRunElementResult = Readonly<{
-  element: AiAnalysisElement;
-  origin: "cache" | "executed";
-  cacheKey: AiCacheKey;
-  generation: AiAnalysisElementGeneration;
-}>;
-
-/** 一つのIssueまたはPull Requestについて取得したAI結果。 */
-export type AiAnalysisRunItemResult = Readonly<{
-  candidateId: string;
-  origin: "cache" | "executed" | "mixed";
-  elements: readonly AiAnalysisRunElementResult[];
-}>;
-
-/** Codex実行または出力検証に失敗してfallbackする項目。 */
-export type AiAnalysisRunFailure = Readonly<{
-  candidateId: string;
-  reason: CodexUnavailableReason;
-  errorType: string;
-  diagnostic?: CodexNonZeroExitDiagnostic;
-  validationDiagnostic?: CodexOutputValidationDiagnostic;
-}>;
-
-/** 1 runのAI分析、抑止、延期と予算使用量。 */
-export type AiAnalysisRunResult = Readonly<{
-  results: readonly AiAnalysisRunItemResult[];
-  failures: readonly AiAnalysisRunFailure[];
-  skipped: readonly Readonly<{
-    candidateId: string;
-    reason: AiAnalysisSkipReason;
-  }>[];
-  deferred: readonly Readonly<{
-    candidateId: string;
-    reason: AiAnalysisDeferReason;
-  }>[];
-  usage: AiBudgetUsage;
-  authenticationPreflightExecuted: boolean;
-}>;
-
-type CandidateCacheState = Readonly<{
-  candidate: PreparedAiAnalysisCandidate;
-  cached: readonly AiAnalysisRunElementResult[];
-  misses: readonly PreparedAiAnalysisCandidate["selectedElements"][number][];
-}>;
+export type {
+  AiAnalysisExecutionContext,
+  AiAnalysisPreflight,
+  AiAnalysisRunConfiguration,
+  AiAnalysisRunDependencies,
+  AiAnalysisRunElementResult,
+  AiAnalysisRunFailure,
+  AiAnalysisRunItemResult,
+  AiAnalysisRunResult,
+} from "./analysis-runner-contracts.js";
 
 type CandidateExecutionOutcome =
   | Readonly<{
@@ -157,405 +53,13 @@ type CandidateExecutionOutcome =
   | Readonly<{
       status: "failure";
       failure: AiAnalysisRunFailure;
+      cached: readonly AiAnalysisRunElementResult[];
     }>
   | Readonly<{
       status: "deferred";
       candidateId: string;
+      cached: readonly AiAnalysisRunElementResult[];
     }>;
-
-function candidateDiagnosticsContext(
-  context: CodexDiagnosticsContext | undefined,
-  candidateId: string,
-): CodexDiagnosticsContext | undefined {
-  if (context == null) {
-    return undefined;
-  }
-  return Object.freeze({
-    ...context,
-    candidateId,
-  });
-}
-
-function validationFailureEvent(error: unknown): string {
-  if (error instanceof CodexOutputSchemaValidationError) {
-    return "codex.output.schema_validation_failed";
-  }
-  if (error instanceof CodexOutputSemanticValidationError) {
-    return "codex.output.semantic_validation_failed";
-  }
-  if (error instanceof CodexAttemptError) {
-    return "codex.fallback";
-  }
-  return "codex.analysis.failed";
-}
-
-async function recordCandidateFailure(
-  context: CodexDiagnosticsContext | undefined,
-  candidateId: string,
-  error: unknown,
-  phase: "execution" | "cache",
-): Promise<void> {
-  const candidateContext = candidateDiagnosticsContext(context, candidateId);
-  const details: Record<string, DiagnosticsJsonValue> = {
-    phase,
-    errorType: error instanceof Error ? error.name : typeof error,
-  };
-  if (error instanceof CodexAttemptError) {
-    details["attempt"] = error.attempts;
-  }
-  if (error instanceof CodexOutputValidationError) {
-    details["issueCount"] = error.issues.length;
-    details["issues"] = Object.freeze(
-      error.issues.slice(0, CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT).map((issue) =>
-        Object.freeze({
-          path: issue.path,
-          code: issue.code,
-        }),
-      ),
-    );
-  }
-  await recordCodexDiagnostic(candidateContext, validationFailureEvent(error), details, error);
-}
-
-function createCacheIdentity(
-  identity: AiAnalysisRunIdentity,
-  elementCandidate: PreparedAiAnalysisCandidate["selectedElements"][number],
-): AiCacheIdentity {
-  return Object.freeze({
-    ...identity,
-    element: elementCandidate.element,
-    revision: AI_ANALYSIS_ELEMENT_REVISIONS[elementCandidate.element],
-    inputFingerprint: parseSha256Hash(elementCandidate.inputFingerprint),
-    executionFingerprint: parseSha256Hash(elementCandidate.executionFingerprint),
-  });
-}
-
-function resultForElement(
-  output: SchemaValidCodexElementOutput,
-  element: AiAnalysisElement,
-): AiAnalysisElementResult {
-  function requiredResult<T>(value: T | undefined, message: string): T {
-    assertNonNullable(value, message);
-    return value;
-  }
-
-  switch (element) {
-    case "status":
-      return requiredResult(output.status, "検証済みCodex出力のstatusがありません");
-    case "waitingOn":
-      return requiredResult(output.waitingOn, "検証済みCodex出力のwaitingOnがありません");
-    case "nextAction":
-      return requiredResult(output.nextAction, "検証済みCodex出力のnextActionがありません");
-    case "relations":
-      return requiredResult(output.relations, "検証済みCodex出力のrelationsがありません");
-    case "progress":
-      return requiredResult(output.progress, "検証済みCodex出力のprogressがありません");
-    case "importance":
-      return requiredResult(output.importance, "検証済みCodex出力のimportanceがありません");
-    case "deadline":
-      return requiredResult(output.deadline, "検証済みCodex出力のdeadlineがありません");
-    case "notification":
-      return requiredResult(output.notification, "検証済みCodex出力のnotificationがありません");
-    case "selfCommitment":
-      return requiredResult(output.selfCommitment, "検証済みCodex出力のselfCommitmentがありません");
-    default:
-      throw new TypeError(`未知のAI判定要素です。対象: ${String(element)}`);
-  }
-}
-
-function assertOutputItemMatchesInput(
-  output: SchemaValidCodexElementOutput,
-  input: CodexAnalysisInput,
-): void {
-  if (output.item.nodeId === input.item.nodeId && output.item.url === input.item.url) {
-    return;
-  }
-  throw new CodexOutputSemanticValidationError([
-    Object.freeze({
-      path: "/item",
-      code: "item_mismatch" satisfies CodexSemanticValidationIssueCode,
-      message: "Codex出力のitemが入力対象と一致しません",
-    }),
-  ]);
-}
-
-function validateComposedOutput(
-  input: CodexAnalysisInput,
-  elements: readonly AiAnalysisRunElementResult[],
-): SchemaValidCodexElementOutput {
-  const value: Record<string, unknown> = {
-    schemaVersion: CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION,
-    item: {
-      nodeId: input.item.nodeId,
-      url: input.item.url,
-    },
-  };
-  for (const element of elements) {
-    value[element.element] = element.generation.result;
-  }
-  const selectedElements = elements.map((element) => element.element);
-  const selectedSet = new Set<string>(selectedElements);
-  const lockedElements: Record<string, unknown> = {};
-  for (const [element, result] of Object.entries(input.lockedElements)) {
-    if (!selectedSet.has(element)) {
-      lockedElements[element] = result;
-    }
-  }
-  const composedInput = createCodexAnalysisInput({
-    ...input,
-    selectedElements,
-    lockedElements,
-  });
-  return validateCodexAnalysisSemantics(value, composedInput);
-}
-
-function createExecutionInput(state: CandidateCacheState): PreparedAiAnalysisCandidate {
-  const lockedElements: Record<string, unknown> = {
-    ...state.candidate.input.lockedElements,
-  };
-  for (const result of state.cached) {
-    lockedElements[result.element] = projectCodexLockedElementResult(
-      result.element,
-      result.generation.result,
-    );
-  }
-  const input = createCodexAnalysisInput({
-    ...state.candidate.input,
-    selectedElements: state.misses.map((value) => value.element),
-    lockedElements,
-  });
-  const normalizedInput = `${serializeCanonicalJson(input)}\n`;
-  const cachedSkipped = state.cached.map((result) => {
-    const elementCandidate = state.candidate.selectedElements.find(
-      (value) => value.element === result.element,
-    );
-    assertNonNullable(elementCandidate, `cache結果の要素候補がありません。対象: ${result.element}`);
-    return Object.freeze({
-      candidate: elementCandidate,
-      reason: "up_to_date" as const,
-    });
-  });
-  return Object.freeze({
-    ...state.candidate,
-    input,
-    elementSelection: Object.freeze({
-      selected: Object.freeze([...state.misses]),
-      skipped: Object.freeze([...state.candidate.elementSelection.skipped, ...cachedSkipped]),
-      shouldCallAi: state.misses.length !== 0,
-    }),
-    selectedElements: Object.freeze([...state.misses]),
-    normalizedInput,
-    inputCharacters: countUnicodeCharacters(normalizedInput),
-  });
-}
-
-function countUnicodeCharacters(value: string): number {
-  let count = 0;
-  for (const character of value) {
-    if (character.length === 0) {
-      throw new TypeError("空のUnicode文字を検出しました");
-    }
-    count += 1;
-  }
-  return count;
-}
-
-function createElementGeneration(
-  candidate: PreparedAiAnalysisCandidate,
-  elementCandidate: PreparedAiAnalysisCandidate["selectedElements"][number],
-  result: AiAnalysisElementResult,
-  identity: AiAnalysisRunIdentity,
-  generatedAt: string,
-): AiAnalysisElementGeneration {
-  const metadata = Object.freeze({
-    ...identity,
-    revision: AI_ANALYSIS_ELEMENT_REVISIONS[elementCandidate.element],
-    inputFingerprint: parseSha256Hash(elementCandidate.inputFingerprint),
-    executionFingerprint: parseSha256Hash(elementCandidate.executionFingerprint),
-    promptFingerprint: parseSha256Hash(candidate.promptFingerprint),
-    outputHash: hashCanonicalJson(result),
-    generatedAt: createUtcIsoDateTime(generatedAt),
-  }) satisfies AnalysisMetadata;
-  return aiAnalysisElementGenerationSchema.parse({
-    metadata,
-    result,
-  });
-}
-
-function createRunElementResult(
-  element: AiAnalysisElement,
-  origin: "cache" | "executed",
-  cacheKey: AiCacheKey,
-  generation: AiAnalysisElementGeneration,
-): AiAnalysisRunElementResult {
-  return Object.freeze({
-    element,
-    origin,
-    cacheKey,
-    generation,
-  });
-}
-
-function createRunItemResult(
-  candidateId: string,
-  elements: readonly AiAnalysisRunElementResult[],
-): AiAnalysisRunItemResult {
-  if (elements.length === 0) {
-    throw new TypeError(`AI分析結果の要素がありません。対象: ${candidateId}`);
-  }
-  const hasCache = elements.some((value) => value.origin === "cache");
-  const hasExecuted = elements.some((value) => value.origin === "executed");
-  const origin = hasCache && hasExecuted ? "mixed" : hasCache ? "cache" : "executed";
-  return Object.freeze({
-    candidateId,
-    origin,
-    elements: Object.freeze([...elements]),
-  });
-}
-
-function createFailure(error: unknown, candidateId: string): AiAnalysisRunFailure {
-  const diagnostic =
-    error instanceof CodexNonZeroExitError
-      ? Object.freeze({
-          exitCode: error.exitCode,
-          apiError: error.apiError,
-        })
-      : undefined;
-  const validationDiagnostic =
-    error instanceof CodexOutputValidationError
-      ? Object.freeze({
-          issueCount: error.issues.length,
-          issues: Object.freeze(
-            error.issues.slice(0, CODEX_OUTPUT_VALIDATION_ISSUE_DETAIL_LIMIT).map((issue) =>
-              Object.freeze({
-                path: issue.path,
-                code: issue.code,
-              }),
-            ),
-          ),
-        })
-      : undefined;
-  return Object.freeze({
-    candidateId,
-    reason: classifyCodexUnavailableReason(error),
-    errorType: error instanceof Error ? error.name : typeof error,
-    ...(diagnostic == null ? {} : { diagnostic }),
-    ...(validationDiagnostic == null ? {} : { validationDiagnostic }),
-  });
-}
-
-async function resolveCacheEntries(
-  candidates: readonly PreparedAiAnalysisCandidate[],
-  configuration: AiAnalysisRunConfiguration,
-  cache: AiCacheStore,
-  target: AiAnalysisTarget | undefined,
-): Promise<
-  Readonly<{
-    states: readonly CandidateCacheState[];
-  }>
-> {
-  const states: CandidateCacheState[] = [];
-  for (const candidate of candidates) {
-    const cached: AiAnalysisRunElementResult[] = [];
-    const misses: PreparedAiAnalysisCandidate["selectedElements"][number][] = [];
-    for (const elementCandidate of candidate.selectedElements) {
-      if (target?.nodeId === candidate.id && target.elements.includes(elementCandidate.element)) {
-        misses.push(elementCandidate);
-        continue;
-      }
-      const identity = createCacheIdentity(configuration.identity, elementCandidate);
-      const cacheKey = createAiCacheKey(identity);
-      const cachedValue = await cache.read(cacheKey);
-      if (cachedValue.status === "hit") {
-        const reuse = determineAiCacheReuse(cachedValue.entry, identity);
-        if (reuse.status === "reusable") {
-          const result = createRunElementResult(
-            elementCandidate.element,
-            "cache",
-            reuse.entry.cacheKey,
-            reuse.entry.generation,
-          );
-          cached.push(result);
-          continue;
-        }
-      }
-      misses.push(elementCandidate);
-    }
-    states.push(
-      Object.freeze({
-        candidate,
-        cached: Object.freeze(cached),
-        misses: Object.freeze(misses),
-      }),
-    );
-  }
-  return Object.freeze({
-    states: Object.freeze(states),
-  });
-}
-
-function sameSelectedElements(
-  candidate: PreparedAiAnalysisCandidate,
-  targetSelection: ReturnType<typeof selectAiAnalysisTarget>,
-): boolean {
-  if (candidate.selectedElements.length !== targetSelection.selectedElements.length) {
-    return false;
-  }
-  const selectedElementsMatch = candidate.selectedElements.every((candidateElement, index) => {
-    return candidateElement.element === targetSelection.selectedElements[index]?.element;
-  });
-  if (!selectedElementsMatch) {
-    return false;
-  }
-  if (candidate.input.selectedElements.length !== targetSelection.selectedElements.length) {
-    return false;
-  }
-  return candidate.input.selectedElements.every((element, index) => {
-    return element === targetSelection.selectedElements[index]?.element;
-  });
-}
-
-function selectCandidatesForRun(
-  candidates: readonly PreparedAiAnalysisCandidate[],
-  target: AiAnalysisTarget | undefined,
-): Readonly<{
-  selected: readonly PreparedAiAnalysisCandidate[];
-  skipped: readonly Readonly<{
-    candidate: PreparedAiAnalysisCandidate;
-    reason: AiAnalysisSkipReason;
-  }>[];
-}> {
-  if (target == null) {
-    return selectAiAnalysisCandidates(candidates);
-  }
-  const targetSelection = selectAiAnalysisTarget(candidates, target);
-  if (!sameSelectedElements(targetSelection.candidate, targetSelection)) {
-    throw new TypeError("指定したAI分析対象のselectedElementsが一致しません");
-  }
-  return Object.freeze({
-    selected: Object.freeze([targetSelection.candidate]),
-    skipped: Object.freeze([]),
-  });
-}
-
-function assertTargetWasExecuted(run: AiAnalysisRunResult, target: AiAnalysisTarget): void {
-  const result = run.results.find((candidate) => candidate.candidateId === target.nodeId);
-  if (result == null) {
-    const failure = run.failures.find((candidate) => candidate.candidateId === target.nodeId);
-    throw new TypeError(
-      `指定したAI分析対象の実推論結果がありません。対象: ${target.nodeId}`,
-      failure == null ? {} : { cause: failure },
-    );
-  }
-  for (const element of target.elements) {
-    const elementResult = result.elements.find((candidate) => candidate.element === element);
-    if (elementResult?.origin !== "executed") {
-      throw new TypeError(
-        `指定したAI分析対象の要素が実推論されていません。対象: ${target.nodeId} 要素: ${element}`,
-      );
-    }
-  }
-}
 
 async function executeCandidate(
   state: CandidateCacheState,
@@ -563,7 +67,8 @@ async function executeCandidate(
   dependencies: AiAnalysisRunDependencies,
   ticket: CodexInitialAttemptTicket,
 ): Promise<CandidateExecutionOutcome> {
-  const candidate = createExecutionInput(state);
+  const candidate = state.item.executionCandidate;
+  assertNonNullable(candidate, `Codex実行入力がありません。対象: ${state.item.nodeId}`);
   try {
     const output = validateCodexAnalysisSemantics(
       await dependencies.execute(candidate.input, {
@@ -602,25 +107,38 @@ async function executeCandidate(
         ),
       );
     }
-    validateComposedOutput(candidate.input, [...state.cached, ...executedResults]);
+    const generated = new Map(executedResults.map((result) => [result.element, result]));
+    const cached = new Map(state.cached.map((result) => [result.element, result]));
+    const composed = state.item.selectedElements.map((element) => {
+      if (generated.has(element) && cached.has(element)) {
+        throw new TypeError(
+          `AI分析要素のcacheと生成結果が重複しています。対象: ${candidate.id}/${element}`,
+        );
+      }
+      const result = generated.get(element) ?? cached.get(element);
+      assertNonNullable(result, `AI分析要素の結果がありません。対象: ${candidate.id}/${element}`);
+      return result;
+    });
+    validateComposedOutput(state.item.candidate.input, composed);
     for (const entry of entries) {
       await dependencies.cache.write(entry);
     }
     return Object.freeze({
       status: "result",
-      result: createRunItemResult(candidate.id, [...state.cached, ...executedResults]),
+      result: createRunItemResult(candidate.id, composed, true),
     });
   } catch (error: unknown) {
     if (error instanceof CodexAttemptBudgetExceededError) {
-      return Object.freeze({ status: "deferred", candidateId: candidate.id });
+      return Object.freeze({ status: "deferred", candidateId: candidate.id, cached: state.cached });
     }
-    if (error instanceof CodexTransportAliasError) {
+    if (!(error instanceof CodexAttemptError || error instanceof CodexOutputValidationError)) {
       throw error;
     }
     await recordCandidateFailure(dependencies.diagnostics, candidate.id, error, "execution");
     return Object.freeze({
       status: "failure",
       failure: createFailure(error, candidate.id),
+      cached: state.cached,
     });
   }
 }
@@ -628,7 +146,7 @@ async function executeCandidate(
 async function executeSelectedCandidates(
   states: readonly CandidateCacheState[],
   selected: readonly Readonly<{
-    candidate: PreparedAiAnalysisCandidate;
+    candidateId: string;
     ticket: CodexInitialAttemptTicket;
   }>[],
   maxConcurrentCalls: number,
@@ -658,9 +176,9 @@ async function executeSelectedCandidates(
         nextCandidateIndex += 1;
         const reserved = selected.at(candidateIndex);
         assertNonNullable(reserved, "Codex分析候補を予算計画順に取得できませんでした");
-        const { candidate, ticket } = reserved;
-        const state = states.find((value) => value.candidate.id === candidate.id);
-        assertNonNullable(state, `Codex分析候補のcache stateがありません。対象: ${candidate.id}`);
+        const { candidateId, ticket } = reserved;
+        const state = states.find((value) => value.item.nodeId === candidateId);
+        assertNonNullable(state, `Codex分析候補のcache stateがありません。対象: ${candidateId}`);
         try {
           outcomes.set(
             candidateIndex,
@@ -692,8 +210,14 @@ async function executeSelectedCandidates(
       results.push(outcome.result);
     } else if (outcome.status === "failure") {
       failures.push(outcome.failure);
+      if (outcome.cached.length > 0) {
+        results.push(createRunItemResult(outcome.failure.candidateId, outcome.cached, false));
+      }
     } else {
       deferred.push(outcome.candidateId);
+      if (outcome.cached.length > 0) {
+        results.push(createRunItemResult(outcome.candidateId, outcome.cached, false));
+      }
     }
   }
   return Object.freeze({
@@ -703,68 +227,106 @@ async function executeSelectedCandidates(
   });
 }
 
-/** 選別済みの要素だけを項目ごとに一回のCodex呼び出しで分析する。 */
-export async function runAiAnalyses(
-  candidates: readonly PreparedAiAnalysisCandidate[],
+/** 確定済みplanの選択要素だけを項目ごとに一回のCodex呼び出しで分析する。 */
+export async function runPlannedAiAnalyses(
+  plan: GenericAiPlan,
   configuration: AiAnalysisRunConfiguration,
   dependencies: AiAnalysisRunDependencies,
 ): Promise<AiAnalysisRunResult> {
-  const target =
-    configuration.target == null ? undefined : createAiAnalysisTarget(configuration.target);
-  const selection = selectCandidatesForRun(candidates, target);
-  const resolved = await resolveCacheEntries(
-    selection.selected,
-    configuration,
-    dependencies.cache,
-    target,
-  );
-  const cachedOnlyResults = resolved.states
-    .filter((state) => state.misses.length === 0)
+  const target = plan.target;
+  if (configuration.identity !== plan.identity) {
+    throw new TypeError("AI実行設定のidentityが計画と一致しません");
+  }
+  if (
+    dependencies.attemptBudget.snapshot.ledgerId !== plan.budget.ledger.ledgerId ||
+    dependencies.attemptBudget.snapshot.sequence !== plan.budget.ledger.sequence
+  ) {
+    throw new TypeError("AI実行時のledgerが計画時の予約と一致しません");
+  }
+  const selection = selectPlannedCandidates(plan);
+  const selectedIds = new Set(plan.budget.selected.map((value) => value.candidateId));
+  const deferredIds = new Set(plan.budget.deferred.map((value) => value.candidateId));
+  if (
+    selectedIds.size !== plan.budget.selected.length ||
+    deferredIds.size !== plan.budget.deferred.length ||
+    selection.selected.some((state) => {
+      const hasExecution = state.item.executionCandidate != null;
+      return (
+        (hasExecution &&
+          selectedIds.has(state.item.nodeId) === deferredIds.has(state.item.nodeId)) ||
+        (!hasExecution &&
+          (selectedIds.has(state.item.nodeId) || deferredIds.has(state.item.nodeId)))
+      );
+    }) ||
+    [...selectedIds, ...deferredIds].some(
+      (id) => !selection.selected.some((state) => state.item.nodeId === id),
+    )
+  ) {
+    throw new TypeError("汎用AIの予約候補と計画が一致しません");
+  }
+  if (plan.budget.preflightTicket != null && dependencies.preflight == null) {
+    throw new TypeError("汎用AIの認証preflight予約に実行境界がありません");
+  }
+  const cachedOnlyResults = selection.selected
+    .filter((state) => state.item.executionCandidate == null)
     .map((state) => {
-      validateComposedOutput(state.candidate.input, state.cached);
-      return createRunItemResult(state.candidate.id, state.cached);
+      validateComposedOutput(state.item.candidate.input, state.cached);
+      return createRunItemResult(state.item.nodeId, state.cached, true);
     });
-  const executionCandidates = resolved.states
-    .filter((state) => state.misses.length !== 0)
-    .map((state) => createExecutionInput(state));
-  const budgetPlan =
-    dependencies.preflight == null
-      ? planAiAnalysisBudget(executionCandidates, configuration.budget, configuration.initialUsage)
-      : planAiAnalysisBudgetWithPreflight(
-          executionCandidates,
-          configuration.budget,
-          configuration.initialUsage,
-          dependencies.preflight,
-        );
-  const reserved = await prepareCodexInitialAttempts(
-    budgetPlan.selected,
-    dependencies.attemptBudget,
-    dependencies.ensureReady,
-    dependencies.preflight?.execute,
-  );
-  const selected = reserved.selected.map((value) => value.candidate);
-  let usage = budgetPlan.usage;
-  if (selected.length !== budgetPlan.selected.length) {
-    usage =
-      dependencies.preflight == null
-        ? planAiAnalysisBudget(selected, configuration.budget, configuration.initialUsage).usage
-        : planAiAnalysisBudgetWithPreflight(
-            selected,
-            configuration.budget,
-            configuration.initialUsage,
-            dependencies.preflight,
-          ).usage;
+  const budgetDeferredResults = plan.budget.deferred.flatMap((value) => {
+    const state = selection.selected.find(
+      (candidate) => candidate.item.nodeId === value.candidateId,
+    );
+    assertNonNullable(state, `延期した汎用AI候補が計画にありません。対象: ${value.candidateId}`);
+    return state.cached.length === 0
+      ? []
+      : [createRunItemResult(value.candidateId, state.cached, false)];
+  });
+  if (plan.budget.selected.length > 0) {
+    try {
+      await dependencies.ensureReady();
+      if (plan.budget.preflightTicket != null) {
+        assertNonNullable(dependencies.preflight, "汎用AIの認証preflight実行境界がありません");
+        await dependencies.preflight.execute(plan.budget.preflightTicket);
+      }
+    } catch (error: unknown) {
+      for (const reserved of plan.budget.selected) {
+        dependencies.attemptBudget.releaseInitialAttempt(reserved.ticket);
+      }
+      throw error;
+    } finally {
+      if (plan.budget.preflightTicket != null) {
+        dependencies.attemptBudget.releaseInitialAttempt(plan.budget.preflightTicket);
+      }
+    }
   }
   const executed = await executeSelectedCandidates(
-    resolved.states,
-    reserved.selected,
+    selection.selected,
+    plan.budget.selected,
     configuration.maxConcurrentCalls,
     configuration,
     dependencies,
   );
+  const summary = summarizeAiBudgetLedger(dependencies.attemptBudget.snapshot);
+  const itemOrder = new Map<string, number>(plan.items.map((item, index) => [item.nodeId, index]));
+  function byPlanOrder(left: string, right: string): number {
+    const leftIndex = itemOrder.get(left);
+    const rightIndex = itemOrder.get(right);
+    assertNonNullable(leftIndex, `AI結果の候補が計画にありません。対象: ${left}`);
+    assertNonNullable(rightIndex, `AI結果の候補が計画にありません。対象: ${right}`);
+    return leftIndex - rightIndex;
+  }
   const result = Object.freeze({
-    results: Object.freeze([...cachedOnlyResults, ...executed.results]),
-    failures: executed.failures,
+    results: Object.freeze(
+      [...cachedOnlyResults, ...budgetDeferredResults, ...executed.results].sort((left, right) =>
+        byPlanOrder(left.candidateId, right.candidateId),
+      ),
+    ),
+    failures: Object.freeze(
+      [...executed.failures].sort((left, right) =>
+        byPlanOrder(left.candidateId, right.candidateId),
+      ),
+    ),
     skipped: Object.freeze(
       selection.skipped.map((value) =>
         Object.freeze({
@@ -773,22 +335,25 @@ export async function runAiAnalyses(
         }),
       ),
     ),
-    deferred: Object.freeze([
-      ...budgetPlan.deferred.map((value) =>
-        Object.freeze({
-          candidateId: value.candidate.id,
-          reason: value.reason,
-        }),
-      ),
-      ...reserved.deferred.map((candidate): AiAnalysisRunResult["deferred"][number] =>
-        Object.freeze({ candidateId: candidate.id, reason: "call_limit" }),
-      ),
-      ...executed.deferred.map((candidateId): AiAnalysisRunResult["deferred"][number] =>
-        Object.freeze({ candidateId, reason: "call_limit" }),
-      ),
-    ]),
-    usage,
-    authenticationPreflightExecuted: reserved.authenticationPreflightExecuted,
+    deferred: Object.freeze(
+      [
+        ...plan.budget.deferred.map((value) =>
+          Object.freeze({
+            candidateId: value.candidateId,
+            reason: value.reason,
+          }),
+        ),
+        ...executed.deferred.map((candidateId): AiAnalysisRunResult["deferred"][number] =>
+          Object.freeze({ candidateId, reason: "call_limit" }),
+        ),
+      ].sort((left, right) => byPlanOrder(left.candidateId, right.candidateId)),
+    ),
+    usage: Object.freeze({
+      calls: summary.logicalCandidateCount + summary.authenticationPreflightAttemptCount,
+      inputCharacters: summary.inputCharacters,
+      estimatedCostUsd: summary.estimatedCostUsd,
+    }),
+    authenticationPreflightExecuted: plan.budget.preflightTicket != null,
   });
   if (target != null) {
     assertTargetWasExecuted(result, target);

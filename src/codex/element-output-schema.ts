@@ -4,9 +4,9 @@ import {
   AI_ANALYSIS_ELEMENT_SCHEMA_VERSION,
   AI_ANALYSIS_ELEMENTS,
   aiAnalysisElementSchema,
-  createAiAnalysisElementResultSchema,
   type AnalysisElement,
 } from "./analysis-elements.js";
+import { GENERIC_AI_ELEMENT_DEFINITIONS } from "./generic-ai-definition.js";
 
 /** 要素別Codex出力のschema version。 */
 export const CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION = AI_ANALYSIS_ELEMENT_SCHEMA_VERSION;
@@ -27,15 +27,15 @@ const itemSchema = z.strictObject({
 export const codexElementOutputStructureSchema = z.strictObject({
   schemaVersion: z.literal(CODEX_ELEMENT_OUTPUT_SCHEMA_VERSION),
   item: itemSchema,
-  status: createAiAnalysisElementResultSchema("status").optional(),
-  waitingOn: createAiAnalysisElementResultSchema("waitingOn").optional(),
-  nextAction: createAiAnalysisElementResultSchema("nextAction").optional(),
-  relations: createAiAnalysisElementResultSchema("relations").optional(),
-  progress: createAiAnalysisElementResultSchema("progress").optional(),
-  importance: createAiAnalysisElementResultSchema("importance").optional(),
-  deadline: createAiAnalysisElementResultSchema("deadline").optional(),
-  notification: createAiAnalysisElementResultSchema("notification").optional(),
-  selfCommitment: createAiAnalysisElementResultSchema("selfCommitment").optional(),
+  status: GENERIC_AI_ELEMENT_DEFINITIONS.status.resultSchema.optional(),
+  waitingOn: GENERIC_AI_ELEMENT_DEFINITIONS.waitingOn.resultSchema.optional(),
+  nextAction: GENERIC_AI_ELEMENT_DEFINITIONS.nextAction.resultSchema.optional(),
+  relations: GENERIC_AI_ELEMENT_DEFINITIONS.relations.resultSchema.optional(),
+  progress: GENERIC_AI_ELEMENT_DEFINITIONS.progress.resultSchema.optional(),
+  importance: GENERIC_AI_ELEMENT_DEFINITIONS.importance.resultSchema.optional(),
+  deadline: GENERIC_AI_ELEMENT_DEFINITIONS.deadline.resultSchema.optional(),
+  notification: GENERIC_AI_ELEMENT_DEFINITIONS.notification.resultSchema.optional(),
+  selfCommitment: GENERIC_AI_ELEMENT_DEFINITIONS.selfCommitment.resultSchema.optional(),
 });
 
 function elementOrder(element: AnalysisElement): number {
@@ -79,7 +79,8 @@ export function createCodexElementOutputSchema(
     item: codexElementOutputStructureSchema.shape.item,
   };
   for (const element of normalizedElements) {
-    selectedShape[element] = codexElementOutputStructureSchema.shape[element].unwrap();
+    const definition = GENERIC_AI_ELEMENT_DEFINITIONS[element];
+    selectedShape[element] = definition.resultSchema.describe(definition.promptDescription);
   }
   const jsonSchema = z.toJSONSchema(z.strictObject(selectedShape), {
     target: "draft-2020-12",

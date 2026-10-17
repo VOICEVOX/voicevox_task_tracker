@@ -1,0 +1,185 @@
+schemaVersion: 1
+organization: VOICEVOX
+
+tracking:
+  startAt: "2026-01-01T00:00:00+09:00"
+  autoInclude:
+    createdAfterStart: true
+    changedAfterStart: true
+    referencedByTracked: true
+    referencesTracked: true
+    nativeRelations: true
+    relationDepth: 3
+  relationExpansion:
+    # 1 runで関係先として個別列挙する一意なnode IDの上限。
+    maxItemsPerRun: 1000
+  include: []
+  retentionDaysAfterTerminal: 180
+  backfill:
+    maxItemsPerRun: 500
+
+# NOTE: リポジトリごとのメンテナは暫定的に1人ずつ手書きしている。実態に合わせて随時見直す。
+maintainers:
+  defaults: [Hiroshiba]
+  repositories:
+    VOICEVOX/voicevox_engine: [Hiroshiba]
+    VOICEVOX/pyopenjtalk: [Hiroshiba]
+    VOICEVOX/pyinstaller: [Hiroshiba]
+    VOICEVOX/voicevox_nemo_engine: [Hiroshiba]
+    VOICEVOX/voicevox_nemo_core: [Hiroshiba]
+    VOICEVOX/voicevox_vvm: [Hiroshiba]
+    VOICEVOX/voicevox_resource: [Hiroshiba]
+    VOICEVOX/voicevox_nemo_resource: [Hiroshiba]
+    VOICEVOX/homebrew-voicevox: [Hiroshiba]
+    VOICEVOX/voicevox_blog: [Hiroshiba]
+    VOICEVOX/voicevox_project: [Hiroshiba]
+    VOICEVOX/voicevox_task_tracker: [Hiroshiba]
+    VOICEVOX/voicevox_operation: [Hiroshiba]
+    VOICEVOX/.github: [Hiroshiba]
+    VOICEVOX/voicevox: [sevenc-nanashi]
+    VOICEVOX/voicevox_mobile: [sevenc-nanashi]
+    VOICEVOX/voicevox_vst: [sevenc-nanashi]
+    VOICEVOX/kuromoji.js: [sevenc-nanashi]
+    VOICEVOX/voicevox_telemetry_gas: [sevenc-nanashi]
+    VOICEVOX/kanalizer: [sevenc-nanashi]
+    VOICEVOX/preview-pages: [sevenc-nanashi]
+    VOICEVOX/WIP_docs: [sevenc-nanashi]
+    VOICEVOX/merge-gatekeeper: [sevenc-nanashi]
+    VOICEVOX/voicevox_core: [qryxip]
+    VOICEVOX/open_jtalk-rs: [qryxip]
+    VOICEVOX/open_jtalk: [qryxip]
+    VOICEVOX/process_path: [qryxip]
+    VOICEVOX/onnxruntime-builder: [qryxip]
+    VOICEVOX/voicevox_additional_libraries: [qryxip]
+    VOICEVOX/ort: [qryxip]
+    VOICEVOX/onnxruntime-rs: [qryxip]
+    VOICEVOX/onnxruntime: [qryxip]
+
+actors:
+  bots:
+    loginPatterns:
+      - "\\[bot\\]$"
+    knownLogins:
+      - renovate[bot]
+      - dependabot[bot]
+      - copilot-pull-request-reviewer[bot]
+      - voicevox-preview-pages[bot]
+    treatAsHuman: []
+
+labels:
+  rules:
+    - repository: "VOICEVOX/*"
+      namePattern: "^優先度[：:]高$"
+      effects:
+        priorityWeight: 25
+        severityLift: 1
+    - repository: "VOICEVOX/*"
+      namePattern: "^優先度[：:]中$"
+      effects:
+        priorityWeight: 12
+    - repository: "VOICEVOX/*"
+      namePattern: "^要議論$"
+      effects:
+        requiresMaintainerDecision: true
+    # 既存labelだけを読む。trackerはlabelを追加・変更しない。
+
+staleness:
+  timezone: Asia/Tokyo
+  recentProgressGraceHours: 24
+  thresholdsHours:
+    assessment: { watch: 48, urgent: 96, critical: 168 }
+    owner: { watch: 48, urgent: 96, critical: 168 }
+    decision: { watch: 48, urgent: 96, critical: 168 }
+    review: { watch: 48, urgent: 120, critical: 240 }
+    revision: { watch: 72, urgent: 168, critical: 336 }
+    reply: { watch: 48, urgent: 120, critical: 240 }
+    work: { watch: 168, urgent: 336, critical: 720 }
+    merge: { watch: 24, urgent: 72, critical: 168 }
+    automation: { watch: 6, urgent: 24, critical: 72 }
+
+importance:
+  weights:
+    priorityLabelMultiplier: 1.0
+    blockedItem: 3
+    blockedRepository: 5
+    downstreamImpactMax: 30
+    significantFeature: 20
+    futureRisk: 15
+  levels:
+    high: 40
+    medium: 20
+
+attention:
+  recencyFloor: 0.4
+  deadlinePoints:
+    none: 0
+    over_30_days: 5
+    within_30_days: 10
+    within_7_days: 15
+    within_3_days: 20
+    within_1_day: 25
+    overdue: 30
+  levels:
+    high: 40
+    medium: 20
+
+ai:
+  provider: codex
+  enabled: true
+  authentication: auth-json
+  model: gpt-5.6-luna
+  confidence:
+    high: 0.85
+    medium: 0.65
+  budget:
+    maxCodexExecAttemptsPerRun: 50
+    maxInputCharactersPerItem: 60000
+    maxTotalInputCharactersPerRun: 6000000
+    maxEstimatedCostUsdPerRun: 10
+    estimatedInputCostUsdPerMillionTokens: 0.20
+  execution:
+    timeoutSeconds: 120
+    maxAttempts: 2
+    maxSemanticGenerations: 3
+    maxConcurrentCalls: 4
+    sandbox: read-only
+    approvalPolicy: never
+    reasoningEffort: medium
+
+notifications:
+  automationNoiseTitles:
+    - Dependency Dashboard
+    - Renovate Dashboard
+  discord:
+    enabled: true
+    webhookSecretName: DISCORD_WEBHOOK_URL
+    operationsWebhookSecretName: DISCORD_OPERATIONS_WEBHOOK_URL
+    mentions:
+      enabled: false
+      users: {}
+      # Hiroshiba: "123456789012345678"
+    maxItemsPerDigest: 32
+
+state:
+  branch: tracker-state
+  snapshotPath: state/snapshot.json
+  historyDirectory: state/history
+  aiCacheDirectory: state/ai-cache
+  personalReminderAiCacheDirectory: state/personal-reminder-ai-cache
+  notificationLedgerPath: state/notification-ledger.json
+  runReportsDirectory: state/run-reports
+  canonicalJson: true
+
+web:
+  basePath: /voicevox_task_tracker/
+  title: VOICEVOX Task Tracker
+  defaultLocale: ja-JP
+  graph:
+    maxInitialNodes: 40
+
+operations:
+  githubApiBudgetRatio: 0.70
+  retry:
+    maxAttempts: 4
+    initialDelaySeconds: 2
+    maxDelaySeconds: 30

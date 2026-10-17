@@ -1,11 +1,13 @@
 import {
-  AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
-  AI_ANALYSIS_ELEMENT_REVISIONS,
   aiAnalysisElementReuseProofSchema,
   type AiAnalysisElement,
   type AiAnalysisElementInputFingerprint,
   type AiAnalysisElementReuseProof,
 } from "./analysis-elements.js";
+import {
+  AI_ANALYSIS_ELEMENT_INPUT_PROJECTION_VERSIONS,
+  AI_ANALYSIS_ELEMENT_REVISIONS,
+} from "./generic-ai-definition.js";
 
 /** 採用結果を現在の要素規則へ照合するための入力。 */
 export type AnalysisElementReuseInput = Readonly<{

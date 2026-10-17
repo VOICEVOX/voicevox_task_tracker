@@ -1,12 +1,11 @@
-import { type ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 
-import {
-  type PublicGraphNodeDto,
-  type PublicItemDetailsDto,
-  type PublicItemHistoryEventDto,
-  type PublicSummaryDto,
-} from "../../src/pages/public-dto.js";
+import type {
+  PublicGraphNodeDto,
+  PublicItemDetailsDto,
+  PublicItemHistoryEventDto,
+  PublicSummaryDto,
+} from "../../src/pages/public-dto-contracts.js";
 import { assertNonNullable, UnreachableError } from "../../src/util/index.js";
 import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
@@ -17,27 +16,16 @@ import { DependencyGraphDiagram } from "./dependency-graph-diagram.js";
 import { GitHubIconButton } from "./github-icon-button.js";
 import { type ItemGraphView } from "./graph-model.js";
 import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
-import {
-  aiUnverifiedValueLabel,
-  confidencePresentation,
-  formatDateTime,
-  formatRelativeTime,
-  formatStallDuration,
-  hasAiUnverifiedValue,
-  statusLabel,
-  waitingOnHistoryLabel,
-  type ConfidencePresentation,
-} from "./model.js";
+import { ItemDetailsLink } from "./item-details-link.js";
+import { hasAiUnverifiedValue } from "./model-ai-presentation.js";
+import { confidencePresentation } from "./model-confidence.js";
+import type { ConfidencePresentation } from "./model-contracts.js";
+import { aiUnverifiedValueLabel, statusLabel } from "./model-labels.js";
+import { formatDateTime, formatRelativeTime, formatStallDuration } from "./model-time.js";
+import { waitingOnHistoryLabel } from "./model-waiting-on.js";
 import { SafeGitHubLink } from "./safe-link.js";
 import { ActionButton, Pill } from "./ui.js";
 import { type PersonNavigation } from "./waiting-on-display.js";
-
-type ItemDetailsLinkProps = Readonly<{
-  children: ComponentChildren;
-  href: string;
-  nodeId: string;
-  onSelect: (nodeId: string) => void;
-}>;
 
 type ItemDetailsProps = PersonNavigation &
   Readonly<{
@@ -173,24 +161,6 @@ function blockerUnverifiedReasonDescription(reason: BlockerUnverifiedReason): st
 
 function blockerUnverifiedDescription(reasons: readonly BlockerUnverifiedReason[]): string {
   return reasons.map(blockerUnverifiedReasonDescription).join("");
-}
-
-/** 項目詳細pageへ遷移し、通常のリンク操作も維持する。 */
-export function ItemDetailsLink({ children, href, nodeId, onSelect }: ItemDetailsLinkProps) {
-  return (
-    <a
-      href={href}
-      onClick={(event) => {
-        if (!shouldHandleClientNavigation(event)) {
-          return;
-        }
-        event.preventDefault();
-        onSelect(nodeId);
-      }}
-    >
-      {children}
-    </a>
-  );
 }
 
 function confidenceDescription(presentation: ConfidencePresentation): string {

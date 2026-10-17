@@ -19,7 +19,7 @@ export default defineConfig({
     sourcemap: true,
     assetsInlineLimit: 0,
     lib: {
-      entry: resolve(import.meta.dirname, "src/cli/tracker-run.ts"),
+      entry: resolve(import.meta.dirname, "src/cli/workflow-entrypoint.ts"),
       formats: ["es"],
       fileName: () => "tracker-run.mjs",
     },

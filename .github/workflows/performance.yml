@@ -8,7 +8,7 @@ permissions: {}
 jobs:
   end-to-end-profile:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -25,7 +25,9 @@ jobs:
       - name: 依存関係をインストール
         run: pnpm install --frozen-lockfile
       - name: end-to-end性能profileを実行
-        run: pnpm perf:profile
+        run: |
+          test -x /usr/bin/time
+          /usr/bin/time -v pnpm perf:profile
       - name: 性能profileの証跡を保存
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

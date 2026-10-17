@@ -1,7 +1,7 @@
 import { UnreachableError } from "../../src/util/index.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { createGitHubAvatarUrl } from "./github-avatar.js";
-import { type WaitingOnDisplayPart } from "./model.js";
+import type { WaitingOnDisplayPart } from "./model-contracts.js";
 
 /** 人ごとのページへのリンク生成とクライアント遷移。 */
 export type PersonNavigation = Readonly<{

@@ -1,3 +1,4 @@
+import { assertNonNullable, UnreachableError } from "../util/index.js";
 import { type SourceId } from "./source-id.js";
 import { type RetentionItemState } from "./tracking-lifecycle.js";
 import {
@@ -6,11 +7,10 @@ import {
   type GitHubNodeId,
   type GraphNodeId,
   type RelationType,
-  type TrackingNotificationClass,
   type TrackedItemState,
+  type TrackingNotificationClass,
   type UtcIsoDateTime,
 } from "./types.js";
-import { assertNonNullable, UnreachableError } from "../util/index.js";
 
 /** T12が算出した活動時刻のうち追跡開始判定に使う値。 */
 export type TrackingActivity = Readonly<{

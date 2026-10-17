@@ -30,7 +30,10 @@ jobs:
           persist-credentials: false
 
       - name: 公開上流の既存stateを取得
-        run: git fetch --no-tags https://github.com/VOICEVOX/voicevox_task_tracker.git refs/heads/tracker-state:refs/heads/tracker-state
+        run: |
+          git remote set-url origin https://github.com/VOICEVOX/voicevox_task_tracker.git
+          git remote set-url --push origin disabled://VOICEVOX/voicevox_task_tracker
+          git fetch --no-tags origin +refs/heads/tracker-state:refs/remotes/origin/tracker-state
 
       - name: Node.jsを準備
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -71,20 +74,10 @@ jobs:
           GH_APP_ID: ${{ vars.GH_APP_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
         run: |
-          export PATH="$GITHUB_WORKSPACE/node_modules/.bin:$PATH"
-          pnpm exec node --input-type=module --eval '
-          const { createDefaultCliApplication } = await import("./dist/index.js");
-          const result = await createDefaultCliApplication().run([
-            "dry-run",
-            "--config",
-            "config.yml",
-            "--artifact",
-            "artifacts/dry-run.json",
-            "--report",
-            "artifacts/run-reports/dry-run.json",
-          ]);
-          process.exitCode = result.exitCode;
-          '
+          pnpm tracker:run dry-run \
+            --config config.yml \
+            --artifact artifacts/dry-run.json \
+            --report artifacts/run-reports/dry-run.json
 
       - name: dry-run成果物を保存
         if: always()

@@ -1,0 +1,83 @@
+name: 追跡runの次段階を判定
+description: 同一runtimeを取得しremote stateから次の段階を判定する
+inputs:
+  state-ref:
+    description: state branch
+    required: true
+  effect-target:
+    description: 副作用の対象
+    required: true
+  config-path:
+    description: 設定ファイル
+    required: true
+  run-id:
+    description: 解析済みrun ID
+    required: false
+outputs:
+  run_id:
+    description: remote stateで確認したrun ID
+    value: ${{ steps.route.outputs.run_id }}
+  next_stage:
+    description: 次に実行する段階
+    value: ${{ steps.route.outputs.next_stage }}
+  run_suffix:
+    description: run別artifactのディレクトリ名
+    value: ${{ steps.route.outputs.run_suffix }}
+  protocol_version:
+    description: 選択した固定回復protocolの版
+    value: ${{ steps.route.outputs.protocol_version }}
+runs:
+  using: composite
+  steps:
+    - name: Node.jsを準備
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      with:
+        node-version-file: .node-version
+    - name: pnpmと依存関係を準備
+      shell: bash
+      run: |
+        corepack enable
+        pnpm install --frozen-lockfile
+    - name: 固定runtimeを取得
+      id: runtime
+      continue-on-error: true
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: workflow-cli-runtime
+        path: artifacts/workflow/runtime
+    - name: 消失したruntimeを同じsourceから再生成
+      if: steps.runtime.outcome == 'failure'
+      shell: bash
+      run: |
+        pnpm build
+        pnpm build:workflow-cli
+        node --input-type=module <<'NODE'
+        import { lstatSync } from "node:fs";
+        const modules = [];
+        for (const [source, module] of [
+          ["src/infrastructure/tracking-run/publication-runtime.ts", "./dist/infrastructure/tracking-run/publication-runtime.js"],
+          ["src/cli/publication-runtime.ts", "./dist/cli/publication-runtime.js"],
+        ]) {
+          try {
+            if (!lstatSync(source).isFile()) throw new TypeError("runtimeのsourceは通常fileである必要があります");
+            modules.push(module);
+          } catch (error) {
+            if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+            throw error;
+          }
+        }
+        if (modules.length !== 1) throw new TypeError("exact runtimeのsource配置を一意に識別できません");
+        const [module] = modules;
+        if (module == null) throw new TypeError("manifest writerを取得できません");
+        const { writeWorkflowRuntimeManifest } = await import(module);
+        await writeWorkflowRuntimeManifest(process.cwd());
+        NODE
+    - name: remote stateから次段階を判定
+      id: route
+      shell: bash
+      env:
+        TRACKING_CONFIG_PATH: ${{ inputs.config-path }}
+        TRACKING_EFFECT_TARGET: ${{ inputs.effect-target }}
+        TRACKING_RUN_ID: ${{ inputs.run-id }}
+        TRACKING_STATE_REF: ${{ inputs.state-ref }}
+      run: bash .github/scripts/route-tracking-stage.sh

@@ -75,6 +75,15 @@ export class PublicRepositoryAllowlist {
         cause: new TypeError("公開リポジトリIDが重複しています"),
       });
     }
+    repositories.sort((left, right) => {
+      if (left.id < right.id) {
+        return -1;
+      }
+      if (left.id > right.id) {
+        return 1;
+      }
+      return 0;
+    });
     return new PublicRepositoryAllowlist(repositories);
   }
 

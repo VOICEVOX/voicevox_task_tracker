@@ -1,24 +1,31 @@
-import {
-  type CodexAnalysisInput,
-  createCodexAnalysisInput,
-  transformCodexSourceReferences,
-} from "./input.js";
 import { z } from "zod";
+import { serializeCanonicalJson } from "../canonical-json/index.js";
+import {
+  validateCodexElementOutputSchema,
+  type CodexElementEvidence,
+  type SchemaValidCodexElementOutput,
+} from "./element-output.js";
 import {
   CodexOutputSemanticValidationError,
   CodexTransportAliasError,
   type CodexOutputValidationIssue,
 } from "./errors.js";
-import { validateCodexElementOutputSchema } from "./element-output.js";
-import { validateCodexAnalysisOutput } from "./output-validation.js";
-import { type CodexElementOutput } from "./semantic-validation.js";
-import { type CodexElementEvidence, type SchemaValidCodexElementOutput } from "./element-output.js";
 import {
-  isCodexSemanticCorrectionEligible,
+  createCodexAnalysisInput,
+  serializeCodexAnalysisInput,
+  transformCodexSourceReferences,
+  type CodexAnalysisInput,
+} from "./input.js";
+import { validateCodexAnalysisOutput } from "./output-validation.js";
+import {
   codexSemanticValidationIssueCodeSchema,
+  isCodexSemanticCorrectionEligible,
   type CodexSemanticValidationIssueCode,
 } from "./semantic-validation-issues.js";
-import { serializeCanonicalJson } from "../canonical-json/index.js";
+import {
+  validateCodexAnalysisSemanticConstraints,
+  type CodexElementOutput,
+} from "./semantic-validation.js";
 
 const SOURCE_ALIAS_PREFIX = "codex_source:";
 const RELATION_ALIAS_PREFIX = "rel:codex-";
@@ -28,6 +35,7 @@ const RELATION_REFERENCE_FIELDS = new Set([
   "nativeBlocking",
   "nativeParent",
   "nativeSubIssues",
+  "nativeImplements",
 ]);
 
 /** Codex実行時のIDとcanonical IDを対応付けるcodec。 */
@@ -323,6 +331,11 @@ function createCodexTransportInput(input: CodexAnalysisInput): CodexTransportInp
   });
 }
 
+/** Codex初回processへ渡すalias化済み入力を費用見積用に返す。 */
+export function serializeCodexTransportAnalysisInput(input: CodexAnalysisInput): string {
+  return serializeCodexAnalysisInput(createCodexTransportInput(input).input);
+}
+
 function restoreSourceId(value: string, path: string, codec: CodexTransportAliasCodec): string {
   return requireCanonicalId(codec.sourceCanonicalIdByAlias, value, path);
 }
@@ -463,17 +476,21 @@ export async function executeCodexAnalysisWithTransportAliases(
     observer?.onGenerationStarted(generation);
     const context = createSemanticGenerationContext(generation, previousOutput, previousIssues);
     const rawOutput = await execute(transport.input, context);
-    let validatedOutput: SchemaValidCodexElementOutput;
+    const schemaValidOutput = validateCodexElementOutputSchema(
+      rawOutput,
+      transport.input.selectedElements,
+    );
+    let canonicalOutput: CodexElementOutput;
     try {
-      validatedOutput = validateCodexAnalysisOutput(rawOutput, transport.input);
+      const validatedOutput = validateCodexAnalysisSemanticConstraints(
+        schemaValidOutput,
+        transport.input,
+      );
+      canonicalOutput = restoreAndValidateCanonicalOutput(validatedOutput, transport.codec, input);
     } catch (error: unknown) {
       if (!(error instanceof CodexOutputSemanticValidationError)) {
         throw error;
       }
-      const schemaValidOutput = validateCodexElementOutputSchema(
-        rawOutput,
-        transport.input.selectedElements,
-      );
       const issues = semanticCorrectionIssues(error.issues);
       if (issues == null || !allSemanticIssuesAreCorrectable(issues)) {
         throw error;
@@ -492,11 +509,6 @@ export async function executeCodexAnalysisWithTransportAliases(
       }
       continue;
     }
-    const canonicalOutput = restoreAndValidateCanonicalOutput(
-      validatedOutput,
-      transport.codec,
-      input,
-    );
     if (generation > 1) {
       observer?.onCorrectionSucceeded(generation);
     }
@@ -544,6 +556,9 @@ function restoreAndValidateCanonicalOutput(
   try {
     return validateCodexAnalysisOutput(restoredOutput, input);
   } catch (error: unknown) {
+    if (error instanceof CodexOutputSemanticValidationError) {
+      throw error;
+    }
     throw new CodexTransportAliasError("canonical_validation", { cause: error });
   }
 }

@@ -1,8 +1,9 @@
 import {
-  assertValidStateBranch,
   assertValidStateDirectory,
   assertValidStatePath,
+  assertValidStateStorageBranch,
   type StateBranchAdapter,
+  type StateBranchCommitInspection,
   type StateBranchCommitRequest,
   type StateBranchCommitResult,
   type StateBranchHead,
@@ -15,9 +16,16 @@ import {
   StateBranchReadError,
   StateConfigurationError,
 } from "./errors.js";
+import {
+  createStateChangedPathManifest,
+  createStateCommitMetadata,
+} from "./state-commit-metadata.js";
 
 type MemoryCommit = Readonly<{
   files: ReadonlyMap<string, Uint8Array>;
+  parent: StateBranchHead;
+  metadata: StateBranchCommitResult["metadata"];
+  changedPathManifest: StateBranchCommitResult["changedPathManifest"];
 }>;
 
 function copyBytes(bytes: Uint8Array): Uint8Array {
@@ -36,13 +44,12 @@ function headsEqual(left: StateBranchHead, right: StateBranchHead): boolean {
 
 /** 性能profile用にstate branchとcommitをメモリ上に保持するadapter。 */
 export class MemoryStateBranchAdapter implements StateBranchAdapter {
-  readonly #branches = new Map<string, string>();
   readonly #commits = new Map<string, MemoryCommit>();
   readonly #publishedBranches = new Map<string, string>();
   #revisionSequence = 0;
 
   public resolveHead(branch: string): Promise<StateBranchHead> {
-    const revision = this.#branches.get(branch);
+    const revision = this.#publishedBranches.get(branch);
     if (revision == null) {
       return Promise.resolve(
         Object.freeze({
@@ -152,7 +159,7 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
   }
 
   public async commit(request: StateBranchCommitRequest): Promise<StateBranchCommitResult> {
-    assertValidStateBranch(request.branch);
+    assertValidStateStorageBranch(request.branch);
     if (request.updates.length === 0) {
       return Promise.reject(
         new StateBranchCommitError({
@@ -178,7 +185,7 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
       assertValidStatePath(path);
     }
 
-    const currentRevision = this.#branches.get(request.branch);
+    const currentRevision = this.#publishedBranches.get(request.branch);
     const currentHead: StateBranchHead =
       currentRevision == null
         ? Object.freeze({
@@ -217,38 +224,91 @@ export class MemoryStateBranchAdapter implements StateBranchAdapter {
       files.delete(path);
     }
 
+    const changedPaths = [...new Set([...paths, ...request.deletions])];
+    const previousFiles =
+      currentHead.status === "missing"
+        ? new Map<string, Uint8Array>()
+        : this.#commits.get(currentHead.revision)?.files;
+    if (previousFiles == null) {
+      throw new StateBranchCommitError({ cause: new TypeError("親commitが存在しません") });
+    }
+    const before = new Map<string, StateFileReadResult>();
+    const after = new Map<string, StateFileReadResult>();
+    for (const path of changedPaths) {
+      const oldBytes = previousFiles.get(path);
+      const newBytes = files.get(path);
+      before.set(
+        path,
+        oldBytes == null ? { status: "missing" } : { status: "present", bytes: oldBytes },
+      );
+      after.set(
+        path,
+        newBytes == null ? { status: "missing" } : { status: "present", bytes: newBytes },
+      );
+    }
+    const changedPathManifest = createStateChangedPathManifest(before, after);
+    const metadata = createStateCommitMetadata(request.commitIdentity, changedPathManifest);
+
     this.#revisionSequence += 1;
-    const revision = `memory-state-${this.#revisionSequence.toString()}`;
+    const revision = this.#revisionSequence.toString(16).padStart(40, "0");
     this.#commits.set(
       revision,
       Object.freeze({
         files: new Map(files),
+        parent: currentHead,
+        metadata,
+        changedPathManifest,
       }),
     );
-    this.#branches.set(request.branch, revision);
     return Promise.resolve(
       Object.freeze({
         revision,
         branchCreated: currentHead.status === "missing",
+        metadata,
+        changedPathManifest,
+      }),
+    );
+  }
+
+  /** メモリ上のexact commitからmetadataと変更manifestを読む。 */
+  public readCommit(revision: string): Promise<StateBranchCommitInspection> {
+    const commit = this.#commits.get(revision);
+    if (commit == null) {
+      return Promise.reject(
+        new StateBranchReadError({ cause: new TypeError("指定commitが存在しません") }),
+      );
+    }
+    return Promise.resolve(
+      Object.freeze({
+        revision,
+        parent: commit.parent,
+        metadata: commit.metadata,
+        changedPathManifest: commit.changedPathManifest,
       }),
     );
   }
 
   /** メモリ上のstate branchを公開済みとして扱う。 */
   public async publish(request: StateBranchPublishRequest): Promise<void> {
-    assertValidStateBranch(request.branch);
-    if (!this.#commits.has(request.revision)) {
+    assertValidStateStorageBranch(request.branch);
+    const commit = this.#commits.get(request.revision);
+    if (commit == null) {
       return Promise.reject(
         new StateBranchReadError({
           cause: new TypeError("公開対象revisionが保存されていません"),
         }),
       );
     }
-    if (this.#branches.get(request.branch) !== request.revision) {
-      return Promise.reject(new StateBranchConflictError());
-    }
-    if (this.#publishedBranches.get(request.branch) === request.revision) {
+    const currentRevision = this.#publishedBranches.get(request.branch);
+    const currentHead: StateBranchHead =
+      currentRevision == null
+        ? Object.freeze({ status: "missing" })
+        : Object.freeze({ status: "present", revision: currentRevision });
+    if (currentHead.status === "present" && currentHead.revision === request.revision) {
       return Promise.resolve();
+    }
+    if (!headsEqual(currentHead, commit.parent)) {
+      return Promise.reject(new StateBranchConflictError());
     }
     this.#publishedBranches.set(request.branch, request.revision);
     return Promise.resolve();

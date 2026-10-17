@@ -1,23 +1,18 @@
-import {
-  type PublicItemSummaryDto,
-  type PublicPersonalReminderResponseDto,
-  type PublicSummaryDto,
-} from "../../src/pages/public-dto.js";
+import type {
+  PublicItemSummaryDto,
+  PublicPersonalReminderResponseDto,
+  PublicSummaryDto,
+} from "../../src/pages/public-dto-contracts.js";
 import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
-import { CurrentResponses } from "./current-responses.js";
 import { CurrentImplementations } from "./current-implementations.js";
-import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
+import { CurrentResponses } from "./current-responses.js";
 import { DeadlineDisplay } from "./deadline-display.js";
+import { AttentionBadge, ImportanceBadge } from "./importance-badge.js";
 import { ItemListHeading } from "./item-list-heading.js";
-import {
-  aiUnverifiedValueLabel,
-  formatStallDuration,
-  hasAiUnverifiedValue,
-  statusLabel,
-  type ItemSort,
-  type ItemSortKey,
-  type ItemTableRow,
-} from "./model.js";
+import { hasAiUnverifiedValue } from "./model-ai-presentation.js";
+import type { ItemSort, ItemSortKey, ItemTableRow } from "./model-contracts.js";
+import { aiUnverifiedValueLabel, statusLabel } from "./model-labels.js";
+import { formatStallDuration } from "./model-time.js";
 import {
   type ResponsiveCardField,
   type ResponsiveTableColumn,

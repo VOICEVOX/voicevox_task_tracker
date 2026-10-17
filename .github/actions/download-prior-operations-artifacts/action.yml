@@ -1,0 +1,29 @@
+name: 以前の運用障害通知の証拠を取得
+description: 同じActions runのreceiptとattempt別公開失敗artifactを取得する
+inputs:
+  workflow-kind:
+    description: 日次または手動workflowの種別
+    required: true
+  run-id:
+    description: Actions run ID
+    required: true
+  github-token:
+    description: Actions artifactの読取token
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: 以前の運用障害通知receiptを取得
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        pattern: operations-alert-receipt-${{ inputs.run-id }}-*
+        path: artifacts/workflow/previous-operations-alert-receipts
+        run-id: ${{ inputs.run-id }}
+        github-token: ${{ inputs.github-token }}
+    - name: 以前の公開失敗artifactを取得
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        pattern: ${{ inputs.workflow-kind }}-failure-${{ inputs.run-id }}-*-*
+        path: artifacts/workflow/previous-operations-alert-failures
+        run-id: ${{ inputs.run-id }}
+        github-token: ${{ inputs.github-token }}

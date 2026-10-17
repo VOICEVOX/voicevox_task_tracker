@@ -51,7 +51,7 @@ blockがあっても、指定されたレビューや計画などを並行して
 - 同じitemの別actionを待つ `waiting` optionは、`relationRefs` が空でも選べます。異なるitemを待つ場合は、その待機の根拠となるrelationが必要です。どちらの場合もsourceの根拠は必須で、optionの `sourceRefs` をすべて参照してください。
 - `conflicting_evidence` と `ambiguous_meaning` には、競合や曖昧さが分かる根拠を少なくとも一つ参照してください。`incomplete_input` で不足している根拠を補作してはいけません。
 - `confidence` は原因ごとに0以上1以下の数値で表し、根拠に照らした確信度を示してください。`unknown` 以外は高信頼で判定できる場合だけ選び、不確かな肯定や否定を高いconfidenceで確定させないでください。正常な `unknown` はconfidenceが低くても返せます。
-- 根拠の要約は日本語で簡潔に書き、現在の義務と行動の判断に必要な事実を示してください。非公開の推論や思考過程は出力しないでください。
+- `references.reasonSummary` は日本語で簡潔に書き、現在の義務と行動の判断に必要な事実を示してください。URLやドメイン名を書かず、参照先は `sourceRefs` などのrefで示してください。非公開の推論や思考過程は出力しないでください。
 
 ## 指定されたJSONだけを返す
 

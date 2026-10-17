@@ -1,6 +1,6 @@
 import { useMemo } from "preact/hooks";
 
-import { type PublicSummaryDto } from "../../src/pages/public-dto.js";
+import type { PublicSummaryDto } from "../../src/pages/public-dto-contracts.js";
 import { AiUnverifiedMark } from "./ai-analysis-notice-icon.js";
 import { shouldHandleClientNavigation } from "./client-navigation.js";
 import { createGitHubAvatarUrl } from "./github-avatar.js";
@@ -8,20 +8,17 @@ import { GitHubProfileLink } from "./github-icon-button.js";
 import { createItemCardFields, createItemTableColumns } from "./item-list-fields.js";
 import { ItemListHeading } from "./item-list-heading.js";
 import { ContentState, PageSection } from "./layout.js";
+import type { ItemSort, ItemSortKey, ItemTableRow } from "./model-contracts.js";
 import {
-  createDefaultTableFilters,
-  createItemTableRows,
-  filterAndSortTableRows,
   collectCurrentResponseTeamIds,
   currentResponseSubjectKey,
   hasCurrentResponseSubjectItemsUnverified,
   hasCurrentResponseTeamOptionsUnverified,
   selectCurrentResponseSubjectItemNodeIds,
   selectCurrentResponseSubjectPrimaryResponse,
-  type ItemSort,
-  type ItemSortKey,
-  type ItemTableRow,
-} from "./model.js";
+} from "./model-current-response.js";
+import { createDefaultTableFilters } from "./model-labels.js";
+import { createItemTableRows, filterAndSortTableRows } from "./model-tables.js";
 import {
   ResponsiveTableCardList,
   type ResponsiveListRowPresentation,

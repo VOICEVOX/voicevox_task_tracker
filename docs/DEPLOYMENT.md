@@ -94,7 +94,7 @@ gh secret set CODEX_AUTH_SYNC_TOKEN --repo VOICEVOX/voicevox_task_tracker
 ```
 
 現行の`config.yml`は`ai.authentication: auth-json`を指定します。
-`collect-analyze` jobは`CODEX_AUTH_JSON`が空なら認証ファイルの配置を省き、非空なら`${{ runner.temp }}/codex-home/auth.json`へ権限600で書き出します。
+`analyze` jobは`CODEX_AUTH_JSON`が空なら認証ファイルの配置を省き、非空なら`${{ runner.temp }}/codex-home/auth.json`へ権限600で書き出します。
 配置時のsha256は指紋として`${{ runner.temp }}/codex-auth-fingerprint`へ保存します。
 `codex-home`を`CODEX_HOME`として収集stepへ渡します。
 Codexへ渡す認証用の環境変数は`CODEX_HOME`だけです。
@@ -102,73 +102,130 @@ Codex CLIはaccess tokenの残り有効期間が5分未満になるとrefresh to
 このときrefresh token自体も新しい値へ入れ替わるため、更新後の`auth.json`を保存しないといずれ認証エラーになります。
 `auth-json`で実行候補が1件以上あるrunでは、候補processより先に固定した短文による認証preflightを空の一時directoryで1論理call実行します。候補データと通常のsystem promptは渡さず、preflightの完了後に設定済みの並列度で候補を処理します。候補なし、cache hitだけ、全候補が予算延期のrunでは実行しません。
 `api-key`ではpreflightを実行しません。このpreflightは必要時のtoken更新機会を先に設ける緩和策であり、refreshを強制しません。preflight後に各並列processが更新条件へ入れば、認証競合は残ります。
-preflightに失敗したrunは候補を1件も開始せず、`codex_analysis`を失敗させます。
-配置後のmaskまで完了していれば、書き戻しstepは先行stepの成否を問わず実行します。
-実行stepへは`CODEX_AUTH_SYNC_TOKEN`の有無を示す真偽値だけを渡します。`auth-json`で実行候補がある場合、この値が偽ならCodexの起動前に失敗します。
-tokenの値は書き戻しstepだけへ`GH_TOKEN`として渡します。
+preflightに失敗したrunは候補を1件も開始せず、`generic_ai_executed`を失敗させます。
+認証secretへの書き戻しは本番の`analyze`とforkの手動dry-runが行います。
+配置後のmaskまで完了していれば、書き戻しstepを先行stepの成否を問わず実行します。
+本番の実行stepへは`CODEX_AUTH_SYNC_TOKEN`の有無を示す真偽値だけを渡します。`auth-json`で実行候補がある場合、この値が偽ならCodexの起動前に失敗します。
+tokenの値は本番と手動dry-runの書き戻しstepだけへ`GH_TOKEN`として渡します。
 書き戻しstepは更新後の値をmaskしてから、配置時のsha256と現在の`auth.json`を比較します。
 変更があってtokenが空なら、secretの更新前に失敗します。
 変更がなければsecretを更新せず、変更があれば`gh secret set`で`CODEX_AUTH_JSON`を更新します。
 この同期が成功する限り、手動の再ログインとsecretの再登録なしにtokenの期限が延長され続けます。
-`collect-analyze`は認証ファイルの配置直後とsecretへ書き戻す直前に`.github/scripts/mask-codex-auth-values.sh`を実行します。
+`analyze`と手動dry-runは認証ファイルの配置直後に`.github/scripts/mask-codex-auth-values.sh`を実行します。書き戻し直前にも実行します。
 このscriptは`auth.json`内のすべての文字列値を`jq`で取り出し、改行を含む値を行へ分け、16文字以上の各行を`::add-mask::`へ登録します。
 値に含まれる`%`はworkflow commandへ渡す前に`%25`へescapeします。
 GitHub Actionsの自動マスクはrun開始時に読み込んだsecret値と完全一致する文字列だけを隠します。
 `auth.json`内の個々のtokenは`CODEX_AUTH_JSON`の部分文字列であり、自動では隠れません。
 Codexが更新した`auth.json`もjob開始時のsecretとは異なるため、書き戻し前に更新後の値を登録します。
-書き戻し後はjobの最後に`codex-home`と指紋ファイルを削除します。
+jobの最後に`codex-home`と指紋ファイルを削除します。
 Codex認証情報と`CODEX_AUTH_SYNC_TOKEN`を`config.yml`、branch、artifact、run logへ書きません。
 
-同じrepositoryの`collect-analyze`、sandbox、手動dry-runは、共通の排他groupで認証の使用と書き戻しを一つずつ実行します。
+同じrepositoryの`analyze` jobと手動dry-runは、共通の排他groupで認証の使用と書き戻しを直列化します。
 repository secretはworkflow runの受付時に読み込まれるため、待機中に別runが認証を更新しても、受付済みrunには反映されません。
 手動実行は、同じ認証を使う前のrunが完了してから起動します。
 この制約は日次workflow、sandbox、手動dry-runに共通です。
-真偽値はtokenの登録有無だけを示し、有効期限やsecret更新権限は保証しません。
+同期用の真偽値はtokenの登録有無だけを示し、有効期限やsecret更新権限は保証しません。
 tokenの権限不足やjobの中断が起きた場合、stateの保存と認証secretの同期は原子的に完了しません。
 
 repositoryのWorkflow permissionsは既定の読み取り専用にします。
 read and writeへ変更する必要はありません。
 全workflowはtop-levelの`permissions`を空にし、各jobで必要な権限だけを指定しています。
 `CODEX_AUTH_SYNC_TOKEN`はjobの`permissions`とは独立した資格情報です。
-同期のために既定のread-only設定や`collect-analyze`の`contents: read`を変更しません。
-`persist-state`、`notify-discord`、`notify-operations`は`tracker-state`へpushするため、それぞれ`contents: write`を指定します。
+同期のために既定のread-only設定や`analyze`の`contents: read`を変更しません。
+`commit-initial-state`、Pages結果のrecord、`settle-notifications`、`finalize-run`はstateへpushするため`contents: write`を指定します。`_tracking-observe.yml`の運用通知は専用の`tracker-operations-alerts`へ保存します。
 これらのjobにはGitHub Actionsが`GITHUB_TOKEN`を自動発行するため、独自の`GITHUB_TOKEN` secretは登録しません。
 
-CLIはremote repositoryへpushしません。
-`src/persistence/git-state-branch-adapter.ts`が`hash-object`、`commit-tree`、`update-ref`などを使い、localの`refs/heads/tracker-state`へcommitを作ります。
-workflowはCLIの実行前にremoteの`tracker-state`をlocal refへfetchし、CLIの実行後に明示的な`git push`でremoteへ反映します。
-`tracker-state`へrulesetを設定する場合はGitHub Actionsによるstate更新を許可し、人間の通常作業branchとして使わないでください。
+`src/persistence/git-state-branch-adapter.ts`はremote refの現在値を読み、`hash-object`と`commit-tree`でcommitを作って非force pushします。運用障害通知の専用refは初回通知時に作成し、以後は同じrefの直前commitを親にします。
+`tracker-state`と`tracker-operations-alerts`へrulesetを設定する場合は、GitHub Actionsによる更新を許可し、人間の通常作業branchとして使わないでください。
 
-`collect-analyze`は`artifacts/workflow/validated-run.json`へ検証済みsnapshot、通知候補、通知管理記録、run report生成用の収集指標、AI cache、Pages URL、Discord送信設定だけを書きます。
-GitHub App key、installation token、Codex認証情報、`CODEX_AUTH_SYNC_TOKEN`、Discord webhookはartifactへ含めません。
-artifactを利用する後続jobは同じartifactを再検証してから利用します。
-依存関係を再インストールせず`notify-discord`でCLIを動かすため、公開sourceから作った自己完結bundleも同じActions artifactへ保存します。
-収集時のCLI reportは収集jobの成否にかかわらず、run IDと試行番号を含む別のActions artifactへ保存します。
-最後の`report-workflow`は全jobの結果と必須metricを`artifacts/run-reports/workflow.json`へまとめ、別のActions artifactへ保存します。
-これらのreport artifactはstateとPagesの入力にしません。
-詳細診断はrunnerの一時directoryでjobごとのJSONLへ記録し、AES-256-GCMで暗号化してから専用artifactへ保存します。
-認証preflightの開始と終了は`codex.authentication_preflight.attempt.started`と`codex.authentication_preflight.attempt.completed`で確認でき、標準出力、標準エラー出力、stackも暗号化診断に記録します。raw出力は公開run reportへ載せません。
-平文のJSONLは暗号化処理の成否にかかわらず削除します。
-暗号化鍵を渡すのは暗号化stepだけです。
-詳細診断artifactの保持期間は7日で、公開可能なrun artifact、state、Pagesの入力には使いません。
+日次workflowの`daily.yml`とsandbox workflowは、共通の`_tracking-run.yml`を呼び出します。
+`_tracking-run.yml`はquality、bootstrap、固定runtimeの準備、analyze、初回commit、初回Pages、通知settlement、finalization、通知履歴Pages、complete、observeを接続します。
+Pagesは`_tracking-pages.yml`、全jobの報告と運用通知は`_tracking-observe.yml`を使います。
+
+手動のproduction直列実行には`run_sequential.yml`を使います。
+親の`run-sequential` CLIは初回state commitから通知履歴Pagesまで一つのprocessで進み、Pages公開時だけ`sequential_pages_effect.yml`を起動して実結果を待ちます。
+子workflowは固定sourceとstate revision、公開intentを再検証し、Pagesの構成、artifact upload、deployと結果の観測だけを行います。
+親が実deployment IDとURLを検証してreceiptへ保存するまで、Discord通知へ進みません。
+子workflowは親のproduction排他groupを取らず、専用groupと`tracker-pages-effect-lease` branchで同じ公開効果の重複を防ぎます。
+親はreportとreceipt artifactの保存後にleaseを解放します。
+leaseがactiveの間は日次実行、手動復旧、Discord送達解決、別のproduction直列実行を停止します。
+
+analyzeが作る`validated-run.cpk`には公開可能なsnapshot、公開allowlist、通知候補、AI生成元、保存・公開計画を結合します。
+snapshot本文は一度だけ保存し、公開計画はsnapshot digestを参照します。sidecarは`.cpk`全byteのdigestを保持します。
+secret、API client、installation token、Codex認証、Webhookを含めません。
+後段はcheckpointとsidecarを再検証し、初回commit後はexact state revisionから読み直します。
+
+`workflow-cli-runtime` artifactには自己完結bundle、固定V1/V2 entrypointとruntime manifestを保存します。
+manifestはcode revision、lockfile digest、Node・pnpmのtoolchain、全fileの相対path・byte数・digest、回復protocol、adapter identityを固定します。
+再開時は元runのbundleを取得し、消失していたら同じsourceから再生成して記録値と完全一致する場合だけ使います。
+再生成時のmanifest writerは、取得したexact sourceの配置から一意に選びます。
+現行制御runtimeはbootstrapだけを読み、未完了payloadの検証とeffectはexact runtimeで行います。
+
+各stageのreceiptとcheckpointは`tracking-stage-<stage>` artifactへ、公開failureは独立したfailure artifactへ保存します。
+最後のobserveは全jobの結果と、失敗binding・operation-local certaintyを集約します。
+reportとfailure artifactをsnapshotやPagesの入力として使いません。
+詳細なstack、Codex process出力は一時JSONLへ分離し、本番とsandboxではそれぞれの鍵でAES-256-GCM暗号化したartifactだけを保存します。
+平文は暗号化の成否にかかわらず削除し、暗号化鍵はsandbox入口の形式検査と各暗号化stepだけへ渡します。
+詳細診断artifactの保持期間は本番で7日、sandboxで30日です。
 
 ### forkの試行用認証を登録する
 
 `Hiroshiba/voicevox_task_tracker`のrepository variableへ`GH_APP_ID`を登録します。
-本番と同じく、repository secretsへ`GH_APP_PRIVATE_KEY`、`CODEX_AUTH_JSON`、`CODEX_AUTH_SYNC_TOKEN`を登録します。
-
-同期用のfine-grained personal access tokenは、Resource ownerを`Hiroshiba`にし、対象repositoryを`Hiroshiba/voicevox_task_tracker`だけに絞ります。
-Repository permissionsには`Secrets`の`Read and write`だけを与えます。
+repository secretsへ`GH_APP_PRIVATE_KEY`、`CODEX_AUTH_JSON`、`VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64`を登録します。
+手動dry-runにはfork専用の`CODEX_AUTH_SYNC_TOKEN`も登録します。
+同期用のfine-grained personal access tokenはResource ownerを`Hiroshiba`にし、対象を`Hiroshiba/voicevox_task_tracker`だけに絞ります。
+Repository permissionsは`Secrets`の`Read and write`だけを与えます。
+同期用tokenは自動延長されないため、期限前に再発行します。
+診断鍵は本番とは別の32 byteの乱数をBase64へ変換し、Git管理外の安全な場所へ権限600で保管します。
 
 ```console
 gh secret set CODEX_AUTH_JSON --repo Hiroshiba/voicevox_task_tracker < "${CODEX_HOME:-$HOME/.codex}/auth.json"
 gh secret set CODEX_AUTH_SYNC_TOKEN --repo Hiroshiba/voicevox_task_tracker
+umask 077
+openssl rand 32 | openssl base64 -A > path/to/sandbox-diagnostics-key.b64
+chmod 600 path/to/sandbox-diagnostics-key.b64
+gh secret set VOICEVOX_TASK_TRACKER_SANDBOX_DIAGNOSTICS_AES256_KEY_V1_B64 --repo Hiroshiba/voicevox_task_tracker < path/to/sandbox-diagnostics-key.b64
 ```
 
-認証ファイルに変更があれば、試行処理が失敗した場合も同じrepository secretへ書き戻します。
-書き戻しに失敗した場合はrunを失敗にし、一時ファイルは削除します。
-認証エラーから復旧するときは、再ログインで得た`auth.json`を同じrepository secretへ登録します。
-同期用PATの有効期限は自動延長されないため、期限前に再発行して`CODEX_AUTH_SYNC_TOKEN`を更新します。
+sandboxは`CODEX_AUTH_SYNC_TOKEN`を受け取らず、Codex認証secretを書き戻しません。
+手動dry-runは認証ファイルが更新された場合にforkの`CODEX_AUTH_JSON`へ書き戻します。
+診断鍵が未設定または形式不正なら、環境の準備とCodexの起動前に停止します。
+Codexが`auth.json`を更新しても次のActions runへ引き継がれません。
+自動起動されるcontinuityの2回目や後続scenarioは、古いrefresh tokenが無効になると認証エラーで停止し得ます。
+認証エラーから復旧するときは、再ログインで得た`auth.json`をforkの`CODEX_AUTH_JSON` secretへ登録してから継続実行します。
+
+### forkで手動dry-runを実行する
+
+実データの収集とAI解析をstateの本番保存やPages公開、Discord送信なしで確認するときは、forkの「手動dry-run」を使います。
+最初に`.github/workflows/dry-run.yml`をforkのデフォルトブランチへ反映し、Actionsを有効にします。
+起動するworkflowのbranchにはforkのデフォルトブランチを選び、`source_ref`へ同じfork内の実行対象branch名かcommit SHAを指定します。
+
+```console
+gh workflow run dry-run.yml --repo Hiroshiba/voicevox_task_tracker --ref main -f source_ref=feature/example
+```
+
+workflowは指定したcodeと`config.yml`を使い、公開上流の`tracker-state`を基準にします。
+stateの取得に失敗した場合や未完了の本番runがある場合は停止します。
+隔離したローカルGitと記録用portで全stageを実行し、本番のstate、Pages、Discordへは書き込みません。
+実行前に`source_ref`の`maintainers`などの設定を確認します。dry-runにrepository filterとforcedモードの入力はありません。
+
+runの失敗stepと次のActions artifactを確認します。保持期間は30日です。
+
+| artifact名                                | 出力先                               | 確認内容                                       |
+| ----------------------------------------- | ------------------------------------ | ---------------------------------------------- |
+| `dry-run-report-<run ID>-<run attempt>`   | `artifacts/run-reports/dry-run.json` | `status`、`complete`、`metrics`、`diagnostics` |
+| `dry-run-artifact-<run ID>-<run attempt>` | `artifacts/dry-run.json`             | `result`、`effectReport`、通知候補、公開計画   |
+
+```console
+gh run list --repo Hiroshiba/voicevox_task_tracker --workflow dry-run.yml --limit 1
+gh run view RUN_ID --repo Hiroshiba/voicevox_task_tracker
+gh run download RUN_ID --repo Hiroshiba/voicevox_task_tracker --dir hiho_dry_run
+```
+
+reportの`status`と`complete`、artifactの`effectReport`にある本番への書き込み件数を照合します。
+`result`ではrepository範囲、待ち相手の`waitingOn`、関係、通知候補を確認します。
+CLI開始前や途中で失敗するとartifactがない場合があります。
+実分析の確認ではpreflight以外のAI呼び出しがあったかを確認します。cache再利用や予算延期で実分析が0件だった場合は、[sandboxのforcedモード](OPERATIONS.md#sandboxで連続runと通知actionを確認する)を使います。
 
 ## マージゲートの設定
 
@@ -205,9 +262,20 @@ job名を変えるとRulesetの必須チェックが永久に未完了のまま�
 repositoryをpublicにした後、SettingsのPagesでSourceを`GitHub Actions`にします。
 branchをPages sourceへ指定しません。
 
-現行構成では`config.yml`の`web.basePath`を`/voicevox_task_tracker/`にし、公開URLを`https://voicevox.github.io/voicevox_task_tracker/`とします。
-workflowの初回`deploy-pages` jobはrepositoryをcheckoutせず、初回`build-pages`が保存したPages artifactを`github-pages` environmentへdeployするだけです。通常通知の送信後に候補がある場合は、`publish-notification-history` jobが最新の`tracker-state`からPagesを再生成し、別名のPages artifactを同じenvironmentへdeployします。
-このため初回`deploy-pages` jobだけが`pages: write`と`id-token: write`を使用します。`publish-notification-history` jobはこれらに加えて`contents: read`を使用します。
+`config.yml`の`web.basePath`を`/voicevox_task_tracker/`にし、公開URLを`https://voicevox.github.io/voicevox_task_tracker/`とします。
+`_tracking-pages.yml`はinitialとnotification_historyのphaseを受け取り、同じbuild・preflight・action・record境界を使います。
+`sequential_pages_effect.yml`も同じ固定SHAのPages actionとdeployment ID観測actionを使います。
+
+buildは保存済みstateの固定revisionからDTOを投影し、Web出力全fileのmanifest、build receipt、deploy intentを保存します。
+deploy直前にremote stateと出力全fileを照合します。
+productionでpreflightがreadyの場合だけ、pinしたconfigure-pages、upload-pages-artifact、deploy-pages actionを実行します。
+record jobはactionの結果、artifact ID・digest、adapter identityをexact runtimeへ渡し、検証済みreceiptを保存します。
+初回Pagesの成功証拠はstateの固定pathにも保存し、通知開始の必須条件にします。
+
+Pages deploy jobは`contents: read`、`actions: read`、`pages: write`、`id-token: write`を持ち、record jobはstate更新の`contents: write`を持ちます。
+sandboxでは同じpreflightを通し、通常artifactへサイトを保存するrecording portで結果を記録します。本番Pagesへdeployしません。
+通知履歴Pagesはrun finalization後のstateを使い、送信履歴が増えない場合は公開不要というreceiptを作ります。
+この後段の失敗でfinalized stateを巻き戻したりDiscordを再送したりしません。
 
 ## config.yml
 
@@ -275,102 +343,34 @@ scoreは各要因の加点を0から100の整数へ収めた値です。
 `importanceCapacity = 100 - deadlinePoints.overdue`として、`recencyScore = round(importanceScore × recencyCoefficient × importanceCapacity / 100)`を求め、期限の切迫度加点を足して要対応度scoreを0から100の整数にします。
 terminal項目とブロック解消待ちの項目は要対応度scoreが0になります。
 
-## デプロイ確認
+## デプロイ前後の確認
 
-### 1. Actionsでdry-runを実行する
+マージ前は[開発手順](DEVELOPMENT.md)の静的確認を実行します。
+CIはPRとmainへのpushでformat、incremental typecheck、cached lint、source-lines、CLI・workflow CLI・Webの3 buildを検査します。
+ESLint cacheはlint対象sourceと型設定、依存lockfileの内容から計算したkeyが完全一致するときだけ復元します。
+verify-state jobはtracker-stateの全履歴と固定SHAを取得し、現行ingress、marker・record・初回Pages証拠と実commit chainを検証します。
+未完了runがある場合はcurrent runtimeの検証を停止し、exact runtimeでの復旧を先に行います。
 
-実データの収集・AI解析を確認する場合は、forkの「手動dry-run」workflowを使います。
-指定したコードと`config.yml`でGitHubから収集し、実行候補があればCodexを呼び出します。
-追跡stateの保存、Pagesの生成・公開、Discord送信は行いません。
+外部確認はforkのsandboxで行います。
+同じenvironmentの連続2 run、更新前後のruntime再現、通知actionと明確な拒否・曖昧な結果・手動解決を、run IDとstate revision・receipt・coverage artifactで確認します。
+静的検査の成功だけを外部確認の成功として報告しません。
+外部確認の条件と実行入力は[運用手順](OPERATIONS.md)にまとめています。
 
-初回は`.github/workflows/dry-run.yml`をforkのデフォルトブランチへ反映し、Actionsを有効にします。
-PRの作業ブランチへファイルを追加しただけでは手動起動できません。
-[試行用認証の登録手順](#forkの試行用認証を登録する)に従い、本番とは別にforkの`GH_APP_ID` variableと`GH_APP_PRIVATE_KEY`、`CODEX_AUTH_JSON`、`CODEX_AUTH_SYNC_TOKEN` secretsを登録します。
-PagesとDiscordの設定は不要です。
+本番の公開確認はdefault branchの「日次タスク追跡」を手動起動します。
+`backfill: none`、空のrepository filterを使い、確認中の通知を保持するときは`notification_action: hold`を選びます。
+設定の`VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED`を文字列`true`にすると定期実行だけを止められます。開始済みrunの完了を待ってから手動実行します。
 
-起動するworkflowのbranchにはforkのデフォルトブランチを選びます。
-実行するコードと設定は、必須入力`source_ref`に同じfork内のbranch名またはcommit SHAを指定します。
-`Hiroshiba/voicevox_task_tracker`の`feature/example`を確認する例です。
+成功時は次の証拠を同じrunで照合します。
 
-```console
-gh workflow run dry-run.yml --repo Hiroshiba/voicevox_task_tracker --ref main \
-  -f source_ref=feature/example
-```
+- 初回commitにsnapshot、履歴、AI cache、通知ledger、durable record、markerがまとまっている
+- 初回Pagesのmanifest・公開receipt・固定証拠が同じcheckpointとstate revisionを指している
+- 通知が初回Pages成功後にだけ始まり、messageごとの保存後に次の送信へ進んでいる
+- finalization receiptとmarkerの`run_finalized`が一致し、その後の通知履歴Pagesが成功または公開不要になっている
+- 認証ファイルを配置した場合は書き戻しと一時ファイル削除が成功している
+- state・公開DTO・failure artifactに非公開repository参照やsecretが含まれていない
 
-stateは公開本番`VOICEVOX/voicevox_task_tracker`の`tracker-state`から取得し、取得に失敗すると停止します。
-`source_ref`の`config.yml`にある`maintainers`などの設定が意図どおりか確認してください。
-state branchは`tracker-state`のまま使います。dry-runにはmodeやrepository filterの入力はありません。
-
-Codex認証ファイルが更新された場合はforkの`CODEX_AUTH_JSON`へ書き戻し、runの終了時に一時ファイルを削除します。
-同じ認証を使う前のrunが完了してから起動してください。
-
-完了したrunの状態と、次の二つのActions artifactを確認します。保持期間は30日です。
-
-| Actions artifact                          | workflow内の出力先                   | 確認内容                                       |
-| ----------------------------------------- | ------------------------------------ | ---------------------------------------------- |
-| `dry-run-report-<run ID>-<run attempt>`   | `artifacts/run-reports/dry-run.json` | `status`、`complete`、`metrics`、`diagnostics` |
-| `dry-run-artifact-<run ID>-<run attempt>` | `artifacts/dry-run.json`             | `complete`、snapshot、通知候補                 |
-
-run IDを確認し、artifactを取得する例です。
-
-```console
-gh run list --repo Hiroshiba/voicevox_task_tracker --workflow dry-run.yml --limit 1
-gh run view RUN_ID --repo Hiroshiba/voicevox_task_tracker
-gh run download RUN_ID --repo Hiroshiba/voicevox_task_tracker --dir hiho_dry_run
-```
-
-reportとartifactの`complete`を確認し、snapshotのrepository範囲、待ち相手を表す`waitingOn`、関係、通知量を調べます。
-CLIの開始前などに失敗するとartifactが作られないことがあるため、runの失敗stepも確認します。
-
-### 2. Codexのdry-run
-
-現行の`config.yml`は`ai.enabled: true`と`ai.authentication: auth-json`を設定済みです。
-手動dry-runはlockfileで固定したCodex CLIとforkの認証情報を使います。
-前節のrun reportで、`ai.model`に設定されたmodel IDの呼び出しが成功したかを確認します。
-`auth-json`で候補を実行するrunでは、preflightを含む`metrics.aiCallCount`、`metrics.aiProcessAttemptCount`、`metrics.estimatedInputTokens`を確認します。preflightはrun全体の入力文字数と見積費用へ1論理callとして計上し、項目ごとの入力文字数上限には含めません。現行の`ai.budget.maxCodexExecAttemptsPerRun`は実試行50回の上限です。preflightを行うrunでは候補の初回試行枠を最大49件分確保でき、retryとsemantic補正の追加実試行も同じ上限から消費します。追加実試行は論理call数へ加えません。
-
-`status`が`success`で`metrics.aiProcessAttemptCount`が1以上となり、`diagnostics`にmodelの利用不可を示す内容がなければ、設定済みmodel IDを利用できています。
-`metrics.aiProcessAttemptCount`が0ならmodelを呼び出していないため、利用可否を確認できていません。`status`が`failure`の場合は、`metrics.aiCallCount`が0でもpreflightでmodelを呼び出した可能性があるため、実試行数と`diagnostics`で失敗段階を確認します。
-`metrics.aiCacheHitCount`、`metrics.estimatedInputTokens`、`diagnostics`も確認します。
-model、reasoning effort、promptを変更した場合は、preflight以外の実分析を含むdry-runでAI判定と通知候補の差分を確認します。
-preflightだけ、cache再利用だけ、予算による延期で実分析が0件だった場合は、実推論の確認を済ませたことにしません。
-対象を指定して実推論を確認する必要がある場合は、[sandboxのforcedモード](OPERATIONS.md#forkでprのコードを動かし試行環境ごとにstateを分ける)を使います。
-
-### 3. 日次workflow
-
-通常digest用と運用障害通知用のIncoming Webhookを作成し、Actionsの`DISCORD_WEBHOOK_URL`と`DISCORD_OPERATIONS_WEBHOOK_URL`へ登録します。
-PagesのSourceを`GitHub Actions`にし、`notifications.discord.enabled: true`であることを確認してから、repositoryのdefault branchから日次workflowを手動実行します。
-workflowはdefault branchからのscheduleまたは手動実行だけを許可します。
-入力は`backfill: none`とし、repository filterは空にします。
-手動実行の`notification_action`は`send`が既定値で、通常の通知を送ります。候補を保持して送信だけを保留する場合は`hold`を選びます。現在の通知候補を通知済みと同様に扱いたい場合だけ`acknowledge-current`を選びます。
-手動実行でも`persist-state`、初回Pages buildとdeploy、`notify-discord`の順に進みます。`send`で通知候補がある場合は、通知後に`publish-notification-history`がPagesを再生成してdeployします。
-
-`hold`では、未送信候補を通知管理記録へ保存し、送信予約や確認済みの記録を追加せずにrunを完了します。次の`send`で候補の有効性を再確認します。手動での確認中はrepository variableの`VOICEVOX_TASK_TRACKER_SCHEDULE_PAUSED`を文字列`true`にすると、定期実行だけを止められます。開始済みのrunは止まらないため、完了を待ってから手動実行します。再開時は変数を削除するか`false`に戻します。
-
-`acknowledge-current`では、現在の通知条件を満たす候補をreasonごとに最大件数の制限なく確認済みとして通知管理記録へ保存します。同じnotification keyは送信済みと同様に通知対象から除外します。すでに送信済みの同じkeyは送信日時とDiscord message IDを維持します。通常のDiscord digestと`notification_sent`履歴は作られません。snapshotとPagesは通常runと同じように生成し、通知管理記録の更新は同じatomic transactionで保存します。手動入力は現在の候補を一括で確認済みにする操作なので、対象範囲を確認してから実行してください。運用障害が起きた場合の`notify-operations`は別系統で通知します。
-
-workflow artifactは`notificationAction`を保持します。`persist-state`はsnapshotと、未送信候補を含む通知管理記録を同じatomic transactionで保存します。`notify-discord`はartifactと`tracker-state`のsnapshot run IDを照合し、不一致なら通常通知もrun完了処理も行いません。state branchや通知管理記録を直接編集してはいけません。保存形式の切替は[運用手順](OPERATIONS.md)の「stateの保存形式を移行する」に従います。
-
-成功後に次を確認します。
-
-- Codex認証ファイルを配置した場合は、`collect-analyze`の「更新されたCodex認証ファイルをsecretへ書き戻す」stepが成功していること
-- `tracker-state`がdefault branchと別の履歴を持つこと
-- `persist-state`のcommitにsnapshot、当日履歴、新しいAI cache、通知管理記録がまとまっていること
-- 後続の通知jobが実測時刻と実送信数を含むrun report、通知管理記録、当日の日次履歴のcommitを追加していること
-- 初回Pagesの生成時刻がsnapshotの生成時刻と一致し、repository数、item数、stale表示も一致すること
-- private repositoryのID、名前、URL、secret、不要な本文がstateとPagesにないこと
-- 通常digestがPages deploy後にだけ送信され、候補0件なら送信されないこと
-- 通知候補がある場合は通知後のPages deployが成功し、同じrunの通知履歴へ送信済み通知が表示されること
-- 同じ候補を含む再実行では送信されず、送信済みの通知管理記録項目が維持されること
-- `notification_action: hold`では通常のDiscord送信と`notification_sent`履歴がなく、候補が`pendingNotifications`へ保存され、次の`send`で再検証されること
-- `notification_action: acknowledge-current`では通常のDiscord送信と`notification_sent`履歴がなく、未送信だった対象候補の通知管理記録項目が`status: acknowledged`になっていること
-- `acknowledge-current`を実行しても、すでに送信済みだった同じnotification keyの送信日時とDiscord message IDが維持されていること
-- `sent`と`acknowledged`の同じnotification keyは期限なく通知対象から除外され、状態、停滞レベル、待ち相手、進捗が変わった候補は次回の`send`で通知対象になること
-- 判定規則versionだけを更新して状態、待ち相手、進捗が変わらない場合は、各種開始時刻とnotification keyが維持されること
-
-`tracking.startAt: null`なら、最初の完全成功runの時刻がsnapshotへ固定されます。
-収集、Pages、Discordのいずれかで運用対象の失敗が起きたrunでは、`notify-operations`が障害通知を1件送ります。
-GitHub Actionsのscheduleは遅延し得るため、00:00、04:00、08:00、12:00、16:00、20:00 JSTは起動予定時刻として扱います。
-
-mentionが必要になった場合だけ、GitHubユーザー名と17桁から20桁のDiscord user IDを`mentions.users`へ登録します。
-登録されていないuserと`@everyone`はmentionされません。
+`hold`は候補をpendingへ保存し、`acknowledge-current`は現在条件を満たす候補を上限なしで確認済みにします。
+両方とも通常のDiscord送信と送信履歴を作りません。
+すでにsentの同じkeyの送信日時とmessage IDを維持し、同じnotification keyの再送を抑えます。
+`tracking.startAt`が未指定なら、初回Pagesと通知の確定後のfinalizationで追跡開始時刻を固定します。
+mentionが必要な場合だけ`mentions.users`へ登録し、未登録userと`@everyone`はmentionしません。

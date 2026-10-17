@@ -1,11 +1,11 @@
+import { aiAnalysisElementSchema, type AiAnalysisElement } from "./ai-analysis-elements.js";
 import {
   createUtcIsoDateTime,
-  type TrackingNotificationClass,
-  type TrackedItemAiAnalysis,
   type TrackedItemState,
+  type TrackingNotificationClass,
   type UtcIsoDateTime,
 } from "./types.js";
-import { aiAnalysisElementSchema, type AiAnalysisElement } from "./ai-analysis-elements.js";
+import { type TrackedItemAiAnalysis } from "./tracked-item-ai-analysis.js";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
